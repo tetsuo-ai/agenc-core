@@ -2,7 +2,10 @@
 
 Built-in model providers for AgenC **0.17.0**. Source of truth:
 `runtime/src/llm/registry/provider-info.ts`
-(`BUILT_IN_PROVIDER_DEFAULT_MODELS`, base URLs, API key envs).
+(`BUILT_IN_PROVIDER_DEFINITIONS`). Each row owns the display name, defaults,
+ordered credential and endpoint environment ingress names, and first-run
+access metadata. Exported default maps are mechanically derived views of
+those rows.
 
 CLI: `agenc providers` · `agenc login` · `agenc config` · `/provider` and
 `/model` in the TUI.
@@ -11,7 +14,7 @@ CLI: `agenc providers` · `agenc login` · `agenc config` · `/provider` and
 
 | Setting | Value |
 | --- | --- |
-| Default provider | `grok` (xAI; alias `xai` normalizes to `grok`) |
+| Default provider | `grok` (xAI) |
 | Fresh-config session model | `grok-4.6` (`defaultConfig().model`) |
 | Provider-map fallback (`BUILT_IN_PROVIDER_DEFAULT_MODELS.grok`) | `grok-4.6` |
 | Managed OpenRouter paid default | `x-ai/grok-4.5` |
@@ -23,6 +26,29 @@ Bare interactive startup with a fresh install uses the **config** default
 explicit model, the registry also uses **`grok-4.6`**. Managed OpenRouter is a
 separate provider route and its paid default remains **`x-ai/grok-4.5`**.
 
+## Single provider authority
+
+Startup provider selection is explicit and layered. Before managed policy is
+applied, `--provider` wins over `AGENC_PROVIDER`, which wins over
+`model_provider` in the selected profile or `config.toml`; the fallback is
+`grok`. Administrator-managed configuration is the final layer and may replace
+or lock that result. A provider-qualified `--model` selection is resolved as
+one provider/model pair. Credentials, OAuth tokens, base URLs, and local
+endpoint availability never choose a provider.
+
+The client captures this selection once and binds it to a session-owned
+provider service before daemon work begins. `/provider` replaces that binding
+for only the current session. It does not stamp `process.env`, change the
+daemon default, or affect concurrent sessions. `AGENC_PROVIDER` is the only
+provider-selection environment variable.
+
+Live provider selection accepts canonical slugs only. The retired selector
+spellings `xai`, `custom`, and `openai_compatible` are rejected at strict-v2
+config, environment, CLI, session-switch, and factory boundaries with their
+replacement. The explicit v1 migration path translates them to `grok` and
+`openai-compatible` and refuses conflicts. Unknown configured provider slugs
+are rejected; provider tables use the same canonical built-in registry.
+
 Grok credential resolution:
 
 1. **Stored `/grok-login` OAuth token** (always wins while present — env API
@@ -30,7 +56,6 @@ Grok credential resolution:
 2. Explicit session/API key when no OAuth token
 3. `XAI_API_KEY`
 4. `GROK_API_KEY`
-5. `AGENC_XAI_API_KEY`
 
 ### Grok defaults and catalog entries
 
@@ -70,45 +95,80 @@ they run only through the Grok Build CLI ACP path. See
 
 ## Built-in providers (16)
 
-| Slug | Display name | Default model | Base URL | API key env (primary) |
-| --- | --- | --- | --- | --- |
-| `grok` | xAI Grok | `grok-4.6` | `https://api.x.ai/v1` | `XAI_API_KEY` |
-| `openai` | OpenAI | `gpt-5` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
-| `anthropic` | Anthropic | `claude-opus-4-7` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` |
-| `ollama` | Ollama | `llama3.3` | `http://localhost:11434` | _(none required)_ |
-| `lmstudio` | LM Studio | `gpt-4o-mini` | `http://localhost:1234/v1` | `LMSTUDIO_API_KEY` (optional) |
-| `openai-compatible` | OpenAI-compatible | `local-model` | `http://localhost:8000/v1` | `OPENAI_COMPATIBLE_API_KEY` |
-| `openrouter` | OpenRouter | `x-ai/grok-4.5` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
-| `groq` | Groq | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` |
-| `deepseek` | DeepSeek | `deepseek-reasoner` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
-| `gemini` | Gemini | `gemini-2.5-pro` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` |
-| `mistral` | Mistral | `devstral-latest` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` |
-| `nvidia-nim` | NVIDIA NIM | `nvidia/llama-3.1-nemotron-70b-instruct` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` |
-| `minimax` | MiniMax | `MiniMax-M2.5` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` |
-| `github` | GitHub Copilot | `gpt-4o` | `https://api.githubcopilot.com` | `GITHUB_TOKEN` |
-| `amazon-bedrock` | Amazon Bedrock | `amazon.nova-pro-v1:0` | `https://bedrock-runtime.us-east-1.amazonaws.com` | `AWS_ACCESS_KEY_ID` (or Bedrock-specific) |
-| `agenc` | AgenC | `agenc` | `https://id.agenc.ag/v1` | managed auth (`requiresManagedAuth`) |
+| Slug | Display name | Default model | Default base URL | Ordered credential env aliases | Ordered endpoint env aliases | Onboarding access |
+| --- | --- | --- | --- | --- | --- | --- |
+| `grok` | xAI Grok | `grok-4.6` | `https://api.x.ai/v1` | `XAI_API_KEY`, `GROK_API_KEY` | `XAI_BASE_URL`, `GROK_BASE_URL` | `api-key` |
+| `openai` | OpenAI | `gpt-5` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`, `OPENAI_API_BASE` | `api-key` |
+| `anthropic` | Anthropic | `claude-opus-4-7` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` | `api-key` |
+| `ollama` | Ollama | `llama3.3` | `http://localhost:11434` | _(none)_ | `OLLAMA_BASE_URL` | `local` |
+| `lmstudio` | LM Studio | `gpt-4o-mini` | `http://localhost:1234/v1` | `LMSTUDIO_API_KEY` (optional) | `LMSTUDIO_BASE_URL` | `local` |
+| `openai-compatible` | OpenAI-compatible | `local-model` | `http://localhost:8000/v1` | `OPENAI_COMPATIBLE_API_KEY`, `OPENAI_API_KEY` | `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_BASE` | `local` |
+| `openrouter` | OpenRouter | `x-ai/grok-4.5` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL` | `api-key` |
+| `groq` | Groq | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `GROQ_BASE_URL` | `api-key` |
+| `deepseek` | DeepSeek | `deepseek-v4-flash` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL` | `api-key` |
+| `gemini` | Gemini | `gemini-2.5-pro` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `GEMINI_BASE_URL` | `api-key` |
+| `mistral` | Mistral | `mistral-medium-latest` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | `MISTRAL_BASE_URL` | `api-key` |
+| `nvidia-nim` | NVIDIA NIM | `nvidia/llama-3.1-nemotron-70b-instruct` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | `NVIDIA_BASE_URL` | `api-key` |
+| `minimax` | MiniMax | `MiniMax-M2.5` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | `MINIMAX_BASE_URL` | `api-key` |
+| `github` | GitHub Copilot | `gpt-5.3-codex` | `https://api.githubcopilot.com` | `GITHUB_TOKEN`, `GH_TOKEN` | `GITHUB_BASE_URL` | `api-key` |
+| `amazon-bedrock` | Amazon Bedrock | `amazon.nova-pro-v1:0` | `https://bedrock-runtime.us-east-1.amazonaws.com` | access: `AWS_BEDROCK_ACCESS_KEY_ID`, `AWS_ACCESS_KEY_ID`; secret: `AWS_BEDROCK_SECRET_ACCESS_KEY`, `AWS_SECRET_ACCESS_KEY`; optional session: `AWS_BEDROCK_SESSION_TOKEN`, `AWS_SESSION_TOKEN` | `AWS_BEDROCK_BASE_URL` | `environment` |
+| `agenc` | AgenC | `agenc` | `https://id.agenc.ag/v1` | _(managed auth; no BYOK key alias)_ | `AGENC_BASE_URL` | `managed` |
 
-Slug aliases accepted on normalize:
-
-| Input | Resolves to |
-| --- | --- |
-| `xai` | `grok` |
-| `custom`, `openai_compatible` | `openai-compatible` |
+`openrouter` remains an `api-key` first-run route, but a signed-in AgenC
+subscription can supply its managed key access when that feature is enabled.
+Amazon Bedrock is an environment-only first-run route because SigV4 requires
+both an access-key ID and secret access key. The optional session token is used
+when present. AgenC's one-field BYOK paste/store path does not accept or persist
+a partial Bedrock credential set.
 
 ## Auth model
 
-Provider credentials are owned by the **auth backend** / BYOK config, not by
-the provider registry. The registry stores **request and catalog metadata**
-only (base URL, default model, retry/timeouts, catalog lists).
+Provider credential values are owned by the **auth backend** or transient BYOK
+ingress, not by the provider registry. The registry stores only non-secret
+metadata, including the ordered environment variable names above. It never
+stores credential values.
 
-- **Local BYOK** — env keys and `auth.json` entries selected at startup.
+- **Local BYOK** — explicit provider environment keys are transient inputs;
+  keys saved through AgenC live only in the home-scoped native credential
+  secure storage. `auth.json` contains non-secret identity/timestamp metadata only.
 - **Remote / managed** — `auth.backend = "remote"` with managed keys
-  (`agenc` provider requires managed auth).
-- **Discovery** — `agenc providers` reports readiness (key present, local
-  server health for Ollama/LM Studio/openai-compatible, subscription tier).
+  (`agenc` provider requires managed auth). The stored bearer is native secure storage
+  state. An explicit constructor token wins over `AGENC_REMOTE_AUTH_TOKEN`,
+  which wins over the stored bearer; explicit overrides are not copied into
+  `auth.json`.
+- **OpenAI / ChatGPT OAuth** — `agenc openai-login` stores one home-scoped
+  native `openAiOauth` record. While `openai` is selected, that stored sign-in
+  wins over `OPENAI_API_KEY`; it never affects `openai-compatible` or another
+  provider. ChatGPT-only accounts use the first-party subscription backend,
+  while eligible platform accounts use the exchanged API key. Both modes
+  reject a custom `OPENAI_BASE_URL` until `agenc openai-logout` removes the
+  stored sign-in. Subscription requests use the same stored access token and
+  account ID; `PROVIDER_CODE_API_KEY` is only a fallback when no usable stored
+  subscription credential exists. The runtime never reads
+  `~/.providerCode/auth.json`,
+  `PROVIDER_CODE_AUTH_JSON_PATH`, or `PROVIDER_CODE_HOME`; those paths and the
+  retired native `agenc` credential field are explicit one-way migration
+  inputs only. Reads, refreshes, and clears stay bound to the client's captured
+  `HomeContext`, and refresh compare-and-swap preserves a newer login.
+- **Provider-native tokens** — GitHub Models, xAI OAuth, and AgenC AI
+  subscription OAuth persist only in the home-scoped native `githubModels`,
+  `xaiOauth`, and `agencAiOauth` namespaces. Their production APIs require an
+  explicit `HomeContext`; cache/single-flight/refresh-lock state is isolated by
+  home, and refresh writes compare-and-swap the exact credential version they
+  exchanged so a newer login always wins. Gemini access-token and Application
+  Default Credentials auth has no provider-specific secure-storage namespace. Gemini API
+  keys explicitly saved through local BYOK live under `localAuth.byokKeys`.
+- **Discovery** — `agenc providers` reports readiness (credentials present, local
+  server health for Ollama/LM Studio/openai-compatible, subscription tier)
+  without changing the selected provider. It uses the same ordered registry
+  aliases as provider construction and reports the alias that actually won.
+  A stored Grok OAuth bearer outranks stale shell keys; LM Studio never borrows
+  an OpenAI key or endpoint for discovery or model-metadata probes.
 
 See `runtime/src/auth/` and `runtime/src/llm/discovery/provider-discovery.ts`.
+`byok-keys.json`, bearer fields in `auth.json`, and `.agenc/remote` credential
+files, plus ProviderCode `auth.json`, are retired migration inputs, not
+compatibility fallbacks.
 
 ## Config & env
 
@@ -127,38 +187,64 @@ export AGENC_MODEL=x-ai/grok-4.5
 export OPENROUTER_API_KEY=…
 ```
 
-Base URL overrides (examples; see `runtime/src/config/env.ts`):
-
-| Provider | Env |
-| --- | --- |
-| OpenAI | `OPENAI_BASE_URL` |
-| Anthropic | `ANTHROPIC_BASE_URL` |
-| LM Studio | `LMSTUDIO_BASE_URL` |
-| OpenAI-compatible | `OPENAI_COMPATIBLE_BASE_URL` |
-| OpenRouter | `OPENROUTER_BASE_URL` |
-| Groq | `GROQ_BASE_URL` |
-| DeepSeek | `DEEPSEEK_BASE_URL` |
-| Gemini | `GEMINI_BASE_URL` |
-| Bedrock | `AWS_BEDROCK_BASE_URL`, region via `AWS_BEDROCK_REGION` / `AWS_REGION` |
+The built-in table above is exhaustive and ordered. An alias is never borrowed
+by another provider unless that provider row explicitly lists it. LM Studio,
+for example, does not inherit OpenAI credentials or endpoints. Bedrock supports
+only the access, secret, optional session-token, endpoint, and region variables
+listed here. Region selection is `AWS_BEDROCK_REGION`, then `AWS_REGION`, then
+`AWS_DEFAULT_REGION`. Without `AWS_BEDROCK_BASE_URL`, that resolved region
+produces `https://bedrock-runtime.<region>.amazonaws.com`; without a region,
+the registry default is `us-east-1`. No additional AWS credential sources are
+consumed by this direct SigV4 provider. Bedrock model discovery and token
+counting receive the same captured credentials explicitly; they do not invoke
+the AWS SDK profile, shared-file, instance-metadata, or web-identity chains.
 
 ## Wire layer
 
 | Layer | Path |
 | --- | --- |
-| Registry / defaults | `runtime/src/llm/registry/provider-info.ts` |
+| Registry / provider metadata | `runtime/src/llm/registry/provider-info.ts` |
 | Model catalog | `runtime/src/llm/registry/model-catalog.ts` |
-| Provider-neutral client | `runtime/src/llm/client.ts`, `provider.ts` |
+| Provider-neutral HTTP client / retry loop | `runtime/src/llm/client.ts`, `client-session.ts` |
+| Stream idle deadline | `runtime/src/llm/stream-watchdog.ts` |
 | Per-provider modules | `runtime/src/llm/providers/*` |
 | HTTP / SDK services | `runtime/src/services/` |
 | Capabilities | `runtime/src/llm/provider-capabilities.ts` |
 
-Default stream/request settings from the registry:
+`ProviderHttpClientSession` owns these defaults for adapters that use the
+provider-neutral HTTP client:
 
 - request max retries: **4**
 - stream max retries: **5**
-- stream idle timeout: **300_000** ms
-- websocket connect timeout: **15_000** ms
-- websockets supported: **`openai` only** in built-in info
+- stream idle timeout: **unset** (0). Silence does not end a turn unless you
+  set `stream_watchdog_timeout_ms` or `AGENC_STREAM_IDLE_TIMEOUT_MS`
+
+Model-provider streaming uses HTTP/SSE. The daemon, realtime connector, MCP,
+and gateway have separate WebSocket transports; they are not provider
+capabilities and are not described by the LLM provider registry.
+
+Its retry behavior is:
+
+- **429 is not retried** (`retry429: false`). 5xx and transport (network/timeout)
+  are. Caller abort is not. One extra TLS-cert retry on attempt 0 only.
+- **Retry-After > 300s** aborts the retry.
+- Session backoff base is **200 ms**.
+- After budget admission, model calls set `singleWireAttempt: true`: **no HTTP
+  retry** on that lease. A retry needs a new reservation.
+Grok uses an SDK transport with a distinct retry contract: its default budget
+is **2**, `maxRetries` can override it, and the SDK owns retry eligibility and
+backoff. A `singleWireAttempt` still forces that SDK budget to **0**. Those are
+provider-specific transport semantics, not provider-registry metadata and not
+the `ProviderHttpClientSession` policy above.
+
+Grok OAuth: expired bearer is often **403**. Refresh on 401 and 403, two
+attempts, then quarantine a dead rotating refresh token. Admitted Grok turns
+do **not** in-band retry; they pre-flight refresh if the stored token is near
+expiry. See [grok-oauth.md](../grok-oauth.md).
+
+Grok server tools (`web_search`, `x_search`, `code_interpreter`, `file_search`,
+MCP) cannot be counted before the turn. Admission reserves the **full context
+window** for those tools so later usage does not trip `provider_overrun`.
 
 ## Related docs
 

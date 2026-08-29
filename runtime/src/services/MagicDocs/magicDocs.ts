@@ -7,6 +7,7 @@
 import { readFile, stat } from "node:fs/promises";
 
 import type { LLMMessage } from "../../llm/types.js";
+import { isHookExecutionSuppressed } from "../../hooks/runtime-policy.js";
 import type { Session } from "../../session/session.js";
 import type { Tool } from "../../tools/types.js";
 import { FILE_EDIT_TOOL_NAME } from "../../tools/system/file-edit.js";
@@ -78,8 +79,9 @@ const updateQueueByScope = new Map<string, Promise<void>>();
 let agentRunnerForTests: MagicDocsAgentRunner | null = null;
 
 function getErrnoCode(error: unknown): string | undefined {
-  return typeof error === "object" && error !== null &&
-      typeof (error as { code?: unknown }).code === "string"
+  return typeof error === "object" &&
+    error !== null &&
+    typeof (error as { code?: unknown }).code === "string"
     ? (error as { code: string }).code
     : undefined;
 }
@@ -104,10 +106,14 @@ function hasToolCallsInLastAssistantTurn(
   }
   return false;
 }
-export function trackedMagicDocPathsForTests(sessionId?: string): readonly string[] {
+export function trackedMagicDocPathsForTests(
+  sessionId?: string,
+): readonly string[] {
   if (sessionId !== undefined) {
-    return [...(trackedMagicDocsByScope.get(scopeIdForSessionId(sessionId))?.keys() ?? [])]
-      .sort();
+    return [
+      ...(trackedMagicDocsByScope.get(scopeIdForSessionId(sessionId))?.keys() ??
+        []),
+    ].sort();
   }
   const paths = new Set<string>();
   for (const docs of trackedMagicDocsByScope.values()) {
@@ -164,7 +170,9 @@ function scopeIdForSessionId(sessionId: string | undefined): string {
 }
 
 function scopeIdForContext(context: MagicDocsPostSamplingContext): string {
-  return scopeIdForSessionId(context.session?.conversationId ?? context.sessionId);
+  return scopeIdForSessionId(
+    context.session?.conversationId ?? context.sessionId,
+  );
 }
 
 function docsForScope(scopeId: string): Map<string, MagicDocInfo> {
@@ -192,21 +200,28 @@ export function registerMagicDoc(filePath: string, sessionId?: string): void {
   }
 }
 
-function snapshotToSeed(snapshot: SessionReadSnapshot): MagicDocsReadFileSnapshot {
+function snapshotToSeed(
+  snapshot: SessionReadSnapshot,
+): MagicDocsReadFileSnapshot {
   return {
     ...(snapshot.content === undefined ? {} : { content: snapshot.content }),
-    ...(typeof snapshot.timestamp === "number" && Number.isFinite(snapshot.timestamp)
+    ...(typeof snapshot.timestamp === "number" &&
+    Number.isFinite(snapshot.timestamp)
       ? { timestamp: snapshot.timestamp }
       : {}),
     ...(snapshot.viewKind === undefined ? {} : { viewKind: snapshot.viewKind }),
     ...(snapshot.isPartialView === true ? { isPartialView: true } : {}),
-    ...(typeof snapshot.readOffset === "number" && Number.isFinite(snapshot.readOffset)
+    ...(typeof snapshot.readOffset === "number" &&
+    Number.isFinite(snapshot.readOffset)
       ? { readOffset: snapshot.readOffset }
       : {}),
-    ...(typeof snapshot.readLimit === "number" && Number.isFinite(snapshot.readLimit)
+    ...(typeof snapshot.readLimit === "number" &&
+    Number.isFinite(snapshot.readLimit)
       ? { readLimit: snapshot.readLimit }
       : {}),
-    ...(snapshot.rawContent === undefined ? {} : { rawContent: snapshot.rawContent }),
+    ...(snapshot.rawContent === undefined
+      ? {}
+      : { rawContent: snapshot.rawContent }),
   };
 }
 
@@ -306,7 +321,10 @@ async function runMagicDocsAgentWithSubagent(
   if (request.signal?.aborted) return;
 
   const live = await spawnMagicDocsLiveAgent(request.session);
-  seedSessionReadState(live.agentId, seedEntriesFromReadFileState(request.readFileState));
+  seedSessionReadState(
+    live.agentId,
+    seedEntriesFromReadFileState(request.readFileState),
+  );
   recordSessionRead(live.agentId, request.docPath, {
     content: request.currentDoc,
     rawContent: request.currentDoc,
@@ -389,6 +407,7 @@ async function updateMagicDoc(
     docInfo.path,
     detected.title,
     detected.instructions,
+    context.session?.services.configStore?.homeContext.path,
   );
 
   await magicDocsAgentRunner()({
@@ -411,7 +430,10 @@ async function updateMagicDocs(
   context: MagicDocsPostSamplingContext,
 ): Promise<void> {
   if (context.signal?.aborted) return;
-  if (context.querySource !== undefined && context.querySource !== "repl_main_thread") {
+  if (
+    context.querySource !== undefined &&
+    context.querySource !== "repl_main_thread"
+  ) {
     return;
   }
   if (hasToolCallsInLastAssistantTurn(context.messages)) {
@@ -432,6 +454,11 @@ async function updateMagicDocs(
 export function runMagicDocsPostSamplingHook(
   context: MagicDocsPostSamplingContext,
 ): Promise<void> {
+  if (
+    isHookExecutionSuppressed(context.session?.services.runtimeOptions)
+  ) {
+    return Promise.resolve();
+  }
   const scopeId = scopeIdForContext(context);
   const prev = updateQueueByScope.get(scopeId) ?? Promise.resolve();
   const next = prev.then(
@@ -453,8 +480,10 @@ export function runMagicDocsPostSamplingHook(
 }
 
 export function initMagicDocs(): void {
+  if (isHookExecutionSuppressed()) return;
   if (unregisterReadListener !== null) return;
   unregisterReadListener = registerFileReadListener((event) => {
+    if (isHookExecutionSuppressed()) return;
     if (detectMagicDocHeader(event.content)) {
       registerMagicDoc(event.filePath, event.sessionId);
     }

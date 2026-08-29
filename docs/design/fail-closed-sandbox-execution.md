@@ -13,7 +13,7 @@ AgenC has one authenticated process-execution boundary. A restricted policy
 2. execution stops before the host process is spawned.
 
 There is no warning-only fallback. Raw host execution is permitted only when a
-trusted operator explicitly selected `danger-full-access`/`--yolo`, or when an
+trusted operator explicitly selected `danger-full-access`/`--dangerously-bypass-approvals-and-sandbox`, or when an
 explicit external sandbox policy says isolation is owned outside AgenC.
 Repository content and model-supplied arguments cannot create either decision.
 
@@ -31,7 +31,7 @@ session-owned automation path must cross the broker at its final spawn point:
 
 | Class | Covered paths | Restricted-mode behavior |
 | --- | --- | --- |
-| Turns and commands | interactive, print, foreground/background shell, Monitor, workflow, job, hook, cron | Transform the final program/argv or reject before spawn. Job and cron are durable origins; their eventual turn/tool process uses the same boundary. |
+| Turns and commands | interactive, print, foreground/background shell, Monitor, job, hook, cron | Transform the final program/argv or reject before spawn. Job and cron are durable origins; their eventual turn/tool process uses the same boundary. |
 | Extensions and daemon RPC | stdio MCP, daemon `commandExec` | Require an explicit authenticated policy. Missing policy is not inferred from request fields. |
 | Coding helpers | Git/repository inspection, code indexing, worktree lifecycle, prompt Git lookup, Grep/Glob/Orient, PDF extraction | Probes and helpers cross the boundary. Grep, Glob, and Orient execute only the packaged pinned ripgrep by absolute path and have no JavaScript search fallback. |
 | Language and provider services | LSP, Chromium, PowerShell native parsing, xAI ACP | Each child uses the owning session's broker. Long-lived services do not report disposal complete until the platform-owned process scope is gone. Linux and Windows provide recursive kernel ownership; macOS covers the original process group plus descendants observed in process-table snapshots. LSP manager/config state is keyed by broker identity, so a restricted session cannot reuse a later danger-mode session's server. |
@@ -51,9 +51,11 @@ and adding a boundary regression test.
 ## Platform readiness
 
 - Linux requires the packaged `agenc-linux-sandbox` helper outside the writable
-  workspace and a trusted system `bubblewrap`. Readiness executes a bounded
-  namespace probe; finding binaries on disk is insufficient. The helper is
-  resolved through the installed runtime package root so source and bundled
+  workspace. Preferred confinement is trusted system `bubblewrap` after a
+  bounded namespace probe; finding binaries on disk is insufficient. When that
+  probe fails and Landlock is fully enforced, readiness is `kind: "ready"` via
+  `agenc-landlock-run` unless `AGENC_DISABLE_LANDLOCK_FALLBACK=1`. The helper
+  is resolved through the installed runtime package root so source and bundled
   layouts agree. It is launched through the absolute trusted Node executable,
   and runtime/native-loader injection variables are removed before the first
   pre-sandbox process. A command profile that could write either launcher is
@@ -144,9 +146,10 @@ retry the command. Do not recover by silently changing policy.
 Revert-sensitive tests use marker-writing commands and assert that the marker is
 never created when the broker is missing, the probe fails, or transformation
 fails. Tests cross real tool/transport boundaries for interactive, print,
-background, Monitor, workflow, hook, MCP stdio, daemon command execution,
+background, Monitor, hook, MCP stdio, daemon command execution,
 coding helpers, worktrees, browser, LSP, ACP, PowerShell parsing, and teammate
-selection; surface-matrix tests cover cron/job/child-agent classifications.
+selection; surface-matrix tests cover cron/job/child-agent classifications,
+including child agents launched by version-2 workflows.
 
 Healthy-path tests also prove that transformed program/argv/cwd/env/argv0 values
 are honored, restricted worktree creation uses separate add/checkout grants and

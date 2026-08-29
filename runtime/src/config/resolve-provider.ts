@@ -1,44 +1,30 @@
 import {
-  resolveModel as resolveEnvModel,
-  resolveProvider as resolveEnvProvider,
-  resolveProviderApiKey as resolveEnvProviderApiKey,
   resolveProviderBaseURL as resolveEnvProviderBaseURL,
   type EnvSnapshot,
 } from "./env.js";
 import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
-  BUILT_IN_PROVIDER_MODEL_CATALOG,
+  resolveBuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
+import type { ProviderSlug } from "./provider-model-authority.js";
+import { normalizeProviderIdentity } from "../provider-identity.js";
 import type {
   AgenCConfig,
   ProviderCapabilityOverrides,
   ProviderConfig,
   ProviderFallbackTargetConfig,
 } from "./schema.js";
-import { resolveGrokProviderApiKey } from "../llm/xai-capability-config.js";
-import {
-  readOpenAiOauthApiKey,
-  readOpenAiSubscriptionAuth,
-} from "../utils/openAiOauthCredentials.js";
 
 export {
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   BUILT_IN_PROVIDER_MODEL_CATALOG,
 } from "../llm/registry/provider-info.js";
-
-export type ProviderSlug = keyof typeof BUILT_IN_PROVIDER_DEFAULT_MODELS;
-
-export function isAgencModelShortcut(
-  model: string | undefined,
-): boolean {
-  return model?.trim().toLowerCase() === "agenc";
-}
+export { buildProviderModelCatalog } from "./provider-model-authority.js";
+export type { ProviderSlug } from "./provider-model-authority.js";
 
 export interface ResolvedProviderSettings {
   readonly provider: ProviderSlug;
-  readonly apiKeyEnvVar?: string;
-  readonly apiKey?: string;
   readonly baseURL?: string;
   readonly defaultModel?: string;
   readonly contextWindowTokens?: number;
@@ -51,54 +37,15 @@ export interface ResolvedProviderSettings {
   readonly fallbackStatuses?: readonly number[];
 }
 
-export function normalizeProviderSlug(
-  provider: string | undefined,
-): ProviderSlug | undefined {
-  const normalized = provider?.trim().toLowerCase();
-  if (!normalized) return undefined;
-  const slug = normalized === "xai"
-    ? "grok"
-    : normalized === "custom" || normalized === "openai_compatible"
-      ? "openai-compatible"
-      : normalized;
-  return slug in BUILT_IN_PROVIDER_DEFAULT_MODELS
-    ? (slug as ProviderSlug)
-    : undefined;
-}
+export { resolveBuiltInProviderSlug as resolveProviderSlug };
 
 export function readProviderConfig(
   config: AgenCConfig,
   provider: string | undefined,
 ): ProviderConfig | undefined {
-  const slug = normalizeProviderSlug(provider);
+  const slug = resolveBuiltInProviderSlug(provider);
   if (!slug) return undefined;
   return config.providers?.[slug];
-}
-
-export function resolveProviderSelection(params: {
-  readonly cliProvider?: string;
-  readonly cliModel?: string;
-  readonly config: AgenCConfig;
-  readonly env?: EnvSnapshot;
-  readonly fallback?: ProviderSlug;
-}): ProviderSlug | undefined {
-  const explicitProvider =
-    normalizeProviderSlug(params.cliProvider) ??
-    normalizeProviderSlug(resolveEnvProvider(params.env));
-  if (explicitProvider) return explicitProvider;
-
-  const envModel = resolveEnvModel("", params.env).trim();
-  const resolved =
-    isAgencModelShortcut(params.cliModel) ||
-    isAgencModelShortcut(envModel) ||
-    isAgencModelShortcut(params.config.model)
-      ? "agenc"
-      : undefined;
-  return (
-    resolved ??
-    normalizeProviderSlug(params.config.model_provider) ??
-    params.fallback
-  );
 }
 
 export function resolveProviderSettings(
@@ -106,29 +53,9 @@ export function resolveProviderSettings(
   config: AgenCConfig,
   env: EnvSnapshot = process.env,
 ): ResolvedProviderSettings | undefined {
-  const slug = normalizeProviderSlug(provider);
+  const slug = resolveBuiltInProviderSlug(provider);
   if (!slug) return undefined;
   const providerConfig = readProviderConfig(config, slug);
-  const apiKeyEnvVar = providerConfig?.api_key_env?.trim() || undefined;
-  // Grok: /grok-login OAuth ALWAYS wins over env BYOK (dead keys in the shell
-  // must not shadow subscription access). Other providers: env as before.
-  const apiKey =
-    slug === "grok"
-      ? resolveGrokProviderApiKey(
-          (apiKeyEnvVar ? env[apiKeyEnvVar] : undefined) ??
-            resolveEnvProviderApiKey(slug, env),
-          env,
-        )
-      : slug === "openai"
-        ? // A subscription sign-in has no platform API key; its access
-          // token is the credential (the factory pairs it with the
-          // ChatGPT backend URL and account header).
-          (readOpenAiOauthApiKey() ??
-          readOpenAiSubscriptionAuth()?.accessToken ??
-          (apiKeyEnvVar ? env[apiKeyEnvVar] : undefined) ??
-          resolveEnvProviderApiKey(slug, env))
-        : ((apiKeyEnvVar ? env[apiKeyEnvVar] : undefined) ??
-          resolveEnvProviderApiKey(slug, env));
   const envBaseURL = resolveEnvProviderBaseURL(slug, env);
   const configuredBaseURL = providerConfig?.base_url?.trim();
   const baseURL = envBaseURL ?? configuredBaseURL;
@@ -146,8 +73,6 @@ export function resolveProviderSettings(
   );
   return {
     provider: slug,
-    ...(apiKeyEnvVar ? { apiKeyEnvVar } : {}),
-    ...(apiKey ? { apiKey } : {}),
     ...(baseURL ? { baseURL } : {}),
     ...(providerConfig?.default_model?.trim()
       ? { defaultModel: providerConfig.default_model.trim() }
@@ -217,7 +142,7 @@ function normalizeProviderFallbackTargets(
     if (!model) return;
     const trimmedProvider = target.provider?.trim();
     const targetProvider = trimmedProvider
-      ? normalizeProviderSlug(trimmedProvider) ?? trimmedProvider.toLowerCase()
+      ? normalizeProviderIdentity(trimmedProvider, "provider fallback target")
       : provider;
     const reason = target.reason?.trim();
     const key = `${targetProvider}\0${model}`;
@@ -242,59 +167,5 @@ function normalizeProviderFallbackTargets(
       ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
     });
   }
-  for (const model of unknownArray(config?.fallback?.models)) {
-    if (typeof model !== "string") continue;
-    append({ provider, model });
-  }
-  for (const model of unknownArray(config?.fallback_models)) {
-    if (typeof model !== "string") continue;
-    append({ provider, model });
-  }
-
   return Object.freeze(out);
-}
-
-export function buildProviderModelCatalog(
-  config?: AgenCConfig,
-): Readonly<Record<string, readonly string[]>> {
-  const catalog: Record<string, string[]> = Object.fromEntries(
-    Object.entries(BUILT_IN_PROVIDER_MODEL_CATALOG).map(([provider, models]) => [
-      provider,
-      [...models],
-    ]),
-  );
-
-  if (config?.providers) {
-    for (const [provider, providerConfig] of Object.entries(config.providers)) {
-      const slug = normalizeProviderSlug(provider);
-      const model = providerConfig.default_model?.trim();
-      if (!slug || !model) continue;
-      const entries = catalog[slug] ?? [];
-      if (!entries.includes(model)) {
-        entries.push(model);
-      }
-      catalog[slug] = entries;
-    }
-  }
-
-  if (config?.model_provider && config.model?.trim()) {
-    const slug = normalizeProviderSlug(config.model_provider);
-    const model = config.model.trim();
-    if (slug) {
-      const entries = catalog[slug] ?? [];
-      if (!entries.includes(model)) {
-        entries.push(model);
-      }
-      catalog[slug] = entries;
-    }
-  }
-
-  return Object.freeze(
-    Object.fromEntries(
-      Object.entries(catalog).map(([provider, models]) => [
-        provider,
-        Object.freeze([...models]),
-      ]),
-    ),
-  );
 }

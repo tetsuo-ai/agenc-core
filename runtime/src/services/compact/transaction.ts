@@ -15,6 +15,7 @@ import {
   readProviderIdentity,
 } from "../../llm/provider.js";
 import type { LLMChatOptions, LLMMessage } from "../../llm/types.js";
+import type { BaseHookInput } from "../../entrypoints/sdk/coreTypes.js";
 import {
   accountCompactionCall,
   buildCompactionMapReducePlan,
@@ -49,7 +50,6 @@ import {
   MAX_COMPACTION_INTERMEDIATE_TOKENS,
   MAX_COMPACTION_OUTPUT_UTF8_BYTES_PER_CALL,
   MAX_COMPACTION_PROVIDER_CALLS,
-  MAX_COMPACTION_POST_HOOK_UTF8_BYTES,
   MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES,
   MAX_COMPACTION_REPLACEMENT_ENVELOPE_UTF8_BYTES,
   MAX_COMPACTION_REPLACEMENT_SUMMARY_UTF8_BYTES,
@@ -275,8 +275,47 @@ async function compactConversationTransactionBody(
 
   const startedAt = performance.now();
   const direction = options.direction ?? "from";
+  const hookDiagnostics: string[] = [];
+  const hookMetadata = buildCompactionHookMetadata(context, session, adapter);
+  reportCompactionHookProgress(context, "pre_compact", hookDiagnostics);
+  let requestedFocus = options.customInstructions;
+  try {
+    const preHookWork = Promise.resolve(
+      session.services.hooks.executePreCompact(
+        {
+          ...hookMetadata,
+          hook_event_name: "PreCompact",
+          trigger: options.automatic ? "auto" : "manual",
+          custom_instructions: options.customInstructions,
+        },
+        context.abortController?.signal,
+      ),
+    );
+    // The abort race can finish before the underlying hook promise. Attach a
+    // terminal observer so a non-cooperative hook cannot produce an unhandled
+    // rejection after the transaction has moved on.
+    void preHookWork.catch(() => {});
+    // PreCompact has no durable or admitted provider work to reconcile. Race
+    // it against the transaction signal without enrolling it in provider
+    // quiescence, so an abort-ignoring hook cannot poison the durable lease.
+    const preHookResult = await waitForHookUntilAbort(
+      preHookWork,
+      context.abortController?.signal,
+    );
+    requestedFocus = mergeCompactionFocus(
+      options.customInstructions,
+      preHookResult.newCustomInstructions,
+    );
+    appendHookDisplayDiagnostic(
+      hookDiagnostics,
+      preHookResult.userDisplayMessage,
+    );
+  } catch (error) {
+    hookDiagnostics.push(hookServiceFailureDiagnostic("PreCompact", error));
+  }
+  deadline.assertActive();
   if (
-    Buffer.byteLength(options.customInstructions, "utf8") >
+    Buffer.byteLength(requestedFocus, "utf8") >
     MAX_COMPACTION_FOCUS_UTF8_BYTES
   ) {
     throw new CompactionTransactionError(
@@ -308,7 +347,7 @@ async function compactConversationTransactionBody(
       context_window_tokens: context.options?.contextWindowTokens ?? null,
       max_output_tokens: context.options?.maxOutputTokens ?? null,
       direction,
-      requested_focus: options.customInstructions,
+      requested_focus: requestedFocus,
     },
   );
   const prepared = adapter.prepareSource(
@@ -342,7 +381,7 @@ async function compactConversationTransactionBody(
     context,
     source: prepared.source,
     systemPrompts: policyMaterial,
-    requestedFocus: options.customInstructions,
+    requestedFocus,
     providerName,
     model,
     messageSourceRefs: selected.sourceRefs,
@@ -396,21 +435,21 @@ async function compactConversationTransactionBody(
       policyDigest,
       accountingRef,
       policyMaterial,
-      requestedFocus: options.customInstructions,
+      requestedFocus,
       providerName,
       model,
       startedAt,
     }));
     deadline.assertActive();
-    const narrative = renderSummaryBody(run.finalSummary);
+    const canonicalSummaryEnvelope = canonicalizeJson({
+      version: 1,
+      kind: COMPACTION_CONTEXT_KIND_V1,
+      trust: "untrusted_historical_data",
+      summary_sha256: run.finalSummary.summary_sha256,
+      body: run.finalSummary.body,
+    });
     const rawSummaryMessage = options.createSummaryMessage(
-      canonicalizeJson({
-        version: 1,
-        kind: COMPACTION_CONTEXT_KIND_V1,
-        trust: "untrusted_historical_data",
-        summary_sha256: run.finalSummary.summary_sha256,
-        body: run.finalSummary.body,
-      }),
+      canonicalSummaryEnvelope,
     );
     const historyMarkerBase = {
       version: COMPACTION_HISTORY_MARKER_VERSION,
@@ -431,11 +470,6 @@ async function compactConversationTransactionBody(
         compactionHistory: { ...historyMarkerBase, kind: "summary" },
       },
     };
-    const hookResults =
-      (await deadline.wait(Promise.resolve(
-        context.deps?.createHookResults?.(narrative, context) ?? [],
-      ))) ?? [];
-    deadline.assertActive();
     const candidateResult: CompactionResult = {
       boundaryMarker,
       summaryMessages:
@@ -445,21 +479,17 @@ async function compactConversationTransactionBody(
           ? [...authoritativeKeep, summaryMessage]
           : authoritativeKeep,
       attachments,
-      hookResults,
-      userDisplayMessage: COMPACTION_BOUNDARY_MESSAGE,
     };
     const replacementSegment = [
       candidateResult.boundaryMarker,
       summaryMessage,
       ...candidateResult.attachments,
-      ...candidateResult.hookResults,
     ];
     const replacementRuntime = materializeReplacementHistory({
       messages: prepared.messages,
       selectedIndexes,
       replacementSegment,
     });
-    assertPostHookProjectionBounded(hookResults);
     const shrink = await deadline.wait(validateShrink({
       context,
       sourceMessages: prepared.messages,
@@ -498,6 +528,35 @@ async function compactConversationTransactionBody(
       );
     }
     transactionCommitted = true;
+    reportCompactionHookProgress(context, "post_compact", hookDiagnostics);
+    try {
+      const postHookWork = Promise.resolve(
+        session.services.hooks.executePostCompact(
+          {
+            ...hookMetadata,
+            hook_event_name: "PostCompact",
+            trigger: options.automatic ? "auto" : "manual",
+            compact_summary: canonicalSummaryEnvelope,
+          },
+          context.abortController?.signal,
+        ),
+      );
+      void postHookWork.catch(() => {});
+      // The durable commit is already complete. Bound the observable wait by
+      // the transaction signal without enrolling PostCompact in deadline
+      // quiescence: an abort-ignoring lifecycle hook must not retain the
+      // canonical compaction lease after the committed result can return.
+      const postHookResult = await waitForHookUntilAbort(
+        postHookWork,
+        context.abortController?.signal,
+      );
+      appendHookDisplayDiagnostic(
+        hookDiagnostics,
+        postHookResult.userDisplayMessage,
+      );
+    } catch (error) {
+      hookDiagnostics.push(hookServiceFailureDiagnostic("PostCompact", error));
+    }
     const transaction: CompactionTransactionMetadataV1 = {
       attempt_id: attemptId,
       history_digest: historyDigest,
@@ -509,6 +568,7 @@ async function compactConversationTransactionBody(
       preCompactTokenCount: shrink.source.inputTokens,
       postCompactTokenCount: shrink.candidate.inputTokens,
       truePostCompactTokenCount: shrink.candidate.inputTokens,
+      userDisplayMessage: buildCompactionDisplayMessage(hookDiagnostics),
       transaction,
     };
   } catch (error) {
@@ -544,6 +604,137 @@ async function compactConversationTransactionBody(
     }
     throw error;
   }
+}
+
+function buildCompactionHookMetadata(
+  context: CompactContext,
+  session: NonNullable<CompactContext["admissionSession"]>,
+  adapter: CompactionTransactionAdapter,
+): BaseHookInput {
+  const adapterRolloutPath = (adapter as CompactionTransactionAdapter & {
+    readonly rolloutPath?: unknown;
+  }).rolloutPath;
+  const transcriptPath =
+    session.rolloutStore?.rolloutPath ??
+    (typeof adapterRolloutPath === "string" ? adapterRolloutPath : "");
+  const cwd =
+    context.cwd ??
+    session.sessionConfiguration?.cwd ??
+    readCompactionPolicyCwd(session) ??
+    process.cwd();
+  return {
+    session_id:
+      typeof session.conversationId === "string"
+        ? session.conversationId
+        : adapter.sessionId,
+    transcript_path: transcriptPath,
+    cwd,
+    permission_mode: readCompactionPermissionMode(session) ?? "default",
+  };
+}
+
+function readCompactionPolicyCwd(
+  session: NonNullable<CompactContext["admissionSession"]>,
+): string | undefined {
+  try {
+    const current = session.services.execPolicy?.current?.();
+    if (current === null || typeof current !== "object") return undefined;
+    const cwd = (current as { readonly cwd?: unknown }).cwd;
+    return typeof cwd === "string" ? cwd : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readCompactionPermissionMode(
+  session: NonNullable<CompactContext["admissionSession"]>,
+): string | undefined {
+  try {
+    const direct = session.permissionModeRegistry?.current?.().mode;
+    if (typeof direct === "string") return direct;
+  } catch {
+    // Fall through to the service-owned registry used by structural sessions.
+  }
+  try {
+    const service = session.services.permissionModeRegistry?.current?.().mode;
+    return typeof service === "string" ? service : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function mergeCompactionFocus(
+  explicitInstructions: string,
+  additionalInstructions: string | undefined,
+): string {
+  if (
+    typeof additionalInstructions !== "string" ||
+    additionalInstructions.length === 0
+  ) {
+    return explicitInstructions;
+  }
+  return `${explicitInstructions}\n\n${additionalInstructions}`;
+}
+
+function reportCompactionHookProgress(
+  context: CompactContext,
+  hookType: "pre_compact" | "post_compact",
+  diagnostics: string[],
+): void {
+  try {
+    context.onCompactProgress?.({ type: "hooks_start", hookType });
+  } catch (error) {
+    diagnostics.push(
+      `${hookType === "pre_compact" ? "PreCompact" : "PostCompact"} progress reporting failed: ${errorDetail(error)}`,
+    );
+  }
+}
+
+function appendHookDisplayDiagnostic(
+  diagnostics: string[],
+  message: string | undefined,
+): void {
+  const normalized = message?.trim();
+  if (normalized !== undefined && normalized.length > 0) {
+    diagnostics.push(normalized);
+  }
+}
+
+function hookServiceFailureDiagnostic(
+  event: "PreCompact" | "PostCompact",
+  error: unknown,
+): string {
+  return `${event} service failed: ${errorDetail(error)}`;
+}
+
+async function waitForHookUntilAbort<T>(
+  work: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (signal === undefined) return work;
+  if (signal.aborted) {
+    throw signal.reason ?? new DOMException("Compaction aborted", "AbortError");
+  }
+  let removeAbortListener = (): void => {};
+  const aborted = new Promise<never>((_resolve, reject) => {
+    const listener = (): void =>
+      reject(
+        signal.reason ?? new DOMException("Compaction aborted", "AbortError"),
+      );
+    signal.addEventListener("abort", listener, { once: true });
+    removeAbortListener = () => signal.removeEventListener("abort", listener);
+  });
+  try {
+    return await Promise.race([work, aborted]);
+  } finally {
+    removeAbortListener();
+  }
+}
+
+function buildCompactionDisplayMessage(
+  hookDiagnostics: readonly string[],
+): string {
+  return [COMPACTION_BOUNDARY_MESSAGE, ...hookDiagnostics].join("\n");
 }
 
 async function runSummaryTree(params: {
@@ -868,12 +1059,8 @@ function assertPlannedReplacementPayloadBounded(params: {
     plannedBytes,
     MAX_COMPACTION_REPLACEMENT_SUMMARY_UTF8_BYTES,
   );
-  const withHooks = safeBudgetSum(
-    withSummary,
-    MAX_COMPACTION_POST_HOOK_UTF8_BYTES,
-  );
   const totalReservedBytes = safeBudgetSum(
-    withHooks,
+    withSummary,
     MAX_COMPACTION_REPLACEMENT_ENVELOPE_UTF8_BYTES,
   );
   if (totalReservedBytes > MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES) {
@@ -900,21 +1087,6 @@ function materializeReplacementHistory(params: {
     }
   }
   return replacement;
-}
-
-function assertPostHookProjectionBounded(
-  messages: readonly RuntimeMessage[],
-): void {
-  const bytes = Buffer.byteLength(
-    JSON.stringify(messages.map(toProjectionMessage)),
-    "utf8",
-  );
-  if (bytes > MAX_COMPACTION_POST_HOOK_UTF8_BYTES) {
-    throw new CompactionTransactionError(
-      "output_limit_exceeded",
-      `post-compaction hook projection exceeds ${MAX_COMPACTION_POST_HOOK_UTF8_BYTES} UTF-8 bytes`,
-    );
-  }
 }
 
 function assertExactToolPairs(
@@ -1169,30 +1341,6 @@ async function validateShrink(params: {
       confidence: candidate.confidence,
     },
   };
-}
-
-function renderSummaryBody(summary: CompactionSummaryV1): string {
-  const sections = [summary.body.narrative.trim()];
-  if (summary.body.facts.length > 0) {
-    sections.push(
-      `Facts:\n${summary.body.facts.map((fact) => `- ${fact.text}`).join("\n")}`,
-    );
-  }
-  if (summary.body.open_actions.length > 0) {
-    sections.push(
-      `Open actions:\n${summary.body.open_actions
-        .map((action) => `- ${action.text}`)
-        .join("\n")}`,
-    );
-  }
-  if (summary.body.tool_pairs.length > 0) {
-    sections.push(
-      `Tool result integrity:\n${summary.body.tool_pairs
-        .map((pair) => `- ${pair.tool_call_id}: sha256:${pair.result_sha256}`)
-        .join("\n")}`,
-    );
-  }
-  return sections.filter((section) => section.length > 0).join("\n\n");
 }
 
 function toProjectionMessage(message: RuntimeMessage): CompactionProjectionMessageV1 {

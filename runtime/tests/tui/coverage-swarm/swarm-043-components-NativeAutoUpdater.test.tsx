@@ -15,9 +15,10 @@ const harness = vi.hoisted(() => ({
   isAutoUpdaterDisabled: vi.fn(() => false),
   logError: vi.fn(),
   logForDebugging: vi.fn(),
-  settings: { autoUpdatesChannel: "beta" } as
-    | { autoUpdatesChannel?: string }
-    | null,
+  settings: {
+    autoUpdatesChannel: "beta" as string | undefined,
+    tui: {},
+  },
   updateResults: [] as AutoUpdaterResult[],
   updatingStates: [] as boolean[],
 }));
@@ -42,18 +43,17 @@ vi.mock("../../utils/log.js", () => ({
 }));
 
 vi.mock("../../utils/config.js", () => ({
-  getGlobalConfig: () => ({ theme: "dark" }),
+  getRuntimeState: () => ({ theme: "dark" }),
   isAutoUpdaterDisabled: harness.isAutoUpdaterDisabled,
-  saveGlobalConfig: vi.fn(),
+  updateRuntimeState: vi.fn(),
 }));
 
 vi.mock("../../utils/nativeInstaller/installer.js", () => ({
   installLatest: harness.installLatest,
 }));
 
-vi.mock("../../utils/settings/settings.js", () => ({
-  getExecutionAuthoritySettings: () => harness.settings,
-  getInitialSettings: () => harness.settings,
+vi.mock("../hooks/useSettings.js", () => ({
+  useSettings: () => harness.settings,
 }));
 
 import { createRoot } from "../ink/root.js";
@@ -168,7 +168,7 @@ function resetHarness(): void {
   harness.logError.mockClear();
   harness.logForDebugging.mockClear();
   harness.intervalDelay = undefined;
-  harness.settings = { autoUpdatesChannel: "beta" };
+  harness.settings = { autoUpdatesChannel: "beta", tui: {} };
   harness.updateResults = [];
   harness.updatingStates = [];
 }
@@ -283,7 +283,7 @@ describe("NativeAutoUpdater coverage swarm row 043", () => {
   });
 
   test("renders successful installer output with fallback channel metadata", async () => {
-    harness.settings = null;
+    harness.settings = { autoUpdatesChannel: undefined, tui: {} };
     harness.installLatest.mockResolvedValueOnce({
       latestVersion: "2.0.0",
       lockFailed: false,

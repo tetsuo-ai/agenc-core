@@ -25,9 +25,7 @@ const USER_MESSAGE = "continue after automatic compaction";
 const COMPACTION_ENVIRONMENT_KEYS = [
   "AGENC_AUTO_COMPACT_WINDOW",
   "AGENC_AUTOCOMPACT_PCT_OVERRIDE",
-  "DISABLE_COMPACT",
   "AGENC_DISABLE_COMPACT",
-  "DISABLE_AUTO_COMPACT",
   "AGENC_DISABLE_AUTO_COMPACT",
 ] as const;
 
@@ -35,9 +33,9 @@ describe("runTurn automatic compaction rollback wiring", () => {
   it("drives the production transaction boundary before requiring a reviewed rollback for later model work", async () => {
     const environment = saveCompactionEnvironment();
     const source = createSourceMessages();
+    enableAutomaticCompaction();
     const harness = createRunTurnHarness(source);
     try {
-      enableAutomaticCompaction();
       const modelInfo = {
         ...mkCtx().modelInfo,
         slug: "grok-4.5",
@@ -145,6 +143,7 @@ function createRunTurnHarness(
     cwd,
     sessionId: SESSION_ID,
     agencVersion: "0.13.0",
+    sessionTempRoot: tmpdir(),
     autoStartScheduler: false,
   });
   store.open({
@@ -172,6 +171,13 @@ function createRunTurnHarness(
   const provider = createProvider(compactionAwareProviderResponse);
   const { session } = mkSession({
     provider,
+    services: {
+      providerEnvironment: Object.fromEntries(
+        COMPACTION_ENVIRONMENT_KEYS.flatMap((key) =>
+          process.env[key] === undefined ? [] : [[key, process.env[key]]],
+        ),
+      ),
+    },
     history: source as readonly LLMMessage[],
     modelInfo: {
       slug: "grok-4.5",
@@ -333,9 +339,7 @@ function saveCompactionEnvironment(): ReadonlyMap<string, string | undefined> {
 function enableAutomaticCompaction(): void {
   process.env.AGENC_AUTO_COMPACT_WINDOW = "1000";
   process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = "50";
-  delete process.env.DISABLE_COMPACT;
   delete process.env.AGENC_DISABLE_COMPACT;
-  delete process.env.DISABLE_AUTO_COMPACT;
   delete process.env.AGENC_DISABLE_AUTO_COMPACT;
 }
 

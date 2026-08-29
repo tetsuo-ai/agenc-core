@@ -13,7 +13,7 @@ export function getEnterWorktreeToolPrompt(): string {
 
 ## Requirements
 
-- Must be in a git repository, OR have WorktreeCreate/WorktreeRemove hooks configured in settings.json
+- Must be in a git repository, OR have WorktreeCreate/WorktreeRemove hooks configured in config.toml
 - Must not already be in a worktree
 
 ## Behavior

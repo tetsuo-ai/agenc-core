@@ -12,9 +12,8 @@ import { ConfiguredPromptTextInput } from './ConfiguredPromptTextInput.js'
 
 const configMock = vi.hoisted(() => ({
   globalConfig: {
-    editorMode: 'normal',
     tui: { vimMode: true },
-  } as { editorMode?: string; tui?: { vimMode?: boolean } },
+  } as { tui?: { vimMode?: boolean } },
 }))
 
 vi.mock('bun:bundle', () => ({
@@ -25,7 +24,13 @@ vi.mock('src/tools.js', () => ({}))
 vi.mock('../../../tools.js', () => ({}))
 
 vi.mock('../../../utils/config.js', () => ({
-  getGlobalConfig: () => configMock.globalConfig,
+  getRuntimeState: () => configMock.globalConfig,
+}))
+
+vi.mock('../../../utils/settings/canonicalAuthority.js', () => ({
+  getCanonicalSettingsAuthority: () => ({
+    current: () => configMock.globalConfig,
+  }),
 }))
 
 vi.mock('../../hooks/useClipboardImageHint.js', () => ({
@@ -47,8 +52,8 @@ vi.mock('../../history/history.js', () => ({
   addToHistory: () => {},
 }))
 
-vi.mock('../../../utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => false,
+vi.mock('../../context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => false,
 }))
 
 vi.mock('../../../utils/env.js', () => ({
@@ -199,7 +204,6 @@ async function renderAndSubmitWithKeys(
   keys: readonly string[],
 ): Promise<string> {
   configMock.globalConfig = {
-    editorMode: 'normal',
     tui: { vimMode: vimModeEnabled },
   }
   const { stdout, stdin } = createTestStreams()
@@ -236,7 +240,6 @@ async function renderAndSubmitWithKeys(
 describe('PromptInput configured vim mode composer path', () => {
   beforeEach(() => {
     configMock.globalConfig = {
-      editorMode: 'normal',
       tui: { vimMode: true },
     }
   })

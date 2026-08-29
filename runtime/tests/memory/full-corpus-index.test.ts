@@ -191,50 +191,58 @@ describe("C3b persistent full-corpus index", () => {
       queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
     });
 
+    const refreshController = new AbortController();
     const refreshPromise = index.refresh(
       [{ path: memoryRoot, role: "project" }],
-      new AbortController().signal,
+      refreshController.signal,
       { explicit: true },
     );
-    const inspection = new Database(databasePath, {
-      readonly: true,
-      fileMustExist: true,
-    });
     try {
-      await expectEventually(async () => {
-        const row = inspection
-          .prepare(
-            `SELECT f.description
-               FROM memory_fts f
-               JOIN memory_index_entries e
-                 ON e.root_id = f.root_id
-                AND e.generation_id = f.generation_id
-                AND e.memory_id = f.memory_id
-              WHERE e.canonical_path = ? AND f.description = ?`,
-          )
-          .get(racedPath, "build_race_alpha");
-        return row !== undefined;
+      const inspection = new Database(databasePath, {
+        readonly: true,
+        fileMustExist: true,
       });
-    } finally {
-      inspection.close();
-    }
-    await writeFile(racedPath, second);
-    await utimes(racedPath, fixedTime, fixedTime);
-    await expect(refreshPromise).resolves.toMatchObject({ kind: "complete" });
+      try {
+        await expectEventually(async () => {
+          const row = inspection
+            .prepare(
+              `SELECT f.description
+                 FROM memory_fts f
+                 JOIN memory_index_entries e
+                   ON e.root_id = f.root_id
+                  AND e.generation_id = f.generation_id
+                  AND e.memory_id = f.memory_id
+                WHERE e.canonical_path = ? AND f.description = ?`,
+            )
+            .get(racedPath, "build_race_alpha");
+          return row !== undefined;
+        }, 120_000);
+      } finally {
+        inspection.close();
+      }
+      await writeFile(racedPath, second);
+      await utimes(racedPath, fixedTime, fixedTime);
+      await expect(refreshPromise).resolves.toMatchObject({ kind: "complete" });
 
-    const stale = await index.query(
-      [{ path: memoryRoot, role: "project" }],
-      ["build_race_alpha"],
-      new AbortController().signal,
-    );
-    const replacement = await index.query(
-      [{ path: memoryRoot, role: "project" }],
-      ["build_race_bravo"],
-      new AbortController().signal,
-    );
-    expect(stale.candidates).toHaveLength(0);
-    expect(replacement.candidates).toHaveLength(1);
-  }, 120_000);
+      const stale = await index.query(
+        [{ path: memoryRoot, role: "project" }],
+        ["build_race_alpha"],
+        new AbortController().signal,
+      );
+      const replacement = await index.query(
+        [{ path: memoryRoot, role: "project" }],
+        ["build_race_bravo"],
+        new AbortController().signal,
+      );
+      expect(stale.candidates).toHaveLength(0);
+      expect(replacement.candidates).toHaveLength(1);
+    } finally {
+      refreshController.abort(
+        new DOMException("Initial build test cleanup", "AbortError"),
+      );
+      await refreshPromise.catch(() => undefined);
+    }
+  }, 6 * 60_000);
 
   it("uses indexed pending order without repeated discovered-file counts", async () => {
     temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-counts-"));
@@ -1136,6 +1144,233 @@ describe("C3b persistent full-corpus index", () => {
     clearIntervalSpy.mockRestore();
   });
 
+  it("returns a degraded result when close races a foreground refresh", async () => {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-refresh-close-"));
+    const memoryRoot = join(temporaryRoot, "memory");
+    const stateRoot = join(temporaryRoot, "state");
+    const databasePath = join(stateRoot, "memory.sqlite");
+    const memoryPath = join(memoryRoot, "refresh.md");
+    await mkdir(memoryRoot, { recursive: true });
+    await mkdir(stateRoot, { recursive: true });
+    await writeMemory(memoryPath, "Closing refresh", "refreshcloseterm alpha");
+    const refreshStarted = Promise.withResolvers<void>();
+    const releaseRefresh = Promise.withResolvers<void>();
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+      beforeIncrementalReadForTesting: async () => {
+        refreshStarted.resolve();
+        await releaseRefresh.promise;
+      },
+    });
+    const roots = [{ path: memoryRoot, role: "project" as const }];
+    await index.refresh(roots, new AbortController().signal, {
+      explicit: true,
+    });
+    await writeMemory(memoryPath, "Closing refresh", "refreshcloseterm bravo");
+    index.recordChange({
+      rootPath: memoryRoot,
+      relativePath: "refresh.md",
+      kind: "update",
+    });
+    const inFlight = index.refresh(roots, new AbortController().signal);
+    try {
+      await refreshStarted.promise;
+      expect(
+        readCurrentGenerationLease(databasePath).builderOwner,
+      ).not.toBeNull();
+      index.close();
+      expect(readCurrentGenerationLease(databasePath)).toEqual({
+        builderOwner: null,
+        leaseExpiresAtMs: null,
+      });
+      releaseRefresh.resolve();
+      await expect(inFlight).resolves.toMatchObject({
+        kind: "degraded",
+        roots: [
+          {
+            canonicalRoot: memoryRoot,
+            role: "project",
+            state: "unavailable",
+            reason: "memory index is closed",
+          },
+        ],
+      });
+      await expect(
+        index.refresh(roots, new AbortController().signal),
+      ).resolves.toMatchObject({
+        kind: "degraded",
+        roots: [{ reason: "memory index is closed" }],
+      });
+      index = new PersistentMemoryIndex({
+        databasePath,
+        backgroundRefresh: false,
+        queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+      });
+      await expect(
+        index.refresh(roots, new AbortController().signal, { explicit: true }),
+      ).resolves.toMatchObject({ kind: "complete" });
+      await expect(
+        index.query(roots, ["bravo"], new AbortController().signal),
+      ).resolves.toMatchObject({
+        kind: "complete",
+        candidates: [{ canonicalPath: memoryPath }],
+      });
+    } finally {
+      releaseRefresh.resolve();
+      await inFlight.catch(() => undefined);
+      index?.close();
+      index = undefined;
+    }
+  });
+
+  it("preserves caller cancellation when close races a foreground refresh", async () => {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-refresh-abort-"));
+    const memoryRoot = join(temporaryRoot, "memory");
+    const stateRoot = join(temporaryRoot, "state");
+    const databasePath = join(stateRoot, "memory.sqlite");
+    const memoryPath = join(memoryRoot, "refresh.md");
+    await mkdir(memoryRoot, { recursive: true });
+    await mkdir(stateRoot, { recursive: true });
+    await writeMemory(memoryPath, "Aborting refresh", "refreshabort alpha");
+    const refreshStarted = Promise.withResolvers<void>();
+    const releaseRefresh = Promise.withResolvers<void>();
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+      beforeIncrementalReadForTesting: async () => {
+        refreshStarted.resolve();
+        await releaseRefresh.promise;
+      },
+    });
+    const roots = [{ path: memoryRoot, role: "project" as const }];
+    await index.refresh(roots, new AbortController().signal, {
+      explicit: true,
+    });
+    await writeMemory(memoryPath, "Aborting refresh", "refreshabort bravo");
+    index.recordChange({
+      rootPath: memoryRoot,
+      relativePath: "refresh.md",
+      kind: "update",
+    });
+    const callerController = new AbortController();
+    const callerReason = new Error("caller cancelled the refresh");
+    const inFlight = index.refresh(roots, callerController.signal);
+    try {
+      await refreshStarted.promise;
+      callerController.abort(callerReason);
+      index.close();
+      index = undefined;
+      releaseRefresh.resolve();
+      await expect(inFlight).rejects.toBe(callerReason);
+    } finally {
+      releaseRefresh.resolve();
+      await inFlight.catch(() => undefined);
+      index?.close();
+      index = undefined;
+    }
+  });
+
+  it("does not cancel a staging refresh through a closed SQLite handle", async () => {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-cancel-close-"));
+    const memoryRoot = join(temporaryRoot, "memory");
+    const stateRoot = join(temporaryRoot, "state");
+    const databasePath = join(stateRoot, "memory.sqlite");
+    await mkdir(memoryRoot, { recursive: true });
+    await mkdir(stateRoot, { recursive: true });
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+    });
+    const roots = [{ path: memoryRoot, role: "project" as const }];
+    const clock = vi.spyOn(performance, "now");
+    clock.mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValue(30_001);
+    const firstSlice = await index
+      .refresh(roots, new AbortController().signal)
+      .finally(() => clock.mockRestore());
+    expect(firstSlice.kind).toBe("refresh_pending");
+    const generationToken = firstSlice.roots[0]?.generationToken;
+    expect(generationToken).toBeTypeOf("string");
+
+    const closingIndex = index;
+    const cancellation = closingIndex.cancelRefresh(generationToken!);
+    closingIndex.close();
+    index = undefined;
+    await expect(cancellation).resolves.toBe(false);
+    await expect(closingIndex.cancelRefresh(generationToken!)).resolves.toBe(
+      false,
+    );
+
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+    });
+    await expect(
+      index.refresh(roots, new AbortController().signal, { explicit: true }),
+    ).resolves.toMatchObject({ kind: "complete" });
+  });
+
+  it("cancels an in-flight audit before closing SQLite", async () => {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-audit-close-"));
+    const memoryRoot = join(temporaryRoot, "memory");
+    const stateRoot = join(temporaryRoot, "state");
+    const databasePath = join(stateRoot, "memory.sqlite");
+    await mkdir(memoryRoot, { recursive: true });
+    await mkdir(stateRoot, { recursive: true });
+    await writeMemory(
+      join(memoryRoot, "audit.md"),
+      "Closing audit",
+      "auditcloseterm",
+    );
+    const auditStarted = Promise.withResolvers<void>();
+    const releaseAudit = Promise.withResolvers<void>();
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+      beforeAuditReadForTesting: async () => {
+        auditStarted.resolve();
+        await releaseAudit.promise;
+      },
+    });
+    const root = { path: memoryRoot, role: "project" as const };
+    await index.refresh([root], new AbortController().signal, {
+      explicit: true,
+    });
+    const closingIndex = index;
+    const inFlight = closingIndex.auditSlice(
+      root,
+      new AbortController().signal,
+    );
+    try {
+      await auditStarted.promise;
+      closingIndex.close();
+      index = undefined;
+      releaseAudit.resolve();
+      await expect(inFlight).resolves.toMatchObject({
+        canonicalRoot: memoryRoot,
+        role: "project",
+        state: "unavailable",
+        reason: "memory index is closed",
+      });
+      await expect(
+        closingIndex.auditSlice(root, new AbortController().signal),
+      ).resolves.toMatchObject({
+        state: "unavailable",
+        reason: "memory index is closed",
+      });
+    } finally {
+      releaseAudit.resolve();
+      await inFlight.catch(() => undefined);
+      index?.close();
+      index = undefined;
+    }
+  });
+
   it("defers an incremental second writer while a queued query pins the generation", async () => {
     temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-query-race-"));
     const memoryRoot = join(temporaryRoot, "memory");
@@ -1728,7 +1963,7 @@ describe("C3b persistent full-corpus index", () => {
     expect(readGenerationDiscoveryState(databasePath, generationToken!)).toEqual(
       { persistedCount: 0, rowCount: 0 },
     );
-  }, 120_000);
+  }, 5 * 60_000);
 });
 
 async function createFixture(): Promise<{
@@ -1816,6 +2051,37 @@ function readCurrentGenerationId(databasePath: string): number {
           LIMIT 1`,
       )
       .get()!.current_generation_id;
+  } finally {
+    database.close();
+  }
+}
+
+function readCurrentGenerationLease(databasePath: string): {
+  readonly builderOwner: string | null;
+  readonly leaseExpiresAtMs: number | null;
+} {
+  const database = new Database(databasePath, {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    return database
+      .prepare<
+        [],
+        {
+          builderOwner: string | null;
+          leaseExpiresAtMs: number | null;
+        }
+      >(
+        `SELECT g.builder_owner AS builderOwner,
+                g.builder_lease_expires_at_ms AS leaseExpiresAtMs
+           FROM memory_index_roots r
+           JOIN memory_index_generations g ON g.id = r.current_generation_id
+          WHERE r.current_generation_id IS NOT NULL
+          ORDER BY r.root_id
+          LIMIT 1`,
+      )
+      .get()!;
   } finally {
     database.close();
   }
@@ -1980,12 +2246,14 @@ function readGenerationDiscoveryState(
   }
 }
 
-async function expectEventually(check: () => Promise<boolean>): Promise<void> {
-  // A filesystem watcher converging is not a fast operation on a loaded
-  // runner, and 5s was tight enough that CI reported "did not converge" on a
-  // healthy index. The bound still exists to catch a watcher that never fires;
-  // it is not a performance assertion.
-  const deadline = Date.now() + 30_000;
+async function expectEventually(
+  check: () => Promise<boolean>,
+  timeoutMs = 30_000,
+): Promise<void> {
+  // Filesystem and index-state convergence are not fast operations on a loaded
+  // runner. The bound still exists to catch work that never finishes; it is not
+  // a performance assertion.
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await check()) return;
     await new Promise((resolve) => setTimeout(resolve, 25));

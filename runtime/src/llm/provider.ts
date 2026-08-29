@@ -4,7 +4,12 @@
  * @module
  */
 
-import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
+import type {
+  AuthBackend,
+  AuthSubscriptionTier,
+  AuthVendedCredential,
+} from "../auth/backend.js";
+import { normalizeProviderIdentity } from "../provider-identity.js";
 import { AgenCProvider } from "./providers/agenc/index.js";
 import { GrokProvider } from "./providers/grok/adapter.js";
 import {
@@ -30,8 +35,13 @@ import {
   type GeminiProviderConfig,
 } from "./providers/gemini/index.js";
 import {
+  assertNoRetiredGeminiRuntimeFields,
+  parseGeminiRuntimeOptions,
+  readGeminiRuntimeOptions,
+  type GeminiRuntimeOptions,
+} from "./providers/gemini/runtime-options.js";
+import {
   BedrockProvider,
-  bedrockBaseURLForRegion,
   type BedrockProviderConfig,
 } from "./providers/bedrock/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
@@ -42,34 +52,39 @@ import { MistralProvider } from "./providers/mistral/index.js";
 import { NvidiaNimProvider } from "./providers/nvidia-nim/index.js";
 import { MiniMaxProvider } from "./providers/minimax/index.js";
 import { GitHubProvider } from "./providers/github/index.js";
+import {
+  getGithubEndpointType,
+  normalizeGithubModelForEndpoint,
+  shouldUseGithubCopilotResponsesApi,
+} from "./providers/github/model-routing.js";
 import { OpenAICompatibleProvider } from "./providers/openai-compatible/index.js";
 import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
 import {
   builtInProviderIds,
-  normalizeBuiltInProviderSlug,
+  resolveBuiltInProviderRegionalEndpoint,
+  resolveBuiltInProviderSlug,
   resolveBuiltInProviderInfo,
   type BuiltInProviderInfo,
   type BuiltInProviderSlug,
 } from "./registry/provider-info.js";
-import { getGeminiAuthMode, getGeminiProjectIdHint } from "../utils/geminiAuth.js";
+export { resolveBuiltInProviderSlug } from "./registry/provider-info.js";
 import {
   forceRefreshXaiOauthCredentials,
   isXaiOauthBearer,
-  readXaiOauthAccessToken,
   xaiOauthRequiresRelogin,
 } from "../utils/xaiOauthCredentials.js";
-import {
-  CHATGPT_BACKEND_ORIGINATOR,
-  readOpenAiOauthApiKey,
-  readOpenAiSubscriptionAuth,
-} from "../utils/openAiOauthCredentials.js";
 import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
+import type { HomeContext } from "../config/home.js";
 
 export type ProviderName = BuiltInProviderSlug;
 
 export interface ProviderFactoryOptions {
+  /** Home-bound native credential authority captured at provider ingress. */
+  readonly credentialHome?: HomeContext;
   readonly apiKey?: string;
+  /** Prepared bearer-token credential. Currently supported by Anthropic. */
+  readonly authToken?: string;
   readonly baseURL?: string;
   readonly model?: string;
   readonly tools?: ReadonlyArray<LLMTool>;
@@ -85,7 +100,8 @@ type FactoryMarkedProvider = LLMProvider & {
   [FACTORY_PROVIDER_STATE]?: ProviderRuntimeState;
 };
 
-export const KNOWN_PROVIDER_NAMES: readonly ProviderName[] = builtInProviderIds();
+export const KNOWN_PROVIDER_NAMES: readonly ProviderName[] =
+  builtInProviderIds();
 
 export interface PreparedProviderSwitch {
   readonly provider: ProviderName;
@@ -105,8 +121,22 @@ export type ProviderRuntimeExtra = Partial<
   readonly project?: string;
   readonly useResponsesApi?: boolean;
   readonly store?: boolean;
+  readonly chatgptBackend?: boolean;
   readonly authMode?: "api_key" | "oauth";
   readonly oauth?: Record<string, unknown>;
+  readonly openAiCompatibility?: {
+    readonly authHeader?: string;
+    readonly authHeaderValue?: string;
+    readonly authScheme?: "bearer" | "raw";
+    readonly azureApiVersion?: string;
+  };
+  readonly gemini?: GeminiRuntimeOptions;
+  readonly grokAcp?: {
+    readonly binaryPath?: string;
+    readonly allowPermissions?: boolean;
+    readonly path?: string;
+    readonly environment?: Readonly<Record<string, string>>;
+  };
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   readonly fetchImpl?: typeof fetch;
   readonly accessKeyId?: string;
@@ -116,7 +146,6 @@ export type ProviderRuntimeExtra = Partial<
   readonly anthropicVersion?: string;
   readonly betaHeaders?: readonly string[];
   readonly contextManagement?: Record<string, unknown>;
-  readonly cachedContent?: string;
   readonly contextWindowTokens?: number;
   readonly parallelToolCalls?: boolean;
   readonly visionModel?: string;
@@ -153,8 +182,12 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "project",
   "useResponsesApi",
   "store",
+  "chatgptBackend",
   "authMode",
   "oauth",
+  "openAiCompatibility",
+  "gemini",
+  "grokAcp",
   "defaultHeaders",
   "fetchImpl",
   "accessKeyId",
@@ -164,7 +197,6 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "anthropicVersion",
   "betaHeaders",
   "contextManagement",
-  "cachedContent",
   "contextWindowTokens",
   "parallelToolCalls",
   "visionModel",
@@ -196,25 +228,49 @@ export function readProviderIdentity(
   fallbackProvider?: string,
 ): ProviderName | null {
   if (!provider) {
-    return normalizeProviderName(fallbackProvider);
+    return resolveBuiltInProviderSlug(fallbackProvider) ?? null;
   }
-  const storedState = (provider as FactoryMarkedProvider)[FACTORY_PROVIDER_STATE];
+  const storedState = (provider as FactoryMarkedProvider)[
+    FACTORY_PROVIDER_STATE
+  ];
   if (storedState) {
     return storedState.provider;
   }
-  return normalizeProviderName(fallbackProvider ?? provider.name);
+  return resolveBuiltInProviderSlug(fallbackProvider ?? provider.name) ?? null;
 }
 
 export function readProviderFactoryOptions(
   provider: LLMProvider,
 ): ProviderFactoryOptions {
-  const storedState = (provider as FactoryMarkedProvider)[FACTORY_PROVIDER_STATE];
+  const storedState = (provider as FactoryMarkedProvider)[
+    FACTORY_PROVIDER_STATE
+  ];
   const config = (
     provider as unknown as {
       config?: Record<string, unknown>;
     }
   ).config;
-  const extra = readProviderRuntimeExtra(config);
+  const directGeminiRuntime =
+    provider.name === "gemini" &&
+    config?.credentialPlan !== undefined &&
+    config?.endpointPlan !== undefined
+      ? parseGeminiRuntimeOptions({
+          credentialPlan: config.credentialPlan,
+          endpointPlan: config.endpointPlan,
+          ...(firstNonEmpty(readString(config, "cachedContent")) !== undefined
+            ? {
+                cachedContent: firstNonEmpty(
+                  readString(config, "cachedContent"),
+                ),
+              }
+            : {}),
+        })
+      : undefined;
+  const runtimeExtra = readProviderRuntimeExtra(config);
+  const extra =
+    directGeminiRuntime === undefined
+      ? runtimeExtra
+      : { ...(runtimeExtra ?? {}), gemini: directGeminiRuntime };
   const configuredTools = Array.isArray(config?.tools)
     ? (config.tools as ReadonlyArray<LLMTool>)
     : undefined;
@@ -233,11 +289,11 @@ export function readProviderFactoryOptions(
       : {}),
     ...(firstNonEmpty(readString(config, "baseURL"), readString(config, "host"))
       ? {
-        baseURL: firstNonEmpty(
-          readString(config, "baseURL"),
-          readString(config, "host"),
-        ),
-      }
+          baseURL: firstNonEmpty(
+            readString(config, "baseURL"),
+            readString(config, "host"),
+          ),
+        }
       : {}),
     ...(firstNonEmpty(readString(config, "model"))
       ? { model: firstNonEmpty(readString(config, "model")) }
@@ -255,10 +311,12 @@ export function normalizeManagedGatewayModel(
   model: string,
 ): string {
   const trimmed = model.trim();
-  const normalizedProvider = normalizeProviderName(provider);
+  const normalizedProvider = resolveBuiltInProviderSlug(provider);
   if (trimmed.length === 0) return trimmed;
   if (normalizedProvider === "openrouter") {
-    return trimmed.startsWith("openrouter/") ? trimmed : `openrouter/${trimmed}`;
+    return trimmed.startsWith("openrouter/")
+      ? trimmed
+      : `openrouter/${trimmed}`;
   }
   if (trimmed.includes("/")) return trimmed;
   switch (normalizedProvider) {
@@ -303,7 +361,23 @@ function markFactoryProvider<T extends LLMProvider>(
   return provider;
 }
 
-function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
+/** Preserve canonical factory identity when wrapping a provider object. */
+export function preserveProviderFactoryState<T extends LLMProvider>(
+  target: T,
+  source: LLMProvider,
+): T {
+  const state = (source as FactoryMarkedProvider)[FACTORY_PROVIDER_STATE];
+  return state === undefined
+    ? target
+    : markFactoryProvider(target, {
+        provider: state.provider,
+        options: state.options,
+      });
+}
+
+function firstNonEmpty(
+  ...values: Array<string | undefined>
+): string | undefined {
   for (const value of values) {
     if (typeof value === "string" && value.trim().length > 0) {
       return value.trim();
@@ -326,52 +400,19 @@ function defaultModelFor(provider: ProviderName): string {
   return requireBuiltInProviderInfo(provider).defaultModel;
 }
 
-/**
- * The provider's own convention for its base-URL variable is the host
- * root (`https://api.anthropic.com`) with the client adding the version
- * segment. We append the wire path to whatever is configured, so taking
- * that value verbatim POSTs to `/messages` and every turn 404s with an
- * empty body — which the app renders as "the model returned nothing".
- * A base that already carries a path (a proxy, a gateway) is left alone.
- */
-function withAnthropicVersionSegment(
-  baseURL: string | undefined,
-): string | undefined {
-  if (baseURL === undefined) return undefined;
-  try {
-    const url = new URL(baseURL);
-    const path = url.pathname.replace(/\/+$/, "");
-    if (path.length > 0) return baseURL;
-    url.pathname = "/v1";
-    return url.toString().replace(/\/+$/, "");
-  } catch {
-    return baseURL;
-  }
-}
-
 function defaultBaseURLFor(provider: ProviderName): string {
   return requireBuiltInProviderInfo(provider).baseURL;
-}
-
-function apiKeyEnvVarFor(provider: ProviderName): string {
-  const envVar = requireBuiltInProviderInfo(provider).apiKeyEnvVar;
-  if (envVar === undefined) {
-    throw new Error(`${provider} provider does not declare an API key env var`);
-  }
-  return envVar;
 }
 
 function requireModel(
   provider: ProviderName,
   explicitModel: string | undefined,
-  envModel: string | undefined,
-  envVarName: string,
   fallbackModel?: string,
 ): string {
-  const model = firstNonEmpty(explicitModel, envModel, fallbackModel);
+  const model = firstNonEmpty(explicitModel, fallbackModel);
   if (!model) {
     throw new Error(
-      `${provider} provider requires model — set ${envVarName} or pass model in factory options`,
+      `${provider} provider requires a canonical model in factory options`,
     );
   }
   return model;
@@ -381,10 +422,7 @@ function resolveFactoryApiKey(
   opts: ProviderFactoryOptions,
   explicitApiKey?: string,
 ): string | undefined {
-  return firstNonEmpty(
-    explicitApiKey,
-    opts.apiKey,
-  );
+  return firstNonEmpty(explicitApiKey, opts.apiKey);
 }
 
 function requireFactoryApiKey(
@@ -401,15 +439,6 @@ function requireFactoryApiKey(
   return apiKey;
 }
 
-/**
- * Providers whose credential the runtime vends from configured auth.
- *
- * A provider missing from this set never receives one: the factory only
- * reads an explicitly-passed key, so it throws "requires apiKey" and the
- * session cannot even be created — the app showed that as a composer
- * that refuses to send. mistral, minimax, nvidia-nim and github are
- * ordinary API-key providers exactly like deepseek, and were left out.
- */
 const AUTH_VENDED_PROVIDER_NAMES = new Set<ProviderName>([
   "grok",
   "openai",
@@ -418,11 +447,6 @@ const AUTH_VENDED_PROVIDER_NAMES = new Set<ProviderName>([
   "openrouter",
   "groq",
   "deepseek",
-  "gemini",
-  "mistral",
-  "minimax",
-  "nvidia-nim",
-  "github",
   "amazon-bedrock",
 ]);
 const DEFAULT_AUTH_VENDED_DELEGATE_TTL_MS = 5 * 60 * 1000;
@@ -466,7 +490,9 @@ class AuthVendedProvider implements LLMProvider {
     this.#sessionId = params.sessionId;
     this.config = {
       model: this.#opts.model ?? defaultModelFor(params.provider),
-      ...(this.#opts.baseURL !== undefined ? { baseURL: this.#opts.baseURL } : {}),
+      ...(this.#opts.baseURL !== undefined
+        ? { baseURL: this.#opts.baseURL }
+        : {}),
     };
     const capabilities = authVendedProviderCapabilities(params.provider);
     if (capabilities.prewarmStartup) {
@@ -477,14 +503,18 @@ class AuthVendedProvider implements LLMProvider {
       this.retrieveStoredResponse = async (responseId) => {
         const delegate = (await this.delegate()).instance;
         if (!delegate.retrieveStoredResponse) {
-          throw new Error(`${this.name} provider does not support stored responses`);
+          throw new Error(
+            `${this.name} provider does not support stored responses`,
+          );
         }
         return delegate.retrieveStoredResponse(responseId);
       };
       this.deleteStoredResponse = async (responseId) => {
         const delegate = (await this.delegate()).instance;
         if (!delegate.deleteStoredResponse) {
-          throw new Error(`${this.name} provider does not support stored responses`);
+          throw new Error(
+            `${this.name} provider does not support stored responses`,
+          );
         }
         return delegate.deleteStoredResponse(responseId);
       };
@@ -503,7 +533,11 @@ class AuthVendedProvider implements LLMProvider {
     onChunk: Parameters<LLMProvider["chatStream"]>[1],
     options?: Parameters<LLMProvider["chatStream"]>[2],
   ): ReturnType<LLMProvider["chatStream"]> {
-    return (await this.delegate()).instance.chatStream(messages, onChunk, options);
+    return (await this.delegate()).instance.chatStream(
+      messages,
+      onChunk,
+      options,
+    );
   }
 
   async healthCheck(): Promise<boolean> {
@@ -515,12 +549,14 @@ class AuthVendedProvider implements LLMProvider {
   ): Promise<LLMProviderExecutionProfile> {
     const { instance: delegate } = await this.delegate();
     const profile = await delegate.getExecutionProfile?.(options);
-    return profile ?? {
-      provider: this.#provider,
-      model: this.config.model,
-      usageReporting: "unavailable",
-      supportsMaxOutputTokens: false,
-    };
+    return (
+      profile ?? {
+        provider: this.#provider,
+        model: this.config.model,
+        usageReporting: "unavailable",
+        supportsMaxOutputTokens: false,
+      }
+    );
   }
 
   private async delegate(): Promise<AuthVendedDelegate> {
@@ -560,33 +596,23 @@ class AuthVendedProvider implements LLMProvider {
         `${this.#provider} provider AuthBackend.vendKey() returned session "${vended.sessionId}"`,
       );
     }
-    const apiKey = firstNonEmpty(vended.apiKey);
-    if (apiKey === undefined) {
-      throw new Error(
-        `${this.#provider} provider AuthBackend.vendKey() returned an empty key`,
-      );
-    }
     const options = cloneProviderFactoryOptions(this.#opts);
-    const extra = mergeAuthVendedProviderExtra(
+    const credentialOptions = resolveAuthVendedProviderCredentialOptions(
       this.#provider,
       options.extra,
-      vended as Record<string, unknown>,
+      vended,
     );
-    const baseURL = firstNonEmpty(
-      options.baseURL,
-      readString(vended as Record<string, unknown>, "baseURL"),
-      readString(vended as Record<string, unknown>, "baseUrl"),
-    );
-    const model = baseURL !== undefined && options.model !== undefined
-      ? normalizeManagedGatewayModel(this.#provider, options.model)
-      : options.model;
+    const baseURL = firstNonEmpty(options.baseURL, vended.baseUrl);
+    const model =
+      baseURL !== undefined && options.model !== undefined
+        ? normalizeManagedGatewayModel(this.#provider, options.model)
+        : options.model;
     return {
       instance: createProvider(this.#provider, {
         ...options,
         ...(model !== undefined ? { model } : {}),
-        apiKey,
+        ...credentialOptions,
         ...(baseURL !== undefined ? { baseURL } : {}),
-        ...(extra !== undefined ? { extra } : {}),
       }),
       expiresAtMs:
         parseAuthVendedExpiresAtMs(vended.expiresAt) ??
@@ -607,26 +633,29 @@ function authVendedProviderCapabilities(
     case "openrouter":
     case "groq":
     case "deepseek":
-    case "gemini":
       return { storedResponses: true };
     default:
       return {};
   }
 }
 
-function parseAuthVendedExpiresAtMs(expiresAt: string | undefined): number | undefined {
+function parseAuthVendedExpiresAtMs(
+  expiresAt: string | undefined,
+): number | undefined {
   if (expiresAt === undefined) return undefined;
   const parsed = Date.parse(expiresAt);
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function concreteProviderExplicitApiKey(
+function hasConcreteProviderCredentialInput(
   provider: ProviderName,
   opts: ProviderFactoryOptions,
-): string | undefined {
+): boolean {
   return provider === "amazon-bedrock"
-    ? firstNonEmpty(readString(opts.extra, "accessKeyId"), opts.apiKey)
-    : firstNonEmpty(opts.apiKey);
+    ? ["accessKeyId", "secretAccessKey", "sessionToken"].some(
+        (field) => firstNonEmpty(readString(opts.extra, field)) !== undefined,
+      )
+    : firstNonEmpty(opts.apiKey, opts.authToken) !== undefined;
 }
 
 function stripConcreteProviderAuthExtra(
@@ -651,7 +680,11 @@ function stripConcreteProviderAuthOptions(
 ): ProviderFactoryOptions {
   const extra = stripConcreteProviderAuthExtra(opts.extra);
   return {
+    ...(opts.credentialHome !== undefined
+      ? { credentialHome: opts.credentialHome }
+      : {}),
     ...(opts.apiKey !== undefined ? { apiKey: opts.apiKey } : {}),
+    ...(opts.authToken !== undefined ? { authToken: opts.authToken } : {}),
     ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
     ...(opts.model !== undefined ? { model: opts.model } : {}),
     ...(opts.tools ? { tools: [...opts.tools] } : {}),
@@ -682,71 +715,67 @@ function resolveAuthVendedProviderModel(
   provider: ProviderName,
   explicitModel: string | undefined,
 ): string {
-  switch (provider) {
-    case "grok":
-      return firstNonEmpty(explicitModel, process.env.AGENC_MODEL) ??
-        defaultModelFor(provider);
-    case "openai":
-      return firstNonEmpty(explicitModel, process.env.OPENAI_MODEL) ??
-        defaultModelFor(provider);
-    case "anthropic":
-      return firstNonEmpty(explicitModel, process.env.ANTHROPIC_MODEL) ??
-        defaultModelFor(provider);
-    case "lmstudio":
-      return firstNonEmpty(explicitModel, process.env.LMSTUDIO_MODEL) ??
-        defaultModelFor(provider);
-    case "openai-compatible":
-      return firstNonEmpty(
-        explicitModel,
-        process.env.OPENAI_COMPATIBLE_MODEL,
-        process.env.OPENAI_MODEL,
-      ) ?? defaultModelFor(provider);
-    case "openrouter":
-      return firstNonEmpty(explicitModel, process.env.OPENROUTER_MODEL) ??
-        defaultModelFor(provider);
-    case "groq":
-      return firstNonEmpty(explicitModel, process.env.GROQ_MODEL) ??
-        defaultModelFor(provider);
-    case "deepseek":
-      return firstNonEmpty(explicitModel, process.env.DEEPSEEK_MODEL) ??
-        defaultModelFor(provider);
-    case "gemini":
-      return firstNonEmpty(explicitModel, process.env.GEMINI_MODEL) ??
-        defaultModelFor(provider);
-    case "amazon-bedrock":
-      return firstNonEmpty(explicitModel, process.env.AWS_BEDROCK_MODEL) ??
-        defaultModelFor(provider);
-    default:
-      return defaultModelFor(provider);
-  }
+  return firstNonEmpty(explicitModel) ?? defaultModelFor(provider);
 }
 
-function mergeAuthVendedProviderExtra(
+function resolveAuthVendedProviderCredentialOptions(
   provider: ProviderName,
   extra: Record<string, unknown> | undefined,
-  vended: Record<string, unknown>,
-): Record<string, unknown> | undefined {
-  if (provider !== "amazon-bedrock") return extra;
+  vended: AuthVendedCredential,
+): Pick<ProviderFactoryOptions, "apiKey" | "extra"> {
+  if (provider !== "amazon-bedrock") {
+    if (vended.kind !== "api-key") {
+      throw new Error(
+        `${provider} provider AuthBackend.vendKey() returned ${vended.kind} credentials; expected api-key`,
+      );
+    }
+    const apiKey = firstNonEmpty(vended.apiKey);
+    if (apiKey === undefined) {
+      throw new Error(
+        `${provider} provider AuthBackend.vendKey() returned an empty API key`,
+      );
+    }
+    return {
+      apiKey,
+      ...(extra !== undefined ? { extra } : {}),
+    };
+  }
+  if (vended.kind !== "aws-sigv4") {
+    throw new Error(
+      "amazon-bedrock provider AuthBackend.vendKey() returned api-key credentials; expected aws-sigv4",
+    );
+  }
+  const accessKeyId = firstNonEmpty(vended.accessKeyId);
+  const secretAccessKey = firstNonEmpty(vended.secretAccessKey);
+  if (accessKeyId === undefined || secretAccessKey === undefined) {
+    throw new Error(
+      "amazon-bedrock provider AuthBackend.vendKey() returned incomplete AWS SigV4 credentials",
+    );
+  }
   const nonCredentialExtra = extra
     ? Object.fromEntries(
-      Object.entries(extra)
-        .filter(([key]) => key !== "accessKeyId")
-        .map(([key, value]) => [key, cloneExtraValue(value)]),
-    )
+        Object.entries(extra)
+          .filter(
+            ([key]) =>
+              key !== "accessKeyId" &&
+              key !== "secretAccessKey" &&
+              key !== "sessionToken" &&
+              key !== "region",
+          )
+          .map(([key, value]) => [key, cloneExtraValue(value)]),
+      )
     : {};
-  const bedrockExtra = {
-    ...nonCredentialExtra,
-    ...(readString(vended, "secretAccessKey") !== undefined
-      ? { secretAccessKey: readString(vended, "secretAccessKey") }
-      : {}),
-    ...(readString(vended, "sessionToken") !== undefined
-      ? { sessionToken: readString(vended, "sessionToken") }
-      : {}),
-    ...(readString(vended, "region") !== undefined
-      ? { region: readString(vended, "region") }
-      : {}),
+  const sessionToken = firstNonEmpty(vended.sessionToken);
+  const region = firstNonEmpty(vended.region, readString(extra, "region"));
+  return {
+    extra: {
+      ...nonCredentialExtra,
+      accessKeyId,
+      secretAccessKey,
+      ...(sessionToken !== undefined ? { sessionToken } : {}),
+      ...(region !== undefined ? { region } : {}),
+    },
   };
-  return Object.keys(bedrockExtra).length > 0 ? bedrockExtra : undefined;
 }
 
 function createAuthVendedProviderIfNeeded(
@@ -755,7 +784,7 @@ function createAuthVendedProviderIfNeeded(
 ): LLMProvider | undefined {
   if (!AUTH_VENDED_PROVIDER_NAMES.has(provider)) return undefined;
   if (providerTargetsLocalEndpoint(provider, opts)) return undefined;
-  if (concreteProviderExplicitApiKey(provider, opts) !== undefined) {
+  if (hasConcreteProviderCredentialInput(provider, opts)) {
     return undefined;
   }
   if (hasFactoryOAuthAccessToken(opts)) return undefined;
@@ -794,11 +823,7 @@ function providerTargetsLocalEndpoint(
   if (provider === "lmstudio" || provider === "ollama") return true;
   if (provider !== "openai-compatible") return false;
   return isLocalBaseURL(
-    normalizeBaseURL(opts.baseURL) ??
-      normalizeBaseURL(process.env.OPENAI_COMPATIBLE_BASE_URL) ??
-      normalizeBaseURL(process.env.OPENAI_BASE_URL) ??
-      normalizeBaseURL(process.env.OPENAI_API_BASE) ??
-      defaultBaseURLFor("openai-compatible"),
+    normalizeBaseURL(opts.baseURL) ?? defaultBaseURLFor("openai-compatible"),
   );
 }
 
@@ -833,16 +858,6 @@ function normalizeOllamaHost(baseURL: string | undefined): string | undefined {
   return normalized.replace(/\/v1\/?$/i, "");
 }
 
-function geminiVertexBaseURL(
-  project: string | undefined,
-  location: string | undefined,
-): string | undefined {
-  const normalizedProject = firstNonEmpty(project);
-  const normalizedLocation = firstNonEmpty(location);
-  if (!normalizedProject || !normalizedLocation) return undefined;
-  return `https://${encodeURIComponent(normalizedLocation)}-aiplatform.googleapis.com/v1/projects/${encodeURIComponent(normalizedProject)}/locations/${encodeURIComponent(normalizedLocation)}`;
-}
-
 function cloneExtraValue(value: unknown): unknown {
   if (isSandboxExecutionBrokerLike(value)) return value;
   if (Array.isArray(value)) return [...value];
@@ -857,10 +872,12 @@ function isSandboxExecutionBrokerLike(
   const candidate = value as Partial<
     Record<keyof SandboxExecutionBrokerLike, unknown>
   >;
-  return typeof candidate.assertReady === "function" &&
+  return (
+    typeof candidate.assertReady === "function" &&
     typeof candidate.prepareSpawn === "function" &&
     typeof candidate.runtimeSandbox === "function" &&
-    typeof candidate.forkForCwd === "function";
+    typeof candidate.forkForCwd === "function"
+  );
 }
 
 function readSandboxExecutionBrokerExtra(
@@ -874,20 +891,34 @@ function cloneProviderFactoryOptions(
   options: ProviderFactoryOptions,
 ): ProviderFactoryOptions {
   return {
+    ...(options.credentialHome !== undefined
+      ? { credentialHome: options.credentialHome }
+      : {}),
     ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}),
+    ...(options.authToken !== undefined
+      ? { authToken: options.authToken }
+      : {}),
     ...(options.baseURL !== undefined ? { baseURL: options.baseURL } : {}),
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.tools ? { tools: [...options.tools] } : {}),
-    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.timeoutMs !== undefined
+      ? { timeoutMs: options.timeoutMs }
+      : {}),
     ...(options.extra
       ? {
-        extra: Object.fromEntries(
-          Object.entries(options.extra).map(([key, value]) => [
-            key,
-            key === "authBackend" ? value : cloneExtraValue(value),
-          ]),
-        ),
-      }
+          extra: Object.fromEntries(
+            Object.entries(options.extra).map(([key, value]) => [
+              key,
+              key === "authBackend"
+                ? value
+                : key === "gemini"
+                  ? parseGeminiRuntimeOptions(value)
+                  : key === "grokAcp"
+                    ? readGrokAcpRuntimeExtra(value)
+                  : cloneExtraValue(value),
+            ]),
+          ),
+        }
       : {}),
   };
 }
@@ -905,7 +936,9 @@ function readNumber(
   key: string,
 ): number | undefined {
   const value = source?.[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
 function readBoolean(
@@ -921,7 +954,8 @@ function readStringRecord(
   key: string,
 ): Readonly<Record<string, string>> | undefined {
   const value = source?.[key];
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
   const entries = Object.entries(value);
   if (entries.some(([, entry]) => typeof entry !== "string")) return undefined;
   return Object.fromEntries(entries) as Readonly<Record<string, string>>;
@@ -932,7 +966,10 @@ function readStringArray(
   key: string,
 ): readonly string[] | undefined {
   const value = source?.[key];
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+  if (
+    !Array.isArray(value) ||
+    value.some((entry) => typeof entry !== "string")
+  ) {
     return undefined;
   }
   return [...value];
@@ -943,7 +980,8 @@ function readRecord(
   key: string,
 ): Record<string, unknown> | undefined {
   const value = source?.[key];
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
   return { ...value };
 }
 
@@ -964,15 +1002,49 @@ function readProviderRuntimeExtra(
     if (!(key in source)) continue;
     const value = source[key];
     if (value === undefined) continue;
-    extra[key] = cloneExtraValue(value);
+    const cloned =
+      key === "gemini"
+        ? parseGeminiRuntimeOptions(value)
+        : key === "grokAcp"
+          ? readGrokAcpRuntimeExtra(value)
+          : cloneExtraValue(value);
+    if (cloned !== undefined) extra[key] = cloned;
   }
   return Object.keys(extra).length > 0 ? extra : undefined;
+}
+
+function readGrokAcpRuntimeExtra(
+  value: unknown,
+): ProviderRuntimeExtra["grokAcp"] | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = { ...value } as Record<string, unknown>;
+  const environment = readStringRecord(record, "environment");
+  const runtime = Object.freeze({
+    ...(readString(record, "binaryPath") !== undefined
+      ? { binaryPath: readString(record, "binaryPath") }
+      : {}),
+    ...(readBoolean(record, "allowPermissions") !== undefined
+      ? { allowPermissions: readBoolean(record, "allowPermissions") }
+      : {}),
+    ...(readString(record, "path") !== undefined
+      ? { path: readString(record, "path") }
+      : {}),
+    ...(environment !== undefined
+      ? { environment: Object.freeze(environment) }
+      : {}),
+  });
+  return Object.keys(runtime).length > 0 ? runtime : undefined;
 }
 
 function readRuntimeExtra(
   extra: Record<string, unknown> | undefined,
 ): ProviderRuntimeExtra {
   const providerFallback = readProviderFallback(extra);
+  const gemini = readGeminiRuntimeOptions(extra);
+  const grokAcp = readGrokAcpRuntimeExtra(extra?.grokAcp);
+  const openAiCompatibility = readRecord(extra, "openAiCompatibility");
   return {
     ...(readString(extra, "systemPrompt") !== undefined
       ? { systemPrompt: readString(extra, "systemPrompt") }
@@ -992,10 +1064,10 @@ function readRuntimeExtra(
     ...(readNumber(extra, "retryDelayMs") !== undefined
       ? { retryDelayMs: readNumber(extra, "retryDelayMs") }
       : {}),
-    ...(providerFallback !== undefined
-      ? { providerFallback }
+    ...(providerFallback !== undefined ? { providerFallback } : {}),
+    ...(extra?.toolHandler
+      ? { toolHandler: extra.toolHandler as LLMProviderConfig["toolHandler"] }
       : {}),
-    ...(extra?.toolHandler ? { toolHandler: extra.toolHandler as LLMProviderConfig["toolHandler"] } : {}),
     ...(readString(extra, "organization") !== undefined
       ? { organization: readString(extra, "organization") }
       : {}),
@@ -1008,15 +1080,21 @@ function readRuntimeExtra(
     ...(readBoolean(extra, "store") !== undefined
       ? { store: readBoolean(extra, "store") }
       : {}),
+    ...(readBoolean(extra, "chatgptBackend") !== undefined
+      ? { chatgptBackend: readBoolean(extra, "chatgptBackend") }
+      : {}),
     ...(readString(extra, "authMode") === "api_key" ||
     readString(extra, "authMode") === "oauth"
       ? {
-        authMode: readString(extra, "authMode") as
-          | "api_key"
-          | "oauth",
-      }
+          authMode: readString(extra, "authMode") as "api_key" | "oauth",
+        }
       : {}),
-    ...(readRecord(extra, "oauth") ? { oauth: readRecord(extra, "oauth") } : {}),
+    ...(readRecord(extra, "oauth")
+      ? { oauth: readRecord(extra, "oauth") }
+      : {}),
+    ...(openAiCompatibility !== undefined ? { openAiCompatibility } : {}),
+    ...(gemini !== undefined ? { gemini } : {}),
+    ...(grokAcp !== undefined ? { grokAcp } : {}),
     ...(readStringRecord(extra, "defaultHeaders")
       ? { defaultHeaders: readStringRecord(extra, "defaultHeaders") }
       : {}),
@@ -1058,8 +1136,8 @@ function readRuntimeExtra(
     readString(extra, "searchMode") === "on" ||
     readString(extra, "searchMode") === "off"
       ? {
-        searchMode: readString(extra, "searchMode") as "auto" | "on" | "off",
-      }
+          searchMode: readString(extra, "searchMode") as "auto" | "on" | "off",
+        }
       : {}),
     ...(readRecord(extra, "webSearchOptions")
       ? { webSearchOptions: readRecord(extra, "webSearchOptions") }
@@ -1099,15 +1177,15 @@ function readRuntimeExtra(
       : {}),
     ...(typeof extra?.emitDiagnostic === "function"
       ? {
-        emitDiagnostic:
-          extra.emitDiagnostic as LLMProviderConfig["emitDiagnostic"],
-      }
+          emitDiagnostic:
+            extra.emitDiagnostic as LLMProviderConfig["emitDiagnostic"],
+        }
       : {}),
     ...(typeof extra?.onCapabilityDrift === "function"
       ? {
-        onCapabilityDrift:
-          extra.onCapabilityDrift as LLMProviderConfig["onCapabilityDrift"],
-      }
+          onCapabilityDrift:
+            extra.onCapabilityDrift as LLMProviderConfig["onCapabilityDrift"],
+        }
       : {}),
   };
 }
@@ -1213,23 +1291,29 @@ function buildOpenAICompatibleProvider(
   >,
   opts: ProviderFactoryOptions,
   input: {
-    readonly envBaseURL?: string;
-    readonly envModel?: string;
-    readonly envModelLabel: string;
     readonly apiKeyMode: "required" | "optional";
-    readonly useResponsesApi: boolean;
+    readonly normalizeModel?: (
+      model: string,
+      baseURL: string | undefined,
+    ) => string;
+    readonly useResponsesApi:
+      boolean | ((model: string, baseURL: string | undefined) => boolean);
     readonly providerCtor?: new (config: OpenAIProviderConfig) => LLMProvider;
   },
 ): LLMProvider {
   const extra = readRuntimeExtra(opts.extra);
-  const apiKeyEnvLabel = apiKeyEnvVarFor(provider);
-  const model = requireModel(
+  const requestedModel = requireModel(
     provider,
     opts.model,
-    input.envModel,
-    input.envModelLabel,
     defaultModelFor(provider),
   );
+  const baseURL = normalizeBaseURL(opts.baseURL) ?? defaultBaseURLFor(provider);
+  const model =
+    input.normalizeModel?.(requestedModel, baseURL) ?? requestedModel;
+  const useResponsesApi =
+    typeof input.useResponsesApi === "function"
+      ? input.useResponsesApi(model, baseURL)
+      : (extra.useResponsesApi ?? input.useResponsesApi);
   const oauthConfig =
     extra.authMode === "oauth" &&
     extra.oauth &&
@@ -1237,22 +1321,19 @@ function buildOpenAICompatibleProvider(
     extra.oauth.accessToken.trim().length > 0
       ? (extra.oauth as unknown as OpenAIProviderConfig["oauth"])
       : undefined;
-  const apiKey = oauthConfig || input.apiKeyMode === "optional"
-    ? resolveFactoryApiKey(opts)
-    : requireFactoryApiKey(provider, opts);
+  const apiKey =
+    oauthConfig || input.apiKeyMode === "optional"
+      ? resolveFactoryApiKey(opts)
+      : requireFactoryApiKey(provider, opts);
 
   const cfg: OpenAIProviderConfig = {
     ...buildCommonConfig(extra),
     ...(apiKey !== undefined ? { apiKey } : {}),
     model,
     providerName: provider,
-    apiKeyEnvLabel,
     tools: opts.tools ? [...opts.tools] : undefined,
-    baseURL:
-      normalizeBaseURL(opts.baseURL) ??
-      normalizeBaseURL(input.envBaseURL) ??
-      defaultBaseURLFor(provider),
-    useResponsesApi: extra.useResponsesApi ?? input.useResponsesApi,
+    baseURL,
+    useResponsesApi,
     ...(extra.store !== undefined ? { store: extra.store } : {}),
     ...(extra.contextWindowTokens !== undefined
       ? { contextWindowTokens: extra.contextWindowTokens }
@@ -1268,11 +1349,17 @@ function buildOpenAICompatibleProvider(
   const ProviderCtor = input.providerCtor ?? OpenAIProvider;
   const providerExtra = readProviderRuntimeExtra({
     ...(cfg as unknown as Record<string, unknown>),
+    ...(extra.openAiCompatibility !== undefined
+      ? { openAiCompatibility: extra.openAiCompatibility }
+      : {}),
     ...(extra.managedCredential === true ? { managedCredential: true } : {}),
   });
   return markFactoryProvider(new ProviderCtor(cfg), {
     provider,
     options: {
+      ...(opts.credentialHome !== undefined
+        ? { credentialHome: opts.credentialHome }
+        : {}),
       ...(apiKey !== undefined ? { apiKey } : {}),
       baseURL: cfg.baseURL,
       model,
@@ -1280,12 +1367,6 @@ function buildOpenAICompatibleProvider(
       ...(providerExtra ? { extra: providerExtra } : {}),
     },
   });
-}
-
-export function normalizeProviderName(
-  provider: string | undefined,
-): ProviderName | null {
-  return normalizeBuiltInProviderSlug(provider) ?? null;
 }
 
 function buildManagedGatewayProvider(
@@ -1302,13 +1383,7 @@ function buildManagedGatewayProvider(
   }
   const model = normalizeManagedGatewayModel(
     provider,
-    requireModel(
-      provider,
-      opts.model,
-      undefined,
-      `${provider.toUpperCase()}_MODEL`,
-      defaultModelFor(provider),
-    ),
+    requireModel(provider, opts.model, defaultModelFor(provider)),
   );
   const cfg: OpenAIProviderConfig = {
     ...buildCommonConfig(extra),
@@ -1330,6 +1405,9 @@ function buildManagedGatewayProvider(
   return markFactoryProvider(providerInstance, {
     provider,
     options: {
+      ...(opts.credentialHome !== undefined
+        ? { credentialHome: opts.credentialHome }
+        : {}),
       apiKey,
       baseURL,
       model,
@@ -1339,11 +1417,11 @@ function buildManagedGatewayProvider(
         managedGateway: true,
       })
         ? {
-          extra: readProviderRuntimeExtra({
-            ...(cfg as unknown as Record<string, unknown>),
-            managedGateway: true,
-          }),
-        }
+            extra: readProviderRuntimeExtra({
+              ...(cfg as unknown as Record<string, unknown>),
+              managedGateway: true,
+            }),
+          }
         : {}),
     },
   });
@@ -1353,6 +1431,19 @@ export function createProvider(
   name: ProviderName,
   opts: ProviderFactoryOptions,
 ): LLMProvider {
+  // Keep the runtime boundary fail-closed even when JavaScript or an unsafe
+  // cast bypasses the canonical ProviderName type.
+  normalizeProviderIdentity(String(name), "provider factory");
+  if (name === "amazon-bedrock" && firstNonEmpty(opts.apiKey) !== undefined) {
+    throw new Error(
+      "amazon-bedrock does not accept the generic apiKey factory option; pass accessKeyId in factory options extra",
+    );
+  }
+  if (name !== "anthropic" && firstNonEmpty(opts.authToken) !== undefined) {
+    throw new Error(
+      `${name} provider does not accept the authToken factory option`,
+    );
+  }
   const authVendedProvider = createAuthVendedProviderIfNeeded(name, opts);
   if (authVendedProvider !== undefined) return authVendedProvider;
   const extra = readRuntimeExtra(opts.extra);
@@ -1373,13 +1464,7 @@ export function createProvider(
           "agenc provider requires sessionId in factory options extra",
         );
       }
-      const model = requireModel(
-        "agenc",
-        opts.model,
-        process.env.AGENC_MODEL,
-        "AGENC_MODEL",
-        defaultModelFor("agenc"),
-      );
+      const model = requireModel("agenc", opts.model, defaultModelFor("agenc"));
       const providerExtra = stripAgenCProviderRuntimeExtra(opts.extra);
       const provider = markFactoryProvider(
         new AgenCProvider({
@@ -1391,24 +1476,35 @@ export function createProvider(
             : {}),
           model,
           tools: opts.tools ? [...opts.tools] : undefined,
-          ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+          ...(opts.timeoutMs !== undefined
+            ? { timeoutMs: opts.timeoutMs }
+            : {}),
           providerFactory: (concreteProvider, providerOptions) =>
             createProvider(concreteProvider, providerOptions),
           ...(opts.baseURL !== undefined || providerExtra !== undefined
             ? {
-              providerOptions: {
-                ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
-                ...(providerExtra !== undefined ? { extra: providerExtra } : {}),
-              },
-            }
+                providerOptions: {
+                  ...(opts.baseURL !== undefined
+                    ? { baseURL: opts.baseURL }
+                    : {}),
+                  ...(providerExtra !== undefined
+                    ? { extra: providerExtra }
+                    : {}),
+                },
+              }
             : {}),
         }),
         {
           provider: "agenc",
           options: {
+            ...(opts.credentialHome !== undefined
+              ? { credentialHome: opts.credentialHome }
+              : {}),
             ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
             model,
-            ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+            ...(opts.timeoutMs !== undefined
+              ? { timeoutMs: opts.timeoutMs }
+              : {}),
             ...(providerExtra !== undefined ? { extra: providerExtra } : {}),
           },
         },
@@ -1416,8 +1512,7 @@ export function createProvider(
       return provider;
     }
     case "grok": {
-      const grokRequestedModel =
-        opts.model?.trim() || process.env.AGENC_MODEL?.trim() || undefined;
+      const grokRequestedModel = opts.model?.trim() || undefined;
       if (isGrokComposerModel(grokRequestedModel)) {
         // Per xAI: composer models are served ONLY through ACP (the Grok
         // Build CLI), never by direct inference calls. Auth belongs to the
@@ -1426,21 +1521,47 @@ export function createProvider(
           opts.extra,
         );
         const storedExtra = readProviderRuntimeExtra(opts.extra);
+        const factoryApiKey = resolveFactoryApiKey(opts);
+        const acpEnvironment = extra.grokAcp?.environment;
+        if (acpEnvironment === undefined) {
+          throw new Error(
+            "grok composer provider requires a prepared child environment in factory options extra",
+          );
+        }
         const acpProvider = new GrokAcpProvider({
           model: grokRequestedModel as string,
+          env: acpEnvironment,
+          ...(factoryApiKey !== undefined ? { apiKey: factoryApiKey } : {}),
+          ...(extra.grokAcp?.binaryPath !== undefined
+            ? { binaryPath: extra.grokAcp.binaryPath }
+            : {}),
+          ...(extra.grokAcp?.allowPermissions !== undefined
+            ? { allowPermissions: extra.grokAcp.allowPermissions }
+            : {}),
+          ...(extra.grokAcp?.path !== undefined
+            ? { path: extra.grokAcp.path }
+            : {}),
           ...(sandboxExecutionBroker !== undefined
             ? { sandboxExecutionBroker }
             : {}),
           ...(extra.contextWindowTokens !== undefined
             ? { contextWindowTokens: extra.contextWindowTokens }
             : {}),
-          ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+          ...(opts.timeoutMs !== undefined
+            ? { timeoutMs: opts.timeoutMs }
+            : {}),
         });
         return markFactoryProvider(acpProvider, {
           provider: "grok",
           options: {
+            ...(opts.credentialHome !== undefined
+              ? { credentialHome: opts.credentialHome }
+              : {}),
+            ...(factoryApiKey !== undefined ? { apiKey: factoryApiKey } : {}),
             model: grokRequestedModel as string,
-            ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+            ...(opts.timeoutMs !== undefined
+              ? { timeoutMs: opts.timeoutMs }
+              : {}),
             ...(storedExtra !== undefined ? { extra: storedExtra } : {}),
           },
         });
@@ -1449,22 +1570,16 @@ export function createProvider(
       // X means subscription access; leftover XAI_API_KEY must not shadow it.
       // Bearer refreshes via the adapter's I-14 401-recovery hook.
       const factoryApiKey = resolveFactoryApiKey(opts);
-      const oauthBearer = readXaiOauthAccessToken();
       const usesXaiOauth =
-        oauthBearer !== undefined || isXaiOauthBearer(factoryApiKey);
-      const apiKey =
-        oauthBearer ??
-        factoryApiKey ??
-        requireFactoryApiKey("grok", opts);
-      const model = requireModel(
-        "grok",
-        opts.model,
-        process.env.AGENC_MODEL,
-        "AGENC_MODEL",
-        defaultModelFor("grok"),
-      );
+        opts.credentialHome !== undefined &&
+        isXaiOauthBearer(opts.credentialHome, factoryApiKey);
+      const apiKey = factoryApiKey ?? requireFactoryApiKey("grok", opts);
+      const model = requireModel("grok", opts.model, defaultModelFor("grok"));
       const cfg: GrokProviderConfig = {
         ...buildCommonConfig(extra),
+        ...(opts.credentialHome !== undefined
+          ? { credentialHome: opts.credentialHome }
+          : {}),
         apiKey,
         model,
         tools: opts.tools ? [...opts.tools] : undefined,
@@ -1477,13 +1592,17 @@ export function createProvider(
           ? { parallelToolCalls: extra.parallelToolCalls }
           : {}),
         ...(extra.visionModel ? { visionModel: extra.visionModel } : {}),
-        ...(extra.webSearch !== undefined ? { webSearch: extra.webSearch } : {}),
+        ...(extra.webSearch !== undefined
+          ? { webSearch: extra.webSearch }
+          : {}),
         ...(extra.searchMode ? { searchMode: extra.searchMode } : {}),
         ...(extra.webSearchOptions
           ? { webSearchOptions: extra.webSearchOptions }
           : {}),
         ...(extra.xSearch !== undefined ? { xSearch: extra.xSearch } : {}),
-        ...(extra.xSearchOptions ? { xSearchOptions: extra.xSearchOptions } : {}),
+        ...(extra.xSearchOptions
+          ? { xSearchOptions: extra.xSearchOptions }
+          : {}),
         ...(extra.codeExecution !== undefined
           ? { codeExecution: extra.codeExecution }
           : {}),
@@ -1506,7 +1625,9 @@ export function createProvider(
         // swap the bearer on the live SDK client, and retry.
         grokProvider.withAuthRefreshCallbacks({
           refreshBearer: async () => {
-            const refreshed = await forceRefreshXaiOauthCredentials();
+            const refreshed = await forceRefreshXaiOauthCredentials(
+              opts.credentialHome!,
+            );
             if (refreshed === undefined) {
               // Honesty split: only claim the user is logged out when the
               // stored grant is genuinely dead (quarantined terminal
@@ -1514,7 +1635,7 @@ export function createProvider(
               // failure during refresh must not flap the TUI to
               // "Not logged in" while the grant is still viable — the next
               // 401/pre-flight retries the single-flight refresh.
-              if (xaiOauthRequiresRelogin()) {
+              if (xaiOauthRequiresRelogin(opts.credentialHome!)) {
                 return {
                   kind: "exhausted",
                   reason:
@@ -1538,23 +1659,29 @@ export function createProvider(
       return markFactoryProvider(grokProvider, {
         provider: "grok",
         options: {
+          ...(opts.credentialHome !== undefined
+            ? { credentialHome: opts.credentialHome }
+            : {}),
           apiKey,
           ...(cfg.baseURL !== undefined ? { baseURL: cfg.baseURL } : {}),
           model,
           ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
-          ...(readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>)
-            ? { extra: readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>) }
+          ...(readProviderRuntimeExtra(
+            cfg as unknown as Record<string, unknown>,
+          )
+            ? {
+                extra: readProviderRuntimeExtra(
+                  cfg as unknown as Record<string, unknown>,
+                ),
+              }
             : {}),
         },
       });
     }
     case "openai": {
-      const apiKeyEnvLabel = apiKeyEnvVarFor("openai");
       const model = requireModel(
         "openai",
         opts.model,
-        process.env.OPENAI_MODEL,
-        "OPENAI_MODEL",
         defaultModelFor("openai"),
       );
       const oauthConfig =
@@ -1564,111 +1691,82 @@ export function createProvider(
         extra.oauth.accessToken.trim().length > 0
           ? (extra.oauth as unknown as OpenAIProviderConfig["oauth"])
           : undefined;
-      // The ChatGPT sign-in wins over env BYOK unconditionally (as
-      // grok's OAuth does), in either of its two shapes: an exchanged
-      // platform API key, or — for an account with no platform
-      // organization, which cannot mint one — the subscription's access
-      // token against the ChatGPT backend.
-      const chatgptKey = readOpenAiOauthApiKey();
-      const subscription =
-        chatgptKey === undefined ? readOpenAiSubscriptionAuth() : undefined;
-      const apiKey =
-        chatgptKey ??
-        subscription?.accessToken ??
-        (oauthConfig
-          ? resolveFactoryApiKey(opts)
-          : requireFactoryApiKey("openai", opts));
+      const apiKey = oauthConfig
+        ? resolveFactoryApiKey(opts)
+        : requireFactoryApiKey("openai", opts);
       const cfg: OpenAIProviderConfig = {
         ...buildCommonConfig(extra),
         ...(apiKey !== undefined ? { apiKey } : {}),
         model,
         providerName: "openai",
-        apiKeyEnvLabel,
         tools: opts.tools ? [...opts.tools] : undefined,
-        baseURL:
-          // A subscription sign-in is bound to the ChatGPT backend: the
-          // access token is not a platform credential and api.openai.com
-          // rejects it.
-          (subscription?.baseUrl !== undefined
-            ? subscription.baseUrl
-            : undefined) ??
-          normalizeBaseURL(opts.baseURL) ??
-          normalizeBaseURL(process.env.OPENAI_BASE_URL) ??
-          defaultBaseURLFor("openai"),
+        baseURL: normalizeBaseURL(opts.baseURL) ?? defaultBaseURLFor("openai"),
         useResponsesApi: extra.useResponsesApi ?? true,
-        // That backend is stateless: it rejects store:true, and without
-        // server-side state the encrypted reasoning has to ride along in
-        // the request to survive across turns.
-        ...(subscription !== undefined
-          ? { store: false }
-          : extra.store !== undefined
-            ? { store: extra.store }
-            : {}),
+        ...(extra.store !== undefined ? { store: extra.store } : {}),
+        ...(extra.chatgptBackend !== undefined
+          ? { chatgptBackend: extra.chatgptBackend }
+          : {}),
         ...(extra.contextWindowTokens !== undefined
           ? { contextWindowTokens: extra.contextWindowTokens }
           : {}),
         ...(extra.authMode ? { authMode: extra.authMode } : {}),
         ...(oauthConfig ? { oauth: oauthConfig } : {}),
-        // The ChatGPT backend identifies the subscription by header; the
-        // bearer alone is not enough and it answers 401 without this.
-        ...(subscription !== undefined || extra.defaultHeaders
-          ? {
-              defaultHeaders: {
-                ...(extra.defaultHeaders ?? {}),
-                ...(subscription !== undefined
-                  ? {
-                      "ChatGPT-Account-ID": subscription.accountId,
-                      originator: CHATGPT_BACKEND_ORIGINATOR,
-                    }
-                  : {}),
-              },
-            }
+        ...(extra.defaultHeaders
+          ? { defaultHeaders: extra.defaultHeaders }
           : {}),
         ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
-        ...(extra.organization
-          ? { organization: extra.organization }
-          : process.env.OPENAI_ORGANIZATION
-          ? { organization: process.env.OPENAI_ORGANIZATION }
-          : {}),
-        ...(extra.project
-          ? { project: extra.project }
-          : process.env.OPENAI_PROJECT
-          ? { project: process.env.OPENAI_PROJECT }
-          : {}),
+        ...(extra.organization ? { organization: extra.organization } : {}),
+        ...(extra.project ? { project: extra.project } : {}),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       };
       return markFactoryProvider(new OpenAIProvider(cfg), {
         provider: "openai",
         options: {
+          ...(opts.credentialHome !== undefined
+            ? { credentialHome: opts.credentialHome }
+            : {}),
           ...(apiKey !== undefined ? { apiKey } : {}),
           baseURL: cfg.baseURL,
           model,
           ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
-          ...(readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>)
-            ? { extra: readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>) }
+          ...(readProviderRuntimeExtra(
+            cfg as unknown as Record<string, unknown>,
+          )
+            ? {
+                extra: readProviderRuntimeExtra(
+                  cfg as unknown as Record<string, unknown>,
+                ),
+              }
             : {}),
         },
       });
     }
     case "anthropic": {
-      const apiKey = requireFactoryApiKey("anthropic", opts);
+      const apiKey = resolveFactoryApiKey(opts);
+      const authToken = firstNonEmpty(opts.authToken);
+      if (apiKey !== undefined && authToken !== undefined) {
+        throw new Error(
+          "anthropic provider requires exactly one prepared credential: apiKey or authToken",
+        );
+      }
+      if (apiKey === undefined && authToken === undefined) {
+        throw new Error(
+          "anthropic provider requires apiKey or authToken in factory options",
+        );
+      }
       const model = requireModel(
         "anthropic",
         opts.model,
-        process.env.ANTHROPIC_MODEL,
-        "ANTHROPIC_MODEL",
         defaultModelFor("anthropic"),
       );
       const cfg: AnthropicProviderConfig = {
         ...buildCommonConfig(extra),
-        apiKey,
+        ...(apiKey !== undefined ? { apiKey } : {}),
+        ...(authToken !== undefined ? { authToken } : {}),
         model,
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL:
-          withAnthropicVersionSegment(
-            normalizeBaseURL(opts.baseURL) ??
-              normalizeBaseURL(process.env.ANTHROPIC_BASE_URL),
-          ) ?? defaultBaseURLFor("anthropic"),
+          normalizeBaseURL(opts.baseURL) ?? defaultBaseURLFor("anthropic"),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
         ...(extra.anthropicVersion
           ? { anthropicVersion: extra.anthropicVersion }
@@ -1677,18 +1775,30 @@ export function createProvider(
         ...(extra.contextManagement
           ? { contextManagement: extra.contextManagement }
           : {}),
-        ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
+        ...(extra.defaultHeaders
+          ? { defaultHeaders: extra.defaultHeaders }
+          : {}),
         ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
       };
       return markFactoryProvider(new AnthropicProvider(cfg), {
         provider: "anthropic",
         options: {
-          apiKey,
+          ...(opts.credentialHome !== undefined
+            ? { credentialHome: opts.credentialHome }
+            : {}),
+          ...(apiKey !== undefined ? { apiKey } : {}),
+          ...(authToken !== undefined ? { authToken } : {}),
           ...(cfg.baseURL !== undefined ? { baseURL: cfg.baseURL } : {}),
           model,
           ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
-          ...(readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>)
-            ? { extra: readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>) }
+          ...(readProviderRuntimeExtra(
+            cfg as unknown as Record<string, unknown>,
+          )
+            ? {
+                extra: readProviderRuntimeExtra(
+                  cfg as unknown as Record<string, unknown>,
+                ),
+              }
             : {}),
         },
       });
@@ -1697,17 +1807,10 @@ export function createProvider(
       const numCtx = extra.numCtx ?? extra.contextWindowTokens;
       const cfg: OllamaProviderConfig = {
         ...buildCommonConfig(extra),
-        model: requireModel(
-          "ollama",
-          opts.model,
-          process.env.OLLAMA_MODEL,
-          "OLLAMA_MODEL",
-          defaultModelFor("ollama"),
-        ),
+        model: requireModel("ollama", opts.model, defaultModelFor("ollama")),
         tools: opts.tools ? [...opts.tools] : undefined,
         host:
           normalizeOllamaHost(opts.baseURL) ??
-          normalizeOllamaHost(process.env.OLLAMA_BASE_URL) ??
           normalizeOllamaHost(defaultBaseURLFor("ollama")),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
         ...(extra.keepAlive ? { keepAlive: extra.keepAlive } : {}),
@@ -1717,182 +1820,157 @@ export function createProvider(
       return markFactoryProvider(new OllamaProvider(cfg), {
         provider: "ollama",
         options: {
+          ...(opts.credentialHome !== undefined
+            ? { credentialHome: opts.credentialHome }
+            : {}),
           ...(cfg.host !== undefined ? { baseURL: cfg.host } : {}),
           model: cfg.model,
           ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
-          ...(readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>)
-            ? { extra: readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>) }
+          ...(readProviderRuntimeExtra(
+            cfg as unknown as Record<string, unknown>,
+          )
+            ? {
+                extra: readProviderRuntimeExtra(
+                  cfg as unknown as Record<string, unknown>,
+                ),
+              }
             : {}),
         },
       });
     }
     case "lmstudio":
       return buildOpenAICompatibleProvider("lmstudio", opts, {
-        envBaseURL: process.env.LMSTUDIO_BASE_URL,
-        envModel: process.env.LMSTUDIO_MODEL,
-        envModelLabel: "LMSTUDIO_MODEL",
         apiKeyMode: "optional",
         useResponsesApi: false,
         providerCtor: LMStudioProvider,
       });
     case "openai-compatible":
       return buildOpenAICompatibleProvider("openai-compatible", opts, {
-        envBaseURL:
-          process.env.OPENAI_COMPATIBLE_BASE_URL ??
-          process.env.OPENAI_BASE_URL ??
-          process.env.OPENAI_API_BASE,
-        envModel:
-          process.env.OPENAI_COMPATIBLE_MODEL ?? process.env.OPENAI_MODEL,
-        envModelLabel: "OPENAI_COMPATIBLE_MODEL",
         apiKeyMode: "optional",
         useResponsesApi: false,
         providerCtor: OpenAICompatibleProvider,
       });
     case "openrouter":
       return buildOpenAICompatibleProvider("openrouter", opts, {
-        envBaseURL: process.env.OPENROUTER_BASE_URL,
-        envModel: process.env.OPENROUTER_MODEL,
-        envModelLabel: "OPENROUTER_MODEL",
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: OpenRouterProvider,
       });
     case "groq":
       return buildOpenAICompatibleProvider("groq", opts, {
-        envBaseURL: process.env.GROQ_BASE_URL,
-        envModel: process.env.GROQ_MODEL,
-        envModelLabel: "GROQ_MODEL",
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: GroqProvider,
       });
     case "deepseek":
       return buildOpenAICompatibleProvider("deepseek", opts, {
-        envBaseURL: process.env.DEEPSEEK_BASE_URL,
-        envModel: process.env.DEEPSEEK_MODEL,
-        envModelLabel: "DEEPSEEK_MODEL",
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: DeepSeekProvider,
       });
     case "mistral":
       return buildOpenAICompatibleProvider("mistral", opts, {
-        envBaseURL: process.env.MISTRAL_BASE_URL,
-        envModel: process.env.MISTRAL_MODEL,
-        envModelLabel: "MISTRAL_MODEL",
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: MistralProvider,
       });
     case "nvidia-nim":
       return buildOpenAICompatibleProvider("nvidia-nim", opts, {
-        envBaseURL: process.env.NVIDIA_BASE_URL,
-        envModel: process.env.NVIDIA_MODEL,
-        envModelLabel: "NVIDIA_MODEL",
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: NvidiaNimProvider,
       });
     case "minimax":
       return buildOpenAICompatibleProvider("minimax", opts, {
-        envBaseURL: process.env.MINIMAX_BASE_URL,
-        envModel: process.env.MINIMAX_MODEL,
-        envModelLabel: "MINIMAX_MODEL",
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: MiniMaxProvider,
       });
     case "github":
       return buildOpenAICompatibleProvider("github", opts, {
-        envBaseURL: process.env.GITHUB_BASE_URL,
-        envModel: process.env.GITHUB_MODEL,
-        envModelLabel: "GITHUB_MODEL",
         apiKeyMode: "required",
-        useResponsesApi: false,
+        normalizeModel: (model, baseURL) =>
+          normalizeGithubModelForEndpoint(
+            model,
+            getGithubEndpointType(baseURL),
+          ),
+        useResponsesApi: shouldUseGithubCopilotResponsesApi,
         providerCtor: GitHubProvider,
       });
     case "gemini": {
-      const apiKeyEnvLabel = apiKeyEnvVarFor("gemini");
-      const geminiAuthMode = getGeminiAuthMode();
-      const shouldUseApiKey =
-        geminiAuthMode !== "access-token" && geminiAuthMode !== "adc";
-      const apiKey = shouldUseApiKey
-        ? resolveFactoryApiKey(
-            opts,
-            firstNonEmpty(process.env.GEMINI_API_KEY, process.env.GOOGLE_API_KEY),
-          )
-        : undefined;
+      assertNoRetiredGeminiRuntimeFields(opts.extra);
+      if (resolveFactoryApiKey(opts) !== undefined) {
+        throw new Error(
+          "Gemini provider does not accept apiKey after ingress; pass canonical extra.gemini runtime options",
+        );
+      }
+      if (normalizeBaseURL(opts.baseURL) !== undefined) {
+        throw new Error(
+          "Gemini provider does not accept baseURL after ingress; pass canonical extra.gemini endpointPlan",
+        );
+      }
+      const gemini = extra.gemini;
+      if (gemini === undefined) {
+        throw new Error(
+          "Gemini provider requires canonical extra.gemini runtime options",
+        );
+      }
       const model = requireModel(
         "gemini",
         opts.model,
-        process.env.GEMINI_MODEL,
-        "GEMINI_MODEL",
         defaultModelFor("gemini"),
       );
-      const project = firstNonEmpty(extra.project, getGeminiProjectIdHint());
-      const location = firstNonEmpty(
-        readString(opts.extra, "location"),
-        readString(opts.extra, "geminiLocation"),
-        extra.region,
-        process.env.GEMINI_VERTEX_LOCATION,
-        process.env.GOOGLE_CLOUD_LOCATION,
-        process.env.GOOGLE_CLOUD_REGION,
-        process.env.CLOUD_ML_REGION,
-      );
-      const explicitAccessToken = firstNonEmpty(
-        readString(opts.extra, "accessToken"),
-        readString(readRecord(opts.extra, "oauth"), "accessToken"),
-        process.env.GEMINI_ACCESS_TOKEN,
-      );
-      const configuredBaseURL =
-        normalizeBaseURL(opts.baseURL) ??
-        normalizeBaseURL(process.env.GEMINI_BASE_URL);
-      const inferredVertexBaseURL = apiKey === undefined
-        ? geminiVertexBaseURL(project, location)
-        : undefined;
       const cfg: GeminiProviderConfig = {
         ...buildCommonConfig(extra),
-        ...(apiKey !== undefined ? { apiKey } : {}),
+        credentialPlan: gemini.credentialPlan,
+        endpointPlan: gemini.endpointPlan,
         model,
-        providerName: "gemini",
-        apiKeyEnvLabel,
         tools: opts.tools ? [...opts.tools] : undefined,
-        baseURL: configuredBaseURL ?? inferredVertexBaseURL ?? defaultBaseURLFor("gemini"),
-        useResponsesApi: false,
-        ...(firstNonEmpty(process.env.GEMINI_CACHED_CONTENT)
-          ? { cachedContent: firstNonEmpty(process.env.GEMINI_CACHED_CONTENT) }
+        ...(gemini.cachedContent
+          ? { cachedContent: gemini.cachedContent }
           : {}),
-        ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
+        ...(extra.defaultHeaders
+          ? { defaultHeaders: extra.defaultHeaders }
+          : {}),
         ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
-        ...(project ? { project } : {}),
-        ...(explicitAccessToken ? { accessToken: explicitAccessToken } : {}),
+        ...(extra.contextWindowTokens !== undefined
+          ? { contextWindowTokens: extra.contextWindowTokens }
+          : {}),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       };
+      const storedExtra = readProviderRuntimeExtra({
+        ...(cfg as unknown as Record<string, unknown>),
+        gemini,
+      });
       return markFactoryProvider(new GeminiProvider(cfg), {
         provider: "gemini",
         options: {
-          ...(apiKey !== undefined ? { apiKey } : {}),
-          baseURL: cfg.baseURL,
+          ...(opts.credentialHome !== undefined
+            ? { credentialHome: opts.credentialHome }
+            : {}),
           model,
           ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
-          ...(readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>)
-            ? { extra: readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>) }
-            : {}),
+          ...(storedExtra !== undefined ? { extra: storedExtra } : {}),
         },
       });
     }
     case "amazon-bedrock": {
-      const region = firstNonEmpty(
-        extra.region,
-        process.env.AWS_BEDROCK_REGION,
-        process.env.AWS_REGION,
-        process.env.AWS_DEFAULT_REGION,
-      ) ?? "us-east-1";
-      const accessKeyId = requireFactoryApiKey(
+      const endpoint = resolveBuiltInProviderRegionalEndpoint(
         "amazon-bedrock",
-        opts,
-        extra.accessKeyId,
+        firstNonEmpty(extra.region),
       );
+      if (endpoint === undefined) {
+        throw new Error(
+          "amazon-bedrock registry metadata is missing a regional endpoint",
+        );
+      }
+      const region = endpoint.region;
+      const accessKeyId = firstNonEmpty(extra.accessKeyId);
+      if (accessKeyId === undefined) {
+        throw new Error(
+          "amazon-bedrock provider requires accessKeyId in factory options extra",
+        );
+      }
       const secretAccessKey = firstNonEmpty(extra.secretAccessKey);
       if (secretAccessKey === undefined) {
         throw new Error(
@@ -1903,8 +1981,6 @@ export function createProvider(
       const model = requireModel(
         "amazon-bedrock",
         opts.model,
-        process.env.AWS_BEDROCK_MODEL,
-        "AWS_BEDROCK_MODEL",
         defaultModelFor("amazon-bedrock"),
       );
       const cfg: BedrockProviderConfig = {
@@ -1915,10 +1991,7 @@ export function createProvider(
         region,
         model,
         tools: opts.tools ? [...opts.tools] : undefined,
-        baseURL:
-          normalizeBaseURL(opts.baseURL) ??
-          normalizeBaseURL(process.env.AWS_BEDROCK_BASE_URL) ??
-          bedrockBaseURLForRegion(region),
+        baseURL: normalizeBaseURL(opts.baseURL) ?? endpoint.baseURL,
         ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       };
@@ -1928,6 +2001,9 @@ export function createProvider(
       return markFactoryProvider(new BedrockProvider(cfg), {
         provider: "amazon-bedrock",
         options: {
+          ...(opts.credentialHome !== undefined
+            ? { credentialHome: opts.credentialHome }
+            : {}),
           baseURL: cfg.baseURL,
           model,
           ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
@@ -1963,8 +2039,8 @@ export function prepareProviderSwitch(
   provider: string | undefined,
   opts: ProviderFactoryOptions,
 ): PreparedProviderSwitch {
-  const normalizedProvider = normalizeProviderName(provider);
-  if (normalizedProvider === null) {
+  const normalizedProvider = resolveBuiltInProviderSlug(provider);
+  if (normalizedProvider === undefined) {
     throw new Error(`unknown provider "${provider?.trim() ?? ""}"`);
   }
   const instance = createProvider(normalizedProvider, opts);
@@ -1973,13 +2049,4 @@ export function prepareProviderSwitch(
     model: readPreparedModel(instance, opts.model),
     instance,
   };
-}
-
-export function resolveProviderNameFromEnv(): ProviderName {
-  const raw = process.env.AGENC_PROVIDER ?? "grok";
-  const normalized = normalizeProviderName(raw);
-  if (normalized !== null) return normalized;
-  throw new Error(
-    `AGENC_PROVIDER="${raw.trim().toLowerCase()}" is not a known provider (accepted: ${KNOWN_PROVIDER_NAMES.join(", ")})`,
-  );
 }

@@ -12,16 +12,22 @@ import type {
   PluginMcpServerConfig,
 } from "../config/schema.js";
 import { pluginDependencyIdentityFromSource, verifyPluginDependencyState } from "./resolution.js";
+import {
+  createPluginStorageAuthority,
+  isReservedPluginStorageChildName,
+  migrateLegacyPluginDataDirectories,
+} from "./directories.js";
 import { pluginScopedServerIdentifier } from "./identifier-normalization.js";
 import {
+  assertNoRetiredRootPluginManifest,
   findPluginManifestPath,
-  loadPluginManifest,
+  loadRequiredPluginManifest,
+  PLUGIN_MANIFEST_FILE,
   PLUGIN_MANIFEST_RELATIVE_PATH,
   readJsonText,
 } from "./manifest.js";
 import {
   isRecord,
-  normalizePluginManifest,
   resolveManifestRelativePath,
   type PluginCommandDeclaration,
   type PluginCommandMetadata,
@@ -30,12 +36,15 @@ import {
   type PluginPathDeclaration,
   type PluginServerDeclaration,
 } from "./manifest-schema.js";
+import {
+  CONVENTIONAL_APP_FILE,
+  CONVENTIONAL_HOOKS_FILE,
+  CONVENTIONAL_LSP_FILE,
+  inspectPluginPackageAuthority,
+  RETIRED_PLUGIN_MCP_FILE,
+  RETIRED_PLUGIN_SETTINGS_FILE,
+} from "./package-authority.js";
 
-const DEFAULT_HOOKS_FILE = "hooks/hooks.json";
-const DEFAULT_MCP_FILE = ".mcp.json";
-const DEFAULT_LSP_FILE = ".lsp.json";
-const DEFAULT_APP_FILE = ".app.json";
-const DEFAULT_SETTINGS_FILE = "settings.json";
 const INSTALL_METADATA_FILE = "agenc-install.json";
 const MAX_PLUGIN_MARKDOWN_FILES = 512;
 const MAX_PLUGIN_SCAN_DEPTH = 8;
@@ -71,10 +80,6 @@ const DEFAULT_COMPONENT_DIRS = {
 } as const;
 const SKIP_PLUGIN_ROOTS = new Set([
   ".git",
-  "node_modules",
-  "dist",
-  "build",
-  "coverage",
   ".cache",
 ]);
 
@@ -115,6 +120,8 @@ export interface PluginHookSource {
 export type PluginContentProvenance = "authority-controlled" | "repository-controlled";
 
 export interface LoadedPlugin {
+  /** Stable config, option, secret, and data identity. Never a filesystem path. */
+  readonly id: string;
   readonly name: string;
   readonly version?: string;
   readonly description?: string;
@@ -146,6 +153,10 @@ export interface LoadedPlugin {
   readonly errors: readonly PluginLoadIssue[];
 }
 
+function canonicalLoadedPluginId(source: string, manifestName: string): string {
+  return pluginDependencyIdentityFromSource(source) ?? manifestName;
+}
+
 export interface PluginLoadResult {
   readonly enabled: readonly LoadedPlugin[];
   readonly disabled: readonly LoadedPlugin[];
@@ -153,9 +164,9 @@ export interface PluginLoadResult {
 }
 
 export interface PluginLoaderOptions {
-  readonly agencHome: string;
+  readonly pluginStorageRoot: string;
   readonly workspaceRoot: string;
-  readonly config?: Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined;
+  readonly config?: Pick<AgenCConfig, "plugins"> | undefined;
   readonly extraPluginDirs?: readonly string[];
 }
 
@@ -175,15 +186,12 @@ export function isRepositoryControlledPlugin(
 }
 
 function configuredPluginEntries(
-  config: Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined,
-): Readonly<Record<string, boolean | PluginEntryConfig>> {
+  config: Pick<AgenCConfig, "plugins"> | undefined,
+): Readonly<Record<string, PluginEntryConfig>> {
   const plugins = config?.plugins;
   return {
-    ...(isRecord(config?.enabledPlugins)
-      ? config.enabledPlugins as Readonly<Record<string, boolean | PluginEntryConfig>>
-      : {}),
     ...(isRecord(plugins) && isRecord(plugins.plugins)
-      ? plugins.plugins as Readonly<Record<string, boolean | PluginEntryConfig>>
+      ? plugins.plugins as Readonly<Record<string, PluginEntryConfig>>
       : {}),
   };
 }
@@ -192,15 +200,15 @@ function pluginAutoDiscoveryEnabled(
   config: Pick<AgenCConfig, "plugins"> | undefined,
 ): boolean {
   const plugins = config?.plugins;
-  return isRecord(plugins) && plugins.enabled === true;
+  return isRecord(plugins) &&
+    (plugins.enabled === true || isRecord(plugins.plugins));
 }
 
 function pluginFeatureEnabled(
-  config: Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined,
+  config: Pick<AgenCConfig, "plugins"> | undefined,
 ): boolean {
   const plugins = config?.plugins;
-  if (isRecord(plugins)) return plugins.enabled === true;
-  return isRecord(config?.enabledPlugins);
+  return isRecord(plugins) && plugins.enabled === true;
 }
 
 function configuredPluginAllowlist(
@@ -242,8 +250,8 @@ function pluginAllowedByAllowlist(
 
 function configuredValueForRoot(
   root: DiscoveredPluginRoot,
-  configured: Readonly<Record<string, boolean | PluginEntryConfig>>,
-): boolean | PluginEntryConfig | undefined {
+  configured: Readonly<Record<string, PluginEntryConfig>>,
+): PluginEntryConfig | undefined {
   return (root.key ? configured[root.key] : undefined) ??
     configured[root.source] ??
     configured[basename(root.path)];
@@ -251,9 +259,9 @@ function configuredValueForRoot(
 
 function configuredValueForPlugin(
   root: DiscoveredPluginRoot,
-  configured: Readonly<Record<string, boolean | PluginEntryConfig>>,
+  configured: Readonly<Record<string, PluginEntryConfig>>,
   manifestName: string,
-): boolean | PluginEntryConfig | undefined {
+): PluginEntryConfig | undefined {
   return (root.key ? configured[root.key] : undefined) ??
     configured[root.source] ??
     configured[manifestName] ??
@@ -264,14 +272,13 @@ function resolvePath(base: string, path: string): string {
   return isAbsolute(path) ? path : resolve(base, path);
 }
 
-function configEntryEnabled(value: boolean | PluginEntryConfig | undefined): boolean {
+function configEntryEnabled(value: PluginEntryConfig | undefined): boolean {
   if (value === undefined) return true;
-  if (typeof value === "boolean") return value;
   if (!isRecord(value)) return true;
   return value.enabled !== false;
 }
 
-function configEntryPath(value: boolean | PluginEntryConfig | undefined): string | undefined {
+function configEntryPath(value: PluginEntryConfig | undefined): string | undefined {
   return isRecord(value) && typeof value.path === "string"
     ? value.path
     : undefined;
@@ -302,8 +309,14 @@ async function maybeRealpath(path: string): Promise<string> {
 }
 
 async function hasPluginManifest(path: string): Promise<boolean> {
-  return await pathIsFile(join(path, PLUGIN_MANIFEST_RELATIVE_PATH)) ||
-    await pathIsFile(join(path, "plugin.json"));
+  try {
+    return (await findPluginManifestPath(path)) !== null;
+  } catch {
+    // A retired root manifest is still a plugin-shaped input. Keep the root
+    // in discovery so createPluginFromPath can disable it with the actionable
+    // manifest diagnostic instead of silently ignoring it.
+    return true;
+  }
 }
 
 async function hasPluginShape(path: string): Promise<boolean> {
@@ -313,19 +326,21 @@ async function hasPluginShape(path: string): Promise<boolean> {
     pathIsDirectory(join(path, DEFAULT_COMPONENT_DIRS.agents)),
     pathIsDirectory(join(path, DEFAULT_COMPONENT_DIRS.skills)),
     pathIsDirectory(join(path, DEFAULT_COMPONENT_DIRS.outputStyles)),
-    pathIsFile(join(path, DEFAULT_HOOKS_FILE)),
-    pathIsFile(join(path, DEFAULT_MCP_FILE)),
-    pathIsFile(join(path, DEFAULT_LSP_FILE)),
-    pathIsFile(join(path, DEFAULT_APP_FILE)),
+    pathIsFile(join(path, CONVENTIONAL_HOOKS_FILE)),
+    pathIsFile(join(path, RETIRED_PLUGIN_MCP_FILE)),
+    pathIsFile(join(path, RETIRED_PLUGIN_SETTINGS_FILE)),
+    pathIsFile(join(path, CONVENTIONAL_LSP_FILE)),
+    pathIsFile(join(path, CONVENTIONAL_APP_FILE)),
   ]).then((checks) => checks.some(Boolean));
 }
 
 async function discoverRootsUnder(
   baseDir: string,
   contentProvenance: PluginContentProvenance,
+  options: { readonly allowBasePlugin?: boolean } = {},
 ): Promise<DiscoveredPluginRoot[]> {
   if (!(await pathIsDirectory(baseDir))) return [];
-  if (await hasPluginShape(baseDir)) {
+  if (options.allowBasePlugin !== false && await hasPluginManifest(baseDir)) {
     return [{
       path: await maybeRealpath(baseDir),
       source: await installedPluginDependencyIdentity(baseDir) ?? baseDir,
@@ -341,7 +356,11 @@ async function discoverRootsUnder(
   }
   const roots: DiscoveredPluginRoot[] = [];
   for (const entry of entries) {
-    if (!entry.isDirectory() || SKIP_PLUGIN_ROOTS.has(entry.name)) continue;
+    if (
+      !entry.isDirectory() ||
+      SKIP_PLUGIN_ROOTS.has(entry.name) ||
+      isReservedPluginStorageChildName(entry.name)
+    ) continue;
     const candidate = join(baseDir, entry.name);
     if (await hasPluginShape(candidate)) {
       roots.push({
@@ -359,17 +378,16 @@ function contentProvenanceForPath(
   candidate: string,
   canonicalCandidate: string,
   workspaceRoot: string,
-  agencHome: string,
+  pluginStorageRoot: string,
 ): PluginContentProvenance {
   const isWithin = (path: string, root: string): boolean => {
     const pathRelative = relative(resolve(root), resolve(path));
     return pathRelative === "" ||
       (!pathRelative.startsWith("..") && !isAbsolute(pathRelative));
   };
-  const userPluginRoot = resolve(agencHome, "plugins");
   if (
-    isWithin(candidate, userPluginRoot) &&
-    isWithin(canonicalCandidate, userPluginRoot)
+    isWithin(candidate, pluginStorageRoot) &&
+    isWithin(canonicalCandidate, pluginStorageRoot)
   ) {
     return "authority-controlled";
   }
@@ -415,6 +433,9 @@ async function findGitRepoRoot(start: string): Promise<string | undefined> {
 export async function discoverPluginRoots(
   options: PluginLoaderOptions,
 ): Promise<readonly DiscoveredPluginRoot[]> {
+  const pluginStorageRoot = createPluginStorageAuthority(
+    options.pluginStorageRoot,
+  ).pluginStorageRoot;
   const configured = configuredPluginEntries(options.config);
   const autoDiscoveryEnabled = pluginAutoDiscoveryEnabled(options.config);
   const featureEnabled = pluginFeatureEnabled(options.config);
@@ -426,8 +447,9 @@ export async function discoverPluginRoots(
   }
   roots.push(
     ...(await discoverRootsUnder(
-      join(options.agencHome, "plugins"),
+      pluginStorageRoot,
       "authority-controlled",
+      { allowBasePlugin: false },
     )).map((root) => ({
       ...root,
       enabled: root.enabled && autoDiscoveryEnabled,
@@ -435,6 +457,7 @@ export async function discoverPluginRoots(
     ...(await discoverRootsUnder(
       join(options.workspaceRoot, ".agents", "plugins"),
       "repository-controlled",
+      { allowBasePlugin: false },
     )).map((root) => ({
       ...root,
       enabled: root.enabled && autoDiscoveryEnabled,
@@ -445,6 +468,7 @@ export async function discoverPluginRoots(
       ...(await discoverRootsUnder(
         workspacePluginDir,
         "repository-controlled",
+        { allowBasePlugin: false },
       )).map((root) => ({
         ...root,
         enabled: root.enabled && autoDiscoveryEnabled,
@@ -466,7 +490,7 @@ export async function discoverPluginRoots(
         resolvedPath,
         canonicalPath,
         options.workspaceRoot,
-        options.agencHome,
+        pluginStorageRoot,
       ),
     });
   }
@@ -480,8 +504,9 @@ export async function discoverPluginRoots(
           resolvedPath,
           canonicalPath,
           options.workspaceRoot,
-          options.agencHome,
+          pluginStorageRoot,
         ),
+        { allowBasePlugin: false },
       )).map((root) => ({
         ...root,
         enabled: root.enabled && featureEnabled,
@@ -498,7 +523,7 @@ export async function discoverPluginRoots(
           resolvedPath,
           canonicalPath,
           options.workspaceRoot,
-          options.agencHome,
+          pluginStorageRoot,
         ),
       )).map((root) => ({
         ...root,
@@ -535,7 +560,6 @@ export async function loadPlugins(
       return createPluginFromPath(root.path, {
         source: root.source,
         enabled: root.enabled,
-        fallbackName: basename(root.path),
         contentProvenance: root.contentProvenance,
         configEntry,
         isEnabled: (manifestName) => configEntryEnabled(configEntry(manifestName)) &&
@@ -547,8 +571,72 @@ export async function loadPlugins(
       });
     }),
   );
-  const plugins = loaded.map((entry) => entry.plugin);
-  const dependencyState = verifyPluginDependencyState(plugins);
+  const plugins = loaded.flatMap((entry) =>
+    entry.plugin === null ? [] : [entry.plugin]
+  );
+  const pluginsById = new Map<string, LoadedPlugin[]>();
+  for (const plugin of plugins) {
+    pluginsById.set(plugin.id, [
+      ...(pluginsById.get(plugin.id) ?? []),
+      plugin,
+    ]);
+  }
+  const collidingIds = new Set<string>();
+  const identityErrors: PluginLoadIssue[] = [];
+  const identityErrorsByRoot = new Map<string, PluginLoadIssue[]>();
+  for (const [pluginId, candidates] of pluginsById) {
+    if (candidates.length < 2) continue;
+    collidingIds.add(pluginId);
+    const roots = candidates.map((candidate) => candidate.root).sort();
+    const message =
+      `Duplicate canonical plugin ID ${JSON.stringify(pluginId)} resolves to multiple roots: ${roots.join(", ")}. No copy was activated.`;
+    for (const candidate of candidates) {
+      const issue: PluginLoadIssue = {
+        type: "manifest",
+        source: candidate.source,
+        plugin: candidate.name,
+        path: candidate.root,
+        message,
+      };
+      identityErrors.push(issue);
+      identityErrorsByRoot.set(candidate.root, [
+        ...(identityErrorsByRoot.get(candidate.root) ?? []),
+        issue,
+      ]);
+    }
+  }
+  const dataMigrationIssues = await migrateLegacyPluginDataDirectories(
+    plugins.map((plugin) => plugin.id),
+    { pluginStorageRoot: options.pluginStorageRoot },
+  );
+  const dataMigrationIds = new Set(
+    dataMigrationIssues.flatMap((issue) => issue.pluginIds),
+  );
+  const dataMigrationErrors: PluginLoadIssue[] = [];
+  const dataMigrationErrorsByRoot = new Map<string, PluginLoadIssue[]>();
+  for (const issue of dataMigrationIssues) {
+    for (const pluginId of issue.pluginIds) {
+      for (const candidate of pluginsById.get(pluginId) ?? []) {
+        const loadIssue: PluginLoadIssue = {
+          type: "settings",
+          source: candidate.source,
+          plugin: candidate.name,
+          path: issue.legacyPath,
+          message: issue.message,
+        };
+        dataMigrationErrors.push(loadIssue);
+        dataMigrationErrorsByRoot.set(candidate.root, [
+          ...(dataMigrationErrorsByRoot.get(candidate.root) ?? []),
+          loadIssue,
+        ]);
+      }
+    }
+  }
+  const dependencyState = verifyPluginDependencyState(
+    plugins.filter((plugin) =>
+      !collidingIds.has(plugin.id) && !dataMigrationIds.has(plugin.id)
+    ),
+  );
   const dependencyErrors: PluginLoadIssue[] = dependencyState.errors.map((issue) => ({
     type: "dependency",
     source: issue.source,
@@ -563,12 +651,15 @@ export async function loadPlugins(
     ]);
   }
   const finalPlugins = plugins.map((plugin) =>
-    dependencyState.demoted.has(plugin.source)
+    collidingIds.has(plugin.id) || dataMigrationIds.has(plugin.id) ||
+        dependencyState.demoted.has(plugin.source)
       ? {
           ...plugin,
           enabled: false,
           errors: [
             ...plugin.errors,
+            ...(identityErrorsByRoot.get(plugin.root) ?? []),
+            ...(dataMigrationErrorsByRoot.get(plugin.root) ?? []),
             ...(dependencyErrorsBySource.get(plugin.source) ?? []),
           ],
         }
@@ -579,6 +670,8 @@ export async function loadPlugins(
     disabled: finalPlugins.filter((plugin) => !plugin.enabled),
     errors: [
       ...loaded.flatMap((entry) => entry.errors),
+      ...identityErrors,
+      ...dataMigrationErrors,
       ...dependencyErrors,
     ],
   };
@@ -627,7 +720,7 @@ export async function loadPluginMcpServers(
   for (const plugin of result.enabled) {
     if (isRepositoryControlledPlugin(plugin)) continue;
     for (const [serverName, server] of Object.entries(plugin.mcpServers)) {
-      servers[pluginScopedServerIdentifier(plugin.name, serverName)] = server;
+      servers[pluginScopedServerIdentifier(plugin.id, serverName)] = server;
     }
   }
   return servers;
@@ -641,7 +734,7 @@ export async function loadPluginLspServers(
   for (const plugin of result.enabled) {
     if (isRepositoryControlledPlugin(plugin)) continue;
     for (const [serverName, server] of Object.entries(plugin.lspServers)) {
-      servers[pluginScopedServerIdentifier(plugin.name, serverName)] = server;
+      servers[pluginScopedServerIdentifier(plugin.id, serverName)] = server;
     }
   }
   return servers;
@@ -652,65 +745,76 @@ export async function createPluginFromPath(
   opts: {
     readonly source: string;
     readonly enabled: boolean;
-    readonly fallbackName: string;
     readonly contentProvenance?: PluginContentProvenance;
-    readonly configEntry?: (manifestName: string) => boolean | PluginEntryConfig | undefined;
+    readonly configEntry?: (manifestName: string) => PluginEntryConfig | undefined;
     readonly isEnabled?: (manifestName: string) => boolean;
   },
-): Promise<{ plugin: LoadedPlugin; errors: readonly PluginLoadIssue[] }> {
+): Promise<{ plugin: LoadedPlugin | null; errors: readonly PluginLoadIssue[] }> {
   const errors: PluginLoadIssue[] = [];
+  const diagnosticName = basename(pluginPath);
   // Direct construction is used by the operator-driven install/validation
   // path. Runtime discovery always supplies explicit provenance.
   const contentProvenance = opts.contentProvenance ?? "authority-controlled";
   if (!(await pathIsDirectory(pluginPath))) {
-    const manifest = fallbackManifest(pluginPath, opts.fallbackName, opts.source);
     errors.push({
       type: "path-not-found",
       source: opts.source,
-      plugin: opts.fallbackName,
+      plugin: diagnosticName,
       path: pluginPath,
       message: `Plugin root not found: ${pluginPath}`,
     });
-    return {
-      plugin: emptyPlugin(pluginPath, opts.source, false, manifest, contentProvenance),
-      errors,
-    };
+    return { plugin: null, errors };
   }
-  if (!opts.enabled) {
-    const manifest = fallbackManifest(pluginPath, opts.fallbackName, opts.source);
-    return {
-      plugin: emptyPlugin(pluginPath, opts.source, false, manifest, contentProvenance),
-      errors,
-    };
+  try {
+    await assertNoRetiredRootPluginManifest(pluginPath);
+  } catch (error) {
+    errors.push({
+      type: "manifest",
+      source: opts.source,
+      plugin: diagnosticName,
+      path: join(pluginPath, PLUGIN_MANIFEST_FILE),
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return { plugin: null, errors };
   }
   let manifest: PluginManifest;
   let manifestPath: string | undefined;
   try {
-    const parsed = await loadPluginManifest(pluginPath, opts.fallbackName);
-    if (parsed) {
-      manifest = parsed.manifest;
-      manifestPath = parsed.manifestPath;
-    } else {
-      manifest = normalizePluginManifest(
-        { name: opts.fallbackName, description: `Plugin from ${opts.source}` },
-        pluginPath,
-        opts.fallbackName,
-      );
-    }
+    const parsed = await loadRequiredPluginManifest(pluginPath);
+    manifest = parsed.manifest;
+    manifestPath = parsed.manifestPath;
   } catch (error) {
-    manifest = normalizePluginManifest(
-      { name: opts.fallbackName, description: `Plugin from ${opts.source}` },
-      pluginPath,
-      opts.fallbackName,
-    );
-    const attemptedManifestPath = await findPluginManifestPath(pluginPath);
+    const retiredManifestPath = join(pluginPath, PLUGIN_MANIFEST_FILE);
+    const attemptedManifestPath = await pathIsFile(retiredManifestPath)
+      ? retiredManifestPath
+      : join(pluginPath, PLUGIN_MANIFEST_RELATIVE_PATH);
     errors.push({
       type: "manifest",
       source: opts.source,
-      plugin: opts.fallbackName,
+      plugin: diagnosticName,
       path: attemptedManifestPath ?? join(pluginPath, PLUGIN_MANIFEST_RELATIVE_PATH),
       message: error instanceof Error ? error.message : String(error),
     });
+    return { plugin: null, errors };
+  }
+  const packageAuthorityIssues = await inspectPluginPackageAuthority(
+    pluginPath,
+    manifest,
+  );
+  if (packageAuthorityIssues.length > 0) {
+    errors.push(...packageAuthorityIssues.map((issue): PluginLoadIssue => ({
+      type: issue.field === "mcpServers"
+        ? "mcp"
+        : issue.field === "lspServers"
+        ? "lsp"
+        : issue.field === "hooks"
+        ? "hooks"
+        : "manifest",
+      source: opts.source,
+      plugin: manifest.name,
+      path: issue.path,
+      message: issue.message,
+    })));
     return {
       plugin: emptyPlugin(pluginPath, opts.source, false, manifest, contentProvenance),
       errors,
@@ -744,7 +848,7 @@ export async function createPluginFromPath(
         "mcp",
         pluginPath,
         manifest.mcpServers,
-        DEFAULT_MCP_FILE,
+        undefined,
         "mcpServers",
         normalizeMcpServer,
         errors,
@@ -761,7 +865,7 @@ export async function createPluginFromPath(
         "lsp",
         pluginPath,
         manifest.lspServers,
-        DEFAULT_LSP_FILE,
+        undefined,
         "lspServers",
         normalizeLspServer,
         errors,
@@ -773,9 +877,21 @@ export async function createPluginFromPath(
     : await loadAppConnectorIds(pluginPath, manifest, errors, opts.source, manifest.name);
   const settings = repositoryControlled
     ? undefined
-    : await loadPluginSettings(pluginPath, manifest, errors, opts.source, manifest.name);
+    : loadPluginSettings(
+        pluginPath,
+        manifest,
+        manifestPath,
+        errors,
+        opts.source,
+        manifest.name,
+      );
+  const { settings: _unfilteredSettings, ...manifestWithoutSettings } = manifest;
+  const loadedManifest: PluginManifest = settings === undefined
+    ? manifestWithoutSettings
+    : { ...manifestWithoutSettings, settings };
 
   const plugin: LoadedPlugin = {
+    id: canonicalLoadedPluginId(opts.source, manifest.name),
     name: manifest.name,
     ...(manifest.version !== undefined ? { version: manifest.version } : {}),
     ...(manifest.description !== undefined ? { description: manifest.description } : {}),
@@ -783,7 +899,7 @@ export async function createPluginFromPath(
     source: opts.source,
     contentProvenance,
     enabled: opts.enabled,
-    manifest,
+    manifest: loadedManifest,
     ...(manifestPath !== undefined ? { manifestPath } : {}),
     ...(await pathIsDirectory(join(pluginPath, DEFAULT_COMPONENT_DIRS.commands))
       ? { commandsPath: join(pluginPath, DEFAULT_COMPONENT_DIRS.commands) }
@@ -812,18 +928,6 @@ export async function createPluginFromPath(
   return { plugin, errors };
 }
 
-function fallbackManifest(
-  pluginPath: string,
-  fallbackName: string,
-  source: string,
-): PluginManifest {
-  return normalizePluginManifest(
-    { name: fallbackName, description: `Plugin from ${source}` },
-    pluginPath,
-    fallbackName,
-  );
-}
-
 function emptyPlugin(
   pluginPath: string,
   source: string,
@@ -832,6 +936,7 @@ function emptyPlugin(
   contentProvenance: PluginContentProvenance,
 ): LoadedPlugin {
   return {
+    id: canonicalLoadedPluginId(source, manifest.name),
     name: manifest.name,
     ...(manifest.version !== undefined ? { version: manifest.version } : {}),
     ...(manifest.description !== undefined ? { description: manifest.description } : {}),
@@ -1062,13 +1167,7 @@ async function loadHooks(
   errors: PluginLoadIssue[],
 ): Promise<readonly PluginHookSource[]> {
   const sources: PluginHookSource[] = [];
-  if (manifest.hooks === undefined) {
-    const defaultPath = join(pluginRoot, DEFAULT_HOOKS_FILE);
-    if (await pathIsFile(defaultPath)) {
-      await appendHookFile(defaultPath, pluginRoot, manifest.name, source, sources, errors);
-    }
-    return sources;
-  }
+  if (manifest.hooks === undefined) return sources;
   const declarations = Array.isArray(manifest.hooks)
     ? manifest.hooks
     : [manifest.hooks];
@@ -1182,7 +1281,7 @@ async function loadServers<T>(
   component: "mcp" | "lsp",
   pluginRoot: string,
   declaration: PluginServerDeclaration | undefined,
-  defaultFile: string,
+  defaultFile: string | undefined,
   wrapperKey: "mcpServers" | "lspServers",
   normalizeServer: (name: string, value: unknown, pluginRoot: string) => T | null,
   errors: PluginLoadIssue[],
@@ -1190,7 +1289,7 @@ async function loadServers<T>(
   pluginName: string,
 ): Promise<Readonly<Record<string, T>>> {
   const declarations = declaration === undefined
-    ? await pathIsFile(join(pluginRoot, defaultFile))
+    ? defaultFile !== undefined && await pathIsFile(join(pluginRoot, defaultFile))
       ? [defaultFile]
       : []
     : Array.isArray(declaration)
@@ -1312,7 +1411,7 @@ function normalizeServerMap<T>(
 
 function applyPluginMcpServerConfig(
   servers: Readonly<Record<string, McpServerConfig>>,
-  entry: boolean | PluginEntryConfig | undefined,
+  entry: PluginEntryConfig | undefined,
 ): Readonly<Record<string, McpServerConfig>> {
   if (typeof entry !== "object" || entry === null || !isRecord(entry.mcp_servers)) {
     return servers;
@@ -1380,8 +1479,7 @@ function normalizeMcpServer(
     ...(transport === "http" ||
       transport === "sse" ||
       transport === "stdio" ||
-      transport === "websocket" ||
-      transport === "ws"
+      transport === "websocket"
       ? { transport }
       : {}),
     ...(command !== undefined ? { command } : {}),
@@ -1407,11 +1505,11 @@ function normalizeMcpTransport(
     value === "http" ||
     value === "sse" ||
     value === "stdio" ||
-    value === "websocket" ||
-    value === "ws"
+    value === "websocket"
   ) {
     return value;
   }
+  if (value === "ws") return "websocket";
   if (value !== undefined || endpoint === undefined || command !== undefined) {
     return undefined;
   }
@@ -1469,9 +1567,7 @@ async function loadAppConnectorIds(
   pluginName: string,
 ): Promise<readonly string[]> {
   const paths = manifest.apps === undefined
-    ? await pathIsFile(join(pluginRoot, DEFAULT_APP_FILE))
-      ? [join(pluginRoot, DEFAULT_APP_FILE)]
-      : []
+    ? []
     : await resolveExistingPaths(
         pluginRoot,
         "apps",
@@ -1514,42 +1610,70 @@ async function loadAppConnectorIdsFromFile(
   }
 }
 
-async function loadPluginSettings(
+function loadPluginSettings(
   pluginRoot: string,
+  manifest: PluginManifest,
+  manifestPath: string | undefined,
+  errors: PluginLoadIssue[],
+  source: string,
+  pluginName: string,
+): Readonly<Record<string, unknown>> | undefined {
+  const settingsPath = manifestPath ??
+    join(pluginRoot, PLUGIN_MANIFEST_RELATIVE_PATH);
+  return manifest.settings === undefined
+    ? undefined
+    : filterPluginSettingsForManifest(
+        manifest.settings,
+        manifest,
+        errors,
+        source,
+        pluginName,
+        settingsPath,
+      );
+}
+
+function filterPluginSettingsForManifest(
+  settings: Readonly<Record<string, unknown>>,
   manifest: PluginManifest,
   errors: PluginLoadIssue[],
   source: string,
   pluginName: string,
-): Promise<Readonly<Record<string, unknown>> | undefined> {
-  const settingsPath = join(pluginRoot, DEFAULT_SETTINGS_FILE);
-  if (await pathIsFile(settingsPath)) {
-    try {
-      const parsed = JSON.parse(await readJsonText(settingsPath));
-      if (!isRecord(parsed)) {
-        errors.push({
-          type: "settings",
-          source,
-          plugin: pluginName,
-          path: settingsPath,
-          message: "Plugin settings file must contain a JSON object",
-        });
-        return undefined;
-      }
-      return filterPluginSettings(parsed);
-    } catch (error) {
-      errors.push({
-        type: "settings",
-        source,
-        plugin: pluginName,
-        path: settingsPath,
-        message: error instanceof Error ? error.message : String(error),
-      });
-      return undefined;
-    }
-  }
-  return manifest.settings === undefined
-    ? undefined
-    : filterPluginSettings(manifest.settings);
+  settingsPath: string,
+): Readonly<Record<string, unknown>> | undefined {
+  const filtered = filterPluginSettings(settings);
+  if (filtered === undefined || !isRecord(filtered.options)) return filtered;
+
+  const sensitiveKeys = [
+    ...Object.entries(manifest.userConfig ?? {}),
+    ...(manifest.channels ?? []).flatMap(channel =>
+      Object.entries(channel.userConfig ?? {})
+    ),
+  ]
+    .filter(
+      ([key, option]) =>
+        option.sensitive === true && Object.hasOwn(filtered.options!, key),
+    )
+    .map(([key]) => key)
+    .filter((key, index, all) => all.indexOf(key) === index)
+    .sort();
+  if (sensitiveKeys.length === 0) return filtered;
+
+  const options = { ...filtered.options };
+  for (const key of sensitiveKeys) delete options[key];
+  errors.push({
+    type: "settings",
+    source,
+    plugin: pluginName,
+    path: settingsPath,
+    message:
+      `Sensitive plugin option(s) ${sensitiveKeys.join(", ")} were ignored in manifest.settings. ` +
+      "Configure them through AgenC so the native secure storage is their sole owner.",
+  });
+
+  const next = { ...filtered };
+  if (Object.keys(options).length === 0) delete next.options;
+  else next.options = options;
+  return Object.keys(next).length > 0 ? next : undefined;
 }
 
 function filterPluginSettings(

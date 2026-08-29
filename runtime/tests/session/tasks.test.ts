@@ -18,6 +18,8 @@
 import { describe, expect, it } from "vitest";
 
 import { AsyncQueue } from "../utils/async-queue.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {
   Session,
   type Event,
@@ -44,6 +46,7 @@ import {
   type SessionTask,
 } from "./tasks.js";
 import type { LLMProvider } from "../llm/types.js";
+import { resolveAgentRuntimeOptions } from "./runtime-options.js";
 import { ToolRouter } from "../tools/router.js";
 import type { Tool } from "../tools/types.js";
 
@@ -53,8 +56,6 @@ import type { Tool } from "../tools/types.js";
 
 function mkFeatures(): ManagedFeatures {
   return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
   };
 }
 
@@ -138,6 +139,9 @@ function mkProvider(): LLMProvider {
 
 function buildSession(): Session {
   const services = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     admissionRequired: false,
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
@@ -149,6 +153,7 @@ function buildSession(): Session {
       isCancelled: () => false,
     },
     provider: mkProvider(),
+    runtimeOptions: resolveAgentRuntimeOptions({}),
     registry: {
       tools: [],
       toLLMTools: () => [],

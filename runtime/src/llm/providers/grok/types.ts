@@ -8,6 +8,7 @@ import type {
   LLMProviderConfig,
   LLMXaiCapabilitySurface,
 } from "../../types.js";
+import type { HomeContext } from "../../../config/home.js";
 
 /**
  * Configuration specific to the Grok (xAI) provider.
@@ -19,7 +20,9 @@ export interface GrokProviderConfig
 {
   /** xAI API key */
   apiKey: string;
-  /** Base URL for the xAI API (default: 'https://api.x.ai/v1') */
+  /** Home-bound native OAuth authority for preflight refresh checks. */
+  credentialHome?: HomeContext;
+  /** API base URL; defaults to the canonical provider-registry endpoint. */
   baseURL?: string;
   /** Optional operator override for effective context window budgeting. */
   contextWindowTokens?: number;

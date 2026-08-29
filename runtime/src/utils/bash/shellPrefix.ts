@@ -30,3 +30,12 @@ export function formatShellPrefixCommand(
     return `${quote([prefix])} ${quote([command])}`
   }
 }
+
+/** Format an already-tokenized wrapper without reparsing or interpolation. */
+export function formatShellWrapperCommand(
+  wrapperArgv: readonly string[],
+  command: string,
+): string {
+  if (wrapperArgv.length === 0) return command;
+  return `${quote([...wrapperArgv])} ${quote([command])}`;
+}

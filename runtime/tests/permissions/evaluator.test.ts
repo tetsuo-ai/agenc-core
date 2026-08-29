@@ -22,10 +22,8 @@ import {
   freshDenialTracking,
   type DenialTrackingState,
 } from "./denial-tracking.js";
-import {
-  applyPermissionUpdate,
-  type PermissionRule,
-} from "./rules.js";
+import type { PermissionRule } from "./rules.js";
+import { applyPermissionUpdate } from "./permission-updates.js";
 import {
   createEmptyToolPermissionContext,
   type PermissionMode,
@@ -130,12 +128,21 @@ function buildHarness(overrides: HarnessOverrides = {}): {
   };
 
   const decisions: { decision: PermissionResult; phase: string }[] = [];
+  const providerEnvironment = Object.freeze({
+    XAI_API_KEY: process.env.XAI_API_KEY,
+    GROK_API_KEY: process.env.GROK_API_KEY,
+  });
+  const providerService = {
+    environment: () => providerEnvironment,
+  };
 
   const context = attachContextDefaults({
     getAppState(): AppStateSnapshot {
       return state;
     },
     session: {
+      providerService,
+      services: { providerService },
       state: {
         unsafePeek: () => ({ history: overrides.history ?? [] }),
       },
@@ -172,10 +179,10 @@ describe("hasPermissionsToUseTool — step 1a deny rule", () => {
   it("short-circuits before the mode gate", async () => {
     const { context } = buildHarness({
       mode: "bypassPermissions",
-      denyRules: [{ toolName: "Bash" }],
+      denyRules: [{ toolName: "system.bash" }],
     });
     const result = await hasPermissionsToUseTool(
-      makeTool({ name: "Bash" }),
+      makeTool({ name: "system.bash" }),
       {},
       context,
     );
@@ -189,10 +196,10 @@ describe("hasPermissionsToUseTool — step 1a deny rule", () => {
 describe("hasPermissionsToUseTool — step 1b ask rule", () => {
   it("returns ask for a whole-tool ask rule", async () => {
     const { context } = buildHarness({
-      askRules: [{ toolName: "Bash" }],
+      askRules: [{ toolName: "system.bash" }],
     });
     const result = await hasPermissionsToUseTool(
-      makeTool({ name: "Bash" }),
+      makeTool({ name: "system.bash" }),
       { command: "ls" },
       context,
     );
@@ -201,14 +208,14 @@ describe("hasPermissionsToUseTool — step 1b ask rule", () => {
 
   it("Bash sandbox fallthrough lets tool.checkPermissions auto-allow", async () => {
     const tool = makeTool({
-      name: "Bash",
+      name: "system.bash",
       checkPermissions: () => ({
         behavior: "allow" as const,
         updatedInput: { command: "sandboxed" },
       }),
     });
     const { context } = buildHarness({
-      askRules: [{ toolName: "Bash" }],
+      askRules: [{ toolName: "system.bash" }],
     });
     const sandboxCtx: ToolEvaluatorContext = {
       ...context,
@@ -228,12 +235,12 @@ describe("hasPermissionsToUseTool — step 1b ask rule", () => {
       }),
     });
     const { context } = buildHarness({
-      askRules: [{ toolName: "Bash" }],
+      askRules: [{ toolName: "system.bash" }],
     });
     const sandboxCtx: ToolEvaluatorContext = {
       ...context,
       autoAllowBashIfSandboxed: true,
-      shouldUseSandbox: () => true,
+      shouldUseSandbox: () => false,
     };
     const result = await hasPermissionsToUseTool(tool, {}, sandboxCtx);
     expect(result.behavior).toBe("ask");
@@ -241,7 +248,7 @@ describe("hasPermissionsToUseTool — step 1b ask rule", () => {
 
   it("real system.bash remains ask-gated when sandbox auto-allow is requested", async () => {
     const { context } = buildHarness({
-      askRules: [{ toolName: "Bash" }],
+      askRules: [{ toolName: "system.bash" }],
     });
     const sandboxCtx: ToolEvaluatorContext = {
       ...context,
@@ -276,7 +283,7 @@ describe("hasPermissionsToUseTool — step 1c tool.checkPermissions", () => {
 
   it("rethrows AbortError from tool.checkPermissions", async () => {
     const tool = makeTool({
-      name: "Bash",
+      name: "system.bash",
       checkPermissions() {
         throw new DOMException("stop", "AbortError");
       },
@@ -289,7 +296,7 @@ describe("hasPermissionsToUseTool — step 1c tool.checkPermissions", () => {
 
   it("catches non-abort throws and falls back to passthrough", async () => {
     const tool = makeTool({
-      name: "Bash",
+      name: "system.bash",
       checkPermissions() {
         throw new Error("boom");
       },
@@ -307,7 +314,7 @@ describe("hasPermissionsToUseTool — step 1c tool.checkPermissions", () => {
 describe("hasPermissionsToUseTool — step 1d tool returns deny", () => {
   it("returns the tool's deny decision", async () => {
     const tool = makeTool({
-      name: "Bash",
+      name: "system.bash",
       checkPermissions: () => ({
         behavior: "deny" as const,
         message: "subcommand blocked",
@@ -341,10 +348,10 @@ describe("hasPermissionsToUseTool — step 1f content-specific ask rule", () => 
     const rule: PermissionRule = {
       source: "session",
       ruleBehavior: "ask",
-      ruleValue: { toolName: "Bash", ruleContent: "npm publish" },
+      ruleValue: { toolName: "system.bash", ruleContent: "npm publish" },
     };
     const tool = makeTool({
-      name: "Bash",
+      name: "system.bash",
       checkPermissions: () => ({
         behavior: "ask" as const,
         message: "content ask",
@@ -427,7 +434,7 @@ describe("hasPermissionsToUseTool — step 1g safetyCheck", () => {
 describe("hasPermissionsToUseTool — generic tool asks still flow through the mode gate", () => {
   it("does not treat a plain tool ask as bypass-immune", async () => {
     const tool = makeTool({
-      name: "Bash",
+      name: "system.bash",
       checkPermissions: () => ({
         behavior: "ask" as const,
         message: "generic ask",
@@ -505,7 +512,7 @@ describe("hasPermissionsToUseTool — unattended policy", () => {
       unattendedPolicy: { allowlist: ["FileRead"], denylist: [] },
     });
     const result = await hasPermissionsToUseTool(
-      makeTool({ name: "Bash" }),
+      makeTool({ name: "system.bash" }),
       { command: "npm test" },
       context,
     );
@@ -522,10 +529,10 @@ describe("hasPermissionsToUseTool — unattended policy", () => {
     const { context } = buildHarness({
       mode: "unattended",
       unattendedPolicy: { allowlist: ["FileRead"], denylist: [] },
-      allowRules: [{ toolName: "Bash" }],
+      allowRules: [{ toolName: "system.bash" }],
     });
     const result = await hasPermissionsToUseTool(
-      makeTool({ name: "Bash" }),
+      makeTool({ name: "system.bash" }),
       { command: "npm test" },
       context,
     );
@@ -539,7 +546,7 @@ describe("hasPermissionsToUseTool — unattended policy", () => {
     });
     const result = await hasPermissionsToUseTool(
       makeTool({
-        name: "Bash",
+        name: "system.bash",
         checkPermissions: () => ({
           behavior: "allow" as const,
           updatedInput: { command: "npm test" },
@@ -554,11 +561,11 @@ describe("hasPermissionsToUseTool — unattended policy", () => {
   it("keeps ask rules as pauses unless the tool is denylisted", async () => {
     const { context } = buildHarness({
       mode: "unattended",
-      unattendedPolicy: { allowlist: ["Bash"], denylist: [] },
-      askRules: [{ toolName: "Bash" }],
+      unattendedPolicy: { allowlist: ["system.bash"], denylist: [] },
+      askRules: [{ toolName: "system.bash" }],
     });
     const result = await hasPermissionsToUseTool(
-      makeTool({ name: "Bash" }),
+      makeTool({ name: "system.bash" }),
       { command: "npm test" },
       context,
     );
@@ -577,7 +584,7 @@ describe("hasPermissionsToUseTool — step 2a bypassPermissions", () => {
   it("allows via mode", async () => {
     const { context } = buildHarness({ mode: "bypassPermissions" });
     const result = await hasPermissionsToUseTool(
-      makeTool({ name: "Bash" }),
+      makeTool({ name: "system.bash" }),
       {},
       context,
     );
@@ -593,7 +600,7 @@ describe("hasPermissionsToUseTool — step 2a bypassPermissions", () => {
       isBypassPermissionsModeAvailable: true,
     });
     const result = await hasPermissionsToUseTool(
-      makeTool({ name: "Bash" }),
+      makeTool({ name: "system.bash" }),
       {},
       context,
     );
@@ -605,10 +612,10 @@ describe("hasPermissionsToUseTool — step 2a bypassPermissions", () => {
 describe("hasPermissionsToUseTool — step 2b toolAlwaysAllowedRule", () => {
   it("allows via whole-tool allow rule", async () => {
     const { context } = buildHarness({
-      allowRules: [{ toolName: "Bash" }],
+      allowRules: [{ toolName: "system.bash" }],
     });
     const result = await hasPermissionsToUseTool(
-      makeTool({ name: "Bash" }),
+      makeTool({ name: "system.bash" }),
       {},
       context,
     );
@@ -645,7 +652,7 @@ describe("hasPermissionsToUseTool — step 3 passthrough → ask", () => {
 
   it("converts a passthrough tool result into ask", async () => {
     const tool = makeTool({
-      name: "Bash",
+      name: "system.bash",
       checkPermissions: () => ({
         behavior: "passthrough" as const,
         message: "default",
@@ -665,7 +672,7 @@ describe("hasPermissionsToUseTool — step 4 dontAsk → deny", () => {
   it("converts ask to deny with mode=dontAsk reason", async () => {
     const { context } = buildHarness({ mode: "dontAsk" });
     const result = await hasPermissionsToUseTool(
-      makeTool({ name: "Bash" }),
+      makeTool({ name: "system.bash" }),
       {},
       context,
     );
@@ -760,7 +767,7 @@ describe("hasPermissionsToUseTool — step 4 shouldAvoidPermissionPrompts", () =
       shouldAvoidPermissionPrompts: true,
     });
     const result = await hasPermissionsToUseTool(
-      makeTool({ name: "Bash" }),
+      makeTool({ name: "system.bash" }),
       {},
       context,
     );
@@ -823,7 +830,7 @@ describe("hasPermissionsToUseTool — step 5 fast paths", () => {
   it("classifier auto-allows sandbox-safe Bash commands", async () => {
     const restoreGate = __setAutoModeGateResolverForTesting(() => true);
     try {
-      const tool = makeTool({ name: "Bash" });
+      const tool = makeTool({ name: "system.bash" });
       const { context } = buildHarness({ mode: "auto" });
       const result = await hasPermissionsToUseTool(
         tool,
@@ -888,7 +895,7 @@ describe("hasPermissionsToUseTool — denial limits", () => {
     // asserts that the harness plumbs denialTracking through without
     // crashing the ask path.
     const result = await hasPermissionsToUseTool(
-      makeTool({ name: "Bash" }),
+      makeTool({ name: "system.bash" }),
       {},
       context,
     );
@@ -927,17 +934,19 @@ describe("hasPermissionsToUseTool — denial limits", () => {
 // ---------------------------------------------------------------------------
 
 describe("I-3 race — getAppState re-read before step 2a", () => {
-  it("picks up a mid-evaluation mode flip into bypassPermissions", async () => {
+  it("refuses a mid-evaluation PermissionUpdate flip into bypassPermissions", async () => {
     const harness = buildHarness({ mode: "default" });
     const tool = makeTool({
-      name: "Bash",
+      name: "system.bash",
       checkPermissions() {
         // Between step 1c and step 2a, mutate the mode to bypass.
-        const nextCtx = applyPermissionUpdate(
-          harness.getState().toolPermissionContext,
-          { type: "setMode", destination: "session", mode: "bypassPermissions" },
-        );
-        harness.setContext(nextCtx);
+        expect(() =>
+          applyPermissionUpdate(harness.getState().toolPermissionContext, {
+            type: "setMode",
+            destination: "session",
+            mode: "bypassPermissions",
+          }),
+        ).toThrow(/exact-cwd consent transition/u);
         return {
           behavior: "passthrough" as const,
           message: "default",
@@ -945,14 +954,8 @@ describe("I-3 race — getAppState re-read before step 2a", () => {
       },
     });
     const result = await hasPermissionsToUseTool(tool, {}, harness.context);
-    // Step 2a must observe the updated mode → allow.
-    expect(result.behavior).toBe("allow");
-    if (result.behavior === "allow") {
-      expect(result.decisionReason).toMatchObject({
-        type: "mode",
-        mode: "bypassPermissions",
-      });
-    }
+    expect(result.behavior).toBe("ask");
+    expect(harness.getState().toolPermissionContext.mode).toBe("default");
   });
 });
 
@@ -995,7 +998,7 @@ describe("checkRuleBasedPermissions", () => {
     const { context } = buildHarness({ mode: "bypassPermissions" });
     const result = await checkRuleBasedPermissions(
       makeTool({
-        name: "Bash",
+        name: "system.bash",
         checkPermissions: () => ({
           behavior: "ask" as const,
           message: "generic ask",
@@ -1009,7 +1012,7 @@ describe("checkRuleBasedPermissions", () => {
 
   it("rethrows AbortError from tool.checkPermissions", async () => {
     const tool = makeTool({
-      name: "Bash",
+      name: "system.bash",
       checkPermissions() {
         throw new DOMException("abort", "AbortError");
       },
@@ -1028,7 +1031,7 @@ describe("checkRuleBasedPermissions", () => {
 describe("hasPermissionsToUseToolInner", () => {
   it("returns a PermissionDecision (never passthrough)", async () => {
     const tool = makeTool({
-      name: "Bash",
+      name: "system.bash",
       checkPermissions: () => ({
         behavior: "passthrough" as const,
         message: "default",
@@ -1055,7 +1058,7 @@ describe("hasPermissionsToUseTool — abort signal", () => {
     ac.abort();
     const ctxWithSignal: ToolEvaluatorContext = { ...context, signal: ac.signal };
     await expect(
-      hasPermissionsToUseTool(makeTool({ name: "Bash" }), {}, ctxWithSignal),
+      hasPermissionsToUseTool(makeTool({ name: "system.bash" }), {}, ctxWithSignal),
     ).rejects.toThrow(/aborted/);
   });
 });

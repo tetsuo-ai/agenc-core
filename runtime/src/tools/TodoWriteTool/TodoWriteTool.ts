@@ -47,7 +47,6 @@ export const TodoWriteTool = buildTool({
   userFacingName() {
     return ''
   },
-  shouldDefer: true,
   isEnabled() {
     return !isTodoV2Enabled()
   },

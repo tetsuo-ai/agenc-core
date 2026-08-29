@@ -34,12 +34,11 @@ import type {
   PermissionUpdate,
   ToolPermissionContext,
 } from "../../permissions/types.js";
-import { applyPermissionUpdates } from "../../permissions/rules.js";
+import { applyPermissionUpdates } from "../../permissions/permission-updates.js";
 import {
   buildPlanPromptPermissionUpdates,
   consumeExitPlanModeApproval,
   parseExitPlanAllowedPrompts,
-  targetPermissionModeForPlanApproval,
 } from "../../planning/exit-plan-approval.js";
 import type { PlanFileContext } from "../../planning/plan-files.js";
 import type { Tool, ToolResult } from "../types.js";
@@ -59,6 +58,7 @@ import {
 } from "../../utils/tasks.js";
 import { jsonStringify } from "../../utils/slowOperations.js";
 import { writeFile } from "node:fs/promises";
+import type { ConfigStore } from "../../config/store.js";
 
 type TodoStatus = "pending" | "in_progress" | "completed";
 
@@ -75,16 +75,13 @@ export interface PlanState {
 
 export interface WorkflowToolController {
   readonly getPermissionModeRegistry?: () => PermissionModeRegistry | null;
+  /** Live canonical configuration authority for policy-sensitive transitions. */
+  readonly getConfigStore?: () => ConfigStore | null;
+  readonly getCwd?: () => string | undefined;
   readonly getPlanFileContext?: () => PlanFileContext | null;
   readonly getPlanFilePath?: () => string;
   readonly readPlan?: () => string | null;
   readonly writePlan?: (content: string) => Promise<void>;
-  readonly syncPermissionContext?: (
-    nextCtx: Pick<
-      ToolPermissionContext,
-      "mode" | "isAutoModeAvailable" | "autoModeActive" | "bypassPermissionsAcceptedIn"
-    >,
-  ) => Promise<void>;
   readonly emitWarning?: (cause: string, message: string) => void;
   readonly emitPlanExited?: () => void;
   readonly emitPlanUpdated?: (state: PlanState) => void;
@@ -247,55 +244,119 @@ async function updatePermissionMode(params: {
   if (!registry) {
     return { error: "permission mode registry is not available for workflow tools" };
   }
-  const current = registry.current();
-  if (params.target === "plan") {
-    if (current.mode === "plan") {
-      return { fromMode: "plan", toMode: "plan", changed: false };
+  const result = await registry.transact<
+    | {
+        readonly fromMode: ToolPermissionContext["mode"];
+        readonly toMode: ToolPermissionContext["mode"];
+        readonly changed: boolean;
+      }
+    | { readonly error: string }
+  >(async (current) => {
+    if (params.target === "plan") {
+      if (current.mode === "plan") {
+        return {
+          next: null,
+          result: () => ({
+            fromMode: "plan",
+            toMode: "plan",
+            changed: false,
+          }),
+        };
+      }
+      const nextCtx = {
+        ...transitionPermissionMode(current.mode, "plan", current),
+        mode: "plan" as const,
+      };
+      return {
+        next: nextCtx,
+        result: () => ({
+          fromMode: current.mode,
+          toMode: "plan",
+          changed: true,
+        }),
+      };
     }
-    const nextCtx = {
-      ...transitionPermissionMode(current.mode, "plan", current),
-      mode: "plan" as const,
+
+    if (current.mode !== "plan") {
+      return {
+        next: null,
+        result: () => ({
+          fromMode: current.mode,
+          toMode: current.mode,
+          changed: false,
+        }),
+      };
+    }
+    const requestedTarget =
+      params.target === "default"
+        ? current.prePlanMode && current.prePlanMode !== "plan"
+          ? current.prePlanMode
+          : "default"
+        : params.target;
+    let nextCtx: ToolPermissionContext;
+    try {
+      const transitioned =
+        requestedTarget === "bypassPermissions"
+          ? (() => {
+              const workspacePath = params.controller?.getCwd?.();
+              if (workspacePath === undefined) {
+                return { error: "bypass_consent_required" as const };
+              }
+              return transitionPermissionMode(
+                "plan",
+                requestedTarget,
+                current,
+                { workspacePath },
+              );
+            })()
+          : transitionPermissionMode("plan", requestedTarget, current);
+      if ("error" in transitioned) {
+        return {
+          next: null,
+          result: () => ({
+            error:
+              "Cannot restore bypassPermissions after plan mode without exact workspace consent",
+          }),
+        };
+      }
+      nextCtx = {
+        ...transitioned,
+        mode: requestedTarget,
+      };
+    } catch {
+      nextCtx = {
+        ...transitionPermissionMode("plan", "default", current),
+        mode: "default",
+      };
+    }
+    if (params.permissionUpdates && params.permissionUpdates.length > 0) {
+      nextCtx = applyPermissionUpdates(nextCtx, params.permissionUpdates);
+    }
+    return {
+      next: nextCtx,
+      result: () => ({
+        fromMode: "plan" as const,
+        toMode: nextCtx.mode,
+        changed: true,
+      }),
     };
-    await registry.update(nextCtx);
-    await params.controller?.syncPermissionContext?.(nextCtx);
+  });
+
+  if ("error" in result) return result;
+  if (!result.changed) return result;
+  if (result.toMode === "plan") {
     params.controller?.emitWarning?.(
       "mode_changed_to_plan",
-      `entered plan mode (stashed prev mode as ${current.mode})`,
+      `entered plan mode (stashed prev mode as ${result.fromMode})`,
     );
-    return { fromMode: current.mode, toMode: "plan", changed: true };
+    return result;
   }
-
-  if (current.mode !== "plan") {
-    return { fromMode: current.mode, toMode: current.mode, changed: false };
-  }
-  const requestedTarget = params.target === "default"
-    ? current.prePlanMode && current.prePlanMode !== "plan"
-      ? current.prePlanMode
-      : "default"
-    : params.target;
-  let nextCtx: ToolPermissionContext;
-  try {
-    nextCtx = {
-      ...transitionPermissionMode("plan", requestedTarget, current),
-      mode: requestedTarget,
-    };
-  } catch {
-    nextCtx = {
-      ...transitionPermissionMode("plan", "default", current),
-      mode: "default",
-    };
-  }
-  if (params.permissionUpdates && params.permissionUpdates.length > 0) {
-    nextCtx = applyPermissionUpdates(nextCtx, params.permissionUpdates);
-  }
-  await registry.update(nextCtx);
-  await params.controller?.syncPermissionContext?.(nextCtx);
   params.controller?.emitWarning?.(
     "mode_exited_plan",
-    `exited plan mode (restored ${nextCtx.mode})`,
+    `exited plan mode (restored ${result.toMode})`,
   );
   params.controller?.emitPlanExited?.();
-  return { fromMode: "plan", toMode: nextCtx.mode, changed: true };
+  return result;
 }
 
 export function createPlanningTools(options: PlanningToolOptions = {}): readonly Tool[] {
@@ -435,7 +496,7 @@ Remember: DO NOT write or edit any files except the plan file.`,
           items: {
             type: "object",
             properties: {
-              tool: { type: "string", enum: ["Bash"] },
+              tool: { type: "string", enum: ["system.bash"] },
               prompt: { type: "string" },
             },
             required: ["tool", "prompt"],
@@ -491,17 +552,20 @@ Remember: DO NOT write or edit any files except the plan file.`,
       }
       const allowedPrompts = approval?.allowedPrompts ??
         parseExitPlanAllowedPrompts(args.allowedPrompts);
+      const managedPermissionRulesOnly =
+        options.workflowController?.getConfigStore?.()?.current()
+          .allowManagedPermissionRulesOnly === true;
       const permissionUpdates = approval?.action === "approve" &&
-        approval.applyAllowedPrompts === true
+        approval.applyAllowedPrompts === true &&
+        !managedPermissionRulesOnly
         ? buildPlanPromptPermissionUpdates(allowedPrompts)
         : [];
-      const targetMode = targetPermissionModeForPlanApproval(
-        approval?.action === "approve" ? approval.mode : undefined,
-        registry.current().prePlanMode,
-      );
       const result = await updatePermissionMode({
         controller: options.workflowController,
-        target: targetMode,
+        target:
+          approval?.action === "approve"
+            ? (approval.mode ?? "default")
+            : "default",
         permissionUpdates,
       });
       if ("error" in result) return errorResult(result.error);

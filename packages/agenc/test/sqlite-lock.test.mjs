@@ -22,6 +22,7 @@ import test from "node:test";
 import {
   acquireLocalSqliteLock,
   acquireLocalSqliteLocks,
+  assertLocalPrivateFile,
   configureLocalSqliteLockConnection,
   isSqliteBusyError,
   LocalSqliteLockTimeoutError,
@@ -195,6 +196,124 @@ function createDatabase(path, sql) {
   }
   if (process.platform !== "win32") chmodSync(path, 0o600);
 }
+
+test("reports bounded lock acquisition phases without protected paths", async (t) => {
+  const root = makeRoot(t, "agenc-package-sqlite-progress-");
+  const lockPath = join(root, "operation.sqlite");
+  const phases = [];
+  const release = await acquireLocalSqliteLock(lockPath, {
+    timeoutMs: 5_000,
+    onProgress: (phase) => phases.push(phase),
+  });
+  release();
+
+  for (const expected of [
+    "lock path preparation started",
+    "lock parent security validation started",
+    "lock parent security validation complete",
+    "lock path preparation complete",
+    "in-process lock acquisition complete",
+    "SQLite module import started",
+    "SQLite module import complete",
+    "SQLite transaction acquisition started",
+    "SQLite pre-open lock validation started",
+    "SQLite pre-open lock validation complete",
+    "SQLite database open started",
+    "SQLite database open complete",
+    "SQLite connection hardening started",
+    "SQLite connection hardening complete",
+    "SQLite post-open lock validation started",
+    "SQLite post-open lock validation complete",
+    "SQLite transaction begin started",
+    "SQLite transaction begin complete",
+    "SQLite lock database inspection started",
+    "SQLite lock database inspection complete",
+    "SQLite journal mode inspection started",
+    "SQLite journal mode inspection complete",
+    "SQLite transaction acquisition complete",
+  ]) {
+    assert.ok(phases.includes(expected), `missing progress phase: ${expected}`);
+  }
+  assert.ok(
+    phases.indexOf("lock path preparation started") <
+      phases.indexOf("SQLite transaction acquisition complete"),
+  );
+  assert.equal(phases.some((phase) => phase.includes(root)), false);
+  assert.equal(phases.some((phase) => phase.includes(lockPath)), false);
+});
+
+test("rejects a non-function lock progress callback", async (t) => {
+  const root = makeRoot(t, "agenc-package-sqlite-invalid-progress-");
+  await assert.rejects(
+    acquireLocalSqliteLock(join(root, "operation.sqlite"), {
+      onProgress: "invalid",
+    }),
+    /lock onProgress must be a function/,
+  );
+});
+
+test("a throwing progress observer cannot change lock semantics", async (t) => {
+  const root = makeRoot(t, "agenc-package-sqlite-throwing-progress-");
+  const lockPath = join(root, "operation.sqlite");
+  let observed = 0;
+  const release = await acquireLocalSqliteLock(lockPath, {
+    timeoutMs: 5_000,
+    onProgress: () => {
+      observed += 1;
+      throw new Error("diagnostic observer failed");
+    },
+  });
+  assert.ok(observed > 0);
+  release();
+
+  const releaseSuccessor = await acquireLocalSqliteLock(lockPath, {
+    timeoutMs: 5_000,
+  });
+  releaseSuccessor();
+});
+
+test("private-file progress observers are implemented and non-authoritative", async (t) => {
+  const root = makeRoot(t, "agenc-package-private-file-progress-");
+  const filePath = join(root, "private.json");
+  writeFileSync(filePath, "{}\n", { mode: 0o600 });
+  let observed = 0;
+  await assertLocalPrivateFile(filePath, {
+    timeoutMs: 5_000,
+    onProgress: () => {
+      observed += 1;
+      throw new Error("diagnostic observer failed");
+    },
+  });
+  assert.ok(observed > 0);
+});
+
+test("rejected async progress observers are consumed", async (t) => {
+  const root = makeRoot(t, "agenc-package-async-progress-");
+  const lockPath = join(root, "operation.sqlite");
+  const filePath = join(root, "private.json");
+  writeFileSync(filePath, "{}\n", { mode: 0o600 });
+  let acquisitionObservations = 0;
+  const release = await acquireLocalSqliteLock(lockPath, {
+    timeoutMs: 5_000,
+    onProgress: async () => {
+      acquisitionObservations += 1;
+      throw new Error("async acquisition observer failed");
+    },
+  });
+  release();
+
+  let fileObservations = 0;
+  await assertLocalPrivateFile(filePath, {
+    timeoutMs: 5_000,
+    onProgress: async () => {
+      fileObservations += 1;
+      throw new Error("async file observer failed");
+    },
+  });
+  await delay(0);
+  assert.ok(acquisitionObservations > 0);
+  assert.ok(fileObservations > 0);
+});
 
 test("same-process contenders queue without blocking the event loop", async (t) => {
   const root = makeRoot(t, "agenc-package-sqlite-same-process-");
@@ -552,6 +671,59 @@ test("Windows ACL validation uses bounded .NET-only PowerShell transport", async
     );
   }
   assert.equal(identityFromStats({ dev: 2n, ino: 3n }, "valid.sqlite"), "2:3");
+});
+
+test("uncontended SQLite locks perform only the required Windows ACL validations", () => {
+  const source = readFileSync(new URL(LOCK_MODULE_URL), "utf8");
+  const prepareStart = source.indexOf("async function prepareLockPath(");
+  const revalidateStart = source.indexOf(
+    "async function revalidatePreparedLock(",
+  );
+  const pragmaStart = source.indexOf("function pragmaValue(", revalidateStart);
+  const acquireStart = source.indexOf("async function acquireSqliteDatabase(");
+  const releaseStart = source.indexOf("function releaseAcquired(", acquireStart);
+  for (const boundary of [
+    prepareStart,
+    revalidateStart,
+    pragmaStart,
+    acquireStart,
+    releaseStart,
+  ]) {
+    assert.ok(boundary >= 0, "SQLite lock validation source boundary moved");
+  }
+
+  const prepareSource = source.slice(prepareStart, revalidateStart);
+  assert.match(prepareSource, /await assertLocalPrivateDirectory\(/u);
+  assert.equal(
+    [...prepareSource.matchAll(/await assertWindowsPathSecurity\(/gu)].length,
+    1,
+  );
+
+  const revalidateSource = source.slice(revalidateStart, pragmaStart);
+  assert.match(revalidateSource, /\{ validateWindowsAcl = false \} = \{\}/u);
+  assert.match(
+    revalidateSource,
+    /process\.platform === "win32" && validateWindowsAcl/u,
+  );
+
+  const acquireSource = source.slice(acquireStart, releaseStart);
+  assert.equal(
+    [...acquireSource.matchAll(/await revalidatePreparedLock\(/gu)].length,
+    2,
+  );
+  assert.match(acquireSource, /validateWindowsAcl: attempt > 0/u);
+  const configureIndex = acquireSource.indexOf(
+    "configureLocalSqliteLockConnection(database);",
+  );
+  const postOpenRevalidationIndex = acquireSource.indexOf(
+    "await revalidatePreparedLock(prepared, context);",
+  );
+  const transactionIndex = acquireSource.indexOf(
+    "beginAndValidateLock(database, prepared.path, context);",
+  );
+  assert.ok(configureIndex >= 0);
+  assert.ok(configureIndex < postOpenRevalidationIndex);
+  assert.ok(postOpenRevalidationIndex < transactionIndex);
 });
 
 test("Windows ACL mutation masks cover generic and inherit-only rights", () => {

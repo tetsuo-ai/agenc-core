@@ -276,7 +276,7 @@ async function renderHelp(props: {
   });
 
   const render = async (nextProps: typeof props): Promise<void> => {
-    root.render(<HelpV2 {...nextProps} />);
+    root.render(<HelpV2 {...nextProps} runtimeState={{}} />);
     await sleep();
   };
 
@@ -334,7 +334,11 @@ describe("HelpV2 coverage swarm row 171", () => {
       makeCommand("deploy-project", { source: "plugin" }),
       makeCommand("secret-project", { isHidden: true, source: "plugin" }),
     ];
-    const props = { commands, onClose, query: "deploy" };
+    const props = {
+      commands,
+      onClose,
+      query: "deploy",
+    };
     const rendered = await renderHelp(props);
 
     try {

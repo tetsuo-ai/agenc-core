@@ -1,14 +1,9 @@
 
-import { clearCACertsCache } from './caCerts.js'
-import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
 import {
   isProviderManagedEnvVar,
   SAFE_ENV_VARS,
 } from './managedEnvConstants.js'
-import { clearMTLSCache } from './mtls.js'
-import { clearProxyCache, configureGlobalAgents } from './proxy.js'
-import { applyActiveProviderProfileFromConfig } from './providerProfiles.js'
 import { isSettingSourceEnabled } from './settings/constants.js'
 import {
   getExecutionAuthoritySettings,
@@ -18,21 +13,15 @@ import {
 /**
  * `agenc ssh` remote: ANTHROPIC_UNIX_SOCKET routes auth through a -R forwarded
  * socket to a local proxy, and the launcher sets a handful of placeholder auth
- * env vars that the remote's ~/.agenc settings.env MUST NOT clobber (see
+ * env vars that canonical remote configuration MUST NOT clobber (see
  * isAnthropicAuthEnabled). Strip them from any settings-sourced env object.
  */
 
-// ---- donor-purge stubs ----
-// These symbols used to come from modules deleted in the api.anthropic.com
-// purge. They are stubbed here as no-ops so the surrounding moved-source
-// code paths degrade silently. Real implementations land when AgenC ships
-// the equivalent backend.
-const isRemoteManagedSettingsEligible = (): boolean => false;
-// ---- end donor-purge stubs ----
 function withoutSSHTunnelVars(
-  env: Record<string, string> | undefined,
+  env: Readonly<Record<string, string>> | undefined,
+  processEnvironment: NodeJS.ProcessEnv,
 ): Record<string, string> {
-  if (!env || !process.env.ANTHROPIC_UNIX_SOCKET) return env || {}
+  if (!env || !processEnvironment.ANTHROPIC_UNIX_SOCKET) return env || {}
   const {
     ANTHROPIC_UNIX_SOCKET: _1,
     ANTHROPIC_BASE_URL: _2,
@@ -48,14 +37,15 @@ function withoutSSHTunnelVars(
  * When the host owns inference routing (sets
  * AGENC_PROVIDER_MANAGED_BY_HOST in spawn env), strip
  * provider-selection / model-default vars from settings-sourced env so a
- * user's ~/.agenc/settings.json can't redirect requests away from the
+ * canonical user configuration cannot redirect requests away from the
  * host-configured provider.
  */
 function withoutHostManagedProviderVars(
-  env: Record<string, string> | undefined,
+  env: Readonly<Record<string, string>> | undefined,
+  processEnvironment: NodeJS.ProcessEnv,
 ): Record<string, string> {
   if (!env) return {}
-  if (!isEnvTruthy(process.env.AGENC_PROVIDER_MANAGED_BY_HOST)) {
+  if (!isEnvTruthy(processEnvironment.AGENC_PROVIDER_MANAGED_BY_HOST)) {
     return env
   }
   const out: Record<string, string> = {}
@@ -68,16 +58,16 @@ function withoutHostManagedProviderVars(
 }
 
 /**
- * Snapshot of env keys present before any settings.env is applied — for CCD,
+ * Snapshot of env keys present before config environment is applied—for CCD,
  * these are the keys the desktop host set to orchestrate the subprocess.
- * Settings must not override them. Keys added LATER by user/project settings
- * are not in this set, so mid-session settings.json changes still apply.
+ * Canonical config must not override them. Keys added later by a config reload
+ * are not in this set, so mid-session config changes still apply.
  * Lazy-captured on first applySafeConfigEnvironmentVariables() call.
  */
 let ccdSpawnEnvKeys: Set<string> | null | undefined
 
 function withoutCcdSpawnEnvKeys(
-  env: Record<string, string> | undefined,
+  env: Readonly<Record<string, string>> | undefined,
 ): Record<string, string> {
   if (!env || !ccdSpawnEnvKeys) return env || {}
   const out: Record<string, string> = {}
@@ -88,22 +78,26 @@ function withoutCcdSpawnEnvKeys(
 }
 
 /**
- * Compose the strip filters applied to every settings-sourced env object.
+ * Compose the strip filters applied to every config-sourced environment map.
  */
 function filterSettingsEnv(
-  env: Record<string, string> | undefined,
+  env: Readonly<Record<string, string>> | undefined,
+  processEnvironment: NodeJS.ProcessEnv,
 ): Record<string, string> {
   return withoutCcdSpawnEnvKeys(
-    withoutHostManagedProviderVars(withoutSSHTunnelVars(env)),
+    withoutHostManagedProviderVars(
+      withoutSSHTunnelVars(env, processEnvironment),
+      processEnvironment,
+    ),
   )
 }
 
 /**
  * Trusted setting sources whose env vars can be applied before the trust dialog.
  *
- * - userSettings (~/.agenc/settings.json): controlled by the user, not project-specific
- * - flagSettings (--settings CLI flag or SDK inline settings): explicitly passed by the user
- * - policySettings (managed settings from enterprise API or local managed-settings.json):
+ * - userSettings (user config.toml): controlled by the user, not project-specific
+ * - flagSettings (explicit canonical config layer): explicitly passed by the user
+ * - policySettings (canonical managed config.toml policy layer):
  *   controlled by IT/admin (highest priority, cannot be overridden)
  *
  * Project-scoped sources (projectSettings, localSettings) are excluded because they live
@@ -130,7 +124,7 @@ const TRUSTED_SETTING_SOURCES = [
  * fully established via applyConfigEnvironmentVariables().
  */
 export function applySafeConfigEnvironmentVariables(): void {
-  // Capture CCD spawn-env keys before any settings.env is applied (once).
+  // Capture CCD spawn-env keys before config environment is applied (once).
   if (ccdSpawnEnvKeys === undefined) {
     ccdSpawnEnvKeys =
       process.env.AGENC_ENTRYPOINT === 'agenc-desktop'
@@ -138,35 +132,28 @@ export function applySafeConfigEnvironmentVariables(): void {
         : null
   }
 
-  // Global config (~/.agenc.json) is user-controlled. In CCD mode,
-  // filterSettingsEnv strips keys that were in the spawn env snapshot so
-  // the desktop host's operational vars are not overridden.
-  Object.assign(process.env, filterSettingsEnv(getGlobalConfig().env))
-
   // Apply ALL env vars from trusted setting sources, policySettings last.
   // Gate on isSettingSourceEnabled so SDK settingSources: [] (isolation mode)
-  // doesn't get clobbered by ~/.agenc/settings.json env (gh#217). policy/flag
+  // does not inherit user configuration. policy/flag
   // sources are always enabled, so this only ever filters userSettings.
   for (const source of TRUSTED_SETTING_SOURCES) {
     if (source === 'policySettings') continue
     if (!isSettingSourceEnabled(source)) continue
     Object.assign(
       process.env,
-      filterSettingsEnv(getSettingsForSource(source)?.env),
+      filterSettingsEnv(
+        getSettingsForSource(source)?.shell_environment_policy?.set,
+        process.env,
+      ),
     )
   }
 
-  // Compute remote-managed-settings eligibility now, with userSettings and
-  // flagSettings env applied. Eligibility reads AGENC_USE_BEDROCK,
-  // ANTHROPIC_BASE_URL — both settable via settings.env.
-  // getSettingsForSource('policySettings') below consults the remote cache,
-  // which guards on this. The two-phase structure makes the ordering
-  // dependency visible: non-policy env → eligibility → policy env.
-  isRemoteManagedSettingsEligible()
-
   Object.assign(
     process.env,
-    filterSettingsEnv(getSettingsForSource('policySettings')?.env),
+    filterSettingsEnv(
+      getSettingsForSource('policySettings')?.shell_environment_policy?.set,
+      process.env,
+    ),
   )
 
   // Apply only safe env vars from the fully-merged settings (which includes
@@ -177,16 +164,16 @@ export function applySafeConfigEnvironmentVariables(): void {
   // unchanged (it has the highest merge priority in both loops) — except
   // provider-routing vars, which filterSettingsEnv strips from every source
   // when AGENC_PROVIDER_MANAGED_BY_HOST is set.
-  const settingsEnv = filterSettingsEnv(getExecutionAuthoritySettings()?.env)
+  const settingsEnv = filterSettingsEnv(
+    getExecutionAuthoritySettings().shell_environment_policy?.set,
+    process.env,
+  )
   for (const [key, value] of Object.entries(settingsEnv)) {
     if (SAFE_ENV_VARS.has(key.toUpperCase())) {
       process.env[key] = value
     }
   }
 
-  // Apply active provider profile only when startup did not explicitly
-  // select a provider via flags/env. Explicit startup intent should win.
-  applyActiveProviderProfileFromConfig()
 }
 
 /**
@@ -197,22 +184,12 @@ export function applySafeConfigEnvironmentVariables(): void {
  * dangerous environment variables such as LD_PRELOAD, PATH, etc.
  */
 export function applyConfigEnvironmentVariables(): void {
-  Object.assign(process.env, filterSettingsEnv(getGlobalConfig().env))
-
   Object.assign(
     process.env,
-    filterSettingsEnv(getExecutionAuthoritySettings()?.env),
+    filterSettingsEnv(
+      getExecutionAuthoritySettings().shell_environment_policy?.set,
+      process.env,
+    ),
   )
 
-  // Keep runtime provider/model env aligned with the active profile, except
-  // when an explicit provider selection is already present in process.env.
-  applyActiveProviderProfileFromConfig()
-
-  // Clear caches so agents are rebuilt with the new env vars
-  clearCACertsCache()
-  clearMTLSCache()
-  clearProxyCache()
-
-  // Reconfigure proxy/mTLS agents to pick up any proxy env vars from settings
-  configureGlobalAgents()
 }

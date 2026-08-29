@@ -9,8 +9,8 @@
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export const meta = {
-  description: "--yolo footer does NOT display the legacy ⚠ glyph.",
-  args: ["--yolo"],
+  description: "--dangerously-bypass-approvals-and-sandbox footer does NOT display the legacy ⚠ glyph.",
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   timeoutMs: 30_000,
 };
 

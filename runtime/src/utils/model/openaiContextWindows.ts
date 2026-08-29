@@ -3,13 +3,24 @@
  * Context window sizes for openai-compatible models used via the shim.
  * Fixes: auto-compact and warnings using wrong 200k default for openai models.
  *
- * When AGENC_USE_OPENAI=1, getContextWindowForModel() falls through to
+ * When an OpenAI-compatible provider is selected, getContextWindowForModel() falls through to
  * MODEL_CONTEXT_WINDOW_DEFAULT (200k). This causes the warning and blocking
  * thresholds to be set at 200k even for models like gpt-4o (128k) or llama3 (8k),
  * meaning users get no warning before hitting a hard API error.
  *
- * Prices in tokens as of April 2026 — update as needed.
+ * Limits in tokens; update from provider model documentation as needed.
  */
+
+export const OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW = 128_000
+export const DEFAULT_MAX_OUTPUT_TOKENS = 32_000
+export const DEFAULT_MAX_OUTPUT_TOKENS_UPPER_LIMIT = 64_000
+export const CAPPED_DEFAULT_MAX_OUTPUT_TOKENS = 8_000
+export const ESCALATED_MAX_OUTPUT_TOKENS = 64_000
+
+export interface OpenAICompatibleTokenLimitOptions {
+  readonly provider?: string
+  readonly externalOverridesJson?: string
+}
 
 const OPENAI_CONTEXT_WINDOWS: Record<string, number> = {
   // GitHub Copilot — values from https://api.githubcopilot.com/models (2026-04-09)
@@ -53,9 +64,8 @@ const OPENAI_CONTEXT_WINDOWS: Record<string, number> = {
   // keep their "<provider>/<model>" naming convention (standard LiteLLM routing)
   // instead of AgenC's "github:copilot:<model>" namespaced form.
   // Entries below cover the aliases currently exposed by LiteLLM's github_copilot
-  // provider — this is a curated subset, not an exhaustive mirror of the
-  // namespaced entries above. Values are sourced from copilotModels.ts to stay
-  // consistent with the native provider path.
+  // provider. This is a curated subset rather than an exhaustive mirror of the
+  // namespaced entries above.
   'github_copilot/claude-sonnet-4.6':        200_000,
   'github_copilot/claude-opus-4.6':          200_000,
   'github_copilot/claude-haiku-4.5':         144_000,
@@ -102,10 +112,6 @@ const OPENAI_CONTEXT_WINDOWS: Record<string, number> = {
   // lands.
   'deepseek-v4-flash':      1_048_576,
   'deepseek-v4-pro':        1_048_576,
-  // Compatibility DeepSeek API aliases documented in the public pricing/model pages.
-  'deepseek-chat':            128_000,
-  'deepseek-reasoner':        128_000,
-
   // Groq (fast inference)
   'llama-3.3-70b-versatile':  128_000,
   'llama-3.1-8b-instant':     128_000,
@@ -114,7 +120,6 @@ const OPENAI_CONTEXT_WINDOWS: Record<string, number> = {
   // Mistral
   'mistral-large-latest':     256_000,
   'mistral-small-latest':     256_000,
-  'devstral-latest':          256_000,
   'ministral-3b-latest':      256_000,
 
   // NVIDIA NIM - popular models
@@ -193,7 +198,7 @@ const OPENAI_CONTEXT_WINDOWS: Record<string, number> = {
   'google/gemini-2.0-flash':1_048_576,
   'google/gemini-2.5-pro':  1_048_576,
 
-  // Google (native via AGENC_USE_GEMINI)
+  // Google (native Gemini provider)
   'gemini-2.0-flash':              1_048_576,
   'gemini-2.5-pro':                1_048_576,
   'gemini-2.5-flash':              1_048_576,
@@ -344,8 +349,6 @@ const OPENAI_MAX_OUTPUT_TOKENS: Record<string, number> = {
   'deepseek-v4-flash':        262_144,
   'deepseek-v4-pro':          262_144,
   // Compatibility DeepSeek API aliases documented in the public pricing/model pages.
-  'deepseek-chat':              8_192,
-  'deepseek-reasoner':         65_536,
 
   // Groq
   'llama-3.3-70b-versatile':  32_768,
@@ -380,7 +383,7 @@ const OPENAI_MAX_OUTPUT_TOKENS: Record<string, number> = {
   'google/gemini-2.0-flash':   8_192,
   'google/gemini-2.5-pro':    65_536,
 
-  // Google (native via AGENC_USE_GEMINI)
+  // Google (native Gemini provider)
   'gemini-2.0-flash':              8_192,
   'gemini-2.5-pro':                65_536,
   'gemini-2.5-flash':              65_536,
@@ -469,62 +472,90 @@ const OPENAI_MAX_OUTPUT_TOKENS: Record<string, number> = {
   'moonshot-v1-128k':          32_768,
 }
 
-// External context-window overrides loaded once at startup.
+// External context-window overrides are captured by the caller at startup.
 // Set AGENC_OPENAI_CONTEXT_WINDOWS to a JSON object mapping model name
 // → context-window token count to add or override entries without editing
 // this file.  Example:
 //   AGENC_OPENAI_CONTEXT_WINDOWS='{"my-corp/llm-v2":200000}'
-const OPENAI_EXTERNAL_CONTEXT_WINDOWS: Record<string, number> = (() => {
+function externalOverrides(
+  raw: string | undefined,
+): Readonly<Record<string, number>> {
   try {
-    const raw = process.env.AGENC_OPENAI_CONTEXT_WINDOWS
     if (raw) {
-      const parsed = JSON.parse(raw)
-      if (typeof parsed === 'object' && parsed !== null) return parsed as Record<string, number>
+      const parsed: unknown = JSON.parse(raw)
+      if (
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        !Array.isArray(parsed)
+      ) {
+        const validated: Record<string, number> = {}
+        for (const [model, value] of Object.entries(parsed)) {
+          if (
+            model.trim().length > 0 &&
+            typeof value === 'number' &&
+            Number.isSafeInteger(value) &&
+            value > 0
+          ) {
+            validated[model] = value
+          }
+        }
+        return Object.freeze(validated)
+      }
     }
   } catch { /* ignore malformed JSON */ }
-  return {}
-})()
+  return Object.freeze({})
+}
 
 // External max-output-token overrides.
 // Set AGENC_OPENAI_MAX_OUTPUT_TOKENS to a JSON object mapping model name
 // → max output token count.
-const OPENAI_EXTERNAL_MAX_OUTPUT_TOKENS: Record<string, number> = (() => {
-  try {
-    const raw = process.env.AGENC_OPENAI_MAX_OUTPUT_TOKENS
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      if (typeof parsed === 'object' && parsed !== null) return parsed as Record<string, number>
-    }
-  } catch { /* ignore malformed JSON */ }
-  return {}
-})()
 
-function lookupByModel<T>(table: Record<string, T>, externalTable: Record<string, T>, model: string): T | undefined {
-  // Try provider-qualified key first: "{OPENAI_MODEL}:{model}" so that
+function providerQualifier(provider: string | undefined): string | undefined {
+  switch (provider?.trim().toLowerCase()) {
+    case 'github':
+      return 'github:copilot'
+    default:
+      return undefined
+  }
+}
+
+function lookupByModel<T>(
+  table: Readonly<Record<string, T>>,
+  externalTable: Readonly<Record<string, T>>,
+  model: string,
+  provider: string | undefined,
+): T | undefined {
+  const trimmedModel = model.trim()
+  // Try the canonical provider identity first so that
   // e.g. "github:copilot:claude-haiku-4.5" can have different limits than
   // a bare "claude-haiku-4.5" served by another provider.
-  const providerModel = process.env.OPENAI_MODEL?.trim()
-  if (providerModel && providerModel !== model) {
-    const qualified = `${providerModel}:${model}`
+  const qualifier = providerQualifier(provider)
+  if (qualifier && !trimmedModel.startsWith(`${qualifier}:`)) {
+    const qualified = `${qualifier}:${trimmedModel}`
     // External table takes precedence over the built-in table.
     const externalQualified = lookupByKey(externalTable, qualified)
     if (externalQualified !== undefined) return externalQualified
     const qualifiedResult = lookupByKey(table, qualified)
     if (qualifiedResult !== undefined) return qualifiedResult
   }
-  const externalResult = lookupByKey(externalTable, model)
+  const externalResult = lookupByKey(externalTable, trimmedModel)
   if (externalResult !== undefined) return externalResult
-  return lookupByKey(table, model)
+  return lookupByKey(table, trimmedModel)
 }
 
-function lookupByKey<T>(table: Record<string, T>, model: string): T | undefined {
+function lookupByKey<T>(table: Readonly<Record<string, T>>, model: string): T | undefined {
   if (table[model] !== undefined) return table[model]
   // Sort keys by length descending so the most specific prefix wins.
   // Without this, 'gpt-4-turbo-preview' could match 'gpt-4' (8k) instead
   // of 'gpt-4-turbo' (128k) depending on V8's key iteration order.
   const sortedKeys = Object.keys(table).sort((a, b) => b.length - a.length)
   for (const key of sortedKeys) {
-    if (model.startsWith(key)) return table[key]
+    if (
+      model.startsWith(key) &&
+      (model.length === key.length || /[-:/_]/.test(model[key.length] ?? ''))
+    ) {
+      return table[key]
+    }
   }
   return undefined
 }
@@ -536,14 +567,37 @@ function lookupByKey<T>(table: Record<string, T>, model: string): T | undefined 
  * Falls back to prefix matching so dated variants like
  * "gpt-4o-2024-11-20" resolve to the base "gpt-4o" entry.
  */
-export function getOpenAIContextWindow(model: string): number | undefined {
-  return lookupByModel(OPENAI_CONTEXT_WINDOWS, OPENAI_EXTERNAL_CONTEXT_WINDOWS, model)
+export function getOpenAICompatibleContextWindow(
+  model: string,
+  options: OpenAICompatibleTokenLimitOptions = {},
+): number | undefined {
+  return lookupByModel(
+    OPENAI_CONTEXT_WINDOWS,
+    externalOverrides(options.externalOverridesJson),
+    model,
+    options.provider,
+  )
 }
 
 /**
  * Look up the max output tokens for an openai-compatible model.
  * Returns undefined if the model is not in the table.
  */
-export function getOpenAIMaxOutputTokens(model: string): number | undefined {
-  return lookupByModel(OPENAI_MAX_OUTPUT_TOKENS, OPENAI_EXTERNAL_MAX_OUTPUT_TOKENS, model)
+export function getOpenAICompatibleMaxOutputTokens(
+  model: string,
+  options: OpenAICompatibleTokenLimitOptions = {},
+): number | undefined {
+  return lookupByModel(
+    OPENAI_MAX_OUTPUT_TOKENS,
+    externalOverrides(options.externalOverridesJson),
+    model,
+    options.provider,
+  )
+}
+
+export function boundedOutputTokens(
+  requested: number,
+  upperLimit: number,
+): number {
+  return Math.min(Math.floor(requested), Math.floor(upperLimit))
 }

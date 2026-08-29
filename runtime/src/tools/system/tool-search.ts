@@ -4,6 +4,7 @@ import {
   encodeMcpToolNameForWire,
 } from "../../llm/wire/mcp-tool-naming.js";
 import { sanitizeSystemReminderContent } from "../../prompts/attachments/system-reminder-sanitizer.js";
+import { SYSTEM_SEARCH_TOOLS_NAME } from "./tool-search-name.js";
 import {
   codingToolMetadata,
   MAX_RESULTS,
@@ -166,11 +167,11 @@ function resolveSelection(
 
 export function createToolSearchTool(config: CodingToolConfig): Tool {
   return {
-    name: "system.searchTools",
+    name: SYSTEM_SEARCH_TOOLS_NAME,
     description:
       "Search the runtime tool catalog by name, family, source, keyword, or preferred profile. Use select or select:<tool_name> to load a deferred tool schema.",
     metadata: {
-      ...codingToolMetadata("system.searchTools", false, ["coding", "general", "operator"]),
+      ...codingToolMetadata(SYSTEM_SEARCH_TOOLS_NAME, false, ["coding", "general", "operator"]),
       keywords: ["tools", "catalog", "discovery", "select", "deferred"],
       virtualNoFsWrites: true,
     },

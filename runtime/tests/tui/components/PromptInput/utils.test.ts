@@ -13,18 +13,23 @@ import {
 
 const mocks = vi.hoisted(() => ({
   config: {
-    editorMode: "default",
     hasUsedBackslashReturn: false,
     shiftEnterKeyBindingInstalled: false,
-    tui: {} as { vimMode?: boolean },
   },
+  operatorConfig: { tui: {} as { vimMode?: boolean } },
   env: {
     terminal: "xterm",
   },
 }));
 
 vi.mock("../../../utils/config.js", () => ({
-  getGlobalConfig: () => mocks.config,
+  getRuntimeState: () => mocks.config,
+}));
+
+vi.mock("../../../utils/settings/canonicalAuthority.js", () => ({
+  getCanonicalSettingsAuthority: () => ({
+    current: () => mocks.operatorConfig,
+  }),
 }));
 
 vi.mock("../../../utils/env.js", () => ({
@@ -62,10 +67,9 @@ function key(overrides: Partial<Key> = {}): Key {
 }
 
 afterEach(() => {
-  mocks.config.editorMode = "default";
   mocks.config.hasUsedBackslashReturn = false;
   mocks.config.shiftEnterKeyBindingInstalled = false;
-  mocks.config.tui = {};
+  mocks.operatorConfig.tui = {};
   mocks.env.terminal = "xterm";
   if (originalPlatform) {
     Object.defineProperty(process, "platform", originalPlatform);
@@ -73,21 +77,13 @@ afterEach(() => {
 });
 
 describe("PromptInput utils", () => {
-  test("resolves vim mode from explicit TUI config before editor mode", () => {
-    expect(
-      isVimModeEnabled({
-        editorMode: "vim",
-        tui: { vimMode: false },
-      } as never),
-    ).toBe(false);
-    expect(
-      isVimModeEnabled({
-        editorMode: "default",
-        tui: { vimMode: true },
-      } as never),
-    ).toBe(true);
-    expect(isVimModeEnabled({ editorMode: "vim" } as never)).toBe(true);
-    expect(isVimModeEnabled({ editorMode: "default" } as never)).toBe(false);
+  test("uses tui.vimMode as the sole Vim-input authority", () => {
+    expect(isVimModeEnabled({ tui: { vimMode: false } })).toBe(false);
+    expect(isVimModeEnabled({ tui: { vimMode: true } })).toBe(true);
+    expect(isVimModeEnabled({})).toBe(false);
+
+    mocks.operatorConfig.tui = { vimMode: true };
+    expect(isVimModeEnabled()).toBe(true);
   });
 
   test("formats vim mode indicators only when a mode is active", () => {
@@ -98,19 +94,19 @@ describe("PromptInput utils", () => {
   test("returns newline instructions for terminal and config states", () => {
     mocks.env.terminal = "Apple_Terminal";
     setPlatform("darwin");
-    expect(getNewlineInstructions()).toBe("shift + ⏎ for newline");
+    expect(getNewlineInstructions(mocks.config)).toBe("shift + ⏎ for newline");
 
     mocks.env.terminal = "xterm";
     setPlatform("linux");
     mocks.config.shiftEnterKeyBindingInstalled = true;
-    expect(getNewlineInstructions()).toBe("shift + ⏎ for newline");
+    expect(getNewlineInstructions(mocks.config)).toBe("shift + ⏎ for newline");
 
     mocks.config.shiftEnterKeyBindingInstalled = false;
     mocks.config.hasUsedBackslashReturn = true;
-    expect(getNewlineInstructions()).toBe("\\⏎ for newline");
+    expect(getNewlineInstructions(mocks.config)).toBe("\\⏎ for newline");
 
     mocks.config.hasUsedBackslashReturn = false;
-    expect(getNewlineInstructions()).toBe(
+    expect(getNewlineInstructions(mocks.config)).toBe(
       "backslash (\\) + return (⏎) for newline",
     );
   });

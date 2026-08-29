@@ -3,13 +3,13 @@ import { useEffect, useRef, useState } from 'react';
 import { logForDebugging } from 'src/utils/debug.js';
 import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useInterval } from 'usehooks-ts';
+import { useSettings } from '../hooks/useSettings.js';
 import { useUpdateNotification } from '../hooks/useUpdateNotification.js';
 import { Box, Text } from '../ink.js';
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
 import type { AutoUpdaterResult } from '../../utils/autoUpdater.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isAutoUpdaterDisabled } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { installLatest } from '../../utils/nativeInstaller/installer.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 
 type Props = {
   isUpdating: boolean;
@@ -27,12 +27,13 @@ export function NativeAutoUpdater({
   showSuccessMessage,
   verbose
 }: Props): React.ReactNode {
+  const settings = useSettings();
   const [versions, setVersions] = useState<{
     current?: string | null;
     latest?: string | null;
   }>({});
   const updateSemver = useUpdateNotification(autoUpdaterResult?.version);
-  const channel = getExecutionAuthoritySettings()?.autoUpdatesChannel ?? 'latest';
+  const channel = settings.autoUpdatesChannel ?? 'latest';
 
   // Track latest isUpdating value in a ref so the memoized checkForUpdates
   // callback always sees the current value without changing callback identity

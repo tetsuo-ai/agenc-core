@@ -141,13 +141,7 @@ function mkCtx(mode = "chat"): TurnContext {
       signal: () => {},
       wait: async () => {},
     },
-    // The plan-mode gate is now `sessionConfiguration.permissionContext.mode`
-    // exclusively (legacy `collaborationMode.model === "plan"` was retired).
-    // Preserve the test ergonomic of `mkCtx("plan")` ⇒ plan-mode-active by
-    // routing the literal "plan" through the authoritative path.
-    ...(mode === "plan"
-      ? { sessionConfiguration: { permissionContext: { mode: "plan" } } }
-      : {}),
+    permissionMode: mode === "plan" ? "plan" : "default",
   } as unknown as TurnContext;
 }
 

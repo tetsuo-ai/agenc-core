@@ -24,6 +24,11 @@ import {
   resolveSpecialPath,
   unrestrictedFileSystemPolicy,
 } from "./index.js";
+import {
+  resolveAgentRuntimeOptions,
+} from "../../../src/session/runtime-options.js";
+
+const TEST_SESSION_TEMP_ROOT = "/tmp/agenc-test-session-root";
 
 describe("sandbox permission profile transforms", () => {
   it("normalizes relative permission paths and rejects writable globs", () => {
@@ -132,6 +137,7 @@ describe("sandbox permission profile transforms", () => {
         network: { enabled: false },
       },
       "/repo",
+      TEST_SESSION_TEMP_ROOT,
     );
 
     expect(granted).toEqual({
@@ -162,6 +168,7 @@ describe("sandbox permission profile transforms", () => {
         },
       },
       "/repo",
+      TEST_SESSION_TEMP_ROOT,
     );
 
     expect(granted).toEqual({});
@@ -185,6 +192,7 @@ describe("sandbox permission profile transforms", () => {
         },
       },
       "/repo",
+      TEST_SESSION_TEMP_ROOT,
     );
 
     expect(granted).toEqual({
@@ -225,6 +233,7 @@ describe("sandbox permission profile transforms", () => {
           },
         },
         "/repo",
+        TEST_SESSION_TEMP_ROOT,
       );
 
       expect(granted, pattern).toEqual({});
@@ -236,8 +245,17 @@ describe("sandbox permission profile transforms", () => {
       { path: { kind: "special", value: { kind: "root" } }, access: "read" },
     ]);
 
-    expect(getWritableRootsWithCwd(readOnly, "/repo")).toEqual([]);
-    expect(canWritePathWithCwd(readOnly, "/repo/package.json", "/repo")).toBe(false);
+    expect(
+      getWritableRootsWithCwd(readOnly, "/repo", TEST_SESSION_TEMP_ROOT),
+    ).toEqual([]);
+    expect(
+      canWritePathWithCwd(
+        readOnly,
+        "/repo/package.json",
+        "/repo",
+        TEST_SESSION_TEMP_ROOT,
+      ),
+    ).toBe(false);
   });
 
   it("resolves relative base policy paths against the sandbox policy cwd", () => {
@@ -245,57 +263,70 @@ describe("sandbox permission profile transforms", () => {
       { path: { kind: "path", path: "src" }, access: "read" },
     ]);
 
-    expect(getReadableRootsWithCwd(relativeRead, "/repo")).toEqual(["/repo/src"]);
-    expect(resolveAccessWithCwd(relativeRead, "/repo/src/index.ts", "/repo")).toBe(
+    expect(
+      getReadableRootsWithCwd(relativeRead, "/repo", TEST_SESSION_TEMP_ROOT),
+    ).toEqual(["/repo/src"]);
+    expect(resolveAccessWithCwd(
+      relativeRead,
+      "/repo/src/index.ts",
+      "/repo",
+      TEST_SESSION_TEMP_ROOT,
+    )).toBe(
       "read",
     );
-    expect(resolveAccessWithCwd(relativeRead, "/other/src/index.ts", "/repo")).toBe(
+    expect(resolveAccessWithCwd(
+      relativeRead,
+      "/other/src/index.ts",
+      "/repo",
+      TEST_SESSION_TEMP_ROOT,
+    )).toBe(
       "none",
     );
   });
 
-  it("only resolves tmpdir special paths from an absolute TMPDIR", () => {
-    const previous = process.env["TMPDIR"];
-    try {
-      delete process.env["TMPDIR"];
-      expect(resolveSpecialPath({ kind: "tmpdir" }, "/repo")).toBeNull();
-
-      process.env["TMPDIR"] = "";
-      expect(resolveSpecialPath({ kind: "tmpdir" }, "/repo")).toBeNull();
-
-      process.env["TMPDIR"] = "relative-tmp";
-      expect(resolveSpecialPath({ kind: "tmpdir" }, "/repo")).toBeNull();
-
-      process.env["TMPDIR"] = "/tmp/agenc-special";
-      expect(resolveSpecialPath({ kind: "tmpdir" }, "/repo")).toBe(
-        "/tmp/agenc-special",
-      );
-    } finally {
-      if (previous === undefined) {
-        delete process.env["TMPDIR"];
-      } else {
-        process.env["TMPDIR"] = previous;
-      }
+  it("resolves tmpdir special paths only from explicit canonical session authority", () => {
+    const options = resolveAgentRuntimeOptions({
+      AGENC_TMPDIR: "/tmp/agenc-special",
+      TMPDIR: "/tmp/generic-must-not-win",
+    });
+    const sessionTempRoot = options.sessionTempRoot;
+    if (sessionTempRoot === undefined) {
+      throw new Error("expected canonical session temp root");
     }
+    expect(resolveSpecialPath(
+      { kind: "tmpdir" },
+      "/repo",
+      sessionTempRoot,
+    )).toBe("/tmp/agenc-special");
   });
 
   it("keeps project-root special subpaths inside the cwd", () => {
     expect(
-      resolveSpecialPath({ kind: "project_roots", subpath: "src" }, "/repo"),
+      resolveSpecialPath(
+        { kind: "project_roots", subpath: "src" },
+        "/repo",
+        TEST_SESSION_TEMP_ROOT,
+      ),
     ).toBe("/repo/src");
     expect(
-      resolveSpecialPath({ kind: "project_roots", subpath: "/etc" }, "/repo"),
+      resolveSpecialPath(
+        { kind: "project_roots", subpath: "/etc" },
+        "/repo",
+        TEST_SESSION_TEMP_ROOT,
+      ),
     ).toBeNull();
     expect(
       resolveSpecialPath(
         { kind: "project_roots", subpath: "../outside" },
         "/repo",
+        TEST_SESSION_TEMP_ROOT,
       ),
     ).toBeNull();
     expect(
       resolveSpecialPath(
         { kind: "project_roots", subpath: "safe/../../outside" },
         "/repo",
+        TEST_SESSION_TEMP_ROOT,
       ),
     ).toBeNull();
   });
@@ -310,11 +341,35 @@ describe("sandbox permission profile transforms", () => {
       { path: { kind: "path", path: "/repo/.git/config" }, access: "write" },
     ]);
 
-    expect(canWritePathWithCwd(workspaceWrite, "/repo/src/index.ts", "/repo")).toBe(true);
-    expect(canWritePathWithCwd(workspaceWrite, "/repo/secrets/key.pem", "/repo")).toBe(false);
-    expect(canWritePathWithCwd(workspaceWrite, "/repo/.git/config", "/repo")).toBe(false);
-    expect(canWritePathWithCwd(explicitMetadataWrite, "/repo/.git/config", "/repo")).toBe(true);
-    expect(getWritableRootsWithCwd(workspaceWrite, "/repo")[0]?.readOnlySubpaths).toContain(
+    expect(canWritePathWithCwd(
+      workspaceWrite,
+      "/repo/src/index.ts",
+      "/repo",
+      TEST_SESSION_TEMP_ROOT,
+    )).toBe(true);
+    expect(canWritePathWithCwd(
+      workspaceWrite,
+      "/repo/secrets/key.pem",
+      "/repo",
+      TEST_SESSION_TEMP_ROOT,
+    )).toBe(false);
+    expect(canWritePathWithCwd(
+      workspaceWrite,
+      "/repo/.git/config",
+      "/repo",
+      TEST_SESSION_TEMP_ROOT,
+    )).toBe(false);
+    expect(canWritePathWithCwd(
+      explicitMetadataWrite,
+      "/repo/.git/config",
+      "/repo",
+      TEST_SESSION_TEMP_ROOT,
+    )).toBe(true);
+    expect(getWritableRootsWithCwd(
+      workspaceWrite,
+      "/repo",
+      TEST_SESSION_TEMP_ROOT,
+    )[0]?.readOnlySubpaths).toContain(
       "/repo/secrets",
     );
   });
@@ -331,7 +386,11 @@ describe("sandbox permission profile transforms", () => {
       { path: { kind: "path", path: linkedPrivate }, access: "read" },
     ]);
 
-    const [root] = getWritableRootsWithCwd(policy, repo);
+    const [root] = getWritableRootsWithCwd(
+      policy,
+      repo,
+      TEST_SESSION_TEMP_ROOT,
+    );
 
     expect(root?.root).toBe(repo);
     expect(root?.readOnlySubpaths).toContain(linkedPrivate);
@@ -357,7 +416,9 @@ describe("sandbox permission profile transforms", () => {
     expect(hasFullDiskReadAccess(rootWrite)).toBe(true);
     expect(hasFullDiskWriteAccess(rootWrite)).toBe(true);
     expect(includePlatformDefaults(minimalRead)).toBe(true);
-    expect(getUnreadableRootsWithCwd(rootDeny, "/repo")).toEqual([]);
+    expect(
+      getUnreadableRootsWithCwd(rootDeny, "/repo", TEST_SESSION_TEMP_ROOT),
+    ).toEqual([]);
   });
 
   it("computes effective sandbox requirements from filesystem and network policy", () => {

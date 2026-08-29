@@ -1,158 +1,52 @@
 /**
- * Gateway configuration loader (TODO task 6).
- *
- * Gateway config lives in its own `<agencHome>/gateway/config.json` (not the
- * main config.toml) because its surface grows per channel. Missing file →
- * fail-closed defaults (no channels, pairing-gated, default agent). Malformed
- * entries are dropped with a warning, never coerced into something permissive.
+ * Pure adapter from the canonical immutable config snapshot to the gateway's
+ * execution shape. Persistent gateway policy is owned only by `[gateway]` in
+ * schema-v2 config.toml; this module performs no file or environment reads.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-
+import type { AgenCConfig } from "../config/schema.js";
 import {
   DEFAULT_GATEWAY_CONFIG,
-  type DmPolicy,
-  type GatewayBinding,
-  type GatewayChannelPolicy,
   type GatewayConfig,
-  type GatewayHooksConfig,
 } from "./types.js";
 
-const DM_POLICIES: readonly DmPolicy[] = [
-  "pairing",
-  "allowlist",
-  "open",
-  "disabled",
-];
-
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((v): v is string => typeof v === "string")
-    : [];
-}
-
-function normalizeChannelPolicy(
-  value: unknown,
-  onWarn: (m: string) => void,
-): GatewayChannelPolicy | null {
-  if (typeof value !== "object" || value === null) return null;
-  const record = value as Record<string, unknown>;
-  const dmPolicy = record.dmPolicy;
-  if (typeof dmPolicy !== "string" || !DM_POLICIES.includes(dmPolicy as DmPolicy)) {
-    onWarn(`gateway: invalid dmPolicy '${String(dmPolicy)}' — skipping channel`);
-    return null;
-  }
-  return {
-    dmPolicy: dmPolicy as DmPolicy,
-    allowlist: stringArray(record.allowlist),
-  };
-}
-
-function normalizeBinding(
-  value: unknown,
-  onWarn: (m: string) => void,
-): GatewayBinding | null {
-  if (typeof value !== "object" || value === null) return null;
-  const record = value as Record<string, unknown>;
-  if (typeof record.agent !== "string" || typeof record.channelId !== "string") {
-    onWarn("gateway: binding missing agent/channelId — skipping");
-    return null;
-  }
-  return {
-    agent: record.agent,
-    channelId: record.channelId,
-    ...(typeof record.peerId === "string" ? { peerId: record.peerId } : {}),
-    ...(typeof record.groupId === "string" ? { groupId: record.groupId } : {}),
-  };
-}
-
-/**
- * Normalize the `hooks` section fail-closed: anything malformed disables the
- * endpoint (never coerced into an enabled state), and a non-loopback bind
- * survives only as expressed intent — the server itself still refuses it
- * without `allowNonLoopback`.
- */
-function normalizeHooksConfig(
-  value: unknown,
-  onWarn: (m: string) => void,
-): GatewayHooksConfig | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "object" || value === null) {
-    onWarn("gateway: invalid hooks section — hooks disabled");
-    return undefined;
-  }
-  const record = value as Record<string, unknown>;
-  if (record.enabled !== true) return { enabled: false };
-  const port =
-    typeof record.port === "number" &&
-    Number.isInteger(record.port) &&
-    record.port >= 0 &&
-    record.port <= 65535
-      ? record.port
-      : undefined;
-  return {
-    enabled: true,
-    ...(typeof record.host === "string" && record.host.length > 0
-      ? { host: record.host }
-      : {}),
-    ...(port !== undefined ? { port } : {}),
-    ...(record.allowNonLoopback === true ? { allowNonLoopback: true } : {}),
-  };
-}
-
-export function resolveGatewayConfigPath(agencHome: string): string {
-  return join(agencHome, "gateway", "config.json");
-}
-
-export interface LoadGatewayConfigOptions {
-  readonly agencHome: string;
-  readonly onWarn?: (message: string) => void;
-}
-
-export function loadGatewayConfig(
-  options: LoadGatewayConfigOptions,
+export function gatewayConfigFromCanonical(
+  config: Pick<AgenCConfig, "gateway">,
 ): GatewayConfig {
-  const onWarn = options.onWarn ?? (() => {});
-  const path = resolveGatewayConfigPath(options.agencHome);
-  if (!existsSync(path)) return DEFAULT_GATEWAY_CONFIG;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
-  } catch (error) {
-    onWarn(`gateway: config.json is unparseable, using defaults: ${String(error)}`);
-    return DEFAULT_GATEWAY_CONFIG;
-  }
-  if (typeof raw !== "object" || raw === null) return DEFAULT_GATEWAY_CONFIG;
-  const record = raw as Record<string, unknown>;
+  const canonical = config.gateway;
+  if (canonical === undefined) return DEFAULT_GATEWAY_CONFIG;
 
-  const channels: Record<string, GatewayChannelPolicy> = {};
-  if (typeof record.channels === "object" && record.channels !== null) {
-    for (const [id, value] of Object.entries(
-      record.channels as Record<string, unknown>,
-    )) {
-      const policy = normalizeChannelPolicy(value, onWarn);
-      if (policy !== null) channels[id] = policy;
-    }
-  }
+  const channels = Object.freeze(Object.fromEntries(
+    Object.entries(canonical.channels ?? {}).map(([channelId, policy]) => [
+      channelId,
+      Object.freeze({
+        dmPolicy: policy.dmPolicy,
+        allowlist: Object.freeze([...(policy.allowlist ?? [])]),
+      }),
+    ]),
+  ));
+  const bindings = Object.freeze(
+    (canonical.bindings ?? []).map((binding) => Object.freeze({ ...binding })),
+  );
+  const hooks = canonical.hooks === undefined
+    ? undefined
+    : Object.freeze({
+        enabled: canonical.hooks.enabled === true,
+        ...(canonical.hooks.host !== undefined
+          ? { host: canonical.hooks.host }
+          : {}),
+        ...(canonical.hooks.port !== undefined
+          ? { port: canonical.hooks.port }
+          : {}),
+        ...(canonical.hooks.allowNonLoopback === true
+          ? { allowNonLoopback: true }
+          : {}),
+      });
 
-  const bindings: GatewayBinding[] = [];
-  if (Array.isArray(record.bindings)) {
-    for (const value of record.bindings) {
-      const binding = normalizeBinding(value, onWarn);
-      if (binding !== null) bindings.push(binding);
-    }
-  }
-
-  const hooks = normalizeHooksConfig(record.hooks, onWarn);
-
-  return {
+  return Object.freeze({
     channels,
     bindings,
-    defaultAgent:
-      typeof record.defaultAgent === "string" && record.defaultAgent.length > 0
-        ? record.defaultAgent
-        : DEFAULT_GATEWAY_CONFIG.defaultAgent,
+    defaultAgent: canonical.defaultAgent ?? DEFAULT_GATEWAY_CONFIG.defaultAgent,
     ...(hooks !== undefined ? { hooks } : {}),
-  };
+  });
 }

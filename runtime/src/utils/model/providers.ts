@@ -2,8 +2,17 @@ import {
   REGISTERED_MODEL_CATALOG,
   resolveRegisteredModelCatalogEntry,
 } from '../../llm/registry/model-catalog.js'
-import { shouldUseProviderCodeTransport } from '../../services/api/providerConfig.js'
-import { isEnvTruthy } from '../envUtils.js'
+import { getCurrentRuntimeSession } from '../../session/current-session.js'
+import { normalizeProviderIdentity } from '../../provider-identity.js'
+import {
+  snapshotProviderEnvironment,
+  type ProviderEnvironment,
+} from '../../llm/provider-options.js'
+import {
+  enterStartupProviderSelectionSnapshotForTests,
+  readStartupProviderSelectionSnapshot,
+  runWithStartupProviderSelectionSnapshot,
+} from './provider-selection-context.js'
 
 export type APIProvider =
   | 'firstParty'
@@ -16,40 +25,154 @@ export type APIProvider =
   | 'mistral'
   | 'xai'
 
-export function getAPIProvider(): APIProvider {
-  return isEnvTruthy(process.env.AGENC_USE_GEMINI)
-    ? 'gemini'
-    :
-    isEnvTruthy(process.env.AGENC_USE_MISTRAL)
-    ? 'mistral'
-    : isEnvTruthy(process.env.AGENC_USE_GITHUB)
-      ? 'github'
-      : isEnvTruthy(process.env.AGENC_USE_MINIMAX)
-        ? 'minimax'
-        : typeof process.env.XAI_API_KEY === 'string' && process.env.XAI_API_KEY.trim() !== ''
-          ? 'xai'
-          : isEnvTruthy(process.env.AGENC_USE_OPENAI)
-          ? isAgenCModel()
-            ? 'agenc'
-            : 'openai'
-          : isEnvTruthy(process.env.NVIDIA_NIM)
-            ? 'nvidia-nim'
-            : typeof process.env.MINIMAX_API_KEY === 'string' && process.env.MINIMAX_API_KEY.trim() !== ''
-              ? 'minimax'
-              : 'firstParty'
+export interface ProviderRuntimeSelection {
+  readonly provider: string
+  readonly model: string
+  readonly environment: ProviderEnvironment
 }
 
-export function usesAnthropicAccountFlow(): boolean {
-  return getAPIProvider() === 'firstParty'
+function selectedProviderIdentity(provider: string): string {
+  const selected = normalizeProviderIdentity(provider, 'provider API projection')
+  if (selected === undefined) {
+    throw new Error('provider authority requires a non-empty provider name')
+  }
+  return selected
+}
+
+/**
+ * Bind pre-session startup work to the provider already resolved by canonical
+ * startup selection. This scope is concurrency-safe and never consults the
+ * daemon process environment.
+ */
+export function runWithStartupProviderSelection<T>(
+  selection: ProviderRuntimeSelection,
+  operation: () => T,
+): T {
+  return runWithStartupProviderSelectionSnapshot(
+    freezeSelection(selection),
+    operation,
+  )
+}
+
+/**
+ * Install the canonical provider for Vitest's current async context.
+ * Production code must use `runWithStartupProviderSelection` at startup or a
+ * session-owned provider service. An architecture test keeps this hook
+ * confined to the test harness.
+ */
+export function enterStartupProviderSelectionForTestingOnly(
+  selection: ProviderRuntimeSelection,
+): void {
+  enterStartupProviderSelectionSnapshotForTests(freezeSelection(selection))
+}
+
+function freezeSelection(
+  selection: ProviderRuntimeSelection,
+): ProviderRuntimeSelection {
+  const model = selection.model.trim()
+  if (model.length === 0) {
+    throw new Error('provider authority requires a non-empty model name')
+  }
+  return Object.freeze({
+    provider: selectedProviderIdentity(selection.provider),
+    model,
+    environment: snapshotProviderEnvironment(selection.environment),
+  })
+}
+
+function sessionSelection(): ProviderRuntimeSelection | undefined {
+  const session = getCurrentRuntimeSession()
+  if (session === null) return undefined
+  const providerService = session.services.providerService
+  const binding = providerService?.current()
+  if (binding === undefined || providerService === undefined) {
+    throw new Error(
+      'Ambient runtime session has no session-owned provider binding',
+    )
+  }
+  return Object.freeze({
+    provider: binding.provider,
+    model: binding.model,
+    environment: providerService.environment(),
+  })
+}
+
+export function getSelectedProviderSelection(): ProviderRuntimeSelection {
+  const session = sessionSelection()
+  if (session !== undefined) return session
+  const startupSelection = readStartupProviderSelectionSnapshot()
+  if (startupSelection !== undefined) return startupSelection
+  throw new Error(
+    'No provider authority is bound; run inside canonical startup/session scope',
+  )
+}
+
+/**
+ * Project the provider selected by an explicit argument, the current session,
+ * or the canonical startup scope. Provider environment is captured at ingress;
+ * this compatibility projection must never read mutable process-global state.
+ */
+export function getSelectedProviderName(explicitProvider?: string): string {
+  if (explicitProvider !== undefined) {
+    return selectedProviderIdentity(explicitProvider)
+  }
+  return getSelectedProviderSelection().provider
+}
+
+export function getSelectedProviderModel(): string {
+  return getSelectedProviderSelection().model
+}
+
+export function getSelectedProviderEnvironment(): ProviderEnvironment {
+  return getSelectedProviderSelection().environment
+}
+
+export function getAPIProvider(explicitProvider?: string): APIProvider {
+  return apiProviderForProvider(getSelectedProviderName(explicitProvider))
+}
+
+export function apiProviderForProvider(provider: string): APIProvider {
+  switch (selectedProviderIdentity(provider)) {
+    case 'grok':
+      return 'xai'
+    case 'anthropic':
+    case 'amazon-bedrock':
+      return 'firstParty'
+    case 'gemini':
+      return 'gemini'
+    case 'mistral':
+      return 'mistral'
+    case 'github':
+      return 'github'
+    case 'minimax':
+      return 'minimax'
+    case 'nvidia-nim':
+      return 'nvidia-nim'
+    case 'agenc':
+      return 'agenc'
+    case 'openai':
+    case 'ollama':
+    case 'lmstudio':
+    case 'openai-compatible':
+    case 'openrouter':
+    case 'groq':
+    case 'deepseek':
+    default:
+      return 'openai'
+  }
+}
+
+export function usesAnthropicAccountFlow(provider?: string): boolean {
+  return provider === undefined
+    ? getAPIProvider() === 'firstParty'
+    : apiProviderForProvider(provider) === 'firstParty'
 }
 
 /**
  * True when `model` is registry-owned by a built-in non-Anthropic provider
  * (grok, openai, ...; the registered catalog carries no Anthropic entries).
- * getAPIProvider() only sees env vars, so a session whose provider comes from
- * config.toml (e.g. grok via OAuth credentials, no XAI_API_KEY set) still
- * reports 'firstParty'; auth-status UI must not tell such a session it is
- * "not logged in" for lacking an Anthropic key.
+ * This remains useful outside a bound runtime session because registry
+ * ownership is determined directly from the model catalog.
  */
 export function isRegistryOwnedNonAnthropicModel(model: string): boolean {
   const trimmed = model.trim()
@@ -72,7 +195,7 @@ export function isRegistryOwnedNonAnthropicModel(model: string): boolean {
  * Returns true when the GitHub provider should use provider's native API
  * format instead of the openai-compatible shim.
  *
- * Enabled when AGENC_USE_GITHUB=1 and the model string contains a provider-native
+ * Enabled when the active session selects GitHub and the model string contains a provider-native
  * model ID (handles bare names like "claude-sonnet-4" and compound formats like
  * "github:copilot:claude-sonnet-4" or any future provider-prefixed variants).
  *
@@ -80,42 +203,25 @@ export function isRegistryOwnedNonAnthropicModel(model: string): boolean {
  * enabling prompt caching via cache_control blocks which significantly reduces
  * per-turn token costs by caching the system prompt and tool definitions.
  */
-export function isGithubNativeAnthropicMode(resolvedModel?: string): boolean {
-  if (!isEnvTruthy(process.env.AGENC_USE_GITHUB)) return false
-  const model =
-    resolvedModel?.trim() ||
-    process.env.GITHUB_MODEL?.trim() ||
-    process.env.OPENAI_MODEL?.trim() ||
-    ''
-  return model.toLowerCase().includes('claude-')
+export function isGithubNativeAnthropicMode(resolvedModel: string): boolean {
+  if (getAPIProvider() !== 'github') return false
+  return resolvedModel.trim().toLowerCase().includes('claude-')
 }
-function isAgenCModel(): boolean {
-  const model = process.env.OPENAI_MODEL || ''
-  return isAgenCShortcutAlias(model) || shouldUseProviderCodeTransport(
-    model,
-    process.env.OPENAI_BASE_URL ?? process.env.OPENAI_API_BASE,
-  )
-}
-
-function isAgenCShortcutAlias(model: string): boolean {
-  const base = model.trim().toLowerCase().split('?', 1)[0] ?? ''
-  return base === 'agencplan' || base === 'agencspark'
-}
-
 /**
  * Check if ANTHROPIC_BASE_URL is a first-party provider API URL.
  * Returns true if not set (default API) or points to api.anthropic.com
  * (or api-staging.anthropic.com for ant users).
  */
 export function isFirstPartyAnthropicBaseUrl(): boolean {
-  const baseUrl = process.env.ANTHROPIC_BASE_URL
+  const environment = getSelectedProviderEnvironment()
+  const baseUrl = environment.ANTHROPIC_BASE_URL
   if (!baseUrl) {
     return true
   }
   try {
     const host = new URL(baseUrl).host
     const allowedHosts = ['api.anthropic.com']
-    if (process.env.USER_TYPE === 'ant') {
+    if (environment.USER_TYPE === 'ant') {
       allowedHosts.push('api-staging.anthropic.com')
     }
     return allowedHosts.includes(host)

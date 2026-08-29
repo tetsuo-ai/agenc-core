@@ -75,29 +75,27 @@ export function resolveExecutionAdmissionBudgetPolicy(params: {
   readonly budget?: BudgetConfig;
   readonly agentBudget?: AgentBudgetConfig;
   readonly autonomous: boolean;
-  readonly env?: NodeJS.ProcessEnv;
   readonly now?: Date;
 }): ExecutionAdmissionBudgetPolicy {
-  const resolved = resolveBudgetPolicy(params.budget, params.env);
+  const policy = resolveBudgetPolicy(params.budget);
   const enforceWindows =
-    resolved.policy.enabled &&
-    (params.autonomous || resolved.policy.enforceInteractive);
+    policy.enabled && (params.autonomous || policy.enforceInteractive);
   const wallClockSeconds = nonNegativeFinite(
     params.agentBudget?.wall_clock_seconds,
   );
   const now = params.now ?? new Date();
   return {
-    ...(enforceWindows && resolved.policy.caps.dailyUsd !== undefined
-      ? { dailyUsd: resolved.policy.caps.dailyUsd }
+    ...(enforceWindows && policy.caps.dailyUsd !== undefined
+      ? { dailyUsd: policy.caps.dailyUsd }
       : {}),
-    ...(enforceWindows && resolved.policy.caps.monthlyUsd !== undefined
-      ? { monthlyUsd: resolved.policy.caps.monthlyUsd }
+    ...(enforceWindows && policy.caps.monthlyUsd !== undefined
+      ? { monthlyUsd: policy.caps.monthlyUsd }
       : {}),
-    ...(enforceWindows && resolved.policy.caps.dailyTokens !== undefined
-      ? { dailyTokens: resolved.policy.caps.dailyTokens }
+    ...(enforceWindows && policy.caps.dailyTokens !== undefined
+      ? { dailyTokens: policy.caps.dailyTokens }
       : {}),
-    ...(enforceWindows && resolved.policy.caps.monthlyTokens !== undefined
-      ? { monthlyTokens: resolved.policy.caps.monthlyTokens }
+    ...(enforceWindows && policy.caps.monthlyTokens !== undefined
+      ? { monthlyTokens: policy.caps.monthlyTokens }
       : {}),
     ...(nonNegativeFinite(params.agentBudget?.dollar_cap) !== undefined
       ? { runMaxCostUsd: params.agentBudget?.dollar_cap }

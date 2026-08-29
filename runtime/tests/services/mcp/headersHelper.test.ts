@@ -55,6 +55,7 @@ test('getMcpServerHeaders merges validated static and helper headers', async () 
       },
       headersHelper: 'helper',
     }),
+    { PATH: '/captured/bin', HELPER_TOKEN: 'captured-only' },
   )
 
   assert.deepEqual(headers, {
@@ -62,6 +63,15 @@ test('getMcpServerHeaders merges validated static and helper headers', async () 
     'X-Static': 'yes',
     'X-Helper': 'yes',
   })
+  const helperEnvironment = headerHelperMocks.execFileNoThrowWithCwd.mock
+    .calls[0]?.[2]?.env as Record<string, string | undefined>
+  assert.equal(helperEnvironment.PATH, '/captured/bin')
+  assert.equal(helperEnvironment.HELPER_TOKEN, 'captured-only')
+  assert.equal(helperEnvironment.AGENC_MCP_SERVER_NAME, 'docs')
+  assert.equal(
+    helperEnvironment.AGENC_MCP_SERVER_URL,
+    'https://example.test/mcp',
+  )
 })
 
 test('getMcpServerHeaders ignores helper headers with invalid names', async () => {
@@ -74,6 +84,7 @@ test('getMcpServerHeaders ignores helper headers with invalid names', async () =
   const headers = await getMcpServerHeaders(
     'docs',
     httpConfig({ headersHelper: 'helper' }),
+    {},
   )
 
   assert.deepEqual(headers, {})
@@ -94,6 +105,7 @@ test('getMcpServerHeaders ignores helper headers with control characters', async
       headers: { 'X-Static': 'yes' },
       headersHelper: 'helper',
     }),
+    {},
   )
 
   assert.deepEqual(headers, { 'X-Static': 'yes' })
@@ -112,6 +124,7 @@ test('getMcpServerHeaders ignores helper headers that exceed the count cap', asy
   const headers = await getMcpServerHeaders(
     'docs',
     httpConfig({ headersHelper: 'helper' }),
+    {},
   )
 
   assert.deepEqual(headers, {})
@@ -123,6 +136,7 @@ test('getMcpServerHeaders rejects invalid static headers', async () => {
       getMcpServerHeaders(
         'docs',
         httpConfig({ headers: { 'Bad Header': 'value' } }),
+        {},
       ),
     /invalid header name/,
   )

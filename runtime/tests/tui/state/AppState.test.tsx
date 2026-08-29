@@ -19,9 +19,6 @@ vi.mock("../context/mailbox.js", () => ({
 vi.mock("../hooks/useEffectEventCompat.js", () => ({
   useEffectEventCompat: (callback: unknown) => callback,
 }));
-vi.mock("../hooks/useSettingsChange.js", () => ({
-  useSettingsChange: () => {},
-}));
 vi.mock("../../services/PromptSuggestion/promptSuggestion.js", () => ({
   shouldEnablePromptSuggestion: () => false,
 }));
@@ -38,14 +35,18 @@ vi.mock("../../tools/Tool.js", () => ({
 vi.mock("../../utils/commitAttribution.js", () => ({
   createEmptyAttributionState: () => ({}),
 }));
-vi.mock("../../utils/permissions/permissionSetup.js", () => ({
-  createDisabledBypassPermissionsContext: (context: unknown) => context,
-  isBypassPermissionsModeDisabled: () => false,
-}));
-vi.mock("../../utils/settings/applySettingsChange.js", () => ({
-  applySettingsChange: () => {},
+vi.mock("../../permissions/settings.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  loadPermissionRulesSnapshot: async () => ({
+    rules: [],
+    managedOnly: false,
+    directories: [],
+    bypassPermissionsModeDisabled: false,
+    disableAutoMode: false,
+  }),
 }));
 vi.mock("../../utils/settings/settings.js", () => ({
+  getExecutionAuthoritySettings: () => ({}),
   getInitialSettings: () => ({}),
 }));
 vi.mock("../../utils/teammate.js", () => ({

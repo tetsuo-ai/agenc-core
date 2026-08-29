@@ -1,12 +1,16 @@
-import { isBareMode, isEnvTruthy } from './envUtils.js'
-import { getSecureStorage } from './secureStorage/index.js'
+import type { HomeContext } from '../config/home.js'
+import type { SecureStorageData } from './secureStorage/index.js'
+import {
+  readNativeSecureStorage,
+  readNativeSecureStorageAsync,
+  updateNativeSecureStorage,
+} from './secureStorage/native.js'
+import { secureStorageIdentityKey } from './secureStorage/home.js'
 import { exchangeForCopilotToken } from '../services/github/deviceFlow.js'
+import { getSelectedProviderName } from './model/providers.js'
 
 /** JSON key in the shared AgenC secure storage blob. */
 export const GITHUB_MODELS_STORAGE_KEY = 'githubModels' as const
-export const GITHUB_MODELS_HYDRATED_ENV_MARKER =
-  'AGENC_GITHUB_TOKEN_HYDRATED' as const
-
 export type GithubModelsCredentialBlob = {
   accessToken: string
   oauthAccessToken?: string
@@ -43,12 +47,9 @@ function checkGithubTokenStatus(token: string): GithubTokenStatus {
   return 'invalid_format'
 }
 
-export function readGithubModelsToken(): string | undefined {
-  if (isBareMode()) return undefined
+export function readGithubModelsToken(home: HomeContext): string | undefined {
   try {
-    const data = getSecureStorage().read() as
-      | ({ githubModels?: GithubModelsCredentialBlob } & Record<string, unknown>)
-      | null
+    const data = readNativeSecureStorage(home)
     const t = data?.githubModels?.accessToken?.trim()
     return t || undefined
   } catch {
@@ -56,47 +57,16 @@ export function readGithubModelsToken(): string | undefined {
   }
 }
 
-export async function readGithubModelsTokenAsync(): Promise<string | undefined> {
-  if (isBareMode()) return undefined
+export async function readGithubModelsTokenAsync(
+  home: HomeContext,
+): Promise<string | undefined> {
   try {
-    const data = (await getSecureStorage().readAsync()) as
-      | ({ githubModels?: GithubModelsCredentialBlob } & Record<string, unknown>)
-      | null
+    const data = await readNativeSecureStorageAsync(home)
     const t = data?.githubModels?.accessToken?.trim()
     return t || undefined
   } catch {
     return undefined
   }
-}
-
-/**
- * If GitHub Models mode is on and no token is in the environment, copy the
- * stored token into process.env so the openai shim and validation see it.
- */
-export function hydrateGithubModelsTokenFromSecureStorage(): void {
-  if (!isEnvTruthy(process.env.AGENC_USE_GITHUB)) {
-    delete process.env[GITHUB_MODELS_HYDRATED_ENV_MARKER]
-    return
-  }
-  if (process.env.GH_TOKEN?.trim()) {
-    delete process.env[GITHUB_MODELS_HYDRATED_ENV_MARKER]
-    return
-  }
-  if (process.env.GITHUB_TOKEN?.trim()) {
-    delete process.env[GITHUB_MODELS_HYDRATED_ENV_MARKER]
-    return
-  }
-  if (isBareMode()) {
-    delete process.env[GITHUB_MODELS_HYDRATED_ENV_MARKER]
-    return
-  }
-  const t = readGithubModelsToken()
-  if (t) {
-    process.env.GITHUB_TOKEN = t
-    process.env[GITHUB_MODELS_HYDRATED_ENV_MARKER] = '1'
-    return
-  }
-  delete process.env[GITHUB_MODELS_HYDRATED_ENV_MARKER]
 }
 
 /**
@@ -105,20 +75,33 @@ export function hydrateGithubModelsTokenFromSecureStorage(): void {
  * If a stored Copilot token is expired/invalid and an OAuth token is present,
  * exchange the OAuth token for a fresh Copilot token and persist it.
  */
-export async function refreshGithubModelsTokenIfNeeded(): Promise<boolean> {
-  if (!isEnvTruthy(process.env.AGENC_USE_GITHUB)) {
-    return false
-  }
-  if (isBareMode()) {
+const refreshByHome = new Map<string, Promise<boolean>>()
+
+export function refreshGithubModelsTokenIfNeeded(
+  home: HomeContext,
+): Promise<boolean> {
+  const storageIdentity = secureStorageIdentityKey(home)
+  const existing = refreshByHome.get(storageIdentity)
+  if (existing) return existing
+  const pending = refreshGithubModelsTokenIfNeededImpl(home).finally(() => {
+    if (refreshByHome.get(storageIdentity) === pending) {
+      refreshByHome.delete(storageIdentity)
+    }
+  })
+  refreshByHome.set(storageIdentity, pending)
+  return pending
+}
+
+async function refreshGithubModelsTokenIfNeededImpl(
+  home: HomeContext,
+): Promise<boolean> {
+  if (getSelectedProviderName() !== 'github') {
     return false
   }
 
   try {
-    const secureStorage = getSecureStorage()
-    const data = secureStorage.read() as
-      | ({ githubModels?: GithubModelsCredentialBlob } & Record<string, unknown>)
-      | null
-    const blob = data?.githubModels
+    const data = await readNativeSecureStorageAsync(home)
+    const blob = normalizedGithubBlob(data.githubModels)
     const accessToken = blob?.accessToken?.trim() || ''
     const oauthToken = blob?.oauthAccessToken?.trim() || ''
 
@@ -128,9 +111,6 @@ export async function refreshGithubModelsTokenIfNeeded(): Promise<boolean> {
 
     const status = accessToken ? checkGithubTokenStatus(accessToken) : 'expired'
     if (status === 'valid') {
-      if (!process.env.GITHUB_TOKEN?.trim() && !process.env.GH_TOKEN?.trim()) {
-        process.env.GITHUB_TOKEN = accessToken
-      }
       return false
     }
 
@@ -139,60 +119,110 @@ export async function refreshGithubModelsTokenIfNeeded(): Promise<boolean> {
     }
 
     const refreshed = await exchangeForCopilotToken(oauthToken)
-    const saved = saveGithubModelsToken(refreshed.token, oauthToken)
-    if (!saved.success) {
-      return false
-    }
-
-    process.env.GITHUB_TOKEN = refreshed.token
-    return true
+    let conflict = false
+    updateNativeSecureStorage(
+      home,
+      current => {
+        const latest = normalizedGithubBlob(current.githubModels)
+        if (!sameGithubBlob(latest, blob)) {
+          conflict = true
+          return structuredClone(current) as SecureStorageData
+        }
+        return {
+          ...current,
+          githubModels: {
+            accessToken: refreshed.token.trim(),
+            oauthAccessToken: oauthToken,
+          },
+        }
+      },
+      'Native secure storage is unavailable; the refreshed GitHub Models token was not saved.',
+    )
+    return !conflict
   } catch {
     return false
   }
 }
 
 export function saveGithubModelsToken(
+  home: HomeContext,
   token: string,
   oauthToken?: string,
 ): {
   success: boolean
   warning?: string
 } {
-  if (isBareMode()) {
-    return { success: false, warning: 'Bare mode: secure storage is disabled.' }
-  }
   const trimmed = token.trim()
   if (!trimmed) {
     return { success: false, warning: 'Token is empty.' }
   }
-  const secureStorage = getSecureStorage()
-  const prev = secureStorage.read() || {}
-  const prevGithubModels = (prev as Record<string, unknown>)[
-    GITHUB_MODELS_STORAGE_KEY
-  ] as GithubModelsCredentialBlob | undefined
   const oauthTrimmed = oauthToken?.trim()
-  const mergedBlob: GithubModelsCredentialBlob = {
-    accessToken: trimmed,
+  try {
+    updateNativeSecureStorage(
+      home,
+      current => {
+        const previous = normalizedGithubBlob(current.githubModels)
+        const preservedOauth = oauthTrimmed ?? previous?.oauthAccessToken
+        return {
+          ...current,
+          [GITHUB_MODELS_STORAGE_KEY]: {
+            accessToken: trimmed,
+            ...(preservedOauth ? { oauthAccessToken: preservedOauth } : {}),
+          },
+        }
+      },
+      'Native secure storage is unavailable; the GitHub Models token was not saved.',
+    )
+    return { success: true }
+  } catch (error) {
+    return nativeFailure(error, 'GitHub Models token save failed.')
   }
-  if (oauthTrimmed) {
-    mergedBlob.oauthAccessToken = oauthTrimmed
-  } else if (prevGithubModels?.oauthAccessToken?.trim()) {
-    mergedBlob.oauthAccessToken = prevGithubModels.oauthAccessToken.trim()
-  }
-  const merged = {
-    ...(prev as Record<string, unknown>),
-    [GITHUB_MODELS_STORAGE_KEY]: mergedBlob,
-  }
-  return secureStorage.update(merged as typeof prev)
 }
 
-export function clearGithubModelsToken(): { success: boolean; warning?: string } {
-  if (isBareMode()) {
+export function clearGithubModelsToken(
+  home: HomeContext,
+): { success: boolean; warning?: string } {
+  try {
+    updateNativeSecureStorage(
+      home,
+      current => {
+        const next = { ...current }
+        delete next[GITHUB_MODELS_STORAGE_KEY]
+        return next
+      },
+      'Native secure storage is unavailable; the GitHub Models token was not cleared.',
+    )
     return { success: true }
+  } catch (error) {
+    return nativeFailure(error, 'GitHub Models token clear failed.')
   }
-  const secureStorage = getSecureStorage()
-  const prev = secureStorage.read() || {}
-  const next = { ...(prev as Record<string, unknown>) }
-  delete next[GITHUB_MODELS_STORAGE_KEY]
-  return secureStorage.update(next as typeof prev)
+}
+
+function normalizedGithubBlob(
+  value: GithubModelsCredentialBlob | undefined,
+): GithubModelsCredentialBlob | undefined {
+  const accessToken = value?.accessToken?.trim()
+  if (!accessToken) return undefined
+  const oauthAccessToken = value?.oauthAccessToken?.trim()
+  return {
+    accessToken,
+    ...(oauthAccessToken ? { oauthAccessToken } : {}),
+  }
+}
+
+function sameGithubBlob(
+  left: GithubModelsCredentialBlob | undefined,
+  right: GithubModelsCredentialBlob | undefined,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function nativeFailure(error: unknown, fallback: string): {
+  success: false
+  warning: string
+} {
+  return {
+    success: false,
+    warning: error instanceof Error ? error.message : fallback,
+  }
 }

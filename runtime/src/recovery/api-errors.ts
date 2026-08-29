@@ -1,9 +1,6 @@
 /**
  * API-error classification primitives used by the recovery ladder.
  *
- * Port of agenc `services/api/errors.ts` subset + the
- * `FallbackTriggeredError` from `services/api/withRetry.ts`.
- *
  * Every classifier here is a pure predicate — no I/O. The recovery
  * ladder uses them to decide which strategy branch applies to the
  * last assistant message.
@@ -21,15 +18,18 @@ import {
   LLMMessageValidationError,
   LLMProviderError,
 } from "../llm/errors.js";
+import {
+  parsePromptTooLongTokenCounts,
+  PROMPT_TOO_LONG_ERROR_MESSAGE,
+} from "../errors/api.js";
+export { parsePromptTooLongTokenCounts } from "../errors/api.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // String constants
 // ─────────────────────────────────────────────────────────────────────
 
-const PROMPT_TOO_LONG_ERROR_MESSAGE = "Prompt is too long";
-
 // ─────────────────────────────────────────────────────────────────────
-// FallbackTriggeredError — port of withRetry.ts:169
+// FallbackTriggeredError
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -101,20 +101,6 @@ export function isPromptTooLongMessage(msg: AssistantMessage): boolean {
  * Parse actual / limit token counts from a PTL error string. Used by
  * reactive compact to jump multiple groups in one retry.
  */
-export function parsePromptTooLongTokenCounts(raw: string): {
-  readonly actualTokens?: number;
-  readonly limitTokens?: number;
-} {
-  const match = raw.match(
-    /prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)/i,
-  );
-  if (!match) return {};
-  return {
-    actualTokens: Number.parseInt(match[1]!, 10),
-    limitTokens: Number.parseInt(match[2]!, 10),
-  };
-}
-
 /** Returns the gap by which PTL exceeded the limit, or undefined. */
 export function getPromptTooLongTokenGap(
   msg: AssistantMessage,

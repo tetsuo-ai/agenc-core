@@ -158,6 +158,12 @@ function vimLiteral(value) {
 async function openEmbeddedNeovim(session) {
   await session.start();
   await session.waitForPrompt({ timeout: 20_000 });
+  await waitForFrameText(
+    session,
+    /target\.txt/u,
+    "hosted-platform kill target in Explorer",
+    20_000,
+  );
   await sleep(300);
   session.send("\x17h");
   await session.waitForIdle({ idleWindow: 300, timeout: 10_000 });

@@ -2,7 +2,8 @@
  * Onboarding acts (onboarding-plan-2026-07 O-2/O-3/O-5/O-6): identity
  * scaffold + naming ritual gate, channel wizard with live-validated tokens
  * and the pairing walkthrough, guardrails-before-autonomy ordering, posture
- * recap, and the gateway env-file — all through scripted IO seams.
+ * recap, and native gateway credential storage — all through scripted IO
+ * seams.
  */
 
 import {
@@ -12,7 +13,6 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,10 +23,11 @@ import { createScriptedActIO } from "../../src/onboarding/acts/io.js";
 import { runIdentityAct } from "../../src/onboarding/acts/identity.js";
 import { runChannelAct } from "../../src/onboarding/acts/channel.js";
 import {
-  appendTomlSectionIfAbsent,
-  enableHooksInGatewayConfig,
+  enableHooksInCanonicalConfig,
   runAutonomyAct,
+  setCanonicalConfigSectionIfAbsent,
 } from "../../src/onboarding/acts/autonomy.js";
+import { loadCanonicalConfig } from "../../src/config/repository.js";
 import {
   buildOnboardingSurfaceSummary,
   runRecap,
@@ -36,10 +37,12 @@ import {
   readOnboardingActs,
 } from "../../src/onboarding/acts/state.js";
 import {
-  mergeGatewayEnv,
-  readGatewayEnvFile,
-  writeGatewayEnvEntries,
-} from "../../src/gateway/env-file.js";
+  mergeGatewayCredentialEnvironment,
+  readGatewayCredentialEnvironment,
+  readGatewayGeneratedToken,
+  updateGatewayCredentialEnvironment,
+} from "../../src/gateway/credentials.js";
+import { resolveHomeContext } from "../../src/config/home.js";
 import {
   parseAgenCOnboardCliArgs,
   buildOnboardStatusReport,
@@ -57,6 +60,7 @@ beforeEach(() => {
 afterEach(() => rmSync(home, { recursive: true, force: true }));
 
 const ENV = () => ({ AGENC_HOME: home, HOME: home });
+const HOME_CONTEXT = () => resolveHomeContext({ AGENC_HOME: home });
 
 describe("identity act (O-2)", () => {
   test("scaffolds SOUL/USER/BOOTSTRAP, trusts the workspace, runs the ritual", async () => {
@@ -120,19 +124,25 @@ describe("identity act (O-2)", () => {
   });
 });
 
-describe("gateway env file", () => {
-  test("round-trips entries at 0600 and merges UNDER the real env", () => {
-    writeGatewayEnvEntries(home, { AGENC_TELEGRAM_BOT_TOKEN: "tok-123" });
-    expect(statSync(join(home, "gateway", "env")).mode & 0o777).toBe(0o600);
-    expect(readGatewayEnvFile(home).AGENC_TELEGRAM_BOT_TOKEN).toBe("tok-123");
+describe("gateway credential storage", () => {
+  test("round-trips entries and merges UNDER the explicit environment", () => {
+    const homeContext = HOME_CONTEXT();
+    updateGatewayCredentialEnvironment(homeContext, {
+      AGENC_TELEGRAM_BOT_TOKEN: "tok-123",
+    });
+    expect(
+      readGatewayCredentialEnvironment(homeContext).AGENC_TELEGRAM_BOT_TOKEN,
+    ).toBe("tok-123");
     // Explicit env always wins.
-    const merged = mergeGatewayEnv(home, {
+    const merged = mergeGatewayCredentialEnvironment(homeContext, {
       AGENC_TELEGRAM_BOT_TOKEN: "explicit",
     });
     expect(merged.AGENC_TELEGRAM_BOT_TOKEN).toBe("explicit");
     // Second write merges, not replaces.
-    writeGatewayEnvEntries(home, { AGENC_DISCORD_BOT_TOKEN: "d-1" });
-    expect(readGatewayEnvFile(home)).toMatchObject({
+    updateGatewayCredentialEnvironment(homeContext, {
+      AGENC_DISCORD_BOT_TOKEN: "d-1",
+    });
+    expect(readGatewayCredentialEnvironment(homeContext)).toMatchObject({
       AGENC_TELEGRAM_BOT_TOKEN: "tok-123",
       AGENC_DISCORD_BOT_TOKEN: "d-1",
     });
@@ -150,7 +160,7 @@ describe("channel act (O-3)", () => {
     slack: vi.fn(async () => ({ ok: true, detail: "bot user U1" })),
   };
 
-  test("telegram: validates live (retry on bad token), stores 0600, runs the pairing walkthrough", async () => {
+  test("telegram: validates live (retry on bad token), stores natively, runs the pairing walkthrough", async () => {
     const stopped = vi.fn();
     const startGatewayFn = vi.fn(async () => {
       // The 'user pairs from their phone': the gateway would write this.
@@ -185,9 +195,11 @@ describe("channel act (O-3)", () => {
 
     expect(code).toBe(0);
     expect(validators.telegram).toHaveBeenCalledTimes(2);
-    expect(readGatewayEnvFile(home).AGENC_TELEGRAM_BOT_TOKEN).toBe("good-token");
-    expect(statSync(join(home, "gateway", "env")).mode & 0o777).toBe(0o600);
-    // The gateway env file rode into the smoke run.
+    expect(
+      readGatewayCredentialEnvironment(HOME_CONTEXT())
+        .AGENC_TELEGRAM_BOT_TOKEN,
+    ).toBe("good-token");
+    // The stored credential reached the smoke run.
     const startEnv = (startGatewayFn.mock.calls[0][0] as { env: Record<string, string> })
       .env;
     expect(startEnv.AGENC_TELEGRAM_BOT_TOKEN).toBe("good-token");
@@ -196,6 +208,34 @@ describe("channel act (O-3)", () => {
     expect(readOnboardingActs(home).acts.channel?.detail?.channel).toBe(
       "telegram",
     );
+  });
+
+  test("stores channel credentials in the captured local-OAuth storage identity", async () => {
+    const environment = Object.freeze({
+      AGENC_HOME: home,
+      HOME: tmpdir(),
+      USER_TYPE: "ant",
+      USE_LOCAL_OAUTH: "1",
+    });
+    const credentialHome = resolveHomeContext(environment, {
+      platformHome: environment.HOME,
+    });
+    const { io } = createScriptedActIO([
+      "telegram",
+      "good-token",
+      "n",
+    ]);
+
+    await expect(runChannelAct({
+      agencHome: home,
+      io,
+      env: environment,
+      validators,
+    })).resolves.toBe(0);
+    expect(
+      readGatewayCredentialEnvironment(credentialHome)
+        .AGENC_TELEGRAM_BOT_TOKEN,
+    ).toBe("good-token");
   });
 
   test("webchat needs no token and surfaces the operator URL", async () => {
@@ -248,9 +288,10 @@ describe("autonomy act (O-5): guardrails before autonomy", () => {
 
     expect(code).toBe(0);
     const toml = readFileSync(join(home, "config.toml"), "utf8");
-    expect(toml).toContain("[budget]");
-    expect(toml).toContain("daily_usd = 2.5");
-    expect(toml).toContain("[heartbeat]");
+    expect(toml).toContain('"config_version" = 2');
+    expect(toml).toContain('["budget"]');
+    expect(toml).toContain('"daily_usd" = 2.5');
+    expect(toml).toContain('["heartbeat"]');
     expect(readFileSync(join(ws, "HEARTBEAT.md"), "utf8")).toContain(
       "HEARTBEAT_OK",
     );
@@ -261,13 +302,26 @@ describe("autonomy act (O-5): guardrails before autonomy", () => {
       cron: "0 9 * * *",
       prompt: "morning briefing please",
     });
-    const gatewayConfig = JSON.parse(
-      readFileSync(join(home, "gateway", "config.json"), "utf8"),
-    ) as { hooks?: { enabled?: boolean } };
-    expect(gatewayConfig.hooks?.enabled).toBe(true);
-    // The hooks token was minted for the curl example.
-    expect(existsSync(join(home, "gateway", "hooks-token"))).toBe(true);
+    // The hooks token was minted in native secure storage for the curl example.
+    expect(readGatewayGeneratedToken(HOME_CONTEXT(), "hooks")).toBeTruthy();
     expect(output.join("\n")).toContain("curl -s -X POST");
+
+    const loaded = await loadCanonicalConfig({
+      home,
+      env: ENV(),
+      cwd: ws,
+      projectRoot: ws,
+      projectTrusted: true,
+    });
+    expect(loaded.config.budget).toMatchObject({
+      enabled: true,
+      daily_usd: 2.5,
+    });
+    expect(loaded.config.heartbeat).toMatchObject({
+      enabled: true,
+      interval_seconds: 1800,
+    });
+    expect(loaded.config.gateway?.hooks?.enabled).toBe(true);
   });
 
   test("REFUSES heartbeat/cron/hooks without a cap unless capless is explicit", async () => {
@@ -282,30 +336,74 @@ describe("autonomy act (O-5): guardrails before autonomy", () => {
     const code = await runAutonomyAct({ agencHome: home, io, env: ENV() });
     expect(code).toBe(0);
     expect(readFileSync(join(home, "config.toml"), "utf8")).toContain(
-      "daily_usd = 3",
+      '"daily_usd" = 3',
     );
     expect(output.join("\n")).toContain("without limit");
   });
 
-  test("appendTomlSectionIfAbsent never rewrites an existing section", () => {
-    writeFileSync(join(home, "config.toml"), "[budget]\ndaily_usd = 99\n");
-    const wrote = appendTomlSectionIfAbsent(home, "budget", ["daily_usd = 1"]);
+  test("mints hooks credentials in the captured custom-OAuth storage identity", async () => {
+    writeFileSync(
+      join(home, "config.toml"),
+      [
+        "config_version = 2",
+        "[budget]",
+        "enabled = true",
+        "daily_usd = 2",
+        "",
+      ].join("\n"),
+    );
+    const environment = Object.freeze({
+      AGENC_HOME: home,
+      HOME: tmpdir(),
+      AGENC_CUSTOM_OAUTH_URL: "https://agenc.tech",
+    });
+    const credentialHome = resolveHomeContext(environment, {
+      platformHome: environment.HOME,
+    });
+    const { io } = createScriptedActIO([
+      "n", // heartbeat
+      "n", // scheduled job
+      "y", // hooks
+    ]);
+
+    await expect(runAutonomyAct({
+      agencHome: home,
+      io,
+      env: environment,
+    })).resolves.toBe(0);
+    expect(readGatewayGeneratedToken(credentialHome, "hooks")).toBeTruthy();
+  });
+
+  test("canonical section creation never rewrites an existing section", () => {
+    writeFileSync(
+      join(home, "config.toml"),
+      'config_version = 2\n[budget]\ndaily_usd = 99\n',
+    );
+    const wrote = setCanonicalConfigSectionIfAbsent(home, "budget", {
+      daily_usd: 1,
+    });
     expect(wrote).toBe(false);
     expect(readFileSync(join(home, "config.toml"), "utf8")).toContain("99");
   });
 
-  test("enableHooksInGatewayConfig preserves unrelated keys", () => {
-    mkdirSync(join(home, "gateway"), { recursive: true });
+  test("canonical gateway hook enablement preserves unrelated keys", async () => {
     writeFileSync(
-      join(home, "gateway", "config.json"),
-      JSON.stringify({ channels: { telegram: { dmPolicy: "pairing", allowlist: [] } } }),
+      join(home, "config.toml"),
+      [
+        "config_version = 2",
+        '[gateway.channels.telegram]',
+        'dmPolicy = "pairing"',
+        'allowlist = []',
+        '',
+      ].join("\n"),
     );
-    enableHooksInGatewayConfig(home);
-    const config = JSON.parse(
-      readFileSync(join(home, "gateway", "config.json"), "utf8"),
-    ) as Record<string, unknown>;
-    expect(config.channels).toBeDefined();
-    expect((config.hooks as { enabled: boolean }).enabled).toBe(true);
+    enableHooksInCanonicalConfig(home);
+    const loaded = await loadCanonicalConfig({ home, env: ENV() });
+    expect(loaded.config.gateway?.channels?.telegram).toEqual({
+      dmPolicy: "pairing",
+      allowlist: [],
+    });
+    expect(loaded.config.gateway?.hooks?.enabled).toBe(true);
   });
 });
 
@@ -315,8 +413,10 @@ describe("recap (O-6) + status funnel", () => {
     writeFileSync(join(ws, "SOUL.md"), "s");
     writeFileSync(join(ws, "IDENTITY.md"), "i");
     markOnboardingActComplete(home, "identity", { workspace: ws });
-    writeGatewayEnvEntries(home, { AGENC_TELEGRAM_BOT_TOKEN: "t" });
-    enableHooksInGatewayConfig(home);
+    updateGatewayCredentialEnvironment(HOME_CONTEXT(), {
+      AGENC_TELEGRAM_BOT_TOKEN: "t",
+    });
+    enableHooksInCanonicalConfig(home);
 
     const summary = await buildOnboardingSurfaceSummary(home, ENV());
     expect(summary.personaFiles).toEqual(["SOUL.md", "IDENTITY.md"]);
@@ -336,6 +436,29 @@ describe("recap (O-6) + status funnel", () => {
     expect(text).toContain("telegram (pairing-gated)");
     expect(text).toContain("Things to try:");
   });
+
+  test.each([
+    ["local", { USER_TYPE: "ant", USE_LOCAL_OAUTH: "1" }],
+    ["custom", { AGENC_CUSTOM_OAUTH_URL: "https://agenc.tech" }],
+  ] as const)(
+    "summarizes channels from the captured %s OAuth storage identity",
+    async (_label, oauthEnvironment) => {
+      const environment = Object.freeze({
+        AGENC_HOME: home,
+        HOME: tmpdir(),
+        ...oauthEnvironment,
+      });
+      const credentialHome = resolveHomeContext(environment, {
+        platformHome: environment.HOME,
+      });
+      updateGatewayCredentialEnvironment(credentialHome, {
+        AGENC_TELEGRAM_BOT_TOKEN: "namespace-token",
+      });
+
+      const summary = await buildOnboardingSurfaceSummary(home, environment);
+      expect(summary.channels).toEqual(["telegram"]);
+    },
+  );
 
   test("onboard CLI parses acts and --status reports the funnel", async () => {
     expect(parseAgenCOnboardCliArgs(["onboard", "identity"])).toEqual({
@@ -360,7 +483,7 @@ describe("recap (O-6) + status funnel", () => {
 });
 
 describe("gateway install-service (O-4)", () => {
-  test("linux: writes the systemd user unit with EnvironmentFile and enables it", async () => {
+  test("linux: writes the systemd user unit without a plaintext credential file and enables it", async () => {
     const { installGatewayService } = await import("../../src/bin/gateway-cli.js");
     const out: string[] = [];
     const commands: string[][] = [];
@@ -383,7 +506,7 @@ describe("gateway install-service (O-4)", () => {
       "utf8",
     );
     expect(unit).toContain("ExecStart=/usr/bin/node /opt/agenc/bin/agenc.js gateway run");
-    expect(unit).toContain(`EnvironmentFile=-${join(home, "gateway", "env")}`);
+    expect(unit).not.toContain("EnvironmentFile=");
     expect(commands).toEqual([
       ["systemctl", "--user", "daemon-reload"],
       ["systemctl", "--user", "enable", "--now", "agenc-gateway"],

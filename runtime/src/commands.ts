@@ -1,6 +1,5 @@
 import type * as React from "react";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 
 import { buildDefaultRegistry } from "./commands/registry.js";
 import type {
@@ -23,16 +22,27 @@ import {
   loadPluginSkills,
 } from "./plugins/registration/load-plugin-commands.js";
 import { clearPluginRegistrationCaches } from "./plugins/registration/manager.js";
+import { resolvePluginStorageAuthority } from "./plugins/directories.js";
 import type { AgenCConfig } from "./config/schema.js";
+import type { SessionServices } from "./session/session.js";
 import { isRecord } from "./utils/record.js";
 import { logForDebugging } from "./utils/debug.js";
+import {
+  CanonicalAuthorityCache,
+  getCanonicalSettingsAuthority,
+} from "./utils/settings/canonicalAuthority.js";
 
 export type LocalCommandResult =
   | { type: "text"; value: string }
   | { type: "compact"; compactionResult?: unknown; displayText?: string }
   | { type: "skip" };
 
-type PluginConfigSurface = Pick<AgenCConfig, "plugins" | "enabledPlugins">;
+type PluginConfigSurface = Pick<AgenCConfig, "plugins">;
+
+export interface CommandDiscoveryAuthority {
+  readonly pluginStorageRoot: string;
+  readonly skillsManager?: SessionServices["skillsManager"];
+}
 
 export type CommandResultDisplay = "skip" | "system" | "user";
 
@@ -287,8 +297,7 @@ let projectedCommandCache: Command[] | null = null;
 const commandProviders = new Set<
   (cwd: string) => Promise<readonly Command[]> | readonly Command[]
 >();
-const localSkillServicesByRoot = new Map<
-  string,
+const localSkillServicesByRoot = new CanonicalAuthorityCache<
   ReturnType<typeof createLocalSkillsServices>
 >();
 
@@ -309,25 +318,40 @@ export function registerCommandProvider(
   };
 }
 
-function localSkillsKey(cwd: string): string {
-  const agencHome = process.env.AGENC_HOME ?? join(homedir(), ".agenc");
-  return `${resolve(cwd)}\u0000${resolve(agencHome)}`;
+function localSkillsKey(cwd: string, pluginStorageRoot: string): string {
+  return `${resolve(cwd)}\u0000${pluginStorageRoot}`;
 }
 
-function localSkillServices(cwd: string): ReturnType<typeof createLocalSkillsServices> {
-  const key = localSkillsKey(cwd);
-  let services = localSkillServicesByRoot.get(key);
+function localSkillServices(
+  cwd: string,
+  pluginStorageRoot: string,
+): ReturnType<typeof createLocalSkillsServices> {
+  const authority = getCanonicalSettingsAuthority();
+  if (authority === null) {
+    throw new Error(
+      "Local skill command discovery requires a ConfigStore authority",
+    );
+  }
+  const key = localSkillsKey(cwd, pluginStorageRoot);
+  let services = localSkillServicesByRoot.get(key, authority);
   if (!services) {
-    const [workspaceRoot, agencHome] = key.split("\u0000") as [string, string];
-    services = createLocalSkillsServices({ workspaceRoot, agencHome });
-    localSkillServicesByRoot.set(key, services);
+    const [workspaceRoot, capturedPluginStorageRoot] = key.split("\u0000") as [
+      string,
+      string,
+    ];
+    services = createLocalSkillsServices({
+      workspaceRoot,
+      agencHome: authority.homeContext.path,
+      pluginStorageRoot: capturedPluginStorageRoot,
+    });
+    localSkillServicesByRoot.set(key, services, authority);
   }
   return services;
 }
 
 function projectLocalSkill(
   skill: LocalSkillMetadata,
-  services: ReturnType<typeof createLocalSkillsServices>,
+  skillsManager: SessionServices["skillsManager"],
 ): Command {
   const repositoryControlled = isRepositoryControlledSkillSource(skill.source);
   return {
@@ -355,7 +379,7 @@ function projectLocalSkill(
     userFacingName: () => skill.displayName ?? skill.name,
     getPromptForCommand: async (args, context) => {
       void context;
-      const rendered = await services.skillsManager.renderSkill?.({
+      const rendered = await skillsManager.renderSkill?.({
         name: skill.name,
         args,
       });
@@ -370,14 +394,20 @@ function projectLocalSkill(
 
 async function loadLocalSkillCommands(
   cwd: string,
+  pluginStorageRoot: string,
   config: unknown = {},
+  skillsManager?: SessionServices["skillsManager"],
 ): Promise<readonly Command[]> {
   try {
-    const services = localSkillServices(cwd);
-    const outcome = await services.skillsManager.skillsForConfig(config, null);
-    return (outcome.availableSkills ?? []).map(skill =>
-      projectLocalSkill(skill as LocalSkillMetadata, services),
-    );
+    const manager =
+      skillsManager ?? localSkillServices(cwd, pluginStorageRoot).skillsManager;
+    const outcome = await manager.skillsForConfig(config, null);
+    return (outcome.availableSkills ?? [])
+      .map(skill => skill as LocalSkillMetadata)
+      // Plugin commands come from loadPluginSkills below, where the manifest
+      // identity is available and the command receives its required namespace.
+      .filter(skill => skill.loadedFrom !== "plugin")
+      .map(skill => projectLocalSkill(skill, manager));
   } catch {
     return [];
   }
@@ -418,44 +448,24 @@ async function callCommandSource(
 
 async function loadProductionCommandSources(
   cwd: string,
+  pluginStorageRoot: string,
   config?: PluginConfigSurface,
 ): Promise<readonly Command[]> {
-  const loadSkills = () =>
-    import("./skills/loadSkillsDir.js") as unknown as Promise<Record<string, unknown>>;
   const loadBundledSkills = () =>
     import("./skills/bundledSkills.js") as unknown as Promise<Record<string, unknown>>;
   const loadBuiltinPlugins = () =>
     import("./plugins/builtin/index.js") as unknown as Promise<Record<string, unknown>>;
 
-  const [
-    skillDirCommands,
-    dynamicSkills,
-    bundledSkills,
-    builtinPluginSkills,
-    pluginCommands,
-    pluginSkills,
-  ] = await Promise.all([
-    callCommandSource(loadSkills, "getSkillDirCommands", cwd),
-    callCommandSource(loadSkills, "getDynamicSkills"),
-    callCommandSource(loadBundledSkills, "getBundledSkills"),
-    callCommandSource(loadBuiltinPlugins, "getBuiltinPluginSkillCommands"),
-    loadPluginCommands({ cwd, config }),
-    loadPluginSkills({ cwd, config }),
-  ]);
-  // The workflow-commands source previously loaded
-  // ./tools/WorkflowTool/createWorkflowCommand.js — that module was
-  // removed during the runtime migration, so the dynamic import always
-  // failed and returned []. Dropped from the loader list now that esbuild
-  // needs literal specifiers; if the workflow source returns, add a
-  // literal-import loader and a corresponding bundle entry.
-  const workflowCommands: readonly Command[] = [];
-
+  const [bundledSkills, builtinPluginSkills, pluginCommands, pluginSkills] =
+    await Promise.all([
+      callCommandSource(loadBundledSkills, "getBundledSkills"),
+      callCommandSource(loadBuiltinPlugins, "getBuiltinPluginSkillCommands"),
+      loadPluginCommands({ cwd, config, pluginStorageRoot }),
+      loadPluginSkills({ cwd, config, pluginStorageRoot }),
+    ]);
   return [
     ...bundledSkills,
     ...builtinPluginSkills,
-    ...skillDirCommands,
-    ...dynamicSkills,
-    ...workflowCommands,
     ...pluginCommands,
     ...pluginSkills,
   ];
@@ -473,13 +483,22 @@ export function listTuiCommandList(registry?: SlashCommandRegistry): readonly Co
 
 export async function getCommands(
   cwd: string,
+  authority: CommandDiscoveryAuthority,
   config: unknown = {},
 ): Promise<Command[]> {
+  const pluginStorageRoot = resolvePluginStorageAuthority(
+    authority.pluginStorageRoot,
+  ).pluginStorageRoot;
   const pluginConfig = pluginConfigSurface(config);
   const dynamicCommands = await Promise.all(
     [
-      loadLocalSkillCommands(cwd, config),
-      loadProductionCommandSources(cwd, pluginConfig),
+      loadLocalSkillCommands(
+        cwd,
+        pluginStorageRoot,
+        config,
+        authority.skillsManager,
+      ),
+      loadProductionCommandSources(cwd, pluginStorageRoot, pluginConfig),
       ...[...commandProviders].map(async provider => [...(await provider(cwd))]),
     ],
   );
@@ -679,8 +698,17 @@ export function isBridgeSafeCommand(cmd: Command): boolean {
 export async function getSkillToolCommands(
   cwd: string,
   config: unknown = {},
+  skillsManager?: SessionServices["skillsManager"],
 ): Promise<Command[]> {
-  const allCommands = await getCommands(cwd, config);
+  const pluginStorageRoot = resolvePluginStorageAuthority().pluginStorageRoot;
+  const allCommands = await getCommands(
+    cwd,
+    {
+      pluginStorageRoot,
+      ...(skillsManager !== undefined ? { skillsManager } : {}),
+    },
+    config,
+  );
   return allCommands.filter(
     command =>
       command.type === "prompt" &&
@@ -688,7 +716,6 @@ export async function getSkillToolCommands(
       command.source !== "builtin" &&
       (command.loadedFrom === "bundled" ||
         command.loadedFrom === "skills" ||
-        command.loadedFrom === "commands_DEPRECATED" ||
         command.hasUserSpecifiedDescription ||
         command.whenToUse),
   );
@@ -710,14 +737,15 @@ export function getMcpSkillCommands(
 }
 
 export function clearCommandMemoizationCaches(): void {
-  for (const services of localSkillServicesByRoot.values()) {
-    services.skillsManager.clearSkillCaches?.();
+  const authority = getCanonicalSettingsAuthority();
+  if (authority === null) {
+    localSkillServicesByRoot.clear();
+  } else {
+    for (const services of localSkillServicesByRoot.values(authority)) {
+      services.skillsManager.clearSkillCaches?.();
+    }
+    localSkillServicesByRoot.clearAuthority(authority);
   }
-  localSkillServicesByRoot.clear();
-  const skillsModulePath: string = "./skills/loadSkillsDir.js";
-  void import(skillsModulePath).then(module => {
-    module.clearSkillCaches?.();
-  }).catch(() => undefined);
   clearPluginRegistrationCaches();
   getSkillToolCommands.cache.clear();
 }

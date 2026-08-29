@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import type { ToolEvaluatorContext } from "../../permissions/evaluator.js";
-import { applyPermissionUpdate } from "../../permissions/rules.js";
+import { applyPermissionUpdate } from "../../permissions/permission-updates.js";
 import { createEmptyToolPermissionContext } from "../../permissions/types.js";
 import {
   clearFileReadListenersForTests,
@@ -128,7 +128,7 @@ describe("FileRead tool", () => {
     }
     if (root) await rm(root, { recursive: true, force: true });
     root = "";
-    clearSessionReadState(sessionId);
+    clearSessionReadState(sessionId, tmpdir());
     clearAllPlanSlugs();
   });
 

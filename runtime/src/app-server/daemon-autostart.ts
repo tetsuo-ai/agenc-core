@@ -41,7 +41,7 @@ import {
   type AgenCDaemonInstanceIdentity,
   type AgenCDaemonProcessIdentity,
 } from "./daemon-instance-identity.js";
-import { loadConfig } from "../config/loader.js";
+import { loadCanonicalDaemonConfig } from "../config/repository.js";
 import {
   resolveMcpServeDefaults,
   type ResolvedMcpServeDefaults,
@@ -69,6 +69,18 @@ const AGENC_DAEMON_BUILD_SKEW_STOP_TIMEOUT_MS = 5_000;
 const AGENC_DAEMON_ORPHAN_STOP_TIMEOUT_MS = 1_000;
 const AGENC_DAEMON_FORCE_STOP_GRACE_MS = 2_000;
 const AGENC_DAEMON_STOP_POLL_MS = 50;
+/**
+ * Restart-cycle bound for the two self-restart paths (legacy identity-less
+ * daemon, build-identity skew). When the condition that forced a restart is a
+ * permanent property of the environment — e.g. the spawned daemon resolves a
+ * different dist/VERSION than the CLI — an unbounded retry respawns a daemon
+ * and rescans /proc forever at ~200% CPU behind a blank screen. Three cycles
+ * with backoff is enough for every transient case (an old daemon finishing
+ * shutdown, a race with a concurrent CLI); after that the environment is
+ * broken and the operator needs the error.
+ */
+const AGENC_DAEMON_AUTOSTART_MAX_RESTART_CYCLES = 3;
+const AGENC_DAEMON_AUTOSTART_RESTART_BACKOFF_MS = [250, 1_000, 4_000] as const;
 
 export interface AgenCDaemonConnectionTarget {
   readonly pid: number;
@@ -189,7 +201,7 @@ export async function resolveAgenCDaemonAutostartConfig(
   userHome?: string,
 ): Promise<AgenCDaemonAutostartConfig> {
   const home = resolveAgenCDaemonHome(env, userHome);
-  const loaded = await loadConfig({ home });
+  const loaded = await loadCanonicalDaemonConfig({ env, home });
   const configAutostart = loaded.config.daemon?.autostart ?? true;
   return {
     daemonEnabled: shouldAutostartAgenCDaemon(env, configAutostart),
@@ -199,6 +211,48 @@ export async function resolveAgenCDaemonAutostartConfig(
 
 export async function ensureAgenCDaemonAutostart(
   options: AgenCDaemonAutostartOptions = {},
+): Promise<AgenCDaemonAutostartResult> {
+  return ensureAgenCDaemonAutostartCycle(options, 0);
+}
+
+/**
+ * Bounded restart-and-retry for the self-restart paths inside the ensure
+ * cycle. `restartCycle` counts how many times the whole cycle has already
+ * re-entered itself; past the cap the environment is treated as broken and a
+ * typed error carries the repeating reason to the caller instead of spinning.
+ */
+async function retryAutostartAfterRestart(
+  options: AgenCDaemonAutostartOptions,
+  restartCycle: number,
+  host: AgenCDaemonAutostartHost,
+  reason: string,
+): Promise<AgenCDaemonAutostartResult> {
+  if (restartCycle >= AGENC_DAEMON_AUTOSTART_MAX_RESTART_CYCLES) {
+    throw new AgenCDaemonAutostartError(
+      `AgenC daemon autostart gave up after ${restartCycle} restart cycles: ${reason} on every attempt. ` +
+        `Inspect the daemon with \`agenc daemon status\`, stop it with \`agenc daemon stop\`, and check that the ` +
+        `installed runtime and the daemon entrypoint resolve the same build before retrying.`,
+    );
+  }
+  // The first restart is the common legitimate case (e.g. a runtime upgrade
+  // replacing a skewed daemon) and stays immediate; backoff only applies once
+  // the condition repeats, which is where the historical spin lived.
+  if (restartCycle > 0) {
+    await host.sleep(
+      AGENC_DAEMON_AUTOSTART_RESTART_BACKOFF_MS[
+        Math.min(
+          restartCycle - 1,
+          AGENC_DAEMON_AUTOSTART_RESTART_BACKOFF_MS.length - 1,
+        )
+      ],
+    );
+  }
+  return ensureAgenCDaemonAutostartCycle(options, restartCycle + 1);
+}
+
+async function ensureAgenCDaemonAutostartCycle(
+  options: AgenCDaemonAutostartOptions,
+  restartCycle: number,
 ): Promise<AgenCDaemonAutostartResult> {
   const host: AgenCDaemonAutostartHost =
     options.host ?? createNodeDaemonCliHost();
@@ -219,41 +273,51 @@ export async function ensureAgenCDaemonAutostart(
     // numeric PID as the daemon: bind the sidecar to the authenticated socket
     // and stable process identity, then repair the pid file while the lifecycle
     // transaction excludes a concurrent publisher.
-    await withAgenCDaemonLifecycleLock(host, async () => {
-      pid = await readAgenCDaemonPid(pidPath);
-      const sidecarIdentity = daemonInstanceIdentityFromRuntimeInfo(
-        readDaemonRuntimeInfo(runtimeInfoPath),
-      );
-      if (
-        pid !== null &&
-        host.isPidRunning(pid) &&
-        sidecarIdentity !== null &&
-        sidecarIdentity.pid !== pid
-      ) {
-        const stalePid = pid;
-        const rebound = await proveRecordedAgenCDaemonInstance({
-          expectedPid: sidecarIdentity.pid,
-          pidPath,
-          runtimeInfoPath,
-          host,
-          options,
-        });
-        const sidecarNow = daemonInstanceIdentityFromRuntimeInfo(
+    const initialSidecarIdentity = daemonInstanceIdentityFromRuntimeInfo(
+      readDaemonRuntimeInfo(runtimeInfoPath),
+    );
+    if (
+      pid === null ||
+      !host.isPidRunning(pid) ||
+      initialSidecarIdentity === null ||
+      initialSidecarIdentity.pid !== pid
+    ) {
+      await withAgenCDaemonLifecycleLock(host, async () => {
+        pid = await readAgenCDaemonPid(pidPath);
+        const sidecarIdentity = daemonInstanceIdentityFromRuntimeInfo(
           readDaemonRuntimeInfo(runtimeInfoPath),
         );
         if (
-          rebound !== null &&
-          (await readAgenCDaemonPid(pidPath)) === stalePid &&
-          sidecarNow !== null &&
-          sameAgenCDaemonInstanceIdentity(rebound.identity, sidecarNow)
+          pid !== null &&
+          host.isPidRunning(pid) &&
+          sidecarIdentity !== null &&
+          sidecarIdentity.pid !== pid
         ) {
-          await writeAgenCDaemonPid(pidPath, rebound.identity.pid);
-          pid = rebound.identity.pid;
-        } else {
-          pid = await readAgenCDaemonPid(pidPath);
+          const stalePid = pid;
+          const rebound = await proveRecordedAgenCDaemonInstance({
+            expectedPid: sidecarIdentity.pid,
+            pidPath,
+            runtimeInfoPath,
+            host,
+            options,
+          });
+          const sidecarNow = daemonInstanceIdentityFromRuntimeInfo(
+            readDaemonRuntimeInfo(runtimeInfoPath),
+          );
+          if (
+            rebound !== null &&
+            (await readAgenCDaemonPid(pidPath)) === stalePid &&
+            sidecarNow !== null &&
+            sameAgenCDaemonInstanceIdentity(rebound.identity, sidecarNow)
+          ) {
+            await writeAgenCDaemonPid(pidPath, rebound.identity.pid);
+            pid = rebound.identity.pid;
+          } else {
+            pid = await readAgenCDaemonPid(pidPath);
+          }
         }
-      }
-    });
+      });
+    }
 
     let respawnReason: string | null = null;
     if (pid !== null && !host.isPidRunning(pid)) {
@@ -465,7 +529,12 @@ export async function ensureAgenCDaemonAutostart(
           removeDaemonRuntimeInfo(runtimeInfoPath);
         }
       });
-      return ensureAgenCDaemonAutostart(options);
+      return retryAutostartAfterRestart(
+        options,
+        restartCycle,
+        host,
+        "the recorded daemon lacked a portable instance identity and had to be restarted",
+      );
     }
 
     let verifiedInstance: BoundAgenCDaemonInstance | null;
@@ -525,7 +594,12 @@ export async function ensureAgenCDaemonAutostart(
       } catch (error) {
         throw error;
       }
-      return ensureAgenCDaemonAutostart(options);
+      return retryAutostartAfterRestart(
+        options,
+        restartCycle,
+        host,
+        "the daemon build identity differed from the on-disk runtime and it was restarted",
+      );
     }
     try {
       await reapSupersededAgenCDaemons({

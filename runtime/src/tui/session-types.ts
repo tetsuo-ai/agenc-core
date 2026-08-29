@@ -1,13 +1,14 @@
 import type { LLMMessage } from "../llm/types.js";
-import type { AgenCConfig } from "../config/schema.js";
 import type { ConfigStore } from "../config/store.js";
 import type { Event } from "../session/event-log.js";
 import type { HistoryReplacedEvent } from "../session/transcript-replacement.js";
 import type {
   IdleInputAdmission,
   IdleInputOwnership,
+  McpSurfaceSnapshot,
   SessionServices,
 } from "../session/session.js";
+import type { ProviderModelSelectionOutcome } from "../contracts/provider-model-selection.js";
 import type { ApprovalResolver } from "../tools/orchestrator.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
@@ -23,6 +24,7 @@ import type { AgenCRealtimeTuiControls } from "./realtime/controller.js";
 import type { FpsMetrics } from "../utils/fpsTracker.js";
 import type { AgentRoleWorkspace } from "../agents/role-workspace.js";
 import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
+import type { AgentRuntimeOptions } from "../session/runtime-options.js";
 import type {
   WorkspaceEditorAcquireParams,
   WorkspaceEditorCancelPredictionSessionParams,
@@ -60,13 +62,13 @@ import type {
   WorkspaceEditorTopologyReserveResult,
   SessionRollbackCompactionResult,
   SessionExtendCompactionRollbackRetentionResult,
+  SessionShellExecuteResult,
 } from "../app-server/protocol/index.js";
 
 export interface AgenCCompactProgressControls {
   setStreamMode?(mode: "requesting" | "responding" | null): void;
   setResponseLength?(updater: (length: number) => number): void;
   onCompactProgress?(event: unknown): void;
-  setSDKStatus?(status: "compacting" | null): void;
 }
 
 export interface PermissionModeRegistryLike {
@@ -80,6 +82,12 @@ export interface PermissionModeRegistryLike {
   ): () => void;
 }
 
+export interface AgenCShellExecuteParams {
+  readonly command: string;
+  readonly commandId: string;
+  readonly signal?: AbortSignal;
+}
+
 export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   readonly conversationId: string;
   /** Immutable role-discovery identity; execution cwd may move independently. */
@@ -91,10 +99,18 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     readonly allowedAgentTypes?: readonly unknown[];
   };
   readonly services: {
+    readonly runtimeOptions?: AgentRuntimeOptions;
     readonly permissionModeRegistry: PermissionModeRegistryLike;
+    /** In-process session provider authority. */
+    readonly providerService?: SessionServices["providerService"];
+    /** Immutable provider environment for daemon-only bridge sessions. */
+    readonly providerEnvironment?: SessionServices["providerEnvironment"];
     readonly sandboxExecutionBroker?: SessionServices["sandboxExecutionBroker"];
+    /** Admission authority present only on genuine in-process Sessions. */
+    readonly executionAdmission?: SessionServices["executionAdmission"];
     readonly configStore?: ConfigStore;
     readonly authManager?: SessionServices["authManager"];
+    readonly authBackend?: SessionServices["authBackend"];
     readonly mcpManager?: SessionServices["mcpManager"];
     readonly skillsManager?: SessionServices["skillsManager"];
     readonly skillsWatcher?: SessionServices["skillsWatcher"];
@@ -157,13 +173,6 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
       readonly outputTokens: number;
       readonly totalTokens: number;
       readonly costUsd: number;
-    };
-    readonly cacheStats: {
-      readonly requestCount: number;
-      readonly cacheReadInputTokens: number;
-      readonly cacheCreationInputTokens: number;
-      readonly cacheTotalInputTokens: number;
-      readonly hitRate: number | null;
     };
   }>;
   partialCompactFromMessage?(params: {
@@ -232,6 +241,9 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     readonly displayText?: string;
   }>;
   readonly realtime?: AgenCRealtimeTuiControls;
+  executeShellCommand?(
+    params: AgenCShellExecuteParams,
+  ): Promise<SessionShellExecuteResult>;
   submit?(
     message: string,
     opts?: {
@@ -335,18 +347,27 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     setExpandedView?: (next: "none" | "tasks") => void;
     setAppState?: (updater: (prev: unknown) => unknown) => void;
   };
+  applyProviderModelSelection?(selection: {
+    readonly provider: string;
+    readonly model: string;
+  }): Promise<ProviderModelSelectionOutcome>;
   setPendingProviderSwitch?(
     pending: { provider: string; model: string; profile?: string } | null,
   ): void;
   listMcpClients?(): readonly MCPServerConnection[];
   listMcpTools?(): readonly unknown[];
+  /** Cached committed MCP status; daemon sessions expose no transport clients. */
+  mcpSurfaceSnapshot?(): McpSurfaceSnapshot;
+  refreshMcpSurface?(): Promise<McpSurfaceSnapshot>;
+  subscribeToMcpSurface?(
+    cb: (snapshot: McpSurfaceSnapshot) => void,
+  ): () => void;
 }
 
 type MutableCompactProgressSession = {
   setStreamMode?: AgenCCompactProgressControls["setStreamMode"];
   setResponseLength?: AgenCCompactProgressControls["setResponseLength"];
   onCompactProgress?: AgenCCompactProgressControls["onCompactProgress"];
-  setSDKStatus?: AgenCCompactProgressControls["setSDKStatus"];
 };
 
 export function installCompactProgressControls(
@@ -358,12 +379,10 @@ export function installCompactProgressControls(
     setStreamMode: target.setStreamMode,
     setResponseLength: target.setResponseLength,
     onCompactProgress: target.onCompactProgress,
-    setSDKStatus: target.setSDKStatus,
   };
   target.setStreamMode = controls.setStreamMode;
   target.setResponseLength = controls.setResponseLength;
   target.onCompactProgress = controls.onCompactProgress;
-  target.setSDKStatus = controls.setSDKStatus;
   return () => {
     restoreCompactProgressControl(
       target,
@@ -379,11 +398,6 @@ export function installCompactProgressControls(
       target,
       "onCompactProgress",
       previous.onCompactProgress,
-    );
-    restoreCompactProgressControl(
-      target,
-      "setSDKStatus",
-      previous.setSDKStatus,
     );
   };
 }
@@ -402,18 +416,8 @@ function restoreCompactProgressControl<
   }
 }
 
-export interface ConfigStoreLike {
-  readonly agencHome?: string;
-  readonly snapshot?: unknown;
-  current?(): AgenCConfig;
-  reload?(): Promise<AgenCConfig>;
-  subscribe?(listener: (config: unknown) => void): (() => void) | void;
-  warnings?(): readonly string[];
-}
-
 export interface AgenCTuiProps {
   readonly session: AgenCBridgeSession;
-  readonly configStore: ConfigStoreLike;
   /**
    * bootTUI-owned awaitable lifecycle boundary. Components register
    * idempotent cleanup here so waitUntilExit cannot outrun daemon/editor

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runWithCwdOverride } from "../../../src/utils/cwd.js";
 
 import {
   clearSessionReadCache,
@@ -27,12 +28,8 @@ describe("cross-agent session-read workspace fallback", () => {
   const SESSION_B = "agent-B-conversation-id";
 
   let workspaceRoot: string;
-  let previousWorkspace: string | undefined;
-
   beforeEach(() => {
     workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-xagent-"));
-    previousWorkspace = process.env.AGENC_WORKSPACE;
-    process.env.AGENC_WORKSPACE = workspaceRoot;
     // Drop any in-memory state from prior tests so the fallback is the
     // only thing that can satisfy a lookup under SESSION_B.
     clearSessionReadCache(SESSION_A);
@@ -42,16 +39,12 @@ describe("cross-agent session-read workspace fallback", () => {
   afterEach(() => {
     clearSessionReadCache(SESSION_A);
     clearSessionReadCache(SESSION_B);
-    if (previousWorkspace === undefined) {
-      delete process.env.AGENC_WORKSPACE;
-    } else {
-      process.env.AGENC_WORKSPACE = previousWorkspace;
-    }
     rmSync(workspaceRoot, { recursive: true, force: true });
   });
 
   it("a FULL read under session A satisfies the gate when queried under session B", () => {
-    const canonicalPath = join(workspaceRoot, "src", "main.ts");
+    runWithCwdOverride(workspaceRoot, () => {
+      const canonicalPath = join(workspaceRoot, "src", "main.ts");
 
     // Agent A (e.g. the canonical tool surface) performs a full read.
     recordSessionRead(SESSION_A, canonicalPath, {
@@ -68,18 +61,22 @@ describe("cross-agent session-read workspace fallback", () => {
     const snapshot = getSessionReadSnapshot(SESSION_B, canonicalPath);
     expect(snapshot).toBeDefined();
     expect(snapshot?.viewKind).toBe("full");
-    expect(snapshot?.isPartialView).not.toBe(true);
+      expect(snapshot?.isPartialView).not.toBe(true);
+    });
   });
 
   it("fails for a path that was never read by anyone", () => {
-    const unreadPath = join(workspaceRoot, "src", "never-read.ts");
+    runWithCwdOverride(workspaceRoot, () => {
+      const unreadPath = join(workspaceRoot, "src", "never-read.ts");
 
-    expect(hasSessionRead(SESSION_B, unreadPath)).toBe(false);
-    expect(getSessionReadSnapshot(SESSION_B, unreadPath)).toBeUndefined();
+      expect(hasSessionRead(SESSION_B, unreadPath)).toBe(false);
+      expect(getSessionReadSnapshot(SESSION_B, unreadPath)).toBeUndefined();
+    });
   });
 
   it("a PARTIAL read by another agent authorizes the gate", () => {
-    const canonicalPath = join(workspaceRoot, "src", "partial.ts");
+    runWithCwdOverride(workspaceRoot, () => {
+      const canonicalPath = join(workspaceRoot, "src", "partial.ts");
 
     // Agent A did a partial (offset/limit) read. Any real read — full or
     // partial — must satisfy the cross-agent fallback so a model reading
@@ -95,11 +92,13 @@ describe("cross-agent session-read workspace fallback", () => {
     expect(hasSessionRead(SESSION_B, canonicalPath)).toBe(true);
     const snapshot = getSessionReadSnapshot(SESSION_B, canonicalPath);
     expect(snapshot).toBeDefined();
-    expect(snapshot?.viewKind).toBe("partial");
+      expect(snapshot?.viewKind).toBe("partial");
+    });
   });
 
   it("does NOT let a SYNTHETIC partial view by another agent authorize the gate", () => {
-    const canonicalPath = join(workspaceRoot, "src", "synthetic.ts");
+    runWithCwdOverride(workspaceRoot, () => {
+      const canonicalPath = join(workspaceRoot, "src", "synthetic.ts");
 
     // Agent A only has an auto-injected processed partial view, which
     // never reflected disk bytes the model chose to read.
@@ -111,26 +110,29 @@ describe("cross-agent session-read workspace fallback", () => {
     });
 
     expect(hasSessionRead(SESSION_B, canonicalPath)).toBe(false);
-    expect(getSessionReadSnapshot(SESSION_B, canonicalPath)).toBeUndefined();
+      expect(getSessionReadSnapshot(SESSION_B, canonicalPath)).toBeUndefined();
+    });
   });
 
   it("does NOT leak across workspace roots", () => {
     const canonicalPath = join(workspaceRoot, "src", "scoped.ts");
 
-    recordSessionRead(SESSION_A, canonicalPath, {
-      content: "export const y = 2;\n",
-      timestamp: Date.now(),
-      viewKind: "full",
+    runWithCwdOverride(workspaceRoot, () => {
+      recordSessionRead(SESSION_A, canonicalPath, {
+        content: "export const y = 2;\n",
+        timestamp: Date.now(),
+        viewKind: "full",
+      });
     });
 
     // Same canonical path, but a DIFFERENT active workspace root: the
     // fallback is keyed by workspace, so it must not match.
     const otherWorkspace = mkdtempSync(join(tmpdir(), "agenc-xagent-other-"));
     try {
-      process.env.AGENC_WORKSPACE = otherWorkspace;
-      expect(hasSessionRead(SESSION_B, canonicalPath)).toBe(false);
+      runWithCwdOverride(otherWorkspace, () => {
+        expect(hasSessionRead(SESSION_B, canonicalPath)).toBe(false);
+      });
     } finally {
-      process.env.AGENC_WORKSPACE = workspaceRoot;
       rmSync(otherWorkspace, { recursive: true, force: true });
     }
   });

@@ -1,7 +1,7 @@
 import {
-  normalizeProviderSlug,
-  type AgenCConfig,
-} from "./_deps/config.js";
+  resolveProviderSlug,
+} from "../config/resolve-provider.js";
+import type { AgenCConfig } from "../config/schema.js";
 import {
   ModelRegistry,
   modelRegistryEntryToModelInfo,
@@ -23,8 +23,8 @@ export class StaticModelsManager implements ModelsManager {
     readonly fallbackProvider?: string;
     readonly metadata?: ModelMetadataResolverOptions;
   }) {
-    this.fallbackProvider = normalizeProviderSlug(params.fallbackProvider);
-    this.configDefaultProvider = normalizeProviderSlug(
+    this.fallbackProvider = resolveProviderSlug(params.fallbackProvider);
+    this.configDefaultProvider = resolveProviderSlug(
       params.config.model_provider,
     );
     this.modelRegistry = new ModelRegistry({

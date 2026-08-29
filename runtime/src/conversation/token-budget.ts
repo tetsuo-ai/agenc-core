@@ -10,6 +10,7 @@
 const COMPLETION_THRESHOLD = 0.9;
 const DIMINISHING_THRESHOLD = 500;
 const DEFAULT_TOKEN_BUDGET_CHECK_INTERVAL = 1_000;
+import { getSelectedProviderEnvironment } from "../utils/model/providers.js";
 
 // Shorthand (+500k) anchored to start/end to avoid false positives in natural
 // language. Verbose (use/spend 2M tokens) matches anywhere.
@@ -227,7 +228,7 @@ export class BudgetTracker {
 }
 
 function resolveTokenBudgetCheckInterval(): number {
-  const raw = process.env.AGENC_TOKEN_BUDGET_CHECK_INTERVAL;
+  const raw = getSelectedProviderEnvironment().AGENC_TOKEN_BUDGET_CHECK_INTERVAL;
   if (!raw) return DEFAULT_TOKEN_BUDGET_CHECK_INTERVAL;
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_TOKEN_BUDGET_CHECK_INTERVAL;

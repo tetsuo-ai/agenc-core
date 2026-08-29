@@ -17,6 +17,10 @@ import {
 } from "./hooks.js";
 import type { Tool } from "./types.js";
 import type { ToolInvocation } from "./context.js";
+import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from "../session/runtime-options.js";
 
 const stubTool: Tool = {
   name: "stub",
@@ -398,6 +402,76 @@ describe("resolveHookPermissionDecision", () => {
     );
     expect(decision.kind).toBe("allow");
     expect(errors).toHaveLength(1);
+  });
+});
+
+describe("simple-mode hook suppression", () => {
+  test("returns each neutral tool-hook contract without invoking callbacks", async () => {
+    const calls: string[] = [];
+    const args = { original: true };
+    const result = { content: "original result" };
+
+    await runWithAgentRuntimeOptions(
+      resolveAgentRuntimeOptions({}, { simpleMode: true }),
+      async () => {
+        const pre = await runPreToolUseHooks(
+          [() => {
+            calls.push("pre");
+            return { kind: "deny", reason: "must not deny" };
+          }],
+          { invocation: stubInvocation, tool: stubTool, args },
+        );
+        expect(pre).toEqual({
+          kind: "continue",
+          args,
+          additionalContexts: [],
+        });
+        expect(pre.args).toBe(args);
+
+        const post = await runPostToolUseHooks(
+          [() => {
+            calls.push("post");
+            return {
+              kind: "hook_blocking_error",
+              blockingError: "must not block",
+            };
+          }],
+          { invocation: stubInvocation, tool: stubTool, args, result },
+        );
+        expect(post).toEqual({
+          kind: "continue",
+          result,
+          additionalContexts: [],
+          blockingErrors: [],
+        });
+        expect(post.result).toBe(result);
+
+        const failure = await runPostToolUseFailureHooks(
+          [() => {
+            calls.push("failure");
+          }],
+          {
+            invocation: stubInvocation,
+            tool: stubTool,
+            args,
+            error: new Error("original failure"),
+          },
+        );
+        expect(failure).toEqual([]);
+
+        const permission = await resolveHookPermissionDecision(
+          stubTool.name,
+          args,
+          [() => {
+            calls.push("permission");
+            return { kind: "deny", reason: "must not deny" };
+          }],
+        );
+        expect(permission).toEqual({ kind: "pass" });
+      },
+    );
+
+    expect(calls).toEqual([]);
   });
 });
 

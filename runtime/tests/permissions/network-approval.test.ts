@@ -549,6 +549,47 @@ describe("NetworkApprovalService — hooks", () => {
     expect(decision).toEqual({ kind: "allow" });
     expect(callCount()).toBe(1);
   });
+
+  test("explicit simple mode skips hooks but still calls the resolver", async () => {
+    const svc = new NetworkApprovalService();
+    const { resolver, callCount } = countingResolver({ kind: "approved" });
+    let hookCalls = 0;
+    const hook: NetworkApprovalHook = async () => {
+      hookCalls += 1;
+      return { deny: "must not run in bare mode" };
+    };
+
+    const decision = await svc.requestNetworkApproval(
+      baseOpts({
+        resolver,
+        hooks: [hook],
+        runtimeOptions: { simpleMode: true },
+      }),
+    );
+
+    expect(decision).toEqual({ kind: "allow" });
+    expect(hookCalls).toBe(0);
+    expect(callCount()).toBe(1);
+  });
+
+  test("explicit simple mode skips an allowing hook and preserves default deny", async () => {
+    const svc = new NetworkApprovalService();
+    let hookCalls = 0;
+    const hook: NetworkApprovalHook = async () => {
+      hookCalls += 1;
+      return { allow: true };
+    };
+
+    const decision = await svc.requestNetworkApproval(
+      baseOpts({
+        hooks: [hook],
+        runtimeOptions: { simpleMode: true },
+      }),
+    );
+
+    expect(decision).toEqual({ kind: "deny", reason: "not_allowed" });
+    expect(hookCalls).toBe(0);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────

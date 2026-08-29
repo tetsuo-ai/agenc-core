@@ -12,7 +12,12 @@ import { SelectMulti } from './CustomSelect/SelectMulti.js';
 import { Byline } from './design-system/Byline.js';
 import { Dialog } from './design-system/Dialog.js';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js';
+import type { CanonicalSettingsAuthority } from '../../utils/settings/canonicalAuthority.js';
+import type { ProviderEnvironment } from '../../llm/provider-options.js';
 type Props = {
+  authority: CanonicalSettingsAuthority;
+  environment: ProviderEnvironment;
+  pluginStorageRoot: string;
   servers: Record<string, McpServerConfig>;
   scope: ConfigScope;
   onDone(): void;
@@ -26,6 +31,7 @@ type Props = {
  * for tests.
  */
 export async function importSelectedMcpServers(
+  authority: CanonicalSettingsAuthority,
   selectedServers: readonly string[],
   servers: Record<string, McpServerConfig>,
   existingServers: Record<string, ScopedMcpServerConfig>,
@@ -44,7 +50,7 @@ export async function importSelectedMcpServers(
       }
       finalName = `${serverName}_${counter}`;
     }
-    await addConfig(finalName, serverConfig, scope);
+    await addConfig(finalName, serverConfig, scope, authority);
     importedCount++;
   }
   return importedCount;
@@ -53,6 +59,9 @@ export async function importSelectedMcpServers(
 export function MCPServerDesktopImportDialog(t0: Props) {
   const $ = _c(36);
   const {
+    authority,
+    environment,
+    pluginStorageRoot,
     servers,
     scope,
     onDone
@@ -79,7 +88,7 @@ export function MCPServerDesktopImportDialog(t0: Props) {
   if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
     t3 = () => {
       let mounted = true;
-      getAllMcpConfigs().then((t5) => {
+      getAllMcpConfigs(authority, { pluginStorageRoot }, environment).then((t5) => {
         const {
           servers: servers_0
         } = t5;
@@ -147,6 +156,7 @@ export function MCPServerDesktopImportDialog(t0: Props) {
   const onSubmit = useCallback(async function onSubmit(selectedServers: string[]) {
     try {
       const importedCount = await importSelectedMcpServers(
+        authority,
         selectedServers,
         servers,
         existingServers,
@@ -160,7 +170,7 @@ export function MCPServerDesktopImportDialog(t0: Props) {
       // and leave the dialog open so the user can retry or cancel.
       logError(error);
     }
-  }, [done, existingServers, scope, servers]);
+  }, [authority, done, existingServers, scope, servers]);
   const t8 = serverNames.length;
   let t9;
   if ($[14] !== serverNames.length) {

@@ -4,35 +4,11 @@ vi.mock('bun:bundle', () => ({
   feature: () => false,
 }))
 
-vi.mock('../../../src/tui/keybindings/parser.js', async importOriginal => {
-  const actual =
-    await importOriginal<typeof import('../../../src/tui/keybindings/parser.js')>()
-
-  return {
-    ...actual,
-    parseKeystroke: (input: string) => {
-      if (input === 'mock-empty') {
-        return {
-          alt: false,
-          ctrl: false,
-          key: '',
-          meta: false,
-          shift: false,
-          super: false,
-        }
-      }
-
-      return actual.parseKeystroke(input)
-    },
-  }
-})
-
 import type {
   KeybindingBlock,
   ParsedBinding,
 } from '../../../src/tui/keybindings/types.js'
 import {
-  checkDuplicateKeysInJson,
   checkDuplicates,
   checkReservedShortcuts,
   formatWarnings,
@@ -41,12 +17,12 @@ import {
 } from '../../../src/tui/keybindings/validate.js'
 
 describe('keybinding validate coverage swarm row 126', () => {
-  test('reports parser failures when a keystroke produces no key or modifiers', () => {
+  test('reports malformed canonical chord syntax', () => {
     const warnings = validateUserConfig([
       {
         context: 'Chat',
         bindings: {
-          'mock-empty': 'chat:submit',
+          'ctrl+': 'chat:submit',
         },
       },
     ])
@@ -54,8 +30,8 @@ describe('keybinding validate coverage swarm row 126', () => {
     expect(warnings).toEqual([
       expect.objectContaining({
         context: 'Chat',
-        key: 'mock-empty',
-        message: 'Could not parse keystroke "mock-empty"',
+        key: 'ctrl+',
+        message: expect.stringContaining('Invalid chord "ctrl+"'),
         severity: 'error',
         type: 'parse_error',
       }),
@@ -74,43 +50,6 @@ describe('keybinding validate coverage swarm row 126', () => {
         },
       ]),
     ).toEqual([])
-  })
-
-  test('handles empty duplicate-json blocks and missing context names', () => {
-    const warnings = checkDuplicateKeysInJson(`[
-      {
-        "bindings": {}
-      },
-      {
-        "bindings": {
-          "ctrl+x": "chat:cancel",
-          "ctrl+x": "chat:submit",
-          "ctrl+x": "chat:newline"
-        }
-      },
-      {
-        "context": "Chat",
-        "bindings": {
-          "enter": "chat:submit"
-        }
-      },
-      {
-        "context": "Chat",
-        "bindings": {
-          "enter": "chat:newline"
-        }
-      }
-    ]`)
-
-    expect(warnings).toEqual([
-      expect.objectContaining({
-        context: 'unknown',
-        key: 'ctrl+x',
-        message: 'Duplicate key "ctrl+x" in unknown bindings',
-        severity: 'warning',
-        type: 'duplicate',
-      }),
-    ])
   })
 
   test('describes null unbinds when normalized duplicates conflict', () => {

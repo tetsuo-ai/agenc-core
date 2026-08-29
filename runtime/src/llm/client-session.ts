@@ -122,7 +122,6 @@ export interface ProviderHttpClientSessionConfig {
   readonly providerFallback?: ProviderFallbackLadderOptions;
   readonly streamIdleTimeoutMs?: number;
   readonly supportsStreaming?: boolean;
-  readonly supportsWebsockets?: boolean;
   readonly fetchImpl?: typeof fetch;
   readonly responsesContinuationState?: ResponsesContinuationState;
   readonly emitWarning?: (warning: {
@@ -626,46 +625,24 @@ function isContinuationExpiryError(error: unknown): boolean {
   );
 }
 
-function providerErrorText(error: ProviderHttpError): string {
-  const body =
+function maybeEmitCapabilityDriftWarning(
+  config: ProviderHttpClientSessionConfig,
+  error: ProviderHttpError,
+): void {
+  if (!config.onCapabilityDrift) return;
+  const bodyMessage =
     typeof error.body === "string"
       ? error.body
       : error.body && typeof error.body === "object"
         ? JSON.stringify(error.body)
         : "";
-  return `${error.message} ${body}`.trim();
-}
-
-/**
- * Report a failed provider call, always.
- *
- * Only capability mismatches used to be surfaced, so every other
- * rejection — a malformed field, an unsupported model, a refused
- * request — reached the user as an empty turn with nothing written
- * anywhere: not the transcript, not the rollout, not the debug log. Three
- * separate wire bugs were indistinguishable from one another because of
- * it. The status and the provider's own body are the whole diagnosis, so
- * they go on the record whatever the code.
- */
-function reportProviderHttpError(
-  config: ProviderHttpClientSessionConfig,
-  error: ProviderHttpError,
-): void {
-  const message = providerErrorText(error);
-  if (
-    config.onCapabilityDrift &&
-    isProviderCapabilityMismatch({ status: error.status, message })
-  ) {
-    config.onCapabilityDrift({ message, status: error.status });
+  const message = `${error.message} ${bodyMessage}`.trim();
+  if (!isProviderCapabilityMismatch({ status: error.status, message })) {
     return;
   }
-  config.emitWarning?.({
-    cause: "provider_request_failed",
-    // The URL is part of the diagnosis: a bare 404 with no body is
-    // almost always the wrong path, and without it that is unfalsifiable.
-    message: `${config.providerName}${
-      config.model !== undefined ? `/${config.model}` : ""
-    } refused the request (HTTP ${error.status}) at ${error.url}: ${message.slice(0, 600)}`,
+  config.onCapabilityDrift({
+    message,
+    status: error.status,
   });
 }
 
@@ -880,10 +857,6 @@ export class ProviderHttpClientSession {
 
   get supportsStreaming(): boolean {
     return this.config.supportsStreaming !== false;
-  }
-
-  get supportsWebsockets(): boolean {
-    return this.config.supportsWebsockets === true;
   }
 
   get requestRetryBudget(): Readonly<NormalizedRetryBudget> {
@@ -1223,7 +1196,7 @@ export class ProviderHttpClientSession {
           throw error;
         }
         if (error instanceof ProviderHttpError) {
-          reportProviderHttpError(this.config, error);
+          maybeEmitCapabilityDriftWarning(this.config, error);
           throw error;
         }
         consecutiveFallbackFailures = 0;
@@ -1332,7 +1305,7 @@ export class ProviderHttpClientSession {
           throw error;
         }
         if (error instanceof ProviderHttpError) {
-          reportProviderHttpError(this.config, error);
+          maybeEmitCapabilityDriftWarning(this.config, error);
           throw error;
         }
         consecutiveFallbackFailures = 0;
@@ -1426,13 +1399,7 @@ export class ProviderHttpClientSession {
       (options.api ? resolveApiPath(options.api) : resolveApiPath(this.wireApi));
     if (
       !isResponsesCreateRequest(method, path, options.body) ||
-      !this.config.responsesContinuationState ||
-      // The ChatGPT subscription backend keeps no server-side response
-      // state, so anchoring a turn to the previous one answers
-      // `Unsupported parameter: previous_response_id` and the turn dies.
-      // Sending the full input every time is the only shape it accepts.
-      // branding-scan: allow factual reference to real provider in host check
-      /(^|\/\/)chatgpt\.com\//.test(this.config.baseURL)
+      !this.config.responsesContinuationState
     ) {
       return { options };
     }

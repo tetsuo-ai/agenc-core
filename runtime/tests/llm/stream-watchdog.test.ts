@@ -1,20 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   installStreamWatchdog,
-  isStreamWatchdogEnabled,
   STREAM_IDLE_ABORT_REASON,
   STREAM_IDLE_WARNING_REASON,
 } from "./stream-watchdog.js";
 
 describe("stream-watchdog", () => {
   let nowMs = 0;
-  let envDisable: string | undefined;
-  let envTimeout: string | undefined;
-
   beforeEach(() => {
-    envDisable = process.env.AGENC_DISABLE_STREAM_WATCHDOG;
-    envTimeout = process.env.AGENC_STREAM_IDLE_TIMEOUT_MS;
-    delete process.env.AGENC_STREAM_IDLE_TIMEOUT_MS;
     nowMs = 0;
     vi.useFakeTimers();
     vi.spyOn(performance, "now").mockImplementation(() => nowMs);
@@ -23,18 +16,6 @@ describe("stream-watchdog", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
-    if (envDisable === undefined) delete process.env.AGENC_DISABLE_STREAM_WATCHDOG;
-    else process.env.AGENC_DISABLE_STREAM_WATCHDOG = envDisable;
-    if (envTimeout === undefined) delete process.env.AGENC_STREAM_IDLE_TIMEOUT_MS;
-    else process.env.AGENC_STREAM_IDLE_TIMEOUT_MS = envTimeout;
-  });
-
-  test("the feature gate remains available unless explicitly disabled", () => {
-    delete process.env.AGENC_DISABLE_STREAM_WATCHDOG;
-    expect(isStreamWatchdogEnabled()).toBe(true);
-
-    process.env.AGENC_DISABLE_STREAM_WATCHDOG = "1";
-    expect(isStreamWatchdogEnabled()).toBe(false);
   });
 
   test("installs no deadline by default, even after six hours", () => {
@@ -140,14 +121,13 @@ describe("stream-watchdog", () => {
     expect(handle.firedAt).toBeNull();
   });
 
-  test("disabled watchdog returns a no-op handle", () => {
+  test("zero-timeout watchdog returns a no-op handle", () => {
     const abortController = new AbortController();
     const onWarning = vi.fn();
     const onFired = vi.fn();
     const handle = installStreamWatchdog({
       abortController,
-      timeoutMs: 100,
-      enabled: false,
+      timeoutMs: 0,
       onWarning,
       onFired,
     });

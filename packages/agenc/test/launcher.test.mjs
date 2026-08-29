@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
@@ -56,6 +56,35 @@ test("daemon home and pid paths prefer AGENC_HOME over HOME", async () => {
     assert.equal(resolveAgenCHome(env, home), env.AGENC_HOME);
     assert.equal(resolveDaemonPidPath(env, home), join(env.AGENC_HOME, "daemon.pid"));
     assert.equal(resolveDaemonCookiePath(env, home), join(env.AGENC_HOME, "daemon.cookie"));
+  });
+});
+
+test("daemon home rejects retired and relative authorities before path use", async () => {
+  await withTempHome(async (home) => {
+    assert.throws(
+      () => resolveAgenCHome({ AGENC_CONFIG_DIR: join(home, "retired") }, home),
+      /AGENC_CONFIG_DIR is no longer a runtime configuration authority/,
+    );
+    assert.throws(
+      () => resolveDaemonPidPath({ AGENC_HOME: "relative-home" }, home),
+      /AGENC_HOME must be an absolute path/,
+    );
+  });
+});
+
+test("daemon paths bind to the canonical home behind a symlink", async () => {
+  await withTempHome(async (home) => {
+    const canonical = join(home, "canonical");
+    const alias = join(home, "alias");
+    await mkdir(canonical);
+    await symlink(canonical, alias, "dir");
+    const configured = join(alias, "nested");
+
+    assert.equal(resolveAgenCHome({ AGENC_HOME: configured }, home), join(canonical, "nested"));
+    assert.equal(
+      resolveDaemonCookiePath({ AGENC_HOME: configured }, home),
+      join(canonical, "nested", "daemon.cookie"),
+    );
   });
 });
 

@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 
 import { DeepSeekProvider } from "./index.js";
+import { BUILT_IN_PROVIDER_BASE_URLS } from "../../registry/provider-info.js";
 
 describe("DeepSeekProvider", () => {
   test("maps reasoning_content responses through the compat adapter", async () => {
@@ -8,7 +9,7 @@ describe("DeepSeekProvider", () => {
       new Response(
         JSON.stringify({
           id: "chatcmpl_deepseek",
-          model: "deepseek-reasoner",
+          model: "deepseek-v4-pro",
           choices: [
             {
               message: {
@@ -34,7 +35,7 @@ describe("DeepSeekProvider", () => {
 
     const provider = new DeepSeekProvider({
       apiKey: "deepseek-test",
-      model: "deepseek-reasoner",
+      model: "deepseek-v4-pro",
       fetchImpl,
     });
 
@@ -42,7 +43,9 @@ describe("DeepSeekProvider", () => {
 
     expect(response.content).toBe("reasoning trace");
     const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(String(requestUrl)).toBe("https://api.deepseek.com/v1/chat/completions");
+    expect(String(requestUrl)).toBe(
+      `${BUILT_IN_PROVIDER_BASE_URLS.deepseek}/chat/completions`,
+    );
     const headers = init?.headers as Headers;
     expect(headers.get("authorization")).toBe("Bearer deepseek-test");
   });

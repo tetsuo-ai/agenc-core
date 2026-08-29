@@ -77,9 +77,9 @@ function makeBashParseUnavailableTool(name: string): ToolLike {
 
 describe("unattended allowlist — bash_parse_unavailable ask must pause", () => {
   it("pauses an allowlisted Bash whose checkPermissions asks with type:other", async () => {
-    const { context } = buildUnattendedContext(["Bash"]);
+    const { context } = buildUnattendedContext(["system.bash"]);
     const result = await hasPermissionsToUseTool(
-      makeBashParseUnavailableTool("Bash"),
+      makeBashParseUnavailableTool("system.bash"),
       { command: "echo $(date)" },
       context,
     );
@@ -99,16 +99,16 @@ describe("unattended allowlist — bash_parse_unavailable ask must pause", () =>
   });
 
   it("does not leak the type:other ask through as an unattended allow", async () => {
-    const { context } = buildUnattendedContext(["Bash"]);
+    const { context } = buildUnattendedContext(["system.bash"]);
     const result = await hasPermissionsToUseTool(
-      makeBashParseUnavailableTool("Bash"),
+      makeBashParseUnavailableTool("system.bash"),
       { command: "echo $(date)" },
       context,
     );
     expect(result.behavior).not.toBe("allow");
     if (result.behavior === "allow") {
       // Belt-and-suspenders: the old leak stamped this exact reason
-      // ("Bash" canonicalizes to "system.bash" in the unattended policy).
+      // ("system.bash" canonicalizes to "system.bash" in the unattended policy).
       expect(result.decisionReason).not.toMatchObject({
         type: "other",
         reason: "unattended allowlist: system.bash",
@@ -117,9 +117,9 @@ describe("unattended allowlist — bash_parse_unavailable ask must pause", () =>
   });
 
   it("still auto-allows an allowlisted tool whose checkPermissions allows", async () => {
-    const { context } = buildUnattendedContext(["Bash"]);
+    const { context } = buildUnattendedContext(["system.bash"]);
     const tool: ToolLike = {
-      name: "Bash",
+      name: "system.bash",
       checkPermissions: (): PermissionResult => ({
         behavior: "allow" as const,
         updatedInput: { command: "ls" },
@@ -134,7 +134,7 @@ describe("unattended allowlist — bash_parse_unavailable ask must pause", () =>
     // allowlisted tool still runs unattended.
     expect(result.behavior).toBe("allow");
     if (result.behavior === "allow") {
-      // "Bash" canonicalizes to "system.bash" via the unattended alias map.
+      // "system.bash" canonicalizes to "system.bash" via the unattended alias map.
       expect(result.decisionReason).toMatchObject({
         type: "other",
         reason: "unattended allowlist: system.bash",

@@ -24,6 +24,7 @@ export type BwrapNetworkMode = "full-access" | "isolated" | "proxy-only";
 export interface BwrapOptions {
   readonly mountProc: boolean;
   readonly networkMode: BwrapNetworkMode;
+  readonly sessionTempRoot: string;
   readonly seccompFd?: number;
   readonly extraReadOnlyBindRoots?: readonly string[];
   readonly extraWritableBindRoots?: readonly string[];
@@ -196,7 +197,11 @@ function createFilesystemArgs(
   protectedCreateTargets: string[],
 ): string[] {
   const args: string[] = [];
-  const writableRoots = getWritableRootsWithCwd(policy, sandboxPolicyCwd);
+  const writableRoots = getWritableRootsWithCwd(
+    policy,
+    sandboxPolicyCwd,
+    options.sessionTempRoot,
+  );
   if (
     options.inheritedReadOnlyCwd === true &&
     writableRoots.length > 0
@@ -219,7 +224,13 @@ function createFilesystemArgs(
       appendReadOnlyIfExists(args, "/nix/store");
       appendReadOnlyIfExists(args, "/run/current-system/sw");
     }
-    for (const root of getReadableRootsWithCwd(policy, sandboxPolicyCwd)) {
+    for (
+      const root of getReadableRootsWithCwd(
+        policy,
+        sandboxPolicyCwd,
+        options.sessionTempRoot,
+      )
+    ) {
       appendReadOnlyIfExists(args, root);
     }
   }
@@ -241,7 +252,11 @@ function createFilesystemArgs(
   }
 
   const unreadableTargets = [
-    ...getUnreadableRootsWithCwd(policy, sandboxPolicyCwd),
+    ...getUnreadableRootsWithCwd(
+      policy,
+      sandboxPolicyCwd,
+      options.sessionTempRoot,
+    ),
     ...expandUnreadableGlobMatches(
       getUnreadableGlobsWithCwd(policy, sandboxPolicyCwd),
       sandboxPolicyCwd,

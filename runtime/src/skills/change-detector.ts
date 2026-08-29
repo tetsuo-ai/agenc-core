@@ -4,8 +4,7 @@ import { createSignal } from "../utils/signal.js";
 
 /**
  * Ports the upstream skill change detection behavior onto AgenC's shared
- * FileWatcher so skills and command roots hot-reload without a separate
- * watcher implementation.
+ * FileWatcher so skill roots hot-reload without a separate watcher.
  */
 
 const DEFAULT_RELOAD_DEBOUNCE_MS = 300;

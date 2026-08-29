@@ -1,62 +1,41 @@
-import { mkdtemp, rm, writeFile } from 'fs/promises'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
-const watcherHandlers = vi.hoisted(
-  () => new Map<string, (path: string) => void | Promise<void>>(),
-)
-const closeWatcher = vi.hoisted(() => vi.fn(async () => undefined))
-const watch = vi.hoisted(() =>
-  vi.fn(() => ({
-    close: closeWatcher,
-    on(event: string, handler: (path: string) => void | Promise<void>) {
-      watcherHandlers.set(event, handler)
-      return this
-    },
-  })),
-)
+vi.mock("bun:bundle", () => ({ feature: () => false }));
 
-vi.mock('bun:bundle', () => ({
-  feature: () => false,
-}))
-
-vi.mock('chokidar', () => ({
-  default: { watch },
-  watch,
-}))
-
+import type { AgenCConfig } from "../../../src/config/schema.js";
 import {
-  disposeKeybindingWatcher,
-  getCachedKeybindingWarnings,
-  getKeybindingsPath,
-  initializeKeybindingWatcher,
+  disposeKeybindingSubscription,
+  initializeKeybindingSubscription,
   isKeybindingCustomizationEnabled,
-  loadKeybindings,
   loadKeybindingsSync,
   loadKeybindingsSyncWithWarnings,
   resetKeybindingLoaderForTesting,
   subscribeToKeybindingChanges,
-} from './loadUserBindings.ts'
-import { resolveKey } from './resolver.ts'
+  type KeybindingConfigStore,
+} from "../../../src/tui/keybindings/loadUserBindings.js";
+import { resolveKey } from "../../../src/tui/keybindings/resolver.js";
 
-const originalConfigDir = process.env.AGENC_CONFIG_DIR
-const tempDirs: string[] = []
+class FakeConfigStore implements KeybindingConfigStore {
+  #snapshot: AgenCConfig;
+  readonly listeners = new Set<(config: AgenCConfig) => void>();
 
-async function createConfigDir(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'agenc-keybindings-'))
-  tempDirs.push(dir)
-  process.env.AGENC_CONFIG_DIR = dir
-  resetKeybindingLoaderForTesting()
-  return dir
-}
+  constructor(snapshot: AgenCConfig = {}) {
+    this.#snapshot = snapshot;
+  }
 
-async function writeKeybindings(content: string): Promise<void> {
-  await writeFile(getKeybindingsPath(), content)
-}
+  current(): AgenCConfig {
+    return this.#snapshot;
+  }
 
-function findAction(bindings: { action: string | null }[], action: string): boolean {
-  return bindings.some(binding => binding.action === action)
+  subscribe(listener: (config: AgenCConfig) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  emit(snapshot: AgenCConfig): void {
+    this.#snapshot = snapshot;
+    for (const listener of this.listeners) listener(snapshot);
+  }
 }
 
 function key(overrides: Record<string, boolean> = {}) {
@@ -81,262 +60,90 @@ function key(overrides: Record<string, boolean> = {}) {
     wheelDown: false,
     wheelUp: false,
     ...overrides,
-  } as never
+  } as never;
 }
 
-beforeEach(() => {
-  watcherHandlers.clear()
-  watch.mockClear()
-  closeWatcher.mockClear()
-  process.env.AGENC_CONFIG_DIR = originalConfigDir
-  resetKeybindingLoaderForTesting()
-})
+beforeEach(() => resetKeybindingLoaderForTesting());
 
-afterEach(async () => {
-  disposeKeybindingWatcher()
-  resetKeybindingLoaderForTesting()
-  if (originalConfigDir === undefined) {
-    delete process.env.AGENC_CONFIG_DIR
-  } else {
-    process.env.AGENC_CONFIG_DIR = originalConfigDir
-  }
-  await Promise.all(tempDirs.splice(0).map(dir => rm(dir, { force: true, recursive: true })))
-})
+describe("canonical keybinding projection", () => {
+  test("uses defaults without a ConfigStore snapshot", () => {
+    expect(isKeybindingCustomizationEnabled()).toBe(true);
+    expect(loadKeybindingsSync()).not.toHaveLength(0);
+    expect(loadKeybindingsSyncWithWarnings().warnings).toEqual([]);
+  });
 
-describe('loadUserBindings', () => {
-  test('uses the configured keybindings path and falls back to defaults when missing', async () => {
-    const dir = await createConfigDir()
+  test("projects actions and explicit unbinds from one ConfigStore snapshot", () => {
+    const store = new FakeConfigStore({
+      tui: {
+        keybindings: [
+          {
+            context: "Chat",
+            bindings: { "ctrl+y": "chat:newline" },
+            unbind: ["enter"],
+          },
+        ],
+      },
+    });
 
-    expect(isKeybindingCustomizationEnabled()).toBe(true)
-    expect(getKeybindingsPath()).toBe(join(dir, 'keybindings.json'))
-
-    const asyncResult = await loadKeybindings()
-    expect(asyncResult.warnings).toEqual([])
-    expect(asyncResult.bindings.length).toBeGreaterThan(0)
-
-    const syncBindings = loadKeybindingsSync()
-    expect(syncBindings).toHaveLength(asyncResult.bindings.length)
-    expect(getCachedKeybindingWarnings()).toEqual([])
-  })
-
-  test('reports async parse and shape errors with default bindings', async () => {
-    await createConfigDir()
-
-    await writeKeybindings('{}')
-    let result = await loadKeybindings()
-    expect(result.bindings.length).toBeGreaterThan(0)
-    expect(result.warnings).toEqual([
-      expect.objectContaining({
-        message: 'keybindings.json must have a "bindings" array',
-        severity: 'error',
-        type: 'parse_error',
-      }),
-    ])
-
-    resetKeybindingLoaderForTesting()
-    await writeKeybindings('{"bindings":{}}')
-    result = await loadKeybindings()
-    expect(result.warnings).toEqual([
-      expect.objectContaining({
-        message: '"bindings" must be an array',
-        type: 'parse_error',
-      }),
-    ])
-
-    resetKeybindingLoaderForTesting()
-    await writeKeybindings('{"bindings":[{}]}')
-    result = await loadKeybindings()
-    expect(result.warnings).toEqual([
-      expect.objectContaining({
-        message: 'keybindings.json contains invalid block structure',
-        type: 'parse_error',
-      }),
-    ])
-
-    resetKeybindingLoaderForTesting()
-    await writeKeybindings('{')
-    result = await loadKeybindings()
-    expect(result.warnings).toEqual([
-      expect.objectContaining({
-        message: expect.stringContaining('Failed to parse keybindings.json:'),
-        type: 'parse_error',
-      }),
-    ])
-  })
-
-  test('merges valid user bindings and caches sync loads with warnings', async () => {
-    await createConfigDir()
-    await writeKeybindings(`{
-      "bindings": [
-        {
-          "context": "Chat",
-          "bindings": {
-            "ctrl+x": "chat:submit",
-            "ctrl+x": "chat:newline"
-          }
-        }
-      ]
-    }`)
-
-    const first = loadKeybindingsSyncWithWarnings()
-    expect(findAction(first.bindings, 'chat:newline')).toBe(true)
-    expect(first.warnings).toEqual([
-      expect.objectContaining({
-        context: 'Chat',
-        key: 'ctrl+x',
-        type: 'duplicate',
-      }),
-    ])
-    expect(getCachedKeybindingWarnings()).toBe(first.warnings)
-
-    await writeKeybindings('{}')
-    const cached = loadKeybindingsSyncWithWarnings()
-    expect(cached.bindings).toBe(first.bindings)
-    expect(cached.warnings).toBe(first.warnings)
-
-    resetKeybindingLoaderForTesting()
-    const invalid = loadKeybindingsSyncWithWarnings()
-    expect(invalid.warnings).toEqual([
-      expect.objectContaining({
-        message: 'keybindings.json must have a "bindings" array',
-        type: 'parse_error',
-      }),
-    ])
-
-    resetKeybindingLoaderForTesting()
-    await writeKeybindings('{')
-    const malformed = loadKeybindingsSyncWithWarnings()
-    expect(malformed.warnings).toEqual([
-      expect.objectContaining({
-        message: expect.stringContaining('Failed to parse keybindings.json:'),
-        severity: 'error',
-        type: 'parse_error',
-      }),
-    ])
-  })
-
-  test('drops unknown user actions before they can shadow default handlers', async () => {
-    await createConfigDir()
-    await writeKeybindings(`{
-      "bindings": [
-        {
-          "context": "Autocomplete",
-          "bindings": {
-            "enter": "chat:acceptSuggestion"
-          }
-        },
-        {
-          "context": "Confirmation",
-          "bindings": {
-            "enter": "modal:confirm",
-            "escape": "modal:cancel"
-          }
-        },
-        {
-          "context": "Chat",
-          "bindings": {
-            "up": "history:prev",
-            "ctrl+y": "command:insert-template"
-          }
-        }
-      ]
-    }`)
-
-    const result = loadKeybindingsSyncWithWarnings()
-
-    expect(result.warnings).toEqual(
+    const result = loadKeybindingsSyncWithWarnings(store);
+    expect(result.warnings).toEqual([]);
+    expect(result.bindings).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          action: 'chat:acceptSuggestion',
-          context: 'Autocomplete',
-          key: 'enter',
-          severity: 'error',
-          type: 'invalid_action',
-        }),
-        expect.objectContaining({
-          action: 'modal:confirm',
-          context: 'Confirmation',
-          key: 'enter',
-          severity: 'error',
-          type: 'invalid_action',
-        }),
-        expect.objectContaining({
-          action: 'history:prev',
-          context: 'Chat',
-          key: 'up',
-          severity: 'error',
-          type: 'invalid_action',
-        }),
+        expect.objectContaining({ action: "chat:newline", context: "Chat" }),
+        expect.objectContaining({ action: null, context: "Chat" }),
       ]),
-    )
-    expect(findAction(result.bindings, 'chat:acceptSuggestion')).toBe(false)
-    expect(findAction(result.bindings, 'modal:confirm')).toBe(false)
-    expect(findAction(result.bindings, 'history:prev')).toBe(false)
-    expect(findAction(result.bindings, 'command:insert-template')).toBe(true)
-
+    );
     expect(
-      resolveKey('', key({ return: true }), ['Autocomplete', 'Chat', 'Global'], result.bindings),
-    ).toEqual({ type: 'match', action: 'autocomplete:confirm' })
-    expect(
-      resolveKey('', key({ return: true }), ['Confirmation', 'Chat', 'Global'], result.bindings),
-    ).toEqual({ type: 'match', action: 'confirm:yes' })
-    expect(
-      resolveKey('', key({ upArrow: true }), ['Chat', 'Global'], result.bindings),
-    ).toEqual({ type: 'match', action: 'history:previous' })
-  })
+      resolveKey("", key({ return: true }), ["Chat", "Global"], result.bindings),
+    ).toEqual({ type: "unbound" });
+    expect(loadKeybindingsSync()).toBe(result.bindings);
+  });
 
-  test('starts, emits, deletes, and disposes the keybinding watcher', async () => {
-    await createConfigDir()
-    const changes: Awaited<ReturnType<typeof loadKeybindings>>[] = []
-    const unsubscribe = subscribeToKeybindingChanges(result => {
-      changes.push(result)
-    })
+  test("rejects an entire invalid injected snapshot instead of dropping entries", () => {
+    const store = new FakeConfigStore({
+      tui: {
+        keybindings: [
+          {
+            context: "Chat",
+            bindings: {
+              "ctrl+y": "chat:newline",
+              "ctrl+z": "chat:not-real" as never,
+            },
+          },
+        ],
+      },
+    });
+    const result = loadKeybindingsSyncWithWarnings(store);
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ severity: "error", type: "invalid_action" }),
+    ]));
+    expect(result.bindings.some((binding) => binding.action === "chat:newline"))
+      .toBe(false);
+  });
 
-    await initializeKeybindingWatcher()
+  test("hot reload subscribes to ConfigStore and disposes cleanly", () => {
+    const store = new FakeConfigStore();
+    const changes: unknown[] = [];
+    const unsubscribe = subscribeToKeybindingChanges((result) => {
+      changes.push(result);
+    });
 
-    expect(watch).toHaveBeenCalledWith(
-      getKeybindingsPath(),
-      expect.objectContaining({
-        atomic: true,
-        ignoreInitial: true,
-        persistent: true,
-      }),
-    )
-    expect(watcherHandlers.has('add')).toBe(true)
-    expect(watcherHandlers.has('change')).toBe(true)
-    expect(watcherHandlers.has('unlink')).toBe(true)
+    initializeKeybindingSubscription(store);
+    initializeKeybindingSubscription(store);
+    expect(store.listeners.size).toBe(1);
 
-    await writeKeybindings(`{
-      "bindings": [
-        {
-          "context": "Chat",
-          "bindings": {
-            "ctrl+y": "chat:newline"
-          }
-        }
-      ]
-    }`)
-    await watcherHandlers.get('change')?.(getKeybindingsPath())
+    store.emit({
+      tui: {
+        keybindings: [{
+          context: "Chat",
+          bindings: { "ctrl+y": "chat:newline" },
+        }],
+      },
+    });
+    expect(changes).toHaveLength(1);
 
-    expect(changes).toHaveLength(1)
-    expect(findAction(changes[0]!.bindings, 'chat:newline')).toBe(true)
-
-    watcherHandlers.get('unlink')?.(getKeybindingsPath())
-    expect(changes).toHaveLength(2)
-    expect(changes[1]!.warnings).toEqual([])
-
-    unsubscribe()
-    disposeKeybindingWatcher()
-    expect(closeWatcher).toHaveBeenCalled()
-    expect(getCachedKeybindingWarnings()).toEqual([])
-  })
-
-  test('does not initialize a watcher when the config directory is unavailable', async () => {
-    const dir = await createConfigDir()
-    await rm(dir, { recursive: true, force: true })
-
-    await initializeKeybindingWatcher()
-
-    expect(watch).not.toHaveBeenCalled()
-  })
-})
+    unsubscribe();
+    disposeKeybindingSubscription();
+    expect(store.listeners.size).toBe(0);
+  });
+});

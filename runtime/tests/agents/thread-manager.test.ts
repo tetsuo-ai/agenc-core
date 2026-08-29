@@ -3,11 +3,9 @@ import { AgentStatusTracker } from "./status.js";
 import {
   createMailboxMetadataRecord,
   Mailbox,
-  MailboxCapacityError,
 } from "./mailbox.js";
 import { createAgentRoleWorkspace, resolveAgentRole } from "./role.js";
 import { ThreadManager } from "./thread-manager.js";
-import { drainChildMailboxForTesting } from "./run-agent.js";
 import type { LiveAgent } from "./control.js";
 import type { AgentMetadata } from "./registry.js";
 
@@ -23,7 +21,12 @@ function makeSession() {
     abortAllTasks: vi.fn(async () => {}),
     mailbox: { send: vi.fn(() => 1) },
     services: {
-      mcpManager: { refreshFromConfig: vi.fn(async () => {}) },
+      mcpManager: {
+        refreshFromAuthority: vi.fn(async () => ({
+          configuredServers: [],
+          requiredServers: [],
+        })),
+      },
     },
   } as never;
 }
@@ -35,14 +38,14 @@ function makeLive(
     agentId: "child-thread",
     agentPath: "/root/task_1",
     agentNickname: "scout",
-    agentRole: "explorer",
+    agentRole: "scanner",
     agentRoleWorkspaceId: ROLE_WORKSPACE.id,
     depth: 1,
   };
   return {
     agentId: "child-thread",
     agentPath: "/root/task_1",
-    role: resolveAgentRole(ROLE_WORKSPACE, "explorer"),
+    role: resolveAgentRole(ROLE_WORKSPACE, "scanner"),
     depth: 1,
     nickname: "scout",
     status: new AgentStatusTracker(),
@@ -143,41 +146,6 @@ describe("ThreadManager", () => {
     expect(live.messages).toEqual([
       { role: "assistant", content: "retained history" },
     ]);
-  });
-
-  it("preserves an accepted MCP refresh when a newer refresh is rejected", async () => {
-    const manager = new ThreadManager(makeSession());
-    const live = makeLive({ maxDownInboxDepth: 1 });
-    manager.registerLiveAgent(live, { parentThreadId: "root-thread" });
-    expect(
-      live.downInbox.send({
-        author: "/root",
-        recipient: live.agentPath,
-        content: "protected task",
-        triggerTurn: true,
-        direction: "down",
-        metadata: createMailboxMetadataRecord("user_input"),
-      }),
-    ).toBe("sent");
-    const acceptedConfig = { servers: ["accepted"] };
-    const rejectedConfig = { servers: ["rejected"] };
-
-    await manager.sendOp("child-thread", {
-      type: "refresh_mcp_servers",
-      config: acceptedConfig,
-    });
-    await expect(
-      manager.sendOp("child-thread", {
-        type: "refresh_mcp_servers",
-        config: rejectedConfig,
-      }),
-    ).rejects.toBeInstanceOf(MailboxCapacityError);
-
-    expect(live.pendingMcpRefresh?.config).toBe(acceptedConfig);
-    expect(drainChildMailboxForTesting(live)).toMatchObject({
-      nextUserMessage: "protected task",
-      refreshMcpConfig: acceptedConfig,
-    });
   });
 
   it("routes trigger-turn IAC to the root mailbox and wakes without display text", async () => {

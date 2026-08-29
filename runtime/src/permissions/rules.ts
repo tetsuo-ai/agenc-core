@@ -25,8 +25,9 @@ import {
   type PermissionUpdateDestination,
   type ToolPermissionContext,
   type ToolPermissionRulesBySource,
-  deepFreeze,
+  immutableToolPermissionContext,
 } from "./types.js";
+import { isRemovedLiveToolName } from "./tool-names.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Escape helpers (parens + backslash)
@@ -91,9 +92,9 @@ function findLastUnescapedChar(str: string, char: string): number {
  *   content   := any char; `\(` and `\)` are escaped parens
  *
  * Shapes treated as whole-tool rules (no content):
- *   "Bash"     → { toolName: "Bash" }
- *   "Bash()"   → { toolName: "Bash" }
- *   "Bash(*)"  → { toolName: "Bash" }
+ *   "system.bash"     → { toolName: "system.bash" }
+ *   "system.bash()"   → { toolName: "system.bash" }
+ *   "system.bash(*)"  → { toolName: "system.bash" }
  */
 export function parseRuleString(raw: string): PermissionRuleValue | null {
   if (typeof raw !== "string" || raw.length === 0) return null;
@@ -147,18 +148,10 @@ export interface ToolLike {
   };
 }
 
-/**
- * Shell-exec family: LIVE default shell is `exec_command`; legacy / TUI /
- * unattended names must collapse for deny/ask/allow rules (parity with
- * unattended-policy.ts TOOL_ALIASES).
- */
+/** Canonical shell-exec tools share one deny/ask/allow risk family. */
 export const SHELL_TOOL_FAMILY: readonly string[] = Object.freeze([
   "system.bash",
-  "Bash",
-  "bash",
   "exec_command",
-  "desktop.bash",
-  "shell",
   // TOOL-02: interactive continuation + kill are shell channels.
   "write_stdin",
   "kill_process",
@@ -169,29 +162,30 @@ export const SHELL_TOOL_FAMILY: readonly string[] = Object.freeze([
 /** TOOL-05: file-mutation family for deny/ask/allow collapse. */
 export const FILE_MUTATION_TOOL_FAMILY: readonly string[] = Object.freeze([
   "Edit",
-  "FileEdit",
   "MultiEdit",
   "Write",
-  "FileWrite",
   "apply_patch",
 ]);
 
-const TOOL_PERMISSION_ALIASES: ReadonlyMap<string, readonly string[]> =
+const TOOL_PERMISSION_RISK_FAMILIES: ReadonlyMap<string, readonly string[]> =
   new Map<string, readonly string[]>([
     ["system.bash", SHELL_TOOL_FAMILY],
-    ["FileRead", Object.freeze(["FileRead", "Read"] as const)],
+    ["exec_command", SHELL_TOOL_FAMILY],
+    ["write_stdin", SHELL_TOOL_FAMILY],
+    ["kill_process", SHELL_TOOL_FAMILY],
+    ["PowerShell", SHELL_TOOL_FAMILY],
+    ["Monitor", SHELL_TOOL_FAMILY],
     ["Edit", FILE_MUTATION_TOOL_FAMILY],
     ["Write", FILE_MUTATION_TOOL_FAMILY],
     ["MultiEdit", FILE_MUTATION_TOOL_FAMILY],
     ["apply_patch", FILE_MUTATION_TOOL_FAMILY],
-    ["Grep", Object.freeze(["Grep", "system.grep"] as const)],
-    ["Glob", Object.freeze(["Glob", "system.glob"] as const)],
   ]);
 
-export function toolNameAliases(toolName: string): readonly string[] {
-  const aliases = TOOL_PERMISSION_ALIASES.get(toolName);
-  if (aliases !== undefined) return aliases;
-  for (const values of TOOL_PERMISSION_ALIASES.values()) {
+export function toolNamesInPermissionRiskFamily(toolName: string): readonly string[] {
+  if (isRemovedLiveToolName(toolName)) return Object.freeze([] as string[]);
+  const family = TOOL_PERMISSION_RISK_FAMILIES.get(toolName);
+  if (family !== undefined) return family;
+  for (const values of TOOL_PERMISSION_RISK_FAMILIES.values()) {
     if (values.includes(toolName)) return values;
   }
   return Object.freeze([toolName] as const);
@@ -240,7 +234,7 @@ export function matchRule(
       : `mcp__${tool.mcpInfo.serverName}`
     : tool.name;
 
-  if (toolNameAliases(toolNameForMatch).includes(rule.ruleValue.toolName)) {
+  if (toolNamesInPermissionRiskFamily(toolNameForMatch).includes(rule.ruleValue.toolName)) {
     return true;
   }
 
@@ -348,7 +342,7 @@ export function getRuleByContentsForTool(
   }
   for (const rule of rules) {
     if (
-      toolNameAliases(toolName).includes(rule.ruleValue.toolName) &&
+      toolNamesInPermissionRiskFamily(toolName).includes(rule.ruleValue.toolName) &&
       rule.ruleValue.ruleContent !== undefined &&
       rule.ruleBehavior === behavior
     ) {
@@ -539,30 +533,39 @@ function writeBucket(
     if (prev) nextBucket[source] = prev;
   }
   nextBucket[destination] = Object.freeze([...ruleStrings]);
-  return deepFreeze({ ...ctx, [bucketKey]: nextBucket }) as ToolPermissionContext;
+  return immutableToolPermissionContext({
+    ...ctx,
+    [bucketKey]: nextBucket,
+  } as ToolPermissionContext);
 }
 
+export type RuleOnlyPermissionUpdate = Exclude<
+  PermissionUpdate,
+  { readonly type: "setMode" }
+>;
+
 /**
- * Apply a single `PermissionUpdate`. Returns a new, deeply frozen
+ * Apply a rule/directory update. Mode changes belong exclusively to
+ * permission-updates.ts so this pure module cannot depend on the FSM.
+ * Returns a new, deeply frozen
  * context. Input update is treated as readonly — destinations not
  * mentioned are carried over verbatim.
  */
-export function applyPermissionUpdate(
+export function applyRulePermissionUpdate(
   ctx: ToolPermissionContext,
-  update: PermissionUpdate,
+  update: RuleOnlyPermissionUpdate,
 ): ToolPermissionContext {
   switch (update.type) {
-    case "setMode": {
-      return deepFreeze({ ...ctx, mode: update.mode }) as ToolPermissionContext;
-    }
     case "addRules": {
       const bucketKey = bucketKeyForBehavior(update.behavior);
       const existing = ctx[bucketKey][update.destination] ?? [];
       const adds = update.rules.map(serializeRuleValue);
-      return writeBucket(ctx, bucketKey, update.destination, [
-        ...existing,
-        ...adds,
-      ]);
+      return writeBucket(
+        ctx,
+        bucketKey,
+        update.destination,
+        [...new Set([...existing, ...adds])],
+      );
     }
     case "replaceRules": {
       const bucketKey = bucketKeyForBehavior(update.behavior);
@@ -584,7 +587,7 @@ export function applyPermissionUpdate(
           source: update.destination as PermissionRuleSource,
         });
       }
-      return deepFreeze({
+      return immutableToolPermissionContext({
         ...ctx,
         additionalWorkingDirectories: next,
       }) as ToolPermissionContext;
@@ -592,7 +595,7 @@ export function applyPermissionUpdate(
     case "removeDirectories": {
       const next = new Map(ctx.additionalWorkingDirectories);
       for (const dir of update.directories) next.delete(dir);
-      return deepFreeze({
+      return immutableToolPermissionContext({
         ...ctx,
         additionalWorkingDirectories: next,
       }) as ToolPermissionContext;
@@ -608,12 +611,12 @@ export function applyPermissionUpdate(
   }
 }
 
-export function applyPermissionUpdates(
+export function applyRulePermissionUpdates(
   ctx: ToolPermissionContext,
-  updates: readonly PermissionUpdate[],
+  updates: readonly RuleOnlyPermissionUpdate[],
 ): ToolPermissionContext {
   let out = ctx;
-  for (const u of updates) out = applyPermissionUpdate(out, u);
+  for (const u of updates) out = applyRulePermissionUpdate(out, u);
   return out;
 }
 
@@ -632,7 +635,7 @@ export function applyPermissionUpdates(
 export function convertRulesToUpdates(
   rules: readonly PermissionRule[],
   updateType: "addRules" | "replaceRules",
-): PermissionUpdate[] {
+): RuleOnlyPermissionUpdate[] {
   const grouped = new Map<string, PermissionRuleValue[]>();
   for (const r of rules) {
     if (!isPermissionUpdateDestination(r.source)) continue;
@@ -641,7 +644,7 @@ export function convertRulesToUpdates(
     if (bucket) bucket.push(r.ruleValue);
     else grouped.set(key, [r.ruleValue]);
   }
-  const updates: PermissionUpdate[] = [];
+  const updates: RuleOnlyPermissionUpdate[] = [];
   for (const [key, values] of grouped) {
     const sepIdx = key.indexOf(":");
     const source = key.slice(0, sepIdx) as PermissionUpdateDestination;
@@ -678,13 +681,16 @@ export function setRulesForSource(
     if (prev) nextBucket[s] = prev;
   }
   nextBucket[source] = Object.freeze([...ruleStrings]);
-  return deepFreeze({ ...ctx, [bucketKey]: nextBucket }) as ToolPermissionContext;
+  return immutableToolPermissionContext({
+    ...ctx,
+    [bucketKey]: nextBucket,
+  } as ToolPermissionContext);
 }
 
 /**
  * Additive rule application — typical startup path. Existing rules
  * are preserved; new rules are appended. Use
- * {@link syncPermissionRulesFromDisk} (in settings.ts) for the
+ * {@link syncPermissionRulesFromConfig} (in settings.ts) for the
  * replacement-on-reload path.
  *
  * Rules with a source that is not a `PermissionUpdateDestination`
@@ -713,7 +719,7 @@ export function applyPermissionRulesToPermissionContext(
   }
 
   const updates = convertRulesToUpdates(destinationOk, "addRules");
-  let out = applyPermissionUpdates(ctx, updates);
+  let out = applyRulePermissionUpdates(ctx, updates);
 
   // Now handle read-only sources by direct bucket write. We append
   // to any pre-existing strings for the same source × behavior so
@@ -742,7 +748,7 @@ export function clearAllRulesFromSource(
 ): ToolPermissionContext {
   let out = ctx;
   for (const behavior of ["allow", "deny", "ask"] as const) {
-    out = applyPermissionUpdate(out, {
+    out = applyRulePermissionUpdate(out, {
       type: "replaceRules",
       destination: source,
       rules: [],

@@ -77,6 +77,7 @@ describe("TUI tool rendering helpers", () => {
     const names = tools.map((tool: { readonly name: string }) => tool.name);
 
     expect(names).toEqual([...names].sort());
+    expect(names).toContain("system.bash");
     expect(names).toContain("Bash");
     expect(names).toContain("FileRead");
     expect(names).toContain("mcp.audit-ping.ping");

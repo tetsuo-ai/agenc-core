@@ -16,19 +16,15 @@ import { withLmstudioHealthSidecar } from "./health.js";
 
 export type LMStudioProviderConfig = OpenAIProviderConfig;
 
-const DEFAULT_LMSTUDIO_BASE_URL = "http://localhost:1234/v1";
-
 export class LMStudioProvider extends OpenAIProvider {
   constructor(config: LMStudioProviderConfig) {
     super({
       ...config,
       providerName: "lmstudio",
-      apiKeyEnvLabel: "LMSTUDIO_API_KEY",
       authStrategy:
         config.authStrategy ??
         (config.apiKey?.trim() ? "optional_bearer" : "none"),
       useResponsesApi: false,
-      baseURL: config.baseURL ?? DEFAULT_LMSTUDIO_BASE_URL,
     });
   }
 

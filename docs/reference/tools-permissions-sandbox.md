@@ -7,13 +7,13 @@ can stop them.
 
 | Surface | Location | Who sees it |
 | --- | --- | --- |
-| **LIVE model-facing registry** | `runtime/src/tool-registry.ts` + `runtime/src/bin/model-facing-tools.ts` + `runtime/src/tools/system/*` | The model / daemon turn loop (`toLLMTools()` → provider payload; `dispatch()` → execution) |
-| **TUI tool pool** | `runtime/src/tools.ts` (`getAllBaseTools()`) | Historical / TUI-side presentation pool — **not** the LIVE catalog. Overlaps names with LIVE but omits many LIVE tools and uses donor-era shapes (`CanonicalBashTool`, etc.) |
-| **MCP bridge tools** | `runtime/src/mcp-client/tools.ts` via `mcpToolsProvider` on the registry | Namespaced `mcp.<server>.<tool>` on the LIVE surface (usually deferred until `system.searchTools`) |
+| **Model-facing authority** | `runtime/src/tool-registry.ts` + `runtime/src/bin/model-facing-tools.ts` + `runtime/src/tools/system/*` | The model / daemon turn loop (`toLLMTools()` → provider payload; `dispatch()` → execution) |
+| **Local TUI and worker pool** | `runtime/src/tools.ts` (`getAllBaseTools()`) | Permission presets, AgentTool workers, and REPL primitives. This pool is not model-facing authority. |
+| **MCP bridge tools** | `runtime/src/mcp-client/tools.ts` via `mcpToolsProvider` on the registry | Namespaced `mcp.<server>.<tool>` on the model-facing surface (usually deferred until `system.searchTools`) |
 
 **Rule of thumb:** if you are changing what the model can call in a real turn,
-edit the LIVE path (`buildToolRegistry` / `createModelFacingTools` /
-`tools/system/*`). Editing `tools.ts` alone does **not** register a LIVE tool.
+edit the model-facing path (`buildToolRegistry` / `createModelFacingTools` /
+`tools/system/*`). Editing `tools.ts` alone does not register a model-facing tool.
 
 Assembly wiring:
 
@@ -132,9 +132,8 @@ Legacy `system.*` utilities (not the primary edit surface):
 | `system.symbolReferences` | Deferred |
 | `LSP` | Language-server diagnostics / definition / references / symbols |
 | `WebSearch` | Web search (provider-native Grok path when available, else configured endpoint / DuckDuckGo) |
-| `XSearch` | **Grok-gated.** Live X/Twitter search via direct xAI when session provider is `grok` and `[llm.xai] x_search` (or `AGENC_XAI_X_SEARCH`) is on |
+| `XSearch` | **Grok-gated.** Live X/Twitter search via direct xAI when session provider is `grok` and `[providers.grok] x_search = true` |
 | `web_fetch` | Fetch URL → text/markdown |
-| `WebFetch` | Legacy alias of `web_fetch` |
 
 There is **no** separate LIVE tool named `web_search`; that string is only a
 provider-native server-side tool id used internally by the Grok web-search
@@ -148,9 +147,8 @@ path. Model-facing search is `WebSearch` (plus gated `XSearch` when enabled).
 | `EnterPlanMode` | Enter plan permission posture |
 | `ExitPlanMode` | Exit plan mode (approval path) |
 | `VerifyPlanExecution` | Compare plan vs progress summary |
-| `WorkflowTool` | Bounded event-driven agent DAG runner; see [workflows.md](workflows.md) |
-| `CronCreate` / `CronDelete` / `CronList` | Local scheduled prompts (`.agenc/scheduled_tasks.json`) |
-| `RemoteTrigger` | Deferred; inspect local scheduled defs only |
+| `WorkflowTool` | Bounded event-driven agent DAG runner; **deferred**. See [workflows.md](workflows.md) |
+| `CronCreate` / `CronDelete` / `CronList` | Local scheduled prompts (`.agenc/scheduled_tasks.json`); **deferred** |
 
 ### Interaction / user input
 
@@ -159,10 +157,12 @@ path. Model-facing search is `WebSearch` (plus gated `XSearch` when enabled).
 | `AskUserQuestion` | Multi-choice questions (TUI picker); **visible by default** |
 | `request_user_input` | Elicitation / free-form user input |
 | `request_ledger_transfer` | Built-in typed Android/Ledger SOL transfer handoff; exact active root-turn `@ledger` authorization only |
-| `Brief` | Short progress message to the user |
-| `SendUserMessage` | Alias of Brief-style progress message |
+| `ledger_wallet_cli_status` | Read-only Ledger Wallet CLI / device status |
+| `install_ledger_wallet_cli` | Prompted install of the official wallet CLI under `AGENC_HOME` |
+| `EditorProposal` | Editor-turn reviewable edit proposal (workbench BUFFER) |
+| `SendUserMessage` | Short progress message to the user |
 | `Sleep` | Sleep / yield; **deferred** by default |
-| `Monitor` | Monitor a background command/process; **deferred** by default |
+| `Monitor` | Canonical unified-exec background process monitor; **deferred** by default |
 
 ### Worktree
 
@@ -179,7 +179,8 @@ path. Model-facing search is `WebSearch` (plus gated `XSearch` when enabled).
 | `ImagineVideo` | Video generation via direct xAI when session provider is `grok` and credentials are available |
 
 These are registered on the LIVE surface but only usable on the Grok/direct-xAI
-path. Other providers do not advertise them as working media tools.
+path. Other providers do not advertise them as working media tools. Operator
+guide: [imagine.md](../imagine.md).
 
 ### Browser
 
@@ -214,18 +215,22 @@ workflow.
 
 | Name | Notes |
 | --- | --- |
-| `Skill` | Invoke a skill by name (`skill` / `name` + optional `args`) |
+| `Skill` | Invoke a skill by name (`skill` + optional `args`) |
 
 ### Task board / background tasks
 
 | Name | Notes |
 | --- | --- |
-| `TaskCreate` | Task board |
-| `TaskGet` | Task board |
-| `TaskUpdate` | Task board |
-| `TaskList` | Task board |
-| `TaskOutput` | Background task output |
-| `TaskStop` | Stop background task |
+| `TaskCreate` | Durable project task board; **deferred** |
+| `TaskGet` | Durable project task board; **deferred** |
+| `TaskUpdate` | Durable project task board; **deferred** |
+| `TaskList` | Durable project task board; **deferred** |
+| `TaskOutput` | In-process background-task output; **deferred** |
+| `TaskStop` | Stop in-process background task; **deferred** |
+
+`TodoWrite` is the session checklist and is visible. LIVE Task* tools are always
+registered but deferred. TUI pool board tools also need `AGENC_ENABLE_TASKS`
+or an interactive session; that gate is **not** the LIVE catalog.
 
 ### Multi-agent v2 + jobs
 
@@ -244,13 +249,16 @@ Canonical v2 surface (`runtime/src/agents/v2/`). Details:
 | `report_agent_job_result` | Record CSV job item result |
 | `inspect_csv_agent_job` | Read a bounded summary and keyset-paginated item page |
 | `read_csv_agent_job_result` | Read one bounded base64 result chunk |
+| `list_csv_job_reviews` | Bounded page of unknown-outcome CSV reviews |
+| `show_csv_job_review` | One bounded review record |
+| `resolve_csv_job_review` | Approval-gated operator resolution with canonical evidence |
 
 ### MCP helpers (built-in) + bridge
 
 | Name | Notes |
 | --- | --- |
-| `ListMcpResourcesTool` / `ListMcpResources` | List MCP resources (deferred) |
-| `ReadMcpResourceTool` / `ReadMcpResource` | Read MCP resource (deferred) |
+| `ListMcpResourcesTool` | List MCP resources (deferred) |
+| `ReadMcpResourceTool` | Read MCP resource (deferred) |
 | `mcp.<server>.<tool>` | Live tools from configured MCP servers (usually deferred until discovery) |
 
 ### Structured output / code-mode
@@ -258,8 +266,8 @@ Canonical v2 surface (`runtime/src/agents/v2/`). Details:
 | Name | Notes |
 | --- | --- |
 | `StructuredOutput` | Schema-bound when session has `outputSchema`; otherwise deferred passthrough |
-| `exec` | Code-mode JS exec — only when code-mode service enabled |
-| `wait` | Code-mode wait — only when code-mode service enabled |
+| `exec` | Code-mode JS exec. Registered only when `AGENC_CODE_MODE` is `1`/`true`/`on` **and** `quickjs-emscripten` loads. Then advertised. Not deferred-discoverable when off. REPL is gone. |
+| `wait` | Code-mode wait (same enablement as `exec`) |
 
 ### Default-visible vs deferred (high level)
 
@@ -270,10 +278,11 @@ Exact visibility is request-scoped and config-dependent. As coded in
   `FileRead`, `Edit`, `MultiEdit`, `Write`, `Glob`, `Grep`, `Orient`,
   `AskUserQuestion`, `TodoWrite`, `EnterPlanMode`, `ExitPlanMode`,
   `system.searchTools`, plus non-deferred model-facing tools (web, multi-agent
-  v2, tasks, Skill, etc.).
+  v2, Skill, CSV jobs, Imagine when registered). Task* / Cron* / `WorkflowTool`
+  are **deferred**.
 - **Deferred / discoverable examples:** `system.bash`, git/symbol `system.*`
   intel tools, MCP tools when `deferMcpTools` is on, MCP resource helpers,
-  `RemoteTrigger`, passthrough `StructuredOutput`, and other tools marked
+  passthrough `StructuredOutput`, and other tools marked
   `metadata.deferred`.
 
 Coordinator mode further **allowlists** orchestration tools only — see
@@ -281,11 +290,11 @@ Coordinator mode further **allowlists** orchestration tools only — see
 
 ---
 
-## TUI pool (`tools.ts`) — dual catalog note
+## Local TUI and worker pool (`tools.ts`)
 
-`runtime/src/tools.ts` still exports a donor-era **TUI / presentation** pool
-via `getAllBaseTools()`. It is useful for UI filtering and historical parity,
-but it is **not** what `buildToolRegistry` advertises to the model.
+`runtime/src/tools.ts` exports the local tool pool used by permission presets,
+AgentTool workers, and REPL primitives. `buildToolRegistry` remains the sole
+authority for the model-facing catalog.
 
 Notable differences (non-exhaustive):
 
@@ -294,9 +303,9 @@ Notable differences (non-exhaustive):
 | Shell | `exec_command` (+ deferred `system.bash`) | `CanonicalBashTool` (bash-shaped) |
 | Files | `FileRead` / `Edit` / `Write` / `MultiEdit` / `apply_patch` | Canonical read/edit/write/notebook set |
 | Multi-agent | `spawn_agent` family | Not assembled here (Team\* gated) |
-| Discovery | `system.searchTools` + deferred system intel | Optional `ToolSearchTool` |
+| Discovery | `system.searchTools` + deferred system intel | Not provided by this pool |
 | Code-mode | `exec` / `wait` when enabled | Not in pool |
-| Authority | Daemon turn loop | Presentation / legacy |
+| Authority | Model-facing catalog | Local TUI and worker consumers |
 
 When docs or code comments say “registered tools”, assume LIVE unless they
 explicitly cite `tools.ts`.
@@ -308,16 +317,29 @@ explicitly cite `tools.ts`.
 Source of truth: `runtime/src/permissions/types.ts` (and
 `runtime/src/types/permissions.ts`).
 
-**User-addressable** (`--permission-mode`, settings, slash `/permissions`):
+**Ordinary user-addressable modes** (`--permission-mode`, settings, slash
+`/permissions`):
 
 | Mode | Intent |
 | --- | --- |
 | `default` | Ask on sensitive / unmatched actions |
 | `acceptEdits` | Auto-approve common edit-class actions; still gate higher risk |
 | `plan` | Planning posture (plan banner in TUI); constrained execution |
-| `bypassPermissions` | YOLO-style skip of approval prompts (deny floor remains; not a sandbox disable) |
 | `dontAsk` | Deny rather than prompt when an ask would be required |
 | `auto` | Classifier-assisted auto decisions |
+
+`bypassPermissions` is restricted. It skips approval prompts down to the deny
+floor, but it does not disable the OS sandbox. `/permissions mode
+bypassPermissions` refuses the transition until the operator runs
+`/permissions accept-bypass`. That confirmation is stored in permission-owned
+runtime state for the exact canonical workspace path and directory identity.
+It does not authorize another path or a replacement directory at the same
+path. Managed policy can disable bypass mode entirely.
+
+`--permission-mode bypassPermissions` is an explicit startup opt-in for the
+current session and workspace; it does not write durable consent. The
+`--dangerously-bypass-approvals-and-sandbox` flag is the separate combined
+escape hatch for bypassed prompts and `danger-full-access`.
 
 **Internal-only** (valid runtime state, not CLI defaults):
 
@@ -373,9 +395,22 @@ OS-level confinement for shell execution lives in `runtime/src/sandbox/`:
 
 | Platform | Engine |
 | --- | --- |
-| Linux | bubblewrap + Landlock helpers (`engine/bwrap.ts`, `engine/landlock.ts`, `linux-launcher/`) |
-| macOS | Seatbelt policies (`engine/seatbelt.ts`, `engine/policies/*.sbpl`) |
-| Windows | Restricted execution fails closed; use WSL2 or an explicit external sandbox |
+| Linux | Primary: system `bwrap` via the Node helper `agenc-linux-sandbox`. Fallback: `agenc-landlock-run` when the probe reports Landlock fully enforced. `engine/landlock.ts` only serializes helper flags; kernel Landlock is the C binary. |
+| macOS | In-tree Seatbelt (`engine/seatbelt.ts`, `engine/policies/*.sbpl`) via `/usr/bin/sandbox-exec`. No AgenC native binary. |
+| Windows | Restricted-token isolation is not implemented (`windows_restricted_token_unimplemented`). Restricted modes fail closed. Use WSL2, `external_sandbox`, or `--dangerously-bypass-approvals-and-sandbox` / `danger-full-access`. |
+
+Native helpers:
+
+| Binary | Source | Job |
+| --- | --- | --- |
+| `agenc-linux-sandbox` | `runtime/bin/agenc-linux-sandbox` → `dist/sandbox/linux-launcher/main.js` | Policy helper. Builds bwrap argv, or falls back to `agenc-landlock-run`. Must sit outside the writable workspace. Override path: `AGENC_LINUX_SANDBOX_EXE`. |
+| `agenc-landlock-run` | `runtime/native/agenc-landlock-run.c` | Self-restrict then exec. `--ro` / `--rw` / `--probe` / `--seccomp <fd>`. Exit 125 on failure. Same seccomp network filter as bwrap. Cannot express deny-inside-allow (writable project with read-only `.git`). |
+| `agenc-process-broker` | `runtime/native/agenc-process-broker.c` | Linux **lifecycle** subreaper (`PR_SET_CHILD_SUBREAPER`). Not filesystem isolation. Preferred tree-kill path is cgroup-v2; this is the fallback. |
+| `agenc-process-job-broker.exe` | `runtime/native/agenc-process-job-broker.cs` | Windows **lifecycle** Job Object (`KILL_ON_JOB_CLOSE`). Not a restricted-token sandbox. |
+
+`AGENC_DISABLE_LANDLOCK_FALLBACK=1` restores bwrap-or-die. `agenc doctor`
+warns `[sandbox_landlock_fallback]` when Linux is ready only via Landlock.
+`[sandbox].allow_gpu` is the macOS Metal opt-in ([config.md](config.md)).
 
 Runtime `read_only` and `workspace_write` profiles use a full-disk read
 baseline. Explicit deny-read entries still override it. `read_only` grants no
@@ -393,15 +428,15 @@ Related:
 - Escalation / approvals: `runtime/src/sandbox/escalation/`
 
 `bypassPermissions` is an approval mode and does not by itself remove kernel
-confinement. The CLI `--yolo` flag is the deliberate combined escape hatch: it
+confinement. The CLI `--dangerously-bypass-approvals-and-sandbox` flag is the deliberate combined escape hatch: it
 selects both bypassed prompts and `danger-full-access`. In `read-only` or
 `workspace-write`, missing/unhealthy platform support, a failed behavioral
 probe, a transform failure, or missing authenticated policy stops execution
 before spawn. Inspect readiness and remediation with `agenc doctor`.
 
-This invariant covers shell/unified-exec, Monitor, workflow/job, hook/cron,
-stdio MCP, daemon command exec, and child-agent paths. The design and stable
-error codes are documented in
+This invariant covers shell/unified-exec, Monitor, jobs, hooks/crons, stdio MCP,
+daemon command exec, and the child-agent processes launched by workflows. The
+design and stable error codes are documented in
 [`../design/fail-closed-sandbox-execution.md`](../design/fail-closed-sandbox-execution.md).
 Docker sandbox driver and SSH remote exec targets remain roadmap items
 ([`../roadmap.md`](../roadmap.md)).

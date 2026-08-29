@@ -28,7 +28,13 @@ import { openStateDatabases } from "../state/sqlite-driver.js";
 import { StateRunDurabilityRepository } from "../state/run-durability.js";
 import { ROLLOUT_SCHEMA_VERSION } from "../session/event-log.js";
 import { RolloutStore } from "../session/rollout-store.js";
+import {
+  resolveAgentRuntimeOptions,
+  type AgentRuntimeOptions,
+} from "../session/runtime-options.js";
+import type { PendingProviderSwitch } from "../session/session.js";
 import { createAgenCJsonLineDaemonRequestClient } from "./agent-cli.js";
+import { AGENC_DAEMON_PROTOCOL_VERSION } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { ensureAgenCDaemonAutostart } from "./daemon-autostart.js";
 import {
@@ -68,15 +74,16 @@ import {
   type AgenCBootstrapFunction,
   type AgenCEnsureAgentControlFunction,
 } from "./background-agent-runner.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { ConfigStore } from "../config/store.js";
+import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import {
-  createEmptyToolPermissionContext,
-  type ToolPermissionContext,
-} from "../permissions/types.js";
-import {
-  EnvHttpProxyAgent,
-  getGlobalDispatcher,
-  setGlobalDispatcher,
-} from "undici";
+  sandboxExecutionBrokerAuthorityFromSessionAuthority,
+  sessionConfigurationFromAgenCConfig,
+  sessionExecutionAuthorityFromAgenCConfig,
+} from "../session/configuration.js";
+import { getGlobalDispatcher, setGlobalDispatcher } from "undici";
 import { clearProxyCache } from "../utils/proxy.js";
 import { clearMTLSCache } from "../utils/mtls.js";
 import { AsyncQueue } from "../utils/async-queue.js";
@@ -97,19 +104,57 @@ import {
 } from "./daemon-runtime-info.js";
 import type { AgenCDaemonInstanceIdentity } from "./daemon-instance-identity.js";
 
+const TEST_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
+
 function createRecoveredSession(
   threadId: string,
-  permissionModeRegistry: {
-    current: () => ToolPermissionContext;
-    update: (context: ToolPermissionContext) => Promise<void> | void;
-  },
+  permissionModeRegistry: PermissionModeRegistry,
   options: {
+    readonly runtimeOptions: AgentRuntimeOptions;
     readonly rolloutStore?: RolloutStore;
     readonly threadStatus?: "running" | "idle";
     readonly enableDurableClose?: boolean;
-  } = {},
+    readonly cwd?: string;
+  },
 ) {
-  const state = { history: [] as unknown[] };
+  const workspaceRoot = options.cwd ?? process.cwd();
+  const configHome = join(
+    tmpdir(),
+    `agenc-recovered-config-${process.pid}-${threadId.replaceAll("/", "_")}`,
+  );
+  const configStore = new ConfigStore({
+    home: configHome,
+    cwd: workspaceRoot,
+    projectRoot: workspaceRoot,
+    projectTrusted: true,
+    env: {
+      AGENC_HOME: configHome,
+      HOME: tmpdir(),
+    },
+  });
+  let configuredExecutionAuthority = sessionExecutionAuthorityFromAgenCConfig({
+    config: {},
+    workspaceRoot,
+    projectTrust: "trusted",
+  });
+  const state = {
+    history: [] as unknown[],
+    sessionConfiguration: sessionConfigurationFromAgenCConfig({
+      config: {},
+      workspaceRoot,
+      model: "grok-4",
+      provider: "grok",
+      projectTrust: "trusted",
+    }),
+  };
+  const sandboxExecutionBroker = new SandboxExecutionBroker({
+    cwd: workspaceRoot,
+    sessionTempRoot: options.runtimeOptions.sessionTempRoot,
+    ...sandboxExecutionBrokerAuthorityFromSessionAuthority(
+      configuredExecutionAuthority,
+      workspaceRoot,
+    ),
+  });
   const rolloutItems: unknown[] = [];
   const fallbackRolloutStore = {
     rolloutPath: join(
@@ -118,6 +163,8 @@ function createRecoveredSession(
     ),
     readAll: () => [...rolloutItems],
     assertToolAdmissionAllowed: () => {},
+    recordRunRuntimeSettingsEvent: () => {},
+    syncCanonicalTail: () => {},
   };
   const rolloutStore = options.rolloutStore ?? fallbackRolloutStore;
   const eventLog = {
@@ -134,6 +181,17 @@ function createRecoveredSession(
     }, 0),
   };
   const beforeDurableCloseListeners = new Set<() => void | Promise<void>>();
+  let pendingProviderSwitch: PendingProviderSwitch | null = null;
+  const runtimeRestoreObservations: Array<
+    | {
+        readonly kind: "pending-provider-switch";
+        readonly pendingProviderSwitch: PendingProviderSwitch | null;
+      }
+    | {
+        readonly kind: "deferred-session-start-hook";
+        readonly pendingProviderSwitch: PendingProviderSwitch | null;
+      }
+  > = [];
   const managedThread = {
     threadId,
     agentPath: "/root",
@@ -161,26 +219,48 @@ function createRecoveredSession(
     }),
     configSnapshot: () => ({}),
   };
-  return {
+  const prepareEvent = (event: {
+    readonly eventId?: string;
+    readonly id?: string;
+    readonly msg: unknown;
+  }) => {
+    const seq = eventLog.lastSeq + 1;
+    const eventId = event.eventId ?? event.id ?? `recovered-event-${seq}`;
+    const stamped = { ...event, eventId, id: eventId, seq };
+    eventLog.lastSeq = seq;
+    let published = false;
+    return {
+      event: stamped,
+      publish: () => {
+        if (published) return stamped;
+        published = true;
+        if (options.rolloutStore === undefined) {
+          rolloutItems.push({ type: "event_msg", payload: stamped });
+        } else if (!options.rolloutStore.append(stamped, { durable: true })) {
+          throw new Error(`failed to append recovered event ${eventId}`);
+        }
+        return stamped;
+      },
+    };
+  };
+  const sessionAbortController = new AbortController();
+  let bootstrapClosed = false;
+  const session = {
     conversationId: threadId,
+    abortController: sessionAbortController,
+    abortTerminal: (reason: string) => sessionAbortController.abort(reason),
+    get sessionConfiguration() {
+      return state.sessionConfiguration;
+    },
     rolloutStore,
     eventLog,
+    prepareEmit: prepareEvent,
+    publishPreparedEvent: (event: unknown) => event,
     emit: (event: {
       readonly eventId?: string;
       readonly id?: string;
       readonly msg: unknown;
-    }) => {
-      const seq = eventLog.lastSeq + 1;
-      const eventId = event.eventId ?? event.id ?? `recovered-event-${seq}`;
-      const stamped = { ...event, eventId, id: eventId, seq };
-      eventLog.lastSeq = seq;
-      if (options.rolloutStore === undefined) {
-        rolloutItems.push({ type: "event_msg", payload: stamped });
-      } else if (!options.rolloutStore.append(stamped, { durable: true })) {
-        throw new Error(`failed to append recovered event ${eventId}`);
-      }
-      return stamped;
-    },
+    }) => prepareEvent(event).publish(),
     ...(options.enableDurableClose === true
       ? {
           onBeforeDurableClose: (listener: () => void | Promise<void>) => {
@@ -202,8 +282,28 @@ function createRecoveredSession(
     snapshotHistoryMessages: () => state.history,
     subscribeToEvents: () => () => {},
     emitPhaseEvent: () => {},
+    get pendingProviderSwitch() {
+      return pendingProviderSwitch;
+    },
+    runtimeRestoreObservations,
+    setPendingProviderSwitch: (next: PendingProviderSwitch | null) => {
+      pendingProviderSwitch = next === null ? null : Object.freeze({ ...next });
+      runtimeRestoreObservations.push({
+        kind: "pending-provider-switch",
+        pendingProviderSwitch,
+      });
+    },
+    flushDeferredSessionStartHook: async () => {
+      runtimeRestoreObservations.push({
+        kind: "deferred-session-start-hook",
+        pendingProviderSwitch,
+      });
+    },
     services: {
       admissionRequired: false,
+      configStore,
+      runtimeOptions: options.runtimeOptions,
+      sandboxExecutionBroker,
       conversationThreadManager: {
         hasThread: (id: string) => id === threadId,
         getThread: (id: string) => {
@@ -214,6 +314,96 @@ function createRecoveredSession(
       },
     },
   };
+  return Object.assign(session, {
+    createBootstrap(extra: Record<string, unknown> = {}) {
+      return {
+        workspaceRoot,
+        get configuredExecutionAuthority() {
+          return configuredExecutionAuthority;
+        },
+        prepareConfiguredExecutionAuthority: (
+          config: Record<string, unknown>,
+        ) => {
+          const previous = configuredExecutionAuthority;
+          const authority = sessionExecutionAuthorityFromAgenCConfig({
+            config,
+            workspaceRoot,
+            projectTrust: "trusted",
+          });
+          let committed = false;
+          return {
+            authority,
+            commit: () => {
+              configuredExecutionAuthority = authority;
+              committed = true;
+            },
+            rollback: () => {
+              if (!committed) return;
+              configuredExecutionAuthority = previous;
+              committed = false;
+            },
+          };
+        },
+        configStore,
+        session,
+        rolloutStore,
+        ...extra,
+        shutdown: async () => {
+          if (bootstrapClosed) return;
+          bootstrapClosed = true;
+          try {
+            await session.runBeforeDurableClose();
+          } finally {
+            options.rolloutStore?.close();
+            configStore.stateRepository.close();
+          }
+        },
+      };
+    },
+  });
+}
+
+function openRecoveredRolloutStore(
+  agencHome: string,
+  options: Parameters<AgenCBootstrapFunction>[0],
+): RolloutStore {
+  if (
+    options.conversationId === undefined ||
+    options.cwd === undefined ||
+    options.resumeRolloutPath === undefined ||
+    options.resumeRolloutLease === undefined
+  ) {
+    throw new Error("startup restore omitted its canonical rollout authority");
+  }
+  const rolloutStore = new RolloutStore({
+    cwd: options.cwd,
+    sessionId: options.conversationId,
+    agencVersion: "0.17.0",
+    sessionTempRoot: options.runtimeOptions.sessionTempRoot,
+    agencHome,
+    resume: true,
+    resumeRolloutPath: options.resumeRolloutPath,
+    resumeRolloutLease: options.resumeRolloutLease,
+    autoStartScheduler: false,
+    ...(options.resumeSuspendedConversation === true
+      ? {
+          resumeSuspendedRun: true,
+          suspendedResumeReason:
+            options.suspendedResumeReason ?? "explicit_continue",
+        }
+      : {}),
+  });
+  rolloutStore.open({
+    sessionId: options.conversationId,
+    timestamp: "2026-05-01T12:00:00.000Z",
+    cwd: options.cwd,
+    originator: "daemon-restart-test",
+    source: "interactive-root",
+    agencVersion: "0.17.0",
+    model: options.model ?? "grok-4",
+    modelProvider: options.provider ?? "grok",
+  });
+  return rolloutStore;
 }
 
 function createIo(): AgenCDaemonCliIo & {
@@ -650,13 +840,6 @@ describe("AgenC daemon CLI", () => {
     expect(
       resolveAgenCDaemonSocketPath({ AGENC_HOME: "/tmp/agenc-home" }),
     ).toBe("/tmp/agenc-home/daemon.sock");
-    expect(
-      resolveAgenCDaemonSocketPath(
-        { AGENC_HOME: String.raw`C:\Users\Test\.agenc` },
-        String.raw`C:\Users\Test`,
-        "win32",
-      ),
-    ).toMatch(/^\\\\\.\\pipe\\agenc-daemon-[a-f0-9]{64}$/u);
     expect(resolveAgenCDaemonCookiePath({}, "/home/test")).toBe(
       "/home/test/.agenc/daemon.cookie",
     );
@@ -677,6 +860,7 @@ describe("AgenC daemon CLI", () => {
       logout: vi.fn(() => ({ authenticated: false })),
       whoami: vi.fn(() => ({ authenticated: true, provider: "local" })),
       vendKey: vi.fn((provider, sessionId) => ({
+        kind: "api-key",
         provider: String(provider),
         sessionId,
         apiKey: `managed-${sessionId}`,
@@ -940,6 +1124,11 @@ describe("AgenC daemon CLI", () => {
       kind: "command",
       action: "reload",
     });
+    expect(parseAgenCDaemonCliArgs(["daemon", "run"])).toEqual({
+      kind: "error",
+      message:
+        "unknown daemon command: run. Use 'agenc daemon start --foreground' instead.",
+    });
     expect(parseAgenCDaemonCliArgs(["daemon", "bogus"])).toEqual({
       kind: "error",
       message: "unknown daemon command: bogus",
@@ -949,6 +1138,7 @@ describe("AgenC daemon CLI", () => {
   it("documents foreground daemon mode and ships supervisor templates", async () => {
     const helpText = formatAgenCDaemonCliHelpText();
     expect(helpText).toContain("agenc daemon start --foreground");
+    expect(helpText).not.toContain("agenc daemon run");
     expect(helpText).toContain("agenc daemon reload");
     expect(helpText).toContain("Run the daemon in the current process");
 
@@ -1016,6 +1206,35 @@ describe("AgenC daemon CLI", () => {
     expect(host.runningPids).toEqual(new Set([4201]));
 
     await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("leaves canonical config validation to the spawned daemon", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const spawnDetachedDaemon = vi.fn(host.spawnDetachedDaemon);
+    host.spawnDetachedDaemon = spawnDetachedDaemon;
+    await writeFile(
+      join(agencHome, "config.toml"),
+      'config_version = 2\nunknown_daemon_key = "invalid"\n',
+    );
+
+    try {
+      await expect(runAgenCDaemonCli(
+        { kind: "command", action: "start" },
+        {
+          host,
+          io,
+          ...createReadyPublishedDaemonOptions(agencHome, host),
+        },
+      )).resolves.toBe(0);
+      expect(spawnDetachedDaemon).toHaveBeenCalledOnce();
+      expect(io.stderrText()).not.toContain(
+        "daemon auth backend initialization failed",
+      );
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
   });
 
   it("status enriches the running line with health.stats over the socket", async () => {
@@ -1165,7 +1384,7 @@ describe("AgenC daemon CLI", () => {
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     await writeFile(
       join(agencHome, "config.toml"),
-      '[auth]\nbackend = "remote"\n',
+      'config_version = 2\n\n[auth]\nbackend = "remote"\n',
     );
 
     await expect(
@@ -1829,6 +2048,41 @@ describe("AgenC daemon CLI", () => {
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("includes the bounded startup phase tail for a debug readiness timeout", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    host.env.TUI_E2E_DEBUG = "1";
+    const io = createIo();
+
+    await expect(
+      runAgenCDaemonCli(
+        { kind: "command", action: "start" },
+        {
+          host,
+          io,
+          waitForDaemonReady: async () => {
+            await writeFile(
+              join(agencHome, "daemon-spawn-stderr.log"),
+              "[agenc:daemon-startup +1234ms] process identity query complete\n",
+            );
+            return false;
+          },
+        },
+      ),
+    ).resolves.toBe(1);
+
+    expect(io.stderrText()).toContain(
+      "lock parent security validation started",
+    );
+    expect(io.stderrText()).toContain(
+      "SQLite transaction acquisition complete",
+    );
+    expect(io.stderrText()).toContain(
+      "[agenc:daemon-startup +1234ms] process identity query complete",
+    );
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
   it("start reports 'started' once the control socket becomes ready", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
@@ -2331,6 +2585,23 @@ describe("AgenC daemon CLI", () => {
     }
   });
 
+  it("consumes rejected lifecycle lock diagnostic observers", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    let observed = 0;
+    const release = await acquireAgenCDaemonLifecycleLock(host, async () => {
+      observed += 1;
+      throw new Error("async diagnostic observer failed");
+    });
+    expect(observed).toBeGreaterThan(0);
+    await release();
+
+    const releaseSuccessor = await acquireAgenCDaemonLifecycleLock(host);
+    await releaseSuccessor();
+    await delay(0);
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
   it("serializes a direct foreground launch against autostart", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
@@ -2715,6 +2986,8 @@ describe("AgenC daemon CLI", () => {
       await writeFile(
         join(agencHome, "config.toml"),
         `
+config_version = 2
+
 [auth]
 backend = "remote"
 
@@ -2755,9 +3028,11 @@ token_cap = 123
       );
       expect(updateRuntimeConfig).toHaveBeenCalledWith(
         expect.objectContaining({
-          agentBudget: expect.objectContaining({ token_cap: 123 }),
           realtimeConnectTransport: expect.any(Function),
         }),
+      );
+      expect(updateRuntimeConfig.mock.calls.at(-1)?.[0]).not.toHaveProperty(
+        "agentBudget",
       );
       expect(updateRuntimeConfig.mock.calls.at(-1)?.[0].authBackend?.kind).toBe(
         "remote",
@@ -2800,6 +3075,8 @@ token_cap = 123
     await writeFile(
       join(agencHome, "config.toml"),
       `
+config_version = 2
+
 [mcp.server]
 enabled = true
 transport = "sse"
@@ -2825,6 +3102,8 @@ workspace = ${JSON.stringify(workspaceA)}
       await writeFile(
         join(agencHome, "config.toml"),
         `
+config_version = 2
+
 [mcp.server]
 enabled = true
 transport = "sse"
@@ -2896,6 +3175,8 @@ workspace = ${JSON.stringify(workspaceB)}
     await writeFile(
       join(agencHome, "config.toml"),
       `
+config_version = 2
+
 [auth]
 backend = "local"
 
@@ -2938,6 +3219,8 @@ workspace = ${JSON.stringify(process.cwd())}
       await writeFile(
         join(agencHome, "config.toml"),
         `
+config_version = 2
+
 [auth]
 backend = "remote"
 
@@ -3214,8 +3497,8 @@ workspace = ${JSON.stringify(process.cwd())}
           id: "initialize-shutdown",
           method: "initialize",
           params: {
-            protocolVersion: "1.2.0",
-            protocol: { version: "1.2.0" },
+            protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+            protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
             clientName: "agenc-shutdown-contract",
             authCookie,
             capabilities: {},
@@ -3301,8 +3584,8 @@ workspace = ${JSON.stringify(process.cwd())}
             id,
             method: "initialize",
             params: {
-              protocolVersion: "1.2.0",
-              protocol: { version: "1.2.0" },
+              protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+              protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
               clientName: id,
               authCookie,
               capabilities: {},
@@ -3434,6 +3717,8 @@ workspace = ${JSON.stringify(process.cwd())}
     await writeFile(
       join(agencHome, "config.toml"),
       `
+config_version = 2
+
 [auth]
 backend = "local"
       `,
@@ -3552,9 +3837,19 @@ backend = "local"
       authenticated: true,
       provider: "local",
     });
-    await expect(
-      readFile(join(agencHome, "auth.json"), "utf8"),
-    ).resolves.toContain('"token"');
+    const persistedAuth = JSON.parse(
+      await readFile(join(agencHome, "auth.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(persistedAuth).toMatchObject({
+      version: 1,
+      provider: "local",
+      identity: {
+        accountId: "local",
+        displayName: "Local AgenC user",
+        plan: "free",
+      },
+    });
+    expect(persistedAuth).not.toHaveProperty("token");
     const afterLoginWhoami = await client.request("auth.whoami");
     expect(afterLoginWhoami).toMatchObject({
       authenticated: true,
@@ -3730,8 +4025,8 @@ backend = "local"
           method: "agent.create",
           params: {
             cwd: process.cwd(),
-            cwd: process.cwd(),
             objective: "realtime thread state",
+            runtimeOptions: TEST_RUNTIME_OPTIONS,
           },
         })}\n`,
       );
@@ -3832,8 +4127,8 @@ backend = "local"
       id: "initialize",
       result: {
         type: "initialized",
-        protocolVersion: "1.2.0",
-        protocol: { version: "1.2.0" },
+        protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+        protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
       },
     });
 
@@ -3902,6 +4197,7 @@ backend = "local"
       const created = await writerClient.request("agent.create", {
         cwd: process.cwd(),
         objective: "health state",
+        runtimeOptions: TEST_RUNTIME_OPTIONS,
       });
       if (created.sessionId === undefined)
         throw new Error("session id missing");
@@ -4002,9 +4298,17 @@ backend = "local"
         timeoutMs: 1000,
       });
 
+      await expect(
+        client.request("workspace.editor.acquire", {
+          workspaceRoot: process.cwd(),
+          editorInstanceId: "editor_boot_injection",
+        }),
+      ).resolves.toMatchObject({ sequence: -1 });
+
       const created = await client.request("agent.create", {
         cwd: process.cwd(),
         objective: "prove dispatcher boot injection",
+        runtimeOptions: TEST_RUNTIME_OPTIONS,
       });
       expect(created.agentId).toBe("agent_boot_injection");
       if (
@@ -4080,7 +4384,7 @@ backend = "local"
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     await writeFile(
       join(agencHome, "config.toml"),
-      '[auth]\nbackend = "remote"\n',
+      'config_version = 2\n\n[auth]\nbackend = "remote"\n',
     );
 
     const running = runAgenCDaemonCli(
@@ -4106,6 +4410,8 @@ backend = "local"
     await writeFile(
       join(agencHome, "config.toml"),
       `
+config_version = 2
+
 [mcp.server]
 enabled = true
 transport = "sse"
@@ -4139,6 +4445,8 @@ port = 0
     await writeFile(
       join(agencHome, "config.toml"),
       `
+config_version = 2
+
 [mcp.server]
 enabled = true
 transport = "sse"
@@ -4172,6 +4480,8 @@ workspace = ${JSON.stringify(process.cwd())}
     await writeFile(
       join(agencHome, "config.toml"),
       `
+config_version = 2
+
 [agent.retention]
 completed_days = 10000
 failed_days = 10000
@@ -4310,29 +4620,30 @@ snapshot_max_bytes = 64
       Parameters<AgenCBootstrapFunction>[0]
     >();
     const sendInput = vi.fn(async () => {});
-    const permissionModeRegistry = {
-      current: () => createEmptyToolPermissionContext(),
-      update: async () => {},
-    };
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: (async (options) => {
         const conversationId = options.conversationId ?? "daemon-recovery";
         restoredConversationIds.push(conversationId);
         restoreOptions.set(conversationId, options);
+        const rolloutStore = openRecoveredRolloutStore(agencHome, options);
         const session = createRecoveredSession(
           conversationId,
-          permissionModeRegistry,
+          new PermissionModeRegistry(createEmptyToolPermissionContext()),
+          {
+            runtimeOptions: options.runtimeOptions,
+            rolloutStore,
+            enableDurableClose: true,
+            ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+          },
         );
-        return {
-          session,
-          rolloutStore: session.rolloutStore,
-          shutdown: async () => {},
-        };
+        return session.createBootstrap();
       }) as AgenCBootstrapFunction,
       ensureAgentControl: (() => ({
         control: {
           sendInput,
           shutdown: async () => {},
+          liveThreadSpawnChildren: () => new Map(),
+          openThreadSpawnChildren: () => new Map(),
         },
         registry: {},
       })) as AgenCEnsureAgentControlFunction,
@@ -4482,12 +4793,14 @@ snapshot_max_bytes = 64
     ).resolves.toMatchObject({
       agentId: "run-restart",
       sessionIds: ["session-restart"],
+      runtimeOptions: TEST_RUNTIME_OPTIONS,
       sessions: [
         {
           sessionId: "session-restart",
           agentId: "run-restart",
           status: "waiting",
           metadata: {
+            runtimeOptions: TEST_RUNTIME_OPTIONS,
             recovery: {
               snapshot: {
                 recoveredToolCalls: [
@@ -4513,7 +4826,11 @@ snapshot_max_bytes = 64
       messageId: expect.any(String),
       streamId: expect.any(String),
     });
-    expect(sendInput).toHaveBeenCalledWith("run-restart", "continue");
+    expect(sendInput).toHaveBeenCalledWith(
+      "run-restart",
+      "continue",
+      expect.objectContaining({ displayUserMessage: "continue" }),
+    );
 
     signalProcess.emit("SIGTERM");
     await expect(running).resolves.toBe(0);
@@ -4531,6 +4848,72 @@ snapshot_max_bytes = 64
     ).toBeUndefined();
 
     await rm(otherCwd, { recursive: true, force: true });
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("refuses to reinterpret daemon environment for a run without durable runtime options", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const runId = "run-without-runtime-options";
+    const sessionId = "session-without-runtime-options";
+    seedRecoverableDaemonState(agencHome, {
+      cwd: process.cwd(),
+      runId,
+      sessionId,
+      includeRuntimeOptions: false,
+    });
+    const restoreAgent = vi.fn(async () => true);
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => {
+        throw new Error("not used");
+      },
+      restoreAgent,
+    };
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess, runner },
+    );
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    await expect(
+      Promise.race([
+        waitForPid(pidPath),
+        running.then((code) => {
+          throw new Error(`daemon exited ${code}: ${io.stderrText()}`);
+        }),
+      ]),
+    ).resolves.toBe(4100);
+    expect(restoreAgent).not.toHaveBeenCalled();
+
+    const authCookie = (
+      await readFile(
+        resolveAgenCDaemonCookiePath(host.env, host.userHome),
+        "utf8",
+      )
+    ).trim();
+    const client = createAgenCJsonLineDaemonRequestClient({
+      socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+      authCookie,
+      timeoutMs: 1000,
+    });
+    await expect(client.request("agent.list", {})).resolves.toMatchObject({
+      agents: [
+        {
+          agentId: runId,
+          metadata: {
+            recovery: {
+              runnable: false,
+              runtimeRestore: "unavailable",
+            },
+          },
+        },
+      ],
+    });
+
+    signalProcess.emit("SIGTERM");
+    await expect(running).resolves.toBe(0);
     await rm(agencHome, { recursive: true, force: true });
   });
 
@@ -4606,7 +4989,7 @@ snapshot_max_bytes = 64
         payload: {
           eventId: `run-cancel-request:${runId}:1`,
           id: `run-cancel-request:${runId}:1`,
-          seq: 1,
+          seq: 2,
           msg: {
             type: "run_cancel_requested",
             payload: {
@@ -4646,8 +5029,6 @@ snapshot_max_bytes = 64
 
   it("suspends an idle run, restores it on daemon restart, and accepts new input", async () => {
     const agencHome = await tempAgencHome();
-    const originalAgencHome = process.env.AGENC_HOME;
-    process.env.AGENC_HOME = agencHome;
     const host = createHost(agencHome);
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
@@ -4661,10 +5042,9 @@ snapshot_max_bytes = 64
     const rolloutIdentity = await stat(rolloutPath, { bigint: true });
     const sendInput = vi.fn(async () => {});
     const restoredOptions: Array<Parameters<AgenCBootstrapFunction>[0]> = [];
-    const permissionModeRegistry = {
-      current: () => createEmptyToolPermissionContext(),
-      update: async () => {},
-    };
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
     const makeRunner = (): AgenCBackgroundAgentRunner =>
       new AgenCDelegateBackgroundAgentRunner({
         bootstrap: (async (options) => {
@@ -4688,55 +5068,19 @@ snapshot_max_bytes = 64
           ) {
             throw new Error("startup restore cwd descriptor identity changed");
           }
-          const rolloutStore = new RolloutStore({
-            cwd: options.cwd,
-            sessionId: options.conversationId,
-            agencVersion: "0.16.1",
-            resume: true,
-            resumeRolloutPath: options.resumeRolloutPath,
-            resumeRolloutLease: options.resumeRolloutLease,
-            autoStartScheduler: false,
-            ...(options.resumeSuspendedConversation === true
-              ? {
-                  resumeSuspendedRun: true,
-                  suspendedResumeReason:
-                    options.suspendedResumeReason ?? "explicit_continue",
-                }
-              : {}),
-          });
-          rolloutStore.open({
-            sessionId: options.conversationId,
-            timestamp: "2026-05-01T12:00:00.000Z",
-            cwd: options.cwd,
-            originator: "daemon-restart-test",
-            source: "interactive-root",
-            agencVersion: "0.16.1",
-            model: "test-model",
-            modelProvider: "test-provider",
-          });
+          const rolloutStore = openRecoveredRolloutStore(agencHome, options);
           const session = createRecoveredSession(
             options.conversationId,
             permissionModeRegistry,
             {
+              runtimeOptions: options.runtimeOptions,
               rolloutStore,
               threadStatus: "idle",
               enableDurableClose: true,
+              cwd: options.cwd,
             },
           );
-          let closed = false;
-          return {
-            session,
-            rolloutStore,
-            shutdown: async () => {
-              if (closed) return;
-              closed = true;
-              try {
-                await session.runBeforeDurableClose();
-              } finally {
-                rolloutStore.close();
-              }
-            },
-          };
+          return session.createBootstrap();
         }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
           control: {
@@ -4774,16 +5118,16 @@ snapshot_max_bytes = 64
         resumeRolloutPath: rolloutPath,
       });
       expect(restoredOptions[0]?.resumeSuspendedConversation).toBeUndefined();
-      expect(restoredOptions[0]?.deferSessionStartHooks).toBeUndefined();
+      expect(restoredOptions[0]?.deferSessionStartHooks).toBe(true);
       expect(restoredOptions[0]?.deferAgentStartupSideEffects).toBeUndefined();
 
       firstSignal.emit("SIGTERM");
       firstStopped = true;
       await expect(first).resolves.toBe(0);
+      const suspended = readCanonicalRunLifecycle(rolloutPath);
       expect(readAgentRunStatus(agencHome, process.cwd(), runId)).toBe(
         "suspended",
       );
-      const suspended = readCanonicalRunLifecycle(rolloutPath);
       expect(suspended.map(({ type }) => type)).toEqual(["run_suspended"]);
       expect(suspended[0]?.payload).toMatchObject({
         runId,
@@ -4860,6 +5204,9 @@ snapshot_max_bytes = 64
       expect(sendInput).toHaveBeenCalledWith(
         runId,
         "continue after daemon restart",
+        expect.objectContaining({
+          displayUserMessage: "continue after daemon restart",
+        }),
       );
 
       secondSignal.emit("SIGTERM");
@@ -4877,8 +5224,6 @@ snapshot_max_bytes = 64
         secondSignal?.emit("SIGTERM");
         await second.catch(() => {});
       }
-      if (originalAgencHome === undefined) delete process.env.AGENC_HOME;
-      else process.env.AGENC_HOME = originalAgencHome;
       await rm(agencHome, { recursive: true, force: true });
     }
   });
@@ -4909,22 +5254,26 @@ snapshot_max_bytes = 64
       string,
       ReturnType<typeof createRecoveredSession>
     >();
-    const permissionModeRegistry = {
-      current: () => createEmptyToolPermissionContext(),
-      update: async () => {},
-    };
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
     const runner: AgenCBackgroundAgentRunner =
       new AgenCDelegateBackgroundAgentRunner({
         bootstrap: (async (options) => {
           const conversationId = options.conversationId ?? "daemon-replay";
+          const rolloutStore = openRecoveredRolloutStore(agencHome, options);
           const session = createRecoveredSession(
             conversationId,
             permissionModeRegistry,
+            {
+              runtimeOptions: options.runtimeOptions,
+              rolloutStore,
+              enableDurableClose: true,
+              ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+            },
           );
           restoredSessions.set(conversationId, session);
-          return {
-            session,
-            rolloutStore: session.rolloutStore,
+          return session.createBootstrap({
             registry: {
               tools: [
                 {
@@ -4940,12 +5289,14 @@ snapshot_max_bytes = 64
               dispatch,
             },
             shutdown: async () => {},
-          };
+          });
         }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
           control: {
             sendInput: async () => {},
             shutdown: async () => {},
+            liveThreadSpawnChildren: () => new Map(),
+            openThreadSpawnChildren: () => new Map(),
           },
           registry: {},
         })) as AgenCEnsureAgentControlFunction,
@@ -5038,30 +5389,36 @@ snapshot_max_bytes = 64
       string,
       ReturnType<typeof createRecoveredSession>
     >();
-    const permissionModeRegistry = {
-      current: () => createEmptyToolPermissionContext(),
-      update: async () => {},
-    };
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
     const runner: AgenCBackgroundAgentRunner =
       new AgenCDelegateBackgroundAgentRunner({
         bootstrap: (async (options) => {
           const conversationId =
             options.conversationId ?? "daemon-completed-tool";
+          const rolloutStore = openRecoveredRolloutStore(agencHome, options);
           const session = createRecoveredSession(
             conversationId,
             permissionModeRegistry,
+            {
+              runtimeOptions: options.runtimeOptions,
+              rolloutStore,
+              enableDurableClose: true,
+              ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+            },
           );
           restoredSessions.set(conversationId, session);
-          return {
-            session,
-            rolloutStore: session.rolloutStore,
+          return session.createBootstrap({
             shutdown: async () => {},
-          };
+          });
         }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
           control: {
             sendInput: async () => {},
             shutdown: async () => {},
+            liveThreadSpawnChildren: () => new Map(),
+            openThreadSpawnChildren: () => new Map(),
           },
           registry: {},
         })) as AgenCEnsureAgentControlFunction,
@@ -5158,23 +5515,27 @@ snapshot_max_bytes = 64
       string,
       ReturnType<typeof createRecoveredSession>
     >();
-    const permissionModeRegistry = {
-      current: () => createEmptyToolPermissionContext(),
-      update: async () => {},
-    };
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
     const runner: AgenCBackgroundAgentRunner =
       new AgenCDelegateBackgroundAgentRunner({
         bootstrap: (async (options) => {
           const conversationId =
             options.conversationId ?? "daemon-replay-poison";
+          const rolloutStore = openRecoveredRolloutStore(agencHome, options);
           const session = createRecoveredSession(
             conversationId,
             permissionModeRegistry,
+            {
+              runtimeOptions: options.runtimeOptions,
+              rolloutStore,
+              enableDurableClose: true,
+              ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+            },
           );
           restoredSessions.set(conversationId, session);
-          return {
-            session,
-            rolloutStore: session.rolloutStore,
+          return session.createBootstrap({
             registry: {
               tools: [
                 { name: "FileWrite", recoveryCategory: "side-effecting" },
@@ -5183,12 +5544,14 @@ snapshot_max_bytes = 64
               dispatch,
             },
             shutdown: async () => {},
-          };
+          });
         }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
           control: {
             sendInput: async () => {},
             shutdown: async () => {},
+            liveThreadSpawnChildren: () => new Map(),
+            openThreadSpawnChildren: () => new Map(),
           },
           registry: {},
         })) as AgenCEnsureAgentControlFunction,
@@ -5267,13 +5630,34 @@ snapshot_max_bytes = 64
       toolArgs: { questions: [] },
       recoveryCategory: "interactive",
     });
-    const runner: AgenCBackgroundAgentRunner = {
-      startAgent: async () => ({
-        agentId: "unused",
-        startedAt: "2026-05-01T12:00:00.500Z",
-        status: "running",
-      }),
-    };
+    const runner: AgenCBackgroundAgentRunner =
+      new AgenCDelegateBackgroundAgentRunner({
+        bootstrap: (async (options) => {
+          const conversationId = options.conversationId ?? "daemon-recovery";
+          const rolloutStore = openRecoveredRolloutStore(agencHome, options);
+          const session = createRecoveredSession(
+            conversationId,
+            new PermissionModeRegistry(createEmptyToolPermissionContext()),
+            {
+              runtimeOptions: options.runtimeOptions,
+              rolloutStore,
+              enableDurableClose: true,
+              ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+            },
+          );
+          return session.createBootstrap();
+        }) as AgenCBootstrapFunction,
+        ensureAgentControl: (() => ({
+          control: {
+            sendInput: async () => {},
+            shutdown: async () => {},
+            liveThreadSpawnChildren: () => new Map(),
+            openThreadSpawnChildren: () => new Map(),
+          },
+          registry: {},
+        })) as AgenCEnsureAgentControlFunction,
+        now: () => "2026-05-01T12:00:00.500Z",
+      });
 
     const running = runAgenCDaemonCli(
       { kind: "command", action: "run" },
@@ -5406,10 +5790,11 @@ snapshot_max_bytes = 64
       objective: "survive daemon restart",
       cwd: process.cwd(),
       model: "grok-4",
-      provider: "xai",
+      provider: "grok",
       profile: "fast",
       unattendedAllow: ["FileRead"],
       unattendedDeny: ["system.bash"],
+      runtimeOptions: TEST_RUNTIME_OPTIONS,
     });
     const sessionId = created.sessionId;
     if (sessionId === undefined) throw new Error("session id missing");
@@ -5442,6 +5827,7 @@ snapshot_max_bytes = 64
       cwd: process.cwd(),
       runId: createdAgentId,
       objective: "survive daemon restart",
+      profile: "fast",
     });
 
     const sendInput = vi.fn(async () => {});
@@ -5452,30 +5838,37 @@ snapshot_max_bytes = 64
       ReturnType<typeof createRecoveredSession>
     >();
     const secondSignal = createSignalProcess();
-    const permissionModeRegistry = {
-      current: () => createEmptyToolPermissionContext(),
-      update: vi.fn(async () => {}),
-    };
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
+    vi.spyOn(permissionModeRegistry, "update");
     const restoreRunner: AgenCBackgroundAgentRunner =
       new AgenCDelegateBackgroundAgentRunner({
         bootstrap: (async (options) => {
           restoreBootstrapOptions = options;
           const conversationId = options.conversationId ?? "daemon-recovery";
+          const rolloutStore = openRecoveredRolloutStore(agencHome, options);
           const session = createRecoveredSession(
             conversationId,
             permissionModeRegistry,
+            {
+              runtimeOptions: options.runtimeOptions,
+              rolloutStore,
+              enableDurableClose: true,
+              ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+            },
           );
           restoredSessions.set(conversationId, session);
-          return {
-            session,
-            rolloutStore: session.rolloutStore,
+          return session.createBootstrap({
             shutdown: async () => {},
-          };
+          });
         }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
           control: {
             sendInput,
             shutdown: async () => {},
+            liveThreadSpawnChildren: () => new Map(),
+            openThreadSpawnChildren: () => new Map(),
           },
           registry: {},
         })) as AgenCEnsureAgentControlFunction,
@@ -5500,12 +5893,39 @@ snapshot_max_bytes = 64
     expect(restoreBootstrapOptions?.argv).toEqual(
       expect.arrayContaining([
         "--provider",
-        "xai",
+        "grok",
         "--model",
         "grok-4",
         "--profile",
         "fast",
       ]),
+    );
+    expect(
+      restoredSessions.get(createdAgentId)?.runtimeRestoreObservations,
+    ).toEqual([
+      {
+        kind: "pending-provider-switch",
+        pendingProviderSwitch: {
+          provider: "grok",
+          model: "grok-4",
+          profile: "fast",
+        },
+      },
+      {
+        kind: "deferred-session-start-hook",
+        pendingProviderSwitch: {
+          provider: "grok",
+          model: "grok-4",
+          profile: "fast",
+        },
+      },
+    ]);
+    expect(restoredSessions.get(createdAgentId)?.pendingProviderSwitch).toEqual(
+      {
+        provider: "grok",
+        model: "grok-4",
+        profile: "fast",
+      },
     );
     expect(permissionModeRegistry.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -5591,6 +6011,7 @@ snapshot_max_bytes = 64
     const created = await client.request("agent.create", {
       objective: "route attach event",
       cwd: otherCwd,
+      runtimeOptions: TEST_RUNTIME_OPTIONS,
     });
     const sessionId = created.sessionId;
     if (sessionId === undefined) throw new Error("session id missing");
@@ -5651,6 +6072,8 @@ function seedRecoverableDaemonState(
     readonly toolArgs?: unknown;
     readonly recoveryCategory?: string;
     readonly status?: string;
+    /** Set false only when exercising the fail-closed pre-contract recovery path. */
+    readonly includeRuntimeOptions?: boolean;
   },
 ): string {
   const driver = openStateDatabases({
@@ -5683,6 +6106,9 @@ function seedRecoverableDaemonState(
         "2026-05-01T00:06:00.000Z",
         JSON.stringify({
           agentPath: `/root/${params.runId.replaceAll("-", "_")}`,
+          ...(params.includeRuntimeOptions === false
+            ? {}
+            : { runtimeOptions: TEST_RUNTIME_OPTIONS }),
         }),
       );
     driver
@@ -5900,6 +6326,7 @@ function seedRecoverableCompletedToolState(
         "2026-05-01T00:06:00.000Z",
         JSON.stringify({
           agentPath: `/root/${params.runId}`,
+          runtimeOptions: TEST_RUNTIME_OPTIONS,
         }),
       );
     driver
@@ -5963,6 +6390,7 @@ function seedCanonicalDaemonRollout(
     readonly cwd: string;
     readonly runId: string;
     readonly objective: string;
+    readonly profile?: string | null;
   },
 ): string {
   const driver = openStateDatabases({ cwd: params.cwd, agencHome });
@@ -5974,6 +6402,23 @@ function seedCanonicalDaemonRollout(
       `rollout-2026-05-01T00-00-00-000Z-${params.runId}.jsonl`,
     );
     const timestamp = "2026-05-01T00:00:00.000Z";
+    const runtimeSettingsEventId = `runtime-settings:${params.runId}:initial`;
+    const runtimeSettings = {
+      permissionMode: "default" as const,
+      prePlanMode: null,
+      autoModeActive: false,
+      autoModeAvailable: false,
+      bypassPermissionsModeAvailable: false,
+      bypassPermissionsWorkspace: null,
+      bypassPermissionsConsentWorkspace: null,
+      model: "grok-4",
+      provider: "grok",
+      profile: params.profile ?? null,
+      reasoningEffort: null,
+      modelVerbosity: null,
+      serviceTier: null,
+      hooksDisabled: false,
+    };
     writeFileSync(
       rolloutPath,
       [
@@ -5997,6 +6442,27 @@ function seedCanonicalDaemonRollout(
           payload: { role: "user", content: params.objective },
           eventVersion: 1,
         },
+        {
+          type: "event_msg",
+          payload: {
+            id: runtimeSettingsEventId,
+            eventId: runtimeSettingsEventId,
+            seq: 1,
+            msg: {
+              type: "run_runtime_settings_changed",
+              payload: {
+                runId: params.runId,
+                epoch: 1,
+                previousSettingsEventId: null,
+                rollbackOfSettingsEventId: null,
+                reason: "initial",
+                changedAt: timestamp,
+                ...runtimeSettings,
+              },
+            },
+          },
+          eventVersion: 1,
+        },
       ]
         .map((item) => JSON.stringify(item))
         .join("\n") + "\n",
@@ -6011,6 +6477,17 @@ function seedCanonicalDaemonRollout(
       sessionId: params.runId,
       sourcePath: rolloutPath,
       boundAt: timestamp,
+    });
+    runs.recordRuntimeSettingsChanged({
+      runId: params.runId,
+      epoch: 1,
+      eventId: runtimeSettingsEventId,
+      eventSequence: 1,
+      previousSettingsEventId: null,
+      rollbackOfSettingsEventId: null,
+      reason: "initial",
+      changedAt: timestamp,
+      settings: runtimeSettings,
     });
     return rolloutPath;
   } finally {
@@ -6193,9 +6670,7 @@ function latestSnapshotToolState(
   }
 }
 
-describe("daemon startup proxy configuration", () => {
-  // getProxyUrl reads process.env (not host.env), matching production where the
-  // spawned daemon's process.env IS the inherited parent CLI env.
+describe("daemon startup proxy isolation", () => {
   const PROXY_ENV = [
     "HTTPS_PROXY",
     "https_proxy",
@@ -6245,14 +6720,15 @@ describe("daemon startup proxy configuration", () => {
     }
   }
 
-  it("installs the env-proxy global dispatcher when HTTPS_PROXY is set", async () => {
+  it("does not install a process-global dispatcher when HTTPS_PROXY is set", async () => {
     process.env.HTTPS_PROXY = "http://127.0.0.1:9"; // unroutable; nothing connects
     clearProxyCache();
+    const before = getGlobalDispatcher();
     await bootDaemonAndStop();
-    // REVERT-SENSITIVE: without the configureGlobalAgents() call in
-    // runAgenCDaemonForeground, the global dispatcher stays undici's default
-    // Agent and this fails.
-    expect(getGlobalDispatcher()).toBeInstanceOf(EnvHttpProxyAgent);
+    // REVERT-SENSITIVE: a daemon-wide configureGlobalAgents() call replaces
+    // this dispatcher and lets one client's proxy authority affect every
+    // later bare fetch in the long-lived process.
+    expect(getGlobalDispatcher()).toBe(before);
   });
 
   it("leaves the default dispatcher untouched without any proxy/mTLS env", async () => {

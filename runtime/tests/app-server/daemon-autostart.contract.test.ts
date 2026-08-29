@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -256,6 +256,8 @@ describe("AgenC daemon autostart", () => {
     await writeFile(
       join(agencHome, "config.toml"),
       `
+config_version = 2
+
 [daemon]
 autostart = false
 
@@ -285,6 +287,42 @@ port = 0
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("uses the captured environment without inheriting the launch workspace", async () => {
+    const root = await tempAgencHome();
+    const agencHome = join(root, "home");
+    const projectRoot = join(root, "project");
+    const cwd = join(projectRoot, "nested");
+    await mkdir(agencHome, { recursive: true });
+    await mkdir(cwd, { recursive: true });
+    await writeFile(join(projectRoot, ".git"), "");
+    await writeFile(join(agencHome, "config.toml"), `
+config_version = 2
+
+[daemon]
+autostart = false
+    `);
+    await mkdir(join(projectRoot, ".agenc"), { recursive: true });
+    await writeFile(join(projectRoot, ".agenc", "config.toml"), `
+config_version = 2
+
+[daemon]
+autostart = true
+    `);
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(cwd);
+    vi.stubEnv("AGENC_PROVIDER", "not-a-provider");
+
+    try {
+      await expect(resolveAgenCDaemonAutostartConfig({
+        AGENC_HOME: agencHome,
+        AGENC_PROVIDER: "grok",
+      }, "/home/test")).resolves.toMatchObject({ daemonEnabled: false });
+    } finally {
+      vi.unstubAllEnvs();
+      cwdSpy.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("connects to an already-running daemon without spawning", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
@@ -293,6 +331,7 @@ port = 0
     host.recordDaemon(5300);
     await writeAgenCDaemonPid(pidPath, 5300);
     const connectedPids: number[] = [];
+    const identityPublicationBarrier = vi.fn();
 
     await expect(
       ensureAgenCDaemonAutostart({
@@ -301,6 +340,7 @@ port = 0
         connect: ({ pid }) => {
           connectedPids.push(pid);
         },
+        identityPublicationBarrier,
       }),
     ).resolves.toEqual({
       pid: 5300,
@@ -311,6 +351,10 @@ port = 0
     });
     expect(host.spawnedPids).toEqual([]);
     expect(connectedPids).toEqual([5300]);
+    expect(identityPublicationBarrier).toHaveBeenCalledOnce();
+    await expect(
+      lstat(join(agencHome, "daemon-lifecycle.lock.sqlite")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
 
     await rm(agencHome, { recursive: true, force: true });
   });
@@ -577,6 +621,59 @@ port = 0
       // not a numeric signal that could race PID reuse.
       expect(signals).toEqual([]);
       await expect(readAgenCDaemonPid(pidPath)).resolves.toBe(5201);
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("gives up with a typed error when build skew persists across every restart cycle", async () => {
+    // Permanent-skew environment: every daemon this host spawns publishes a
+    // build identity that differs from the CLI's on-disk runtime, so the
+    // skew branch fires on every ensure cycle. Before the restart-cycle cap
+    // this recursed forever: respawn + full /proc scan + lifecycle lock at
+    // ~200% CPU behind a blank screen.
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const skewedBuild = {
+      runtimeVersion: "0.0.0-skewed",
+      commit: "skewed-commit",
+      buildTime: "1970-01-01T00:00:00.000Z",
+    };
+    const baseSpawn = host.spawnDetachedDaemon;
+    host.spawnDetachedDaemon = () => {
+      const pid = baseSpawn();
+      host.recordDaemon(pid, skewedBuild);
+      return pid;
+    };
+    const oldPid = 5480;
+    host.runningPids.add(oldPid);
+    await writeAgenCDaemonPid(pidPath, oldPid);
+    host.recordDaemon(oldPid, skewedBuild);
+    const sleeps: number[] = [];
+    host.sleep = async (ms: number) => {
+      sleeps.push(ms);
+    };
+
+    try {
+      await expect(
+        ensureAgenCDaemonAutostart({
+          host,
+          findOrphanDaemonPids: () => [],
+          findSupersededDaemonPids: () => [],
+          isReady: ({ pid }) => host.runningPids.has(pid),
+        }),
+      ).rejects.toThrowError(
+        expect.objectContaining({
+          name: "AgenCDaemonAutostartError",
+          message: expect.stringMatching(/gave up after 3 restart cycles/),
+        }),
+      );
+      // Bounded work: one spawn per cycle, never an unbounded respawn storm.
+      expect(host.spawnedPids.length).toBeLessThanOrEqual(4);
+      // Backoff between repeated restart cycles (the first restart stays
+      // immediate; escalation starts when the condition repeats).
+      expect(sleeps.filter((ms) => ms >= 250).length).toBeGreaterThanOrEqual(2);
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }

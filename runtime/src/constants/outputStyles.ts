@@ -1,12 +1,17 @@
 import figures from 'figures'
-import memoize from 'lodash-es/memoize.js'
 import { getOutputStyleDirStyles } from '../outputStyles/loadOutputStylesDir.js'
-import { loadPluginOutputStyles } from '../plugins/registration/load-plugin-output-styles.js'
+import {
+  clearPluginOutputStyleCache,
+  loadPluginOutputStyles,
+} from '../plugins/registration/load-plugin-output-styles.js'
+import type { PluginRuntimeLoadOptions } from '../plugins/registration/common.js'
 import type { OutputStyle } from '../utils/config.js'
 import { getCwd } from '../utils/cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import type { SettingSource } from '../utils/settings/constants.js'
 import { getExecutionAuthoritySettings } from '../utils/settings/settings.js'
+import { getActiveAgentRuntimeOptions } from '../session/runtime-options.js'
+import { getCanonicalSettingsAuthority } from '../utils/settings/canonicalAuthority.js'
 
 export type OutputStyleConfig = {
   name: string
@@ -134,11 +139,17 @@ ${EXPLANATORY_FEATURE_PROMPT}`,
   },
 }
 
-export const getAllOutputStyles = memoize(async function getAllOutputStyles(
+async function loadAllOutputStylesForCapturedPluginRoot(
   cwd: string,
+  pluginStorageRoot: string,
+  config: PluginRuntimeLoadOptions['config'],
 ): Promise<{ [styleName: string]: OutputStyleConfig | null }> {
   const customStyles = await getOutputStyleDirStyles(cwd)
-  const pluginStyles = await loadPluginOutputStyles()
+  const pluginStyles = await loadPluginOutputStyles({
+    cwd,
+    pluginStorageRoot,
+    ...(config !== undefined ? { config } : {}),
+  })
 
   // Start with built-in modes
   const allStyles = {
@@ -172,10 +183,38 @@ export const getAllOutputStyles = memoize(async function getAllOutputStyles(
   }
 
   return allStyles
-})
+}
+
+function requireActiveSessionPluginStorageRoot(): string {
+  const pluginStorageRoot = getActiveAgentRuntimeOptions()?.pluginStorageRoot
+  if (pluginStorageRoot === undefined) {
+    throw new Error(
+      'Output style loading requires an explicit plugin storage root or active runtime session',
+    )
+  }
+  return pluginStorageRoot
+}
+
+/**
+ * Load styles for an exact captured plugin root. One-argument calls are
+ * active-session adapters and never reconstruct plugin authority from env or
+ * home.
+ */
+export function getAllOutputStyles(
+  cwd: string,
+  pluginStorageRoot: string = requireActiveSessionPluginStorageRoot(),
+  config: PluginRuntimeLoadOptions['config'] =
+    getCanonicalSettingsAuthority()?.current(),
+): Promise<{ [styleName: string]: OutputStyleConfig | null }> {
+  return loadAllOutputStylesForCapturedPluginRoot(
+    cwd,
+    pluginStorageRoot,
+    config,
+  )
+}
 
 export function clearAllOutputStylesCache(): void {
-  getAllOutputStyles.cache?.clear?.()
+  clearPluginOutputStyleCache()
 }
 
 export async function getOutputStyleConfig(): Promise<OutputStyleConfig | null> {

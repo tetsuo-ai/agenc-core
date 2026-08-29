@@ -56,8 +56,9 @@ persistence, cancellation, and 10,000-candidate checks remain in
   boundary: code requested by `NODE_OPTIONS` can execute before the runner can
   inspect the environment. Workers receive a fixed, minimal environment with
   no inherited home, path, provider key, or other secret-bearing variable.
-  `AGENC_HOME`, `TEMP`, `TMP`, and `TMPDIR` all resolve to the supervisor-owned
-  per-worker root, so workers never share the ambient temporary namespace.
+  `AGENC_HOME`, `TEMP`, `TMP`, and `TMPDIR` all use the canonical spelling of
+  the supervisor-owned per-worker root, so worker IPC never traverses a path
+  alias and workers never share the ambient temporary namespace.
   Windows carries only the case-insensitively matched `SystemRoot` value needed
   by the worker; libuv's finite required-variable set is removed before
   validation and before any measured production module loads. `tsx` uses no

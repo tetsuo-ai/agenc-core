@@ -114,6 +114,8 @@ import {
   createTrajectoryExportSink,
   type TrajectoryExportSink,
 } from "./trajectory-export.js";
+import { resolveHomeContext } from "../config/home.js";
+import { getAgenCHomeDir } from "../utils/envUtils.js";
 
 export const I4_FSYNC_RETRY_MS = 100;
 const I83_SUSPEND_DETECTION_MS = 10_000;
@@ -240,13 +242,9 @@ export function slugifyCwd(cwd: string): string {
 }
 
 export function getAgencHomeDir(agencHome?: string): string {
-  const explicit = agencHome ?? process.env.AGENC_HOME;
-  if (explicit) return explicit;
-  const home = process.env.HOME;
-  if (!home) {
-    throw new Error("HOME unset and AGENC_HOME unset (I-52)");
-  }
-  return join(home, ".agenc");
+  return agencHome === undefined
+    ? getAgenCHomeDir()
+    : resolveHomeContext({ AGENC_HOME: agencHome }).path;
 }
 
 /**
@@ -1158,6 +1156,8 @@ export interface SessionStoreOpts {
   readonly cwd: string;
   readonly sessionId: string;
   readonly agencVersion: string;
+  /** Canonical home authority captured by the owning session/ingress. */
+  readonly agencHome?: string;
   /** Whether to open existing rollout (resume) or create new. */
   readonly resume?: boolean;
   /**
@@ -1379,6 +1379,7 @@ export class SessionStore {
   readonly cwd: string;
   readonly sessionId: string;
   readonly agencVersion: string;
+  readonly agencHome: string;
   readonly sessionDir: string;
   readonly rolloutPath: string;
   readonly lockPath: string;
@@ -1472,6 +1473,7 @@ export class SessionStore {
     this.cwd = opts.cwd;
     this.sessionId = opts.sessionId;
     this.agencVersion = opts.agencVersion;
+    this.agencHome = getAgencHomeDir(opts.agencHome);
     const explicitRolloutPath = opts.resumeRolloutPath;
     this.explicitResumeRolloutPath = explicitRolloutPath !== undefined;
     this.resumeRolloutLease = opts.resumeRolloutLease;
@@ -1507,6 +1509,7 @@ export class SessionStore {
             opts.cwd,
             opts.sessionId,
             opts.projectRootMarkers ?? DEFAULT_SESSION_ROOT_MARKERS,
+            this.agencHome,
           )
         : dirname(explicitRolloutPath);
     if (explicitRolloutPath === undefined) {
@@ -1529,7 +1532,7 @@ export class SessionStore {
       }
       let projectsRoot: string;
       try {
-        projectsRoot = realpathSync(resolve(getAgencHomeDir(), "projects"));
+        projectsRoot = realpathSync(resolve(this.agencHome, "projects"));
       } catch {
         throw new Error("resume rollout projects root is unavailable");
       }
@@ -3515,8 +3518,9 @@ export class SessionStore {
     cwd: string,
     sessionId: string,
     projectRootMarkers: readonly string[] = DEFAULT_SESSION_ROOT_MARKERS,
+    agencHome?: string,
   ): void {
-    const dir = getSessionDir(cwd, sessionId, projectRootMarkers);
+    const dir = getSessionDir(cwd, sessionId, projectRootMarkers, agencHome);
     mkdirSync(dir, { recursive: true });
     accessSync(dir, fsConstants.W_OK);
   }

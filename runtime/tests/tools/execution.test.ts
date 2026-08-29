@@ -1696,7 +1696,7 @@ describe("T11 W3-B — permission evaluator integration", () => {
     }
   });
 
-  test("unlisted unattended tools ask and flow to the approval bridge", async () => {
+  test("unlisted unattended tools fail closed without opening an approval bridge", async () => {
     const { context } = buildEvaluatorContext("unattended", {
       shouldAvoidPermissionPrompts: true,
       unattendedPolicy: {
@@ -1734,19 +1734,11 @@ describe("T11 W3-B — permission evaluator integration", () => {
       eventLog: log,
     });
 
-    expect(out.isError).toBe(false);
-    expect(executed).toBe(1);
-    expect(requestApproval).toHaveBeenCalledTimes(1);
-    expect(recorded).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "request_permissions",
-          payload: expect.objectContaining({
-            callId: "c1",
-            toolName: "Bash",
-          }),
-        }),
-      ]),
+    expect(out.isError).toBe(true);
+    expect(executed).toBe(0);
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(recorded.some((event) => event.type === "request_permissions")).toBe(
+      false,
     );
   });
 

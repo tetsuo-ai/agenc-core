@@ -1,13 +1,14 @@
 import {
-  normalizeProviderSlug,
   readProviderConfig,
-  type AgenCConfig,
-} from "./_deps/config.js";
+} from "../config/resolve-provider.js";
+import type { AgenCConfig } from "../config/schema.js";
 import { resolveModelCatalogMetadata } from "./registry/model-catalog.js";
+import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
 import {
-  BUILT_IN_PROVIDER_API_KEY_ENVS,
-  BUILT_IN_PROVIDER_BASE_URLS,
-} from "./registry/provider-info.js";
+  resolveProviderApiKeyEnvironment,
+  resolveProviderBaseURLEnvironment,
+} from "./registry/provider-ingress.js";
+import { resolveBuiltInProviderInfo } from "./registry/provider-info.js";
 import {
   boundedOutputTokens,
   CAPPED_DEFAULT_MAX_OUTPUT_TOKENS,
@@ -34,6 +35,7 @@ const LIVE_METADATA_PROVIDERS = new Set([
   "openai",
   "lmstudio",
   "openai-compatible",
+  "ollama",
   "groq",
   "deepseek",
 ]);
@@ -80,6 +82,8 @@ interface ModelMetadataValues {
 
 interface FetchJsonOptions {
   readonly headers?: Readonly<Record<string, string>>;
+  /** Ollama's native metadata endpoint is a POST with a JSON body. */
+  readonly jsonBody?: Readonly<Record<string, unknown>>;
 }
 
 export class ModelMetadataResolver {
@@ -208,21 +212,49 @@ export class ModelMetadataResolver {
   private async resolveLiveEndpointMetadata(
     params: LookupParams,
   ): Promise<ModelMetadataValues | undefined> {
-    const provider = normalizeProvider(params.provider);
+    const provider = normalizeMetadataProviderIdentity(params.provider);
     if (!LIVE_METADATA_PROVIDERS.has(provider)) return undefined;
     if (!shouldQueryLiveEndpoint(params, this.env)) return undefined;
     const baseUrl = providerBaseUrl(params.config, provider, this.env);
     if (!baseUrl) return undefined;
-    const response = await this.fetchJson(modelsUrlFromBaseUrl(baseUrl), {
-      headers: authHeaders(params.config, provider, this.env),
+    const headers = authHeaders(provider, this.env);
+    // Ollama serves no context length over its OpenAI-compatible surface, so
+    // the native endpoint is the only place the real number exists.
+    if (provider !== "ollama") {
+      const response = await this.fetchJson(modelsUrlFromBaseUrl(baseUrl), {
+        headers,
+      });
+      const openAi = metadataFromOpenAiModelsResponse(response, params.model);
+      if (hasAnyMetadata(openAi)) return openAi;
+    }
+    return await this.resolveOllamaNativeMetadata(baseUrl, params, headers);
+  }
+
+  /**
+   * Ollama's `/v1/models` returns only `{id, object, created, owned_by}` -- no
+   * context length -- so a local model silently inherited the conservative
+   * 128k fallback while really being 32k (qwen2.5-coder) or 2k (moondream).
+   * `/api/show` reports the true window under an architecture-prefixed key
+   * (`qwen2.context_length`). This also runs for `openai-compatible` and
+   * `lmstudio` pointed at an Ollama endpoint, which is a common setup; a
+   * non-Ollama server simply 404s and the caller falls through.
+   */
+  private async resolveOllamaNativeMetadata(
+    baseUrl: string,
+    params: LookupParams,
+    headers: Readonly<Record<string, string>> | undefined,
+  ): Promise<ModelMetadataValues | undefined> {
+    const response = await this.fetchJson(ollamaShowUrlFromBaseUrl(baseUrl), {
+      ...(headers !== undefined ? { headers } : {}),
+      jsonBody: { model: params.model },
     });
-    return metadataFromOpenAiModelsResponse(response, params.model);
+    return metadataFromOllamaShowResponse(response);
   }
 
   private async resolveOpenRouterMetadata(
     params: LookupParams,
   ): Promise<ModelMetadataValues | undefined> {
-    if (normalizeProvider(params.provider) !== "openrouter") return undefined;
+    if (normalizeMetadataProviderIdentity(params.provider) !== "openrouter") return undefined;
     const response = await this.fetchJson(OPENROUTER_MODELS_URL);
     return metadataFromOpenAiModelsResponse(response, params.model);
   }
@@ -246,7 +278,9 @@ export class ModelMetadataResolver {
     options: FetchJsonOptions = {},
   ): Promise<unknown | undefined> {
     if (!this.fetchImpl) return undefined;
-    const cacheKey = `${url}\n${JSON.stringify(options.headers ?? {})}`;
+    const cacheKey = `${url}\n${JSON.stringify(options.headers ?? {})}\n${
+      JSON.stringify(options.jsonBody ?? null)
+    }`;
     const cached = this.jsonCache.get(cacheKey);
     if (cached) return await cached;
     const request = this.fetchJsonUncached(url, options);
@@ -262,7 +296,16 @@ export class ModelMetadataResolver {
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const response = await this.fetchImpl!(url, {
-        headers: options.headers,
+        ...(options.jsonBody !== undefined
+          ? {
+            method: "POST",
+            body: JSON.stringify(options.jsonBody),
+            headers: {
+              ...(options.headers ?? {}),
+              "content-type": "application/json",
+            },
+          }
+          : { headers: options.headers }),
         signal: controller.signal,
       });
       if (!response.ok) return undefined;
@@ -303,7 +346,7 @@ function shouldPreferDynamicMetadata(
   params: LookupParams,
   env: Readonly<Record<string, string | undefined>>,
 ): boolean {
-  const provider = normalizeProvider(params.provider);
+  const provider = normalizeMetadataProviderIdentity(params.provider);
   return provider === "openrouter" || shouldQueryLiveEndpoint(params, env);
 }
 
@@ -311,11 +354,12 @@ function shouldQueryLiveEndpoint(
   params: LookupParams,
   env: Readonly<Record<string, string | undefined>>,
 ): boolean {
-  const provider = normalizeProvider(params.provider);
+  const provider = normalizeMetadataProviderIdentity(params.provider);
   const providerConfig = readProviderConfig(params.config, provider);
   return (
     provider === "lmstudio" ||
     provider === "openai-compatible" ||
+    provider === "ollama" ||
     Boolean(providerConfig?.base_url?.trim()) ||
     Boolean(envBaseUrl(provider, env))
   );
@@ -326,7 +370,7 @@ function shouldPreferLiveEndpointOverExplicit(
   env: Readonly<Record<string, string | undefined>>,
 ): boolean {
   return (
-    normalizeProvider(params.provider) === "openai-compatible" &&
+    normalizeMetadataProviderIdentity(params.provider) === "openai-compatible" &&
     shouldQueryLiveEndpoint(params, env)
   );
 }
@@ -371,7 +415,8 @@ function mergeLiveEndpointMetadata(
 function readExplicitConfigMetadata(
   params: LookupParams,
 ): ModelMetadataValues {
-  const providerConfig = readProviderConfig(params.config, params.provider) as
+  const provider = normalizeMetadataProviderIdentity(params.provider);
+  const providerConfig = readProviderConfig(params.config, provider) as
     | Record<string, unknown>
     | undefined;
   const explicitContextWindow = readPositiveInteger(
@@ -380,7 +425,7 @@ function readExplicitConfigMetadata(
     "contextWindowTokens",
   );
   const catalogMaxContextWindow = resolveModelCatalogMetadata({
-    provider: params.provider,
+    provider,
     model: params.model,
   })?.maxContextWindow;
   const contextWindow =
@@ -431,7 +476,7 @@ function inferBuiltInMetadata(
   provider: string,
   model: string,
 ): ModelMetadataValues | undefined {
-  const normalizedProvider = normalizeProvider(provider);
+  const normalizedProvider = normalizeMetadataProviderIdentity(provider);
   const normalizedModel = model.trim().toLowerCase();
   const catalog = resolveModelCatalogMetadata({
     provider: normalizedProvider,
@@ -576,32 +621,51 @@ function metadataFromLiteLlm(
   return undefined;
 }
 
+/**
+ * llama.cpp nests the window inside `meta` where the flat lookup never sees
+ * it, and reports both what the server loaded (`n_ctx`) and what the model was
+ * trained for (`n_ctx_train`). The loaded one wins: `llama-server -c 4096` on
+ * a 32k model refuses at 4097, so the trained maximum is not a usable budget.
+ */
+function servedContextWindow(
+  record: Record<string, unknown>,
+): number | undefined {
+  const meta = asRecord(record.meta);
+  if (!meta) return undefined;
+  return readPositiveInteger(meta, "n_ctx") ??
+    readPositiveInteger(meta, "n_ctx_train");
+}
+
 function metadataFromGenericRecord(
   record: Record<string, unknown>,
 ): ModelMetadataValues {
   const topProvider = asRecord(record.top_provider);
   return {
-    ...(readPositiveInteger(
-      record,
-      "max_model_len",
-      "context_length",
-      "max_context_length",
-      "max_input_tokens",
-      "max_tokens",
-    ) !== undefined
-      ? {
-        contextWindow: readPositiveInteger(
-          record,
-          "max_model_len",
-          "context_length",
-          "max_context_length",
-          "max_input_tokens",
-          "max_tokens",
-        ),
-      }
-      : readPositiveInteger(topProvider, "context_length") !== undefined
-        ? { contextWindow: readPositiveInteger(topProvider, "context_length") }
-        : {}),
+    // The served window is checked before the model's advertised maximum: a
+    // local server refuses anything past what it actually loaded.
+    ...(servedContextWindow(record) !== undefined
+      ? { contextWindow: servedContextWindow(record) }
+      : readPositiveInteger(
+        record,
+        "max_model_len",
+        "context_length",
+        "max_context_length",
+        "max_input_tokens",
+        "max_tokens",
+      ) !== undefined
+        ? {
+          contextWindow: readPositiveInteger(
+            record,
+            "max_model_len",
+            "context_length",
+            "max_context_length",
+            "max_input_tokens",
+            "max_tokens",
+          ),
+        }
+        : readPositiveInteger(topProvider, "context_length") !== undefined
+          ? { contextWindow: readPositiveInteger(topProvider, "context_length") }
+          : {}),
     ...(readPositiveInteger(
       record,
       "max_output_tokens",
@@ -671,7 +735,7 @@ function modelIdMatches(candidate: string, model: string): boolean {
 }
 
 function providerAliases(provider: string): readonly string[] {
-  const normalized = normalizeProvider(provider);
+  const normalized = normalizeMetadataProviderIdentity(provider);
   switch (normalized) {
     case "grok":
       return ["grok", "xai", "x-ai"];
@@ -684,8 +748,8 @@ function providerAliases(provider: string): readonly string[] {
   }
 }
 
-function normalizeProvider(provider: string): string {
-  return normalizeProviderSlug(provider) ?? provider.trim().toLowerCase();
+function normalizeMetadataProviderIdentity(provider: string): string {
+  return normalizeProviderMetadataIdentity(provider) ?? "";
 }
 
 function normalizeId(value: string): string {
@@ -703,6 +767,34 @@ function providerBaseUrl(
   return envBaseURL || configured || defaultProviderBaseUrl(provider);
 }
 
+/**
+ * Ollama's native API sits at the origin while its OpenAI-compatible surface
+ * lives under `/v1`, so a base URL configured for either one has to collapse
+ * to the same `/api/show`.
+ */
+export function ollamaShowUrlFromBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  const origin = trimmed.replace(/\/(?:v\d+(?:beta)?|api\/v\d+)$/i, "");
+  return `${origin}/api/show`;
+}
+
+function metadataFromOllamaShowResponse(
+  response: unknown,
+): ModelMetadataValues | undefined {
+  const modelInfo = asRecord(asRecord(response)?.model_info);
+  if (!modelInfo) return undefined;
+  // The key is architecture-prefixed (`qwen2.context_length`, `phi2.…`), and
+  // the architecture is not knowable from the model name, so match the suffix.
+  for (const [key, value] of Object.entries(modelInfo)) {
+    if (!/(?:^|\.)context_length$/.test(key)) continue;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+      continue;
+    }
+    return { contextWindow: value };
+  }
+  return undefined;
+}
+
 function modelsUrlFromBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.replace(/\/+$/, "");
   if (trimmed.endsWith("/models")) return trimmed;
@@ -713,16 +805,10 @@ function modelsUrlFromBaseUrl(baseUrl: string): string {
 }
 
 function authHeaders(
-  config: AgenCConfig,
   provider: string,
   env: Readonly<Record<string, string | undefined>>,
 ): Readonly<Record<string, string>> | undefined {
-  const providerConfig = readProviderConfig(config, provider);
-  const configuredApiKeyEnv = providerConfig?.api_key_env?.trim();
-  const apiKey =
-    configuredApiKeyEnv
-      ? env[configuredApiKeyEnv]?.trim()
-      : envApiKey(provider, env);
+  const apiKey = envApiKey(provider, env);
   return apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
 }
 
@@ -730,52 +816,18 @@ function envBaseUrl(
   provider: string,
   env: Readonly<Record<string, string | undefined>>,
 ): string | undefined {
-  switch (provider) {
-    case "openai":
-      return nonEmpty(env.OPENAI_BASE_URL);
-    case "lmstudio":
-      return nonEmpty(env.LMSTUDIO_BASE_URL) ?? nonEmpty(env.OPENAI_BASE_URL);
-    case "openai-compatible":
-      return (
-        nonEmpty(env.OPENAI_COMPATIBLE_BASE_URL) ??
-        nonEmpty(env.OPENAI_BASE_URL)
-      );
-    case "openrouter":
-      return nonEmpty(env.OPENROUTER_BASE_URL);
-    case "groq":
-      return nonEmpty(env.GROQ_BASE_URL);
-    case "deepseek":
-      return nonEmpty(env.DEEPSEEK_BASE_URL);
-    default:
-      return undefined;
-  }
+  return resolveProviderBaseURLEnvironment(provider, env)?.value;
 }
 
 function envApiKey(
   provider: string,
   env: Readonly<Record<string, string | undefined>>,
 ): string | undefined {
-  const primaryEnv = defaultProviderApiKeyEnv(provider);
-  const primary = primaryEnv ? nonEmpty(env[primaryEnv]) : undefined;
-  if (primary) return primary;
-  return provider === "lmstudio" || provider === "openai-compatible"
-    ? nonEmpty(env.OPENAI_API_KEY)
-    : undefined;
+  return resolveProviderApiKeyEnvironment(provider, env)?.value;
 }
 
 function defaultProviderBaseUrl(provider: string): string | undefined {
-  const slug = normalizeProviderSlug(provider);
-  return slug === undefined ? undefined : BUILT_IN_PROVIDER_BASE_URLS[slug];
-}
-
-function defaultProviderApiKeyEnv(provider: string): string | undefined {
-  const slug = normalizeProviderSlug(provider);
-  return slug === undefined ? undefined : BUILT_IN_PROVIDER_API_KEY_ENVS[slug];
-}
-
-function nonEmpty(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
+  return resolveBuiltInProviderInfo(provider)?.baseURL;
 }
 
 function readPositiveInteger(

@@ -4,7 +4,7 @@
  * Uses stricter path handling and a small frontmatter grammar.
  *
  * Rule files live under:
- *   - `/etc/agenc/rules/*.md` for managed rules
+ *   - `<managed-instruction-directory>/rules/*.md` for managed rules
  *   - `~/.agenc/rules/*.md` for user rules
  *   - `<project-dir>/.agenc/rules/*.md` for project-scoped rules
  *
@@ -27,6 +27,7 @@ import {
   resolve,
   sep,
 } from "node:path";
+import { resolveHomeContext } from "../../config/home.js";
 
 import { normalizeExternalText } from "../_deps/file-read.js";
 import {
@@ -37,7 +38,6 @@ import {
 
 const RULES_DIRNAME = ".agenc";
 const RULES_SUBDIR = "rules";
-export const DEFAULT_MANAGED_RULES_DIR = "/etc/agenc/rules";
 const MAX_RULE_FILES = 200;
 const MAX_RULE_DEPTH = 3;
 const MAX_RULE_BYTES = 512 * 1024;
@@ -625,7 +625,10 @@ export function projectRulesDir(dir: string): string {
 }
 
 export function userRulesDir(homeDir: string = homedir()): string {
-  return join(homeDir, ".agenc", RULES_SUBDIR);
+  return join(
+    resolveHomeContext({}, { platformHome: homeDir }).path,
+    RULES_SUBDIR,
+  );
 }
 
 export function formatRulesBlock(rules: readonly InstructionRule[]): string {

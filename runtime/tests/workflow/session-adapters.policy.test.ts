@@ -3,8 +3,8 @@
  *
  * A2: the frozen spec's permissionMode/unattendedAllow/unattendedDeny are
  * applied to the run's bootstrapped session exactly like the
- * background-agent runner applies them (`--permission-mode`/`--yolo`
- * bootstrap argv + unattended-policy install on the permission-mode
+ * background-agent runner applies them (`--permission-mode` bootstrap argv
+ * plus unattended-policy installation on the permission-mode
  * registry) — on start (explicit policy) AND on resume (policy re-resolved
  * from the durable intake spec).
  *
@@ -25,12 +25,10 @@ import {
   inspectWorkflowChildTerminal,
   recordWorkflowChildTerminal,
   workflowChildAdmissionUsage,
-  workflowPermissionModeArgv,
   type WorkflowSessionSeams,
 } from "../../src/app-server/workflow/session-adapters.js";
 import type { WorkflowRunSessionPolicy } from "../../src/app-server/workflow/verified-change-controller.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
-import { readStartupCliFlags } from "../../src/bin/startup-selection.js";
 import {
   EFFECT_EVIDENCE_FORMAT_VERSION,
   EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
@@ -38,6 +36,7 @@ import {
 import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
 import type { ToolPermissionContext } from "../../src/permissions/types.js";
 import { EventLog, type Event } from "../../src/session/event-log.js";
+import type { AgentRuntimeOptions } from "../../src/session/runtime-options.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import {
   openStateDatabases,
@@ -51,6 +50,7 @@ interface FakeBootstrapCall {
   readonly registry: PermissionModeRegistry;
   readonly conversationId: string | undefined;
   readonly resumeConversation: boolean | undefined;
+  readonly runtimeOptions: AgentRuntimeOptions | undefined;
 }
 
 let home: string;
@@ -98,7 +98,7 @@ const fakeBootstrap: AgenCBootstrapFunction = async (options) => {
   const argv = options.argv;
   let mode: ToolPermissionContext["mode"] = "default";
   if (argv !== undefined) {
-    if (argv.includes("--yolo")) mode = "bypassPermissions";
+    if (argv.includes("--dangerously-bypass-approvals-and-sandbox")) mode = "bypassPermissions";
     const flag = argv.indexOf("--permission-mode");
     if (flag >= 0 && typeof argv[flag + 1] === "string") {
       mode = argv[flag + 1] as ToolPermissionContext["mode"];
@@ -112,6 +112,7 @@ const fakeBootstrap: AgenCBootstrapFunction = async (options) => {
     registry,
     conversationId: options.conversationId,
     resumeConversation: options.resumeConversation,
+    runtimeOptions: options.runtimeOptions,
   });
   return {
     session: {
@@ -128,8 +129,12 @@ const fakeBootstrap: AgenCBootstrapFunction = async (options) => {
 function makeSeams(
   resolveRunPolicy: (runId: string) => WorkflowRunSessionPolicy | undefined = () =>
     undefined,
+  env: NodeJS.ProcessEnv = {},
 ): WorkflowSessionSeams {
   return createWorkflowSessionSeams({
+    agencHome: home,
+    env,
+    argv: ["node", "agenc"],
     kernel: {} as ExecutionAdmissionKernel,
     durability: () => repo,
     resolveRunRepoPath: () => cwd,
@@ -145,15 +150,26 @@ function makeSeams(
 }
 
 describe("A2 — spec permission policy on the run session", () => {
-  it("bypassPermissions rides --yolo on the bootstrap argv", async () => {
+  it("captures untrusted-hook authority at the workflow automation boundary", async () => {
+    const seams = makeSeams(() => undefined, {
+      AGENC_ALLOW_UNTRUSTED_HOOKS: "true",
+    });
+    await seams.journal.open(RUN_ID, { repoPath: cwd });
+    expect(bootstrapCalls[0]?.runtimeOptions?.allowUntrustedHooks).toBe(true);
+    await seams.close();
+  });
+
+  it("keeps bypassPermissions approval-only on the bootstrap argv", async () => {
     const seams = makeSeams();
     await seams.journal.open(RUN_ID, {
       repoPath: cwd,
       policy: { permissionMode: "bypassPermissions" },
     });
     expect(bootstrapCalls).toHaveLength(1);
-    expect(bootstrapCalls[0].argv).toContain("--yolo");
-    expect(bootstrapCalls[0].argv).not.toContain("--permission-mode");
+    const argv = bootstrapCalls[0].argv;
+    const permissionModeFlag = argv.indexOf("--permission-mode");
+    expect(argv[permissionModeFlag + 1]).toBe("bypassPermissions");
+    expect(argv).not.toContain("--dangerously-bypass-approvals-and-sandbox");
     expect(bootstrapCalls[0].registry.current().mode).toBe(
       "bypassPermissions",
     );
@@ -166,7 +182,7 @@ describe("A2 — spec permission policy on the run session", () => {
       repoPath: cwd,
       policy: {
         permissionMode: "acceptEdits",
-        unattendedAllow: ["Bash", "FileRead"],
+        unattendedAllow: ["exec_command", "FileRead"],
         unattendedDeny: ["Edit"],
       },
     });
@@ -199,12 +215,12 @@ describe("A2 — spec permission policy on the run session", () => {
   it("a resumed run re-resolves the policy from the durable intake spec", async () => {
     const seams = makeSeams(() => ({
       permissionMode: "plan",
-      unattendedDeny: ["Bash"],
+      unattendedDeny: ["exec_command"],
     }));
     // No explicit policy → the resume path (journal.open without context).
     await seams.journal.open(RUN_ID);
     expect(resolvedPolicies).toEqual([
-      { permissionMode: "plan", unattendedDeny: ["Bash"] },
+      { permissionMode: "plan", unattendedDeny: ["exec_command"] },
     ]);
     const call = bootstrapCalls[0];
     expect(call.resumeConversation).toBe(true);
@@ -218,48 +234,6 @@ describe("A2 — spec permission policy on the run session", () => {
     await seams.close();
   });
 
-  it("workflowPermissionModeArgv never duplicates flags already present", () => {
-    expect(
-      workflowPermissionModeArgv("bypassPermissions", ["node", "agenc", "--yolo"]),
-    ).toEqual(["node", "agenc", "--yolo"]);
-    expect(
-      workflowPermissionModeArgv("acceptEdits", [
-        "node",
-        "agenc",
-        "--permission-mode",
-        "plan",
-      ]),
-    ).toEqual(["node", "agenc", "--permission-mode", "plan"]);
-    expect(workflowPermissionModeArgv("plan", ["node", "agenc"])).toEqual([
-      "node",
-      "agenc",
-      "--permission-mode",
-      "plan",
-    ]);
-  });
-
-  it("inserts generated permission options before a positional argv boundary", () => {
-    const argv = workflowPermissionModeArgv("plan", [
-      "node",
-      "agenc",
-      "daemon",
-      "run",
-      "--permission-mode",
-      "bypassPermissions",
-    ]);
-
-    expect(argv).toEqual([
-      "node",
-      "agenc",
-      "--permission-mode",
-      "plan",
-      "daemon",
-      "run",
-      "--permission-mode",
-      "bypassPermissions",
-    ]);
-    expect(readStartupCliFlags(argv).permissionMode).toBe("plan");
-  });
 });
 
 describe("A1 — effect evidence format", () => {

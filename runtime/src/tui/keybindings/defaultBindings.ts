@@ -6,7 +6,7 @@ import type { KeybindingBlock } from "./types.js";
 
 /**
  * Default keybindings that match current AgenC behavior.
- * These are loaded first, then user keybindings.json overrides them.
+ * These are loaded first, then canonical `tui.keybindings` overrides them.
  */
 
 // Platform-specific image paste shortcut:
@@ -75,7 +75,6 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       "ctrl+x backspace": "chat:dropQueuedInput",
       [MODE_CYCLE_KEY]: "chat:cycleMode",
       "meta+p": "chat:modelPicker",
-      "meta+o": "chat:fastMode",
       "meta+t": "chat:thinkingToggle",
       enter: "chat:submit",
       up: "history:previous",
@@ -142,8 +141,6 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       tab: "confirm:nextField",
       space: "confirm:toggle",
       d: "workbench:openDiff",
-      // Cycle modes (used in file permission dialogs and teams dialog)
-      "shift+tab": "confirm:cycleMode",
       // Toggle permission explanation in permission dialogs
       "ctrl+e": "confirm:toggleExplanation",
       // Toggle permission debug info
@@ -308,14 +305,6 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       down: "diff:nextFile",
       enter: "diff:viewDetails",
       // Note: diff:back is handled by left arrow in detail mode
-    },
-  },
-  // Model picker effort cycling (internal-only)
-  {
-    context: "ModelPicker",
-    bindings: {
-      left: "modelPicker:decreaseEffort",
-      right: "modelPicker:increaseEffort",
     },
   },
   // Select component navigation (used by /model, /resume, permission prompts, etc.)

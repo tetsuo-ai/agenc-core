@@ -31,7 +31,7 @@ function makeAgentTask(
     notified: false,
     agentId: id,
     prompt: "inspect",
-    agentType: "worker",
+    agentType: "runner",
     retrieved: false,
     messages: undefined,
     lastReportedToolCount: 0,

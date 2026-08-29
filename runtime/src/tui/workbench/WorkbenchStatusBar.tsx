@@ -6,7 +6,8 @@ import { useAppStateMaybeOutsideOfProvider } from "../state/AppState.js";
 import {
   getDefaultMainLoopModelSetting,
   parseUserSpecifiedModel,
-  renderModelName,
+  renderModelNameForContext,
+  type ModelDisplayReadContext,
 } from "../../utils/model/model.js";
 import { VERSION } from "../../version.js";
 import { WorkbenchActivityIndicator } from "./WorkbenchActivityIndicator.js";
@@ -15,6 +16,7 @@ export function WorkbenchStatusBar({
   activityMode = null,
   columns,
   contextPctLabel = null,
+  modelDisplayContext,
 }: {
   /** Current streaming phase, or null when idle. Drives the working indicator. */
   readonly activityMode?: SpinnerMode | null;
@@ -29,7 +31,13 @@ export function WorkbenchStatusBar({
    * the viewport is wide enough.
    */
   readonly contextPctLabel?: string | null;
-} = {}): React.ReactElement {
+  /**
+   * Session-owned provider/environment projection for provider-aware labels.
+   * Standalone renderers without a session show the already-selected model
+   * verbatim instead of rediscovering provider authority.
+   */
+  readonly modelDisplayContext?: ModelDisplayReadContext;
+}): React.ReactElement {
   const modelSetting =
     useAppStateMaybeOutsideOfProvider(
       (state) =>
@@ -37,7 +45,10 @@ export function WorkbenchStatusBar({
         state.mainLoopModel ??
         getDefaultMainLoopModelSetting(),
     ) ?? getDefaultMainLoopModelSetting();
-  const modelLabel = renderModelName(parseUserSpecifiedModel(modelSetting));
+  const parsedModel = parseUserSpecifiedModel(modelSetting);
+  const modelLabel = modelDisplayContext
+    ? renderModelNameForContext(parsedModel, modelDisplayContext)
+    : parsedModel;
   const contextValue = contextPctLabel?.replace(/^ctx\s+/u, "") ?? null;
   const showContext = contextValue !== null && (columns ?? 120) >= 48;
   const showVersion = (columns ?? 120) >= 64;

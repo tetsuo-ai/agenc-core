@@ -7,7 +7,10 @@
  * Handles ${VAR} and ${VAR:-default} syntax
  * @returns Object with expanded string and list of missing variables
  */
-export function expandEnvVarsInString(value: string): {
+export function expandEnvVarsInString(
+  value: string,
+  environment: Readonly<Record<string, string | undefined>>,
+): {
   expanded: string
   missingVars: string[]
 } {
@@ -18,7 +21,7 @@ export function expandEnvVarsInString(value: string): {
     const sep = varContent.indexOf(':-')
     const varName = sep === -1 ? varContent : varContent.slice(0, sep)
     const defaultValue = sep === -1 ? undefined : varContent.slice(sep + 2)
-    const envValue = process.env[varName]
+    const envValue = environment[varName]
 
     if (envValue !== undefined) {
       return envValue

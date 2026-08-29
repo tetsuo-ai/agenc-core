@@ -6,7 +6,7 @@ import type {
   PluginAuthor,
   PluginManifest,
 } from '../utils/plugins/schemas.js'
-import type { HooksSettings } from '../utils/settings/types.js'
+import type { HooksSettings } from '../schemas/hooks.js'
 export type { PluginAuthor, PluginManifest, CommandMetadata }
 
 /**
@@ -15,18 +15,10 @@ export type { PluginAuthor, PluginManifest, CommandMetadata }
  * users (persisted to user settings).
  */
 export type BuiltinPluginDefinition = {
-  /** Plugin name (used in `{name}@builtin` identifier) */
-  name: string
-  /** Description shown in the /plugin UI */
-  description: string
-  /** Optional version string */
-  version?: string
+  /** Shipped package root containing the required canonical manifest. */
+  root: string
   /** Skills provided by this plugin */
   skills?: BundledSkillDefinition[]
-  /** Hooks provided by this plugin */
-  hooks?: HooksSettings
-  /** MCP servers provided by this plugin */
-  mcpServers?: Record<string, McpServerConfig>
   /** Whether this plugin is available (e.g. based on system capabilities). Unavailable plugins are hidden entirely. */
   isAvailable?: () => boolean
   /** Default enabled state before the user sets a preference (defaults to true) */
@@ -34,6 +26,7 @@ export type BuiltinPluginDefinition = {
 }
 
 export type LoadedPlugin = {
+  id: string
   name: string
   manifest: PluginManifest
   path: string

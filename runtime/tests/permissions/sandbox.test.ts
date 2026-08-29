@@ -1,5 +1,11 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from "../../src/session/runtime-options.js";
 import {
   NETWORK_DISABLED,
   NETWORK_ENABLED,
@@ -85,15 +91,27 @@ describe("getWritableRootsWithCwd", () => {
 
   test("workspace_write pushes cwd + /tmp (POSIX) + $TMPDIR", () => {
     const cwd = isPosix ? "/home/tester/repo" : "C:\\home\\tester\\repo";
-    process.env["TMPDIR"] = isPosix ? "/var/tmp" : "C:\\Temp";
-    const p = newWorkspaceWritePolicy();
-    const roots = getWritableRootsWithCwd(p, cwd);
-    const rootPaths = roots.map((r) => r.root);
-    expect(rootPaths).toContain(path.normalize(cwd));
-    if (isPosix) {
-      expect(rootPaths).toContain("/tmp");
+    const sessionTempRoot = mkdtempSync(
+      path.join(tmpdir(), "agenc-sandbox-policy-"),
+    );
+    try {
+      process.env["TMPDIR"] = sessionTempRoot;
+      const p = newWorkspaceWritePolicy();
+      const runtimeOptions = resolveAgentRuntimeOptions({}, {
+        sessionTempRoot,
+      });
+      const roots = runWithAgentRuntimeOptions(runtimeOptions, () =>
+        getWritableRootsWithCwd(p, cwd),
+      );
+      const rootPaths = roots.map((r) => r.root);
+      expect(rootPaths).toContain(path.normalize(cwd));
+      if (isPosix) {
+        expect(rootPaths).toContain("/tmp");
+      }
+      expect(rootPaths).toContain(path.normalize(sessionTempRoot));
+    } finally {
+      rmSync(sessionTempRoot, { recursive: true, force: true });
     }
-    expect(rootPaths).toContain(path.normalize(process.env["TMPDIR"] as string));
   });
 
   test("exclude_slash_tmp keeps /tmp out of the list", () => {

@@ -202,9 +202,13 @@ export function createAgenCPortalAgentCreateRequest(
   const params: AgentCreateParams = {
     objective: options.objective,
     cwd: options.cwd,
+    runtimeOptions: options.runtimeOptions,
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.provider !== undefined ? { provider: options.provider } : {}),
     ...(options.profile !== undefined ? { profile: options.profile } : {}),
+    ...(options.configPath !== undefined
+      ? { configPath: options.configPath }
+      : {}),
     ...(options.instructions !== undefined
       ? { instructions: options.instructions }
       : {}),

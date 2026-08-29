@@ -17,7 +17,6 @@ import {
   setOriginalCwd,
 } from "../../src/bootstrap/state.js";
 import { runWithCwdOverride } from "../../src/utils/cwd.js";
-import { resetSettingsCache } from "../../src/utils/settings/settingsCache.js";
 import {
   createAgentWorktree,
   removeAgentWorktree,
@@ -25,17 +24,16 @@ import {
 
 const originalCwd = getCwdState();
 const originalProjectCwd = getOriginalCwd();
-const originalConfigDir = process.env.AGENC_CONFIG_DIR;
+const originalAgencHome = process.env.AGENC_HOME;
 
 afterEach(() => {
   setCwdState(originalCwd);
   setOriginalCwd(originalProjectCwd);
-  if (originalConfigDir === undefined) {
-    delete process.env.AGENC_CONFIG_DIR;
+  if (originalAgencHome === undefined) {
+    delete process.env.AGENC_HOME;
   } else {
-    process.env.AGENC_CONFIG_DIR = originalConfigDir;
+    process.env.AGENC_HOME = originalAgencHome;
   }
-  resetSettingsCache();
 });
 
 function git(repo: string, args: readonly string[]): void {
@@ -60,19 +58,21 @@ describe("repository-controlled worktree content boundary", () => {
       [
         ".env",
         "private-cache/",
-        ".agenc/settings.local.json",
+        ".agenc/config.local.toml",
         ".agenc/worktrees/",
         "",
       ].join("\n"),
     );
     writeFileSync(
-      join(repo, ".agenc", "settings.json"),
-      JSON.stringify({
-        worktree: {
-          sparsePaths: ["src"],
-          symlinkDirectories: ["private-cache"],
-        },
-      }),
+      join(repo, ".agenc", "config.toml"),
+      [
+        "config_version = 2",
+        "",
+        "[worktree]",
+        'sparsePaths = ["src"]',
+        'symlinkDirectories = ["private-cache"]',
+        "",
+      ].join("\n"),
     );
     writeFileSync(join(repo, ".worktreeinclude"), ".env\n");
     writeFileSync(join(repo, ".husky", "pre-commit"), "exit 99\n");
@@ -83,16 +83,15 @@ describe("repository-controlled worktree content boundary", () => {
 
     writeFileSync(join(repo, ".env"), "TOKEN=do-not-copy\n");
     writeFileSync(
-      join(repo, ".agenc", "settings.local.json"),
-      JSON.stringify({ env: { TOKEN: "do-not-copy" } }),
+      join(repo, ".agenc", "config.local.toml"),
+      '[shell_environment_policy.set]\nTOKEN = "do-not-copy"\n',
     );
     mkdirSync(join(repo, "private-cache"), { recursive: true });
     writeFileSync(join(repo, "private-cache", "secret"), "do-not-link\n");
 
-    process.env.AGENC_CONFIG_DIR = join(root, "config-home");
+    process.env.AGENC_HOME = join(root, "config-home");
     setOriginalCwd(repo);
     setCwdState(repo);
-    resetSettingsCache();
 
     let worktree:
       | Awaited<ReturnType<typeof createAgentWorktree>>
@@ -111,7 +110,7 @@ describe("repository-controlled worktree content boundary", () => {
       expect(existsSync(join(worktree.worktreePath, ".env"))).toBe(false);
       expect(
         existsSync(
-          join(worktree.worktreePath, ".agenc", "settings.local.json"),
+          join(worktree.worktreePath, ".agenc", "config.local.toml"),
         ),
       ).toBe(false);
 

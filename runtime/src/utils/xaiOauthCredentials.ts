@@ -1,9 +1,8 @@
 /**
  * Persistence + refresh for xAI OAuth ("Sign in with X / Grok") credentials.
  *
- * Storage follows the githubModels/gemini credential pattern: one blob in
- * the shared secure-storage payload. Refresh follows the Hermes/opencode
- * rules for xAI's ROTATING refresh tokens:
+ * Storage uses one namespace in the shared secure-storage payload. Refresh
+ * follows the provider's rotating-token rules:
  *  - single-flight: concurrent callers share one refresh promise so a
  *    rotated refresh token is never replayed;
  *  - refresh ~1 h before expiry (~6 h access tokens);
@@ -23,9 +22,14 @@ import {
   isTrustedXaiOauthEndpoint,
 } from '../services/xai/oauth.js'
 import type { XaiOauthTokens } from '../services/xai/oauth.js'
-import { getAgenCConfigHomeDir, isBareMode } from './envUtils.js'
+import type { HomeContext } from '../config/home.js'
 import * as lockfile from './lockfile.js'
-import { getSecureStorage } from './secureStorage/index.js'
+import type { SecureStorageData } from './secureStorage/index.js'
+import {
+  readNativeSecureStorage,
+  updateNativeSecureStorage,
+} from './secureStorage/native.js'
+import { secureStorageIdentityKey } from './secureStorage/home.js'
 
 export const XAI_OAUTH_STORAGE_KEY = 'xaiOauth' as const
 
@@ -51,86 +55,110 @@ export type XaiOauthCredentialBlob = {
 type StorageShape = { xaiOauth?: XaiOauthCredentialBlob } & Record<string, unknown>
 
 /**
- * Secure-storage reads can shell out (secret-tool on Linux, keychain on
- * macOS), and the grok credential fallback sits on provider-resolution
+ * Secure-storage reads invoke the platform adapter, and the grok
+ * credential fallback sits on provider-resolution
  * paths that run often. A short TTL cache keeps those paths cheap;
  * save/clear update it immediately and the refresh path bypasses it.
  */
 const READ_CACHE_TTL_MS = 30_000
-let readCache: { at: number; blob: XaiOauthCredentialBlob | undefined } | null =
-  null
+const readCacheByHome = new Map<
+  string,
+  { at: number; blob: XaiOauthCredentialBlob | undefined }
+>()
 
-function readXaiOauthCredentialsFresh(): XaiOauthCredentialBlob | undefined {
-  if (isBareMode()) return undefined
+function readXaiOauthCredentialsFresh(
+  home: HomeContext,
+): XaiOauthCredentialBlob | undefined {
   try {
-    const data = getSecureStorage().read() as StorageShape | null
+    const data = readNativeSecureStorage(home) as StorageShape
     const blob = data?.xaiOauth
     const result = blob?.accessToken?.trim() ? blob : undefined
-    readCache = { at: Date.now(), blob: result }
+    readCacheByHome.set(secureStorageIdentityKey(home), {
+      at: Date.now(),
+      blob: result,
+    })
     return result
   } catch {
     return undefined
   }
 }
 
-export function readXaiOauthCredentials(): XaiOauthCredentialBlob | undefined {
-  if (readCache !== null && Date.now() - readCache.at < READ_CACHE_TTL_MS) {
-    return readCache.blob
+export function readXaiOauthCredentials(
+  home: HomeContext,
+): XaiOauthCredentialBlob | undefined {
+  const cached = readCacheByHome.get(secureStorageIdentityKey(home))
+  if (cached !== undefined && Date.now() - cached.at < READ_CACHE_TTL_MS) {
+    return cached.blob
   }
-  return readXaiOauthCredentialsFresh()
+  return readXaiOauthCredentialsFresh(home)
 }
 
 /**
  * The stored bearer for provider use, or `undefined` when absent or
  * quarantined. May be expired — the provider's 401-refresh path recovers.
  */
-export function readXaiOauthAccessToken(): string | undefined {
-  const blob = readXaiOauthCredentials()
+export function readXaiOauthAccessToken(home: HomeContext): string | undefined {
+  const blob = readXaiOauthCredentials(home)
   if (blob === undefined || blob.quarantinedAt !== undefined) return undefined
   return blob.accessToken
 }
 
 /** True when `apiKey` is the stored OAuth bearer (vs a real xAI API key). */
-export function isXaiOauthBearer(apiKey: string | undefined): boolean {
+export function isXaiOauthBearer(
+  home: HomeContext,
+  apiKey: string | undefined,
+): boolean {
   if (!apiKey) return false
-  const blob = readXaiOauthCredentials()
+  const blob = readXaiOauthCredentials(home)
   return blob !== undefined &&
     blob.quarantinedAt === undefined &&
     blob.accessToken === apiKey
 }
 
 export function saveXaiOauthCredentials(
+  home: HomeContext,
   blob: XaiOauthCredentialBlob,
 ): { success: boolean; warning?: string } {
-  if (isBareMode()) {
-    return { success: false, warning: 'Bare mode: secure storage is disabled.' }
-  }
   if (!blob.accessToken?.trim()) {
     return { success: false, warning: 'Access token is empty.' }
   }
-  const secureStorage = getSecureStorage()
-  const prev = (secureStorage.read() || {}) as StorageShape
-  const merged = { ...prev, [XAI_OAUTH_STORAGE_KEY]: blob }
-  const result = secureStorage.update(merged as typeof prev)
-  if (result.success) {
-    readCache = { at: Date.now(), blob }
+  try {
+    updateNativeSecureStorage(
+      home,
+      current => ({ ...current, [XAI_OAUTH_STORAGE_KEY]: blob }),
+      'Native secure storage is unavailable; xAI OAuth credentials were not saved.',
+    )
+    readCacheByHome.set(secureStorageIdentityKey(home), {
+      at: Date.now(),
+      blob,
+    })
+    return { success: true }
+  } catch (error) {
+    return nativeFailure(error, 'xAI OAuth credential save failed.')
   }
-  return result
 }
 
-export function clearXaiOauthCredentials(): { success: boolean; warning?: string } {
-  if (isBareMode()) {
+export function clearXaiOauthCredentials(
+  home: HomeContext,
+): { success: boolean; warning?: string } {
+  try {
+    updateNativeSecureStorage(
+      home,
+      current => {
+        const next = { ...current }
+        delete next[XAI_OAUTH_STORAGE_KEY]
+        return next
+      },
+      'Native secure storage is unavailable; xAI OAuth credentials were not cleared.',
+    )
+    readCacheByHome.set(secureStorageIdentityKey(home), {
+      at: Date.now(),
+      blob: undefined,
+    })
     return { success: true }
+  } catch (error) {
+    return nativeFailure(error, 'xAI OAuth credential clear failed.')
   }
-  const secureStorage = getSecureStorage()
-  const prev = (secureStorage.read() || {}) as StorageShape
-  const next = { ...prev }
-  delete next[XAI_OAUTH_STORAGE_KEY]
-  const result = secureStorage.update(next as typeof prev)
-  if (result.success) {
-    readCache = { at: Date.now(), blob: undefined }
-  }
-  return result
 }
 
 export function xaiOauthTokensToBlob(
@@ -174,34 +202,44 @@ export function xaiOauthTokenIsExpiring(blob: XaiOauthCredentialBlob): boolean {
 }
 
 /** Single-flight guard: rotating refresh tokens must never race. */
-let inflightRefresh: Promise<XaiOauthCredentialBlob | undefined> | null = null
+const inflightRefreshByHome = new Map<
+  string,
+  Promise<XaiOauthCredentialBlob | undefined>
+>()
 
 /**
  * Force a refresh of the stored grant, regardless of expiry. Returns the
  * updated blob, or `undefined` when no refresh is possible (missing/
  * quarantined credentials, or terminal invalid_grant — which quarantines).
  */
-export function forceRefreshXaiOauthCredentials(): Promise<
+export function forceRefreshXaiOauthCredentials(home: HomeContext): Promise<
   XaiOauthCredentialBlob | undefined
 > {
-  if (inflightRefresh) return inflightRefresh
-  inflightRefresh = doRefresh().finally(() => {
-    inflightRefresh = null
+  const storageIdentity = secureStorageIdentityKey(home)
+  const existing = inflightRefreshByHome.get(storageIdentity)
+  if (existing) return existing
+  const pending = doRefresh(home).finally(() => {
+    if (inflightRefreshByHome.get(storageIdentity) === pending) {
+      inflightRefreshByHome.delete(storageIdentity)
+    }
   })
-  return inflightRefresh
+  inflightRefreshByHome.set(storageIdentity, pending)
+  return pending
 }
 
 /**
  * Refresh only when the stored token is inside the expiry skew window.
  * Safe to call at startup; no-ops quickly when nothing is stored.
  */
-export async function refreshXaiOauthCredentialsIfNeeded(): Promise<
+export async function refreshXaiOauthCredentialsIfNeeded(
+  home: HomeContext,
+): Promise<
   XaiOauthCredentialBlob | undefined
 > {
-  const blob = readXaiOauthCredentials()
+  const blob = readXaiOauthCredentials(home)
   if (blob === undefined || blob.quarantinedAt !== undefined) return undefined
   if (!xaiOauthTokenIsExpiring(blob)) return blob
-  return forceRefreshXaiOauthCredentials()
+  return forceRefreshXaiOauthCredentials(home)
 }
 
 /**
@@ -216,11 +254,12 @@ export async function refreshXaiOauthCredentialsIfNeeded(): Promise<
  * Best-effort: when the lock cannot be acquired the refresh still proceeds,
  * protected by the adopt-on-conflict checks in {@link doRefresh}.
  */
-async function acquireRefreshLock(): Promise<() => Promise<void>> {
+async function acquireRefreshLock(
+  home: HomeContext,
+): Promise<() => Promise<void>> {
   try {
-    const dir = getAgenCConfigHomeDir()
-    await mkdir(dir, { recursive: true })
-    return await lockfile.lock(join(dir, '.xai-oauth-refresh'), {
+    await mkdir(home.path, { recursive: true })
+    return await lockfile.lock(join(home.path, '.xai-oauth-refresh'), {
       realpath: false,
       stale: 30_000,
       retries: { retries: 5, minTimeout: 200, maxTimeout: 2_000 },
@@ -230,20 +269,22 @@ async function acquireRefreshLock(): Promise<() => Promise<void>> {
   }
 }
 
-async function doRefresh(): Promise<XaiOauthCredentialBlob | undefined> {
+async function doRefresh(
+  home: HomeContext,
+): Promise<XaiOauthCredentialBlob | undefined> {
   // Fresh read: another process may have already rotated the grant, and a
   // refresh with a stale (consumed) refresh token would burn it.
-  const blob = readXaiOauthCredentialsFresh()
+  const blob = readXaiOauthCredentialsFresh(home)
   if (blob === undefined || blob.quarantinedAt !== undefined) return undefined
   const refreshToken = blob.refreshToken?.trim()
   if (!refreshToken) return undefined
 
-  const release = await acquireRefreshLock()
+  const release = await acquireRefreshLock(home)
   try {
     // Re-read under the lock: a sibling process may have rotated the grant
     // while we waited. Exchanging the stale token would burn the account's
     // rotating-refresh chain, so adopt the sibling's rotation instead.
-    const current = readXaiOauthCredentialsFresh()
+    const current = readXaiOauthCredentialsFresh(home)
     if (current === undefined || current.quarantinedAt !== undefined) {
       return undefined
     }
@@ -274,8 +315,8 @@ async function doRefresh(): Promise<XaiOauthCredentialBlob | undefined> {
         tokenEndpoint,
         previous: current,
       })
-      saveXaiOauthCredentials(next)
-      return next
+      const written = compareAndSetXaiOauthCredentials(home, current, next)
+      return written ? next : readXaiOauthCredentialsFresh(home)
     } catch (error) {
       if (
         error instanceof XaiOauthError &&
@@ -289,7 +330,7 @@ async function doRefresh(): Promise<XaiOauthCredentialBlob | undefined> {
         // (lock unavailable / bypassed), writing a quarantined stale blob
         // here would destroy the sibling's good rotation and force a
         // needless re-login. Adopt the sibling's grant instead.
-        const latest = readXaiOauthCredentialsFresh()
+        const latest = readXaiOauthCredentialsFresh(home)
         if (
           latest !== undefined &&
           latest.quarantinedAt === undefined &&
@@ -299,8 +340,9 @@ async function doRefresh(): Promise<XaiOauthCredentialBlob | undefined> {
         }
         // Quarantine so no caller replays a doomed refresh; the user must
         // run the login again.
-        saveXaiOauthCredentials({
-          ...(latest ?? current),
+        const quarantineBase = latest ?? current
+        compareAndSetXaiOauthCredentials(home, quarantineBase, {
+          ...quarantineBase,
           quarantinedAt: Date.now(),
           quarantineReason: error.message,
         })
@@ -315,6 +357,66 @@ async function doRefresh(): Promise<XaiOauthCredentialBlob | undefined> {
   }
 }
 
+function compareAndSetXaiOauthCredentials(
+  home: HomeContext,
+  expected: XaiOauthCredentialBlob,
+  replacement: XaiOauthCredentialBlob,
+): boolean {
+  let written = false
+  let observed: XaiOauthCredentialBlob | undefined
+  updateNativeSecureStorage(
+    home,
+    current => {
+      const latest = current.xaiOauth
+      if (!sameXaiOauthCredentials(latest, expected)) {
+        observed = latest
+        return structuredClone(current) as SecureStorageData
+      }
+      written = true
+      return { ...current, xaiOauth: replacement }
+    },
+    'Native secure storage is unavailable; xAI OAuth refresh state was not saved.',
+  )
+  if (written) {
+    readCacheByHome.set(secureStorageIdentityKey(home), {
+      at: Date.now(),
+      blob: replacement,
+    })
+  } else {
+    readCacheByHome.set(secureStorageIdentityKey(home), {
+      at: Date.now(),
+      blob: observed,
+    })
+  }
+  return written
+}
+
+function sameXaiOauthCredentials(
+  left: XaiOauthCredentialBlob | undefined,
+  right: XaiOauthCredentialBlob | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right
+  return left.accessToken === right.accessToken &&
+    left.refreshToken === right.refreshToken &&
+    left.idToken === right.idToken &&
+    left.expiresAt === right.expiresAt &&
+    left.tokenEndpoint === right.tokenEndpoint &&
+    left.accountLabel === right.accountLabel &&
+    left.lastRefreshAt === right.lastRefreshAt &&
+    left.quarantinedAt === right.quarantinedAt &&
+    left.quarantineReason === right.quarantineReason
+}
+
+function nativeFailure(error: unknown, fallback: string): {
+  success: false
+  warning: string
+} {
+  return {
+    success: false,
+    warning: error instanceof Error ? error.message : fallback,
+  }
+}
+
 /**
  * True when the stored grant is quarantined (terminal refresh failure) or
  * absent — i.e. a new `/grok-login` is genuinely required. Used by the
@@ -322,8 +424,8 @@ async function doRefresh(): Promise<XaiOauthCredentialBlob | undefined> {
  * a transient network failure during refresh must NOT tell the user they
  * are logged out.
  */
-export function xaiOauthRequiresRelogin(): boolean {
-  const blob = readXaiOauthCredentialsFresh()
+export function xaiOauthRequiresRelogin(home: HomeContext): boolean {
+  const blob = readXaiOauthCredentialsFresh(home)
   return (
     blob === undefined ||
     blob.quarantinedAt !== undefined ||

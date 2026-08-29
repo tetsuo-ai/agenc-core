@@ -111,7 +111,6 @@ function compactedAppendCalls(appendRollout: ReturnType<typeof vi.fn>): number {
 describe("runAutoCompact durable rollout suspension guard", () => {
   beforeEach(() => {
     // The downshift path is gated on auto-compact being enabled.
-    delete process.env.DISABLE_AUTO_COMPACT;
     delete process.env.AGENC_DISABLE_AUTO_COMPACT;
     setAutoCompactImplForTests(async (): Promise<AutoCompactResult> => ({
       ...COMPACT_RESULT,

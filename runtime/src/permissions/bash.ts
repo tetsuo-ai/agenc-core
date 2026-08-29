@@ -78,7 +78,7 @@ export type { ToolEvaluatorContext } from "./evaluator.js";
 // Constants
 // ─────────────────────────────────────────────────────────────────────
 
-export const BASH_TOOL_NAME = "Bash";
+export const BASH_TOOL_NAME = "system.bash";
 
 // ─────────────────────────────────────────────────────────────────────
 // Input + result types

@@ -2,6 +2,7 @@ import * as React from "react";
 import { describe, expect, it, beforeEach, vi } from "vitest";
 
 import type { StatusNoticeContext } from "./statusNoticeDefinitions.js";
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../remoteAuthSessionContext.fixture.js";
 
 const mocks = vi.hoisted(() => ({
   authTokenSource: { source: "none", hasToken: false } as {
@@ -9,13 +10,18 @@ const mocks = vi.hoisted(() => ({
       | "ANTHROPIC_AUTH_TOKEN"
       | "AGENC_OAUTH_TOKEN"
       | "AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR"
-      | "CCR_OAUTH_TOKEN_FILE"
-      | "apiKeyHelper"
+      | "native-secure-storage"
+      | "agenc-cloud"
       | "none";
     hasToken: boolean;
   },
-  apiKeySource: "none" as "ANTHROPIC_API_KEY" | "apiKeyHelper" | "/login managed key" | "none",
+  apiKeySource: "none" as
+    | "ANTHROPIC_API_KEY"
+    | "/login managed key"
+    | "none",
   apiKeyConfigured: false,
+  credentialHomes: [] as unknown[],
+  providerAuthContexts: [] as unknown[],
   agentTokens: 0,
   throwApiKeyLookup: false,
   subscriber: false,
@@ -43,22 +49,29 @@ vi.mock("../../utils/format.js", () => ({
 }));
 
 vi.mock("../../utils/auth.js", () => ({
-  getAnthropicApiKeyWithSource: () => {
+  selectedProviderUsesExternalAuth: (provider: string) =>
+    provider !== "anthropic" && provider !== "agenc",
+  getAnthropicApiKeyWithSourceForContext: (context: unknown) => {
+    mocks.providerAuthContexts.push(context);
     if (mocks.throwApiKeyLookup) {
       throw new Error("ANTHROPIC_API_KEY or AGENC_OAUTH_TOKEN env var is required");
     }
-    return { source: mocks.apiKeySource };
+    return { key: null, source: mocks.apiKeySource };
   },
-  getproviderApiKeyWithSource: () => {
-    if (mocks.throwApiKeyLookup) {
-      throw new Error("ANTHROPIC_API_KEY or AGENC_OAUTH_TOKEN env var is required");
-    }
-    return { source: mocks.apiKeySource };
+  getPrimaryApiKeyFromSecureStorage: (home: unknown) => {
+    mocks.credentialHomes.push(home);
+    return mocks.apiKeyConfigured
+      ? { key: "configured-key", source: "/login managed key" }
+      : null;
   },
-  getApiKeyFromConfigOrMacOSKeychain: () =>
-    mocks.apiKeyConfigured ? "configured-key" : null,
-  getAuthTokenSource: () => mocks.authTokenSource,
-  isAgenCAISubscriber: () => mocks.subscriber,
+  getAuthTokenSourceForContext: (context: unknown) => {
+    mocks.providerAuthContexts.push(context);
+    return mocks.authTokenSource;
+  },
+  isAgenCAISubscriberForContext: (context: unknown) => {
+    mocks.providerAuthContexts.push(context);
+    return mocks.subscriber;
+  },
 }));
 
 vi.mock("../../utils/statusNoticeHelpers.js", () => ({
@@ -79,6 +92,8 @@ vi.mock("../../utils/jetbrains.js", () => ({
 function baseContext(): StatusNoticeContext {
   return {
     config: { autoInstallIdeExtension: true } as StatusNoticeContext["config"],
+    homeContext: TEST_REMOTE_AUTH_SESSION_CONTEXT.home,
+    providerAuthContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
     memoryDiagnostics: [],
     daemonStatus: {
       autostartDisabled: false,
@@ -101,6 +116,8 @@ describe("startup status notice definitions", () => {
     mocks.authTokenSource = { source: "none", hasToken: false };
     mocks.apiKeySource = "none";
     mocks.apiKeyConfigured = false;
+    mocks.credentialHomes = [];
+    mocks.providerAuthContexts = [];
     mocks.agentTokens = 0;
     mocks.throwApiKeyLookup = false;
     mocks.subscriber = false;
@@ -123,6 +140,35 @@ describe("startup status notice definitions", () => {
     expect(ids.filter((id) => id.endsWith("-external-token"))).toEqual([
       "agenc-account-external-token",
     ]);
+    expect(mocks.credentialHomes).toEqual([]);
+    expect(mocks.providerAuthContexts.length).toBeGreaterThan(0);
+    expect(
+      mocks.providerAuthContexts.every(
+        (context) => context === TEST_REMOTE_AUTH_SESSION_CONTEXT,
+      ),
+    ).toBe(true);
+    expect(
+      Object.isFrozen(TEST_REMOTE_AUTH_SESSION_CONTEXT.environment),
+    ).toBe(true);
+  });
+
+  it("does not inspect Anthropic credentials for an external provider", async () => {
+    const context = {
+      ...baseContext(),
+      providerAuthContext: {
+        ...TEST_REMOTE_AUTH_SESSION_CONTEXT,
+        provider: "openai-compatible",
+      },
+    };
+
+    const { getActiveNotices } = await import("./statusNoticeDefinitions.js");
+    const ids = getActiveNotices(context).map((notice) => notice.id);
+
+    expect(ids).not.toContain("agenc-account-external-token");
+    expect(ids).not.toContain("api-key-conflict");
+    expect(ids).not.toContain("both-auth-methods");
+    expect(mocks.providerAuthContexts).toEqual([]);
+    expect(mocks.credentialHomes).toEqual([]);
   });
 
   it("activates the API-key conflict notice for configured external keys", async () => {
@@ -133,6 +179,9 @@ describe("startup status notice definitions", () => {
     const ids = getActiveNotices(baseContext()).map((notice) => notice.id);
 
     expect(ids).toContain("api-key-conflict");
+    expect(mocks.credentialHomes).toEqual([
+      TEST_REMOTE_AUTH_SESSION_CONTEXT.home,
+    ]);
   });
 
   it("does not throw when auth notice API-key source lookup fails", async () => {

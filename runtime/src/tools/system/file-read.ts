@@ -70,6 +70,7 @@ import { parsePDFInfoPageCount } from "../../utils/pdfInfo.js";
 import { asRecord } from "../../utils/record.js";
 import { maybeResizeAndDownsampleImageBuffer } from "../../utils/imageResizer.js";
 import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
+import { getSelectedProviderEnvironment } from "../../utils/model/providers.js";
 import { applyRuntimeSandboxToSpawn } from "./apply-runtime-sandbox.js";
 import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
 import {
@@ -1683,7 +1684,8 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
  * compatibility). Returns the supplied default if unset or invalid.
  */
 function envOrDefault(fallback: number): number {
-  const raw = process.env.AGENC_FILE_READ_MAX_OUTPUT_TOKENS;
+  const raw =
+    getSelectedProviderEnvironment().AGENC_FILE_READ_MAX_OUTPUT_TOKENS;
   if (typeof raw !== "string" || raw.trim().length === 0) return fallback;
   const parsed = Number.parseInt(raw.trim(), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;

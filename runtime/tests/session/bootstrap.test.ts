@@ -24,6 +24,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AsyncQueue } from "../utils/async-queue.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import {
   Session,
@@ -53,8 +55,6 @@ import type { RolloutItem } from "./rollout-item.js";
 
 function mkFeatures(): ManagedFeatures {
   return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
   };
 }
 
@@ -139,6 +139,9 @@ function mkProvider(): LLMProvider {
 function mkServices(overrides: Partial<SessionServices> = {}): SessionServices {
   const mcpStartupAbort = new AbortController();
   return {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},
@@ -150,6 +153,12 @@ function mkServices(overrides: Partial<SessionServices> = {}): SessionServices {
       isCancelled: () => mcpStartupAbort.signal.aborted,
     },
     provider: mkProvider(),
+    userShell: {
+      path: "/test/session-shell",
+      commandWrapperArgv: [],
+      childEnvironment: {},
+      deriveExecArgs: (input: string) => ["-c", input],
+    },
     registry: {
       tools: [],
       toLLMTools: () => [],
@@ -250,14 +259,13 @@ function mkStubMcpManager(
 // ─────────────────────────────────────────────────────────────────────
 
 describe("bootstrapSession happy path", () => {
-  it("returns a Session with the discovered shell, active turn clean, and session_configured emitted once", async () => {
+  it("preserves the boundary-owned shell, leaves the active turn clean, and emits session_configured once", async () => {
     const opts = mkBootstrapOpts();
     const session = await bootstrapSession(opts);
 
     expect(session).toBeInstanceOf(Session);
-    // Discovered shell is a real path rather than the `/bin/sh` interface stub.
-    expect(typeof session.services.userShell.path).toBe("string");
-    expect(session.services.userShell.path.length).toBeGreaterThan(0);
+    expect(session.services.userShell).toBe(opts.services.userShell);
+    expect(session.services.userShell.path).toBe("/test/session-shell");
     // The bootstrap helper does not install a task; activeTurn stays null.
     expect(session.activeTurn.unsafePeek()).toBeNull();
     expect(session.hasPendingInput()).toBe(false);
@@ -628,17 +636,20 @@ describe("emitSessionConfigured helper", () => {
   });
 });
 
-describe("legacy Session constructor compatibility", () => {
-  it("still builds a Session without any bootstrap-only side effects", () => {
-    const opts = mkSessionOpts();
+describe("direct Session construction", () => {
+  it("keeps caller-owned services without any bootstrap-only side effects", () => {
+    const userShell = {
+      path: "/test/direct-session-shell",
+      deriveExecArgs: (input: string) => ["-c", input],
+    };
+    const opts = mkSessionOpts({ services: mkServices({ userShell }) });
     const session = new Session(opts);
     expect(session).toBeInstanceOf(Session);
-    // The legacy constructor does NOT emit session_configured.
+    // Direct construction does not emit session_configured.
     const events = collectSessionEvents(session);
     expect(events.some((e) => e.msg.type === "session_configured")).toBe(false);
-    // The legacy constructor does NOT discover the real shell; it
-    // accepts whatever the caller supplied (including stub services).
-    expect(session.services.userShell).toBeUndefined();
+    // Session construction preserves the service boundary's immutable choice.
+    expect(session.services.userShell).toBe(userShell);
   });
 });
 

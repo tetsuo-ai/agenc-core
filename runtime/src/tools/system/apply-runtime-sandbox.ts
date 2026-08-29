@@ -18,6 +18,7 @@ import {
   readSandboxExecutionBroker,
   readSandboxExecutionSurface,
   transformSandboxedCommand,
+  type SandboxPreparedSpawn,
   type SandboxExecutionSurface,
 } from "../../sandbox/execution-broker.js";
 import type { UnifiedExecRuntimeSandbox } from "../../unified-exec/types.js";
@@ -52,7 +53,7 @@ interface ApplyRuntimeSandboxToSpawnParams {
  */
 export function applyRuntimeSandboxToSpawn(
   params: ApplyRuntimeSandboxToSpawnParams,
-): SandboxSpawnCommand {
+): SandboxSpawnCommand | SandboxPreparedSpawn {
   return applyRuntimeSandboxToSpawnWithCapabilities(params, "inherit");
 }
 
@@ -64,14 +65,14 @@ export function applyRuntimeSandboxToSpawn(
  */
 export function applyReadOnlyRuntimeSandboxToSpawn(
   params: ApplyRuntimeSandboxToSpawnParams,
-): SandboxSpawnCommand {
+): SandboxSpawnCommand | SandboxPreparedSpawn {
   return applyRuntimeSandboxToSpawnWithCapabilities(params, "read_only");
 }
 
 function applyRuntimeSandboxToSpawnWithCapabilities(
   params: ApplyRuntimeSandboxToSpawnParams,
   capabilities: "inherit" | "read_only",
-): SandboxSpawnCommand {
+): SandboxSpawnCommand | SandboxPreparedSpawn {
   const runtimeContext = readToolRuntimeContext(params.toolArgs);
   const surface = params.surface ??
     readSandboxExecutionSurface(params.toolArgs) ??
@@ -81,6 +82,26 @@ function applyRuntimeSandboxToSpawnWithCapabilities(
     params.fallbackCwd,
     surface,
   );
+  const broker = readSandboxExecutionBroker(params.toolArgs);
+  if (broker !== undefined) {
+    return broker.prepareSpawn(surface, {
+      program: params.program,
+      args: params.args,
+      cwd: params.cwd,
+      env: params.env,
+      argv0: basename(params.program),
+      ...(params.cwdBinding !== undefined
+        ? { cwdBinding: params.cwdBinding }
+        : {}),
+      ...(capabilities === "read_only" && runtimeSandbox !== undefined
+        ? {
+            permissionProfileOverride:
+              narrowRuntimeSandboxToReadOnly(runtimeSandbox)
+                .permissionProfile,
+          }
+        : {}),
+    });
+  }
   if (runtimeSandbox === undefined) {
     // A real runtime context is authoritative. `undefined` here means that
     // context explicitly selected danger-full-access/external sandbox, not
@@ -88,16 +109,7 @@ function applyRuntimeSandboxToSpawnWithCapabilities(
     if (runtimeContext === undefined) {
       const broker = readSandboxExecutionBroker(params.toolArgs);
       if (broker !== undefined) {
-        return broker.prepareSpawn(surface, {
-          program: params.program,
-          args: params.args,
-          cwd: params.cwd,
-          env: params.env,
-          argv0: basename(params.program),
-          ...(params.cwdBinding !== undefined
-            ? { cwdBinding: params.cwdBinding }
-            : {}),
-        });
+        throw new Error("sandbox execution broker admission was lost");
       }
     }
     return {

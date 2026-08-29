@@ -31,7 +31,7 @@
  * the change report.
  */
 
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 // run-turn fans out into magic-docs / session-memory hooks and an axios client
 // at import time; stub them exactly like run-turn.progress.test.ts.
@@ -56,6 +56,8 @@ vi.mock("../memory/session/sessionMemory.js", () => ({
 }));
 
 import { AsyncQueue } from "../utils/async-queue.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { runTurn } from "./run-turn.js";
 import {
   Session,
@@ -82,30 +84,18 @@ import type { ToolRegistry } from "../tool-registry.js";
 import type { Terminal } from "./turn-state.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
 import type { PhaseEvent } from "../phases/events.js";
+import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
+import { createTestConfigStore } from "../fixtures.js";
 
-// ── env isolation ───────────────────────────────────────────────────
-
-const ENV_KEYS = ["AGENC_MAX_TURNS", "AGENC_BEHAVIORAL_BACKSTOP"] as const;
 const TEST_CONTEXT_WINDOW_TOKENS = 131_072;
-const savedEnv: Record<string, string | undefined> = {};
-beforeEach(() => {
-  for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
-});
 afterEach(() => {
-  for (const k of ENV_KEYS) {
-    if (savedEnv[k] === undefined) delete process.env[k];
-    else process.env[k] = savedEnv[k];
-  }
   vi.restoreAllMocks();
 });
 
 // ── harness factories (mirror run-turn.progress.test.ts) ────────────
 
 function mkFeatures(): ManagedFeatures {
-  return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
-  };
+  return {};
 }
 
 function mkConfig(): Config {
@@ -206,9 +196,10 @@ function mkCtx(maxTurns: number): TurnContext {
  * stream-model phase, so its `usage` exercises the whole capture/propagation
  * chain rather than a synthetic injected count.
  */
-function mkScriptedProvider(
-  step: (i: number) => Partial<LLMResponse>,
-): { provider: LLMProvider; calls: () => number } {
+function mkScriptedProvider(step: (i: number) => Partial<LLMResponse>): {
+  provider: LLMProvider;
+  calls: () => number;
+} {
   let calls = 0;
   const make = (i: number): LLMResponse => ({
     content: "",
@@ -270,10 +261,10 @@ function mkScriptedRegistry(
   return { registry };
 }
 
-function mkSession(opts: {
-  provider: LLMProvider;
-  registry: ToolRegistry;
-}): { session: Session; events: Event[] } {
+function mkSession(opts: { provider: LLMProvider; registry: ToolRegistry }): {
+  session: Session;
+  events: Event[];
+} {
   const events: Event[] = [];
   const state = {
     sessionConfiguration: mkSessionConfiguration(),
@@ -281,7 +272,15 @@ function mkSession(opts: {
     totalTokenUsage: 0,
   };
   const services: SessionServices = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     admissionRequired: false,
+    runtimeOptions: resolveAgentRuntimeOptions({}),
+    configStore: createTestConfigStore({
+      cwd: state.sessionConfiguration.cwd,
+    }),
+    providerEnvironment: {},
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},
@@ -329,9 +328,8 @@ async function drainTurn(
 function tokenCountEvents(
   events: Event[],
 ): Array<Extract<Event["msg"], { type: "token_count" }>["payload"]> {
-  const out: Array<
-    Extract<Event["msg"], { type: "token_count" }>["payload"]
-  > = [];
+  const out: Array<Extract<Event["msg"], { type: "token_count" }>["payload"]> =
+    [];
   for (const e of events) {
     if (e.msg.type === "token_count") out.push(e.msg.payload);
   }
@@ -352,7 +350,6 @@ function lastTurnComplete(
 
 describe("usage propagation — completed turn reaches every TUI sink", () => {
   test("turn_complete.usage + token_count event + session.totalTokenUsage are all nonzero (the real upstream the rail/`/cost` read)", async () => {
-    process.env.AGENC_MAX_TURNS = "5";
     const ctx = mkCtx(5);
     const { provider } = mkScriptedProvider(() => ({
       content: "done",
@@ -399,7 +396,6 @@ describe("usage propagation — completed turn reaches every TUI sink", () => {
   // ── 2: usage accumulates across a multi-step (tool-use) turn ──────
 
   test("a tool-use turn accumulates usage across both sampling steps onto turn_complete", async () => {
-    process.env.AGENC_MAX_TURNS = "5";
     const ctx = mkCtx(5);
     // Step 0 calls a tool (usage 11), step 1 stops (usage 6) → cumulative 17.
     const { provider } = mkScriptedProvider((i) => {

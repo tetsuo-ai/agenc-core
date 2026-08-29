@@ -16,6 +16,7 @@ import {
   useModalScrollRef,
 } from "../context/modalContext.js";
 import { renderToString } from "../../utils/staticRender.js";
+import { FullscreenModeProvider } from "../context/fullscreenModeContext.js";
 
 const SYNC_START = "\x1B[?2026h";
 const SYNC_END = "\x1B[?2026l";
@@ -31,27 +32,6 @@ type TestStdin = PassThrough & {
   setRawMode: (mode: boolean) => void;
   unref: () => void;
 };
-
-function restoreEnv(name: string, previous: string | undefined): void {
-  if (previous === undefined) {
-    delete process.env[name];
-  } else {
-    process.env[name] = previous;
-  }
-}
-
-async function withFullscreenEnv<T>(
-  value: "0" | "1",
-  fn: () => Promise<T>,
-): Promise<T> {
-  const previous = process.env.AGENC_NO_FLICKER;
-  process.env.AGENC_NO_FLICKER = value;
-  try {
-    return await fn();
-  } finally {
-    restoreEnv("AGENC_NO_FLICKER", previous);
-  }
-}
 
 function extractLastFrame(output: string): string {
   let lastFrame: string | null = null;
@@ -110,14 +90,17 @@ async function renderFullscreenLayout(
   node: React.ReactNode,
   viewport: Viewport,
 ): Promise<string> {
-  return withFullscreenEnv("1", () => renderToString(node, viewport));
+  return renderToString(
+    <FullscreenModeProvider enabled={true}>{node}</FullscreenModeProvider>,
+    viewport,
+  );
 }
 
 async function renderFullscreenLayoutLatestFrame(
   node: React.ReactNode,
   viewport: Viewport,
 ): Promise<string> {
-  return withFullscreenEnv("1", async () => {
+  return (async () => {
     const { stdin, stdout, getOutput } = createTestStreams(viewport);
     const root = await createRoot({
       patchConsole: false,
@@ -125,7 +108,9 @@ async function renderFullscreenLayoutLatestFrame(
       stdout: stdout as unknown as NodeJS.WriteStream,
     });
 
-    root.render(node);
+    root.render(
+      <FullscreenModeProvider enabled={true}>{node}</FullscreenModeProvider>,
+    );
     await sleep();
     const output = stripAnsi(extractLastFrame(getOutput()));
     root.unmount();
@@ -133,7 +118,7 @@ async function renderFullscreenLayoutLatestFrame(
     stdout.end();
     await sleep();
     return output;
-  });
+  })();
 }
 
 function makeVisiblePillRefs(): {
@@ -203,16 +188,16 @@ describe("FullscreenLayout render branches", () => {
   });
 
   test("renders content sequentially when fullscreen is disabled", async () => {
-    const output = await withFullscreenEnv("0", () =>
-      renderToString(
+    const output = await renderToString(
+      <FullscreenModeProvider enabled={false}>
         <FullscreenLayout
           scrollable={<Text>sequential scrollable</Text>}
           bottom={<Text>sequential bottom</Text>}
           overlay={<Text>sequential overlay</Text>}
           modal={<Text>sequential modal</Text>}
-        />,
-        { columns: 80, rows: 12 },
-      ),
+        />
+      </FullscreenModeProvider>,
+      { columns: 80, rows: 12 },
     );
 
     expect(output).toContain("sequential scrollable");

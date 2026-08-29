@@ -2,6 +2,7 @@ import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { parseToml } from "../config/loader.js";
 import {
   formatAgenCPermissionGrantList,
   parseAgenCPermissionsCliArgs,
@@ -65,7 +66,7 @@ describe("permission CLI parser", () => {
         "approve",
         "--persist",
         "project",
-        "Read",
+        "FileRead",
       ]),
     ).toEqual({
       kind: "error",
@@ -73,11 +74,11 @@ describe("permission CLI parser", () => {
         "repository files cannot store permission approvals; use --persist user or approve a live request with --session",
     });
     expect(
-      parseAgenCPermissionsCliArgs(["permissions", "revoke", "Bash(ls)"]),
+      parseAgenCPermissionsCliArgs(["permissions", "revoke", "system.bash(ls)"]),
     ).toEqual({
       kind: "revokeRule",
       destination: "userSettings",
-      rule: "Bash(ls)",
+      rule: "system.bash(ls)",
     });
     expect(
       parseAgenCPermissionsCliArgs([
@@ -121,7 +122,7 @@ describe("permission CLI parser", () => {
         "session_1",
         "--persist",
         "project",
-        "Read",
+        "FileRead",
       ]),
     ).toEqual({
       kind: "error",
@@ -134,7 +135,7 @@ describe("permission CLI parser", () => {
         "--session",
         "session_1",
         "--persist=user",
-        "Read",
+        "FileRead",
       ]),
     ).toEqual({
       kind: "error",
@@ -148,7 +149,7 @@ describe("permission CLI parser", () => {
         "user",
         "--persist",
         "project",
-        "Read",
+        "FileRead",
       ]),
     ).toEqual({
       kind: "error",
@@ -239,7 +240,7 @@ describe("permission CLI parser", () => {
         "approve",
         "--reason",
         "no",
-        "Read",
+        "FileRead",
       ]),
     ).toEqual({
       kind: "error",
@@ -251,7 +252,7 @@ describe("permission CLI parser", () => {
         "revoke",
         "--scope",
         "session",
-        "Read",
+        "FileRead",
       ]),
     ).toEqual({
       kind: "error",
@@ -271,7 +272,7 @@ describe("permission CLI local rules", () => {
         const io = createIo();
         await expect(
           runAgenCPermissionsCli(
-            { kind: "approveRule", rule: "Read", destination },
+            { kind: "approveRule", rule: "FileRead", destination },
             { home: tmp, cwd: tmp, io },
           ),
         ).resolves.toBe(1);
@@ -279,9 +280,9 @@ describe("permission CLI local rules", () => {
           "repository files cannot store permission approvals",
         );
       }
-      await expect(access(join(tmp, ".agenc", "settings.json"))).rejects.toThrow();
+      await expect(access(join(tmp, ".agenc", "config.toml"))).rejects.toThrow();
       await expect(
-        access(join(tmp, ".agenc", "settings.local.json")),
+        access(join(tmp, ".agenc", "config.local.toml")),
       ).rejects.toThrow();
     } finally {
       await rm(tmp, { recursive: true, force: true });
@@ -295,14 +296,14 @@ describe("permission CLI local rules", () => {
       const auditLogger = vi.fn(async () => {});
       await expect(
         runAgenCPermissionsCli(
-          { kind: "approveRule", rule: "Read", destination: "userSettings" },
+          { kind: "approveRule", rule: "FileRead", destination: "userSettings" },
           { home: tmp, cwd: tmp, io, permissionAuditLogger: auditLogger },
         ),
       ).resolves.toBe(0);
-      expect(io.stdoutText()).toBe("Approved Read in userSettings\n");
-      const settingsPath = join(tmp, ".agenc", "settings.json");
-      expect(JSON.parse(await readFile(settingsPath, "utf8"))).toMatchObject({
-        permissions: { allow: ["Read"] },
+      expect(io.stdoutText()).toBe("Approved FileRead in userSettings\n");
+      const settingsPath = join(tmp, "config.toml");
+      expect(parseToml(await readFile(settingsPath, "utf8"))).toMatchObject({
+        permissions: { allow: ["FileRead"] },
       });
 
       const listIo = createIo();
@@ -313,18 +314,18 @@ describe("permission CLI local rules", () => {
         ),
       ).resolves.toBe(0);
       expect(listIo.stdoutText()).toContain("permission-mode");
-      expect(listIo.stdoutText()).toContain("Read");
+      expect(listIo.stdoutText()).toContain("FileRead");
       expect(listIo.stdoutText()).toContain("allow");
 
       const revokeIo = createIo();
       await expect(
         runAgenCPermissionsCli(
-          { kind: "revokeRule", rule: "Read", destination: "userSettings" },
+          { kind: "revokeRule", rule: "FileRead", destination: "userSettings" },
           { home: tmp, cwd: tmp, io: revokeIo, permissionAuditLogger: auditLogger },
         ),
       ).resolves.toBe(0);
-      expect(revokeIo.stdoutText()).toBe("Revoked Read from userSettings\n");
-      expect(JSON.parse(await readFile(settingsPath, "utf8"))).toMatchObject({
+      expect(revokeIo.stdoutText()).toBe("Revoked FileRead from userSettings\n");
+      expect(parseToml(await readFile(settingsPath, "utf8"))).toMatchObject({
         permissions: { allow: [] },
       });
       expect(auditLogger).toHaveBeenCalledWith(
@@ -333,7 +334,7 @@ describe("permission CLI local rules", () => {
           decision: "approved",
           source: "permissions-cli",
           subjectType: "rule",
-          rule: "Read",
+          rule: "FileRead",
           destination: "userSettings",
           reasonCode: "local_rule_approved",
         }),
@@ -344,7 +345,7 @@ describe("permission CLI local rules", () => {
           decision: "revoked",
           source: "permissions-cli",
           subjectType: "rule",
-          rule: "Read",
+          rule: "FileRead",
           destination: "userSettings",
           reasonCode: "local_rule_revoked",
         }),
@@ -361,7 +362,7 @@ describe("permission CLI local rules", () => {
       const onPermissionAuditError = vi.fn();
       await expect(
         runAgenCPermissionsCli(
-          { kind: "approveRule", rule: "Read", destination: "userSettings" },
+          { kind: "approveRule", rule: "FileRead", destination: "userSettings" },
           {
             home: tmp,
             cwd: tmp,
@@ -373,7 +374,7 @@ describe("permission CLI local rules", () => {
           },
         ),
       ).resolves.toBe(0);
-      expect(io.stdoutText()).toBe("Approved Read in userSettings\n");
+      expect(io.stdoutText()).toBe("Approved FileRead in userSettings\n");
       expect(onPermissionAuditError).toHaveBeenCalledOnce();
     } finally {
       await rm(tmp, { recursive: true, force: true });
@@ -411,7 +412,7 @@ describe("permission CLI daemon requests", () => {
         permissions: [
           {
             permissionId: "rule:allow:session:Read",
-            subject: "Read",
+            subject: "FileRead",
             action: "allow",
             scope: "session",
           },
@@ -435,7 +436,7 @@ describe("permission CLI daemon requests", () => {
     expect(ensureDaemonReady).toHaveBeenCalledTimes(1);
     expect(client.listPermissions).toHaveBeenCalledWith({ agentId: "agent_1" });
     expect(io.stdoutText()).toContain("rule:allow:session:Read");
-    expect(io.stdoutText()).toContain("Read");
+    expect(io.stdoutText()).toContain("FileRead");
   });
 
   it("approves and revokes live permission requests through the daemon", async () => {

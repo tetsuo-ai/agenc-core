@@ -6,13 +6,11 @@ import {
   API_ERROR_MESSAGE_PREFIX,
   API_TIMEOUT_ERROR_MESSAGE,
   CREDIT_BALANCE_TOO_LOW_ERROR_MESSAGE,
-  CUSTOM_OFF_SWITCH_MESSAGE,
   INVALID_API_KEY_ERROR_MESSAGE,
   INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL,
-  ORG_DISABLED_ERROR_MESSAGE_ENV_KEY,
   PROMPT_TOO_LONG_ERROR_MESSAGE,
   TOKEN_REVOKED_ERROR_MESSAGE,
-} from '../../services/api/errors.js'
+} from '../../errors/api.js'
 import { NO_RESPONSE_REQUESTED } from '../../utils/messages.js'
 import { renderToString } from '../../utils/staticRender.js'
 import { AssistantTextMessage } from './AssistantTextMessage.js'
@@ -30,10 +28,6 @@ function renderAssistantText(text: string, verbose = false): Promise<string> {
     />,
     100,
   )
-}
-
-function normalizeOutput(text: string): string {
-  return text.replace(/\s+/g, ' ').trim()
 }
 
 describe('AssistantTextMessage', () => {
@@ -61,17 +55,11 @@ describe('AssistantTextMessage', () => {
     await expect(
       renderAssistantText(INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL),
     ).resolves.toContain(INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL)
-    expect(normalizeOutput(await renderAssistantText(ORG_DISABLED_ERROR_MESSAGE_ENV_KEY))).toContain(
-      normalizeOutput(ORG_DISABLED_ERROR_MESSAGE_ENV_KEY),
-    )
     await expect(renderAssistantText(TOKEN_REVOKED_ERROR_MESSAGE)).resolves.toContain(
       TOKEN_REVOKED_ERROR_MESSAGE,
     )
     await expect(renderAssistantText(API_TIMEOUT_ERROR_MESSAGE)).resolves.toContain(
       API_TIMEOUT_ERROR_MESSAGE,
-    )
-    await expect(renderAssistantText(CUSTOM_OFF_SWITCH_MESSAGE)).resolves.toContain(
-      'high demand',
     )
     await expect(renderAssistantText(ERROR_MESSAGE_USER_ABORT)).resolves.toContain(
       'Interrupted',

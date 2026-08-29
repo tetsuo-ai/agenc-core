@@ -3,13 +3,13 @@ import { PassThrough } from 'node:stream'
 import React from 'react'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 import type { PastedContent } from '../../utils/config.js'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../remoteAuthSessionContext.fixture.js'
 
 const harness = vi.hoisted(() => {
   const appState = {
     coordinatorTaskIndex: -1,
     effortValue: undefined,
     expandedView: 'transcript',
-    fastMode: false,
     footerSelection: null as null | 'tasks' | 'teams',
     isBriefOnly: false,
     mainLoopModel: 'gpt-5.4',
@@ -63,6 +63,10 @@ const harness = vi.hoisted(() => {
     features: {} as Record<string, boolean>,
     fullscreen: false,
     getGlobalConfigResult: {} as Record<string, unknown>,
+    getNextPermissionMode: vi.fn(
+      (_from: unknown, _context: Record<string, unknown>) =>
+        harness.nextPermissionMode,
+    ),
     globalSearchProps: undefined as undefined | Record<string, unknown>,
     hasAutoModeOptIn: true,
     history: {
@@ -100,9 +104,7 @@ const harness = vi.hoisted(() => {
     isSSH: false,
     keybindingRegistrations: [] as Array<Record<string, unknown>>,
     keybindings: {} as Record<string, () => unknown>,
-    modelPickerProps: undefined as undefined | Record<string, unknown>,
     nextPermissionMode: 'plan',
-    cyclePermissionModeNextMode: null as null | string,
     onRender: vi.fn(),
     platform: 'linux',
     promptInputFooterProps: undefined as undefined | Record<string, unknown>,
@@ -111,7 +113,7 @@ const harness = vi.hoisted(() => {
     quickOpenProps: undefined as undefined | Record<string, unknown>,
     removeNotification: vi.fn(),
     runningTeammates: [] as Array<{ id: string }>,
-    saveGlobalConfig: vi.fn(),
+    updateRuntimeState: vi.fn(),
     setAutoModeActive: vi.fn(),
     specialChars: {} as Record<string, string>,
     stopOrDismissAgent: vi.fn(),
@@ -139,7 +141,6 @@ const harness = vi.hoisted(() => {
       suggestionType: undefined as undefined | string,
       suggestions: [] as Array<{ description?: string; label: string }>,
     },
-    updateSettingsForSource: vi.fn(),
     visibleAgentTasks: [] as Array<{ id: string; status?: string }>,
     viewedTeammate: undefined as
       | undefined
@@ -148,14 +149,6 @@ const harness = vi.hoisted(() => {
           identity: { agentName: string; color?: string }
           permissionMode: string
         },
-    fastMode: {
-      available: false,
-      cooldown: false,
-      enabled: false,
-      runtimeState: { status: 'available' },
-      supportedByModel: true,
-      unavailableReason: null as string | null,
-    },
     reset: () => {
       harness.activeAgent = { type: 'leader' }
       harness.addNotification.mockClear()
@@ -174,6 +167,7 @@ const harness = vi.hoisted(() => {
       harness.features = {}
       harness.fullscreen = false
       harness.getGlobalConfigResult = {}
+      harness.getNextPermissionMode.mockClear()
       harness.globalSearchProps = undefined
       harness.hasAutoModeOptIn = true
       harness.history.dismissSearchHint.mockClear()
@@ -198,9 +192,7 @@ const harness = vi.hoisted(() => {
       harness.isSSH = false
       harness.keybindingRegistrations = []
       harness.keybindings = {}
-      harness.modelPickerProps = undefined
       harness.nextPermissionMode = 'plan'
-      harness.cyclePermissionModeNextMode = null
       harness.onRender.mockClear()
       harness.platform = 'linux'
       harness.promptInputFooterProps = undefined
@@ -209,7 +201,7 @@ const harness = vi.hoisted(() => {
       harness.quickOpenProps = undefined
       harness.removeNotification.mockClear()
       harness.runningTeammates = []
-      harness.saveGlobalConfig.mockClear()
+      harness.updateRuntimeState.mockClear()
       harness.setAppState.mockClear()
       harness.setAutoModeActive.mockClear()
       harness.setPastedContents.mockClear()
@@ -234,21 +226,11 @@ const harness = vi.hoisted(() => {
         suggestionType: undefined,
         suggestions: [],
       }
-      harness.updateSettingsForSource.mockClear()
       harness.visibleAgentTasks = []
       harness.viewedTeammate = undefined
-      harness.fastMode = {
-        available: false,
-        cooldown: false,
-        enabled: false,
-        runtimeState: { status: 'available' },
-        supportedByModel: true,
-        unavailableReason: null,
-      }
       appState.coordinatorTaskIndex = -1
       appState.effortValue = undefined
       appState.expandedView = 'transcript'
-      appState.fastMode = false
       appState.footerSelection = null
       appState.isBriefOnly = false
       appState.mainLoopModel = 'gpt-5.4'
@@ -478,8 +460,8 @@ vi.mock('../../utils/array.js', () => ({
 }))
 
 vi.mock('../../utils/config.js', () => ({
-  getGlobalConfig: () => harness.getGlobalConfigResult,
-  saveGlobalConfig: harness.saveGlobalConfig,
+  getRuntimeState: () => harness.getGlobalConfigResult,
+  updateRuntimeState: harness.updateRuntimeState,
 }))
 
 vi.mock('../../utils/cwd.js', () => ({
@@ -517,24 +499,8 @@ vi.mock('../../utils/errors.js', async importOriginal => {
   }
 })
 
-vi.mock('../../utils/extraUsage.js', () => ({
-  isBilledAsExtraUsage: () => false,
-}))
-
-vi.mock('../../utils/fastMode.js', () => ({
-  FAST_MODE_MODEL_DISPLAY: 'fast-model',
-  clearFastModeCooldown: vi.fn(),
-  getFastModeModel: () => 'fast-model',
-  getFastModeRuntimeState: () => harness.fastMode.runtimeState,
-  getFastModeUnavailableReason: () => harness.fastMode.unavailableReason,
-  isFastModeAvailable: () => harness.fastMode.available,
-  isFastModeCooldown: () => harness.fastMode.cooldown,
-  isFastModeEnabled: () => harness.fastMode.enabled,
-  isFastModeSupportedByModel: () => harness.fastMode.supportedByModel,
-}))
-
-vi.mock('../../utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => harness.fullscreen,
+vi.mock('../context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => harness.fullscreen,
 }))
 
 vi.mock('../../utils/imagePaste.js', () => ({
@@ -570,15 +536,9 @@ vi.mock('../../utils/permissions/autoModeState.js', () => ({
   setAutoModeActive: harness.setAutoModeActive,
 }))
 
-vi.mock('../../utils/permissions/getNextPermissionMode.js', () => ({
-  cyclePermissionMode: (context: unknown) => ({
-    context,
-    nextMode: harness.cyclePermissionModeNextMode ?? harness.nextPermissionMode,
-  }),
-  getNextPermissionMode: () => harness.nextPermissionMode,
-}))
-
-vi.mock('../../utils/permissions/permissionSetup.js', () => ({
+vi.mock('../../permissions/permission-mode.js', () => ({
+  getNextPermissionMode: harness.getNextPermissionMode,
+  isAutoModeGateEnabled: () => true,
   transitionPermissionMode: harness.transitionPermissionMode,
 }))
 
@@ -599,7 +559,6 @@ vi.mock('../input/processBashCommand.js', () => ({
 
 vi.mock('../../utils/settings/settings.js', () => ({
   hasAutoModeOptIn: () => harness.hasAutoModeOptIn,
-  updateSettingsForSource: harness.updateSettingsForSource,
 }))
 
 vi.mock('../../utils/suggestions/commandSuggestions.js', () => ({
@@ -663,10 +622,6 @@ vi.mock('../components/EffortIndicator.js', () => ({
   getEffortNotificationText: () => undefined,
 }))
 
-vi.mock('../components/FastIcon.js', () => ({
-  getFastIconString: () => 'FAST',
-}))
-
 vi.mock('../components/FullscreenLayout.js', () => ({
   calculateFullscreenLayoutBudget: (rows: number) => ({
     bottomMaxHeight: Math.max(1, Math.floor(rows / 2)),
@@ -683,13 +638,6 @@ vi.mock('../components/GlobalSearchDialog.js', () => ({
 vi.mock('../history/HistorySearchDialog.js', () => ({
   HistorySearchDialog: (props: Record<string, unknown>) => {
     harness.historySearchProps = props
-    return null
-  },
-}))
-
-vi.mock('../components/ModelPicker.js', () => ({
-  ModelPicker: (props: Record<string, unknown>) => {
-    harness.modelPickerProps = props
     return null
   },
 }))
@@ -775,10 +723,6 @@ vi.mock('../components/PromptInput/useMaybeTruncateInput.js', () => ({
 
 vi.mock('../components/PromptInput/usePromptInputPlaceholder.js', () => ({
   usePromptInputPlaceholder: () => 'Type a prompt',
-}))
-
-vi.mock('../components/PromptInput/useShowFastIconHint.js', () => ({
-  useShowFastIconHint: () => false,
 }))
 
 vi.mock('../components/PromptInput/useSwarmBanner.js', () => ({
@@ -876,6 +820,7 @@ function basePromptInputProps(overrides: Record<string, unknown> = {}) {
     onShowMessageSelector: vi.fn(),
     onSubmit: vi.fn(async () => {}),
     pastedContents: {},
+    remoteAuthSessionContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
     setHelpOpen: vi.fn(),
     setIsSearchingHistory: vi.fn(),
     setPastedContents: harness.setPastedContents,
@@ -1140,6 +1085,9 @@ describe('PromptInput coverage swarm row 001', () => {
         () => harness.autoModeOptInProps !== undefined,
         'auto mode dialog did not render',
       )
+      expect(setToolPermissionContext).not.toHaveBeenCalled()
+      expect(harness.transitionPermissionMode).not.toHaveBeenCalled()
+      expect(harness.appState.toolPermissionContext.mode).toBe('default')
 
       ;(harness.autoModeOptInProps?.onAccept as () => void)()
       expect(harness.transitionPermissionMode).toHaveBeenCalledWith(
@@ -1173,15 +1121,17 @@ describe('PromptInput coverage swarm row 001', () => {
         () => harness.autoModeOptInProps !== undefined,
         'auto mode dialog did not render for decline',
       )
+      expect(declineSetToolPermissionContext).not.toHaveBeenCalled()
+      expect(harness.transitionPermissionMode).not.toHaveBeenCalled()
+      expect(harness.appState.toolPermissionContext.mode).toBe('default')
 
+      const acceptAfterClose = harness.autoModeOptInProps?.onAccept as () => void
       ;(harness.autoModeOptInProps?.onDecline as () => void)()
-      expect(harness.setAutoModeActive).toHaveBeenCalledWith(false)
-      expect(declineSetToolPermissionContext).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          isAutoModeAvailable: false,
-          mode: 'default',
-        }),
-      )
+      acceptAfterClose()
+      expect(harness.setAutoModeActive).not.toHaveBeenCalled()
+      expect(declineSetToolPermissionContext).not.toHaveBeenCalled()
+      expect(harness.transitionPermissionMode).not.toHaveBeenCalled()
+      expect(harness.appState.toolPermissionContext.mode).toBe('default')
     } finally {
       await declineRendered.dispose()
     }
@@ -1218,6 +1168,48 @@ describe('PromptInput coverage swarm row 001', () => {
       )
       expect(setToolPermissionContext).not.toHaveBeenCalled()
       expect(harness.appState.toolPermissionContext.mode).toBe('default')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('does not offer bypass mode to a viewed teammate', async () => {
+    harness.isAgentSwarmsEnabled = true
+    harness.nextPermissionMode = 'bypassPermissions'
+    harness.appState.viewingAgentTaskId = 'worker-1'
+    harness.viewedTeammate = {
+      id: 'worker-1',
+      identity: { agentName: 'worker', color: 'cyan' },
+      permissionMode: 'plan',
+    }
+    harness.appState.tasks = {
+      'worker-1': {
+        id: 'worker-1',
+        permissionMode: 'plan',
+        type: 'in_process_teammate',
+      },
+    }
+    const rendered = await renderPromptInput({
+      setToolPermissionContext: vi.fn(),
+    })
+
+    try {
+      await waitForPromptInputProps()
+
+      harness.keybindings['chat:cycleMode']?.()
+
+      expect(harness.getNextPermissionMode).toHaveBeenCalledWith(
+        'plan',
+        expect.objectContaining({
+          isBypassPermissionsModeAvailable: false,
+        }),
+      )
+      expect(harness.appState.tasks['worker-1']).toEqual(
+        expect.objectContaining({ permissionMode: 'plan' }),
+      )
+      expect(harness.addNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'teammate-bypass-consent-required' }),
+      )
     } finally {
       await rendered.dispose()
     }

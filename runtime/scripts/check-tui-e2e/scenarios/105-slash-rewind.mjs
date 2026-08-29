@@ -1,15 +1,11 @@
 /**
  * /rewind scenario.
  *
- * `/rewind` is documented to restore code and/or conversation to a
- * previous point. The full UI lives in REPL.tsx (orphaned shell — see
- * GAP-TUI-12); App.tsx (the live shell) does not yet mount it. The
- * command should still dispatch without crashing — either by no-op'ing
- * or by printing a "not available" message. Smoke-test that it doesn't
- * blow up the Ink tree.
+ * `/rewind` mounts the live message selector. With no earlier prompt it
+ * must render the empty state, close on Escape, and return to the composer.
  */
 export const meta = {
-  description: "/rewind dispatches without crashing.",
+  description: "/rewind renders and closes its empty state.",
   timeoutMs: 30_000,
 };
 
@@ -17,5 +13,7 @@ export default async function (session) {
   await session.start();
   await session.waitForPrompt({ timeout: 15_000 });
   await session.submitSlashCommand("/rewind");
-  await session.waitForIdle({ timeout: 15_000 });
+  await session.waitFor(/Nothing to rewind to yet\./u, { timeout: 15_000 });
+  session.sendEscape();
+  await session.waitForPrompt({ timeout: 15_000 });
 }

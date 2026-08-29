@@ -1,5 +1,19 @@
 import { describe, expect, test, vi } from "vitest";
 
+const { loadTieredInstructionsMock } = vi.hoisted(() => ({
+  loadTieredInstructionsMock: vi.fn(async () => ({
+    managed: null,
+    user: null,
+    project: null,
+    local: null,
+  })),
+}));
+
+vi.mock("../prompts/agenc-md.js", async importOriginal => ({
+  ...(await importOriginal<typeof import("../prompts/agenc-md.js")>()),
+  loadTieredInstructions: loadTieredInstructionsMock,
+}));
+
 // session-compact.ts now imports from system-prompt.ts (to count the
 // per-turn system message in /context) and that pulls in `bun:bundle`
 // transitively. Mock it so vitest can load the module without a Bun
@@ -15,6 +29,8 @@ import {
 } from "./session-compact.js";
 import type { LLMMessage, LLMTool } from "../llm/types.js";
 import type { RuntimeMessage } from "../services/compact/types.js";
+
+const TEST_PROVIDER_ENVIRONMENT = Object.freeze({});
 
 function userMessage(content: string): RuntimeMessage {
   const message: LLMMessage = { role: "user", content };
@@ -55,6 +71,7 @@ describe("/context display: computeContextUsageBreakdown", () => {
     // threshold, violating the global 'UI Semantics' rule. The new
     // breakdown separates the four numbers.
     const breakdown = computeContextUsageBreakdown({
+      providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
       messages: [userMessage("hello world")],
       tools: [],
       contextWindowTokens: 100_000,
@@ -84,11 +101,13 @@ describe("/context display: computeContextUsageBreakdown", () => {
     // wire-level usage.
     const messages = [userMessage("hi")];
     const noTools = computeContextUsageBreakdown({
+      providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
       messages,
       tools: [],
       contextWindowTokens: 100_000,
     });
     const withTools = computeContextUsageBreakdown({
+      providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
       messages,
       tools: [
         tool(
@@ -117,6 +136,7 @@ describe("/context display: computeContextUsageBreakdown", () => {
     // override, an operator who sets a 256k window for qwen3:8b in
     // their config would see only the 128k table-default in /context.
     const breakdown = computeContextUsageBreakdown({
+      providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
       messages: [],
       tools: [],
       contextWindowTokens: 262_144,
@@ -128,6 +148,7 @@ describe("/context display: computeContextUsageBreakdown", () => {
   test("hard limit falls back to the table-driven model lookup when no config window is supplied", () => {
     // qwen3:8b is in OPENAI_CONTEXT_WINDOWS at 128_000.
     const breakdown = computeContextUsageBreakdown({
+      providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
       messages: [],
       tools: [],
       model: "qwen3:8b",
@@ -142,6 +163,7 @@ describe("/context display: computeContextUsageBreakdown", () => {
     // headroom — that's nonsensical and confuses the operator.
     const massive = "x".repeat(2_000_000);
     const breakdown = computeContextUsageBreakdown({
+      providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
       messages: [userMessage(massive)],
       tools: [],
       contextWindowTokens: 128_000,
@@ -185,12 +207,14 @@ describe("/context display: computeContextUsageBreakdown", () => {
     ].join("\n");
 
     const withoutSystem = computeContextUsageBreakdown({
+      providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
       messages: conversation,
       tools: [],
       contextWindowTokens: 200_000,
       model: "qwen3:8b",
     });
     const withSystem = computeContextUsageBreakdown({
+      providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
       messages: [syntheticSystemMessage(systemText), ...conversation],
       tools: [],
       contextWindowTokens: 200_000,
@@ -209,6 +233,7 @@ describe("/context display: computeContextUsageBreakdown", () => {
   describe("cache-hit ratio surfacing", () => {
     test("populates cacheHitRatio when sessionTokenUsage carries cachedInputTokens", () => {
       const breakdown = computeContextUsageBreakdown({
+        providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
         messages: [],
         tools: [],
         contextWindowTokens: 200_000,
@@ -227,6 +252,7 @@ describe("/context display: computeContextUsageBreakdown", () => {
 
     test("omits cacheHitRatio when promptTokens is 0", () => {
       const breakdown = computeContextUsageBreakdown({
+        providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
         messages: [],
         tools: [],
         contextWindowTokens: 200_000,
@@ -242,6 +268,7 @@ describe("/context display: computeContextUsageBreakdown", () => {
 
     test("omits cacheHitRatio when sessionTokenUsage is missing entirely (no usage data yet)", () => {
       const breakdown = computeContextUsageBreakdown({
+        providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
         messages: [],
         tools: [],
         contextWindowTokens: 200_000,
@@ -252,6 +279,7 @@ describe("/context display: computeContextUsageBreakdown", () => {
 
     test("omits cacheHitRatio when cachedInputTokens is undefined (provider doesn't report cache split)", () => {
       const breakdown = computeContextUsageBreakdown({
+        providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
         messages: [],
         tools: [],
         contextWindowTokens: 200_000,
@@ -267,6 +295,7 @@ describe("/context display: computeContextUsageBreakdown", () => {
       // Defensive: if a provider's accounting drifts, don't render
       // 150% hit which would confuse the user.
       const breakdown = computeContextUsageBreakdown({
+        providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
         messages: [],
         tools: [],
         contextWindowTokens: 200_000,
@@ -281,15 +310,14 @@ describe("/context display: computeContextUsageBreakdown", () => {
   });
 
   test("auto-compact disabled flag flips compactionThreshold to the hard limit", () => {
-    // When DISABLE_COMPACT or AGENC_DISABLE_COMPACT is set, the
-    // compaction threshold should equal the hard limit (no
-    // separate threshold to display). The breakdown reports
-    // autoCompactEnabled:false so the renderer can show the
-    // appropriate message.
+    // When AGENC_DISABLE_COMPACT is set, the compaction threshold should equal
+    // the hard limit (no separate threshold to display). The breakdown reports
+    // autoCompactEnabled:false so the renderer can show the appropriate message.
     const original = process.env.AGENC_DISABLE_COMPACT;
     try {
       process.env.AGENC_DISABLE_COMPACT = "1";
       const breakdown = computeContextUsageBreakdown({
+        providerEnvironment: { ...process.env },
         messages: [],
         tools: [],
         contextWindowTokens: 200_000,
@@ -308,6 +336,80 @@ describe("/context display: computeContextUsageBreakdown", () => {
 });
 
 describe("/context TUI bridge", () => {
+  test("loads managed policy from the session's captured authority", async () => {
+    const capturedManagedPath = "/captured/policy/AGENC.md";
+    const ambientManagedPath = "/ambient/policy/AGENC.md";
+    const previousAmbient = process.env.AGENC_MANAGED_INSTRUCTIONS;
+    process.env.AGENC_MANAGED_INSTRUCTIONS = ambientManagedPath;
+    loadTieredInstructionsMock.mockClear();
+
+    try {
+      const setToolJSX = vi.fn();
+      const session = {
+        abortController: new AbortController(),
+        conversationId: "session-managed-authority",
+        newDefaultTurnWithSubId: () => ({
+          cwd: "/tmp/agenc-context",
+          config: {},
+          modelInfo: {
+            slug: "grok-4",
+            contextWindow: 200_000,
+            effectiveContextWindowPercent: 100,
+          },
+          modelProviderId: "xai",
+          options: {},
+        }),
+        nextInternalSubId: () => "sub-1",
+        snapshotHistoryMessages: () => [],
+        state: {
+          unsafePeek: () => ({ totalTokenUsage: { promptTokens: 0 } }),
+        },
+        permissionModeRegistry: { current: () => undefined },
+        services: {
+          registry: {
+            toLLMTools: () => [],
+            allSpecs: () => [],
+          },
+          configStore: {
+            current: () => ({}),
+            homeContext: { path: "/captured/home" },
+            managedPaths: { instructions: capturedManagedPath },
+          },
+          permissionModeRegistry: { current: () => undefined },
+          providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
+          provider: {},
+        },
+        emit: vi.fn(),
+        clearProviderResponseId: vi.fn(),
+      };
+
+      const result = await contextCommand.execute({
+        session: session as never,
+        argsRaw: "",
+        cwd: "/tmp/agenc-context",
+        home: "/home/test",
+        appState: { setToolJSX },
+      });
+
+      expect(result).toEqual({ kind: "skip" });
+      expect(loadTieredInstructionsMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          configHomeDir: "/captured/home",
+          managedPath: capturedManagedPath,
+        }),
+      );
+      expect(loadTieredInstructionsMock).not.toHaveBeenCalledWith(
+        expect.objectContaining({ managedPath: ambientManagedPath }),
+      );
+    } finally {
+      if (previousAmbient === undefined) {
+        delete process.env.AGENC_MANAGED_INSTRUCTIONS;
+      } else {
+        process.env.AGENC_MANAGED_INSTRUCTIONS = previousAmbient;
+      }
+    }
+  });
+
   test("opens the v2 context usage modal from the slash command", async () => {
     const setToolJSX = vi.fn();
     const session = {
@@ -348,6 +450,7 @@ describe("/context TUI bridge", () => {
         permissionModeRegistry: {
           current: () => undefined,
         },
+        providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
         provider: {},
       },
       emit: vi.fn(),
@@ -410,6 +513,7 @@ describe("/context TUI bridge", () => {
             current: () => ({}),
           },
           permissionModeRegistry: { current },
+          providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
           provider: {},
         },
         emit: vi.fn(),
@@ -454,6 +558,7 @@ describe("/context TUI bridge", () => {
             },
           }),
         },
+        providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
       },
       getDaemonSessionSnapshot: async () => ({
         tokenUsage: {
@@ -500,6 +605,7 @@ describe("/compact TUI bridge", () => {
             },
           }),
         },
+        providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
       },
       getDaemonSessionSnapshot: async () => ({
         tokenUsage: {

@@ -10,7 +10,7 @@
 
 import { createConnection } from "node:net";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { cwd as processCwd } from "node:process";
 import {
   ensureAgenCDaemonAutostart,
@@ -41,6 +41,7 @@ import {
   type AgentStopResult,
   type SessionSummary,
   type AgenCDaemonErrorResponse,
+  type AgenCDaemonErrorCode,
   type AgenCDaemonResponse,
   type AgenCDaemonSuccessResponse,
   type JsonObject,
@@ -49,6 +50,11 @@ import {
 } from "./protocol/index.js";
 import { encodeBoundedJsonLine } from "./transport/stdio.js";
 import { isRecord } from "../utils/record.js";
+import {
+  resolveAgentRuntimeOptions,
+  type AgentRuntimeOptions,
+} from "../session/runtime-options.js";
+import { collectDaemonClientEnvOverrides } from "./client-env-snapshot.js";
 import {
   AgentRoleWorkspaceError,
   createAgentRoleWorkspace,
@@ -95,6 +101,19 @@ export interface AgenCDaemonRequestOptions {
   readonly signal?: AbortSignal;
 }
 
+/** A daemon response that proves the server returned a JSON-RPC error. */
+export class AgenCDaemonResponseError extends Error {
+  readonly code: AgenCDaemonErrorCode;
+  readonly data: JsonValue | undefined;
+
+  constructor(error: AgenCDaemonErrorResponse["error"]) {
+    super(error.message);
+    this.name = "AgenCDaemonResponseError";
+    this.code = error.code;
+    this.data = error.data;
+  }
+}
+
 export interface AgenCDaemonTuiConnectionState {
   readonly status: "connected" | "reconnecting" | "disconnected";
   readonly message?: string;
@@ -117,12 +136,14 @@ export interface AgenCAgentAttachTuiContext {
   readonly agentId: string;
   readonly clientId: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly runtimeOptions?: AgentRuntimeOptions;
 }
 
 export interface AgenCAgentCliOptions {
   readonly client?: AgenCAgentCliDaemonClient;
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly runtimeOptions?: AgentRuntimeOptions;
   readonly io?: AgenCAgentCliIo;
   readonly ensureDaemonReady?: () => Promise<void>;
   readonly clientId?: string;
@@ -154,6 +175,9 @@ const MAX_BUFFERED_SESSION_EVENT_SESSIONS = 50;
 // dropped the oldest events under a fast first turn — which is almost always
 // the user's first prompt — so the YOU bubble never rendered on cold open.
 const MAX_BUFFERED_SESSION_EVENTS_PER_SESSION = 1000;
+const overflowedBufferedSessionEventMaps = new WeakSet<
+  Map<string, JsonObject[]>
+>();
 // Cap the per-connection read buffer so a daemon (or anything impersonating
 // the socket) that streams bytes without ever emitting a newline cannot grow
 // client memory unbounded. Mirrors the daemon transport's max-line / max
@@ -174,103 +198,7 @@ const UNBOUNDED_DAEMON_METHODS: ReadonlySet<AgenCDaemonKnownMethod> = new Set([
   "session.rewindConversationToMessage",
 ]);
 
-/**
- * Client-env keys forwarded to the daemon as `agent.create` envOverrides.
- *
- * The daemon resolves providers/keys/proxies/PATH from the env frozen at
- * daemon start, so without this allowlist a rotated API key or a new
- * shell's venv/nvm PATH is invisible to daemon sessions until the daemon
- * is restarted (audit 2026-07-11 finding 4).
- *
- * Semantics: a key is forwarded only when set (non-empty) in the client
- * process env at agent.create time. Unset keys are NOT forwarded, so the
- * daemon's own values keep winning as the fallback — the merge on the
- * daemon side is `{...daemonEnv, ...envOverrides}`
- * (background-agent-runner.ts startAgent).
- *
- * AGENC_WORKSPACE is deliberately excluded: the workspace must come from
- * the `cwd` create param, not ambient env (audit finding 2).
- *
- * These values travel over the local daemon socket only (same trust
- * boundary as the existing AGENC_MCP_SERVERS override, which can already
- * carry credentials in server configs) and are not logged by the daemon
- * dispatcher or transports.
- */
-const DAEMON_CLIENT_ENV_OVERRIDE_KEYS = [
-  "AGENC_MCP_SERVERS",
-  // Model/provider selection (env beats config.toml per config/env.ts).
-  "AGENC_MODEL",
-  "AGENC_PROVIDER",
-  "AGENC_PROFILE",
-  // Provider API keys — cross-checked against config/env.ts EnvSnapshot
-  // and llm/discovery/provider-discovery.ts providerApiKeyEnvCandidates.
-  "XAI_API_KEY",
-  "GROK_API_KEY",
-  "AGENC_XAI_API_KEY",
-  "OPENAI_API_KEY",
-  "OPENAI_COMPATIBLE_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "LMSTUDIO_API_KEY",
-  "OPENROUTER_API_KEY",
-  "GROQ_API_KEY",
-  "DEEPSEEK_API_KEY",
-  "GEMINI_API_KEY",
-  "GOOGLE_API_KEY",
-  "MISTRAL_API_KEY",
-  "NVIDIA_API_KEY",
-  "MINIMAX_API_KEY",
-  "GITHUB_TOKEN",
-  "GH_TOKEN",
-  "AWS_BEDROCK_ACCESS_KEY_ID",
-  "AWS_ACCESS_KEY_ID",
-  "AWS_BEDROCK_SECRET_ACCESS_KEY",
-  "AWS_SECRET_ACCESS_KEY",
-  "AWS_BEDROCK_SESSION_TOKEN",
-  "AWS_SESSION_TOKEN",
-  // Provider base URLs / regions / compatible-model overrides.
-  "OPENAI_BASE_URL",
-  "OPENAI_COMPATIBLE_BASE_URL",
-  "OPENAI_COMPATIBLE_MODEL",
-  "ANTHROPIC_BASE_URL",
-  "LMSTUDIO_BASE_URL",
-  "OPENROUTER_BASE_URL",
-  "GROQ_BASE_URL",
-  "DEEPSEEK_BASE_URL",
-  "GEMINI_BASE_URL",
-  "OLLAMA_BASE_URL",
-  "AWS_BEDROCK_BASE_URL",
-  "AWS_BEDROCK_MODEL",
-  "AWS_BEDROCK_REGION",
-  "AWS_REGION",
-  "AWS_DEFAULT_REGION",
-  // Proxy configuration (both spellings are honored by Node tooling).
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "NO_PROXY",
-  "http_proxy",
-  "https_proxy",
-  "no_proxy",
-  // Tool resolution for spawned processes (venv/nvm activation).
-  "PATH",
-] as const;
-
-/**
- * Collect the allowlisted client env values to forward with `agent.create`.
- * Only keys set (non-empty) in the given env are included; everything else
- * is left to the daemon's own environment.
- */
-export function collectDaemonClientEnvOverrides(
-  env: NodeJS.ProcessEnv,
-): Record<string, string> {
-  const overrides: Record<string, string> = {};
-  for (const key of DAEMON_CLIENT_ENV_OVERRIDE_KEYS) {
-    const value = env[key];
-    if (typeof value === "string" && value.trim().length > 0) {
-      overrides[key] = value;
-    }
-  }
-  return overrides;
-}
+export { collectDaemonClientEnvOverrides };
 
 export function formatAgenCAgentCliHelpText(): string {
   return [
@@ -528,7 +456,7 @@ async function createReconnectableDaemonTuiClient(options: {
         sessionId,
       );
       buffered.push(event);
-      trimBufferedSessionEvents(buffered);
+      trimBufferedSessionEvents(buffered, undefined, sessionId);
       return;
     }
     for (const listener of listeners) {
@@ -721,12 +649,11 @@ async function createReconnectableDaemonTuiClient(options: {
       listeners.add(cb);
       subscribeInnerSession(sessionId);
       // Flush any outer-layer buffer that accumulated before this listener.
-      const buffered = bufferedSessionEvents.get(sessionId);
-      if (buffered !== undefined) {
-        bufferedSessionEvents.delete(sessionId);
-        for (const event of buffered) {
-          notifyDaemonListener(cb, event);
-        }
+      for (const event of drainBufferedSessionEvents(
+        bufferedSessionEvents,
+        sessionId,
+      )) {
+        notifyDaemonListener(cb, event);
       }
       return () => {
         listeners?.delete(cb);
@@ -752,6 +679,7 @@ async function createReconnectableDaemonTuiClient(options: {
       detachInnerClient();
       innerClient = null;
       bufferedSessionEvents.clear();
+      overflowedBufferedSessionEventMaps.delete(bufferedSessionEvents);
       setConnectionState({
         status: "disconnected",
         message: "Daemon connection closed",
@@ -815,14 +743,15 @@ async function startAgenCAgent(
   return runAgenCAgentCliOperation(io, options, async () => {
     const client = resolveAgenCAgentCliDaemonClient(options);
     const objective = command.objective;
-    const envOverrides = collectDaemonClientEnvOverrides(
-      options.env ?? process.env,
-    );
+    const env = options.env ?? process.env;
+    const envOverrides = collectDaemonClientEnvOverrides(env);
     const result = await client.createAgent({
       objective,
       instructions: objective,
       // DAE-02: absolute workspace identity from the CLI process (never omit).
       cwd: resolve(options.cwd ?? processCwd()),
+      runtimeOptions:
+        options.runtimeOptions ?? resolveAgentRuntimeOptions(env),
       metadata: { source: "agenc agent start" },
       ...(command.unattendedAllow.length > 0
         ? { unattendedAllow: command.unattendedAllow }
@@ -861,6 +790,9 @@ async function attachAgenCAgent(
         agentId: command.agentId,
         clientId,
         ...(options.env !== undefined ? { env: options.env } : {}),
+        ...(options.runtimeOptions !== undefined
+          ? { runtimeOptions: options.runtimeOptions }
+          : {}),
       });
     }
     const client = resolveAgenCAgentCliDaemonClient(options);
@@ -953,7 +885,7 @@ function resolveAgenCAgentAttachSession(
   const primarySessionId = result.sessionIds[0];
   if (primarySessionId === undefined) return null;
   return (
-    result.sessions?.find(
+    result.sessions.find(
       (session) => session.sessionId === primarySessionId,
     ) ?? null
   );
@@ -961,10 +893,20 @@ function resolveAgenCAgentAttachSession(
 
 export function resolveAgenCAgentAttachCwd(
   result: AgentAttachResult,
-  fallbackCwd: string,
 ): string {
-  const cwd = resolveAgenCAgentAttachSession(result)?.cwd?.trim();
-  return cwd && cwd.length > 0 ? cwd : fallbackCwd;
+  const cwd = resolveAgenCAgentAttachSession(result)?.cwd;
+  if (
+    typeof cwd !== "string" ||
+    cwd.trim() !== cwd ||
+    cwd.length === 0 ||
+    Buffer.byteLength(cwd, "utf8") > 4_096 ||
+    !isAbsolute(cwd)
+  ) {
+    throw new Error(
+      "daemon agent attachment primary session must include a bounded absolute cwd",
+    );
+  }
+  return cwd;
 }
 
 /** Resolve persisted role authority independently from the execution cwd. */
@@ -1107,6 +1049,8 @@ function connectPersistentDaemonClient(
       });
       socket.destroy();
       failPending(new Error("Daemon connection closed"));
+      bufferedSessionEvents.clear();
+      overflowedBufferedSessionEventMaps.delete(bufferedSessionEvents);
     };
     const client: AgenCJsonLineDaemonTuiClient = {
       request: (method, params = {}, options = {}) => {
@@ -1197,10 +1141,11 @@ function connectPersistentDaemonClient(
           sessionListeners.set(sessionId, listeners);
         }
         listeners.add(cb);
-        const buffered = bufferedSessionEvents.get(sessionId);
-        if (buffered !== undefined) {
-          bufferedSessionEvents.delete(sessionId);
-          for (const event of buffered) cb(event);
+        for (const event of drainBufferedSessionEvents(
+          bufferedSessionEvents,
+          sessionId,
+        )) {
+          cb(event);
         }
         return () => {
           listeners?.delete(cb);
@@ -1323,7 +1268,7 @@ function handlePersistentDaemonMessage(
     if (waiter.timeout !== null) clearTimeout(waiter.timeout);
     const response = message as AgenCDaemonResponse;
     if (isErrorResponse(response)) {
-      waiter.reject(new Error(response.error.message));
+      waiter.reject(new AgenCDaemonResponseError(response.error));
       return;
     }
     waiter.resolve((response as AgenCDaemonSuccessResponse).result);
@@ -1343,7 +1288,7 @@ function handlePersistentDaemonMessage(
       sessionId,
     );
     buffered.push(message);
-    trimBufferedSessionEvents(buffered);
+    trimBufferedSessionEvents(buffered, undefined, sessionId);
     bufferedSessionEvents.set(sessionId, buffered);
     return;
   }
@@ -1363,18 +1308,29 @@ function handlePersistentDaemonMessage(
 export function trimBufferedSessionEvents(
   buffered: JsonObject[],
   maxEvents: number = MAX_BUFFERED_SESSION_EVENTS_PER_SESSION,
+  sessionId: string = daemonEventSessionId(buffered[0] ?? {}) ?? "unknown",
 ): void {
   while (buffered.length > maxEvents) {
     const dropIndex = buffered.findIndex(
-      (event) => !isSessionUserMessageNotification(event),
+      (event) => !isProtectedBufferedSessionNotification(event),
     );
     if (dropIndex < 0) {
-      // Pathological: only user messages remain. Keep the newest cap window.
-      buffered.shift();
-      continue;
+      buffered.splice(
+        0,
+        buffered.length,
+        runtimeSettingsBufferGapNotification(sessionId, "session_event_limit"),
+      );
+      return;
     }
     buffered.splice(dropIndex, 1);
   }
+}
+
+function isProtectedBufferedSessionNotification(event: JsonObject): boolean {
+  return (
+    isSessionUserMessageNotification(event) ||
+    isRuntimeSettingsAuthorityNotification(event)
+  );
 }
 
 export function isSessionUserMessageNotification(event: JsonObject): boolean {
@@ -1387,6 +1343,56 @@ export function isSessionUserMessageNotification(event: JsonObject): boolean {
   return isJsonObject(msg) && msg.type === "user_message";
 }
 
+function isRuntimeSettingsAuthorityNotification(event: JsonObject): boolean {
+  const params = event.params;
+  if (isJsonObject(params) && isJsonObject(params.event)) {
+    return (
+      params.event.type === "run_runtime_settings_changed" ||
+      params.event.type === "runtime_settings_authority_gap"
+    );
+  }
+  const msg = event.msg;
+  return (
+    isJsonObject(msg) &&
+    (msg.type === "run_runtime_settings_changed" ||
+      msg.type === "runtime_settings_authority_gap")
+  );
+}
+
+function runtimeSettingsBufferGapNotification(
+  sessionId: string,
+  reason: "session_event_limit" | "session_map_limit",
+): JsonObject {
+  const eventId = `runtime-settings-buffer-gap:${reason}:${sessionId}`;
+  return {
+    jsonrpc: JSON_RPC_VERSION,
+    method: "event.session_event",
+    params: {
+      sessionId,
+      eventId,
+      event: {
+        id: eventId,
+        type: "runtime_settings_authority_gap",
+        payload: { reason },
+      },
+    },
+  };
+}
+
+function drainBufferedSessionEvents(
+  bufferedSessionEvents: Map<string, JsonObject[]>,
+  sessionId: string,
+): JsonObject[] {
+  const buffered = bufferedSessionEvents.get(sessionId) ?? [];
+  bufferedSessionEvents.delete(sessionId);
+  return overflowedBufferedSessionEventMaps.has(bufferedSessionEvents)
+    ? [
+        runtimeSettingsBufferGapNotification(sessionId, "session_map_limit"),
+        ...buffered,
+      ]
+    : buffered;
+}
+
 function getBoundedBufferedSessionEvents(
   bufferedSessionEvents: Map<string, JsonObject[]>,
   sessionId: string,
@@ -1396,6 +1402,7 @@ function getBoundedBufferedSessionEvents(
   while (bufferedSessionEvents.size >= MAX_BUFFERED_SESSION_EVENT_SESSIONS) {
     const oldestSessionId = bufferedSessionEvents.keys().next().value;
     if (typeof oldestSessionId !== "string") break;
+    overflowedBufferedSessionEventMaps.add(bufferedSessionEvents);
     bufferedSessionEvents.delete(oldestSessionId);
   }
   const next: JsonObject[] = [];

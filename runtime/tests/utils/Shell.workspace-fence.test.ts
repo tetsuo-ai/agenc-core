@@ -5,8 +5,13 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { ConfigStore } from "../../src/config/store.js";
+import { runWithCurrentRuntimeSession } from "../../src/session/current-session.js";
+import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
+import type { Session } from "../../src/session/session.js";
 import { runWithCwdOverride } from "../../src/utils/cwd.js";
 import { exec } from "../../src/utils/Shell.js";
+import { runWithCanonicalSettingsAuthority } from "../../src/utils/settings/canonicalAuthority.js";
 import {
   beginWorkspaceToolOperation,
   endWorkspaceToolOperation,
@@ -44,40 +49,67 @@ describe("Shell workspace-operation lifetime", () => {
       ].join(""),
       "utf8",
     );
-    const operation = beginWorkspaceToolOperation(
-      workspaceRoot,
-      "generic-shell",
-    );
-    const lifetime = createWorkspaceOperationLifetime(() => {
-      endWorkspaceToolOperation(operation);
+    const configStore = new ConfigStore({
+      home: join(workspaceRoot, ".agenc-test-home"),
+      env: {},
+      cwd: workspaceRoot,
+      projectRoot: workspaceRoot,
+      projectTrusted: false,
     });
+    const runtimeSession = {
+      conversationId: "00000000-0000-4000-8000-000000000224",
+      services: {
+        configStore,
+        runtimeOptions: resolveAgentRuntimeOptions({}),
+        userShell: {
+          path: "/bin/bash",
+          commandWrapperArgv: [],
+          childEnvironment: { ...process.env },
+          deriveExecArgs: (input: string) => ["-c", input],
+        },
+      },
+    } as unknown as Session;
+    await runWithCanonicalSettingsAuthority(
+      configStore,
+      () =>
+        runWithCurrentRuntimeSession(runtimeSession, async () => {
+          const operation = beginWorkspaceToolOperation(
+            workspaceRoot,
+            "generic-shell",
+          );
+          const lifetime = createWorkspaceOperationLifetime(() => {
+            endWorkspaceToolOperation(operation);
+          });
+          const shellCommand = await runWithWorkspaceOperationLifetime(
+            lifetime,
+            () =>
+              runWithCwdOverride(workspaceRoot, () =>
+                exec(
+                  `${JSON.stringify(process.execPath)} ${JSON.stringify(launcherPath)} ${JSON.stringify(path)}`,
+                  new AbortController().signal,
+                  "bash",
+                  {
+                    preventCwdChanges: true,
+                    sandboxExecutionBroker: explicitDangerBroker,
+                    sandboxExecutionSurface: "tool",
+                  },
+                ),
+              ),
+          );
+          await shellCommand.result;
+          await lifetime.release();
+          await lifetime.settled();
 
-    const shellCommand = await runWithWorkspaceOperationLifetime(lifetime, () =>
-      runWithCwdOverride(workspaceRoot, () =>
-        exec(
-          `${JSON.stringify(process.execPath)} ${JSON.stringify(launcherPath)} ${JSON.stringify(path)}`,
-          new AbortController().signal,
-          "bash",
-          {
-            preventCwdChanges: true,
-            sandboxExecutionBroker: explicitDangerBroker,
-            sandboxExecutionSurface: "tool",
-          },
-        ),
-      ),
+          expect(() =>
+            workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
+              workspaceRoot,
+              editorInstanceId: "editor-after-generic-shell",
+            }),
+          ).not.toThrow();
+          await delay(900);
+          expect(await readFile(path, "utf8")).toBe("before\n");
+          shellCommand.cleanup();
+        }),
     );
-    await shellCommand.result;
-    await lifetime.release();
-    await lifetime.settled();
-
-    expect(() =>
-      workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
-        workspaceRoot,
-        editorInstanceId: "editor-after-generic-shell",
-      }),
-    ).not.toThrow();
-    await delay(900);
-    expect(await readFile(path, "utf8")).toBe("before\n");
-    shellCommand.cleanup();
   });
 });

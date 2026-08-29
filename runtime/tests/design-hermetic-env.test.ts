@@ -16,7 +16,7 @@ const HERMETIC_ENV_CONTRACT = JSON.parse(
 describe('least-privilege design environment', () => {
   it('runs setup, preserves only design inputs, and isolates home state', () => {
     expect(process.env[HERMETIC_MARKER_ENV_VAR]).toBe('1');
-    expect(process.env.AGENC_HOME).toBe(process.env.AGENC_CONFIG_DIR);
+    expect(process.env.AGENC_CONFIG_DIR).toBeUndefined();
     expect(process.env.HOME).toBe(process.env.AGENC_HOME);
 
     const preserved = new Set<string>(HERMETIC_DESIGN_INPUT_ENV_VARS);

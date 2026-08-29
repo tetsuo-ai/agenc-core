@@ -54,7 +54,7 @@ describe("grok reasoning_effort capability gate", () => {
 
     expect(
       resolveProviderModelCapabilities({
-        provider: "xai",
+        provider: "grok",
         model: "grok-4.5",
       }).acceptsReasoningEffort,
     ).toBe(true);

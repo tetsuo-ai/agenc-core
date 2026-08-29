@@ -14,7 +14,6 @@ import {
 } from '../ink/native-ts/file-index/index'
 import { isRelativePathOutsideBase } from '../pathDisplay.js'
 import type { FileSuggestionCommandInput } from '../../types/fileSuggestion'
-import { getGlobalConfig } from '../../utils/config.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { getCwd } from '../../utils/cwd.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage, isENOENT } from '../../utils/errors.js' // upstream-import: keep target is owned by another Z-PURGE item
@@ -533,13 +532,12 @@ export async function getPathsForSuggestions(): Promise<FileIndex> {
 
   try {
     const authoritySettings = getExecutionAuthoritySettings()
-    const globalConfig = getGlobalConfig()
     const repositoryRequiresGitignore =
       getSettingsForSource('projectSettings')?.respectGitignore === true ||
       getSettingsForSource('localSettings')?.respectGitignore === true
     const respectGitignore = repositoryRequiresGitignore
       ? true
-      : authoritySettings.respectGitignore ?? globalConfig.respectGitignore ?? true
+      : authoritySettings.respectGitignore ?? true
 
     const cwd = getCwd()
     const [projectFiles, configFiles] = await Promise.all([

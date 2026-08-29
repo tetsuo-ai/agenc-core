@@ -584,7 +584,7 @@ describe("strict canonical journal contract", () => {
         threadId: "1a57950f-c453-4551-a9a6-703fc2b1fe80",
         agentPath: "/root/probe_usb_board",
         agentNickname: "Molly",
-        agentRole: "worker",
+        agentRole: "runner",
         agentRoleDisplayName: "Runner",
         prompt: "identify the connected board",
         model: "grok-4.5",

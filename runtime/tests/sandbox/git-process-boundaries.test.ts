@@ -30,10 +30,16 @@ import {
   createEnterWorktreeTool,
   createExitWorktreeTool,
 } from "../../src/tools/system/worktree.js";
+import {
+  SESSION_AGENC_HOME_ARG,
+  withSignedSessionId,
+} from "../../src/tools/system/filesystem.js";
 import { EnterWorktreeTool } from "../../src/tools/EnterWorktreeTool/EnterWorktreeTool.js";
 import { ExitWorktreeTool } from "../../src/tools/ExitWorktreeTool/ExitWorktreeTool.js";
 import { runWithCwdOverride } from "../../src/utils/cwd.js";
 import { restoreWorktreeSession } from "../../src/utils/worktree.js";
+import { resolveHomeContext } from "../../src/config/home.js";
+import { runWithCanonicalSettingsAuthority } from "../../src/utils/settings/canonicalAuthority.js";
 
 const roots: string[] = [];
 
@@ -41,6 +47,17 @@ function tempRoot(label: string): string {
   const root = mkdtempSync(join(tmpdir(), label));
   roots.push(root);
   return root;
+}
+
+function authorizedSessionArgs(
+  args: Record<string, unknown>,
+  sessionId: string,
+  agencHome: string,
+): Record<string, unknown> {
+  return {
+    ...withSignedSessionId(args, sessionId),
+    [SESSION_AGENC_HOME_ARG]: agencHome,
+  };
 }
 
 function unavailableBroker(cwd: string): SandboxExecutionBroker {
@@ -169,10 +186,7 @@ describe.sequential("git process sandbox boundaries", () => {
       "-c",
       "maintenance.auto=false",
     ];
-    const addArgs: Record<string, unknown> = {
-      name: slug,
-      __agencSessionId: sessionId,
-    };
+    const addArgs = authorizedSessionArgs({ name: slug }, sessionId, root);
     attachSandboxExecutionBroker(addArgs, broker, "tool");
 
     const entered = await createEnterWorktreeTool({ cwd: root }).execute(
@@ -244,11 +258,11 @@ describe.sequential("git process sandbox boundaries", () => {
       requests.indexOf(checkoutRequest!),
     );
 
-    const removeArgs: Record<string, unknown> = {
-      action: "remove",
-      discard_changes: true,
-      __agencSessionId: sessionId,
-    };
+    const removeArgs = authorizedSessionArgs(
+      { action: "remove", discard_changes: true },
+      sessionId,
+      root,
+    );
     attachSandboxExecutionBroker(removeArgs, broker, "tool");
     const exited = await createExitWorktreeTool({ cwd: root }).execute(
       removeArgs,
@@ -331,10 +345,11 @@ describe.sequential("git process sandbox boundaries", () => {
     );
     const slug = "checkout-failure";
     const worktreePath = join(root, ".agenc", "worktrees", slug);
-    const args: Record<string, unknown> = {
-      name: slug,
-      __agencSessionId: "restricted-worktree-checkout-failure",
-    };
+    const args = authorizedSessionArgs(
+      { name: slug },
+      "restricted-worktree-checkout-failure",
+      root,
+    );
     attachSandboxExecutionBroker(args, broker, "tool");
 
     const entered = await createEnterWorktreeTool({ cwd: root }).execute(args);
@@ -566,10 +581,11 @@ describe.sequential("git process sandbox boundaries", () => {
     const marker = join(root, "legacy-worktree-escaped");
     const bin = installGitShim(root, marker);
     vi.stubEnv("PATH", `${bin}${delimiter}${process.env.PATH ?? ""}`);
-    const args: Record<string, unknown> = {
-      name: "sandbox-boundary",
-      __agencSessionId: "git-boundary-test",
-    };
+    const args = authorizedSessionArgs(
+      { name: "sandbox-boundary" },
+      "git-boundary-test",
+      root,
+    );
     attachSandboxExecutionBroker(args, unavailableBroker(root), "tool");
 
     await expect(createEnterWorktreeTool({ cwd: root }).execute(args)).rejects
@@ -587,16 +603,28 @@ describe.sequential("git process sandbox boundaries", () => {
     const bin = installGitShim(root, marker);
     vi.stubEnv("PATH", `${bin}${delimiter}${process.env.PATH ?? ""}`);
 
+    const homeContext = resolveHomeContext({ AGENC_HOME: root });
+    const authority = {
+      current: () => ({}),
+      sources: () => [],
+      projectRoot: root,
+      homeContext,
+      stateRepository: { getNamespace: () => ({}) },
+      reload: async () => {},
+      subscribe: () => {},
+    };
     await expect(
-      runWithCwdOverride(root, () =>
-        EnterWorktreeTool.call(
-          { name: "sandbox-boundary" },
-          {
-            abortController: new AbortController(),
-            services: { sandboxExecutionBroker: unavailableBroker(root) },
-          } as never,
-          undefined,
-          undefined,
+      runWithCanonicalSettingsAuthority(authority as never, () =>
+        runWithCwdOverride(root, () =>
+          EnterWorktreeTool.call(
+            { name: "sandbox-boundary" },
+            {
+              abortController: new AbortController(),
+              services: { sandboxExecutionBroker: unavailableBroker(root) },
+            } as never,
+            undefined,
+            undefined,
+          )
         )
       ),
     ).rejects.toMatchObject({
@@ -656,28 +684,32 @@ describe.sequential("git process sandbox boundaries", () => {
     expect(existsSync(marker)).toBe(false);
   });
 
-  it("blocks prompt git probing through the live session broker", async () => {
+  it("degrades prompt git probing through the live session broker", async () => {
     const root = tempRoot("agenc-prompt-git-boundary-");
     const marker = join(root, "prompt-git-escaped");
     const bin = installGitShim(root, marker);
     vi.stubEnv("PATH", `${bin}${delimiter}${process.env.PATH ?? ""}`);
 
-    await expect(
-      assembleSystemPrompt({
-        session: {
-          services: { sandboxExecutionBroker: unavailableBroker(root) },
-        } as never,
-        ctx: {
-          cwd: root,
-          config: { model: "grok-4.5" },
-          configSnapshot: { model: "grok-4.5" },
-        } as never,
-        envForSimpleMode: {},
-      }),
-    ).rejects.toMatchObject({
-      code: "sandbox_probe_failed",
-      surface: "tool",
+    const prompt = await assembleSystemPrompt({
+      session: {
+        services: { sandboxExecutionBroker: unavailableBroker(root) },
+      } as never,
+      ctx: {
+        cwd: root,
+        config: { model: "grok-4.5" },
+        configSnapshot: { model: "grok-4.5" },
+        sandboxPolicy: { value: "workspace_write" },
+        networkSandboxPolicy: {
+          allowlist: [],
+          denylist: [],
+          allowManagedDomainsOnly: false,
+          enabled: false,
+        },
+      } as never,
+      simpleMode: false,
     });
+
+    expect(prompt.text).toContain("Git branch: <not a git repository>");
     expect(existsSync(marker)).toBe(false);
   });
 });

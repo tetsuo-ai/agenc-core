@@ -890,7 +890,7 @@ test("daemon cleanup refuses a receipt for a process without exact ownership", a
     {
       cwd: REQUIRED_GATES_REPOSITORY_ROOT,
       detached: true,
-      env: { ...env, AGENC_CONFIG_DIR: path.join(root, "wrong-config") },
+      env: { ...env, AGENC_HOME: path.join(root, "wrong-home") },
       stdio: "ignore",
     },
   );

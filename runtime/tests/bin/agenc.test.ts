@@ -4,7 +4,6 @@
  *   - `system.agent.delegate` built-in tool
  *
  * T10 Group I integration seams:
- *   - I-60 ambiguous-model hard-fail (`resolveModelOrThrow`)
  *   - I-47 between-turn config reload (`maybeReloadConfigBetweenTurns`)
  *   - AgenCConfig → SessionConfiguration bridge
  *   - Memory auto-save sidecar + per-turn attachments
@@ -22,16 +21,14 @@ import { join } from "node:path";
 
 import { buildDelegateTool } from "./delegate-tool.js";
 import {
-  PROVIDER_MODEL_CATALOG,
   __resetActiveInkUnmountForTest,
   __setDaemonCliDepsForTest,
   __setActiveInkUnmountForTest,
   bootTUIEntry,
+  attachAgentTuiEntry,
   detectStartupShortCircuit,
   formatUnavailableCliCwdMessage,
   formatCliHelpText,
-  initializeCliRuntime,
-  installInitSignalHandlers,
   installSignalHandlers,
   isUnavailableCliCwdError,
   main,
@@ -40,7 +37,6 @@ import {
   parseStreamJsonPrompt,
   prepareTurnRuntimeInputs,
   resolveCliCwdForStartup,
-  resolveModelOrThrow,
   resumeTUIEntry,
   runSingleTurn,
   sessionConfigurationFromAgenCConfig,
@@ -49,12 +45,7 @@ import {
   type ConfigReloadLatch,
 } from "./agenc-main.js";
 import { ConfigStore } from "../config/store.js";
-import {
-  AmbiguousModelError,
-  defaultConfig,
-  UnknownModelError,
-} from "../config/schema.js";
-import * as configUtils from "../config/init.js";
+import { defaultConfig } from "../config/schema.js";
 import {
   assembleSystemPrompt,
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
@@ -72,6 +63,15 @@ import {
 } from "../permissions/trust/project-trust.js";
 import { getProjectDir } from "../session/session-store.js";
 import { classifyCLI } from "./route.js";
+import { isBareMode } from "../utils/envUtils.js";
+import {
+  resolveAgentRuntimeOptions,
+  resolveSessionTempRoot,
+  runWithAgentRuntimeOptions,
+  type AgentRuntimeOptions,
+} from "../session/runtime-options.js";
+import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
+import { AgenCDaemonResponseError } from "../app-server/agent-cli.js";
 
 function stubSession() {
   return {
@@ -124,11 +124,29 @@ function trustWorkspaceForTest(agencHome: string, workspace: string): void {
   });
 }
 
+function withRunSingleTurnRuntime<T>(operation: () => T): T {
+  const runtimeOptions = resolveAgentRuntimeOptions(
+    {},
+    {
+      pluginStorageRoot: join(
+        tmpdir(),
+        "agenc-run-single-turn-test-plugins",
+      ),
+    },
+  );
+  return runWithAgentRuntimeOptions(runtimeOptions, operation);
+}
+
 async function writeResumeRolloutForTest(
   cwd: string,
   conversationId: string,
+  agencHome: string,
 ): Promise<string> {
-  const sessionDir = join(getProjectDir(cwd), "sessions", conversationId);
+  const sessionDir = join(
+    getProjectDir(cwd, undefined, agencHome),
+    "sessions",
+    conversationId,
+  );
   const rolloutPath = join(
     sessionDir,
     `rollout-2026-08-19T00-00-00-000Z-${conversationId}.jsonl`,
@@ -194,6 +212,8 @@ function installDaemonCliDepsForTest(
     readonly liveAgent?: boolean;
     readonly liveAgentMetadata?: Readonly<Record<string, unknown>>;
     readonly liveAgentPath?: string;
+    readonly runtimeOptions?: AgentRuntimeOptions;
+    readonly runtimeSettings?: RunRuntimeSettingsSnapshot;
     readonly resumePromptAgentError?: Error;
     readonly requestErrors?: Partial<Record<string, Error | readonly Error[]>>;
     readonly mcpManager?: unknown;
@@ -223,6 +243,25 @@ function installDaemonCliDepsForTest(
   const runtimeSessionId = options.runtimeSessionId ?? sessionId;
   const cwd = options.cwd ?? process.cwd();
   const roleWorkspaceCwd = options.roleWorkspaceCwd ?? cwd;
+  let ownerRuntimeOptions =
+    options.runtimeOptions ?? resolveAgentRuntimeOptions({});
+  let ownerRuntimeSettings: RunRuntimeSettingsSnapshot =
+    options.runtimeSettings ?? {
+      permissionMode: "default",
+      prePlanMode: null,
+      autoModeActive: false,
+      autoModeAvailable: true,
+      bypassPermissionsModeAvailable: false,
+      bypassPermissionsWorkspace: null,
+      bypassPermissionsConsentWorkspace: null,
+      model: "grok-4.3",
+      provider: "grok",
+      profile: null,
+      reasoningEffort: null,
+      modelVerbosity: null,
+      serviceTier: null,
+      hooksDisabled: false,
+    };
   const requests: Array<{ method: string; params: unknown }> = [];
   const requestErrorQueues = new Map<string, Error[]>(
     Object.entries(options.requestErrors ?? {}).map(([method, error]) => [
@@ -295,6 +334,8 @@ function installDaemonCliDepsForTest(
           agentId,
           attachmentId: "attachment_test",
           sessionIds: [sessionId],
+          runtimeOptions: ownerRuntimeOptions,
+          runtimeSettings: ownerRuntimeSettings,
           runtimeSessionId,
           sessions: [
             {
@@ -311,6 +352,17 @@ function installDaemonCliDepsForTest(
           ],
         };
       }
+      if (method === "session.mcp.status") {
+        return {
+          sessionId:
+            typeof params?.sessionId === "string"
+              ? params.sessionId
+              : sessionId,
+          revision: 0,
+          servers: [],
+          tools: [],
+        };
+      }
       if (method === "session.snapshot") {
         return {
           sessionId:
@@ -323,13 +375,6 @@ function installDaemonCliDepsForTest(
             outputTokens: 3,
             totalTokens: 13,
             costUsd: 0.001,
-          },
-          cacheStats: {
-            requestCount: 1,
-            cacheReadInputTokens: 0,
-            cacheCreationInputTokens: 0,
-            cacheTotalInputTokens: 0,
-            hitRate: null,
           },
         };
       }
@@ -383,7 +428,35 @@ function installDaemonCliDepsForTest(
     async (params: {
       prompt: string;
       initialContent?: string | readonly unknown[];
+      runtimeOptions?: AgentRuntimeOptions;
+      model?: string;
+      provider?: string;
+      profile?: string;
+      permissionMode?: RunRuntimeSettingsSnapshot["permissionMode"];
     }) => {
+      if (params.runtimeOptions !== undefined) {
+        ownerRuntimeOptions = params.runtimeOptions;
+      }
+      const permissionMode =
+        params.permissionMode ?? ownerRuntimeSettings.permissionMode;
+      const bypassTransitionCritical = permissionMode === "bypassPermissions";
+      ownerRuntimeSettings = {
+        ...ownerRuntimeSettings,
+        permissionMode,
+        prePlanMode: permissionMode === "plan" ? "default" : null,
+        autoModeActive: permissionMode === "auto",
+        autoModeAvailable: true,
+        bypassPermissionsModeAvailable:
+          bypassTransitionCritical ||
+          ownerRuntimeSettings.bypassPermissionsModeAvailable,
+        bypassPermissionsWorkspace: bypassTransitionCritical ? cwd : null,
+        bypassPermissionsConsentWorkspace: bypassTransitionCritical
+          ? cwd
+          : ownerRuntimeSettings.bypassPermissionsConsentWorkspace,
+        model: params.model ?? ownerRuntimeSettings.model,
+        provider: params.provider ?? ownerRuntimeSettings.provider,
+        profile: params.profile ?? ownerRuntimeSettings.profile,
+      };
       return {
         ...agent,
         objective: params.prompt.trim(),
@@ -395,10 +468,38 @@ function installDaemonCliDepsForTest(
     async (params: {
       rolloutPath: string;
       sourceProof: { readonly dev: string; readonly ino: string };
+      runtimeOptions?: AgentRuntimeOptions;
+      model?: string;
+      provider?: string;
+      profile?: string;
+      permissionMode?: RunRuntimeSettingsSnapshot["permissionMode"];
     }) => {
       if (options.resumePromptAgentError !== undefined) {
         throw options.resumePromptAgentError;
       }
+      if (params.runtimeOptions !== undefined) {
+        ownerRuntimeOptions = params.runtimeOptions;
+      }
+      const permissionMode =
+        params.permissionMode ?? ownerRuntimeSettings.permissionMode;
+      const bypassTransitionCritical = permissionMode === "bypassPermissions";
+      ownerRuntimeSettings = {
+        ...ownerRuntimeSettings,
+        permissionMode,
+        prePlanMode: permissionMode === "plan" ? "default" : null,
+        autoModeActive: permissionMode === "auto",
+        autoModeAvailable: true,
+        bypassPermissionsModeAvailable:
+          bypassTransitionCritical ||
+          ownerRuntimeSettings.bypassPermissionsModeAvailable,
+        bypassPermissionsWorkspace: bypassTransitionCritical ? cwd : null,
+        bypassPermissionsConsentWorkspace: bypassTransitionCritical
+          ? cwd
+          : ownerRuntimeSettings.bypassPermissionsConsentWorkspace,
+        model: params.model ?? ownerRuntimeSettings.model,
+        provider: params.provider ?? ownerRuntimeSettings.provider,
+        profile: params.profile ?? ownerRuntimeSettings.profile,
+      };
       return {
         ...agent,
         agentPath: "/root",
@@ -433,29 +534,37 @@ function installDaemonCliDepsForTest(
       cwd: string;
       roleWorkspace?: { readonly id: string; readonly cwd: string };
       conversationId: string;
+      runtimeOptions: AgentRuntimeOptions;
+      runtimeSettings?: RunRuntimeSettingsSnapshot;
     }) => {
       const abortController = new AbortController();
-      return {
-        configStore: {
-          agencHome: params.env?.AGENC_HOME ?? "/tmp/agenc-test-home",
-          current: () => ({
-            ...defaultConfig(),
-            model: "grok-4.3",
-            model_provider: "xai",
-          }),
-          subscribe: () => () => undefined,
-          warnings: () => [],
+      const configStore = new ConfigStore({
+        home: params.env?.AGENC_HOME ?? "/tmp/agenc-test-home",
+        env: params.env ?? {},
+        base: {
+          ...defaultConfig(),
+          model: "grok-4.3",
+          model_provider: "grok",
         },
+      });
+      const config = configStore.current();
+      return {
         baseSession: {
           conversationId: params.conversationId,
           roleWorkspace: params.roleWorkspace,
           cwd: params.cwd,
           home: params.env?.HOME ?? "/tmp/agenc-test-user",
           sessionConfiguration: {
+            ...sessionConfigurationFromAgenCConfig({
+              config,
+              workspaceRoot: params.cwd,
+              model: config.model,
+            }),
             cwd: params.cwd,
             provider: { slug: "xai" },
           },
           services: {
+            configStore,
             permissionModeRegistry: new PermissionModeRegistry(
               createEmptyToolPermissionContext(),
             ),
@@ -582,7 +691,7 @@ describe("buildDelegateTool — system.agent.delegate", () => {
     });
     expect(delegateSpy).toHaveBeenCalledTimes(1);
     const args = delegateSpy.mock.calls[0]![0];
-    expect(args.role).toBe("explorer");
+    expect(args.role).toBe("scanner");
     expect(args.taskPrompt).toBe("scan the repo");
     expect(args.parentPath).toBe("/root");
     expect(result.isError).toBeUndefined();
@@ -650,105 +759,9 @@ describe("buildDelegateTool — system.agent.delegate", () => {
   });
 });
 
-describe("initializeCliRuntime", () => {
-  it("enables config reads before the CLI routes into turn logic", () => {
-    const enableSpy = vi
-      .spyOn(configUtils, "enableConfigs")
-      .mockImplementation(() => undefined);
-
-    try {
-      initializeCliRuntime();
-      expect(enableSpy).toHaveBeenCalledTimes(1);
-    } finally {
-      enableSpy.mockRestore();
-    }
-  });
-});
-
 // ─────────────────────────────────────────────────────────────────────
 // T10 Group I — integration tests
 // ─────────────────────────────────────────────────────────────────────
-
-describe("PROVIDER_MODEL_CATALOG", () => {
-  it("advertises grok models with grok-4.6 leading", () => {
-    // The grok catalog is derived from REGISTERED_MODEL_CATALOG.
-    expect(PROVIDER_MODEL_CATALOG.grok).toEqual([
-      "grok-4.6",
-      "grok-4.5",
-      "grok-build-0.1",
-      "grok-4.3",
-      "grok-4.20-0309-reasoning",
-      "grok-4.20-0309-non-reasoning",
-      "grok-4.20-multi-agent-0309",
-      "grok-composer-2.5-fast",
-    ]);
-  });
-});
-
-describe("I-60: resolveModelOrThrow hard-fail", () => {
-  it("returns {provider, model} for an unambiguous bare slug", () => {
-    const result = resolveModelOrThrow("grok-4.3", PROVIDER_MODEL_CATALOG);
-    expect(result.provider).toBe("grok");
-    expect(result.model).toBe("grok-4.3");
-  });
-
-  it("accepts explicit provider:model form", () => {
-    const result = resolveModelOrThrow(
-      "grok:grok-4.20-0309-reasoning",
-      PROVIDER_MODEL_CATALOG,
-    );
-    expect(result.provider).toBe("grok");
-    expect(result.model).toBe("grok-4.20-0309-reasoning");
-  });
-
-  it("THROWS a catchable AmbiguousModelError on an ambiguous bare slug (no process.exit)", () => {
-    const catalog = {
-      grok: ["shared-model", "grok-4"] as readonly string[],
-      openai: ["shared-model", "gpt-4"] as readonly string[],
-    };
-    // Spy on process.exit so a regression to the old exit-based code is caught:
-    // shared selection code must never hard-kill the process — it must throw so
-    // daemon/TUI and CLI callers can intercept via their own try/catch.
-    const exitSpy = vi
-      .spyOn(process, "exit")
-      .mockImplementation((() => undefined) as never);
-    try {
-      let captured: unknown;
-      try {
-        resolveModelOrThrow("shared-model", catalog);
-      } catch (err) {
-        captured = err;
-      }
-      expect(captured).toBeInstanceOf(AmbiguousModelError);
-      const message = (captured as Error).message;
-      expect(message).toMatch(/ambiguous/i);
-      expect(message).toMatch(/grok:shared-model/);
-      expect(message).toMatch(/openai:shared-model/);
-      expect(exitSpy).not.toHaveBeenCalled();
-    } finally {
-      exitSpy.mockRestore();
-    }
-  });
-
-  it("THROWS a catchable UnknownModelError on an unknown model slug (no process.exit)", () => {
-    const exitSpy = vi
-      .spyOn(process, "exit")
-      .mockImplementation((() => undefined) as never);
-    try {
-      let captured: unknown;
-      try {
-        resolveModelOrThrow("nope-unknown", PROVIDER_MODEL_CATALOG);
-      } catch (err) {
-        captured = err;
-      }
-      expect(captured).toBeInstanceOf(UnknownModelError);
-      expect((captured as Error).message).toMatch(/unknown model/i);
-      expect(exitSpy).not.toHaveBeenCalled();
-    } finally {
-      exitSpy.mockRestore();
-    }
-  });
-});
 
 describe("sessionConfigurationFromAgenCConfig", () => {
   it("maps AgenCConfig approval_policy + sandbox_mode enums", () => {
@@ -796,6 +809,35 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     expect(sc.networkSandboxPolicy.enabled).toBe(true);
   });
 
+  it("applies canonical sandbox network and filesystem settings", () => {
+    const sc = sessionConfigurationFromAgenCConfig({
+      config: {
+        ...defaultConfig(),
+        sandbox_mode: "workspace-write" as const,
+        sandbox: {
+          network_access: true,
+          filesystem: {
+            allowWrite: ["./cache", "/var/tmp/agenc"],
+            denyWrite: ["./locked"],
+            allowRead: ["./inputs"],
+            denyRead: ["./secrets"],
+          },
+        },
+      },
+      workspaceRoot: "/tmp/ws",
+      model: "grok-4.3",
+    });
+    expect(sc.networkSandboxPolicy.enabled).toBe(true);
+    expect(sc.fileSystemSandboxPolicy.allowWrite).toEqual([
+      "/tmp/ws",
+      "/tmp/ws/cache",
+      "/var/tmp/agenc",
+    ]);
+    expect(sc.fileSystemSandboxPolicy.denyWrite).toEqual(["/tmp/ws/locked"]);
+    expect(sc.fileSystemSandboxPolicy.allowRead).toEqual(["/tmp/ws/inputs"]);
+    expect(sc.fileSystemSandboxPolicy.denyRead).toEqual(["/tmp/ws/secrets"]);
+  });
+
   it("on-failure → on_failure mapping", () => {
     const sc = sessionConfigurationFromAgenCConfig({
       config: { ...defaultConfig(), approval_policy: "on-failure" as const },
@@ -825,12 +867,11 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     expect(sc.approvalPolicy.value).toBe("never");
   });
 
-  it("propagates personality, reasoning_summary, and compact_prompt", () => {
+  it("propagates personality and reasoning_summary", () => {
     const cfg = {
       ...defaultConfig(),
       personality: "friendly" as const,
       reasoning_summary: "detailed" as const,
-      compact_prompt: "COMPACT: keep only the durable facts.",
     };
     const sc = sessionConfigurationFromAgenCConfig({
       config: cfg,
@@ -839,7 +880,6 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     });
     expect(sc.personality).toBe("friendly");
     expect(sc.modelReasoningSummary).toBe("detailed");
-    expect(sc.compactPrompt).toBe("COMPACT: keep only the durable facts.");
   });
 
   it("leaves propagated fields undefined when config omits them", () => {
@@ -849,7 +889,6 @@ describe("sessionConfigurationFromAgenCConfig", () => {
       ...cfg,
       personality: undefined,
       reasoning_summary: undefined,
-      compact_prompt: undefined,
     } as typeof cfg;
     const sc = sessionConfigurationFromAgenCConfig({
       config: override,
@@ -858,7 +897,6 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     });
     expect(sc.personality).toBeUndefined();
     expect(sc.modelReasoningSummary).toBeUndefined();
-    expect(sc.compactPrompt).toBeUndefined();
   });
 });
 
@@ -954,14 +992,14 @@ describe("I-47: maybeReloadConfigBetweenTurns", () => {
     await store.reload();
     const latch: ConfigReloadLatch = { requested: true };
     const emit = vi.fn();
-    const refreshFromConfig = vi.fn().mockResolvedValue({
+    const refreshFromAuthority = vi.fn().mockResolvedValue({
       configuredServers: ["github"],
       requiredServers: ["github"],
     });
     const sessionStub = {
       emit,
       nextInternalSubId: () => "sub-x",
-      services: { mcpManager: { refreshFromConfig } },
+      services: { mcpManager: { refreshFromAuthority } },
     } as unknown as Parameters<
       typeof maybeReloadConfigBetweenTurns
     >[0]["session"];
@@ -973,7 +1011,7 @@ describe("I-47: maybeReloadConfigBetweenTurns", () => {
       clearCache: () => {},
     });
 
-    expect(refreshFromConfig).toHaveBeenCalledWith(nextCfg);
+    expect(refreshFromAuthority).toHaveBeenCalledWith();
     expect(emit).toHaveBeenCalledTimes(1);
     const arg = emit.mock.calls[0]![0];
     expect(arg.msg.type).toBe("warning");
@@ -996,13 +1034,13 @@ describe("I-47: maybeReloadConfigBetweenTurns", () => {
     await store.reload();
     const latch: ConfigReloadLatch = { requested: true };
     const emit = vi.fn();
-    const refreshFromConfig = vi
+    const refreshFromAuthority = vi
       .fn()
       .mockRejectedValue(new Error("required server missing"));
     const sessionStub = {
       emit,
       nextInternalSubId: () => "sub-x",
-      services: { mcpManager: { refreshFromConfig } },
+      services: { mcpManager: { refreshFromAuthority } },
     } as unknown as Parameters<
       typeof maybeReloadConfigBetweenTurns
     >[0]["session"];
@@ -1038,6 +1076,13 @@ describe("I-47: maybeReloadConfigBetweenTurns", () => {
         configSnapshot: base,
         cwd: "/tmp",
         modelInfo: { slug: "grok-4.3" },
+        sandboxPolicy: { value: "workspace_write" },
+        networkSandboxPolicy: {
+          allowlist: [],
+          denylist: [],
+          allowManagedDomainsOnly: false,
+          enabled: false,
+        },
       } as never,
     });
     expect(__systemPromptSectionCacheSize()).toBeGreaterThan(0);
@@ -1205,27 +1250,6 @@ describe("resolveCliCwdForStartup", () => {
   });
 });
 
-describe("installInitSignalHandlers", () => {
-  it("maps init signals to abort reasons and unregisters the same handlers", () => {
-    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-      const { proc, onceHandlers, removeListener } = createMockSignalProcess();
-      const abort = new AbortController();
-      const uninstall = installInitSignalHandlers(abort, proc);
-
-      expect(onceHandlers.has(signal)).toBe(true);
-      onceHandlers.get(signal)!();
-      expect(abort.signal.aborted).toBe(true);
-      expect(abort.signal.reason).toBe(`${signal} during init`);
-
-      uninstall();
-      expect(removeListener).toHaveBeenCalledWith(
-        signal,
-        onceHandlers.get(signal),
-      );
-    }
-  });
-});
-
 describe("installSignalHandlers", () => {
   it("SIGTERM unmounts Ink before aborting the terminal", () => {
     const { proc, onceHandlers } = createMockSignalProcess();
@@ -1338,6 +1362,13 @@ describe("system-prompt assembly: project instructions + memory", () => {
         configSnapshot: cfg,
         cwd: "/tmp",
         modelInfo: { slug: "grok-4.3" },
+        sandboxPolicy: { value: "workspace_write" },
+        networkSandboxPolicy: {
+          allowlist: [],
+          denylist: [],
+          allowManagedDomainsOnly: false,
+          enabled: false,
+        },
       } as never,
       projectInstructions: "## project\n\nFollow repo AGENC.md guidance.",
       memoryPrompt: "# Memory\n\nCurrent memory guidance.",
@@ -1478,10 +1509,12 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
     });
     // Drain the generator.
     // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const step = await iter.next();
-      if (step.done) break;
-    }
+    await withRunSingleTurnRuntime(async () => {
+      while (true) {
+        const step = await iter.next();
+        if (step.done) break;
+      }
+    });
     expect(reloadConfigFn).toHaveBeenCalledTimes(1);
     expect(assembleSystemPromptFn).toHaveBeenCalledTimes(1);
     expect(runTurnFn).toHaveBeenCalledTimes(1);
@@ -1501,28 +1534,30 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
     await store.reload();
     const latch: ConfigReloadLatch = { requested: false };
 
-    for (let i = 0; i < 3; i++) {
-      const iter = runSingleTurn({
-        session: { emit: vi.fn() } as never,
-        ctx: {} as never,
-        input: `t${i}`,
-        configStore: store,
-        configReloadLatch: latch,
-        memoryPromptText: "",
-        allMemories: [],
-        enabledToolNames: new Set<string>(),
-        mcpServers: [],
-        provider: "grok",
-        reloadConfigFn: reloadConfigFn as never,
-        assembleSystemPromptFn: assembleSystemPromptFn as never,
-        runTurnFn: runTurnFn as never,
-      });
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const step = await iter.next();
-        if (step.done) break;
+    await withRunSingleTurnRuntime(async () => {
+      for (let i = 0; i < 3; i++) {
+        const iter = runSingleTurn({
+          session: { emit: vi.fn() } as never,
+          ctx: {} as never,
+          input: `t${i}`,
+          configStore: store,
+          configReloadLatch: latch,
+          memoryPromptText: "",
+          allMemories: [],
+          enabledToolNames: new Set<string>(),
+          mcpServers: [],
+          provider: "grok",
+          reloadConfigFn: reloadConfigFn as never,
+          assembleSystemPromptFn: assembleSystemPromptFn as never,
+          runTurnFn: runTurnFn as never,
+        });
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const step = await iter.next();
+          if (step.done) break;
+        }
       }
-    }
+    });
     expect(reloadConfigFn).toHaveBeenCalledTimes(3);
     expect(runTurnFn).toHaveBeenCalledTimes(3);
   });
@@ -1561,26 +1596,35 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
       configSnapshot: cfg,
       cwd: "/tmp",
       modelInfo: { slug: cfg.model },
+      sandboxPolicy: { value: "workspace_write" },
+      networkSandboxPolicy: {
+        allowlist: [],
+        denylist: [],
+        allowManagedDomainsOnly: false,
+        enabled: false,
+      },
     } as never;
 
-    for (let i = 0; i < 2; i++) {
-      const iter = runSingleTurn({
-        session: { emit: vi.fn() } as never,
-        ctx,
-        input: `t${i}`,
-        configStore: store,
-        configReloadLatch: { requested: false },
-        loadTurnInputsFn: loadTurnInputsFn as never,
-        provider: "grok",
-        reloadConfigFn: (async () => ({ reloaded: false })) as never,
-        runTurnFn: fakeRunTurn as never,
-      });
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const step = await iter.next();
-        if (step.done) break;
+    await withRunSingleTurnRuntime(async () => {
+      for (let i = 0; i < 2; i++) {
+        const iter = runSingleTurn({
+          session: { emit: vi.fn() } as never,
+          ctx,
+          input: `t${i}`,
+          configStore: store,
+          configReloadLatch: { requested: false },
+          loadTurnInputsFn: loadTurnInputsFn as never,
+          provider: "grok",
+          reloadConfigFn: (async () => ({ reloaded: false })) as never,
+          runTurnFn: fakeRunTurn as never,
+        });
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const step = await iter.next();
+          if (step.done) break;
+        }
       }
-    }
+    });
 
     expect(loadTurnInputsFn).toHaveBeenCalledTimes(2);
     expect(prompts[0]).not.toContain("PROJECT-ONE");
@@ -1622,7 +1666,9 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
       assembleSystemPromptFn: (async () => ({ text: "SYS" })) as never,
       runTurnFn: runTurnFn as never,
     });
-    for await (const ev of iter) collected.push(ev);
+    await withRunSingleTurnRuntime(async () => {
+      for await (const ev of iter) collected.push(ev);
+    });
     expect(collected).toEqual(events);
   });
 });
@@ -1731,6 +1777,7 @@ describe("main() smoke", () => {
     process.env.AGENC_WORKSPACE = tmpCwd;
     process.env.AGENC_PROVIDER = "openai";
     process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
+    process.env.AGENC_ALLOW_UNTRUSTED_HOOKS = "true";
     process.env.AGENC_CLI_ENTRY_DISABLE = "1";
     const daemon = installDaemonCliDepsForTest({
       agentId: "agent_slash",
@@ -1774,6 +1821,9 @@ describe("main() smoke", () => {
           objective: "/help\nextra",
           instructions: "/help\nextra",
           cwd: tmpCwd,
+          runtimeOptions: expect.objectContaining({
+            allowUntrustedHooks: true,
+          }),
           metadata: { source: "agenc.prompt", mode: "one-shot" },
         }),
       });
@@ -2071,6 +2121,222 @@ describe("main() smoke", () => {
     }
   });
 
+  it("oneShotCLI cancels an attached daemon run when no terminal event arrives", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-signal-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-signal-cwd-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+
+    const agentId = "agent_signal";
+    const sessionId = "session_signal";
+    const daemon = installDaemonCliDepsForTest({
+      agentId,
+      sessionId,
+      cwd: tmpCwd,
+      oneShotEvents: [],
+    });
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      const existingSigintListeners = new Set(process.listeners("SIGINT"));
+      const run = oneShotCLI("wait for a daemon answer");
+      const oneShotSigintListener = await waitForValue(
+        "one-shot SIGINT listener",
+        () =>
+          process
+            .listeners("SIGINT")
+            .find((listener) => !existingSigintListeners.has(listener)) as
+            | (() => void)
+            | undefined,
+      );
+      const subscription = await waitForValue(
+        "one-shot session subscription",
+        () =>
+          daemon.client.subscribeToSessionEvents.mock.calls[0] as
+            | [string, (event: unknown) => void]
+            | undefined,
+      );
+
+      oneShotSigintListener();
+      const timeout = new Promise<"timeout">((resolve) => {
+        timeoutId = setTimeout(() => resolve("timeout"), 2_000);
+      });
+      const result = await Promise.race([run, timeout]);
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+
+      // Let the pre-fix implementation unwind after a revert-sensitive
+      // timeout instead of leaving its daemon wait alive in the test process.
+      if (result === "timeout") {
+        subscription[1]({
+          method: "event.agent_status",
+          params: {
+            sessionId,
+            eventId: "cleanup_after_signal_timeout",
+            agentId,
+            status: "idle",
+            runStatus: "completed",
+          },
+        });
+        await run;
+      }
+
+      expect(result).toBe(130);
+      expect(
+        daemon.requests.slice(0, 2).map(({ method }) => method),
+      ).toEqual(["agent.create", "agent.attach"]);
+      expect(
+        daemon.requests.filter(({ method }) => method === "agent.stop"),
+      ).toEqual([
+        {
+          method: "agent.stop",
+          params: {
+            agentId,
+            reason: "one_shot_cancelled",
+          },
+        },
+      ]);
+      expect(daemon.client.close).toHaveBeenCalledOnce();
+      expect(daemon.stopPromptAgent).not.toHaveBeenCalled();
+      expect(process.listeners("SIGINT")).not.toContain(oneShotSigintListener);
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      stdoutSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("oneShotCLI cancels an attached daemon run when stdout closes", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-epipe-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-epipe-cwd-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+
+    const agentId = "agent_epipe";
+    const sessionId = "session_epipe";
+    const daemon = installDaemonCliDepsForTest({
+      agentId,
+      sessionId,
+      cwd: tmpCwd,
+      oneShotEvents: [],
+    });
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    const destroySpy = vi
+      .spyOn(process.stdout, "destroy")
+      .mockImplementation(() => process.stdout);
+    const exitSpy = vi
+      .spyOn(process, "exit")
+      .mockImplementation((() => undefined) as never);
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      const run = oneShotCLI("wait for a daemon answer");
+      const subscription = await waitForValue(
+        "one-shot session subscription",
+        () =>
+          daemon.client.subscribeToSessionEvents.mock.calls[0] as
+            | [string, (event: unknown) => void]
+            | undefined,
+      );
+      const handlerState = Symbol.for(
+        "agenc.process-output-error-handler.state.v1",
+      );
+      const outputErrorHandler = process.stdout
+        .listeners("error")
+        .find((listener) => Reflect.get(listener, handlerState) !== undefined);
+
+      // Let the pre-fix implementation unwind instead of leaking its daemon
+      // wait when the canonical output handler is absent or fails to abort it.
+      if (outputErrorHandler === undefined) {
+        subscription[1]({
+          method: "event.agent_status",
+          params: {
+            sessionId,
+            eventId: "cleanup_after_missing_epipe_handler",
+            agentId,
+            status: "idle",
+            runStatus: "completed",
+          },
+        });
+        await run;
+      }
+      expect(outputErrorHandler).toBeDefined();
+      if (outputErrorHandler === undefined) return;
+
+      outputErrorHandler(
+        Object.assign(new Error("write EPIPE"), { code: "EPIPE" }),
+      );
+      const timeout = new Promise<"timeout">((resolve) => {
+        timeoutId = setTimeout(() => resolve("timeout"), 2_000);
+      });
+      const result = await Promise.race([run, timeout]);
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+
+      if (result === "timeout") {
+        subscription[1]({
+          method: "event.agent_status",
+          params: {
+            sessionId,
+            eventId: "cleanup_after_epipe_timeout",
+            agentId,
+            status: "idle",
+            runStatus: "completed",
+          },
+        });
+        await run;
+      }
+
+      expect(result).toBe(0);
+      expect(destroySpy).toHaveBeenCalledOnce();
+      expect(
+        daemon.requests.filter(({ method }) => method === "agent.stop"),
+      ).toEqual([
+        {
+          method: "agent.stop",
+          params: {
+            agentId,
+            reason: "one_shot_cancelled",
+          },
+        },
+      ]);
+      expect(daemon.client.close).toHaveBeenCalledOnce();
+      expect(daemon.stopPromptAgent).not.toHaveBeenCalled();
+      expect(exitSpy).not.toHaveBeenCalled();
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      exitSpy.mockRestore();
+      destroySpy.mockRestore();
+      stdoutSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
   it("oneShotCLI writes a single final JSON object for --output-format json", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-json-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-json-cwd-"));
@@ -2138,7 +2404,6 @@ describe("main() smoke", () => {
         finalMessage: string;
         deniedPermissionRequestIds: unknown[];
         tokenUsage: unknown;
-        cacheStats: unknown;
         events: unknown[];
       };
       expect(result).toMatchObject({
@@ -2154,10 +2419,6 @@ describe("main() smoke", () => {
         outputTokens: 3,
         totalTokens: 13,
         costUsd: 0.001,
-      });
-      expect(result.cacheStats).toMatchObject({
-        requestCount: 1,
-        hitRate: null,
       });
       expect(result.events).toHaveLength(2);
     } finally {
@@ -2264,10 +2525,6 @@ describe("main() smoke", () => {
           totalTokens: 13,
           costUsd: 0.001,
         },
-        cacheStats: {
-          requestCount: 1,
-          hitRate: null,
-        },
       });
     } finally {
       process.argv = prevArgv;
@@ -2362,7 +2619,7 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI forwards --permission-mode acceptEdits to agent.create", async () => {
-    // PART A regression: the print path previously forwarded only --yolo/bypass
+    // PART A regression: the print path previously forwarded only --dangerously-bypass-approvals-and-sandbox/bypass
     // and silently dropped --permission-mode acceptEdits/plan/default. The
     // validated mode must reach agent.create so the daemon honors it (the
     // unattended policy preserves acceptEdits/plan rather than forcing
@@ -2425,7 +2682,7 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI keeps bypassPermissions precedence over --permission-mode", async () => {
-    // --yolo must still win: when both --yolo and --permission-mode acceptEdits
+    // --dangerously-bypass-approvals-and-sandbox must still win: when both --dangerously-bypass-approvals-and-sandbox and --permission-mode acceptEdits
     // are present, the forwarded mode is bypassPermissions (no posture
     // weakening of the existing yolo path).
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-yolo-home-"));
@@ -2442,7 +2699,7 @@ describe("main() smoke", () => {
       "/usr/bin/node",
       "/opt/agenc/bin/agenc.js",
       "--print",
-      "--yolo",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--permission-mode",
       "acceptEdits",
       "do a thing",
@@ -2500,7 +2757,7 @@ describe("main() smoke", () => {
       "/usr/bin/node",
       "/opt/agenc/bin/agenc.js",
       "explain",
-      "--yolo",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--permission-mode",
       "bypassPermissions",
     ];
@@ -2517,7 +2774,7 @@ describe("main() smoke", () => {
     try {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       await expect(
-        oneShotCLI("explain --yolo --permission-mode bypassPermissions"),
+        oneShotCLI("explain --dangerously-bypass-approvals-and-sandbox --permission-mode bypassPermissions"),
       ).resolves.toBe(0);
       const createCall = daemon.requests.find(
         (request) => request.method === "agent.create",
@@ -2612,18 +2869,20 @@ describe("main() smoke", () => {
     process.argv = [
       "node",
       "agenc",
+      "--config",
+      "ambient-missing.toml",
       "--provider",
-      "grok",
-      "--model",
-      "grok-4.3",
-      "--permission-mode",
-      "plan",
+      "openai",
     ];
     process.env.AGENC_HOME = tmpHome;
     process.env.AGENC_WORKSPACE = tmpCwd;
     process.env.XAI_API_KEY = "stub-key-for-test";
     process.env.AGENC_CLI_ENTRY_DISABLE = "1";
-    const sessionDir = join(getProjectDir(tmpCwd), "sessions", conversationId);
+    const sessionDir = join(
+      getProjectDir(tmpCwd, undefined, tmpHome),
+      "sessions",
+      conversationId,
+    );
     await mkdir(sessionDir, { recursive: true });
     await writeFile(
       join(
@@ -2664,9 +2923,14 @@ describe("main() smoke", () => {
 
     try {
       trustWorkspaceForTest(tmpHome, tmpCwd);
-      await expect(resumeTUIEntry({ resumeId: conversationId })).resolves.toBe(
-        0,
-      );
+      await expect(resumeTUIEntry(
+        { resumeId: conversationId },
+        {
+          provider: "grok",
+          model: "grok-4.3",
+          permissionMode: "plan",
+        },
+      )).resolves.toBe(0);
       expect(daemon.findAgentBySessionId).toHaveBeenCalledWith(
         daemon.client,
         conversationId,
@@ -2709,7 +2973,11 @@ describe("main() smoke", () => {
     process.env.AGENC_HOME = tmpHome;
     process.env.AGENC_WORKSPACE = tmpCwd;
     process.env.AGENC_CLI_ENTRY_DISABLE = "1";
-    const rolloutPath = await writeResumeRolloutForTest(tmpCwd, conversationId);
+    const rolloutPath = await writeResumeRolloutForTest(
+      tmpCwd,
+      conversationId,
+      tmpHome,
+    );
     const rolloutIdentity = await lstat(rolloutPath, { bigint: true });
     const daemon = installDaemonCliDepsForTest({
       agentId: conversationId,
@@ -2753,6 +3021,248 @@ describe("main() smoke", () => {
     }
   });
 
+  it("resumeTUIEntry attaches a matching live agent that wins the cold-resume race", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-raced-resume-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-raced-resume-cwd-"));
+    const prevEnv = { ...process.env };
+    const conversationId = "conv-racedresume1";
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    const rolloutPath = await writeResumeRolloutForTest(
+      tmpCwd,
+      conversationId,
+      tmpHome,
+    );
+    const rolloutIdentity = await lstat(rolloutPath, { bigint: true });
+    const daemon = installDaemonCliDepsForTest({
+      agentId: conversationId,
+      sessionId: conversationId,
+      cwd: tmpCwd,
+      liveAgent: false,
+      resumePromptAgentError: new AgenCDaemonResponseError({
+        code: -32602,
+        message: `canonical session ${conversationId} already has a live daemon agent`,
+        data: { code: "CANONICAL_SESSION_ALREADY_ACTIVE" },
+      }),
+    });
+    daemon.findAgentBySessionId
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        agentId: conversationId,
+        agentPath: "/root",
+        objective: "retained prompt",
+        status: "running",
+        createdAt: "2026-08-19T00:00:00.000Z",
+        cwd: tmpCwd,
+        activeSessionIds: [conversationId],
+        metadata: {
+          agentPath: "/root",
+          canonicalRolloutPath: rolloutPath,
+          canonicalRolloutDev: rolloutIdentity.dev.toString(10),
+          canonicalRolloutIno: rolloutIdentity.ino.toString(10),
+        },
+      });
+    const waitUntilExit = vi.fn().mockResolvedValue(undefined);
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async () => ({
+        unmount: vi.fn(),
+        waitUntilExit,
+      })),
+    }));
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      await expect(resumeTUIEntry({ resumeId: conversationId })).resolves.toBe(
+        0,
+      );
+      expect(daemon.resumePromptAgent).toHaveBeenCalledOnce();
+      expect(daemon.findAgentBySessionId).toHaveBeenCalledTimes(2);
+      expect(daemon.requests).toContainEqual({
+        method: "agent.attach",
+        params: expect.objectContaining({ agentId: conversationId }),
+      });
+      expect(waitUntilExit).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      label: "different resume authority",
+      error: new AgenCDaemonResponseError({
+        code: -32602,
+        message: "canonical session is already being resumed with different authority",
+        data: { code: "INVALID_ARGUMENT" },
+      }),
+    },
+    {
+      label: "an unrelated restore failure",
+      error: new Error("restore failed after bootstrap"),
+    },
+  ])(
+    "resumeTUIEntry does not mask $label when a live agent appears",
+    async ({ error }) => {
+      const tmpHome = await mkdtemp(join(tmpdir(), "agenc-race-deny-home-"));
+      const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-race-deny-cwd-"));
+      const prevEnv = { ...process.env };
+      const conversationId = "conv-racedenied1";
+      process.env.AGENC_HOME = tmpHome;
+      process.env.AGENC_WORKSPACE = tmpCwd;
+      process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+      const rolloutPath = await writeResumeRolloutForTest(
+        tmpCwd,
+        conversationId,
+        tmpHome,
+      );
+      const rolloutIdentity = await lstat(rolloutPath, { bigint: true });
+      const daemon = installDaemonCliDepsForTest({
+        agentId: conversationId,
+        sessionId: conversationId,
+        cwd: tmpCwd,
+        liveAgent: false,
+        resumePromptAgentError: error,
+      });
+      daemon.findAgentBySessionId
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          agentId: conversationId,
+          agentPath: "/root",
+          objective: "retained prompt",
+          status: "running",
+          createdAt: "2026-08-19T00:00:00.000Z",
+          cwd: tmpCwd,
+          activeSessionIds: [conversationId],
+          metadata: {
+            agentPath: "/root",
+            canonicalRolloutPath: rolloutPath,
+            canonicalRolloutDev: rolloutIdentity.dev.toString(10),
+            canonicalRolloutIno: rolloutIdentity.ino.toString(10),
+          },
+        });
+      const stderrSpy = vi
+        .spyOn(process.stderr, "write")
+        .mockImplementation(() => true);
+
+      try {
+        trustWorkspaceForTest(tmpHome, tmpCwd);
+        await expect(
+          resumeTUIEntry({ resumeId: conversationId }),
+        ).resolves.toBe(1);
+        expect(daemon.resumePromptAgent).toHaveBeenCalledOnce();
+        expect(daemon.findAgentBySessionId).toHaveBeenCalledOnce();
+        expect(daemon.requests).not.toContainEqual(
+          expect.objectContaining({ method: "agent.attach" }),
+        );
+        expect(stderrSpy).toHaveBeenCalledWith(
+          expect.stringContaining(error.message),
+        );
+      } finally {
+        stderrSpy.mockRestore();
+        for (const key of Object.keys(process.env)) {
+          if (!(key in prevEnv)) delete process.env[key];
+        }
+        Object.assign(process.env, prevEnv);
+        await rm(tmpHome, { recursive: true, force: true });
+        await rm(tmpCwd, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("attach binds local TUI work to the daemon session runtime options", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-bare-attach-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-bare-attach-cwd-"));
+    const prevEnv = { ...process.env };
+    const runtimeOptions = resolveAgentRuntimeOptions({}, { simpleMode: true });
+    const daemon = installDaemonCliDepsForTest({
+      agentId: "agent_bare_attach",
+      sessionId: "session_bare_attach",
+      cwd: tmpCwd,
+      runtimeOptions,
+    });
+    const observedBareMode: boolean[] = [];
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async () => {
+        observedBareMode.push(isBareMode());
+        return {
+          unmount: vi.fn(),
+          waitUntilExit: async () => {
+            observedBareMode.push(isBareMode());
+          },
+        };
+      }),
+    }));
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      await expect(
+        attachAgentTuiEntry({
+          agentId: "agent_bare_attach",
+          clientId: "client_bare_attach",
+          env: {
+            AGENC_HOME: tmpHome,
+            AGENC_WORKSPACE: tmpCwd,
+            HOME: tmpHome,
+          },
+        }),
+      ).resolves.toBe(0);
+      expect(daemon.createTuiContext).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtimeOptions,
+          runtimeSettings: expect.objectContaining({
+            permissionMode: "default",
+            model: "grok-4.3",
+            provider: "grok",
+          }),
+        }),
+      );
+      expect(observedBareMode).toEqual([true, true]);
+      await expect(
+        attachAgentTuiEntry({
+          agentId: "agent_bare_attach",
+          clientId: "client_conflicting_attach",
+          env: {
+            AGENC_HOME: tmpHome,
+            AGENC_WORKSPACE: tmpCwd,
+            HOME: tmpHome,
+          },
+          runtimeOptions: resolveAgentRuntimeOptions({}),
+        }),
+      ).rejects.toThrow("runtime options disagree");
+      expect(daemon.createTuiContext).toHaveBeenCalledOnce();
+      await expect(
+        attachAgentTuiEntry({
+          agentId: "agent_bare_attach",
+          clientId: "client_provider_conflicting_attach",
+          env: {
+            AGENC_HOME: tmpHome,
+            AGENC_WORKSPACE: tmpCwd,
+            HOME: tmpHome,
+          },
+          startupCliFlags: { provider: "openai" },
+        }),
+      ).rejects.toThrow(
+        "attach-time provider openai disagrees with live daemon provider grok",
+      );
+      expect(daemon.createTuiContext).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
   it("main --resume trusts only the resolved target workspace", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-resume-trust-home-"));
     const currentCwd = await mkdtemp(join(tmpdir(), "agenc-resume-current-"));
@@ -2777,9 +3287,12 @@ describe("main() smoke", () => {
       configurable: true,
       value: true,
     });
+    await mkdir(join(currentCwd, ".git"));
+    await mkdir(join(targetCwd, ".git"));
     const rolloutPath = await writeResumeRolloutForTest(
       targetCwd,
       conversationId,
+      tmpHome,
     );
     const rolloutIdentity = await lstat(rolloutPath, { bigint: true });
     trustWorkspaceForTest(tmpHome, targetCwd);
@@ -2865,7 +3378,11 @@ describe("main() smoke", () => {
     process.env.AGENC_HOME = tmpHome;
     process.env.AGENC_WORKSPACE = tmpCwd;
     process.env.AGENC_CLI_ENTRY_DISABLE = "1";
-    const rolloutPath = await writeResumeRolloutForTest(tmpCwd, conversationId);
+    const rolloutPath = await writeResumeRolloutForTest(
+      tmpCwd,
+      conversationId,
+      tmpHome,
+    );
     const daemon = installDaemonCliDepsForTest({
       agentId: conversationId,
       sessionId: conversationId,
@@ -2915,7 +3432,7 @@ describe("main() smoke", () => {
     process.env.AGENC_HOME = tmpHome;
     process.env.AGENC_WORKSPACE = tmpCwd;
     process.env.AGENC_CLI_ENTRY_DISABLE = "1";
-    await writeResumeRolloutForTest(tmpCwd, conversationId);
+    await writeResumeRolloutForTest(tmpCwd, conversationId, tmpHome);
     const daemon = installDaemonCliDepsForTest({
       agentId: conversationId,
       sessionId: conversationId,
@@ -3058,10 +3575,14 @@ describe("main() smoke", () => {
   it("bootTUIEntry opens an idle daemon-backed TUI without starting a prompt agent", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-idle-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-idle-cwd-"));
+    const sessionTempRoot = await mkdtemp(
+      join(tmpdir(), "agenc-tui-idle-session-temp-"),
+    );
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
     process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_TMPDIR = sessionTempRoot;
     process.env.XAI_API_KEY = "stub-key-for-test";
     process.env.AGENC_CLI_ENTRY_DISABLE = "1";
     const daemon = installDaemonCliDepsForTest({
@@ -3070,10 +3591,17 @@ describe("main() smoke", () => {
       cwd: tmpCwd,
     });
 
-    const waitUntilExit = vi.fn().mockResolvedValue(undefined);
+    const observedTempRoots: string[] = [];
+    const waitUntilExit = vi.fn(async () => {
+      await Promise.resolve();
+      observedTempRoots.push(resolveSessionTempRoot());
+    });
     const unmount = vi.fn();
     vi.doMock("../tui/main.js", () => ({
-      bootTUI: vi.fn(async () => ({ unmount, waitUntilExit })),
+      bootTUI: vi.fn(async () => {
+        observedTempRoots.push(resolveSessionTempRoot());
+        return { unmount, waitUntilExit };
+      }),
     }));
 
     try {
@@ -3084,6 +3612,7 @@ describe("main() smoke", () => {
       expect(daemon.createConnectedTuiClient).not.toHaveBeenCalled();
       expect(daemon.requests).toEqual([]);
       expect(waitUntilExit).toHaveBeenCalledTimes(1);
+      expect(observedTempRoots).toEqual([sessionTempRoot, sessionTempRoot]);
     } finally {
       vi.doUnmock("../tui/main.js");
       for (const key of Object.keys(process.env)) {
@@ -3092,6 +3621,7 @@ describe("main() smoke", () => {
       Object.assign(process.env, prevEnv);
       await rm(tmpHome, { recursive: true, force: true });
       await rm(tmpCwd, { recursive: true, force: true });
+      await rm(sessionTempRoot, { recursive: true, force: true });
     }
   });
 
@@ -3209,6 +3739,7 @@ describe("main() smoke", () => {
       );
       expect(daemon.requests.map((request) => request.method)).toEqual([
         "agent.attach",
+        "session.mcp.status",
       ]);
     } finally {
       vi.doUnmock("../tui/main.js");
@@ -3281,9 +3812,10 @@ describe("main() smoke", () => {
       expect(code).toBe(0);
       expect(daemon.requests.map((request) => request.method)).toEqual([
         "agent.attach",
+        "session.mcp.status",
         "session.cancelTurn",
       ]);
-      expect(daemon.requests.at(1)?.params).toEqual({
+      expect(daemon.requests.at(2)?.params).toEqual({
         sessionId: "session_tui_cancel",
         reason: "interrupted",
       });
@@ -3377,8 +3909,10 @@ describe("main() smoke", () => {
       );
       expect(daemon.requests.map((request) => request.method)).toEqual([
         "agent.attach",
+        "session.mcp.status",
         "message.stream",
         "agent.attach",
+        "session.mcp.status",
       ]);
       expect(daemon.createConnectedTuiClient).toHaveBeenCalledTimes(2);
       expect(daemon.client.close).toHaveBeenCalled();
@@ -3394,7 +3928,7 @@ describe("main() smoke", () => {
     }
   });
 
-  it("bootTUIEntry carries pre-start /mcp additions into the daemon prompt agent", async () => {
+  it("bootTUIEntry never serializes MCP configuration into daemon env", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-mcp-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-mcp-cwd-"));
     const prevArgv = process.argv;
@@ -3461,7 +3995,7 @@ describe("main() smoke", () => {
       expect(code).toBe(0);
       const env = daemon.startPromptAgent.mock.calls[0]?.[0].env as
         NodeJS.ProcessEnv | undefined;
-      expect(env?.AGENC_MCP_SERVERS).toBe(JSON.stringify([mcpConfig]));
+      expect(env).not.toHaveProperty("AGENC_MCP_SERVERS");
     } finally {
       vi.doUnmock("../tui/main.js");
       for (const key of Object.keys(process.env)) {
@@ -3568,7 +4102,7 @@ describe("main() smoke", () => {
       );
       const prevArgv = process.argv;
       const prevEnv = { ...process.env };
-      process.argv = ["node", "agenc", "--provider", "xai"];
+      process.argv = ["node", "agenc", "--provider", "grok"];
       process.env.HOME = tmpHome;
       process.env.USERPROFILE = tmpHome;
       process.env.AGENC_HOME = tmpHome;
@@ -3872,7 +4406,7 @@ describe("main() smoke", () => {
       label: "after the positional prompt begins",
       argv: [
         "literal prompt",
-        "--yolo",
+        "--dangerously-bypass-approvals-and-sandbox",
         "--permission-mode",
         "bypassPermissions",
         "--provider",
@@ -3883,14 +4417,14 @@ describe("main() smoke", () => {
         "--version",
       ],
       expectedPrompt:
-        "literal prompt --yolo --permission-mode bypassPermissions --provider openai --model gpt-5 --help --version",
+        "literal prompt --dangerously-bypass-approvals-and-sandbox --permission-mode bypassPermissions --provider openai --model gpt-5 --help --version",
     },
     {
       label: "after the end-of-options delimiter",
       argv: [
         "--",
         "literal prompt",
-        "--yolo",
+        "--dangerously-bypass-approvals-and-sandbox",
         "--permission-mode",
         "bypassPermissions",
         "--provider",
@@ -3901,7 +4435,7 @@ describe("main() smoke", () => {
         "--version",
       ],
       expectedPrompt:
-        "literal prompt --yolo --permission-mode bypassPermissions --provider openai --model gpt-5 --help --version",
+        "literal prompt --dangerously-bypass-approvals-and-sandbox --permission-mode bypassPermissions --provider openai --model gpt-5 --help --version",
     },
   ])(
     "main keeps startup-looking tokens literal $label",

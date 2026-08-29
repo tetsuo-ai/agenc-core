@@ -52,12 +52,12 @@ describe("token budget prompt text", () => {
 
   test("copied system prompt path uses the shared prompt section", () => {
     const source = readFileSync(
-      sourceUrl("constants/prompts.ts"),
+      sourceUrl("prompts/system-prompt.ts"),
       "utf8",
     );
 
     expect(source).toContain("getTokenBudgetPromptSection");
-    expect(source).toContain("'token_budget'");
+    expect(source).toContain('"token_budget"');
     expect(source).toContain("() => getTokenBudgetPromptSection()");
   });
 });

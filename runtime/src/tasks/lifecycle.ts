@@ -187,6 +187,10 @@ export class BackgroundTaskLifecycle {
   private readonly aliases = new Map<string, string>();
   private readonly outputs = new Map<string, OutputBuffer>();
   private readonly notifications: BackgroundTaskNotification[] = [];
+  private readonly snapshotListeners = new Map<
+    string,
+    Set<(snapshot: BackgroundTaskSnapshot) => void>
+  >();
 
   register(input: RegisterBackgroundTaskInput): BackgroundTaskSnapshot {
     const id = input.id ?? generateBackgroundTaskId(input.type);
@@ -250,6 +254,22 @@ export class BackgroundTaskLifecycle {
     return this.list().filter((task) => task.status === "running");
   }
 
+  /** Observe the canonical snapshot stream for an already-registered task. */
+  subscribe(
+    taskId: string,
+    listener: (snapshot: BackgroundTaskSnapshot) => void,
+  ): () => void {
+    const record = this.requireTask(taskId);
+    const listeners = this.snapshotListeners.get(record.id) ?? new Set();
+    listeners.add(listener);
+    this.snapshotListeners.set(record.id, listeners);
+    return () => {
+      const current = this.snapshotListeners.get(record.id);
+      current?.delete(listener);
+      if (current?.size === 0) this.snapshotListeners.delete(record.id);
+    };
+  }
+
   appendOutput(taskId: string, chunk: string): BackgroundTaskSnapshot {
     const record = this.requireTask(taskId);
     const output = this.outputs.get(record.id) ?? { content: "", totalBytes: 0 };
@@ -262,7 +282,7 @@ export class BackgroundTaskLifecycle {
     output.totalBytes += Buffer.byteLength(chunk, "utf8");
     this.outputs.set(record.id, output);
     this.pushNotification("progress", record, `Task "${record.description}" produced output`, chunk);
-    return this.snapshot(record);
+    return this.publish(record);
   }
 
   readOutput(taskId: string): string {
@@ -286,7 +306,7 @@ export class BackgroundTaskLifecycle {
         record.metadata = { ...(record.metadata ?? {}), ...metadata };
       }
     }
-    return this.snapshot(record);
+    return this.publish(record);
   }
 
   updateAgentProgress(taskId: string, progress: AgentProgress): BackgroundTaskSnapshot {
@@ -295,7 +315,7 @@ export class BackgroundTaskLifecycle {
       const summary = record.progress?.summary;
       record.progress = summary ? { ...progress, summary } : progress;
     }
-    return this.snapshot(record);
+    return this.publish(record);
   }
 
   updateAgentSummary(taskId: string, summary: string): BackgroundTaskSnapshot {
@@ -313,7 +333,7 @@ export class BackgroundTaskLifecycle {
         `Task "${record.description}" summary updated`,
       );
     }
-    return this.snapshot(record);
+    return this.publish(record);
   }
 
   complete(
@@ -339,6 +359,14 @@ export class BackgroundTaskLifecycle {
       metadata,
       error: toErrorMessage(error),
       summaryStatus: "failed",
+    });
+  }
+
+  /** Record an externally observed terminal shutdown without invoking onStop. */
+  kill(taskId: string, reason: string): BackgroundTaskSnapshot {
+    return this.finish(taskId, "killed", {
+      error: reason,
+      summaryStatus: "was stopped",
     });
   }
 
@@ -477,7 +505,7 @@ export class BackgroundTaskLifecycle {
       `Task "${record.description}" ${params.summaryStatus}`,
     );
     this.evictOldTerminalTasks();
-    return this.snapshot(record);
+    return this.publish(record);
   }
 
   private evictOldTerminalTasks(): void {
@@ -506,6 +534,7 @@ export class BackgroundTaskLifecycle {
   private deleteTaskRecord(taskId: string): void {
     this.tasks.delete(taskId);
     this.outputs.delete(taskId);
+    this.snapshotListeners.delete(taskId);
     for (const [alias, targetId] of this.aliases) {
       if (targetId === taskId || alias === taskId) {
         this.aliases.delete(alias);
@@ -534,6 +563,14 @@ export class BackgroundTaskLifecycle {
       ...(record.progress !== undefined ? { progress: record.progress } : {}),
       ...(record.error !== undefined ? { error: record.error } : {}),
     };
+  }
+
+  private publish(record: MutableTaskRecord): BackgroundTaskSnapshot {
+    const snapshot = this.snapshot(record);
+    for (const listener of this.snapshotListeners.get(record.id) ?? []) {
+      listener(snapshot);
+    }
+    return snapshot;
   }
 
   private pushNotification(

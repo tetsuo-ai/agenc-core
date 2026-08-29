@@ -9,12 +9,8 @@
  *     is granted through AgenC's internal session allowed-roots argument.
  */
 
-import {
-  mkdir,
-  open,
-  writeFile,
-} from "node:fs/promises";
-import { dirname, sep } from "node:path";
+import { mkdir, open, writeFile } from "node:fs/promises";
+import { dirname, resolve, sep } from "node:path";
 
 import type { LiveAgent } from "../../agents/control.js";
 import { ROOT_AGENT_PATH } from "../../agents/registry.js";
@@ -25,9 +21,8 @@ import type {
 import type { LLMMessage } from "../../llm/types.js";
 import { AdmissionDeniedError } from "../../budget/admission-client.js";
 import { runAdmittedToolCall } from "../../budget/admitted-tool-call.js";
-import {
-  cloneLlmMessageSnapshot as cloneMessage,
-} from "../../llm/content-conversion.js";
+import { isHookExecutionSuppressed } from "../../hooks/runtime-policy.js";
+import { cloneLlmMessageSnapshot as cloneMessage } from "../../llm/content-conversion.js";
 import { roughTokenCountEstimationForMessages } from "../../llm/token-estimation.js";
 import type { Session } from "../../session/session.js";
 import { FILE_EDIT_TOOL_NAME } from "../../tools/system/file-edit.js";
@@ -40,7 +35,10 @@ import {
 } from "../../tools/system/filesystem.js";
 import { withSignedSessionId } from "../../agents/_deps/filesystem-args.js";
 import type { Tool } from "../../tools/types.js";
-import { buildSessionMemoryUpdatePrompt, loadSessionMemoryTemplate } from "./prompts.js";
+import {
+  buildSessionMemoryUpdatePrompt,
+  loadSessionMemoryTemplate,
+} from "./prompts.js";
 import {
   createSessionMemoryState,
   getLastSummarizedMessageCount,
@@ -88,7 +86,9 @@ const SESSION_MEMORY_SETUP_TOOL = {
     maxCostUsd: 0,
   }),
   execute: async () => {
-    throw new Error(`${SESSION_MEMORY_SETUP_TOOL_NAME} is an internal boundary`);
+    throw new Error(
+      `${SESSION_MEMORY_SETUP_TOOL_NAME} is an internal boundary`,
+    );
   },
 } satisfies Tool;
 
@@ -255,12 +255,15 @@ export function shouldExtractMemory(
 }
 
 function laneKeyForContext(context: SessionMemoryPostSamplingContext): string {
-  const sessionId = context.session?.conversationId ?? context.sessionId ?? "default";
+  const sessionId =
+    context.session?.conversationId ?? context.sessionId ?? "default";
   const cwd = context.cwd ?? cwdForSession(context.session);
   return `${sessionId}\0${cwd}`;
 }
 
-function laneForContext(context: SessionMemoryPostSamplingContext): SessionMemoryLane {
+function laneForContext(
+  context: SessionMemoryPostSamplingContext,
+): SessionMemoryLane {
   const key = laneKeyForContext(context);
   const existing = lanes.get(key);
   if (existing) {
@@ -300,9 +303,11 @@ function cwdForSession(session: Session | undefined): string {
 function pathOptionsForContext(
   context: SessionMemoryPostSamplingContext,
 ): SessionMemorySetupOptions {
+  const configHomeDir = context.session?.services.configStore?.homeContext.path;
   return {
     cwd: context.cwd ?? cwdForSession(context.session),
     ...(context.env !== undefined ? { env: context.env } : {}),
+    ...(configHomeDir !== undefined ? { configHomeDir } : {}),
     ...(context.signal !== undefined ? { signal: context.signal } : {}),
   };
 }
@@ -339,8 +344,10 @@ export function createSessionMemoryEditPolicy(
   };
 }
 
-export interface SessionMemorySetupOptions
-  extends Omit<SessionMemoryPathOptions, "sessionId"> {
+export interface SessionMemorySetupOptions extends Omit<
+  SessionMemoryPathOptions,
+  "sessionId"
+> {
   readonly signal?: AbortSignal;
 }
 
@@ -354,10 +361,25 @@ export async function setupSessionMemoryFile(
   readonly currentMemoryMtimeMs: number;
 }> {
   if (session === undefined || session === null) {
-    throw new AdmissionDeniedError("session_memory_admission_session_unavailable");
+    throw new AdmissionDeniedError(
+      "session_memory_admission_session_unavailable",
+    );
+  }
+  const boundHome = session.services.configStore?.homeContext.path;
+  if (
+    boundHome !== undefined &&
+    options.configHomeDir !== undefined &&
+    resolve(options.configHomeDir) !== boundHome
+  ) {
+    throw new AdmissionDeniedError("session_memory_config_home_mismatch");
+  }
+  const configHomeDir = boundHome ?? options.configHomeDir;
+  if (configHomeDir === undefined) {
+    throw new AdmissionDeniedError("session_memory_config_home_unavailable");
   }
   const pathOptions: SessionMemoryPathOptions = {
     ...options,
+    configHomeDir,
     sessionId: session.conversationId,
   };
   const memoryDir = resolveSessionMemoryDirectory(pathOptions);
@@ -389,12 +411,16 @@ export async function setupSessionMemoryFile(
       signal.throwIfAborted();
 
       try {
-        await writeFile(memoryPath, await loadSessionMemoryTemplate(signal), {
-          encoding: "utf8",
-          mode: 0o600,
-          flag: "wx",
-          signal,
-        });
+        await writeFile(
+          memoryPath,
+          await loadSessionMemoryTemplate(configHomeDir, signal),
+          {
+            encoding: "utf8",
+            mode: 0o600,
+            flag: "wx",
+            signal,
+          },
+        );
       } catch (error) {
         if (errnoCode(error) !== "EEXIST") throw error;
       }
@@ -407,10 +433,7 @@ export async function setupSessionMemoryFile(
         maxTextBytes: ONE_MEBIBYTE,
       });
       const readArgs = withSignedAllowedRoots(
-        withSignedSessionId(
-          { file_path: memoryPath },
-          session.conversationId,
-        ),
+        withSignedSessionId({ file_path: memoryPath }, session.conversationId),
         [memoryDir],
       );
       Object.defineProperty(readArgs, "__abortSignal", {
@@ -468,7 +491,9 @@ function buildSessionMemoryInitialMessages(
   ];
 }
 
-async function spawnSessionMemoryLiveAgent(session: Session): Promise<LiveAgent> {
+async function spawnSessionMemoryLiveAgent(
+  session: Session,
+): Promise<LiveAgent> {
   const controlWithSpawn = session.services.agentControl as unknown as {
     spawn?: (opts: {
       readonly parentPath: string;
@@ -553,7 +578,10 @@ async function extractSessionMemory(
   force: boolean,
 ): Promise<ManualExtractionResult | null> {
   if (!context.session) {
-    return { success: false, error: "Session memory extraction requires a live session" };
+    return {
+      success: false,
+      error: "Session memory extraction requires a live session",
+    };
   }
   if (!force && shouldSkipContext(context)) return null;
   if (!force && !shouldExtractMemory(context.messages, lane.state)) return null;
@@ -567,6 +595,7 @@ async function extractSessionMemory(
     const prompt = await buildSessionMemoryUpdatePrompt(
       setup.currentMemory,
       setup.memoryPath,
+      context.session.services.configStore?.homeContext.path,
     );
 
     await sessionMemoryAgentRunner()({
@@ -584,9 +613,15 @@ async function extractSessionMemory(
       ...(context.signal !== undefined ? { signal: context.signal } : {}),
     });
 
-    recordExtractionTokenCount(tokenCountWithEstimation(context.messages), lane.state);
+    recordExtractionTokenCount(
+      tokenCountWithEstimation(context.messages),
+      lane.state,
+    );
     setLastSummarizedMessageCount(context.messages.length, lane.state);
-    setLastSummarizedMessageId(messageCountMarker(context.messages), lane.state);
+    setLastSummarizedMessageId(
+      messageCountMarker(context.messages),
+      lane.state,
+    );
 
     return { success: true, memoryPath: setup.memoryPath };
   } catch (error) {
@@ -602,6 +637,11 @@ async function extractSessionMemory(
 export function runSessionMemoryPostSamplingHook(
   context: SessionMemoryPostSamplingContext,
 ): Promise<void> {
+  if (
+    isHookExecutionSuppressed(context.session?.services.runtimeOptions)
+  ) {
+    return Promise.resolve();
+  }
   const lane = laneForContext(context);
   lane.pending += 1;
   lane.queue = lane.queue.then(

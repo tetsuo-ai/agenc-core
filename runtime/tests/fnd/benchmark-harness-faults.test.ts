@@ -24,10 +24,12 @@ import { describe, expect, test } from "vitest";
 import { publishBenchmarkArtifacts } from "../../benchmarks/fnd/artifact-output.mjs";
 import { readBoundedRegularFile } from "../../benchmarks/fnd/bounded-file.mjs";
 import {
+  BENCHMARK_PLAN,
   BENCHMARK_WORKER_COMPLETION_PREFIX,
   normalizeResourceUsageMaxRssBytes,
   summarizeSamples,
 } from "../../benchmarks/fnd/contract.mjs";
+import { formatBoundedDiagnostic } from "../../benchmarks/fnd/diagnostic.mjs";
 import {
   assertBenchmarkWorkerEnvironment,
   assertNoBenchmarkExecArguments,
@@ -39,11 +41,17 @@ import {
 import {
   assertNoBenchmarkControlsAtOrAbove,
   cleanupOwnedTemporaryRoot,
+  OWNED_TEMPORARY_ROOT_PREFIX,
   retainedOwnedTemporaryRootPath,
   validateOwnedTemporaryRootPath,
   withOwnedTemporaryRoot,
 } from "../../benchmarks/fnd/isolation.mjs";
 import { PRODUCTION_MODULE_RECORD_PREFIX } from "../../benchmarks/fnd/module-closure.mjs";
+import {
+  JSONC_PARSER_ESM_ENTRY,
+  JSONC_PARSER_NODE_ADAPTER_URL,
+  resolveBenchmarkModuleCompatibility,
+} from "../../benchmarks/fnd/module-compatibility.mjs";
 import {
   assertBindingsStable,
   bindProductionModuleClosures,
@@ -67,6 +75,13 @@ import {
 const RUNTIME_ROOT = join(import.meta.dirname, "../..");
 const RUNNER_PATH = join(RUNTIME_ROOT, "benchmarks/fnd/run-baselines.mjs");
 const CASE_WORKER_PATH = join(RUNTIME_ROOT, "benchmarks/fnd/case-worker.mjs");
+const COMPLETED_BENCHMARK_CASES = BENCHMARK_PLAN.cases
+  .filter(({ expectedTermination }) => expectedTermination === "completed")
+  .map(({ id: benchmarkCase, timeoutMs }) => ({ benchmarkCase, timeoutMs }));
+const COMPLETED_BENCHMARK_TEST_TIMEOUT_MS =
+  Math.max(...COMPLETED_BENCHMARK_CASES.map(({ timeoutMs }) => timeoutMs)) +
+  CHILD_TERMINATION_SETTLEMENT_TIMEOUT_MS +
+  5_000;
 const NPM_CLI_BOUNDARY_PROBE_TIMEOUT_MS = 15_000;
 // The Windows-native lane runs this fixture alongside process and ACL probes;
 // keep setup bounded while allowing for hosted process-startup contention.
@@ -81,7 +96,105 @@ const FIXTURE_PRODUCTION_SOURCE = [
   "",
 ].join("\n");
 
+function createDarwinStyleAliasedOwnedRoot(parentRoot: string): string {
+  const canonicalTemporaryDirectory = join(parentRoot, "private", "var");
+  const aliasedTemporaryDirectory = join(parentRoot, "var");
+  mkdirSync(canonicalTemporaryDirectory, { recursive: true });
+  symlinkSync(canonicalTemporaryDirectory, aliasedTemporaryDirectory, "dir");
+  return mkdtempSync(
+    join(aliasedTemporaryDirectory, OWNED_TEMPORARY_ROOT_PREFIX),
+  );
+}
+
 describe("FND benchmark harness fault contracts", () => {
+  test("redirects only the exact jsonc-parser ESM entry", () => {
+    const nextResult = { shortCircuit: true, url: "file:///next.mjs" };
+    const context = Object.freeze({ parentURL: import.meta.url });
+    const delegatedSpecifiers: string[] = [];
+    const nextResolve = (specifier: string) => {
+      delegatedSpecifiers.push(specifier);
+      return nextResult;
+    };
+
+    expect(
+      resolveBenchmarkModuleCompatibility(
+        JSONC_PARSER_ESM_ENTRY,
+        context,
+        nextResolve,
+      ),
+    ).toEqual({
+      shortCircuit: true,
+      url: JSONC_PARSER_NODE_ADAPTER_URL,
+    });
+    expect(delegatedSpecifiers).toEqual([]);
+
+    for (const specifier of [
+      "jsonc-parser",
+      "jsonc-parser/lib/esm/main",
+      "jsonc-parser/lib/esm/main.js?query",
+      "jsonc-parser/lib/esm/impl/parser.js",
+    ]) {
+      expect(
+        resolveBenchmarkModuleCompatibility(specifier, context, nextResolve),
+      ).toBe(nextResult);
+    }
+    expect(delegatedSpecifiers).toEqual([
+      "jsonc-parser",
+      "jsonc-parser/lib/esm/main",
+      "jsonc-parser/lib/esm/main.js?query",
+      "jsonc-parser/lib/esm/impl/parser.js",
+    ]);
+  });
+
+  test("retains both ends of one canonical bounded diagnostic", () => {
+    const formatted = formatBoundedDiagnostic(
+      Buffer.from(`  HEAD-${"m".repeat(3_000)}-TAIL  `),
+    );
+    expect(formatted).toHaveLength(2_000);
+    expect(formatted).toMatch(/^HEAD-/u);
+    expect(formatted).toContain("\n…\n");
+    expect(formatted).toMatch(/-TAIL$/u);
+    expect(formatBoundedDiagnostic("  short diagnostic  ")).toBe(
+      "short diagnostic",
+    );
+  });
+
+  test("routes every benchmark diagnostic through the canonical formatter", () => {
+    for (const relativePath of [
+      "benchmarks/fnd/provenance.mjs",
+      "benchmarks/fnd/run-baselines.mjs",
+      "benchmarks/fnd/supervisor.mjs",
+    ]) {
+      const source = readFileSync(join(RUNTIME_ROOT, relativePath), "utf8");
+      expect(source).toContain('from "./diagnostic.mjs"');
+      expect(source).not.toMatch(
+        /function (?:boundedCommandDiagnostic|trimDiagnostic)\b/u,
+      );
+    }
+  });
+
+  test("retains the tail of a failed metadata command diagnostic", () => {
+    const diagnosticTail = "metadata command diagnostic tail";
+    const source = `process.stderr.write(${JSON.stringify(
+      `${"metadata-record\n".repeat(200)}${diagnosticTail}`,
+    )}); process.exit(1);`;
+    let rejection: unknown;
+    try {
+      runBoundedCommandText(process.execPath, ["-e", source], {
+        cwd: RUNTIME_ROOT,
+        label: "diagnostic tail probe",
+        maxOutputBytes: 8_192,
+        timeoutMs: 5_000,
+      });
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toBeInstanceOf(Error);
+    expect((rejection as Error & { cause?: Error }).cause?.message).toContain(
+      diagnosticTail,
+    );
+  });
+
   test("pins median and median absolute deviation semantics independently", () => {
     expect(summarizeSamples([9, 1, 5, 3, 7])).toEqual({
       madMs: 2,
@@ -150,6 +263,7 @@ describe("FND benchmark harness fault contracts", () => {
         process.platform,
         ownedRoot,
       );
+      const canonicalOwnedRoot = realpathSync(ownedRoot);
       expect(workerEnvironment).not.toHaveProperty("AGENC_PRIVATE_TOKEN");
       expect(workerEnvironment).not.toHaveProperty("HOME");
       expect(workerEnvironment).not.toHaveProperty("PATH");
@@ -157,7 +271,7 @@ describe("FND benchmark harness fault contracts", () => {
         assertBenchmarkWorkerEnvironment(workerEnvironment, process.platform),
       ).toThrow(/require an owned temporary root/u);
       for (const name of ["AGENC_HOME", "TEMP", "TMP", "TMPDIR"]) {
-        expect(workerEnvironment[name]).toBe(ownedRoot);
+        expect(workerEnvironment[name]).toBe(canonicalOwnedRoot);
         expect(workerEnvironment[name]).not.toBe(ambientTemporaryRoot);
       }
       expect(() =>
@@ -418,53 +532,60 @@ describe("FND benchmark harness fault contracts", () => {
   }
 
   test("matches the minimal Windows worker allowlist case-insensitively", () => {
-    const ownedRoot = join(tmpdir(), "agenc-fnd-windows-owned-root");
-    const workerEnvironment = createBenchmarkWorkerEnvironment(
-      {
-        cOmSpEc: "C:\\Windows\\System32\\cmd.exe",
-        sYsTeMrOoT: "C:\\Windows",
-        TEMP: "C:\\shared-ambient-temp",
-        wInDiR: "C:\\Windows",
-      },
-      "win32",
-      ownedRoot,
+    const ownedRoot = mkdtempSync(
+      join(tmpdir(), "agenc-fnd-windows-owned-root-"),
     );
-    expect(workerEnvironment.SystemRoot).toBe("C:\\Windows");
-    expect(workerEnvironment).not.toHaveProperty("WINDIR");
-    expect(workerEnvironment).not.toHaveProperty("ComSpec");
+    try {
+      const canonicalOwnedRoot = realpathSync(ownedRoot);
+      const workerEnvironment = createBenchmarkWorkerEnvironment(
+        {
+          cOmSpEc: "C:\\Windows\\System32\\cmd.exe",
+          sYsTeMrOoT: "C:\\Windows",
+          TEMP: "C:\\shared-ambient-temp",
+          wInDiR: "C:\\Windows",
+        },
+        "win32",
+        ownedRoot,
+      );
+      expect(workerEnvironment.SystemRoot).toBe("C:\\Windows");
+      expect(workerEnvironment).not.toHaveProperty("WINDIR");
+      expect(workerEnvironment).not.toHaveProperty("ComSpec");
 
-    const mixedCaseEnvironment = {
-      aGeNc_HoMe: ownedRoot,
-      lAnG: "C",
-      lC_aLl: "C",
-      sYsTeMrOoT: "C:\\Windows",
-      tEmP: ownedRoot,
-      tMp: ownedRoot,
-      tMpDiR: ownedRoot,
-      tSx_DiSaBlE_CaChE: "1",
-      tZ: "UTC",
-    };
-    expect(() =>
-      assertBenchmarkWorkerEnvironment(
-        mixedCaseEnvironment,
-        "win32",
-        ownedRoot,
-      ),
-    ).not.toThrow();
-    expect(() =>
-      assertBenchmarkWorkerEnvironment(
-        { ...mixedCaseEnvironment, PaTh: "C:\\unbound" },
-        "win32",
-        ownedRoot,
-      ),
-    ).toThrow(/unexpected environment: PaTh/u);
-    expect(() =>
-      assertBenchmarkWorkerEnvironment(
-        { ...mixedCaseEnvironment, SYSTEMROOT: "C:\\duplicate" },
-        "win32",
-        ownedRoot,
-      ),
-    ).toThrow(/repeats a case-insensitive name/u);
+      const mixedCaseEnvironment = {
+        aGeNc_HoMe: canonicalOwnedRoot,
+        lAnG: "C",
+        lC_aLl: "C",
+        sYsTeMrOoT: "C:\\Windows",
+        tEmP: canonicalOwnedRoot,
+        tMp: canonicalOwnedRoot,
+        tMpDiR: canonicalOwnedRoot,
+        tSx_DiSaBlE_CaChE: "1",
+        tZ: "UTC",
+      };
+      expect(() =>
+        assertBenchmarkWorkerEnvironment(
+          mixedCaseEnvironment,
+          "win32",
+          ownedRoot,
+        ),
+      ).not.toThrow();
+      expect(() =>
+        assertBenchmarkWorkerEnvironment(
+          { ...mixedCaseEnvironment, PaTh: "C:\\unbound" },
+          "win32",
+          ownedRoot,
+        ),
+      ).toThrow(/unexpected environment: PaTh/u);
+      expect(() =>
+        assertBenchmarkWorkerEnvironment(
+          { ...mixedCaseEnvironment, SYSTEMROOT: "C:\\duplicate" },
+          "win32",
+          ownedRoot,
+        ),
+      ).toThrow(/repeats a case-insensitive name/u);
+    } finally {
+      rmSync(ownedRoot, { force: true, recursive: true });
+    }
   });
 
   test("requires empty Node execArgv", () => {
@@ -933,38 +1054,78 @@ describe("FND benchmark harness fault contracts", () => {
     expect(existsSync(temporaryRoot!)).toBe(false);
   });
 
-  test("holds an authenticated completed worker until contained teardown", async () => {
-    await withOwnedTemporaryRoot(async (ownedRoot) => {
-      const completionNonce = "a".repeat(64);
-      const result = await runBoundedChild({
-        args: [
-          CASE_WORKER_PATH,
-          "--case",
-          "patch_delete_parser_historical_comparison",
-          "--point",
-          "0",
-          "--temporary-root",
-          ownedRoot,
-          "--completion-nonce",
-          completionNonce,
-        ],
-        command: process.execPath,
-        cwd: RUNTIME_ROOT,
-        env: createBenchmarkWorkerEnvironment(
+  test.each(COMPLETED_BENCHMARK_CASES)(
+    "holds an authenticated completed $benchmarkCase worker until contained teardown",
+    async ({ benchmarkCase, timeoutMs }) => {
+      await withOwnedTemporaryRoot(async (ownedRoot) => {
+        const workerRoot =
+          benchmarkCase === "csv_scheduler_progress_scan" &&
+          process.platform !== "win32"
+            ? createDarwinStyleAliasedOwnedRoot(ownedRoot)
+            : ownedRoot;
+        if (workerRoot !== ownedRoot) {
+          expect(realpathSync(workerRoot)).not.toBe(workerRoot);
+        }
+        const workerEnvironment = createBenchmarkWorkerEnvironment(
           process.platform === "win32"
             ? { SystemRoot: process.env.SystemRoot ?? "C:\\Windows" }
             : {},
           process.platform,
-          ownedRoot,
-        ),
-        expectedCompletionRecord: `${BENCHMARK_WORKER_COMPLETION_PREFIX}${completionNonce}`,
-        maxOutputBytes: 1_048_576,
-        timeoutMs: 10_000,
+          workerRoot,
+        );
+        if (workerRoot !== ownedRoot) {
+          const canonicalWorkerRoot = realpathSync(workerRoot);
+          for (const name of ["AGENC_HOME", "TEMP", "TMP", "TMPDIR"]) {
+            expect(workerEnvironment[name]).toBe(canonicalWorkerRoot);
+            expect(workerEnvironment[name]).not.toBe(workerRoot);
+          }
+        }
+        const completionNonce = "a".repeat(64);
+        const result = await runBoundedChild({
+          args: [
+            CASE_WORKER_PATH,
+            "--case",
+            benchmarkCase,
+            "--point",
+            "0",
+            "--temporary-root",
+            workerRoot,
+            "--completion-nonce",
+            completionNonce,
+          ],
+          command: process.execPath,
+          cwd: RUNTIME_ROOT,
+          env: workerEnvironment,
+          expectedCompletionRecord: `${BENCHMARK_WORKER_COMPLETION_PREFIX}${completionNonce}`,
+          maxOutputBytes: 1_048_576,
+          timeoutMs,
+        });
+        expect(result.timedOut).toBe(false);
+        expect(result.exitCode).toBe(0);
+        expect(result.signal).toBeNull();
+        expect(JSON.parse(result.stdout)).toMatchObject({ status: "completed" });
       });
-      expect(result.timedOut).toBe(false);
-      expect(result.exitCode).toBe(0);
-      expect(result.signal).toBeNull();
-      expect(JSON.parse(result.stdout)).toMatchObject({ status: "completed" });
+    },
+    COMPLETED_BENCHMARK_TEST_TIMEOUT_MS,
+  );
+
+  test("rejects overflow after an authenticated record in the same chunk", async () => {
+    await withOwnedTemporaryRoot(async (ownedRoot) => {
+      const completionRecord = `${BENCHMARK_WORKER_COMPLETION_PREFIX}${"b".repeat(64)}`;
+      const source =
+        `process.stderr.write(${JSON.stringify(`${completionRecord}\n${"x".repeat(4_096)}`)});` +
+        "setInterval(() => {}, 1_000);";
+      await expect(
+        runBoundedChild({
+          args: ["-e", source],
+          command: process.execPath,
+          cwd: ownedRoot,
+          env: process.env,
+          expectedCompletionRecord: completionRecord,
+          maxOutputBytes: Buffer.byteLength(completionRecord) + 1,
+          timeoutMs: 5_000,
+        }),
+      ).rejects.toThrow(/bounded output ceiling/u);
     });
   });
 
@@ -1198,6 +1359,24 @@ describe("FND benchmark harness fault contracts", () => {
     expect(terminationAttempts).toBeGreaterThan(0);
   });
 
+  test("rejects completion authentication on the injected controller seam", () => {
+    expect(() =>
+      runBoundedChild({
+        args: ["-e", "process.exit(0)"],
+        command: process.execPath,
+        cwd: RUNTIME_ROOT,
+        env: process.env,
+        expectedCompletionRecord: "complete",
+        maxOutputBytes: 1_024,
+        processTreeController: {
+          isAlive: () => false,
+          terminate: () => {},
+        },
+        timeoutMs: 100,
+      }),
+    ).toThrow(/completion records require production containment/u);
+  });
+
   test("retains the owned root when process-tree settlement is unproven", async () => {
     let childPid: number | undefined;
     let retainedRoot: string | undefined;
@@ -1290,6 +1469,32 @@ describe("FND benchmark harness fault contracts", () => {
     if (retainedRoot !== undefined) {
       expect(existsSync(retainedRoot)).toBe(false);
     }
+  });
+
+  test("retains the tail of a bounded child failure diagnostic", async () => {
+    const diagnosticTail = "ERR_MODULE_NOT_FOUND injected diagnostic tail";
+    const stderr = Buffer.from(
+      `${"AGENC_FND_MODULE injected-module-record\n".repeat(100)}${diagnosticTail}`,
+    );
+    await expect(
+      runBoundedChild({
+        args: ["--injected"],
+        command: process.execPath,
+        cwd: RUNTIME_ROOT,
+        env: process.env,
+        expectedCompletionRecord: "missing-completion-record",
+        maxOutputBytes: 8_192,
+        productionContainmentRunner: async () => ({
+          backstopExpired: false,
+          exitCode: 1,
+          forced: false,
+          signal: null,
+          stderr,
+          stdout: Buffer.alloc(0),
+        }),
+        timeoutMs: 100,
+      }),
+    ).rejects.toThrow(diagnosticTail);
   });
 
   test("hard-kills a signal-resistant metadata process tree by its deadline", async () => {

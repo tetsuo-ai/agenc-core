@@ -27,9 +27,6 @@ vi.mock("../context/mailbox.js", () => ({
 vi.mock("../hooks/useEffectEventCompat.js", () => ({
   useEffectEventCompat: (callback: unknown) => callback,
 }));
-vi.mock("../hooks/useSettingsChange.js", () => ({
-  useSettingsChange: () => {},
-}));
 vi.mock("../../bootstrap/state.js", () => ({
   flushInteractionTime: () => {},
   getActiveTimeCounter: () => ({ activeMs: 0, totalMs: 0 }),
@@ -62,12 +59,15 @@ vi.mock("../../utils/debug.js", () => ({
 vi.mock("../../utils/log.js", () => ({
   logError: () => {},
 }));
-vi.mock("../../utils/permissions/permissionSetup.js", () => ({
-  createDisabledBypassPermissionsContext: (context: unknown) => context,
-  isBypassPermissionsModeDisabled: () => false,
-}));
-vi.mock("../../utils/settings/applySettingsChange.js", () => ({
-  applySettingsChange: () => {},
+vi.mock("../../permissions/settings.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  loadPermissionRulesSnapshot: async () => ({
+    rules: [],
+    managedOnly: false,
+    directories: [],
+    bypassPermissionsModeDisabled: false,
+    disableAutoMode: false,
+  }),
 }));
 vi.mock("../../utils/settings/settings.js", () => ({
   getInitialSettings: () => ({}),

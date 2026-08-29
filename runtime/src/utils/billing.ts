@@ -1,11 +1,16 @@
 import {
   getAnthropicApiKey,
   getAuthTokenSource,
+  getOauthAccountInfo,
   getSubscriptionType,
   isAgenCAISubscriber,
 } from './auth.js'
-import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
+import { resolveSecureStorageHome } from './secureStorage/home.js'
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 
 export function hasConsoleBillingAccess(): boolean {
   // Check if cost reporting is disabled via environment variable
@@ -13,14 +18,14 @@ export function hasConsoleBillingAccess(): boolean {
     return false
   }
 
-  const isSubscriber = isAgenCAISubscriber()
+  const isSubscriber = isAgenCAISubscriber(credentialHome())
 
   // This might be wrong if user is signed into Max but also using an API key, but
   // we already show a warning on launch in that case
   if (isSubscriber) return false
 
   // Check if user has any form of authentication
-  const authSource = getAuthTokenSource()
+  const authSource = getAuthTokenSource(credentialHome())
   const hasApiKey = getAnthropicApiKey() !== null
 
   // If user has no authentication at all (logged out), don't show costs
@@ -28,9 +33,9 @@ export function hasConsoleBillingAccess(): boolean {
     return false
   }
 
-  const config = getGlobalConfig()
-  const orgRole = config.oauthAccount?.organizationRole
-  const workspaceRole = config.oauthAccount?.workspaceRole
+  const account = getOauthAccountInfo(credentialHome())
+  const orgRole = account?.organizationRole
+  const workspaceRole = account?.workspaceRole
 
   if (!orgRole || !workspaceRole) {
     return false // hide cost for grandfathered users who have not re-authed since we've added roles
@@ -43,24 +48,12 @@ export function hasConsoleBillingAccess(): boolean {
   )
 }
 
-// Mock billing access for /mock-limits testing (set by mockRateLimits.ts)
-let mockBillingAccessOverride: boolean | null = null
-
-export function setMockBillingAccessOverride(value: boolean | null): void {
-  mockBillingAccessOverride = value
-}
-
 export function hasAgenCAiBillingAccess(): boolean {
-  // Check for mock billing access first (for /mock-limits testing)
-  if (mockBillingAccessOverride !== null) {
-    return mockBillingAccessOverride
-  }
-
-  if (!isAgenCAISubscriber()) {
+  if (!isAgenCAISubscriber(credentialHome())) {
     return false
   }
 
-  const subscriptionType = getSubscriptionType()
+  const subscriptionType = getSubscriptionType(credentialHome())
 
   // Consumer plans (Max/Pro) - individual users always have billing access
   if (subscriptionType === 'max' || subscriptionType === 'pro') {
@@ -68,8 +61,7 @@ export function hasAgenCAiBillingAccess(): boolean {
   }
 
   // Team/Enterprise - check for admin or billing roles
-  const config = getGlobalConfig()
-  const orgRole = config.oauthAccount?.organizationRole
+  const orgRole = getOauthAccountInfo(credentialHome())?.organizationRole
 
   return (
     !!orgRole &&

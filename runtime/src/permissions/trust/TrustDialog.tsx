@@ -63,7 +63,7 @@ export interface TrustDialogProps {
 type TrustChoice = "trust" | "exit";
 
 export const YOLO_TRUST_COPY =
-  "--yolo skips tool approval prompts and uses danger-full-access sandbox mode after trust; project trust still requires confirmation.";
+  "--dangerously-bypass-approvals-and-sandbox skips tool approval prompts and uses danger-full-access sandbox mode after trust; project trust still requires confirmation.";
 
 export function trustDialogOptionLabel(
   id: TrustChoice,

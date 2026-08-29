@@ -41,9 +41,8 @@ vi.mock("../../utils/nativeInstaller/installer.js", () => ({
   installLatest: harness.installLatest,
 }));
 
-vi.mock("../../utils/settings/settings.js", () => ({
-  getExecutionAuthoritySettings: () => ({ autoUpdatesChannel: "nightly" }),
-  getInitialSettings: () => ({ autoUpdatesChannel: "nightly" }),
+vi.mock("../hooks/useSettings.js", () => ({
+  useSettings: () => ({ autoUpdatesChannel: "nightly", tui: {} }),
 }));
 
 import { createRoot } from "../ink/root.js";

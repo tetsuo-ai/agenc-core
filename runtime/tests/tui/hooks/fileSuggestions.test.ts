@@ -59,7 +59,7 @@ vi.mock('../../utils/settings/settings.js', () => ({
 }))
 
 vi.mock('../../utils/config.js', () => ({
-  getGlobalConfig: () => ({}),
+  getRuntimeState: () => ({}),
   checkHasTrustDialogAccepted: () => true,
 }))
 

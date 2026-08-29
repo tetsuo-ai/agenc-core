@@ -1,10 +1,18 @@
-import { writeFile } from 'fs/promises'
-import { join } from 'path'
-import type { MCPResultType } from '../services/mcp/client.js'
+import { join, parse } from 'path'
+import { commitArtifactAtomically } from '../durability/atomic-artifact.js'
 import { toError } from './errors.js'
 import { formatFileSize } from './format.js'
 import { logError } from './log.js'
-import { ensureToolResultsDir, getToolResultsDir } from './toolResultStorage.js'
+import {
+  ensureToolResultsDir,
+  getToolResultPath,
+  getToolResultsDir,
+} from './toolResultStorage.js'
+
+export type MCPResultType =
+  | 'toolResult'
+  | 'structuredContent'
+  | 'contentArray'
 
 /**
  * Generates a format description string based on the MCP result type and schema.
@@ -148,10 +156,17 @@ export async function persistBinaryContent(
 ): Promise<PersistBinaryResult> {
   await ensureToolResultsDir()
   const ext = extensionForMimeType(mimeType)
-  const filepath = join(getToolResultsDir(), `${persistId}.${ext}`)
+  // Reuse the canonical tool-result path sanitizer. `persistId` can contain
+  // remote server/tool labels, separators, or Windows device names and must
+  // never be allowed to select a path outside the session artifact directory.
+  const safeTextPath = getToolResultPath(persistId, false)
+  const parsedPath = parse(safeTextPath)
+  const filepath = join(parsedPath.dir, `${parsedPath.name}.${ext}`)
 
   try {
-    await writeFile(filepath, bytes)
+    await commitArtifactAtomically(filepath, bytes, {
+      trustedRoot: getToolResultsDir(),
+    })
   } catch (error) {
     const err = toError(error)
     logError(err)

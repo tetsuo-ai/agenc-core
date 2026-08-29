@@ -51,7 +51,12 @@ describe("BYOK precedence", () => {
       whoami: () => ({ authenticated: true, provider: "local" }),
       vendKey: (provider, sessionId) => {
         calls.push(`vendKey:${provider}:${sessionId}`);
-        return { provider, sessionId, apiKey: "managed-key" };
+        return {
+          kind: "api-key",
+          provider,
+          sessionId,
+          apiKey: "managed-key",
+        };
       },
       inferAgencModel: () => {
         calls.push("inferAgencModel");

@@ -1,21 +1,25 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
-import { JSON_RPC_VERSION } from "./protocol/index.js";
+import {
+  AGENC_DAEMON_PROTOCOL_VERSION,
+  JSON_RPC_VERSION,
+} from "./protocol/index.js";
 import type {
   SessionApplyConfigParams,
   SessionSetModelParams,
   SessionSetPermissionModeParams,
+  SessionPermissionRuleMutationParams,
 } from "./protocol/index.js";
 
 async function initialize(connection: {
   dispatch(message: Record<string, unknown>): Promise<unknown>;
-}): Promise<void> {
+}, version = "1.0.0"): Promise<void> {
   await connection.dispatch({
     jsonrpc: JSON_RPC_VERSION,
     id: "init",
     method: "initialize",
-    params: { protocol: { version: "1.0.0" } },
+    params: { protocol: { version } },
   });
 }
 
@@ -200,6 +204,9 @@ describe("daemon session-control internal method dispatch", () => {
     const setSessionModel = vi.fn(async (params: SessionSetModelParams) => ({
       sessionId: params.sessionId,
       applied: true,
+      provider: "openai",
+      model: "gpt-x",
+      runtimeSettingsEventId: "settings-1",
       summary: "Model switched.",
     }));
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
@@ -225,6 +232,9 @@ describe("daemon session-control internal method dispatch", () => {
       result: {
         sessionId: "session_1",
         applied: true,
+        provider: "openai",
+        model: "gpt-x",
+        runtimeSettingsEventId: "settings-1",
         summary: "Model switched.",
       },
     });
@@ -315,6 +325,96 @@ describe("daemon session-control internal method dispatch", () => {
       error: { code: -32602 },
     });
     expect(setSessionPermissionMode).not.toHaveBeenCalled();
+  });
+
+  it("authenticates, validates, and routes session.permissions.mutateRule", async () => {
+    const mutateSessionPermissionRule = vi.fn(
+      async (params: SessionPermissionRuleMutationParams) => ({
+        sessionId: params.sessionId,
+        applied: true,
+        operation: params.operation,
+        behavior: params.behavior,
+        rule: params.rule,
+        sessionRules: {
+          allow: [params.rule],
+          deny: [],
+          ask: [],
+        },
+      }),
+    );
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: { mutateSessionPermissionRule } as never,
+    });
+    const connection = dispatcher.createConnection();
+    const request = {
+      jsonrpc: JSON_RPC_VERSION,
+      id: "mutate-rule",
+      method: "session.permissions.mutateRule",
+      params: {
+        sessionId: "session_1",
+        operation: "add",
+        behavior: "allow",
+        rule: "system.bash(ls)",
+      },
+    };
+
+    await expect(connection.dispatch(request)).resolves.toMatchObject({
+      error: { data: { code: "CONNECTION_NOT_INITIALIZED" } },
+    });
+    expect(mutateSessionPermissionRule).not.toHaveBeenCalled();
+
+    await initialize(connection, AGENC_DAEMON_PROTOCOL_VERSION);
+    await expect(connection.dispatch(request)).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "mutate-rule",
+      result: {
+        sessionId: "session_1",
+        applied: true,
+        operation: "add",
+        behavior: "allow",
+        rule: "system.bash(ls)",
+        sessionRules: {
+          allow: ["system.bash(ls)"],
+          deny: [],
+          ask: [],
+        },
+      },
+    });
+    expect(mutateSessionPermissionRule).toHaveBeenCalledWith(request.params);
+  });
+
+  it("rejects malformed session.permissions.mutateRule parameters", async () => {
+    const mutateSessionPermissionRule = vi.fn();
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: { mutateSessionPermissionRule } as never,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection, AGENC_DAEMON_PROTOCOL_VERSION);
+    const valid = {
+      sessionId: "session_1",
+      operation: "remove",
+      behavior: "deny",
+      rule: "Write",
+    };
+    const malformed = [
+      { ...valid, operation: "replace" },
+      { ...valid, behavior: "maybe" },
+      { ...valid, rule: "" },
+      { ...valid, rule: "x".repeat(4_097) },
+      { ...valid, unexpected: true },
+    ];
+
+    for (const [index, params] of malformed.entries()) {
+      await expect(
+        connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id: `bad-rule-${index}`,
+          method: "session.permissions.mutateRule",
+          params,
+        }),
+      ).resolves.toMatchObject({ error: { code: -32602 } });
+    }
+    expect(mutateSessionPermissionRule).not.toHaveBeenCalled();
   });
 
   it("routes session.applyConfig to the agent manager", async () => {

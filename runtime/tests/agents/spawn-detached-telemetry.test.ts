@@ -1,118 +1,123 @@
-/**
- * A spawn whose lifecycle registration collides with the daemon's own
- * pre-registration must still emit its status/counter telemetry: the
- * onSnapshot hook died with the duplicate registration, and attached UIs
- * saw agents spawn and finish with no status and `tools 0 tokens 0`.
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { attachDetachedSpawnTelemetry } from "../../src/agents/v2/spawn.js";
-import type { AgentThreadTaskHandle } from "../../src/tasks/index.js";
-import type { BackgroundTaskSnapshot } from "../../src/tasks/index.js";
+import type { AgentStatus } from "../../src/agents/status.js";
+import {
+  BackgroundTaskLifecycle,
+  observeAgentThreadTask,
+  registerAgentThreadTask,
+  type AgentThreadTaskHandle,
+  type BackgroundTaskSnapshot,
+} from "../../src/tasks/index.js";
 
-type StatusListener = (status: { status: string }) => void;
+class FakeStatus {
+  value: AgentStatus = { status: "pending_init" };
+  private readonly listeners = new Set<(status: AgentStatus) => void>();
 
-function fakeThread(): {
-  thread: AgentThreadTaskHandle;
-  setStatus: (status: string) => void;
-  counters: { tokens: number; tools: number };
-} {
-  const counters = { tokens: 0, tools: 0 };
-  const listeners: StatusListener[] = [];
-  let value = { status: "running" };
-  const thread = {
-    threadId: "t-1",
-    live: {
-      agentId: "a-1",
-      agentPath: "/root/worker",
-      status: {
-        get value() {
-          return value;
-        },
-        subscribe: (listener: StatusListener) => {
-          listeners.push(listener);
-          return () => {};
-        },
-      },
-      get tokenUsage() {
-        return { totalTokens: counters.tokens };
-      },
-      get toolCallCount() {
-        return counters.tools;
-      },
-    },
-  } as unknown as AgentThreadTaskHandle;
-  return {
-    thread,
-    counters,
-    setStatus: (status: string) => {
-      value = { status };
-      for (const listener of listeners) listener(value);
-    },
-  };
+  subscribe(listener: (status: AgentStatus) => void): () => void {
+    this.listeners.add(listener);
+    listener(this.value);
+    return () => this.listeners.delete(listener);
+  }
+
+  set(status: AgentStatus): void {
+    this.value = status;
+    for (const listener of this.listeners) listener(status);
+  }
 }
 
-describe("attachDetachedSpawnTelemetry", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-  afterEach(() => {
-    vi.useRealTimers();
-  });
+function registeredThread(): {
+  readonly lifecycle: BackgroundTaskLifecycle;
+  readonly status: FakeStatus;
+  readonly counters: { tokens: number; tools: number };
+  readonly thread: AgentThreadTaskHandle;
+} {
+  const lifecycle = new BackgroundTaskLifecycle();
+  const status = new FakeStatus();
+  const counters = { tokens: 0, tools: 0 };
+  const live = {
+    agentId: "agent-1",
+    status,
+    abortController: new AbortController(),
+    get tokenUsage() {
+      return { totalTokens: counters.tokens };
+    },
+    get toolCallCount() {
+      return counters.tools;
+    },
+  };
+  const thread: AgentThreadTaskHandle = {
+    threadId: "agent-1",
+    taskPrompt: "work",
+    live,
+    join: () => new Promise(() => {}),
+  };
+  registerAgentThreadTask(lifecycle, thread);
+  status.set({ status: "running", turnId: "turn-1", startedAtMs: 1 });
+  return { lifecycle, status, counters, thread };
+}
 
-  it("emits an immediate running status with live counters", () => {
-    const { thread, counters } = fakeThread();
+describe("detached spawn lifecycle observation", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("observes the already-registered canonical task without a second poller", () => {
+    const { lifecycle, counters, thread } = registeredThread();
     counters.tools = 2;
-    counters.tokens = 1200;
-    const emitted: BackgroundTaskSnapshot[] = [];
-    attachDetachedSpawnTelemetry(thread, (snapshot) => emitted.push(snapshot));
-    expect(emitted).toHaveLength(1);
-    expect(emitted[0]?.status).toBe("running");
-    expect(emitted[0]?.progress).toEqual({ toolUseCount: 2, tokenCount: 1200 });
-  });
+    counters.tokens = 1_200;
+    vi.advanceTimersByTime(1_000);
 
-  it("polls counters and emits only when they advance", () => {
-    const { thread, counters } = fakeThread();
     const emitted: BackgroundTaskSnapshot[] = [];
-    attachDetachedSpawnTelemetry(thread, (snapshot) => emitted.push(snapshot));
+    observeAgentThreadTask(lifecycle, thread, (snapshot) => emitted.push(snapshot));
+
+    expect(emitted.at(-1)).toMatchObject({
+      status: "running",
+      progress: { toolUseCount: 2, tokenCount: 1_200 },
+    });
     emitted.length = 0;
     vi.advanceTimersByTime(3_000);
-    expect(emitted).toHaveLength(1);
-    counters.tools = 3;
-    counters.tokens = 9000;
-    vi.advanceTimersByTime(1_000);
-    expect(emitted).toHaveLength(2);
-    expect(emitted[1]?.progress).toEqual({ toolUseCount: 3, tokenCount: 9000 });
-    vi.advanceTimersByTime(5_000);
-    expect(emitted).toHaveLength(2);
+    expect(emitted).toHaveLength(0);
   });
 
-  it("maps raw agent words onto the closed wire vocabulary", () => {
-    const { thread, setStatus } = fakeThread();
-    const emitted: BackgroundTaskSnapshot[] = [];
-    attachDetachedSpawnTelemetry(thread, (snapshot) => emitted.push(snapshot));
-    setStatus("errored");
-    expect(emitted.at(-1)?.status).toBe("failed");
-    const again = fakeThread();
-    const emitted2: BackgroundTaskSnapshot[] = [];
-    attachDetachedSpawnTelemetry(again.thread, (s2) => emitted2.push(s2));
-    again.setStatus("shutdown");
-    expect(emitted2.at(-1)?.status).toBe("killed");
+  it("maps terminal agent states once through the canonical lifecycle", () => {
+    const failed = registeredThread();
+    const failedSnapshots: BackgroundTaskSnapshot[] = [];
+    observeAgentThreadTask(failed.lifecycle, failed.thread, (snapshot) =>
+      failedSnapshots.push(snapshot),
+    );
+    failed.status.set({
+      status: "errored",
+      turnId: "turn-1",
+      endedAtMs: 2,
+      error: "boom",
+    });
+    expect(failedSnapshots.at(-1)).toMatchObject({
+      status: "failed",
+      error: "boom",
+    });
+
+    const killed = registeredThread();
+    const killedSnapshots: BackgroundTaskSnapshot[] = [];
+    observeAgentThreadTask(killed.lifecycle, killed.thread, (snapshot) =>
+      killedSnapshots.push(snapshot),
+    );
+    killed.status.set({ status: "shutdown" });
+    expect(killedSnapshots.at(-1)).toMatchObject({
+      status: "killed",
+      error: "agent shutdown",
+    });
   });
 
-  it("emits the terminal status and stops polling after it", () => {
-    const { thread, counters, setStatus } = fakeThread();
+  it("unsubscribes after the terminal snapshot", () => {
+    const { lifecycle, status, thread } = registeredThread();
     const emitted: BackgroundTaskSnapshot[] = [];
-    attachDetachedSpawnTelemetry(thread, (snapshot) => emitted.push(snapshot));
-    emitted.length = 0;
-    counters.tools = 5;
-    counters.tokens = 40_000;
-    setStatus("completed");
-    expect(emitted.at(-1)?.status).toBe("completed");
+    observeAgentThreadTask(lifecycle, thread, (snapshot) => emitted.push(snapshot));
+    status.set({ status: "shutdown" });
     const settled = emitted.length;
-    counters.tools = 9;
-    vi.advanceTimersByTime(10_000);
+
+    lifecycle.updateAgentProgress("agent-1", {
+      toolUseCount: 99,
+      tokenCount: 99,
+    });
     expect(emitted).toHaveLength(settled);
   });
 });

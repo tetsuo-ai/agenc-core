@@ -9,8 +9,7 @@ import { classifyGuiEditor, getExternalEditor } from './editor.js'
 import { execSync_DEPRECATED } from './execSyncWrapper.js'
 import { getFsImplementation } from './fsOperations.js'
 import { toIDEDisplayName } from './ide.js'
-import { writeFileSync_DEPRECATED } from './slowOperations.js'
-import { generateTempFilePath } from './tempfile.js'
+import { createPrivateTempFile } from './tempfile.js'
 
 // Map of editor command overrides (e.g., to add wait flags)
 const EDITOR_OVERRIDES: Record<string, string> = {
@@ -139,23 +138,18 @@ export function editPromptInEditor(
   currentPrompt: string,
   pastedContents?: Record<number, PastedContent>,
 ): EditorResult {
-  const fs = getFsImplementation()
-  const tempFile = generateTempFilePath()
+  // Expand any pasted text references before editing.
+  const expandedPrompt = pastedContents
+    ? expandPastedTextRefs(currentPrompt, pastedContents)
+    : currentPrompt
+  const tempFile = createPrivateTempFile({
+    content: expandedPrompt,
+    flush: true,
+  })
 
   try {
-    // Expand any pasted text references before editing
-    const expandedPrompt = pastedContents
-      ? expandPastedTextRefs(currentPrompt, pastedContents)
-      : currentPrompt
-
-    // Write expanded prompt to temp file
-    writeFileSync_DEPRECATED(tempFile, expandedPrompt, {
-      encoding: 'utf-8',
-      flush: true,
-    })
-
     // Delegate to editFileInEditor
-    const result = editFileInEditor(tempFile)
+    const result = editFileInEditor(tempFile.path)
 
     if (result.content === null) {
       return result
@@ -178,9 +172,8 @@ export function editPromptInEditor(
 
     return { content: finalContent }
   } finally {
-    // Clean up temp file
     try {
-      fs.unlinkSync(tempFile)
+      tempFile.dispose()
     } catch {
       // Ignore cleanup errors
     }

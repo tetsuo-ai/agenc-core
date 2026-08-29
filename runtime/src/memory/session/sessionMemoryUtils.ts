@@ -11,13 +11,16 @@ import { homedir } from "node:os";
 import { join, normalize, sep } from "node:path";
 
 import { findGitRoot as findCanonicalGitRoot } from "../../agents/worktree.js";
+import { resolveHomeContext } from "../../config/home.js";
 import { findProjectRootSync } from "../../session/session-store.js";
 import {
+  getAgenCHomeDir,
+  isBareMode,
   isEnvDefinedFalsy,
   isEnvTruthy,
-  resolveAgenCConfigHomeDir,
 } from "../../utils/envUtils.js";
 import { sanitizePathForProjectKey } from "../../services/extractMemories/memory-paths.js";
+import { getActiveAgentRuntimeOptions } from "../../session/runtime-options.js";
 
 export type SessionMemoryEnv = Readonly<Record<string, string | undefined>>;
 
@@ -124,14 +127,15 @@ function positiveConfig(
 export function resolveSessionMemoryDirectory(
   options: SessionMemoryPathOptions,
 ): string {
-  const env = effectiveEnv(options.env);
+  const explicitPathAuthority =
+    options.env !== undefined || options.homeDir !== undefined;
   const configHome =
     options.configHomeDir ??
-    resolveAgenCConfigHomeDir({
-      configDirEnv: env.AGENC_CONFIG_DIR,
-      agencHomeEnv: env.AGENC_HOME,
-      homeDir: options.homeDir ?? homedir(),
-    });
+    (explicitPathAuthority
+      ? resolveHomeContext(options.env ?? {}, {
+          platformHome: options.homeDir ?? homedir(),
+        }).path
+      : getAgenCHomeDir());
   return normalizeWithTrailingSep(
     join(
       configHome,
@@ -156,15 +160,12 @@ export function isSessionMemoryEnabled(
   if (isEnvTruthy(source.AGENC_DISABLE_SESSION_MEMORY)) return false;
   if (isEnvDefinedFalsy(source.AGENC_SESSION_MEMORY_ENABLED)) return false;
   if (isEnvTruthy(source.AGENC_SESSION_MEMORY_ENABLED)) return true;
-  if (isEnvTruthy(source.AGENC_SIMPLE)) return false;
-  if (
-    isEnvTruthy(source.AGENC_REMOTE) &&
-    !source.AGENC_REMOTE_MEMORY_DIR
-  ) {
+  if (isBareMode()) return false;
+  const runtimeOptions = getActiveAgentRuntimeOptions();
+  if (runtimeOptions?.remoteMode && !runtimeOptions.remoteMemoryRoot) {
     return false;
   }
-  const autoCompactDisabled =
-    source.DISABLE_AUTO_COMPACT ?? source.AGENC_DISABLE_AUTO_COMPACT;
+  const autoCompactDisabled = source.AGENC_DISABLE_AUTO_COMPACT;
   if (isEnvTruthy(autoCompactDisabled)) return false;
   return true;
 }

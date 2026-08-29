@@ -58,6 +58,7 @@ const FIXTURE = join(
   'fixtures',
   'fake-acp-agent.mjs',
 )
+const ACP_TEST_ENV = Object.freeze({ ...process.env })
 
 describe('composer model detection', () => {
   test('matches grok-composer-* only', () => {
@@ -72,7 +73,10 @@ describe('factory routing', () => {
   test('composer models construct the ACP provider without an API key', async () => {
     const provider = createProvider('grok', {
       model: 'grok-composer-2.5-fast',
-      extra: { sandboxExecutionBroker: explicitDangerBroker },
+      extra: {
+        sandboxExecutionBroker: explicitDangerBroker,
+        grokAcp: { environment: ACP_TEST_ENV },
+      },
     })
     try {
       expect(provider.name).toBe('grok')
@@ -84,21 +88,50 @@ describe('factory routing', () => {
 
   test('composer factory options preserve the exact sandbox broker across recreation', async () => {
     const broker = explicitDangerBroker.forkForCwd(process.cwd())
+    const preparedEnvironment = {
+      PATH: '/captured/bin',
+      HOME: '/captured/home',
+      ACP_PUBLIC_SETTING: 'captured-value',
+    }
     const provider = createProvider('grok', {
       model: 'grok-composer-2.5-fast',
-      extra: { sandboxExecutionBroker: broker },
+      extra: {
+        sandboxExecutionBroker: broker,
+        grokAcp: { environment: preparedEnvironment },
+      },
     })
     let recreated: ReturnType<typeof createProvider> | undefined
 
     try {
       const factoryOptions = readProviderFactoryOptions(provider)
       expect(factoryOptions.extra?.sandboxExecutionBroker).toBe(broker)
+      const storedEnvironment = (
+        factoryOptions.extra?.grokAcp as {
+          environment: NodeJS.ProcessEnv
+        }
+      ).environment
+      expect(storedEnvironment).toEqual(preparedEnvironment)
+      expect(Object.isFrozen(storedEnvironment)).toBe(true)
 
+      preparedEnvironment.PATH = '/mutated/bin'
+
+      await provider.dispose?.()
       recreated = createProvider('grok', factoryOptions)
       expect(recreated).toBeInstanceOf(GrokAcpProvider)
       expect(
         readProviderFactoryOptions(recreated).extra?.sandboxExecutionBroker,
       ).toBe(broker)
+      expect(
+        (
+          readProviderFactoryOptions(recreated).extra?.grokAcp as {
+            environment: NodeJS.ProcessEnv
+          }
+        ).environment,
+      ).toMatchObject({
+        PATH: '/captured/bin',
+        HOME: '/captured/home',
+        ACP_PUBLIC_SETTING: 'captured-value',
+      })
     } finally {
       await provider.dispose?.()
       await recreated?.dispose?.()
@@ -156,9 +189,46 @@ describe('message flattening', () => {
 })
 
 describe('GrokAcpProvider end to end (fake agent)', () => {
+  test('does not reinterpret child env as CLI or permission authority', async () => {
+    const unresolved = new GrokAcpProvider({
+      model: 'grok-composer-2.5-fast',
+      env: {
+        AGENC_GROK_CLI: '/daemon/bin/grok',
+        AGENC_GROK_ACP_PERMISSIONS: 'allow',
+      },
+    })
+    const permissionProbe = new GrokAcpProvider({
+      model: 'grok-composer-2.5-fast',
+      binaryPath: FIXTURE,
+      env: {
+        PATH: process.env.PATH,
+        AGENC_GROK_ACP_PERMISSIONS: 'allow',
+        FAKE_ACP_REQUEST_PERMISSION: '1',
+      },
+      sandboxExecutionBroker: explicitDangerBroker,
+    })
+
+    try {
+      expect(
+        (
+          unresolved as unknown as {
+            resolveBinary(): string | undefined
+          }
+        ).resolveBinary(),
+      ).toBeUndefined()
+      const response = await permissionProbe.chat([
+        { role: 'user', content: 'request permission' },
+      ])
+      expect(response.content).toContain('perm=selected:reject')
+    } finally {
+      await Promise.all([unresolved.dispose(), permissionProbe.dispose()])
+    }
+  })
+
   test('rejects a managed invocation before starting the ACP transport', async () => {
     const provider = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',
+      env: ACP_TEST_ENV,
       binaryPath: '/definitely/not/a/grok/binary',
       sandboxExecutionBroker: explicitDangerBroker,
     })
@@ -185,6 +255,7 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
   test('close drains a replacement client created during an earlier disposal', async () => {
     const provider = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',
+      env: ACP_TEST_ENV,
       binaryPath: FIXTURE,
       sandboxExecutionBroker: explicitDangerBroker,
     })
@@ -218,6 +289,7 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
   test('chat selects the model and returns the streamed text', async () => {
     const provider = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',
+      env: ACP_TEST_ENV,
       binaryPath: FIXTURE,
       sandboxExecutionBroker: explicitDangerBroker,
     })
@@ -246,6 +318,7 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
   test('chatStream streams deltas and ends with a done chunk', async () => {
     const provider = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',
+      env: ACP_TEST_ENV,
       binaryPath: FIXTURE,
       sandboxExecutionBroker: explicitDangerBroker,
     })
@@ -271,6 +344,7 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
   test('reuses one CLI process across chats but a fresh session per chat', async () => {
     const provider = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',
+      env: ACP_TEST_ENV,
       binaryPath: FIXTURE,
       sandboxExecutionBroker: explicitDangerBroker,
     })
@@ -288,6 +362,7 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
   test('missing Grok CLI surfaces the executable boundary error', async () => {
     const provider = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',
+      env: ACP_TEST_ENV,
       binaryPath: 'definitely-not-a-real-grok-binary',
       sandboxExecutionBroker: explicitDangerBroker,
     })
@@ -315,6 +390,7 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
     const prepareSpawn = vi.spyOn(broker, 'prepareSpawn')
     const provider = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',
+      env: ACP_TEST_ENV,
       binaryPath: FIXTURE,
       cwd: staleCwd,
       sandboxExecutionBroker: broker,
@@ -324,6 +400,9 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
       await provider.chat([{ role: 'user', content: 'before transition' }])
       expect(prepareSpawn).toHaveBeenCalledTimes(1)
       expect(prepareSpawn.mock.calls[0]?.[1].cwd).toBe(initialCwd)
+      expect(prepareSpawn.mock.calls[0]?.[2]).toEqual({
+        lifecycleParticipant: 'grok-acp-provider',
+      })
 
       await transitionSandboxExecutionBroker(broker, rebasedCwd)
       // Resume is intentionally lazy: a workspace transition does not launch
@@ -333,6 +412,9 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
       await provider.chat([{ role: 'user', content: 'after transition' }])
       expect(prepareSpawn).toHaveBeenCalledTimes(2)
       expect(prepareSpawn.mock.calls[1]?.[1].cwd).toBe(rebasedCwd)
+      expect(prepareSpawn.mock.calls[1]?.[2]).toEqual({
+        lifecycleParticipant: 'grok-acp-provider',
+      })
     } finally {
       await provider.dispose()
       prepareSpawn.mockRestore()
@@ -349,6 +431,7 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
     const prepareSpawn = vi.spyOn(broker, 'prepareSpawn')
     const provider = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',
+      env: ACP_TEST_ENV,
       binaryPath: FIXTURE,
       sandboxExecutionBroker: broker,
     })
@@ -388,8 +471,11 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
     const childBroker = explicitDangerBroker.forkForCwd(childCwd)
     const parentSpawn = vi.spyOn(parentBroker, 'prepareSpawn')
     const childSpawn = vi.spyOn(childBroker, 'prepareSpawn')
+    const priorAmbientSentinel = process.env.ACP_AMBIENT_SENTINEL
+    process.env.ACP_AMBIENT_SENTINEL = 'daemon-only-value'
     const parent = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',
+      env: { ...ACP_TEST_ENV, ACP_PUBLIC_SETTING: 'session-value' },
       binaryPath: FIXTURE,
       sandboxExecutionBroker: parentBroker,
     })
@@ -405,12 +491,29 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
       ])
       expect(parentSpawn).toHaveBeenCalledTimes(1)
       expect(parentSpawn.mock.calls[0]?.[1].cwd).toBe(parentCwd)
+      expect(parentSpawn.mock.calls[0]?.[1].env?.ACP_PUBLIC_SETTING).toBe(
+        'session-value',
+      )
+      expect(
+        parentSpawn.mock.calls[0]?.[1].env?.ACP_AMBIENT_SENTINEL,
+      ).toBeUndefined()
       expect(childSpawn).toHaveBeenCalledTimes(1)
       expect(childSpawn.mock.calls[0]?.[1].cwd).toBe(childCwd)
+      expect(childSpawn.mock.calls[0]?.[1].env?.ACP_PUBLIC_SETTING).toBe(
+        'session-value',
+      )
+      expect(
+        childSpawn.mock.calls[0]?.[1].env?.ACP_AMBIENT_SENTINEL,
+      ).toBeUndefined()
     } finally {
       await Promise.all([parent.dispose(), child.dispose()])
       parentSpawn.mockRestore()
       childSpawn.mockRestore()
+      if (priorAmbientSentinel === undefined) {
+        delete process.env.ACP_AMBIENT_SENTINEL
+      } else {
+        process.env.ACP_AMBIENT_SENTINEL = priorAmbientSentinel
+      }
       await rm(root, { recursive: true, force: true })
     }
   })

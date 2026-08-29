@@ -17,6 +17,7 @@ function openRollout(opts: {
     cwd: opts.cwd,
     sessionId: opts.sessionId,
     agencVersion: "0.6.0",
+    sessionTempRoot: tmpdir(),
   });
   store.open({
     sessionId: opts.sessionId,

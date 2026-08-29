@@ -2,21 +2,24 @@ import { PassThrough } from 'node:stream'
 
 import React from 'react'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../remoteAuthSessionContext.fixture.js'
+import { defaultConfig } from '../../config/schema.js'
+
+const TEST_CONFIG = defaultConfig()
 
 const authHarness = vi.hoisted(() => {
   const state = {
     authEnabled: true,
     key: undefined as string | undefined,
-    nonInteractive: false,
     source: undefined as string | undefined,
     subscriber: false,
+    remoteAuthContexts: [] as unknown[],
   }
 
   return {
     state,
-    getApiKeyFromApiKeyHelper: vi.fn(async () => undefined),
     getAnthropicApiKeyWithSource: vi.fn(
-      (_options?: { skipRetrievingKeyFromApiKeyHelper?: boolean }) => ({
+      () => ({
         key: state.key,
         source: state.source,
       }),
@@ -24,23 +27,17 @@ const authHarness = vi.hoisted(() => {
     reset() {
       state.authEnabled = true
       state.key = undefined
-      state.nonInteractive = false
       state.source = undefined
       state.subscriber = false
-      this.getApiKeyFromApiKeyHelper.mockClear()
+      state.remoteAuthContexts = []
       this.getAnthropicApiKeyWithSource.mockClear()
       this.verifyApiKey.mockClear()
     },
-    verifyApiKey: vi.fn(async () => true),
+    verifyApiKey: vi.fn(async () => ({ status: 'valid' })),
   }
 })
 
-vi.mock('../../bootstrap/state', async importOriginal => ({
-  ...(await importOriginal()),
-  getIsNonInteractiveSession: () => authHarness.state.nonInteractive,
-}))
-
-vi.mock('../../services/api/anthropic', () => ({
+vi.mock('../../onboarding/useApiKeyVerification', () => ({
   verifyApiKey: authHarness.verifyApiKey,
 }))
 
@@ -49,14 +46,17 @@ vi.mock('../../services/api/anthropic', () => ({
 // real ~/.agenc/auth.json and keep exercising the anthropic key path.
 vi.mock('../../auth/session-state', async importOriginal => ({
   ...(await importOriginal()),
-  hasRemoteAuthSessionSync: () => false,
+  hasRemoteAuthSessionSync: (context: unknown) => {
+    authHarness.state.remoteAuthContexts.push(context)
+    return false
+  },
 }))
 
 vi.mock('../../utils/auth.js', () => ({
-  getAnthropicApiKeyWithSource: authHarness.getAnthropicApiKeyWithSource,
-  getApiKeyFromApiKeyHelper: authHarness.getApiKeyFromApiKeyHelper,
-  isAgenCAISubscriber: () => authHarness.state.subscriber,
-  isAnthropicAuthEnabled: () => authHarness.state.authEnabled,
+  getAnthropicApiKeyWithSourceForContext:
+    authHarness.getAnthropicApiKeyWithSource,
+  isAgenCAISubscriberForContext: () => authHarness.state.subscriber,
+  isAnthropicAuthEnabledForContext: () => authHarness.state.authEnabled,
 }))
 
 import { createRoot } from '../ink/root.js'
@@ -114,14 +114,16 @@ describe('useApiKeyVerification api key helper coverage', () => {
     authHarness.reset()
   })
 
-  test('reports a configured helper that warms but does not return a key', async () => {
-    authHarness.state.nonInteractive = true
+  test('treats a source label without an actual key as missing', async () => {
     authHarness.state.source = 'apiKeyHelper'
     const snapshots: Snapshot[] = []
     let latest: HookResult | null = null
 
     function Harness(): null {
-      const result = useApiKeyVerification()
+      const result = useApiKeyVerification(
+        TEST_REMOTE_AUTH_SESSION_CONTEXT,
+        TEST_CONFIG,
+      )
       latest = result
 
       React.useEffect(() => {
@@ -145,41 +147,43 @@ describe('useApiKeyVerification api key helper coverage', () => {
       root.render(React.createElement(Harness))
 
       await waitForCondition(
-        () => latest?.status === 'loading',
-        'Timed out waiting for initial loading status',
+        () => latest?.status === 'missing',
+        'Timed out waiting for missing status',
       )
 
-      expect(authHarness.getAnthropicApiKeyWithSource).toHaveBeenCalledWith({
-        skipRetrievingKeyFromApiKeyHelper: true,
-      })
+      expect(authHarness.getAnthropicApiKeyWithSource).toHaveBeenCalledWith(
+        TEST_REMOTE_AUTH_SESSION_CONTEXT,
+      )
+      expect(authHarness.state.remoteAuthContexts.length).toBeGreaterThan(0)
+      expect(
+        authHarness.state.remoteAuthContexts.every(
+          context => context === TEST_REMOTE_AUTH_SESSION_CONTEXT,
+        ),
+      ).toBe(true)
 
       await latest?.reverify()
 
       await waitForCondition(
-        () =>
-          latest?.status === 'error' &&
-          latest.error?.message ===
-            'API key helper did not return a valid key',
-        'Timed out waiting for helper error status',
+        () => latest?.status === 'missing',
+        'Timed out waiting for missing reverify status',
       )
 
-      expect(authHarness.getApiKeyFromApiKeyHelper).toHaveBeenCalledWith(true)
-      expect(authHarness.getAnthropicApiKeyWithSource).toHaveBeenLastCalledWith()
+      expect(authHarness.getAnthropicApiKeyWithSource).toHaveBeenLastCalledWith(
+        TEST_REMOTE_AUTH_SESSION_CONTEXT,
+      )
       expect(authHarness.verifyApiKey).not.toHaveBeenCalled()
 
       await waitForCondition(
         () =>
           snapshots.some(
             snapshot =>
-              snapshot.status === 'error' &&
-              snapshot.errorMessage ===
-                'API key helper did not return a valid key',
+              snapshot.status === 'missing' && snapshot.errorMessage === null,
           ),
-        'Timed out waiting for the helper error effect snapshot',
+        'Timed out waiting for the missing effect snapshot',
       )
       expect(snapshots).toContainEqual({
-        errorMessage: 'API key helper did not return a valid key',
-        status: 'error',
+        errorMessage: null,
+        status: 'missing',
       })
     } finally {
       root.unmount()
@@ -197,7 +201,10 @@ describe('useApiKeyVerification api key helper coverage', () => {
     let latest: HookResult | null = null
 
     function Harness(): null {
-      const result = useApiKeyVerification()
+      const result = useApiKeyVerification(
+        TEST_REMOTE_AUTH_SESSION_CONTEXT,
+        TEST_CONFIG,
+      )
       latest = result
 
       React.useEffect(() => {
@@ -225,9 +232,9 @@ describe('useApiKeyVerification api key helper coverage', () => {
         'Timed out waiting for missing status after throwing key lookup',
       )
 
-      expect(authHarness.getAnthropicApiKeyWithSource).toHaveBeenCalledWith({
-        skipRetrievingKeyFromApiKeyHelper: true,
-      })
+      expect(authHarness.getAnthropicApiKeyWithSource).toHaveBeenCalledWith(
+        TEST_REMOTE_AUTH_SESSION_CONTEXT,
+      )
       expect(authHarness.verifyApiKey).not.toHaveBeenCalled()
       expect(snapshots).toContainEqual({
         errorMessage: null,

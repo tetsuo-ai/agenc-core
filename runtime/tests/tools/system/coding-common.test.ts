@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { resolveWorkspacePath } from "src/tools/system/coding-common.js";
+import { SESSION_AGENC_HOME_ARG } from "src/tools/system/filesystem.js";
 import {
   SESSION_ID_ARG,
   SESSION_ID_SIG_ARG,
@@ -70,14 +71,11 @@ describe("HMAC-signed session id (plan-file carve-out)", () => {
     let agencHome: string;
     let workspace: string;
     let planFile: string;
-    let savedAgencHome: string | undefined;
 
     beforeEach(() => {
       clearAllPlanSlugs();
       agencHome = mkdtempSync(join(tmpdir(), "agenc-home-"));
       workspace = mkdtempSync(join(tmpdir(), "agenc-ws-"));
-      savedAgencHome = process.env.AGENC_HOME;
-      process.env.AGENC_HOME = agencHome;
       // Pin a deterministic slug so the plan path is stable, then
       // materialize the plan file on disk (canonicalizePath needs it).
       setPlanSlug({ agencHome, sessionId: SESSION_ID }, "fixed-slug");
@@ -86,11 +84,6 @@ describe("HMAC-signed session id (plan-file carve-out)", () => {
     });
 
     afterEach(() => {
-      if (savedAgencHome === undefined) {
-        delete process.env.AGENC_HOME;
-      } else {
-        process.env.AGENC_HOME = savedAgencHome;
-      }
       clearAllPlanSlugs();
     });
 
@@ -104,6 +97,7 @@ describe("HMAC-signed session id (plan-file carve-out)", () => {
     it("DENIES the carve-out for an unsigned session id", async () => {
       const args = roundTrip({
         file_path: planFile,
+        [SESSION_AGENC_HOME_ARG]: agencHome,
         [SESSION_ID_ARG]: SESSION_ID, // no signature — pure model forgery
       });
       const result = await resolveWorkspacePath({
@@ -117,6 +111,7 @@ describe("HMAC-signed session id (plan-file carve-out)", () => {
     it("DENIES the carve-out for a forged-signature session id", async () => {
       const args = roundTrip({
         file_path: planFile,
+        [SESSION_AGENC_HOME_ARG]: agencHome,
         [SESSION_ID_ARG]: SESSION_ID,
         [SESSION_ID_SIG_ARG]: "ff".repeat(32),
       });
@@ -131,7 +126,13 @@ describe("HMAC-signed session id (plan-file carve-out)", () => {
     // LEGIT: a signed session id DOES unlock the plan-file write target.
     it("ALLOWS the carve-out for a legitimately signed session id", async () => {
       const args = roundTrip(
-        withSignedSessionId({ file_path: planFile }, SESSION_ID),
+        withSignedSessionId(
+          {
+            file_path: planFile,
+            [SESSION_AGENC_HOME_ARG]: agencHome,
+          },
+          SESSION_ID,
+        ),
       );
       const result = await resolveWorkspacePath({
         config: config(),

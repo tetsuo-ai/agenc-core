@@ -1,17 +1,25 @@
-export const SECRET_ENV_KEYS = [
-  'OPENAI_API_KEY',
+import { BUILT_IN_PROVIDER_DEFINITIONS } from '../llm/registry/provider-info.js'
+
+const NON_PROVIDER_SECRET_ENV_KEYS = [
   'OPENAI_AUTH_HEADER_VALUE',
+  'ANTHROPIC_AUTH_TOKEN',
   'AGENC_API_KEY',
-  'GEMINI_API_KEY',
-  'GOOGLE_API_KEY',
-  'MISTRAL_API_KEY',
   'BNKR_API_KEY',
-  'XAI_API_KEY',
+  'PROVIDER_CODE_API_KEY',
 ] as const
 
-export type SecretValueSource = Partial<
-  Record<(typeof SECRET_ENV_KEYS)[number], string | undefined>
->
+export const SECRET_ENV_KEYS: readonly string[] = Object.freeze([
+  ...new Set([
+    ...Object.values(BUILT_IN_PROVIDER_DEFINITIONS).flatMap(definition =>
+      definition.credentials.kind === 'api-key'
+        ? definition.credentials.apiKey.envVars
+        : [],
+    ),
+    ...NON_PROVIDER_SECRET_ENV_KEYS,
+  ]),
+])
+
+export type SecretValueSource = Readonly<Record<string, string | undefined>>
 
 export function sanitizeApiKey(
   key: string | null | undefined,

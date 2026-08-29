@@ -16,17 +16,25 @@
 // mock device codes to the service owner is handled by the TODO task 30
 // orchestrator, not this repo.
 //
-// AGENC_HOME is pointed at a per-fork temp dir so homedir-derived reads
-// (getAgenCConfigHomeDir: AGENC_CONFIG_DIR > AGENC_HOME > $HOME/.agenc) can
-// never touch the developer's live ~/.agenc. Tests that need their own
-// AGENC_HOME set it inside the test — after this ran — and win.
+// AGENC_HOME is pointed at a per-fork temp dir so home-derived reads can never
+// touch the developer's live ~/.agenc. Removed home aliases are cleared. Tests
+// that need their own AGENC_HOME set it inside the test after this ran.
 
 import {
   getOrCreateHermeticTestHome,
   sanitizeHermeticEnv,
 } from './tests/helpers/hermetic-env.mjs'
+import { beforeEach } from 'vitest'
+// Register host-bound infrastructure mocks before importing ConfigStore or
+// any other runtime module that can transitively load those boundaries.
 import './tests/helpers/hermetic-managed-policy-mocks.js'
 import './tests/helpers/hermetic-secure-storage-mocks.js'
+import { ConfigStore } from './src/config/store.js'
+import {
+  enterStartupProviderSelectionSnapshotForTests as enterStartupProviderSelectionForTestingOnly,
+} from './src/utils/model/provider-selection-context.js'
+import { enterCanonicalSettingsAuthority } from './src/utils/settings/canonicalAuthority.js'
+import { installWorkspaceMutationHomeResolverForTestingOnly } from './src/workspace/mutation-coordinator.js'
 import { installNetworkTripwire } from './tests/helpers/network-tripwire.mjs'
 
 // Re-assert at every test-file boundary. The helper also self-installs when
@@ -42,3 +50,43 @@ installNetworkTripwire()
 const hermeticHome = getOrCreateHermeticTestHome()
 sanitizeHermeticEnv(process.env, hermeticHome)
 process.env.AGENC_TEST_HERMETIC_HOME = hermeticHome
+
+// Production workspace-mutation state is partitioned by the ConfigStore
+// authority. Low-level unit tests intentionally exercise the facade without a
+// bootstrapped store, so bind their explicit hermetic home through a test-only
+// resolver instead of letting production code rediscover process.env.
+installWorkspaceMutationHomeResolverForTestingOnly(() => {
+  const home = process.env.AGENC_HOME
+  if (home === undefined || home.length === 0) {
+    throw new Error('AGENC_HOME is required by the workspace test harness')
+  }
+  return home
+})
+
+// Ordinary unit tests execute without a bootstrapped Session. Give each test
+// an explicit canonical startup authority so production code can remain
+// fail-closed instead of falling back to mutable process.env selection.
+// Provider-selection tests install narrower scopes around their assertions.
+beforeEach(() => {
+  // Individual tests may deliberately delete or replace process.env. Restore
+  // the hermetic ingress before constructing the next test's authority.
+  sanitizeHermeticEnv(process.env, hermeticHome)
+  process.env.AGENC_TEST_HERMETIC_HOME = hermeticHome
+  const environment = Object.freeze({ ...process.env })
+  const home = environment.AGENC_HOME
+  if (home === undefined || home.length === 0) {
+    throw new Error('AGENC_HOME is required by the canonical settings test harness')
+  }
+  enterCanonicalSettingsAuthority(
+    new ConfigStore({
+      home,
+      env: environment,
+      cwd: process.cwd(),
+    }),
+  )
+  enterStartupProviderSelectionForTestingOnly({
+    provider: 'grok',
+    model: 'grok-4.6',
+    environment,
+  })
+})

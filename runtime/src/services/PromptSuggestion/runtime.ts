@@ -1,16 +1,10 @@
 /**
- * Local runtime helpers for the prompt-suggestion service.
- *
- * This file carries the small source-reference helper slices that S-04 needs
- * without importing mirror PromptSuggestion modules. The live service can
- * therefore compile and
- * run as AgenC-owned code while preserving the prompt-suggestion control flow.
+ * Shared runtime types and helpers for prompt suggestions and speculative
+ * follow-up work.
  */
 
 import { randomUUID } from 'crypto'
-import { tmpdir } from 'os'
-import { join, resolve } from 'path'
-import { tokenizeCliOptionRegion } from '../../bin/cli-option-region.js'
+import { resolve } from 'path'
 import type { LLMProvider } from '../../llm/types.js'
 import { isDangerousCommand } from '../../permissions/bash.js'
 import {
@@ -95,6 +89,8 @@ export type SpeculationState =
       isPipelined: boolean
       speculationEnabled?: boolean
       cwd: string
+      /** Exact private overlay created when this speculation started. */
+      overlayPath: string
       contextRef: { current: REPLHookContext }
       pipelinedSuggestion?: {
         text: string
@@ -183,8 +179,7 @@ export type PromptSuggestionSettings = {
   readonly promptSuggestionEnabled?: boolean
   readonly isNonInteractiveSession?: boolean
   readonly isTeammateSession?: boolean
-  readonly promptSuggestionFeatureEnabled?: boolean
-  readonly agentSwarmsEnabled?: boolean
+  readonly agentSwarmsEnabled: boolean
 }
 
 export type PromptSuggestionRuntimeOptions = {
@@ -195,52 +190,11 @@ export type PromptSuggestionRuntimeOptions = {
 const INTERRUPT_MESSAGE_TEXT = '[Request interrupted by user]'
 const INTERRUPT_MESSAGE_FOR_TOOL_USE_TEXT =
   '[Request interrupted by user for tool use]'
-
 export const INTERRUPT_MESSAGE = INTERRUPT_MESSAGE_TEXT
 export const INTERRUPT_MESSAGE_FOR_TOOL_USE =
   INTERRUPT_MESSAGE_FOR_TOOL_USE_TEXT
 
-export function getFeatureValue_CACHED_MAY_BE_STALE<T>(
-  feature: string,
-  defaultValue: T,
-): T {
-  const raw = process.env.AGENC_INTERNAL_FC_OVERRIDES
-  if (raw && process.env.USER_TYPE === 'ant') {
-    try {
-      const parsed = JSON.parse(raw) as Record<string, unknown>
-      if (Object.hasOwn(parsed, feature)) return parsed[feature] as T
-    } catch {
-      return defaultValue
-    }
-  }
-  return defaultValue
-}
-
-export function getInitialPromptSuggestionSettings(
-  settings?: PromptSuggestionSettings | null,
-): PromptSuggestionSettings {
-  const raw = process.env.AGENC_PROMPT_SUGGESTION_ENABLED
-  if (raw === undefined) return settings ?? {}
-  return { promptSuggestionEnabled: !['0', 'false', 'no', 'off'].includes(raw) }
-}
-
-export function isAgentSwarmsEnabled(): boolean {
-  if (process.env.USER_TYPE === 'ant') return true
-  const { optionArgs } = tokenizeCliOptionRegion(process.argv.slice(2))
-  if (
-    !isEnvTruthy(process.env.AGENC_EXPERIMENTAL_AGENT_TEAMS) &&
-    !optionArgs.includes('--agent-teams')
-  ) {
-    return false
-  }
-  return getFeatureValue_CACHED_MAY_BE_STALE('tengu_amber_flint', true)
-}
-
 export function isSpeculationConfigEnabled(speculationEnabled?: boolean): boolean {
-  const envOverride = process.env.AGENC_SPECULATION_ENABLED
-  if (envOverride !== undefined) {
-    return !['0', 'false', 'no', 'off'].includes(envOverride.toLowerCase())
-  }
   return speculationEnabled !== false
 }
 
@@ -372,9 +326,11 @@ export function extractReadFilesFromMessages(
     for (const block of content) {
       if (!block || typeof block !== 'object') continue
       const candidate = block as Record<string, unknown>
+      // Current turns use FileRead. The old spelling remains here only while
+      // reconstructing file state from persisted transcripts.
       if (
         candidate.type === 'tool_use' &&
-        candidate.name === 'Read' &&
+        (candidate.name === 'FileRead' || candidate.name === 'Read') &&
         typeof candidate.id === 'string'
       ) {
         const input = candidate.input
@@ -402,18 +358,6 @@ export function extractReadFilesFromMessages(
   }
 
   return extracted
-}
-
-export function getPromptSuggestionTempDir(): string {
-  return join(tmpdir(), 'agenc')
-}
-
-export function getTranscriptPath(): string {
-  return join(getPromptSuggestionTempDir(), 'transcript.jsonl')
-}
-
-export function jsonStringify(value: unknown): string {
-  return JSON.stringify(value)
 }
 
 export function getCurrentCwd(fallback?: string): string {

@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 type SpawnFlagState = {
-  readonly bypassPermissions?: boolean
   readonly chromeFlag?: boolean
   readonly inlinePlugins?: readonly string[]
-  readonly mainLoopModel?: string
   readonly settingsPath?: string
   readonly teammateMode?: string
+  readonly simpleMode?: boolean
+  readonly dangerouslyBypassApprovalsAndSandbox?: boolean
+  readonly selectedModel?: string
 }
 
 afterEach(() => {
@@ -22,8 +23,6 @@ async function loadSpawnUtils(state: SpawnFlagState = {}) {
     getChromeFlagOverride: () => state.chromeFlag,
     getFlagSettingsPath: () => state.settingsPath,
     getInlinePlugins: () => state.inlinePlugins ?? [],
-    getMainLoopModelOverride: () => state.mainLoopModel,
-    getSessionBypassPermissionsMode: () => state.bypassPermissions ?? false,
   }))
   vi.doMock('../../../src/utils/bundledMode.js', () => ({
     isInBundledMode: () => false,
@@ -35,24 +34,74 @@ async function loadSpawnUtils(state: SpawnFlagState = {}) {
     }),
   )
 
-  return import('../../../src/utils/swarm/spawnUtils.js')
+  const spawnUtils = await import('../../../src/utils/swarm/spawnUtils.js')
+  const { runWithAgentRuntimeOptions } = await import(
+    '../../../src/session/runtime-options.js'
+  )
+  const { runWithStartupProviderSelection } = await import(
+    '../../../src/utils/model/providers.js'
+  )
+  const runtimeOptions = Object.freeze({
+    simpleMode: state.simpleMode ?? false,
+    dangerouslyBypassApprovalsAndSandbox:
+      state.dangerouslyBypassApprovalsAndSandbox ?? false,
+    stdinDataMode: false,
+    remoteMode: false,
+    sessionTempRoot: '/tmp/agenc-spawn-flags-temp',
+    pluginStorageRoot: '/tmp/agenc-spawn-flags-plugins',
+    allowUntrustedHooks: false,
+  })
+  return {
+    ...spawnUtils,
+    buildInheritedCliFlags: (
+      options?: Parameters<typeof spawnUtils.buildInheritedCliFlags>[0],
+    ) =>
+      runWithStartupProviderSelection(
+        {
+          provider: 'grok',
+          model: state.selectedModel ?? 'leader-model',
+          environment: {},
+        },
+        () =>
+          runWithAgentRuntimeOptions(runtimeOptions, () =>
+            spawnUtils.buildInheritedCliFlags(options),
+          ),
+      ),
+  }
 }
 
 describe('buildInheritedCliFlags', () => {
+  test('propagates approval bypass without inventing sandbox bypass', async () => {
+    const { buildInheritedCliFlags } = await loadSpawnUtils()
+
+    const flags = buildInheritedCliFlags({
+      permissionMode: 'bypassPermissions',
+    })
+
+    expect(flags).toContain('--permission-mode bypassPermissions')
+    expect(flags).not.toContain('--dangerously-bypass-approvals-and-sandbox')
+  })
+
+  test('does not invent bypass authority for a non-bypass mode', async () => {
+    const { buildInheritedCliFlags } = await loadSpawnUtils()
+
+    expect(buildInheritedCliFlags({ permissionMode: 'default' })).toBe(
+      '--model leader-model --teammate-mode default',
+    )
+  })
+
   test('propagates auto permission mode and teammate mode together', async () => {
     const { buildInheritedCliFlags } = await loadSpawnUtils({
       teammateMode: 'tmux',
     })
 
     expect(buildInheritedCliFlags({ permissionMode: 'auto' })).toBe(
-      '--permission-mode auto --teammate-mode tmux',
+      '--permission-mode auto --model leader-model --teammate-mode tmux',
     )
   })
 
-  test('uses explicit teammate model instead of the leader model override', async () => {
-    const { buildInheritedCliFlags } = await loadSpawnUtils({
-      mainLoopModel: 'leader model with spaces',
-    })
+  test('uses the explicit teammate model', async () => {
+    const { buildInheritedCliFlags } = await loadSpawnUtils()
 
     const flags = buildInheritedCliFlags({
       permissionMode: 'acceptEdits',
@@ -62,16 +111,23 @@ describe('buildInheritedCliFlags', () => {
     expect(flags).toBe(
       "--permission-mode acceptEdits --model 'worker model with spaces' --teammate-mode default",
     )
-    expect(flags).not.toContain('leader model')
   })
 
-  test('falls back to the leader model when no teammate model is provided', async () => {
+  test('uses the bound leader model when the caller omits an override', async () => {
     const { buildInheritedCliFlags } = await loadSpawnUtils({
-      mainLoopModel: 'leader model with spaces',
+      selectedModel: 'bound-leader-model',
     })
 
     expect(buildInheritedCliFlags()).toBe(
-      "--model 'leader model with spaces' --teammate-mode default",
+      '--model bound-leader-model --teammate-mode default',
     )
+  })
+
+  test('propagates immutable bare mode from the parent runtime', async () => {
+    const { buildInheritedCliFlags } = await loadSpawnUtils({ simpleMode: true })
+
+    const flags = buildInheritedCliFlags()
+
+    expect(flags).toBe('--model leader-model --bare --teammate-mode default')
   })
 })

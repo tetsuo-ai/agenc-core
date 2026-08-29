@@ -205,7 +205,6 @@ describe("CronScheduler", () => {
         value: "prompt-bbbb0002",
         mode: "task-notification",
         isMeta: true,
-        workload: "cron",
         queueOwner: TEST_ACTIVATION.queueOwner,
       }),
     );
@@ -453,7 +452,6 @@ describe("cronEnqueueToCommandQueue (production wiring)", () => {
       value: "do the thing",
       mode: "task-notification",
       isMeta: true,
-      workload: "cron",
       agentId: "agent-123",
       queueOwner: { ...TEST_ACTIVATION.queueOwner },
     });
@@ -463,7 +461,6 @@ describe("cronEnqueueToCommandQueue (production wiring)", () => {
       value: "do the thing",
       mode: "task-notification",
       isMeta: true,
-      workload: "cron",
       agentId: "agent-123",
       queueOwner: { ...TEST_ACTIVATION.queueOwner },
     });
@@ -474,7 +471,6 @@ describe("cronEnqueueToCommandQueue (production wiring)", () => {
       value: "no agent",
       mode: "task-notification",
       isMeta: true,
-      workload: "cron",
       queueOwner: { ...TEST_ACTIVATION.queueOwner },
     });
 

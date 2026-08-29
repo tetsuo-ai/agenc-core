@@ -31,9 +31,11 @@ import {
 } from "../../llm/xai-capability-config.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
+import type { HomeContext } from "../../config/home.js";
 
 export interface ImagineVideoToolOptions {
   readonly workspaceRoot: string;
+  readonly home: HomeContext;
   readonly getSession: () => {
     services?: { provider?: unknown };
   } | null;
@@ -205,12 +207,16 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
 
       const sessionKey =
         typeof factory.apiKey === "string" ? factory.apiKey : undefined;
-      const bearer = resolveXaiBearerToken(opts.env ?? process.env, sessionKey);
+      const bearer = resolveXaiBearerToken(
+        opts.home,
+        opts.env ?? process.env,
+        sessionKey,
+      );
       if (!bearer) {
         return json(
           {
             error:
-              "ImagineVideo needs xAI credentials: /grok-login (subscription) or XAI_API_KEY / GROK_API_KEY / AGENC_XAI_API_KEY.",
+              "ImagineVideo needs xAI credentials: /grok-login (subscription) or XAI_API_KEY / GROK_API_KEY.",
           },
           true,
         );

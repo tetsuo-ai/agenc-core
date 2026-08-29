@@ -2,6 +2,7 @@ import React from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { renderToString } from "../../utils/staticRender.js";
+import { FullscreenModeProvider } from "../context/fullscreenModeContext.js";
 import { Text } from "../ink.js";
 import { BashModeProgress } from "./BashModeProgress.js";
 
@@ -122,13 +123,16 @@ describe("BashModeProgress", () => {
 
   test("falls back to BashTool progress rendering before progress arrives", async () => {
     const output = await renderToString(
-      <RerenderBashModeProgress input="pwd" progress={null} verbose={false} />,
+      <FullscreenModeProvider enabled={true}>
+        <RerenderBashModeProgress input="pwd" progress={null} verbose={false} />
+      </FullscreenModeProvider>,
       120,
     );
 
     expect(output).toContain("input:<bash-input>pwd</bash-input>");
     expect(output).toContain("fallback:false");
     expect(bashToolMock.renderFallback).toHaveBeenCalledWith([], {
+      fullscreen: true,
       terminalSize: undefined,
       tools: [],
       verbose: false,

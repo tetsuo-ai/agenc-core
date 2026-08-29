@@ -9,7 +9,6 @@ const SHELL_WORKSPACE_WRITE_TOOL_NAMES = new Set([
   "exec_command",
   "write_stdin",
   "system.bash",
-  "desktop.bash",
 ]);
 const SHELL_WRAPPER_COMMANDS = new Set([
   "bash",

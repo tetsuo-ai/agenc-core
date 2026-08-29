@@ -8,8 +8,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export const meta = {
-  description: "--yolo: model uses Edit, file content updated on disk.",
-  args: ["--yolo"],
+  description: "--dangerously-bypass-approvals-and-sandbox: model uses Edit, file content updated on disk.",
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   timeoutMs: 120_000,
   slimCwd: true,
 };

@@ -11,12 +11,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { vi } from "vitest";
+
+const pinnedRipgrepSeam = vi.hoisted(() => ({ path: "" }));
+
+vi.mock("../../src/tools/system/pinned-ripgrep.js", () => ({
+  selectPinnedRipgrepPath: () => pinnedRipgrepSeam.path || undefined,
+}));
 
 import {
   SandboxExecutionBroker,
   attachSandboxExecutionBroker,
+  type SandboxPreparedSpawn,
   type SandboxSpawnCommand,
 } from "../../src/sandbox/execution-broker.js";
+import { registerSandboxPreparedSpawn } from "../../src/sandbox/execution-prepared-spawn.js";
 import { createGlobTool } from "../../src/tools/system/glob.js";
 import {
   __resetRipgrepProbeForTests,
@@ -47,12 +56,14 @@ describe("model-controlled helper process sandbox closure", () => {
       "utf8",
     );
     await chmod(rg, 0o755);
+    pinnedRipgrepSeam.path = rg;
     process.env.PATH = `${bin}:${savedPath ?? ""}`;
     __resetRipgrepProbeForTests();
   });
 
   afterEach(async () => {
     process.env.PATH = savedPath;
+    pinnedRipgrepSeam.path = "";
     __resetRipgrepProbeForTests();
     if (root) await rm(root, { recursive: true, force: true });
   });
@@ -102,8 +113,19 @@ describe("model-controlled helper process sandbox closure", () => {
       cwd: root,
     });
     Object.defineProperty(broker, "prepareSpawn", {
-      value: (_surface: string, command: SandboxSpawnCommand) =>
-        transform(command),
+      value: (_surface: string, command: SandboxSpawnCommand) => {
+        const transformed = transform(command);
+        const signal = new AbortController().signal;
+        const preparedSpawn: SandboxPreparedSpawn = {
+          run: operation => operation(transformed, signal),
+          start: operation => operation(transformed, signal).value,
+          runSync: operation => operation(transformed),
+          spawnLifecycleParticipant: (_participantName, operation) =>
+            operation(transformed),
+        };
+        registerSandboxPreparedSpawn(preparedSpawn);
+        return preparedSpawn;
+      },
     });
     return broker;
   }
@@ -413,20 +435,42 @@ describe("model-controlled helper process sandbox closure", () => {
 
     for (const testCase of cases) {
       const capture = join(root, `${testCase.label}-changed-cwd.json`);
-      const broker = transformingDangerBroker((command) =>
-        capturedNodeCommand({
+      const broker = transformingDangerBroker((command) => {
+        if (command.args.includes("--version")) {
+          return {
+            ...command,
+            program: process.execPath,
+            args: ["-e", "process.stdout.write('ripgrep 99.0.0\\n')"],
+            cwd: ".",
+          };
+        }
+        return capturedNodeCommand({
           original: command,
           capturePath: capture,
           cwd: changedCwd,
           label: `${testCase.label}-changed-cwd`,
           stdout: "",
-        }),
-      );
+        });
+      });
       attachSandboxExecutionBroker(testCase.args, broker, "interactive");
 
-      await expect(testCase.execute(testCase.args)).rejects.toThrow(
-        /sandbox transform changed descriptor-bound ripgrep cwd/u,
+      const outcome = await testCase.execute(testCase.args).then(
+        result => ({ result }),
+        error => ({ error }),
       );
+      if ("error" in outcome) {
+        expect(outcome.error).toBeInstanceOf(Error);
+        expect((outcome.error as Error).message).toContain(
+          "sandbox transform changed descriptor-bound ripgrep cwd",
+        );
+      } else {
+        expect(outcome.result).toMatchObject({
+          isError: true,
+          content: expect.stringContaining(
+            "sandbox transform changed descriptor-bound ripgrep cwd",
+          ),
+        });
+      }
       await expect(access(capture)).rejects.toMatchObject({ code: "ENOENT" });
       __resetRipgrepProbeForTests();
     }
@@ -448,15 +492,32 @@ describe("model-controlled helper process sandbox closure", () => {
     ];
 
     for (const testCase of cases) {
-      const broker = transformingDangerBroker((command) => ({
-        ...command,
-        argv0: "x".repeat(MAX_GREP_ARGV_UTF8_BYTES + 1),
-      }));
+      const broker = transformingDangerBroker((command) =>
+        command.args.includes("--version")
+          ? {
+              ...command,
+              program: process.execPath,
+              args: ["-e", "process.stdout.write('ripgrep 99.0.0\\n')"],
+            }
+          : {
+              ...command,
+              argv0: "x".repeat(MAX_GREP_ARGV_UTF8_BYTES + 1),
+            },
+      );
       attachSandboxExecutionBroker(testCase.args, broker, "interactive");
 
-      await expect(testCase.execute(testCase.args)).rejects.toMatchObject({
-        reason: "ARGV_UTF8_LIMIT",
-      });
+      const outcome = await testCase.execute(testCase.args).then(
+        result => ({ result }),
+        error => ({ error }),
+      );
+      if ("error" in outcome) {
+        expect(outcome.error).toMatchObject({ reason: "ARGV_UTF8_LIMIT" });
+      } else {
+        expect(outcome.result).toMatchObject({
+          isError: true,
+          content: expect.stringMatching(/ripgrep argv is .* maximum is/u),
+        });
+      }
       __resetRipgrepProbeForTests();
     }
     await expectMarkerAbsent();

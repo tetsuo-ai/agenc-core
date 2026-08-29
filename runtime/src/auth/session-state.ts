@@ -1,14 +1,28 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
-import { resolveAgencHome, type EnvSnapshot } from "../config/env.js";
+import type { EnvSnapshot } from "../config/env.js";
+import type { HomeContext } from "../config/home.js";
 import type { AuthSubscriptionTier } from "./backend.js";
+import { readRemoteBearerCredential } from "./native-credentials.js";
+
+const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN" as const;
 
 interface AuthDiskState {
   readonly provider?: unknown;
-  readonly token?: unknown;
+  readonly createdAt?: unknown;
   readonly expiresAt?: unknown;
   readonly subscriptionTier?: unknown;
+}
+
+interface RemoteAuthSessionState extends AuthDiskState {
+  readonly token: string;
+}
+
+export interface RemoteAuthSessionReadContext {
+  /** Canonical native secure storage and metadata identity captured at ingress. */
+  readonly home: HomeContext;
+  /** Immutable session/CLI environment captured at the same ingress. */
+  readonly environment: EnvSnapshot;
 }
 
 function normalizeSubscriptionTier(
@@ -29,14 +43,27 @@ function isEntitledSubscriptionTier(
 }
 
 function readRemoteAuthSessionSync(
-  env: EnvSnapshot = process.env,
-): AuthDiskState | null {
+  context: RemoteAuthSessionReadContext,
+): RemoteAuthSessionState | null {
   try {
+    const explicitToken = trimNonEmpty(
+      context.environment[REMOTE_AUTH_TOKEN_ENV],
+    );
+    if (explicitToken !== undefined) {
+      return { token: explicitToken };
+    }
     const state = JSON.parse(
-      readFileSync(join(resolveAgencHome(env), "auth.json"), "utf8"),
+      readFileSync(context.home.authPath, "utf8"),
     ) as AuthDiskState;
     if (state.provider !== "remote") return null;
-    if (typeof state.token !== "string" || state.token.trim().length === 0) {
+    const credential = readRemoteBearerCredential(
+      context.home,
+    );
+    if (
+      credential === undefined ||
+      typeof state.createdAt !== "string" ||
+      credential.createdAt !== state.createdAt
+    ) {
       return null;
     }
     if (typeof state.expiresAt === "string") {
@@ -45,34 +72,41 @@ function readRemoteAuthSessionSync(
         return null;
       }
     }
-    return state;
+    return { ...state, token: credential.bearerToken };
   } catch {
     return null;
   }
 }
 
 export function hasRemoteAuthSessionSync(
-  env: EnvSnapshot = process.env,
+  context: RemoteAuthSessionReadContext,
 ): boolean {
-  return readRemoteAuthSessionSync(env) !== null;
+  return readRemoteAuthSessionSync(context) !== null;
 }
 
 export function remoteAuthSessionTokenSync(
-  env: EnvSnapshot = process.env,
+  context: RemoteAuthSessionReadContext,
 ): string | undefined {
-  return readRemoteAuthSessionSync(env)?.token as string | undefined;
+  return readRemoteAuthSessionSync(context)?.token;
 }
 
 export function remoteAuthSessionSubscriptionTierSync(
-  env: EnvSnapshot = process.env,
+  context: RemoteAuthSessionReadContext,
 ): AuthSubscriptionTier | undefined {
   return normalizeSubscriptionTier(
-    readRemoteAuthSessionSync(env)?.subscriptionTier,
+    readRemoteAuthSessionSync(context)?.subscriptionTier,
   );
 }
 
 export function hasEntitledRemoteAuthSessionSync(
-  env: EnvSnapshot = process.env,
+  context: RemoteAuthSessionReadContext,
 ): boolean {
-  return isEntitledSubscriptionTier(remoteAuthSessionSubscriptionTierSync(env));
+  return isEntitledSubscriptionTier(
+    remoteAuthSessionSubscriptionTierSync(context),
+  );
+}
+
+function trimNonEmpty(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
 }

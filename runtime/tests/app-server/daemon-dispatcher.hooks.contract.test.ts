@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
-import { JSON_RPC_VERSION } from "./protocol/index.js";
+import {
+  AGENC_DAEMON_PROTOCOL_VERSION,
+  JSON_RPC_VERSION,
+} from "./protocol/index.js";
 import type {
   SessionHooksSetDisabledParams,
   SessionHooksStatusParams,
@@ -14,7 +17,7 @@ async function initialize(connection: {
     jsonrpc: JSON_RPC_VERSION,
     id: "init",
     method: "initialize",
-    params: { protocol: { version: "1.0.0" } },
+    params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION } },
   });
 }
 
@@ -26,6 +29,9 @@ describe("daemon session.hooks.* internal method dispatch", () => {
         available: true,
         sourcePath: "/home/agent/.agenc/config.toml",
         disabled: false,
+        hardSuppressed: true,
+        effectiveDisabled: true,
+        suppressionReason: "bare_mode" as const,
         issues: [],
         hooks: [
           {
@@ -59,6 +65,10 @@ describe("daemon session.hooks.* internal method dispatch", () => {
       result: {
         sessionId: "session_1",
         available: true,
+        disabled: false,
+        hardSuppressed: true,
+        effectiveDisabled: true,
+        suppressionReason: "bare_mode",
         hooks: [{ event: "PreToolUse", index: 0 }],
       },
     });
@@ -95,6 +105,9 @@ describe("daemon session.hooks.* internal method dispatch", () => {
         sessionId: params.sessionId,
         applied: true,
         disabled: params.disabled,
+        hardSuppressed: true,
+        effectiveDisabled: true,
+        suppressionReason: "bare_mode" as const,
       }),
     );
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
@@ -108,16 +121,23 @@ describe("daemon session.hooks.* internal method dispatch", () => {
         jsonrpc: JSON_RPC_VERSION,
         id: "hooks-disable",
         method: "session.hooks.setDisabled",
-        params: { sessionId: "session_1", disabled: true },
+        params: { sessionId: "session_1", disabled: false },
       }),
     ).resolves.toEqual({
       jsonrpc: JSON_RPC_VERSION,
       id: "hooks-disable",
-      result: { sessionId: "session_1", applied: true, disabled: true },
+      result: {
+        sessionId: "session_1",
+        applied: true,
+        disabled: false,
+        hardSuppressed: true,
+        effectiveDisabled: true,
+        suppressionReason: "bare_mode",
+      },
     });
     expect(setSessionHooksDisabled).toHaveBeenCalledWith({
       sessionId: "session_1",
-      disabled: true,
+      disabled: false,
     });
   });
 

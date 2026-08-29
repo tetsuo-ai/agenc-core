@@ -231,6 +231,38 @@ describe("planCommand.execute", () => {
     );
   });
 
+  it("keeps the daemon-reconciled permission projection when entering plan mode", async () => {
+    const daemonProjection = createEmptyToolPermissionContext({
+      mode: "plan",
+      prePlanMode: "default",
+      alwaysDenyRules: {
+        managedSettings: ["system.bash(curl:*)"],
+      },
+    });
+    let liveRegistry: PermissionModeRegistry | undefined;
+    const setDaemonPermissionMode = vi.fn(async () => {
+      await liveRegistry!.update(daemonProjection);
+    });
+    const h = mkHarness({
+      initialMode: "default",
+      setDaemonPermissionMode,
+    });
+    liveRegistry = h.registry;
+
+    const res = await planCommand.execute(h.ctx);
+
+    expect(res).toEqual({ kind: "text", text: "Enabled plan mode" });
+    expect(setDaemonPermissionMode).toHaveBeenCalledWith("plan");
+    expect(h.registry.current()).not.toBe(daemonProjection);
+    expect(h.registry.current()).toMatchObject({
+      mode: "plan",
+      prePlanMode: "default",
+    });
+    expect(h.registry.current().alwaysDenyRules.managedSettings).toEqual([
+      "system.bash(curl:*)",
+    ]);
+  });
+
   it("transitions default -> plan and opens v2 dashboard when TUI app state is wired", async () => {
     const setToolJSX = vi.fn();
     const h = mkHarness({

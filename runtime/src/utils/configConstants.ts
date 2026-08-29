@@ -20,4 +20,21 @@ export const EDITOR_MODES = ['normal', 'vim'] as const
 // 'auto' = automatically choose based on context (default)
 export const TEAMMATE_MODES = ['auto', 'tmux', 'in-process'] as const
 
-export const PROVIDERS = ['openai', 'anthropic', 'mistral', 'gemini'] as const
+export const PROVIDERS = [
+  'grok',
+  'openai',
+  'anthropic',
+  'ollama',
+  'lmstudio',
+  'openai-compatible',
+  'openrouter',
+  'groq',
+  'deepseek',
+  'gemini',
+  'mistral',
+  'nvidia-nim',
+  'minimax',
+  'github',
+  'amazon-bedrock',
+  'agenc',
+] as const

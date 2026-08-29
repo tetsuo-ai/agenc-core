@@ -9,10 +9,10 @@ import {
   type AgenCSessionLifecycleOptions,
 } from "./session-lifecycle.js";
 import {
-  attachDaemonTuiSession,
   type AgenCDaemonTuiClient,
   type AgenCTuiBridgeSession,
 } from "../tui/daemon-session.js";
+import { attachDaemonTuiSessionFixture as attachDaemonTuiSession } from "../helpers/daemon-tui-session.js";
 import type {
   AgenCDaemonMethod,
   AgenCDaemonResultByMethod,

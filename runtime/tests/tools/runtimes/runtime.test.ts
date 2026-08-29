@@ -42,6 +42,12 @@ import {
 } from "./context.js";
 import { createToolExecutionRuntime } from "./parallel.js";
 
+const TEST_SESSION_TEMP_ROOT = join(tmpdir(), "agenc-runtime-session-root");
+const TEST_RUNTIME_SERVICES = {
+  admissionRequired: false,
+  runtimeOptions: { sessionTempRoot: TEST_SESSION_TEMP_ROOT },
+} as const;
+
 function callContext(
   callId: string,
   classification: ToolRuntimeCallContext["classification"],
@@ -256,9 +262,19 @@ describe("tools/runtimes", () => {
       { cwd: "/repo" },
     );
 
-    expect(canReadPathWithCwd(profile.fileSystem, "/etc/passwd", "/repo"))
+    expect(canReadPathWithCwd(
+      profile.fileSystem,
+      "/etc/passwd",
+      "/repo",
+      TEST_SESSION_TEMP_ROOT,
+    ))
       .toBe(true);
-    expect(canReadPathWithCwd(profile.fileSystem, "/repo/private/key", "/repo"))
+    expect(canReadPathWithCwd(
+      profile.fileSystem,
+      "/repo/private/key",
+      "/repo",
+      TEST_SESSION_TEMP_ROOT,
+    ))
       .toBe(false);
   });
 
@@ -271,7 +287,7 @@ describe("tools/runtimes", () => {
       execute: async () => ({ content: "not reached" }),
     };
     const invocation = {
-      session: {} as never,
+      session: { services: TEST_RUNTIME_SERVICES } as never,
       turn: { cwd: "/repo" } as never,
       tracker: tracker() as never,
       callId: "call-sandbox-enforce",
@@ -597,6 +613,23 @@ describe("tools/runtimes", () => {
           },
           tool: shellTool,
           args: { cmd: "echo allowed > /tmp/agenc-runtime-tmpdir/file.txt" },
+        }),
+      ).toThrow(/workspace_write blocked/);
+      expect(() =>
+        enforceRuntimeSandboxAttempt({
+          context: {
+            ...base,
+            approvalPolicy: "never",
+            requestedSandboxMode: "workspace_write",
+            sandboxMode: "workspace_write",
+            approvalResolved: false,
+            rawArgs: "{}",
+            invocation: sandboxedInvocation,
+          },
+          tool: shellTool,
+          args: {
+            cmd: `echo allowed > ${TEST_SESSION_TEMP_ROOT}/file.txt`,
+          },
         }),
       ).not.toThrow();
     } finally {
@@ -948,7 +981,7 @@ describe("tools/runtimes", () => {
 
   test("virtualNoFsWrites tools bypass the indeterminate-target denial without weakening real writers", () => {
     const invocation = {
-      session: {} as never,
+      session: { services: TEST_RUNTIME_SERVICES } as never,
       turn: { cwd: "/repo" } as never,
       tracker: tracker() as never,
       callId: "call-virtual-no-fs",
@@ -1144,7 +1177,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: TEST_RUNTIME_SERVICES,
         } as never,
         turn: {
           subId: "turn-exec-read-outside",
@@ -1171,7 +1204,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: TEST_RUNTIME_SERVICES,
         } as never,
         turn: {
           subId: "turn-exec-generated-write",
@@ -1213,7 +1246,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: TEST_RUNTIME_SERVICES,
         } as never,
         turn: {
           subId: "turn-exec-root-scoped-read",
@@ -1267,7 +1300,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: TEST_RUNTIME_SERVICES,
         } as never,
         turn: {
           subId: "turn-stdin-no-helper",
@@ -1310,7 +1343,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: TEST_RUNTIME_SERVICES,
         } as never,
         turn: {
           subId: "turn-stdin-read-only",
@@ -1347,7 +1380,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: TEST_RUNTIME_SERVICES,
         } as never,
         turn: {
           subId: "turn-stdin-continue",
@@ -1384,7 +1417,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: TEST_RUNTIME_SERVICES,
         } as never,
         turn: {
           subId: "turn-stdin-full-access",
@@ -1435,7 +1468,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: TEST_RUNTIME_SERVICES,
         } as never,
         turn: {
           subId: "turn-real-exec-no-helper",
@@ -1503,7 +1536,7 @@ describe("tools/runtimes", () => {
           {
             session: {
               eventLog: new EventLog(),
-              services: { admissionRequired: false },
+              services: TEST_RUNTIME_SERVICES,
             } as never,
             turn: {
               subId: "turn-helper-check",
@@ -1567,7 +1600,7 @@ describe("tools/runtimes", () => {
     const baseOpts = {
       session: {
         eventLog: new EventLog(),
-        services: { admissionRequired: false },
+        services: TEST_RUNTIME_SERVICES,
       } as never,
       turn: {
         subId: "turn-shell-envelope",
@@ -1616,7 +1649,7 @@ describe("tools/runtimes", () => {
     const session = {
       conversationId: "runtime-write-session",
       eventLog: new EventLog(),
-      services: { admissionRequired: false },
+      services: TEST_RUNTIME_SERVICES,
     } as never;
 
     const blocked = await router.dispatchModelToolCall(
@@ -1689,7 +1722,7 @@ describe("tools/runtimes", () => {
     const session = {
       conversationId: sessionId,
       eventLog: new EventLog(),
-      services: { admissionRequired: false },
+      services: TEST_RUNTIME_SERVICES,
     } as never;
     const dispatch = (
       call: LLMToolCall,
@@ -1774,7 +1807,7 @@ describe("tools/runtimes", () => {
       "turn-edit-outside",
     );
     expect(outsideEdit.isError).toBe(true);
-    expect(outsideEdit.content).toContain("outside allowed");
+    expect(outsideEdit.content).toContain("workspace_write blocked");
     expect(readFileSync(outsideEditPath, "utf8")).toBe("outside alpha\n");
 
     const outsideMultiPath = join(outsideRoot, "outside-multi.txt");
@@ -1793,7 +1826,7 @@ describe("tools/runtimes", () => {
       "turn-multiedit-outside",
     );
     expect(outsideMulti.isError).toBe(true);
-    expect(outsideMulti.content).toContain("outside allowed");
+    expect(outsideMulti.content).toContain("workspace_write blocked");
     expect(readFileSync(outsideMultiPath, "utf8")).toBe(
       "outside one\noutside two\n",
     );
@@ -1855,7 +1888,7 @@ describe("tools/runtimes", () => {
     const session = {
       conversationId: "runtime-patch-session",
       eventLog: new EventLog(),
-      services: { admissionRequired: false },
+      services: TEST_RUNTIME_SERVICES,
     } as never;
     const insidePatch = [
       "*** Begin Patch",
@@ -1982,7 +2015,7 @@ describe("tools/runtimes", () => {
     const result = await router.dispatchModelToolCall(call, {
       session: {
         eventLog: new EventLog(),
-        services: { admissionRequired: false },
+        services: TEST_RUNTIME_SERVICES,
       } as never,
       turn: {
         subId: "turn-runtime-probe",
@@ -2047,7 +2080,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: TEST_RUNTIME_SERVICES,
         } as never,
         turn: {
           subId: "turn-runtime-escalation",
@@ -2098,7 +2131,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: TEST_RUNTIME_SERVICES,
         } as never,
         turn: {
           subId: "turn-direct-runtime",
@@ -2147,7 +2180,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: TEST_RUNTIME_SERVICES,
         } as never,
         turn: {
           subId: "turn-rich-runtime",
@@ -2190,7 +2223,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: TEST_RUNTIME_SERVICES,
         } as never,
         turn: {
           subId: "turn-bigint-runtime",
@@ -2245,7 +2278,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: TEST_RUNTIME_SERVICES,
         } as never,
         turn: {
           subId: "turn-code-mode-runtime",

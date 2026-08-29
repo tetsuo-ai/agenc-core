@@ -7,7 +7,7 @@ import {
 const task = (id: string, extra: Record<string, unknown> = {}) => ({
   id,
   type: "local_agent",
-  agentType: "worker",
+  agentType: "runner",
   startTime: id === "a" ? 1 : 2,
   status: "running",
   ...extra,

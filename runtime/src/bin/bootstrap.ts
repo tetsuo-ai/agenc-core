@@ -5,17 +5,13 @@ import { join } from "node:path";
 
 import {
   createProvider,
-  normalizeManagedGatewayModel,
-  normalizeProviderName,
+  resolveBuiltInProviderSlug,
   type ProviderName,
 } from "../llm/provider.js";
-import { resolveXaiCapabilityExtra } from "../llm/xai-capability-config.js";
 import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
 import type { LLMProvider } from "../llm/types.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
 import { createManagedFeatures } from "../llm/registry/features.js";
-import { setContextWindowUpgradeContext } from "../llm/context-window-upgrade.js";
-import { setActiveConfigModel } from "../bootstrap/state.js";
 import {
   markCapabilityDrift,
   markCapabilityVerified,
@@ -23,16 +19,20 @@ import {
   shouldProbeCapabilityEntry,
 } from "../llm/capabilities.js";
 import { MCPManager } from "../mcp-client/manager.js";
+import {
+  snapshotMcpRequestEnvironment,
+  snapshotMcpRequestEnvironmentForAuthority,
+} from "../mcp-client/environment.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { isAutoModeGateEnabled } from "../permissions/classifier.js";
-import { resolveApprovalPolicy } from "../permissions/approval-policy.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
 import { NetworkApprovalService as RuntimeNetworkApprovalService } from "../permissions/network-approval.js";
 import { initializeToolPermissionContext } from "../permissions/settings.js";
+import type { ToolPermissionContext } from "../permissions/types.js";
 import { buildTurnContext, type TurnContext } from "../session/turn-context.js";
 import { Session, type SessionState } from "../session/session.js";
 import {
-  createSessionMcpManagerFromSources,
+  createSessionMcpManager,
   createSessionMcpService,
 } from "../session/mcp-startup.js";
 import type {
@@ -40,6 +40,14 @@ import type {
   ModelInfo,
   SessionConfiguration,
 } from "../session/turn-context.js";
+import {
+  applySessionExecutionAuthority,
+  executionAuthorityForPermissionContext,
+  sandboxExecutionBrokerAuthorityFromSessionAuthority,
+  sessionConfigurationFromAgenCConfig,
+  sessionExecutionAuthorityFromAgenCConfig,
+  type SessionExecutionAuthority,
+} from "../session/configuration.js";
 import {
   SchemaMismatchError,
   SessionLockedError,
@@ -61,28 +69,36 @@ import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
 import { ErrorLogSidecar } from "../session/error-log.js";
 import { CostSidecar } from "../session/cost.js";
 import { bindActiveCostSidecar } from "../cost/tracker.js";
-import { shutdownSessionLifecycle } from "../session/lifecycle.js";
+import {
+  SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS,
+  shutdownSessionLifecycle,
+} from "../session/lifecycle.js";
 import type { EventMsg } from "../session/event-log.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import type { RunResumeReason } from "../contracts/run-contracts.js";
 import { AgentControl } from "../agents/control.js";
+import { AgentRoleCatalog } from "../agents/role-catalog.js";
 import { ThreadManager } from "../agents/thread-manager.js";
 import { ConversationThreadManager } from "../conversation/thread-manager.js";
 import { AgentRegistry } from "../agents/registry.js";
-import { createAgentRoleWorkspace, listAgentRoles } from "../agents/role.js";
+import { createAgentRoleWorkspace } from "../agents/role.js";
 import { loadFreshAgentDefinitions } from "../tools/AgentTool/loadAgentsDir.js";
 import {
   type BuildToolRegistryOptions,
   type ToolRegistry,
 } from "../tool-registry.js";
-import { getCompactSystemPrompt,
-  getSystemPrompt } from "../constants/prompts.js";
 import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
-import type { Tools as PromptTools } from "../tools/Tool.js";
+import { assembleBaseInstructionsForModel } from "../prompts/system-prompt.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
-import { UnifiedExecProcessManager } from "../unified-exec/process-manager.js";
+import {
+  UnifiedExecProcessManager,
+  type UnifiedExecSandboxAuthorityQuiesceToken,
+} from "../unified-exec/process-manager.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
-import { disposeSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
+import {
+  disposeSandboxExecutionBroker,
+  registerSandboxExecutionLifecycleParticipant,
+} from "../sandbox/execution-lifecycle.js";
 import { createCodeModeService } from "../tools/code-mode/service.js";
 import {
   clearCurrentRuntimeSession,
@@ -94,25 +110,39 @@ import {
   resolveAgencHome as resolveAgencHomeFromEnv,
   resolveWorkspace as resolveWorkspaceFromEnv,
 } from "../config/env.js";
-import { resolveProviderSettings } from "../config/resolve-provider.js";
+import {
+  resolveCommandExecutionAuthority,
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+  type AgentRuntimeOptions,
+} from "../session/runtime-options.js";
+import {
+  assertHostedAgencSubscriptionAuthority,
+  MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
+  requireProviderRuntimeCredential,
+  resolveProviderRuntimeAuthority,
+  snapshotProviderEnvironment,
+  type ProviderEnvironment,
+} from "../llm/provider-options.js";
+import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
+import { isGrokComposerModel } from "../llm/providers/grok/acp-adapter.js";
+import { runWithStartupProviderSelection } from "../utils/model/providers.js";
 import type { AgenCConfig } from "../config/schema.js";
-import { runStartupConfigMigrations } from "../state/migrations/config-migrations.js";
-import { maybeMigratePersonality } from "../personality/migration.js";
-import type { ResolvedProviderSettings } from "../config/resolve-provider.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
-import { selectByokPrecedenceApiKey } from "../auth/byok-precedence.js";
 import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
 import { bindSessionAgentControl } from "./delegate-tool.js";
 import {
   readStartupCliFlags,
-  resolveStartupSelection,
+  resolveCanonicalStartupSelection,
+  resolvedStartupProfileName,
+  startupConfigLayerOptions,
+  type StartupCliFlags,
 } from "./startup-selection.js";
 import { resolveProjectTrustStateSync } from "../permissions/trust/project-trust.js";
-export {
-  PROVIDER_MODEL_CATALOG,
-  resolveModelOrThrow,
-} from "./startup-selection.js";
+import { findSuitableShell } from "../utils/Shell.js";
+import { subprocessEnv } from "../utils/subprocessEnv.js";
+import { scrubEnvForChildProcess } from "../unified-exec/scrub-env.js";
 export type { StartupCliFlags, StartupSelection } from "./startup-selection.js";
 import {
   buildBootstrapSessionServices,
@@ -120,6 +150,7 @@ import {
 } from "./bootstrap-services.js";
 import { fetchStartupInternalEvents } from "./startup-internal-events.js";
 import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
+import { getProxyFetchOptions } from "../utils/proxy.js";
 import {
   CsvAgentJobsRepositoryAuthority,
   type CsvAgentJobsRepositoryProvider,
@@ -166,132 +197,12 @@ function firstNonEmptyString(
   return undefined;
 }
 
-interface AuthBackendWithLocalByokKeys extends AuthBackend {
-  readByokKey(
-    provider: string,
-  ): string | undefined | Promise<string | undefined>;
-}
-
-function canReadLocalByokKeys(
-  authBackend: AuthBackend | undefined,
-): authBackend is AuthBackendWithLocalByokKeys {
-  return (
-    authBackend !== undefined &&
-    typeof (authBackend as { readByokKey?: unknown }).readByokKey === "function"
-  );
-}
-
-async function readAuthBackendByokKey(
-  authBackend: AuthBackend | undefined,
-  provider: ProviderName,
-): Promise<string | undefined> {
-  if (!canReadLocalByokKeys(authBackend)) return undefined;
-  const apiKey = await authBackend.readByokKey(provider);
-  return typeof apiKey === "string" && apiKey.trim().length > 0
-    ? apiKey.trim()
-    : undefined;
-}
-
 async function resolveAuthSubscriptionTier(
   authBackend: AuthBackend | undefined,
   sessionId: string,
 ): Promise<AuthSubscriptionTier> {
   if (authBackend === undefined) return "free";
   return authBackend.getSubscriptionTier({ sessionId });
-}
-
-function isRemoteAuthBackend(authBackend: AuthBackend | undefined): boolean {
-  return authBackend?.kind === "remote";
-}
-
-function isSubscriptionEntitled(tier: AuthSubscriptionTier): boolean {
-  return tier === "pro" || tier === "team" || tier === "enterprise";
-}
-
-function providerHasLiveManagedSubscriptionRoute(
-  provider: ProviderName,
-): boolean {
-  return provider === "openrouter";
-}
-
-function allowsFreeManagedProviderKey(params: {
-  readonly provider: ProviderName;
-  readonly model: string;
-  readonly subscriptionTier: AuthSubscriptionTier;
-}): boolean {
-  return (
-    params.subscriptionTier === "free" &&
-    isFreeSubscriptionManagedModel(params.provider, params.model)
-  );
-}
-
-const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 2_048;
-
-async function buildBaseInstructionsForModel(params: {
-  readonly registry: ToolRegistry;
-  readonly model: string;
-  readonly coordinatorMode?: boolean;
-  readonly compactProfile?: boolean;
-}): Promise<string> {
-  if (params.coordinatorMode === true) {
-    const { getLiveCoordinatorSystemPrompt } =
-      await import("../coordinator/coordinatorMode.js");
-    return getLiveCoordinatorSystemPrompt();
-  }
-  if (params.compactProfile === true) {
-    return getCompactSystemPrompt().join("\n\n");
-  }
-  const sections = await getSystemPrompt(
-    params.registry.tools as unknown as PromptTools,
-    params.model,
-  );
-  return sections.join("\n\n");
-}
-
-function enforceRemoteSubscriptionGate(params: {
-  readonly authBackend: AuthBackend | undefined;
-  readonly subscriptionTier: AuthSubscriptionTier;
-  readonly provider: ProviderName;
-  readonly model: string;
-  readonly providerSettings: ResolvedProviderSettings | undefined;
-  readonly byokApiKey: string | undefined;
-  readonly managedKeysEnabled: boolean;
-}): void {
-  if (!isRemoteAuthBackend(params.authBackend)) return;
-  if (
-    isSubscriptionEntitled(params.subscriptionTier) ||
-    allowsFreeManagedProviderKey({
-      provider: params.provider,
-      model: params.model,
-      subscriptionTier: params.subscriptionTier,
-    })
-  )
-    return;
-  if (requiresAuthModelInference(params.provider, params.model)) {
-    throw new Error(
-      "Hosted AgenC model routing requires an active AgenC subscription",
-    );
-  }
-  if (
-    params.managedKeysEnabled &&
-    params.byokApiKey === undefined &&
-    providerApiKeyEnvHint(params.provider, params.providerSettings) !==
-      undefined
-  ) {
-    throw new Error(
-      "Managed provider keys require an active AgenC subscription; configure BYOK provider credentials instead",
-    );
-  }
-}
-
-function requiresAuthModelInference(provider: string, model: string): boolean {
-  const normalizedProvider = provider.trim().toLowerCase();
-  const normalizedModel = model.trim().toLowerCase();
-  return (
-    normalizedProvider === "agenc" ||
-    normalizedModel === "agenc" ||
-    normalizedModel.startsWith("agenc:")
-  );
 }
 
 async function resolveAuthModelSelection(params: {
@@ -303,7 +214,7 @@ async function resolveAuthModelSelection(params: {
 }): Promise<ResolvedAuthModelSelection> {
   if (
     params.authBackend === undefined ||
-    !requiresAuthModelInference(params.provider, params.model)
+    !isHostedAgencProvider(params.provider)
   ) {
     return {
       provider: params.provider,
@@ -312,120 +223,31 @@ async function resolveAuthModelSelection(params: {
       profileModel: params.model,
     };
   }
+  assertHostedAgencSubscriptionAuthority({
+    provider: params.provider,
+    authBackend: params.authBackend,
+    subscriptionTier: params.subscriptionTier,
+  });
   const inferred = await params.authBackend.inferAgencModel({
     provider: params.provider,
     requestedModel: params.model,
     sessionId: params.sessionId,
     subscriptionTier: params.subscriptionTier,
   });
-  const inferredProvider = normalizeProviderName(inferred.provider);
+  const inferredProvider = resolveBuiltInProviderSlug(inferred.provider);
   const inferredModel = firstNonEmptyString(inferred.model);
   if (inferredModel === undefined) {
     throw new Error("AuthBackend model inference returned an empty model");
   }
-  if (isHostedAgencProvider(params.provider)) {
-    return {
-      provider: params.provider,
-      model: params.model,
-      profileProvider:
-        inferredProvider !== null && inferredProvider !== "agenc"
-          ? inferredProvider
-          : params.provider,
-      profileModel: inferredModel,
-    };
-  }
   return {
-    provider:
-      inferredProvider !== null && inferredProvider !== "agenc"
-        ? inferredProvider
-        : params.provider,
-    model: inferredModel,
+    provider: params.provider,
+    model: params.model,
     profileProvider:
-      inferredProvider !== null && inferredProvider !== "agenc"
+      inferredProvider !== undefined && inferredProvider !== "agenc"
         ? inferredProvider
         : params.provider,
     profileModel: inferredModel,
   };
-}
-
-async function vendProviderKeyOrUndefined(params: {
-  readonly authBackend: AuthBackend | undefined;
-  readonly provider: ProviderName;
-  readonly sessionId: string;
-}): Promise<ManagedProviderKeyResult> {
-  if (params.authBackend === undefined) return { attempted: false };
-  if (!providerHasLiveManagedSubscriptionRoute(params.provider)) {
-    return { attempted: false, disabled: true };
-  }
-  try {
-    const key = await params.authBackend.vendKey(
-      params.provider,
-      params.sessionId,
-    );
-    const apiKey = key.apiKey.trim();
-    const baseURL = key.baseUrl?.trim();
-    return apiKey.length > 0
-      ? {
-          attempted: true,
-          apiKey,
-          ...(baseURL ? { baseURL } : {}),
-        }
-      : { attempted: true };
-  } catch {
-    return { attempted: true };
-  }
-}
-
-interface ManagedProviderKeyResult {
-  readonly attempted: boolean;
-  readonly disabled?: boolean;
-  readonly apiKey?: string;
-  readonly baseURL?: string;
-}
-
-const PROVIDER_API_KEY_ENV_HINTS: Readonly<
-  Partial<Record<ProviderName, string>>
-> = Object.freeze({
-  grok: "XAI_API_KEY",
-  openai: "OPENAI_API_KEY",
-  anthropic: "ANTHROPIC_API_KEY",
-  openrouter: "OPENROUTER_API_KEY",
-  groq: "GROQ_API_KEY",
-  deepseek: "DEEPSEEK_API_KEY",
-  gemini: "GEMINI_API_KEY",
-});
-
-function requireProviderApiKeyOrUndefined(params: {
-  readonly provider: ProviderName;
-  readonly providerSettings: ResolvedProviderSettings | undefined;
-  readonly apiKey: string | undefined;
-  readonly managedKey: ManagedProviderKeyResult;
-}): string | undefined {
-  if (params.apiKey !== undefined) return params.apiKey;
-  const envHint = providerApiKeyEnvHint(
-    params.provider,
-    params.providerSettings,
-  );
-  if (envHint === undefined) return undefined;
-  const managedKeyHint = !providerHasLiveManagedSubscriptionRoute(
-    params.provider,
-  )
-    ? "Subscription-managed access is currently live for OpenRouter only."
-    : params.managedKey.disabled
-      ? "Managed key vending is disabled by auth.managedKeys.enabled."
-      : params.managedKey.attempted
-        ? "AuthBackend.vendKey() did not return a usable managed key."
-        : "No AuthBackend was configured to vend a managed key.";
-  throw new Error(
-    `${params.provider} provider requires an API key. ${managedKeyHint} Set ${envHint} or configure providers.${params.provider}.api_key_env for BYOK fallback.`,
-  );
-}
-
-function providerApiKeyEnvHint(
-  provider: ProviderName,
-  providerSettings: ResolvedProviderSettings | undefined,
-): string | undefined {
-  return providerSettings?.apiKeyEnvVar ?? PROVIDER_API_KEY_ENV_HINTS[provider];
 }
 
 function parseWorkerEpoch(env: NodeJS.ProcessEnv): number | null {
@@ -441,6 +263,7 @@ function parseWorkerEpoch(env: NodeJS.ProcessEnv): number | null {
 async function writeStartupInternalEvent(params: {
   readonly sessionBaseUrl: string;
   readonly headers: Record<string, string>;
+  readonly environment: ProviderEnvironment;
   readonly workerEpoch: number;
   readonly eventType: string;
   readonly payload: Record<string, unknown>;
@@ -477,6 +300,7 @@ async function writeStartupInternalEvent(params: {
           },
         ],
       }),
+      ...getProxyFetchOptions({ environment: params.environment }),
     },
   );
 
@@ -487,6 +311,7 @@ async function writeStartupInternalEvent(params: {
 
 async function registerStartupSessionIngress(params: {
   readonly env: NodeJS.ProcessEnv;
+  readonly requestEnvironment: ProviderEnvironment;
   readonly conversationId: string;
 }): Promise<void> {
   const baseUrl = params.env.SESSION_INGRESS_URL?.trim();
@@ -521,11 +346,13 @@ async function registerStartupSessionIngress(params: {
       fetchStartupInternalEvents({
         sessionBaseUrl,
         headers: authHeaders,
+        environment: params.requestEnvironment,
       }),
     () =>
       fetchStartupInternalEvents({
         sessionBaseUrl,
         headers: authHeaders,
+        environment: params.requestEnvironment,
         subagents: true,
       }),
   );
@@ -539,6 +366,7 @@ async function registerStartupSessionIngress(params: {
     writeStartupInternalEvent({
       sessionBaseUrl,
       headers: authHeaders,
+      environment: params.requestEnvironment,
       workerEpoch,
       eventType,
       payload,
@@ -641,6 +469,20 @@ export function maxTurnsFromAgenCConfig(
   return undefined;
 }
 
+/** Map the canonical per-session cost cap onto the live turn configuration. */
+export function maxBudgetUsdFromAgenCConfig(
+  config: Pick<AgenCConfig, "max_budget_usd">,
+): number | undefined {
+  if (
+    typeof config.max_budget_usd === "number" &&
+    Number.isFinite(config.max_budget_usd) &&
+    config.max_budget_usd > 0
+  ) {
+    return config.max_budget_usd;
+  }
+  return undefined;
+}
+
 /**
  * Structural `Config` shape for the live local-runtime session. The fields
  * below are the runtime-owned config snapshot consumed by the active shell.
@@ -649,18 +491,17 @@ function buildDeferredConfig(
   cwd: string,
   model: string,
   config: AgenCConfig,
+  agentDefinitions: readonly {
+    readonly agentType: string;
+    readonly whenToUse: string;
+  }[],
   sandboxStatus?: ReturnType<SandboxExecutionBroker["status"]>,
 ): Config {
-  // `minimal` used to be folded into `low` here, which meant gpt-5 — the
-  // one family that documents it — could never actually be run at its
-  // floor. Adapters that lack the rung map it themselves.
   const modelReasoningEffort = config.reasoning_effort;
   const maxTurns = maxTurnsFromAgenCConfig(config);
+  const maxBudgetUsd = maxBudgetUsdFromAgenCConfig(config);
   return {
     model,
-    ...(config.review_model !== undefined
-      ? { reviewModel: config.review_model }
-      : {}),
     ...(config.model_verbosity !== undefined
       ? { modelVerbosity: config.model_verbosity }
       : {}),
@@ -677,8 +518,15 @@ function buildDeferredConfig(
     ...(config.autonomous_mode !== undefined
       ? { autonomousMode: config.autonomous_mode }
       : {}),
+    ...(config.coordinator_mode !== undefined
+      ? { coordinatorMode: config.coordinator_mode }
+      : {}),
     // Snake config key → camel turn Config (todo-105). Unset = no iteration cap.
     ...(maxTurns !== undefined ? { maxTurns } : {}),
+    ...(maxBudgetUsd !== undefined ? { maxBudgetUsd } : {}),
+    ...(config.durableTurns !== undefined
+      ? { durableTurns: config.durableTurns }
+      : {}),
     ...(config.approvals_reviewer !== undefined
       ? { approvalsReviewer: config.approvals_reviewer }
       : {}),
@@ -696,7 +544,7 @@ function buildDeferredConfig(
     sandboxStatus.reason !== undefined
       ? { sandboxUnavailableReason: sandboxStatus.reason }
       : {}),
-    features: createManagedFeatures(config),
+    features: createManagedFeatures(),
     /** T9: `multiAgentV2` hints (subagent usage hints + metadata visibility). */
     multiAgentV2: {
       minWaitTimeoutMs: 10_000,
@@ -718,10 +566,10 @@ function buildDeferredConfig(
     },
     /** T-future: ghost-snapshot state machine (agenc runtime workspace restore). */
     ghostSnapshot: { enabled: false },
-    /** T9: real `agentRoles` list from role layer (`agents/role.ts`). */
-    agentRoles: listAgentRoles(createAgentRoleWorkspace(cwd)).map((role) => ({
-      name: role.name,
-      description: role.config.description ?? "",
+    /** T9: exact session-owned executable agent catalog. */
+    agentRoles: agentDefinitions.map((definition) => ({
+      name: definition.agentType,
+      description: definition.whenToUse,
     })),
   };
 }
@@ -736,113 +584,13 @@ function createMemoryAutoSaveSidecar(): Sidecar {
   };
 }
 
-function mapApprovalPolicy(
-  raw: AgenCConfig["approval_policy"] | undefined,
-): SessionConfiguration["approvalPolicy"]["value"] {
-  switch (raw) {
-    case "never":
-      return "never";
-    case "on-failure":
-      return "on_failure";
-    case "on-request":
-      return "on_request";
-    case "untrusted":
-      return "untrusted";
-    default:
-      return "on_request";
-  }
-}
-
-function mapSandboxPolicy(
-  raw: AgenCConfig["sandbox_mode"] | undefined,
-): SessionConfiguration["sandboxPolicy"]["value"] {
-  switch (raw) {
-    case "read-only":
-      return "read_only";
-    case "danger-full-access":
-      return "danger_full_access";
-    case "workspace-write":
-      return "workspace_write";
-    default:
-      return "workspace_write";
-  }
-}
-
-export function sessionConfigurationFromAgenCConfig(params: {
-  readonly config: AgenCConfig;
-  readonly workspaceRoot: string;
-  readonly model: string;
-  readonly provider?: string;
-  readonly projectTrust?: "trusted" | "untrusted";
-}): SessionConfiguration {
-  const configPolicy = mapApprovalPolicy(params.config.approval_policy);
-  const approval = resolveApprovalPolicy({
-    configPolicy,
-    projectTrust: params.projectTrust === "untrusted" ? "untrusted" : undefined,
-  });
-  const sandbox = mapSandboxPolicy(params.config.sandbox_mode);
-  const base: SessionConfiguration = {
-    cwd: params.workspaceRoot,
-    approvalPolicy: { value: approval },
-    sandboxPolicy: { value: sandbox },
-    fileSystemSandboxPolicy: {
-      allowWrite: sandbox === "workspace_write" ? [params.workspaceRoot] : [],
-      denyWrite: [],
-      allowRead: [],
-      denyRead: [],
-    },
-    networkSandboxPolicy: {
-      allowlist: [],
-      denylist: [],
-      allowManagedDomainsOnly: false,
-      enabled: sandbox === "danger_full_access",
-    },
-    windowsSandboxLevel: "none",
-    ...(params.provider
-      ? {
-          provider: {
-            slug: params.provider,
-          } as unknown as SessionConfiguration["provider"],
-        }
-      : {}),
-    collaborationMode: { model: params.model },
-    dynamicTools: [],
-    sessionSource: "cli_main",
-  };
-  return {
-    ...base,
-    ...(params.config.review_model !== undefined
-      ? { reviewModel: params.config.review_model }
-      : {}),
-    ...(params.config.approvals_reviewer !== undefined
-      ? { approvalsReviewer: params.config.approvals_reviewer }
-      : {}),
-    ...(params.config.model_verbosity !== undefined
-      ? { modelVerbosity: params.config.model_verbosity }
-      : {}),
-    ...(params.config.personality !== undefined
-      ? { personality: params.config.personality }
-      : {}),
-    ...(params.config.reasoning_summary !== undefined
-      ? { modelReasoningSummary: params.config.reasoning_summary }
-      : {}),
-    ...(params.config.service_tier !== undefined
-      ? { serviceTier: params.config.service_tier }
-      : {}),
-    ...(params.config.compact_prompt !== undefined
-      ? { compactPrompt: params.config.compact_prompt }
-      : {}),
-    ...(params.config.sandbox?.allow_gpu === true
-      ? { sandboxAllowGpu: true }
-      : {}),
-  };
-}
-
 export interface BootstrapLocalRuntimeSessionOptions {
   readonly apiKey?: string;
   readonly authBackend?: AuthBackend;
   readonly fetchImpl?: typeof fetch;
   readonly env?: NodeJS.ProcessEnv;
+  /** Immutable operator policy supplied by a daemon/client boundary. */
+  readonly runtimeOptions?: AgentRuntimeOptions;
   readonly argv?: readonly string[];
   readonly cwd?: string;
   readonly conversationId?: string;
@@ -894,6 +642,12 @@ export interface BootstrapLocalRuntimeSessionOptions {
 export interface LocalRuntimeBootstrap {
   readonly agencHome: string;
   readonly configStore: ConfigStore;
+  /** Configured least-privilege policy captured before mode overrides. */
+  readonly configuredExecutionAuthority: SessionExecutionAuthority;
+  /** Stage a configured baseline for the registry publication transaction. */
+  readonly prepareConfiguredExecutionAuthority: (
+    config: AgenCConfig,
+  ) => PreparedConfiguredExecutionAuthority;
   readonly workspaceRoot: string;
   readonly conversationId: string;
   readonly resolvedProvider: string;
@@ -913,6 +667,33 @@ export interface LocalRuntimeBootstrap {
   readonly memoryMdPath: string;
   readonly shutdown: () => Promise<void>;
   readonly autonomousModeEnabled: boolean;
+}
+
+export interface PreparedConfiguredExecutionAuthority {
+  readonly authority: SessionExecutionAuthority;
+  commit(): void;
+  rollback(): void;
+}
+
+async function waitForPartialMcpDisposal(task: Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `partial MCP disposal exceeded ${SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS}ms`,
+          ),
+        ),
+      SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS,
+    );
+    timer.unref?.();
+  });
+  try {
+    await Promise.race([task, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 function parsePositiveFileIdentity(value: string, label: string): bigint {
@@ -975,18 +756,70 @@ function assertPinnedResumeCwd(
   }
 }
 
+function snapshotGrokAcpChildEnvironment(
+  environment: Readonly<NodeJS.ProcessEnv>,
+): Readonly<Record<string, string>> {
+  const childEnvironment = scrubEnvForChildProcess(environment);
+  delete childEnvironment.AGENC_GROK_CLI;
+  delete childEnvironment.AGENC_GROK_ACP_PERMISSIONS;
+  return Object.freeze(childEnvironment);
+}
+
 export async function bootstrapLocalRuntimeSession(
   options: BootstrapLocalRuntimeSessionOptions,
 ): Promise<LocalRuntimeBootstrap> {
-  const env = options.env ?? process.env;
+  const env = { ...(options.env ?? process.env) };
+  const providerEnvironment = snapshotProviderEnvironment(env);
+  const mcpRequestEnvironment = snapshotMcpRequestEnvironment(env);
   const argv = options.argv ?? process.argv;
+  const cli = readStartupCliFlags(argv);
+  const parsedRuntimeOptions =
+    options.runtimeOptions ??
+    resolveAgentRuntimeOptions(env, {
+      simpleMode: cli.simpleMode === true,
+      dangerouslyBypassApprovalsAndSandbox:
+        cli.dangerouslyBypassApprovalsAndSandbox === true,
+    });
+  const commandShellPath = await findSuitableShell(parsedRuntimeOptions, env);
+  const commandExecutionAuthority = resolveCommandExecutionAuthority(
+    parsedRuntimeOptions,
+    commandShellPath,
+    subprocessEnv(env),
+  );
+  const runtimeOptions = Object.freeze({
+    ...parsedRuntimeOptions,
+    posixShellPath: commandExecutionAuthority.path,
+  });
+  return runWithAgentRuntimeOptions(runtimeOptions, () =>
+    bootstrapLocalRuntimeSessionScoped({
+      ...options,
+      env,
+      providerEnvironment,
+      mcpRequestEnvironment,
+      cli,
+      runtimeOptions,
+      commandExecutionAuthority,
+    })
+  );
+}
+
+async function bootstrapLocalRuntimeSessionScoped(
+  options: BootstrapLocalRuntimeSessionOptions & {
+    readonly env: NodeJS.ProcessEnv;
+    readonly providerEnvironment: ReturnType<typeof snapshotProviderEnvironment>;
+    readonly mcpRequestEnvironment: ReturnType<typeof snapshotMcpRequestEnvironment>;
+    readonly cli: StartupCliFlags;
+    readonly runtimeOptions: AgentRuntimeOptions;
+    readonly commandExecutionAuthority: ReturnType<
+      typeof resolveCommandExecutionAuthority
+    >;
+  },
+): Promise<LocalRuntimeBootstrap> {
+  const env = options.env ?? process.env;
+  const providerEnvironment = options.providerEnvironment;
+  const mcpRequestEnvironment = options.mcpRequestEnvironment;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const agencHome = resolveAgencHomeFromEnv(env);
-  const configStore = new ConfigStore({
-    home: agencHome,
-    env,
-  });
-  await configStore.reload();
   // The explicit per-session cwd must beat AGENC_WORKSPACE: in the daemon,
   // `env` is the process env frozen at daemon start, and a stale
   // AGENC_WORKSPACE from the first launch shell would pin every later
@@ -1000,51 +833,31 @@ export async function bootstrapLocalRuntimeSession(
       ? canonicalWorkspace.cwd
       : requestedWorkspaceRoot;
   assertPinnedResumeCwd(options, workspaceRoot);
-  const configMigrations = await runStartupConfigMigrations({
+  const profileName = resolvedStartupProfileName(options.cli, env);
+  const configStore = new ConfigStore({
     home: agencHome,
     cwd: workspaceRoot,
-    configStore,
-  });
-  if (configMigrations.wrote) {
-    await configStore.reload();
-  }
-  let startup = resolveStartupSelection({
-    config: configStore.current(),
     env,
-    argv,
+    retainUntrustedProjectCommandHooks:
+      options.runtimeOptions.allowUntrustedHooks,
+    ...startupConfigLayerOptions({
+      cli: options.cli,
+      cwd: workspaceRoot,
+    }),
   });
-  const personalityMigrationStatus = await maybeMigratePersonality({
-    agencHome,
+  await configStore.reload();
+  const startup = resolveCanonicalStartupSelection({
     config: configStore.current(),
-    cwd: workspaceRoot,
-    defaultModelProviderId: startup.provider,
-    ...(startup.profileName !== undefined
-      ? { activeProfileName: startup.profileName }
-      : {}),
-    ...(startup.config.project_root_markers !== undefined
-      ? { projectRootMarkers: startup.config.project_root_markers }
-      : {}),
+    ...(profileName !== undefined ? { profileName } : {}),
   });
-  if (personalityMigrationStatus === "Applied") {
-    await configStore.reload();
-    startup = resolveStartupSelection({
-      config: configStore.current(),
-      env,
-      argv,
+  const cli = options.cli;
+  const runtimeOptions = options.runtimeOptions;
+  const sessionMcpRequestEnvironment =
+    snapshotMcpRequestEnvironmentForAuthority(mcpRequestEnvironment, {
+      agencHome: configStore.homeContext.path,
+      pluginStorageRoot: runtimeOptions.pluginStorageRoot,
     });
-  }
-  const cli = readStartupCliFlags(argv);
-  const sandboxExecutionBroker = new SandboxExecutionBroker({
-    mode: cli.allowDangerouslySkipPermissions
-      ? "danger_full_access"
-      : mapSandboxPolicy(startup.config.sandbox_mode),
-    cwd: workspaceRoot,
-    env,
-    allowGpu: startup.config.sandbox?.allow_gpu === true,
-  });
-  if (options.requireSandboxReadyAtStartup === true) {
-    sandboxExecutionBroker.assertReady("startup");
-  }
+  const sessionTempRoot = runtimeOptions.sessionTempRoot;
   const autonomousModeEnabled =
     cli.autonomousMode === true || startup.config.autonomous_mode === true;
   const executionAdmissionAutonomous =
@@ -1079,26 +892,168 @@ export async function bootstrapLocalRuntimeSession(
     cwd: workspaceRoot,
     projectRootMarkers: startup.config.project_root_markers,
   });
+  const executionProjectTrust = (
+    config: AgenCConfig,
+    cwd: string,
+  ) => resolveProjectTrustStateSync({
+    agencHome,
+    env,
+    cwd,
+    projectRootMarkers: config.project_root_markers,
+  });
+  let configuredExecutionConfig = startup.config;
+  let configuredExecutionAuthorityCwd = workspaceRoot;
+  let configuredExecutionAuthorityProjectTrust = projectTrust;
+  let configuredExecutionAuthority =
+    sessionExecutionAuthorityFromAgenCConfig({
+      config: configuredExecutionConfig,
+      workspaceRoot: configuredExecutionAuthorityCwd,
+      projectTrust,
+    });
+  const currentConfiguredExecutionAuthority = (): SessionExecutionAuthority => {
+    const currentCwd = sandboxExecutionBroker.cwd;
+    const currentProjectTrust = executionProjectTrust(
+      configuredExecutionConfig,
+      currentCwd,
+    );
+    if (
+      configuredExecutionAuthorityCwd === currentCwd &&
+      configuredExecutionAuthorityProjectTrust === currentProjectTrust
+    ) {
+      return configuredExecutionAuthority;
+    }
+    configuredExecutionAuthority = sessionExecutionAuthorityFromAgenCConfig({
+      config: configuredExecutionConfig,
+      workspaceRoot: currentCwd,
+      projectTrust: currentProjectTrust,
+    });
+    configuredExecutionAuthorityCwd = currentCwd;
+    configuredExecutionAuthorityProjectTrust = currentProjectTrust;
+    return configuredExecutionAuthority;
+  };
+  const prepareConfiguredExecutionAuthority = (
+    canonicalConfig: AgenCConfig,
+  ): PreparedConfiguredExecutionAuthority => {
+    const previousConfig = configuredExecutionConfig;
+    const previous = currentConfiguredExecutionAuthority();
+    const previousProjectTrust = configuredExecutionAuthorityProjectTrust;
+    const preparedCwd = sandboxExecutionBroker.cwd;
+    const preparedProjectTrust = executionProjectTrust(
+      canonicalConfig,
+      preparedCwd,
+    );
+    const authority = sessionExecutionAuthorityFromAgenCConfig({
+      config: canonicalConfig,
+      workspaceRoot: preparedCwd,
+      projectTrust: preparedProjectTrust,
+    });
+    let committed = false;
+    return Object.freeze({
+      authority,
+      commit: () => {
+        if (configuredExecutionConfig !== previousConfig && !committed) {
+          throw new Error(
+            "configured execution authority changed before staged commit",
+          );
+        }
+        if (sandboxExecutionBroker.cwd !== preparedCwd && !committed) {
+          throw new Error(
+            "configured execution authority cwd changed before staged commit",
+          );
+        }
+        if (
+          executionProjectTrust(canonicalConfig, preparedCwd) !==
+            preparedProjectTrust &&
+          !committed
+        ) {
+          throw new Error(
+            "configured execution authority trust changed before staged commit",
+          );
+        }
+        configuredExecutionConfig = canonicalConfig;
+        configuredExecutionAuthority = authority;
+        configuredExecutionAuthorityCwd = preparedCwd;
+        configuredExecutionAuthorityProjectTrust = preparedProjectTrust;
+        committed = true;
+      },
+      rollback: () => {
+        if (!committed) return;
+        if (configuredExecutionConfig !== canonicalConfig) {
+          throw new Error(
+            "configured execution authority changed before staged rollback",
+          );
+        }
+        configuredExecutionConfig = previousConfig;
+        const currentCwd = sandboxExecutionBroker.cwd;
+        const currentProjectTrust = executionProjectTrust(
+          previousConfig,
+          currentCwd,
+        );
+        configuredExecutionAuthority =
+          currentCwd === preparedCwd &&
+            currentProjectTrust === previousProjectTrust
+            ? previous
+            : sessionExecutionAuthorityFromAgenCConfig({
+                config: previousConfig,
+                workspaceRoot: currentCwd,
+                projectTrust: currentProjectTrust,
+              });
+        configuredExecutionAuthorityCwd = currentCwd;
+        configuredExecutionAuthorityProjectTrust = currentProjectTrust;
+        committed = false;
+      },
+    });
+  };
   const permissionInit = await initializeToolPermissionContext({
     env: {
       home: agencHome,
       cwd: workspaceRoot,
       configStore,
     },
+    providerEnvironment,
     ...(cli.permissionMode ? { permissionMode: cli.permissionMode } : {}),
-    ...(cli.allowDangerouslySkipPermissions
+    ...(runtimeOptions.dangerouslyBypassApprovalsAndSandbox
       ? { allowDangerouslySkipPermissions: true }
       : {}),
     projectTrust,
   });
-  const autoModeEnabled = isAutoModeGateEnabled();
-  const toolPermissionContext = {
+  const autoModeEnabled =
+    permissionInit.toolPermissionContext.isAutoModeAvailable === true &&
+    isAutoModeGateEnabled(providerEnvironment);
+  let toolPermissionContext: ToolPermissionContext = {
     ...permissionInit.toolPermissionContext,
     isAutoModeAvailable: autoModeEnabled,
     ...(permissionInit.toolPermissionContext.mode === "auto" && !autoModeEnabled
       ? { mode: "default" as const, autoModeActive: false }
       : {}),
   };
+  const initialSandboxExecutionAuthority =
+    sandboxExecutionBrokerAuthorityFromSessionAuthority(
+      executionAuthorityForPermissionContext(
+        configuredExecutionAuthority,
+        toolPermissionContext,
+        runtimeOptions.dangerouslyBypassApprovalsAndSandbox,
+      ),
+      workspaceRoot,
+    );
+  const sandboxExecutionBroker = new SandboxExecutionBroker({
+    mode: initialSandboxExecutionAuthority.mode,
+    cwd: workspaceRoot,
+    env,
+    sessionTempRoot,
+    ...(initialSandboxExecutionAuthority.permissionProfile !== undefined
+      ? {
+          permissionProfile:
+            initialSandboxExecutionAuthority.permissionProfile,
+        }
+      : {}),
+    windowsSandboxLevel:
+      initialSandboxExecutionAuthority.windowsSandboxLevel,
+    allowGpu: initialSandboxExecutionAuthority.allowGpu,
+  });
+  if (options.requireSandboxReadyAtStartup === true) {
+    sandboxExecutionBroker.assertReady("startup");
+  }
   const permissionModeRegistry = new PermissionModeRegistry(
     toolPermissionContext,
   );
@@ -1109,39 +1064,6 @@ export async function bootstrapLocalRuntimeSession(
     conversationId,
   );
   const localByokAuthBackend = new LocalAuthBackend({ agencHome, env });
-  const managedKeysEnabled = resolveAuthManagedKeysEnabled(startup.config);
-  const startupInjectedByokKey = await readAuthBackendByokKey(
-    options.authBackend,
-    startup.provider,
-  );
-  const startupLocalByokKey = await readAuthBackendByokKey(
-    localByokAuthBackend,
-    startup.provider,
-  );
-  const startupByokApiKey = firstNonEmptyString(
-    startup.apiKey,
-    startupInjectedByokKey,
-    startupLocalByokKey,
-  );
-  const byokApiKey = selectByokPrecedenceApiKey({
-    explicitApiKey: options.apiKey,
-    byokApiKey: startupByokApiKey,
-    managedKeysEnabled,
-  });
-  const startupProviderSettings = resolveProviderSettings(
-    startup.provider,
-    startup.config,
-    env,
-  );
-  enforceRemoteSubscriptionGate({
-    authBackend: options.authBackend,
-    subscriptionTier: authSubscriptionTier,
-    provider: startup.provider,
-    model: startup.model,
-    providerSettings: startupProviderSettings,
-    byokApiKey,
-    managedKeysEnabled,
-  });
   const modelSelection = await resolveAuthModelSelection({
     authBackend: options.authBackend,
     provider: startup.provider,
@@ -1151,93 +1073,71 @@ export async function bootstrapLocalRuntimeSession(
   });
   const resolvedProvider = modelSelection.provider;
   const providerModel = modelSelection.model;
+  return runWithStartupProviderSelection({
+    provider: resolvedProvider,
+    model: providerModel,
+    environment: env,
+  }, async () => {
   const profileProvider = modelSelection.profileProvider;
   const model = modelSelection.profileModel;
-  // Publish the config-resolved model so the env-driven model.ts helpers
-  // (welcome display, WebSearchTool, useMainLoopModel fallback, …) reflect
-  // `agenc config set model` instead of a hardcoded provider default. This is
-  // the same selection that seeds the session's collaborationMode.model below.
-  setActiveConfigModel({ provider: resolvedProvider, model: providerModel });
-  const runtimeProviderSettings = resolveProviderSettings(
-    resolvedProvider,
-    startup.config,
-    env,
-  );
-  const runtimeAuthBackendByokKey =
-    resolvedProvider === startup.provider
-      ? startupInjectedByokKey
-      : await readAuthBackendByokKey(options.authBackend, resolvedProvider);
-  const runtimeLocalByokKey =
-    resolvedProvider === startup.provider
-      ? startupLocalByokKey
-      : await readAuthBackendByokKey(localByokAuthBackend, resolvedProvider);
-  const runtimeByokApiKey = firstNonEmptyString(
-    startup.apiKey,
-    runtimeAuthBackendByokKey,
-    runtimeLocalByokKey,
-    // The provider's own environment variable is the last resort and was
-    // missing from this chain: with no BYOK entry and no managed key, a
-    // provider whose key sits in the environment still failed with
-    // "requires an API key" before any request. resolveProviderSettings
-    // already reads it — it just was not being asked.
-    runtimeProviderSettings?.apiKey,
-  );
-  const runtimeSelectedByokApiKey = selectByokPrecedenceApiKey({
-    explicitApiKey: options.apiKey,
-    byokApiKey: runtimeByokApiKey,
-    managedKeysEnabled,
-  });
-  const providerSettings =
-    profileProvider === resolvedProvider
-      ? runtimeProviderSettings
-      : resolveProviderSettings(profileProvider, startup.config, env);
-  const managedKey =
-    runtimeSelectedByokApiKey === undefined &&
-    managedKeysEnabled &&
-    !isHostedAgencProvider(resolvedProvider)
-      ? await vendProviderKeyOrUndefined({
-          authBackend: options.authBackend,
-          provider: resolvedProvider,
-          sessionId: conversationId,
-        })
-      : {
-          attempted: false,
-          ...(!managedKeysEnabled ? { disabled: true } : {}),
-        };
-  const selectedApiKey = requireProviderApiKeyOrUndefined({
+  const initialTransportRequest = resolveProviderRuntimeRequest({
     provider: resolvedProvider,
-    providerSettings: runtimeProviderSettings,
-    apiKey:
-      runtimeSelectedByokApiKey ??
-      selectByokPrecedenceApiKey({
-        explicitApiKey: undefined,
-        byokApiKey: undefined,
-        managedKeysEnabled,
-        managedApiKey: managedKey.apiKey,
-      }),
-    managedKey,
+    model: providerModel,
+    config: startup.config,
+    environment: providerEnvironment,
+    credentialHome: configStore.homeContext,
+    executionAdmissionRequired: true,
   });
-  const selectedBaseURL = firstNonEmptyString(
-    providerSettings?.baseURL,
-    managedKey.baseURL,
-  );
-  const hasManagedCredential =
-    managedKey.apiKey !== undefined || managedKey.baseURL !== undefined;
-  const selectedProviderModel =
-    managedKey.baseURL !== undefined
-      ? normalizeManagedGatewayModel(resolvedProvider, providerModel)
-      : providerModel;
-  const mcpManager = await createSessionMcpManagerFromSources(
-    configStore.current(),
-    env,
-    {
-      cwd: workspaceRoot,
-      includeProjectMcpServers: cli.allowDangerouslySkipPermissions,
-      sandboxExecutionBroker,
-    },
+  const providerSettings = profileProvider === resolvedProvider
+    ? initialTransportRequest.settings
+    : resolveProviderRuntimeRequest({
+        provider: profileProvider,
+        model,
+        config: startup.config,
+        environment: providerEnvironment,
+      }).settings;
+  const selectedBaseURL = initialTransportRequest.requested.baseURL;
+  const mcpManager = createSessionMcpManager([], {
+    environment: sessionMcpRequestEnvironment,
+    sandboxExecutionBroker,
+  });
+  const commandExecutionAuthority = options.commandExecutionAuthority;
+  const grokAcpChildEnvironment = snapshotGrokAcpChildEnvironment(
+    commandExecutionAuthority.childEnvironment,
   );
   const unifiedExecManager = new UnifiedExecProcessManager({
     cwd: workspaceRoot,
+    baseEnv: env,
+    shellPath: commandExecutionAuthority.path,
+    commandWrapperArgv: commandExecutionAuthority.commandWrapperArgv,
+  });
+  const unifiedExecLifecycleParticipantName = "unified-exec-manager";
+  let unifiedExecQuiesceToken:
+    | UnifiedExecSandboxAuthorityQuiesceToken
+    | undefined;
+  registerSandboxExecutionLifecycleParticipant(sandboxExecutionBroker, {
+    name: unifiedExecLifecycleParticipantName,
+    quiesce: async () => {
+      const token = unifiedExecManager.beginSandboxAuthorityQuiesce();
+      unifiedExecQuiesceToken = token;
+      await unifiedExecManager.finishSandboxAuthorityQuiesce(token);
+    },
+    resume: async () => {
+      sandboxExecutionBroker.assertLifecycleParticipantResumePermit(
+        unifiedExecLifecycleParticipantName,
+      );
+      const token = unifiedExecQuiesceToken;
+      if (token === undefined) {
+        throw new Error("unified exec lifecycle resume has no quiesce token");
+      }
+      unifiedExecManager.resumeSandboxAuthorityAfterQuiesce(token);
+      unifiedExecQuiesceToken = undefined;
+    },
+    dispose: async () => {
+      const token = unifiedExecManager.beginSandboxAuthorityQuiesce();
+      unifiedExecQuiesceToken = token;
+      await unifiedExecManager.finishSandboxAuthorityQuiesce(token);
+    },
   });
   const codeModeService = createCodeModeService({ env });
   let sessionRef: Session | null = null;
@@ -1260,29 +1160,17 @@ export async function bootstrapLocalRuntimeSession(
   }): void => {
     // Keep provider request-shape diagnostics out of warning/error streams.
   };
-  const handleCapabilityDrift = (warning: {
-    message: string;
-    status?: number;
-  }): void => {
-    markCapabilityDrift({
-      provider: profileProvider,
-      model,
-      overrides: providerSettings?.capabilityOverrides,
-    });
-    emitProviderWarning({
-      cause: "capability_drift_detected",
-      message:
-        warning.status !== undefined
-          ? `${profileProvider}/${model} rejected a capability the registry claimed it supported (HTTP ${warning.status}): ${warning.message}`
-          : `${profileProvider}/${model} rejected a capability the registry claimed it supported: ${warning.message}`,
-    });
-  };
-
   const { isCoordinatorModeEnabled, LIVE_COORDINATOR_ALLOWED_TOOLS } =
     await import("../coordinator/coordinatorMode.js");
   const coordinatorModeEnabled = isCoordinatorModeEnabled(
     startup.config.coordinator_mode,
   );
+  const roleWorkspace = createAgentRoleWorkspace(workspaceRoot);
+  const agentDefinitions = await loadFreshAgentDefinitions(
+    roleWorkspace.cwd,
+    runtimeOptions.pluginStorageRoot,
+  );
+  const roleCatalog = new AgentRoleCatalog(roleWorkspace, agentDefinitions);
   const ownedCsvAgentJobsRepositories =
     options.csvAgentJobsRepositories === undefined
       ? new CsvAgentJobsRepositoryAuthority({ agencHome })
@@ -1294,8 +1182,10 @@ export async function bootstrapLocalRuntimeSession(
   const registry = buildBootstrapToolRegistry({
     workspaceRoot,
     agencHome,
+    environment: providerEnvironment,
     mcpManager,
     getSession: () => sessionRef,
+    roleCatalog,
     csvAgentJobsRepositories,
     emitWarning: emitProviderWarning,
     toolRegistryOptions: {
@@ -1303,6 +1193,9 @@ export async function bootstrapLocalRuntimeSession(
       unifiedExecManager,
       sandboxExecutionBroker,
       codeModeService,
+      ...(startup.config.browser !== undefined
+        ? { browserConfig: startup.config.browser }
+        : {}),
       // Coordinator mode restricts the LIVE surface to orchestration +
       // user-interaction tools: the coordinator directs workers, it
       // does not edit files or run commands itself.
@@ -1314,8 +1207,8 @@ export async function bootstrapLocalRuntimeSession(
         : baseToolsConfig,
       // G1/G3 Hermes-style catalog gates: pass session provider + host so
       // XSearch / ImagineImage are not advertised to Claude/GPT/OpenRouter.
-      ...(startup.config.llm?.xai !== undefined
-        ? { llmXai: startup.config.llm.xai }
+      ...(startup.config.providers?.grok !== undefined
+        ? { grokCapabilities: startup.config.providers.grok }
         : {}),
       sessionProvider: resolvedProvider,
       ...(selectedBaseURL !== undefined
@@ -1323,58 +1216,106 @@ export async function bootstrapLocalRuntimeSession(
         : {}),
     },
   });
-  const xaiCapabilityExtra = resolveXaiCapabilityExtra({
-    provider: resolvedProvider,
-    baseURL: selectedBaseURL,
-    llmXai: startup.config.llm?.xai,
-    env: env as Readonly<Record<string, string | undefined>>,
-  });
-  const provider: LLMProvider = createProvider(
-    resolvedProvider as ProviderName,
-    {
-      apiKey: selectedApiKey,
-      ...(selectedBaseURL ? { baseURL: selectedBaseURL } : {}),
-      model: selectedProviderModel,
-      ...(providerSettings?.timeoutMs !== undefined
-        ? { timeoutMs: providerSettings.timeoutMs }
-        : {}),
+  const resolveProviderPreparationRequest = async (selection: {
+    readonly provider: string;
+    readonly model: string;
+  }) => {
+    const provider = resolveBuiltInProviderSlug(selection.provider);
+    if (provider === undefined) {
+      throw new Error(`unknown provider "${selection.provider}"`);
+    }
+    const currentConfig = configStore.current();
+    const settingsRequest = resolveProviderRuntimeRequest({
+      provider,
+      model: selection.model,
+      config: currentConfig,
+      environment: providerEnvironment,
+      credentialHome: configStore.homeContext,
+      executionAdmissionRequired: true,
+    });
+    const runtimeRequest = resolveProviderRuntimeRequest({
+      provider,
+      model: selection.model,
+      config: currentConfig,
+      environment: providerEnvironment,
+      credentialHome: configStore.homeContext,
       tools: registry.toLLMTools(),
-      extra: {
-        emitWarning: emitProviderWarning,
-        emitDiagnostic: emitProviderDiagnostic,
-        onCapabilityDrift: handleCapabilityDrift,
-        fetchImpl,
-        sandboxExecutionBroker,
-        ...(options.authBackend !== undefined
+      executionAdmissionRequired: true,
+      baseExtra: {
+        ...(provider === "grok" && isGrokComposerModel(selection.model)
           ? {
-              authBackend: options.authBackend,
-              sessionId: conversationId,
-              subscriptionTier: authSubscriptionTier,
+              grokAcp: {
+                environment: grokAcpChildEnvironment,
+              },
             }
           : {}),
-        ...(providerSettings?.contextWindowTokens !== undefined
-          ? { contextWindowTokens: providerSettings.contextWindowTokens }
-          : {}),
-        ...(providerSettings?.maxOutputTokens !== undefined
-          ? { maxTokens: providerSettings.maxOutputTokens }
-          : {}),
-        ...(hasManagedCredential &&
-        resolvedProvider === "openrouter" &&
-        providerSettings?.maxOutputTokens === undefined
-          ? { maxTokens: MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS }
-          : {}),
-        // M3 reserves one conservative maximum per provider dispatch. Keep
-        // the wire operation single-attempt; otherwise a hidden retry or
-        // model fallback could spend outside that reservation. The explicit
-        // startup-prewarm fallback is admitted and journaled separately.
-        maxRetries: 0,
-        ...(hasManagedCredential ? { managedCredential: true } : {}),
-        ...(managedKey.baseURL !== undefined ? { managedGateway: true } : {}),
-        // Grok-only server-tool profile from [llm.xai]; empty for non-Grok /
-        // non-direct-xAI hosts so other providers never get xAI payloads.
-        ...xaiCapabilityExtra,
+        emitWarning: emitProviderWarning,
+        emitDiagnostic: emitProviderDiagnostic,
+        onCapabilityDrift: (warning: {
+          message: string;
+          status?: number;
+        }): void => {
+          markCapabilityDrift({
+            provider,
+            model: selection.model,
+            overrides: settingsRequest.settings?.capabilityOverrides,
+          });
+          emitProviderWarning({
+            cause: "capability_drift_detected",
+            message:
+              warning.status !== undefined
+                ? `${provider}/${selection.model} rejected a capability the registry claimed it supported (HTTP ${warning.status}): ${warning.message}`
+                : `${provider}/${selection.model} rejected a capability the registry claimed it supported: ${warning.message}`,
+          });
+        },
+        fetchImpl,
+        sandboxExecutionBroker,
       },
+    });
+    const explicitApiKey =
+      provider === resolvedProvider
+        ? firstNonEmptyString(options.apiKey)
+        : undefined;
+    return {
+      requested: {
+        ...runtimeRequest.requested,
+        ...(explicitApiKey !== undefined ? { apiKey: explicitApiKey } : {}),
+      },
+      runtime: {
+        managedKeysEnabled: resolveAuthManagedKeysEnabled(currentConfig),
+        freeManagedCredential:
+          authSubscriptionTier === "free" &&
+          isFreeSubscriptionManagedModel(provider, selection.model),
+        applyManagedDefaultOutputCap:
+          provider === "openrouter" &&
+          runtimeRequest.settings?.maxOutputTokens === undefined,
+      },
+    };
+  };
+  const initialPreparation = await resolveProviderPreparationRequest({
+    provider: resolvedProvider,
+    model: providerModel,
+  });
+  const initialAuthority = await resolveProviderRuntimeAuthority(
+    resolvedProvider,
+    initialPreparation.requested,
+    providerEnvironment,
+    {
+      readSavedApiKey: (provider) =>
+        localByokAuthBackend.readByokKey(provider),
+      ...(options.authBackend !== undefined
+        ? { authBackend: options.authBackend }
+        : {}),
+      sessionId: conversationId,
+      subscriptionTier: authSubscriptionTier,
+      ...initialPreparation.runtime,
     },
+  );
+  requireProviderRuntimeCredential(resolvedProvider, initialAuthority);
+  const hasManagedCredential = initialAuthority.managedCredential;
+  const provider: LLMProvider = createProvider(
+    resolvedProvider,
+    initialAuthority.factoryOptions,
   );
   const capabilityEntry = resolveProviderCapabilityEntry({
     provider: profileProvider,
@@ -1383,6 +1324,7 @@ export async function bootstrapLocalRuntimeSession(
   });
   const providerHealthCheck = provider.healthCheck;
   if (
+    !hasManagedCredential &&
     shouldProbeCapabilityEntry(capabilityEntry) &&
     typeof providerHealthCheck === "function"
   ) {
@@ -1407,7 +1349,9 @@ export async function bootstrapLocalRuntimeSession(
     {
       ...startup.config,
       autonomous_mode: autonomousModeEnabled,
+      coordinator_mode: coordinatorModeEnabled,
     },
+    agentDefinitions.activeAgents,
     sandboxExecutionBroker.status(),
   );
   const modelsManager = new StaticModelsManager({
@@ -1423,16 +1367,10 @@ export async function bootstrapLocalRuntimeSession(
         }),
     },
   });
-  // Register the live (model, ModelsManager) pair so sync helpers like
-  // `getUpgradeMessage` (post-compact stdout breadcrumb, status hints)
-  // can propose same-family larger-context-window models without
-  // having to await a fresh catalog lookup.
-  setContextWindowUpgradeContext({ currentModel: model, modelsManager });
   const rawModelInfo = await modelsManager.getModelInfo(model);
   const modelInfo =
     hasManagedCredential &&
-    resolvedProvider === "openrouter" &&
-    providerSettings?.maxOutputTokens === undefined
+    initialPreparation.runtime.applyManagedDefaultOutputCap
       ? {
           ...rawModelInfo,
           maxOutputTokens: MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
@@ -1446,13 +1384,7 @@ export async function bootstrapLocalRuntimeSession(
           maxOutputTokensCappedDefault: true,
         }
       : rawModelInfo;
-  const baseInstructions = await buildBaseInstructionsForModel({
-    registry,
-    model: selectedProviderModel,
-    coordinatorMode: coordinatorModeEnabled,
-    compactProfile: usesLocalToolProfile(resolvedProvider),
-  });
-  const baseSessionConfiguration = {
+  const configuredSessionConfiguration = {
     ...sessionConfigurationFromAgenCConfig({
       config: startup.config,
       workspaceRoot,
@@ -1460,28 +1392,47 @@ export async function bootstrapLocalRuntimeSession(
       provider: resolvedProvider,
       projectTrust,
     }),
-    baseInstructions,
-  };
-  const sessionConfiguration = cli.allowDangerouslySkipPermissions
-    ? ({
-        ...baseSessionConfiguration,
-        approvalPolicy: { value: "never" },
-        sandboxPolicy: { value: "danger_full_access" },
-        fileSystemSandboxPolicy: {
-          allowWrite: [],
-          denyWrite: [],
-          allowRead: [],
-          denyRead: [],
-        },
-      } satisfies SessionConfiguration)
-    : baseSessionConfiguration;
-  let initialState: SessionState = {
-    sessionConfiguration: {
-      ...sessionConfiguration,
-      permissionContext: {
-        mode: toolPermissionContext.mode,
+  } satisfies SessionConfiguration;
+  const authorizedSessionConfiguration = applySessionExecutionAuthority(
+    configuredSessionConfiguration,
+    executionAuthorityForPermissionContext(
+      configuredExecutionAuthority,
+      toolPermissionContext,
+      runtimeOptions.dangerouslyBypassApprovalsAndSandbox,
+    ),
+  );
+  const promptContext = buildTurnContext({
+    conversationId,
+    subId: "bootstrap-system-prompt",
+    config: { ...config, model: providerModel },
+    modelInfo: { ...modelInfo, slug: providerModel },
+    provider,
+    sessionConfiguration: authorizedSessionConfiguration,
+    permissionMode: toolPermissionContext.mode,
+  });
+  const baseInstructions = await assembleBaseInstructionsForModel({
+    session: {
+      services: {
+        runtimeOptions,
+        sandboxExecutionBroker,
       },
-    } as SessionConfiguration,
+    },
+    ctx: promptContext,
+    registry,
+    provider: resolvedProvider,
+    permissionContext: toolPermissionContext,
+    profile: coordinatorModeEnabled
+      ? "coordinator"
+      : usesLocalToolProfile(resolvedProvider)
+        ? "compact"
+        : "standard",
+  });
+  const sessionConfiguration = {
+    ...authorizedSessionConfiguration,
+    baseInstructions,
+  } satisfies SessionConfiguration;
+  let initialState: SessionState = {
+    sessionConfiguration,
     history: [],
     ...(resumeConversation
       ? { pendingSessionStartSource: "resume" as const }
@@ -1521,7 +1472,6 @@ export async function bootstrapLocalRuntimeSession(
       budget: startup.config.budget,
       agentBudget: startup.config.agent?.budget,
       autonomous: executionAdmissionAutonomous,
-      env,
     }),
   });
   const memoryDir = join(agencHome, "memory");
@@ -1541,17 +1491,21 @@ export async function bootstrapLocalRuntimeSession(
   let agentControlForShutdown: AgentControl | null = null;
   let rolloutStoreForReturn: RolloutStore | null = null;
   let ctxForReturn: TurnContext | null = null;
+  const mcpService = createSessionMcpService(mcpManager, {
+    authority: configStore,
+    environment: sessionMcpRequestEnvironment,
+    pluginStorageRoot: options.runtimeOptions.pluginStorageRoot,
+  });
   const bootstrapServices: BootstrapSessionServicesHandle =
     buildBootstrapSessionServices({
       provider,
       providerName: resolvedProvider,
-      ...(selectedApiKey ? { apiKey: selectedApiKey } : {}),
       ...(options.authBackend !== undefined
         ? { authBackend: options.authBackend }
         : {}),
       authSubscriptionTier,
       registry,
-      mcpManager: createSessionMcpService(mcpManager, { env }),
+      mcpManager: mcpService,
       unifiedExecManager,
       permissionModeRegistry,
       configStore,
@@ -1563,7 +1517,12 @@ export async function bootstrapLocalRuntimeSession(
       env,
       conversationId,
       model,
+      readSavedApiKey: (provider) =>
+        localByokAuthBackend.readByokKey(provider),
+      resolveProviderPreparationRequest,
       sessionConfiguration,
+      runtimeOptions,
+      commandExecutionAuthority,
       codeModeService,
       sandboxExecutionBroker,
       executionAdmission,
@@ -1577,6 +1536,16 @@ export async function bootstrapLocalRuntimeSession(
     // begins on a microtask, and sidecar stop may await; neither may leave a
     // window where a late submit can activate MCP/cron/job startup.
     sessionForShutdown?.beginShutdown();
+    let partialMcpDisposeTask: Promise<void> | undefined;
+    if (sessionForShutdown === null) {
+      try {
+        partialMcpDisposeTask = mcpService.dispose?.();
+        void partialMcpDisposeTask?.catch(() => undefined);
+      } catch (error) {
+        partialMcpDisposeTask = Promise.reject(error);
+        void partialMcpDisposeTask.catch(() => undefined);
+      }
+    }
 
     const task = Promise.resolve().then(async (): Promise<void> => {
       const errors: unknown[] = [];
@@ -1602,10 +1571,12 @@ export async function bootstrapLocalRuntimeSession(
         } catch (error) {
           errors.push(error);
         }
-        if (sessionForShutdown !== null && agentControlForShutdown !== null) {
+        if (sessionForShutdown !== null) {
           await shutdownSessionLifecycle({
             session: sessionForShutdown,
-            agentControl: agentControlForShutdown,
+            ...(agentControlForShutdown !== null
+              ? { agentControl: agentControlForShutdown }
+              : {}),
             mcpManager,
           }).catch(() => {
             /* best effort */
@@ -1616,6 +1587,13 @@ export async function bootstrapLocalRuntimeSession(
         try {
           await bootstrapServices.shutdown();
           bootstrapServicesStopped = true;
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (partialMcpDisposeTask !== undefined) {
+        try {
+          await waitForPartialMcpDisposal(partialMcpDisposeTask);
         } catch (error) {
           errors.push(error);
         }
@@ -1659,8 +1637,6 @@ export async function bootstrapLocalRuntimeSession(
   };
 
   try {
-    const roleWorkspace = createAgentRoleWorkspace(workspaceRoot);
-    const agentDefinitions = await loadFreshAgentDefinitions(roleWorkspace.cwd);
     // Construct the session through `bootstrapSession` so shell
     // discovery, SessionConfigured emit, startup prewarm, and
     // resume-history recording all flow through the shared entry
@@ -1679,6 +1655,7 @@ export async function bootstrapLocalRuntimeSession(
       initialState,
       features: config.features,
       services: bootstrapServices.services,
+      mcpManagerOwnership: "owned",
       jsRepl: { id: `repl-${conversationId}` },
       config,
       modelInfo,
@@ -1717,6 +1694,7 @@ export async function bootstrapLocalRuntimeSession(
         const agentControl = new AgentControl({
           session: s,
           registry: agentRegistry,
+          roleCatalog,
         });
         const threadManager = new ThreadManager({
           control: agentControl,
@@ -1752,6 +1730,7 @@ export async function bootstrapLocalRuntimeSession(
         setCurrentRuntimeSession(s);
         await registerStartupSessionIngress({
           env,
+          requestEnvironment: providerEnvironment,
           conversationId,
         });
 
@@ -1763,6 +1742,8 @@ export async function bootstrapLocalRuntimeSession(
           cwd: workspaceRoot,
           sessionId: conversationId,
           agencVersion: VERSION,
+          agencHome,
+          sessionTempRoot,
           ...(resumeConversation ? { resume: true } : {}),
           ...(options.resumeRolloutPath !== undefined
             ? { resumeRolloutPath: options.resumeRolloutPath }
@@ -1827,7 +1808,11 @@ export async function bootstrapLocalRuntimeSession(
           if (existingItems.length > 0) {
             const indexSnapshot = readIndexSnapshot(
               join(
-                getProjectDir(workspaceRoot, sessionProjectRootMarkers),
+                getProjectDir(
+                  workspaceRoot,
+                  sessionProjectRootMarkers,
+                  agencHome,
+                ),
                 "sessions",
                 conversationId,
                 "index.json",
@@ -1895,6 +1880,7 @@ export async function bootstrapLocalRuntimeSession(
         const projectDir = getProjectDir(
           workspaceRoot,
           sessionProjectRootMarkers,
+          agencHome,
         );
         sidecarManager = new SidecarManager({
           onDiagnostic: (diagnostic) => {
@@ -2115,6 +2101,10 @@ export async function bootstrapLocalRuntimeSession(
     return {
       agencHome,
       configStore,
+      get configuredExecutionAuthority() {
+        return currentConfiguredExecutionAuthority();
+      },
+      prepareConfiguredExecutionAuthority,
       workspaceRoot,
       conversationId,
       resolvedProvider,
@@ -2153,4 +2143,5 @@ export async function bootstrapLocalRuntimeSession(
     }
     throw err;
   }
+  });
 }

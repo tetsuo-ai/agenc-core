@@ -121,7 +121,6 @@ describe("startHeartbeat persistent session", () => {
       agencHome: home,
       workspaceDir: ws,
       config,
-      env: {},
       client,
       adapters: [mem],
       clock,

@@ -1,7 +1,7 @@
 /**
  * Yolo + Bash tool round-trip.
  *
- * --yolo bypasses permission prompts. Submits a prompt that explicitly
+ * --dangerously-bypass-approvals-and-sandbox bypasses permission prompts. Submits a prompt that explicitly
  * asks the model to run a Bash command, then asserts the command's output
  * appears in the captured buffer. This is the most-traveled tool path:
  * if Bash round-trip is broken, every multi-step task is broken.
@@ -11,8 +11,8 @@
  * a future model change breaks that, this scenario gates the regression.
  */
 export const meta = {
-  description: "--yolo: model uses Bash, command output renders in transcript.",
-  args: ["--yolo"],
+  description: "--dangerously-bypass-approvals-and-sandbox: model uses Bash, command output renders in transcript.",
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   timeoutMs: 90_000,
 };
 

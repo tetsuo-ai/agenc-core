@@ -50,11 +50,13 @@ export interface SessionLifecycleOpts {
  *   4. Close live unified exec processes.
  *   5. Delegate to `Session.shutdown()` (drain childInboxes + close
  *      rollout + event log + txEvent).
- *   6. Stop the MCP manager (close all bridges + kill child procs).
+ *   6. Await the MCP service disposal started at the shutdown boundary (or
+ *      stop the concrete manager for compatibility-only callers).
  *
- * The whole teardown is bounded by `shutdownBudgetMs`. Any step that
- * exceeds the budget emits a warning event + moves on — we prefer
- * exiting with a complaint over hanging forever.
+ * The whole teardown is bounded by `shutdownBudgetMs`. Any step that exceeds
+ * the budget attempts a best-effort warning and moves on. Once the canonical
+ * journal is sealed, that diagnostic may be dropped but teardown still cannot
+ * reject or hang.
  */
 export async function shutdownSessionLifecycle(
   opts: SessionLifecycleOpts,
@@ -68,8 +70,13 @@ export async function shutdownSessionLifecycle(
   const startupLifecycle = opts.session as Session & {
     beginShutdown?: () => void;
     drainDeferredStartupForShutdown?: () => Promise<void>;
+    prepareOwnedMcpDisposalForShutdown?: (
+      retryDeadlineMs: number,
+    ) => Promise<void> | undefined;
   };
   startupLifecycle.beginShutdown?.();
+  const ownedMcpDisposeTask =
+    startupLifecycle.prepareOwnedMcpDisposalForShutdown?.(deadlineMs);
   if (!opts.session.abortController.signal.aborted) {
     opts.session.abortController.abort("session_shutdown");
   }
@@ -140,23 +147,37 @@ export async function shutdownSessionLifecycle(
     opts.session,
   );
 
-  // Step 7: MCP manager stop (best-effort; I-6 fail-soft).
-  if (opts.mcpManager) {
+  // Step 7: prove the service-owned transaction queue and concrete manager
+  // are closed (best-effort; I-6 fail-soft).
+  if (monotonicMs() >= deadlineMs) {
+    emitLifecycleWarning(
+      opts.session.eventLog,
+      opts.session.nextInternalSubId(),
+      "shutdown_budget_exceeded",
+      "mcp_manager_stop: no budget remaining; skipping stop",
+    );
+    return;
+  }
+  let mcpStopTask = ownedMcpDisposeTask;
+  if (mcpStopTask === undefined && opts.mcpManager !== undefined) {
     try {
-      await raceBudget(
-        opts.mcpManager.stop(),
-        deadlineMs,
-        "mcp_manager_stop",
-        opts.session,
-      );
+      mcpStopTask = opts.mcpManager.stop();
     } catch (err) {
-      emitWarning(
+      emitLifecycleWarning(
         opts.session.eventLog,
         opts.session.nextInternalSubId(),
         "mcp_stop_failed",
         err instanceof Error ? err.message : String(err),
       );
     }
+  }
+  if (mcpStopTask !== undefined) {
+    await raceBudget(
+      mcpStopTask,
+      deadlineMs,
+      "mcp_manager_stop",
+      opts.session,
+    );
   }
 }
 
@@ -172,7 +193,7 @@ async function raceBudget(
 ): Promise<void> {
   const remaining = Math.max(0, deadlineMs - monotonicMs());
   if (remaining <= 0) {
-    emitWarning(
+    emitLifecycleWarning(
       session.eventLog,
       session.nextInternalSubId(),
       "shutdown_budget_exceeded",
@@ -190,7 +211,7 @@ async function raceBudget(
       task
         .then(() => "done" as const)
         .catch((err) => {
-          emitWarning(
+          emitLifecycleWarning(
             session.eventLog,
             session.nextInternalSubId(),
             `${step}_failed`,
@@ -201,7 +222,7 @@ async function raceBudget(
       timeout,
     ]);
     if (outcome === "timeout") {
-      emitWarning(
+      emitLifecycleWarning(
         session.eventLog,
         session.nextInternalSubId(),
         "shutdown_step_timeout",
@@ -210,5 +231,20 @@ async function raceBudget(
     }
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function emitLifecycleWarning(
+  eventLog: Session["eventLog"],
+  subId: string,
+  cause: string,
+  message: string,
+): void {
+  try {
+    emitWarning(eventLog, subId, cause, message);
+  } catch {
+    // Session shutdown may already have sealed or closed the canonical
+    // journal while an outer deadline expires. Diagnostics are best-effort at
+    // that boundary and must never turn bounded teardown into a rejection.
   }
 }

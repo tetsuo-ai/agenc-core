@@ -18,13 +18,17 @@ import {
   resolveBedrockCountModelId,
   resolveFallbackTokenCountModel,
   roughTokenCountEstimationForServiceMessages,
-  stripToolSearchFieldsFromMessages,
+  stripHistoricalToolReferenceFields,
   VERTEX_COUNT_TOKENS_ALLOWED_BETAS,
 } from "./tokenEstimation.js";
 import {
   TOKEN_FALLBACK_MARGIN_RATIO,
   TOKEN_FALLBACK_MARGIN_TOKENS,
 } from "../../src/llm/token-accounting.js";
+import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from "../../src/session/runtime-options.js";
 
 function highConfidenceNativeCount(inputTokens: number): number {
   return (
@@ -70,6 +74,32 @@ describe("notifier service", () => {
       notificationType: "turn_complete",
     });
     expect(terminal.calls).toEqual(["kitty:AgenC:42"]);
+  });
+
+  test("simple mode skips only the hook callback and still notifies the terminal", async () => {
+    const terminal = createTerminal();
+    const hook = vi.fn();
+
+    await runWithAgentRuntimeOptions(
+      resolveAgentRuntimeOptions({}, { simpleMode: true }),
+      () =>
+        sendNotification(
+          {
+            message: "done",
+            notificationType: "turn_complete",
+          },
+          terminal,
+          {
+            preferredChannel: "kitty",
+            terminalName: "kitty",
+            executeNotificationHooks: hook,
+            generateKittyId: () => 43,
+          },
+        ),
+    );
+
+    expect(hook).not.toHaveBeenCalled();
+    expect(terminal.calls).toEqual(["kitty:AgenC:43"]);
   });
 
   test("auto channel selects supported terminal mechanisms", async () => {
@@ -325,7 +355,7 @@ describe("tokenEstimation service", () => {
     ] as never;
 
     expect(hasThinkingBlocks(messages)).toBe(false);
-    expect(stripToolSearchFieldsFromMessages(messages)).toEqual([
+    expect(stripHistoricalToolReferenceFields(messages)).toEqual([
       {
         role: "assistant",
         content: [{ type: "tool_use", id: "toolu_1", name: "read", input: {} }],

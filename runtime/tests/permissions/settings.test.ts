@@ -1,1110 +1,758 @@
 import {
-  existsSync,
+  chmodSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { dirname, join } from "node:path";
+
+import { afterEach, describe, expect, test } from "vitest";
+
 import {
-  addPermissionRulesToSettings,
-  deletePermissionRule,
+  getAllowedSettingSources,
+  setAllowedSettingSources,
+} from "../../src/bootstrap/state.js";
+import { parseToml } from "../../src/config/loader.js";
+import { resolveHomeContext } from "../../src/config/home.js";
+import { RuntimeStateRepository } from "../../src/config/runtime-state-repository.js";
+import { ConfigStore } from "../../src/config/store.js";
+import type { AgenCConfig } from "../../src/config/schema.js";
+import {
+  SETTING_SOURCES as CANONICAL_SETTING_SOURCES,
   getEnabledSettingSources,
-  getSettingsFilePathForSource,
+} from "../../src/utils/settings/constants.js";
+import {
+  addPermissionRulesToConfig,
+  deletePermissionRule,
   initialPermissionModeFromCLI,
   initializeToolPermissionContext,
-  loadAllPermissionRulesFromDisk,
+  loadAllPermissionRulesFromConfig,
+  loadPermissionRulesSnapshot,
   parseBaseToolsFromCLI,
   parseToolListFromCLI,
-  readSettingsFileLenient,
-  settingsJsonToRules,
+  permissionSettingsToRules,
   shouldAllowManagedPermissionRulesOnly,
-  syncPermissionRulesFromDisk,
-  type SettingsJson,
-} from "./settings.js";
+  syncPermissionRulesFromConfig,
+  type DiskEnv,
+} from "../../src/permissions/settings.js";
 import {
   createEmptyToolPermissionContext,
-  type PermissionRule,
-  type PermissionResult,
-  type ToolPermissionContext,
-} from "./types.js";
-import { applyPermissionRulesToPermissionContext } from "./rules.js";
-import { __setAutoModeGateResolverForTesting } from "./permission-mode.js";
-import { ConfigStore } from "../config/store.js";
-import { defaultConfig } from "../config/schema.js";
-import { bashToolHasPermission, type BashPermissionInput } from "./bash.js";
+  type PermissionMode,
+} from "../../src/permissions/types.js";
 import {
-  attachContextDefaults,
-  hasPermissionsToUseTool,
-  type AppStateSnapshot,
-  type ToolEvaluatorContext,
-} from "./evaluator.js";
-import { freshDenialTracking } from "./denial-tracking.js";
-import type { Session } from "../session/session.js";
+  __setAutoModeGateResolverForTesting,
+  transitionPermissionMode,
+} from "../../src/permissions/permission-mode.js";
+import {
+  canonicalizeBypassPermissionsCwd,
+  loadBypassPermissionsConsent,
+  recordBypassPermissionsConsent,
+} from "../../src/permissions/bypass-consent-state.js";
 
-function mkTmp(): string {
-  return mkdtempSync(join(tmpdir(), "agenc-perm-settings-"));
+const temporaryDirectories: string[] = [];
+
+function temporaryDirectory(): string {
+  const path = mkdtempSync(join(tmpdir(), "agenc-permission-config-"));
+  temporaryDirectories.push(path);
+  return path;
 }
 
-function writeSettings(path: string, json: unknown) {
-  mkdirSync(join(path, ".agenc"), { recursive: true });
+function write(path: string, content: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, content, { mode: 0o600 });
+  chmodSync(path, 0o600);
 }
 
-function makeEvaluatorContext(
-  toolPermissionContext: ToolPermissionContext,
-): ToolEvaluatorContext {
-  const state: AppStateSnapshot = {
-    toolPermissionContext,
-    denialTracking: freshDenialTracking(),
-    autoModeActive: toolPermissionContext.autoModeActive === true,
-  };
-  return attachContextDefaults({
-    getAppState: () => state,
-    session: {
-      state: {
-        unsafePeek: () => ({ history: [] }),
-      },
-    } as unknown as Session,
-  } as ToolEvaluatorContext);
+async function canonicalEnv(params: {
+  readonly user?: string;
+  readonly project?: string;
+  readonly local?: string;
+  readonly managed?: string;
+  readonly diskState?: boolean;
+  readonly cliOverrides?: AgenCConfig;
+} = {}): Promise<DiskEnv & { readonly configStore: ConfigStore }> {
+  const root = temporaryDirectory();
+  const home = join(root, "home");
+  const projectRoot = join(root, "repo");
+  mkdirSync(join(projectRoot, ".git"), { recursive: true });
+  if (params.user) write(join(home, "config.toml"), params.user);
+  if (params.project) write(join(projectRoot, ".agenc", "config.toml"), params.project);
+  if (params.local) write(join(projectRoot, ".agenc", "config.local.toml"), params.local);
+  const managedConfigPath = join(root, "managed", "config.toml");
+  if (params.managed) write(managedConfigPath, params.managed);
+  const stateRepository = params.diskState === true
+    ? new RuntimeStateRepository(
+        resolveHomeContext(
+          { AGENC_HOME: home, HOME: root },
+          { platformHome: root },
+        ),
+        { storage: "disk" },
+      )
+    : undefined;
+  const configStore = new ConfigStore({
+    home,
+    cwd: projectRoot,
+    projectRoot,
+    projectTrusted: true,
+    managedConfigPath,
+    managedDropInDir: join(root, "managed", "config.d"),
+    env: { ...process.env, AGENC_HOME: home },
+    ...(params.cliOverrides !== undefined
+      ? { cliOverrides: params.cliOverrides }
+      : {}),
+    ...(stateRepository !== undefined ? { stateRepository } : {}),
+  });
+  await configStore.reload();
+  return { home, cwd: projectRoot, managedConfigPath, configStore };
 }
 
-describe("getSettingsFilePathForSource", () => {
-  test("userSettings resolves under env.home/.agenc/settings.json", () => {
-    const p = getSettingsFilePathForSource("userSettings", {
-      home: "/home/u",
-      cwd: "/x",
-    });
-    expect(p).toBe("/home/u/.agenc/settings.json");
+async function restartCanonicalEnv(
+  env: DiskEnv & { readonly configStore: ConfigStore },
+  cwd = env.cwd!,
+): Promise<DiskEnv & { readonly configStore: ConfigStore }> {
+  env.configStore.stateRepository.close();
+  const stateRepository = new RuntimeStateRepository(
+    resolveHomeContext({ AGENC_HOME: env.home, HOME: env.home }),
+    { storage: "disk" },
+  );
+  const configStore = new ConfigStore({
+    home: env.home,
+    cwd,
+    projectRoot: cwd,
+    projectTrusted: true,
+    managedConfigPath: env.managedConfigPath,
+    managedDropInDir: join(dirname(env.managedConfigPath!), "config.d"),
+    env: { ...process.env, AGENC_HOME: env.home },
+    stateRepository,
   });
+  await configStore.reload();
+  return { ...env, cwd, configStore };
+}
 
-  test("projectSettings uses cwd when cwd is the project root", () => {
-    const dir = mkTmp();
+afterEach(() => {
+  for (const path of temporaryDirectories.splice(0)) {
+    rmSync(path, { recursive: true, force: true });
+  }
+});
+
+describe("canonical permission projection", () => {
+  test("preserves canonical global precedence for every enabled subset", () => {
+    const originalSources = [...getAllowedSettingSources()];
     try {
-      mkdirSync(join(dir, ".git"));
-      const p = getSettingsFilePathForSource("projectSettings", {
-        home: "/home/u",
-        cwd: dir,
-      });
-      expect(p).toBe(join(dir, ".agenc", "settings.json"));
+      const configurable = [
+        "userSettings",
+        "projectSettings",
+        "localSettings",
+      ] as const;
+      for (let mask = 0; mask < 1 << configurable.length; mask += 1) {
+        const subset = configurable
+          .filter((_, index) => (mask & (1 << index)) !== 0)
+          .reverse();
+        setAllowedSettingSources(subset);
+        const enabled = new Set([
+          ...subset,
+          "flagSettings" as const,
+          "policySettings" as const,
+        ]);
+        expect(getEnabledSettingSources()).toEqual(
+          CANONICAL_SETTING_SOURCES.filter((source) => enabled.has(source)),
+        );
+        expect(getEnabledSettingSources().at(-1)).toBe("policySettings");
+      }
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      setAllowedSettingSources(originalSources);
     }
   });
 
-  test("projectSettings climbs to marker ancestor (.git)", () => {
-    const dir = mkTmp();
-    const nested = join(dir, "a", "b");
-    mkdirSync(nested, { recursive: true });
-    mkdirSync(join(dir, ".git"));
-    try {
-      const p = getSettingsFilePathForSource("projectSettings", {
-        home: "/home/u",
-        cwd: nested,
-      });
-      expect(p).toBe(join(dir, ".agenc", "settings.json"));
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("localSettings writes to settings.local.json", () => {
-    const dir = mkTmp();
-    try {
-      mkdirSync(join(dir, ".git"));
-      const p = getSettingsFilePathForSource("localSettings", {
-        home: "/home/u",
-        cwd: dir,
-      });
-      expect(p).toBe(join(dir, ".agenc", "settings.local.json"));
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("flagSettings uses the CLI-provided path", () => {
-    const p = getSettingsFilePathForSource("flagSettings", {
-      flagSettingsPath: "/tmp/flag.json",
-    });
-    expect(p).toBe("/tmp/flag.json");
-  });
-
-  test("flagSettings returns null when no path given", () => {
-    expect(getSettingsFilePathForSource("flagSettings", {})).toBeNull();
-  });
-
-  test("policySettings falls back to managed path", () => {
-    const p = getSettingsFilePathForSource("policySettings", {
-      managedSettingsPath: "/etc/custom.json",
-    });
-    expect(p).toBe("/etc/custom.json");
-  });
-
-  test("session / cliArg / command return null", () => {
-    expect(getSettingsFilePathForSource("session")).toBeNull();
-    expect(getSettingsFilePathForSource("cliArg")).toBeNull();
-    expect(getSettingsFilePathForSource("command")).toBeNull();
-  });
-});
-
-describe("readSettingsFileLenient", () => {
-  let dir = "";
-  beforeEach(() => {
-    dir = mkTmp();
-  });
-  afterEach(() => {
-    if (dir) rmSync(dir, { recursive: true, force: true });
-  });
-
-  test("returns null for missing files", async () => {
-    const r = await readSettingsFileLenient(join(dir, "nope.json"));
-    expect(r).toBeNull();
-  });
-
-  test("returns {} for empty file", async () => {
-    const p = join(dir, "empty.json");
-    writeFileSync(p, "");
-    expect(await readSettingsFileLenient(p)).toEqual({});
-  });
-
-  test("parses normal JSON", async () => {
-    const p = join(dir, "s.json");
-    writeFileSync(p, JSON.stringify({ permissions: { allow: ["Read"] } }));
-    const r = await readSettingsFileLenient(p);
-    expect(r?.permissions?.allow).toEqual(["Read"]);
-  });
-
-  test("strips UTF-8 BOM (I-81)", async () => {
-    const p = join(dir, "bom.json");
-    writeFileSync(
-      p,
-      `\uFEFF${JSON.stringify({ permissions: { allow: ["Read"] } })}`,
-    );
-    const r = await readSettingsFileLenient(p);
-    expect(r?.permissions?.allow).toEqual(["Read"]);
-  });
-
-  test("returns null when JSON is malformed", async () => {
-    const p = join(dir, "bad.json");
-    writeFileSync(p, "{not json");
-    expect(await readSettingsFileLenient(p)).toBeNull();
-  });
-
-  test("returns null when root is not an object", async () => {
-    const p = join(dir, "arr.json");
-    writeFileSync(p, "[]");
-    expect(await readSettingsFileLenient(p)).toBeNull();
-  });
-
-  test("lenient: preserves unknown fields so bad hooks can't clobber perms", async () => {
-    const p = join(dir, "mixed.json");
-    writeFileSync(
-      p,
-      JSON.stringify({
-        permissions: { allow: ["Read"] },
-        hooks: "invalid-shape",
-      }),
-    );
-    const r = await readSettingsFileLenient(p);
-    expect(r?.permissions?.allow).toEqual(["Read"]);
-    expect(r?.hooks).toBe("invalid-shape");
-  });
-});
-
-describe("settingsJsonToRules", () => {
-  test("emits rules for allow/deny/ask lists", () => {
-    const json: SettingsJson = {
-      permissions: {
-        allow: ["Bash(git:*)", "Read"],
-        deny: ["Bash(rm -rf:*)"],
-        ask: ["Bash(npm publish:*)"],
-      },
-    };
-    const rules = settingsJsonToRules(json, "userSettings");
-    expect(rules.length).toBe(4);
-    expect(rules.map((r) => r.source)).toEqual([
-      "userSettings",
-      "userSettings",
-      "userSettings",
-      "userSettings",
-    ]);
-    expect(rules.map((r) => r.ruleBehavior)).toEqual([
-      "allow",
-      "allow",
-      "deny",
-      "ask",
-    ]);
-  });
-
-  test("returns empty list when permissions block missing", () => {
-    expect(settingsJsonToRules({}, "userSettings")).toEqual([]);
-    expect(settingsJsonToRules(null, "userSettings")).toEqual([]);
-  });
-
-  test("skips non-string entries", () => {
-    const rules = settingsJsonToRules(
-      {
-        permissions: {
-          allow: ["Read", 123 as unknown as string, null as unknown as string],
-        },
-      },
-      "projectSettings",
-    );
-    expect(rules.length).toBe(1);
-  });
-
-  test("keeps permission tool names literal", () => {
-    const rules = settingsJsonToRules(
-      { permissions: { allow: ["spawn_agent(worker)"] } },
-      "userSettings",
-    );
-    expect(rules[0]?.ruleValue.toolName).toBe("spawn_agent");
-  });
-});
-
-describe("shouldAllowManagedPermissionRulesOnly", () => {
-  test("returns true when policy sets the flag", () => {
-    expect(
-      shouldAllowManagedPermissionRulesOnly({
-        permissions: { allowManagedPermissionRulesOnly: true },
-      }),
-    ).toBe(true);
-  });
-
-  test("returns false otherwise", () => {
-    expect(shouldAllowManagedPermissionRulesOnly(null)).toBe(false);
-    expect(shouldAllowManagedPermissionRulesOnly({})).toBe(false);
-    expect(
-      shouldAllowManagedPermissionRulesOnly({
-        permissions: { allowManagedPermissionRulesOnly: false },
-      }),
-    ).toBe(false);
-  });
-});
-
-describe("loadAllPermissionRulesFromDisk", () => {
-  let home = "";
-  let cwd = "";
-  beforeEach(() => {
-    home = mkTmp();
-    cwd = mkTmp();
-    mkdirSync(join(cwd, ".git")); // anchor project root
-  });
-  afterEach(() => {
-    for (const d of [home, cwd]) rmSync(d, { recursive: true, force: true });
-  });
-
-  test("reads rules from user + project + local", async () => {
-    mkdirSync(join(home, ".agenc"), { recursive: true });
-    writeFileSync(
-      join(home, ".agenc", "settings.json"),
-      JSON.stringify({ permissions: { allow: ["Read"] } }),
-    );
-    mkdirSync(join(cwd, ".agenc"), { recursive: true });
-    writeFileSync(
-      join(cwd, ".agenc", "settings.json"),
-      JSON.stringify({ permissions: { allow: ["Bash(git:*)"] } }),
-    );
-    writeFileSync(
-      join(cwd, ".agenc", "settings.local.json"),
-      JSON.stringify({ permissions: { deny: ["Write"] } }),
-    );
-
-    const rules = await loadAllPermissionRulesFromDisk({
-      home,
-      cwd,
-      managedSettingsPath: join(home, "nonexistent-policy.json"),
-    });
-    expect(rules.length).toBe(3);
-    expect(rules.map((r) => r.source).sort()).toEqual(
-      ["userSettings", "projectSettings", "localSettings"].sort(),
-    );
-  });
-
-  test("respects allowManagedPermissionRulesOnly gate", async () => {
-    const policy = join(home, "policy.json");
-    writeFileSync(
-      policy,
-      JSON.stringify({
-        permissions: {
-          allowManagedPermissionRulesOnly: true,
-          allow: ["Read"],
-        },
-      }),
-    );
-    // User rule that should be ignored.
-    mkdirSync(join(home, ".agenc"), { recursive: true });
-    writeFileSync(
-      join(home, ".agenc", "settings.json"),
-      JSON.stringify({ permissions: { allow: ["Bash"] } }),
-    );
-    const rules = await loadAllPermissionRulesFromDisk({
-      home,
-      cwd,
-      managedSettingsPath: policy,
-    });
-    expect(rules.length).toBe(1);
-    expect(rules[0]?.source).toBe("policySettings");
-  });
-
-  test("tolerates missing settings files", async () => {
-    const rules = await loadAllPermissionRulesFromDisk({
-      home,
-      cwd,
-      managedSettingsPath: join(home, "policy-missing.json"),
-    });
-    expect(rules).toEqual([]);
-  });
-});
-
-describe("syncPermissionRulesFromDisk", () => {
-  let home = "";
-  let cwd = "";
-  beforeEach(() => {
-    home = mkTmp();
-    cwd = mkTmp();
-    mkdirSync(join(cwd, ".git"));
-  });
-  afterEach(() => {
-    for (const d of [home, cwd]) rmSync(d, { recursive: true, force: true });
-  });
-
-  test("picks up fresh rules from disk", async () => {
-    const ctx = createEmptyToolPermissionContext();
-    mkdirSync(join(home, ".agenc"), { recursive: true });
-    writeFileSync(
-      join(home, ".agenc", "settings.json"),
-      JSON.stringify({ permissions: { allow: ["Read"] } }),
-    );
-    const out = await syncPermissionRulesFromDisk(ctx, {
-      home,
-      cwd,
-      managedSettingsPath: join(home, "no-policy.json"),
-    });
-    expect(out.alwaysAllowRules.userSettings).toEqual(["Read"]);
-  });
-
-  test("removes in-memory rules when disk deletes them", async () => {
-    // Seed a context as if userSettings already had Read + Bash(git:*).
-    let ctx = applyPermissionRulesToPermissionContext(
-      createEmptyToolPermissionContext(),
-      [
-        {
-          source: "userSettings",
-          ruleBehavior: "allow",
-          ruleValue: { toolName: "Read" },
-        },
-        {
-          source: "userSettings",
-          ruleBehavior: "allow",
-          ruleValue: { toolName: "Bash", ruleContent: "git:*" },
-        },
-      ] satisfies PermissionRule[],
-    );
-
-    // Disk only has Bash(git:*) now.
-    mkdirSync(join(home, ".agenc"), { recursive: true });
-    writeFileSync(
-      join(home, ".agenc", "settings.json"),
-      JSON.stringify({ permissions: { allow: ["Bash(git:*)"] } }),
-    );
-
-    ctx = await syncPermissionRulesFromDisk(ctx, {
-      home,
-      cwd,
-      managedSettingsPath: join(home, "no-policy.json"),
-    });
-    expect(ctx.alwaysAllowRules.userSettings).toEqual(["Bash(git:*)"]);
-  });
-
-  test("scrubs policySettings bucket when disk drops the rule", async () => {
-    let ctx = applyPermissionRulesToPermissionContext(
-      createEmptyToolPermissionContext(),
-      [
-        {
-          source: "policySettings",
-          ruleBehavior: "deny",
-          ruleValue: { toolName: "Bash", ruleContent: "rm -rf:*" },
-        },
-      ],
-    );
-    expect(ctx.alwaysDenyRules.policySettings).toEqual(["Bash(rm -rf:*)"]);
-
-    // No policy file on disk.
-    ctx = await syncPermissionRulesFromDisk(ctx, {
-      home,
-      cwd,
-      managedSettingsPath: join(home, "no-policy.json"),
-    });
-    expect(ctx.alwaysDenyRules.policySettings).toEqual([]);
-  });
-
-  test("live sync strips repository grants while retaining restrictions", async () => {
-    mkdirSync(join(cwd, ".agenc"), { recursive: true });
-    writeFileSync(
-      join(cwd, ".agenc", "settings.json"),
-      JSON.stringify({
-        permissions: {
-          allow: ["Bash(*)"],
-          ask: ["Edit"],
-          deny: ["Write"],
-        },
-      }),
-    );
-    writeFileSync(
-      join(cwd, ".agenc", "settings.local.json"),
-      JSON.stringify({
-        permissions: {
-          allow: ["Read"],
-          deny: ["Bash(curl:*)"],
-        },
-      }),
-    );
-
-    const out = await syncPermissionRulesFromDisk(
-      createEmptyToolPermissionContext(),
-      { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
-    );
-
-    expect(out.alwaysAllowRules.projectSettings ?? []).toEqual([]);
-    expect(out.alwaysAllowRules.localSettings ?? []).toEqual([]);
-    expect(out.alwaysAskRules.projectSettings).toEqual(["Edit"]);
-    expect(out.alwaysDenyRules.projectSettings).toEqual(["Write"]);
-    expect(out.alwaysDenyRules.localSettings).toEqual(["Bash(curl:*)"]);
-  });
-});
-
-describe("addPermissionRulesToSettings / deletePermissionRule", () => {
-  let home = "";
-  beforeEach(() => {
-    home = mkTmp();
-  });
-  afterEach(() => {
-    if (home) rmSync(home, { recursive: true, force: true });
-  });
-
-  test("adds new rules to an empty settings file", async () => {
-    const ok = await addPermissionRulesToSettings({
-      destination: "userSettings",
-      behavior: "allow",
-      rules: [{ toolName: "Read" }, { toolName: "Bash", ruleContent: "git:*" }],
-      env: { home },
-    });
-    expect(ok).toBe(true);
-    const parsed = await readSettingsFileLenient(
-      join(home, ".agenc", "settings.json"),
-    );
-    expect(parsed?.permissions?.allow).toEqual(["Read", "Bash(git:*)"]);
-  });
-
-  test("repository settings reject allow grants but retain restrictions", async () => {
-    const cwd = join(home, "repo");
-    mkdirSync(cwd, { recursive: true });
-    writeFileSync(join(cwd, "package.json"), "{}\n");
-    const env = {
-      home,
-      cwd,
-      managedSettingsPath: join(home, "no-policy.json"),
-    };
-
-    for (const destination of [
-      "projectSettings",
-      "localSettings",
-    ] as const) {
-      await expect(
-        addPermissionRulesToSettings({
-          destination,
-          behavior: "allow",
-          rules: [{ toolName: "Bash", ruleContent: "*" }],
-          env,
-        }),
-      ).resolves.toBe(false);
-    }
-    expect(existsSync(join(cwd, ".agenc", "settings.json"))).toBe(false);
-    expect(existsSync(join(cwd, ".agenc", "settings.local.json"))).toBe(
-      false,
-    );
-
-    await expect(
-      addPermissionRulesToSettings({
-        destination: "projectSettings",
-        behavior: "deny",
-        rules: [{ toolName: "Bash", ruleContent: "curl:*" }],
-        env,
-      }),
-    ).resolves.toBe(true);
-    const project = await readSettingsFileLenient(
-      join(cwd, ".agenc", "settings.json"),
-    );
-    expect(project?.permissions?.deny).toEqual(["Bash(curl:*)"]);
-    expect(project?.permissions?.allow).toBeUndefined();
-  });
-
-  test("dedupes against existing rules", async () => {
-    await addPermissionRulesToSettings({
-      destination: "userSettings",
-      behavior: "allow",
-      rules: [{ toolName: "Read" }],
-      env: { home },
-    });
-    await addPermissionRulesToSettings({
-      destination: "userSettings",
-      behavior: "allow",
-      rules: [{ toolName: "Read" }, { toolName: "Write" }],
-      env: { home },
-    });
-    const parsed = await readSettingsFileLenient(
-      join(home, ".agenc", "settings.json"),
-    );
-    expect(parsed?.permissions?.allow).toEqual(["Read", "Write"]);
-  });
-
-  test("refuses to write when managed-only gate is set", async () => {
-    const policy = join(home, "policy.json");
-    writeFileSync(
-      policy,
-      JSON.stringify({
-        permissions: { allowManagedPermissionRulesOnly: true },
-      }),
-    );
-    const ok = await addPermissionRulesToSettings({
-      destination: "userSettings",
-      behavior: "allow",
-      rules: [{ toolName: "Read" }],
-      env: { home, managedSettingsPath: policy },
-    });
-    expect(ok).toBe(false);
-  });
-
-  test("deletePermissionRule removes a matching rule", async () => {
-    await addPermissionRulesToSettings({
-      destination: "userSettings",
-      behavior: "allow",
-      rules: [{ toolName: "Read" }, { toolName: "Write" }],
-      env: { home },
-    });
-    const deleted = await deletePermissionRule({
-      destination: "userSettings",
-      rule: {
-        source: "userSettings",
-        ruleBehavior: "allow",
-        ruleValue: { toolName: "Read" },
-      },
-      env: { home },
-    });
-    expect(deleted).toBe(true);
-    const parsed = await readSettingsFileLenient(
-      join(home, ".agenc", "settings.json"),
-    );
-    expect(parsed?.permissions?.allow).toEqual(["Write"]);
-  });
-
-  test("deletePermissionRule returns false when rule is absent", async () => {
-    const ok = await deletePermissionRule({
-      destination: "userSettings",
-      rule: {
-        source: "userSettings",
-        ruleBehavior: "allow",
-        ruleValue: { toolName: "Read" },
-      },
-      env: { home },
-    });
-    expect(ok).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// CLI parsing
-// ---------------------------------------------------------------------------
-
-describe("parseToolListFromCLI", () => {
-  test("splits on commas outside parens", () => {
-    const rules = parseToolListFromCLI(["Read, Write"]);
-    expect(rules.map((r) => r.ruleValue.toolName)).toEqual(["Read", "Write"]);
-  });
-
-  test("splits on spaces outside parens", () => {
-    const rules = parseToolListFromCLI(["Read Write"]);
-    expect(rules.map((r) => r.ruleValue.toolName)).toEqual(["Read", "Write"]);
-  });
-
-  test("preserves parens", () => {
-    const rules = parseToolListFromCLI(["Bash(git commit:*)"]);
-    expect(rules[0]?.ruleValue.toolName).toBe("Bash");
-    expect(rules[0]?.ruleValue.ruleContent).toBe("git commit:*");
-  });
-
-  test("commas inside parens are kept", () => {
-    const rules = parseToolListFromCLI(["Bash(git add,git commit)"]);
-    expect(rules[0]?.ruleValue.ruleContent).toBe("git add,git commit");
-  });
-
-  test("stamps source=cliArg and default behavior=allow", () => {
-    const rules = parseToolListFromCLI(["Read"]);
-    expect(rules[0]?.source).toBe("cliArg");
-    expect(rules[0]?.ruleBehavior).toBe("allow");
-  });
-
-  test("empty input yields empty list", () => {
-    expect(parseToolListFromCLI([])).toEqual([]);
-    expect(parseToolListFromCLI([""])).toEqual([]);
-  });
-});
-
-describe("parseBaseToolsFromCLI", () => {
-  test("uses same grammar as allowlist", () => {
-    const rules = parseBaseToolsFromCLI(["Read, Write, Bash(git:*)"]);
-    expect(rules.length).toBe(3);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// initialPermissionModeFromCLI
-// ---------------------------------------------------------------------------
-
-describe("initialPermissionModeFromCLI", () => {
-  test("defaults to 'default' when nothing provided", () => {
-    const r = initialPermissionModeFromCLI({});
-    expect(r.mode).toBe("default");
-  });
-
-  test("honors --dangerously-bypass-approvals-and-sandbox", () => {
-    const r = initialPermissionModeFromCLI({
-      dangerouslySkipPermissions: true,
-    });
-    expect(r.mode).toBe("bypassPermissions");
-  });
-
-  test("honors --permission-mode plan", () => {
-    const r = initialPermissionModeFromCLI({ permissionModeCli: "plan" });
-    expect(r.mode).toBe("plan");
-  });
-
-  test("settings.defaultMode fallback when no CLI flag", () => {
-    const r = initialPermissionModeFromCLI({ userDefaultMode: "acceptEdits" });
-    expect(r.mode).toBe("acceptEdits");
-  });
-
-  test("CLI beats settings.defaultMode", () => {
-    const r = initialPermissionModeFromCLI({
-      permissionModeCli: "plan",
-      userDefaultMode: "acceptEdits",
-    });
-    expect(r.mode).toBe("plan");
-  });
-
-  test("disableBypassPermissionsMode blocks bypass, falls back to next mode", () => {
-    const r = initialPermissionModeFromCLI({
-      dangerouslySkipPermissions: true,
-      userDefaultMode: "acceptEdits",
-      policySettings: {
-        permissions: { disableBypassPermissionsMode: "disable" },
+  test("managed defaultMode overrides the flag layer", async () => {
+    const env = await canonicalEnv({
+      managed:
+        'config_version = 2\n[permissions]\ndefaultMode = "default"\n',
+      cliOverrides: {
+        permissions: { defaultMode: "acceptEdits" },
       },
     });
-    expect(r.mode).toBe("acceptEdits");
-    expect(r.notification).toMatch(/Bypass/);
-  });
 
-  test("disableBypassPermissionsMode without fallback → default", () => {
-    const r = initialPermissionModeFromCLI({
-      dangerouslySkipPermissions: true,
-      policySettings: {
-        permissions: { disableBypassPermissionsMode: "disable" },
-      },
-    });
-    expect(r.mode).toBe("default");
-    expect(r.notification).toMatch(/Bypass/);
-  });
-
-  test("invalid CLI mode string is ignored", () => {
-    const r = initialPermissionModeFromCLI({
-      permissionModeCli: "totally-bogus",
-    });
-    expect(r.mode).toBe("default");
-  });
-
-  test("unattended CLI mode is ignored", () => {
-    const r = initialPermissionModeFromCLI({
-      permissionModeCli: "unattended",
-    });
-    expect(r.mode).toBe("default");
-  });
-
-  test("unattended settings.defaultMode is ignored", () => {
-    const r = initialPermissionModeFromCLI({
-      userDefaultMode: "unattended",
-    });
-    expect(r.mode).toBe("default");
-  });
-
-  test("auto mode falls back when disabled by settings", () => {
-    const r = initialPermissionModeFromCLI({
-      permissionModeCli: "auto",
-      isAutoModeAvailable: false,
-    });
-    expect(r.mode).toBe("default");
-    expect(r.notification).toMatch(/Auto mode was disabled/);
-  });
-
-  test("auto mode falls back when the live gate is closed", () => {
-    const r = initialPermissionModeFromCLI({
-      permissionModeCli: "auto",
-      isAutoModeAvailable: true,
-      isAutoModeGateEnabled: false,
-    });
-    expect(r.mode).toBe("default");
-    expect(r.notification).toMatch(/gate is closed/);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// initializeToolPermissionContext end-to-end
-// ---------------------------------------------------------------------------
-
-describe("initializeToolPermissionContext", () => {
-  let home = "";
-  let cwd = "";
-  beforeEach(() => {
-    home = mkTmp();
-    cwd = mkTmp();
-    mkdirSync(join(cwd, ".git"));
-  });
-  afterEach(() => {
-    for (const d of [home, cwd]) rmSync(d, { recursive: true, force: true });
-  });
-
-  test("merges disk + CLI rules", async () => {
-    mkdirSync(join(home, ".agenc"), { recursive: true });
-    writeFileSync(
-      join(home, ".agenc", "settings.json"),
-      JSON.stringify({ permissions: { allow: ["Read"] } }),
-    );
-    const { toolPermissionContext } = await initializeToolPermissionContext({
-      env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
-      cliAllows: ["Bash(git:*)"],
-    });
-    expect(toolPermissionContext.alwaysAllowRules.userSettings).toEqual([
-      "Read",
-    ]);
-    expect(toolPermissionContext.alwaysAllowRules.cliArg).toEqual([
-      "Bash(git:*)",
-    ]);
-  });
-
-  test("project trust never makes project/local allow rules or default modes authoritative", async () => {
-    mkdirSync(join(cwd, ".agenc"), { recursive: true });
-    writeFileSync(
-      join(cwd, ".agenc", "settings.json"),
-      JSON.stringify({
-        permissions: {
-          defaultMode: "bypassPermissions",
-          allow: ["Bash(*)"],
-          ask: ["Edit"],
-          deny: ["Write"],
-        },
-      }),
-    );
-    writeFileSync(
-      join(cwd, ".agenc", "settings.local.json"),
-      JSON.stringify({
-        permissions: {
-          defaultMode: "bypassPermissions",
-          allow: ["Read"],
-          ask: ["Bash(npm publish:*)"],
-        },
-      }),
-    );
-
-    const { toolPermissionContext, warnings } =
-      await initializeToolPermissionContext({
-        env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
-        projectTrust: "trusted",
-      });
+    const { toolPermissionContext } =
+      await initializeToolPermissionContext({ env });
 
     expect(toolPermissionContext.mode).toBe("default");
-    expect(toolPermissionContext.alwaysAllowRules.projectSettings ?? []).toEqual(
-      [],
-    );
-    expect(toolPermissionContext.alwaysAllowRules.localSettings ?? []).toEqual(
-      [],
-    );
-    expect(toolPermissionContext.alwaysAskRules.projectSettings).toEqual([
-      "Edit",
-    ]);
-    expect(toolPermissionContext.alwaysAskRules.localSettings).toEqual([
-      "Bash(npm publish:*)",
-    ]);
-    expect(toolPermissionContext.alwaysDenyRules.projectSettings).toEqual([
-      "Write",
-    ]);
-    expect(warnings).toEqual([
-      "Ignored 2 repository-controlled permission allow rules; project/local settings may restrict but cannot grant capabilities",
+  });
+
+  test("converts allow, deny, and ask rules with source provenance", () => {
+    const rules = permissionSettingsToRules({
+      permissions: { allow: ["FileRead"], deny: ["system.bash(rm:*)"], ask: ["Edit"] },
+    }, "userSettings");
+    expect(rules.map((rule) => [rule.source, rule.ruleBehavior])).toEqual([
+      ["userSettings", "allow"],
+      ["userSettings", "deny"],
+      ["userSettings", "ask"],
     ]);
   });
 
-  test("repository settings may disable auto mode but cannot enable it", async () => {
-    mkdirSync(join(home, ".agenc"), { recursive: true });
-    mkdirSync(join(cwd, ".agenc"), { recursive: true });
-    writeFileSync(
-      join(home, ".agenc", "settings.json"),
-      JSON.stringify({ permissions: { disableAutoMode: "disable" } }),
+  test("recognizes the sole top-level managed-only policy gate", () => {
+    expect(shouldAllowManagedPermissionRulesOnly({ allowManagedPermissionRulesOnly: true })).toBe(true);
+    expect(shouldAllowManagedPermissionRulesOnly(null)).toBe(false);
+  });
+
+  test("loads every strict layer and preserves source provenance", async () => {
+    const env = await canonicalEnv({
+      user: 'config_version = 2\n[permissions]\nallow = ["FileRead"]\n',
+      project: 'config_version = 2\n[permissions]\nask = ["Edit"]\n',
+      local: 'config_version = 2\n[permissions]\ndeny = ["system.bash(rm:*)"]\n',
+    });
+    const rules = await loadAllPermissionRulesFromConfig(env);
+    expect(rules.map((rule) => rule.source)).toEqual([
+      "userSettings",
+      "projectSettings",
+      "localSettings",
+    ]);
+  });
+
+  test("managed-only policy removes lower-priority and session grants on sync", async () => {
+    const env = await canonicalEnv({
+      user: 'config_version = 2\n[permissions]\nallow = ["FileRead"]\n',
+      managed: 'config_version = 2\nallowManagedPermissionRulesOnly = true\n[permissions]\ndeny = ["system.bash(curl:*)"]\n',
+    });
+    const current = createEmptyToolPermissionContext({
+      alwaysAllowRules: { session: ["Write"], cliArg: ["Edit"] },
+    });
+    const synced = await syncPermissionRulesFromConfig(current, env);
+    expect(synced.alwaysAllowRules.session).toEqual([]);
+    expect(synced.alwaysAllowRules.cliArg).toEqual([]);
+    expect(synced.alwaysDenyRules.policySettings).toEqual(["system.bash(curl:*)"]);
+  });
+
+  test("managed bypass disable normalizes a plan restore target", async () => {
+    const env = await canonicalEnv({
+      managed:
+        'config_version = 2\n[permissions]\nbypassPermissionsMode = "disable"\n',
+    });
+    const current = createEmptyToolPermissionContext({
+      mode: "plan",
+      prePlanMode: "bypassPermissions",
+      isBypassPermissionsModeAvailable: true,
+      bypassPermissionsAcceptedIn: [env.cwd!],
+    });
+    const synced = await syncPermissionRulesFromConfig(current, env);
+    expect(synced).toMatchObject({
+      mode: "plan",
+      prePlanMode: "default",
+      isBypassPermissionsModeAvailable: false,
+      bypassPermissionsModeDisabledByPolicy: true,
+      bypassPermissionsAcceptedIn: [],
+    });
+  });
+
+  test("managed-only reload replaces the active-auto dangerous-rule stash", async () => {
+    const env = await canonicalEnv({
+      managed: [
+        "config_version = 2",
+        "allowManagedPermissionRulesOnly = true",
+        "[permissions]",
+        'allow = ["system.bash(node:*)", "FileRead"]',
+        "",
+      ].join("\n"),
+    });
+    const active = createEmptyToolPermissionContext({
+      mode: "auto",
+      autoModeActive: true,
+      isAutoModeAvailable: true,
+      alwaysAllowRules: {
+        userSettings: ["FileRead(old-user)"],
+        session: ["FileRead(old-session)"],
+      },
+      strippedDangerousRules: {
+        userSettings: ["system.bash(python:*)"],
+        session: ["system.bash(npm:*)"],
+      },
+    });
+
+    const synced = await syncPermissionRulesFromConfig(active, env);
+
+    expect(synced).toMatchObject({
+      mode: "auto",
+      autoModeActive: true,
+      alwaysAllowRules: { policySettings: ["FileRead"] },
+      strippedDangerousRules: {
+        policySettings: ["system.bash(node:*)"],
+      },
+    });
+    expect(synced.alwaysAllowRules.userSettings ?? []).toEqual([]);
+    expect(synced.alwaysAllowRules.session ?? []).toEqual([]);
+    expect(synced.strippedDangerousRules?.userSettings).toBeUndefined();
+    expect(synced.strippedDangerousRules?.session).toBeUndefined();
+
+    const exited = transitionPermissionMode("auto", "default", synced);
+    expect(exited.alwaysAllowRules).toMatchObject({
+      policySettings: ["FileRead", "system.bash(node:*)"],
+    });
+    expect(exited.alwaysAllowRules.userSettings ?? []).toEqual([]);
+    expect(exited.alwaysAllowRules.session ?? []).toEqual([]);
+  });
+
+  test("managed auto disable cannot restore stale user or session grants", async () => {
+    const env = await canonicalEnv({
+      managed: [
+        "config_version = 2",
+        'disableAutoMode = "disable"',
+        "allowManagedPermissionRulesOnly = true",
+        "[permissions]",
+        'allow = ["FileRead"]',
+        "",
+      ].join("\n"),
+    });
+    const active = createEmptyToolPermissionContext({
+      mode: "auto",
+      autoModeActive: true,
+      isAutoModeAvailable: true,
+      strippedDangerousRules: {
+        userSettings: ["system.bash(python:*)"],
+        session: ["system.bash(npm:*)"],
+      },
+    });
+
+    const synced = await syncPermissionRulesFromConfig(active, env);
+
+    expect(synced).toMatchObject({
+      mode: "default",
+      autoModeActive: false,
+      isAutoModeAvailable: false,
+      alwaysAllowRules: { policySettings: ["FileRead"] },
+    });
+    expect(synced.strippedDangerousRules).toBeUndefined();
+    expect(synced.alwaysAllowRules.userSettings ?? []).toEqual([]);
+    expect(synced.alwaysAllowRules.session ?? []).toEqual([]);
+  });
+
+  test("replaces stale managed directory grants with the final managed layer", async () => {
+    const env = await canonicalEnv({
+      managed: [
+        "config_version = 2",
+        "[permissions]",
+        'additionalDirectories = ["/stale-managed"]',
+        "",
+      ].join("\n"),
+    });
+    write(
+      join(dirname(env.managedConfigPath!), "config.d", "20-permissions.toml"),
+      [
+        "config_version = 2",
+        "[permissions]",
+        'additionalDirectories = ["/active-managed"]',
+        "",
+      ].join("\n"),
     );
-    writeFileSync(
-      join(cwd, ".agenc", "settings.json"),
-      JSON.stringify({ permissions: { disableAutoMode: "enable" } }),
-    );
+    await env.configStore.reload();
+
+    const current = createEmptyToolPermissionContext({
+      additionalWorkingDirectories: new Map([
+        [
+          "/stale-managed",
+          { path: "/stale-managed", source: "policySettings" as const },
+        ],
+        [
+          "/session-extra",
+          { path: "/session-extra", source: "session" as const },
+        ],
+      ]),
+    });
+    const synced = await syncPermissionRulesFromConfig(current, env);
+
+    expect([...synced.additionalWorkingDirectories.values()]).toEqual([
+      { path: "/session-extra", source: "session" },
+      { path: "/active-managed", source: "policySettings" },
+    ]);
+  });
+});
+
+describe("canonical permission persistence", () => {
+  test("writes and deletes user rules through config.toml", async () => {
+    const env = await canonicalEnv();
+    await expect(addPermissionRulesToConfig({
+      destination: "userSettings",
+      behavior: "allow",
+      rules: [{ toolName: "FileRead" }],
+      env,
+    })).resolves.toBe(true);
+    expect(parseToml(readFileSync(join(env.home!, "config.toml"), "utf8"))).toMatchObject({
+      config_version: 2,
+      permissions: { allow: ["FileRead"] },
+    });
+    await expect(deletePermissionRule({
+      destination: "userSettings",
+      rule: { source: "userSettings", ruleBehavior: "allow", ruleValue: { toolName: "FileRead" } },
+      env,
+    })).resolves.toBe(true);
+    expect(parseToml(readFileSync(join(env.home!, "config.toml"), "utf8"))).toMatchObject({
+      permissions: { allow: [] },
+    });
+  });
+
+  test("repository config rejects grants but accepts restrictions", async () => {
+    const env = await canonicalEnv();
+    await expect(addPermissionRulesToConfig({
+      destination: "projectSettings",
+      behavior: "allow",
+      rules: [{ toolName: "FileRead" }],
+      env,
+    })).resolves.toBe(false);
+    await expect(addPermissionRulesToConfig({
+      destination: "projectSettings",
+      behavior: "deny",
+      rules: [{ toolName: "system.bash", ruleContent: "rm:*" }],
+      env,
+    })).resolves.toBe(true);
+    expect(parseToml(readFileSync(join(env.cwd!, ".agenc", "config.toml"), "utf8"))).toMatchObject({
+      permissions: { deny: ["system.bash(rm:*)"] },
+    });
+  });
+});
+
+describe("permission CLI/mode helpers", () => {
+  test("restores exact-cwd bypass consent on trusted restart before a later mode switch", async () => {
+    let env = await canonicalEnv({ diskState: true });
+    const canonicalCwd = canonicalizeBypassPermissionsCwd(env.cwd!);
+    recordBypassPermissionsConsent(env.configStore.stateRepository, env.cwd!);
+    env = await restartCanonicalEnv(env);
+    expect(
+      loadBypassPermissionsConsent(
+        env.configStore.stateRepository,
+        env.cwd!,
+        { reload: true },
+      ),
+    ).toEqual([canonicalCwd]);
 
     const { toolPermissionContext } = await initializeToolPermissionContext({
-      env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
+      env,
       projectTrust: "trusted",
     });
 
-    expect(toolPermissionContext.isAutoModeAvailable).toBe(false);
-  });
-
-  test("untrusted projects downgrade bypassPermissions unless dangerous skip is explicit", async () => {
-    const downgraded = await initializeToolPermissionContext({
-      env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
-      projectTrust: "untrusted",
-      permissionMode: "bypassPermissions",
+    expect(toolPermissionContext).toMatchObject({
+      mode: "default",
+      isBypassPermissionsModeAvailable: true,
+      bypassPermissionsAcceptedIn: [canonicalCwd],
     });
-    expect(downgraded.toolPermissionContext.mode).toBe("default");
-    expect(downgraded.warnings).toContain(
-      "Bypass permissions mode requires project trust; using default mode",
+    expect(Object.isFrozen(toolPermissionContext)).toBe(true);
+    expect(() => {
+      (toolPermissionContext as { mode: PermissionMode }).mode = "plan";
+    }).toThrow(TypeError);
+    const switched = transitionPermissionMode(
+      "default",
+      "bypassPermissions",
+      toolPermissionContext,
+      { workspacePath: env.cwd! },
     );
-
-    const explicit = await initializeToolPermissionContext({
-      env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
-      projectTrust: "untrusted",
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
+    expect(switched).not.toHaveProperty("error");
+    expect({ ...switched, mode: "bypassPermissions" as const }).toMatchObject({
+      mode: "bypassPermissions",
+      isBypassPermissionsModeAvailable: true,
+      bypassPermissionsAcceptedIn: [canonicalCwd],
     });
-    expect(explicit.toolPermissionContext.mode).toBe("bypassPermissions");
+    env.configStore.stateRepository.close();
   });
 
-  test("applies ConfigStore permissions as session approval rules", async () => {
-    const store = new ConfigStore({
-      env: {},
-      base: {
-        ...defaultConfig(),
-        permissions: {
-          allow: ["Read"],
-          ask: ["Bash(npm publish *)"],
-          deny: ["Write"],
-          additionalDirectories: [cwd],
-        },
-      },
-    });
+  test("does not restore durable bypass consent into a different cwd", async () => {
+    let env = await canonicalEnv({ diskState: true });
+    recordBypassPermissionsConsent(env.configStore.stateRepository, env.cwd!);
+    const differentCwd = join(dirname(env.cwd!), "different-repo");
+    mkdirSync(join(differentCwd, ".git"), { recursive: true });
+    env = await restartCanonicalEnv(env, differentCwd);
 
     const { toolPermissionContext } = await initializeToolPermissionContext({
-      env: {
-        home,
-        cwd,
-        managedSettingsPath: join(home, "no-policy.json"),
-        configStore: store,
-      },
+      env,
+      projectTrust: "trusted",
     });
 
-    expect(toolPermissionContext.alwaysAllowRules.session).toEqual(["Read"]);
-    expect(toolPermissionContext.alwaysAskRules.session).toEqual([
-      "Bash(npm publish *)",
-    ]);
-    expect(toolPermissionContext.alwaysDenyRules.session).toEqual(["Write"]);
-    expect(toolPermissionContext.additionalWorkingDirectories.has(cwd)).toBe(
-      true,
-    );
+    expect(toolPermissionContext).toMatchObject({
+      mode: "default",
+      isBypassPermissionsModeAvailable: false,
+    });
+    expect(toolPermissionContext.bypassPermissionsAcceptedIn ?? []).toEqual([]);
+    expect(
+      transitionPermissionMode(
+        "default",
+        "bypassPermissions",
+        toolPermissionContext,
+        { workspacePath: differentCwd },
+      ),
+    ).toMatchObject({ error: expect.any(String) });
+    env.configStore.stateRepository.close();
   });
 
-  test("ConfigStore approval rules affect production tool decisions", async () => {
-    const store = new ConfigStore({
-      env: {},
-      base: {
-        ...defaultConfig(),
-        permissions: {
-          allow: ["Bash(git:*)"],
-          ask: ["Bash(echo publish:*)"],
-          deny: ["Bash(git push:*)"],
-        },
-      },
+  test("managed disable suppresses durable bypass consent after restart", async () => {
+    let env = await canonicalEnv({
+      diskState: true,
+      managed:
+        'config_version = 2\n[permissions]\nbypassPermissionsMode = "disable"\n',
     });
+    recordBypassPermissionsConsent(env.configStore.stateRepository, env.cwd!);
+    env = await restartCanonicalEnv(env);
 
     const { toolPermissionContext } = await initializeToolPermissionContext({
-      env: {
-        home,
-        cwd,
-        managedSettingsPath: join(home, "no-policy.json"),
-        configStore: store,
-      },
+      env,
+      projectTrust: "trusted",
     });
-    const evalCtx = makeEvaluatorContext(toolPermissionContext);
-    const bashTool = {
-      name: "Bash",
-      checkPermissions: (
-        input: unknown,
-        context: ToolEvaluatorContext,
-      ): Promise<PermissionResult> =>
-        bashToolHasPermission(input as BashPermissionInput, context),
-    };
 
-    const allowed = await hasPermissionsToUseTool(
-      bashTool,
-      { command: "git status --short" },
-      evalCtx,
-    );
-    expect(allowed.behavior).toBe("allow");
-
-    const prompted = await hasPermissionsToUseTool(
-      bashTool,
-      { command: "echo publish package" },
-      evalCtx,
-    );
-    expect(prompted.behavior).toBe("ask");
-
-    const denied = await hasPermissionsToUseTool(
-      bashTool,
-      { command: "git push origin main" },
-      evalCtx,
-    );
-    expect(denied.behavior).toBe("deny");
+    expect(toolPermissionContext).toMatchObject({
+      mode: "default",
+      isBypassPermissionsModeAvailable: false,
+      bypassPermissionsModeDisabledByPolicy: true,
+      bypassPermissionsAcceptedIn: [],
+    });
+    expect(
+      transitionPermissionMode(
+        "default",
+        "bypassPermissions",
+        toolPermissionContext,
+        { workspacePath: env.cwd! },
+      ),
+    ).toMatchObject({ error: expect.any(String) });
+    env.configStore.stateRepository.close();
   });
 
-  test("applies --add-dir directories that exist", async () => {
-    const extra = mkTmp();
+  test("startup auto mode strips dangerous grants only after rules are loaded", async () => {
+    const env = await canonicalEnv({
+      user: [
+        "config_version = 2",
+        "[permissions]",
+        'defaultMode = "auto"',
+        'allow = ["system.bash(python:*)", "spawn_agent(worker)", "FileRead"]',
+        "",
+      ].join("\n"),
+    });
+    const restore = __setAutoModeGateResolverForTesting(() => true);
     try {
-      const { toolPermissionContext, warnings } =
-        await initializeToolPermissionContext({
-          env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
-          addDirs: [extra],
-        });
-      expect(toolPermissionContext.additionalWorkingDirectories.has(extra)).toBe(
-        true,
-      );
-      expect(warnings).toEqual([]);
-    } finally {
-      rmSync(extra, { recursive: true, force: true });
-    }
-  });
-
-  test("warns about --add-dir paths that do not exist", async () => {
-    const { warnings } = await initializeToolPermissionContext({
-      env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
-      addDirs: ["/nope-absolutely-does-not-exist-123456"],
-    });
-    expect(warnings.some((w) => w.includes("does not exist"))).toBe(true);
-  });
-
-  test("respects permissionMode override", async () => {
-    const { toolPermissionContext } = await initializeToolPermissionContext({
-      env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
-      permissionMode: "plan",
-    });
-    expect(toolPermissionContext.mode).toBe("plan");
-  });
-
-  test("sets isAutoModeAvailable when settings do not disable auto mode", async () => {
-    const { toolPermissionContext } = await initializeToolPermissionContext({
-      env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
-    });
-    expect(toolPermissionContext.isAutoModeAvailable).toBe(true);
-  });
-
-  test("reads disableAutoMode from settings into the context", async () => {
-    mkdirSync(join(home, ".agenc"), { recursive: true });
-    writeFileSync(
-      join(home, ".agenc", "settings.json"),
-      JSON.stringify({ permissions: { disableAutoMode: "disable" } }),
-    );
-    const { toolPermissionContext } = await initializeToolPermissionContext({
-      env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
-    });
-    expect(toolPermissionContext.isAutoModeAvailable).toBe(false);
-  });
-
-  test("does not start in auto mode when the live gate is closed", async () => {
-    const restore = __setAutoModeGateResolverForTesting(() => false);
-    try {
-      const { toolPermissionContext } = await initializeToolPermissionContext({
-        env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
-        permissionMode: "auto",
+      const { toolPermissionContext } =
+        await initializeToolPermissionContext({ env });
+      expect(toolPermissionContext).toMatchObject({
+        mode: "auto",
+        autoModeActive: true,
       });
-      expect(toolPermissionContext.mode).toBe("default");
+      expect(Object.isFrozen(toolPermissionContext)).toBe(true);
+      expect(() => {
+        (toolPermissionContext as { mode: PermissionMode }).mode = "default";
+      }).toThrow(TypeError);
+      expect(toolPermissionContext.alwaysAllowRules.userSettings).toEqual([
+        "FileRead",
+      ]);
+      expect(toolPermissionContext.strippedDangerousRules?.userSettings).toEqual([
+        "system.bash(python:*)",
+        "spawn_agent(worker)",
+      ]);
     } finally {
       restore();
     }
   });
 
-  test("sets isBypassPermissionsModeAvailable when dangerous skip granted", async () => {
-    const { toolPermissionContext } = await initializeToolPermissionContext({
-      env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
-      allowDangerouslySkipPermissions: true,
-      permissionMode: "bypassPermissions",
+  test("startup auto mode falls back cleanly when its gate is closed", async () => {
+    const env = await canonicalEnv({
+      user: [
+        "config_version = 2",
+        "[permissions]",
+        'defaultMode = "auto"',
+        'allow = ["system.bash(python:*)", "FileRead"]',
+        "",
+      ].join("\n"),
     });
-    expect(toolPermissionContext.isBypassPermissionsModeAvailable).toBe(true);
-  });
-
-  test("reads additionalDirectories from user settings", async () => {
-    const extra = mkTmp();
+    const restore = __setAutoModeGateResolverForTesting(() => false);
     try {
-      mkdirSync(join(home, ".agenc"), { recursive: true });
-      writeFileSync(
-        join(home, ".agenc", "settings.json"),
-        JSON.stringify({
-          permissions: { additionalDirectories: [extra] },
-        }),
-      );
-      const { toolPermissionContext } = await initializeToolPermissionContext({
-        env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
-      });
-      expect(
-        toolPermissionContext.additionalWorkingDirectories.has(extra),
-      ).toBe(true);
+      const { toolPermissionContext } =
+        await initializeToolPermissionContext({ env });
+      expect(toolPermissionContext.mode).toBe("default");
+      expect(toolPermissionContext.autoModeActive).not.toBe(true);
+      expect(toolPermissionContext.strippedDangerousRules).toBeUndefined();
+      expect(toolPermissionContext.alwaysAllowRules.userSettings).toEqual([
+        "system.bash(python:*)",
+        "FileRead",
+      ]);
     } finally {
-      rmSync(extra, { recursive: true, force: true });
+      restore();
     }
   });
-});
 
-describe("getEnabledSettingSources", () => {
-  test("returns all five file-backed sources by default", () => {
-    expect(getEnabledSettingSources()).toEqual([
-      "userSettings",
-      "projectSettings",
-      "localSettings",
-      "flagSettings",
+  test("parses comma and whitespace separated rules without splitting parentheses", () => {
+    expect(parseToolListFromCLI(["FileRead, system.bash(git commit:*) Write"]).map((rule) => rule.ruleValue)).toEqual([
+      { toolName: "FileRead" },
+      { toolName: "system.bash", ruleContent: "git commit:*" },
+      { toolName: "Write" },
+    ]);
+    expect(parseBaseToolsFromCLI(["FileRead Edit"])).toHaveLength(2);
+  });
+
+  test("uses explicit dangerous bypass first unless managed policy disables it", () => {
+    expect(initialPermissionModeFromCLI({ dangerouslySkipPermissions: true })).toEqual({
+      mode: "bypassPermissions",
+      notification: undefined,
+    });
+    expect(initialPermissionModeFromCLI({
+      dangerouslySkipPermissions: true,
+      permissionModeCli: "plan",
+      policySettings: { permissions: { bypassPermissionsMode: "disable" } },
+    })).toEqual({
+      mode: "plan",
+      notification: "Bypass permissions mode was disabled by configuration",
+    });
+  });
+
+  test("returns an immutable explicit-bypass startup context", async () => {
+    const env = await canonicalEnv();
+    const { toolPermissionContext } = await initializeToolPermissionContext({
+      env,
+      allowDangerouslySkipPermissions: true,
+    });
+
+    expect(toolPermissionContext.mode).toBe("bypassPermissions");
+    expect(Object.isFrozen(toolPermissionContext)).toBe(true);
+    expect(() => {
+      (toolPermissionContext as { mode: PermissionMode }).mode = "default";
+    }).toThrow(TypeError);
+  });
+
+  test("initialization ignores repository grants while retaining restrictions", async () => {
+    const env = await canonicalEnv({
+      project: 'config_version = 2\n[permissions]\nallow = ["FileRead"]\nask = ["Edit"]\n',
+      local: 'config_version = 2\n[permissions]\ndeny = ["system.bash(rm:*)"]\n',
+    });
+    const { toolPermissionContext, warnings } = await initializeToolPermissionContext({ env });
+    expect(toolPermissionContext.alwaysAllowRules.projectSettings ?? []).toEqual([]);
+    expect(toolPermissionContext.alwaysAskRules.projectSettings).toEqual(["Edit"]);
+    expect(toolPermissionContext.alwaysDenyRules.localSettings).toEqual(["system.bash(rm:*)"]);
+    expect(warnings.join(" ")).toMatch(/Ignored 1 repository-controlled/u);
+  });
+
+  test("initialization cannot reintroduce grants after managed-only filtering", async () => {
+    const env = await canonicalEnv({
+      user: [
+        "config_version = 2",
+        "[permissions]",
+        'allow = ["Write"]',
+        'additionalDirectories = ["/user-extra"]',
+        "",
+      ].join("\n"),
+      managed: [
+        "config_version = 2",
+        "allowManagedPermissionRulesOnly = true",
+        "[permissions]",
+        'allow = ["FileRead"]',
+        'deny = ["system.bash(curl:*)"]',
+        'additionalDirectories = ["/managed-extra"]',
+        "",
+      ].join("\n"),
+    });
+
+    const { toolPermissionContext, warnings } =
+      await initializeToolPermissionContext({
+        env,
+        cliAllows: ["Edit"],
+        addDirs: ["/cli-extra"],
+      });
+
+    expect(toolPermissionContext.alwaysAllowRules.userSettings ?? []).toEqual([]);
+    expect(toolPermissionContext.alwaysAllowRules.cliArg ?? []).toEqual([]);
+    expect(toolPermissionContext.alwaysAllowRules.session ?? []).toEqual([]);
+    expect(toolPermissionContext.alwaysAllowRules.policySettings).toEqual(["FileRead"]);
+    expect(toolPermissionContext.alwaysDenyRules.policySettings).toEqual([
+      "system.bash(curl:*)",
+    ]);
+    expect([...toolPermissionContext.additionalWorkingDirectories.values()])
+      .toEqual([{ path: "/managed-extra", source: "policySettings" }]);
+    expect(warnings).toContain(
+      "Ignored --add-dir because managed policy allows only managed permission rules",
+    );
+  });
+
+  test("managed-only rules retain repository auto and bypass restrictions at startup", async () => {
+    const env = await canonicalEnv({
+      project: [
+        "config_version = 2",
+        'disableAutoMode = "disable"',
+        "[permissions]",
+        'bypassPermissionsMode = "disable"',
+        'deny = ["system.bash(rm:*)"]',
+        "",
+      ].join("\n"),
+      managed: [
+        "config_version = 2",
+        "allowManagedPermissionRulesOnly = true",
+        "[permissions]",
+        'deny = ["system.bash(curl:*)"]',
+        "",
+      ].join("\n"),
+    });
+    const snapshot = await loadPermissionRulesSnapshot(env);
+    expect(snapshot).toMatchObject({
+      managedOnly: true,
+      disableAutoMode: true,
+      bypassPermissionsModeDisabled: true,
+    });
+    expect(snapshot.rules.map((rule) => rule.source)).toEqual([
       "policySettings",
     ]);
+
+    const restoreGate = __setAutoModeGateResolverForTesting(() => true);
+    try {
+      const auto = await initializeToolPermissionContext({
+        env,
+        permissionMode: "auto",
+      });
+      expect(auto.toolPermissionContext).toMatchObject({
+        mode: "default",
+        isAutoModeAvailable: false,
+      });
+
+      const bypass = await initializeToolPermissionContext({
+        env,
+        allowDangerouslySkipPermissions: true,
+      });
+      expect(bypass.toolPermissionContext).toMatchObject({
+        mode: "default",
+        isBypassPermissionsModeAvailable: false,
+        bypassPermissionsModeDisabledByPolicy: true,
+        bypassPermissionsAcceptedIn: [],
+      });
+    } finally {
+      restoreGate();
+    }
   });
-});
 
-// Small compile-time check that writeSettings is declared (eslint's
-// noUnusedLocals would flag the helper above; this test reminds that
-// it can be used to extend coverage without adding imports).
-test("writeSettings helper is referenceable", () => {
-  expect(typeof writeSettings).toBe("function");
-});
+  test("honors source isolation for rules, directories, and the default mode", async () => {
+    const originalSources = [...getAllowedSettingSources()];
+    try {
+      setAllowedSettingSources([]);
+      const env = await canonicalEnv({
+        user: [
+          "config_version = 2",
+          "[permissions]",
+          'allow = ["FileRead"]',
+          'additionalDirectories = ["/user-extra"]',
+          'defaultMode = "acceptEdits"',
+          "",
+        ].join("\n"),
+        managed: [
+          "config_version = 2",
+          "[permissions]",
+          'deny = ["system.bash(curl:*)"]',
+          'additionalDirectories = ["/managed-extra"]',
+          "",
+        ].join("\n"),
+      });
 
-test("loadAllPermissionRulesFromDisk returns empty when env omitted and no $HOME file present", async () => {
-  // Use a temp home that has no .agenc subdir and a managed path that
-  // does not exist — guarantees empty rules in a clean env.
-  const clean = mkTmp();
-  try {
-    const rules = await loadAllPermissionRulesFromDisk({
-      home: clean,
-      cwd: clean,
-      managedSettingsPath: join(clean, "nope.json"),
-    });
-    expect(rules).toEqual([]);
-  } finally {
-    rmSync(clean, { recursive: true, force: true });
-  }
-});
+      const { toolPermissionContext } =
+        await initializeToolPermissionContext({ env });
 
-test("existsSync behaves as expected (env sanity)", () => {
-  const d = mkTmp();
-  try {
-    expect(existsSync(d)).toBe(true);
-  } finally {
-    rmSync(d, { recursive: true, force: true });
-  }
+      expect(toolPermissionContext.mode).toBe("default");
+      expect(toolPermissionContext.alwaysAllowRules.userSettings ?? []).toEqual([]);
+      expect(toolPermissionContext.alwaysDenyRules.policySettings).toEqual([
+        "system.bash(curl:*)",
+      ]);
+      expect([...toolPermissionContext.additionalWorkingDirectories.values()])
+        .toEqual([{ path: "/managed-extra", source: "policySettings" }]);
+    } finally {
+      setAllowedSettingSources(originalSources);
+    }
+  });
 });

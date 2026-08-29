@@ -1,15 +1,36 @@
 import { describe, expect, it, vi } from "vitest";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { pluginsCommand } from "./plugins.js";
 import type { SlashCommandContext } from "./types.js";
+import { ConfigStore } from "../config/store.js";
 
 function makeCtx(
   appState?: SlashCommandContext["appState"],
 ): SlashCommandContext {
+  const workspaceRoot = "/tmp/project";
   return {
-    session: { services: {} } as SlashCommandContext["session"],
+    session: {
+      services: {
+        configStore: new ConfigStore({
+          home: "/tmp/agenc-plugin-command-home",
+          env: {},
+          cwd: workspaceRoot,
+          projectRoot: workspaceRoot,
+        }),
+        runtimeOptions: {
+          simpleMode: false,
+          stdinDataMode: false,
+          remoteMode: false,
+          sessionTempRoot: tmpdir(),
+          pluginStorageRoot: join(tmpdir(), "agenc-plugin-command-test"),
+          allowUntrustedHooks: false,
+        },
+      },
+    } as SlashCommandContext["session"],
     argsRaw: "",
-    cwd: "/tmp/project",
+    cwd: workspaceRoot,
     home: "/tmp",
     appState,
   };

@@ -20,8 +20,10 @@ import type {
   CsvJobReviewShowResult,
 } from "./csv-jobs.js";
 
+/** JSON-RPC 2.0 envelope version sent on every request. */
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
-export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.2.0" as const;
+/** Protocol the SDK advertises on `initialize`. Handshake rules are in docs/sdk.md. */
+export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.9.0" as const;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | readonly JsonValue[] | JsonObject;
@@ -64,6 +66,7 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "session.transcript.v2",
   "session.cancelTurn",
   "session.resolveToolCall",
+  "session.mcp.status",
   "session.mcp.addServer",
   "message.send",
   "message.stream",
@@ -105,6 +108,7 @@ export const AGENC_SDK_DAEMON_NOTIFICATION_METHODS = [
   "event.permission_request",
   "event.user_input_request",
   "event.mcp_elicitation_request",
+  "event.mcp_status_changed",
   "event.agent_status",
   "event.session_event",
   "event.event_gap",
@@ -166,6 +170,27 @@ export type MessageContentBlock =
 
 export type MessageContent = string | readonly MessageContentBlock[];
 
+export interface AgentRuntimeOptionsParams extends JsonObject {
+  readonly simpleMode: boolean;
+  /** Omission by an older peer is normalized to false. */
+  readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
+  readonly stdinDataMode: boolean;
+  readonly remoteMode: boolean;
+  readonly remoteMemoryRoot?: string;
+  readonly coworkMemoryPathOverride?: string;
+  readonly coworkMemoryExtraGuidelines?: string;
+  readonly posixShellPath?: string;
+  readonly commandWrapperArgv?: readonly string[];
+  readonly sessionTempRoot?: string;
+  readonly pluginStorageRoot: string;
+  /**
+   * Explicit capability for command hook effects in an untrusted workspace.
+   * The SDK safe default is false. This field never permits HTTP, prompt, or
+   * agent hook effects and cannot override simpleMode hook suppression.
+   */
+  readonly allowUntrustedHooks: boolean;
+}
+
 export interface AgentCreateParams extends JsonObject {
   readonly objective?: string;
   /**
@@ -177,12 +202,16 @@ export interface AgentCreateParams extends JsonObject {
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  /** Absolute explicit config layer selected by the invoking client. */
+  readonly configPath?: string;
   readonly instructions?: string;
   readonly initialContent?: MessageContent;
   readonly unattendedAllow?: readonly string[];
   readonly unattendedDeny?: readonly string[];
   readonly metadata?: JsonObject;
   readonly permissionMode?: PermissionMode;
+  /** Immutable operator policy resolved by the embedding client. */
+  readonly runtimeOptions: AgentRuntimeOptionsParams;
   readonly envOverrides?: { readonly [key: string]: string };
 }
 
@@ -332,9 +361,13 @@ export interface SessionResolveToolCallEvidenceParams extends JsonObject {
 export type SessionResolveToolCallParams =
   SessionResolveToolCallLegacyParams | SessionResolveToolCallEvidenceParams;
 
+export interface SessionMcpStatusParams extends JsonObject {
+  readonly sessionId: string;
+}
+
 export interface SessionMcpServerConfig extends JsonObject {
   readonly name: string;
-  readonly transport?: "stdio" | "sse" | "http" | "websocket" | "ws";
+  readonly transport?: "stdio" | "sse" | "http" | "websocket";
   readonly command?: string;
   readonly args?: readonly string[];
   readonly endpoint?: string;
@@ -533,6 +566,7 @@ export interface AgencParamsByMethod {
   readonly "session.transcript.v2": SessionTranscriptV2Params;
   readonly "session.cancelTurn": SessionCancelTurnParams;
   readonly "session.resolveToolCall": SessionResolveToolCallParams;
+  readonly "session.mcp.status": SessionMcpStatusParams;
   readonly "session.mcp.addServer": SessionMcpAddServerParams;
   readonly "message.send": MessageSendParams;
   readonly "message.stream": MessageStreamParams;
@@ -623,12 +657,55 @@ export interface AgentListResult extends JsonObject {
   readonly nextCursor?: string;
 }
 
+/** Standalone wire mirror of the runtime's canonical run-settings snapshot. */
+export interface RunRuntimeSettingsSnapshot extends JsonObject {
+  readonly permissionMode:
+    | "default"
+    | "plan"
+    | "acceptEdits"
+    | "bypassPermissions"
+    | "dontAsk"
+    | "auto"
+    | "unattended";
+  readonly prePlanMode:
+    | "default"
+    | "plan"
+    | "acceptEdits"
+    | "bypassPermissions"
+    | "dontAsk"
+    | "auto"
+    | "unattended"
+    | null;
+  readonly autoModeActive: boolean;
+  readonly autoModeAvailable: boolean;
+  readonly bypassPermissionsModeAvailable: boolean;
+  readonly bypassPermissionsWorkspace: string | null;
+  readonly bypassPermissionsConsentWorkspace: string | null;
+  readonly model: string;
+  readonly provider: string;
+  readonly profile: string | null;
+  readonly reasoningEffort: "low" | "medium" | "high" | "xhigh" | "none" | null;
+  readonly modelVerbosity: "low" | "medium" | "high" | null;
+  readonly serviceTier: "priority" | "flex" | null;
+  readonly hooksDisabled: boolean;
+}
+
 export interface AgentAttachResult extends JsonObject {
   readonly agentId: string;
   readonly attachmentId: string;
   readonly sessionIds: readonly string[];
+  /** Immutable operator authority owned by the attached daemon session. */
+  readonly runtimeOptions: AgentRuntimeOptionsParams;
+  /** Live daemon-owned settings; static session metadata is not authority. */
+  readonly runtimeSettings: RunRuntimeSettingsSnapshot;
+  /** Canonical settings event hydrated by this response. */
+  readonly runtimeSettingsEventId: string;
   readonly runtimeSessionId?: string;
-  readonly sessions?: readonly SessionSummary[];
+  readonly sessions: readonly AgentAttachSessionSummary[];
+}
+
+export interface AgentAttachSessionSummary extends SessionSummary {
+  readonly cwd: string;
 }
 
 export interface AgentStopResult extends JsonObject {
@@ -1000,12 +1077,14 @@ export interface RunAdmissionReplayResult extends RunReplayPage {
 /** Discriminated by `source.kind`; M3 and M4 event contracts stay precise. */
 export type RunReplayResult = RunJournalReplayResult | RunAdmissionReplayResult;
 
+/** True when `run.replay` used the pre-generalized admission journal. */
 export function isRunAdmissionReplayResult(
   result: RunReplayResult,
 ): result is RunAdmissionReplayResult {
   return result.source.kind === "execution_admission_journal";
 }
 
+/** True when `run.replay` used the canonical run journal. */
 export function isRunJournalReplayResult(
   result: RunReplayResult,
 ): result is RunJournalReplayResult {
@@ -1099,19 +1178,10 @@ export interface TokenUsage extends JsonObject {
   readonly costUsd: number;
 }
 
-export interface CacheStats extends JsonObject {
-  readonly requestCount: number;
-  readonly cacheReadInputTokens: number;
-  readonly cacheCreationInputTokens: number;
-  readonly cacheTotalInputTokens: number;
-  readonly hitRate: number | null;
-}
-
 export interface SessionSnapshotResult extends JsonObject {
   readonly sessionId: string;
   readonly turnCount: number;
   readonly tokenUsage: TokenUsage;
-  readonly cacheStats: CacheStats;
 }
 
 export interface SessionTranscriptMessage extends JsonObject {
@@ -1166,6 +1236,34 @@ export interface SessionResolveToolCallResult extends JsonObject {
     readonly eventId?: string;
   }[];
   readonly remaining: number;
+}
+
+export interface SessionMcpStatusServer extends JsonObject {
+  readonly name: string;
+  readonly transport: "stdio" | "sse" | "http" | "websocket";
+  readonly enabled: boolean;
+  readonly required: boolean;
+  readonly state:
+    | "connected"
+    | "pending"
+    | "failed"
+    | "disabled"
+    | "needs-auth"
+    | "disconnected";
+  readonly displayTarget?: string;
+  readonly toolCount: number;
+}
+
+export interface SessionMcpStatusTool extends JsonObject {
+  readonly serverName: string;
+  readonly name: string;
+}
+
+export interface SessionMcpStatusResult extends JsonObject {
+  readonly sessionId: string;
+  readonly revision: number;
+  readonly servers: readonly SessionMcpStatusServer[];
+  readonly tools: readonly SessionMcpStatusTool[];
 }
 
 export interface SessionMcpAddServerResult extends JsonObject {
@@ -1347,6 +1445,7 @@ export interface AgencResultByMethod {
   readonly "session.transcript.v2": SessionTranscriptV2Result;
   readonly "session.cancelTurn": SessionCancelTurnResult;
   readonly "session.resolveToolCall": SessionResolveToolCallResult;
+  readonly "session.mcp.status": SessionMcpStatusResult;
   readonly "session.mcp.addServer": SessionMcpAddServerResult;
   readonly "message.send": MessageSendResult;
   readonly "message.stream": MessageStreamResult;
@@ -1426,6 +1525,12 @@ export interface EventMcpElicitationRequestParams extends AgencEventBaseParams {
   readonly serverName: string;
   readonly turnId: string;
   readonly request: JsonObject;
+}
+
+/** Non-journal control-plane invalidation for the passive MCP projection. */
+export interface EventMcpStatusChangedParams extends JsonObject {
+  readonly sessionId: string;
+  readonly revision: number;
 }
 
 export interface EventAgentStatusParams extends AgencEventBaseParams {

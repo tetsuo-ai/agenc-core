@@ -7,7 +7,7 @@ import {
 
 const tools = [
   {
-    name: 'Bash',
+    name: 'system.bash',
     aliases: [],
     toAutoClassifierInput(input: Record<string, unknown>) {
       return String(input.command ?? '')
@@ -36,7 +36,7 @@ describe('buildTranscriptForClassifier', () => {
           content: [
             {
               type: 'tool_use',
-              name: 'Bash',
+              name: 'system.bash',
               input: { command: 'old-tool' },
             },
           ],
@@ -54,7 +54,7 @@ describe('buildTranscriptForClassifier', () => {
           content: [
             {
               type: 'tool_use',
-              name: 'Bash',
+              name: 'system.bash',
               input: { command: 'new-tool' },
             },
           ],
@@ -62,7 +62,7 @@ describe('buildTranscriptForClassifier', () => {
       },
     ] as any
 
-    const transcript = buildTranscriptForClassifier(messages, tools, 32)
+    const transcript = buildTranscriptForClassifier(messages, tools, 40)
 
     expect(transcript).toContain('new-user')
     expect(transcript).toContain('new-tool')

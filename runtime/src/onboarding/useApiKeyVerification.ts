@@ -1,13 +1,22 @@
 import { useEffect, useState } from "react";
 
-import { resolveProviderSettings } from "../config/resolve-provider.js";
 import type { AgenCConfig } from "../config/schema.js";
+import type { ProviderFactoryOptions } from "../llm/provider.js";
+import { resolveProviderCredentialAuthority } from "../llm/provider-options.js";
+import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
+import { geminiEndpointFor } from "../llm/providers/gemini/endpoint-plan.js";
+import { readGeminiRuntimeOptions } from "../llm/providers/gemini/runtime-options.js";
 import {
   BUILT_IN_PROVIDER_BASE_URLS,
-  normalizeBuiltInProviderSlug,
+  resolveBuiltInProviderInfo,
   type BuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
+import {
+  geminiCredentialHeaders,
+  materializeGeminiCredentialPlan,
+} from "../utils/geminiAuth.js";
 import type { OnboardingEnv } from "./projectOnboardingState.js";
+import { getProxyFetchOptions } from "../utils/proxy.js";
 
 export type VerificationStatus =
   | "loading"
@@ -34,7 +43,23 @@ export interface UseApiKeyVerificationOptions extends VerifyApiKeyParams {
   readonly enabled?: boolean;
 }
 
-const LOCAL_KEYLESS_PROVIDERS = new Set<BuiltInProviderSlug>([
+export interface VerifyPreparedProviderConnectionParams {
+  readonly provider: BuiltInProviderSlug;
+  readonly factoryOptions: ProviderFactoryOptions;
+  readonly environment?: OnboardingEnv;
+  readonly fetchImpl?: typeof fetch;
+  readonly timeoutMs?: number;
+}
+
+type GenericApiKeyVerificationProvider = Exclude<
+  BuiltInProviderSlug,
+  "gemini"
+>;
+
+// This is provider verification-protocol behavior, not the onboarding access
+// classification: an OpenAI-compatible local endpoint can authenticate its
+// models route, while Ollama and LM Studio have no stable key-check contract.
+const PROVIDERS_WITHOUT_API_KEY_VERIFICATION = new Set<BuiltInProviderSlug>([
   "ollama",
   "lmstudio",
 ]);
@@ -48,11 +73,23 @@ const LOCAL_KEYLESS_PROVIDERS = new Set<BuiltInProviderSlug>([
  */
 export const DEFAULT_PROVIDER_VERIFY_TIMEOUT_MS = 5_000;
 
+function preparedDefaultHeaders(
+  value: unknown,
+): Readonly<Record<string, string>> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const entries = Object.entries(value);
+  return entries.some(([, entry]) => typeof entry !== "string")
+    ? {}
+    : (Object.fromEntries(entries) as Readonly<Record<string, string>>);
+}
+
 /**
  * Providers that reject bad API keys with HTTP 400 instead of 401/403 on
  * their models endpoint (verified live): x.ai returns 400 for both
- * malformed and well-formed-but-wrong keys, and Gemini's OpenAI-compat
- * surface does the same. For these, 400 on a bare authenticated GET means
+ * malformed and well-formed-but-wrong keys, and the Gemini Developer API
+ * does the same. For these, 400 on a bare authenticated GET means
  * "key rejected", not "request malformed".
  */
 const PROVIDERS_REJECTING_KEYS_WITH_400 = new Set<BuiltInProviderSlug>([
@@ -79,42 +116,146 @@ export async function verifyApiKey(
   if (/\s/.test(apiKey)) {
     return { status: "invalid", error: "API keys must not contain whitespace." };
   }
-  const provider = normalizeBuiltInProviderSlug(params.provider);
-  if (provider === undefined) {
+  const providerInfo = resolveBuiltInProviderInfo(params.provider);
+  if (providerInfo === undefined) {
     return { status: "error", error: `Unknown provider: ${params.provider}` };
   }
-  if (provider === "agenc") {
+  const provider = providerInfo.id;
+  if (providerInfo.onboarding.access === "managed") {
     return {
       status: "error",
       error: "Hosted AgenC uses account auth instead of first-run BYOK keys.",
     };
   }
-  if (LOCAL_KEYLESS_PROVIDERS.has(provider)) {
+  if (providerInfo.onboarding.access === "environment") {
+    return {
+      status: "error",
+      error:
+        "Amazon Bedrock uses an AWS SigV4 credential set and cannot be verified as a one-field API key.",
+    };
+  }
+  if (PROVIDERS_WITHOUT_API_KEY_VERIFICATION.has(provider)) {
     return { status: "valid" };
   }
+  const environment = params.env ?? {};
+  const runtimeRequest = resolveProviderRuntimeRequest({
+    provider,
+    model: providerInfo.defaultModel,
+    config: params.config,
+    environment,
+  });
+  let authority: ReturnType<typeof resolveProviderCredentialAuthority>;
+  try {
+    authority = resolveProviderCredentialAuthority(
+      provider,
+      {
+        ...runtimeRequest.requested,
+        apiKey,
+      },
+      environment,
+    );
+  } catch (error) {
+    return {
+      status: "error",
+      error: error instanceof Error
+        ? error.message
+        : "Provider verification configuration is invalid.",
+    };
+  }
+  if (provider === "gemini") {
+    const runtime = readGeminiRuntimeOptions(authority.factoryOptions.extra);
+    if (runtime?.credentialPlan.kind !== "api-key") {
+      return {
+        status: "error",
+        error:
+          "Gemini API-key verification is blocked by the configured non-API-key auth mode.",
+      };
+    }
+  }
+  return verifyPreparedProviderConnection({
+    provider,
+    factoryOptions: authority.factoryOptions,
+    environment,
+    ...(params.fetchImpl !== undefined ? { fetchImpl: params.fetchImpl } : {}),
+    ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
+  });
+}
+
+export async function verifyPreparedProviderConnection(
+  params: VerifyPreparedProviderConnectionParams,
+): Promise<ApiKeyVerificationResult> {
   const fetchImpl = params.fetchImpl ?? globalThis.fetch?.bind(globalThis);
   if (fetchImpl === undefined) {
     return { status: "error", error: "No fetch implementation is available." };
   }
-  const settings = resolveProviderSettings(
-    provider,
-    params.config,
-    params.env,
-  );
-  const baseURL = settings?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS[provider];
+  const { provider, factoryOptions } = params;
+  const environment = params.environment ?? {};
+  let verificationURL: string;
+  let headers: Readonly<Record<string, string>>;
+  if (provider === "gemini") {
+    const runtime = readGeminiRuntimeOptions(factoryOptions.extra);
+    if (runtime === undefined) {
+      return {
+        status: "error",
+        error: "Gemini verification requires canonical runtime options.",
+      };
+    }
+    const credential = await materializeGeminiCredentialPlan(
+      runtime.credentialPlan,
+    );
+    const canonicalHeaders = geminiCredentialHeaders(credential);
+    if (canonicalHeaders === undefined) {
+      return {
+        status: "error",
+        error: "Gemini API-key verification could not materialize credentials.",
+      };
+    }
+    const nativeBaseURL = geminiEndpointFor(runtime.endpointPlan)
+      .replace(/\/+$/, "");
+    verificationURL = `${nativeBaseURL}/models`;
+    headers = canonicalHeaders;
+  } else {
+    const apiKey = factoryOptions.apiKey?.trim();
+    const authToken = factoryOptions.authToken?.trim();
+    if (apiKey === undefined && authToken === undefined) {
+      return {
+        status: "missing",
+        error: "Provider verification requires a prepared credential.",
+      };
+    }
+    verificationURL = providerVerificationUrl(
+      provider,
+      factoryOptions.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS[provider],
+    );
+    headers = {
+      ...preparedDefaultHeaders(factoryOptions.extra?.defaultHeaders),
+      ...(provider === "anthropic" && authToken !== undefined
+        ? {
+            "anthropic-version": "2023-06-01",
+            Authorization: `Bearer ${authToken}`,
+          }
+        : apiKeyHeaders(provider, apiKey ?? "")),
+    };
+  }
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(),
-    params.timeoutMs ?? DEFAULT_PROVIDER_VERIFY_TIMEOUT_MS,
+    params.timeoutMs ??
+      factoryOptions.timeoutMs ??
+      DEFAULT_PROVIDER_VERIFY_TIMEOUT_MS,
   );
   if (typeof (timer as { unref?: () => void }).unref === "function") {
     (timer as { unref: () => void }).unref();
   }
   try {
-    const response = await fetchImpl(providerVerificationUrl(provider, baseURL), {
+    const response = await fetchImpl(verificationURL, {
       method: "GET",
-      headers: apiKeyHeaders(provider, apiKey),
+      headers,
       signal: controller.signal,
+      ...(getProxyFetchOptions({
+        environment,
+        forAnthropicAPI: provider === "anthropic",
+      }) as RequestInit),
     });
     if (response.ok) return { status: "valid" };
     if (isKeyRejectedStatus(provider, response.status)) {
@@ -171,21 +312,17 @@ export function useApiKeyVerification(
 
 /**
  * URL used to verify a provider API key. This is the models listing for
- * most providers, with two exceptions: Gemini keys are checked against the
- * OpenAI-compat surface, and OpenRouter's models endpoint is PUBLIC (it
- * returns 200 for any Authorization header, verified live) so its key-info
- * endpoint `/auth/key` is used instead — that one actually authenticates.
+ * most providers, except OpenRouter: its models endpoint is public (it returns
+ * 200 for any Authorization header, verified live), so its authenticated
+ * key-info endpoint `/auth/key` is used instead.
  */
 export function providerVerificationUrl(
-  provider: BuiltInProviderSlug,
+  provider: GenericApiKeyVerificationProvider,
   baseURL: string,
 ): string {
   const trimmed = baseURL.replace(/\/+$/, "");
   if (provider === "openrouter" && !/\/auth\/key$/i.test(trimmed)) {
     return `${trimmed}/auth/key`;
-  }
-  if (provider === "gemini" && !/\/openai$/i.test(trimmed)) {
-    return `${trimmed}/openai/models`;
   }
   if (trimmed.endsWith("/models")) return trimmed;
   if (/\/(?:v\d+(?:beta)?|api\/v\d+)$/i.test(trimmed)) {
@@ -195,7 +332,7 @@ export function providerVerificationUrl(
 }
 
 function apiKeyHeaders(
-  provider: BuiltInProviderSlug,
+  provider: GenericApiKeyVerificationProvider,
   apiKey: string,
 ): Readonly<Record<string, string>> {
   if (provider === "anthropic") {

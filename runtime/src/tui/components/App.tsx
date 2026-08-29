@@ -1,8 +1,7 @@
 import { watch, type FSWatcher } from "node:fs";
 import { logForDebugging } from "src/utils/debug.js";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { c as _c } from "react-compiler-runtime";
 import React, {
   type ReactNode,
@@ -111,7 +110,7 @@ import { ScrollKeybindingHandler } from "./ScrollKeybindingHandler.js";
 import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
 import { AlternateScreen } from "../ink/components/AlternateScreen.js";
 import {
-  isFullscreenEnvEnabled,
+  isFullscreenEnabledForCurrentTerminal,
   isMouseTrackingEnabled,
 } from "../../utils/fullscreen.js";
 import { SpinnerWithVerb } from "./spinner/Spinner.js";
@@ -133,21 +132,31 @@ import {
   dispatchSlashCommand,
 } from "../../commands/dispatcher.js";
 import { buildDefaultRegistry } from "../../commands/registry.js";
-import { setGlobalCommandRegistry } from "../../commands/types.js";
+import {
+  setGlobalCommandRegistry,
+  type SlashCommandContext,
+} from "../../commands/types.js";
 import { PromptOverlayProvider } from "../context/promptOverlayContext.js";
 import { KeybindingSetup } from "../keybindings/KeybindingProviderSetup.js";
 import { CancelRequestHandler } from "../hooks/useCancelRequest.js";
 import { useApiKeyVerification } from "../hooks/useApiKeyVerification.js";
+import type { ProviderAuthReadContext } from "../../utils/auth.js";
 import { addToHistory } from "../history/history.js";
 import { GlobalKeybindingHandlers } from "../hooks/useGlobalKeybindings.js";
 import {
   type AppState,
   AppStateProvider,
-  getDefaultAppState,
+  getDefaultAppStateForProviderEnvironment,
   useAppState,
   useAppStateStore,
   useSetAppState,
 } from "../state/AppState.js";
+import { useSettings } from "../hooks/useSettings.js";
+import { useMainLoopModel } from "../hooks/useMainLoopModel.js";
+import {
+  FullscreenModeProvider,
+} from "../context/fullscreenModeContext.js";
+import { getInitialSettings } from "../../utils/settings/settings.js";
 import {
   Box,
   Text,
@@ -160,17 +169,11 @@ import {
   setPendingResumeSessionId,
 } from "../pending-resume.js";
 import { requestTuiSessionTurnCancel } from "../sessionCancel.js";
-import { getSdkBetas } from "../../bootstrap/state.js";
 import {
   calculateContextPercentages,
-  getContextWindowForModel,
+  getContextWindowForModelForContext,
 } from "../../utils/context.js";
 import {
-  getRuntimeMainLoopModel,
-  type ModelName,
-} from "../../utils/model/model.js";
-import {
-  doesMostRecentAssistantMessageExceed200k,
   getCurrentUsage,
 } from "../../utils/tokens.js";
 import type { LLMMessage } from "../../llm/types.js";
@@ -185,9 +188,13 @@ import type {
 import { createMcpUrlCompletionResponse } from "../../elicitation/url-completion.js";
 import { EDITOR_PROPOSAL_TOOL_NAME } from "../../tools/system/editor-proposal.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
-import { defaultConfig, type AgenCConfig } from "../../config/schema.js";
-import { configReadsEnabled } from "../../config/init.js";
+import type { AgenCConfig } from "../../config/schema.js";
 import { createTuiTools } from "../tool-rendering.js";
+import type {
+  McpSurfaceServer,
+  McpSurfaceSnapshot as CommittedMcpSurfaceSnapshot,
+  McpSurfaceTool,
+} from "../../session/session.js";
 import { useSessionTranscript } from "../session-transcript.js";
 import { useToolJSX } from "../tool-jsx-state.js";
 import { executeRealtimeComposerCommand } from "../realtime/commands.js";
@@ -212,7 +219,6 @@ import {
   createAgentRoleWorkspace,
   normalizeAgentRoleWorkspace,
 } from "../../agents/role.js";
-import { buildPendingProviderSwitch } from "../model-switch.js";
 import { pastedContentsToLLMMessage } from "../../llm/pasted-content.js";
 import { renderUntrustedWorkspaceData } from "../../prompts/untrusted-workspace-content.js";
 import type { PromptInputContext } from "../input/inputContext.js";
@@ -220,7 +226,7 @@ import {
   isDollarSkillCommand,
   loadDollarSkillCommandForTurn,
   parseDollarSkillCommand,
-} from "../input/processPromptInput.js";
+} from "../input/dollar-skill-command.js";
 import type { Command } from "../../commands.js";
 import type {
   QueuedCommand,
@@ -234,19 +240,21 @@ import {
 } from "../../tools/system/editor-proposal.js";
 import {
   installCompactProgressControls,
+  type AgenCBridgeSession,
   type AgenCTuiProps,
 } from "../session-types.js";
+import {
+  resolveSessionProviderModelSelection,
+} from "../../session/provider-model-selection.js";
 import { useMcpConnectivityStatus } from "../hooks/notifs/useMcpConnectivityStatus.js";
 import { useCostSummary } from "../../cost/hook.js";
 import { getTotalCost } from "../../cost/tracker.js";
 import { useNotifications } from "../context/notifications.js";
 import { hasConsoleBillingAccess } from "../../utils/billing.js";
-import { getGlobalConfig, saveGlobalConfig } from "../../utils/config.js";
+import { updateRuntimeState } from "../../utils/config.js";
 import { registerCleanup } from "../../utils/cleanupRegistry.js";
 import { AgenCConfigEditsBuilder } from "../../config/edit.js";
 import { logError } from "../../utils/log.js";
-import { markInternalWrite } from "../../utils/settings/internalWrites.js";
-import { resetSettingsCache } from "../../utils/settings/settingsCache.js";
 import {
   createFileStateCacheWithSizeLimit,
   READ_FILE_STATE_CACHE_SIZE,
@@ -286,6 +294,8 @@ export { shouldEnableTranscriptScrollKeybindings } from "../workbench/transcript
 export type McpFieldValue = string | number | boolean | readonly string[];
 const EMPTY_MCP_CLIENTS: readonly MCPServerConnection[] = [];
 const EMPTY_MCP_TOOLS: readonly unknown[] = [];
+const EMPTY_MCP_SERVERS: readonly McpSurfaceServer[] = [];
+const EMPTY_MCP_STATUS_TOOLS: readonly McpSurfaceTool[] = [];
 const EMPTY_ONBOARDING_COMMANDS: Command[] = [];
 const BUSY_BLOCKED_SLASH_COMMANDS = new Set([
   "agents",
@@ -1663,12 +1673,17 @@ export function shouldShowPromptInputState(options: {
  * Provides FPS metrics, stats context, and app state to the component tree.
  */
 export function App(t0) {
-  const $ = _c(9);
-  const { getFpsMetrics, stats, initialState, children } = t0;
+  const $ = _c(10);
+  const { getFpsMetrics, stats, initialState, configStore, children } = t0;
   let t1;
-  if ($[0] !== children || $[1] !== initialState) {
+  if (
+    $[0] !== children ||
+    $[1] !== configStore ||
+    $[2] !== initialState
+  ) {
     t1 = (
       <AppStateProvider
+        configStore={configStore}
         initialState={initialState}
         onChangeAppState={onChangeAppState}
       >
@@ -1676,32 +1691,33 @@ export function App(t0) {
       </AppStateProvider>
     );
     $[0] = children;
-    $[1] = initialState;
-    $[2] = t1;
+    $[1] = configStore;
+    $[2] = initialState;
+    $[3] = t1;
   } else {
-    t1 = $[2];
+    t1 = $[3];
   }
   let t2;
-  if ($[3] !== stats || $[4] !== t1) {
+  if ($[4] !== stats || $[5] !== t1) {
     t2 = <StatsProvider store={stats}>{t1}</StatsProvider>;
-    $[3] = stats;
-    $[4] = t1;
-    $[5] = t2;
+    $[4] = stats;
+    $[5] = t1;
+    $[6] = t2;
   } else {
-    t2 = $[5];
+    t2 = $[6];
   }
   let t3;
-  if ($[6] !== getFpsMetrics || $[7] !== t2) {
+  if ($[7] !== getFpsMetrics || $[8] !== t2) {
     t3 = (
       <FpsMetricsProvider getFpsMetrics={getFpsMetrics}>
         {t2}
       </FpsMetricsProvider>
     );
-    $[6] = getFpsMetrics;
-    $[7] = t2;
-    $[8] = t3;
+    $[7] = getFpsMetrics;
+    $[8] = t2;
+    $[9] = t3;
   } else {
-    t3 = $[8];
+    t3 = $[9];
   }
   return t3;
 }
@@ -1715,56 +1731,11 @@ function startupModel(props: AgenCTuiProps): string | null {
     null
   );
 }
-function hasAcknowledgedCostThreshold(): boolean {
+function hasAcknowledgedCostThreshold(props: AgenCTuiProps): boolean {
   return (
-    configReadsEnabled() &&
-    getGlobalConfig().hasAcknowledgedCostThreshold === true
+    getTuiConfigStore(props.session).stateRepository.get()
+      .hasAcknowledgedCostThreshold === true
   );
-}
-async function persistOnboardingModelSetting(
-  agencHome: string | undefined,
-  model: string,
-): Promise<void> {
-  if (agencHome === undefined || model.length === 0) {
-    return;
-  }
-  const filePath = join(agencHome, "settings.json");
-  let existing: Record<string, unknown> = {};
-  try {
-    const text = await readFile(filePath, "utf8");
-    const parsed = JSON.parse(text) as unknown;
-    if (
-      parsed !== null &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed)
-    ) {
-      existing = parsed as Record<string, unknown>;
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-  }
-  await mkdir(dirname(filePath), {
-    recursive: true,
-    mode: 0o700,
-  });
-  markInternalWrite(filePath);
-  await writeFile(
-    filePath,
-    `${JSON.stringify(
-      {
-        ...existing,
-        model,
-      },
-      null,
-      2,
-    )}\n`,
-    {
-      mode: 0o600,
-    },
-  );
-  resetSettingsCache();
 }
 async function persistOnboardingSelection(
   props: AgenCTuiProps,
@@ -1773,14 +1744,12 @@ async function persistOnboardingSelection(
 ): Promise<void> {
   const provider = next.selectedProvider.trim();
   const model = next.selectedModel.trim();
-  await persistOnboardingModelSetting(agencHome, model);
   if (agencHome !== undefined && provider.length > 0 && model.length > 0) {
     await new AgenCConfigEditsBuilder(agencHome)
       .setModelSelection(provider, model)
       .apply();
   }
-  await props.configStore.reload?.();
-  await props.session.services.configStore?.reload?.();
+  await getTuiConfigStore(props.session).reload();
 }
 function initialState(props: AgenCTuiProps, roleWorkspaceCwd: string): any {
   const roleWorkspace = createAgentRoleWorkspace(roleWorkspaceCwd);
@@ -1803,7 +1772,10 @@ function initialState(props: AgenCTuiProps, roleWorkspaceCwd: string): any {
         allAgents: fallbackDefinitions,
       };
     })();
-  const defaults = getDefaultAppState();
+  const defaults = getDefaultAppStateForProviderEnvironment(
+    getTuiProviderEnvironment(props.session),
+    getInitialSettings(getTuiConfigStore(props.session)),
+  );
   return {
     ...defaults,
     workbench:
@@ -1876,9 +1848,8 @@ function useSyncedPermissionContext(
   const toolPermissionContext = useAppState(_temp2) as ToolPermissionContext;
   const setAppState = useSetAppState();
   useEffect(() => {
-    return session.services.permissionModeRegistry.subscribeToModeChange?.(
-      () => {
-        const next = session.services.permissionModeRegistry.current();
+    return session.services.permissionModeRegistry.subscribeToContextChange(
+      (next) => {
         setAppState((prev) => ({
           ...prev,
           toolPermissionContext: next,
@@ -1891,11 +1862,14 @@ function useSyncedPermissionContext(
       const registry = session.services.permissionModeRegistry;
       const daemonSetMode = daemonPermissionModeFn(session);
       const applyLocal = async (): Promise<void> => {
+        await registry.update?.(next);
+      };
+      const mirrorCanonicalDaemonContext = (): void => {
+        const canonical = registry.current();
         setAppState((prev) => ({
           ...prev,
-          toolPermissionContext: next,
+          toolPermissionContext: canonical,
         }));
-        await registry.update?.(next);
       };
       // Always push the mode to the daemon, even when the client-side registry
       // already shows it: the daemon may have RESPAWNED since (fresh registry at
@@ -1907,14 +1881,10 @@ function useSyncedPermissionContext(
         void applyLocal().catch(_temp3);
         return;
       }
-      const previous = registry.current();
       void daemonSetMode(next.mode)
-        .then(() => applyLocal())
+        .then(mirrorCanonicalDaemonContext)
         .catch((err) => {
-          setAppState((prev) => ({
-            ...prev,
-            toolPermissionContext: previous,
-          }));
+          mirrorCanonicalDaemonContext();
           emitPermissionModeSyncWarning(session, next.mode, err);
         });
     },
@@ -2023,14 +1993,41 @@ function useInitialSubmit(
 }
 type McpSurfaceSnapshot = {
   readonly clients: readonly MCPServerConnection[];
-  readonly tools: readonly unknown[];
+  /** Live, callable tools only. Passive daemon catalog entries never enter this list. */
+  readonly tools: readonly ExecutableMcpTool[];
+  readonly servers: readonly McpSurfaceServer[];
+  /** Display-only tool catalog used by MCP status and approval presentation. */
+  readonly statusTools: readonly McpSurfaceTool[];
 };
+type ExecutableMcpTool = {
+  readonly name: string;
+  readonly [key: string]: unknown;
+};
+function isExecutableMcpTool(value: unknown): value is ExecutableMcpTool {
+  if (value === null || typeof value !== "object") return false;
+  const candidate = value as {
+    readonly name?: unknown;
+    readonly call?: unknown;
+    readonly execute?: unknown;
+  };
+  return (
+    typeof candidate.name === "string" &&
+    (typeof candidate.call === "function" ||
+      typeof candidate.execute === "function")
+  );
+}
 function readMcpSurfaceSnapshot(
   session: AgenCTuiProps["session"],
+  committedSnapshot: CommittedMcpSurfaceSnapshot | undefined =
+    session.mcpSurfaceSnapshot?.(),
 ): McpSurfaceSnapshot {
+  const listedTools = session.listMcpTools?.() ?? EMPTY_MCP_TOOLS;
+  const tools = listedTools.filter(isExecutableMcpTool);
   return {
     clients: session.listMcpClients?.() ?? EMPTY_MCP_CLIENTS,
-    tools: session.listMcpTools?.() ?? EMPTY_MCP_TOOLS,
+    tools,
+    servers: committedSnapshot?.servers ?? EMPTY_MCP_SERVERS,
+    statusTools: committedSnapshot?.tools ?? EMPTY_MCP_STATUS_TOOLS,
   };
 }
 function mcpSurfaceValueSignature(value: unknown): string {
@@ -2087,57 +2084,98 @@ function mcpSurfaceSignature(snapshot: McpSurfaceSnapshot): string {
     }
     return "";
   });
-  return `${clients.join("\u0000")}\u0001${tools.join("\u0000")}`;
+  const servers = snapshot.servers.map((server) =>
+    [
+      server.name,
+      server.transport,
+      server.enabled,
+      server.required,
+      server.state,
+      server.displayTarget,
+      server.toolCount,
+    ]
+      .map(mcpSurfaceValueSignature)
+      .join(":"),
+  );
+  const statusTools = snapshot.statusTools.map((tool) =>
+    [tool.serverName, tool.name].map(mcpSurfaceValueSignature).join(":"),
+  );
+  return `${clients.join("\u0000")}\u0001${tools.join("\u0000")}\u0001${servers.join("\u0000")}\u0001${statusTools.join("\u0000")}`;
 }
-function useSessionMcpSurface(session) {
-  const $ = _c(8);
-  let t0;
-  if ($[0] !== session) {
-    t0 = () => readMcpSurfaceSnapshot(session);
-    $[0] = session;
-    $[1] = t0;
-  } else {
-    t0 = $[1];
-  }
-  const [snapshot, setSnapshot] = useState(t0);
-  let t1;
-  if ($[2] !== session) {
-    t1 = () => {
+function useSessionMcpSurface(
+  session: AgenCTuiProps["session"],
+): McpSurfaceSnapshot {
+  const [snapshot, setSnapshot] = useState<McpSurfaceSnapshot>(() =>
+    readMcpSurfaceSnapshot(session),
+  );
+  const publish = useCallback(
+    (committedSnapshot?: CommittedMcpSurfaceSnapshot) => {
       setSnapshot((previous) => {
-        const next = readMcpSurfaceSnapshot(session);
+        const next = readMcpSurfaceSnapshot(session, committedSnapshot);
         return mcpSurfaceSignature(previous) === mcpSurfaceSignature(next)
           ? previous
           : next;
       });
+    },
+    [session],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const publishIfMounted = (
+      committedSnapshot?: CommittedMcpSurfaceSnapshot,
+    ): void => {
+      if (!cancelled) publish(committedSnapshot);
     };
-    $[2] = session;
-    $[3] = t1;
-  } else {
-    t1 = $[3];
-  }
-  const refresh = t1;
-  let t2;
-  let t3;
-  if ($[4] !== refresh || $[5] !== session) {
-    t2 = () => {
-      refresh();
-      const unsubscribe = session.subscribeToEvents?.(() => refresh());
-      const interval = setInterval(refresh, 1500);
-      return () => {
-        unsubscribe?.();
-        clearInterval(interval);
-      };
+
+    publishIfMounted();
+    let unsubscribeSurface: (() => void) | undefined;
+    try {
+      unsubscribeSurface = session.subscribeToMcpSurface?.(publishIfMounted);
+    } catch (error) {
+      logForDebugging(
+        `MCP surface subscription failed: ${
+          error instanceof Error ? (error.stack ?? error.message) : String(error)
+        }`,
+        { level: "warn" },
+      );
+    }
+    const unsubscribeEvents =
+      unsubscribeSurface === undefined
+        ? session.subscribeToEvents?.(() => publishIfMounted())
+        : undefined;
+
+    let refreshTask: Promise<CommittedMcpSurfaceSnapshot> | undefined;
+    try {
+      refreshTask = session.refreshMcpSurface?.();
+    } catch (error) {
+      logForDebugging(
+        `MCP surface refresh failed: ${
+          error instanceof Error ? (error.stack ?? error.message) : String(error)
+        }`,
+        { level: "warn" },
+      );
+    }
+    if (refreshTask !== undefined) {
+      void refreshTask.then(publishIfMounted).catch((error) => {
+        logForDebugging(
+          `MCP surface refresh failed: ${
+            error instanceof Error
+              ? (error.stack ?? error.message)
+              : String(error)
+          }`,
+          { level: "warn" },
+        );
+      });
+    }
+
+    return () => {
+      cancelled = true;
+      unsubscribeSurface?.();
+      unsubscribeEvents?.();
     };
-    t3 = [refresh, session];
-    $[4] = refresh;
-    $[5] = session;
-    $[6] = t2;
-    $[7] = t3;
-  } else {
-    t2 = $[6];
-    t3 = $[7];
-  }
-  useEffect(t2, t3);
+  }, [publish, session]);
+
   return snapshot;
 }
 function extractTag(text: string, tag: string): string | null {
@@ -2331,8 +2369,59 @@ function completionPipelineStateSignature(
   ]);
 }
 
+export function getTuiRemoteAuthSessionReadContext(
+  session: AgenCBridgeSession,
+): ProviderAuthReadContext {
+  const home = getTuiConfigStore(session).homeContext;
+  return Object.freeze({
+    home,
+    environment: getTuiProviderEnvironment(session),
+    provider: getTuiProviderName(session),
+  });
+}
+
+function getTuiConfigStore(session: AgenCBridgeSession) {
+  const configStore = session.services.configStore;
+  if (configStore === undefined) {
+    throw new Error(
+      "TUI session requires a canonical ConfigStore captured at ingress",
+    );
+  }
+  return configStore;
+}
+
+export function getTuiProviderName(session: AgenCBridgeSession): string {
+  const provider =
+    session.services.providerService?.current().provider ??
+    session.sessionConfiguration?.provider?.slug;
+  const normalized = provider?.trim();
+  if (normalized === undefined || normalized.length === 0) {
+    throw new Error(
+      "TUI session requires an explicit provider identity captured at ingress",
+    );
+  }
+  return normalized;
+}
+
+export function getTuiProviderEnvironment(
+  session: AgenCBridgeSession,
+): NonNullable<AgenCBridgeSession["services"]["providerEnvironment"]> {
+  const environment =
+    session.services.providerService?.environment() ??
+    session.services.providerEnvironment;
+  if (environment === undefined) {
+    throw new Error(
+      "TUI session requires an immutable provider environment captured at ingress",
+    );
+  }
+  return environment;
+}
+
 function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const { exit } = useApp();
+  const settings = useSettings();
+  const configStore = getTuiConfigStore(props.session);
+  const stateRepository = configStore.stateRepository;
   const getFpsMetrics = useFpsMetrics();
   useCostSummary(getFpsMetrics);
   const renderHealthWarning = formatRenderHealthWarning(getFpsMetrics?.());
@@ -2344,7 +2433,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const backpressureWarning =
     formatTuiBackpressureWarning(backpressureSnapshot);
   const { addNotification } = useNotifications();
-  const { status: apiKeyStatus, reverify } = useApiKeyVerification();
+  const remoteAuthSessionContext = useMemo(
+    () => getTuiRemoteAuthSessionReadContext(props.session),
+    [props.session],
+  );
+  const { status: apiKeyStatus, reverify } = useApiKeyVerification(
+    remoteAuthSessionContext,
+    configStore.current(),
+  );
   useEffect(() => {
     void reverify();
   }, [reverify]);
@@ -2515,7 +2611,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const activePredictionRequestIdRef = useRef<string | null>(null);
   const [predictionConsentPromptVisible, setPredictionConsentPromptVisible] =
     useState(false);
-  const fullscreen = isFullscreenEnvEnabled();
+  const fullscreen = isFullscreenEnabledForCurrentTerminal(
+    settings.tui?.flickerFreeMode,
+  );
   const workbenchEnabled = fullscreen && isWorkbenchEnabled();
   const workbenchState = useAppState(getWorkbenchStateFromAppState);
   const [workspaceEditorAuthority, setWorkspaceEditorAuthority] =
@@ -2614,6 +2712,16 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // prompt remains busy/cancellable while message.stream is still running.
   const [activeModelSubmissionCount, setActiveModelSubmissionCount] =
     useState(0);
+  const activeShellAbortControllerRef = useRef<AbortController | null>(null);
+  const [shellAbortController, setShellAbortController] =
+    useState<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      activeShellAbortControllerRef.current?.abort("tui_unmounted");
+      activeShellAbortControllerRef.current = null;
+    },
+    [],
+  );
   const [pastedContents, setPastedContents] = useState<Record<number, any>>({});
   const [vimMode, setVimMode] = useState<VimMode>("INSERT");
   const workspaceComposerDraftsRef = useRef<
@@ -2760,7 +2868,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const summarizeAbortRef = useRef<AbortController | null>(null);
   const [exitFlow, setExitFlow] = useState<React.ReactNode>(null);
   const [haveShownCostDialog, setHaveShownCostDialog] = useState(
-    hasAcknowledgedCostThreshold,
+    () => hasAcknowledgedCostThreshold(props),
   );
   const [showCostDialog, setShowCostDialog] = useState(false);
   const [compactProgress, setCompactProgress] = useState({
@@ -2774,8 +2882,22 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     if (props.session.agentDefinitions !== undefined) {
       return;
     }
+    const pluginStorageRoot =
+      props.session.services.runtimeOptions?.pluginStorageRoot;
+    if (pluginStorageRoot === undefined) {
+      addNotification({
+        key: "agent-catalog-load-error",
+        text: "Session is missing captured plugin storage authority",
+        color: "error",
+        priority: "high",
+      });
+      return;
+    }
     let cancelled = false;
-    void getAgentDefinitionsWithOverrides(props.roleWorkspaceCwd)
+    void getAgentDefinitionsWithOverrides(
+      props.roleWorkspaceCwd,
+      pluginStorageRoot,
+    )
       .then((agentDefinitions) => {
         if (cancelled) return;
         const roleWorkspace = createAgentRoleWorkspace(props.roleWorkspaceCwd);
@@ -2806,6 +2928,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     addNotification,
     props.roleWorkspaceCwd,
     props.session.agentDefinitions,
+    props.session.services.runtimeOptions?.pluginStorageRoot,
     setAppState,
   ]);
   const getBridgeAppState = useCallback(
@@ -2948,17 +3071,16 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const [toolPermissionContext, setToolPermissionContext] =
     useSyncedPermissionContext(props.session);
   const [config, setConfig] = useState<AgenCConfig>(
-    () => props.configStore.current?.() ?? defaultConfig(),
+    () => configStore.current(),
   );
   useEffect(() => {
-    setConfig(props.configStore.current?.() ?? defaultConfig());
-    const unsubscribe = props.configStore.subscribe?.((next) => {
-      setConfig(next as AgenCConfig);
+    setConfig(configStore.current());
+    const unsubscribe = configStore.subscribe((next) => {
+      setConfig(next);
     });
-    return typeof unsubscribe === "function" ? unsubscribe : undefined;
-  }, [props.configStore]);
-  const agencHome =
-    props.configStore.agencHome ?? config.agenc_home ?? props.session.home;
+    return unsubscribe;
+  }, [configStore]);
+  const agencHome = configStore.homeContext.path;
   const persistPredictionConsent = useCallback(
     async (enabled: "on" | "off"): Promise<void> => {
       const nextBuffer = {
@@ -2972,16 +3094,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         .setBufferEditorConfig(nextBuffer)
         .apply();
       await props.session.applyDaemonConfig?.({ reload: true });
-      const reloaded = await props.configStore.reload?.();
-      setConfig(
-        reloaded ?? {
-          ...config,
-          buffer: nextBuffer,
-        },
-      );
+      const reloaded = await configStore.reload();
+      setConfig(reloaded);
       setPredictionConsentPromptVisible(false);
     },
-    [agencHome, config, props.configStore, props.session],
+    [agencHome, config, configStore, props.session],
   );
   const completeCodePrediction = useCallback(
     async (
@@ -4331,16 +4448,22 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       agencHome,
       config,
       cwd: props.session.cwd ?? props.session.sessionConfiguration?.cwd,
-      env: process.env,
+      env: remoteAuthSessionContext.environment,
       permissionMode: String(toolPermissionContext.mode),
-      sandboxMode: config.sandbox_mode ?? config.sandbox?.mode,
-      terminalName: process.env.TERM_PROGRAM ?? process.env.TERM,
+      sandboxMode: config.sandbox_mode,
+      terminalName:
+        remoteAuthSessionContext.environment.TERM_PROGRAM ??
+        remoteAuthSessionContext.environment.TERM,
+      authBackend: props.session.services.authBackend,
+      remoteAuthSessionContext,
     }),
     [
       agencHome,
       config,
       props.session.cwd,
       props.session.sessionConfiguration?.cwd,
+      props.session.services.authBackend,
+      remoteAuthSessionContext,
       toolPermissionContext.mode,
     ],
   );
@@ -4427,7 +4550,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // when a new assistant message lands (its usage block carries the token
   // counts) or the model/permission mode changes — never per streaming delta.
   // Derivation mirrors StatusLine so both surfaces show the same number.
-  const mainLoopModelSetting = useAppState((state) => state.mainLoopModel);
+  const resolvedMainLoopModel = useMainLoopModel();
   const contextPctLabel = useMemo(() => {
     const messages = transcriptMessagesRef.current as any[];
     // Daemon-bridge transcripts synthesize assistant messages with zero
@@ -4436,19 +4559,17 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     // fall back to the message walk for embedded/local transcripts.
     const usage = transcript.latestUsage ?? getCurrentUsage(messages);
     if (!usage) return null;
-    const runtimeModel = getRuntimeMainLoopModel({
-      permissionMode: toolPermissionContext.mode,
-      mainLoopModel: mainLoopModelSetting as ModelName,
-      exceeds200kTokens: doesMostRecentAssistantMessageExceed200k(messages),
-    });
-    const windowSize = getContextWindowForModel(runtimeModel, getSdkBetas());
+    const windowSize = getContextWindowForModelForContext(
+      resolvedMainLoopModel,
+      remoteAuthSessionContext,
+    );
     const { used } = calculateContextPercentages(usage, windowSize);
     return used === null ? null : `ctx ${used}%`;
   }, [
     lastAssistantMessageId,
     transcript.latestUsage,
-    mainLoopModelSetting,
-    toolPermissionContext.mode,
+    resolvedMainLoopModel,
+    remoteAuthSessionContext,
   ]);
   const realtimeState = useRealtimeState(props.session.realtime);
   const [toolJSX, setToolJSX] = useToolJSX();
@@ -4459,27 +4580,50 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         mainLoopModel: next,
         mainLoopModelForSession: next,
       }));
-      const switchSpec = buildPendingProviderSwitch(props.session, next);
-      if (switchSpec !== null) {
-        props.session.setPendingProviderSwitch?.(switchSpec);
-      }
     },
-    [setAppState, props.session],
+    [setAppState],
   );
   const applyOnboardingSelection = useCallback(
     async (next_0: FirstRunOnboardingState) => {
-      await persistOnboardingSelection(props, agencHome, next_0).catch(
-        (error) => {
-          logError(error);
-        },
-      );
-      setModel(next_0.selectedModel);
-      props.session.setPendingProviderSwitch?.({
+      const requestedSelection = {
         provider: next_0.selectedProvider,
         model: next_0.selectedModel,
+      };
+      if (typeof props.session.applyProviderModelSelection === "function") {
+        await persistOnboardingSelection(props, agencHome, next_0).catch(
+          (error) => {
+            logError(error);
+          },
+        );
+        const outcome =
+          await props.session.applyProviderModelSelection(requestedSelection);
+        if (!outcome.applied) throw new Error(outcome.summary);
+        setModel(outcome.model);
+        return;
+      }
+      const admittedSelection = resolveSessionProviderModelSelection(
+        props.session,
+        {
+          model_provider: requestedSelection.provider,
+          model: requestedSelection.model,
+        },
+        { fallbackConfig: configStore.current() },
+      );
+      const selection = {
+        provider: admittedSelection.provider,
+        model: admittedSelection.model,
+      };
+      await persistOnboardingSelection(props, agencHome, {
+        ...next_0,
+        selectedProvider: selection.provider,
+        selectedModel: selection.model,
+      }).catch((error) => {
+        logError(error);
       });
+      props.session.setPendingProviderSwitch?.(selection);
+      setModel(selection.model);
     },
-    [agencHome, props, setModel],
+    [agencHome, configStore, props, setModel],
   );
   const onboarding = useFirstRunOnboardingController({
     ...onboardingContext,
@@ -4519,6 +4663,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     () => [...tools, ...mcpSurface.tools],
     [tools, mcpSurface.tools],
   );
+  // Approval rendering only needs tool identity. Include passive daemon
+  // catalog entries here so an MCP permission prompt can be named accurately,
+  // but never place them in availableTools/model execution contexts.
+  const permissionToolDescriptors = useMemo(
+    () => [...availableTools, ...mcpSurface.statusTools],
+    [availableTools, mcpSurface.statusTools],
+  );
   const refreshAvailableTools = useCallback(
     () => [...tools, ...readMcpSurfaceSnapshot(props.session).tools],
     [props.session, tools],
@@ -4541,7 +4692,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     [commandRegistry],
   );
   // The slash palette (and findCommand execution) previously saw ONLY built-in
-  // commands: dir commands (.agenc/commands), skills (.agenc/skills), bundled
+  // Commands include skills from `.agenc/skills` and bundled sources.
   // skills, and plugin commands were loaded for the model but never surfaced
   // in the composer. Load the full command set for this workspace and merge
   // it in, keeping registry built-ins authoritative on name collisions.
@@ -4549,12 +4700,31 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     props.session.cwd ??
     props.session.sessionConfiguration?.cwd ??
     process.cwd();
+  const dynamicCommandPluginStorageRoot =
+    props.session.services.runtimeOptions?.pluginStorageRoot;
   const [dynamicTuiCommands, setDynamicTuiCommands] = useState<
     readonly Command[]
   >([]);
   useEffect(() => {
+    if (dynamicCommandPluginStorageRoot === undefined) {
+      setDynamicTuiCommands([]);
+      logForDebugging(
+        "dynamic TUI command load skipped: session is missing captured plugin storage authority",
+        { level: "warn" },
+      );
+      return;
+    }
     let cancelled = false;
-    void getCommands(dynamicCommandsCwd, config)
+    void getCommands(
+      dynamicCommandsCwd,
+      {
+        pluginStorageRoot: dynamicCommandPluginStorageRoot,
+        ...(props.session.services.skillsManager !== undefined
+          ? { skillsManager: props.session.services.skillsManager }
+          : {}),
+      },
+      config,
+    )
       .then((all) => {
         if (cancelled) return;
         setDynamicTuiCommands(
@@ -4582,7 +4752,12 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [dynamicCommandsCwd, config]);
+  }, [
+    dynamicCommandPluginStorageRoot,
+    dynamicCommandsCwd,
+    config,
+    props.session.services.skillsManager,
+  ]);
   const commands = useMemo(() => {
     const seen = new Set(
       builtinTuiCommands.map((cmd) => cmd.name.toLowerCase()),
@@ -4603,7 +4778,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     hasActiveSessionTurn ||
     hasActiveModelSubmission;
   const effectiveInputBusy =
-    isLoading || hasActiveLocalAgents || completionPipelineActive;
+    isLoading ||
+    shellAbortController !== null ||
+    hasActiveLocalAgents ||
+    completionPipelineActive;
   const effectiveInputBusyRef = useRef(effectiveInputBusy);
   effectiveInputBusyRef.current = effectiveInputBusy;
   // The message.stream RPC can outlive the turn itself (an error-terminated
@@ -4744,6 +4922,15 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
 
   // Transient-message helper for local slash-command results.
   const transientResultTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const cancelTransientResult = useCallback(
+    (clearSurface: boolean) => {
+      if (transientResultTimerRef.current === null) return;
+      clearTimeout(transientResultTimerRef.current);
+      transientResultTimerRef.current = null;
+      if (clearSurface) setToolJSX(null);
+    },
+    [setToolJSX],
+  );
   const showTransientResult = useCallback(
     (
       text: string,
@@ -4752,10 +4939,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         persistent?: boolean;
       },
     ) => {
-      if (transientResultTimerRef.current !== null) {
-        clearTimeout(transientResultTimerRef.current);
-        transientResultTimerRef.current = null;
-      }
+      cancelTransientResult(false);
       const isError = (opts?.display ?? "").toLowerCase() === "error";
       setToolJSX({
         jsx: (
@@ -4776,16 +4960,85 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         setToolJSX(null);
       }, 3000);
     },
-    [setToolJSX],
+    [cancelTransientResult, setToolJSX],
   );
   useEffect(() => {
-    return () => {
-      if (transientResultTimerRef.current !== null) {
-        clearTimeout(transientResultTimerRef.current);
-        transientResultTimerRef.current = null;
+    return () => cancelTransientResult(false);
+  }, [cancelTransientResult]);
+  const createSlashCommandContext = useCallback(
+    (argsRaw: string): SlashCommandContext => ({
+      session: props.session as unknown as SlashCommandContext["session"],
+      argsRaw,
+      cwd:
+        props.session.cwd ??
+        props.session.sessionConfiguration?.cwd ??
+        process.cwd(),
+      home: process.env.HOME ?? "",
+      agencHome,
+      ...(props.session.services?.configStore
+        ? { configStore: props.session.services.configStore }
+        : {}),
+      appState: {
+        getAppState: () => appStateStore.getState(),
+        setModel,
+        setAppState,
+        setToolJSX,
+        tools: availableTools,
+        requestResumeSession: (sessionId: string) => {
+          requestAppExitRef.current(sessionId);
+        },
+        requestShowMessageSelector: () => {
+          setSelectorNotice(null);
+          setIsMessageSelectorVisible(true);
+        },
+      },
+      commandRegistry,
+    }),
+    [
+      agencHome,
+      appStateStore,
+      availableTools,
+      commandRegistry,
+      props.session,
+      setAppState,
+      setModel,
+      setToolJSX,
+    ],
+  );
+  const openCanonicalModelMenu = useCallback(async (): Promise<void> => {
+    cancelTransientResult(true);
+    try {
+      const parsed = parseSlashCommand("/model");
+      if (parsed === null) {
+        throw new Error("Unable to parse the model menu command");
       }
-    };
-  }, []);
+      const outcome = await dispatchSlashCommand(
+        parsed,
+        createSlashCommandContext(parsed.argsRaw),
+        commandRegistry,
+      );
+      if (outcome.result.kind === "error") {
+        showTransientResult(outcome.result.message, { display: "error" });
+        return;
+      }
+      if (
+        outcome.result.kind === "text" ||
+        outcome.result.kind === "compact"
+      ) {
+        showTransientResult(outcome.result.text);
+      }
+    } catch (error) {
+      showTransientResult(
+        error instanceof Error ? error.message : String(error),
+        { display: "error" },
+      );
+    }
+  }, [
+    cancelTransientResult,
+    commandRegistry,
+    createSlashCommandContext,
+    showTransientResult,
+  ]);
   const runQueuedBashCommand = useCallback(
     async (command: string, admittedCwd?: string) => {
       const trimmedBash = command.trim();
@@ -4797,12 +5050,22 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           "Queued Bash ownership no longer matches the active workspace; the command was not executed.",
         );
       }
+      if (activeShellAbortControllerRef.current !== null) {
+        throw new Error("A shell command is already running in this session.");
+      }
       const bashAbortController = new AbortController();
-      const ctx = getToolUseContext(
+      const toolUseContext = getToolUseContext(
         transcriptMessagesRef.current as unknown[],
         [],
         bashAbortController,
-      ) as PromptInputContext & {
+      );
+      const ctx = {
+        ...toolUseContext,
+        // A direct shell command has its own cancellation lifetime. A genuine
+        // in-process Session may also expose a turn-wide controller, but ESC
+        // must stop this command without aborting or reusing the model turn.
+        abortController: bashAbortController,
+      } as PromptInputContext & {
         session?: {
           emit?: (event: unknown) => void;
           nextInternalSubId?: () => string;
@@ -4827,8 +5090,26 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           },
         });
       };
-
-      emitTranscriptText(`<bash-input>${escapeXml(trimmedBash)}</bash-input>`);
+      const { confirmSuspectedShellPaste } =
+        await import("../input/shell-paste-confirmation.js");
+      if (!(await confirmSuspectedShellPaste(trimmedBash, setToolJSX))) {
+        emitTranscriptText(
+          `<bash-input>${escapeXml(trimmedBash)}</bash-input>`,
+        );
+        emitTranscriptText(
+          "<bash-stderr>Bash submission aborted: input looked like a paste and was not confirmed.</bash-stderr>",
+        );
+        return;
+      }
+      const executeShellCommand = props.session.executeShellCommand;
+      const hasLocalExecutionAdmission =
+        (
+          props.session.services as typeof props.session.services & {
+            readonly executionAdmission?: unknown;
+          }
+        ).executionAdmission !== undefined;
+      const usesDaemonShellBridge = typeof executeShellCommand === "function";
+      const commandId = randomUUID();
       const shellEditorInstanceId = `tui-shell-${randomUUID()}`;
       let shellLease: Awaited<
         ReturnType<NonNullable<typeof props.session.acquireWorkspaceEditor>>
@@ -4839,8 +5120,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       const acquireWorkspaceEditor = props.session.acquireWorkspaceEditor;
       const heartbeatWorkspaceEditor = props.session.heartbeatWorkspaceEditor;
       const releaseWorkspaceEditor = props.session.releaseWorkspaceEditor;
+      activeShellAbortControllerRef.current = bashAbortController;
+      setShellAbortController(bashAbortController);
       try {
-        if (workbenchEnabled) {
+        if (workbenchEnabled && !usesDaemonShellBridge) {
           if (
             acquireWorkspaceEditor === undefined ||
             heartbeatWorkspaceEditor === undefined ||
@@ -4902,10 +5185,26 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             });
           });
         }
-        const { processBashCommand } =
-          await import("../input/processBashCommand.js");
-        const executeBash = () =>
-          runWithCwdOverride(workspaceRoot, () =>
+        const executeBash = async (): Promise<void> => {
+          if (usesDaemonShellBridge) {
+            await executeShellCommand.call(props.session, {
+              command: trimmedBash,
+              commandId,
+              signal: bashAbortController.signal,
+            });
+            return;
+          }
+          if (!hasLocalExecutionAdmission) {
+            throw new Error(
+              "Shell execution is unavailable because this session has neither a daemon shell bridge nor a local execution admission client.",
+            );
+          }
+          emitTranscriptText(
+            `<bash-input>${escapeXml(trimmedBash)}</bash-input>`,
+          );
+          const { processBashCommand } =
+            await import("../input/processBashCommand.js");
+          const result = await runWithCwdOverride(workspaceRoot, () =>
             processBashCommand(
               trimmedBash,
               [],
@@ -4914,24 +5213,26 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               ctx.setToolJSX ?? (() => {}),
             ),
           );
-        const result =
+          for (const message of result.messages) {
+            const text = extractUserMessageText(message);
+            if (text === null) continue;
+            if (
+              !text.startsWith("<bash-stdout") &&
+              !text.startsWith("<bash-stderr")
+            ) {
+              continue;
+            }
+            emitTranscriptText(text);
+          }
+        };
+        const execution =
           workspaceLifetime === null
-            ? await executeBash()
-            : await runWithWorkspaceOperationLifetime(
+            ? executeBash()
+            : runWithWorkspaceOperationLifetime(
                 workspaceLifetime,
                 executeBash,
               );
-        for (const message_0 of result.messages) {
-          const text_1 = extractUserMessageText(message_0);
-          if (text_1 === null) continue;
-          if (
-            !text_1.startsWith("<bash-stdout") &&
-            !text_1.startsWith("<bash-stderr")
-          ) {
-            continue;
-          }
-          emitTranscriptText(text_1);
-        }
+        await execution;
       } catch (err_1) {
         const message_1 =
           err_1 instanceof Error ? err_1.message : String(err_1);
@@ -4952,6 +5253,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               epoch: shellLease.epoch,
             }).catch(() => {});
           }
+        }
+        if (activeShellAbortControllerRef.current === bashAbortController) {
+          activeShellAbortControllerRef.current = null;
+          setShellAbortController(null);
         }
       }
     },
@@ -5231,11 +5536,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       // usage error) so the prior status doesn't bleed into the new turn.
       // The 3s auto-clear timer is a safety net; this is the immediate
       // user-input clear path.
-      if (transientResultTimerRef.current !== null) {
-        clearTimeout(transientResultTimerRef.current);
-        transientResultTimerRef.current = null;
-        setToolJSX(null);
-      }
+      cancelTransientResult(true);
       const startPendingSubmission = () => {
         setPendingSubmission(true);
         effectiveInputBusyRef.current = true;
@@ -5333,7 +5634,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         // a `/agenc-*` rail would come back as "Unknown command" even though
         // it shows in the palette. Resolve `/name` against `commands` first and
         // expand it into the turn exactly like `$skill` — this is what makes
-        // `.agenc/commands/*.md` rails and skills invocable via `/`. Built-in
+        // Skills may be invoked via `/`. Built-in
         // registry commands (they answer `commandRegistry.find`) are left to
         // the dispatcher below and are never intercepted here.
         const slashPromptCommand = findCommand(
@@ -5518,44 +5819,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
 
           const outcome = await dispatchSlashCommand(
             parsedSlashCommand,
-            {
-              session: props.session,
-              argsRaw: parsedSlashCommand.argsRaw,
-              cwd:
-                props.session.cwd ??
-                props.session.sessionConfiguration?.cwd ??
-                process.cwd(),
-              home: process.env.HOME ?? "",
-              agencHome,
-              ...(props.session.services?.configStore
-                ? {
-                    configStore: props.session.services.configStore,
-                  }
-                : {}),
-              appState: {
-                getAppState: () => appStateStore.getState(),
-                setModel,
-                setAppState,
-                setToolJSX,
-                tools: availableTools,
-                // /resume picker: record the chosen session id, then drain Ink.
-                // After waitUntilExit() the boot entrypoint relaunches into the
-                // proven attach path for this id (see tui/pending-resume.ts). We
-                // never touch props.session here — commands must not swap it in
-                // place — so the prior session is cleanly detached on exit first.
-                requestResumeSession: (sessionId: string) => {
-                  requestAppExitRef.current(sessionId);
-                },
-                // /rewind: open the message selector (the rewind dialog).
-                // Inlined on stable state setters (not handleShowMessageSelector)
-                // so this callback never goes stale inside the submit closure.
-                requestShowMessageSelector: () => {
-                  setSelectorNotice(null);
-                  setIsMessageSelectorVisible(true);
-                },
-              },
-              commandRegistry,
-            },
+            createSlashCommandContext(parsedSlashCommand.argsRaw),
             commandRegistry,
           );
           if (outcome.result.kind !== "skip" || outcome.command !== undefined) {
@@ -5757,9 +6021,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       props.session,
       appStateStore,
       setToolJSX,
+      cancelTransientResult,
       showTransientResult,
       addNotification,
       commandRegistry,
+      createSlashCommandContext,
       commands,
       submitToSession,
       workbenchEnabled,
@@ -6034,8 +6300,12 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     return () => scheduler.stop(activation);
   }, [commandQueueOwner.workspaceRoot, props.session.conversationId]);
   const toolUseConfirmQueue = useMemo(
-    () => buildToolUseConfirmQueue(permissionRequests, availableTools),
-    [permissionRequests, availableTools],
+    () =>
+      buildToolUseConfirmQueue(
+        permissionRequests,
+        permissionToolDescriptors,
+      ),
+    [permissionRequests, permissionToolDescriptors],
   );
 
   // Per-turn AbortController. CancelRequestHandler reads
@@ -6069,6 +6339,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     if (turnAbortController !== null && !turnAbortController.signal.aborted) {
       turnAbortController.abort("interrupted");
     }
+    const activeShellAbortController = activeShellAbortControllerRef.current;
+    if (
+      activeShellAbortController !== null &&
+      !activeShellAbortController.signal.aborted
+    ) {
+      activeShellAbortController.abort("interrupted");
+    }
+    if (!isLoading) return;
     requestTuiSessionTurnCancel(props.session);
     // Close the turn LOCALLY, right now: the daemon may have no live turn to
     // cancel (the 403 error path already finished it without emitting any
@@ -6093,7 +6371,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     pendingSubmissionSinceRef.current = null;
     setPendingSubmission(false);
     setActiveModelSubmissionCount(0);
-  }, [turnAbortController, props.session]);
+  }, [isLoading, turnAbortController, props.session]);
   const handleAgentsKilled = useCallback(
     (agents: readonly KilledAgentSummary[]) => {
       const text = formatAgentsKilledNotification(agents);
@@ -6108,7 +6386,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     [addNotification],
   );
   useMcpConnectivityStatus({
-    mcpClients: mcpClients as MCPServerConnection[],
+    mcpClients,
+    mcpServers: mcpSurface.servers,
   });
   const title = useMemo(() => terminalTitle(props), [props]);
   const titleIsAnimating =
@@ -6173,35 +6452,18 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       responseLength: 0,
     });
   }, []);
-  const setCompactSDKStatus = useCallback((status: "compacting" | null) => {
-    if (status === "compacting") {
-      setCompactProgress({
-        status: "compacting",
-        label: "Compacting conversation",
-        responseLength: 0,
-      });
-      return;
-    }
-    setCompactProgress({
-      status: "idle",
-      label: null,
-      responseLength: 0,
-    });
-  }, []);
   useEffect(
     () =>
       installCompactProgressControls(props.session, {
         setStreamMode: setCompactStreamMode,
         setResponseLength: setCompactResponseLength,
         onCompactProgress: handleCompactProgress,
-        setSDKStatus: setCompactSDKStatus,
       }),
     [
       props.session,
       setCompactStreamMode,
       setCompactResponseLength,
       handleCompactProgress,
-      setCompactSDKStatus,
     ],
   );
   const handleShowMessageSelector = useCallback(() => {
@@ -6598,11 +6860,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const handleCostThresholdDone = useCallback(() => {
     setShowCostDialog(false);
     setHaveShownCostDialog(true);
-    saveGlobalConfig((current) => ({
-      ...current,
-      hasAcknowledgedCostThreshold: true,
-    }));
-  }, []);
+    updateRuntimeState(
+      (current) => ({
+        ...current,
+        hasAcknowledgedCostThreshold: true,
+      }),
+      stateRepository,
+    );
+  }, [stateRepository]);
 
   // Spinner gating + mode derivation.
   //
@@ -6660,6 +6925,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       pauseStartTimeRef={pauseStartTimeRef}
       responseLengthRef={responseLengthRef}
       verbose={false}
+      providerAuthContext={remoteAuthSessionContext}
       hasActiveTools={hasActiveToolActivity}
       leaderIsIdle={!transcript.isStreaming}
       overrideMessage={inProgressToolCount > 0 ? "Running tools" : null}
@@ -6672,100 +6938,104 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       onboarding.state,
     );
     return (
-      <Box flexDirection="column" width="100%">
-        <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
-        <Onboarding
-          state={onboarding.state}
-          steps={onboarding.steps}
-          currentStep={onboarding.currentStep}
-          context={onboardingContext}
-        />
-        {toolJSX !== null ? (
-          <Box flexDirection="column" width="100%">
-            {toolJSX.jsx}
-          </Box>
-        ) : null}
-        <PromptInput
-          debug={false}
-          ideSelection={undefined}
-          toolPermissionContext={toolPermissionContext as any}
-          setToolPermissionContext={setToolPermissionContext as any}
-          apiKeyStatus="valid"
-          agencHome={agencHome}
-          commands={EMPTY_ONBOARDING_COMMANDS}
-          agents={agents as any}
-          isLoading={false}
-          verbose={false}
-          getMessages={getTranscriptMessages}
-          hasMessages={hasTranscriptMessages}
-          isMidConversation={hasTranscriptMessages}
-          lastAssistantMessageId={lastAssistantMessageId}
-          onAutoUpdaterResult={() => {}}
-          autoUpdaterResult={null}
-          input={input}
-          onInputChange={setInput}
-          mode={mode}
-          onModeChange={setMode}
-          stashedPrompt={stashedPrompt}
-          setStashedPrompt={setStashedPrompt}
-          submitCount={submitCount}
-          onShowMessageSelector={handleShowMessageSelector}
-          onMessageActionsEnter={handleShowMessageSelector}
-          mcpClients={mcpClients as never}
-          pastedContents={pastedContents}
-          setPastedContents={setPastedContents}
-          vimMode={vimMode}
-          setVimMode={setVimMode}
-          showBashesDialog={showBashesDialog}
-          setShowBashesDialog={setShowBashesDialog}
-          onExit={handleExit}
-          getToolUseContext={getToolUseContext}
-          onBashSubmit={runQueuedBashCommand}
-          queueOwner={commandQueueOwner}
-          queueExecutionCwd={queueWorkspaceRoot}
-          restoreComposerDraftForView={restoreComposerDraftForView}
-          onboardingInput={onboardingInput}
-          onSubmit={async (value_0, helpers) => {
-            if (isExitSlashCommand(value_0)) {
-              setInput("");
-              helpers.clearBuffer();
-              helpers.resetHistory();
-              helpers.setCursorOffset(0);
-              handleExit();
-              return;
-            }
-            if (
-              value_0.trim().startsWith("/") &&
-              !isOnboardingSlashAlias(value_0)
-            ) {
+      <FullscreenModeProvider enabled={fullscreen}>
+        <Box flexDirection="column" width="100%">
+          <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
+          <Onboarding
+            state={onboarding.state}
+            steps={onboarding.steps}
+            currentStep={onboarding.currentStep}
+            context={onboardingContext}
+          />
+          {toolJSX !== null ? (
+            <Box flexDirection="column" width="100%">
+              {toolJSX.jsx}
+            </Box>
+          ) : null}
+          <PromptInput
+            debug={false}
+            ideSelection={undefined}
+            toolPermissionContext={toolPermissionContext as any}
+            setToolPermissionContext={setToolPermissionContext as any}
+            apiKeyStatus="valid"
+            remoteAuthSessionContext={remoteAuthSessionContext}
+            commands={EMPTY_ONBOARDING_COMMANDS}
+            agents={agents as any}
+            isLoading={false}
+            verbose={false}
+            getMessages={getTranscriptMessages}
+            hasMessages={hasTranscriptMessages}
+            isMidConversation={hasTranscriptMessages}
+            lastAssistantMessageId={lastAssistantMessageId}
+            onAutoUpdaterResult={() => {}}
+            autoUpdaterResult={null}
+            input={input}
+            onInputChange={setInput}
+            mode={mode}
+            onModeChange={setMode}
+            stashedPrompt={stashedPrompt}
+            setStashedPrompt={setStashedPrompt}
+            submitCount={submitCount}
+            onShowMessageSelector={handleShowMessageSelector}
+            onMessageActionsEnter={handleShowMessageSelector}
+            mcpClients={mcpClients as never}
+            pastedContents={pastedContents}
+            setPastedContents={setPastedContents}
+            vimMode={vimMode}
+            setVimMode={setVimMode}
+            showBashesDialog={showBashesDialog}
+            setShowBashesDialog={setShowBashesDialog}
+            onExit={handleExit}
+            getToolUseContext={getToolUseContext}
+            onBashSubmit={runQueuedBashCommand}
+            queueOwner={commandQueueOwner}
+            queueExecutionCwd={queueWorkspaceRoot}
+            restoreComposerDraftForView={restoreComposerDraftForView}
+            onboardingInput={onboardingInput}
+            onSubmit={async (value_0, helpers) => {
+              if (isExitSlashCommand(value_0)) {
+                setInput("");
+                helpers.clearBuffer();
+                helpers.resetHistory();
+                helpers.setCursorOffset(0);
+                handleExit();
+                return;
+              }
+              if (
+                value_0.trim().startsWith("/") &&
+                !isOnboardingSlashAlias(value_0)
+              ) {
+                await submitViaElicitationPrompt(
+                  elicitation,
+                  submit,
+                  value_0,
+                  helpers,
+                );
+                return;
+              }
+              if (await onboarding.submit(value_0)) {
+                setInput("");
+                helpers.clearBuffer();
+                helpers.resetHistory();
+                helpers.setCursorOffset(0);
+                return;
+              }
               await submitViaElicitationPrompt(
                 elicitation,
                 submit,
                 value_0,
                 helpers,
               );
-              return;
-            }
-            if (await onboarding.submit(value_0)) {
-              setInput("");
-              helpers.clearBuffer();
-              helpers.resetHistory();
-              helpers.setCursorOffset(0);
-              return;
-            }
-            await submitViaElicitationPrompt(
-              elicitation,
-              submit,
-              value_0,
-              helpers,
-            );
-          }}
-          isSearchingHistory={isSearchingHistory}
-          setIsSearchingHistory={setIsSearchingHistory}
-          helpOpen={helpOpen}
-          setHelpOpen={setHelpOpen}
-        />
-      </Box>
+            }}
+            isSearchingHistory={isSearchingHistory}
+            setIsSearchingHistory={setIsSearchingHistory}
+            helpOpen={helpOpen}
+            setHelpOpen={setHelpOpen}
+            runtimeStateRepository={stateRepository}
+            settingsAuthority={configStore}
+          />
+        </Box>
+      </FullscreenModeProvider>
     );
   }
   const messagesElement = isLocalJSXCommandActive ? null : (
@@ -6782,6 +7052,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       screen={screen as any}
       streamingToolUses={transcript.streamingToolUses}
       showAllInTranscript={showAllInTranscript}
+      providerAuthContext={remoteAuthSessionContext}
+      stateRepository={stateRepository}
+      settingsAuthority={configStore}
       isLoading={isLoading}
       streamingText={transcript.streamingText}
       streamingThinking={transcript.streamingThinking as never}
@@ -6854,7 +7127,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         ) : null}
         <PermissionOverlay
           request={permissionRequests[0]}
-          tools={availableTools as any}
+          tools={permissionToolDescriptors}
           mcpClients={mcpClients as any}
         />
       </>
@@ -6894,7 +7167,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       toolPermissionContext={toolPermissionContext as any}
       setToolPermissionContext={setToolPermissionContext as any}
       apiKeyStatus={apiKeyStatus}
-      agencHome={agencHome}
+      remoteAuthSessionContext={remoteAuthSessionContext}
       commands={commands as unknown as Command[]}
       agents={agents as any}
       isLoading={effectiveInputBusy}
@@ -6932,6 +7205,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       onSubmissionBlocked={(reason) => {
         showTransientResult(reason, { display: "error" });
       }}
+      onOpenModelMenu={openCanonicalModelMenu}
       onSubmit={async (value_1, helpers_0, _speculation, submitOptions) => {
         if (isLocalJSXCommandActive) {
           return;
@@ -6971,6 +7245,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       setIsSearchingHistory={setIsSearchingHistory}
       helpOpen={helpOpen}
       setHelpOpen={setHelpOpen}
+      runtimeStateRepository={stateRepository}
+      settingsAuthority={configStore}
     />
   ) : null;
   const bottomContent = (
@@ -7035,17 +7311,21 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         onAgentsKilled={handleAgentsKilled}
         isMessageSelectorVisible={isMessageSelectorVisible}
         screen={screen as never}
-        {...(turnAbortController !== null
+        {...(shellAbortController !== null
           ? {
-              abortSignal: turnAbortController.signal,
+              abortSignal: shellAbortController.signal,
             }
-          : {})}
+          : turnAbortController !== null
+            ? {
+                abortSignal: turnAbortController.signal,
+              }
+            : {})}
         isSearchingHistory={isSearchingHistory}
         isHelpOpen={helpOpen}
         inputMode={mode as never}
         inputValue={input}
         streamMode={cancelStreamMode as never}
-        canCancelActiveTurn={isLoading}
+        canCancelActiveTurn={isLoading || shellAbortController !== null}
         queueOwner={commandQueueOwner}
       />
       {workbenchEnabled ? (
@@ -7069,6 +7349,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           }
           activityMode={showSpinner ? streamMode : null}
           contextPctLabel={contextPctLabel}
+          modelDisplayContext={remoteAuthSessionContext}
           sessionCostUsd={transcript.sessionCostUsd}
           onEditorInteraction={handleEditorInteraction}
           codePrediction={codePrediction}
@@ -7112,31 +7393,37 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   );
   if (fullscreen) {
     return (
-      <AlternateScreen mouseTracking={isMouseTrackingEnabled()}>
-        {body}
-      </AlternateScreen>
+      <FullscreenModeProvider enabled={fullscreen}>
+        <AlternateScreen mouseTracking={isMouseTrackingEnabled()}>
+          {body}
+        </AlternateScreen>
+      </FullscreenModeProvider>
     );
   }
   // Non-fullscreen: wrap in a flex column so children stack normally.
   return (
-    <Box flexDirection="column" width="100%">
-      {body}
-    </Box>
+    <FullscreenModeProvider enabled={fullscreen}>
+      <Box flexDirection="column" width="100%">
+        {body}
+      </Box>
+    </FullscreenModeProvider>
   );
 }
 export function AgenCTuiApp(props: AgenCTuiProps): React.ReactElement {
   const roleWorkspaceCwd = useMemo(() => requireTuiRoleWorkspaceCwd(props), []);
+  const configStore = getTuiConfigStore(props.session);
   const initial = useMemo(
     () => initialState(props, roleWorkspaceCwd),
     [roleWorkspaceCwd],
   );
   return (
     <App
+      configStore={configStore}
       initialState={initial}
       getFpsMetrics={props.getFpsMetrics ?? DEFAULT_FPS_METRICS_GETTER}
     >
       <PromptOverlayProvider>
-        <KeybindingSetup>
+        <KeybindingSetup configStore={configStore}>
           <AgenCTuiShell {...props} roleWorkspaceCwd={roleWorkspaceCwd} />
         </KeybindingSetup>
       </PromptOverlayProvider>

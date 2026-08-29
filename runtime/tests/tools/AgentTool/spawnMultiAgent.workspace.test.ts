@@ -5,7 +5,11 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createAgentRoleWorkspace } from '../../../src/agents/role.js'
+import { ConfigStore } from '../../../src/config/store.js'
+import { createProvider } from '../../../src/llm/provider.js'
 import { runWithCurrentRuntimeSession } from '../../../src/session/current-session.js'
+import { SessionProviderService } from '../../../src/session/provider-service.js'
+import { resolveAgentRuntimeOptions } from '../../../src/session/runtime-options.js'
 import type { Session } from '../../../src/session/session.js'
 import {
   __setPluginAgentsLoaderForTesting,
@@ -37,13 +41,22 @@ import {
   resetBackendDetection,
 } from '../../../src/utils/swarm/backends/registry.js'
 import { resetDetectionCache } from '../../../src/utils/swarm/backends/detection.js'
+import {
+  resetCanonicalSettingsAuthorityForTesting,
+  runWithCanonicalSettingsAuthority,
+} from '../../../src/utils/settings/canonicalAuthority.js'
 
 const roots: string[] = []
+const settingsAuthorities = new Map<string, ConfigStore>()
+let settingsHomeRoot: string | null = null
 
 afterEach(() => {
+  resetCanonicalSettingsAuthorityForTesting()
   __setSpawnTeammateBackendForTesting(undefined)
   __setPluginAgentsLoaderForTesting(undefined)
   clearAgentDefinitionsCache()
+  settingsAuthorities.clear()
+  settingsHomeRoot = null
   clearCliTeammateModeOverride('auto')
   setIsInteractive(false)
   vi.unstubAllEnvs()
@@ -60,6 +73,24 @@ function tempWorkspace(label: string): string {
   return workspace
 }
 
+function settingsAuthorityFor(projectRoot: string): ConfigStore {
+  const existing = settingsAuthorities.get(projectRoot)
+  if (existing !== undefined) return existing
+  settingsHomeRoot ??= tempWorkspace('settings-authority')
+  const home = join(settingsHomeRoot, String(settingsAuthorities.size))
+  mkdirSync(home, { recursive: true })
+  const authority = new ConfigStore({
+    home,
+    cwd: projectRoot,
+    projectRoot,
+    projectTrusted: false,
+    env: {},
+    loader: async () => ({ configVersion: 2 }),
+  })
+  settingsAuthorities.set(projectRoot, authority)
+  return authority
+}
+
 function contextFor(
   workspace: string,
   activeAgents: AgentDefinition[] = [],
@@ -70,7 +101,10 @@ function contextFor(
     activeAgents,
     allAgents: activeAgents,
   }
-  const defaultState = getDefaultAppState()
+  const defaultState = runWithCanonicalSettingsAuthority(
+    settingsAuthorityFor(workspace),
+    getDefaultAppState,
+  )
   const appState = {
     ...defaultState,
     mainLoopModel: 'leader-model',
@@ -118,10 +152,33 @@ function sessionFor(
   workspace: string,
   sandboxExecutionBroker: SandboxExecutionBrokerLike = explicitDangerBroker,
 ): Session {
+  const configStore = settingsAuthorityFor(workspace)
+  const providerService = new SessionProviderService({
+    initialProvider: createProvider('openai-compatible', {
+      baseURL: 'http://127.0.0.1:18000/v1',
+      model: 'grok-test',
+    }),
+    initialProviderName: 'openai-compatible',
+    initialModel: 'grok-test',
+  })
   return {
     roleWorkspace: createAgentRoleWorkspace(workspace),
-    services: { admissionRequired: false, sandboxExecutionBroker },
+    services: {
+      admissionRequired: false,
+      sandboxExecutionBroker,
+      configStore,
+      providerService,
+      runtimeOptions: resolveAgentRuntimeOptions({}, {
+        pluginStorageRoot: join(workspace, '.agenc-test-plugins'),
+      }),
+    },
   } as unknown as Session
+}
+
+function runWithTestSession<T>(session: Session, operation: () => T): T {
+  return runWithCanonicalSettingsAuthority(session.services.configStore, () =>
+    runWithCurrentRuntimeSession(session, operation),
+  )
 }
 
 function successfulBackend(
@@ -170,7 +227,7 @@ describe('teammate role workspace preflight', () => {
       })
 
       await expect(
-        runWithCurrentRuntimeSession(session, () =>
+        runWithTestSession(session, () =>
           spawnTeammate(
             configFor(workspace, 'general-purpose'),
             contextFor(workspace),
@@ -282,7 +339,7 @@ Fresh restrictive prompt.
     }))
     __setSpawnTeammateBackendForTesting(backend)
 
-    await runWithCurrentRuntimeSession(sessionFor(workspace), () =>
+    await runWithTestSession(sessionFor(workspace), () =>
       spawnTeammate(
         configFor(workspace, 'boundary-worker'),
         context,
@@ -316,7 +373,7 @@ Do not execute without exact role provenance.
 
     try {
       await expect(
-        runWithCurrentRuntimeSession(sessionFor(workspace), () =>
+        runWithTestSession(sessionFor(workspace), () =>
           spawnTeammate(
             configFor(workspace, 'boundary-worker'),
             contextFor(workspace),
@@ -355,7 +412,7 @@ Do not execute without exact role provenance.
 
     try {
       await expect(
-        runWithCurrentRuntimeSession(sessionFor(workspace, broker), () =>
+        runWithTestSession(sessionFor(workspace, broker), () =>
           spawnTeammate(
             configFor(workspace, 'general-purpose'),
             contextFor(workspace),
@@ -400,7 +457,7 @@ Do not execute without exact role provenance.
       'general-purpose',
     )
 
-    await runWithCurrentRuntimeSession(sessionFor(workspace, broker), () =>
+    await runWithTestSession(sessionFor(workspace, broker), () =>
       spawnTeammate(config, contextFor(workspace)),
     )
 
@@ -421,9 +478,9 @@ Do not execute without exact role provenance.
       },
     },
     {
-      label: 'selected canonical alias',
+      label: 'selected canonical scanner',
       requested: 'scanner',
-      denied: 'explorer',
+      denied: 'scanner',
       pluginAgent: undefined,
     },
   ])('rejects a denied $label before any backend call', async ({
@@ -442,7 +499,7 @@ Do not execute without exact role provenance.
     __setSpawnTeammateBackendForTesting(backend)
 
     await expect(
-      runWithCurrentRuntimeSession(sessionFor(workspace), () =>
+      runWithTestSession(sessionFor(workspace), () =>
         spawnTeammate(configFor(workspace, requested), context),
       ),
     ).rejects.toThrow(`Agent type '${requested}' has been denied`)

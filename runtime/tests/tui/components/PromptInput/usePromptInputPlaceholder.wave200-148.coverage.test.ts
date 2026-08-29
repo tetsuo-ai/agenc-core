@@ -9,7 +9,6 @@ const fixture = vi.hoisted(() => {
     enabledFeatures: new Set<string>(),
     exampleCommand: '/status',
     proactiveActive: false,
-    queuedCommandUpHintCount: 0,
     queuedCommands: [] as Array<{ editable?: boolean }>,
   }
 
@@ -25,7 +24,6 @@ const fixture = vi.hoisted(() => {
       state.enabledFeatures.clear()
       state.exampleCommand = '/status'
       state.proactiveActive = false
-      state.queuedCommandUpHintCount = 0
       state.queuedCommands = []
       this.getExampleCommandFromCache.mockClear()
       this.isPromptInputProactiveActive.mockClear()
@@ -46,12 +44,6 @@ vi.mock('../../state/AppState.js', () => ({
   useAppState: (
     selector: (state: typeof fixture.state.appState) => unknown,
   ) => selector(fixture.state.appState),
-}))
-
-vi.mock('../../../utils/config.js', () => ({
-  getGlobalConfig: () => ({
-    queuedCommandUpHintCount: fixture.state.queuedCommandUpHintCount,
-  }),
 }))
 
 vi.mock('../../../utils/exampleCommands.js', () => ({
@@ -176,7 +168,6 @@ describe('usePromptInputPlaceholder coverage', () => {
     await expectPlaceholder(
       () => {
         fixture.state.queuedCommands = [{ editable: true }]
-        fixture.state.queuedCommandUpHintCount = 2
       },
       'Press up to edit queued messages',
     )
@@ -184,14 +175,6 @@ describe('usePromptInputPlaceholder coverage', () => {
     await expectPlaceholder(
       () => {
         fixture.state.queuedCommands = [{ editable: false }]
-      },
-      '/status',
-    )
-
-    await expectPlaceholder(
-      () => {
-        fixture.state.queuedCommands = [{ editable: true }]
-        fixture.state.queuedCommandUpHintCount = 3
       },
       '/status',
     )

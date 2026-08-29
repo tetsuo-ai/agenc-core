@@ -1,33 +1,30 @@
-import { isEnvTruthy } from 'src/utils/envUtils.js'
+import { isEnvTruthy } from '../utils/envBoolean.js'
+
+type OauthEnvironment = Readonly<Record<string, string | undefined>>
 
 // Default to prod config, override with test/staging if enabled
 type OauthConfigType = 'prod' | 'staging' | 'local'
 
-function getOauthConfigType(): OauthConfigType {
-  if (process.env.USER_TYPE === 'ant') {
-    if (isEnvTruthy(process.env.USE_LOCAL_OAUTH)) {
+function getOauthConfigType(environment: OauthEnvironment): OauthConfigType {
+  if (environment.USER_TYPE === 'ant') {
+    if (isEnvTruthy(environment.USE_LOCAL_OAUTH)) {
       return 'local'
     }
-    if (isEnvTruthy(process.env.USE_STAGING_OAUTH)) {
+    if (isEnvTruthy(environment.USE_STAGING_OAUTH)) {
       return 'staging'
     }
   }
   return 'prod'
 }
 
-export function fileSuffixForOauthConfig(): string {
-  if (process.env.AGENC_CUSTOM_OAUTH_URL) {
-    return '-custom-oauth'
-  }
-  switch (getOauthConfigType()) {
-    case 'local':
-      return '-local-oauth'
-    case 'staging':
-      return '-staging-oauth'
-    case 'prod':
-      // No suffix for production config
-      return ''
-  }
+export function fileSuffixForOauthConfig(
+  environment: OauthEnvironment = process.env,
+): string {
+  // The native secure storage namespace must use the suffix of the OAuth configuration
+  // that is actually active. In particular, the current staging placeholder
+  // falls back to production and therefore has no suffix. Keeping a second
+  // hand-written switch here previously let file and secure-storage identities diverge.
+  return getOauthConfig(environment).OAUTH_FILE_SUFFIX
 }
 
 export const AGENC_AI_INFERENCE_SCOPE = 'user:inference' as const
@@ -125,15 +122,15 @@ const STAGING_OAUTH_CONFIG = undefined as undefined
 // Three local dev servers: :8000 api-proxy (`api dev start -g ccr`),
 // :4000 AgenC frontend, :3000 Console frontend. Env vars let
 // scripts/agenc-localhost override if your layout differs.
-function getLocalOauthConfig(): OauthConfig {
+function getLocalOauthConfig(environment: OauthEnvironment): OauthConfig {
   const api =
-    process.env.AGENC_LOCAL_OAUTH_API_BASE?.replace(/\/$/, '') ??
+    environment.AGENC_LOCAL_OAUTH_API_BASE?.replace(/\/$/, '') ??
     'http://localhost:8000'
   const apps =
-    process.env.AGENC_LOCAL_OAUTH_APPS_BASE?.replace(/\/$/, '') ??
+    environment.AGENC_LOCAL_OAUTH_APPS_BASE?.replace(/\/$/, '') ??
     'http://localhost:4000'
   const consoleBase =
-    process.env.AGENC_LOCAL_OAUTH_CONSOLE_BASE?.replace(/\/$/, '') ??
+    environment.AGENC_LOCAL_OAUTH_CONSOLE_BASE?.replace(/\/$/, '') ??
     'http://localhost:3000'
   return {
     BASE_API_URL: api,
@@ -161,11 +158,13 @@ const ALLOWED_OAUTH_BASE_URLS = [
 ]
 
 // Default to prod config, override with test/staging if enabled
-export function getOauthConfig(): OauthConfig {
+export function getOauthConfig(
+  environment: OauthEnvironment = process.env,
+): OauthConfig {
   let config: OauthConfig = (() => {
-    switch (getOauthConfigType()) {
+    switch (getOauthConfigType(environment)) {
       case 'local':
-        return getLocalOauthConfig()
+        return getLocalOauthConfig(environment)
       case 'staging':
         return STAGING_OAUTH_CONFIG ?? PROD_OAUTH_CONFIG
       case 'prod':
@@ -175,7 +174,7 @@ export function getOauthConfig(): OauthConfig {
 
   // Allow overriding all OAuth URLs to point to an approved FedStart deployment.
   // Only allowlisted base URLs are accepted to prevent credential leakage.
-  const oauthBaseUrl = process.env.AGENC_CUSTOM_OAUTH_URL
+  const oauthBaseUrl = environment.AGENC_CUSTOM_OAUTH_URL
   if (oauthBaseUrl) {
     const base = oauthBaseUrl.replace(/\/$/, '')
     if (!ALLOWED_OAUTH_BASE_URLS.includes(base)) {
@@ -200,7 +199,7 @@ export function getOauthConfig(): OauthConfig {
   }
 
   // Allow CLIENT_ID override via environment variable (e.g., for Xcode integration)
-  const clientIdOverride = process.env.AGENC_OAUTH_CLIENT_ID
+  const clientIdOverride = environment.AGENC_OAUTH_CLIENT_ID
   if (clientIdOverride) {
     config = {
       ...config,

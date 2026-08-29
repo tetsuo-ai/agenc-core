@@ -13,6 +13,7 @@ import {
   isPathAllowed,
 } from "./filesystem.js";
 import type { Tool } from "../types.js";
+import { runWithCwdOverride } from "../../../src/utils/cwd.js";
 
 // ============================================================================
 // Mock node:fs/promises
@@ -947,7 +948,6 @@ describe("workspace read path identity", () => {
     if (platformDescriptor === undefined) {
       throw new Error("process.platform descriptor is unavailable");
     }
-    const previousWorkspace = process.env.AGENC_WORKSPACE;
     const sessionId = "windows-workspace-read-source";
     const canonicalPath = "/workspace/source.ts";
     Object.defineProperty(process, "platform", {
@@ -955,15 +955,14 @@ describe("workspace read path identity", () => {
       value: "win32",
     });
     try {
-      process.env.AGENC_WORKSPACE = "/workspace/cafe\u0301";
-      recordSessionRead(sessionId, canonicalPath, { viewKind: "full" });
-      process.env.AGENC_WORKSPACE = "/workspace/caf\u00e9";
-
-      expect(hasSessionRead(undefined, canonicalPath)).toBe(true);
+      runWithCwdOverride("/workspace/cafe\u0301", () => {
+        recordSessionRead(sessionId, canonicalPath, { viewKind: "full" });
+      });
+      runWithCwdOverride("/workspace/caf\u00e9", () => {
+        expect(hasSessionRead(undefined, canonicalPath)).toBe(true);
+      });
     } finally {
-      clearSessionReadState(sessionId);
-      if (previousWorkspace === undefined) delete process.env.AGENC_WORKSPACE;
-      else process.env.AGENC_WORKSPACE = previousWorkspace;
+      clearSessionReadState(sessionId, tmpdir());
       Object.defineProperty(process, "platform", platformDescriptor);
     }
   });
@@ -973,7 +972,7 @@ describe("snapshotTopRecentReads", () => {
   const sessionId = "session-snapshot-top";
 
   beforeEach(() => {
-    clearSessionReadState(sessionId);
+    clearSessionReadState(sessionId, tmpdir());
   });
 
   it("does not treat processed partial views as valid read gates", () => {

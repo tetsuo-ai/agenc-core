@@ -72,8 +72,6 @@ const WORKFLOW_WORST_CASE_HANDOFF: WorkflowHandoffReferenceV2 = Object.freeze({
 const WORKFLOW_HANDOFF_TOKEN_BYTES_PER_TOKEN = 1;
 const WORKFLOW_GROUP_AGGREGATE_HEADER =
   "AGENC_WORKFLOW_GROUP_HANDOFF_V1\n";
-const LEGACY_TEMPLATE_PATTERN =
-  /\{\{\s*(steps|group)\.([A-Za-z0-9_-]+)\s*\}\}/gu;
 
 type BlockReason = "none" | "failed" | "unknown";
 
@@ -91,7 +89,6 @@ export interface RunAgentWorkflowV2Options {
   readonly workflowId: string;
   readonly manifest: WorkflowDagManifestV2;
   readonly manifestDigest: Sha256Digest;
-  readonly sourceVersion: 1 | 2;
   readonly effectiveLimits: EffectiveWorkflowLimits;
   readonly artifactStore: WorkflowSchedulerArtifactStore;
   readonly runId?: string;
@@ -761,6 +758,7 @@ async function executeWorkflowNode(
       registerAgentThreadTask(context.lifecycle, thread as never, {
         description: `workflow:${safeIdentity}`,
         prompt: invocation.instruction,
+        runtimeOptions: context.options.session.services.runtimeOptions,
       });
     } catch {
       // Task-pill registration is observational; lifecycle retirement is not.
@@ -893,15 +891,12 @@ function prepareStepInvocation(
   groups: ReadonlyMap<string, RuntimeGroup>,
 ): PreparedStepInvocation {
   const step = graph.nodes[ordinal]!.step;
-  const prepared =
-    options.sourceVersion === 1
-      ? prepareLegacyInputs(step, graph, artifacts, groups)
-      : {
-          instruction: step.message,
-          references: Object.entries(step.inputs ?? {}).map(
-            ([alias, reference]) => ({ alias, reference }),
-          ),
-        };
+  const prepared = {
+    instruction: step.message,
+    references: Object.entries(step.inputs ?? {}).map(
+      ([alias, reference]) => ({ alias, reference }),
+    ),
+  };
   const inputItems = prepared.references.map(({ alias, reference }) => {
     const artifact = artifactForReference(reference, graph, artifacts, groups);
     return { alias, reference, artifact };
@@ -925,38 +920,6 @@ function prepareStepInvocation(
     },
   });
   return Object.freeze({ instruction: prepared.instruction, envelope });
-}
-
-function prepareLegacyInputs(
-  step: WorkflowStepV2,
-  graph: CompiledWorkflowGraph,
-  artifacts: readonly (WorkflowHandoffArtifact | undefined)[],
-  groups: ReadonlyMap<string, RuntimeGroup>,
-): {
-  readonly instruction: string;
-  readonly references: readonly {
-    readonly alias: string;
-    readonly reference: WorkflowRef;
-  }[];
-} {
-  const references: Array<{ alias: string; reference: WorkflowRef }> = [];
-  let nextAlias = 0;
-  const instruction = step.message.replace(
-    LEGACY_TEMPLATE_PATTERN,
-    (_match, namespace: string, name: string) => {
-      const alias = `legacy_${nextAlias}`;
-      nextAlias += 1;
-      const reference: WorkflowRef =
-        namespace === "steps" ? { step: name } : { group: name };
-      artifactForReference(reference, graph, artifacts, groups);
-      references.push({ alias, reference });
-      return `[[workflow-input:${alias}]]`;
-    },
-  );
-  return Object.freeze({
-    instruction,
-    references: Object.freeze(references),
-  });
 }
 
 function artifactForReference(

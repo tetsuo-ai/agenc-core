@@ -30,7 +30,7 @@ export interface SnapshotPolicyOptions {
   readonly maxConversationEvents?: number;
   readonly maxTrackedSessions?: number;
   // OOM fix: bound the in-memory per-session tool state so a single long-lived
-  // session (e.g. `agenc --yolo`) cannot grow `completed` / `inFlight` /
+  // session (e.g. `agenc --dangerously-bypass-approvals-and-sandbox`) cannot grow `completed` / `inFlight` /
   // `statusTransitions` without limit. The authoritative, full tool result is
   // already persisted and size-rotated to SQLite (recordInFlightToolCallStart /
   // recordInFlightToolCallCompletion); the in-memory copy only needs a bounded
@@ -232,7 +232,7 @@ export class AgenCSessionSnapshotPolicy {
   // insertion order) once the in-memory map exceeds its cap. `inFlight` normally
   // drains on tool_call_completed/poisoned, but an orphaned call (cancellation,
   // crash, or a lost completion event) would otherwise pin one entry forever in
-  // a long-lived `--yolo` session — the sibling leak to `completed`, which
+  // a long-lived `--dangerously-bypass-approvals-and-sandbox` session — the sibling leak to `completed`, which
   // #boundCompletedToolCalls already caps. The full in-flight record is persisted
   // via recordInFlightToolCallStart, so dropping the oldest in-memory entry is
   // safe; a late completion still resolves via its own payload metadata
@@ -250,7 +250,7 @@ export class AgenCSessionSnapshotPolicy {
   // pinned in the in-memory `completed` map. The untruncated result is already
   // persisted (and size-rotated) to SQLite, so the in-memory copy only needs a
   // preview for snapshotting. This is the change that stops a FileRead/Bash-heavy
-  // `--yolo` session from pinning MBs per completed call until the heap is gone.
+  // `--dangerously-bypass-approvals-and-sandbox` session from pinning MBs per completed call until the heap is gone.
   #boundInMemoryResult(result: JsonValue | null): JsonValue | null {
     const cap = this.#maxInMemoryToolResultBytes;
     if (cap === 0 || typeof result !== "string" || result.length <= cap) {

@@ -5,6 +5,7 @@ import type { UUID } from 'crypto';
 import type { RefObject } from 'react';
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { RuntimeStateRepository } from '../../config/runtime-state-repository.js';
 import type { StreamingToolUse } from '../../llm/types.js';
 import { every } from '../../utils/set.js';
 import { getIsRemoteMode } from '../../bootstrap/state.js';
@@ -26,9 +27,7 @@ import { collapseBackgroundBashNotifications } from '../../utils/collapseBackgro
 import { collapseHookSummaries } from '../../utils/collapseHookSummaries.js';
 import { collapseReadSearchGroups } from '../../utils/collapseReadSearch.js';
 import { collapseTeammateShutdowns } from '../../utils/collapseTeammateShutdowns.js';
-import { getGlobalConfig } from '../../utils/config.js';
 import { isEnvTruthy } from '../../utils/envUtils.js';
-import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import { applyGrouping } from '../../utils/groupToolUses.js';
 import { buildMessageLookups, createAssistantMessage, deriveUUID, getMessagesAfterCompactBoundary, getToolUseID, getToolUseIDs, hasUnresolvedHooksFromLookup, isNotEmptyMessage, normalizeMessages, reorderMessagesInUI, type StreamingThinking, shouldShowUserMessage } from '../../utils/messages.js';
 import { plural } from '../../utils/stringUtils.js';
@@ -44,6 +43,7 @@ import { isNullRenderingAttachment } from '../message-visibility.js';
 import { OffscreenFreeze } from './OffscreenFreeze.js';
 import type { ToolUseConfirm } from '../permission-types.js';
 import { StatusNotices } from '../startup/StatusNotices.js';
+import type { ProviderAuthReadContext } from '../../utils/auth.js';
 import type { JumpHandle } from './VirtualMessageList.js';
 import {
   getMessagesSendUserFileToolName,
@@ -53,6 +53,12 @@ import {
   dropTextInBriefTurns,
   filterForBriefTool,
 } from './messagesBriefFiltering.js';
+import { useFullscreenMode } from '../context/fullscreenModeContext.js';
+import { useSettings } from '../hooks/useSettings.js';
+import {
+  runWithCanonicalSettingsAuthority,
+  type CanonicalSettingsAuthority,
+} from '../../utils/settings/canonicalAuthority.js';
 
 // Memoed logo header: this box is the FIRST sibling before all MessageRows
 // in main-screen mode. If it becomes dirty on every Messages re-render,
@@ -90,13 +96,17 @@ class WelcomePanelBoundary extends React.Component<
 
 const LogoHeader = React.memo(function LogoHeader(t0: {
   readonly agentDefinitions?: AgentDefinitionsResult;
+  readonly providerAuthContext: ProviderAuthReadContext;
+  readonly stateRepository: RuntimeStateRepository;
   readonly showWelcome?: boolean;
 }) {
   const {
     agentDefinitions,
+    providerAuthContext,
+    stateRepository,
     showWelcome = false,
   } = t0;
-  return <OffscreenFreeze><Box flexDirection="column" gap={1}><React.Suspense fallback={null}><StatusNotices agentDefinitions={agentDefinitions} /></React.Suspense>{showWelcome ? <WelcomePanelBoundary><WelcomeColdPanelWithModel /></WelcomePanelBoundary> : null}</Box></OffscreenFreeze>;
+  return <OffscreenFreeze><Box flexDirection="column" gap={1}><React.Suspense fallback={null}><StatusNotices homeContext={providerAuthContext.home} providerAuthContext={providerAuthContext} stateRepository={stateRepository} agentDefinitions={agentDefinitions} /></React.Suspense>{showWelcome ? <WelcomePanelBoundary><WelcomeColdPanelWithModel /></WelcomePanelBoundary> : null}</Box></OffscreenFreeze>;
 });
 
 // Dead code elimination: conditional import for brief mode
@@ -152,6 +162,9 @@ type Props = {
   streamingToolUses: readonly StreamingToolUse[];
   showAllInTranscript?: boolean;
   agentDefinitions?: AgentDefinitionsResult;
+  providerAuthContext: ProviderAuthReadContext;
+  stateRepository: RuntimeStateRepository;
+  settingsAuthority: CanonicalSettingsAuthority;
   onOpenRateLimitOptions?: () => void;
   /** Hide the logo/header - used for subagent zoom view */
   hideLogo?: boolean;
@@ -282,6 +295,9 @@ const MessagesImpl = ({
   streamingToolUses,
   showAllInTranscript = false,
   agentDefinitions,
+  providerAuthContext,
+  stateRepository,
+  settingsAuthority,
   onOpenRateLimitOptions,
   hideLogo = false,
   isLoading,
@@ -302,6 +318,8 @@ const MessagesImpl = ({
   cursorNavRef,
   renderRange
 }: Props): React.ReactNode => {
+  const fullscreen = useFullscreenMode();
+  const settings = useSettings();
   const {
     columns
   } = useTerminalSize();
@@ -399,7 +417,7 @@ const MessagesImpl = ({
   const disableVirtualScroll = useMemo(() => isEnvTruthy(process.env.AGENC_DISABLE_VIRTUAL_SCROLL), []);
   // Virtual scroll replaces the transcript cap: everything is scrollable and
   // memory is bounded by the mounted-item count, not the total. scrollRef is
-  // only passed when isFullscreenEnvEnabled() is true (AgenCTuiApp gates it),
+  // only passed when fullscreen mode is active (AgenCTuiApp gates it),
   // so scrollRef's presence is the signal.
   const virtualScrollRuntimeGate = scrollRef != null && !disableVirtualScroll;
   const shouldTruncate = isTranscriptMode && !showAllInTranscript && !virtualScrollRuntimeGate;
@@ -431,7 +449,7 @@ const MessagesImpl = ({
     // (this PR's core goal — full history in UI, filter only for the model).
     // Also avoids a UUID mismatch: normalizeMessages derives new UUIDs, so
     // projectSnippedView's check against original removedUuids would fail.
-    const compactAwareMessages = verbose || isFullscreenEnvEnabled() ? normalizedMessages : getMessagesAfterCompactBoundary(normalizedMessages, {
+    const compactAwareMessages = verbose || fullscreen ? normalizedMessages : getMessagesAfterCompactBoundary(normalizedMessages, {
       includeSnipped: true
     });
     const messagesToShowNotTruncated = reorderMessagesInUI(compactAwareMessages.filter((msg_2): msg_2 is Exclude<NormalizedMessage, ProgressMessageType> => msg_2.type !== 'progress')
@@ -455,7 +473,19 @@ const MessagesImpl = ({
     const {
       messages: groupedMessages
     } = applyGrouping(messagesToShow, tools, verbose);
-    const collapsed = collapseBackgroundBashNotifications(collapseHookSummaries(collapseTeammateShutdowns(collapseReadSearchGroups(groupedMessages, tools))), verbose);
+    const collapsed = runWithCanonicalSettingsAuthority(
+      settingsAuthority,
+      () =>
+        collapseBackgroundBashNotifications(
+          collapseHookSummaries(
+            collapseTeammateShutdowns(
+              collapseReadSearchGroups(groupedMessages, tools, fullscreen),
+            ),
+          ),
+          verbose,
+          fullscreen,
+        ),
+    );
     const lookups = buildMessageLookups(normalizedMessages, messagesToShow);
     const hiddenMessageCount = messagesToShowNotTruncated.length - MAX_MESSAGES_TO_SHOW_IN_TRANSCRIPT_MODE;
     return {
@@ -464,7 +494,7 @@ const MessagesImpl = ({
       hasTruncatedMessages,
       hiddenMessageCount
     };
-  }, [verbose, normalizedMessages, isTranscriptMode, syntheticStreamingToolUseMessages, shouldTruncate, tools, isBriefOnly]);
+  }, [verbose, fullscreen, normalizedMessages, isTranscriptMode, syntheticStreamingToolUseMessages, shouldTruncate, tools, isBriefOnly, settingsAuthority]);
 
   // Cheap slice — only runs when scroll range or slice config changes.
   const renderableMessages = useMemo(() => {
@@ -538,7 +568,11 @@ const MessagesImpl = ({
     progress
   } = useTerminalNotification();
   const prevProgressState = useRef<string | null>(null);
-  const progressEnabled = getGlobalConfig().terminalProgressBarEnabled && !getIsRemoteMode() && !((feature('PROACTIVE') || feature('KAIROS')) && isMessagesProactiveActive());
+  const progressEnabled =
+    (settings.tui?.terminalProgressBarEnabled ?? true) &&
+    !getIsRemoteMode() &&
+    !((feature('PROACTIVE') || feature('KAIROS')) &&
+      isMessagesProactiveActive());
   useEffect(() => {
     const state = progressEnabled ? hasToolsInProgress ? 'indeterminate' : 'completed' : null;
     if (prevProgressState.current === state) return;
@@ -557,7 +591,7 @@ const MessagesImpl = ({
     // sibling after this map, so it's never in renderableMessages — OR it
     // in explicitly so the group flips to past tense as soon as text starts
     // streaming instead of waiting for the block to finalize.
-    const hasContentAfter = msg_8.type === 'collapsed_read_search' && (!!streamingText || hasContentAfterIndex(renderableMessages, index, tools, streamingToolUseIDs));
+    const hasContentAfter = msg_8.type === 'collapsed_read_search' && (!!streamingText || runWithCanonicalSettingsAuthority(settingsAuthority, () => hasContentAfterIndex(renderableMessages, index, tools, streamingToolUseIDs, fullscreen)));
     const k_0 = messageKey(msg_8);
     const row = <MessageRow key={k_0} message={msg_8} isUserContinuation={isUserContinuation} hasContentAfter={hasContentAfter} tools={tools} commands={commands} verbose={verbose || isItemExpanded(msg_8) || cursor?.expanded === true && index === selectedIdx} inProgressToolUseIDs={inProgressToolUseIDs} streamingToolUseIDs={streamingToolUseIDs} screen={screen} canAnimate={canAnimate} onOpenRateLimitOptions={onOpenRateLimitOptions} lastThinkingBlockId={lastThinkingBlockId} latestBashOutputUUID={latestBashOutputUUID} columns={contentColumns} isLoading={isLoading} lookups={lookups_0} />;
 
@@ -614,7 +648,7 @@ const MessagesImpl = ({
   }, [tools, lookups_0]);
   return <>
       {/* Logo */}
-      {!hideLogo && !(renderRange && renderRange[0] > 0) && <LogoHeader agentDefinitions={agentDefinitions} showWelcome={renderableMessages.length === 0 && !streamingText && !isBriefOnly} />}
+      {!hideLogo && !(renderRange && renderRange[0] > 0) && <LogoHeader agentDefinitions={agentDefinitions} providerAuthContext={providerAuthContext} stateRepository={stateRepository} showWelcome={renderableMessages.length === 0 && !streamingText && !isBriefOnly} />}
 
       {/* Truncation indicator */}
       {hasTruncatedMessages_0 && <Divider title={`${toggleShowAllShortcut} to show ${chalk.bold(hiddenMessageCount_0)} previous messages`} width={contentColumns} />}

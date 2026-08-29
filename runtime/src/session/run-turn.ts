@@ -48,10 +48,6 @@ import {
   LLMServerError,
   LLMTimeoutError,
 } from "../llm/errors.js";
-import {
-  withCompactContextGuards,
-  type CompactGuardEnv,
-} from "./compact-env-guard.js";
 import type {
   LLMContentPart,
   LLMMessage,
@@ -70,6 +66,7 @@ import {
   usesLocalToolProfile,
 } from "../llm/wire/capability-gating.js";
 import type { QueuedCommand } from "../types/textInputTypes.js";
+import { getSelectedProviderEnvironment } from "../utils/model/providers.js";
 import { safeStringify } from "../tools/types.js";
 import {
   classifyUntrustedToolResult,
@@ -190,7 +187,6 @@ import {
   queuedCommandWorkspaceView,
   remove as removeFromQueue,
 } from "../utils/messageQueueManager.js";
-import { notifyCommandLifecycle } from "../utils/commandLifecycle.js";
 import { wrapCommandText } from "../utils/messages.js";
 import { asRecord } from "../utils/record.js";
 import { SLEEP_TOOL_NAME } from "../tools/SleepTool/prompt.js";
@@ -408,7 +404,6 @@ type AgenCCompactionResult = {
   readonly summaryMessages?: readonly AgenCRuntimeMessage[];
   readonly messagesToKeep?: readonly AgenCRuntimeMessage[];
   readonly attachments?: readonly AgenCRuntimeMessage[];
-  readonly hookResults?: readonly AgenCRuntimeMessage[];
   readonly userDisplayMessage?: string;
   readonly preCompactTokenCount?: number;
   readonly postCompactTokenCount?: number;
@@ -500,19 +495,17 @@ async function runAgenCAutoCompact(params: {
       toolUseContext,
       forkContextMessages: messages,
     };
-    const result = await withCompactContextGuards(async () => {
-      const { autoCompactIfNeeded } =
-        await import("../services/compact/autoCompact.js");
-      return autoCompactIfNeeded(
-        messages,
-        toolUseContext,
-        cacheSafeParams,
-        params.querySource,
-        state.autoCompactTracking,
-        state.snipTokensFreed ?? 0,
-        { force: params.force === true },
-      );
-    }, envForToolUseContext(toolUseContext));
+    const { autoCompactIfNeeded } =
+      await import("../services/compact/autoCompact.js");
+    const result = await autoCompactIfNeeded(
+      messages,
+      toolUseContext,
+      cacheSafeParams,
+      params.querySource,
+      state.autoCompactTracking,
+      state.snipTokensFreed ?? 0,
+      { force: params.force === true },
+    );
     if (!result.wasCompacted || !result.compactionResult) {
       return compactionNotRun(result.consecutiveFailures);
     }
@@ -623,37 +616,34 @@ async function prepareAgenCQueryMessages(params: {
   readonly committed: boolean;
 }> {
   try {
-    const result = await withCompactContextGuards(async () => {
-      let messages = toAgenCRuntimeMessages(params.messages);
-      const budgeted = await applyToolResultBudget(
-        messages,
-        params.contentReplacementState,
-        {
-          limitChars: resolveToolResultBudgetChars(
-            params.toolUseContext.options.contextWindowTokens,
-          ),
-          persist: persistOversizedToolResult,
-        },
-      );
-      messages = budgeted.messages as AgenCRuntimeMessage[];
-      const { microcompactMessages } =
-        await import("../services/compact/microCompact.js");
-      const microcompactResult = await microcompactMessages(
-        messages,
-        params.toolUseContext,
-        params.querySource,
-      );
-      messages = microcompactResult.messages as AgenCRuntimeMessage[];
-      const committed = false;
-      return {
-        messages: truncateToolResultsToFit(
-          fromAgenCRuntimeMessages(messages),
+    let messages = toAgenCRuntimeMessages(params.messages);
+    const budgeted = await applyToolResultBudget(
+      messages,
+      params.contentReplacementState,
+      {
+        limitChars: resolveToolResultBudgetChars(
           params.toolUseContext.options.contextWindowTokens,
         ),
-        snipTokensFreed: 0,
-        committed,
-      };
-    }, envForToolUseContext(params.toolUseContext));
+        persist: persistOversizedToolResult,
+      },
+    );
+    messages = budgeted.messages as AgenCRuntimeMessage[];
+    const { microcompactMessages } =
+      await import("../services/compact/microCompact.js");
+    const microcompactResult = await microcompactMessages(
+      messages,
+      params.toolUseContext,
+      params.querySource,
+    );
+    messages = microcompactResult.messages as AgenCRuntimeMessage[];
+    const result = {
+      messages: truncateToolResultsToFit(
+        fromAgenCRuntimeMessages(messages),
+        params.toolUseContext.options.contextWindowTokens,
+      ),
+      snipTokensFreed: 0,
+      committed: false,
+    };
     return {
       messages: result.messages,
       snipTokensFreed: result.snipTokensFreed,
@@ -788,21 +778,15 @@ async function persistOversizedToolResult(
 
 async function toAgenCCompactionResult(
   result: AgenCCompactionResult,
-  toolUseContext?: AgenCToolUseContext,
 ): Promise<NonNullable<AgenCAutoCompactResult["compactionResult"]>> {
   let replacementHistory: LLMMessage[];
   try {
-    replacementHistory = await withCompactContextGuards(
-      async () => {
-        const { buildPostCompactMessages } =
-          await import("../services/compact/compact.js");
-        return fromAgenCRuntimeMessages(
-          buildPostCompactMessages(
-            toCompactServiceResult(result),
-          ) as AgenCRuntimeMessage[],
-        );
-      },
-      toolUseContext ? envForToolUseContext(toolUseContext) : undefined,
+    const { buildPostCompactMessages } =
+      await import("../services/compact/compact.js");
+    replacementHistory = fromAgenCRuntimeMessages(
+      buildPostCompactMessages(
+        toCompactServiceResult(result),
+      ) as AgenCRuntimeMessage[],
     );
   } catch (error) {
     if (result.transaction !== undefined) {
@@ -841,7 +825,6 @@ function toCompactServiceResult(
     boundaryMarker: result.boundaryMarker,
     summaryMessages: result.summaryMessages ?? [],
     attachments: result.attachments ?? [],
-    hookResults: result.hookResults ?? [],
     ...(result.messagesToKeep !== undefined
       ? { messagesToKeep: result.messagesToKeep }
       : {}),
@@ -1070,21 +1053,6 @@ function cloneLLMMessage(message: LLMMessage): LLMMessage {
   return {
     ...message,
     content: cloneContent(message.content),
-  };
-}
-
-function envForToolUseContext(
-  toolUseContext: AgenCToolUseContext,
-): CompactGuardEnv {
-  const providerOverride = toolUseContext.options.providerOverride;
-  if (!providerOverride) return {};
-  return {
-    AGENC_USE_OPENAI: "1",
-    OPENAI_MODEL: providerOverride.model,
-    OPENAI_BASE_URL: providerOverride.baseURL,
-    OPENAI_API_KEY: providerOverride.apiKey,
-    AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW:
-      toolUseContext.options.contextWindowTokens.toString(),
   };
 }
 
@@ -1413,9 +1381,9 @@ const IN_MEMORY_TOOL_RESULT_MAX_CHARS = 6_000;
 const IN_MEMORY_TOOL_RESULT_CLEARED_MARKER =
   "[Old tool result content cleared]";
 const IN_MEMORY_MCP_TOOL_PREFIX = "mcp__";
-// The shell tool registers as "exec_command" in the LIVE tool registry (see
-// `src/tools/system/exec-command.ts`), NOT "Bash". There is no exported
-// constant for it at the source, so the canonical string is pinned here.
+// Shell tools register as "exec_command" / "system.bash" in the LIVE tool
+// registry. Removed names in the compactable set exist only for persisted
+// historical transcripts.
 const IN_MEMORY_EXEC_COMMAND_TOOL_NAME = "exec_command";
 // Tool names MUST match the LIVE tool registry. The whole-file reader is
 // `FILE_READ_TOOL_NAME` ("FileRead") and the shell tool is "exec_command" —
@@ -1427,11 +1395,13 @@ const IN_MEMORY_COMPACTABLE_TOOLS = new Set([
   FILE_READ_TOOL_NAME,
   "Read",
   IN_MEMORY_EXEC_COMMAND_TOOL_NAME,
+  "system.bash",
   "Bash",
   "PowerShell",
   "Grep",
   "Glob",
   "WebSearch",
+  "web_fetch",
   "WebFetch",
   "Edit",
   "Write",
@@ -1601,7 +1571,6 @@ function drainQueuedCommandsAfterTools(params: {
   readonly ctx: TurnContext;
   readonly querySource: string;
   readonly sleepRan: boolean;
-  readonly consumedCommandUuids: string[];
 }): PhaseEvent[] {
   // Commands in the global input queue belong to fresh Agent turns unless
   // explicitly admitted through the Editor-owned mailbox path. Consuming
@@ -1657,10 +1626,6 @@ function drainQueuedCommandsAfterTools(params: {
             { userMessageId: uuid }),
       },
     });
-    if (typeof command.uuid === "string") {
-      params.consumedCommandUuids.push(command.uuid);
-      notifyCommandLifecycle(command.uuid, "started");
-    }
     if (durableUserPrompt) {
       params.session.emit({
         id: uuid,
@@ -1979,8 +1944,7 @@ function messageHasImageContent(message: LLMMessage | undefined): boolean {
 }
 
 function isAutoCompactEnabledForNotices(): boolean {
-  const raw =
-    process.env.DISABLE_AUTO_COMPACT ?? process.env.AGENC_DISABLE_AUTO_COMPACT;
+  const raw = getSelectedProviderEnvironment().AGENC_DISABLE_AUTO_COMPACT;
   if (raw === undefined) return true;
   return !TRUTHY_ENV.has(raw.trim().toLowerCase());
 }
@@ -2038,6 +2002,7 @@ function terminalToStopReason(
   switch (reason) {
     case "completed":
     case "max_turns":
+    case "max_budget_usd":
     case "cancelled":
     case "no_progress": // honest mapping, NOT default→"error" (would mask it as a crash)
       return reason;
@@ -2317,14 +2282,16 @@ async function runAutoCompact(
           { durable: true },
         );
       }
-      const compacted = cr.transaction === undefined
-        ? buildAgenCPostCompactMessages(compactedRollout)
-        : cr.transaction.committed.replacement_history.map((message) =>
-            responseItemToLlmMessage(message),
-          );
-      const unsentImageTurn = cr.transaction === undefined && shouldKeepUnsentImageTurn
-        ? state.messages.at(-1)
-        : undefined;
+      const compacted =
+        cr.transaction === undefined
+          ? buildAgenCPostCompactMessages(compactedRollout)
+          : cr.transaction.committed.replacement_history.map((message) =>
+              responseItemToLlmMessage(message),
+            );
+      const unsentImageTurn =
+        cr.transaction === undefined && shouldKeepUnsentImageTurn
+          ? state.messages.at(-1)
+          : undefined;
       const applyProjection = (): void => {
         // Replace both the full history view and the per-iteration
         // projection so `prepareContext` (next phase) sees the same
@@ -3082,8 +3049,14 @@ async function prepareSamplingRequestBoundary(
   // Per-turn attachments run once, immediately before the retry-stable
   // request snapshot is captured. A reconnect must never consume one-shot
   // attachment state or observe a different prompt than the first attempt.
-  const agencHome = session.services.configStore?.agencHome;
-  const currentConfig = session.services.configStore?.current();
+  const attachmentConfigStore = session.services.configStore;
+  if (attachmentConfigStore === undefined) {
+    throw new Error(
+      "Cannot build session attachments without canonical ConfigStore home authority",
+    );
+  }
+  const agencHome = attachmentConfigStore.homeContext.path;
+  const currentConfig = attachmentConfigStore.current();
   const fileMentionAllowedRoots = extractMentionAllowedRoots(currentConfig);
   const userInput = extractLastUserText(state.messagesForQuery);
   const rootHumanTurn = session.currentRootHumanTurn();
@@ -3114,9 +3087,7 @@ async function prepareSamplingRequestBoundary(
       : {}),
     subagentDepth: ctx.depth,
     signal,
-    ...(typeof agencHome === "string" && agencHome.length > 0
-      ? { agencHome }
-      : {}),
+    agencHome,
     ...(fileMentionAllowedRoots !== undefined
       ? { fileMentionAllowedRoots }
       : {}),
@@ -3215,27 +3186,6 @@ async function tryRunSamplingRequest(
     } else {
       streamModelError = new StreamModelError(error);
     }
-    // The model phase failing is the single most useful thing to know
-    // about a turn, and it was recorded nowhere: the error travelled on
-    // as a value and, if any later step cleared it, the turn finished
-    // looking like a normal empty answer.
-    {
-      const cause = streamModelError.cause ?? streamModelError;
-      session.emit({
-        id: session.nextInternalSubId(),
-        msg: {
-          type: "warning",
-          payload: {
-            cause: "stream_model_failed",
-            message: `${session.services.provider.name}: ${
-              cause instanceof Error
-                ? `${cause.name}: ${cause.message}`
-                : String(cause)
-            }`,
-          },
-        },
-      });
-    }
   }
 
   // Plan-mode: after the stream finishes, let the helper finalize any
@@ -3322,25 +3272,6 @@ async function tryRunSamplingRequest(
     // swallow the stream error and let the outer loop re-enter
     // PrepareContext.
     if (state.transition !== undefined) {
-      // Recovery is about to retry, so the error stops here. Put it on
-      // the record first: a ladder that keeps transitioning and never
-      // succeeds ends the turn with nothing rendered and no trace of
-      // what the provider actually said.
-      if (streamModelError !== null) {
-        const cause = streamModelError.cause ?? streamModelError;
-        session.emit({
-          id: session.nextInternalSubId(),
-          msg: {
-            type: "warning",
-            payload: {
-              cause: "stream_error_recovered",
-              message: `recovery ${state.transition.reason}: ${
-                cause instanceof Error ? cause.message : String(cause)
-              }`,
-            },
-          },
-        });
-      }
       (state as TurnState & { lastStreamError?: unknown }).lastStreamError =
         undefined;
       streamModelError = null;
@@ -3564,33 +3495,17 @@ export function isRetryableStreamError(error: unknown): boolean {
 /**
  * Outer model↔tool loop iteration cap. Default is **no cap** — the turn ends
  * when the model stops tool-calling (or cancel / budget / behavioral
- * backstop fires). An explicit `max_turns` / `maxTurns` config value or
- * `AGENC_MAX_TURNS` is the only way to force a hard iteration ceiling
- * (optional runaway-loop backstop for ops).
+ * backstop fires). The canonical repository maps `max_turns` (including its
+ * environment override) to the internal `maxTurns` snapshot once at startup.
  */
 function resolveMaxTurns(ctx: TurnContext): number {
-  const cfg = ctx.config as unknown as {
-    maxTurns?: number;
-    max_turns?: number;
-  };
-  // Prefer camel (bootstrap maps max_turns → maxTurns); accept snake as fallback.
-  const explicit =
-    typeof cfg.maxTurns === "number"
-      ? cfg.maxTurns
-      : typeof cfg.max_turns === "number"
-        ? cfg.max_turns
-        : undefined;
+  const explicit = ctx.config.maxTurns;
   if (
     typeof explicit === "number" &&
     Number.isFinite(explicit) &&
     explicit > 0
   ) {
     return explicit;
-  }
-  const envRaw = process.env.AGENC_MAX_TURNS;
-  if (envRaw !== undefined) {
-    const parsed = Number.parseInt(envRaw, 10);
-    if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
   // Unbounded: model stop-signal / cancel / budget owns termination.
   return Number.POSITIVE_INFINITY;
@@ -3838,20 +3753,13 @@ export async function* runTurnKernel(
   };
   const referenceContextItem = toTurnContextItem(ctx);
 
-  // I-13 consumer: apply any staged provider/model/profile switch from
-  // a prior `/model`, `/provider`, `/config profile <name>`, or
-  // recovery-side `model_fallback` before this turn's lifecycle emits
-  // so downstream `turn_context` reflects the intended model slug (for
-  // callers that rebuild `ctx` from `session.state` per turn). The
-  // existing `pendingProviderSwitch` check inside the inner sampling
-  // loop stays as a safety net — the clear here prevents it from
-  // re-terminating this fresh turn.
+  // Session.runTurn consumes a staged operator switch before constructing
+  // this immutable context. Do not consume another switch here: one staged
+  // after context construction belongs to the next turn, and committing it
+  // now would mix that provider with this turn's model metadata and options.
   const sessionOwner = session as Session & {
     consumePendingProviderSwitch?: () => Promise<void>;
   };
-  if (typeof sessionOwner.consumePendingProviderSwitch === "function") {
-    await sessionOwner.consumePendingProviderSwitch();
-  }
   session.bindProviderConversation();
 
   const pendingInputOwnership = pendingInputOwnershipForTurn(ctx);
@@ -4500,17 +4408,6 @@ async function* runTurnKernelInner(
   let lastContent = "";
   let emptyResponseRetryCount = 0;
   let editorSamplingIterations = 0;
-  const consumedCommandUuids: string[] = [];
-  const completeConsumedCommands = (): void => {
-    for (const uuid of consumedCommandUuids) {
-      notifyCommandLifecycle(uuid, "completed");
-    }
-    consumedCommandUuids.length = 0;
-  };
-  const returnTerminal = (terminal: Terminal): Terminal => {
-    completeConsumedCommands();
-    return terminal;
-  };
   const finishEditorInteractionLimit = async (
     limitKind: "sampling_iterations" | "tool_calls",
     limit: number,
@@ -4576,16 +4473,14 @@ async function* runTurnKernelInner(
   // Behavioral backstop (goal #3): resolve the no-progress config once
   // per turn so the top-of-loop evaluate site and the post-tool record
   // site share an identical config object. Pure synchronous resolution.
-  const behavioralCfg: BehavioralConfig = resolveBehavioralConfig({
-    config: ctx.config as unknown as Record<string, unknown>,
-  });
+  const behavioralCfg: BehavioralConfig = resolveBehavioralConfig();
 
   // The phase loop — agenc runtime's "while streaming & tools" outer loop.
   while (true) {
     const cancelledAtLoopStart = await finishCancelledIfAborted();
     if (cancelledAtLoopStart !== null) {
       yield cancelledAtLoopStart.event;
-      return returnTerminal(cancelledAtLoopStart.terminal);
+      return cancelledAtLoopStart.terminal;
     }
 
     // Guardian-rejection circuit-breaker interrupt (inspected runtime
@@ -4616,7 +4511,7 @@ async function* runTurnKernelInner(
         usage,
         stopReason: "cancelled",
       };
-      return returnTerminal(terminal);
+      return terminal;
     }
 
     if (
@@ -4629,7 +4524,7 @@ async function* runTurnKernelInner(
         editorSamplingIterations,
       );
       yield limited.event;
-      return returnTerminal(limited.terminal);
+      return limited.terminal;
     }
 
     const maxTurns = resolveMaxTurns(ctx);
@@ -4644,7 +4539,30 @@ async function* runTurnKernelInner(
         usage,
         stopReason: "max_turns",
       };
-      return returnTerminal(terminal);
+      return terminal;
+    }
+
+    const maxBudgetUsd = ctx.config.maxBudgetUsd;
+    const totalCostUsd = session.services.costSidecar?.getTotalCostUsd();
+    if (
+      typeof maxBudgetUsd === "number" &&
+      Number.isFinite(maxBudgetUsd) &&
+      maxBudgetUsd > 0 &&
+      typeof totalCostUsd === "number" &&
+      Number.isFinite(totalCostUsd) &&
+      totalCostUsd >= maxBudgetUsd
+    ) {
+      await drainInFlight(state, ctx, session);
+      await syncSessionState();
+      emitTurnComplete(lastContent);
+      const terminal: Terminal = { reason: "max_budget_usd" };
+      yield {
+        type: "turn_complete",
+        content: lastContent,
+        usage,
+        stopReason: "max_budget_usd",
+      };
+      return terminal;
     }
 
     // Behavioral backstop (goal #3): the SECOND whole-turn backstop —
@@ -4717,7 +4635,7 @@ async function* runTurnKernelInner(
           usage,
           stopReason: "no_progress",
         };
-        return returnTerminal(terminal);
+        return terminal;
       }
     }
 
@@ -4734,7 +4652,7 @@ async function* runTurnKernelInner(
         usage,
         stopReason: "completed",
       };
-      return returnTerminal(terminal);
+      return terminal;
     }
 
     resetIterationFields(state);
@@ -4779,7 +4697,7 @@ async function* runTurnKernelInner(
           usage,
           stopReason: terminalToStopReason(result.terminal.reason),
         };
-        return returnTerminal(result.terminal);
+        return result.terminal;
       }
     } catch (error) {
       await drainInFlight(state, ctx, session);
@@ -4809,7 +4727,7 @@ async function* runTurnKernelInner(
           stopReason: "cancelled",
           error: underlying,
         };
-        return returnTerminal(terminal);
+        return terminal;
       }
       // T6 gap #119: error-terminated turn still completes the turn
       // boundary for rollout reducers.
@@ -4823,13 +4741,13 @@ async function* runTurnKernelInner(
         stopReason: "error",
         error: underlying,
       };
-      return returnTerminal(terminal);
+      return terminal;
     }
 
     const cancelledAfterSampling = await finishCancelledIfAborted();
     if (cancelledAfterSampling !== null) {
       yield cancelledAfterSampling.event;
-      return returnTerminal(cancelledAfterSampling.terminal);
+      return cancelledAfterSampling.terminal;
     }
 
     // Recovery re-entry? postSampleRecovery or continuationNudge may
@@ -4966,7 +4884,7 @@ async function* runTurnKernelInner(
           stopReason: "error",
           error: underlying,
         };
-        return returnTerminal(terminal);
+        return terminal;
       }
 
       if (!midTurnCompacted) {
@@ -5000,7 +4918,7 @@ async function* runTurnKernelInner(
           stopReason: "error",
           error: underlying,
         };
-        return returnTerminal(terminal);
+        return terminal;
       }
 
       // agenc runtime `client_session.reset_websocket_session()` parity.
@@ -5061,7 +4979,7 @@ async function* runTurnKernelInner(
           stopReason: "error",
           error,
         };
-        return returnTerminal(terminal);
+        return terminal;
       }
       // Reasoning providers can occasionally complete a response after
       // emitting only a reasoning-summary block and no assistant output. A
@@ -5107,7 +5025,7 @@ async function* runTurnKernelInner(
         stopReason,
       };
       await drainPendingExtraction();
-      return returnTerminal(terminal);
+      return terminal;
     }
 
     // GOAL #4b Stage 1 — CB-PostAssistant durable checkpoint. The assistant
@@ -5145,7 +5063,7 @@ async function* runTurnKernelInner(
     const cancelledAfterTools = await finishCancelledIfAborted();
     if (cancelledAfterTools !== null) {
       yield cancelledAfterTools.event;
-      return returnTerminal(cancelledAfterTools.terminal);
+      return cancelledAfterTools.terminal;
     }
     if (lastAssistant) {
       const completedByCallId = new Map(
@@ -5210,7 +5128,7 @@ async function* runTurnKernelInner(
         state.editorToolCallsAdmitted + state.editorToolCallLimitDeniedIds.size,
       );
       yield limited.event;
-      return returnTerminal(limited.terminal);
+      return limited.terminal;
     }
     if (state.preventContinuation) {
       state.toolUseBlocks = [];
@@ -5232,7 +5150,7 @@ async function* runTurnKernelInner(
         stopReason: "completed",
       };
       await drainPendingExtraction();
-      return returnTerminal(terminal);
+      return terminal;
     }
     const drainedQueuedCommandEvents = drainQueuedCommandsAfterTools({
       state,
@@ -5240,7 +5158,6 @@ async function* runTurnKernelInner(
       ctx,
       querySource: turnQuerySource,
       sleepRan,
-      consumedCommandUuids,
     });
     for (const event of drainedQueuedCommandEvents) {
       yield event;

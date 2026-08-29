@@ -3,8 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   __createDeferredDaemonPromptTuiSessionForTest,
   __wrapDaemonTuiSessionWithPromptPreparationForTest,
+  sessionConfigurationFromAgenCConfig,
 } from "./agenc-main.js";
 import { ConfigStore } from "../config/store.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type {
   SessionEditorInteraction,
   SessionSubmitOptions,
@@ -12,6 +15,8 @@ import type {
 import type {
   IdleInputAdmission,
   IdleInputOwnership,
+  McpManager,
+  McpSurfaceSnapshot,
 } from "../session/session.js";
 import type {
   WorkspaceEditorAcquireParams,
@@ -42,9 +47,14 @@ import type {
   WorkspaceEditorTopologyReleaseResult,
   WorkspaceEditorTopologyReserveParams,
   WorkspaceEditorTopologyReserveResult,
+  SessionShellExecuteResult,
 } from "../app-server/protocol/index.js";
 
 interface DeferredInputSession {
+  readonly services: {
+    readonly mcpManager: McpManager;
+  };
+  subscribeToEvents(cb: (event: unknown) => void): () => void;
   submit(message: string, opts?: SessionSubmitOptions): Promise<void>;
   enqueueIdleInput(input: unknown, ownership?: IdleInputOwnership): number;
   enqueueIdleInputBatch(
@@ -110,6 +120,16 @@ interface DeferredInputSession {
   reportEditorPredictionFeedback(
     params: WorkspaceEditorPredictionFeedbackSessionParams,
   ): Promise<WorkspaceEditorPredictionFeedbackResult>;
+  executeShellCommand(params: {
+    readonly command: string;
+    readonly commandId: string;
+    readonly signal?: AbortSignal;
+  }): Promise<SessionShellExecuteResult>;
+  mcpSurfaceSnapshot(): McpSurfaceSnapshot;
+  refreshMcpSurface(): Promise<McpSurfaceSnapshot>;
+  subscribeToMcpSurface(
+    cb: (snapshot: McpSurfaceSnapshot) => void,
+  ): () => void;
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -132,8 +152,7 @@ async function createDeferredInputSession(
   } = {},
 ): Promise<DeferredInputSession> {
   const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-    baseSession: options.baseSession ?? {},
-    configStore: options.configStore ?? new ConfigStore({ env: {} }),
+    baseSession: withConfigStore(options.baseSession, options.configStore),
     deps: (options.deps ?? {}) as never,
     agencHome: process.cwd(),
     env: {},
@@ -145,6 +164,48 @@ async function createDeferredInputSession(
   });
   cleanups.push(deferred.close);
   return deferred.session as DeferredInputSession;
+}
+
+function withConfigStore(
+  baseSession: unknown = {},
+  configStore = new ConfigStore({ env: {} }),
+): Record<string, unknown> {
+  const base =
+    typeof baseSession === "object" && baseSession !== null
+      ? (baseSession as Record<string, unknown>)
+      : {};
+  const services =
+    typeof base.services === "object" && base.services !== null
+      ? (base.services as Record<string, unknown>)
+      : {};
+  const existingSessionConfiguration =
+    typeof base.sessionConfiguration === "object" &&
+    base.sessionConfiguration !== null
+      ? (base.sessionConfiguration as Record<string, unknown>)
+      : {};
+  const workspaceRoot =
+    typeof existingSessionConfiguration.cwd === "string"
+      ? existingSessionConfiguration.cwd
+      : process.cwd();
+  const config = configStore.current();
+  return {
+    ...base,
+    sessionConfiguration: {
+      ...sessionConfigurationFromAgenCConfig({
+        config,
+        workspaceRoot,
+        model: config.model,
+      }),
+      ...existingSessionConfiguration,
+    },
+    services: {
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext(),
+      ),
+      ...services,
+      configStore,
+    },
+  };
 }
 
 function queuedText(text: string): {
@@ -172,15 +233,70 @@ function editorInteraction(interactionId: string): SessionEditorInteraction {
   };
 }
 
+function daemonRuntimeSettings() {
+  return {
+    permissionMode: "default" as const,
+    prePlanMode: null,
+    autoModeActive: false,
+    autoModeAvailable: true,
+    bypassPermissionsModeAvailable: false,
+    bypassPermissionsWorkspace: null,
+    bypassPermissionsConsentWorkspace: null,
+    model: "grok-4.5",
+    provider: "grok",
+    profile: null,
+    reasoningEffort: null,
+    modelVerbosity: null,
+    serviceTier: null,
+    hooksDisabled: false,
+  };
+}
+
 function daemonHarness(
   options: {
     readonly rejectFirstAttach?: boolean;
     readonly rejectMessageStream?: boolean;
     readonly rejectFirstEditorPrediction?: boolean;
+    readonly rejectShellExecute?: boolean;
+    readonly withMcpSurface?: boolean;
+    readonly initialSessionEvent?: unknown;
   } = {},
 ) {
   let attachAttempts = 0;
   let predictionAttempts = 0;
+  let mcpRevision = 1;
+  const mcpServers: Array<{
+    readonly name: string;
+    readonly transport: "stdio";
+    readonly enabled: boolean;
+    readonly required: boolean;
+    readonly state: "connected";
+    readonly displayTarget: string;
+    readonly toolCount: number;
+  }> = options.withMcpSurface === true
+    ? [
+        {
+          name: "alpha",
+          transport: "stdio",
+          enabled: true,
+          required: false,
+          state: "connected",
+          displayTarget: "alpha-server",
+          toolCount: 1,
+        },
+      ]
+    : [];
+  const mcpTools: Array<{
+    readonly serverName: string;
+    readonly name: string;
+  }> = options.withMcpSurface === true
+    ? [
+        {
+          serverName: "alpha",
+          name: "mcp.alpha.read",
+        },
+      ]
+    : [];
   const requests: Array<{
     readonly method: string;
     readonly params: Record<string, unknown> | undefined;
@@ -200,6 +316,8 @@ function daemonHarness(
           attachmentId: `attachment-${attachAttempts}`,
           sessionIds: [`session-${attachAttempts}`],
           runtimeSessionId: agentId,
+          runtimeSettings: daemonRuntimeSettings(),
+          runtimeSettingsEventId: `settings-${attachAttempts}`,
         };
       }
       if (method === "message.stream") {
@@ -209,6 +327,23 @@ function daemonHarness(
           );
         }
         return {};
+      }
+      if (method === "session.shell.execute") {
+        if (options.rejectShellExecute === true) {
+          throw Object.assign(new Error("shell outcome is ambiguous"), {
+            code: "AGENT_NOT_FOUND",
+          });
+        }
+        return {
+          commandId: String(params?.commandId),
+          content: "deferred shell output",
+          stdout: "deferred shell output",
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+          truncated: false,
+          isError: false,
+        };
       }
       if (method === "workspace.editor.predict") {
         predictionAttempts += 1;
@@ -267,9 +402,52 @@ function daemonHarness(
       if (method === "daemon.reload") {
         return { reloaded: true };
       }
+      if (method === "session.mcp.status") {
+        return {
+          sessionId: String(params?.sessionId ?? "session-1"),
+          revision: mcpRevision,
+          servers: mcpServers,
+          tools: mcpTools,
+        };
+      }
+      if (method === "session.mcp.addServer") {
+        const config = params?.config as
+          | { readonly name?: unknown; readonly command?: unknown }
+          | undefined;
+        const serverName =
+          typeof config?.name === "string" ? config.name : "added";
+        mcpRevision += 1;
+        mcpServers.push({
+          name: serverName,
+          transport: "stdio",
+          enabled: true,
+          required: false,
+          state: "connected",
+          displayTarget:
+            typeof config?.command === "string" ? config.command : "node",
+          toolCount: 1,
+        });
+        mcpTools.push({
+          serverName,
+          name: `mcp.${serverName}.ping`,
+        });
+        return {
+          sessionId: String(params?.sessionId ?? "session-1"),
+          serverName,
+          success: true,
+          toolCount: 1,
+        };
+      }
       return {};
     }),
-    subscribeToSessionEvents: vi.fn(() => () => undefined),
+    subscribeToSessionEvents: vi.fn(
+      (_sessionId: string, cb: (event: never) => void) => {
+        if (options.initialSessionEvent !== undefined) {
+          cb(options.initialSessionEvent as never);
+        }
+        return () => undefined;
+      },
+    ),
     subscribeToConnectionState: vi.fn(() => () => undefined),
     getConnectionState: vi.fn(() => ({ status: "connected" as const })),
     close: vi.fn(async () => undefined),
@@ -298,11 +476,216 @@ function daemonHarness(
 }
 
 describe("deferred daemon input ownership", () => {
+  it.each([
+    {
+      decision: { kind: "approved" },
+      method: "tool.approve",
+      outcome: { scope: "once" },
+    },
+    {
+      decision: { kind: "denied" },
+      method: "tool.deny",
+      outcome: { reason: "denied" },
+    },
+  ] as const)(
+    "bridges an immediate permission request through $method",
+    async ({ decision, method, outcome }) => {
+      const harness = daemonHarness({
+        initialSessionEvent: {
+          jsonrpc: "2.0",
+          method: "event.permission_request",
+          params: {
+            sessionId: "session-1",
+            eventId: "call-1",
+            requestId: "call-1",
+            toolName: "Bash",
+            turnId: "turn-1",
+            permissions: ["tool.use"],
+            input: { command: "pwd" },
+          },
+        },
+      });
+      const session = await createDeferredInputSession({
+        baseSession: harness.baseSession,
+        deps: harness.deps,
+      });
+      const resolver = {
+        request: vi.fn(async () => decision),
+      };
+      (
+        session.services as unknown as {
+          approvalResolver?: typeof resolver;
+        }
+      ).approvalResolver = resolver;
+
+      await session.submit("check permissions");
+
+      await vi.waitFor(() => {
+        expect(resolver.request).toHaveBeenCalledTimes(1);
+        expect(harness.requests).toContainEqual({
+          method,
+          params: {
+            sessionId: "session-1",
+            requestId: "call-1",
+            ...outcome,
+          },
+        });
+      });
+      const unsubscribe = session.subscribeToEvents(() => undefined);
+      await Promise.resolve();
+      expect(resolver.request).toHaveBeenCalledTimes(1);
+      unsubscribe();
+    },
+  );
+
+  it("replaces bootstrap MCP authority with an inert pre-attach facade", async () => {
+    const harness = daemonHarness();
+    const inheritedAdd = vi.fn(async (config: { readonly name: string }) => ({
+      serverName: config.name,
+      success: true,
+      toolCount: 99,
+    }));
+    const inheritedManager = {
+      effectiveServers: vi.fn(async () => new Map()),
+      toolPluginProvenance: vi.fn(async () => undefined),
+      addServer: inheritedAdd,
+    } satisfies McpManager;
+    const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
+      baseSession: withConfigStore({
+        ...harness.baseSession,
+        services: { mcpManager: inheritedManager },
+      }),
+      deps: harness.deps as never,
+      agencHome: process.cwd(),
+      env: {},
+      cwd: process.cwd(),
+      clientId: "deferred-mcp-cold-test",
+    });
+    cleanups.push(deferred.close);
+    const session = deferred.session as DeferredInputSession;
+
+    expect(session.services.mcpManager).not.toBe(inheritedManager);
+    expect("listMcpClients" in session).toBe(false);
+    expect("listMcpTools" in session).toBe(false);
+    expect(session.mcpSurfaceSnapshot()).toEqual({
+      revision: 0,
+      servers: [],
+      tools: [],
+    });
+    await expect(session.refreshMcpSurface()).resolves.toEqual({
+      revision: 0,
+      servers: [],
+      tools: [],
+    });
+    await expect(
+      session.services.mcpManager.effectiveServers({}, undefined),
+    ).rejects.toThrow(/no live daemon session/i);
+    await expect(
+      session.services.mcpManager.addServer?.({
+        name: "cold",
+        transport: "stdio",
+        command: "node",
+      }),
+    ).rejects.toThrow(/no live daemon session/i);
+    await expect(
+      session.services.mcpManager.refreshFromAuthority?.(),
+    ).rejects.toThrow(/no live daemon session/i);
+    expect(inheritedManager.effectiveServers).not.toHaveBeenCalled();
+    expect(inheritedAdd).not.toHaveBeenCalled();
+    expect(harness.startPromptAgent).not.toHaveBeenCalled();
+  });
+
+  it("forwards MCP reads, mutations, and surface subscriptions after attach", async () => {
+    const harness = daemonHarness({ withMcpSurface: true });
+    const inheritedAdd = vi.fn(async (config: { readonly name: string }) => ({
+      serverName: config.name,
+      success: true,
+      toolCount: 99,
+    }));
+    const inheritedManager = {
+      effectiveServers: vi.fn(async () => new Map()),
+      toolPluginProvenance: vi.fn(async () => undefined),
+      addServer: inheritedAdd,
+    } satisfies McpManager;
+    const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
+      baseSession: withConfigStore({
+        ...harness.baseSession,
+        services: { mcpManager: inheritedManager },
+      }),
+      deps: harness.deps as never,
+      agencHome: process.cwd(),
+      env: {},
+      cwd: process.cwd(),
+      clientId: "deferred-mcp-live-test",
+      preparePrompt: async ({ message }) => message,
+    });
+    cleanups.push(deferred.close);
+    const session = deferred.session as DeferredInputSession;
+    const observedRevisions: number[] = [];
+    const unsubscribe = session.subscribeToMcpSurface((snapshot) => {
+      observedRevisions.push(snapshot.revision);
+    });
+
+    await session.submit("start daemon MCP authority");
+    await vi.waitFor(() => {
+      expect(session.mcpSurfaceSnapshot()).toMatchObject({
+        revision: 1,
+        servers: [expect.objectContaining({ name: "alpha" })],
+        tools: [expect.objectContaining({ name: "mcp.alpha.read" })],
+      });
+      expect(observedRevisions).toContain(1);
+    });
+    const effectiveServers =
+      await session.services.mcpManager.effectiveServers({}, undefined);
+    expect([...effectiveServers.keys()]).toEqual(["alpha"]);
+    await expect(
+      session.services.mcpManager.addServer?.({
+        name: "beta",
+        transport: "stdio",
+        command: "beta-server",
+        enabled: true,
+      }),
+    ).resolves.toEqual({
+      serverName: "beta",
+      success: true,
+      toolCount: 1,
+    });
+
+    expect("listMcpClients" in session).toBe(false);
+    expect("listMcpTools" in session).toBe(false);
+    expect(session.mcpSurfaceSnapshot()).toMatchObject({
+      revision: 2,
+      servers: expect.arrayContaining([
+        expect.objectContaining({ name: "alpha" }),
+        expect.objectContaining({ name: "beta" }),
+      ]),
+      tools: expect.arrayContaining([
+        expect.objectContaining({ name: "mcp.alpha.read" }),
+        expect.objectContaining({ name: "mcp.beta.ping" }),
+      ]),
+    });
+    expect(observedRevisions).toContain(2);
+    expect(harness.requests).toContainEqual({
+      method: "session.mcp.addServer",
+      params: {
+        sessionId: "session-1",
+        config: {
+          name: "beta",
+          transport: "stdio",
+          command: "beta-server",
+          enabled: true,
+        },
+      },
+    });
+    expect(inheritedAdd).not.toHaveBeenCalled();
+
+    unsubscribe();
+  });
+
   it("exposes cold Editor authority through one lazy sessionless control client", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -395,8 +778,7 @@ describe("deferred daemon input ownership", () => {
   it("reloads daemon-global config before the first turn without starting an agent", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -434,8 +816,7 @@ describe("deferred daemon input ownership", () => {
     });
     const startPromptAgent = vi.fn(async () => ({ agentId: "unused" }));
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: {},
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(),
       deps: {
         startPromptAgent,
         stopPromptAgent: vi.fn(async () => undefined),
@@ -494,8 +875,7 @@ describe("deferred daemon input ownership", () => {
     const createConnectedTuiClient = vi.fn(() => connection);
     const stopPromptAgent = vi.fn(async () => undefined);
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: {},
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(),
       deps: {
         startPromptAgent,
         stopPromptAgent,
@@ -533,8 +913,7 @@ describe("deferred daemon input ownership", () => {
   it("stops a prediction-only daemon session when the TUI closes before submit", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -578,8 +957,7 @@ describe("deferred daemon input ownership", () => {
   it("replaces one lost deferred prediction session across concurrent retry", async () => {
     const harness = daemonHarness({ rejectFirstEditorPrediction: true });
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -641,8 +1019,7 @@ describe("deferred daemon input ownership", () => {
   it("does not replace an activated Agent session from prediction routing", async () => {
     const harness = daemonHarness({ rejectFirstEditorPrediction: true });
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -688,8 +1065,7 @@ describe("deferred daemon input ownership", () => {
   it("stops a prediction-started daemon after an Editor-only submission", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -728,8 +1104,7 @@ describe("deferred daemon input ownership", () => {
   it("stops a daemon started directly by a cold Editor-only submission", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -762,8 +1137,7 @@ describe("deferred daemon input ownership", () => {
   it("keeps a daemon alive after Editor mode activates through an ordinary Agent submission", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -787,8 +1161,7 @@ describe("deferred daemon input ownership", () => {
   it("retains Editor-only teardown ownership when Agent activation fails", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -821,8 +1194,7 @@ describe("deferred daemon input ownership", () => {
   it("preserves pre-prediction queued input when reusing the cold session for the first turn", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -869,11 +1241,97 @@ describe("deferred daemon input ownership", () => {
     });
   });
 
+  it("runs a cold shell command once without consuming the first Agent turn", async () => {
+    const harness = daemonHarness();
+    const session = await createDeferredInputSession({
+      baseSession: harness.baseSession,
+      deps: harness.deps,
+    });
+
+    await expect(
+      session.executeShellCommand({
+        command: "printf deferred-shell",
+        commandId: "deferred-shell-1",
+      }),
+    ).resolves.toMatchObject({
+      commandId: "deferred-shell-1",
+      stdout: "deferred shell output",
+      exitCode: 0,
+      isError: false,
+    });
+
+    expect(harness.startPromptAgent).toHaveBeenCalledOnce();
+    expect(harness.startPromptAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "AgenC Editor workspace",
+        deferInitialTurn: true,
+      }),
+    );
+    expect(harness.startPromptAgent.mock.calls[0]?.[0]).not.toHaveProperty(
+      "initialContent",
+    );
+    expect(
+      harness.requests.filter(
+        ({ method }) => method === "session.shell.execute",
+      ),
+    ).toEqual([
+      {
+        method: "session.shell.execute",
+        params: {
+          sessionId: "session-1",
+          commandId: "deferred-shell-1",
+          command: "printf deferred-shell",
+        },
+      },
+    ]);
+
+    await session.submit("first Agent turn after shell");
+    expect(harness.startPromptAgent).toHaveBeenCalledOnce();
+    expect(harness.requests).toContainEqual({
+      method: "message.stream",
+      params: expect.objectContaining({
+        sessionId: "session-1",
+        content: "first Agent turn after shell",
+      }),
+    });
+  });
+
+  it("never replays an ambiguous deferred shell request", async () => {
+    const harness = daemonHarness({ rejectShellExecute: true });
+    const session = await createDeferredInputSession({
+      baseSession: harness.baseSession,
+      deps: harness.deps,
+    });
+
+    await expect(
+      session.executeShellCommand({
+        command: "touch side-effect",
+        commandId: "ambiguous-shell-1",
+      }),
+    ).rejects.toThrow("shell outcome is ambiguous");
+
+    expect(harness.startPromptAgent).toHaveBeenCalledOnce();
+    expect(
+      harness.requests.filter(
+        ({ method }) => method === "session.shell.execute",
+      ),
+    ).toHaveLength(1);
+
+    await session.submit("first Agent turn after ambiguous shell");
+    expect(harness.startPromptAgent).toHaveBeenCalledOnce();
+    expect(harness.requests).toContainEqual({
+      method: "message.stream",
+      params: expect.objectContaining({
+        sessionId: "session-1",
+        content: "first Agent turn after ambiguous shell",
+      }),
+    });
+  });
+
   it("keeps cold and live Editor attachments out of Agent turns and migrates them exactly once", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -1009,6 +1467,8 @@ describe("deferred daemon input ownership", () => {
           attachmentId: "attachment-1",
           sessionIds: ["session-1"],
           runtimeSessionId: "agent-1",
+          runtimeSettings: daemonRuntimeSettings(),
+          runtimeSettingsEventId: "settings-1",
         };
       }
       if (method === "workspace.editor.predict") {
@@ -1038,6 +1498,8 @@ describe("deferred daemon input ownership", () => {
           attachmentId: "attachment-2",
           sessionIds: ["session-2"],
           runtimeSessionId: "agent-2",
+          runtimeSettings: daemonRuntimeSettings(),
+          runtimeSettingsEventId: "settings-2",
         };
       }
       if (method === "workspace.editor.predict") {
@@ -1063,13 +1525,12 @@ describe("deferred daemon input ownership", () => {
       return client;
     });
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: {
+      baseSession: withConfigStore({
         activeTurn: { unsafePeek: () => null },
         conversationId: "deferred-editor-dynamic",
         services: {},
         sessionConfiguration: { cwd: workspaceRoot },
-      },
-      configStore: new ConfigStore({ env: {} }),
+      }),
       deps: {
         startPromptAgent,
         stopPromptAgent: vi.fn(async () => undefined),
@@ -1305,9 +1766,8 @@ describe("deferred daemon input ownership", () => {
   it("rejects a blocked live prompt instead of resolving without submission", async () => {
     const submit = vi.fn(async () => undefined);
     const wrapped = __wrapDaemonTuiSessionWithPromptPreparationForTest(
-      { submit },
+      withConfigStore({ submit }),
       {
-        configStore: new ConfigStore({ env: {} }),
         agencHome: process.cwd(),
         cwd: process.cwd(),
         env: {},
@@ -1340,9 +1800,8 @@ describe("deferred daemon input ownership", () => {
       },
     };
     const wrapped = __wrapDaemonTuiSessionWithPromptPreparationForTest(
-      { submit },
+      withConfigStore({ submit }),
       {
-        configStore: new ConfigStore({ env: {} }),
         agencHome: process.cwd(),
         cwd: process.cwd(),
         env: {},

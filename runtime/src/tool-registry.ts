@@ -32,12 +32,13 @@ import type {
   ToolRecoveryCategory,
 } from "./tools/types.js";
 import { safeStringify } from "./tools/types.js";
-import type { ToolsConfig } from "./config/schema.js";
+import type { BrowserConfig, ToolsConfig } from "./config/schema.js";
 import { createFilesystemTools } from "./tools/system/filesystem.js";
 import {
   createCodingTools,
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
 } from "./tools/system/coding.js";
+import { SYSTEM_SEARCH_TOOLS_NAME } from "./tools/system/tool-search-name.js";
 import { createBashTool } from "./tools/system/bash.js";
 import { createExecCommandTool } from "./tools/system/exec-command.js";
 import { createWriteStdinTool } from "./tools/system/write-stdin.js";
@@ -98,12 +99,12 @@ import {
 } from "./tools/concurrency.js";
 import { ToolRouter, type ConfiguredToolSpec } from "./tools/router.js";
 import { resolvePerToolConfig, toolConfigAllowsTool } from "./tools/config.js";
-import { canonicalModelToolName } from "./tools/model-tool-aliases.js";
 import {
   attachSandboxExecutionBroker,
   type SandboxExecutionBrokerLike,
 } from "./sandbox/execution-broker.js";
 import type { Session } from "./session/session.js";
+import { getAttachmentTrackingState } from "./session/attachment-state.js";
 import { runAdmittedToolCall } from "./budget/admitted-tool-call.js";
 import { AdmissionDeniedError } from "./budget/admission-client.js";
 import type { ToolEffectDispositionEvidence } from "./contracts/run-contracts.js";
@@ -523,6 +524,10 @@ export function isResumeReplaySafe(tool: ResumeReplaySafetyView): boolean {
 
 export interface BuildToolRegistryOptions {
   readonly workspaceRoot: string;
+  /** Canonical state home used by the browser lifecycle. */
+  readonly agencHome?: string;
+  /** Already-layered canonical `[browser]` snapshot for this session. */
+  readonly browserConfig?: BrowserConfig;
   /** Live session used to admit direct registry/code-mode dispatches. */
   readonly getSession?: () => Session | null;
   /** Fail closed when direct dispatch has no live admission session. */
@@ -563,7 +568,7 @@ export interface BuildToolRegistryOptions {
   readonly discoverableTools?: ToolListInput;
   /**
    * Product/model-facing tools owned by the registry surface. Bootstrap
-   * wires web_fetch/WebFetch, agent, task, skill, notebook, and workflow tools here
+   * wires web_fetch, agent, task, skill, notebook, and workflow tools here
    * so `tool-registry.ts` remains the single place that combines the
    * runtime-visible tool catalog.
    */
@@ -581,16 +586,15 @@ export interface BuildToolRegistryOptions {
   /** Upstream-style JavaScript code-mode service for exec/wait. */
   readonly codeModeService?: CodeModeService;
   /**
-   * Config-driven tool policy. Boolean entries are enable/disable
-   * shorthands; object entries can set `enabled` and
-   * `default_permission_mode` per tool.
+   * Config-driven tool policy. `enabled_tools` / `disabled_tools` are the
+   * only enablement authority; exact-name objects set approval defaults.
    */
   readonly toolsConfig?: ToolsConfig;
   /**
-   * `[llm.xai]` Grok capability profile. Passed through to model-facing
+   * `[providers.grok]` capability profile. Passed through to model-facing
    * LIVE tools (XSearch) so Pattern A one-shots can gate on config.
    */
-  readonly llmXai?: import("./config/schema.js").LlmXaiConfig;
+  readonly grokCapabilities?: import("./config/schema.js").GrokCapabilityConfig;
   /** Session provider slug for catalog-gating xAI-only LIVE tools. */
   readonly sessionProvider?: string;
   /** Session inference base URL for direct-xAI host checks. */
@@ -637,6 +641,17 @@ export function buildToolRegistry(
       }
     }
   };
+  const notifySessionSkillsForTouchedPath = async (
+    absolutePath: string,
+  ): Promise<void> => {
+    const session = options.getSession?.();
+    if (session === null || session === undefined) return;
+    const roots = await session.services.skillsManager
+      .discoverSkillDirsForPaths?.([absolutePath]);
+    if (!roots || roots.length === 0) return;
+    const triggers = getAttachmentTrackingState(session).dynamicSkillDirTriggers;
+    for (const root of roots) triggers.add(root);
+  };
 
   const filesystemCompatibilityTools = createFilesystemTools({
     allowedPaths: [options.workspaceRoot],
@@ -672,6 +687,19 @@ export function buildToolRegistry(
     }),
     createBashTool({
       cwd: options.workspaceRoot,
+      ...(options.getSession !== undefined
+        ? {
+            commandExecutionAuthority: () => {
+              const session = options.getSession?.();
+              if (session === null || session === undefined) {
+                throw new Error(
+                  "system.bash requires an active session command authority",
+                );
+              }
+              return session.services.userShell;
+            },
+          }
+        : {}),
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }
         : {}),
@@ -695,6 +723,7 @@ export function buildToolRegistry(
     }),
     createFileWriteTool({
       allowedPaths: [options.workspaceRoot],
+      onTouchedPath: notifySessionSkillsForTouchedPath,
     }),
     createGlobTool({
       allowedPaths: [options.workspaceRoot],
@@ -737,7 +766,16 @@ export function buildToolRegistry(
   // Browser tool (task 18). Registered deferred (metadata.deferred=true) so it
   // is discovered on demand via system.searchTools, keeping the default
   // per-turn catalog small. The manager launches Chromium lazily on first use.
-  const browserTools = [createBrowserTool()] as const;
+  const browserTools = [
+    createBrowserTool({
+      ...(options.agencHome !== undefined
+        ? { agencHome: options.agencHome }
+        : {}),
+      ...(options.browserConfig !== undefined
+        ? { config: options.browserConfig }
+        : {}),
+    }),
+  ] as const;
   const requestedModelFacingTools = readToolList(options.modelFacingTools);
   const registryModelFacingTools = [
     ...requestedModelFacingTools.filter(
@@ -754,7 +792,6 @@ export function buildToolRegistry(
   ];
   const modelFacingProviderNativeSurface = {
     webFetch: "web_fetch",
-    legacyWebFetch: "WebFetch",
     webSearch: "WebSearch",
     xSearch: "XSearch",
     webSearchNativeTool: "web_search",
@@ -779,7 +816,6 @@ export function buildToolRegistry(
   const skillToolInvocationName = "Skill";
   const modelFacingStringArgumentFieldCandidates = {
     [modelFacingProviderNativeSurface.webFetch]: "url",
-    [modelFacingProviderNativeSurface.legacyWebFetch]: "url",
     [modelFacingProviderNativeSurface.webSearch]: "query",
     [modelFacingProviderNativeSurface.xSearch]: "query",
     [spawnToolName]: "message",
@@ -815,7 +851,7 @@ export function buildToolRegistry(
       id: "coding",
       admissionDefault: "local_zero",
       tools: codingTools,
-      visibleByDefault: ["system.searchTools"],
+      visibleByDefault: [SYSTEM_SEARCH_TOOLS_NAME],
     },
     {
       id: "shell",
@@ -942,20 +978,32 @@ export function buildToolRegistry(
     EditorInteractionToolName,
     Tool
   >();
+  // Direct shell RPCs select one daemon-owned builtin by name. Reserve both
+  // names even when the canonical tool is disabled or unavailable so an
+  // extension cannot become the physical execution target by collision.
+  const reservedDirectShellToolNames = new Set(["system.bash", "PowerShell"]);
+  const trustedDirectShellTools = new Map<string, Tool>();
   for (const tool of defaultBuiltinTools) {
     if (isEditorInteractionToolName(tool.name)) {
       trustedEditorInteractionTools.set(tool.name, tool);
     }
+    if (reservedDirectShellToolNames.has(tool.name)) {
+      trustedDirectShellTools.set(tool.name, tool);
+    }
   }
 
-  const preserveTrustedEditorInteractionTools = (
+  const preserveTrustedRuntimeOwnedTools = (
     tools: readonly Tool[],
   ): Tool[] =>
-    tools.filter(
-      (tool) =>
-        !isEditorInteractionToolName(tool.name) ||
-        trustedEditorInteractionTools.get(tool.name) === tool,
-    );
+    tools.filter((tool) => {
+      if (isEditorInteractionToolName(tool.name)) {
+        return trustedEditorInteractionTools.get(tool.name) === tool;
+      }
+      if (reservedDirectShellToolNames.has(tool.name)) {
+        return trustedDirectShellTools.get(tool.name) === tool;
+      }
+      return true;
+    });
 
   const extraTools: Tool[] = configuredTools(
     (options.extraTools ?? []).map((tool) => tagTool(tool)),
@@ -966,7 +1014,7 @@ export function buildToolRegistry(
   // Tools without explicit metadata get sensible defaults:
   //   - readFile/listDir/stat/glob/grep → SharedRead + isReadOnly
   //   - writeFile/editFile/delete/move    → Exclusive (never parallel)
-  //   - web_fetch/WebFetch/WebSearch      → SharedRead (network reads)
+  //   - web_fetch/WebSearch               → SharedRead (network reads)
   //   - bash                              → BackgroundTerminal (subprocess)
   function currentMcpTools(): readonly Tool[] {
     return configuredTools(
@@ -1019,8 +1067,8 @@ export function buildToolRegistry(
 
   function buildRouter(): ToolRouter {
     const baseSpecs =
-      preserveTrustedEditorInteractionTools(staticTools).map(specForTool);
-    const mcpTools = preserveTrustedEditorInteractionTools(currentMcpTools());
+      preserveTrustedRuntimeOwnedTools(staticTools).map(specForTool);
+    const mcpTools = preserveTrustedRuntimeOwnedTools(currentMcpTools());
     const directMcpTools = mcpTools.filter(
       (tool) => tool.metadata?.deferred !== true,
     );
@@ -1031,10 +1079,10 @@ export function buildToolRegistry(
       baseSpecs,
       mcpTools: toolMap(directMcpTools),
       deferredMcpTools: toolMap(deferredMcpTools),
-      discoverableTools: preserveTrustedEditorInteractionTools(
+      discoverableTools: preserveTrustedRuntimeOwnedTools(
         currentDiscoverableTools(),
       ),
-      dynamicTools: preserveTrustedEditorInteractionTools([
+      dynamicTools: preserveTrustedRuntimeOwnedTools([
         ...currentDynamicTools(),
         ...currentDeferredTools(),
       ]),
@@ -1074,7 +1122,7 @@ export function buildToolRegistry(
         configurable: true,
       });
     }
-    if (spec.tool.name === "system.searchTools") {
+    if (spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME) {
       Object.defineProperty(args, SESSION_ADVERTISED_TOOL_NAMES_ARG, {
         value: visibleSpecs().map((visible) => visible.tool.name),
         enumerable: false,
@@ -1152,10 +1200,7 @@ export function buildToolRegistry(
     },
     async dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResult> {
       const router = buildRouter();
-      const toolName = canonicalModelToolName(toolCall.name);
-      const routedToolCall =
-        toolName === toolCall.name ? toolCall : { ...toolCall, name: toolName };
-      const spec = router.findSpec(toolName);
+      const spec = router.findSpec(toolCall.name);
       if (!spec) {
         return {
           content: safeStringify({
@@ -1166,7 +1211,7 @@ export function buildToolRegistry(
       }
       try {
         const parseResult = parseToolCallArguments(
-          routedToolCall,
+          toolCall,
           builtinSurface.stringArgumentFields,
         );
         if (!parseResult.ok) {

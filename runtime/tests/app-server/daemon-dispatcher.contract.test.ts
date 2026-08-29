@@ -51,10 +51,12 @@ function request(id: string, method: string, params?: JsonObject): JsonObject {
 
 async function initialize(connection: {
   dispatch(message: JsonObject): Promise<JsonObject>;
-}): Promise<void> {
+}, protocolVersion = "1.0.0"): Promise<void> {
   await expect(
     connection.dispatch(
-      request("init", "initialize", { protocol: { version: "1.0.0" } }),
+      request("init", "initialize", {
+        protocol: { version: protocolVersion },
+      }),
     ),
   ).resolves.toMatchObject({
     result: {
@@ -292,6 +294,8 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
       "auth.login": false,
       "auth.whoami": false,
       "auth.logout": false,
+      "workspace.editor.acquire": false,
+      "workspace.editor.sync": false,
     });
 
     const testOnlyEnabledDispatcher = new AgenCDaemonJsonRpcDispatcher({
@@ -1142,6 +1146,206 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     ]);
   });
 
+  it("routes session.mcp.status through the active daemon agent runtime", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session_mcp_status",
+      agentId: "agent_mcp_status",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "inspect MCP",
+    });
+    const getMcpStatus = vi.fn(async () => ({
+      revision: 6,
+      servers: [
+        {
+          name: "audit-ping",
+          transport: "stdio" as const,
+          enabled: true,
+          required: false,
+          state: "connected" as const,
+          displayTarget: "node",
+          toolCount: 1,
+        },
+      ],
+      tools: [
+        {
+          serverName: "audit-ping",
+          name: "mcp.audit-ping.check",
+        },
+      ],
+    }));
+    const agentManager = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        getMcpStatus,
+      },
+    });
+    await agentManager.restoreAgent({
+      agentId: "agent_mcp_status",
+      objective: "inspect MCP",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session_mcp_status"],
+      runtimeAvailable: true,
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager,
+      sessionManager: sessions,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection, "1.3.0");
+
+    await expect(
+      connection.dispatch(
+        request("mcp-status", "session.mcp.status", {
+          sessionId: "session_mcp_status",
+        }),
+      ),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "mcp-status",
+      result: {
+        sessionId: "session_mcp_status",
+        revision: 6,
+        servers: [
+          {
+            name: "audit-ping",
+            transport: "stdio",
+            enabled: true,
+            required: false,
+            state: "connected",
+            displayTarget: "node",
+            toolCount: 1,
+          },
+        ],
+        tools: [
+          {
+            serverName: "audit-ping",
+            name: "mcp.audit-ping.check",
+          },
+        ],
+      },
+    });
+    expect(getMcpStatus).toHaveBeenCalledWith("agent_mcp_status");
+  });
+
+  it("gates MCP status requests and invalidations from pre-1.3 clients", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: () => "session_mcp_compat",
+    });
+    await sessions.createSession({
+      agentId: "agent_mcp_compat",
+      cwd: await workspaces.create(),
+    });
+    const clientMultiplexer = new AgenCDaemonClientMultiplexer({
+      sessionManager: sessions,
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager({ sessionManager: sessions }),
+      clientMultiplexer,
+      sessionManager: sessions,
+    });
+    const oldNotifications: JsonObject[] = [];
+    const currentNotifications: JsonObject[] = [];
+    const oldConnection = dispatcher.createConnection({
+      sendNotification: (message) => oldNotifications.push(message),
+    });
+    const currentConnection = dispatcher.createConnection({
+      sendNotification: (message) => currentNotifications.push(message),
+    });
+
+    const oldInitialize = await oldConnection.dispatch(
+      request("old-init", "initialize", {
+        protocol: { version: "1.2.0" },
+      }),
+    );
+    const currentInitialize = await currentConnection.dispatch(
+      request("current-init", "initialize", {
+        protocol: { version: "1.3.0" },
+      }),
+    );
+    expect(daemonMethodCapabilities(oldInitialize)["session.mcp.status"]).toBe(
+      false,
+    );
+    expect(
+      daemonMethodCapabilities(currentInitialize)["session.mcp.status"],
+    ).toBe(true);
+
+    await oldConnection.dispatch(
+      request("old-attach", "session.attach", {
+        sessionId: "session_mcp_compat",
+        clientId: "old-client",
+      }),
+    );
+    await currentConnection.dispatch(
+      request("current-attach", "session.attach", {
+        sessionId: "session_mcp_compat",
+        clientId: "current-client",
+      }),
+    );
+
+    await expect(
+      oldConnection.dispatch(
+        request("old-status", "session.mcp.status", {
+          sessionId: "session_mcp_compat",
+        }),
+      ),
+    ).resolves.toMatchObject({
+      id: "old-status",
+      error: {
+        code: -32601,
+        message: expect.stringContaining("session.mcp.status"),
+      },
+    });
+
+    const invalidation = {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.mcp_status_changed",
+      params: { sessionId: "session_mcp_compat", revision: 8 },
+    };
+    await expect(
+      clientMultiplexer.broadcastSessionEvent(
+        "session_mcp_compat",
+        invalidation,
+      ),
+    ).resolves.toMatchObject({ deliveredClientIds: ["current-client"] });
+    expect(oldNotifications).toEqual([]);
+    expect(currentNotifications).toEqual([invalidation]);
+  });
+
+  it("rejects session.mcp.status params beyond the session identity", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager({ sessionManager: sessions }),
+      sessionManager: sessions,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection, "1.3.0");
+
+    await expect(
+      connection.dispatch(
+        request("bad-mcp-status", "session.mcp.status", {
+          sessionId: "session_mcp_status",
+          includeClients: true,
+        }),
+      ),
+    ).resolves.toMatchObject({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "bad-mcp-status",
+      error: expect.objectContaining({
+        message: expect.stringContaining(
+          "does not accept param 'includeClients'",
+        ),
+      }),
+    });
+  });
+
   it("routes session.mcp.addServer through the active daemon agent runtime", async () => {
     const sessions = new AgenCDaemonSessionManager();
     await sessions.restoreSession({
@@ -1521,7 +1725,7 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
           sessionId: "session_1",
           config: {
             name: "audit-ping",
-            transport: "ftp",
+            transport: "ws",
           },
         }),
       ),
@@ -1529,7 +1733,7 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
       error: {
         code: -32602,
         message:
-          "session.mcp.addServer.config transport must be stdio, sse, http, websocket, or ws",
+          "session.mcp.addServer.config transport must be stdio, sse, http, or websocket",
       },
     });
   });

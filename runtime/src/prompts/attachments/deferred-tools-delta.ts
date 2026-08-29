@@ -1,17 +1,13 @@
 /**
  * Deferred-tools delta attachment producer.
  *
- * Hand-port of reference `getDeferredToolsDeltaAttachment`
- * (`src/utils/attachments.ts:1456-1476`) and the underlying diff in
- * `getDeferredToolsDelta` (`src/utils/toolSearch.ts:646-706`).
- *
  * Fires when the set of deferred tools loaded into the visible catalog
  * via `system.searchTools` has changed since the last announcement. The
  * first turn seeds tracking state without emitting (announcing the
  * always-empty initial set would be noise).
  *
- * AgenC divergence from AgenC: instead of reconstructing the prior
- * announced set by scanning the message history for prior
+ * Instead of reconstructing the prior announced set by scanning message
+ * history for prior
  * `deferred_tools_delta` attachments, AgenC stores the prior set
  * directly on `AttachmentTrackingState.lastDeferredToolsSet`. Same
  * semantics, much simpler — and the trigger condition is identical
@@ -25,7 +21,7 @@ import type { AttachmentProducer } from "./orchestrator.js";
 
 /**
  * Compute the current deferred-tools set from the visible catalog. A tool
- * is "deferred" if it has been discovered (loaded via ToolSearch) — that
+ * is "deferred" if it has been discovered through system.searchTools — that
  * is, it's present in `discoveredToolNames` AND in the visible catalog
  * for this turn. Tools in the static default-visible set are excluded
  * (they were always visible, never deferred).
@@ -63,9 +59,9 @@ export const deferredToolsDeltaProducer: AttachmentProducer = async (
   if (prior === undefined) {
     // First turn — seed without emitting. The delta only marks a real
     // change in the catalog; the initial state is communicated through
-    // the ToolSearch system-prompt section. Matches AgenC behavior:
+    // the system.searchTools prompt section. The first scan finds no prior
     // the first scan finds no prior `deferred_tools_delta` attachments,
-    // and announces only what's already deferred — for a fresh session
+    // attachment and announces only what's already deferred — for a fresh session
     // that's the empty set.
     trackingState.lastDeferredToolsSet = currentSet;
     return [];

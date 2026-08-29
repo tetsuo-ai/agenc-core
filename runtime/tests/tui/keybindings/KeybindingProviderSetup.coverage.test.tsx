@@ -15,9 +15,7 @@ import { parseBindings } from "./parser.js";
 const inputHandlers = vi.hoisted(() => [] as unknown[]);
 const addNotification = vi.hoisted(() => vi.fn());
 const removeNotification = vi.hoisted(() => vi.fn());
-const initializeKeybindingWatcher = vi.hoisted(() =>
-  vi.fn(async () => undefined),
-);
+const initializeKeybindingSubscription = vi.hoisted(() => vi.fn());
 const loadKeybindingsSyncWithWarnings = vi.hoisted(() => vi.fn());
 const reloadListeners = vi.hoisted(
   () => [] as Array<(result: unknown) => void>,
@@ -48,7 +46,7 @@ vi.mock("../../utils/debug.js", () => ({
 }));
 
 vi.mock("./loadUserBindings.js", () => ({
-  initializeKeybindingWatcher,
+  initializeKeybindingSubscription,
   loadKeybindingsSyncWithWarnings,
   subscribeToKeybindingChanges,
 }));
@@ -157,7 +155,7 @@ describe("KeybindingProviderSetup coverage", () => {
     reloadListeners.length = 0;
     addNotification.mockClear();
     removeNotification.mockClear();
-    initializeKeybindingWatcher.mockClear();
+    initializeKeybindingSubscription.mockClear();
     loadKeybindingsSyncWithWarnings.mockReset();
     subscribeToKeybindingChanges.mockClear();
     unsubscribe.mockClear();
@@ -208,7 +206,7 @@ describe("KeybindingProviderSetup coverage", () => {
       );
 
       expect(loadKeybindingsSyncWithWarnings).toHaveBeenCalledTimes(1);
-      expect(initializeKeybindingWatcher).toHaveBeenCalledTimes(1);
+      expect(initializeKeybindingSubscription).toHaveBeenCalledTimes(1);
       expect(inputHandlers).toHaveLength(1);
       expect(displays).toContain("Enter");
       expect(removeNotification).toHaveBeenCalledWith(

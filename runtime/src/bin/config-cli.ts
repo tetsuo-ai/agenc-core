@@ -1,19 +1,6 @@
-import { spawn } from "node:child_process";
-import {
-  lstat,
-  mkdir,
-  mkdtemp,
-  realpath,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from "node:fs/promises";
-import {
-  basename,
-  dirname,
-  join,
-} from "node:path";
+/**
+ * `agenc config` show/get/set/unset/validate/edit/path.
+ */
 
 import {
   editorForEnv,
@@ -21,35 +8,38 @@ import {
   getConfigFilePath,
   getConfigPath,
 } from "../commands/config.js";
-import { readTextFile } from "../config/_deps/file-read.js";
 import {
-  applyEnvOverrides,
+  editCanonicalUserConfig,
+  spawnConfigEditor,
+  type ConfigEditorSpawner,
+} from "../config/editor.js";
+import {
   resolveAgencHome,
-  type EnvSnapshot,
 } from "../config/env.js";
 import {
   cloneJsonValue,
-  cloneRecord,
   isPlainRecord,
-  stableJson,
   type JsonRecord,
 } from "../config/json.js";
-import { loadConfig, parseToml } from "../config/loader.js";
 import {
-  CONFIG_FILE_VERSION_KEY,
-  CURRENT_CONFIG_FILE_VERSION,
-  runConfigFileMigrations,
-  serializeConfigToml,
-  type ConfigFileMigrationResult,
-} from "../config/migrate.js";
+  assertConfigPatchAuthority,
+} from "../config/layer-authority.js";
+import { parseToml } from "../config/loader.js";
+import type { ConfigV2MigrationOptions } from "../config/migration.js";
 import {
-  normalizeAgenCKeyAliases,
-  normalizeRawConfig,
+  CANONICAL_CONFIG_VERSION_KEY,
+  assertNoRetiredConfigInputsForMutation,
+  loadCanonicalConfig,
+  type LayeredConfigRepositoryOptions,
+} from "../config/repository.js";
+import {
   validateAgenCConfigBlocks,
   validatePermissionsConfig,
   type AgenCConfig,
 } from "../config/schema.js";
-import { migrateRawAgenCConfig } from "../state/migrations/config-migrations.js";
+import { mutateCanonicalUserConfigSync } from "../config/update-sync.js";
+
+export type { ConfigEditorSpawner } from "../config/editor.js";
 
 export type AgenCConfigCliCommand =
   | { readonly kind: "show" }
@@ -59,6 +49,14 @@ export type AgenCConfigCliCommand =
   | { readonly kind: "validate" }
   | { readonly kind: "edit" }
   | { readonly kind: "path" }
+  | {
+      readonly kind: "migrate";
+      readonly action: "check" | "apply";
+      readonly retireSharedSecureStorage: boolean;
+      readonly confirmRetiredWritersStopped: boolean;
+      readonly retiredSecureStorageAccount?: string;
+    }
+  | { readonly kind: "migrate"; readonly action: "rollback"; readonly id: string }
   | { readonly kind: "help"; readonly text: string }
   | { readonly kind: "error"; readonly message: string };
 
@@ -67,25 +65,19 @@ export interface AgenCConfigCliIo {
   readonly stderr: Pick<NodeJS.WriteStream, "write">;
 }
 
-export interface ConfigEditorSpawner {
-  (command: string, args: readonly string[]): Promise<number>;
-}
-
 export interface AgenCConfigCliOptions {
   readonly agencHome?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly io?: AgenCConfigCliIo;
   readonly spawner?: ConfigEditorSpawner;
+  readonly cwd?: string;
+  readonly projectRoot?: string;
+  readonly managedConfigPath?: string;
+  readonly managedSettingsPath?: string;
+  readonly globalStatePath?: string;
+  readonly platformHome?: string;
 }
 
-interface WritableConfigTarget {
-  readonly path: string;
-  readonly displayPath: string;
-  readonly exists: boolean;
-  readonly mode: number;
-}
-
-const DEFAULT_FILE_MODE = 0o600;
 const CONFIG_PATH_LIMITATION =
   "Dot paths split on '.'; use 'agenc config edit' for keys containing literal dots.";
 const FORBIDDEN_CONFIG_PATH_SEGMENTS = new Set([
@@ -93,20 +85,6 @@ const FORBIDDEN_CONFIG_PATH_SEGMENTS = new Set([
   "prototype",
   "constructor",
 ]);
-const UNSAFE_MIGRATION_SKIPS = new Set([
-  "toml:read-failed",
-  "toml:invalid",
-  "toml:duplicate-keys",
-  "toml:future-version",
-  "toml:unsupported",
-  "toml:write-failed",
-  "json:read-failed",
-  "json:invalid",
-  "json:not-object",
-  "json:unsupported",
-  "json:write-failed",
-]);
-
 export function formatAgenCConfigCliHelpText(): string {
   return [
     "Usage: agenc config <command> [args]",
@@ -119,6 +97,13 @@ export function formatAgenCConfigCliHelpText(): string {
     "  validate                     Validate config.toml and schema blocks",
     "  edit                         Open config.toml in the configured editor",
     "  path                         Print the config.toml path",
+    "  migrate [check|apply] [--confirm-retired-writers-stopped] [--retire-shared-secure-storage] [--retired-secure-storage-account <name>]",
+    "                               Plan or apply the explicit schema-v2 migration",
+    "                               One-way credential cleanup requires the stopped-writer confirmation",
+    "                               The destructive flag asserts no other/default home owns the old shared secure-storage record",
+    "                               The account flag selects only a historical USER-bound secure-storage source",
+    "  migrate rollback <id>        Roll back one journaled schema-v2 migration",
+    "                               (never recreates deleted plaintext credentials)",
     "",
     "Values:",
     "  Values are parsed as TOML when possible: true, 123, [\"a\"], { enabled = true }.",
@@ -128,7 +113,7 @@ export function formatAgenCConfigCliHelpText(): string {
     "Examples:",
     "  agenc config show",
     "  agenc config get model",
-    "  agenc config set permissions.default_mode never",
+    "  agenc config set approval_policy never",
     "  agenc config set plugins.enabled true",
     "  agenc config unset plugins.plugins.example.enabled",
     "  agenc config validate",
@@ -187,6 +172,71 @@ export function parseAgenCConfigCliArgs(
       return noArgs(action, rest) ?? { kind: "edit" };
     case "path":
       return noArgs(action, rest) ?? { kind: "path" };
+    case "migrate": {
+      const migrationAction = rest[0] ?? "check";
+      if (migrationAction === "check" || migrationAction === "apply") {
+        const flags = rest.slice(1);
+        let retireSharedSecureStorage = false;
+        let confirmRetiredWritersStopped = false;
+        let retiredSecureStorageAccount: string | undefined;
+        for (let index = 0; index < flags.length; index += 1) {
+          const flag = flags[index];
+          if (flag === "--retire-shared-secure-storage") {
+            if (retireSharedSecureStorage) {
+              return { kind: "error", message: `${flag} may be specified only once` };
+            }
+            retireSharedSecureStorage = true;
+            continue;
+          }
+          if (flag === "--confirm-retired-writers-stopped") {
+            if (confirmRetiredWritersStopped) {
+              return { kind: "error", message: `${flag} may be specified only once` };
+            }
+            confirmRetiredWritersStopped = true;
+            continue;
+          }
+          if (flag === "--retired-secure-storage-account") {
+            const value = flags[index + 1]?.trim();
+            if (
+              retiredSecureStorageAccount !== undefined ||
+              value === undefined ||
+              value.length === 0 ||
+              value.startsWith("--")
+            ) {
+              return {
+                kind: "error",
+                message: `${flag} requires exactly one account name and may be specified only once`,
+              };
+            }
+            retiredSecureStorageAccount = value;
+            index += 1;
+            continue;
+          }
+          return {
+            kind: "error",
+            message:
+              `config migrate ${migrationAction} accepts only --confirm-retired-writers-stopped, --retire-shared-secure-storage, and --retired-secure-storage-account <name>`,
+          };
+        }
+        return {
+          kind: "migrate",
+          action: migrationAction,
+          retireSharedSecureStorage,
+          confirmRetiredWritersStopped,
+          ...(retiredSecureStorageAccount !== undefined
+            ? { retiredSecureStorageAccount }
+            : {}),
+        };
+      }
+      if (migrationAction === "rollback") {
+        const id = rest[1]?.trim();
+        if (!id || rest.length !== 2) {
+          return { kind: "error", message: "config migrate rollback requires exactly one migration id" };
+        }
+        return { kind: "migrate", action: "rollback", id };
+      }
+      return { kind: "error", message: `unknown config migrate action: ${migrationAction}` };
+    }
     default:
       return { kind: "error", message: `unknown config command: ${action}` };
   }
@@ -198,9 +248,18 @@ export async function runAgenCConfigCli(
 ): Promise<number> {
   const io = options.io ?? { stdout: process.stdout, stderr: process.stderr };
   const env = options.env ?? process.env;
-  const agencHome = options.agencHome ?? resolveAgencHome(env);
 
   try {
+    if (command.kind === "migrate") {
+      return await runConfigMigrate(command, options, io);
+    }
+    const agencHome = options.agencHome ?? resolveAgencHome(env);
+    const repositoryOptions: LayeredConfigRepositoryOptions = {
+      env: options.agencHome === undefined ? env : { ...env, AGENC_HOME: agencHome },
+      cwd: options.cwd,
+      projectRoot: options.projectRoot,
+      managedConfigPath: options.managedConfigPath,
+    };
     switch (command.kind) {
       case "help":
         io.stdout.write(`${command.text}\n`);
@@ -213,22 +272,28 @@ export async function runAgenCConfigCli(
         io.stdout.write(`${getConfigFilePath(agencHome)}\n`);
         return 0;
       case "show":
-        return await runConfigShow(agencHome, env, io);
+        return await runConfigShow(repositoryOptions, io);
       case "get":
-        return await runConfigGet(command.key, agencHome, env, io);
+        return await runConfigGet(command.key, repositoryOptions, io);
       case "validate":
-        return await runConfigValidate(agencHome, env, io);
-      case "set":
+        return await runConfigValidate(repositoryOptions, io);
+      case "set": {
+        await assertNoRetiredConfigInputsForMutation(repositoryOptions);
         return await runConfigSet(command.key, command.value, agencHome, io);
-      case "unset":
+      }
+      case "unset": {
+        await assertNoRetiredConfigInputsForMutation(repositoryOptions);
         return await runConfigUnset(command.key, agencHome, io);
-      case "edit":
+      }
+      case "edit": {
+        await assertNoRetiredConfigInputsForMutation(repositoryOptions);
         return await runConfigEdit(
           agencHome,
           env,
-          options.spawner ?? defaultSpawnEditor,
+          options.spawner ?? spawnConfigEditor,
           io,
         );
+      }
     }
   } catch (error) {
     io.stderr.write(`agenc: ${errorMessage(error)}\n`);
@@ -255,17 +320,134 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function runConfigShow(
-  agencHome: string,
-  env: EnvSnapshot,
+async function runConfigMigrate(
+  command: Extract<AgenCConfigCliCommand, { readonly kind: "migrate" }>,
+  options: AgenCConfigCliOptions,
   io: AgenCConfigCliIo,
 ): Promise<number> {
-  await runConfigMigrationForRead(agencHome, io);
-  const loaded = await loadEffectiveConfigForCli(agencHome, env, io);
-  if (loaded.parseError !== undefined) {
-    io.stderr.write(`agenc: config is invalid: ${loaded.parseError}\n`);
+  const {
+    applyConfigV2Migration,
+    checkConfigV2Migration,
+    rollbackConfigV2Migration,
+  } = await import("../config/migration.js");
+  const migrationOptions: ConfigV2MigrationOptions = {
+    ...(options.env !== undefined ? { env: options.env } : {}),
+    ...(options.agencHome !== undefined ? { home: options.agencHome } : {}),
+    ...(options.platformHome !== undefined
+      ? { platformHome: options.platformHome }
+      : {}),
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    ...(options.projectRoot !== undefined ? { projectRoot: options.projectRoot } : {}),
+    ...(options.managedConfigPath !== undefined
+      ? { managedConfigPath: options.managedConfigPath }
+      : {}),
+    ...(options.managedSettingsPath !== undefined
+      ? { managedSettingsPath: options.managedSettingsPath }
+      : {}),
+    ...(options.globalStatePath !== undefined
+      ? { globalStatePath: options.globalStatePath }
+      : {}),
+    ...(command.action !== "rollback" && command.retireSharedSecureStorage
+      ? { retireSharedSecureStorage: true }
+      : {}),
+    ...(command.action !== "rollback" && command.confirmRetiredWritersStopped
+      ? { confirmRetiredWritersStopped: true }
+      : {}),
+    ...(command.action !== "rollback" && command.retiredSecureStorageAccount !== undefined
+      ? { retiredSecureStorageAccount: command.retiredSecureStorageAccount }
+      : {}),
+  };
+  if (command.action === "rollback") {
+    const rolledBack = await rollbackConfigV2Migration(command.id, migrationOptions);
+    io.stdout.write(
+      `Rolled back config migration ${rolledBack.id}; restored ${rolledBack.restored} file(s).\n` +
+        (rolledBack.credentialsPreserved
+          ? "Native secure storage credentials were preserved; deleted plaintext credential inputs were not recreated.\n"
+          : "") +
+        `Journal: ${rolledBack.journalPath}\n`,
+    );
+    return 0;
+  }
+
+  const plan = await checkConfigV2Migration(migrationOptions);
+  const credentialSanitizations =
+    (plan.credentialMigration === undefined ? 0 : 1) +
+    (plan.retiredAuthMigration?.descriptor.fileActions.length ?? 0);
+  io.stdout.write(
+    `Config migration ${plan.id}: ${plan.writes.length} write(s), ` +
+      `${plan.archivePaths.length} retired-source archive(s), ` +
+      `${credentialSanitizations} one-way credential sanitization(s), ` +
+      `${plan.conflicts.length} conflict(s).\n`,
+  );
+  if (credentialSanitizations > 0) {
+    io.stdout.write(
+      "Credential migration writes the native secure storage first, then deletes each retired plaintext source or rewrites auth.json metadata-only; rollback will not recreate secret fields.\n",
+    );
+  }
+  if (plan.requiresRetiredWriterQuiescence) {
+    io.stdout.write(
+      "One-way credential cleanup requires every retired AgenC writer to remain stopped from check through apply.\n",
+    );
+  }
+  if (
+    plan.secureStorageNamespaceMigration?.sourceDisposition === "retain-shared"
+  ) {
+    io.stdout.write(
+      "The old unscoped native secure storage is shared with the default and possibly other relocated homes, so it will be copied but retained. Stop older AgenC processes and rerun check/apply with --retire-shared-secure-storage only after confirming no other home still owns that record.\n",
+    );
+  } else if (
+    plan.secureStorageNamespaceMigration?.sourceDisposition ===
+      "delete-shared-confirmed"
+  ) {
+    io.stdout.write(
+      "Shared native secure storage retirement was explicitly confirmed; all older AgenC processes must remain stopped until apply completes.\n",
+    );
+  } else if (
+    plan.secureStorageNamespaceMigration?.sourceDisposition ===
+      "rewrite-in-place"
+  ) {
+    io.stdout.write(
+      "The Windows DPAPI file uses a retired USER-derived entropy identity and will be atomically re-encrypted in place for the stable OS account. All older AgenC processes must remain stopped until apply completes.\n",
+    );
+  }
+  for (const conflict of plan.conflicts) {
+    io.stderr.write(
+      `conflict [${conflict.scope}] ${conflict.sourcePath}` +
+        `${conflict.field ? `:${conflict.field}` : ""}: ${conflict.reason}\n`,
+    );
+  }
+  if (plan.conflicts.length > 0) {
+    io.stderr.write("agenc: migration is fail-closed; no files were changed.\n");
     return 1;
   }
+  if (command.action === "check") {
+    io.stdout.write("Migration check complete; no files were changed.\n");
+    return 0;
+  }
+  if (
+    plan.requiresRetiredWriterQuiescence &&
+    !plan.retiredWriterQuiescenceConfirmed
+  ) {
+    io.stderr.write(
+      "agenc: apply refused; stop every retired AgenC process, rerun check, then apply with --confirm-retired-writers-stopped.\n",
+    );
+    return 1;
+  }
+  const applied = await applyConfigV2Migration(plan);
+  io.stdout.write(
+    `Applied config migration ${applied.id}: ${applied.writes} write(s), ` +
+      `${applied.archives} archived retired source(s), ` +
+      `${applied.credentialSourcesSanitized} retired plaintext credential source(s) deleted or rewritten metadata-only.\n` +
+      `Journal: ${applied.journalPath}\n`,
+  );
+  return 0;
+}
+
+async function runConfigShow(
+  repositoryOptions: LayeredConfigRepositoryOptions,
+  io: AgenCConfigCliIo,
+): Promise<number> {
+  const loaded = await loadEffectiveConfigForCli(repositoryOptions, io);
   try {
     validateLoadedConfigForCli(loaded.config);
   } catch (error) {
@@ -278,17 +460,11 @@ async function runConfigShow(
 
 async function runConfigGet(
   key: string,
-  agencHome: string,
-  env: EnvSnapshot,
+  repositoryOptions: LayeredConfigRepositoryOptions,
   io: AgenCConfigCliIo,
 ): Promise<number> {
   assertReadableConfigPath(key);
-  await runConfigMigrationForRead(agencHome, io);
-  const loaded = await loadEffectiveConfigForCli(agencHome, env, io);
-  if (loaded.parseError !== undefined) {
-    io.stderr.write(`agenc: config is invalid: ${loaded.parseError}\n`);
-    return 1;
-  }
+  const loaded = await loadEffectiveConfigForCli(repositoryOptions, io);
   try {
     validateLoadedConfigForCli(loaded.config);
   } catch (error) {
@@ -300,31 +476,19 @@ async function runConfigGet(
 }
 
 async function runConfigValidate(
-  agencHome: string,
-  env: EnvSnapshot,
+  repositoryOptions: LayeredConfigRepositoryOptions,
   io: AgenCConfigCliIo,
 ): Promise<number> {
-  await runConfigMigrationForRead(agencHome, io);
-  // Round-2 M-NEW5: previously `runConfigValidate` only returned
-  // non-zero on parse failures, ignoring warnings emitted during
-  // schema validation. A config with unknown keys, deprecated fields,
-  // or invalid value coercions would print warnings to stderr but
-  // still exit 0 — making `agenc config validate` lie about validity.
-  // Capture warnings via the onWarn channel and fail the command if
-  // any fired.
   const warnings: string[] = [];
   const captureWarn = (message: string): void => {
     warnings.push(message);
     io.stderr.write(`${message}\n`);
   };
-  const loaded = await loadConfig({ home: agencHome, onWarn: captureWarn });
-  const config = applyEnvOverrides(loaded.config, env, captureWarn);
-  if (loaded.parseError !== undefined) {
-    io.stderr.write(
-      `agenc: config validation failed: ${loaded.parseError}\n`,
-    );
-    return 1;
-  }
+  const loaded = await loadCanonicalConfig({
+    ...repositoryOptions,
+    onWarn: captureWarn,
+  });
+  const config = loaded.config;
   try {
     validateLoadedConfigForCli(config);
   } catch (error) {
@@ -339,30 +503,27 @@ async function runConfigValidate(
     );
     return 1;
   }
-  io.stdout.write(`Config valid: ${loaded.path}\n`);
+  io.stdout.write(
+    `Config valid: ${loaded.sources.length} layer(s), home ${loaded.home.path}\n`,
+  );
   return 0;
 }
 
 async function loadEffectiveConfigForCli(
-  agencHome: string,
-  env: EnvSnapshot,
+  repositoryOptions: LayeredConfigRepositoryOptions,
   io: AgenCConfigCliIo,
 ): Promise<{
   readonly config: AgenCConfig;
-  readonly path: string;
-  readonly parseError?: string;
 }> {
   const onWarn = (message: string): void => {
     io.stderr.write(`${message}\n`);
   };
-  const loaded = await loadConfig({
-    home: agencHome,
+  const loaded = await loadCanonicalConfig({
+    ...repositoryOptions,
     onWarn,
   });
   return {
-    config: applyEnvOverrides(loaded.config, env, onWarn),
-    path: loaded.path,
-    ...(loaded.parseError !== undefined ? { parseError: loaded.parseError } : {}),
+    config: loaded.config,
   };
 }
 
@@ -375,12 +536,12 @@ async function runConfigSet(
   const segments = parseEditablePath(key);
   assertEditableConfigPath(segments);
   const value = parseConfigSetValue(rawValue);
-  const target = await prepareConfigEditTarget(agencHome, io);
-  const raw = target.exists ? await readConfigTomlRaw(target.path) : {};
-  const next = prepareRawConfigForWrite(raw);
-  setNestedValue(next, segments, value);
-  await validateAndWriteConfig(next, target);
-  io.stdout.write(`Set ${key} in ${target.displayPath}\n`);
+  assertConfigPatchAuthority("user", { [segments[0]!]: value });
+  const path = getConfigFilePath(agencHome);
+  mutateCanonicalUserConfigSync(path, (raw) => {
+    setNestedValue(raw, segments, value);
+  });
+  io.stdout.write(`Set ${key} in ${path}\n`);
   return 0;
 }
 
@@ -391,19 +552,16 @@ async function runConfigUnset(
 ): Promise<number> {
   const segments = parseEditablePath(key);
   assertEditableConfigPath(segments);
-  const target = await prepareConfigEditTarget(agencHome, io);
-  if (!target.exists) {
+  const path = getConfigFilePath(agencHome);
+  let removed = false;
+  mutateCanonicalUserConfigSync(path, (raw) => {
+    removed = deleteNestedValue(raw, segments);
+  });
+  if (!removed) {
     io.stdout.write(`not set: ${key}\n`);
     return 0;
   }
-  const raw = await readConfigTomlRaw(target.path);
-  const next = prepareRawConfigForWrite(raw);
-  if (!deleteNestedValue(next, segments)) {
-    io.stdout.write(`not set: ${key}\n`);
-    return 0;
-  }
-  await validateAndWriteConfig(next, target);
-  io.stdout.write(`Unset ${key} in ${target.displayPath}\n`);
+  io.stdout.write(`Unset ${key} in ${path}\n`);
   return 0;
 }
 
@@ -413,275 +571,23 @@ async function runConfigEdit(
   spawner: ConfigEditorSpawner,
   io: AgenCConfigCliIo,
 ): Promise<number> {
-  await prepareConfigEditTarget(agencHome, io);
   const path = getConfigFilePath(agencHome);
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const editor = parseEditorCommand(editorForEnv(env));
-  const code = await spawner(editor.command, [...editor.args, path]);
-  if (code !== 0) {
-    io.stderr.write(`agenc: editor "${editor.command}" exited with code ${code}. File path: ${path}\n`);
+  const result = await editCanonicalUserConfig({
+    path,
+    editor: editorForEnv(env),
+    spawner,
+  });
+  if (result.exitCode !== 0) {
+    io.stderr.write(`agenc: editor "${result.editorCommand}" exited with code ${result.exitCode}. File path: ${path}\n`);
     return 1;
   }
   io.stdout.write(`Edited ${path}\n`);
   return 0;
 }
 
-const defaultSpawnEditor: ConfigEditorSpawner = (command, args) =>
-  new Promise((resolve) => {
-    try {
-      const child = spawn(command, [...args], { stdio: "inherit" });
-      child.on("exit", (code) => resolve(code ?? 0));
-      child.on("error", () => resolve(127));
-    } catch {
-      resolve(127);
-    }
-  });
-
-function parseEditorCommand(raw: string): {
-  readonly command: string;
-  readonly args: readonly string[];
-} {
-  const parts = splitCommandLine(raw);
-  const command = parts[0]?.trim();
-  if (command === undefined || command.length === 0) {
-    throw new Error("EDITOR resolved to an empty command");
-  }
-  return {
-    command,
-    args: parts.slice(1),
-  };
-}
-
-function splitCommandLine(raw: string): string[] {
-  const args: string[] = [];
-  let current = "";
-  let quote: "'" | "\"" | null = null;
-  let escaped = false;
-
-  const push = (): void => {
-    if (current.length > 0) {
-      args.push(current);
-      current = "";
-    }
-  };
-
-  for (const char of raw.trim()) {
-    if (escaped) {
-      current += char;
-      escaped = false;
-      continue;
-    }
-    if (char === "\\" && quote !== "'") {
-      escaped = true;
-      continue;
-    }
-    if (quote !== null) {
-      if (char === quote) quote = null;
-      else current += char;
-      continue;
-    }
-    if (char === "'" || char === "\"") {
-      quote = char;
-      continue;
-    }
-    if (/\s/u.test(char)) {
-      push();
-      continue;
-    }
-    current += char;
-  }
-  if (escaped) current += "\\";
-  if (quote !== null) {
-    throw new Error("EDITOR contains an unterminated quote");
-  }
-  push();
-  return args;
-}
-
-async function runConfigMigrationForRead(
-  agencHome: string,
-  io: AgenCConfigCliIo,
-): Promise<void> {
-  const configPath = getConfigFilePath(agencHome);
-  const initialTarget = await resolveWritableConfigTarget(configPath);
-  const migrationResult = await runConfigFileMigrations({
-    home: agencHome,
-    configTomlPath: initialTarget.path,
-    parseToml,
-    onWarn: (message) => io.stderr.write(`${message}\n`),
-  });
-  const target = await resolveWritableConfigTarget(configPath);
-  await assertMigrationAllowsEdit({
-    result: migrationResult,
-    tomlExists: target.exists,
-    jsonExists: await pathIsFile(join(agencHome, "config.json")),
-  });
-}
-
-async function prepareConfigEditTarget(
-  agencHome: string,
-  io: AgenCConfigCliIo,
-): Promise<WritableConfigTarget> {
-  const configPath = getConfigFilePath(agencHome);
-  const initialTarget = await resolveWritableConfigTarget(configPath);
-  const migrationResult = await runConfigFileMigrations({
-    home: agencHome,
-    configTomlPath: initialTarget.path,
-    parseToml,
-    onWarn: (message) => io.stderr.write(`${message}\n`),
-  });
-  const target = await resolveWritableConfigTarget(configPath);
-  await assertMigrationAllowsEdit({
-    result: migrationResult,
-    tomlExists: target.exists,
-    jsonExists: await pathIsFile(join(agencHome, "config.json")),
-  });
-  return target;
-}
-
-async function assertMigrationAllowsEdit(params: {
-  readonly result: ConfigFileMigrationResult;
-  readonly tomlExists: boolean;
-  readonly jsonExists: boolean;
-}): Promise<void> {
-  const unsafeSkip = params.result.skipped.find((skip) =>
-    UNSAFE_MIGRATION_SKIPS.has(skip)
-  );
-  if (unsafeSkip !== undefined) {
-    throw new Error(
-      `cannot edit config.toml after skipped config migration (${unsafeSkip})`,
-    );
-  }
-  if (!params.tomlExists && params.jsonExists) {
-    throw new Error(
-      "cannot edit config.toml because config.json could not be migrated safely",
-    );
-  }
-}
-
-async function resolveWritableConfigTarget(
-  configPath: string,
-): Promise<WritableConfigTarget> {
-  let linkInfo;
-  try {
-    linkInfo = await lstat(configPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return {
-        path: configPath,
-        displayPath: configPath,
-        exists: false,
-        mode: DEFAULT_FILE_MODE,
-      };
-    }
-    throw error;
-  }
-
-  const path = linkInfo.isSymbolicLink()
-    ? await resolveExistingSymlinkTarget(configPath)
-    : configPath;
-  const info = await stat(path);
-  if (!info.isFile()) {
-    throw new Error(`config path is not a file: ${configPath}`);
-  }
-  return {
-    path,
-    displayPath: configPath,
-    exists: true,
-    mode: modeOrDefault(info.mode & 0o777),
-  };
-}
-
-async function resolveExistingSymlinkTarget(configPath: string): Promise<string> {
-  try {
-    return await realpath(configPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new Error(`config symlink target does not exist: ${configPath}`);
-    }
-    throw error;
-  }
-}
-
-async function pathIsFile(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isFile();
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
-  }
-}
-
-function modeOrDefault(mode: number): number {
-  return mode > 0 ? mode : DEFAULT_FILE_MODE;
-}
-
-async function readConfigTomlRaw(path: string): Promise<JsonRecord> {
-  const text = await readTextFile(path);
-  let sawDuplicateKey = false;
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = parseToml(text, {
-      onDuplicateKey: () => {
-        sawDuplicateKey = true;
-      },
-    }) as Record<string, unknown>;
-  } catch (error) {
-    throw new Error(`invalid TOML at ${path}: ${errorMessage(error)}`);
-  }
-  if (sawDuplicateKey) {
-    throw new Error(`cannot edit ${path}: duplicate TOML keys must be resolved first`);
-  }
-  return cloneRecord(parsed);
-}
-
-function prepareRawConfigForWrite(raw: Readonly<Record<string, unknown>>): JsonRecord {
-  const aliased = normalizeAgenCKeyAliases(cloneRecord(raw));
-  const migrated = migrateRawAgenCConfig(aliased);
-  migrated[CONFIG_FILE_VERSION_KEY] = CURRENT_CONFIG_FILE_VERSION;
-  return migrated;
-}
-
-async function validateAndWriteConfig(
-  raw: JsonRecord,
-  target: WritableConfigTarget,
-): Promise<void> {
-  validateRawConfigForCli(raw);
-  const serialized = serializeConfigToml(raw);
-  const parsed = parseToml(serialized) as Record<string, unknown>;
-  if (stableJson(parsed) !== stableJson(raw)) {
-    throw new Error("serialized config.toml did not round-trip");
-  }
-  await writeTextAtomic(target.path, serialized, target.mode);
-}
-
-function validateRawConfigForCli(raw: Readonly<Record<string, unknown>>): void {
-  const validated = validateAgenCConfigBlocks(normalizeRawConfig(cloneRecord(raw)));
-  validatePermissionsConfig(validated.permissions);
-}
-
 function validateLoadedConfigForCli(config: AgenCConfig): void {
   const validated = validateAgenCConfigBlocks(config);
   validatePermissionsConfig(validated.permissions);
-}
-
-async function writeTextAtomic(
-  path: string,
-  text: string,
-  mode: number,
-): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const tempDir = await mkdtemp(join(dirname(path), ".agenc-config-"));
-  const tempPath = join(tempDir, basename(path));
-  try {
-    await writeFile(tempPath, text, {
-      encoding: "utf8",
-      mode: modeOrDefault(mode),
-    });
-    await rename(tempPath, path);
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
 }
 
 function parseEditablePath(key: string): readonly string[] {
@@ -697,8 +603,11 @@ function parseEditablePath(key: string): readonly string[] {
 }
 
 function assertEditableConfigPath(segments: readonly string[]): void {
-  if (segments[0] === CONFIG_FILE_VERSION_KEY) {
-    throw new Error(`${CONFIG_FILE_VERSION_KEY} is managed by AgenC`);
+  if (
+    segments[0] === CANONICAL_CONFIG_VERSION_KEY ||
+    segments[0] === "configVersion"
+  ) {
+    throw new Error(`${CANONICAL_CONFIG_VERSION_KEY} is managed by AgenC`);
   }
   assertNoForbiddenPathSegments(segments);
 }

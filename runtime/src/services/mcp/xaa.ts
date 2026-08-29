@@ -25,6 +25,8 @@ import { z } from 'zod/v4'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logMCPDebug } from '../../utils/log.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
+import { getProxyFetchOptions } from '../../utils/proxy.js'
 
 const XAA_REQUEST_TIMEOUT_MS = 30000
 
@@ -39,7 +41,11 @@ const ID_TOKEN_TYPE = 'urn:ietf:params:oauth:token-type:id_token'
  * user's cancel (e.g. Esc in the auth menu) actually aborts in-flight requests
  * rather than being clobbered by the timeout signal.
  */
-function makeXaaFetch(abortSignal?: AbortSignal): FetchLike {
+function makeXaaFetch(
+  environment: ProviderEnvironment,
+  abortSignal?: AbortSignal,
+): FetchLike {
+  const transportOptions = getProxyFetchOptions({ environment })
   return (url, init) => {
     const timeout = AbortSignal.timeout(XAA_REQUEST_TIMEOUT_MS)
     const signal = abortSignal
@@ -47,11 +53,9 @@ function makeXaaFetch(abortSignal?: AbortSignal): FetchLike {
         AbortSignal.any([timeout, abortSignal])
       : timeout
     // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-    return fetch(url, { ...init, signal })
+    return fetch(url, { ...init, signal, ...transportOptions })
   }
 }
-
-const defaultFetch = makeXaaFetch()
 
 /**
  * RFC 8414 §3.3 / RFC 9728 §3.3 identifier comparison. Roundtrip through URL
@@ -134,14 +138,14 @@ export type ProtectedResourceMetadata = {
  */
 async function discoverProtectedResource(
   serverUrl: string,
-  opts?: { fetchFn?: FetchLike },
+  opts: { fetchFn: FetchLike },
 ): Promise<ProtectedResourceMetadata> {
   let prm
   try {
     prm = await discoverOAuthProtectedResourceMetadata(
       serverUrl,
       undefined,
-      opts?.fetchFn ?? defaultFetch,
+      opts.fetchFn,
     )
   } catch (e) {
     throw new Error(
@@ -177,10 +181,10 @@ export type AuthorizationServerMetadata = {
  */
 async function discoverAuthorizationServer(
   asUrl: string,
-  opts?: { fetchFn?: FetchLike },
+  opts: { fetchFn: FetchLike },
 ): Promise<AuthorizationServerMetadata> {
   const meta = await discoverAuthorizationServerMetadata(asUrl, {
-    fetchFn: opts?.fetchFn ?? defaultFetch,
+    fetchFn: opts.fetchFn,
   })
   if (!meta?.issuer || !meta.token_endpoint) {
     throw new Error(
@@ -238,9 +242,9 @@ async function requestJwtAuthorizationGrant(opts: {
   clientId: string
   clientSecret?: string
   scope?: string
-  fetchFn?: FetchLike
+  fetchFn: FetchLike
 }): Promise<JwtAuthGrantResult> {
-  const fetchFn = opts.fetchFn ?? defaultFetch
+  const fetchFn = opts.fetchFn
   const params = new URLSearchParams({
     grant_type: TOKEN_EXCHANGE_GRANT,
     requested_token_type: ID_JAG_TOKEN_TYPE,
@@ -341,9 +345,9 @@ async function exchangeJwtAuthGrant(opts: {
   clientSecret: string
   authMethod?: 'client_secret_basic' | 'client_secret_post'
   scope?: string
-  fetchFn?: FetchLike
+  fetchFn: FetchLike
 }): Promise<XaaTokenResult> {
-  const fetchFn = opts.fetchFn ?? defaultFetch
+  const fetchFn = opts.fetchFn
   const authMethod = opts.authMethod ?? 'client_secret_basic'
 
   const params = new URLSearchParams({
@@ -416,8 +420,8 @@ export type XaaConfig = {
 
 /**
  * Full XAA flow: PRM → AS metadata → token-exchange → jwt-bearer → access_token.
- * Thin composition of the four Layer-2 ops. Used by performMCPXaaAuth,
- * AgenCAuthProvider.xaaRefresh, and the try-xaa*.ts debug scripts.
+ * Thin composition of the four Layer-2 ops. Used by
+ * AgenCAuthProvider.xaaRefresh and the try-xaa*.ts debug scripts.
  *
  * @param serverUrl The MCP server URL (e.g. `https://mcp.example.com/mcp`)
  * @param config IdP + AS credentials
@@ -426,10 +430,12 @@ export type XaaConfig = {
 export async function performCrossAppAccess(
   serverUrl: string,
   config: XaaConfig,
+  environment: ProviderEnvironment,
   serverName = 'xaa',
   abortSignal?: AbortSignal,
 ): Promise<XaaResult> {
-  const fetchFn = makeXaaFetch(abortSignal)
+  const requestEnvironment = Object.freeze({ ...environment })
+  const fetchFn = makeXaaFetch(requestEnvironment, abortSignal)
 
   logMCPDebug(serverName, `XAA: discovering PRM for ${serverUrl}`)
   const prm = await discoverProtectedResource(serverUrl, { fetchFn })

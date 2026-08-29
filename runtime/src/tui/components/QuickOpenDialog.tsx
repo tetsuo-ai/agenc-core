@@ -15,11 +15,16 @@ import { truncatePathMiddle, truncateToWidth } from '../../utils/format';
 import { highlightMatch } from '../../utils/highlightMatch';
 import { logError } from '../../utils/log';
 import { readFileInRange } from '../../utils/readFileInRange';
+import {
+  type CanonicalSettingsAuthority,
+  runWithCanonicalSettingsAuthority,
+} from '../../utils/settings/canonicalAuthority.js';
 import { FuzzyPicker, computeFuzzyPickerPreviewBudget, computeFuzzyPickerVisibleCount } from './design-system/FuzzyPicker';
 import { LoadingState } from './design-system/LoadingState';
 type Props = {
   onDone: () => void;
   onInsert: (text: string) => void;
+  settingsAuthority: CanonicalSettingsAuthority;
 };
 const VISIBLE_RESULTS = 8;
 const PREVIEW_LINES = 20;
@@ -51,8 +56,11 @@ export function QuickOpenDialog(t0) {
   const $ = _c(35);
   const {
     onDone,
-    onInsert
+    onInsert,
+    settingsAuthority
   } = t0;
+  const settingsAuthorityRef = useRef(settingsAuthority);
+  settingsAuthorityRef.current = settingsAuthority;
   const setAppState = useOptionalSetAppState();
   useRegisterOverlay("quick-open");
   const {
@@ -102,7 +110,9 @@ export function QuickOpenDialog(t0) {
         setResults([]);
         return;
       }
-      generateFileSuggestions(q, true).then(items => {
+      runWithCanonicalSettingsAuthority(settingsAuthorityRef.current, () =>
+        generateFileSuggestions(q, true)
+      ).then(items => {
         if (gen !== queryGenRef.current) {
           return;
         }

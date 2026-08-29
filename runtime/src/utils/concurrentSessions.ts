@@ -8,7 +8,7 @@ import {
 } from '../bootstrap/state.js'
 import { registerCleanup } from './cleanupRegistry.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getAgenCConfigHomeDir } from './envUtils.js'
+import { getAgenCHomeDir } from './envUtils.js'
 import { errorMessage, isFsInaccessible } from './errors.js'
 import { isProcessRunning } from './genericProcessUtils.js'
 import { getPlatform } from './platform.js'
@@ -19,7 +19,7 @@ export type SessionKind = 'interactive' | 'bg' | 'daemon' | 'daemon-worker'
 export type SessionStatus = 'busy' | 'idle' | 'waiting'
 
 function getSessionsDir(): string {
-  return join(getAgenCConfigHomeDir(), 'sessions')
+  return join(getAgenCHomeDir(), 'sessions')
 }
 
 /**
@@ -194,7 +194,7 @@ export async function countConcurrentSessions(): Promise<number> {
     } else if (getPlatform() !== 'wsl') {
       // Stale file from a crashed session — sweep it. Skip on WSL: if
       // ~/.agenc/sessions/ is shared with Windows-native AgenC (symlink
-      // or AGENC_CONFIG_DIR), a Windows PID won't be probeable from WSL
+      // via AGENC_HOME, a Windows PID won't be probeable from WSL
       // and we'd falsely delete a live session's file. This is just
       // telemetry so conservative undercount is acceptable.
       void unlink(join(dir, file)).catch(() => {})

@@ -42,8 +42,16 @@ export async function waitForFrameText(session, pattern, label, timeoutMs = 10_0
   const deadline = Date.now() + timeoutMs;
   let frame = "";
   while (Date.now() < deadline) {
+    session.throwIfAborted?.();
     frame = frameText(session);
     if (pattern.test(frame)) return;
+    if (session.exited === true) {
+      throw new Error(
+        `${label} did not render before the TUI exited ` +
+          `(code=${session.exitInfo?.exitCode}, signal=${session.exitInfo?.signal}): ` +
+          frame.slice(-1200),
+      );
+    }
     await sleep(100);
   }
   throw new Error(`${label} did not render in the latest PTY frame: ${frame.slice(-1200)}`);

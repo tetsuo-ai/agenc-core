@@ -1,4 +1,8 @@
 import chalk, { Chalk } from 'chalk'
+import {
+  TUI_THEME_SETTINGS,
+  type TuiThemeSetting,
+} from '../config/schema.js'
 import { env } from './env.js'
 
 export type Theme = {
@@ -78,8 +82,6 @@ export type Theme = {
   memoryBackgroundColor: string
   rate_limit_fill: string
   rate_limit_empty: string
-  fastMode: string
-  fastModeShimmer: string
   // Brief/assistant mode label colors
   briefLabelYou: string
   briefLabelAgenC: string
@@ -100,19 +102,13 @@ export type Theme = {
   rainbow_violet_shimmer: string
 }
 
-export const THEME_NAMES = [
-  'dark',
-  'light',
-  'light-daltonized',
-  'dark-daltonized',
-  'light-ansi',
-  'dark-ansi',
-] as const
+export const THEME_NAMES = TUI_THEME_SETTINGS.slice(1) as readonly Exclude<
+  (typeof TUI_THEME_SETTINGS)[number],
+  'auto'
+>[]
 
 /** A renderable theme. Always resolvable to a concrete color palette. */
 export type ThemeName = (typeof THEME_NAMES)[number]
-
-export const THEME_SETTINGS = ['auto', ...THEME_NAMES] as const
 
 export const AURA_LIFECYCLE_GLYPHS = {
   queued: '○',
@@ -129,10 +125,10 @@ export const AURA_PLAN_GLYPHS = {
 } as const
 
 /**
- * A theme preference as stored in user config. `'auto'` follows the system
- * dark/light mode and is resolved to a ThemeName at runtime.
+ * A theme preference stored by the canonical settings authority. `'auto'`
+ * follows the terminal dark/light mode and resolves to a ThemeName at runtime.
  */
-export type ThemeSetting = (typeof THEME_SETTINGS)[number]
+export type ThemeSetting = TuiThemeSetting
 
 /**
  * Light theme using explicit RGB values to avoid inconsistencies
@@ -207,8 +203,6 @@ const lightTheme: Theme = {
   memoryBackgroundColor: 'rgb(230, 245, 250)',
   rate_limit_fill: 'rgb(87,105,247)', // Medium blue
   rate_limit_empty: 'rgb(39,47,111)', // Dark blue
-  fastMode: 'rgb(255,106,0)', // Electric orange
-  fastModeShimmer: 'rgb(255,150,50)', // Lighter orange for shimmer
   // Brief/assistant mode
   briefLabelYou: 'rgb(37,99,235)', // Blue
   briefLabelAgenC: 'rgb(215,119,87)', // Brand orange
@@ -301,8 +295,6 @@ const lightAnsiTheme: Theme = {
   memoryBackgroundColor: 'ansi:white',
   rate_limit_fill: 'ansi:yellow',
   rate_limit_empty: 'ansi:black',
-  fastMode: 'ansi:red',
-  fastModeShimmer: 'ansi:redBright',
   briefLabelYou: 'ansi:blue',
   briefLabelAgenC: 'ansi:redBright',
   rainbow_red: 'ansi:red',
@@ -394,8 +386,6 @@ const darkAnsiTheme: Theme = {
   memoryBackgroundColor: 'ansi:blackBright',
   rate_limit_fill: 'ansi:yellow',
   rate_limit_empty: 'ansi:white',
-  fastMode: 'ansi:redBright',
-  fastModeShimmer: 'ansi:redBright',
   briefLabelYou: 'ansi:blueBright',
   briefLabelAgenC: 'ansi:magentaBright',
   rainbow_red: 'ansi:red',
@@ -487,8 +477,6 @@ const lightDaltonizedTheme: Theme = {
   memoryBackgroundColor: 'rgb(230, 245, 250)',
   rate_limit_fill: 'rgb(51,102,255)', // Bright blue
   rate_limit_empty: 'rgb(23,46,114)', // Dark blue
-  fastMode: 'rgb(255,106,0)', // Electric orange (color-blind safe)
-  fastModeShimmer: 'rgb(255,150,50)', // Lighter orange for shimmer
   briefLabelYou: 'rgb(37,99,235)', // Blue
   briefLabelAgenC: 'rgb(255,153,51)', // Orange adjusted for deuteranopia (matches agenc)
   rainbow_red: 'rgb(235,95,87)',
@@ -580,8 +568,6 @@ const chromaticDarkTheme: Theme = {
   memoryBackgroundColor: 'rgb(22, 40, 48)',
   rate_limit_fill: 'rgb(178,95,255)',
   rate_limit_empty: 'rgb(55,39,72)',
-  fastMode: 'rgb(255,151,72)',
-  fastModeShimmer: 'rgb(255,195,124)',
   briefLabelYou: 'rgb(82,214,255)',
   briefLabelAgenC: 'rgb(206,92,255)',
   rainbow_red: 'rgb(235,95,87)',
@@ -717,8 +703,6 @@ const darkDaltonizedTheme: Theme = {
   memoryBackgroundColor: 'rgb(55, 65, 70)',
   rate_limit_fill: 'rgb(153,204,255)', // Light blue
   rate_limit_empty: 'rgb(69,92,115)', // Dark blue
-  fastMode: 'rgb(255,120,20)', // Electric orange for dark bg (color-blind safe)
-  fastModeShimmer: 'rgb(255,165,70)', // Lighter orange for shimmer
   briefLabelYou: 'rgb(122,180,232)', // Light blue
   briefLabelAgenC: 'rgb(255,153,51)', // Orange adjusted for deuteranopia (matches agenc)
   rainbow_red: 'rgb(235,95,87)',

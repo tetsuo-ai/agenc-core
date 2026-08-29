@@ -44,7 +44,6 @@ const fixture = vi.hoisted(() => ({
   killAllRunningAgentTasks: vi.fn(),
   markAgentsNotified: vi.fn(),
   enqueuePendingNotification: vi.fn(),
-  emitTaskTerminatedSdk: vi.fn(),
   onCancel: vi.fn(),
   onAgentsKilled: vi.fn(),
 }))
@@ -161,11 +160,6 @@ vi.mock('../../utils/messageQueueManager.js', () => ({
   hasCommandsInQueue: () => fixture.hasCommandsInQueue,
 }))
 
-vi.mock('../../utils/sdkEventQueue.js', () => ({
-  emitTaskTerminatedSdk: (...args: unknown[]) =>
-    fixture.emitTaskTerminatedSdk(...args),
-}))
-
 function runningAgent(id = 'agent_1'): Record<string, unknown> {
   return {
     id,
@@ -231,7 +225,6 @@ describe('CancelRequestHandler local-agent cancellation visibility', () => {
     fixture.killAllRunningAgentTasks.mockClear()
     fixture.markAgentsNotified.mockClear()
     fixture.enqueuePendingNotification.mockClear()
-    fixture.emitTaskTerminatedSdk.mockClear()
     fixture.onCancel.mockClear()
     fixture.onAgentsKilled.mockClear()
   })
@@ -488,10 +481,6 @@ describe('CancelRequestHandler local-agent cancellation visibility', () => {
       'agent_1',
       expect.any(Function),
     )
-    expect(fixture.emitTaskTerminatedSdk).toHaveBeenCalledWith('agent_1', 'stopped', {
-      toolUseId: 'tool_1',
-      summary: 'inspect status bar',
-    })
     expect(fixture.enqueuePendingNotification).toHaveBeenCalledWith(
       expect.objectContaining({
         mode: 'task-notification',

@@ -11,9 +11,14 @@ import {
   clearCurrentRuntimeSession,
   runWithCurrentRuntimeSession,
 } from "../../src/session/current-session.js";
+import {
+  resolveAgentRuntimeOptions,
+  resolveCommandExecutionAuthority,
+} from "../../src/session/runtime-options.js";
 import type { Session } from "../../src/session/session.js";
 import { createTestEffectJournal } from "../helpers/test-effect-journal.js";
 import { getEmptyToolPermissionContext } from "../../src/tools/Tool.js";
+import { subprocessEnv } from "../../src/utils/subprocessEnv.js";
 
 const shellProbe = vi.hoisted(() => ({
   signals: [] as AbortSignal[],
@@ -37,6 +42,12 @@ vi.mock("../../src/utils/Shell.js", async (importOriginal) => {
 import { PowerShellTool } from "../../src/tools/PowerShellTool/PowerShellTool.js";
 
 function admissionHarness(signal = new AbortController().signal) {
+  const runtimeOptions = resolveAgentRuntimeOptions({});
+  const commandExecutionAuthority = resolveCommandExecutionAuthority(
+    runtimeOptions,
+    "/bin/bash",
+    subprocessEnv(process.env),
+  );
   const acquire = vi.fn(
     async (input: AdmissionAcquireInput): Promise<AdmissionLease> => ({
       decision: "allow",
@@ -88,6 +99,11 @@ function admissionHarness(signal = new AbortController().signal) {
     services: {
       executionAdmission: admission,
       admissionRequired: true,
+      runtimeOptions,
+      userShell: {
+        ...commandExecutionAuthority,
+        deriveExecArgs: (input: string) => ["-c", input],
+      },
     },
   } as unknown as Session;
   return {

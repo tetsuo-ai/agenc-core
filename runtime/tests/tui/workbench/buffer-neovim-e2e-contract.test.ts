@@ -6,7 +6,11 @@ import {
   INITIAL_STATE,
   parseMultipleKeypresses,
 } from "../../../src/tui/ink/parse-keypress.js";
-import { runEmbeddedNeovimCommand } from "../../../scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs";
+import { TuiSession } from "../../../scripts/check-tui-e2e/harness.mjs";
+import {
+  runEmbeddedNeovimCommand,
+  waitForFrameText,
+} from "../../../scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs";
 
 // NOTE: This is a STATIC contract check that the PTY gate scripts exist and
 // declare the expected lifecycle assertions — it does NOT spawn nvim or run a
@@ -16,6 +20,36 @@ import { runEmbeddedNeovimCommand } from "../../../scripts/check-tui-e2e/helpers
 // Neovim lane covers four lower-level real-process lifecycle tests; the full
 // PTY scenario remains local, so do not treat this file as e2e coverage.
 describe("embedded Neovim BUFFER PTY gate files", () => {
+  it("does not accept a blank quiet frame as a rendered prompt", async () => {
+    const blankSession = new TuiSession();
+    await expect(
+      blankSession.waitForPrompt({ idleWindow: 0, timeout: 50 }),
+    ).rejects.toThrow("waitForPrompt: timeout after 50ms");
+
+    const renderedSession = new TuiSession();
+    renderedSession.buffer = "Describe a task…";
+    await expect(
+      renderedSession.waitForPrompt({ idleWindow: 0, timeout: 50 }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("reports an early TUI exit with its latest rendered frame", async () => {
+    await expect(waitForFrameText(
+      {
+        raw: "booting workbench",
+        cols: 80,
+        rows: 24,
+        exited: true,
+        exitInfo: { exitCode: 7, signal: null },
+      },
+      /target\.txt/u,
+      "target in Explorer",
+      1_000,
+    )).rejects.toThrow(
+      /target in Explorer.*TUI exited.*code=7.*booting workbench/su,
+    );
+  });
+
   it("enters command mode with an unambiguous Escape before provider-state acknowledgements", async () => {
     const events: string[] = [];
     const sentInputs: string[] = [];
@@ -197,6 +231,10 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
       expect(platformScenario).toContain("runEmbeddedNeovimCommand");
       expect(platformScenario).not.toContain(
         "async function runNeovimCommand",
+      );
+      expect(platformScenario.indexOf("/target\\.txt/u")).toBeGreaterThan(-1);
+      expect(platformScenario.indexOf("/target\\.txt/u")).toBeLessThan(
+        platformScenario.indexOf('session.send("\\x17h")'),
       );
     }
     expect(platformGate).toContain('"write", {');

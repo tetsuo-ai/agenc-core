@@ -65,8 +65,6 @@ export const MAX_COMPACTION_ABORT_QUIESCENCE_MS = 5_000;
 export const MAX_COMPACTION_FOCUS_UTF8_BYTES = 16_384;
 /** Canonical JSONL record ceiling shared with strict restart recovery. */
 export const MAX_COMPACTION_CANONICAL_LINE_UTF8_BYTES = 4_194_304;
-/** Reserved commit space for deterministic post-summary hook projections. */
-export const MAX_COMPACTION_POST_HOOK_UTF8_BYTES = 65_536;
 /** Worst-case nested JSON escaping of one accepted final provider response. */
 export const MAX_COMPACTION_REPLACEMENT_SUMMARY_UTF8_BYTES = 8_388_608;
 /** Fixed boundary/summary marker and canonical array framing reserve. */

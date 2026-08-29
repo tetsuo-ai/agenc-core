@@ -92,7 +92,7 @@ describe("PromptSuggestion runtime", () => {
     expect(result).toEqual({ messages: [message], totalUsage: emptyUsage });
   });
 
-  it("extracts successful Read tool results into read-file state", () => {
+  it("extracts successful FileRead tool results into read-file state", () => {
     const cwd = process.cwd();
     const messages = [
       {
@@ -102,7 +102,7 @@ describe("PromptSuggestion runtime", () => {
             {
               type: "tool_use",
               id: "read-1",
-              name: "Read",
+              name: "FileRead",
               input: { file_path: "notes.txt" },
             },
           ],
@@ -130,7 +130,7 @@ describe("PromptSuggestion runtime", () => {
     );
   });
 
-  it("ignores failed Read results and respects max extracted entries", () => {
+  it("ignores failed FileRead results and respects max extracted entries", () => {
     const cwd = process.cwd();
     const messages = [
       {
@@ -140,13 +140,13 @@ describe("PromptSuggestion runtime", () => {
             {
               type: "tool_use",
               id: "read-1",
-              name: "Read",
+              name: "FileRead",
               input: { file_path: "one.txt" },
             },
             {
               type: "tool_use",
               id: "read-2",
-              name: "Read",
+              name: "FileRead",
               input: { file_path: "two.txt" },
             },
           ],

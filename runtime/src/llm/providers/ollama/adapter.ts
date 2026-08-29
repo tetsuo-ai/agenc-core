@@ -37,9 +37,10 @@ import { withOllamaHealthSidecar } from "./health.js";
 import { isRecord } from "../../../utils/record.js";
 import { coerceUsage } from "../../wire/shared.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
-
-const DEFAULT_HOST = "http://localhost:11434";
-const DEFAULT_MODEL = "llama3.3";
+import {
+  BUILT_IN_PROVIDER_BASE_URLS,
+  BUILT_IN_PROVIDER_DEFAULT_MODELS,
+} from "../../registry/provider-info.js";
 
 function normalizeTimeoutMs(timeoutMs: number | undefined): number | undefined {
   if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
@@ -472,15 +473,18 @@ export class OllamaProvider implements LLMProvider {
   readonly name = "ollama";
 
   private client: unknown | null = null;
-  private readonly config: OllamaProviderConfig;
+  private readonly config: OllamaProviderConfig & {
+    readonly host: string;
+    readonly model: string;
+  };
   private readonly tools: LLMTool[];
   private readonly compactionConfig: ResolvedLLMCompactionConfig;
 
   constructor(config: OllamaProviderConfig) {
     this.config = {
       ...config,
-      model: config.model ?? DEFAULT_MODEL,
-      host: config.host ?? DEFAULT_HOST,
+      model: config.model ?? BUILT_IN_PROVIDER_DEFAULT_MODELS.ollama,
+      host: config.host ?? BUILT_IN_PROVIDER_BASE_URLS.ollama,
     };
     this.tools = config.tools ?? [];
     this.compactionConfig = resolveLLMCompactionConfig(undefined);
@@ -1012,8 +1016,7 @@ export class OllamaProvider implements LLMProvider {
       model:
         readString(record.model) ||
         options?.model?.trim() ||
-        this.config.model ||
-        DEFAULT_MODEL,
+        this.config.model,
       finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
       ...this.buildUnsupportedDiagnostics(options),
     };

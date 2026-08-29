@@ -10,8 +10,8 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export const meta = {
-  description: "--yolo: model uses Read on workspace file, content is recorded.",
-  args: ["--yolo"],
+  description: "--dangerously-bypass-approvals-and-sandbox: model uses Read on workspace file, content is recorded.",
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   timeoutMs: 90_000,
   slimCwd: true,
 };

@@ -196,7 +196,7 @@ export interface WorkflowDurabilityContext {
 /**
  * The frozen spec's execution policy, applied to the run's bootstrapped
  * session (Phase 6): the session-backed journal writer mirrors the
- * background-agent runner (`--permission-mode`/`--yolo` bootstrap argv +
+ * background-agent runner (`--permission-mode`/`--dangerously-bypass-approvals-and-sandbox` bootstrap argv +
  * `installUnattendedPermissionPolicy`) so children never run under the
  * daemon's default policy. Resumed runs re-resolve it from the durable
  * intake spec.

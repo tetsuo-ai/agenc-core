@@ -1,7 +1,10 @@
 import memoize from 'lodash-es/memoize.js'
 import sample from 'lodash-es/sample.js'
 import { getCwd } from './cwd.js'
-import { getCurrentProjectConfig, saveCurrentProjectConfig } from './config.js'
+import {
+  getCurrentProjectRuntimeState,
+  saveCurrentProjectRuntimeState,
+} from './config.js'
 import { env } from './env.js'
 import { execFileNoThrowWithCwd } from './execFileNoThrow.js'
 import { getIsGit, gitExe } from './git.js'
@@ -140,9 +143,9 @@ async function getFrequentlyModifiedFiles(): Promise<string[]> {
 const ONE_WEEK_IN_MS = 7 * 24 * 60 * 60 * 1000
 
 export const getExampleCommandFromCache = memoize(() => {
-  const projectConfig = getCurrentProjectConfig()
-  const frequentFile = projectConfig.exampleFiles?.length
-    ? sample(projectConfig.exampleFiles)
+  const projectState = getCurrentProjectRuntimeState()
+  const frequentFile = projectState.exampleFiles?.length
+    ? sample(projectState.exampleFiles)
     : '<filepath>'
 
   const commands = [
@@ -160,20 +163,20 @@ export const getExampleCommandFromCache = memoize(() => {
 })
 
 export const refreshExampleCommands = memoize(async (): Promise<void> => {
-  const projectConfig = getCurrentProjectConfig()
+  const projectState = getCurrentProjectRuntimeState()
   const now = Date.now()
-  const lastGenerated = projectConfig.exampleFilesGeneratedAt ?? 0
+  const lastGenerated = projectState.exampleFilesGeneratedAt ?? 0
 
   // Regenerate examples if they're over a week old
   if (now - lastGenerated > ONE_WEEK_IN_MS) {
-    projectConfig.exampleFiles = []
+    projectState.exampleFiles = []
   }
 
   // If no example files cached, kickstart fetch in background
-  if (!projectConfig.exampleFiles?.length) {
+  if (!projectState.exampleFiles?.length) {
     void getFrequentlyModifiedFiles().then(files => {
       if (files.length) {
-        saveCurrentProjectConfig(current => ({
+        saveCurrentProjectRuntimeState(current => ({
           ...current,
           exampleFiles: files,
           exampleFilesGeneratedAt: Date.now(),

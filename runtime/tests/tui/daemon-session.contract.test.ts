@@ -20,10 +20,6 @@ vi.mock("../agents/role-definitions.js", () => ({
   listAgentRoleDefinitions: () => [],
 }));
 
-vi.mock("./model-switch.js", () => ({
-  buildPendingProviderSwitch: () => null,
-}));
-
 vi.mock("../llm/pasted-content.js", () => ({
   pastedContentsToLLMMessage: () => null,
 }));
@@ -100,12 +96,14 @@ vi.mock("./tool-rendering.js", () => ({
 import {
   AGENC_DAEMON_RECONNECTING_MESSAGE,
   attachDaemonAgentTuiSession,
-  attachDaemonTuiSession,
-  createDaemonTuiSession,
   type AgenCDaemonConnectionState,
   type AgenCDaemonTuiClient,
   type AgenCTuiBridgeSession,
 } from "./daemon-session.js";
+import {
+  attachDaemonTuiSessionFixture as attachDaemonTuiSession,
+  createDaemonTuiSessionFixture as createDaemonTuiSession,
+} from "../helpers/daemon-tui-session.js";
 import {
   installElicitationResolvers,
   subscribeToMcpUrlCompletions,
@@ -120,21 +118,28 @@ import type {
   SessionRollbackCompactionResult,
   SessionExtendCompactionRollbackRetentionResult,
   SessionRewindConversationToMessageResult,
+  SessionShellExecuteResult,
 } from "../app-server/protocol/index.js";
 import { JSON_RPC_VERSION } from "../app-server/protocol/index.js";
 import { APPROVED, DENIED } from "../permissions/review-decision.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import { AgenCDaemonResponseError } from "../app-server/agent-cli.js";
 
 function createBaseSession(): AgenCTuiBridgeSession {
+  let permissionContext = {
+    mode: "default",
+    plan: null,
+    network: null,
+  } as never;
   return {
     conversationId: "local_session",
     services: {
       permissionModeRegistry: {
-        current: () =>
-          ({
-            mode: "default",
-            plan: null,
-            network: null,
-          }) as never,
+        current: () => permissionContext,
+        update: async (next: never) => {
+          permissionContext = next;
+        },
       },
     },
   };
@@ -149,27 +154,23 @@ describe("compact progress controls", () => {
       setStreamMode: vi.fn(),
       setResponseLength: vi.fn(),
       onCompactProgress: vi.fn(),
-      setSDKStatus: vi.fn(),
     };
 
     const restore = installCompactProgressControls(session, controls);
     session.setStreamMode?.("requesting");
     session.setResponseLength?.((value) => value + 1);
     session.onCompactProgress?.({ type: "compact_start" });
-    session.setSDKStatus?.("compacting");
 
     expect(controls.setStreamMode).toHaveBeenCalledWith("requesting");
     expect(controls.setResponseLength).toHaveBeenCalledOnce();
     expect(controls.onCompactProgress).toHaveBeenCalledWith({
       type: "compact_start",
     });
-    expect(controls.setSDKStatus).toHaveBeenCalledWith("compacting");
 
     restore();
     expect(session.setStreamMode).toBe(previousSetStreamMode);
     expect(session.setResponseLength).toBeUndefined();
     expect(session.onCompactProgress).toBeUndefined();
-    expect(session.setSDKStatus).toBeUndefined();
   });
 });
 
@@ -207,6 +208,7 @@ function createClient(): AgenCDaemonTuiClient & {
       | SessionRollbackCompactionResult
       | SessionExtendCompactionRollbackRetentionResult
       | SessionRewindConversationToMessageResult
+      | SessionShellExecuteResult
     > {
       requests.push({
         method,
@@ -254,6 +256,18 @@ function createClient(): AgenCDaemonTuiClient & {
           sessionId: "session_1",
           ok: true,
           eventAlreadyEmitted: true,
+        };
+      }
+      if (method === "session.shell.execute") {
+        return {
+          commandId: String(params?.commandId),
+          content: "shell output",
+          stdout: "shell output",
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+          truncated: false,
+          isError: false,
         };
       }
       if (
@@ -447,7 +461,318 @@ const flush = (): Promise<void> =>
     setTimeout(resolve, 0);
   });
 
+function runtimeAuthoritySessionConfiguration() {
+  return {
+    cwd: process.cwd(),
+    approvalPolicy: { value: "on_request" as const },
+    sandboxPolicy: { value: "workspace_write" as const },
+    fileSystemSandboxPolicy: {
+      allowWrite: [process.cwd()],
+      denyWrite: [],
+      allowRead: [],
+      denyRead: [],
+    },
+    networkSandboxPolicy: {
+      allowlist: [],
+      denylist: [],
+      allowManagedDomainsOnly: false,
+    },
+    windowsSandboxLevel: "none" as const,
+    provider: { slug: "grok" },
+    collaborationMode: { model: "grok-4.5" },
+    dynamicTools: [],
+    sessionSource: "cli_main" as const,
+  };
+}
+
+function runtimeAuthorityBase(
+  onUpdate?: (mode: string) => Promise<void> | void,
+): {
+  readonly baseSession: AgenCTuiBridgeSession;
+  currentMode(): string;
+  readonly abortTerminal: ReturnType<typeof vi.fn>;
+} {
+  let current = { mode: "default" } as never;
+  const abortTerminal = vi.fn();
+  const baseSession = {
+    conversationId: "local_session",
+    sessionConfiguration: runtimeAuthoritySessionConfiguration(),
+    abortTerminal,
+    services: {
+      permissionModeRegistry: {
+        current: () => current,
+        update: async (next: { readonly mode: string }) => {
+          await onUpdate?.(next.mode);
+          current = next as never;
+        },
+      },
+    },
+  } as unknown as AgenCTuiBridgeSession;
+  return {
+    baseSession,
+    currentMode: () => (current as { readonly mode: string }).mode,
+    abortTerminal,
+  };
+}
+
+function runtimeSettingsEvent(
+  eventId: string,
+  previousSettingsEventId: string | null,
+  permissionMode: "default" | "acceptEdits" | "plan",
+  prePlanMode: "default" | "acceptEdits" | null = null,
+  capabilities: {
+    readonly autoModeAvailable?: boolean;
+    readonly bypassPermissionsModeAvailable?: boolean;
+    readonly bypassPermissionsConsentWorkspace?: string | null;
+    readonly provider?: string;
+    readonly model?: string;
+  } = {},
+): JsonObject {
+  return {
+    jsonrpc: JSON_RPC_VERSION,
+    method: "event.session_event",
+    params: {
+      sessionId: "session_1",
+      agentId: "agent_1",
+      eventId,
+      event: {
+        id: eventId,
+        type: "run_runtime_settings_changed",
+        payload: {
+          previousSettingsEventId,
+          permissionMode,
+          prePlanMode,
+          autoModeActive: false,
+          autoModeAvailable: capabilities.autoModeAvailable ?? true,
+          bypassPermissionsModeAvailable:
+            capabilities.bypassPermissionsModeAvailable ?? false,
+          bypassPermissionsWorkspace: null,
+          bypassPermissionsConsentWorkspace:
+            capabilities.bypassPermissionsConsentWorkspace ?? null,
+          model: capabilities.model ?? "grok-4.5",
+          provider: capabilities.provider ?? "grok",
+          profile: null,
+          reasoningEffort: null,
+          modelVerbosity: null,
+          serviceTier: null,
+          hooksDisabled: false,
+        },
+      },
+    },
+  };
+}
+
 describe("AgenC TUI daemon session adapter", () => {
+  it("reconciles raw settings cursors in order before ordinary authority-dependent events", async () => {
+    const order: string[] = [];
+    const authority = runtimeAuthorityBase((mode) => {
+      order.push(`apply:${mode}`);
+    });
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: authority.baseSession,
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+    });
+    const unsubscribe = session.subscribeToEvents((event) => {
+      order.push(`deliver:${(event as JsonObject).type as string}`);
+    });
+
+    client.emit(
+      "session_1",
+      runtimeSettingsEvent("E1", "E0", "acceptEdits"),
+    );
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.session_event",
+      params: {
+        sessionId: "session_1",
+        agentId: "agent_1",
+        eventId: "P1",
+        event: {
+          id: "permission-1",
+          type: "request_permissions",
+          payload: { callId: "call-1", permissions: ["FileRead"] },
+        },
+      },
+    });
+    client.emit(
+      "session_1",
+      runtimeSettingsEvent("E2", "E1", "plan", "acceptEdits"),
+    );
+
+    await session.submit("");
+    unsubscribe();
+    expect(authority.currentMode()).toBe("plan");
+    expect(order).toEqual([
+      "apply:acceptEdits",
+      "deliver:run_runtime_settings_changed",
+      "deliver:request_permissions",
+      "apply:plan",
+      "deliver:run_runtime_settings_changed",
+    ]);
+  });
+
+  it("reconciles inactive daemon permission capabilities as projection-only state", async () => {
+    const authority = runtimeAuthorityBase();
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: authority.baseSession,
+      client,
+      sessionId: "session_1",
+      clientId: "tui_capabilities",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+    });
+
+    client.emit(
+      "session_1",
+      runtimeSettingsEvent("E1", "E0", "default", null, {
+        autoModeAvailable: true,
+        bypassPermissionsModeAvailable: true,
+        bypassPermissionsConsentWorkspace: process.cwd(),
+      }),
+    );
+    await session.submit("");
+
+    expect(
+      authority.baseSession.services.permissionModeRegistry.current(),
+    ).toMatchObject({
+      mode: "default",
+      autoModeActive: false,
+      isAutoModeAvailable: true,
+      isBypassPermissionsModeAvailable: true,
+      bypassPermissionsAcceptedIn: [process.cwd()],
+    });
+  });
+
+  it("awaits queued settings replay before submitting and keeps observing after listeners detach", async () => {
+    let releaseUpdate!: () => void;
+    const updateGate = new Promise<void>((resolve) => {
+      releaseUpdate = resolve;
+    });
+    const authority = runtimeAuthorityBase(() => updateGate);
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: authority.baseSession,
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+    });
+    const unsubscribe = session.subscribeToEvents(() => {});
+    unsubscribe();
+    client.emit(
+      "session_1",
+      runtimeSettingsEvent("E1", "E0", "acceptEdits"),
+    );
+    const submit = session.submit("hello");
+    await flush();
+    expect(client.requests.some((request) => request.method === "message.stream"))
+      .toBe(false);
+    releaseUpdate();
+    await submit;
+    expect(authority.currentMode()).toBe("acceptEdits");
+    expect(client.requests.some((request) => request.method === "message.stream"))
+      .toBe(true);
+  });
+
+  it("fails closed on a settings cursor gap and on reconnect before the first UI subscriber", async () => {
+    const gapAuthority = runtimeAuthorityBase();
+    const gapClient = createClient();
+    const gapSession = createDaemonTuiSession({
+      baseSession: gapAuthority.baseSession,
+      client: gapClient,
+      sessionId: "session_1",
+      clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+    });
+    gapClient.emit(
+      "session_1",
+      runtimeSettingsEvent("E2", "missing", "acceptEdits"),
+    );
+    await expect(gapSession.submit("")).rejects.toThrow(
+      /cursor gap/u,
+    );
+    expect(gapAuthority.abortTerminal).toHaveBeenCalledWith(
+      "runtime_settings_authority_gap",
+    );
+
+    const reconnectAuthority = runtimeAuthorityBase();
+    const reconnectClient = createClient();
+    reconnectClient.connectionState = { status: "connected", id: "c1" };
+    const reconnectSession = createDaemonTuiSession({
+      baseSession: reconnectAuthority.baseSession,
+      client: reconnectClient,
+      sessionId: "session_1",
+      clientId: "tui_2",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+    });
+    reconnectClient.emitConnection({ status: "disconnected" });
+    reconnectClient.emitConnection({ status: "connected", id: "c2" });
+    await expect(reconnectSession.submit("must fail")).rejects.toThrow(
+      /re-attach is required/u,
+    );
+    expect(
+      reconnectClient.requests.some((request) => request.method === "message.stream"),
+    ).toBe(false);
+  });
+
+  it("fails closed on an explicit pre-subscribe authority overflow marker", async () => {
+    const authority = runtimeAuthorityBase();
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: authority.baseSession,
+      client,
+      sessionId: "session_1",
+      clientId: "tui_overflow",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+    });
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.session_event",
+      params: {
+        sessionId: "session_1",
+        eventId: "runtime-settings-buffer-gap:session_event_limit:session_1",
+        event: {
+          id: "runtime-settings-buffer-gap:session_event_limit:session_1",
+          type: "runtime_settings_authority_gap",
+          payload: { reason: "session_event_limit" },
+        },
+      },
+    });
+
+    await expect(session.submit("must fail")).rejects.toThrow(
+      /pre-subscribe buffer overflowed/u,
+    );
+    expect(authority.abortTerminal).toHaveBeenCalledWith(
+      "runtime_settings_authority_gap",
+    );
+  });
+
+  it("joins an initial replay at its raw baseline cursor and applies strict successors", async () => {
+    const authority = runtimeAuthorityBase();
+    const client = createClient();
+    const subscribe = client.subscribeToSessionEvents.bind(client);
+    client.subscribeToSessionEvents = (sessionId, listener) => {
+      const unsubscribe = subscribe(sessionId, listener);
+      listener(runtimeSettingsEvent("E0", null, "default"));
+      listener(runtimeSettingsEvent("E1", "E0", "acceptEdits"));
+      listener(runtimeSettingsEvent("E2", "E1", "plan", "acceptEdits"));
+      return unsubscribe;
+    };
+    const session = createDaemonTuiSession({
+      baseSession: authority.baseSession,
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+    });
+    await session.submit("");
+    expect(authority.currentMode()).toBe("plan");
+  });
+
   it("attaches the TUI to an agent before subscribing to its daemon session", async () => {
     const client = createClient();
     client.request = async (method, params) => {
@@ -458,13 +783,43 @@ describe("AgenC TUI daemon session adapter", () => {
           attachmentId: "attachment_1",
           sessionIds: ["session_1"],
           runtimeSessionId: "agent_runtime",
+          sessions: [
+            {
+              sessionId: "session_1",
+              agentId: "agent_1",
+              status: "running",
+              createdAt: "2026-05-01T12:00:00.000Z",
+              cwd: process.cwd(),
+            },
+          ],
+          runtimeSettings: {
+            permissionMode: "default",
+            prePlanMode: null,
+            autoModeActive: false,
+            autoModeAvailable: true,
+            bypassPermissionsModeAvailable: false,
+            bypassPermissionsWorkspace: null,
+            bypassPermissionsConsentWorkspace: null,
+            model: "grok-4.5",
+            provider: "grok",
+            profile: null,
+            reasoningEffort: null,
+            modelVerbosity: null,
+            serviceTier: null,
+            hooksDisabled: false,
+          },
+          runtimeSettingsEventId: "settings:agent_1:initial",
         } as never;
       }
       return {} as never;
     };
 
+    const baseSession = createBaseSession() as AgenCTuiBridgeSession & {
+      sessionConfiguration: JsonObject;
+    };
+    baseSession.sessionConfiguration = runtimeAuthoritySessionConfiguration();
     const session = await attachDaemonAgentTuiSession({
-      baseSession: createBaseSession(),
+      baseSession,
       client,
       agentId: "agent_1",
       clientId: "tui_1",
@@ -566,7 +921,7 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
   });
 
-  it("mirrors daemon-backed MCP additions to the runtime session", async () => {
+  it("routes MCP additions only to the daemon and refreshes passive status", async () => {
     const client = createClient();
     client.request = async (method, params) => {
       client.requests.push({ method, params });
@@ -576,6 +931,38 @@ describe("AgenC TUI daemon session adapter", () => {
           serverName: "audit-ping",
           success: true,
           toolCount: 1,
+        } as never;
+      }
+      if (method === "session.mcp.status") {
+        return {
+          sessionId: "session_1",
+          revision: 1,
+          servers: [
+            {
+              name: "audit-ping",
+              transport: "stdio",
+              enabled: true,
+              required: false,
+              state: "connected",
+              displayTarget: "node",
+              toolCount: 1,
+              error: "https://operator:hunter2@example.test/private",
+              env: { API_KEY: "hunter2" },
+              headers: { Authorization: "Bearer hunter2" },
+              args: ["--token", "hunter2"],
+              client: { secret: "hunter2" },
+            },
+          ],
+          tools: [
+            {
+              serverName: "audit-ping",
+              name: "mcp.audit-ping.check",
+              description:
+                "Use https://operator:hunter2@example.test/private",
+              inputSchema: { token: "hunter2" },
+              client: { secret: "hunter2" },
+            },
+          ],
         } as never;
       }
       return {} as never;
@@ -617,7 +1004,11 @@ describe("AgenC TUI daemon session adapter", () => {
       success: true,
       toolCount: 1,
     });
-    expect(client.requests).toEqual([
+    expect(
+      client.requests.filter(
+        (request) => request.method !== "session.mcp.status",
+      ),
+    ).toEqual([
       {
         method: "session.attach",
         params: { sessionId: "session_1", clientId: "tui_1" },
@@ -635,16 +1026,164 @@ describe("AgenC TUI daemon session adapter", () => {
         },
       },
     ]);
-    expect(localAddServer).toHaveBeenCalledWith({
-      name: "audit-ping",
-      transport: "stdio",
-      command: "node",
-      args: ["/tmp/audit-ping.mjs"],
+    expect(client.requests).toContainEqual({
+      method: "session.mcp.status",
+      params: { sessionId: "session_1" },
+    });
+    expect(localAddServer).not.toHaveBeenCalled();
+    expect(session.listMcpClients).toBeUndefined();
+    expect(session.listMcpTools).toBeUndefined();
+    expect(session.mcpSurfaceSnapshot?.()).toEqual({
+      revision: 1,
+      servers: [
+        {
+          name: "audit-ping",
+          transport: "stdio",
+          enabled: true,
+          required: false,
+          state: "connected",
+          displayTarget: "node",
+          toolCount: 1,
+        },
+      ],
+      tools: [{ serverName: "audit-ping", name: "mcp.audit-ping.check" }],
+    });
+    expect(JSON.stringify(session.mcpSurfaceSnapshot?.())).not.toContain(
+      "hunter2",
+    );
+  });
+
+  it("rejects unsafe daemon MCP projection values before caching them", async () => {
+    const client = createClient();
+    client.request = async (method, params) => {
+      client.requests.push({ method, params });
+      if (method === "session.mcp.status") {
+        return {
+          sessionId: "session_1",
+          revision: 1,
+          servers: [
+            {
+              name: "remote",
+              transport: "http",
+              enabled: true,
+              required: false,
+              state: "connected",
+              displayTarget:
+                "https://example.test/private?token=hunter2#credential",
+              toolCount: 0,
+            },
+          ],
+          tools: [],
+        } as never;
+      }
+      return {} as never;
+    };
+    const session = await attachDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await expect(session.refreshMcpSurface?.()).rejects.toThrow(
+      "Daemon MCP status servers[0].displayTarget is invalid",
+    );
+    expect(session.mcpSurfaceSnapshot?.()).toEqual({
+      revision: 0,
+      servers: [],
+      tools: [],
     });
   });
 
-  it("mirrors daemon-backed MCP reconnect/enable/disable to the runtime session", async () => {
+  it("rejects non-canonical daemon MCP server identities before caching them", async () => {
     const client = createClient();
+    client.request = async (method, params) => {
+      client.requests.push({ method, params });
+      if (method === "session.mcp.status") {
+        return {
+          sessionId: "session_1",
+          revision: 1,
+          servers: [
+            {
+              name: "remote.bad",
+              transport: "http",
+              enabled: true,
+              required: false,
+              state: "connected",
+              displayTarget: "https://example.test",
+              toolCount: 0,
+            },
+          ],
+          tools: [],
+        } as never;
+      }
+      return {} as never;
+    };
+    const session = await attachDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await expect(session.refreshMcpSurface?.()).rejects.toThrow(
+      "Daemon MCP status servers[0].name is invalid",
+    );
+    expect(session.mcpSurfaceSnapshot?.()).toEqual({
+      revision: 0,
+      servers: [],
+      tools: [],
+    });
+  });
+
+  it("retries a transient MCP status failure without losing the invalidation revision", async () => {
+    const client = createClient();
+    let statusAttempts = 0;
+    client.request = async (method, params) => {
+      client.requests.push({ method, params });
+      if (method === "session.mcp.status") {
+        statusAttempts += 1;
+        if (statusAttempts === 1) {
+          throw new Error("temporary daemon read failure");
+        }
+        return {
+          sessionId: "session_1",
+          revision: 5,
+          servers: [],
+          tools: [],
+        } as never;
+      }
+      return {} as never;
+    };
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const revisions: number[] = [];
+    const unsubscribeEvents = session.subscribeToEvents(() => {});
+    const unsubscribeSurface = session.subscribeToMcpSurface?.((snapshot) => {
+      revisions.push(snapshot.revision);
+    });
+
+    client.emit("session_1", {
+      method: "event.mcp_status_changed",
+      params: { sessionId: "session_1", revision: 5 },
+    });
+    await vi.waitFor(() => {
+      expect(session.mcpSurfaceSnapshot?.().revision).toBe(5);
+    });
+    expect(statusAttempts).toBe(2);
+    expect(revisions).toEqual([5]);
+
+    unsubscribeSurface?.();
+    unsubscribeEvents();
+  });
+
+  it("routes MCP state mutations only to the daemon authority", async () => {
+    const client = createClient();
+    let revision = 0;
     client.request = async (method, params) => {
       client.requests.push({ method, params });
       if (
@@ -657,6 +1196,31 @@ describe("AgenC TUI daemon session adapter", () => {
           serverName: "audit-ping",
           success: true,
           toolCount: 2,
+        } as never;
+      }
+      if (method === "session.mcp.status") {
+        revision += 1;
+        return {
+          sessionId: "session_1",
+          revision,
+          servers: [
+            {
+              name: "audit-ping",
+              transport: "stdio",
+              enabled: revision < 3,
+              required: false,
+              state: revision < 3 ? "connected" : "disabled",
+              displayTarget: "node",
+              toolCount: revision < 3 ? 2 : 0,
+            },
+          ],
+          tools:
+            revision < 3
+              ? [
+                  { serverName: "audit-ping", name: "mcp.audit-ping.check" },
+                  { serverName: "audit-ping", name: "mcp.audit-ping.report" },
+                ]
+              : [],
         } as never;
       }
       return {} as never;
@@ -708,7 +1272,9 @@ describe("AgenC TUI daemon session adapter", () => {
     expect(enableResult).toEqual(projected);
     expect(disableResult).toEqual(projected);
 
-    expect(client.requests).toEqual([
+    expect(
+      client.requests.filter((request) => request.method !== "session.mcp.status"),
+    ).toEqual([
       {
         method: "session.attach",
         params: { sessionId: "session_1", clientId: "tui_1" },
@@ -726,9 +1292,140 @@ describe("AgenC TUI daemon session adapter", () => {
         params: { sessionId: "session_1", serverName: "audit-ping" },
       },
     ]);
-    expect(localReconnect).toHaveBeenCalledWith("audit-ping");
-    expect(localEnable).toHaveBeenCalledWith("audit-ping");
-    expect(localDisable).toHaveBeenCalledWith("audit-ping");
+    expect(
+      client.requests.filter((request) => request.method === "session.mcp.status"),
+    ).toHaveLength(3);
+    expect(localReconnect).not.toHaveBeenCalled();
+    expect(localEnable).not.toHaveBeenCalled();
+    expect(localDisable).not.toHaveBeenCalled();
+    expect(session.mcpSurfaceSnapshot?.()).toMatchObject({
+      revision: 3,
+      servers: [
+        expect.objectContaining({
+          name: "audit-ping",
+          enabled: false,
+          state: "disabled",
+        }),
+      ],
+      tools: [],
+    });
+  });
+
+  it("tracks revisioned passive MCP status across invalidations and reconnect epochs", async () => {
+    const client = createClient();
+    client.connectionState = { status: "connected", id: "connection-1" };
+    let currentStatus = {
+      sessionId: "session_1",
+      revision: 9,
+      servers: [
+        {
+          name: "audit-ping",
+          transport: "stdio" as const,
+          enabled: true,
+          required: false,
+          state: "connected" as const,
+          displayTarget: "node",
+          toolCount: 1,
+        },
+      ],
+      tools: [
+        { serverName: "audit-ping", name: "mcp.audit-ping.check" },
+      ],
+    };
+    client.request = async (method, params) => {
+      client.requests.push({ method, params });
+      if (method === "session.mcp.status") return currentStatus as never;
+      return {} as never;
+    };
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const transcriptEvents: unknown[] = [];
+    const surfaceRevisions: number[] = [];
+    const unsubscribeEvents = session.subscribeToEvents((event) => {
+      transcriptEvents.push(event);
+    });
+    const unsubscribeSurface = session.subscribeToMcpSurface?.((snapshot) => {
+      surfaceRevisions.push(snapshot.revision);
+    });
+
+    await expect(session.refreshMcpSurface?.()).resolves.toMatchObject({
+      revision: 9,
+    });
+    expect(surfaceRevisions).toEqual([9]);
+    const statusRequestsAfterInitial = client.requests.filter(
+      (request) => request.method === "session.mcp.status",
+    ).length;
+
+    client.emit("session_1", {
+      method: "event.mcp_status_changed",
+      params: { sessionId: "session_1", revision: 8 },
+    });
+    await flush();
+    expect(
+      client.requests.filter(
+        (request) => request.method === "session.mcp.status",
+      ),
+    ).toHaveLength(statusRequestsAfterInitial);
+
+    currentStatus = {
+      ...currentStatus,
+      revision: 10,
+      servers: [
+        {
+          ...currentStatus.servers[0]!,
+          state: "failed",
+          toolCount: 0,
+        },
+      ],
+      tools: [],
+    };
+    client.emit("session_1", {
+      method: "event.mcp_status_changed",
+      params: { sessionId: "session_1", revision: 10 },
+    });
+    await vi.waitFor(() => {
+      expect(session.mcpSurfaceSnapshot?.()).toMatchObject({
+        revision: 10,
+        servers: [
+          expect.objectContaining({
+            name: "audit-ping",
+            state: "failed",
+          }),
+        ],
+        tools: [],
+      });
+    });
+
+    client.emitConnection({ status: "disconnected", message: "socket lost" });
+    currentStatus = {
+      sessionId: "session_1",
+      revision: 1,
+      servers: [],
+      tools: [],
+    };
+    client.emitConnection({ status: "connected", id: "connection-2" });
+    await vi.waitFor(() => {
+      expect(session.mcpSurfaceSnapshot?.()).toMatchObject({
+        revision: 1,
+        servers: [],
+        tools: [],
+      });
+    });
+    expect(surfaceRevisions).toEqual([9, 10, 1]);
+    expect(transcriptEvents).not.toContainEqual(
+      expect.objectContaining({ type: "mcp_status_changed" }),
+    );
+
+    unsubscribeSurface?.();
+    unsubscribeEvents();
+
+    await expect(session.submit("must reattach")).rejects.toThrow(
+      /re-attach is required/u,
+    );
   });
 
   it("exposes daemon turn activity through activeTurn for prompt busy state", async () => {
@@ -837,6 +1534,164 @@ describe("AgenC TUI daemon session adapter", () => {
       },
     });
     expect(session.activeTurn?.unsafePeek()).toBeNull();
+    unsubscribe();
+  });
+
+  it("does not classify direct shell tool activity as a model turn", async () => {
+    const client = createClient();
+    const originalRequest = client.request.bind(client) as (
+      method: AgenCDaemonMethod | AgenCDaemonInternalMethod,
+      params?: JsonObject,
+      options?: { readonly signal?: AbortSignal },
+    ) => Promise<unknown>;
+    let shellRequested = false;
+    let resolveShellResponse!: (result: SessionShellExecuteResult) => void;
+    const shellResponse = new Promise<SessionShellExecuteResult>((resolve) => {
+      resolveShellResponse = resolve;
+    });
+    client.request = ((
+      method: AgenCDaemonMethod | AgenCDaemonInternalMethod,
+      params?: JsonObject,
+      options?: { readonly signal?: AbortSignal },
+    ) => {
+      if (method === "session.shell.execute") {
+        shellRequested = true;
+        return shellResponse;
+      }
+      return originalRequest(method, params, options);
+    }) as typeof client.request;
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const unsubscribe = session.subscribeToEvents(() => undefined);
+    if (session.executeShellCommand === undefined) {
+      throw new Error("expected daemon shell execution bridge");
+    }
+
+    const shell = session.executeShellCommand({
+      command: "printf shell-output",
+      commandId: "shell-command-lifecycle",
+    });
+    expect(shellRequested).toBe(true);
+    client.emit("session_1", {
+      method: "event.session_event",
+      params: {
+        eventId: "shell-tool-started",
+        event: {
+          id: "shell-tool-started",
+          type: "tool_call_started",
+          payload: {
+            callId: "shell-command-lifecycle",
+            toolName: "system.bash",
+            args: '{"command":"printf shell-output"}',
+          },
+        },
+      },
+    });
+    expect(session.activeTurn?.unsafePeek()).toBeNull();
+
+    resolveShellResponse({
+      commandId: "shell-command-lifecycle",
+      content: "shell output",
+      stdout: "shell output",
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      truncated: false,
+      isError: false,
+    });
+    await expect(shell).resolves.toMatchObject({
+      commandId: "shell-command-lifecycle",
+    });
+    expect(session.activeTurn?.unsafePeek()).toBeNull();
+    unsubscribe();
+  });
+
+  it("keeps a model turn active when turn_started arrives before the shell response", async () => {
+    const client = createClient();
+    const originalRequest = client.request.bind(client) as (
+      method: AgenCDaemonMethod | AgenCDaemonInternalMethod,
+      params?: JsonObject,
+      options?: { readonly signal?: AbortSignal },
+    ) => Promise<unknown>;
+    let resolveShellResponse!: (result: SessionShellExecuteResult) => void;
+    const shellResponse = new Promise<SessionShellExecuteResult>((resolve) => {
+      resolveShellResponse = resolve;
+    });
+    client.request = ((
+      method: AgenCDaemonMethod | AgenCDaemonInternalMethod,
+      params?: JsonObject,
+      options?: { readonly signal?: AbortSignal },
+    ) =>
+      method === "session.shell.execute"
+        ? shellResponse
+        : originalRequest(method, params, options)) as typeof client.request;
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const unsubscribe = session.subscribeToEvents(() => undefined);
+    if (session.executeShellCommand === undefined) {
+      throw new Error("expected daemon shell execution bridge");
+    }
+
+    const shell = session.executeShellCommand({
+      command: "printf shell-output",
+      commandId: "shell-command-race",
+    });
+    client.emit("session_1", {
+      method: "event.session_event",
+      params: {
+        eventId: "shell-tool-progress",
+        event: {
+          id: "shell-tool-progress",
+          type: "tool_progress",
+          payload: {
+            callId: "shell-command-race",
+            toolName: "system.bash",
+            output: "running",
+          },
+        },
+      },
+    });
+    expect(session.activeTurn?.unsafePeek()).toBeNull();
+
+    client.emit("session_1", {
+      method: "event.session_event",
+      params: {
+        eventId: "model-turn-started",
+        event: {
+          id: "model-turn-started",
+          type: "turn_started",
+          payload: { turnId: "model-turn-2" },
+        },
+      },
+    });
+    expect(session.activeTurn?.unsafePeek()).toEqual({
+      turnId: "model-turn-2",
+    });
+
+    resolveShellResponse({
+      commandId: "shell-command-race",
+      content: "shell output",
+      stdout: "shell output",
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      truncated: false,
+      isError: false,
+    });
+    await expect(shell).resolves.toMatchObject({
+      commandId: "shell-command-race",
+    });
+    expect(session.activeTurn?.unsafePeek()).toEqual({
+      turnId: "model-turn-2",
+    });
     unsubscribe();
   });
 
@@ -1147,28 +2002,79 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
   });
 
-  it("forwards setPendingProviderSwitch to the daemon session.setModel RPC", async () => {
+  it("awaits the exact model-settings successor before returning success", async () => {
+    const authority = runtimeAuthorityBase();
     const client = createClient();
+    const request = client.request.bind(client);
+    let resolveModelResponse!: (value: unknown) => void;
+    const modelResponse = new Promise<unknown>((resolve) => {
+      resolveModelResponse = resolve;
+    });
+    client.request = async (method, params, options) => {
+      if (method !== "session.setModel") {
+        return request(method, params, options);
+      }
+      client.requests.push({ method, params });
+      return (await modelResponse) as never;
+    };
     const session = createDaemonTuiSession({
-      baseSession: createBaseSession(),
+      baseSession: authority.baseSession,
       client,
       sessionId: "session_1",
       clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
     });
 
-    // /model and /provider stage the switch synchronously; the bridge
-    // fires session.setModel fire-and-forget. Flush the microtask queue
-    // so the request lands before assertion.
-    (
-      session as unknown as {
-        setPendingProviderSwitch: (
-          spec: { provider: string; model: string } | null,
-        ) => void;
-      }
-    ).setPendingProviderSwitch({ provider: "openai", model: "gpt-x" });
-    await Promise.resolve();
-    await Promise.resolve();
+    let settled = false;
+    const mutation = session.applyProviderModelSelection?.({
+      provider: "openai",
+      model: "gpt-x",
+    });
+    void mutation?.finally(() => {
+      settled = true;
+    });
+    await flush();
+    expect(settled).toBe(false);
 
+    resolveModelResponse({
+      sessionId: "session_1",
+      applied: true,
+      provider: "openai",
+      model: "gpt-x",
+      runtimeSettingsEventId: "E1",
+      summary: 'Model switched to "gpt-x" on "openai".',
+    });
+    await flush();
+    expect(settled).toBe(false);
+    expect(
+      (
+        authority.baseSession as unknown as {
+          sessionConfiguration: {
+            provider: { slug: string };
+            collaborationMode: { model: string };
+          };
+        }
+      ).sessionConfiguration,
+    ).toMatchObject({
+      provider: { slug: "grok" },
+      collaborationMode: { model: "grok-4.5" },
+    });
+
+    client.emit(
+      "session_1",
+      runtimeSettingsEvent("E1", "E0", "default", null, {
+        provider: "openai",
+        model: "gpt-x",
+      }),
+    );
+    const result = await mutation;
+
+    expect(result).toMatchObject({
+      applied: true,
+      provider: "openai",
+      model: "gpt-x",
+      runtimeSettingsEventId: "E1",
+    });
     expect(client.requests).toEqual([
       {
         method: "session.setModel",
@@ -1179,34 +2085,155 @@ describe("AgenC TUI daemon session adapter", () => {
         },
       },
     ]);
+    expect(
+      (
+        authority.baseSession as unknown as {
+          sessionConfiguration: {
+            provider: { slug: string };
+            collaborationMode: { model: string };
+          };
+        }
+      ).sessionConfiguration,
+    ).toMatchObject({
+      provider: { slug: "openai" },
+      collaborationMode: { model: "gpt-x" },
+    });
   });
 
-  it("ignores a null setPendingProviderSwitch without issuing an RPC", async () => {
+  it("serializes model changes so a second request follows the first successor", async () => {
+    const authority = runtimeAuthorityBase();
     const client = createClient();
+    const request = client.request.bind(client);
+    let cursor = "E0";
+    const pairs: Array<readonly [string, string]> = [];
+    client.request = async (method, params, options) => {
+      if (method !== "session.setModel") {
+        return request(method, params, options);
+      }
+      client.requests.push({ method, params });
+      const provider = String(params?.provider);
+      const model = String(params?.model);
+      pairs.push([provider, model]);
+      const nextCursor = `E${pairs.length}`;
+      client.emit(
+        "session_1",
+        runtimeSettingsEvent(nextCursor, cursor, "default", null, {
+          provider,
+          model,
+        }),
+      );
+      cursor = nextCursor;
+      return {
+        sessionId: "session_1",
+        applied: true,
+        provider,
+        model,
+        runtimeSettingsEventId: nextCursor,
+        summary: `Model switched to "${model}" on "${provider}".`,
+      } as never;
+    };
     const session = createDaemonTuiSession({
-      baseSession: createBaseSession(),
+      baseSession: authority.baseSession,
       client,
       sessionId: "session_1",
       clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
     });
 
-    (
-      session as unknown as {
-        setPendingProviderSwitch: (spec: null) => void;
-      }
-    ).setPendingProviderSwitch(null);
-    await Promise.resolve();
+    const first = session.applyProviderModelSelection?.({
+      provider: "openai",
+      model: "gpt-x",
+    });
+    const second = session.applyProviderModelSelection?.({
+      provider: "grok",
+      model: "grok-4.5",
+    });
+    await Promise.all([first, second]);
 
-    expect(client.requests).toEqual([]);
+    expect(pairs).toEqual([
+      ["openai", "gpt-x"],
+      ["grok", "grok-4.5"],
+    ]);
+    expect(
+      (
+        authority.baseSession as unknown as {
+          sessionConfiguration: {
+            provider: { slug: string };
+            collaborationMode: { model: string };
+          };
+        }
+      ).sessionConfiguration,
+    ).toMatchObject({
+      provider: { slug: "grok" },
+      collaborationMode: { model: "grok-4.5" },
+    });
+  });
+
+  it("rejects when the connection gaps after the model response but before its successor", async () => {
+    const authority = runtimeAuthorityBase();
+    const client = createClient();
+    const request = client.request.bind(client);
+    client.request = async (method, params, options) => {
+      if (method !== "session.setModel") {
+        return request(method, params, options);
+      }
+      client.requests.push({ method, params });
+      client.emitConnection({ status: "disconnected" });
+      return {
+        sessionId: "session_1",
+        applied: true,
+        provider: "openai",
+        model: "gpt-x",
+        runtimeSettingsEventId: "E1",
+        summary: 'Model switched to "gpt-x" on "openai".',
+      } as never;
+    };
+    const session = createDaemonTuiSession({
+      baseSession: authority.baseSession,
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+    });
+
+    await expect(
+      session.applyProviderModelSelection?.({
+        provider: "openai",
+        model: "gpt-x",
+      }),
+    ).rejects.toThrow(/connection changed.*re-attach/u);
+    await expect(session.submit("must stay fenced")).rejects.toThrow(
+      /connection changed.*re-attach/u,
+    );
+    expect(authority.abortTerminal).toHaveBeenCalledTimes(1);
   });
 
   it("forwards setDaemonPermissionMode to the daemon session.setPermissionMode RPC", async () => {
+    const authority = runtimeAuthorityBase();
     const client = createClient();
+    const request = client.request.bind(client);
+    client.request = async (method, params, options) => {
+      if (method !== "session.setPermissionMode") {
+        return request(method, params, options);
+      }
+      client.requests.push({ method, params });
+      client.emit(
+        "session_1",
+        runtimeSettingsEvent("E1", "E0", "plan", "default"),
+      );
+      return {
+        sessionId: "session_1",
+        applied: true,
+        previousMode: "default",
+        mode: "plan",
+      } as never;
+    };
     const session = createDaemonTuiSession({
-      baseSession: createBaseSession(),
+      baseSession: authority.baseSession,
       client,
       sessionId: "session_1",
       clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
     });
 
     await (
@@ -1224,6 +2251,296 @@ describe("AgenC TUI daemon session adapter", () => {
         },
       },
     ]);
+    expect(authority.currentMode()).toBe("plan");
+  });
+
+  it("holds immediate input until an in-flight permission-mode change settles", async () => {
+    const authority = runtimeAuthorityBase();
+    const client = createClient();
+    const request = client.request.bind(client);
+    const modeRequestEntered = Promise.withResolvers<void>();
+    const releaseModeRequest = Promise.withResolvers<void>();
+    client.request = async (method, params, options) => {
+      if (method !== "session.setPermissionMode") {
+        return request(method, params, options);
+      }
+      client.requests.push({ method, params });
+      modeRequestEntered.resolve();
+      await releaseModeRequest.promise;
+      client.emit(
+        "session_1",
+        runtimeSettingsEvent("E1", "E0", "plan", "default"),
+      );
+      return {
+        sessionId: "session_1",
+        applied: true,
+        previousMode: "default",
+        mode: "plan",
+      } as never;
+    };
+    const session = createDaemonTuiSession({
+      baseSession: authority.baseSession,
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+    });
+
+    const modeChange = session.setDaemonPermissionMode?.("plan");
+    await modeRequestEntered.promise;
+    const submission = session.submit("run after plan starts");
+    await Promise.resolve();
+
+    expect(client.requests.map((entry) => entry.method)).toEqual([
+      "session.setPermissionMode",
+    ]);
+
+    releaseModeRequest.resolve();
+    await Promise.all([modeChange, submission]);
+    expect(client.requests.map((entry) => entry.method)).toEqual([
+      "session.setPermissionMode",
+      "message.stream",
+    ]);
+    expect(authority.currentMode()).toBe("plan");
+  });
+
+  it("forwards and projects canonical daemon permission-rule mutations", async () => {
+    const registry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
+    const baseSession = {
+      ...createBaseSession(),
+      services: { permissionModeRegistry: registry },
+    } as unknown as AgenCTuiBridgeSession;
+    const client = createClient();
+    client.request = async (method, params) => {
+      if (method !== "session.permissions.mutateRule") return {} as never;
+      client.requests.push({ method, params });
+      return {
+        sessionId: "session_1",
+        applied: true,
+        operation: "add",
+        behavior: "ask",
+        rule: "Write",
+        sessionRules: { allow: [], deny: [], ask: ["Write"] },
+      } as never;
+    };
+    const session = createDaemonTuiSession({
+      baseSession,
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await expect(
+      (
+        session as unknown as {
+          mutateDaemonPermissionRule(params: {
+            operation: "add";
+            behavior: "ask";
+            rule: string;
+          }): Promise<unknown>;
+        }
+      ).mutateDaemonPermissionRule({
+        operation: "add",
+        behavior: "ask",
+        rule: "Write",
+      }),
+    ).resolves.toMatchObject({ sessionRules: { ask: ["Write"] } });
+    expect(client.requests).toEqual([
+      {
+        method: "session.permissions.mutateRule",
+        params: {
+          sessionId: "session_1",
+          operation: "add",
+          behavior: "ask",
+          rule: "Write",
+        },
+      },
+    ]);
+    expect(registry.current().alwaysAskRules.session).toEqual(["Write"]);
+  });
+
+  it("fails closed when the daemon returns a malformed permission-rule snapshot", async () => {
+    const registry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
+    const abortTerminal = vi.fn();
+    const baseSession = {
+      ...createBaseSession(),
+      abortTerminal,
+      services: { permissionModeRegistry: registry },
+    } as unknown as AgenCTuiBridgeSession;
+    const client = createClient();
+    client.request = async (method, params) => {
+      client.requests.push({ method, params });
+      if (method !== "session.permissions.mutateRule") return {} as never;
+      return {
+        sessionId: "session_1",
+        applied: true,
+        operation: "add",
+        behavior: "ask",
+        rule: "Write",
+        sessionRules: { allow: [], deny: [], ask: ["Write(*)"] },
+      } as never;
+    };
+    const session = createDaemonTuiSession({
+      baseSession,
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await expect(
+      session.mutateDaemonPermissionRule?.({
+        operation: "add",
+        behavior: "ask",
+        rule: "Write",
+      }),
+    ).rejects.toThrow(/non-canonical/u);
+    expect(abortTerminal).toHaveBeenCalledWith(
+      "permission_rule_authority_reconciliation_failed",
+    );
+    expect(registry.current().alwaysAskRules.session).toBeUndefined();
+    await expect(session.submit("must remain fenced")).rejects.toThrow(
+      /non-canonical/u,
+    );
+  });
+
+  it("fails closed when canonical permission-rule projection cannot commit", async () => {
+    const abortTerminal = vi.fn();
+    const projectionError = new Error("permission projection failed");
+    const baseSession = {
+      ...createBaseSession(),
+      abortTerminal,
+      services: {
+        permissionModeRegistry: {
+          current: () => createEmptyToolPermissionContext(),
+          transact: vi.fn(async () => {
+            throw projectionError;
+          }),
+        },
+      },
+    } as unknown as AgenCTuiBridgeSession;
+    const client = createClient();
+    client.request = async (method, params) => {
+      client.requests.push({ method, params });
+      if (method !== "session.permissions.mutateRule") return {} as never;
+      return {
+        sessionId: "session_1",
+        applied: true,
+        operation: "remove",
+        behavior: "deny",
+        rule: "Write",
+        sessionRules: { allow: [], deny: [], ask: [] },
+      } as never;
+    };
+    const session = createDaemonTuiSession({
+      baseSession,
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await expect(
+      session.mutateDaemonPermissionRule?.({
+        operation: "remove",
+        behavior: "deny",
+        rule: "Write",
+      }),
+    ).rejects.toBe(projectionError);
+    expect(abortTerminal).toHaveBeenCalledWith(
+      "permission_rule_authority_reconciliation_failed",
+    );
+  });
+
+  it("fails closed when a permission-rule request times out after an ambiguous commit", async () => {
+    const registry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
+    const abortTerminal = vi.fn();
+    const baseSession = {
+      ...createBaseSession(),
+      abortTerminal,
+      services: { permissionModeRegistry: registry },
+    } as unknown as AgenCTuiBridgeSession;
+    const client = createClient();
+    let daemonCommitted = false;
+    client.request = async (method, params) => {
+      client.requests.push({ method, params });
+      if (method !== "session.permissions.mutateRule") return {} as never;
+      daemonCommitted = true;
+      throw new Error("request timed out after dispatch");
+    };
+    const session = createDaemonTuiSession({
+      baseSession,
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await expect(
+      session.mutateDaemonPermissionRule?.({
+        operation: "add",
+        behavior: "deny",
+        rule: "Write",
+      }),
+    ).rejects.toThrow("request timed out after dispatch");
+
+    expect(daemonCommitted).toBe(true);
+    expect(registry.current().alwaysDenyRules.session).toBeUndefined();
+    expect(abortTerminal).toHaveBeenCalledWith(
+      "permission_rule_authority_reconciliation_failed",
+    );
+    await expect(session.submit("must remain fenced")).rejects.toThrow(
+      "request timed out after dispatch",
+    );
+  });
+
+  it("does not fence a proven precommit permission-rule rejection", async () => {
+    const registry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
+    const abortTerminal = vi.fn();
+    const baseSession = {
+      ...createBaseSession(),
+      abortTerminal,
+      services: { permissionModeRegistry: registry },
+    } as unknown as AgenCTuiBridgeSession;
+    const client = createClient();
+    const request = client.request.bind(client);
+    client.request = async (method, params, options) => {
+      if (method === "session.permissions.mutateRule") {
+        client.requests.push({ method, params });
+        throw new AgenCDaemonResponseError({
+          code: -32602,
+          message: "Session permission rules are disabled by managed policy",
+          data: {
+            code: "PERMISSION_RULE_MUTATION_REJECTED",
+            authorityPhase: "precommit",
+          },
+        });
+      }
+      return request(method, params, options) as never;
+    };
+    const session = createDaemonTuiSession({
+      baseSession,
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await expect(
+      session.mutateDaemonPermissionRule?.({
+        operation: "add",
+        behavior: "deny",
+        rule: "Write",
+      }),
+    ).rejects.toThrow(/disabled by managed policy/u);
+
+    expect(abortTerminal).not.toHaveBeenCalled();
+    await expect(session.submit("still allowed")).resolves.toBeUndefined();
+    expect(client.requests.at(-1)?.method).toBe("message.stream");
   });
 
   it("reloads daemon-global config before applying it to the live session", async () => {
@@ -1608,6 +2925,43 @@ describe("AgenC TUI daemon session adapter", () => {
         },
       },
     ]);
+  });
+
+  it("forwards shell execution through the attached session with cancellation", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const controller = new AbortController();
+
+    await expect(
+      session.executeShellCommand?.({
+        command: "printf shell-output",
+        commandId: "shell-command-1",
+        signal: controller.signal,
+      }),
+    ).resolves.toEqual({
+      commandId: "shell-command-1",
+      content: "shell output",
+      stdout: "shell output",
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      truncated: false,
+      isError: false,
+    });
+    expect(client.requests.at(-1)).toEqual({
+      method: "session.shell.execute",
+      params: {
+        sessionId: "session_1",
+        commandId: "shell-command-1",
+        command: "printf shell-output",
+      },
+      signal: controller.signal,
+    });
   });
 
   it("forwards getDaemonHooksStatus to the daemon session.hooks.status RPC", async () => {
@@ -2476,6 +3830,7 @@ describe("AgenC TUI daemon session adapter", () => {
         },
       },
       {
+        eventId: "raw_1",
         id: "daemon:agent_1:raw_1",
         type: "custom",
         payload: { ok: true },

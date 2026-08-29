@@ -53,6 +53,22 @@ const landlockRunDist = resolve(
   runtimeRoot,
   'dist/agenc-landlock-run',
 );
+const linuxSecretServiceHelperSource = resolve(
+  runtimeRoot,
+  'native/agenc-secret-service-helper.c',
+);
+const linuxSecretServiceHelperDist = resolve(
+  runtimeRoot,
+  'dist/agenc-secret-service-helper',
+);
+const macOsKeychainHelperSource = resolve(
+  runtimeRoot,
+  'native/agenc-keychain-helper.c',
+);
+const macOsKeychainHelperDist = resolve(
+  runtimeRoot,
+  'dist/agenc-keychain-helper',
+);
 const windowsProcessBrokerSource = resolve(
   runtimeRoot,
   'native/agenc-process-job-broker.cs',
@@ -209,6 +225,86 @@ function compileLinuxLandlockRun(): void {
     );
   }
   chmodSync(landlockRunDist, 0o755);
+}
+
+function compileLinuxSecretServiceHelper(): void {
+  if (process.platform !== 'linux') return;
+  const compiler = process.env.CC?.trim() || 'cc';
+  const result = spawnSync(
+    compiler,
+    [
+      '-O2',
+      '-std=c11',
+      '-Wall',
+      '-Wextra',
+      '-Werror',
+      '-D_FORTIFY_SOURCE=2',
+      '-fstack-protector-strong',
+      '-Wl,-z,relro,-z,now',
+      '-o',
+      linuxSecretServiceHelperDist,
+      linuxSecretServiceHelperSource,
+      '-ldl',
+    ],
+    {
+      cwd: runtimeRoot,
+      env: {
+        ...process.env,
+        LANG: 'C',
+        LC_ALL: 'C',
+      },
+      encoding: 'utf8',
+    },
+  );
+  if (result.error !== undefined || result.status !== 0) {
+    throw new Error(
+      'Linux Secret Service helper build failed' +
+        (result.error === undefined ? '' : `: ${result.error.message}`) +
+        (result.stderr ? `\n${result.stderr.trim()}` : ''),
+    );
+  }
+  chmodSync(linuxSecretServiceHelperDist, 0o755);
+}
+
+function compileMacOsKeychainHelper(): void {
+  if (process.platform !== 'darwin') return;
+  const compiler = process.env.CC?.trim() || 'cc';
+  const result = spawnSync(
+    compiler,
+    [
+      '-O2',
+      '-std=c11',
+      '-Wall',
+      '-Wextra',
+      '-Werror',
+      '-D_FORTIFY_SOURCE=2',
+      '-fstack-protector-strong',
+      '-framework',
+      'Security',
+      '-framework',
+      'CoreFoundation',
+      '-o',
+      macOsKeychainHelperDist,
+      macOsKeychainHelperSource,
+    ],
+    {
+      cwd: runtimeRoot,
+      env: {
+        ...process.env,
+        LANG: 'C',
+        LC_ALL: 'C',
+      },
+      encoding: 'utf8',
+    },
+  );
+  if (result.error !== undefined || result.status !== 0) {
+    throw new Error(
+      'macOS Keychain helper build failed' +
+        (result.error === undefined ? '' : `: ${result.error.message}`) +
+        (result.stderr ? `\n${result.stderr.trim()}` : ''),
+    );
+  }
+  chmodSync(macOsKeychainHelperDist, 0o755);
 }
 
 function compileWindowsProcessBroker(): void {
@@ -509,6 +605,8 @@ const agencRuntimeAssets = {
       copyYoloClassifierPrompts();
       compileLinuxProcessBroker();
       compileLinuxLandlockRun();
+      compileLinuxSecretServiceHelper();
+      compileMacOsKeychainHelper();
       compileWindowsProcessBroker();
     });
   },
@@ -583,7 +681,7 @@ const agencBareSrcAlias = {
   },
 };
 
-const noExternal = ['semver', 'supports-hyperlinks'];
+const noExternal = ['jsonc-parser', 'semver', 'supports-hyperlinks'];
 
 function isBundledBareImport(source: string): boolean {
   return noExternal.some(
@@ -712,7 +810,6 @@ const external = [
   '@anthropic-ai/bedrock-sdk',
   '@aws-sdk/client-bedrock',
   '@aws-sdk/client-bedrock-runtime',
-  '@aws-sdk/client-sts',
   '@smithy/core',
   '@smithy/node-http-handler',
   'axios',

@@ -141,6 +141,22 @@ export function runtimeSandboxForExec(
   const sandboxPolicyCwd = resolve(
     stringValue(turn.cwd) ?? fallbackCwd,
   );
+  const sessionTempRoot =
+    context.invocation.session.services.runtimeOptions.sessionTempRoot;
+  if (sessionTempRoot === undefined) {
+    throw new SandboxExecutionError({
+      code: "sandbox_surface_uncovered",
+      surface: executionSurface,
+      status: {
+        kind: "unavailable",
+        mode: context.sandboxMode,
+        platform: process.platform,
+        reason:
+          "authenticated runtime session has no captured temp-root authority",
+        remediation: "Create the session through the canonical runtime ingress.",
+      },
+    });
+  }
   const network = networkPolicy(turn.networkSandboxPolicy);
   const networkInterfaces = networkPolicyInterfaces(turn.network);
   return {
@@ -152,11 +168,11 @@ export function runtimeSandboxForExec(
       ? { additionalPermissions: context.additionalPermissions }
       : {}),
     sandboxPolicyCwd,
+    sessionTempRoot,
     preference: "require",
     ...(booleanValue(turn.config?.sandboxAllowGpu) === true
       ? { allowGpu: true }
       : {}),
-    useLegacyLandlock: useLegacyLandlock(turn.features ?? turn.config?.features),
     windowsSandboxLevel: windowsSandboxLevel(turn.windowsSandboxLevel),
     windowsSandboxPrivateDesktop: booleanValue(
       turn.windowsSandboxPrivateDesktop,
@@ -240,21 +256,6 @@ function windowsSandboxLevel(value: unknown): WindowsSandboxLevel {
     default:
       return "disabled";
   }
-}
-
-function useLegacyLandlock(features: unknown): boolean {
-  if (typeof features !== "object" || features === null) return false;
-  const candidate = features as {
-    readonly useLegacyLandlock?: unknown;
-    readonly enabled?: unknown;
-  };
-  if (typeof candidate.useLegacyLandlock === "function") {
-    return candidate.useLegacyLandlock() === true;
-  }
-  if (typeof candidate.enabled === "function") {
-    return candidate.enabled("use_legacy_landlock") === true;
-  }
-  return false;
 }
 
 function errorResult(error: unknown): ToolResult {
@@ -349,8 +350,8 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
     // the transcript — and most of the context budget. Same classifier as
     // Bash, so a build or an upload still renders in full: those are the ones
     // worth looking at.
-    isSearchOrReadCommand: (input: { cmd?: string; command?: string }) =>
-      isSearchOrReadBashCommand(input?.cmd ?? input?.command ?? ""),
+    isSearchOrReadCommand: (input: { cmd?: string }) =>
+      isSearchOrReadBashCommand(input?.cmd ?? ""),
     supportsParallelToolCalls: false,
     isConcurrencySafe: () => false,
     interruptBehavior: () => "cancel",
@@ -362,19 +363,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           description:
             "Shell command to execute. MCP tool names such as mcp.server.tool are not shell commands; call those tools directly. Do not use echo/printf placeholders like \"I need to call the MCP tool\".",
         },
-        command: {
-          type: "string",
-          description:
-            "Compatibility alias for cmd. Prefer cmd for AgenC calls.",
-        },
         workdir: {
           type: "string",
           description: "Working directory. Defaults to the AgenC workspace root.",
-        },
-        cwd: {
-          type: "string",
-          description:
-            "Compatibility alias for workdir. Prefer workdir for AgenC calls.",
         },
         timeoutMs: {
           type: "number",
@@ -436,12 +427,25 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           description: "Approval-cache command prefix rule, when applicable.",
         },
       },
-      anyOf: [{ required: ["cmd"] }, { required: ["command"] }],
+      required: ["cmd"],
       additionalProperties: false,
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as Record<string, unknown> & ToolExecutionInjectedArgs;
-      const cmd = asString(args.cmd) ?? asString(args.command);
+      for (const removedAlias of ["command", "cwd"] as const) {
+        if (Object.prototype.hasOwnProperty.call(args, removedAlias)) {
+          const message = `unknown field \`${removedAlias}\``;
+          return {
+            content: safeStringify({ error: message }),
+            isError: true,
+            effectDisposition: confirmedNoEffectDisposition(
+              "tool:system.exec-command:invalid-input",
+              message,
+            ),
+          };
+        }
+      }
+      const cmd = asString(args.cmd);
       if (!cmd) {
         const message = "cmd must be a non-empty string";
         return {
@@ -453,7 +457,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           ),
         };
       }
-      const workdir = asString(args.workdir) ?? asString(args.cwd);
+      const workdir = asString(args.workdir);
       const timeoutMs = asNumber(args.timeoutMs);
       const tty = asBoolean(args.tty);
 

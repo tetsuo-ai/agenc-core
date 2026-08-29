@@ -5,14 +5,11 @@ first real-model run (grok-4.5 on the adm-zip pilot task) produced a
 hidden-verifier-passing patch inside a fully contained lane
 (`oracleContainment: contained`, all probes true, `patchKeyScan: clean`).
 
-Live-run note — headless proxy: the runtime installs its undici proxy
-dispatcher (`configureGlobalAgents`) only on the interactive TUI path, so the
-daemon behind `agenc -p` ignored `HTTPS_PROXY` and attempted a direct model
-call, which the egress lane's blackholed resolver correctly refused. The lane
-now injects `NODE_OPTIONS=--require .../proxy/eval-proxy-preload.cjs` into the
-agent (inherited by the daemon), which installs the dispatcher from
-`HTTPS_PROXY`. The proper fix is to have the runtime configure the proxy in
-headless mode too (a separate follow-up); the preload can then be dropped.
+Live-run note — headless proxy: provider, MCP, hook, and web request paths bind
+an immutable environment snapshot and construct request-scoped proxy/TLS
+agents. The eval lane therefore passes `HTTPS_PROXY` normally; it does not
+install an undici global dispatcher or inject a `NODE_OPTIONS` preload into the
+CLI and daemon.
 
 Implementation notes / deviations from the original design, all made during
 the adversarial review:
@@ -37,7 +34,7 @@ the adversarial review:
 
 Phase 2a ships the offline agent-run lane (`--network none`, bundled
 in-container mock provider). Phase 2b lets the agent reach a **real** model
-provider API without letting a `--yolo` agent fetch the upstream fix
+provider API without letting a `--dangerously-bypass-approvals-and-sandbox` agent fetch the upstream fix
 (the tasks are cut from merged public GitHub PRs) or exfiltrate the provider
 key (untrusted issue text can prompt-inject the agent). See
 `eval-pilot-executor.md` "Phase 2b" for why this could not be part of 2a.
@@ -50,7 +47,7 @@ unsets `HTTPS_PROXY` or opens a raw socket still cannot leave — there is
 nothing to flush, no `NET_ADMIN` to hold, no host root required. Proxy env
 only makes the *allowed* path work.
 
-Rejected alternatives: an iptables/nftables egress firewall (a root `--yolo`
+Rejected alternatives: an iptables/nftables egress firewall (a root `--dangerously-bypass-approvals-and-sandbox`
 agent with `NET_ADMIN`, or a rule-flush, subverts it; DNS/IP allowlisting is
 brittle to CDN churn) and DNS-restriction (the agent can hardcode IPs to
 bypass name-based blocking). Both scored below the sidecar on security and

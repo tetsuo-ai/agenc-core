@@ -4,6 +4,12 @@ import * as path from 'node:path'
 import React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ConfigStore } from '../../config/store.js'
+import {
+  type CanonicalSettingsAuthority,
+  getCanonicalSettingsAuthority,
+} from '../../utils/settings/canonicalAuthority.js'
+
 type PickerAction = {
   action: string
   handler: (item: string) => void
@@ -90,6 +96,10 @@ import { createRoot } from '../ink/root.js'
 import { renderToString } from '../../utils/staticRender.js'
 import { QuickOpenDialog } from './QuickOpenDialog.js'
 
+const DEFAULT_SETTINGS_AUTHORITY = new ConfigStore({
+  home: '/tmp/agenc-quick-open-render-test',
+})
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -175,7 +185,9 @@ function createStreams(): {
   return { stdin, stdout }
 }
 
-async function renderDialog() {
+async function renderDialog(
+  settingsAuthority: CanonicalSettingsAuthority = DEFAULT_SETTINGS_AUTHORITY,
+) {
   const onDone = vi.fn()
   const onInsert = vi.fn()
   const { stdin, stdout } = createStreams()
@@ -185,7 +197,13 @@ async function renderDialog() {
     stdout: stdout as unknown as NodeJS.WriteStream,
   })
 
-  root.render(<QuickOpenDialog onDone={onDone} onInsert={onInsert} />)
+  root.render(
+    <QuickOpenDialog
+      onDone={onDone}
+      onInsert={onInsert}
+      settingsAuthority={settingsAuthority}
+    />,
+  )
   await waitFor(() => harness.pickerProps !== undefined, 'QuickOpenDialog did not render')
 
   return {
@@ -237,6 +255,31 @@ function deferred<T>(): {
 describe('QuickOpenDialog render and interactions', () => {
   beforeEach(() => {
     resetHarness()
+  })
+
+  it('binds the supplied settings authority while searching', async () => {
+    const settingsAuthority = new ConfigStore({
+      home: '/tmp/agenc-quick-open-bound-authority-test',
+    })
+    harness.generateFileSuggestions.mockImplementationOnce(async () => {
+      expect(getCanonicalSettingsAuthority()).toBe(settingsAuthority)
+      return [{ id: 'file-bound', displayText: 'src/bound.ts' }]
+    })
+    const rendered = await renderDialog(settingsAuthority)
+
+    try {
+      pickerProps().onQueryChange('bound')
+      await waitFor(
+        () => harness.generateFileSuggestions.mock.calls.length === 1,
+        'Quick open did not request authority-bound suggestions',
+      )
+      await waitFor(
+        () => pickerProps().items.includes('src/bound.ts'),
+        'Quick open did not render authority-bound suggestions',
+      )
+    } finally {
+      await rendered.dispose()
+    }
   })
 
   it('renders the initial picker state, empty-query state, cancel wiring, and bottom preview layout', async () => {

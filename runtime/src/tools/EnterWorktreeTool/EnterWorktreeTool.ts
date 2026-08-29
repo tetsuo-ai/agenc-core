@@ -71,7 +71,6 @@ export const EnterWorktreeTool: Tool<InputSchema, Output> = buildTool({
   userFacingName() {
     return 'Creating worktree'
   },
-  shouldDefer: true,
   toAutoClassifierInput(input) {
     return input.name ?? ''
   },

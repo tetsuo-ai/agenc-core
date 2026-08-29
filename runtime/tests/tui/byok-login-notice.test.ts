@@ -23,28 +23,22 @@ import type { VerificationStatus } from "../../src/tui/hooks/useApiKeyVerificati
 // Mirrors the render-gate condition in
 // src/tui/components/PromptInput/Notifications.tsx
 function loginNoticeVisible(
+  provider: string,
   apiKeyStatus: VerificationStatus,
   hasRemoteAuthSession = false,
   mainLoopModel = "",
 ): boolean {
   return (
-    usesAnthropicAccountFlow() &&
+    usesAnthropicAccountFlow(provider) &&
     !isRegistryOwnedNonAnthropicModel(mainLoopModel) &&
     !hasRemoteAuthSession &&
     (apiKeyStatus === "invalid" || apiKeyStatus === "missing")
   );
 }
 
-// Env keys that getAPIProvider() inspects; cleared between cases so each test
-// starts from a clean provider-detection state.
+// Credential/model inputs are isolated; provider identity is passed explicitly.
 const PROVIDER_ENV_KEYS = [
-  "AGENC_USE_GEMINI",
-  "AGENC_USE_MISTRAL",
-  "AGENC_USE_GITHUB",
-  "AGENC_USE_MINIMAX",
   "XAI_API_KEY",
-  "AGENC_USE_OPENAI",
-  "NVIDIA_NIM",
   "MINIMAX_API_KEY",
   "OPENAI_MODEL",
   "OPENAI_BASE_URL",
@@ -75,62 +69,54 @@ describe("byok-login-notice", () => {
   test("xai BYOK provider: login notice is suppressed even when apiKeyStatus is 'missing'", () => {
     process.env.XAI_API_KEY = "xai-test-key";
 
-    expect(getAPIProvider()).toBe("xai");
-    expect(usesAnthropicAccountFlow()).toBe(false);
-    expect(loginNoticeVisible("missing")).toBe(false);
-    expect(loginNoticeVisible("invalid")).toBe(false);
+    expect(getAPIProvider("grok")).toBe("xai");
+    expect(usesAnthropicAccountFlow("grok")).toBe(false);
+    expect(loginNoticeVisible("grok", "missing")).toBe(false);
+    expect(loginNoticeVisible("grok", "invalid")).toBe(false);
   });
 
   test("gemini BYOK provider: login notice is suppressed", () => {
-    process.env.AGENC_USE_GEMINI = "1";
-
-    expect(getAPIProvider()).toBe("gemini");
-    expect(usesAnthropicAccountFlow()).toBe(false);
-    expect(loginNoticeVisible("missing")).toBe(false);
+    expect(getAPIProvider("gemini")).toBe("gemini");
+    expect(usesAnthropicAccountFlow("gemini")).toBe(false);
+    expect(loginNoticeVisible("gemini", "missing")).toBe(false);
   });
 
   test("openai BYOK provider: login notice is suppressed", () => {
-    process.env.AGENC_USE_OPENAI = "1";
-
-    expect(getAPIProvider()).toBe("openai");
-    expect(usesAnthropicAccountFlow()).toBe(false);
-    expect(loginNoticeVisible("missing")).toBe(false);
+    expect(getAPIProvider("openai")).toBe("openai");
+    expect(usesAnthropicAccountFlow("openai")).toBe(false);
+    expect(loginNoticeVisible("openai", "missing")).toBe(false);
   });
 
   test("firstParty (Anthropic) with missing/invalid credential: login notice is shown", () => {
-    // No BYOK env set → defaults to firstParty.
-    expect(getAPIProvider()).toBe("firstParty");
-    expect(usesAnthropicAccountFlow()).toBe(true);
-    expect(loginNoticeVisible("missing")).toBe(true);
-    expect(loginNoticeVisible("invalid")).toBe(true);
+    expect(getAPIProvider("anthropic")).toBe("firstParty");
+    expect(usesAnthropicAccountFlow("anthropic")).toBe(true);
+    expect(loginNoticeVisible("anthropic", "missing")).toBe(true);
+    expect(loginNoticeVisible("anthropic", "invalid")).toBe(true);
   });
 
   test("firstParty with a valid credential: login notice is not shown", () => {
-    expect(getAPIProvider()).toBe("firstParty");
-    expect(loginNoticeVisible("valid")).toBe(false);
+    expect(getAPIProvider("anthropic")).toBe("firstParty");
+    expect(loginNoticeVisible("anthropic", "valid")).toBe(false);
   });
 
   test("firstParty with remote AgenC auth: login notice is suppressed", () => {
-    expect(getAPIProvider()).toBe("firstParty");
-    expect(usesAnthropicAccountFlow()).toBe(true);
-    expect(loginNoticeVisible("missing", true)).toBe(false);
-    expect(loginNoticeVisible("invalid", true)).toBe(false);
+    expect(getAPIProvider("anthropic")).toBe("firstParty");
+    expect(usesAnthropicAccountFlow("anthropic")).toBe(true);
+    expect(loginNoticeVisible("anthropic", "missing", true)).toBe(false);
+    expect(loginNoticeVisible("anthropic", "invalid", true)).toBe(false);
   });
 
-  test("config-selected grok session (no provider env vars): login notice is suppressed", () => {
-    // config.toml `model_provider = "grok"` with OAuth credentials sets no env
-    // var, so getAPIProvider() still reports firstParty; the registry-owned
-    // session model is what proves the session is not on the Anthropic flow.
-    expect(getAPIProvider()).toBe("firstParty");
+  test("explicit grok selection suppresses the Anthropic login notice", () => {
+    expect(getAPIProvider("grok")).toBe("xai");
     expect(isRegistryOwnedNonAnthropicModel("grok-4.5")).toBe(true);
-    expect(loginNoticeVisible("missing", false, "grok-4.5")).toBe(false);
-    expect(loginNoticeVisible("invalid", false, "grok-4.5")).toBe(false);
+    expect(loginNoticeVisible("grok", "missing", false, "grok-4.5")).toBe(false);
+    expect(loginNoticeVisible("grok", "invalid", false, "grok-4.5")).toBe(false);
   });
 
   test("registry ownership: anthropic and unknown models stay on the notice path", () => {
     expect(isRegistryOwnedNonAnthropicModel("gpt-5")).toBe(true);
     expect(isRegistryOwnedNonAnthropicModel("claude-opus-5")).toBe(false);
     expect(isRegistryOwnedNonAnthropicModel("")).toBe(false);
-    expect(loginNoticeVisible("missing", false, "claude-opus-5")).toBe(true);
+    expect(loginNoticeVisible("anthropic", "missing", false, "claude-opus-5")).toBe(true);
   });
 });

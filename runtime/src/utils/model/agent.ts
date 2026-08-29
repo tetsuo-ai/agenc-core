@@ -1,12 +1,16 @@
-import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { capitalize } from '../stringUtils.js'
 import { MODEL_ALIASES, type ModelAlias } from './aliases.js'
 import {
   getCanonicalName,
-  getRuntimeMainLoopModel,
   parseUserSpecifiedModel,
 } from './model.js'
-import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './providers.js'
+import {
+  getAPIProvider,
+  getSelectedProviderName,
+  isFirstPartyAnthropicBaseUrl,
+} from './providers.js'
+import { resolveAllowedModelProjection } from './modelAllowlist.js'
+import { getExecutionAuthoritySettings } from '../settings/settings.js'
 
 export const AGENT_MODEL_OPTIONS = [...MODEL_ALIASES, 'inherit'] as const
 export type AgentModelAlias = (typeof AGENT_MODEL_OPTIONS)[number]
@@ -31,57 +35,47 @@ export function getDefaultSubagentModel(): string {
 export function getAgentModel(
   agentModel: string | undefined,
   parentModel: string,
-  toolSpecifiedModel?: ModelAlias,
-  permissionMode?: PermissionMode,
+  toolSpecifiedModel: ModelAlias | undefined,
 ): string {
-  if (process.env.AGENC_SUBAGENT_MODEL) {
-    return parseUserSpecifiedModel(process.env.AGENC_SUBAGENT_MODEL)
-  }
+  let projectedModel: string
 
   // Prioritize tool-specified model if provided
   if (toolSpecifiedModel) {
     if (aliasMatchesParentTier(toolSpecifiedModel, parentModel)) {
-      return parentModel
+      projectedModel = parentModel
+    } else {
+      projectedModel = parseUserSpecifiedModel(toolSpecifiedModel)
     }
-    return parseUserSpecifiedModel(toolSpecifiedModel)
+  } else {
+    const agentModelWithExp = agentModel ?? getDefaultSubagentModel()
+
+    // Provider-aware model alias fallback for agents.
+    // AgenC-native provider API modes have guaranteed haiku/sonnet model
+    // availability. Other providers and compatible endpoints may not have
+    // equivalent models, causing "model not found" errors when resolving aliases.
+    // For haiku/sonnet aliases on non-AgenC-native providers, inherit parent model.
+    // Note: 'opus' is NOT included here because it's handled separately by
+    // aliasMatchesParentTier() which checks if parent's tier matches the alias.
+    if (
+      (agentModelWithExp === 'haiku' || agentModelWithExp === 'sonnet') &&
+      !checkIsAgenCNativeProvider()
+    ) {
+      // Non-AgenC-native provider → inherit parent model
+      projectedModel = parentModel
+    } else if (agentModelWithExp === 'inherit') {
+      projectedModel = parentModel
+    } else if (aliasMatchesParentTier(agentModelWithExp, parentModel)) {
+      projectedModel = parentModel
+    } else {
+      projectedModel = parseUserSpecifiedModel(agentModelWithExp)
+    }
   }
 
-  const agentModelWithExp = agentModel ?? getDefaultSubagentModel()
-
-  // Provider-aware model alias fallback for agents.
-  // AgenC-native provider API modes have guaranteed haiku/sonnet model
-  // availability. Custom provider-compatible endpoints, openai-shim, Gemini,
-  // Mistral, and other providers may not have
-  // equivalent models, causing "model not found" errors when resolving aliases.
-  // For haiku/sonnet aliases on non-AgenC-native providers, inherit parent model.
-  // Note: 'opus' is NOT included here because it's handled separately by
-  // aliasMatchesParentTier() which checks if parent's tier matches the alias.
-  if (
-    (agentModelWithExp === 'haiku' || agentModelWithExp === 'sonnet') &&
-    !checkIsAgenCNativeProvider()
-  ) {
-    // Non-AgenC-native provider → inherit parent model
-    return getRuntimeMainLoopModel({
-      permissionMode: permissionMode ?? 'default',
-      mainLoopModel: parentModel,
-      exceeds200kTokens: false,
-    })
-  }
-
-  if (agentModelWithExp === 'inherit') {
-    // Apply runtime model resolution for inherit to get the effective model
-    // This ensures agents using 'inherit' get opusplan→Opus resolution in plan mode
-    return getRuntimeMainLoopModel({
-      permissionMode: permissionMode ?? 'default',
-      mainLoopModel: parentModel,
-      exceeds200kTokens: false,
-    })
-  }
-
-  if (aliasMatchesParentTier(agentModelWithExp, parentModel)) {
-    return parentModel
-  }
-  return parseUserSpecifiedModel(agentModelWithExp)
+  return resolveAllowedModelProjection(
+    getSelectedProviderName(),
+    projectedModel,
+    getExecutionAuthoritySettings(),
+  )
 }
 
 /**
@@ -94,7 +88,7 @@ export function getAgentModel(
  * getDefaultOpusModel() returns for 3P.
  * See https://github.com/tetsuo-ai/agenc-core/issues/30815.
  *
- * Only bare family aliases match. `opus[1m]`, `best`, `opusplan` fall through
+ * Only bare family aliases match. `opus[1m]` and `best` fall through
  * since they carry semantics beyond "same tier as parent".
  */
 function aliasMatchesParentTier(alias: string, parentModel: string): boolean {

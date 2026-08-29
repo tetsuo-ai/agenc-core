@@ -20,7 +20,7 @@ import path from "node:path";
 import {
   missingSandboxExecutionBoundary,
   type SandboxExecutionBrokerLike,
-  type SandboxSpawnCommand,
+  type SandboxPreparedSpawn,
 } from "../../sandbox/execution-broker.js";
 import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
 import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
@@ -143,7 +143,7 @@ async function runPdfTextExtractor(
   if (options.sandboxExecutionBroker === undefined) {
     throw missingSandboxExecutionBoundary("tool");
   }
-  let command: SandboxSpawnCommand;
+  let command: SandboxPreparedSpawn;
   try {
     command = options.sandboxExecutionBroker.prepareSpawn("tool", {
       program: "pdftotext",

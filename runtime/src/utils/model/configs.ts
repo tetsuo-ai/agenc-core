@@ -1,4 +1,5 @@
 import type { ModelName } from './model.js'
+import { isModelAlias } from './aliases.js'
 
 export type ModelConfig = {
   readonly [provider: string]: ModelName
@@ -7,7 +8,7 @@ export type ModelConfig = {
 // ---------------------------------------------------------------------------
 // openai-compatible model mappings
 // Maps AgenC model tiers to sensible defaults for popular providers.
-// Override with OPENAI_MODEL, ANTHROPIC_MODEL, or settings.model
+// Resolve through the canonical session model selection.
 // ---------------------------------------------------------------------------
 export const OPENAI_MODEL_DEFAULTS = {
   opus: 'gpt-4o',           // best reasoning
@@ -18,7 +19,7 @@ export const OPENAI_MODEL_DEFAULTS = {
 // ---------------------------------------------------------------------------
 // Gemini model mappings
 // Maps AgenC model tiers to Google Gemini equivalents.
-// Override with GEMINI_MODEL env var.
+// Resolve through the canonical session model selection.
 // ---------------------------------------------------------------------------
 export const GEMINI_MODEL_DEFAULTS = {
   opus: 'gemini-2.5-pro',   // most capable
@@ -238,6 +239,74 @@ export const ALL_MODEL_CONFIGS = {
 } as const satisfies Record<string, ModelConfig>
 
 export type ModelKey = keyof typeof ALL_MODEL_CONFIGS
+
+/** Resolve one canonical tier mapping without consulting runtime/session state. */
+export function modelConfigIdForProvider(
+  provider: string,
+  key: ModelKey,
+): ModelName {
+  const providerKey = (() => {
+    switch (provider) {
+      case 'grok':
+        return 'xai'
+      case 'anthropic':
+        return 'firstParty'
+      case 'amazon-bedrock':
+        return 'bedrock'
+      case 'ollama':
+      case 'lmstudio':
+      case 'openai-compatible':
+      case 'openrouter':
+      case 'groq':
+      case 'deepseek':
+        return 'openai'
+      default:
+        return provider
+    }
+  })()
+  const config = ALL_MODEL_CONFIGS[key]
+  const lookup = config as Readonly<Record<string, ModelName | undefined>>
+  return lookup[providerKey] ?? lookup.openai ?? config.firstParty
+}
+
+/**
+ * Project a user-facing model alias to the one provider-local model that may
+ * be persisted and sent at runtime. Managed overrides are applied here so
+ * policy matching and provider binding observe the same identifier.
+ */
+export function resolveProviderModelAlias(
+  provider: string,
+  modelInput: string,
+  overrides?: Readonly<Record<string, string>>,
+): ModelName {
+  const trimmed = modelInput.trim()
+  const has1mTag = trimmed.toLowerCase().endsWith('[1m]')
+  const base = has1mTag ? trimmed.slice(0, -4).trim().toLowerCase() : trimmed.toLowerCase()
+  if (!isModelAlias(base)) return trimmed
+
+  const key: ModelKey =
+    base === 'sonnet'
+      ? 'sonnet46'
+      : base === 'haiku'
+        ? 'haiku45'
+        : 'opus47'
+  const canonicalId = ALL_MODEL_CONFIGS[key].firstParty
+  const override = overrides?.[canonicalId]?.trim()
+  const projected = override || modelConfigIdForProvider(provider, key)
+  return has1mTag ? `${projected}[1m]` : projected
+}
+
+/** Reverse one configured provider ID to its canonical model ID. */
+export function resolveConfiguredModelOverride(
+  modelId: string,
+  overrides: Readonly<Record<string, string>> | undefined,
+): string {
+  if (!overrides) return modelId
+  for (const [canonicalId, override] of Object.entries(overrides)) {
+    if (override === modelId) return canonicalId
+  }
+  return modelId
+}
 
 /** Union of all canonical first-party model IDs, e.g. 'claude-opus-4-6' | 'claude-sonnet-4-5-20250929' | … */
 export type CanonicalModelId =

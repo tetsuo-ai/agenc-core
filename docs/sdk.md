@@ -37,13 +37,15 @@ const client = await connect({
   // requestTimeoutMs      — per-RPC timeout (default 30s or AGENC_DAEMON_REQUEST_TIMEOUT_MS)
   onPermissionRequest: async (request) => {
     // request: { sessionId, requestId, toolName?, permissions, input?, reason? }
-    return request.toolName === "Read"
+    return request.toolName === "FileRead"
       ? { behavior: "allow", scope: "once" }
       : { behavior: "deny", reason: "not allowed here" };
   },
 });
 
-const session = await client.createSession();
+const session = await client.createSession({
+  pluginStorageRoot: "/absolute/agenc-home/plugins",
+});
 const run = session.prompt("Summarize this repo's protocol layer.");
 
 for await (const event of run) {
@@ -51,10 +53,20 @@ for await (const event of run) {
     case "text":
       process.stdout.write(event.delta);
       break;
+    case "message_committed":
+      /* durable assistant message; distinct from text deltas */ break;
     case "tool_call":
       /* event.toolName, event.input */ break;
     case "permission_request":
       /* also routed to onPermissionRequest */ break;
+    case "elicitation_request":
+      /* also routed to onElicitationRequest */ break;
+    case "history_reset":
+      /* drop buffered history; reload transcriptV2() */ break;
+    case "gap":
+      /* event.event_gap; do not skip */ break;
+    case "session_event":
+      /* lifecycle / session status */ break;
     case "status":
       /* event.runStatus */ break;
   }
@@ -62,14 +74,14 @@ for await (const event of run) {
 
 const result = await run.result();
 // { stopReason: "completed" | "errored" | "stopped", exitCode, finalMessage,
-//   deniedPermissionRequestIds, usage?, cacheStats? }
+//   deniedPermissionRequestIds, usage? }
 
 await client.close();
 ```
 
 Key `AgencClient` methods:
 
-- `createSession(params?)` / `resumeSession(sessionId)` → `AgencSession`
+- `createSession(params)` / `resumeSession(sessionId)` → `AgencSession`
   (`prompt`, `transcript`, `transcriptV2`, `snapshot`, `cancelTurn`, `terminate`)
 - `spawnAgent(params)` → background agent (`agent.create`)
 - `attachAgent(agentId)` → `{ attach, session }` for a running agent
@@ -79,8 +91,46 @@ Key `AgencClient` methods:
   `{ runId, specDigest, baseCommit, baseDirty }`)
 - `runStatus(id)` / `runResult(id)` / `replayRun(params)` /
   `reattachRun(options)` / `runEvidence(params)` / `cancelRun(id, reason?)`
+- `listCsvJobReviews` / `showCsvJobReview` / `resolveCsvJobReview`
 - `request(method, params)` → raw typed JSON-RPC for any of the **53** daemon methods
+- `initialize` (handshake; SDK retries 1.0 through 1.8), `close()`
+- `negotiatedProtocolVersion` / `serverProtocolVersion` / `serverCapabilities`
 - `onNotification(cb)` / `onSessionNotification(sessionId, cb)` → raw events
+- Path helpers: `resolveAgencHome`, `resolveDaemonSocketPath`, `resolveDaemonCookiePath`
+
+The daemon transport validates its home authority before it reads a cookie or
+opens a socket. `AGENC_HOME` must be absolute and is canonicalized through its
+deepest existing ancestor. Explicit `socketPath` and `cookiePath` overrides do
+not bypass home-authority validation.
+
+`createSession()` sends safe runtime options with
+`allowUntrustedHooks: false` and the exact `pluginStorageRoot` passed to that
+call. `AgencClient` does not reread `AGENC_PLUGIN_CACHE_DIR` or derive a root
+from `AGENC_HOME`. The root must be absolute, must not have surrounding
+whitespace, and must be at most 4096 UTF-8 bytes. `createSession()` does not
+accept `agentId`; use `attachAgent()` for an existing agent. The lower-level
+`spawnAgent()` API requires a complete `runtimeOptions` object. Set
+`allowUntrustedHooks: true` only when the embedding application has vetted the
+workspace and intends to permit command hook effects there. The field never
+permits HTTP, prompt, or agent hook effects.
+
+`dangerouslyBypassApprovalsAndSandbox` defaults to `false`. Set it to `true`
+only when the embedding application deliberately grants both approval bypass
+and unrestricted OS execution to the new session. The daemon retains that
+creation-time authority across attachment and cold resume; attaching to an
+existing session cannot add or remove it.
+
+When `initialPrompt` is present, `createSession()` submits it as the new
+agent's initial input. The method also passes `metadata` unchanged to
+`agent.create`. Without `initialPrompt`, the new agent remains idle until the
+first `prompt()` call.
+
+`simpleMode: true`, which is the typed form of `--bare`, still suppresses every
+session hook extension point.
+
+Generated public contracts (do not edit by hand):
+`packages/agenc-sdk/src/workflow-handoff.generated.ts` and
+`workflow-result.generated.ts`. Source schemas live under `runtime/src/agents/`.
 
 Permission requests with no registered handler are **denied** (never granted)
 so an unattended embedder can't hang a turn, mirroring `agenc -p`.
@@ -102,7 +152,7 @@ authenticated Android portal client advertises those explicitly. A future SDK
 capability option must remain opt-in and bind delivery to a concrete handler.
 
 Usage/cost: after the turn ends the SDK fetches `session.snapshot` and puts
-`tokenUsage`/`cacheStats` on the result (`includeUsage: false` to skip).
+`tokenUsage` on the result (`includeUsage: false` to skip).
 
 Prompt admission is reserved synchronously per session, before attach or send,
 so a second local `prompt()` throws `AgencPromptRunInProgressError`. Every SDK
@@ -117,9 +167,10 @@ on an older daemon because it could hit a later turn.
 The SDK distinguishes `text` deltas from `message_committed`, reconciles the
 final result with committed text, and exposes `history_reset` for clear,
 compaction, rewind, and rollback. A duplicate without durable terminal proof
-fails with `AgencDuplicateSubmissionIncompleteError`. Initialization retries a
-1.0/1.1 daemon at its reported version and retains negotiated version and
-capability information for safe feature fallback.
+fails with `AgencDuplicateSubmissionIncompleteError`. Initialization retries
+against daemons running protocol 1.0 through 1.8 at the reported version and
+retains negotiated version and capability information for safe feature
+fallback.
 
 ### Handshake and autostart
 
@@ -156,7 +207,14 @@ const transport = new AgenCInProcessDaemonTransport({
 });
 client = createAgencClient({ transport });
 await client.initialize();
+const session = await client.createSession({
+  pluginStorageRoot: "/absolute/agenc-home/plugins",
+});
 ```
+
+Every transport must pass the exact `pluginStorageRoot` to `createSession()`.
+Protocol 1.8 is the first daemon protocol that can bind that root to the new
+agent. The SDK does not rebuild the root from the host process environment.
 
 ## Subprocess transport
 
@@ -180,8 +238,18 @@ Under the hood this is
 `agenc -p --output-format stream-json --input-format stream-json`, with the
 prompt written to stdin as `{"type":"prompt","prompt":"..."}`. Exit code 2
 means the run auto-denied a tool permission and gave up (the CLI's
-non-interactive contract); pass `permissionMode: "bypassPermissions"` or use
-the daemon transport when tools must run.
+non-interactive contract). `permissionMode: "bypassPermissions"` is an
+explicit approval-only opt-in bound to the subprocess workspace; it does not
+disable the configured OS sandbox, persist consent, or override managed
+policy. `dangerouslyBypassApprovalsAndSandbox: true` emits the separate
+combined escape flag. Use the daemon transport when a client must resolve
+permission requests interactively.
+
+The subprocess transport invokes `agenc -p`, so
+`AGENC_ALLOW_UNTRUSTED_HOOKS` in `options.env`, or in the inherited child
+environment when `options.env` is omitted, is captured as automation startup
+authority. The child sends the captured typed value to the daemon; it does not
+install the variable as mutable daemon environment state.
 
 ## Runnable example
 
@@ -189,7 +257,8 @@ the daemon transport when tools must run.
 
 ```bash
 npm run build --workspace=@tetsuo-ai/agenc-sdk
-node packages/agenc-sdk/examples/one-shot.mjs "say hello in one word"
+AGENC_PLUGIN_CACHE_DIR=/absolute/path/to/agenc/plugins \
+  node packages/agenc-sdk/examples/one-shot.mjs "say hello in one word"
 node packages/agenc-sdk/examples/one-shot.mjs --transport subprocess "say hello"
 ```
 
@@ -277,7 +346,7 @@ other runs. `run.evidence` declares
 that compatibility source, together with an explicit completeness value and
 content hashes.
 
-## Daemon method surface (53 methods)
+## Daemon method surface (54 methods)
 
 Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 (order pinned to the runtime registry):
@@ -288,7 +357,7 @@ Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 | agents              | `agent.create`, `agent.list`, `agent.attach`, `agent.stop`, `agent.logs`                                                                                                                                                                                |
 | runs                | `run.start`, `run.status`, `run.result`, `run.replay`, `run.evidence`, `run.cancel`                                                                                                                                                                     |
 | CSV review          | `csvJob.review.list`, `csvJob.review.show`, `csvJob.review.resolve`                                                                                                                                                                                     |
-| sessions            | `session.create`, `session.list`, `session.attach`, `session.detach`, `session.terminate`, `session.clear`, `session.snapshot`, `session.transcript`, `session.transcript.v2`, `session.cancelTurn`, `session.resolveToolCall`, `session.mcp.addServer` |
+| sessions            | `session.create`, `session.list`, `session.attach`, `session.detach`, `session.terminate`, `session.clear`, `session.snapshot`, `session.transcript`, `session.transcript.v2`, `session.cancelTurn`, `session.resolveToolCall`, `session.mcp.status`, `session.mcp.addServer` |
 | messaging           | `message.send`, `message.stream`                                                                                                                                                                                                                        |
 | realtime            | `thread/realtime/start`, `thread/realtime/appendAudio`, `thread/realtime/appendText`, `thread/realtime/stop`, `thread/realtime/listVoices`                                                                                                              |
 | tools / permissions | `tool.approve`, `tool.deny`, `tool.cancel`, `elicitation.respond`, `permission.list`                                                                                                                                                                    |
@@ -310,9 +379,39 @@ evidence shape (`toolCallId`, `disposition`, `evidenceRef`, and
 `evidenceSha256`), and partial mixtures are rejected. An earlier-shape request
 leaves durable effects unchanged in `remaining`.
 
-Server→client notifications (`AGENC_SDK_DAEMON_NOTIFICATION_METHODS`) cover
-command-exec deltas, message chunks, tool/permission/elicitation requests,
-agent/session status, and realtime stream events.
+Protocol version constant: **`1.9.0`**
+(`AGENC_SDK_DAEMON_PROTOCOL_VERSION`). Handshake rules and
+`PROTOCOL_VERSION_UNSUPPORTED` live in [daemon.md](reference/daemon.md).
+The SDK retries initialization at a daemon running protocol 1.0 through 1.8 and
+uses advertised capabilities for additive fallbacks. Protocol 1.6 made the
+owning runtime options and live run-settings snapshot required in `agent.attach`.
+Protocol 1.7 adds required inactive auto availability and exact-workspace bypass
+capability and consent fields to that snapshot. The SDK rejects attachment
+and session creation before dispatch on a negotiated protocol below 1.8. It
+does not fall back to `session.create`, because that request cannot bind the
+exact plugin storage root. Protocol 1.8 requires that root in the owning runtime
+options and binds Core model and config mutation responses to the
+runtime-settings event that follows them.
+Protocol 1.9 adds the internal `session.shell.execute` method for Core. The
+method is not in the SDK request union.
+
+Server→client notifications (`AGENC_SDK_DAEMON_NOTIFICATION_METHODS`, 18 names):
+
+| Group | Methods |
+| --- | --- |
+| Exec | `commandExec.outputDelta` |
+| Turn / tools | `event.message_chunk`, `event.tool_request`, `event.permission_request`, `event.user_input_request`, `event.mcp_elicitation_request` |
+| Status | `event.agent_status`, `event.session_event`, `event.mcp_status_changed` |
+| Sync | `event.event_gap` (do not skip; resync from the durable cursor) |
+| Realtime | `thread/realtime/started`, `itemAdded`, `transcript/delta`, `transcript/done`, `outputAudio/delta`, `sdp`, `error`, `closed` |
+
+`session.mcp.status` is a passive, credential-free projection. The matching
+`event.mcp_status_changed` notification carries only `{ sessionId, revision }`;
+fetch the method after invalidation rather than treating the event as a tool or
+connection object. Protocols 1.0–1.2 advertise the method as unavailable and do
+not receive the notification. Invalidations are live-only and coalesced, so a
+newly attached client fetches the snapshot instead of replaying status hints.
+Reset the revision watermark when reconnecting to a replacement daemon.
 
 The command-exec methods remain typed for protocol compatibility, but
 `commandExec.start` currently returns `EXECUTION_ADMISSION_REQUIRED`: it cannot
@@ -357,7 +456,7 @@ params/result maps declare every method. Change the daemon protocol and
 `vitest` fails until the mirror is updated.
 
 Event semantics (streamed text extraction, terminal-status detection) mirror
-the CLI's daemon one-shot path in `runtime/src/bin/agenc.ts`
+the CLI's daemon one-shot path in `runtime/src/bin/agenc-main.ts`
 (`daemonOneShotMessageChunk` / `daemonOneShotFinalStatus`), so an embedder
 sees the same output and completion behavior as `agenc -p`.
 
@@ -382,8 +481,27 @@ sees the same output and completion behavior as `agenc -p`.
 cd runtime && npx vitest run tests/sdk-package
 ```
 
+## Errors
+
+Thrown by `connect()`, `AgencClient`, and `promptViaSubprocess`
+(`packages/agenc-sdk/src/client.ts`):
+
+| Class | When |
+| --- | --- |
+| `AgencRpcError` | JSON-RPC error object from the daemon. Fields: `code`, `data`, `method`, `requestId` |
+| `AgencMalformedResponseError` | Response body is not a valid result for the method. Field: `response` |
+| `AgencPromptRunInProgressError` | Second `prompt()` on a session that already has an active run (`ifBusy: "reject"` or equivalent). Fields: `sessionId`, `clientMessageId` |
+| `AgencDuplicateSubmissionIncompleteError` | Reused `clientMessageId` whose prior submit has no durable terminal outcome |
+| `AgencCapabilityUnavailableError` | Caller asked for a protocol 1.2 (or later) guarantee the negotiated daemon does not have |
+| `AgencRunReplayGapError` | Replay cursor hit an explicit `event_gap` / `cursor_ahead` / retention gap. Do not skip it |
+| `AgencRunReplayProtocolError` | Replay page would hide loss or corruption |
+
+Internal workbench RPCs (`workspace.editor.*`) are not on this client. See
+[daemon.md](reference/daemon.md) internal methods.
+
 ## Related
 
 - Package README: [`packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md)
 - Architecture: [`ARCHITECTURE.md`](ARCHITECTURE.md)
 - Channel gateway (SDK consumer): [`gateway.md`](gateway.md)
+- Env vars: [`reference/env.md`](reference/env.md)

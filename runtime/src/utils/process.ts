@@ -1,18 +1,98 @@
 import { execFile } from "node:child_process";
 
-function handleEPIPE(
-  stream: NodeJS.WriteStream,
-): (err: NodeJS.ErrnoException) => void {
-  return (err: NodeJS.ErrnoException) => {
-    if (err.code === "EPIPE") {
-      stream.destroy();
-    }
-  };
+export interface ProcessOutputBrokenPipeEvent {
+  readonly stream: "stdout" | "stderr";
+  readonly error: NodeJS.ErrnoException;
 }
 
-export function registerProcessOutputErrorHandlers(): void {
-  process.stdout.on("error", handleEPIPE(process.stdout));
-  process.stderr.on("error", handleEPIPE(process.stderr));
+interface ProcessOutputStream {
+  destroy(): unknown;
+  listeners(event: "error"): Function[];
+  on(
+    event: "error",
+    listener: (error: NodeJS.ErrnoException) => void,
+  ): unknown;
+}
+
+interface ProcessOutputHandlerState {
+  readonly subscribers: Set<
+    (event: ProcessOutputBrokenPipeEvent) => void
+  >;
+}
+
+const PROCESS_OUTPUT_HANDLER_STATE = Symbol.for(
+  "agenc.process-output-error-handler.state.v1",
+);
+
+function processOutputHandlerState(
+  streamName: ProcessOutputBrokenPipeEvent["stream"],
+  stream: ProcessOutputStream,
+): ProcessOutputHandlerState {
+  for (const candidate of stream.listeners("error")) {
+    const existing = Reflect.get(candidate, PROCESS_OUTPUT_HANDLER_STATE) as
+      | ProcessOutputHandlerState
+      | undefined;
+    if (existing?.subscribers instanceof Set) return existing;
+  }
+
+  const state: ProcessOutputHandlerState = {
+    subscribers: new Set(),
+  };
+  const listener = (error: NodeJS.ErrnoException): void => {
+    if (error.code !== "EPIPE") throw error;
+    try {
+      stream.destroy();
+    } catch {
+      // The downstream pipe is already gone; lifecycle subscribers still need
+      // the cancellation signal even when a custom stream throws on destroy.
+    }
+    for (const subscriber of [...state.subscribers]) {
+      subscriber({ stream: streamName, error });
+    }
+  };
+  Object.defineProperty(listener, PROCESS_OUTPUT_HANDLER_STATE, {
+    value: state,
+  });
+  stream.on("error", listener);
+  return state;
+}
+
+/**
+ * Own stdout/stderr EPIPE delivery without creating competing stream handlers.
+ *
+ * The underlying listener intentionally stays installed after `dispose()`: a
+ * stream can emit a queued EPIPE after the one-shot lifecycle has completed.
+ * Registrations add only scoped subscribers, while `Symbol.for` lets module
+ * reloads reuse the same process-wide listener. Non-EPIPE failures are
+ * rethrown so this adapter never hides unrelated output errors.
+ */
+export function registerProcessOutputErrorHandlers(
+  onBrokenPipe: (event: ProcessOutputBrokenPipeEvent) => void,
+  streams: {
+    readonly stdout: ProcessOutputStream;
+    readonly stderr: ProcessOutputStream;
+  } = { stdout: process.stdout, stderr: process.stderr },
+): { dispose(): void } {
+  let notified = false;
+  const subscriber = (event: ProcessOutputBrokenPipeEvent): void => {
+    if (notified) return;
+    notified = true;
+    onBrokenPipe(event);
+  };
+  const stdoutState = processOutputHandlerState("stdout", streams.stdout);
+  const stderrState = processOutputHandlerState("stderr", streams.stderr);
+  stdoutState.subscribers.add(subscriber);
+  stderrState.subscribers.add(subscriber);
+
+  let disposed = false;
+  return {
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      stdoutState.subscribers.delete(subscriber);
+      stderrState.subscribers.delete(subscriber);
+    },
+  };
 }
 
 function writeOut(stream: NodeJS.WriteStream, data: string): void {

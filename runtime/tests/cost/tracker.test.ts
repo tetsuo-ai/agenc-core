@@ -14,11 +14,6 @@ import {
   getTotalLinesAdded,
   getTotalLinesRemoved,
 } from "./tracker.js";
-import {
-  getCurrentTurnCacheMetrics,
-  getSessionCacheMetrics,
-  resetSessionCacheStats,
-} from "../services/api/cacheStatsTracker.js";
 
 vi.mock("src/utils/modelCost.js", () => ({
   calculateUSDCost: () => 0.1234,
@@ -33,7 +28,7 @@ vi.mock("../utils/env.js", () => ({
   env: { isCI: false },
 }));
 vi.mock("../utils/envUtils.js", () => ({
-  getAgenCConfigHomeDir: () => process.cwd(),
+  getAgenCHomeDir: () => process.cwd(),
   isEnvTruthy: (value: string | boolean | undefined) =>
     value === true || value === "1" || value === "true",
 }));
@@ -125,7 +120,6 @@ describe("cost tracker facade", () => {
 
   test("token-dollar facade records explicit API cost", () => {
     resetFacadeForTests();
-    resetSessionCacheStats();
     const sidecar = new CostSidecar({
       defaultProvider: "openai",
       defaultModel: "gpt-4o",
@@ -154,46 +148,4 @@ describe("cost tracker facade", () => {
     dispose();
   });
 
-  test("cached VCR producer records cost and cache usage together", async () => {
-    resetFacadeForTests();
-    resetSessionCacheStats();
-    const { addCachedCostToTotalSessionCost } = await import(
-      "../services/vcr.js"
-    );
-    const sidecar = new CostSidecar({
-      defaultProvider: "openai",
-      defaultModel: "gpt-4o",
-    });
-    const dispose = bindActiveCostSidecar(sidecar);
-    const usage = {
-      input_tokens: 1000,
-      output_tokens: 250,
-      cache_read_input_tokens: 400,
-      cache_creation_input_tokens: 25,
-      server_tool_use: { web_search_requests: 2 },
-    };
-
-    addCachedCostToTotalSessionCost({
-      type: "assistant",
-      message: { model: "gpt-4o", usage },
-    } as Parameters<typeof addCachedCostToTotalSessionCost>[0]);
-
-    expect(getTotalCost()).toBeGreaterThan(0);
-    expect(getTotalInputTokens()).toBe(1000);
-    expect(getCurrentTurnCacheMetrics()).toMatchObject({
-      read: 400,
-      created: 25,
-      total: 1425,
-      supported: true,
-    });
-    expect(getSessionCacheMetrics().read).toBe(400);
-    expect(sidecar.getPerModelUsage()[0]).toMatchObject({
-      inputTokens: 1000,
-      outputTokens: 250,
-      cachedInputTokens: 400,
-      cacheCreationInputTokens: 25,
-      webSearchRequests: 2,
-    });
-    dispose();
-  });
 });

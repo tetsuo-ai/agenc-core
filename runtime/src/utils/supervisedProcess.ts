@@ -30,6 +30,11 @@ import {
   resolveTrustedWindowsSystemPaths,
   type TrustedWindowsSystemPaths,
 } from "./windows-system-path.js";
+import {
+  SandboxExecutionLeaseCleanupError,
+  isSandboxPreparedSpawn,
+  type SandboxPreparedSpawn,
+} from "../sandbox/execution-prepared-spawn.js";
 
 export type SupervisedProcessStopReason =
   | "timeout"
@@ -48,6 +53,8 @@ export interface SupervisedProcessCommand {
 }
 
 export interface SupervisedProcessControl {
+  /** OS process id observed for this supervised child, when available. */
+  readonly processId?: number;
   stop(reason?: "consumer_limit"): void;
 }
 
@@ -68,6 +75,8 @@ export interface SupervisedProcessOptions {
   readonly signal?: AbortSignal;
   readonly terminateGraceMs?: number;
   readonly settleBackstopMs?: number;
+  /** Select the Linux containment backend explicitly for deterministic tests. */
+  readonly linuxContainment?: "auto" | "subreaper";
   readonly onStdout?: (
     chunk: Buffer,
     control: SupervisedProcessControl,
@@ -87,6 +96,17 @@ export interface SupervisedProcessResult {
   readonly forced: boolean;
   readonly backstopExpired: boolean;
   readonly error?: Error;
+  /**
+   * False only when the supervisor explicitly could not prove that the entire
+   * process tree stopped. Optional so legacy result producers remain valid.
+   */
+  readonly processTreeCleanupProven?: boolean;
+  /**
+   * True only after Node reports the child `spawn` event, false only when the
+   * supervisor proves it returned before spawning, and absent when the spawn
+   * boundary is ambiguous (for example an asynchronous spawn error).
+   */
+  readonly processStarted?: boolean;
 }
 
 const DEFAULT_TERMINATE_GRACE_MS = 500;
@@ -1476,6 +1496,35 @@ export function windowsCommandLineUtf16CodeUnits(
 
 /** Run a native helper with bounded output and process-tree cleanup. */
 export function runSupervisedProcess(
+  command: SupervisedProcessCommand | SandboxPreparedSpawn,
+  options: SupervisedProcessOptions,
+): Promise<SupervisedProcessResult> {
+  if (isSandboxPreparedSpawn(command)) {
+    return command.run(async (preparedCommand, lifecycleSignal) => {
+      const signal =
+        options.signal === undefined
+          ? lifecycleSignal
+          : AbortSignal.any([options.signal, lifecycleSignal]);
+      const result = await runSupervisedProcessCommand(preparedCommand, {
+        ...options,
+        signal,
+      });
+      if (
+        result.backstopExpired ||
+        result.processTreeCleanupProven === false
+      ) {
+        throw new SandboxExecutionLeaseCleanupError(
+          "sandbox lifecycle could not prove supervised process-tree cleanup",
+          result.error === undefined ? undefined : { cause: result.error },
+        );
+      }
+      return result;
+    });
+  }
+  return runSupervisedProcessCommand(command, options);
+}
+
+function runSupervisedProcessCommand(
   command: SupervisedProcessCommand,
   options: SupervisedProcessOptions,
 ): Promise<SupervisedProcessResult> {
@@ -1489,6 +1538,8 @@ export function runSupervisedProcess(
       stopReason: "aborted",
       forced: false,
       backstopExpired: false,
+      processTreeCleanupProven: true,
+      processStarted: false,
     });
   }
 
@@ -1499,6 +1550,9 @@ export function runSupervisedProcess(
         cwd: command.cwd,
         env: command.env,
         ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
+        ...(options.linuxContainment !== undefined
+          ? { linuxContainment: options.linuxContainment }
+          : {}),
       });
     } catch (error) {
       resolve({
@@ -1510,6 +1564,8 @@ export function runSupervisedProcess(
         forced: false,
         backstopExpired: false,
         error: toError(error),
+        processTreeCleanupProven: true,
+        processStarted: false,
       });
       return;
     }
@@ -1524,12 +1580,14 @@ export function runSupervisedProcess(
     let exitCode: number | null = null;
     let exitSignal: NodeJS.Signals | null = null;
     let processError: Error | undefined;
+    let processStarted: boolean | undefined;
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
     let forceTimer: ReturnType<typeof setTimeout> | undefined;
     let backstopTimer: ReturnType<typeof setTimeout> | undefined;
     let treeExitTimer: ReturnType<typeof setInterval> | undefined;
 
     const control: SupervisedProcessControl = {
+      ...(child.pid !== undefined ? { processId: child.pid } : {}),
       stop: () => requestStop("consumer_limit"),
     };
 
@@ -1583,25 +1641,33 @@ export function runSupervisedProcess(
       child.stdout.removeAllListeners();
       child.stderr.removeAllListeners();
       const brokerBoundary = linuxSubreaperBoundaries.get(child);
+      let processTreeCleanupProven = !backstopExpired;
       if (brokerBoundary?.protocolError !== undefined) {
         processError ??= brokerBoundary.protocolError;
+        processTreeCleanupProven = false;
       }
-      void releaseLinuxCgroupBoundary(child)
-        .catch((error) => {
-          processError ??= toError(error);
-        })
-        .then(() => {
-          resolve({
-            exitCode,
-            signal: exitSignal,
-            stdout: Buffer.concat(stdout),
-            stderr: Buffer.concat(stderr),
-            ...(stopReason !== undefined ? { stopReason } : {}),
-            forced,
-            backstopExpired,
-            ...(processError !== undefined ? { error: processError } : {}),
-          });
+      const resolveResult = (): void => {
+        resolve({
+          exitCode,
+          signal: exitSignal,
+          stdout: Buffer.concat(stdout),
+          stderr: Buffer.concat(stderr),
+          ...(stopReason !== undefined ? { stopReason } : {}),
+          forced,
+          backstopExpired,
+          processTreeCleanupProven,
+          ...(processError !== undefined ? { error: processError } : {}),
+          ...(processStarted !== undefined ? { processStarted } : {}),
         });
+      };
+      void releaseLinuxCgroupBoundary(child).then(
+        resolveResult,
+        (error) => {
+          processError ??= toError(error);
+          processTreeCleanupProven = false;
+          resolveResult();
+        },
+      );
     };
 
     const maybeFinish = (): void => {
@@ -1611,7 +1677,16 @@ export function runSupervisedProcess(
     };
 
     function requestStop(reason: SupervisedProcessStopReason): void {
-      stopReason ??= reason;
+      // A consumer can stop on the accepted prefix of a chunk whose suffix
+      // exceeds the output ceiling. The hard byte bound must win that race.
+      if (reason === "output_limit" && stopReason === "consumer_limit") {
+        stopReason = reason;
+      } else {
+        stopReason ??= reason;
+      }
+      // Stop-reason precedence may still change while shutdown is in flight,
+      // but the process tree must receive only one graceful-termination signal.
+      if (forceTimer !== undefined) return;
       // Unblock a pending stdin write before waiting on process-tree cleanup.
       // This is idempotent for the common no-input path, whose stdin was
       // already ended immediately after spawn.
@@ -1622,7 +1697,6 @@ export function runSupervisedProcess(
         PROCESS_TREE_POLL_INTERVAL_MS,
       );
       treeExitTimer.unref?.();
-      if (forceTimer !== undefined) return;
       forceTimer = setTimeout(() => {
         if (!isProcessTreeAlive(child)) {
           maybeFinish();
@@ -1653,6 +1727,10 @@ export function runSupervisedProcess(
     options.signal?.addEventListener("abort", onAbort, { once: true });
     // Abort may race the pre-spawn check and listener installation.
     if (options.signal?.aborted === true) onAbort();
+
+    child.once("spawn", () => {
+      processStarted = true;
+    });
 
     child.stdout.on("data", (chunk: Buffer) =>
       append(stdout, chunk, options.onStdout, options.captureStdout !== false),

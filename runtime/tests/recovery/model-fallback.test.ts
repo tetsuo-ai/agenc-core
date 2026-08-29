@@ -1,8 +1,4 @@
 import { describe, expect, test } from "vitest";
-import {
-  FACTORY_PROVIDER_MARKER,
-  FACTORY_PROVIDER_STATE,
-} from "../llm/provider.js";
 import { EventLog } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnState, UserMessage } from "../session/turn-state.js";
@@ -35,6 +31,9 @@ function mkSession(log: EventLog): Session {
     },
     nextInternalSubId: () => `s-${++i}`,
     pendingProviderSwitch: null,
+    setPendingProviderSwitch(pendingProviderSwitch) {
+      this.pendingProviderSwitch = pendingProviderSwitch;
+    },
   } as unknown as Session;
 }
 
@@ -256,22 +255,14 @@ describe("runModelFallback — T8 hardening", () => {
     expect(state.streamingToolExecutor).toBeNull();
   });
 
-  test("stages fallback switches with the compat provider identity, not the generic adapter name", () => {
+  test("stages fallback switches from the canonical live provider binding", () => {
     const log = new EventLog();
     const session = mkSession(log);
-    (session.services.provider as Record<PropertyKey, unknown>).name = "openai";
-    (session.services.provider as Record<PropertyKey, unknown>)[
-      FACTORY_PROVIDER_MARKER
-    ] = true;
-    (session.services.provider as Record<PropertyKey, unknown>)[
-      FACTORY_PROVIDER_STATE
-    ] = {
-      provider: "openrouter",
-      options: {
-        apiKey: "or-test",
-        baseURL: "https://openrouter.ai/api/v1",
+    session.services.providerService = {
+      current: () => ({
+        provider: "openrouter",
         model: "openai/gpt-5",
-      },
+      }),
     };
     const state = mkState({
       assistantMessages: [
@@ -321,5 +312,62 @@ describe("runModelFallback — T8 hardening", () => {
       toProvider: "openai",
       reason: "provider_fallback_ladder",
     });
+  });
+
+  test("infers a model-only fallback provider through canonical authority", () => {
+    const session = mkSession(new EventLog());
+    const state = mkState();
+
+    const outcome = runModelFallback({
+      session,
+      state,
+      error: new FallbackTriggeredError("grok-4", "gpt-5"),
+    });
+
+    expect(session.pendingProviderSwitch).toEqual({
+      provider: "openai",
+      model: "gpt-5",
+    });
+    expect(state.pendingAdmissionFallback).toMatchObject({
+      toProvider: "openai",
+      toModel: "gpt-5",
+    });
+    expect(outcome.toModel).toBe("gpt-5");
+  });
+
+  test.each([
+    {
+      label: "provider/model conflict",
+      error: new FallbackTriggeredError("grok-4", "gpt-5", {
+        toProvider: "grok",
+      }),
+    },
+    {
+      label: "unknown provider",
+      error: new FallbackTriggeredError("grok-4", "custom-model", {
+        toProvider: "retired-provider",
+      }),
+    },
+  ])("rejects $label before mutating recovery state", ({ error }) => {
+    const session = mkSession(new EventLog());
+    const executor = mkExecutor();
+    const assistantMessage = {
+      uuid: "a1",
+      role: "assistant" as const,
+      text: "partial",
+      toolCalls: [{ id: "tc-1", name: "bash", arguments: "{}" }],
+    };
+    const state = mkState({
+      assistantMessages: [assistantMessage],
+      streamingToolExecutor: executor,
+    });
+
+    expect(() => runModelFallback({ session, state, error })).toThrow();
+
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(executor.discardCount).toBe(0);
+    expect(state.assistantMessages).toEqual([assistantMessage]);
+    expect(state.messages).toEqual([]);
+    expect(state.transition).toBeUndefined();
   });
 });

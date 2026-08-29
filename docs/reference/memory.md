@@ -17,7 +17,8 @@ How AgenC loads durable instructions, persona, and auto-memory. Sources:
 
 ## Store paths
 
-`AGENC_HOME` defaults to `~/.agenc` (`resolveAgencHome` / `getAgenCConfigHomeDir`).
+The sole home authority is `AGENC_HOME`, defaulting to `$HOME/.agenc`
+(`HomeContext` / `getAgenCHomeDir`).
 
 | Store | Default path | Notes |
 | --- | --- | --- |
@@ -27,11 +28,12 @@ How AgenC loads durable instructions, persona, and auto-memory. Sources:
 | Project instructions | `<projectRoot>/AGENC.md` | Preferred root instruction file |
 | User instructions | `$AGENC_HOME/AGENC.md` | Private global |
 | Daily auto-mem logs | `<autoMemPath>/logs/YYYY/MM/YYYY-MM-DD.md` | Distilled later by dream/extract flows when enabled |
+| Team memory | `<autoMemPath>/team/MEMORY.md` | When `TEAMMEM` is on |
 
 **Project auto-memory resolution** (`getProjectMemoryPath` / `getAutoMemPath`):
 
 1. `AGENC_COWORK_MEMORY_PATH_OVERRIDE` (absolute full-path override)
-2. `autoMemoryDirectory` in trusted settings only (policy / flag / local / user — **not** committed project settings)
+2. The trusted canonical auto-memory directory preference (managed/user; never a committed project value)
 3. If `AGENC_REMOTE_MEMORY_DIR` is set: `$base/projects/<sanitized-git-root>/memory/`
 4. Else: `<projectRoot>/.agenc/memory/`
 
@@ -45,10 +47,10 @@ canonical git root is found.
 Resolved for every coding-agent/review turn at the shared session boundary in
 priority order (later wins only within workspace guidance):
 
-1. **Managed** — e.g. system-wide managed `AGENC.md` / rules dirs
-2. **User** — `~/.agenc/AGENC.md` (+ user rules dir)
-3. **Project** — walk from cwd up: `AGENC.md` (preferred), **`AGENTS.md` fallback**, `.agenc/AGENC.md`, `.agenc/rules/*.md`
-4. **Local** — `AGENC.local.md` (private project)
+1. **Managed** — `$AGENC_MANAGED_INSTRUCTIONS` or the platform managed `AGENC.md`: `/etc/agenc/AGENC.md` on Linux, `/Library/Application Support/AgenC/AGENC.md` on macOS, and `%ProgramData%\AgenC\AGENC.md` on Windows. Rules load from the `rules/*.md` directory beside that file.
+2. **User** — `$AGENC_HOME/AGENC.md` plus `$AGENC_HOME/rules/*.md`
+3. **Project** — walk from cwd: `AGENC.override.md`, `AGENC.md`, **`AGENTS.md` fallback** (`CLAUDE.md` is not a fallback), `.agenc/AGENC.md`, `.agenc/rules/**/*.md`
+4. **Local** — `<projectRoot>/AGENC.local.md` only (not every ancestor)
 
 Also:
 
@@ -99,11 +101,10 @@ Onboarding: `agenc onboard identity` walks the naming ritual for these files.
 
 **Enabled by default.** `isAutoMemoryEnabled()` priority:
 
-1. `AGENC_DISABLE_AUTO_MEMORY` — truthy → OFF, falsy → ON
-2. `AGENC_SIMPLE` — OFF
-3. When `AGENC_REMOTE` is set and `AGENC_REMOTE_MEMORY_DIR` is unset — OFF
-4. `autoMemoryEnabled` in settings.json
-5. Default: **on**
+1. Typed simple mode selected by `--bare` — OFF
+2. When `AGENC_REMOTE` is set and `AGENC_REMOTE_MEMORY_DIR` is unset — OFF
+3. Canonical `autoMemoryEnabled` in `config.toml`
+4. Default: **on**
 
 When on, the agent may maintain `MEMORY.md` / topic files under the auto-memory
 dirs; extract/background helpers may run on interactive sessions (also gated by
@@ -140,7 +141,7 @@ repo state.
 
 `agenc init` creates:
 
-- `.agenc/config.json`
+- `.agenc/config.toml`
 - `AGENC.md`
 
 See [cli.md](cli.md) · persona/onboarding [onboarding.md](../onboarding.md).

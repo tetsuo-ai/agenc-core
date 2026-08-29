@@ -3,6 +3,7 @@ import { PassThrough } from "node:stream";
 import React from "react";
 import stripAnsi from "strip-ansi";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../../remoteAuthSessionContext.fixture.js";
 
 const harness = vi.hoisted(() => ({
   addNotification: vi.fn(),
@@ -30,7 +31,6 @@ const harness = vi.hoisted(() => ({
   removeNotification: vi.fn(),
   subscriptionType: "pro" as "enterprise" | "pro" | "team",
   tokenUsage: 1776,
-  usingOverage: undefined as boolean | undefined,
 }));
 
 vi.mock("bun:bundle", () => ({
@@ -38,7 +38,7 @@ vi.mock("bun:bundle", () => ({
 }));
 
 vi.mock("../../../services/compact/autoCompact.js", () => ({
-  calculateTokenWarningState: (tokenUsage: number, model: string) => ({
+  calculateTokenWarningStateForEnvironment: (tokenUsage: number, model: string) => ({
     isAboveWarningThreshold: harness.compactWarning,
     model,
     tokenUsage,
@@ -49,7 +49,7 @@ vi.mock("../../../utils/auth.js", () => ({
   getApiKeyHelperElapsedMs: () => harness.helperElapsedMs,
   getConfiguredApiKeyHelper: () =>
     harness.helperConfigured ? "echo helper" : null,
-  getSubscriptionType: () => harness.subscriptionType,
+  getSubscriptionTypeForContext: () => harness.subscriptionType,
 }));
 
 vi.mock("../../../utils/editor.js", () => ({
@@ -65,7 +65,7 @@ vi.mock("../../../utils/format.js", () => ({
   formatDuration: (ms: number) => `${ms}ms`,
 }));
 
-vi.mock("../../../utils/hooks/fileChangedWatcher.js", () => ({
+vi.mock("../../../utils/hooks/cwdChangedHooks.js", () => ({
   setEnvHookNotifier: (
     notifier: null | ((text: string, isError?: boolean) => void),
   ) => {
@@ -101,10 +101,6 @@ vi.mock("../../hooks/useIdeConnectionStatus.js", () => ({
 
 vi.mock("../../hooks/useMainLoopModel.js", () => ({
   useMainLoopModel: () => harness.model,
-}));
-
-vi.mock("../../rate-limits/agenc-ai-limits.js", () => ({
-  useAgenCAiLimits: () => ({ isUsingOverage: harness.usingOverage }),
 }));
 
 vi.mock("../../state/AppState.js", () => ({
@@ -180,13 +176,19 @@ vi.mock("../../cost/TokenWarning.js", async () => {
 
   return {
     TokenWarning: ({
+      environment,
       model,
       tokenUsage,
     }: {
+      environment: unknown;
       model: string;
       tokenUsage: number;
     }) =>
-      ReactModule.createElement(Text, null, `TokenWarning:${tokenUsage}:${model}`),
+      ReactModule.createElement(
+        Text,
+        null,
+        `TokenWarning:${tokenUsage}:${model}:${String(environment === TEST_REMOTE_AUTH_SESSION_CONTEXT.environment)}`,
+      ),
   };
 });
 
@@ -227,7 +229,6 @@ function resetHarness() {
   harness.removeNotification.mockClear();
   harness.subscriptionType = "pro";
   harness.tokenUsage = 1776;
-  harness.usingOverage = undefined;
 }
 
 function baseProps(): NotificationsProps {
@@ -242,6 +243,7 @@ function baseProps(): NotificationsProps {
     mcpClients: undefined,
     onAutoUpdaterResult: vi.fn(),
     onChangeIsUpdating: vi.fn(),
+    remoteAuthSessionContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
     verbose: false,
   };
 }
@@ -341,7 +343,7 @@ describe("Notifications wave200-144 coverage", () => {
 
     try {
       expect(rendered.output()).toContain("IDE:selected text:1");
-      expect(rendered.output()).toContain("TokenWarning:1776:gpt-5.4");
+      expect(rendered.output()).toContain("TokenWarning:1776:gpt-5.4:true");
       expect(rendered.output()).not.toContain("AutoUpdater");
       expect(harness.autoUpdaterProps).toHaveLength(0);
       expect(harness.mcpClientsSeen).toBe(mcpClients);

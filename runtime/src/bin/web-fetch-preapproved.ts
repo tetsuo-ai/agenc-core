@@ -1,12 +1,12 @@
 /**
- * Preapproved-host allowlist for `WebFetch`.
+ * Preapproved-host allowlist for `web_fetch`.
  *
  * Common dev/docs domains that are known-safe for GET-only fetches.
  * AgenC surfaces this via the web fetch tool result so the model
  * knows when a host is well-known; the access-control gate itself
  * remains the standard permission classifier.
  *
- * Security note: this list applies ONLY to WebFetch (HTTPS GET).
+ * Security note: this list applies ONLY to web_fetch (HTTPS GET).
  * Sandbox network policy must NOT
  * inherit it — arbitrary network access (POST / uploads) to hosts in
  * this list could enable data exfiltration, since some entries

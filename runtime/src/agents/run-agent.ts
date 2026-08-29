@@ -37,7 +37,7 @@ import type {
 import { createCacheSafeParams } from "../services/PromptSuggestion/runtime.js";
 import { llmMessageToAgentSummaryMessage } from "../services/AgentSummary/transcript.js";
 import {
-  readProviderFactoryOptions,
+  preserveProviderFactoryState,
   readProviderIdentity,
 } from "../llm/provider.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
@@ -532,7 +532,7 @@ function wrapStartupPrewarmHandleForAgentSummary(
   };
 }
 
-function wrapProviderForAgentSummary(
+export function wrapProviderForAgentSummary(
   provider: LLMProvider,
   capture: AgentSummaryProviderRequestCapture,
 ): LLMProvider {
@@ -599,7 +599,7 @@ function wrapProviderForAgentSummary(
       ? { dispose: () => provider.dispose!() }
       : {}),
   };
-  return wrapped;
+  return preserveProviderFactoryState(wrapped, provider);
 }
 
 interface AgentRunContext {
@@ -612,11 +612,6 @@ interface AgentRunContext {
     readonly mcpClients: readonly unknown[];
     readonly contextWindowTokens: number;
     readonly maxOutputTokens?: number;
-    readonly providerOverride?: {
-      readonly model: string;
-      readonly baseURL: string;
-      readonly apiKey: string;
-    };
     readonly querySource?: string;
     readonly agentDefinitions: {
       readonly agentRoleWorkspaceId?: string;
@@ -643,7 +638,6 @@ interface AgentRunContext {
   readonly setStreamMode: (mode: "requesting" | "responding" | null) => void;
   readonly setResponseLength: (updater: (length: number) => number) => void;
   readonly onCompactProgress: (event: unknown) => void;
-  readonly setSDKStatus: (status: "compacting" | null) => void;
   readonly addNotification: (notification: unknown) => void;
   readonly emitWarning: (warning: {
     readonly cause: string;
@@ -693,7 +687,6 @@ type SessionSurface = {
   readonly setStreamMode?: (mode: "requesting" | "responding" | null) => void;
   readonly setResponseLength?: (updater: (length: number) => number) => void;
   readonly onCompactProgress?: (event: unknown) => void;
-  readonly setSDKStatus?: (status: "compacting" | null) => void;
   readonly addNotification?: (notification: unknown) => void;
   readonly emitWarning?: (warning: {
     readonly cause: string;
@@ -707,7 +700,6 @@ function buildAgentRunContext(
   opts: { readonly querySource?: string; readonly verbose?: boolean } = {},
 ): AgentRunContext {
   const model = toAgentModelContext(ctx);
-  const providerOverride = buildAgentProviderOverride(session, model.model);
   const surface = readAgentSessionSurface(session);
   const agentDefinitions = {
     ...(firstNonEmpty(surface.agentDefinitions?.agentRoleWorkspaceId) !==
@@ -740,7 +732,6 @@ function buildAgentRunContext(
       ...(model.maxOutputTokens !== undefined
         ? { maxOutputTokens: model.maxOutputTokens }
         : {}),
-      ...(providerOverride !== undefined ? { providerOverride } : {}),
       ...(opts.querySource !== undefined
         ? { querySource: opts.querySource }
         : {}),
@@ -763,7 +754,6 @@ function buildAgentRunContext(
     setStreamMode: surface.setStreamMode ?? (() => {}),
     setResponseLength: surface.setResponseLength ?? (() => {}),
     onCompactProgress: surface.onCompactProgress ?? (() => {}),
-    setSDKStatus: surface.setSDKStatus ?? (() => {}),
     addNotification: surface.addNotification ?? (() => {}),
     emitWarning:
       surface.emitWarning ??
@@ -824,22 +814,6 @@ function toAgentRuntimeTools(tools: readonly LLMTool[]): AgentRuntimeTool[] {
   });
 }
 
-function buildAgentProviderOverride(
-  session: Session,
-  fallbackModel: string,
-): AgentRunContext["options"]["providerOverride"] | undefined {
-  const provider = session.services.provider;
-  const options = readProviderFactoryOptions(provider);
-  const model = firstNonEmpty(options.model, fallbackModel);
-  const baseURL = firstNonEmpty(options.baseURL);
-  if (!model || !baseURL) return undefined;
-  return {
-    model,
-    baseURL,
-    apiKey: options.apiKey ?? "",
-  };
-}
-
 function firstNonEmpty(
   ...values: Array<string | undefined>
 ): string | undefined {
@@ -883,7 +857,6 @@ function readAgentSessionSurface(session: Session): SessionSurface {
     setResponseLength:
       read<(updater: (length: number) => number) => void>("setResponseLength"),
     onCompactProgress: read<(event: unknown) => void>("onCompactProgress"),
-    setSDKStatus: read<(status: "compacting" | null) => void>("setSDKStatus"),
     addNotification: read<(notification: unknown) => void>("addNotification"),
     emitWarning:
       read<
@@ -1783,7 +1756,6 @@ interface DrainedChildMailbox {
   readonly clearHistory?: boolean;
   readonly interruptReason?: string;
   readonly nextUserMessage?: string | readonly LLMContentPart[];
-  readonly refreshMcpConfig?: unknown;
   readonly taskId?: string;
   readonly turnId?: string;
   readonly omittedPassiveMessages?: number;
@@ -1926,7 +1898,6 @@ function drainChildMailbox(
   const contextParts: Array<string | readonly LLMContentPart[]> = [];
   let assignment: ChildMailboxAssignment | undefined;
   let clearHistory = false;
-  let refreshMcpConfig: unknown;
   let retainedPassiveBytes = 0;
   let omittedPassiveMessages = 0;
   let omittedPassiveBytes = 0;
@@ -1950,16 +1921,6 @@ function drainChildMailbox(
       clearHistory = true;
       contextParts.length = 0;
       assignment = undefined;
-      continue;
-    }
-    if (kind === "mcp_refresh") {
-      // Control message: refresh the live child's MCP servers between turns.
-      // Latest config wins; does not itself trigger a turn.
-      const refresh = live.pendingMcpRefresh;
-      if (refresh !== undefined) {
-        refreshMcpConfig = refresh.config;
-        live.pendingMcpRefresh = undefined;
-      }
       continue;
     }
     if (kind === "mailbox_omission") {
@@ -2056,13 +2017,11 @@ function drainChildMailbox(
   if (assignment === undefined) {
     return {
       ...(clearHistory ? { clearHistory } : {}),
-      ...(refreshMcpConfig !== undefined ? { refreshMcpConfig } : {}),
     };
   }
 
   return {
     ...(clearHistory ? { clearHistory } : {}),
-    ...(refreshMcpConfig !== undefined ? { refreshMcpConfig } : {}),
     nextUserMessage: assignment.nextUserMessage,
     ...(assignment.taskId !== undefined ? { taskId: assignment.taskId } : {}),
     ...(assignment.turnId !== undefined ? { turnId: assignment.turnId } : {}),
@@ -2422,14 +2381,12 @@ const THREAD_SPAWN_MAIN_THREAD_TOOL_NAMES = new Set([
   "TaskList",
   "TaskOutput",
   "TaskStop",
-  "Brief",
   "SendUserMessage",
   "VerifyPlanExecution",
   "CronCreate",
   "CronDelete",
   "CronList",
   "WorkflowTool",
-  "RemoteTrigger",
   "EnterPlanMode",
   "ExitPlanMode",
 ]);
@@ -2471,7 +2428,7 @@ export function mergeRoleDisallowlist(
 
 function resolveSessionMaxAgentDepth(parent: Session): number {
   const asDepth = (value: unknown): number | undefined =>
-    typeof value === "number" && Number.isInteger(value) && value >= 1
+    typeof value === "number" && Number.isInteger(value) && value >= 0
       ? value
       : undefined;
   return (
@@ -2911,10 +2868,6 @@ function createInertChildMcpManager(): Session["services"]["mcpManager"] {
   return {
     effectiveServers: async () => new Map(),
     toolPluginProvenance: async () => null,
-    refreshFromConfig: async () => ({
-      configuredServers: [],
-      requiredServers: [],
-    }),
     getTools: () => [],
     getToolsByServer: () => [],
     getConfiguredServers: () => [],
@@ -3014,9 +2967,15 @@ function buildChildSession(
       history: [],
     },
     features: params.parent.features,
+    mcpManagerOwnership: "borrowed",
     services: {
       ...params.parent.services,
       provider,
+      // A provider service is session-owned. Do not let the parent's service
+      // survive the spread above and silently override the forked provider in
+      // the ChildSession constructor.
+      providerService: undefined,
+      providerEnvironment: params.parent.providerService.environment(),
       registry,
       ...(params.parent.services.executionAdmission !== undefined
         ? {
@@ -3655,11 +3614,6 @@ export async function* runAgent(
         await clearChildConversationHistory(activeChildSession, live, history);
         assistantText = "";
       }
-      if (pending.refreshMcpConfig !== undefined) {
-        await activeChildSession.services.mcpManager?.refreshFromConfig?.(
-          pending.refreshMcpConfig,
-        );
-      }
       return {
         interrupted: false,
         ...(pending.nextUserMessage !== undefined
@@ -3719,6 +3673,7 @@ export async function* runAgent(
       let stopReason:
         | "completed"
         | "max_turns"
+        | "max_budget_usd"
         | "cancelled"
         | "error"
         | "empty_response"
@@ -3761,6 +3716,39 @@ export async function* runAgent(
         const step = await iter.next();
         if (step.done) {
           terminalError = step.value?.error;
+          // The terminal return value is authoritative even when a failing
+          // phase cannot emit its usual turn_complete event. Without this
+          // fallback, provider failures were misreported as successful child
+          // runs because the local stop reason starts at "completed".
+          if (stopReason === "completed") {
+            switch (step.value?.reason) {
+              case "max_turns":
+                stopReason = "max_turns";
+                break;
+              case "max_budget_usd":
+                stopReason = "max_budget_usd";
+                break;
+              case "cancelled":
+              case "aborted_streaming":
+              case "aborted_tools":
+                stopReason = "cancelled";
+                break;
+              case "no_progress":
+                stopReason = "no_progress";
+                break;
+              case "blocking_limit":
+              case "prompt_too_long":
+              case "image_error":
+              case "model_error":
+              case "stop_hook_prevented":
+              case "hook_stopped":
+                stopReason = "error";
+                break;
+              case "completed":
+              case undefined:
+                break;
+            }
+          }
           break;
         }
         const event = step.value;
@@ -3860,11 +3848,14 @@ export async function* runAgent(
       if (
         stopReason === "error" ||
         stopReason === "max_turns" ||
+        stopReason === "max_budget_usd" ||
         stopReason === "no_progress"
       ) {
         let message: string;
         if (stopReason === "max_turns") {
           message = `subagent exceeded maxTurns${params.maxTurns !== undefined ? ` (${params.maxTurns})` : ""}`;
+        } else if (stopReason === "max_budget_usd") {
+          message = "subagent reached the canonical session cost cap";
         } else if (stopReason === "no_progress") {
           message =
             assistantText ||

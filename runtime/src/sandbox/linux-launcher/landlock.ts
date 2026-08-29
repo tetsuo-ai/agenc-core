@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import { SECCOMP_STDIN_FD } from "./config.js";
@@ -82,9 +81,10 @@ export function networkSeccompMode(
 
 export function openNetworkSeccompProgramFile(
   mode: NetworkSeccompMode,
+  sessionTempRoot: string,
   arch: NodeJS.Architecture = process.arch,
 ): SeccompProgramFile {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agenc-seccomp-"));
+  const dir = fs.mkdtempSync(path.join(sessionTempRoot, "agenc-seccomp-"));
   const filePath = path.join(dir, "network.bpf");
   const fd = fs.openSync(filePath, "w+");
   const program = createNetworkSeccompProgram(mode, arch);
@@ -147,19 +147,24 @@ export function createNetworkSeccompProgram(
 }
 
 function restrictedNetworkDeniedSyscalls(table: SyscallTable): number[] {
+  // getsockname/getpeername/getsockopt are deliberately NOT denied: they are
+  // read-only introspection of already-open sockets and grant no
+  // connectivity (socket creation stays AF_UNIX-only above; connect/bind/
+  // listen/accept/send* stay denied). Node's libuv classifies inherited
+  // stdio with getsockname, and child_process "pipe" stdio are AF_UNIX
+  // socketpairs — denying it made every node-spawned confined child see
+  // instant EOF on stdin (getsockname(0) => EPERM), which broke stdio MCP
+  // servers under the Landlock fallback.
   return [
     table.connect,
     table.accept,
     table.accept4,
     table.bind,
     table.listen,
-    table.getpeername,
-    table.getsockname,
     table.shutdown,
     table.sendto,
     table.sendmmsg,
     table.recvmmsg,
-    table.getsockopt,
     table.setsockopt,
   ];
 }

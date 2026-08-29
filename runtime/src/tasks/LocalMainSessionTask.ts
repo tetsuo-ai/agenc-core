@@ -42,7 +42,6 @@ import {
   createAssistantAPIErrorMessage,
   isAssistantAPIErrorMessage,
 } from "../utils/messages.js";
-import { emitTaskTerminatedSdk } from "../utils/sdkEventQueue.js";
 import {
   getAgentTranscriptPath,
   recordSidechainTranscript,
@@ -224,19 +223,13 @@ export function completeMainSessionTask(
       );
     }
   } else {
-    // Foregrounded: no XML notification (TUI user is watching), but SDK
-    // consumers still need to see the task_started bookend close.
-    // Set notified so evictTerminalTask/generateTaskAttachments eviction
-    // guards pass; the backgrounded path sets this inside
-    // enqueueMainSessionNotification's check-and-set.
+    // Foregrounded: no notification because the user is watching it directly.
+    // Set notified so eager and between-turn terminal-eviction guards pass;
+    // the backgrounded path sets this in enqueueMainSessionNotification.
     updateTaskState(taskId, setAppState, (task) => ({
       ...task,
       notified: true,
     }));
-    emitTaskTerminatedSdk(taskId, success ? "completed" : "failed", {
-      toolUseId,
-      summary: "Background session",
-    });
   }
 }
 
@@ -434,17 +427,12 @@ export function startBackgroundSession({
       )) {
         if (abortSignal.aborted) {
           // Aborted mid-stream — completeMainSessionTask won't be reached.
-          // chat:killAgents path already marked notified + emitted; stopTask path did not.
-          let alreadyNotified = false;
+          // chat:killAgents already marked notified; stopTask may not have.
           updateTaskState(taskId, setAppState, (task) => {
-            alreadyNotified = task.notified === true;
-            return alreadyNotified ? task : { ...task, notified: true };
+            return task.notified === true
+              ? task
+              : { ...task, notified: true };
           });
-          if (!alreadyNotified) {
-            emitTaskTerminatedSdk(taskId, "stopped", {
-              summary: description,
-            });
-          }
           return;
         }
 

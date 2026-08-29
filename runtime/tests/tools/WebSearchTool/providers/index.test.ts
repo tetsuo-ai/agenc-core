@@ -1,6 +1,17 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test'
 import { getProviderMode, getProviderChain, getAvailableProviders } from '../../../../src/tools/WebSearchTool/providers/index.ts'
 import type { ProviderMode } from '../../../../src/tools/WebSearchTool/providers/index.ts'
+import { runWithCanonicalRuntimeAuthority } from '../../../helpers/canonical-runtime-authority.bun.ts'
+
+function withEnvironment<T>(
+  environment: Readonly<Record<string, string | undefined>>,
+  operation: () => T,
+): T {
+  return runWithCanonicalRuntimeAuthority(
+    operation,
+    { environment, model: 'gpt-5', provider: 'openai' },
+  )
+}
 
 // ---------------------------------------------------------------------------
 // getProviderMode
@@ -19,27 +30,27 @@ describe('getProviderMode', () => {
 
   test('returns auto by default', () => {
     delete process.env.WEB_SEARCH_PROVIDER
-    expect(getProviderMode()).toBe('auto')
+    expect(withEnvironment({}, () => getProviderMode())).toBe('auto')
   })
 
   test('returns configured mode', () => {
     process.env.WEB_SEARCH_PROVIDER = 'tavily'
-    expect(getProviderMode()).toBe('tavily')
+    expect(withEnvironment({ WEB_SEARCH_PROVIDER: 'tavily' }, () => getProviderMode())).toBe('tavily')
   })
 
   test('returns ddg mode', () => {
     process.env.WEB_SEARCH_PROVIDER = 'ddg'
-    expect(getProviderMode()).toBe('ddg')
+    expect(withEnvironment({ WEB_SEARCH_PROVIDER: 'ddg' }, () => getProviderMode())).toBe('ddg')
   })
 
   test('returns native mode', () => {
     process.env.WEB_SEARCH_PROVIDER = 'native'
-    expect(getProviderMode()).toBe('native')
+    expect(withEnvironment({ WEB_SEARCH_PROVIDER: 'native' }, () => getProviderMode())).toBe('native')
   })
 
   test('falls back to auto for invalid mode', () => {
     process.env.WEB_SEARCH_PROVIDER = 'nonexistent_provider'
-    expect(getProviderMode()).toBe('auto')
+    expect(withEnvironment({ WEB_SEARCH_PROVIDER: 'nonexistent_provider' }, () => getProviderMode())).toBe('auto')
   })
 })
 
@@ -50,13 +61,13 @@ describe('getProviderMode', () => {
 describe('getProviderChain', () => {
   test('auto mode returns at least one configured provider', () => {
     // DDG isAlways configured (no API key needed)
-    const chain = getProviderChain('auto')
+    const chain = withEnvironment({}, () => getProviderChain('auto'))
     expect(chain.length).toBeGreaterThan(0)
     expect(chain.some(p => p.name === 'duckduckgo')).toBe(true)
   })
 
   test('auto mode does NOT include custom provider', () => {
-    const chain = getProviderChain('auto')
+    const chain = withEnvironment({}, () => getProviderChain('auto'))
     expect(chain.some(p => p.name === 'custom')).toBe(false)
   })
 
@@ -114,9 +125,12 @@ describe('runSearch', () => {
 
     try {
       const { runSearch } = await import('../../../../src/tools/WebSearchTool/providers/index.ts')
-      await expect(runSearch({ query: 'test' })).rejects.toThrow(
-        /not configured/i,
-      )
+      await expect(
+        withEnvironment(
+          { WEB_SEARCH_PROVIDER: 'tavily' },
+          () => runSearch({ query: 'test' }),
+        ),
+      ).rejects.toThrow(/not configured/i)
     } finally {
       if (saved !== undefined) process.env.TAVILY_API_KEY = saved
       else delete process.env.TAVILY_API_KEY
@@ -132,29 +146,25 @@ describe('runSearch', () => {
 
 describe('getAvailableProviders', () => {
   test('always includes duckduckgo (no API key required)', () => {
-    const providers = getAvailableProviders()
+    const providers = withEnvironment({}, () => getAvailableProviders())
     expect(providers.some(p => p.name === 'duckduckgo')).toBe(true)
   })
 
   test('does NOT include custom in available providers (auto chain)', () => {
-    const providers = getAvailableProviders()
+    const providers = withEnvironment({}, () => getAvailableProviders())
     expect(providers.some(p => p.name === 'custom')).toBe(false)
   })
 
   test('includes providers when API keys are set', () => {
-    const saved = process.env.TAVILY_API_KEY
-    process.env.TAVILY_API_KEY = 'test-key'
-    const providers = getAvailableProviders()
+    const providers = withEnvironment(
+      { TAVILY_API_KEY: 'test-key' },
+      () => getAvailableProviders(),
+    )
     expect(providers.some(p => p.name === 'tavily')).toBe(true)
-    if (saved === undefined) delete process.env.TAVILY_API_KEY
-    else process.env.TAVILY_API_KEY = saved
   })
 
   test('excludes providers when API keys are missing', () => {
-    const saved = process.env.TAVILY_API_KEY
-    delete process.env.TAVILY_API_KEY
-    const providers = getAvailableProviders()
+    const providers = withEnvironment({}, () => getAvailableProviders())
     expect(providers.some(p => p.name === 'tavily')).toBe(false)
-    if (saved !== undefined) process.env.TAVILY_API_KEY = saved
   })
 })

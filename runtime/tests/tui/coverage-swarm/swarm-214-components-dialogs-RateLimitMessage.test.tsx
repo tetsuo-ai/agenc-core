@@ -5,24 +5,12 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 const originalDisableExtraUsageCommand =
   process.env.DISABLE_EXTRA_USAGE_COMMAND
 
-type LimitSnapshot = {
-  readonly status: string
-  readonly resetsAt?: number
-  readonly isUsingOverage: boolean
-}
-
 const harness = vi.hoisted(() => ({
   hasBillingAccess: false,
   isAgenCAISubscriber: vi.fn(() => true),
   isNonInteractive: false,
-  limits: {
-    status: 'accepted',
-    resetsAt: undefined,
-    isUsingOverage: false,
-  } as LimitSnapshot,
   overageAllowed: true,
   rateLimitTier: null as string | null,
-  shouldProcessMockLimits: false,
   subscriptionType: 'pro' as string | null,
 }))
 
@@ -35,14 +23,6 @@ vi.mock('../../../src/bootstrap/state.js', async importOriginal => {
     getIsNonInteractiveSession: () => harness.isNonInteractive,
   }
 })
-
-vi.mock('../../../src/services/rateLimitMocking.js', () => ({
-  shouldProcessMockLimits: () => harness.shouldProcessMockLimits,
-}))
-
-vi.mock('../../../src/tui/rate-limits/agenc-ai-limits.js', () => ({
-  useAgenCAiLimits: () => harness.limits,
-}))
 
 vi.mock('../../../src/utils/auth.js', () => ({
   getRateLimitTier: () => harness.rateLimitTier,
@@ -96,14 +76,8 @@ describe('RateLimitMessage coverage swarm row 214', () => {
     harness.isAgenCAISubscriber.mockReset()
     harness.isAgenCAISubscriber.mockReturnValue(true)
     harness.isNonInteractive = false
-    harness.limits = {
-      status: 'accepted',
-      resetsAt: undefined,
-      isUsingOverage: false,
-    }
     harness.overageAllowed = true
     harness.rateLimitTier = null
-    harness.shouldProcessMockLimits = false
     harness.subscriptionType = 'pro'
   })
 
@@ -124,15 +98,15 @@ describe('RateLimitMessage coverage swarm row 214', () => {
     ).toContain('/upgrade or /extra-usage')
   })
 
-  test('uses mock limit processing as a subscriber substitute without checking subscriber state', async () => {
-    harness.shouldProcessMockLimits = true
+  test('does not show subscriber upsells for a non-subscriber', async () => {
     harness.isAgenCAISubscriber.mockReturnValue(false)
 
     const output = await renderRateLimitMessage()
 
     expect(output).toContain('Rate limit reached')
-    expect(output).toContain('/upgrade or /extra-usage')
-    expect(harness.isAgenCAISubscriber).not.toHaveBeenCalled()
+    expect(output).not.toContain('/upgrade')
+    expect(output).not.toContain('/extra-usage')
+    expect(harness.isAgenCAISubscriber).toHaveBeenCalledTimes(1)
   })
 
   test('hides extra-usage guidance when the command is disabled or the session is non-interactive', async () => {
@@ -156,34 +130,4 @@ describe('RateLimitMessage coverage swarm row 214', () => {
     expect(nonInteractiveOutput).not.toContain('/extra-usage')
   })
 
-  test('does not auto-open options without a reset time or while already using overage', async () => {
-    const onOpenRateLimitOptions = vi.fn()
-    harness.limits = {
-      status: 'rejected',
-      resetsAt: undefined,
-      isUsingOverage: false,
-    }
-
-    const missingResetOutput = await renderRateLimitMessage({
-      onOpenRateLimitOptions,
-    })
-
-    expect(missingResetOutput).toContain('/upgrade or /extra-usage')
-    expect(missingResetOutput).not.toContain('Opening your options')
-    expect(onOpenRateLimitOptions).not.toHaveBeenCalled()
-
-    harness.limits = {
-      status: 'rejected',
-      resetsAt: Date.now() + 60_000,
-      isUsingOverage: true,
-    }
-
-    const overageOutput = await renderRateLimitMessage({
-      onOpenRateLimitOptions,
-    })
-
-    expect(overageOutput).toContain('/upgrade or /extra-usage')
-    expect(overageOutput).not.toContain('Opening your options')
-    expect(onOpenRateLimitOptions).not.toHaveBeenCalled()
-  })
 })

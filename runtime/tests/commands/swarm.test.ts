@@ -25,6 +25,11 @@ function makeCtx(argsRaw: string) {
   return { argsRaw, appState } as never;
 }
 
+async function persistSwarmMode(swarmMode: boolean | undefined): Promise<void> {
+  const result = await updateSettingsForSource("userSettings", { swarmMode });
+  expect(result.error).toBeNull();
+}
+
 function makeProducerOpts(
   turnId: string,
   rootHumanInput: string | null,
@@ -48,7 +53,7 @@ function makeProducerOpts(
 
 describe("/swarm command", () => {
   test("status reports the current mode and usage hint", async () => {
-    updateSettingsForSource("userSettings", { swarmMode: undefined });
+    await persistSwarmMode(undefined);
     const result = (await swarmCommand.execute(makeCtx("status"))) as {
       kind: string;
       text: string;
@@ -71,8 +76,8 @@ describe("/swarm command", () => {
     expect(getSettingsForSource("userSettings")?.swarmMode).toBe(true);
   });
 
-  test("a fresh TUI restores persisted swarm mode immediately", () => {
-    updateSettingsForSource("userSettings", { swarmMode: true });
+  test("a resolved canonical write is immediately visible to a fresh TUI", async () => {
+    await persistSwarmMode(true);
     expect(getDefaultAppState().swarmMode).toBe(true);
   });
 
@@ -117,7 +122,7 @@ describe("swarmModeProducer", () => {
   });
 
   test("emits the parallel fan-out nudge while swarm mode is on", async () => {
-    updateSettingsForSource("userSettings", { swarmMode: true });
+    await persistSwarmMode(true);
     const attachments = await swarmModeProducer(
       makeProducerOpts(
         "turn-parallel",
@@ -142,17 +147,17 @@ describe("swarmModeProducer", () => {
   });
 
   test("emits nothing when swarm mode is off", async () => {
-    updateSettingsForSource("userSettings", { swarmMode: false });
+    await persistSwarmMode(false);
     expect(await swarmModeProducer(opts, {} as never)).toEqual([]);
   });
 
   test("emits nothing on swarm children (no recursive fan-out)", async () => {
-    updateSettingsForSource("userSettings", { swarmMode: true });
+    await persistSwarmMode(true);
     expect(await swarmModeProducer(childOpts, {} as never)).toEqual([]);
   });
 
   test("renders an adaptive routing receipt without copying prompt content", async () => {
-    updateSettingsForSource("userSettings", { swarmMode: true });
+    await persistSwarmMode(true);
     const tracking = { swarmRoutingDecisionCount: 0 } as never;
     const attachments = await swarmModeProducer(
       makeProducerOpts(
@@ -178,7 +183,7 @@ describe("swarmModeProducer", () => {
   });
 
   test("routes synthetic and stale-turn follow-ups as coordination", async () => {
-    updateSettingsForSource("userSettings", { swarmMode: true });
+    await persistSwarmMode(true);
     const staleParallelPrompt =
       "Parallelize these independent checks:\n- API\n- TUI";
 
@@ -214,7 +219,7 @@ describe("swarmModeProducer", () => {
   });
 
   test("emits at most once per exact turn but emits again for a new turn", async () => {
-    updateSettingsForSource("userSettings", { swarmMode: true });
+    await persistSwarmMode(true);
     const tracking = { swarmRoutingDecisionCount: 0 } as never;
     const sameTask =
       "Parallelize these independent checks:\n- API\n- TUI";
@@ -244,7 +249,7 @@ describe("swarmModeProducer", () => {
   });
 
   test("records the exact routing decision used by provider enforcement", async () => {
-    updateSettingsForSource("userSettings", { swarmMode: true });
+    await persistSwarmMode(true);
     const tracking = { swarmRoutingDecisionCount: 0 } as never;
     await swarmModeProducer(
       makeProducerOpts(
@@ -265,7 +270,7 @@ describe("swarmModeProducer", () => {
   });
 
   test("reports a missing spawn tool instead of pretending fan-out happened", async () => {
-    updateSettingsForSource("userSettings", { swarmMode: true });
+    await persistSwarmMode(true);
     const attachments = await swarmModeProducer(opts, {
       swarmRoutingDecisionCount: 0,
     } as never);
@@ -275,7 +280,7 @@ describe("swarmModeProducer", () => {
   });
 
   test("keeps plan mode non-mutating while preserving the parallel decision", async () => {
-    updateSettingsForSource("userSettings", { swarmMode: true });
+    await persistSwarmMode(true);
     const attachments = await swarmModeProducer(
       makeProducerOpts(
         "turn-plan",

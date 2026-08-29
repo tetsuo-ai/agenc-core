@@ -22,11 +22,19 @@ export interface AdmittedLegacyToolCallOptions<T> {
   readonly toDispatchResult: (result: T) => ToolResult;
 }
 
+export interface AdmittedSessionBoundToolDispatchContext
+  extends AdmittedToolDispatchContext {
+  /** Stable identity generated for this admitted physical effect. */
+  readonly callId: string;
+}
+
 export interface AdmittedSessionBoundToolCallOptions<T> {
   readonly tool: Tool;
   readonly args: Readonly<Record<string, unknown>>;
   readonly signal?: AbortSignal;
-  readonly invoke: (context: AdmittedToolDispatchContext) => Promise<T>;
+  readonly invoke: (
+    context: AdmittedSessionBoundToolDispatchContext,
+  ) => Promise<T>;
   readonly toDispatchResult: (result: T) => ToolResult;
 }
 
@@ -61,7 +69,7 @@ export async function runAdmittedSessionBoundToolCall<T>(
     ...(params.signal !== undefined ? { signal: params.signal } : {}),
     invoke: async (context) => {
       context.crossEffectBoundary();
-      result = await params.invoke(context);
+      result = await params.invoke({ ...context, callId });
       return params.toDispatchResult(result);
     },
   });

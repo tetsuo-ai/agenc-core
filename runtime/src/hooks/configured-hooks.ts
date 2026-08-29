@@ -22,7 +22,6 @@ import type {
   StopRequest,
 } from "../phases/stop-hooks.js";
 import { hookMatcherInputsForToolName } from "../permissions/hook-event-schedule.js";
-import { isProjectTrustedSync } from "../permissions/trust/project-trust.js";
 import type { UserPromptSubmitHook } from "./user-prompt-submit.js";
 import type {
   HookInput,
@@ -49,6 +48,14 @@ import type {
   HookRunStatus,
   IndividualHookConfig,
 } from "./engine/types.js";
+import {
+  resolveConfiguredHookSources,
+  type ConfiguredHookAuthoritySnapshot,
+} from "./configured-hook-sources.js";
+import type { HookRuntimeAuthority } from "./runtime-policy.js";
+import type { HookExecutionAuthority } from "./execution-authority.js";
+
+export type { ConfiguredHookAuthoritySnapshot } from "./configured-hook-sources.js";
 
 export { groupHooksByEvent, matchesPattern };
 export type {
@@ -76,37 +83,37 @@ export interface HookInstallTarget {
       input: PreCompactHookInput,
       signal?: AbortSignal,
     ) => Promise<HookResult>,
-  ) => void;
+  ) => () => void;
   readonly addPostCompactHook?: (
     hook: (
       input: PostCompactHookInput,
       signal?: AbortSignal,
     ) => Promise<HookResult>,
-  ) => void;
+  ) => () => void;
   readonly addSessionStartHook?: (
     hook: (
       input: SessionStartHookInput,
       signal?: AbortSignal,
     ) => Promise<HookResult>,
-  ) => void;
+  ) => () => void;
   readonly addSubagentStopHook?: (
     hook: (
       input: SubagentStopHookInput,
       signal?: AbortSignal,
     ) => Promise<HookResult>,
-  ) => void;
+  ) => () => void;
   readonly addSessionEndHook?: (
     hook: (
       input: SessionEndHookInput,
       signal?: AbortSignal,
     ) => Promise<HookResult>,
-  ) => void;
+  ) => () => void;
   readonly addNotificationHook?: (
     hook: (
       input: NotificationHookInput,
       signal?: AbortSignal,
     ) => Promise<HookResult>,
-  ) => void;
+  ) => () => void;
   readonly clearConfiguredLifecycleHooks?: () => void;
 }
 
@@ -115,44 +122,94 @@ export interface ConfiguredHooksRuntimeOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly agencHome: string;
   readonly shellPath: string;
+  readonly commandWrapperArgv?: readonly string[];
   readonly sandboxExecutionBroker?: import("../sandbox/execution-broker.js").SandboxExecutionBrokerLike;
   readonly executionAdmission?: import("../budget/admission-client.js").ExecutionAdmissionClient;
   readonly admissionRequired?: boolean;
-  /**
-   * SECURITY: trust gate for config/plugin-sourced command hooks. Returns true
-   * when the current workspace is trusted (persisted in trusted-projects.json).
-   * Defaults to the real project-trust lookup; injectable for tests. Hooks
-   * declared in config.toml or plugins execute arbitrary shell commands, so a
-   * freshly-cloned untrusted repo must NOT be able to run them (RCE).
-   */
-  readonly isWorkspaceTrusted?: () => boolean;
+  /** Immutable authority owned by the session whose hooks this runtime runs. */
+  readonly runtimeOptions?: HookRuntimeAuthority;
+  /** Sole session-owned decision point for every configured command effect. */
+  readonly executionAuthority: HookExecutionAuthority;
 }
 
-/**
- * SECURITY opt-in: when set to a truthy value ("1"/"true"), config/plugin
- * command hooks are allowed to run even in an UNTRUSTED workspace. This exists
- * for headless/SDK automation that has already vetted the workspace out-of-band.
- * Default (unset) = untrusted workspaces never run command hooks.
- */
-const ALLOW_UNTRUSTED_HOOKS_ENV = "AGENC_ALLOW_UNTRUSTED_HOOKS";
+interface ManagedHookInstallation {
+  readonly target: HookInstallTarget;
+  readonly preToolUseHooks: PreToolUseHook[];
+  readonly postToolUseHooks: PostToolUseHook[];
+  readonly failureToolUseHooks: PostToolUseFailureHook[];
+  readonly permissionDecisionHooks: PermissionDecisionHook[];
+  readonly userPromptSubmitHooks: UserPromptSubmitHook[];
+  readonly stopHooks: StopHookHandler[];
+  readonly stopFailureHooks: StopHookHandler[];
+  readonly lifecycleDisposers: Array<() => void>;
+  readonly insertionIndexes: ManagedHookInsertionIndexes;
+}
 
-function isTruthyEnvFlag(value: string | undefined): boolean {
-  if (value === undefined) return false;
-  const normalized = value.trim().toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes";
+interface ManagedHookInsertionIndexes {
+  readonly preToolUseHooks: number;
+  readonly postToolUseHooks: number;
+  readonly failureToolUseHooks: number;
+  readonly permissionDecisionHooks: number;
+  readonly userPromptSubmitHooks: number;
+  readonly stopHooks: number;
+  readonly stopFailureHooks: number;
+}
+
+function removeInstalledHooks<T>(target: T[], installed: readonly T[]): void {
+  if (installed.length === 0) return;
+  const managed = new Set(installed);
+  let writeIndex = 0;
+  for (const hook of target) {
+    if (managed.has(hook)) continue;
+    target[writeIndex] = hook;
+    writeIndex += 1;
+  }
+  target.length = writeIndex;
+}
+
+function managedInsertionIndex<T>(
+  target: readonly T[],
+  installed: readonly T[],
+  fallback: number,
+): number {
+  const indexes = installed
+    .map((hook) => target.indexOf(hook))
+    .filter((index) => index >= 0);
+  return indexes.length > 0
+    ? Math.min(...indexes)
+    : Math.min(fallback, target.length);
+}
+
+function insertManagedHook<T>(
+  target: T[],
+  installed: T[],
+  insertionIndex: number,
+  hook: T,
+): void {
+  target.splice(
+    Math.min(insertionIndex + installed.length, target.length),
+    0,
+    hook,
+  );
+  installed.push(hook);
 }
 
 export class ConfiguredHooksRuntime {
   private readonly engine: HookEngine;
   private validationIssues: HookValidationIssue[] = [];
   private target: HookInstallTarget | null = null;
-  private readonly isWorkspaceTrusted: () => boolean;
+  private configAuthority: ConfiguredHookAuthoritySnapshot | undefined;
+  private pluginHooks: HooksMap | undefined;
+  private managedInstallation: ManagedHookInstallation | undefined;
 
   constructor(private readonly opts: ConfiguredHooksRuntimeOptions) {
     this.engine = new HookEngine({
       cwd: opts.cwd,
       env: opts.env,
       shellPath: opts.shellPath,
+      ...(opts.commandWrapperArgv !== undefined
+        ? { commandWrapperArgv: opts.commandWrapperArgv }
+        : {}),
       sourcePath: this.sourcePath(),
       ...(opts.sandboxExecutionBroker !== undefined
         ? { sandboxExecutionBroker: opts.sandboxExecutionBroker }
@@ -163,23 +220,44 @@ export class ConfiguredHooksRuntime {
       ...(opts.admissionRequired !== undefined
         ? { admissionRequired: opts.admissionRequired }
         : {}),
+      ...(opts.runtimeOptions !== undefined
+        ? { runtimeOptions: opts.runtimeOptions }
+        : {}),
     });
-    this.isWorkspaceTrusted =
-      opts.isWorkspaceTrusted ??
-      (() =>
-        isProjectTrustedSync({
-          cwd: opts.cwd,
-          agencHome: opts.agencHome,
-          env: opts.env,
-        }));
   }
 
   attachTarget(target: HookInstallTarget): void {
+    if (this.target !== target) this.uninstallManagedHooks();
     this.target = target;
     this.rebuildTarget();
   }
 
-  load(raw: HooksMap | undefined): void {
+  /** Replace canonical config authority without disturbing plugin hooks. */
+  loadConfigAuthority(snapshot: ConfiguredHookAuthoritySnapshot): void {
+    this.configAuthority = snapshot;
+    this.refreshSources();
+  }
+
+  /** Replace explicit plugin command hooks without reconstructing config. */
+  setPluginHooks(hooks: HooksMap | undefined): void {
+    this.pluginHooks = hooks;
+    this.refreshSources();
+  }
+
+  /** @internal Test-only raw loader. Production must bind source authority. */
+  loadForTesting(raw: HooksMap | undefined): void {
+    this.configAuthority = undefined;
+    this.pluginHooks = undefined;
+    this.loadResolved(raw);
+  }
+
+  private refreshSources(): void {
+    this.loadResolved(
+      resolveConfiguredHookSources(this.configAuthority, this.pluginHooks),
+    );
+  }
+
+  private loadResolved(raw: HooksMap | undefined): void {
     try {
       this.engine.load(validateHooksConfig(raw));
       this.validationIssues = [];
@@ -204,6 +282,16 @@ export class ConfiguredHooksRuntime {
 
   isDisabled(): boolean {
     return this.engine.isDisabled();
+  }
+
+  /** Immutable owner policy; unlike `isDisabled`, callers cannot toggle it. */
+  isHardSuppressed(): boolean {
+    return this.engine.isHardSuppressed();
+  }
+
+  /** Effective execution state across mutable and immutable policy. */
+  isExecutionSuppressed(): boolean {
+    return this.engine.isExecutionSuppressed();
   }
 
   listHooks(): readonly IndividualHookConfig[] {
@@ -238,89 +326,256 @@ export class ConfiguredHooksRuntime {
   }
 
   private rebuildTarget(): void {
+    const priorInsertionIndexes = this.uninstallManagedHooks();
     const target = this.target;
     if (!target) return;
+    const insertionIndexes: ManagedHookInsertionIndexes =
+      priorInsertionIndexes ?? {
+        preToolUseHooks: target.preToolUseHooks.length,
+        postToolUseHooks: target.postToolUseHooks.length,
+        failureToolUseHooks: target.failureToolUseHooks.length,
+        permissionDecisionHooks: target.permissionDecisionHooks.length,
+        userPromptSubmitHooks: target.userPromptSubmitHooks.length,
+        stopHooks: target.stopHooks.length,
+        stopFailureHooks: target.stopFailureHooks.length,
+      };
+    const installation: ManagedHookInstallation = {
+      target,
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+      lifecycleDisposers: [],
+      insertionIndexes,
+    };
+    this.managedInstallation = installation;
     let hasPermissionRequestHook = false;
-    target.preToolUseHooks.length = 0;
-    target.postToolUseHooks.length = 0;
-    target.failureToolUseHooks.length = 0;
-    target.permissionDecisionHooks.length = 0;
-    target.userPromptSubmitHooks.length = 0;
-    target.stopHooks.length = 0;
-    target.stopFailureHooks.length = 0;
-    target.clearConfiguredLifecycleHooks?.();
 
     for (const hook of this.listHooks()) {
       if (!hook.enabled) continue;
       switch (hook.event) {
-        case "PreToolUse":
-          target.preToolUseHooks.push(this.createPreToolUseHook(hook));
+        case "PreToolUse": {
+          const installed = this.createPreToolUseHook(hook);
+          insertManagedHook(
+            target.preToolUseHooks,
+            installation.preToolUseHooks,
+            insertionIndexes.preToolUseHooks,
+            installed,
+          );
           break;
-        case "PostToolUse":
-          target.postToolUseHooks.push(this.createPostToolUseHook(hook));
+        }
+        case "PostToolUse": {
+          const installed = this.createPostToolUseHook(hook);
+          insertManagedHook(
+            target.postToolUseHooks,
+            installation.postToolUseHooks,
+            insertionIndexes.postToolUseHooks,
+            installed,
+          );
           break;
-        case "PostToolUseFailure":
-          target.failureToolUseHooks.push(this.createFailureHook(hook));
+        }
+        case "PostToolUseFailure": {
+          const installed = this.createFailureHook(hook);
+          insertManagedHook(
+            target.failureToolUseHooks,
+            installation.failureToolUseHooks,
+            insertionIndexes.failureToolUseHooks,
+            installed,
+          );
           break;
+        }
         case "PermissionRequest":
           hasPermissionRequestHook = true;
           break;
-        case "UserPromptSubmit":
-          target.userPromptSubmitHooks.push(
-            this.createUserPromptSubmitHook(hook),
+        case "UserPromptSubmit": {
+          const installed = this.createUserPromptSubmitHook(hook);
+          insertManagedHook(
+            target.userPromptSubmitHooks,
+            installation.userPromptSubmitHooks,
+            insertionIndexes.userPromptSubmitHooks,
+            installed,
           );
           break;
-        case "Stop":
-          target.stopHooks.push(this.createStopHook(hook));
+        }
+        case "Stop": {
+          const installed = this.createStopHook(hook);
+          insertManagedHook(
+            target.stopHooks,
+            installation.stopHooks,
+            insertionIndexes.stopHooks,
+            installed,
+          );
           break;
-        case "StopFailure":
-          target.stopFailureHooks.push(this.createStopFailureHook(hook));
+        }
+        case "StopFailure": {
+          const installed = this.createStopFailureHook(hook);
+          insertManagedHook(
+            target.stopFailureHooks,
+            installation.stopFailureHooks,
+            insertionIndexes.stopFailureHooks,
+            installed,
+          );
           break;
+        }
         case "PreCompact":
-          target.addPreCompactHook?.(this.createLifecycleHook(hook));
+          this.trackLifecycleRegistration(
+            installation,
+            target.addPreCompactHook?.(this.createLifecycleHook(hook)),
+          );
           break;
         case "PostCompact":
-          target.addPostCompactHook?.(this.createLifecycleHook(hook));
+          this.trackLifecycleRegistration(
+            installation,
+            target.addPostCompactHook?.(this.createLifecycleHook(hook)),
+          );
           break;
         case "SessionStart":
-          target.addSessionStartHook?.(this.createLifecycleHook(hook));
+          this.trackLifecycleRegistration(
+            installation,
+            target.addSessionStartHook?.(this.createLifecycleHook(hook)),
+          );
           break;
         case "SubagentStop":
-          target.addSubagentStopHook?.(
-            this.createGenericLifecycleHook(hook, (input) =>
-              input.hook_event_name === "SubagentStop"
-                ? (input.agent_type ?? input.task_name)
-                : "",
+          this.trackLifecycleRegistration(
+            installation,
+            target.addSubagentStopHook?.(
+              this.createGenericLifecycleHook(hook, (input) =>
+                input.hook_event_name === "SubagentStop"
+                  ? (input.agent_type ?? input.task_name)
+                  : "",
+              ),
             ),
           );
           break;
         case "SessionEnd":
-          target.addSessionEndHook?.(
-            this.createGenericLifecycleHook(hook, (input) =>
-              input.hook_event_name === "SessionEnd" ? input.reason : "",
+          this.trackLifecycleRegistration(
+            installation,
+            target.addSessionEndHook?.(
+              this.createGenericLifecycleHook(hook, (input) =>
+                input.hook_event_name === "SessionEnd" ? input.reason : "",
+              ),
             ),
           );
           break;
         case "Notification":
-          target.addNotificationHook?.(
-            this.createGenericLifecycleHook(hook, (input) =>
-              input.hook_event_name === "Notification"
-                ? input.notification_type
-                : "",
+          this.trackLifecycleRegistration(
+            installation,
+            target.addNotificationHook?.(
+              this.createGenericLifecycleHook(hook, (input) =>
+                input.hook_event_name === "Notification"
+                  ? input.notification_type
+                  : "",
+              ),
             ),
           );
           break;
       }
     }
     if (hasPermissionRequestHook) {
-      target.permissionDecisionHooks.push(this.createPermissionHook());
+      const installed = this.createPermissionHook();
+      insertManagedHook(
+        target.permissionDecisionHooks,
+        installation.permissionDecisionHooks,
+        insertionIndexes.permissionDecisionHooks,
+        installed,
+      );
     }
+  }
+
+  private trackLifecycleRegistration(
+    installation: ManagedHookInstallation,
+    disposer: void | (() => void),
+  ): void {
+    if (typeof disposer === "function") {
+      installation.lifecycleDisposers.push(disposer);
+    }
+  }
+
+  private uninstallManagedHooks(): ManagedHookInsertionIndexes | undefined {
+    const installation = this.managedInstallation;
+    if (installation === undefined) return undefined;
+    this.managedInstallation = undefined;
+    const insertionIndexes: ManagedHookInsertionIndexes = {
+      preToolUseHooks: managedInsertionIndex(
+        installation.target.preToolUseHooks,
+        installation.preToolUseHooks,
+        installation.insertionIndexes.preToolUseHooks,
+      ),
+      postToolUseHooks: managedInsertionIndex(
+        installation.target.postToolUseHooks,
+        installation.postToolUseHooks,
+        installation.insertionIndexes.postToolUseHooks,
+      ),
+      failureToolUseHooks: managedInsertionIndex(
+        installation.target.failureToolUseHooks,
+        installation.failureToolUseHooks,
+        installation.insertionIndexes.failureToolUseHooks,
+      ),
+      permissionDecisionHooks: managedInsertionIndex(
+        installation.target.permissionDecisionHooks,
+        installation.permissionDecisionHooks,
+        installation.insertionIndexes.permissionDecisionHooks,
+      ),
+      userPromptSubmitHooks: managedInsertionIndex(
+        installation.target.userPromptSubmitHooks,
+        installation.userPromptSubmitHooks,
+        installation.insertionIndexes.userPromptSubmitHooks,
+      ),
+      stopHooks: managedInsertionIndex(
+        installation.target.stopHooks,
+        installation.stopHooks,
+        installation.insertionIndexes.stopHooks,
+      ),
+      stopFailureHooks: managedInsertionIndex(
+        installation.target.stopFailureHooks,
+        installation.stopFailureHooks,
+        installation.insertionIndexes.stopFailureHooks,
+      ),
+    };
+    removeInstalledHooks(
+      installation.target.preToolUseHooks,
+      installation.preToolUseHooks,
+    );
+    removeInstalledHooks(
+      installation.target.postToolUseHooks,
+      installation.postToolUseHooks,
+    );
+    removeInstalledHooks(
+      installation.target.failureToolUseHooks,
+      installation.failureToolUseHooks,
+    );
+    removeInstalledHooks(
+      installation.target.permissionDecisionHooks,
+      installation.permissionDecisionHooks,
+    );
+    removeInstalledHooks(
+      installation.target.userPromptSubmitHooks,
+      installation.userPromptSubmitHooks,
+    );
+    removeInstalledHooks(
+      installation.target.stopHooks,
+      installation.stopHooks,
+    );
+    removeInstalledHooks(
+      installation.target.stopFailureHooks,
+      installation.stopFailureHooks,
+    );
+    for (const dispose of installation.lifecycleDisposers.splice(0).reverse()) {
+      dispose();
+    }
+    return insertionIndexes;
   }
 
   private createPreToolUseHook(hook: IndividualHookConfig): PreToolUseHook {
     return async ({ invocation, tool, args }) => {
       const toolName = tool.name;
-      if (this.isDisabled() || !matchesToolMatcher(toolName, hook.matcher)) {
+      if (
+        this.isExecutionSuppressed() ||
+        !matchesToolMatcher(toolName, hook.matcher)
+      ) {
         return { kind: "continue" };
       }
       const result = await this.runCommandHook(hook, {
@@ -369,7 +624,10 @@ export class ConfiguredHooksRuntime {
   private createPostToolUseHook(hook: IndividualHookConfig): PostToolUseHook {
     return async ({ invocation, tool, args, result }) => {
       const toolName = tool.name;
-      if (this.isDisabled() || !matchesToolMatcher(toolName, hook.matcher)) {
+      if (
+        this.isExecutionSuppressed() ||
+        !matchesToolMatcher(toolName, hook.matcher)
+      ) {
         return { kind: "continue" };
       }
       const run = await this.runCommandHook(hook, {
@@ -432,7 +690,10 @@ export class ConfiguredHooksRuntime {
   ): PostToolUseFailureHook {
     return async ({ invocation, tool, args, error, isInterrupt }) => {
       const toolName = tool.name;
-      if (this.isDisabled() || !matchesToolMatcher(toolName, hook.matcher))
+      if (
+        this.isExecutionSuppressed() ||
+        !matchesToolMatcher(toolName, hook.matcher)
+      )
         return;
       await this.runCommandHook(hook, {
         ...toolInvocationHookContext(invocation, this.opts.cwd),
@@ -451,22 +712,26 @@ export class ConfiguredHooksRuntime {
   private createPermissionHook(): PermissionDecisionHook {
     return async (input) => {
       const { toolName, args } = input;
-      if (this.isDisabled()) {
+      if (this.isExecutionSuppressed()) {
         return { kind: "pass" };
       }
-      const runs = await this.engine.dispatch(
+      const hookInput = {
+        ...permissionDecisionHookInput(input, this.opts.cwd),
+        hook_event_name: "PermissionRequest",
+        tool_name: toolName,
+        tool_input: args,
+      };
+      const handlers = this.engine.selectHandlersForMatcherInputs(
         "PermissionRequest",
         hookMatcherInputsForToolName(toolName, input.matcherAliases ?? []),
-        {
-          ...permissionDecisionHookInput(input, this.opts.cwd),
-          hook_event_name: "PermissionRequest",
-          tool_name: toolName,
-          tool_input: args,
-        },
-        input.signal,
+      );
+      const runs = await Promise.all(
+        handlers.map((hook) =>
+          this.runCommandHook(hook, hookInput, input.signal),
+        ),
       );
       let allow: PermissionDecisionResult | undefined;
-      for (const { run } of runs) {
+      for (const run of runs) {
         if (run.status === "blocking") {
           const reason = trimmedReason(run.rawStderr);
           if (reason === undefined) {
@@ -493,7 +758,7 @@ export class ConfiguredHooksRuntime {
   ): UserPromptSubmitHook {
     return async (input) => {
       const { prompt, permissionMode, cwd, signal } = input;
-      if (this.isDisabled()) {
+      if (this.isExecutionSuppressed()) {
         return undefined;
       }
       const run = await this.runCommandHook(
@@ -567,7 +832,7 @@ export class ConfiguredHooksRuntime {
     return {
       name: hookCommandLabel(hook),
       run: async (request) => {
-        if (this.isDisabled()) {
+        if (this.isExecutionSuppressed()) {
           return allowStopOutcome();
         }
         const run = await this.runCommandHook(hook, stopInput("Stop", request));
@@ -630,7 +895,10 @@ export class ConfiguredHooksRuntime {
       name: hookCommandLabel(hook),
       run: async (request) => {
         const error = classifyStopFailure(request);
-        if (this.isDisabled() || !matchesPattern(error, hook.matcher)) {
+        if (
+          this.isExecutionSuppressed() ||
+          !matchesPattern(error, hook.matcher)
+        ) {
           return allowStopOutcome();
         }
         await this.runCommandHook(hook, {
@@ -654,7 +922,10 @@ export class ConfiguredHooksRuntime {
     matchKey: (input: I) => string,
   ): (input: I, signal?: AbortSignal) => Promise<HookResult> {
     return async (input, signal) => {
-      if (this.isDisabled() || !matchesPattern(matchKey(input), hook.matcher)) {
+      if (
+        this.isExecutionSuppressed() ||
+        !matchesPattern(matchKey(input), hook.matcher)
+      ) {
         return { succeeded: true, output: "", command: hook.command.command };
       }
       const run = await this.runCommandHook(
@@ -698,7 +969,10 @@ export class ConfiguredHooksRuntime {
     return async (input, signal) => {
       const matchQuery =
         input.hook_event_name === "SessionStart" ? input.source : input.trigger;
-      if (this.isDisabled() || !matchesPattern(matchQuery, hook.matcher)) {
+      if (
+        this.isExecutionSuppressed() ||
+        !matchesPattern(matchQuery, hook.matcher)
+      ) {
         return { succeeded: true, output: "", command: hook.command.command };
       }
       const run = await this.runCommandHook(
@@ -733,7 +1007,10 @@ export class ConfiguredHooksRuntime {
     signal?: AbortSignal,
   ) => Promise<HookResult> {
     return async (input, signal) => {
-      if (this.isDisabled() || !matchesPattern(input.source, hook.matcher)) {
+      if (
+        this.isExecutionSuppressed() ||
+        !matchesPattern(input.source, hook.matcher)
+      ) {
         return { succeeded: true, output: "", command: hook.command.command };
       }
       const run = await this.runCommandHook(
@@ -797,29 +1074,16 @@ export class ConfiguredHooksRuntime {
     input: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<HookCommandRunDiagnostic> {
-    // SECURITY: config/plugin-sourced command hooks run arbitrary shell commands
-    // (engine/command-runner.ts spawn(shell, ["-c", command])). A freshly-cloned
-    // untrusted repo's config.toml must NOT be able to execute host code. Gate
-    // every spawn behind workspace trust; allow untrusted only via explicit
-    // AGENC_ALLOW_UNTRUSTED_HOOKS opt-in (headless/SDK that vetted the workspace).
-    if (!this.shouldRunUntrustedSafe()) {
+    // Route mutable and immutable suppression through the engine so every
+    // direct/test invocation records the same skipped diagnostic and never
+    // reaches trust evaluation or the subprocess boundary.
+    if (this.isExecutionSuppressed()) {
+      return this.engine.runCommandHook(hook, input, signal, inputCwd(input));
+    }
+    if (!this.opts.executionAuthority.decision("command").allowed) {
       return skippedUntrustedDiagnostic(hook);
     }
     return this.engine.runCommandHook(hook, input, signal, inputCwd(input));
-  }
-
-  /**
-   * Returns true when configured command hooks are permitted to execute: either
-   * the workspace is trusted, or the AGENC_ALLOW_UNTRUSTED_HOOKS opt-in is set.
-   */
-  private shouldRunUntrustedSafe(): boolean {
-    if (this.isWorkspaceTrusted()) {
-      return true;
-    }
-    if (isTruthyEnvFlag(this.opts.env[ALLOW_UNTRUSTED_HOOKS_ENV])) {
-      return true;
-    }
-    return false;
   }
 
   private recordHookOutputIssue(
@@ -915,8 +1179,7 @@ function skippedUntrustedDiagnostic(
     durationMs: 0,
     stdout: "",
     stderr: "",
-    error:
-      "skipped: workspace not trusted (set AGENC_ALLOW_UNTRUSTED_HOOKS=1 to override)",
+    error: "skipped: session hook policy denied command execution",
     startedAtUnixMs: Date.now(),
     rawStdout: "",
     rawStderr: "",
@@ -1030,7 +1293,7 @@ function defaultHookInput(
     case "PermissionRequest":
       return {
         hook_event_name: event,
-        tool_name: "Read",
+        tool_name: "FileRead",
         tool_input: {},
         tool_use_id: "test",
       };
@@ -1057,12 +1320,20 @@ function defaultHookInput(
     case "PreCompact":
       return {
         hook_event_name: event,
+        session_id: "",
+        transcript_path: "",
+        cwd,
+        permission_mode: "default",
         trigger: "manual",
         custom_instructions: null,
       };
     case "PostCompact":
       return {
         hook_event_name: event,
+        session_id: "",
+        transcript_path: "",
+        cwd,
+        permission_mode: "default",
         trigger: "manual",
         compact_summary: "",
       };

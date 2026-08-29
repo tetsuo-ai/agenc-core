@@ -20,6 +20,8 @@ import {
   it,
 } from "vitest";
 
+import { retryTimedOutEmbeddedNeovimStartup } from "../../helpers/neovim-startup-retry.js";
+
 import {
   discoverNeovim,
   type NeovimDiscoveryResult,
@@ -88,18 +90,15 @@ const REAL_NEOVIM_STARTUP_TIMEOUT_MS = 60_000;
 async function startEmbeddedNeovim(
   options: StartEmbeddedNeovimOptions,
 ): Promise<EmbeddedNeovimSession> {
-  const start = (): Promise<EmbeddedNeovimSession> =>
+  const start = (
+    attemptOptions: StartEmbeddedNeovimOptions,
+  ): Promise<EmbeddedNeovimSession> =>
     startEmbeddedNeovimProcess({
-      ...options,
+      ...attemptOptions,
       startupTimeoutMs:
         options.startupTimeoutMs ?? REAL_NEOVIM_STARTUP_TIMEOUT_MS,
     });
-  try {
-    return await start();
-  } catch (error) {
-    if (!/startup timed out/iu.test(String(error))) throw error;
-    return await start();
-  }
+  return retryTimedOutEmbeddedNeovimStartup(options, start);
 }
 
 beforeAll(async () => {

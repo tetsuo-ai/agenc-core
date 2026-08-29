@@ -1,17 +1,10 @@
-/**
- * Hook Zod schemas extracted to break import cycles.
- *
- * This file contains hook-related schema definitions that were originally
- * in src/utils/settings/types.ts. By extracting them here, we break the
- * circular dependency between settings/types.ts and plugins/schemas.ts.
- *
- * Both files now import from this shared location instead of each other.
- */
+/** Canonical persisted-hook schemas and runtime hook types. */
 
 import { HOOK_EVENTS, type HookEvent } from 'src/entrypoints/agentSdkTypes.js'
 import { z } from 'zod/v4'
 import { lazySchema } from '../utils/lazySchema.js'
 import { SHELL_TYPES } from '../utils/shell/shellProvider.js'
+import type { UserConfigSchema } from '../utils/plugins/mcpbHandler.js'
 
 // Shared schema for the `if` condition field.
 // Uses permission rule syntax (e.g., "Bash(git *)", "Read(*.ts)") to filter hooks
@@ -127,10 +120,10 @@ function buildHookSchemas() {
 
   const AgentHookSchema = z.object({
     type: z.literal('agent').describe('Agentic verifier hook type'),
-    // DO NOT add .transform() here. This schema is used by parseSettingsFile,
+    // DO NOT add .transform() here. This schema validates canonical projections,
     // and updateSettingsForSource round-trips the parsed result through
     // JSON.stringify — a transformed function value is silently dropped,
-    // deleting the user's prompt from settings.json (gh-24920, CC-79). The
+    // deleting the user's prompt from config.toml (gh-24920, CC-79). The
     // transform (from #10594) wrapped the string in `(_msgs) => prompt`
     // for a programmatic-construction use case in ExitPlanModeV2Tool that
     // has since been refactored into VerifyPlanExecutionTool, which no
@@ -220,3 +213,22 @@ export type AgentHook = Extract<HookCommand, { type: 'agent' }>
 export type HttpHook = Extract<HookCommand, { type: 'http' }>
 export type HookMatcher = z.infer<ReturnType<typeof HookMatcherSchema>>
 export type HooksSettings = Partial<Record<HookEvent, HookMatcher[]>>
+
+/** Plugin hook matcher enriched with its trusted bundle provenance. */
+export interface PluginHookMatcher {
+  matcher?: string
+  hooks: HookCommand[]
+  pluginRoot: string
+  pluginName: string
+  pluginId: string
+  /** Trusted user-config schema captured from the same loaded manifest. */
+  pluginConfigSchema?: UserConfigSchema
+}
+
+/** Skill hook matcher enriched with its loaded skill provenance. */
+export interface SkillHookMatcher {
+  matcher?: string
+  hooks: HookCommand[]
+  skillRoot: string
+  skillName: string
+}

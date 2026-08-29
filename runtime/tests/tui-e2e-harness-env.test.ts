@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -86,7 +86,7 @@ describe("TUI E2E harness state isolation", () => {
     );
   });
 
-  it("replaces ambient state roots and drops unrelated operator values", () => {
+  it("replaces ambient state roots and removes the obsolete config-home alias", () => {
     const home = "/private/scenario-home";
     const env = isolatedHomeEnv(home, {
       AGENC_CONFIG_DIR: "/ambient/config",
@@ -96,7 +96,6 @@ describe("TUI E2E harness state isolation", () => {
     });
 
     expect(env).toMatchObject({
-      AGENC_CONFIG_DIR: join(home, ".agenc"),
       AGENC_HOME: join(home, ".agenc"),
       HOME: home,
       USERPROFILE: home,
@@ -104,13 +103,13 @@ describe("TUI E2E harness state isolation", () => {
       AGENC_DAEMON_WEBSOCKET_PORT: "0",
       TMPDIR: join(home, "tmp"),
     });
+    expect(env.AGENC_CONFIG_DIR).toBeUndefined();
     expect(env.SENTINEL).toBeUndefined();
   });
 
   it("always requests an ephemeral daemon port", () => {
     const home = "/private/scenario-home";
     const env = tempDaemonEnv(home, 19_876, {
-      AGENC_CONFIG_DIR: "/ambient/config",
       AGENC_DAEMON_WEBSOCKET_PORT: "7766",
       AGENC_HOME: "/ambient/state",
       HOME: "/ambient/home",
@@ -118,7 +117,6 @@ describe("TUI E2E harness state isolation", () => {
     });
 
     expect(env).toMatchObject({
-      AGENC_CONFIG_DIR: join(home, ".agenc"),
       AGENC_DAEMON_WEBSOCKET_PORT: "0",
       AGENC_HOME: join(home, ".agenc"),
       HOME: home,
@@ -201,14 +199,21 @@ describe("TUI E2E harness state isolation", () => {
   });
 
   it("forces deterministic gate controls after scenario overrides", () => {
-    const env = tuiGateEnvironment("/private/gate", {
-      AGENC_AUTH_BACKEND: "remote",
-      AGENC_DAEMON_WEBSOCKET_HOST: "0.0.0.0",
-      AGENC_DAEMON_WEBSOCKET_PORT: "7766",
-      AGENC_ONBOARDING: "force",
-      NODE_OPTIONS: "--inspect=9229",
-      OPENAI_API_KEY: "operator-secret",
-    });
+    const env = tuiGateEnvironment(
+      "/private/gate",
+      {
+        AGENC_AUTH_BACKEND: "remote",
+        AGENC_DAEMON_WEBSOCKET_HOST: "0.0.0.0",
+        AGENC_DAEMON_WEBSOCKET_PORT: "7766",
+        AGENC_ONBOARDING: "force",
+        NODE_OPTIONS: "--inspect=9229",
+        OPENAI_API_KEY: "operator-secret",
+        ProgramData: "C:\\ProgramData",
+      },
+      {
+        PROGRAMDATA: "C:\\injected-program-data",
+      },
+    );
 
     expect(env).toMatchObject({
       AGENC_AUTH_BACKEND: "local",
@@ -219,8 +224,12 @@ describe("TUI E2E harness state isolation", () => {
       GIT_OPTIONAL_LOCKS: "0",
       GIT_TERMINAL_PROMPT: "0",
       NODE_OPTIONS: "",
+      ProgramData: join(resolve("/private/gate"), "ProgramData"),
     });
     expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(
+      Object.keys(env).filter((key) => key.toLowerCase() === "programdata"),
+    ).toEqual(["ProgramData"]);
   });
 
   it.each([
@@ -253,7 +262,7 @@ describe("TUI E2E harness state isolation", () => {
     expect(source).toContain('args: ["--permission-mode", "default"]');
     expect(source).toContain("slimCwd: true");
     expect(source).not.toContain("mkdtemp");
-    expect(source).not.toContain('args: ["--yolo"]');
+    expect(source).not.toContain('args: ["--dangerously-bypass-approvals-and-sandbox"]');
   });
 
   it("configures a scenario-only sandbox override before starting its temp daemon", () => {

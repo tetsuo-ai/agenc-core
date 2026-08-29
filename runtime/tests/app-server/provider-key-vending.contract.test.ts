@@ -22,6 +22,7 @@ describe("AgenC daemon provider-key vending", () => {
     const backend = makeAuthBackend((provider, sessionId) => {
       calls.push(`${provider}:${sessionId}`);
       return {
+        kind: "api-key",
         provider: String(provider),
         sessionId,
         apiKey: `managed-key-${calls.length}`,
@@ -35,8 +36,14 @@ describe("AgenC daemon provider-key vending", () => {
     const secondProvider = await wrapped.vendKey("openai", "session-1");
 
     expect(duplicate).toBe(first);
-    expect(secondSession.apiKey).toBe("managed-key-2");
-    expect(secondProvider.apiKey).toBe("managed-key-3");
+    expect(secondSession).toMatchObject({
+      kind: "api-key",
+      apiKey: "managed-key-2",
+    });
+    expect(secondProvider).toMatchObject({
+      kind: "api-key",
+      apiKey: "managed-key-3",
+    });
     expect(calls).toEqual([
       "grok:session-1",
       "grok:session-2",
@@ -59,6 +66,7 @@ describe("AgenC daemon provider-key vending", () => {
   it("replaces the backend and clears cached provider keys", async () => {
     const initialBackend: AuthBackend = {
       ...makeAuthBackend((provider, sessionId) => ({
+        kind: "api-key",
         provider: String(provider),
         sessionId,
         apiKey: "managed-key-before",
@@ -67,6 +75,7 @@ describe("AgenC daemon provider-key vending", () => {
     };
     const nextBackend: AuthBackend = {
       ...makeAuthBackend((provider, sessionId) => ({
+        kind: "api-key",
         provider: String(provider),
         sessionId,
         apiKey: "managed-key-after",
@@ -96,6 +105,7 @@ describe("AgenC daemon provider-key vending", () => {
         throw new Error("temporary vending failure");
       }
       return {
+        kind: "api-key",
         provider: String(provider),
         sessionId,
         apiKey: "managed-key",
@@ -110,5 +120,33 @@ describe("AgenC daemon provider-key vending", () => {
       apiKey: "managed-key",
     });
     expect(attempts).toBe(2);
+  });
+
+  it("caches structured AWS credentials without an API-key facade", async () => {
+    const backend = makeAuthBackend((provider, sessionId) => ({
+      kind: "aws-sigv4",
+      provider: String(provider),
+      sessionId,
+      accessKeyId: "managed-aws-access",
+      secretAccessKey: "managed-aws-secret",
+      sessionToken: "managed-aws-session",
+      region: "us-west-2",
+    }));
+    const wrapped = createAgenCDaemonRuntimeAuthBackend(backend);
+
+    const first = await wrapped.vendKey("amazon-bedrock", "session-1");
+    const duplicate = await wrapped.vendKey("amazon-bedrock", "session-1");
+
+    expect(duplicate).toBe(first);
+    expect(first).toEqual({
+      kind: "aws-sigv4",
+      provider: "amazon-bedrock",
+      sessionId: "session-1",
+      accessKeyId: "managed-aws-access",
+      secretAccessKey: "managed-aws-secret",
+      sessionToken: "managed-aws-session",
+      region: "us-west-2",
+    });
+    expect(backend.vendKey).toHaveBeenCalledTimes(1);
   });
 });

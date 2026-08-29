@@ -27,7 +27,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  clearSessionReadState(sessionId);
+  clearSessionReadState(sessionId, tmpdir());
   rmSync(tmpDir, { recursive: true, force: true });
 });
 

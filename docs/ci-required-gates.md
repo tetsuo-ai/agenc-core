@@ -5,8 +5,12 @@ Decision record: 2026-07-15
 Operating policy update: 2026-07-16
 
 The current merge policy keeps the complete platform-independent suite
-**local-only**. GitHub Actions runs only exact, narrow capability lanes, and
-merge does not require a GitHub App Check Run or an App-bound ruleset. Before
+**local-only**. GitHub Actions does **not** replace that local evidence.
+`platform-tests.yml` currently runs six job families: `default-suite` (four
+Ubuntu shards of hermetic Vitest plus runtime typecheck, **without** the
+Docker hermetic/red-probe boundary), plus Linux-kernel sandbox, PowerShell,
+Neovim (five OS/arch targets), macOS native, and Windows native. Merge does
+not require a GitHub App Check Run or an App-bound ruleset. Before
 merge, the PR must record the exact locally tested
 SHA, commands, results, and every skip. Release verification repeats the
 required gates locally at exact current `main` before the release tag exists.
@@ -47,9 +51,10 @@ npm run check:sbom
 npm run check:tui-runtime-startup --workspace=@tetsuo-ai/runtime
 ```
 
-`npm test` contains the runtime and test-support typechecks, the separate
-expected-red probe audit, and the stable Vitest suite, in that order. The final
-startup command exercises the built TUI/daemon path in real PTYs. Run
+Root `npm test` first runs policy tests, agent-surface checker tests, and
+launcher tests. The runtime workspace then runs hermetic typecheck, the
+expected-red probe audit, and the stable Vitest suite (`run-hermetic-test-boundary.mjs`).
+The final startup command exercises the built TUI/daemon path in real PTYs. Run
 additional task-specific regression tests before this complete final-head
 sequence.
 
@@ -859,12 +864,13 @@ GitHub-hosted jobs to publish or promote exact reviewed bytes. They do not
 repeat the local verification plan. The candidate phase of
 `release-runtime.yml` runs the exact native-only allowlist after its first clean
 install and
-requires the recorded result to contain 47 passing macOS tests in eight suites
-across five files or 50 passing Windows tests in twelve suites across seven files,
+requires the recorded result to contain 48 passing macOS tests in nine suites
+across six files or 50 passing Windows tests in twelve suites across seven files,
 with zero failed, pending, skipped, or todo tests. Both candidate lanes begin
 with the same 45-test, seven-suite, four-file FND set for bounded file I/O,
 fixture loading, portable paths, and process containment. macOS adds one
-Seatbelt test and one volume-sensitive pathname-identity test; Windows adds
+Seatbelt test, one volume-sensitive pathname-identity test, and one compiled
+Security.framework Keychain-helper CRUD test; Windows adds
 three atomic-publication and `.cmd` tests plus two bound-helper transport
 tests. Its
 tagged phase only promotes and re-attests the five sealed runtime artifacts.
@@ -902,9 +908,13 @@ squash-merged commit.
 
 ## Hosted capability lanes
 
-[`platform-tests.yml`](../.github/workflows/platform-tests.yml) carries only
-tests whose required runtime or operating system is unavailable to the normal
-Linux local gate. Its `linux-kernel-sandbox` job installs the digest- and
+[`platform-tests.yml`](../.github/workflows/platform-tests.yml) also has
+`default-suite`: four `ubuntu-24.04` shards that typecheck the runtime and run
+`run-hermetic-vitest.mjs --require-zero-skips --shard=N/4 --maxWorkers=2`.
+That is **not** the Docker hermetic/red-probe path used locally.
+
+Capability lanes remain for work the normal Linux local gate cannot run. The
+`linux-kernel-sandbox` job installs the digest- and
 byte-pinned Ubuntu bubblewrap package from
 [`release-toolchain.json`](../release-toolchain.json), keeps Ubuntu's global
 AppArmor user-namespace restriction enabled, and loads the narrow profile
@@ -931,10 +941,12 @@ default suite, and runs an exact three-file allowlist. The Node tripwire remains
 active, while the native PowerShell subprocess is restricted to local
 fixtures, fixed telemetry/update opt-outs, and an asserted no-process-leak
 postcondition; this narrow lane is not an OS egress boundary.
-The `neovim` job similarly provisions the official digest- and byte-pinned
-Neovim 0.12.1 Linux binary and requires all four real-process lifecycle tests
-in its one-file allowlist. Its provider and observed-descendant phase runs an
-exact 63-test, three-file allowlist on every required hosted target. The
+The `neovim` matrix is five runners (`linux-x64`, `linux-arm64`, `darwin-x64`,
+`darwin-arm64`, `win-x64`) with digest-pinned Neovim. Lifecycle requires **18**
+tests in one file (`buffer-neovim-lifecycle.real-neovim.test.ts`). Provider and
+observed-descendant require **65** tests in three files. Hosted PTY scenarios
+run `node runtime/scripts/check-tui-e2e/runner.mjs --platform "$AGENC_NEOVIM_SLUG"`
+and expect `2/2 passed`. The
 `macos-native` job first runs the 67-test
 red-probe runner contract, including residual-process settlement on Darwin.
 The macOS and Windows native jobs then run a shared 81-test, eight-suite,
@@ -942,10 +954,11 @@ five-file FND set. It combines the 45-test release-builder set with 36
 benchmark-harness fault contracts for process-tree containment, owned-root
 retention, exclusive artifact publication, minimal subprocess environments,
 bounded metadata commands, and provenance binding. macOS adds one Seatbelt test
-and one volume-sensitive pathname-identity test for an exact total of 83 tests,
-ten suites, and six files. Both native lanes also exercise CSV publication on
+and one volume-sensitive pathname-identity test, plus one compiled
+Security.framework Keychain-helper CRUD test, for an exact total of 84 tests,
+eleven suites, and seven files. Both native lanes also exercise CSV publication on
 the real filesystem and reject a foreign inheritable-read ACL before staging,
-bringing macOS to an exact 85 tests, eleven suites, and seven files. Before its
+bringing macOS to an exact 86 tests, twelve suites, and eight files. Before its
 native allowlist, Windows requires the
 exact one-file FND red-probe audit summary and
 runs three forced-containment tests in one file. Its named-pipe and
@@ -1176,9 +1189,9 @@ PTY supervisor run locally. PR descriptions are the human-reviewed evidence
 record and must follow the exact-SHA protocol above. Release records use the
 defined local evidence path and immutable-tag protocol. No dedicated GitHub
 App or active App-bound ruleset is claimed or required in local-only mode.
-The hosted platform workflow supplements PRs with the five narrow capability
-lanes above; the same native probes also run while the untagged candidate
-artifacts are built. The optional multi-UID systemd/App design has not been
+The hosted platform workflow supplements PRs with `default-suite` plus the
+five capability families above (six job families / 13 checks). The same native
+probes also run while the untagged candidate artifacts are built. The optional multi-UID systemd/App design has not been
 activated.
 
 ## Primary sources

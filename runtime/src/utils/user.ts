@@ -6,10 +6,16 @@ import {
   getRateLimitTier,
   getSubscriptionType,
 } from './auth.js'
-import { getGlobalConfig, getOrCreateUserID } from './config.js'
+import { getRuntimeState, getOrCreateUserID } from './config.js'
 import { getCwd } from './cwd.js'
 import { type env, getHostPlatform } from './env.js'
 import { isEnvTruthy } from './envUtils.js'
+import { resolveSecureStorageHome } from './secureStorage/home.js'
+import { getSelectedProviderEnvironment } from './model/providers.js'
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 
 // Cache for email fetched asynchronously at startup
 let cachedEmail: string | undefined | null = null // null means not fetched yet
@@ -72,14 +78,14 @@ export function resetUserCache(): void {
 export const getCoreUserData = memoize(
   (includeAccountMetadata?: boolean): CoreUserData => {
     const deviceId = getOrCreateUserID()
-    const config = getGlobalConfig()
+    const config = getRuntimeState()
 
     let subscriptionType: string | undefined
     let rateLimitTier: string | undefined
     let firstTokenTime: number | undefined
     if (includeAccountMetadata) {
-      subscriptionType = getSubscriptionType() ?? undefined
-      rateLimitTier = getRateLimitTier() ?? undefined
+      subscriptionType = getSubscriptionType(credentialHome()) ?? undefined
+      rateLimitTier = getRateLimitTier(credentialHome()) ?? undefined
       if (subscriptionType && config.agencCodeFirstTokenDate) {
         const configFirstTokenTime = new Date(
           config.agencCodeFirstTokenDate,
@@ -91,7 +97,7 @@ export const getCoreUserData = memoize(
     }
 
     // Only include OAuth account data when actively using OAuth authentication
-    const oauthAccount = getOauthAccountInfo()
+    const oauthAccount = getOauthAccountInfo(credentialHome())
     const organizationUuid = oauthAccount?.organizationUuid
     const accountUuid = oauthAccount?.accountUuid
 
@@ -128,7 +134,7 @@ function getEmail(): string | undefined {
   }
 
   // Only include OAuth email when actively using OAuth authentication
-  const oauthAccount = getOauthAccountInfo()
+  const oauthAccount = getOauthAccountInfo(credentialHome())
   if (oauthAccount?.emailAddress) {
     return oauthAccount.emailAddress
   }
@@ -139,7 +145,7 @@ function getEmail(): string | undefined {
 
 async function getEmailAsync(): Promise<string | undefined> {
   // Only include OAuth email when actively using OAuth authentication
-  const oauthAccount = getOauthAccountInfo()
+  const oauthAccount = getOauthAccountInfo(credentialHome())
   if (oauthAccount?.emailAddress) {
     return oauthAccount.emailAddress
   }

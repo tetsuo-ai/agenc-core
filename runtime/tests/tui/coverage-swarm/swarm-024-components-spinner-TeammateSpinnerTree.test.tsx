@@ -7,6 +7,8 @@ import {
 } from "../../../src/tui/components/spinner/TeammateSpinnerTree.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
 
+const TEST_SPINNER_VERBS = ["Working"] as const;
+
 type AppStateSlice = {
   showTeammateMessagePreview: boolean;
   tasks: Record<string, unknown>;
@@ -98,7 +100,11 @@ describe("TeammateSpinnerTree coverage swarm row 024", () => {
 
   test("renders a backgrounded leader action without selection controls", async () => {
     const output = await renderToString(
-      <TeammateSpinnerTree leaderTokenCount={1500} leaderVerb="coordinating" />,
+      <TeammateSpinnerTree
+        leaderTokenCount={1500}
+        leaderVerb="coordinating"
+        spinnerVerbs={TEST_SPINNER_VERBS}
+      />,
       120,
     );
 
@@ -111,7 +117,11 @@ describe("TeammateSpinnerTree coverage swarm row 024", () => {
 
   test("renders backgrounded leader idle text and omits nonpositive token counts", async () => {
     const output = await renderToString(
-      <TeammateSpinnerTree leaderIdleText="Idle for 9s" leaderTokenCount={0} />,
+      <TeammateSpinnerTree
+        leaderIdleText="Idle for 9s"
+        leaderTokenCount={0}
+        spinnerVerbs={TEST_SPINNER_VERBS}
+      />,
       120,
     );
 
@@ -122,7 +132,11 @@ describe("TeammateSpinnerTree coverage swarm row 024", () => {
 
   test("renders the selected hide row when selection moves past teammates", async () => {
     const output = await renderToString(
-      <TeammateSpinnerTree isInSelectionMode selectedIndex={1} />,
+      <TeammateSpinnerTree
+        isInSelectionMode
+        selectedIndex={1}
+        spinnerVerbs={TEST_SPINNER_VERBS}
+      />,
       120,
     );
 
@@ -142,7 +156,11 @@ describe("TeammateSpinnerTree coverage swarm row 024", () => {
     ).toBe(true);
 
     const output = await renderToString(
-      <TeammateSpinnerTree isInSelectionMode selectedIndex={9} />,
+      <TeammateSpinnerTree
+        isInSelectionMode
+        selectedIndex={9}
+        spinnerVerbs={TEST_SPINNER_VERBS}
+      />,
       120,
     );
 
@@ -173,6 +191,7 @@ describe("TeammateSpinnerTree coverage swarm row 024", () => {
         isInSelectionMode
         leaderVerb="reviewing"
         selectedIndex={-1}
+        spinnerVerbs={TEST_SPINNER_VERBS}
       />,
       120,
     );
@@ -197,7 +216,10 @@ describe("TeammateSpinnerTree coverage swarm row 024", () => {
       }),
     };
 
-    const output = await renderToString(<TeammateSpinnerTree />, 120);
+    const output = await renderToString(
+      <TeammateSpinnerTree spinnerVerbs={TEST_SPINNER_VERBS} />,
+      120,
+    );
 
     expect(output.trim()).toBe("");
   });

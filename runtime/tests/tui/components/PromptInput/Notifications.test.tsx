@@ -3,6 +3,7 @@ import { PassThrough } from 'node:stream'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../../remoteAuthSessionContext.fixture.js'
 
 const harness = vi.hoisted(() => ({
   addNotification: vi.fn(),
@@ -23,16 +24,17 @@ const harness = vi.hoisted(() => ({
   },
   autoUpdaterProps: [] as Array<Record<string, unknown>>,
   compactWarning: false,
+  compactWarningEnvironments: [] as unknown[],
   editor: undefined as string | undefined,
   envHookNotifier: null as null | ((text: string, isError?: boolean) => void),
   features: new Set<string>(),
-  helperConfigured: false,
-  helperElapsedMs: 0,
   ideStatus: 'disconnected' as 'connected' | 'disconnected',
   mcpClientsSeen: undefined as unknown,
   model: 'gpt-5.4',
   removeNotification: vi.fn(),
+  remoteMode: false,
   remoteAuthSession: false,
+  remoteAuthContexts: [] as unknown[],
   remoteManagedKeys: false,
   remoteSubscriptionTier: undefined as
     | undefined
@@ -42,8 +44,8 @@ const harness = vi.hoisted(() => ({
     | 'team',
   subscriptionType: 'pro' as 'enterprise' | 'pro' | 'team',
   tokenUsage: 1234,
+  tokenWarningEnvironments: [] as unknown[],
   usesAnthropicAccountFlow: true,
-  usingOverage: false,
 }))
 
 vi.mock('bun:bundle', () => ({
@@ -51,40 +53,65 @@ vi.mock('bun:bundle', () => ({
 }))
 
 vi.mock('../../../services/compact/autoCompact.js', () => ({
-  calculateTokenWarningState: (tokenUsage: number, model: string) => ({
-    isAboveWarningThreshold: harness.compactWarning,
-    model,
-    tokenUsage,
-  }),
+  calculateTokenWarningStateForEnvironment: (
+    tokenUsage: number,
+    model: string,
+    environment: unknown,
+  ) => {
+    harness.compactWarningEnvironments.push(environment)
+    return {
+      isAboveWarningThreshold: harness.compactWarning,
+      model,
+      tokenUsage,
+    }
+  },
 }))
 
 vi.mock('../../../auth/session-state.js', () => ({
-  hasEntitledRemoteAuthSessionSync: () => harness.remoteManagedKeys,
-  hasRemoteAuthSessionSync: () => harness.remoteAuthSession,
-  remoteAuthSessionSubscriptionTierSync: () => harness.remoteSubscriptionTier,
+  hasEntitledRemoteAuthSessionSync: (context: unknown) => {
+    harness.remoteAuthContexts.push(context)
+    return harness.remoteManagedKeys
+  },
+  hasRemoteAuthSessionSync: (context: unknown) => {
+    harness.remoteAuthContexts.push(context)
+    return harness.remoteAuthSession
+  },
+  remoteAuthSessionSubscriptionTierSync: (context: unknown) => {
+    harness.remoteAuthContexts.push(context)
+    return harness.remoteSubscriptionTier
+  },
 }))
 
 vi.mock('../../../utils/auth.js', () => ({
-  getApiKeyHelperElapsedMs: () => harness.helperElapsedMs,
-  getConfiguredApiKeyHelper: () =>
-    harness.helperConfigured ? 'echo helper' : null,
-  getSubscriptionType: () => harness.subscriptionType,
+  getSubscriptionTypeForContext: () => harness.subscriptionType,
 }))
+
+vi.mock('../../../bootstrap/state.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../../bootstrap/state.js')>()
+  return {
+    ...actual,
+    getIsRemoteMode: () => harness.remoteMode,
+  }
+})
 
 vi.mock('../../../utils/editor.js', () => ({
   getExternalEditor: () => harness.editor,
 }))
 
-vi.mock('../../../utils/envUtils.js', () => ({
-  isEnvTruthy: (value: string | undefined) =>
-    value === '1' || value === 'true' || value === 'yes',
-}))
+vi.mock('../../../utils/envUtils.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../../utils/envUtils.js')>()
+  return {
+    ...actual,
+    isEnvTruthy: (value: string | undefined) =>
+      value === '1' || value === 'true' || value === 'yes',
+  }
+})
 
 vi.mock('../../../utils/format.js', () => ({
   formatDuration: (ms: number) => `${ms}ms`,
 }))
 
-vi.mock('../../../utils/hooks/fileChangedWatcher.js', () => ({
+vi.mock('../../../utils/hooks/cwdChangedHooks.js', () => ({
   setEnvHookNotifier: (
     notifier: null | ((text: string, isError?: boolean) => void),
   ) => {
@@ -128,10 +155,6 @@ vi.mock('../../hooks/useIdeConnectionStatus.js', () => ({
 
 vi.mock('../../hooks/useMainLoopModel.js', () => ({
   useMainLoopModel: () => harness.model,
-}))
-
-vi.mock('../../rate-limits/agenc-ai-limits.js', () => ({
-  useAgenCAiLimits: () => ({ isUsingOverage: harness.usingOverage }),
 }))
 
 vi.mock('../../state/AppState.js', () => ({
@@ -208,12 +231,17 @@ vi.mock('../../cost/TokenWarning.js', async () => {
   const { Text } = await import('../../ink.js')
   return {
     TokenWarning: ({
+      environment,
       model,
       tokenUsage,
     }: {
+      environment: unknown
       model: string
       tokenUsage: number
-    }) => ReactModule.createElement(Text, null, `TokenWarning:${tokenUsage}:${model}`),
+    }) => {
+      harness.tokenWarningEnvironments.push(environment)
+      return ReactModule.createElement(Text, null, `TokenWarning:${tokenUsage}:${model}`)
+    },
   }
 })
 
@@ -238,30 +266,29 @@ type RenderedNotifications = {
 
 type NotificationsProps = React.ComponentProps<typeof Notifications>
 
-const originalRemote = process.env.AGENC_REMOTE
-
 function resetHarness() {
   harness.addNotification.mockClear()
   harness.appState.isBriefOnly = false
   harness.appState.notifications = { current: null, queue: [] }
   harness.autoUpdaterProps = []
   harness.compactWarning = false
+  harness.compactWarningEnvironments = []
   harness.editor = undefined
   harness.envHookNotifier = null
   harness.features = new Set()
-  harness.helperConfigured = false
-  harness.helperElapsedMs = 0
   harness.ideStatus = 'disconnected'
   harness.mcpClientsSeen = undefined
   harness.model = 'gpt-5.4'
   harness.removeNotification.mockClear()
+  harness.remoteMode = false
   harness.remoteAuthSession = false
+  harness.remoteAuthContexts = []
   harness.remoteManagedKeys = false
   harness.remoteSubscriptionTier = undefined
   harness.subscriptionType = 'pro'
   harness.tokenUsage = 1234
+  harness.tokenWarningEnvironments = []
   harness.usesAnthropicAccountFlow = true
-  harness.usingOverage = false
 }
 
 function baseProps(): NotificationsProps {
@@ -276,6 +303,7 @@ function baseProps(): NotificationsProps {
     mcpClients: undefined,
     onAutoUpdaterResult: vi.fn(),
     onChangeIsUpdating: vi.fn(),
+    remoteAuthSessionContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
     verbose: false,
   }
 }
@@ -352,23 +380,34 @@ async function renderNotifications(
 
 beforeEach(() => {
   resetHarness()
-  if (originalRemote === undefined) {
-    delete process.env.AGENC_REMOTE
-  } else {
-    process.env.AGENC_REMOTE = originalRemote
-  }
 })
 
 afterEach(() => {
-  if (originalRemote === undefined) {
-    delete process.env.AGENC_REMOTE
-  } else {
-    process.env.AGENC_REMOTE = originalRemote
-  }
   vi.restoreAllMocks()
 })
 
 describe('Notifications', () => {
+  test('uses the explicit session authority for every remote auth read', async () => {
+    const rendered = await renderNotifications()
+
+    try {
+      expect(harness.remoteAuthContexts).toHaveLength(3)
+      expect(
+        harness.remoteAuthContexts.every(
+          context => context === TEST_REMOTE_AUTH_SESSION_CONTEXT,
+        ),
+      ).toBe(true)
+      expect(harness.compactWarningEnvironments).toEqual([
+        TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
+      ])
+      expect(harness.tokenWarningEnvironments).toEqual([
+        TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
+      ])
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('wraps opted-in notifications so the remediation tail stays readable', async () => {
     // Terminal is 120 columns; this message is deliberately longer so a
     // truncating render would drop the trailing remediation.
@@ -412,7 +451,6 @@ describe('Notifications', () => {
       key: 'plain',
       text: 'Plain notice',
     }
-    harness.usingOverage = true
     const rendered = await renderNotifications({
       debug: true,
       mcpClients: [{ name: 'server-a' }] as never,
@@ -422,7 +460,6 @@ describe('Notifications', () => {
     try {
       expect(rendered.output()).toContain('IDE:none:1')
       expect(rendered.output()).toContain('Plain notice')
-      expect(rendered.output()).toContain('Now using extra usage')
       expect(rendered.output()).toContain('Debug mode')
       expect(rendered.output()).toContain('1234 tokens')
       expect(rendered.output()).toContain('TokenWarning:1234:gpt-5.4')
@@ -486,7 +523,7 @@ describe('Notifications', () => {
   })
 
   test('renders auth failures and compact auto-updater state without editor hints', async () => {
-    process.env.AGENC_REMOTE = 'true'
+    harness.remoteMode = true
     harness.compactWarning = true
     harness.editor = 'vscode'
     const rendered = await renderNotifications({
@@ -555,21 +592,13 @@ describe('Notifications', () => {
     }
   })
 
-  test('shows slow apiKeyHelper notice and suppresses team overage in brief mode', async () => {
+  test('suppresses team overage and token warnings in brief mode', async () => {
     harness.appState.isBriefOnly = true
     harness.features.add('KAIROS')
-    harness.helperConfigured = true
-    harness.helperElapsedMs = 12_000
     harness.subscriptionType = 'team'
-    harness.usingOverage = true
     const rendered = await renderNotifications()
 
     try {
-      await sleep(1100)
-
-      expect(rendered.output()).toContain('apiKeyHelper is taking a while')
-      expect(rendered.output()).toContain('(12000ms)')
-      expect(rendered.output()).not.toContain('Now using extra usage')
       expect(rendered.output()).not.toContain('TokenWarning:')
     } finally {
       await rendered.dispose()

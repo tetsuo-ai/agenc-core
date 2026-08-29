@@ -1,12 +1,8 @@
 import { createHash } from 'node:crypto'
 import { join } from 'path'
-import { resolveAgencHome } from '../../config/env.js'
-import { getCurrentProjectConfig } from '../../utils/config.js'
-import { getCwd } from '../../utils/cwd.js'
-import { getGlobalAgenCFile } from '../../utils/env.js'
-import { getEnterpriseMcpFilePath } from './config.js'
+import { getProjectMcpServerApprovalStatusSync } from '../../permissions/trust/project-trust.js'
+import type { CanonicalSettingsAuthority } from '../../utils/settings/canonicalAuthority.js'
 import { validateMcpHeaders } from './headerValidation.js'
-import { mcpInfoFromString } from './mcpStringUtils.js'
 import { normalizeNameForMCP } from './normalization.js'
 import {
   type ConfigScope,
@@ -15,36 +11,27 @@ import {
 } from './types.js'
 
 /**
- * Checks if a tool name belongs to a specific MCP server
- * @param toolName The tool name to check
- * @param serverName The server name to match against
- * @returns True if the tool belongs to the specified server
- */
-export function isToolFromMcpServer(
-  toolName: string,
-  serverName: string,
-): boolean {
-  const info = mcpInfoFromString(toolName)
-  return info?.serverName === serverName
-}
-
-/**
  * Describe the file path for a given MCP config scope.
  * @param scope The config scope ('user', 'project', 'local', or 'dynamic')
  * @returns A description of where the config is stored
  */
-export function describeMcpConfigFilePath(scope: ConfigScope): string {
+export function describeMcpConfigFilePath(
+  scope: ConfigScope,
+  authority: CanonicalSettingsAuthority,
+): string {
   switch (scope) {
     case 'user':
-      return join(resolveAgencHome(process.env), 'config.toml')
+      return authority.homeContext.configTomlPath
     case 'project':
-      return join(getCwd(), '.mcp.json')
+      return join(authority.projectRoot, '.agenc', 'config.toml')
     case 'local':
-      return `${getGlobalAgenCFile()} [project: ${getCwd()}]`
+      return join(authority.projectRoot, '.agenc', 'config.local.toml')
     case 'dynamic':
       return 'Dynamically configured'
     case 'enterprise':
-      return getEnterpriseMcpFilePath()
+      return authority.sources('managed')
+        .findLast(layer => layer.config.mcp_servers !== undefined)?.path ??
+        'Canonical managed config.toml'
     case 'agencai':
       return 'agenc.tech'
     default:
@@ -57,7 +44,7 @@ export function getScopeLabel(scope: ConfigScope): string {
     case 'local':
       return 'Local config (private to you in this project)'
     case 'project':
-      return 'Project config (shared via .mcp.json)'
+      return 'Project config (shared via .agenc/config.toml)'
     case 'user':
       return 'User config (available in all your projects)'
     case 'dynamic':
@@ -132,44 +119,88 @@ function canonicalApprovalValue(value: unknown): unknown {
   )
 }
 
+export type McpServerDefinitionOrigin =
+  | 'default'
+  | 'managed'
+  | 'user'
+  | 'project'
+  | 'local'
+  | 'flag'
+  | 'profile'
+  | 'environment'
+  | 'cli'
+  | 'plugin'
+  | 'session'
+
+export function mcpServerDefinitionOrigin(
+  config: ScopedMcpServerConfig,
+): McpServerDefinitionOrigin {
+  if (config.authoritySource !== undefined) return config.authoritySource
+  if (config.scope === 'enterprise' || config.scope === 'managed') {
+    return 'managed'
+  }
+  if (config.scope === 'dynamic' && config.pluginServer !== undefined) {
+    return 'plugin'
+  }
+  if (config.scope === 'dynamic' || config.scope === 'agencai') {
+    return 'session'
+  }
+  return config.scope
+}
+
+/**
+ * Content identity for the exact policy-resolved definition behind a live
+ * server. Values such as headers and environment entries are hashed and are
+ * never returned or logged.
+ */
+export function mcpServerDefinitionId(
+  name: string,
+  config: ScopedMcpServerConfig,
+): string {
+  const {
+    scope: _scope,
+    authoritySource: _authoritySource,
+    pluginSource,
+    pluginServer,
+    ...definition
+  } = config
+  const canonical = canonicalApprovalValue({
+    name,
+    origin: {
+      scope: mcpServerDefinitionOrigin(config),
+      pluginSource,
+      pluginServer,
+    },
+    definition,
+  })
+  return createHash('sha256')
+    .update('agenc:mcp-server-definition:v1\0')
+    .update(JSON.stringify(canonical))
+    .digest('hex')
+}
+
 /** Content-addressed identity for a parsed project MCP server definition. */
 export function projectMcpServerApprovalDigest(
   config: ScopedMcpServerConfig,
 ): string {
+  const { authoritySource: _authoritySource, ...approvalDefinition } = config
   return createHash('sha256')
-    .update(JSON.stringify(canonicalApprovalValue(config)))
+    .update(JSON.stringify(canonicalApprovalValue(approvalDefinition)))
     .digest('hex')
 }
 
 export function getProjectMcpServerStatus(
+  authority: CanonicalSettingsAuthority,
   serverName: string,
   config?: ScopedMcpServerConfig,
 ): 'approved' | 'rejected' | 'pending' {
-  // Approval state is stored outside the repository in the per-project global
-  // config. Project/local settings and non-interactive mode are deliberately
-  // not authority channels.
-  const settings = getCurrentProjectConfig()
   const normalizedName = normalizeNameForMCP(serverName)
-
-  // Follow-up: This fails an e2e test if the ?. is not present. This is likely a bug in the e2e test.
-  // Will fix this in a follow-up PR.
-  if (
-    settings?.disabledMcpjsonServers?.some(
-      name => normalizeNameForMCP(name) === normalizedName,
-    )
-  ) {
-    return 'rejected'
-  }
-
-  if (config !== undefined) {
-    const expected = settings.approvedMcpjsonServerDigests?.[normalizedName]
-    if (
-      typeof expected === 'string' &&
-      expected === projectMcpServerApprovalDigest(config)
-    ) {
-      return 'approved'
-    }
-  }
-
-  return 'pending'
+  return getProjectMcpServerApprovalStatusSync(
+    normalizedName,
+    config === undefined ? undefined : projectMcpServerApprovalDigest(config),
+    {
+      agencHome: authority.homeContext.path,
+      projectRoot: authority.projectRoot,
+    },
+  )
 }

@@ -49,13 +49,13 @@ export interface UnifiedExecRuntimeSandbox {
   readonly permissionProfile: PermissionProfile;
   readonly additionalPermissions?: AdditionalPermissionProfile;
   readonly sandboxPolicyCwd: string;
+  readonly sessionTempRoot: string;
   readonly preference?: SandboxablePreference;
   readonly enforceManagedNetwork?: boolean;
   readonly network?: NetworkProxyConfig;
   readonly networkPolicyDecider?: NetworkPolicyDecider;
   readonly blockedRequestObserver?: BlockedRequestObserver;
   readonly agencLinuxSandboxExe?: string;
-  readonly useLegacyLandlock?: boolean;
   readonly windowsSandboxLevel?: WindowsSandboxLevel;
   readonly windowsSandboxPrivateDesktop?: boolean;
   /** Opt-in GPU compute inside the sandbox (config `sandbox.allow_gpu`). */
@@ -65,10 +65,17 @@ export interface UnifiedExecRuntimeSandbox {
 export interface UnifiedExecManagerOptions {
   readonly cwd?: string;
   readonly env?: Record<string, string>;
+  readonly baseEnv?: Readonly<Record<string, string | undefined>>;
+  /** Immutable temp-root authority captured when this manager is created. */
+  readonly sessionTempRoot?: string;
+  readonly shellPath?: string;
+  readonly commandWrapperArgv?: readonly string[];
   /** Optional cap applied only when a request explicitly supplies timeoutMs. */
   readonly maxTimeoutMs?: number;
   readonly maxProcesses?: number;
   readonly sandboxManager?: UnifiedExecSandboxManager;
+  /** Injectable only for deterministic sandbox-authority drain tests. */
+  readonly sandboxAuthorityQuiesceTimeoutMs?: number;
 }
 
 export interface ExecCommandRequest extends ToolExecutionInjectedArgs {

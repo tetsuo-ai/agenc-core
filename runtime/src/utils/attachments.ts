@@ -1,20 +1,17 @@
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import {
   toolMatchesName,
-  type Tools,
   type ToolUseContext,
   type ToolPermissionContext,
 } from '../tools/Tool.js'
-import { runAdmittedSessionBoundToolCall } from '../budget/admitted-legacy-tool-call.js'
 import { CanonicalFileReadTool } from '../tools/canonicalToolSurface.js'
-import type { Tool } from '../tools/types.js'
 import { withSignedAllowedRoots } from '../tools/system/filesystem.js'
 import { FileTooLargeError, readFileInRange } from './readFileInRange.js'
 import { expandPath } from './path.js'
 import { countCharInString } from './stringUtils.js'
 import { uniq } from './array.js'
 import { extractLegacyAgentMentions } from './agentMentions.js'
-import { extractMcpResourceMentions } from './mcpResourceMentions.js'
+import { getSelectedProviderEnvironment } from './model/providers.js'
 import { getFsImplementation } from './fsOperations.js'
 import { readdir, stat } from 'fs/promises'
 import type { IDESelection } from '../tui/hooks/useIdeSelection.js'
@@ -51,7 +48,7 @@ import {
   isValidImagePaste,
 } from 'src/types/textInputTypes.js'
 import { randomUUID, type UUID } from 'crypto'
-import { getSettings_DEPRECATED } from './settings/settings.js'
+import { getInitialSettings } from './settings/settings.js'
 import { getSnippetForTwoFileDiff } from 'src/tools/FileEditTool/utils.js'
 import type {
   ContentBlockParam,
@@ -60,7 +57,6 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { maybeResizeAndDownsampleImageBlock } from './imageResizer.js'
 import type { PastedContent } from './config.js'
-import type { ReadResourceResult } from '@modelcontextprotocol/sdk/types.js'
 import { getSkillToolCommands, getMcpSkillCommands } from '../commands.js'
 import type { Command } from '../types/command.js'
 import uniqBy from 'lodash-es/uniqBy.js'
@@ -68,6 +64,11 @@ import { getProjectRoot } from '../bootstrap/state.js'
 import { formatCommandsWithinBudget } from '../tools/SkillTool/prompt.js'
 import { getContextWindowForModel } from './context.js'
 import * as autoModeState from './permissions/autoModeState.js'
+import { resolveSecureStorageHome } from './secureStorage/home.js'
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 // Donor-purge: ../services/skillSearch/* was deleted; type aliased as opaque.
 type DiscoverySignal = any
 // Conditional require for DCE. All skill-search string literals that would
@@ -113,16 +114,14 @@ import {
   pathInAllowedWorkingPath,
 } from './permissions/filesystem.js'
 import {
-  generateTaskAttachments,
+  collectTaskStateMaintenance,
   applyTaskOffsetsAndEvictions,
 } from './task/framework.js'
-import { getTaskOutputPath } from './task/diskOutput.js'
 import { drainPendingMessages } from '../tasks/LocalAgentTask/LocalAgentTask.js'
 import type { TaskType, TaskStatus } from '../tasks/Task.js'
 import {
   getOriginalCwd,
   getSessionId,
-  getSdkBetas,
   getTotalCostUSD,
   getTotalOutputTokens,
   getCurrentTurnTokenBudget,
@@ -139,20 +138,9 @@ import {
 } from '../bootstrap/state.js'
 import type { QuerySource } from '../constants/querySource.js'
 import {
-  getDeferredToolsDelta,
-  isDeferredToolsDeltaEnabled,
-  isToolSearchEnabledOptimistic,
-  isToolSearchToolAvailable,
-  modelSupportsToolReference,
-  type DeferredToolsDeltaScanContext,
-} from './toolSearch.js'
-import {
   getMcpInstructionsDelta,
   isMcpInstructionsDeltaEnabled,
-  type ClientSideInstruction,
 } from './mcpInstructionsDelta.js'
-import { AGENC_IN_CHROME_MCP_SERVER_NAME } from './agencInChrome/common.js'
-import { CHROME_TOOL_SEARCH_INSTRUCTIONS } from './agencInChrome/prompt.js'
 import type { MCPServerConnection } from '../services/mcp/types.js'
 import type {
   HookEvent,
@@ -162,6 +150,7 @@ import {
   checkForAsyncHookResponses,
   removeDeliveredAsyncHooks,
 } from './hooks/AsyncHookRegistry.js'
+import { captureToolQueueOwner } from './queueOwnership.js'
 import {
   checkForLSPDiagnostics,
   clearAllLSPDiagnostics,
@@ -174,7 +163,7 @@ import {
   isThinkingMessage,
 } from './messages.js'
 import { isHumanTurn } from './messagePredicates.js'
-import { isEnvTruthy, getAgenCConfigHomeDir } from './envUtils.js'
+import { isBareMode, isEnvTruthy, getAgenCHomeDir } from './envUtils.js'
 import { feature } from 'bun:bundle'
 export { extractLegacyAgentMentions as extractAgentMentions } from './agentMentions.js'
 export { extractMcpResourceMentions } from './mcpResourceMentions.js'
@@ -402,6 +391,24 @@ export type HookNonBlockingErrorAttachment = {
   durationMs?: number
 }
 
+const RETIRED_ATTACHMENT_TYPES: ReadonlySet<string> = new Set([
+  'autocheckpointing',
+  'background_task_status',
+  'mcp_resource',
+  'todo',
+  'task_progress',
+  'ultramemory',
+])
+
+/**
+ * Persisted sessions can contain attachment discriminators that no current
+ * producer emits. Retired attachments are dropped at both model and TUI
+ * boundaries; they have no executable producer or renderer.
+ */
+export function isRetiredAttachmentType(type: string): boolean {
+  return RETIRED_ATTACHMENT_TYPES.has(type)
+}
+
 export type Attachment =
   /**
    * User at-mentioned the file
@@ -559,14 +566,6 @@ export type Attachment =
       planContent: string
     }
   | {
-      type: 'mcp_resource'
-      server: string
-      uri: string
-      name: string
-      description?: string
-      content: ReadResourceResult
-    }
-  | {
       type: 'command_permissions'
       allowedTools: string[]
       model?: string
@@ -720,7 +719,7 @@ export async function getAttachments(
 ): Promise<Attachment[]> {
   if (
     isEnvTruthy(process.env.AGENC_DISABLE_ATTACHMENTS) ||
-    isEnvTruthy(process.env.AGENC_SIMPLE)
+    isBareMode()
   ) {
     // query.ts:removeFromQueue dequeues these unconditionally after
     // getAttachmentMessages runs — returning [] here silently drops them.
@@ -743,9 +742,6 @@ export async function getAttachments(
     ? [
         maybe('at_mentioned_files', () =>
           processAtMentionedFiles(input, context),
-        ),
-        maybe('mcp_resources', () =>
-          processMcpResourceAttachments(input, context),
         ),
         maybe('agent_mentions', () =>
           Promise.resolve(
@@ -787,6 +783,13 @@ export async function getAttachments(
   // This ensures files are added to nestedMemoryAttachmentTriggers before nested_memory processes them
   const userAttachmentResults = await Promise.all(userInputAttachments)
 
+  // Task output offsets and terminal-task eviction are state maintenance,
+  // not model-facing attachments. Keep the work concurrent with attachment
+  // collection while preserving the same best-effort error boundary.
+  const taskStateMaintenance = isMainThread
+    ? maintainUnifiedTaskState(toolUseContext)
+    : Promise.resolve()
+
   // Thread-safe attachments available in sub-agents
   // NOTE: These must be created AFTER userInputAttachments completes to ensure
   // nestedMemoryAttachmentTriggers is populated before getNestedMemoryAttachments runs
@@ -802,21 +805,6 @@ export async function getAttachments(
     maybe('ultrathink_effort', () =>
       Promise.resolve(getUltrathinkEffortAttachment(input)),
     ),
-    maybe('deferred_tools_delta', () =>
-      Promise.resolve(
-        getDeferredToolsDeltaAttachment(
-          toolUseContext.options.tools,
-          toolUseContext.options.mainLoopModel,
-          messages,
-          {
-            callSite: isMainThread
-              ? 'attachments_main'
-              : 'attachments_subagent',
-            querySource,
-          },
-        ),
-      ),
-    ),
     maybe('agent_listing_delta', () =>
       Promise.resolve(getAgentListingDeltaAttachment(toolUseContext, messages)),
     ),
@@ -824,8 +812,6 @@ export async function getAttachments(
       Promise.resolve(
         getMcpInstructionsDeltaAttachment(
           toolUseContext.options.mcpClients,
-          toolUseContext.options.tools,
-          toolUseContext.options.mainLoopModel,
           messages,
         ),
       ),
@@ -920,11 +906,8 @@ export async function getAttachments(
         maybe('lsp_diagnostics', async () =>
           getLSPDiagnosticAttachments(toolUseContext),
         ),
-        maybe('unified_tasks', async () =>
-          getUnifiedTaskAttachments(toolUseContext),
-        ),
         maybe('async_hook_responses', async () =>
-          getAsyncHookResponseAttachments(),
+          getAsyncHookResponseAttachments(toolUseContext),
         ),
         maybe('token_usage', async () =>
           Promise.resolve(
@@ -948,11 +931,13 @@ export async function getAttachments(
       ]
     : []
 
-  // Process thread and main thread attachments in parallel (no dependencies between them)
+  // Process maintenance, thread attachments, and main-thread attachments in
+  // parallel; none depends on another.
   const [threadAttachmentResults, mainThreadAttachmentResults] =
     await Promise.all([
       Promise.all(allThreadAttachments),
       Promise.all(mainThreadAttachments),
+      taskStateMaintenance,
     ])
 
   clearTimeout(timeoutId)
@@ -987,8 +972,8 @@ export async function getQueuedCommandAttachments(
   // Include both 'prompt' and 'task-notification' commands as attachments.
   // During proactive agentic loops, task-notification commands would otherwise
   // stay in the queue permanently (useQueueProcessor can't run while a query
-  // is active), causing hasPendingNotifications() to return true and Sleep to
-  // wake immediately with 0ms duration in an infinite loop.
+  // is active), leaving queued work that wakes Sleep immediately with 0ms
+  // duration in an infinite loop.
   const filtered = queuedCommands.filter(_ =>
     INLINE_NOTIFICATION_MODES.has(_.mode),
   )
@@ -1385,29 +1370,6 @@ function getUltrathinkEffortAttachment(input: string | null): Attachment[] {
   return [{ type: 'ultrathink_effort', level: 'high' }]
 }
 
-// Exported for compact.ts — the gate must be identical at both call sites.
-export function getDeferredToolsDeltaAttachment(
-  tools: Tools,
-  model: string,
-  messages: Message[] | undefined,
-  scanContext?: DeferredToolsDeltaScanContext,
-): Attachment[] {
-  if (!isDeferredToolsDeltaEnabled()) return []
-  // These three checks mirror the sync parts of isToolSearchEnabled —
-  // the attachment text says "available via ToolSearch", so ToolSearch
-  // has to actually be in the request. The async auto-threshold check
-  // is not replicated (would double-fire tengu_tool_search_mode_decision);
-  // in tst-auto below-threshold the attachment can fire while ToolSearch
-  // is filtered out, but that's a narrow case and the tools announced
-  // are directly callable anyway.
-  if (!isToolSearchEnabledOptimistic()) return []
-  if (!modelSupportsToolReference(model)) return []
-  if (!isToolSearchToolAvailable(tools)) return []
-  const delta = getDeferredToolsDelta(tools, messages ?? [], scanContext)
-  if (!delta) return []
-  return [{ type: 'deferred_tools_delta', ...delta }]
-}
-
 /**
  * Diff the current filtered agent pool against what's already been announced
  * in this conversation (reconstructed from prior agent_listing_delta
@@ -1484,7 +1446,7 @@ export function getAgentListingDeltaAttachment(
       addedLines: added.map(formatAgentLine),
       removedTypes: removed,
       isInitial: announced.size === 0,
-      showConcurrencyNote: getSubscriptionType() !== 'pro',
+      showConcurrencyNote: getSubscriptionType(credentialHome()) !== 'pro',
     },
   ]
 }
@@ -1492,28 +1454,10 @@ export function getAgentListingDeltaAttachment(
 // Exported for compact.ts / reactiveCompact.ts — single source of truth for the gate.
 export function getMcpInstructionsDeltaAttachment(
   mcpClients: MCPServerConnection[],
-  tools: Tools,
-  model: string,
   messages: Message[] | undefined,
 ): Attachment[] {
   if (!isMcpInstructionsDeltaEnabled()) return []
-
-  // The chrome ToolSearch hint is client-authored and ToolSearch-conditional;
-  // actual server `instructions` are unconditional. Decide the chrome part
-  // here, pass it into the pure diff as a synthesized entry.
-  const clientSide: ClientSideInstruction[] = []
-  if (
-    isToolSearchEnabledOptimistic() &&
-    modelSupportsToolReference(model) &&
-    isToolSearchToolAvailable(tools)
-  ) {
-    clientSide.push({
-      serverName: AGENC_IN_CHROME_MCP_SERVER_NAME,
-      block: CHROME_TOOL_SEARCH_INSTRUCTIONS,
-    })
-  }
-
-  const delta = getMcpInstructionsDelta(mcpClients, messages ?? [], clientSide)
+  const delta = getMcpInstructionsDelta(mcpClients, messages ?? [], [])
   if (!delta) return []
   return [{ type: 'mcp_instructions_delta', ...delta }]
 }
@@ -1529,7 +1473,7 @@ function getCriticalSystemReminderAttachment(
 }
 
 function getOutputStyleAttachment(): Attachment[] {
-  const settings = getSettings_DEPRECATED()
+  const settings = getInitialSettings()
   const outputStyle = settings?.outputStyle || 'default'
 
   // Only show for non-default styles
@@ -1917,108 +1861,6 @@ function processAgentMentions(
   return results.filter(
     (result): result is NonNullable<typeof result> => result !== null,
   )
-}
-
-async function processMcpResourceAttachments(
-  input: string,
-  toolUseContext: ToolUseContext,
-): Promise<Attachment[]> {
-  const resourceMentions = extractMcpResourceMentions(input)
-  if (resourceMentions.length === 0) return []
-
-  const mcpClients = toolUseContext.options.mcpClients || []
-
-  const results = await Promise.all(
-    resourceMentions.map(async mention => {
-      try {
-        const [serverName, ...uriParts] = mention.split(':')
-        const uri = uriParts.join(':') // Rejoin in case URI contains colons
-
-        if (!serverName || !uri) {
-          return null
-        }
-
-        // Find the MCP client
-        const client = mcpClients.find(c => c.name === serverName)
-        if (!client || client.type !== 'connected') {
-          return null
-        }
-
-        // Find the resource in available resources to get its metadata
-        const serverResources =
-          toolUseContext.options.mcpResources?.[serverName] || []
-        const resourceInfo = serverResources.find(r => r.uri === uri)
-        if (!resourceInfo) {
-          return null
-        }
-
-        try {
-          const result = await runAdmittedSessionBoundToolCall({
-            tool: MCP_RESOURCE_ATTACHMENT_ADMISSION_TOOL,
-            args: { server: serverName, uri },
-            signal: toolUseContext.abortController.signal,
-            invoke: ({ signal }) =>
-              client.client.readResource(
-                { uri },
-                { signal, timeout: MCP_RESOURCE_ATTACHMENT_TIMEOUT_MS },
-              ),
-            toDispatchResult: () => ({ content: '' }),
-          })
-
-          return {
-            type: 'mcp_resource' as const,
-            server: serverName,
-            uri,
-            name: resourceInfo.name || uri,
-            description: resourceInfo.description,
-            content: result,
-          }
-        } catch (error) {
-          logError(error)
-          return null
-        }
-      } catch {
-        return null
-      }
-    }),
-  )
-
-  return results.filter(
-    (result): result is NonNullable<typeof result> => result !== null,
-  ) as Attachment[]
-}
-
-const MCP_RESOURCE_ATTACHMENT_TIMEOUT_MS = 1000
-const MCP_RESOURCE_ATTACHMENT_ADMISSION_TOOL: Tool = {
-  name: 'mcp.preflight.resource_attachment',
-  description: 'Read an MCP resource referenced by a user attachment.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      server: { type: 'string' },
-      uri: { type: 'string' },
-    },
-    required: ['server', 'uri'],
-    additionalProperties: false,
-  },
-  metadata: {
-    family: 'mcp',
-    source: 'mcp',
-    mutating: false,
-    hiddenByDefault: true,
-  },
-  isReadOnly: true,
-  recoveryCategory: 'idempotent',
-  admissionEstimate: () => ({
-    maxInputTokens: 0,
-    maxOutputTokens: 0,
-    maxCostUsd: 0,
-  }),
-  async execute() {
-    throw new Error(
-      'MCP resource attachment admission descriptor is not executable',
-    )
-  },
 }
 
 async function callCanonicalFileReadTool(
@@ -2493,7 +2335,11 @@ async function getSkillListingAttachments(
   }
 
   const cwd = getProjectRoot()
-  const localCommands = await getSkillToolCommands(cwd)
+  const localCommands = await getSkillToolCommands(
+    cwd,
+    null,
+    toolUseContext.skillsManager,
+  )
   const mcpSkills = getMcpSkillCommands(
     toolUseContext.getAppState().mcp.commands,
   )
@@ -2556,7 +2402,6 @@ async function getSkillListingAttachments(
   // Format within budget using existing logic
   const contextWindowTokens = getContextWindowForModel(
     toolUseContext.options.mainLoopModel,
-    getSdkBetas(),
   )
   const content = formatCommandsWithinBudget(newSkills, contextWindowTokens)
 
@@ -3217,38 +3062,31 @@ async function getTaskReminderAttachments(
   return []
 }
 
-/**
- * Get attachments for all unified tasks using the Task framework.
- * Replaces the old getBackgroundShellAttachments, getBackgroundRemoteSessionAttachments,
- * and getAsyncAgentAttachments functions.
- */
-async function getUnifiedTaskAttachments(
+async function maintainUnifiedTaskState(
   toolUseContext: ToolUseContext,
-): Promise<Attachment[]> {
-  const appState = toolUseContext.getAppState()
-  const { attachments, updatedTaskOffsets, evictedTaskIds } =
-    await generateTaskAttachments(appState)
+): Promise<void> {
+  try {
+    const appState = toolUseContext.getAppState()
+    const { updatedTaskOffsets, evictedTaskIds } =
+      await collectTaskStateMaintenance(appState)
 
-  applyTaskOffsetsAndEvictions(
-    toolUseContext.setAppState,
-    updatedTaskOffsets,
-    evictedTaskIds,
-  )
-
-  // Convert TaskAttachment to Attachment format
-  return attachments.map(taskAttachment => ({
-    type: 'task_status' as const,
-    taskId: taskAttachment.taskId,
-    taskType: taskAttachment.taskType,
-    status: taskAttachment.status,
-    description: taskAttachment.description,
-    deltaSummary: taskAttachment.deltaSummary,
-    outputFilePath: getTaskOutputPath(taskAttachment.taskId),
-  }))
+    applyTaskOffsetsAndEvictions(
+      toolUseContext.setAppState,
+      updatedTaskOffsets,
+      evictedTaskIds,
+    )
+  } catch (error) {
+    logError(error)
+    logAntError('Task state maintenance error', error)
+  }
 }
 
-async function getAsyncHookResponseAttachments(): Promise<Attachment[]> {
-  const responses = await checkForAsyncHookResponses()
+async function getAsyncHookResponseAttachments(
+  toolUseContext: ToolUseContext,
+): Promise<Attachment[]> {
+  const responses = await checkForAsyncHookResponses(
+    captureToolQueueOwner(toolUseContext),
+  )
 
   if (responses.length === 0) {
     return []
@@ -3573,7 +3411,7 @@ function getTeamContextAttachment(messages: Message[]): Attachment[] {
     return []
   }
 
-  const configDir = getAgenCConfigHomeDir()
+  const configDir = getAgenCHomeDir()
   const teamConfigPath = `${configDir}/teams/${teamName}/config.json`
   const taskListPath = `${configDir}/tasks/${teamName}/`
 
@@ -3593,7 +3431,11 @@ function getTokenUsageAttachment(
   messages: Message[],
   model: string,
 ): Attachment[] {
-  if (!isEnvTruthy(process.env.AGENC_ENABLE_TOKEN_USAGE_ATTACHMENT)) {
+  if (
+    !isEnvTruthy(
+      getSelectedProviderEnvironment().AGENC_ENABLE_TOKEN_USAGE_ATTACHMENT,
+    )
+  ) {
     return []
   }
 

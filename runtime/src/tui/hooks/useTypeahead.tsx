@@ -79,6 +79,11 @@ import {
   HASH_CHANNEL_RE,
 } from "./typeaheadTokens.js";
 import { consumeAutocompleteEnterKey } from "./typeaheadKeyHandling.js";
+import type { GlobalRuntimeState } from "../../config/runtime-state-repository.js";
+import {
+  type CanonicalSettingsAuthority,
+  runWithCanonicalSettingsAuthority,
+} from "../../utils/settings/canonicalAuthority.js";
 // Re-export the pure utilities so existing call sites keep their imports.
 export {
   extractCompletionToken,
@@ -165,6 +170,8 @@ type Props = {
   suppressSuggestions?: boolean;
   markAccepted: () => void;
   onModeChange?: (mode: PromptInputMode) => void;
+  runtimeState: Pick<GlobalRuntimeState, 'skillUsage'>;
+  settingsAuthority: CanonicalSettingsAuthority;
 };
 type UseTypeaheadResult = {
   suggestions: SuggestionItem[];
@@ -378,6 +385,8 @@ export function useTypeahead({
   suppressSuggestions = false,
   markAccepted,
   onModeChange,
+  runtimeState,
+  settingsAuthority,
 }: Props): UseTypeaheadResult {
   const { addNotification } = useNotifications();
   const thinkingToggleShortcut = useShortcutDisplay(
@@ -425,7 +434,11 @@ export function useTypeahead({
     if (mode !== "prompt" || suppressSuggestions) return undefined;
     const midInputCommand = findMidInputSlashCommand(input, cursorOffset);
     if (!midInputCommand) return undefined;
-    const match = getBestCommandMatch(midInputCommand.partialCommand, commands);
+    const match = getBestCommandMatch(
+      midInputCommand.partialCommand,
+      commands,
+      runtimeState,
+    );
     if (!match) return undefined;
     return {
       text: match.suffix,
@@ -433,7 +446,7 @@ export function useTypeahead({
       insertPosition:
         midInputCommand.startPos + 1 + midInputCommand.partialCommand.length,
     };
-  }, [input, cursorOffset, mode, commands, suppressSuggestions]);
+  }, [input, cursorOffset, mode, commands, suppressSuggestions, runtimeState]);
 
   // Merged ghost text: prompt mode uses synchronous useMemo, bash mode uses async useState
   const effectiveGhostText = suppressSuggestions
@@ -525,11 +538,15 @@ export function useTypeahead({
         );
       let combinedItems: SuggestionItem[];
       try {
-        combinedItems = await generateUnifiedSuggestions(
-          searchToken,
-          mcpResources,
-          agents,
-          isAtSymbol,
+        combinedItems = await runWithCanonicalSettingsAuthority(
+          settingsAuthority,
+          () =>
+            generateUnifiedSuggestions(
+              searchToken,
+              mcpResources,
+              agents,
+              isAtSymbol,
+            ),
         );
       } catch (error) {
         if (isStaleRequest()) {
@@ -574,6 +591,7 @@ export function useTypeahead({
       agents,
       clearSuggestions,
       isCurrentInputState,
+      settingsAuthority,
     ],
   );
 
@@ -593,7 +611,9 @@ export function useTypeahead({
   // fileSuggestions tests that trigger a refresh directly work correctly.
   useEffect(() => {
     if (process.env.NODE_ENV !== "test") {
-      startBackgroundCacheRefresh();
+      runWithCanonicalSettingsAuthority(settingsAuthority, () => {
+        startBackgroundCacheRefresh();
+      });
     }
     return onIndexBuildComplete(() => {
       const token = latestSearchTokenRef.current;
@@ -611,7 +631,7 @@ export function useTypeahead({
         void fetchFileSuggestions(token, token === "", requestState);
       }
     });
-  }, [fetchFileSuggestions, isCurrentInputState]);
+  }, [fetchFileSuggestions, isCurrentInputState, settingsAuthority]);
 
   // Debounce the file fetch operation. 50ms sits just above macOS default
   // key-repeat (~33ms) so held-delete/backspace coalesces into one search
@@ -708,6 +728,7 @@ export function useTypeahead({
           const match = getBestCommandMatch(
             midInputCommand.partialCommand,
             commands,
+            runtimeState,
           );
           if (match) {
             // Clear dropdown suggestions when showing ghost text
@@ -1037,7 +1058,11 @@ export function useTypeahead({
           // Note: argument hint is only shown when there's exactly one trailing space
           // (set above when hasExactlyOneTrailingSpace is true)
         }
-        const commandItems = generateCommandSuggestions(value, commands);
+        const commandItems = generateCommandSuggestions(
+          value,
+          commands,
+          runtimeState,
+        );
         setSuggestionsState(() => ({
           commandArgumentHint,
           suggestions: commandItems,
@@ -1209,6 +1234,7 @@ export function useTypeahead({
       // Note: using suggestionsRef instead of suggestions to avoid recreating
       // this callback when only selectedSuggestion changes (not the suggestions list)
       allCommandsMaxWidth,
+      runtimeState,
     ],
   );
 
@@ -1677,11 +1703,15 @@ export function useTypeahead({
             mode: requestMode,
           };
           try {
-            suggestionItems = await generateUnifiedSuggestions(
-              searchToken,
-              mcpResources,
-              agents,
-              isAtSymbol,
+            suggestionItems = await runWithCanonicalSettingsAuthority(
+              settingsAuthority,
+              () =>
+                generateUnifiedSuggestions(
+                  searchToken,
+                  mcpResources,
+                  agents,
+                  isAtSymbol,
+                ),
             );
           } catch (error) {
             if (
@@ -1743,6 +1773,7 @@ export function useTypeahead({
     isCurrentInputState,
     getActiveDirectoryCompletionToken,
     getActiveFileCompletionToken,
+    settingsAuthority,
   ]);
 
   // Handle enter key press - apply and execute suggestions

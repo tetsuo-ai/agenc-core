@@ -9,7 +9,7 @@
  * objects under their `event` field, so one mapper serves both.
  *
  * Terminal-status and message-chunk detection intentionally mirrors the
- * CLI's daemon one-shot path (`runtime/src/bin/agenc.ts`:
+ * CLI's daemon one-shot path (`runtime/src/bin/agenc-main.ts`:
  * `daemonOneShotMessageChunk` / `daemonOneShotFinalStatus`) so an embedder
  * sees the same text and the same completion semantics as `agenc -p`.
  */
@@ -112,7 +112,6 @@ export interface AgencPromptResult {
   /** Permission requests that were auto- or callback-denied during the turn. */
   readonly deniedPermissionRequestIds: readonly string[];
   readonly usage?: JsonObject;
-  readonly cacheStats?: JsonObject;
 }
 
 export interface AgencTerminalStatus {

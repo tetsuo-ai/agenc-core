@@ -7,6 +7,7 @@
 import type { HookCommand, HookEventName } from "../../config/schema.js";
 import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
 import type { ExecutionAdmissionClient } from "../../budget/admission-client.js";
+import type { HookRuntimeAuthority } from "../runtime-policy.js";
 
 export type HookRunStatus =
   "success" | "blocking" | "non_blocking_error" | "timeout" | "skipped";
@@ -54,14 +55,12 @@ export interface HookEngineOptions {
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
   readonly shellPath: string;
+  readonly commandWrapperArgv?: readonly string[];
   readonly sourcePath: string;
   readonly maxDiagnostics?: number;
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
   readonly executionAdmission?: ExecutionAdmissionClient;
   readonly admissionRequired?: boolean;
-}
-
-export interface HookDispatchResult {
-  readonly hook: IndividualHookConfig;
-  readonly run: HookCommandRunDiagnostic;
+  /** Immutable authority owned by the session whose hooks this engine runs. */
+  readonly runtimeOptions?: HookRuntimeAuthority;
 }

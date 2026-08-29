@@ -2,12 +2,15 @@ import { spawn } from "node:child_process";
 
 import type { AuthBackend, AuthIdentity, AuthLlmUsage } from "../auth/backend.js";
 import { createAuthBackend } from "../auth/selection.js";
-import { resolveAgencHome } from "../config/env.js";
-import { normalizeProviderSlug } from "../config/resolve-provider.js";
 import { defaultConfig } from "../config/schema.js";
 import { Box, Text } from "../tui/ink.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
-import { applyProviderSwitch } from "./provider.js";
+import { readBuiltInSessionSelection } from "../session/provider-model-selection.js";
+import {
+  providerEnvironmentFromCommandContext,
+  remoteAuthContextFromCommandContext,
+  requireCommandConfigStore,
+} from "./config-context.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -99,7 +102,7 @@ async function executeAuthCommand(
         clearLocalAuthNotice(ctx);
       }
       const tier = await resolveSubscriptionTier(backend);
-      const routeMessage = await maybeSelectHostedSubscriptionRoute(ctx, tier);
+      const routeMessage = hostedSubscriptionRouteMessage(ctx, tier);
       return {
         kind: "text",
         text:
@@ -153,106 +156,39 @@ function managedSubscriptionTier(
   return tier === "free" || tier === "pro" || tier === "team" || tier === "enterprise";
 }
 
-function readSessionProvider(ctx: SlashCommandContext): string | undefined {
-  const peekState = (ctx.session as unknown as {
-    state?: { unsafePeek?: () => unknown };
-  }).state?.unsafePeek;
-  const rawState =
-    typeof peekState === "function"
-      ? (peekState.call((ctx.session as unknown as { state?: unknown }).state) as {
-          sessionConfiguration?: {
-            provider?: { slug?: string };
-          };
-        })
-      : null;
-  const directConfig = (ctx.session as unknown as {
-    sessionConfiguration?: {
-      provider?: { slug?: string };
-    };
-  }).sessionConfiguration;
-  return rawState?.sessionConfiguration?.provider?.slug ??
-    directConfig?.provider?.slug;
-}
-
-async function maybeSelectHostedSubscriptionRoute(
+function hostedSubscriptionRouteMessage(
   ctx: SlashCommandContext,
   tier: string | undefined,
-): Promise<string | undefined> {
+): string | undefined {
   if (!managedSubscriptionTier(tier)) return undefined;
-  const config = ctx.configStore?.current() ?? defaultConfig();
-  if (!hasHostedManagedAccess(config, process.env)) return undefined;
-
-  const currentProvider =
-    normalizeProviderSlug(readSessionProvider(ctx)) ??
-    normalizeProviderSlug(config.model_provider) ??
-    "grok";
-  if (currentProvider === SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER) {
+  const config = requireCommandConfigStore(ctx).current();
+  if (!hasHostedManagedAccess(config, remoteAuthContextFromCommandContext(ctx))) {
     return undefined;
   }
 
-  const configuredProvider = normalizeProviderSlug(config.model_provider);
-  if (
-    configuredProvider !== undefined &&
-    configuredProvider !== "grok" &&
-    configuredProvider !== SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER
-  ) {
+  const currentProvider = readBuiltInSessionSelection(ctx.session, {
+    includePending: true,
+    fallbackConfig: config,
+  }).provider;
+  if (currentProvider === SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER) {
     return (
-      "Hosted models ready through OpenRouter. Your configured provider was kept; " +
-      "run /provider openrouter to switch."
+      "Hosted models are ready through OpenRouter. Your current provider was kept; " +
+      "run /model to choose a hosted model."
     );
   }
-
-  if (currentProvider !== "grok") {
-    return (
-      "Hosted models ready through OpenRouter. Your current provider was kept; " +
-      "run /provider openrouter to switch."
-    );
-  }
-
-  const defaultModel = subscriptionManagedDefaultModelForTier(
-    SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
-    tier,
-  );
-  if (defaultModel === undefined) return undefined;
-  const summary = await applyProviderSwitch(
-    ctx.session,
-    SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
-    defaultModel,
-  );
-  if (!summary.startsWith("Provider switched ") && !summary.startsWith("Provider switch staged:")) {
-    return `Hosted models ready, but the automatic OpenRouter switch was blocked: ${summary}`;
-  }
-  updateHostedRouteChrome(ctx, defaultModel);
   return (
-    `Hosted ${tier === "free" ? "free " : ""}route selected: ${SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER} / ` +
-    `${defaultModel}. Run /model to choose another hosted model.`
+    `Hosted models are ready through OpenRouter. Your current provider (${currentProvider}) was kept; ` +
+    "run /provider openrouter to switch."
   );
-}
-
-function updateHostedRouteChrome(
-  ctx: SlashCommandContext,
-  model: string,
-): void {
-  if (typeof ctx.appState?.setAppState === "function") {
-    ctx.appState.setAppState((prev: unknown): unknown => {
-      if (typeof prev !== "object" || prev === null) return prev;
-      return {
-        ...prev,
-        mainLoopModel: model,
-        mainLoopModelForSession: model,
-      };
-    });
-    return;
-  }
-  ctx.appState?.setModel?.(model);
 }
 
 function createSlashAuthBackend(ctx: SlashCommandContext): AuthBackend {
-  const agencHome = ctx.agencHome ?? resolveAgencHome(process.env);
-  const config = ctx.configStore?.current() ?? defaultConfig();
+  const configStore = requireCommandConfigStore(ctx);
+  const agencHome = configStore.homeContext.path;
+  const config = configStore.current() ?? defaultConfig();
   return createAuthBackend(config, {
     agencHome,
-    env: process.env,
+    env: providerEnvironmentFromCommandContext(ctx),
     remote: {
       onDeviceCode: async ({ verificationUri, userCode }) => {
         if (verificationUri === undefined) return;

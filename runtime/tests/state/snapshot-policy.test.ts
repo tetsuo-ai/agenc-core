@@ -117,7 +117,7 @@ describe("AgenCSessionSnapshotPolicy", () => {
     expect(runLastSnapshotAt("run-1")).toBe("2026-05-01T00:00:05.000Z");
   });
 
-  // OOM fix: a long-lived (e.g. `agenc --yolo`) session fires many tool calls;
+  // OOM fix: a long-lived (e.g. `agenc --dangerously-bypass-approvals-and-sandbox`) session fires many tool calls;
   // the in-memory `completed` map previously pinned the RAW result of every one
   // forever (unbounded large-payload growth → ~4GB heap → crash). Assert it is
   // now FIFO-capped and each retained result is truncated to a bounded preview.

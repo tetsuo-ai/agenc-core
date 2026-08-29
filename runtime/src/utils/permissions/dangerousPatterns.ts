@@ -3,12 +3,12 @@
  *
  * An allow rule like `Bash(python:*)` or `PowerShell(node:*)` lets the model
  * run arbitrary code via that interpreter, bypassing the auto-mode classifier.
- * These lists feed the isDangerous{Bash,PowerShell}Permission predicates in
- * permissionSetup.ts, which strip such rules at auto-mode entry.
+ * These lists feed the canonical permission-mode predicates, which strip
+ * such rules at auto-mode entry.
  *
  * The matcher in each predicate handles the rule-shape variants (exact, `:*`,
  * trailing `*`, ` *`, ` -…*`). PS-specific cmdlet strings live in
- * isDangerousPowerShellPermission (permissionSetup.ts).
+ * the canonical isDangerousPowerShellPermission implementation.
  */
 
 /**

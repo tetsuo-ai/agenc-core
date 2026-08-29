@@ -14,14 +14,23 @@ import { parseZipModes, unzipFile } from '../dxt/zip.js'
 import { errorMessage, getErrnoCode, isENOENT, toError } from '../errors.js'
 import { getFsImplementation } from '../fsOperations.js'
 import { logError } from '../log.js'
-import { getSecureStorage } from '../secureStorage/index.js'
 import {
-  getExecutionAuthoritySettings,
+  readNativeSecureStorage,
+  updateNativeSecureStorage,
+} from '../secureStorage/native.js'
+import {
   getSettingsForSource,
   updateSettingsForSource,
 } from '../settings/settings.js'
 import { jsonParse, jsonStringify } from '../slowOperations.js'
 import { getSystemDirectories } from '../systemDirectories.js'
+import {
+  assertPluginConfigKeysDeclared,
+  requirePluginConfigAuthority,
+  resolveSchemaOwnedPluginConfig,
+  rollbackPluginSecretBucket,
+  withPluginSecretBucket,
+} from './pluginConfigAuthority.js'
 /**
  * User configuration values for MCPB
  */
@@ -114,26 +123,25 @@ function getMetadataPath(cacheDir: string, source: string): string {
 }
 
 /**
- * Compose the secureStorage key for a per-server secret bucket.
- * `pluginSecrets` is a flat map — per-server secrets share it with top-level
+ * Compose the native secure storage key for a per-server secret bucket.
+ * `pluginSecrets` is a flat map. Per-server secrets share it with top-level
  * plugin options (pluginOptionsStorage.ts) using a `${pluginId}/${server}`
  * composite key. `/` can't appear in plugin IDs (`name@marketplace`) or
- * server names (MCP identifier constraints), so it's unambiguous. Keeps the
- * SecureStorageData schema unchanged and the single-keychain-entry size
- * budget (~2KB stdin-safe, see INC-3028) shared across all plugin secrets.
+ * server names (MCP identifier constraints), so the key is unambiguous. This
+ * keeps the SecureStorageData schema unchanged and shares the existing
+ * credential record with top-level plugin secrets.
  */
 function serverSecretsKey(pluginId: string, serverName: string): string {
   return `${pluginId}/${serverName}`
 }
 
 /**
- * Load user configuration for an MCP server, merging non-sensitive values
- * (from settings.json) with sensitive values (from secureStorage keychain).
- * secureStorage wins on collision — schema determines destination so
- * collision shouldn't happen, but if a user hand-edits settings.json we
- * trust the more secure source.
+ * Load user configuration for an MCP server according to its manifest schema.
+ * Non-sensitive values come only from config.toml; sensitive values come only
+ * from the native secure storage. A plaintext sensitive duplicate is an
+ * explicit error and is never used as fallback.
  *
- * Returns null only if NEITHER source has anything — callers skip
+ * Returns null when the schema owns no configured value — callers skip
  * ${user_config.X} substitution in that case.
  *
  * @param pluginId - Plugin identifier in "plugin@marketplace" format
@@ -142,45 +150,36 @@ function serverSecretsKey(pluginId: string, serverName: string): string {
 export function loadMcpServerUserConfig(
   pluginId: string,
   serverName: string,
+  schema: UserConfigSchema,
 ): UserConfigValues | null {
-  try {
-    const settings = getExecutionAuthoritySettings()
-    const nonSensitive =
-      settings.pluginConfigs?.[pluginId]?.mcpServers?.[serverName]
+  const authority = requirePluginConfigAuthority()
+  const configured =
+    authority.current().pluginConfigs?.[pluginId]?.mcpServers?.[serverName]
+  const sensitive = readNativeSecureStorage(authority.homeContext)
+    .pluginSecrets?.[serverSecretsKey(pluginId, serverName)]
+  const resolved = resolveSchemaOwnedPluginConfig(
+    `pluginConfigs.${JSON.stringify(pluginId)}.mcpServers.${JSON.stringify(serverName)}`,
+    schema,
+    configured,
+    sensitive,
+  ) as UserConfigValues
 
-    const sensitive =
-      getSecureStorage().read()?.pluginSecrets?.[
-        serverSecretsKey(pluginId, serverName)
-      ]
-
-    if (!nonSensitive && !sensitive) {
-      return null
-    }
-
-    logForDebugging(
-      `Loaded user config for ${pluginId}/${serverName} (settings + secureStorage)`,
-    )
-    return { ...nonSensitive, ...sensitive }
-  } catch (error) {
-    const errorObj = toError(error)
-    logError(errorObj)
-    logForDebugging(
-      `Failed to load user config for ${pluginId}/${serverName}: ${error}`,
-      { level: 'error' },
-    )
-    return null
-  }
+  if (Object.keys(resolved).length === 0) return null
+  logForDebugging(
+    `Loaded schema-owned user config for ${pluginId}/${serverName}`,
+  )
+  return resolved
 }
 
 /**
  * Save user configuration for an MCP server, splitting by `schema[key].sensitive`.
  * Mirrors savePluginOptions (pluginOptionsStorage.ts:90) for top-level options:
- *   - `sensitive: true` → secureStorage (keychain on macOS, .credentials.json 0600 elsewhere)
- *   - everything else   → settings.json pluginConfigs[pluginId].mcpServers[serverName]
+ *   - `sensitive: true` → native secure storage
+ *   - everything else   → config.toml pluginConfigs[pluginId].mcpServers[serverName]
  *
  * Without this split, per-channel `sensitive: true` was a false sense of
  * security — the dialog masked the input but the save went to plaintext
- * settings.json anyway. H1 #3617646 (Telegram/Discord bot tokens in
+ * config.toml anyway. H1 #3617646 (Telegram/Discord bot tokens in
  * world-readable .env) surfaced this as the gap to close.
  *
  * Writes are skipped if nothing in that category is present.
@@ -191,13 +190,19 @@ export function loadMcpServerUserConfig(
  * @param schema - The userConfig schema for this server (manifest.user_config
  *   or channels[].userConfig) — drives the sensitive/non-sensitive split
  */
-export function saveMcpServerUserConfig(
+export async function saveMcpServerUserConfig(
   pluginId: string,
   serverName: string,
   config: UserConfigValues,
   schema: UserConfigSchema,
-): void {
+): Promise<void> {
   try {
+    const authority = requirePluginConfigAuthority()
+    assertPluginConfigKeysDeclared(
+      `MCP server config for ${JSON.stringify(`${pluginId}/${serverName}`)}`,
+      schema,
+      config,
+    )
     const nonSensitive: UserConfigValues = {}
     const sensitive: Record<string, string> = {}
 
@@ -209,125 +214,112 @@ export function saveMcpServerUserConfig(
       }
     }
 
-    // Scrub ONLY keys we're writing in this call. Covers both directions
-    // across schema-version flips:
-    //  - sensitive→secureStorage ⇒ remove stale plaintext from settings.json
-    //  - nonSensitive→settings.json ⇒ remove stale entry from secureStorage
-    //    (otherwise loadMcpServerUserConfig's {...nonSensitive, ...sensitive}
-    //    would let the stale secureStorage value win on next read)
-    // Partial `config` (user only re-enters one field) leaves other fields
-    // untouched in BOTH stores — defense-in-depth against future callers.
+    // Scrub only keys written in this call. When a key becomes sensitive,
+    // remove its old plaintext config.toml value. When a key becomes
+    // non-sensitive, remove its old native-storage value. A partial `config`
+    // leaves other fields untouched in both stores.
     const sensitiveKeysInThisSave = new Set(Object.keys(sensitive))
     const nonSensitiveKeysInThisSave = new Set(Object.keys(nonSensitive))
 
-    // Sensitive → secureStorage FIRST. If this fails (keychain locked,
-    // .credentials.json perms), throw before touching settings.json — the
-    // old plaintext stays as a fallback instead of losing BOTH copies.
+    // Write sensitive values to native secure storage first. If this fails,
+    // including from a locked macOS Keychain or native storage permissions,
+    // throw before touching config.toml.
+    // Any old plaintext remains rejected until reconfiguration completes; it
+    // never becomes a live fallback.
     //
-    // Also scrub non-sensitive keys from secureStorage — schema flipped
-    // sensitive→false and they're being written to settings.json now. Without
-    // this, loadMcpServerUserConfig's merge would let the stale secureStorage
-    // value win on next read.
-    const storage = getSecureStorage()
+    // Also scrub non-sensitive keys from native secure storage when the schema
+    // changes and the values are written to config.toml. Without
+    // this, loadMcpServerUserConfig's merge would let the stale native-storage
+    // value win on the next read.
     const k = serverSecretsKey(pluginId, serverName)
-    const existingInSecureStorage =
-      storage.read()?.pluginSecrets?.[k] ?? undefined
-    const secureScrubbed = existingInSecureStorage
-      ? Object.fromEntries(
-          Object.entries(existingInSecureStorage).filter(
-            ([key]) => !nonSensitiveKeysInThisSave.has(key),
-          ),
-        )
-      : undefined
-    const needSecureScrub =
-      secureScrubbed &&
-      existingInSecureStorage &&
-      Object.keys(secureScrubbed).length !==
-        Object.keys(existingInSecureStorage).length
-    if (Object.keys(sensitive).length > 0 || needSecureScrub) {
-      const existing = storage.read() ?? {}
-      if (!existing.pluginSecrets) {
-        existing.pluginSecrets = {}
-      }
-      // secureStorage keyvault is a flat object — direct replace, no merge
-      // semantics to worry about (unlike settings.json's mergeWith).
-      existing.pluginSecrets[k] = {
-        ...secureScrubbed,
-        ...sensitive,
-      }
-      const result = storage.update(existing)
-      if (!result.success) {
-        throw new Error(
-          `Failed to save sensitive config to secure storage for ${k}`,
-        )
-      }
-      if (result.warning) {
-        logForDebugging(`Server secrets save warning: ${result.warning}`, {
-          level: 'warn',
-        })
-      }
-      if (needSecureScrub) {
-        logForDebugging(
-          `saveMcpServerUserConfig: scrubbed ${
-            Object.keys(existingInSecureStorage!).length -
-            Object.keys(secureScrubbed!).length
-          } stale non-sensitive key(s) from secureStorage for ${k}`,
-        )
-      }
-    }
+    const secureTransaction =
+      Object.keys(sensitive).length > 0 || nonSensitiveKeysInThisSave.size > 0
+        ? updateNativeSecureStorage(
+            authority.homeContext,
+            current => {
+              const existing = current.pluginSecrets?.[k]
+              const secureScrubbed = existing
+                ? Object.fromEntries(
+                    Object.entries(existing).filter(
+                      ([key]) => !nonSensitiveKeysInThisSave.has(key),
+                    ),
+                  )
+                : undefined
+              return withPluginSecretBucket(current, k, {
+                ...secureScrubbed,
+                ...sensitive,
+              })
+            },
+            `Failed to save sensitive config to secure storage for ${k}`,
+          )
+        : null
 
-    // Non-sensitive → settings.json. Write whenever there are new non-sensitive
+    // Non-sensitive → config.toml. Write whenever there are new non-sensitive
     // values OR existing plaintext sensitive values to scrub — so reconfiguring
-    // a sensitive-only schema still cleans up the old settings.json. Runs
-    // AFTER the secureStorage write succeeded, so the scrub can't leave you
-    // with zero copies of the secret.
+    // a sensitive-only schema still cleans up old config.toml plaintext. Runs
+    // after the native secure storage write succeeds, so the scrub cannot
+    // leave zero copies of the secret.
     //
     // updateSettingsForSource does mergeWith(diskSettings, ourSettings, ...)
     // which PRESERVES destination keys absent from source — so simply omitting
     // sensitive keys doesn't scrub them, the disk copy merges back in. Instead:
     // set each sensitive key to explicit `undefined` — mergeWith (with the
     // customizer at settings.ts:349) treats explicit undefined as a delete.
-    const settings = getSettingsForSource('userSettings') ?? {}
-    const existingInSettings =
-      settings.pluginConfigs?.[pluginId]?.mcpServers?.[serverName] ?? {}
-    const keysToScrubFromSettings = Object.keys(existingInSettings).filter(k =>
-      sensitiveKeysInThisSave.has(k),
-    )
-    if (
-      Object.keys(nonSensitive).length > 0 ||
-      keysToScrubFromSettings.length > 0
-    ) {
-      // Build the scrub-via-undefined map. The UserConfigValues type doesn't
-      // include undefined, but updateSettingsForSource's mergeWith customizer
-      // needs explicit undefined to delete — cast is deliberate internal
-      // plumbing (same rationale as deletePluginOptions in
-      // pluginOptionsStorage.ts:184, see AGENC.md's 10% case).
-      const scrubbed = Object.fromEntries(
-        keysToScrubFromSettings.map(k => [k, undefined]),
-      ) as Record<string, undefined>
-      const existingPluginConfig = settings.pluginConfigs?.[pluginId] ?? {}
-      const result = updateSettingsForSource('userSettings', {
-        pluginConfigs: {
-          [pluginId]: {
-            ...existingPluginConfig,
-            mcpServers: {
-              ...(existingPluginConfig.mcpServers ?? {}),
-              [serverName]: {
-                ...nonSensitive,
-                ...scrubbed,
-              } as UserConfigValues,
+    try {
+      const settings = getSettingsForSource('userSettings', authority) ?? {}
+      const existingInSettings =
+        settings.pluginConfigs?.[pluginId]?.mcpServers?.[serverName] ?? {}
+      const keysToScrubFromSettings = Object.keys(existingInSettings).filter(
+        key => sensitiveKeysInThisSave.has(key),
+      )
+      if (
+        Object.keys(nonSensitive).length > 0 ||
+        keysToScrubFromSettings.length > 0
+      ) {
+        // Build the scrub-via-undefined map. The UserConfigValues type doesn't
+        // include undefined, but updateSettingsForSource's mergeWith customizer
+        // needs explicit undefined to delete — cast is deliberate internal
+        // plumbing (same rationale as deletePluginOptions in
+        // pluginOptionsStorage.ts:184, see AGENC.md's 10% case).
+        const scrubbed = Object.fromEntries(
+          keysToScrubFromSettings.map(key => [key, undefined]),
+        ) as Record<string, undefined>
+        const existingPluginConfig = settings.pluginConfigs?.[pluginId] ?? {}
+        const result = await updateSettingsForSource(
+          'userSettings',
+          {
+            pluginConfigs: {
+              [pluginId]: {
+                ...existingPluginConfig,
+                mcpServers: {
+                  ...(existingPluginConfig.mcpServers ?? {}),
+                  [serverName]: {
+                    ...nonSensitive,
+                    ...scrubbed,
+                  } as UserConfigValues,
+                },
+              },
             },
           },
-        },
-      })
-      if (result.error) {
-        throw result.error
-      }
-      if (keysToScrubFromSettings.length > 0) {
-        logForDebugging(
-          `saveMcpServerUserConfig: scrubbed ${keysToScrubFromSettings.length} plaintext sensitive key(s) from settings.json for ${pluginId}/${serverName}`,
+          authority,
         )
+        if (result.error) {
+          throw result.error
+        }
+        if (keysToScrubFromSettings.length > 0) {
+          logForDebugging(
+            `saveMcpServerUserConfig: scrubbed ${keysToScrubFromSettings.length} plaintext sensitive key(s) from config.toml for ${pluginId}/${serverName}`,
+          )
+        }
       }
+    } catch (error) {
+      rollbackPluginSecretBucket(
+        authority.homeContext,
+        k,
+        secureTransaction,
+        `Failed to roll back sensitive MCP server config for ${k}`,
+      )
+      throw error
     }
 
     logForDebugging(
@@ -721,8 +713,12 @@ export async function loadMcpbFile(
       // Server name from DXT manifest
       const serverName = manifest.name
 
-      // Try to load existing config from settings.json or use provided config
-      const savedConfig = loadMcpServerUserConfig(pluginId, serverName)
+      // Try to load existing canonical config or use provided config
+      const savedConfig = loadMcpServerUserConfig(
+        pluginId,
+        serverName,
+        manifest.user_config,
+      )
       const userConfig = providedUserConfig || savedConfig || {}
 
       // Validate we have all required fields
@@ -743,7 +739,7 @@ export async function loadMcpbFile(
 
       // Save config if it was provided (first time or reconfiguration)
       if (providedUserConfig) {
-        saveMcpServerUserConfig(
+        await saveMcpServerUserConfig(
           pluginId,
           serverName,
           providedUserConfig,
@@ -856,8 +852,12 @@ export async function loadMcpbFile(
     // Server name from DXT manifest
     const serverName = manifest.name
 
-    // Try to load existing config from settings.json or use provided config
-    const savedConfig = loadMcpServerUserConfig(pluginId, serverName)
+    // Try to load existing canonical config or use provided config
+    const savedConfig = loadMcpServerUserConfig(
+      pluginId,
+      serverName,
+      manifest.user_config,
+    )
     const userConfig = providedUserConfig || savedConfig || {}
 
     // Validate we have all required fields
@@ -888,7 +888,7 @@ export async function loadMcpbFile(
 
     // Save config if it was provided (first time or reconfiguration)
     if (providedUserConfig) {
-      saveMcpServerUserConfig(
+      await saveMcpServerUserConfig(
         pluginId,
         serverName,
         providedUserConfig,

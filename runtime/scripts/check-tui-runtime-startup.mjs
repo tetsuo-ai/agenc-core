@@ -744,8 +744,8 @@ async function main() {
       if (interrupted) return 1;
       results.push(
         await ptyStartupSmoke(
-          "agenc --yolo",
-          ["--yolo"],
+          "agenc --dangerously-bypass-approvals-and-sandbox",
+          ["--dangerously-bypass-approvals-and-sandbox"],
           viewport,
           gateState.env,
           {},

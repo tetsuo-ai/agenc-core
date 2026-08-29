@@ -47,7 +47,7 @@
  *
  *   | Upstream step                                | Gut status                                     |
  *   |-----------------------------------------------|-----------------------------------------------|
- *   | Shell discovery (`shell::default_user_shell`) | WIRED via `utils/shell-discovery.ts`          |
+ *   | Shell selection                               | WIRED at the session-services boundary        |
  *   | Parallel auth + MCP startup (`tokio::join!`)  | WIRED via `Promise.all` in this file          |
  *   | `LiveThread::create/resume`                   | WIRED in `bin/bootstrap-services.ts`          |
  *   | `state_db` lookup                             | WIRED for thread-store metadata              |
@@ -69,7 +69,6 @@
 
 import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import type { RolloutItem } from "./rollout-item.js";
-import { discoverDefaultUserShellAsync } from "../utils/shell-discovery.js";
 import {
   recordInitialHistoryOnResume,
   maybePrewarmAgentTaskRegistration,
@@ -79,9 +78,7 @@ import { runWithCurrentRuntimeSession } from "./current-session.js";
 import {
   Session,
   type SessionOpts,
-  type SessionServices,
   type SessionConfiguredEvent,
-  type UserShell,
 } from "./session.js";
 
 /**
@@ -214,18 +211,6 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 // Exported sub-steps. Each is a standalone helper so tests can drive
 // them without going through the full bootstrap sequence.
 // ─────────────────────────────────────────────────────────────────────
-
-/**
- * Upstream `let mut default_shell = ...` block
- * (agenc-rs/core/src/session/session.rs:585-605). Discovers the real
- * user shell and returns a `UserShell` suitable for
- * `SessionServices.userShell`.
- */
-export async function discoverShellForSession(
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<UserShell> {
-  return discoverDefaultUserShellAsync({ env });
-}
 
 /**
  * Upstream parallel `tokio::join!(auth_and_mcp_fut, ...)`
@@ -383,9 +368,8 @@ export async function runStartupPrewarm(
  * Orchestration mirrors upstream line-for-line where a gut-side
  * concept exists:
  *
- *   1. Discover the default user shell and patch the services slot
- *      so `session.services.userShell` holds the real shell instead
- *      of the `/bin/sh` stub.
+ *   1. Accept the immutable shell selected by the session-services boundary.
+ *      Bootstrap never re-reads daemon-global process state.
  *   2. Construct the `Session`. The constructor is still lightweight
  *      (field init + permission-registry bootstrap).
  *   3. Run auth prep and MCP startup in parallel. Required-server
@@ -421,20 +405,13 @@ export async function bootstrapSession(
 ): Promise<Session> {
   throwIfAborted(opts.signal);
 
-  // 1. Shell discovery. Patched into the services slot pre-construction
-  //    so the session never sees the interface stub.
-  const discoveredShell = await discoverShellForSession(process.env);
-  const patchedServices: SessionServices = {
-    ...opts.services,
-    userShell: discoveredShell,
-  };
-
-  throwIfAborted(opts.signal);
-
+  // 1. The boundary-owned services already contain the session's resolved
+  //    shell. Never rediscover it from daemon-global process.env here: two
+  //    concurrent sessions may intentionally use different shells.
   // 2. Construct the session.
   const session = new Session({
     ...opts,
-    services: patchedServices,
+    services: opts.services,
   });
 
   throwIfAborted(opts.signal);
@@ -499,13 +476,13 @@ export async function bootstrapSession(
   //    `McpConnectionManager::new()` AFTER the SessionConfigured dispatch.
   if (
     opts.deferOrdinaryStartup === true &&
-    patchedServices.skillsWatcher?.start !== undefined
+    opts.services.skillsWatcher?.start !== undefined
   ) {
     session.appendDeferredOrdinarySubmitHook(async () => {
-      await patchedServices.skillsWatcher?.start?.();
+      await opts.services.skillsWatcher?.start?.();
     });
   } else {
-    await patchedServices.skillsWatcher?.start?.();
+    await opts.services.skillsWatcher?.start?.();
   }
   const dispatchSessionStart = () =>
     dispatchBootstrapSessionStart(session, {
@@ -556,12 +533,7 @@ async function dispatchBootstrapSessionStart(
 ): Promise<void> {
   const processSessionStart = session.services.hooks?.processSessionStart;
   if (typeof processSessionStart !== "function") return;
-  const permissionMode =
-    (
-      session.sessionConfiguration as {
-        readonly permissionContext?: { readonly mode?: string };
-      }
-    ).permissionContext?.mode ?? "default";
+  const permissionMode = session.permissionModeRegistry.current().mode;
   const messages = await runWithCurrentRuntimeSession(session, () =>
     processSessionStart(
       {

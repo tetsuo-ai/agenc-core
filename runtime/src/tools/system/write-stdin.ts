@@ -82,11 +82,6 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           description:
             "The session_id returned by exec_command for a still-running process.",
         },
-        process_id: {
-          type: "number",
-          description:
-            "Compatibility alias for session_id. Prefer session_id.",
-        },
         chars: {
           type: "string",
           description:
@@ -101,12 +96,15 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           description: "Maximum output tokens to return.",
         },
       },
-      anyOf: [{ required: ["session_id"] }, { required: ["process_id"] }],
+      required: ["session_id"],
       additionalProperties: false,
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as Record<string, unknown> & ToolExecutionInjectedArgs;
-      const sessionId = asNumber(args.session_id) ?? asNumber(args.process_id);
+      if (Object.prototype.hasOwnProperty.call(args, "process_id")) {
+        return errorResult("unknown field `process_id`");
+      }
+      const sessionId = asNumber(args.session_id);
       if (sessionId === undefined) {
         return {
           content: safeStringify({

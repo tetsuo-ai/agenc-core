@@ -1,4 +1,6 @@
 import { asRecord } from '../../utils/record.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
+import { getProxyFetchOptions } from '../../utils/proxy.js'
 
 const PROVIDER_CODE_OAUTH_ISSUER = 'https://auth.openai.com'
 export const PROVIDER_CODE_REFRESH_URL = `${PROVIDER_CODE_OAUTH_ISSUER}/oauth/token`
@@ -50,25 +52,33 @@ export async function readOAuthTokenJsonResponse(
 }
 
 export function getOpenAiCodeOAuthClientId(
-  env: NodeJS.ProcessEnv = process.env,
+  environment: ProviderEnvironment,
 ): string {
-  return asTrimmedString(env.PROVIDER_CODE_OAUTH_CLIENT_ID) ?? DEFAULT_PROVIDER_CODE_OAUTH_CLIENT_ID
+  return (
+    asTrimmedString(environment.PROVIDER_CODE_OAUTH_CLIENT_ID) ??
+    DEFAULT_PROVIDER_CODE_OAUTH_CLIENT_ID
+  )
 }
 
 export function getOpenAiCodeOAuthCallbackPort(
-  env: NodeJS.ProcessEnv = process.env,
+  environment: ProviderEnvironment,
 ): number {
-  const rawPort = asTrimmedString(env.PROVIDER_CODE_OAUTH_CALLBACK_PORT)
-  if (!rawPort) {
-    return DEFAULT_PROVIDER_CODE_OAUTH_CALLBACK_PORT
+  const configured = asTrimmedString(
+    environment.PROVIDER_CODE_OAUTH_CALLBACK_PORT,
+  )
+  if (configured === undefined) return DEFAULT_PROVIDER_CODE_OAUTH_CALLBACK_PORT
+  if (!/^\d+$/u.test(configured)) {
+    throw new Error(
+      'PROVIDER_CODE_OAUTH_CALLBACK_PORT must be an integer from 1 to 65535.',
+    )
   }
-
-  const parsed = Number.parseInt(rawPort, 10)
-  if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65535) {
-    return parsed
+  const port = Number(configured)
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(
+      'PROVIDER_CODE_OAUTH_CALLBACK_PORT must be an integer from 1 to 65535.',
+    )
   }
-
-  return DEFAULT_PROVIDER_CODE_OAUTH_CALLBACK_PORT
+  return port
 }
 
 export function decodeJwtPayload(
@@ -132,10 +142,11 @@ export function escapeHtml(value: string): string {
 
 export async function exchangeProviderCodeIdTokenForApiKey(
   idToken: string,
+  environment: ProviderEnvironment,
 ): Promise<string> {
   const body = new URLSearchParams({
     grant_type: PROVIDER_CODE_TOKEN_EXCHANGE_GRANT,
-    client_id: getOpenAiCodeOAuthClientId(),
+    client_id: getOpenAiCodeOAuthClientId(environment),
     requested_token: PROVIDER_CODE_API_KEY_TOKEN_NAME,
     subject_token: idToken,
     subject_token_type: PROVIDER_CODE_ID_TOKEN_SUBJECT_TYPE,
@@ -148,6 +159,7 @@ export async function exchangeProviderCodeIdTokenForApiKey(
     },
     body,
     signal: AbortSignal.timeout(15_000),
+    ...getProxyFetchOptions({ environment }),
   })
 
   if (!response.ok) {

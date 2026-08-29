@@ -19,7 +19,7 @@ afterEach(() => {
 
 describe('checkDomainBlocklist', () => {
   test('returns allowed without API call in OpenAi mode', async () => {
-    process.env.AGENC_USE_OPENAI = '1'
+    process.env.AGENC_PROVIDER = 'openai'
     const actual = await import('../../../src/utils/model/providers.ts')
     mock.module('../../../src/utils/model/providers.js', () => ({
       ...actual,
@@ -32,14 +32,14 @@ describe('checkDomainBlocklist', () => {
     axios.get = getSpy as typeof axios.get
 
     const { checkDomainBlocklist } = await importFreshModule()
-    const result = await checkDomainBlocklist('example.com')
+    const result = await checkDomainBlocklist('example.com', {})
 
     expect(result.status).toBe('allowed')
     expect(getSpy).not.toHaveBeenCalled()
   })
 
   test('returns allowed without API call in Gemini mode', async () => {
-    process.env.AGENC_USE_GEMINI = '1'
+    process.env.AGENC_PROVIDER = 'gemini'
     const actual = await import('../../../src/utils/model/providers.ts')
     mock.module('../../../src/utils/model/providers.js', () => ({
       ...actual,
@@ -52,16 +52,14 @@ describe('checkDomainBlocklist', () => {
     axios.get = getSpy as typeof axios.get
 
     const { checkDomainBlocklist } = await importFreshModule()
-    const result = await checkDomainBlocklist('example.com')
+    const result = await checkDomainBlocklist('example.com', {})
 
     expect(result.status).toBe('allowed')
     expect(getSpy).not.toHaveBeenCalled()
   })
 
   test('calls provider domain check in first-party mode', async () => {
-    delete process.env.AGENC_USE_OPENAI
-    delete process.env.AGENC_USE_GEMINI
-    delete process.env.AGENC_USE_GITHUB
+    process.env.AGENC_PROVIDER = 'anthropic'
 
     const actual = await import('../../../src/utils/model/providers.ts')
     mock.module('../../../src/utils/model/providers.js', () => ({
@@ -72,10 +70,10 @@ describe('checkDomainBlocklist', () => {
     const getSpy = mock(() =>
       Promise.resolve({ status: 200, data: { can_fetch: true } }),
     )
-    axios.get = getSpy as typeof axios.get
+    axios.create = mock(() => ({ get: getSpy })) as typeof axios.create
 
     const { checkDomainBlocklist } = await importFreshModule()
-    const result = await checkDomainBlocklist('example.com')
+    const result = await checkDomainBlocklist('example.com', {})
 
     expect(result.status).toBe('allowed')
     expect(getSpy).toHaveBeenCalledTimes(1)

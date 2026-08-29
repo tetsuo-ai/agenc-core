@@ -18,7 +18,11 @@ import {
   switchSession,
 } from "../../../src/bootstrap/state.js";
 import { createAgentRoleWorkspace } from "../../../src/agents/role.js";
+import { ConfigStore } from "../../../src/config/store.js";
+import { createProvider } from "../../../src/llm/provider.js";
 import { runWithCurrentRuntimeSession } from "../../../src/session/current-session.js";
+import { SessionProviderService } from "../../../src/session/provider-service.js";
+import { resolveAgentRuntimeOptions } from "../../../src/session/runtime-options.js";
 import type { Session } from "../../../src/session/session.js";
 import { getAgentMemoryDir } from "../../../src/tools/AgentTool/agentMemory.js";
 import {
@@ -42,15 +46,22 @@ import {
   resetProjectForTesting,
   writeAgentMetadata,
 } from "../../../src/utils/sessionStorage.js";
+import {
+  resetCanonicalSettingsAuthorityForTesting,
+  runWithCanonicalSettingsAuthority,
+} from "../../../src/utils/settings/canonicalAuthority.js";
 
 const tempRoots: string[] = [];
+const settingsAuthorities = new Map<string, ConfigStore>();
 const boundarySessionId = "00000000-0000-4000-8000-000000000223";
 
 afterEach(() => {
+  resetCanonicalSettingsAuthorityForTesting();
   __setPluginAgentsLoaderForTesting(undefined);
   __setResumeAgentLaunchForTesting(undefined);
   resumeToolPoolCapture.modes.length = 0;
   clearAgentDefinitionsCache();
+  settingsAuthorities.clear();
   for (const root of tempRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -59,15 +70,60 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+function settingsAuthorityFor(root: string): ConfigStore {
+  const existing = settingsAuthorities.get(root);
+  if (existing !== undefined) return existing;
+  const home = join(root, "config");
+  mkdirSync(home, { recursive: true });
+  const authority = new ConfigStore({
+    home,
+    cwd: root,
+    projectRoot: root,
+    projectTrusted: false,
+    env: {},
+    loader: async () => ({ configVersion: 2 }),
+  });
+  settingsAuthorities.set(root, authority);
+  return authority;
+}
+
+function withBoundaryAuthority<T>(root: string, operation: () => T): T {
+  return runWithCanonicalSettingsAuthority(
+    settingsAuthorityFor(root),
+    operation,
+  );
+}
+
+function runWithBoundarySession<T>(session: Session, operation: () => T): T {
+  return runWithCanonicalSettingsAuthority(session.services.configStore, () =>
+    runWithCurrentRuntimeSession(session, operation),
+  );
+}
+
 function configureBoundarySession(root: string): Session {
-  vi.stubEnv("AGENC_CONFIG_DIR", join(root, "config"));
+  vi.stubEnv("AGENC_HOME", join(root, "config"));
   resetStateForTests();
   resetProjectForTesting();
   setOriginalCwd(root);
   switchSession(boundarySessionId as never, null);
+  const providerService = new SessionProviderService({
+    initialProvider: createProvider("openai-compatible", {
+      baseURL: "http://127.0.0.1:18000/v1",
+      model: "test-model",
+    }),
+    initialProviderName: "openai-compatible",
+    initialModel: "test-model",
+  });
   return {
     conversationId: boundarySessionId,
     roleWorkspace: createAgentRoleWorkspace(root),
+    services: {
+      providerService,
+      configStore: settingsAuthorityFor(root),
+      runtimeOptions: resolveAgentRuntimeOptions({}, {
+        pluginStorageRoot: join(root, "plugins"),
+      }),
+    },
   } as unknown as Session;
 }
 
@@ -102,7 +158,7 @@ function boundaryContext(
     activeAgents,
     allAgents: activeAgents,
   };
-  const defaultState = getDefaultAppState();
+  const defaultState = withBoundaryAuthority(workspace, getDefaultAppState);
   const appState = {
     ...defaultState,
     mainLoopModel: "test-model",
@@ -205,12 +261,14 @@ Guarded prompt.
     __setPluginAgentsLoaderForTesting(async () => []);
 
     const workspace = createAgentRoleWorkspace(root);
-    vi.stubEnv("AGENC_CONFIG_DIR", join(root, "config"));
+    vi.stubEnv("AGENC_HOME", join(root, "config"));
     resetStateForTests();
     resetProjectForTesting();
     setOriginalCwd(root);
     switchSession("00000000-0000-4000-8000-000000000222" as never, null);
-    const firstCatalog = await loadFreshAgentDefinitions(root);
+    const firstCatalog = await withBoundaryAuthority(root, () =>
+      loadFreshAgentDefinitions(root, join(root, "plugins")),
+    );
     const first = firstCatalog.activeAgents.find(
       (definition) => definition.agentType === "guarded-worker",
     );
@@ -230,7 +288,9 @@ Guarded prompt.
       resolveAgentDefinitionForResume(
         persistedMetadata,
         workspace,
-        await loadFreshAgentDefinitions(root),
+        await withBoundaryAuthority(root, () =>
+          loadFreshAgentDefinitions(root, join(root, "plugins")),
+        ),
       ).selectedAgent,
     ).toMatchObject({
       agentType: "guarded-worker",
@@ -240,7 +300,9 @@ Guarded prompt.
       resolveAgentDefinitionForResume(
         persistedMetadata,
         workspace,
-        await loadFreshAgentDefinitions(root),
+        await withBoundaryAuthority(root, () =>
+          loadFreshAgentDefinitions(root, join(root, "plugins")),
+        ),
       ).selectedAgent,
     ).not.toHaveProperty("permissionMode");
 
@@ -255,7 +317,9 @@ permissionMode: acceptEdits
 Guarded prompt.
 `,
     );
-    const secondCatalog = await loadFreshAgentDefinitions(root);
+    const secondCatalog = await withBoundaryAuthority(root, () =>
+      loadFreshAgentDefinitions(root, join(root, "plugins")),
+    );
     const second = secondCatalog.activeAgents.find(
       (definition) => definition.agentType === "guarded-worker",
     );
@@ -288,18 +352,23 @@ Review without mutation.
 `,
     );
     __setPluginAgentsLoaderForTesting(async () => []);
-    const initialCatalog = await loadFreshAgentDefinitions(root);
+    const initialCatalog = await withBoundaryAuthority(root, () =>
+      loadFreshAgentDefinitions(root, join(root, "plugins")),
+    );
     const initialRole = initialCatalog.activeAgents.find(
       (definition) => definition.agentType === "boundary-reviewer",
     );
     expect(initialRole).toBeDefined();
     const agentId = "resume-boundary-edited-role";
-    await writeAgentMetadata(agentId as never, {
-      agentType: "boundary-reviewer",
-      agentRoleWorkspaceId: session.roleWorkspace.id,
-      agentRoleFingerprint: requireAgentDefinitionRoleFingerprint(initialRole!),
+    await runWithBoundarySession(session, async () => {
+      await writeAgentMetadata(agentId as never, {
+        agentType: "boundary-reviewer",
+        agentRoleWorkspaceId: session.roleWorkspace.id,
+        agentRoleFingerprint:
+          requireAgentDefinitionRoleFingerprint(initialRole!),
+      });
+      writeBoundaryTranscript(agentId, root);
     });
-    writeBoundaryTranscript(agentId, root);
 
     writeFileSync(
       rolePath,
@@ -320,7 +389,7 @@ Review and mutate freely.
     __setResumeAgentLaunchForTesting(launch);
 
     await expect(
-      runWithCurrentRuntimeSession(session, () =>
+      runWithBoundarySession(session, () =>
         resumeAgentBackground({
           agentId,
           prompt: "Continue the review.",
@@ -350,20 +419,24 @@ Use only this role's project memory.
 `,
     );
     __setPluginAgentsLoaderForTesting(async () => []);
-    const catalog = await loadFreshAgentDefinitions(root);
+    const catalog = await withBoundaryAuthority(root, () =>
+      loadFreshAgentDefinitions(root, join(root, "plugins")),
+    );
     const selectedRole = catalog.activeAgents.find(
       (definition) => definition.agentType === "memory-reviewer",
     );
     expect(selectedRole).toBeDefined();
     const agentId = "resume-boundary-memory-role";
-    await writeAgentMetadata(agentId as never, {
-      agentType: "memory-reviewer",
-      agentRoleWorkspaceId: session.roleWorkspace.id,
-      agentRoleFingerprint: requireAgentDefinitionRoleFingerprint(
-        selectedRole!,
-      ),
+    await runWithBoundarySession(session, async () => {
+      await writeAgentMetadata(agentId as never, {
+        agentType: "memory-reviewer",
+        agentRoleWorkspaceId: session.roleWorkspace.id,
+        agentRoleFingerprint: requireAgentDefinitionRoleFingerprint(
+          selectedRole!,
+        ),
+      });
+      writeBoundaryTranscript(agentId, root);
     });
-    writeBoundaryTranscript(agentId, root);
     const memoryDir = getAgentMemoryDir("memory-reviewer", "project", root);
     mkdirSync(memoryDir, { recursive: true });
     writeFileSync(
@@ -389,7 +462,7 @@ Use only this role's project memory.
     __setResumeAgentLaunchForTesting(launch);
 
     await expect(
-      runWithCurrentRuntimeSession(session, () =>
+      runWithBoundarySession(session, () =>
         resumeAgentBackground({
           agentId,
           prompt: "Continue using your own memory.",

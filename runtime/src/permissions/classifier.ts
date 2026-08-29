@@ -34,6 +34,7 @@ import type {
   LLMStructuredOutputSchema,
   LLMUsage as ProviderLLMUsage,
 } from "../llm/types.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
 import {
   matchedDangerousLabel,
   shouldUseSandbox,
@@ -41,8 +42,13 @@ import {
 } from "./bash.js";
 import type { ToolPermissionContext } from "./types.js";
 import { peekAmbientRuntimeSession } from "../session/current-session.js";
+import type { Session } from "../session/session.js";
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
-import { AdmissionDeniedError } from "../budget/admission-client.js";
+import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
+import {
+  LIST_MCP_RESOURCES_TOOL_NAME,
+  READ_MCP_RESOURCE_TOOL_NAME,
+} from "../mcp-client/resource-tool-names.js";
 
 // ---------------------------------------------------------------------------
 // Safe-tool allowlist
@@ -68,22 +74,19 @@ const SAFE_YOLO_ALLOWLISTED_TOOLS: ReadonlySet<string> = Object.freeze(
   new Set<string>([
     // Read-only file operations
     "FileRead",
-    "Read", // alias of FileRead per permissions/rules.ts:153
     // Search / read-only
     "Grep",
     "Glob",
     "Orient",
     "LSP",
-    "ToolSearch",
-    // gaphunt3 #9: WebFetch/WebSearch removed from the safe allowlist. They
+    SYSTEM_SEARCH_TOOLS_NAME,
+    // gaphunt3 #9: web_fetch/WebSearch removed from the safe allowlist. They
     // ingest attacker-controllable external content (the canonical indirect
     // prompt-injection / data-exfil-via-URL vector), so auto mode must route
     // them through the classifier instead of blanket auto-allowing them.
     // MCP resource read
-    "ListMcpResources",
-    "ReadMcpResource",
-    "ListMcpResourcesTool",
-    "ReadMcpResourceTool",
+    LIST_MCP_RESOURCES_TOOL_NAME,
+    READ_MCP_RESOURCE_TOOL_NAME,
     // Task/agent metadata
     "TodoWrite",
     "TaskCreate",
@@ -97,7 +100,6 @@ const SAFE_YOLO_ALLOWLISTED_TOOLS: ReadonlySet<string> = Object.freeze(
     "EnterPlanMode",
     "ExitPlanMode",
     "VerifyPlanExecution",
-    "Brief",
     "SendUserMessage",
     // Workflow orchestration
     "Workflow",
@@ -132,11 +134,23 @@ export function __listAutoModeAllowlistedToolsForTesting(): readonly string[] {
  * (currently: an xAI API key is configured). Tests can still override the
  * resolver directly.
  */
-let autoModeGateResolver: () => boolean = () =>
-  resolveRemoteClassifierConfig() !== null;
+function currentClassifierEnvironment(): ProviderEnvironment | undefined {
+  return peekAmbientRuntimeSession()?.providerService.environment();
+}
 
-export function isAutoModeGateEnabled(): boolean {
-  return autoModeGateResolver();
+type AutoModeGateResolver = (
+  environment: ProviderEnvironment | undefined,
+) => boolean;
+
+let autoModeGateResolver: AutoModeGateResolver = (environment) =>
+  resolveRemoteClassifierConfig(
+    environment ?? currentClassifierEnvironment(),
+  ) !== null;
+
+export function isAutoModeGateEnabled(
+  environment?: ProviderEnvironment,
+): boolean {
+  return autoModeGateResolver(environment);
 }
 
 export function __setAutoModeGateResolverForTesting(
@@ -201,6 +215,8 @@ export interface YoloClassifierResult {
 }
 
 export interface ClassifyYoloActionOpts {
+  /** Explicit session authority; production callers must provide it. */
+  readonly session?: Session;
   readonly messages: readonly LLMMessage[];
   readonly action: { readonly toolName: string; readonly input: unknown };
   readonly tools: readonly ToolLike[];
@@ -360,6 +376,8 @@ interface RemoteClassifierStageResponse {
 
 type RemoteClassifierStageRunner = (
   request: RemoteClassifierStageRequest,
+  config: RemoteClassifierConfig,
+  session: Session,
 ) => Promise<RemoteClassifierStageResponse>;
 
 let remoteClassifierStageRunner: RemoteClassifierStageRunner =
@@ -376,8 +394,9 @@ export function __setRemoteClassifierStageRunnerForTesting(
 }
 
 function resolveRemoteClassifierConfig(
-  env: NodeJS.ProcessEnv = process.env,
+  env: ProviderEnvironment | undefined,
 ): RemoteClassifierConfig | null {
+  if (env === undefined) return null;
   const apiKey = resolveApiKey(env);
   if (!apiKey) return null;
   return {
@@ -450,15 +469,9 @@ function tryParseJson(input: string): unknown {
 
 async function defaultRemoteClassifierStageRunner(
   request: RemoteClassifierStageRequest,
+  config: RemoteClassifierConfig,
+  session: Session,
 ): Promise<RemoteClassifierStageResponse> {
-  const session = peekAmbientRuntimeSession();
-  if (session === null) {
-    throw new AdmissionDeniedError("classifier_session_context_unavailable");
-  }
-  const config = resolveRemoteClassifierConfig();
-  if (!config) {
-    throw new Error("auto mode classifier unavailable: missing xAI API key");
-  }
   const provider = createProvider("grok", {
     apiKey: config.apiKey,
     model: request.model,
@@ -634,7 +647,10 @@ export async function classifyYoloAction(
   opts: ClassifyYoloActionOpts,
 ): Promise<YoloClassifierResult> {
   const started = Date.now();
-  const remoteConfig = resolveRemoteClassifierConfig();
+  const session = opts.session ?? peekAmbientRuntimeSession();
+  const remoteConfig = resolveRemoteClassifierConfig(
+    session?.providerService.environment(),
+  );
   const finish = (
     result: Omit<YoloClassifierResult, "durationMs" | "model" | "stage" | "usage"> & {
       readonly model?: string;
@@ -676,7 +692,7 @@ export async function classifyYoloAction(
     });
   }
 
-  if (remoteConfig === null) {
+  if (remoteConfig === null || session === null) {
     emitClassifierWarningOnce({
       cause: "auto_mode_classifier_missing_xai_api_key",
       message:
@@ -701,13 +717,17 @@ export async function classifyYoloAction(
   const stage1Prompt = buildRemoteClassifierUserPrompt(opts, "fast");
   let fastResult: RemoteClassifierStageResponse;
   try {
-    fastResult = await remoteClassifierStageRunner({
-      stage: "fast",
-      model: remoteConfig.fastModel,
-      systemPrompt: AUTO_MODE_SYSTEM_PROMPT,
-      userPrompt: stage1Prompt,
-      signal: opts.signal,
-    });
+    fastResult = await remoteClassifierStageRunner(
+      {
+        stage: "fast",
+        model: remoteConfig.fastModel,
+        systemPrompt: AUTO_MODE_SYSTEM_PROMPT,
+        userPrompt: stage1Prompt,
+        signal: opts.signal,
+      },
+      remoteConfig,
+      session,
+    );
   } catch (error) {
     return finish({
       shouldBlock: true,
@@ -744,13 +764,17 @@ export async function classifyYoloAction(
   const stage2Started = Date.now();
   const stage2Prompt = buildRemoteClassifierUserPrompt(opts, "thinking");
   try {
-    const thinkingResult = await remoteClassifierStageRunner({
-      stage: "thinking",
-      model: remoteConfig.thinkingModel,
-      systemPrompt: AUTO_MODE_SYSTEM_PROMPT,
-      userPrompt: stage2Prompt,
-      signal: opts.signal,
-    });
+    const thinkingResult = await remoteClassifierStageRunner(
+      {
+        stage: "thinking",
+        model: remoteConfig.thinkingModel,
+        systemPrompt: AUTO_MODE_SYSTEM_PROMPT,
+        userPrompt: stage2Prompt,
+        signal: opts.signal,
+      },
+      remoteConfig,
+      session,
+    );
     const stage2DurationMs = Date.now() - stage2Started;
     return finish({
       shouldBlock: thinkingResult.shouldBlock,
@@ -849,7 +873,7 @@ function classifyRuntimeBashAction(
 }
 
 function isRuntimeBackedBashToolName(toolName: string): boolean {
-  return toolName === "Bash" || toolName === "system.bash" ||
+  return toolName === "exec_command" || toolName === "system.bash" ||
     toolName === "local_shell";
 }
 
@@ -863,6 +887,13 @@ function normalizeRuntimeBashInput(
 ): BashPermissionInput | null {
   if (isBashPermissionInput(input)) {
     return input;
+  }
+  if (
+    input &&
+    typeof input === "object" &&
+    typeof (input as { cmd?: unknown }).cmd === "string"
+  ) {
+    return { command: (input as { cmd: string }).cmd };
   }
   if (
     input &&

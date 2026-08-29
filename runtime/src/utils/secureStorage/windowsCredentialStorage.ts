@@ -1,13 +1,20 @@
-import { execaSync } from 'execa'
 import { join } from 'path'
-import { getAgenCConfigHomeDir } from '../envUtils.js'
-import { jsonParse, jsonStringify } from '../slowOperations.js'
+import { jsonStringify } from '../slowOperations.js'
+import {
+  resolveTrustedWindowsSystemExecutable,
+  resolveTrustedWindowsSystemPaths,
+} from '../windows-system-path.js'
 import {
   CREDENTIALS_SERVICE_SUFFIX,
   getSecureStorageServiceName,
-  getUsername,
 } from './macOsKeychainHelpers.js'
+import type { HomeContext } from '../../config/home.js'
 import type { SecureStorage, SecureStorageData } from './index.js'
+import { decodeSecureStorageData } from './decode.js'
+import {
+  runSecureStorageCommand,
+  type SecureStorageCommandRunner,
+} from './subprocess.js'
 
 interface PowerShellResult {
   readonly stdout?: string
@@ -15,37 +22,35 @@ interface PowerShellResult {
   readonly exitCode?: number
 }
 
-/**
- * Windows-specific secure storage implementation using DPAPI for new writes,
- * with best-effort reads/deletes from the compatibility PasswordVault path.
- */
+const INJECTED_WINDOWS_POWERSHELL_EXECUTABLE =
+  String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
+
+function resolveTrustedWindowsPowerShell(): string {
+  return resolveTrustedWindowsSystemExecutable(
+    resolveTrustedWindowsSystemPaths(),
+    ['System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'],
+  )
+}
+
+/** Windows-specific secure storage implementation using DPAPI. */
 function escapePowerShellSingleQuoted(value: string): string {
   return value.replace(/'/g, "''")
 }
 
-function getLegacyResourceName(): string {
-  return getSecureStorageServiceName(CREDENTIALS_SERVICE_SUFFIX)
-}
-
-function getWindowsSecureStorageEntropy(): string {
-  return `${getLegacyResourceName()}:${getUsername()}`
-}
-
-function getWindowsSecureStorageFilePath(): string {
-  const resourceName = getLegacyResourceName().replace(/[^a-zA-Z0-9._-]/g, '_')
-  return join(getAgenCConfigHomeDir(), `${resourceName}.secure.dpapi`)
-}
-
-function shouldUseLegacyPasswordVault(): boolean {
-  return process.env.AGENC_ENABLE_LEGACY_WINDOWS_PASSWORDVAULT === '1'
-}
-
 function runPowerShell(
+  runCommand: SecureStorageCommandRunner,
+  getExecutable: () => string,
   script: string,
   options?: { input?: string },
 ): PowerShellResult | null {
   try {
-    return execaSync('powershell.exe', ['-Command', script], {
+    return runCommand(getExecutable(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      script,
+    ], {
       input: options?.input,
       reject: false,
     })
@@ -70,69 +75,65 @@ function getFailureWarning(
   return fallback
 }
 
-function readLegacyPasswordVault(): SecureStorageData | null {
-  if (!shouldUseLegacyPasswordVault()) {
-    return null
+export function createWindowsCredentialStorage(
+  home: HomeContext,
+  runCommand: SecureStorageCommandRunner = runSecureStorageCommand,
+  identityOverride?: {
+    readonly serviceName: string
+    readonly homePath: string
+    readonly accountName: string
+  },
+  resolveExecutable?: () => string,
+): SecureStorage {
+  const username = identityOverride?.accountName ?? home.secureStorageAccount
+  const resourceName = identityOverride?.serviceName ??
+    getSecureStorageServiceName(home, CREDENTIALS_SERVICE_SUFFIX)
+  const entropy = `${resourceName}:${username}`
+  const safeResourceName = resourceName.replace(/[^a-zA-Z0-9._-]/g, '_')
+  const storageFilePath = join(
+    identityOverride?.homePath ?? home.path,
+    `${safeResourceName}.secure.dpapi`,
+  )
+  const resolvePowerShell = resolveExecutable ??
+    (runCommand === runSecureStorageCommand
+      ? resolveTrustedWindowsPowerShell
+      : () => INJECTED_WINDOWS_POWERSHELL_EXECUTABLE)
+  let powerShellExecutable: string | undefined
+  const getPowerShellExecutable = (): string => {
+    powerShellExecutable ??= resolvePowerShell()
+    if (!/^[a-z]:\\/iu.test(powerShellExecutable)) {
+      throw new Error(
+        'Windows secure storage PowerShell resolver returned a non-absolute path',
+      )
+    }
+    return powerShellExecutable
   }
 
-  // gaphunt3 #29: single-quote (escapePowerShellSingleQuoted) instead of the
-  // weak `\"` double-quote escaping. PowerShell double-quoted strings still
-  // perform $var / $(...) expansion and treat backtick as an escape char, so a
-  // username/resource like 'a$(calc)' was evaluated; single-quoted literals
-  // disable all expansion (only ' needs doubling).
-  const resourceName = escapePowerShellSingleQuoted(getLegacyResourceName())
-  const username = escapePowerShellSingleQuoted(getUsername())
-  const script = `
-    Add-Type -AssemblyName System.Runtime.WindowsRuntime
-    try {
-      $vault = New-Object Windows.Security.Credentials.PasswordVault
-      $cred = $vault.Retrieve('${resourceName}', '${username}')
-      $cred.FillPassword()
-      [Console]::Out.Write($cred.Password)
-    } catch {
-      exit 1
-    }
-  `
-
-  const result = runPowerShell(script)
-  if (result?.exitCode === 0 && result.stdout) {
-    try {
-      return jsonParse(result.stdout)
-    } catch {
-      return null
-    }
-  }
-
-  return null
-}
-
-export const windowsCredentialStorage: SecureStorage = {
-  name: 'credential-locker-dpapi',
-  read(): SecureStorageData | null {
-    const filePath = escapePowerShellSingleQuoted(
-      getWindowsSecureStorageFilePath(),
-    )
-    const entropy = escapePowerShellSingleQuoted(
-      getWindowsSecureStorageEntropy(),
-    )
-    const script = `
+  return {
+    name: 'windows-dpapi',
+    read(): SecureStorageData | null {
+      const filePath = escapePowerShellSingleQuoted(storageFilePath)
+      const escapedEntropy = escapePowerShellSingleQuoted(entropy)
+      const script = `
+      $ErrorActionPreference = 'Stop'
       try {
-        Add-Type -AssemblyName System.Security
         $path = '${filePath}'
-        if (!(Test-Path -LiteralPath $path)) {
-          exit 1
+        if (!(Test-Path -LiteralPath $path -PathType Leaf -ErrorAction Stop)) {
+          exit 2
         }
+
+        Add-Type -AssemblyName System.Security
 
         $protectedBase64 = [System.IO.File]::ReadAllText(
           $path,
           [System.Text.Encoding]::UTF8
         ).Trim()
         if (-not $protectedBase64) {
-          exit 1
+          throw 'Credential record is empty'
         }
 
         $protectedBytes = [Convert]::FromBase64String($protectedBase64)
-        $entropyBytes = [System.Text.Encoding]::UTF8.GetBytes('${entropy}')
+        $entropyBytes = [System.Text.Encoding]::UTF8.GetBytes('${escapedEntropy}')
         $bytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
           $protectedBytes,
           $entropyBytes,
@@ -144,29 +145,34 @@ export const windowsCredentialStorage: SecureStorage = {
       }
     `
 
-    const result = runPowerShell(script)
-    if (result?.exitCode === 0 && result.stdout) {
-      try {
-        return jsonParse(result.stdout)
-      } catch {
-        return readLegacyPasswordVault()
+      const result = runPowerShell(runCommand, getPowerShellExecutable, script)
+      if (result === null) {
+        throw new Error('Windows secure storage could not start PowerShell')
       }
-    }
-
-    return readLegacyPasswordVault()
-  },
-  async readAsync(): Promise<SecureStorageData | null> {
-    return this.read()
-  },
-  update(data: SecureStorageData): { success: boolean; warning?: string } {
-    const filePath = escapePowerShellSingleQuoted(
-      getWindowsSecureStorageFilePath(),
-    )
-    const entropy = escapePowerShellSingleQuoted(
-      getWindowsSecureStorageEntropy(),
-    )
-    const payload = jsonStringify(data)
-    const script = `
+      if (result.exitCode === 2 && !result.stderr?.trim()) return null
+      if (result.exitCode === 0 && result.stdout?.trim()) {
+        return decodeSecureStorageData(
+          result.stdout,
+          'Windows secure storage',
+        )
+      }
+      throw new Error(
+        getFailureWarning(
+          result,
+          'Windows secure storage could not decrypt the credential record',
+        ),
+      )
+    },
+    async readAsync(): Promise<SecureStorageData | null> {
+      return this.read()
+    },
+    update(data: SecureStorageData): { success: boolean; warning?: string } {
+      const filePath = escapePowerShellSingleQuoted(storageFilePath)
+      const escapedEntropy = escapePowerShellSingleQuoted(entropy)
+      const payload = jsonStringify(data)
+      const script = `
+      $ErrorActionPreference = 'Stop'
+      $tempPath = $null
       try {
         Add-Type -AssemblyName System.Security
         $path = '${filePath}'
@@ -177,73 +183,85 @@ export const windowsCredentialStorage: SecureStorage = {
 
         $payload = [Console]::In.ReadToEnd()
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
-        $entropyBytes = [System.Text.Encoding]::UTF8.GetBytes('${entropy}')
+        $entropyBytes = [System.Text.Encoding]::UTF8.GetBytes('${escapedEntropy}')
         $protectedBytes = [System.Security.Cryptography.ProtectedData]::Protect(
           $bytes,
           $entropyBytes,
           [System.Security.Cryptography.DataProtectionScope]::CurrentUser
         )
         $protectedBase64 = [Convert]::ToBase64String($protectedBytes)
-        [System.IO.File]::WriteAllText(
-          $path,
-          $protectedBase64,
-          [System.Text.Encoding]::UTF8
+        $outputBytes = [System.Text.Encoding]::UTF8.GetBytes($protectedBase64)
+        $tempPath = [System.IO.Path]::Combine(
+          $directory,
+          '.' + [System.IO.Path]::GetFileName($path) + '.' +
+            [Guid]::NewGuid().ToString('N') + '.tmp'
         )
+        $stream = [System.IO.FileStream]::new(
+          $tempPath,
+          [System.IO.FileMode]::CreateNew,
+          [System.IO.FileAccess]::Write,
+          [System.IO.FileShare]::None,
+          4096,
+          [System.IO.FileOptions]::WriteThrough
+        )
+        try {
+          $stream.Write($outputBytes, 0, $outputBytes.Length)
+          $stream.Flush($true)
+        } finally {
+          $stream.Dispose()
+        }
+        if ([System.IO.File]::Exists($path)) {
+          [System.IO.File]::Replace($tempPath, $path, $null)
+        } else {
+          [System.IO.File]::Move($tempPath, $path)
+        }
+        $tempPath = $null
       } catch {
         Write-Error $_.Exception.Message
         exit 1
+      } finally {
+        if ($tempPath -and [System.IO.File]::Exists($tempPath)) {
+          [System.IO.File]::Delete($tempPath)
+        }
       }
     `
-    const result = runPowerShell(script, { input: payload })
-    if (result?.exitCode === 0) {
-      return { success: true }
-    }
+      const result = runPowerShell(
+        runCommand,
+        getPowerShellExecutable,
+        script,
+        { input: payload },
+      )
+      if (result?.exitCode === 0) {
+        return { success: true }
+      }
 
-    return {
-      success: false,
-      warning: getFailureWarning(
-        result,
-        'Windows secure storage could not encrypt credentials with DPAPI',
-      ),
-    }
-  },
-  delete(): boolean {
-    const filePath = escapePowerShellSingleQuoted(
-      getWindowsSecureStorageFilePath(),
-    )
-    const removeDpapiScript = `
+      return {
+        success: false,
+        warning: getFailureWarning(
+          result,
+          'Windows secure storage could not encrypt credentials with DPAPI',
+        ),
+      }
+    },
+    delete(): boolean {
+      const filePath = escapePowerShellSingleQuoted(storageFilePath)
+      const removeDpapiScript = `
+      $ErrorActionPreference = 'Stop'
       try {
         $path = '${filePath}'
-        if (Test-Path -LiteralPath $path) {
-          Remove-Item -LiteralPath $path -Force
+        if (Test-Path -LiteralPath $path -ErrorAction Stop) {
+          Remove-Item -LiteralPath $path -Force -ErrorAction Stop
         }
       } catch {
         exit 1
       }
     `
-    const removeDpapiResult = runPowerShell(removeDpapiScript)
-
-    if (shouldUseLegacyPasswordVault()) {
-      // gaphunt3 #29: single-quote untrusted values so PowerShell does not
-      // expand $/$(...)/backtick (the `\"` double-quote escaping left those
-      // active, allowing injection via a crafted USER value on delete()).
-      const resourceName = escapePowerShellSingleQuoted(getLegacyResourceName())
-      const username = escapePowerShellSingleQuoted(getUsername())
-      const removeLegacyScript = `
-        Add-Type -AssemblyName System.Runtime.WindowsRuntime
-        try {
-          $vault = New-Object Windows.Security.Credentials.PasswordVault
-          $cred = $vault.Retrieve('${resourceName}', '${username}')
-          $vault.Remove($cred)
-        } catch {
-          exit 0
-        }
-      `
-      const removeLegacyResult = runPowerShell(removeLegacyScript)
-
-      void removeLegacyResult
-    }
-
-    return (removeDpapiResult?.exitCode ?? 1) === 0
-  },
+      const removeDpapiResult = runPowerShell(
+        runCommand,
+        getPowerShellExecutable,
+        removeDpapiScript,
+      )
+      return (removeDpapiResult?.exitCode ?? 1) === 0
+    },
+  }
 }

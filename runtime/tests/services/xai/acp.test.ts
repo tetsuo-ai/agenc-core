@@ -46,8 +46,23 @@ import {
   XaiAcpClient,
   type XaiAcpPermissionRequest,
 } from '../../../src/services/xai/acp.ts'
-import { SandboxExecutionBroker } from '../../../src/sandbox/execution-broker.ts'
+import {
+  SandboxExecutionBroker,
+  type SandboxPreparedSpawn,
+} from '../../../src/sandbox/execution-broker.ts'
+import { registerSandboxExecutionLifecycleParticipant } from '../../../src/sandbox/execution-lifecycle.ts'
 import { explicitDangerBroker } from '../../helpers/explicit-danger-boundary.ts'
+
+function registerAcpParticipant(broker: SandboxExecutionBroker): void {
+  registerSandboxExecutionLifecycleParticipant(broker, {
+    name: 'grok-acp-provider',
+    spawnSurfaces: ['provider'],
+    quiesce: async () => {},
+    resume: async () => {},
+  })
+}
+
+registerAcpParticipant(explicitDangerBroker)
 
 const FIXTURE = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -172,12 +187,35 @@ describe('XaiAcpClient', () => {
       new XaiAcpClient({
         command: 'definitely-not-a-real-grok-binary',
         cwd: process.cwd(),
+        env: process.env,
         sandboxExecutionBroker: explicitDangerBroker,
       }),
     ).toThrowError(expect.objectContaining({
       code: 'sandbox_transform_failed',
       surface: 'provider',
     }))
+  })
+
+  test('child stdin closure rejects requests without an uncaught EPIPE', async () => {
+    const client = new XaiAcpClient({
+      command: process.execPath,
+      args: [
+        '-e',
+        "require('node:fs').closeSync(0); setInterval(() => {}, 1000)",
+      ],
+      cwd: process.cwd(),
+      env: process.env,
+      requestTimeoutMs: 500,
+      sandboxExecutionBroker: explicitDangerBroker,
+    })
+    try {
+      await new Promise(resolve => setTimeout(resolve, 100))
+      await expect(client.initialize()).rejects.toMatchObject({
+        code: 'closed',
+      })
+    } finally {
+      await client.dispose()
+    }
   })
 
   test('prompt timeout produces a typed timeout error', async () => {
@@ -265,6 +303,7 @@ describe('XaiAcpClient', () => {
         remediation: 'repair the test sandbox',
       }),
     })
+    registerAcpParticipant(broker)
 
     try {
       expect(() =>
@@ -272,6 +311,7 @@ describe('XaiAcpClient', () => {
           command: process.execPath,
           args: [executable],
           cwd: root,
+          env: process.env,
           sandboxExecutionBroker: broker,
         }),
       ).toThrowError(expect.objectContaining({
@@ -318,14 +358,30 @@ describe('XaiAcpClient', () => {
         platform: 'linux',
       }),
     })
+    registerAcpParticipant(broker)
     const prepareSpawn = vi.spyOn(broker, 'prepareSpawn').mockImplementation(
-      (_surface, command) => ({
-        program: process.execPath,
-        args: [wrapperPath],
-        cwd: transformedCwd,
-        env: { ...command.env, ACP_TRANSFORMED: 'present' },
-        argv0: 'agenc-acp-sandboxed',
-      }),
+      (_surface, command) => {
+        const transformed = {
+          program: process.execPath,
+          args: [wrapperPath],
+          cwd: transformedCwd,
+          env: { ...command.env, ACP_TRANSFORMED: 'present' },
+          argv0: 'agenc-acp-sandboxed',
+        }
+        return {
+          run: operation => operation(
+            transformed,
+            new AbortController().signal,
+          ),
+          start: operation => operation(
+            transformed,
+            new AbortController().signal,
+          ).value,
+          runSync: operation => operation(transformed),
+          spawnLifecycleParticipant: (_participantName, operation) =>
+            operation(transformed),
+        } satisfies SandboxPreparedSpawn
+      },
     )
     let client: XaiAcpClient | undefined
 
@@ -355,7 +411,7 @@ describe('XaiAcpClient', () => {
           GROK_OAUTH2_REFERRER: 'agenc',
         },
         additionalPermissions: { network: { enabled: true } },
-      })
+      }, { lifecycleParticipant: 'grok-acp-provider' })
       expect(JSON.parse(await readFile(capturePath, 'utf8'))).toEqual({
         cwd: transformedCwd,
         argv0: 'agenc-acp-sandboxed',
@@ -394,6 +450,7 @@ describe('XaiAcpClient', () => {
         'utf8',
       )
       const broker = explicitDangerBroker.forkForCwd(root)
+      registerAcpParticipant(broker)
       let client: XaiAcpClient | undefined
       let pids: { agent: number; child: number } | undefined
 
@@ -402,6 +459,7 @@ describe('XaiAcpClient', () => {
           command: process.execPath,
           args: [agentPath],
           cwd: root,
+          env: process.env,
           sandboxExecutionBroker: broker,
           terminateGraceMs: 50,
           settleBackstopMs: 500,

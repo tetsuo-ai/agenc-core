@@ -1,14 +1,11 @@
 import { promises as fsp } from "fs";
-import { getSdkAgentProgressSummariesEnabled } from "../../bootstrap/state.js";
 import {
   assertAgentRoleWorkspaceMatches,
   type AgentRoleWorkspace,
 } from "../../agents/role.js";
-import { getSystemPrompt } from "../../constants/prompts.js";
 import { isCoordinatorMode } from "../../coordinator/coordinatorMode.js";
 import type { CanUseToolFn } from "../../tui/hooks/useCanUseTool.js";
 import type { ToolPermissionContext, ToolUseContext } from "../Tool.js";
-import type { AdditionalWorkingDirectory } from "../../types/permissions.js";
 import { registerAsyncAgent } from "../../tasks/LocalAgentTask/LocalAgentTask.js";
 import { requireCurrentRuntimeSession } from "../../session/current-session.js";
 import { assembleToolPool } from "../../tools.js";
@@ -34,7 +31,6 @@ import {
   getAgentTranscript,
   readAgentMetadata,
 } from "../../utils/sessionStorage.js";
-import { buildEffectiveSystemPrompt } from "../../utils/systemPrompt.js";
 import type { SystemPrompt } from "../../utils/systemPromptType.js";
 import { getTaskOutputPath } from "../../utils/task/diskOutput.js";
 import { getParentSessionId } from "../../utils/teammate.js";
@@ -149,7 +145,6 @@ export async function resumeAgentBackground({
   // reaches the root store so task registration/progress/kill stay visible.
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState;
-  const permissionMode = appState.toolPermissionContext.mode;
   const parentSession = requireCurrentRuntimeSession("subagent resume");
   const queueOwner = sessionQueueOwner(parentSession.conversationId);
   assertAgentRoleWorkspaceMatches(
@@ -162,6 +157,7 @@ export async function resumeAgentBackground({
   );
   const freshCatalog = await loadFreshAgentDefinitions(
     parentSession.roleWorkspace.cwd,
+    parentSession.services.runtimeOptions.pluginStorageRoot,
   );
 
   const [transcript, meta] = await Promise.all([
@@ -233,38 +229,9 @@ export async function resumeAgentBackground({
     if (toolUseContext.renderedSystemPrompt) {
       forkParentSystemPrompt = toolUseContext.renderedSystemPrompt;
     } else {
-      const mainThreadAgentDefinition = appState.agent
-        ? appState.agentDefinitions.activeAgents.find(
-            (a) => a.agentType === appState.agent,
-          )
-        : undefined;
-      // DeepImmutable flattens the ReadonlyMap's method signatures into
-      // non-callable {} property shapes. The runtime value is a real Map, so
-      // view it as a ReadonlyMap to call .keys() (read-only, no behavior
-      // change). The DeepImmutable shape doesn't structurally overlap a Map,
-      // so route the cast through unknown (mirrors runAgent.ts).
-      const additionalWorkingDirectories = Array.from(
-        (
-          appState.toolPermissionContext
-            .additionalWorkingDirectories as unknown as ReadonlyMap<
-            string,
-            AdditionalWorkingDirectory
-          >
-        ).keys(),
+      throw new Error(
+        "Cannot resume fork agent without the admitted parent system-prompt snapshot",
       );
-      const defaultSystemPrompt = await getSystemPrompt(
-        toolUseContext.options.tools,
-        toolUseContext.options.mainLoopModel,
-        additionalWorkingDirectories,
-        toolUseContext.options.mcpClients,
-      );
-      forkParentSystemPrompt = buildEffectiveSystemPrompt({
-        mainThreadAgentDefinition,
-        toolUseContext,
-        customSystemPrompt: toolUseContext.options.customSystemPrompt,
-        defaultSystemPrompt,
-        appendSystemPrompt: toolUseContext.options.appendSystemPrompt,
-      });
     }
     if (!forkParentSystemPrompt) {
       throw new Error(
@@ -278,7 +245,6 @@ export async function resumeAgentBackground({
     repositoryControlledAgent ? undefined : selectedAgent.model,
     toolUseContext.options.mainLoopModel,
     undefined,
-    permissionMode,
   );
 
   // `selectedAgent.permissionMode` is typed with the permissions/types.ts
@@ -389,9 +355,7 @@ export async function resumeAgentBackground({
         rootSetAppState,
         agentIdForCleanup: agentId,
         enableSummarization:
-          isCoordinatorMode() ||
-          isForkSubagentEnabled() ||
-          getSdkAgentProgressSummariesEnabled(),
+          isCoordinatorMode() || isForkSubagentEnabled(),
         getWorktreeResult: async () =>
           resumedWorktreePath ? { worktreePath: resumedWorktreePath } : {},
       }),

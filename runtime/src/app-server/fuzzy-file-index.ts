@@ -14,7 +14,7 @@ import { performance } from "node:perf_hooks";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
 import { scrubEnvForChildProcess } from "../unified-exec/scrub-env.js";
-import { getAgenCConfigHomeDir } from "../utils/envUtils.js";
+import { getAgenCHomeDir } from "../utils/envUtils.js";
 import { gitExe } from "../utils/git.js";
 import { runSupervisedProcess } from "../utils/supervisedProcess.js";
 import {
@@ -1227,7 +1227,7 @@ export class PersistentFuzzyFileIndex {
 
 export function resolveDefaultFuzzyFileIndexPath(): string {
   return join(
-    getAgenCConfigHomeDir(),
+    getAgenCHomeDir(),
     FUZZY_FILE_INDEX_DIRECTORY,
     FUZZY_FILE_INDEX_FILENAME,
   );

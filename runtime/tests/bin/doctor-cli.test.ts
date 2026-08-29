@@ -9,6 +9,23 @@ import {
   parseAgenCDoctorCliArgs,
   runAgenCDoctorCli,
 } from "./doctor-cli.js";
+import {
+  enterCanonicalSettingsAuthority,
+  getCanonicalSettingsAuthority,
+  resetCanonicalSettingsAuthorityForTesting,
+} from "../../src/utils/settings/canonicalAuthority.js";
+
+async function withoutAmbientSettingsAuthority<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = getCanonicalSettingsAuthority();
+  resetCanonicalSettingsAuthorityForTesting();
+  try {
+    return await operation();
+  } finally {
+    if (previous !== null) enterCanonicalSettingsAuthority(previous);
+  }
+}
 
 // MACRO is a build-time esbuild define (tsup) that getDoctorDiagnostic reads
 // (MACRO.VERSION / MACRO.PACKAGE_URL); it is not defined under vitest. Stand it
@@ -83,10 +100,12 @@ describe("runAgenCDoctorCli", () => {
   it("prints a human-readable diagnostic and returns an exit code", async () => {
     const out = vi.spyOn(process.stdout, "write").mockReturnValue(true);
     try {
-      const code = await runAgenCDoctorCli({ kind: "doctor", json: false });
+      const code = await withoutAmbientSettingsAuthority(() =>
+        runAgenCDoctorCli({ kind: "doctor", json: false }),
+      );
       const printed = out.mock.calls.map((c) => String(c[0])).join("");
       expect(printed).toContain("AgenC Doctor");
-      expect(printed).toContain("Configured rg (TUI/legacy):");
+      expect(printed).toContain("Configured rg:");
       expect(printed).toContain("Packaged rg (Grep/Glob/Orient):");
       // Exit code is 0 (clean) or 1 (warnings present) — always a number.
       expect([0, 1]).toContain(code);
@@ -98,7 +117,9 @@ describe("runAgenCDoctorCli", () => {
   it("emits valid JSON under --json", async () => {
     const out = vi.spyOn(process.stdout, "write").mockReturnValue(true);
     try {
-      await runAgenCDoctorCli({ kind: "doctor", json: true });
+      await withoutAmbientSettingsAuthority(() =>
+        runAgenCDoctorCli({ kind: "doctor", json: true }),
+      );
       const printed = out.mock.calls.map((c) => String(c[0])).join("");
       const parsed = JSON.parse(printed);
       expect(parsed.ripgrepStatus).toEqual(
@@ -161,7 +182,7 @@ describe("buildRipgrepWarning", () => {
     );
     expect(warning).not.toBeNull();
     expect(warning?.issue).toContain("configured ripgrep");
-    expect(warning?.issue).toContain("TUI and legacy runtime search");
+    expect(warning?.issue).toContain("interactive search");
     expect(warning?.fix).toContain("brew install ripgrep");
   });
 

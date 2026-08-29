@@ -3,7 +3,7 @@
 // Telegram adapter over a fake transport. This is the "prove the run loop"
 // coverage the stdio channel exists for.
 
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -13,6 +13,12 @@ import {
   sanitizeGatewayDaemonEnv,
   startGateway,
 } from "../../src/gateway/run.js";
+import { resolveHomeContext } from "../../src/config/home.js";
+import { serializeConfigToml } from "../../src/config/serialize.js";
+import {
+  readGatewayGeneratedToken,
+  updateGatewayCredentialEnvironment,
+} from "../../src/gateway/credentials.js";
 import { DiscordChannelAdapter } from "../../src/gateway/discord-channel.js";
 import { SlackChannelAdapter } from "../../src/gateway/slack-channel.js";
 import {
@@ -84,8 +90,11 @@ describe("startGateway", () => {
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
   function writeConfig(config: unknown): void {
-    mkdirSync(join(home, "gateway"), { recursive: true });
-    writeFileSync(join(home, "gateway", "config.json"), JSON.stringify(config));
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "config.toml"), serializeConfigToml({
+      config_version: 2,
+      gateway: config,
+    }));
   }
 
   test("strips gateway-only credentials from daemon autostart env", () => {
@@ -100,6 +109,7 @@ describe("startGateway", () => {
       AGENC_DISCORD_BOT_TOKEN: "discord-secret",
       AGENC_SLACK_BOT_TOKEN: "slack-bot-secret",
       AGENC_SLACK_APP_TOKEN: "slack-app-secret",
+      AGENC_GATEWAY_HOOKS_TOKEN: "retired-hooks-secret",
     });
 
     expect(sanitized.PATH).toBe("/usr/bin");
@@ -112,7 +122,55 @@ describe("startGateway", () => {
     expect(sanitized.AGENC_DISCORD_BOT_TOKEN).toBeUndefined();
     expect(sanitized.AGENC_SLACK_BOT_TOKEN).toBeUndefined();
     expect(sanitized.AGENC_SLACK_APP_TOKEN).toBeUndefined();
+    expect(sanitized.AGENC_GATEWAY_HOOKS_TOKEN).toBeUndefined();
   });
+
+  test("rejects the retired hooks-token alias before gateway startup", async () => {
+    await expect(startGateway({
+      agencHome: home,
+      env: { AGENC_GATEWAY_HOOKS_TOKEN: "retired-hooks-secret" },
+      stdio: true,
+    })).rejects.toThrow(
+      /obsolete configuration environment variable.*AGENC_GATEWAY_HOOKS_TOKEN.*AGENC_HOOKS_TOKEN/u,
+    );
+  });
+
+  test.each([
+    [
+      "local",
+      { USER_TYPE: "ant", USE_LOCAL_OAUTH: "1" },
+      "local-oauth-webchat-token-123456",
+    ],
+    [
+      "custom",
+      { AGENC_CUSTOM_OAUTH_URL: "https://agenc.tech" },
+      "custom-oauth-webchat-token-12345",
+    ],
+  ] as const)(
+    "uses the %s OAuth native secure storage namespace captured at gateway ingress",
+    async (_label, oauthEnvironment, token) => {
+      const environment = Object.freeze({
+        AGENC_HOME: home,
+        HOME: tmpdir(),
+        ...oauthEnvironment,
+      });
+      const credentialHome = resolveHomeContext(environment, {
+        platformHome: environment.HOME,
+      });
+      updateGatewayCredentialEnvironment(credentialHome, {
+        AGENC_WEBCHAT_TOKEN: token,
+      });
+
+      const handle = await startGateway({
+        agencHome: home,
+        env: environment,
+        webchat: true,
+        clientFactory: async () => new FakeClient(),
+      });
+      expect(handle.webchatUrl).toContain(`token=${token}`);
+      await handle.stop();
+    },
+  );
 
   test("hooks-only run is valid (a trigger surface counts as a reason to run)", async () => {
     writeConfig({});
@@ -159,7 +217,7 @@ describe("startGateway", () => {
     expect(client.closed).toBe(true);
   });
 
-  test("hooks: --hooks mints a 0600 token, binds loopback, and an authed POST runs a turn end to end", async () => {
+  test("hooks: --hooks mints a native secure storage token, binds loopback, and an authed POST runs a turn end to end", async () => {
     writeConfig({});
     const client = new FakeClient();
     const handle = await startGateway({
@@ -171,11 +229,11 @@ describe("startGateway", () => {
     });
     expect(handle.hooksPort).toBeGreaterThan(0);
 
-    // The token was minted and persisted 0600 under gateway/.
-    const tokenPath = join(home, "gateway", "hooks-token");
-    const token = readFileSync(tokenPath, "utf8").trim();
+    const token = readGatewayGeneratedToken(
+      resolveHomeContext({ AGENC_HOME: home }),
+      "hooks",
+    ) ?? "";
     expect(token.length).toBeGreaterThanOrEqual(16);
-    expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
 
     const url = `http://127.0.0.1:${handle.hooksPort}/hooks/agent`;
     // Unauthenticated → rejected.
@@ -593,6 +651,7 @@ describe("startGateway", () => {
     require("node:fs").writeFileSync(
       join(home, "config.toml"),
       [
+        "config_version = 2",
         "[heartbeat]",
         "enabled = true",
         "interval_seconds = 10",

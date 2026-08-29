@@ -8,20 +8,14 @@ import { buildPrompt } from "../../session/run-turn.js";
 import type { TurnContext } from "../../session/turn-context.js";
 import { StaticModelsManager } from "../models-manager.js";
 import {
-  AGENC_FEATURE_SPECS,
-  AgenCFeatureSet,
-  createManagedFeatures,
-  experimentalFeatureSpecs,
-  featureForKey,
-} from "./features.js";
-import {
   listRegisteredModelCatalogEntries,
   resolveModelCapabilityHints,
   resolveModelCatalogMetadata,
   resolveRegisteredModelCatalogEntry,
 } from "./model-catalog.js";
 import {
-  BUILT_IN_PROVIDER_SCOPE_OMISSIONS,
+  BUILT_IN_PROVIDER_DEFINITIONS,
+  DEFAULT_BUILT_IN_PROVIDER_SELECTION,
   listBuiltInProviderInfo,
   resolveBuiltInProviderInfo,
 } from "./provider-info.js";
@@ -38,90 +32,35 @@ const DONOR_MODEL_IDS = Object.freeze([
   "codex-auto-review", // branding-scan: allow OpenAI model identifier
 ]);
 
-const DONOR_FEATURE_KEYS = Object.freeze([
-  "undo",
-  "shell_tool",
-  "unified_exec",
-  "shell_zsh_fork",
-  "shell_snapshot",
-  "js_repl",
-  "code_mode",
-  "code_mode_only",
-  "js_repl_tools_only",
-  "terminal_resize_reflow",
-  "web_search_request",
-  "web_search_cached",
-  "search_tool",
-  "agenc_git_commit",
-  "runtime_metrics",
-  "sqlite",
-  "memories",
-  "chronicle",
-  "child_agents_md",
-  "apply_patch_freeform",
-  "apply_patch_streaming_events",
-  "exec_permission_approvals",
-  "hooks",
-  "request_permissions_tool",
-  "use_linux_sandbox_bwrap",
-  "use_legacy_landlock",
-  "request_rule",
-  "experimental_windows_sandbox",
-  "elevated_windows_sandbox",
-  "remote_models",
-  "enable_request_compression",
-  "multi_agent",
-  "multi_agent_v2",
-  "enable_fanout",
-  "apps",
-  "enable_mcp_apps",
-  "apps_mcp_path_override",
-  "tool_search",
-  "tool_search_always_defer_mcp_tools",
-  "unavailable_dummy_tools",
-  "tool_suggest",
-  "plugins",
-  "plugin_hooks",
-  "in_app_browser",
-  "browser_use",
-  "browser_use_external",
-  "computer_use",
-  "remote_plugin",
-  "external_migration",
-  "image_generation",
-  "skill_mcp_dependency_install",
-  "skill_env_var_dependency_prompt",
-  "steer",
-  "default_mode_request_user_input",
-  "guardian_approval",
-  "goals",
-  "collaboration_modes",
-  "tool_call_mcp_elicitation",
-  "personality",
-  "artifact",
-  "fast_mode",
-  "realtime_conversation",
-  "remote_control",
-  "image_detail_original",
-  "tui_app_server",
-  "prevent_idle_sleep",
-  "workspace_owner_usage_nudge",
-  "responses_websockets",
-  "responses_websockets_v2",
-  "workspace_dependencies",
-]);
-
 describe("LLM registry", () => {
+  it("owns the default config provider and model as one registry selection", () => {
+    expect(DEFAULT_BUILT_IN_PROVIDER_SELECTION).toEqual({
+      provider: "grok",
+      model: "grok-4.6",
+    });
+    expect(DEFAULT_BUILT_IN_PROVIDER_SELECTION.model).toBe(
+      BUILT_IN_PROVIDER_DEFINITIONS[
+        DEFAULT_BUILT_IN_PROVIDER_SELECTION.provider
+      ].defaultModel,
+    );
+    expect(defaultConfig()).toMatchObject({
+      model_provider: DEFAULT_BUILT_IN_PROVIDER_SELECTION.provider,
+      model: DEFAULT_BUILT_IN_PROVIDER_SELECTION.model,
+    });
+  });
+
   it("lists built-in providers with request and auth metadata", () => {
-    expect(resolveBuiltInProviderInfo("xai")).toMatchObject({
+    expect(resolveBuiltInProviderInfo("grok")).toMatchObject({
       id: "grok",
       name: "xAI Grok",
       defaultModel: "grok-4.6",
-      apiKeyEnvVar: "XAI_API_KEY",
-      requestMaxRetries: 4,
-      streamMaxRetries: 5,
-      streamIdleTimeoutMs: 0,
-      supportsWebsockets: false,
+      credentials: {
+        kind: "api-key",
+        apiKey: {
+          envVars: ["XAI_API_KEY", "GROK_API_KEY"],
+          required: true,
+        },
+      },
     });
 
     expect(resolveBuiltInProviderInfo("agenc")).toMatchObject({
@@ -137,15 +76,24 @@ describe("LLM registry", () => {
       name: "Amazon Bedrock",
       defaultModel: "amazon.nova-pro-v1:0",
       baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
-      apiKeyEnvVar: "AWS_ACCESS_KEY_ID",
+      credentials: {
+        kind: "aws-sigv4",
+        accessKeyId: {
+          envVars: ["AWS_BEDROCK_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"],
+          required: true,
+        },
+        secretAccessKey: {
+          envVars: [
+            "AWS_BEDROCK_SECRET_ACCESS_KEY",
+            "AWS_SECRET_ACCESS_KEY",
+          ],
+          required: true,
+        },
+      },
     });
     expect(listBuiltInProviderInfo().map((entry) => entry.id)).toContain(
       "openai-compatible",
     );
-  });
-
-  it("does not carry unresolved built-in provider scope omissions", () => {
-    expect(BUILT_IN_PROVIDER_SCOPE_OMISSIONS).toEqual({});
   });
 
   it("resolves donor model catalog metadata by exact, prefix, and namespace", () => {
@@ -270,136 +218,4 @@ describe("LLM registry", () => {
     });
   });
 
-  it("normalizes staged feature defaults and legacy keys", () => {
-    const features = AgenCFeatureSet.fromConfig({
-      include_apply_patch_tool: true,
-      enable_fanout: true,
-      code_mode_only: true,
-      multi_agent_v2: true,
-      apps_mcp_path_override: { path: "/tmp/agenc-apps.mjs" },
-      js_repl: true,
-      unknown_feature: true,
-    });
-
-    expect(featureForKey("web_search")).toBe("web_search_request");
-    expect(featureForKey("memory_tool")).toBe("memories");
-    expect(featureForKey("telepathy")).toBe("chronicle");
-    expect(featureForKey("agenc_hooks")).toBe("hooks");
-    expect(features.enabled("shell_tool")).toBe(true);
-    expect(features.enabled("apply_patch_freeform")).toBe(true);
-    expect(features.enabled("enable_fanout")).toBe(true);
-    expect(features.enabled("code_mode_only")).toBe(true);
-    expect(features.enabled("code_mode")).toBe(true);
-    expect(features.enabled("multi_agent_v2")).toBe(true);
-    expect(features.enabled("multi_agent")).toBe(true);
-    expect(features.enabled("apps_mcp_path_override")).toBe(true);
-    expect(features.enabled("js_repl")).toBe(false);
-    expect(experimentalFeatureSpecs().map((entry) => entry.key)).toContain(
-      "goals",
-    );
-  });
-
-  it("keeps multi_agent_v2 independent from the older multi_agent flag", () => {
-    const features = AgenCFeatureSet.fromConfig({
-      multi_agent: false,
-      multi_agent_v2: true,
-    });
-
-    expect(features.enabled("multi_agent_v2")).toBe(true);
-    expect(features.enabled("multi_agent")).toBe(false);
-  });
-
-  it("normalizes structured staged feature config entries", () => {
-    const enabled = AgenCFeatureSet.fromConfig({
-      multi_agent: false,
-      multi_agent_v2: {
-        enabled: true,
-        max_concurrent_threads_per_session: 3,
-        min_wait_timeout_ms: 10_000,
-        usage_hint_enabled: true,
-        usage_hint_text: "Use agents sparingly.",
-        root_agent_usage_hint_text: "Root hint",
-        subagent_usage_hint_text: "Child hint",
-        hide_spawn_agent_metadata: false,
-      },
-      apps_mcp_path_override: {
-        path: "/tmp/agenc-apps.mjs",
-      },
-    });
-    expect(enabled.enabled("multi_agent_v2")).toBe(true);
-    expect(enabled.enabled("multi_agent")).toBe(false);
-    expect(enabled.enabled("apps_mcp_path_override")).toBe(true);
-
-    const disabled = AgenCFeatureSet.fromConfig({
-      multi_agent_v2: {
-        max_concurrent_threads_per_session: 3,
-      },
-      apps_mcp_path_override: {
-        enabled: false,
-        path: "/tmp/agenc-apps.mjs",
-      },
-    });
-    expect(disabled.enabled("multi_agent_v2")).toBe(false);
-    expect(disabled.enabled("apps_mcp_path_override")).toBe(false);
-  });
-
-  it("creates runtime managed features from config feature tables", () => {
-    const managed = createManagedFeatures({
-      _unknown: {
-        features: {
-          apps: false,
-          use_legacy_landlock: true,
-        },
-      },
-    });
-
-    expect(managed.enabled?.("apps")).toBe(false);
-    expect(managed.enabled?.("use_legacy_landlock")).toBe(true);
-    expect(managed.appsEnabledForAuth(true)).toBe(false);
-    expect(managed.useLegacyLandlock()).toBe(true);
-  });
-
-  it("preserves donor feature keys, stages, and default states", () => {
-    expect(AGENC_FEATURE_SPECS.map((entry) => entry.key)).toEqual(
-      DONOR_FEATURE_KEYS,
-    );
-    expect(new Set(DONOR_FEATURE_KEYS).size).toBe(DONOR_FEATURE_KEYS.length);
-
-    const specByKey = new Map(
-      AGENC_FEATURE_SPECS.map((spec) => [spec.key, spec]),
-    );
-    expect(specByKey.get("tool_search")).toMatchObject({
-      stage: "stable",
-      defaultEnabled: true,
-    });
-    expect(specByKey.get("plugins")).toMatchObject({
-      stage: "stable",
-      defaultEnabled: true,
-    });
-    expect(specByKey.get("computer_use")).toMatchObject({
-      stage: "stable",
-      defaultEnabled: true,
-    });
-    expect(specByKey.get("enable_request_compression")).toMatchObject({
-      stage: "stable",
-      defaultEnabled: true,
-    });
-    expect(specByKey.get("artifact")).toMatchObject({
-      stage: "under_development",
-      defaultEnabled: false,
-    });
-    expect(specByKey.get("use_legacy_landlock")).toMatchObject({
-      stage: "deprecated",
-      defaultEnabled: false,
-    });
-    expect(specByKey.get("search_tool")).toMatchObject({
-      stage: "removed",
-      defaultEnabled: false,
-    });
-    expect(specByKey.get("terminal_resize_reflow")).toMatchObject({
-      stage: "experimental",
-      defaultEnabled: true,
-    });
-    expect(specByKey.get("prevent_idle_sleep")?.defaultEnabled).toBe(false);
-  });
 });

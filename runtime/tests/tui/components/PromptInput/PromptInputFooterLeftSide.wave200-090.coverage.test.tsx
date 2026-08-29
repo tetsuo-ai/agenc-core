@@ -17,8 +17,10 @@ const harness = vi.hoisted(() => ({
   },
   columns: 100,
   config: {
-    copyOnSelect: true as boolean | undefined,
-    prStatusFooterEnabled: true as boolean | undefined,
+    tui: {
+      copyOnSelect: true as boolean | undefined,
+      prStatusFooterEnabled: true as boolean | undefined,
+    },
   },
   features: new Set<string>(),
   fullscreen: false,
@@ -50,8 +52,10 @@ const harness = vi.hoisted(() => ({
     };
     harness.columns = 100;
     harness.config = {
-      copyOnSelect: true,
-      prStatusFooterEnabled: true,
+      tui: {
+        copyOnSelect: true,
+        prStatusFooterEnabled: true,
+      },
     };
     harness.features = new Set();
     harness.fullscreen = false;
@@ -187,8 +191,12 @@ vi.mock("../../hooks/useTasksV2.js", () => ({
   useTasksV2: () => harness.tasksV2,
 }));
 
-vi.mock("../../../utils/fullscreen.js", () => ({
-  isFullscreenEnvEnabled: () => harness.fullscreen,
+vi.mock("../../hooks/useSettings.js", () => ({
+  useSettings: () => harness.config,
+}));
+
+vi.mock("../../context/fullscreenModeContext.js", () => ({
+  useFullscreenMode: () => harness.fullscreen,
 }));
 
 vi.mock("../../ink/terminal.js", async importOriginal => {
@@ -205,7 +213,7 @@ vi.mock("../../ink/hooks/use-selection.js", () => ({
 }));
 
 vi.mock("../../../utils/config.js", () => ({
-  getGlobalConfig: () => harness.config,
+  getRuntimeState: () => harness.config,
 }));
 
 vi.mock("../../../utils/platform.js", () => ({

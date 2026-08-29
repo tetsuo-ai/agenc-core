@@ -4,14 +4,11 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 let tempRoot = "";
-let oldConfigDir: string | undefined;
-let oldDisableAutoMemory: string | undefined;
+let oldAgencHome: string | undefined;
 
 afterEach(() => {
-  if (oldConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR;
-  else process.env.AGENC_CONFIG_DIR = oldConfigDir;
-  if (oldDisableAutoMemory === undefined) delete process.env.AGENC_DISABLE_AUTO_MEMORY;
-  else process.env.AGENC_DISABLE_AUTO_MEMORY = oldDisableAutoMemory;
+  if (oldAgencHome === undefined) delete process.env.AGENC_HOME;
+  else process.env.AGENC_HOME = oldAgencHome;
   if (tempRoot) rmSync(tempRoot, { recursive: true, force: true });
   tempRoot = "";
   vi.resetModules();
@@ -141,10 +138,8 @@ async function loadMemoryHarness(options: {
     getSettingsForSource: () => undefined,
   }));
   tempRoot = mkdtempSync(join(tmpdir(), "agenc-memory-feature-prompt-"));
-  oldConfigDir = process.env.AGENC_CONFIG_DIR;
-  oldDisableAutoMemory = process.env.AGENC_DISABLE_AUTO_MEMORY;
-  process.env.AGENC_CONFIG_DIR = join(tempRoot, "home");
-  process.env.AGENC_DISABLE_AUTO_MEMORY = "0";
+  oldAgencHome = process.env.AGENC_HOME;
+  process.env.AGENC_HOME = join(tempRoot, "home");
 
   const state = await import("../bootstrap/state.js");
   state.setProjectRoot(join(tempRoot, "repo"));

@@ -3,12 +3,12 @@ import * as React from 'react';
 import type { Command } from '../../commands.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { ContentWidthProvider, useContentWidth } from '../context/contentWidthContext.js';
+import { useFullscreenMode } from '../context/fullscreenModeContext.js';
 import { Box } from '../ink.js';
 import type { Tools } from '../../tools/Tool.js';
 import { isConnectorTextBlock } from '../../types/connectorText.js';
 import type { AssistantMessage, AttachmentMessage as AttachmentMessageType, CollapsedReadSearchGroup as CollapsedReadSearchGroupType, GroupedToolUseMessage as GroupedToolUseMessageType, NormalizedUserMessage, ProgressMessage, SystemMessage } from '../../types/message.js';
 import { isAdvisorBlock } from '../../utils/advisor.js';
-import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import { logError } from '../../utils/log.js';
 import type { buildMessageLookups } from '../../utils/messages.js';
 import { isSnipMarkerMessage } from '../../services/compact/snipCompact.js';
@@ -126,6 +126,7 @@ function MessageImpl({
   lastThinkingBlockId,
   latestBashOutputUUID,
 }: Props): React.ReactNode {
+  const isFullscreen = useFullscreenMode();
   const inheritedContentWidth = useContentWidth();
   const messageContentWidth = typeof containerWidth === 'number' ? containerWidth : inheritedContentWidth;
   switch (message.type) {
@@ -248,7 +249,7 @@ function MessageImpl({
     case "system":
       {
         if (message.subtype === "compact_boundary") {
-          if (isFullscreenEnvEnabled()) {
+          if (isFullscreen) {
             return null;
           }
           return <CompactBoundaryMessage />;
@@ -296,6 +297,7 @@ function MessageImpl({
             lookups={lookups}
             inProgressToolUseIDs={inProgressToolUseIDs}
             shouldAnimate={shouldAnimate}
+            fullscreen={isFullscreen}
           />
         </ContentWidthProvider>
       );

@@ -9,6 +9,7 @@ import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import type { AuthBackend } from "../../src/auth/backend.js";
 import { AgenCProvider } from "../../src/llm/providers/agenc/index.js";
+import { FACTORY_PROVIDER_STATE } from "../../src/llm/provider.js";
 import type { ProviderTokenCountCapability } from "../../src/llm/token-accounting.js";
 import type {
   LLMChatOptions,
@@ -163,6 +164,71 @@ function callOptions(
 }
 
 describe("runAdmittedModelCall", () => {
+  test("accounts for canonical Gemini cached content before admission", async () => {
+    const state = harness({});
+    const countTokens = vi.fn(async (request) => {
+      expect(request.options.promptCacheKey).toBe(
+        "cachedContents/project-context",
+      );
+      return {
+        inputTokens: 23,
+        complete: true as const,
+        confidence: "exact" as const,
+        countedComponents: [
+          "messages" as const,
+          "provider_framing" as const,
+        ],
+      };
+    });
+    const provider = Object.assign(state.provider, {
+      name: "gemini",
+      [FACTORY_PROVIDER_STATE]: {
+        provider: "gemini",
+        options: {
+          model: "gemini-2.5-pro",
+          extra: {
+            gemini: {
+              credentialPlan: {
+                kind: "api-key",
+                credential: "test-key",
+                source: "factory",
+              },
+              endpointPlan: {
+                kind: "developer",
+                nativeBaseURL:
+                  "https://generativelanguage.googleapis.com/v1beta",
+              },
+              cachedContent: "cachedContents/project-context",
+            },
+          },
+        },
+      },
+      tokenCountCapability: {
+        capabilityVersion: "gemini-cached-count-v1",
+        adapterRevision: "gemini-cached-adapter-v1",
+        configurationRevision: "gemini-cached-config-v1",
+        countTokens,
+      } satisfies ProviderTokenCountCapability,
+    });
+
+    await runAdmittedModelCall({
+      session: state.session,
+      provider,
+      messages: [{ role: "user", content: "hello" }],
+      options: { maxOutputTokens: 200 },
+      stepId: "model:gemini-cached",
+      model: "gemini-2.5-pro",
+      providerName: "gemini",
+      invoke: async () => response({ model: "gemini-2.5-pro" }),
+    });
+
+    expect(countTokens).toHaveBeenCalledOnce();
+    expect(state.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({ maxInputTokens: 23 }),
+      undefined,
+    );
+  });
+
   test("uses a complete native count for reservation and final wire fitting", async () => {
     const state = harness({ maxCostUsd: 1 });
     const countTokens = vi.fn(async (request) => {
@@ -754,6 +820,7 @@ describe("runAdmittedModelCall", () => {
       whoami: () => ({ authenticated: true, provider: "remote" }),
       inferAgencModel,
       vendKey: (provider: string, sessionId: string) => ({
+        kind: "api-key",
         provider,
         sessionId,
         apiKey: "managed-key",

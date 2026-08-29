@@ -10,9 +10,39 @@
 import type {
   PermissionDefaultMode,
   PerToolConfig,
-  PluginMcpSandboxMetadata,
 } from "../config/schema.js";
 import type { Tool } from "./_deps/tools-types.js";
+
+/** Runtime-only metadata injected after canonical config validation. */
+export interface PluginMcpSandboxMetadata {
+  readonly mode: "stdio-child-process";
+  readonly pluginName: string;
+  readonly pluginRoot: string;
+  readonly pluginDataDir: string;
+  readonly serverName: string;
+  readonly scopedServerName: string;
+}
+
+/** Provenance retained after policy resolution and transport adaptation. */
+export interface MCPServerOrigin {
+  readonly scope:
+    | "default"
+    | "managed"
+    | "user"
+    | "project"
+    | "local"
+    | "flag"
+    | "profile"
+    | "environment"
+    | "cli"
+    | "plugin"
+    | "session";
+  readonly pluginSource?: string;
+  readonly pluginServer?: {
+    readonly pluginName: string;
+    readonly serverName: string;
+  };
+}
 
 /**
  * Configuration for an external MCP server.
@@ -21,48 +51,56 @@ import type { Tool } from "./_deps/tools-types.js";
  *   - `"stdio"` (default): spawn a child process via `command` + `args`.
  *   - `"sse"`: connect to a remote server over compatibility SSE at `endpoint`.
  *   - `"http"`: connect over the Streamable HTTP transport at `endpoint`.
- *   - `"websocket"` / `"ws"`: connect to a remote WebSocket endpoint.
+ *   - `"websocket"`: connect to a remote WebSocket endpoint.
  */
 export interface MCPServerConfig {
   /** Human-readable server name (used for tool namespacing) */
-  name: string;
+  readonly name: string;
   /** Transport kind. Default: "stdio". */
-  transport?: "stdio" | "sse" | "http" | "websocket" | "ws";
+  readonly transport?: "stdio" | "sse" | "http" | "websocket";
   /** Executable command (e.g. "npx", "node"). Required for stdio transport. */
-  command?: string;
+  readonly command?: string;
   /** Command arguments (e.g. ["-y", "@nicholasareed/peekaboo-mcp@latest"]).
    *  Required for stdio transport. */
-  args?: string[];
+  readonly args?: readonly string[];
   /** Remote endpoint URL. Required when `transport` is `"sse"`, `"http"`, or WebSocket. */
-  endpoint?: string;
+  readonly endpoint?: string;
   /** Optional headers to send on the initial request (SSE/HTTP/WebSocket). */
-  headers?: Record<string, string>;
+  readonly headers?: Readonly<Record<string, string>>;
   /** Optional environment variables for the child process (stdio only). */
-  env?: Record<string, string>;
+  readonly env?: Readonly<Record<string, string>>;
   /** Optional parent environment variable names to copy into stdio process env. */
-  env_vars?: readonly string[];
+  readonly env_vars?: readonly string[];
   /** Optional working directory for the stdio process. */
-  cwd?: string;
+  readonly cwd?: string;
   /** Whether this server is enabled. Default: true */
-  enabled?: boolean;
+  readonly enabled?: boolean;
   /** Whether startup/reload must fail if this server cannot connect. */
-  required?: boolean;
+  readonly required?: boolean;
   /** Connection timeout in ms. Default: 30000 */
-  timeout?: number;
+  readonly timeout?: number;
   /** Route this server into a container instead of running on the host.
    *  Currently only "desktop" is supported — the MCP server will be spawned
    *  via `docker exec` inside the desktop sandbox container. Stdio only. */
-  container?: string;
+  readonly container?: string;
   /** Default approval mode for tools exposed by this server. */
-  default_tools_approval_mode?: PermissionDefaultMode;
+  readonly default_tools_approval_mode?: PermissionDefaultMode;
   /** Explicit allow-list of raw MCP tool names exposed from this server. */
-  enabled_tools?: readonly string[];
+  readonly enabled_tools?: readonly string[];
   /** Explicit deny-list of raw MCP tool names removed after the allow-list. */
-  disabled_tools?: readonly string[];
+  readonly disabled_tools?: readonly string[];
   /** Per raw MCP tool approval settings. */
-  tools?: Readonly<Record<string, PerToolConfig>>;
+  readonly tools?: Readonly<Record<string, PerToolConfig>>;
+  /** Canonical SHA-256 digest pin for the server's exposed tool catalog. */
+  readonly pinnedCatalogSha256?: string;
+  /** Structured supply-chain policy for the server's tool catalog. */
+  readonly supplyChain?: {
+    readonly catalogSha256?: string;
+  };
   /** Metadata for plugin-owned stdio servers isolated as child processes. */
-  pluginSandbox?: PluginMcpSandboxMetadata;
+  readonly pluginSandbox?: PluginMcpSandboxMetadata;
+  /** Canonical source identity used by status and policy projections. */
+  readonly origin?: MCPServerOrigin;
 }
 
 /**
@@ -83,8 +121,6 @@ export interface MCPReconnectResult {
   readonly toolCount: number;
   readonly error?: string;
 }
-
-export type MCPServerMutationResult = MCPReconnectResult;
 
 export interface MCPElicitationHandlers {
   handleRequest(params: {

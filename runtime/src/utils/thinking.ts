@@ -5,8 +5,11 @@ import { getCanonicalName } from './model/model.js'
 import { resolveAntModel } from './model/antModels.js'
 import { isAlwaysOnThinkingAnthropicModel } from './model/alwaysOnThinking.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
-import { getAPIProvider } from './model/providers.js'
-import { getSettingsWithErrors } from './settings/settings.js'
+import {
+  getAPIProvider,
+  getSelectedProviderEnvironment,
+} from './model/providers.js'
+import type { ProviderEnvironment } from '../llm/provider-options.js'
 import { isZaiBaseUrl, isZaiGlmModel } from './zaiProvider.js'
 
 export type ThinkingConfig =
@@ -176,15 +179,15 @@ export function modelSupportsThinking(model: string): boolean {
   if ((provider as string) === 'foundry' || provider === 'firstParty') {
     return !canonical.includes('claude-3-')
   }
-  if (
-    canonical.startsWith('deepseek-v4-') ||
-    canonical === 'deepseek-reasoner'
-  ) {
+  if (canonical.startsWith('deepseek-v4-')) {
     return true
   }
   if (
     provider === 'openai' &&
-    isZaiBaseUrl(process.env.OPENAI_BASE_URL ?? process.env.OPENAI_API_BASE) &&
+    isZaiBaseUrl(
+      getSelectedProviderEnvironment().OPENAI_BASE_URL ??
+        getSelectedProviderEnvironment().OPENAI_API_BASE,
+    ) &&
     isZaiGlmModel(canonical)
   ) {
     return true
@@ -239,13 +242,16 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   return provider === 'firstParty' || (provider as string) === 'foundry'
 }
 
-export function shouldEnableThinkingByDefault(): boolean {
-  if (process.env.MAX_THINKING_TOKENS) {
-    return parseInt(process.env.MAX_THINKING_TOKENS, 10) > 0
+export function shouldEnableThinkingByDefault(options: {
+  readonly environment: ProviderEnvironment
+  readonly alwaysThinkingEnabled: boolean | undefined
+}): boolean {
+  const maxThinkingTokens = options.environment.MAX_THINKING_TOKENS
+  if (maxThinkingTokens) {
+    return parseInt(maxThinkingTokens, 10) > 0
   }
 
-  const { settings } = getSettingsWithErrors()
-  if (settings.alwaysThinkingEnabled === false) {
+  if (options.alwaysThinkingEnabled === false) {
     return false
   }
 

@@ -68,9 +68,19 @@ describe('inputModes', () => {
       ).toEqual({ mode: 'bash', strippedValue: 'ls -la' })
     })
 
-    it('returns null when the cursor is not at the start', () => {
+    it('enters bash mode when bulk input advances the cursor before onChange', () => {
       expect(
-        detectModeEntry({ value: '!', prevInputLength: 0, cursorOffset: 1 }),
+        detectModeEntry({
+          value: '!sleep 30',
+          prevInputLength: 0,
+          cursorOffset: '!sleep 30'.length,
+        }),
+      ).toEqual({ mode: 'bash', strippedValue: 'sleep 30' })
+    })
+
+    it('returns null when the cursor is not at the start of existing input', () => {
+      expect(
+        detectModeEntry({ value: '!ab', prevInputLength: 2, cursorOffset: 3 }),
       ).toBeNull()
     })
 

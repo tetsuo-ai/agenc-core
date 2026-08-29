@@ -6,7 +6,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createAgentRoleWorkspace } from '../../../src/agents/role.js'
 import type { ExecutionAdmissionClient } from '../../../src/budget/admission-client.js'
+import { ConfigStore } from '../../../src/config/store.js'
+import { createProvider } from '../../../src/llm/provider.js'
 import { runWithCurrentRuntimeSession } from '../../../src/session/current-session.js'
+import { SessionProviderService } from '../../../src/session/provider-service.js'
+import { resolveAgentRuntimeOptions } from '../../../src/session/runtime-options.js'
 import type { Session } from '../../../src/session/session.js'
 import {
   __setAgentMetadataWriterForTesting,
@@ -16,22 +20,35 @@ import {
   AgentTool,
 } from '../../../src/tools/AgentTool/AgentTool.js'
 import {
+  bindAgentDefinitionToWorkspace,
   __setPluginAgentsLoaderForTesting,
   clearAgentDefinitionsCache,
 } from '../../../src/tools/AgentTool/loadAgentsDir.js'
+import { runAgent } from '../../../src/tools/AgentTool/runAgent.js'
 import type { ToolUseContext } from '../../../src/tools/Tool.js'
 import { getDefaultAppState } from '../../../src/tui/state/AppStateStore.js'
 import { runWithCwdOverride } from '../../../src/utils/cwd.js'
+import { createFileStateCacheWithSizeLimit } from '../../../src/utils/fileStateCache.js'
+import {
+  resetCanonicalSettingsAuthorityForTesting,
+  runWithCanonicalSettingsAuthority,
+} from '../../../src/utils/settings/canonicalAuthority.js'
+import { asSystemPrompt } from '../../../src/utils/systemPromptType.js'
 
 const roots: string[] = []
+const settingsAuthorities = new Map<string, ConfigStore>()
+let settingsHomeRoot: string | null = null
 
 afterEach(() => {
+  resetCanonicalSettingsAuthorityForTesting()
   __setPluginAgentsLoaderForTesting(undefined)
   __setAgentMetadataWriterForTesting(undefined)
   __setAgentTaskRegistrarsForTesting(undefined)
   __setAgentToolLaunchPreflightForTesting(undefined)
   __setAgentWorktreeCreatorForTesting(undefined)
   clearAgentDefinitionsCache()
+  settingsAuthorities.clear()
+  settingsHomeRoot = null
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true })
   }
@@ -43,18 +60,57 @@ function tempRoot(label: string): string {
   return root
 }
 
+function settingsAuthorityFor(projectRoot: string): ConfigStore {
+  const existing = settingsAuthorities.get(projectRoot)
+  if (existing !== undefined) return existing
+  settingsHomeRoot ??= tempRoot('agent-settings-authority')
+  const home = join(settingsHomeRoot, String(settingsAuthorities.size))
+  mkdirSync(home, { recursive: true })
+  const authority = new ConfigStore({
+    home,
+    cwd: projectRoot,
+    projectRoot,
+    projectTrusted: false,
+    env: {},
+    loader: async () => ({ configVersion: 2 }),
+  })
+  settingsAuthorities.set(projectRoot, authority)
+  return authority
+}
+
 function sessionFor(
   cwd: string,
   executionAdmission?: ExecutionAdmissionClient,
 ): Session {
+  const configStore = settingsAuthorityFor(cwd)
+  const runtimeOptions = resolveAgentRuntimeOptions({}, {
+    pluginStorageRoot: tempRoot('agent-plugin-storage'),
+  })
+  const providerService = new SessionProviderService({
+    initialProvider: createProvider('openai-compatible', {
+      baseURL: 'http://127.0.0.1:18000/v1',
+      model: 'grok-test',
+    }),
+    initialProviderName: 'openai-compatible',
+    initialModel: 'grok-test',
+  })
   return {
     conversationId: 'parent-session',
     roleWorkspace: createAgentRoleWorkspace(cwd),
+    config: { coordinatorMode: false },
     services: executionAdmission === undefined
-      ? { admissionRequired: false }
+      ? {
+          admissionRequired: false,
+          configStore,
+          providerService,
+          runtimeOptions,
+        }
       : {
           executionAdmission,
           admissionRequired: true,
+          configStore,
+          providerService,
+          runtimeOptions,
           sandboxExecutionBroker: {
             cwd,
             prepareSpawn: vi.fn(),
@@ -146,7 +202,10 @@ function contextFor(
     activeAgents: [],
     allAgents: [],
   }
-  const defaultState = getDefaultAppState()
+  const defaultState = runWithCanonicalSettingsAuthority(
+    settingsAuthorityFor(catalogWorkspace),
+    getDefaultAppState,
+  )
   const appState = {
     ...defaultState,
     agentDefinitions,
@@ -184,7 +243,9 @@ async function callAgentTool(
   cwd: string | undefined,
   input: Record<string, unknown> = {},
 ): Promise<unknown> {
-  const call = () => runWithCurrentRuntimeSession(session, () =>
+  const configStore = session.services.configStore
+  const call = () => runWithCanonicalSettingsAuthority(configStore, () =>
+    runWithCurrentRuntimeSession(session, () =>
       (AgentTool.call as unknown as (
         input: Record<string, unknown>,
         context: ToolUseContext,
@@ -199,7 +260,8 @@ async function callAgentTool(
         },
         context,
         async () => ({ behavior: 'allow' }),
-      ))
+      )),
+  )
   return cwd === undefined
     ? runWithCwdOverride(session.roleWorkspace.cwd, call)
     : call()
@@ -226,7 +288,24 @@ describe('AgentTool workspace authority', () => {
     expect(setAppState).not.toHaveBeenCalled()
   })
 
-  it('enforces an alias deny before falling back from scanner to explorer', async () => {
+  it.each(['explorer', 'worker'])(
+    'rejects retired built-in role id %s at the AgentTool boundary',
+    async retiredRole => {
+      const workspace = tempRoot(`agent-retired-${retiredRole}`)
+      __setPluginAgentsLoaderForTesting(async () => [])
+      const session = sessionFor(workspace)
+      const { context, setAppState } = contextFor(workspace)
+
+      await expect(
+        callAgentTool(session, context, workspace, {
+          subagent_type: retiredRole,
+        }),
+      ).rejects.toThrow(`Agent type '${retiredRole}' not found`)
+      expect(setAppState).not.toHaveBeenCalled()
+    },
+  )
+
+  it('enforces a canonical scanner deny at the tool boundary', async () => {
     const workspace = tempRoot('agent-alias-deny')
     __setPluginAgentsLoaderForTesting(async () => [])
     const session = sessionFor(workspace)
@@ -242,7 +321,7 @@ describe('AgentTool workspace authority', () => {
     expect(setAppState).not.toHaveBeenCalled()
   })
 
-  it('does not fall back to explorer when an exact custom scanner is denied', async () => {
+  it('does not weaken an exact custom scanner when it is denied', async () => {
     const workspace = tempRoot('agent-exact-deny')
     const agentsDir = join(workspace, '.agenc', 'agents')
     mkdirSync(agentsDir, { recursive: true })
@@ -596,6 +675,74 @@ Do not start.
     )
   })
 
+  it('refuses configured child bypass consent granted for a different cwd', async () => {
+    const workspace = tempRoot('agent-bypass-workspace')
+    const consentedElsewhere = tempRoot('agent-bypass-other-workspace')
+    const session = sessionFor(workspace)
+    const { context } = contextFor(workspace)
+    const parentState = context.getAppState()
+    const permissionContext = {
+      ...parentState.toolPermissionContext,
+      mode: 'default' as const,
+      isBypassPermissionsModeAvailable: true,
+      bypassPermissionsAcceptedIn: [resolve(consentedElsewhere)],
+    }
+    const childContext = {
+      ...context,
+      readFileState: createFileStateCacheWithSizeLimit(10),
+      getAppState: () => ({
+        ...parentState,
+        toolPermissionContext: permissionContext,
+      }),
+    } as unknown as ToolUseContext
+    const agentDefinition = bindAgentDefinitionToWorkspace(
+      {
+        agentType: 'consent-bound-child',
+        whenToUse: 'Tests exact cwd permission consent',
+        source: 'plugin',
+        plugin: 'permission-test',
+        baseDir: workspace,
+        permissionMode: 'bypassPermissions',
+        getSystemPrompt: () => 'Do not execute tools.',
+      },
+      session.roleWorkspace,
+    )
+    const cacheBoundary = new Error('cache boundary reached')
+    let observedMode: string | undefined
+
+    const iterator = runAgent({
+      agentDefinition,
+      promptMessages: [],
+      toolUseContext: childContext,
+      canUseTool: async () => ({ behavior: 'allow' }),
+      isAsync: false,
+      querySource: 'agent:custom',
+      availableTools: [],
+      agentMetadataAlreadyPersisted: true,
+      override: {
+        agentId: 'permission-test-child',
+        userContext: {},
+        systemContext: {},
+        systemPrompt: asSystemPrompt(['Test child.']),
+      },
+      onCacheSafeParams: params => {
+        observedMode = params.toolUseContext.getAppState().toolPermissionContext.mode
+        throw cacheBoundary
+      },
+    })
+
+    const advance = () => runWithCanonicalSettingsAuthority(
+      session.services.configStore,
+      () => runWithCurrentRuntimeSession(
+        session,
+        () => runWithCwdOverride(workspace, () => iterator.next()),
+      ),
+    )
+
+    await expect(advance()).rejects.toBe(cacheBoundary)
+    expect(observedMode).toBe('default')
+  })
+
   it('prefers an exact restrictive plugin alias on the immediate call path', async () => {
     const workspace = tempRoot('agent-fresh-plugin')
     __setPluginAgentsLoaderForTesting(async () => [
@@ -620,7 +767,10 @@ Do not start.
         isolation: 'worktree',
       }),
     ).rejects.toThrow(
-      "Agent 'scanner' requires MCP servers matching: exact-plugin-server",
+      "Agent 'scanner' requires MCP servers matching: exact-plugin-server. " +
+        "MCP servers with tools: none. " +
+        "Use /mcp to configure or reconnect the required MCP servers. " +
+        "If an XAA server reports needs-auth, run 'agenc mcp xaa login'.",
     )
   })
 })

@@ -22,6 +22,9 @@ import {
   runAgenCSecurityCli,
   securityAuditExitCode,
 } from "../../src/bin/security-cli.js";
+import { resolveHomeContext } from "../../src/config/home.js";
+import { serializeConfigToml } from "../../src/config/serialize.js";
+import { resolveGatewayGeneratedToken } from "../../src/gateway/credentials.js";
 
 describe("parseAgenCSecurityCliArgs", () => {
   test("returns null for non-security argv", () => {
@@ -66,6 +69,13 @@ describe("security audit against a temp home", () => {
   afterEach(() => {
     rmSync(home, { recursive: true, force: true });
   });
+
+  function writeGatewayConfig(gateway: Readonly<Record<string, unknown>>): void {
+    writeFileSync(join(home, "config.toml"), serializeConfigToml({
+      config_version: 2,
+      gateway,
+    }), { mode: 0o600 });
+  }
 
   test("clean home: all ok, exit 0", async () => {
     const report = await buildSecurityAuditReport({ env });
@@ -151,10 +161,10 @@ describe("security audit against a temp home", () => {
     ).toBe("critical");
   });
 
-  test("bypassPermissions default mode is a warning, not critical", async () => {
+  test("never-ask default approval policy is a warning, not critical", async () => {
     writeFileSync(
       join(home, "config.toml"),
-      '[permissions]\ndefault_mode = "bypassPermissions"\n',
+      'config_version = 2\napproval_policy = "never"\n',
       { mode: 0o600 },
     );
     const report = await buildSecurityAuditReport({ env });
@@ -176,7 +186,18 @@ describe("security audit against a temp home", () => {
     ).toBe("warn");
   });
 
-  test("group-readable gateway secrets (env/tokens) are critical; --fix chmods", async () => {
+  test("security audit reports the retired hooks-token alias rejection", async () => {
+    const report = await buildSecurityAuditReport({
+      env: { ...env, AGENC_GATEWAY_HOOKS_TOKEN: "retired-hooks-secret" },
+    });
+    const finding = report.findings.find((f) => f.id === "config-integrity");
+    expect(finding?.severity).toBe("warn");
+    expect(finding?.detail).toMatch(
+      /obsolete configuration environment variable.*AGENC_GATEWAY_HOOKS_TOKEN.*AGENC_HOOKS_TOKEN/u,
+    );
+  });
+
+  test("group-readable retired gateway secret inputs are critical; --fix chmods", async () => {
     mkdirSync(join(home, "gateway"), { recursive: true, mode: 0o700 });
     writeFileSync(join(home, "gateway", "env"), "AGENC_TELEGRAM_BOT_TOKEN=x");
     chmodSync(join(home, "gateway", "env"), 0o644);
@@ -194,12 +215,7 @@ describe("security audit against a temp home", () => {
   });
 
   test("hooks enabled WITHOUT a token is critical (task 17 acceptance)", async () => {
-    mkdirSync(join(home, "gateway"), { recursive: true, mode: 0o700 });
-    writeFileSync(
-      join(home, "gateway", "config.json"),
-      JSON.stringify({ hooks: { enabled: true } }),
-      { mode: 0o600 },
-    );
+    writeGatewayConfig({ hooks: { enabled: true } });
     const report = await buildSecurityAuditReport({ env });
     const finding = report.findings.find((f) => f.id === "hooks-exposure");
     expect(finding?.severity).toBe("critical");
@@ -207,17 +223,12 @@ describe("security audit against a temp home", () => {
     expect(securityAuditExitCode(report)).toBe(1);
   });
 
-  test("hooks enabled WITH a persisted token is ok", async () => {
-    mkdirSync(join(home, "gateway"), { recursive: true, mode: 0o700 });
-    writeFileSync(
-      join(home, "gateway", "config.json"),
-      JSON.stringify({ hooks: { enabled: true } }),
-      { mode: 0o600 },
-    );
-    writeFileSync(
-      join(home, "gateway", "hooks-token"),
-      "hooks-token-0123456789abcdef",
-      { mode: 0o600 },
+  test("hooks enabled WITH a native secure storage token is ok", async () => {
+    writeGatewayConfig({ hooks: { enabled: true } });
+    resolveGatewayGeneratedToken(
+      resolveHomeContext({ AGENC_HOME: home }),
+      "hooks",
+      undefined,
     );
     const report = await buildSecurityAuditReport({ env });
     expect(
@@ -225,17 +236,42 @@ describe("security audit against a temp home", () => {
     ).toBe("ok");
   });
 
+  test.each([
+    ["local", { USER_TYPE: "ant", USE_LOCAL_OAUTH: "1" }],
+    ["custom", { AGENC_CUSTOM_OAUTH_URL: "https://agenc.tech" }],
+  ] as const)(
+    "audits the %s OAuth native secure storage namespace from the captured environment",
+    async (_label, oauthEnvironment) => {
+      writeGatewayConfig({ hooks: { enabled: true } });
+      const capturedEnvironment = Object.freeze({
+        ...env,
+        HOME: tmpdir(),
+        ...oauthEnvironment,
+      });
+      resolveGatewayGeneratedToken(
+        resolveHomeContext(capturedEnvironment, {
+          platformHome: capturedEnvironment.HOME,
+        }),
+        "hooks",
+        undefined,
+      );
+
+      const report = await buildSecurityAuditReport({
+        env: capturedEnvironment,
+      });
+      expect(
+        report.findings.find((finding) => finding.id === "hooks-exposure")
+          ?.severity,
+      ).toBe("ok");
+    },
+  );
+
   test("hooks bound non-loopback is critical even with a token", async () => {
-    mkdirSync(join(home, "gateway"), { recursive: true, mode: 0o700 });
-    writeFileSync(
-      join(home, "gateway", "config.json"),
-      JSON.stringify({ hooks: { enabled: true, host: "0.0.0.0" } }),
-      { mode: 0o600 },
-    );
-    writeFileSync(
-      join(home, "gateway", "hooks-token"),
-      "hooks-token-0123456789abcdef",
-      { mode: 0o600 },
+    writeGatewayConfig({ hooks: { enabled: true, host: "0.0.0.0" } });
+    resolveGatewayGeneratedToken(
+      resolveHomeContext({ AGENC_HOME: home }),
+      "hooks",
+      undefined,
     );
     const report = await buildSecurityAuditReport({ env });
     expect(

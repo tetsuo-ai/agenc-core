@@ -14,6 +14,7 @@ import {
   type ModelMessages,
 } from "../../context/personality-spec-instructions.js";
 import type { ReasoningEffort, ReasoningSummary } from "../../session/turn-context.js";
+import { normalizeProviderIdentity } from "../../provider-identity.js";
 
 export type ModelInputModality = "text" | "image" | "audio";
 export type ModelWebSearchToolType = "none" | "text" | "text_and_image";
@@ -471,11 +472,11 @@ export function resolveRegisteredModelCatalogEntry(input: {
   readonly provider: string | undefined;
   readonly model: string | undefined;
 }): RegisteredModelCatalogEntry | undefined {
-  const provider = normalizeProvider(input.provider);
+  const provider = modelCatalogProviderIdentity(input.provider);
   const model = input.model?.trim() ?? "";
   if (provider.length === 0 || model.length === 0) return undefined;
   const candidates = REGISTERED_MODEL_CATALOG.filter(
-    (entry) => normalizeProvider(entry.provider) === provider,
+    (entry) => modelCatalogProviderIdentity(entry.provider) === provider,
   );
   return (
     findExactModel(model, candidates) ??
@@ -515,8 +516,8 @@ export function resolveModelCatalogMetadata(input: {
  * default-model resolution still work). They are NOT user-selectable: each
  * picker is responsible for excluding "hide" models from its offered options
  * (see `providerRows` in commands/model-menu.tsx and the visibility filters in
- * models-manager.ts / utils/model/modelOptions.ts). Order within a provider
- * follows ascending `priority`.
+ * models-manager.ts and the provider-neutral command catalog). Order within
+ * a provider follows ascending `priority`.
  *
  * This makes REGISTERED_MODEL_CATALOG the single source of truth: adding one
  * entry here surfaces the model in every flat-catalog consumer.
@@ -525,7 +526,7 @@ export function deriveFlatCatalog(): Readonly<Record<string, readonly string[]>>
   const byProvider = new Map<string, RegisteredModelCatalogEntry[]>();
   for (const entry of REGISTERED_MODEL_CATALOG) {
     if (entry.visibility === "none") continue;
-    const key = normalizeProvider(entry.provider);
+    const key = modelCatalogProviderIdentity(entry.provider);
     const list = byProvider.get(key);
     if (list) {
       list.push(entry);
@@ -598,9 +599,8 @@ function findLongestPrefix(
     .sort((left, right) => right.model.length - left.model.length)[0];
 }
 
-function normalizeProvider(provider: string | undefined): string {
-  const normalized = normalizeId(provider ?? "");
-  return normalized === "xai" ? "grok" : normalized;
+function modelCatalogProviderIdentity(provider: string | undefined): string {
+  return normalizeProviderIdentity(provider, "model catalog") ?? "";
 }
 
 function normalizeId(value: string): string {

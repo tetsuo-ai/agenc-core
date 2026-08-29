@@ -15,6 +15,8 @@ export {
   resolveAgencHome,
   resolveDaemonSocketPath,
   resolveDaemonCookiePath,
+  InvalidHomePathError,
+  RetiredConfigDirError,
   AgencSocketTransport,
   type AgencConnectOptions,
   type AgencSocketTransportOptions,

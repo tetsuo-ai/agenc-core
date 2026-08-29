@@ -24,7 +24,6 @@ import type { ToolUseContext } from '../Tool.js'
 import type { InProcessTeammateTaskState } from '../../tasks/InProcessTeammateTask/types.js'
 import { formatAgentId } from '../../utils/agentId.js'
 import { quote } from '../../utils/bash/shellQuote.js'
-import { getGlobalConfig } from '../../utils/config.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
@@ -74,6 +73,7 @@ import {
   sendCommandToPane,
 } from '../../utils/swarm/teammateLayoutManager.js'
 import { getHardcodedTeammateModelFallback } from '../../utils/swarm/teammateModel.js'
+import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
 import { registerTask } from '../../utils/task/framework.js'
 import { writeToMailbox } from '../../utils/teammateMailbox.js'
 import {
@@ -85,8 +85,12 @@ import { setAgentColor } from 'src/tools/AgentTool/agentColorManager.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 
 function getDefaultTeammateModel(leaderModel: string | null): string {
-  const configured = getGlobalConfig().teammateDefaultModel
-  if (configured !== null && configured !== undefined) {
+  const configured = getExecutionAuthoritySettings().teammates?.defaultModel
+  if (configured === 'inherit') {
+    // The canonical TOML sentinel follows the leader model.
+    return leaderModel ?? getHardcodedTeammateModelFallback()
+  }
+  if (configured !== undefined) {
     return parseUserSpecifiedModel(configured)
   }
   // Explicit "Default" pick (null) and never-configured (undefined)
@@ -817,8 +821,6 @@ function registerOutOfProcessTeammateTask(
 
   // When abort is signaled, kill the pane using the backend that created it
   // (tmux kill-pane for tmux panes, it2 session close for iTerm2 native panes).
-  // SDK task_notification bookend is emitted by killInProcessTeammate (the
-  // sole abort trigger for this controller).
   abortController.signal.addEventListener(
     'abort',
     () => {
@@ -1144,6 +1146,7 @@ export async function spawnTeammate(
   if (config.agent_type) {
     const freshCatalog = await loadFreshAgentDefinitions(
       parentSession.roleWorkspace.cwd,
+      parentSession.services.runtimeOptions.pluginStorageRoot,
     )
     assertAgentRoleWorkspaceMatches(
       parentSession.roleWorkspace,

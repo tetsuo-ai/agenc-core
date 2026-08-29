@@ -18,7 +18,7 @@ import {
 import {
   MAX_WORKFLOW_MANIFEST_BYTES,
   parseWorkflowManifestBytes,
-  type NormalizedWorkflowManifest,
+  type ValidatedWorkflowManifest,
 } from "./workflow-manifest-schema.js";
 
 export const MAX_WORKFLOW_NAME_CODEPOINTS = 128;
@@ -60,7 +60,7 @@ export interface LoadedWorkflowManifest {
   readonly sourceRoot: string;
   readonly sourcePath: string;
   readonly searchedPaths: readonly string[];
-  readonly document: NormalizedWorkflowManifest;
+  readonly document: ValidatedWorkflowManifest;
 }
 
 export class WorkflowManifestPathError extends Error {

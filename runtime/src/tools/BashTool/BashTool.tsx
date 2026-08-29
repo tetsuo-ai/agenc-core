@@ -11,7 +11,6 @@ import type { AppState } from "../../tui/state/AppState.js";
 import { z } from "zod/v4";
 import { getKairosActive } from "../../bootstrap/state.js";
 import { TOOL_SUMMARY_MAX_LENGTH } from "../../constants/toolLimits.js";
-import { notifyVscodeFileUpdated } from "../../services/mcp/vscodeSdkMcp.js";
 import type {
   SetToolJSXFn,
   ToolCallProgress,
@@ -53,7 +52,6 @@ import { getFsImplementation } from "../../utils/fsOperations.js";
 import { lazySchema } from "../../utils/lazySchema.js";
 import { expandPath } from "../../utils/path.js";
 import type { PermissionResult } from "../../utils/permissions/PermissionResult.js";
-import { maybeRecordPluginHint } from "../../utils/plugins/hintRecommendation.js";
 import { exec } from "../../utils/Shell.js";
 import type { ExecResult } from "../../utils/ShellCommand.js";
 import { SandboxManager } from "../../utils/sandbox/sandbox-runtime.js";
@@ -384,7 +382,7 @@ function detectBlockedSleepPattern(command: string): string | null {
  * Checks if a command contains tools that shouldn't run in sandbox
  * This includes:
  * - Dynamic config-based disabled commands and substrings (tengu_sandbox_disabled_commands)
- * - User-configured commands from settings.json (sandbox.excludedCommands)
+ * - User-configured commands from config.toml (sandbox.excludedCommands)
  *
  * User-configured commands support the same pattern syntax as permission rules:
  * - Exact matches: "npm run lint"
@@ -416,11 +414,10 @@ async function applySedEdit(
   const absoluteFilePath = expandPath(filePath);
   const fs = getFsImplementation();
 
-  // Read original content for VS Code notification
+  // Verify that the target is readable before applying the simulated edit.
   const encoding = detectFileEncoding(absoluteFilePath);
-  let originalContent: string;
   try {
-    originalContent = await fs.readFile(absoluteFilePath, {
+    await fs.readFile(absoluteFilePath, {
       encoding,
     });
   } catch (e) {
@@ -448,9 +445,6 @@ async function applySedEdit(
   // Detect line endings and write new content
   const endings = detectLineEndings(absoluteFilePath);
   writeTextContent(absoluteFilePath, newContent, encoding, endings);
-
-  // Notify VS Code about the file change
-  notifyVscodeFileUpdated(absoluteFilePath, originalContent, newContent);
 
   // Update read timestamp to invalidate stale writes
   toolUseContext.readFileState.set(absoluteFilePath, {
@@ -573,7 +567,6 @@ export const BashTool = buildTool({
   },
   async validateInput(input: BashToolInput): Promise<ValidationResult> {
     if (
-      feature("MONITOR_TOOL") &&
       !isBackgroundTasksDisabled &&
       !input.run_in_background
     ) {
@@ -581,7 +574,7 @@ export const BashTool = buildTool({
       if (sleepPattern !== null) {
         return {
           result: false,
-          message: `Blocked: ${sleepPattern}. Run blocking commands in the background with run_in_background: true — you'll get a completion notification when done. For streaming events (watching logs, polling APIs), use the Monitor tool. If you genuinely need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.`,
+          message: `Blocked: ${sleepPattern}. Run blocking commands in the background with run_in_background: true — you'll get a completion notification when done. For streaming events (watching logs, polling APIs), inspect the background task output. If you genuinely need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.`,
           errorCode: 10,
         };
       }
@@ -830,17 +823,10 @@ export const BashTool = buildTool({
     }
     let strippedStdout = stripEmptyLines(stdout);
 
-    // AgenC hints protocol: CLIs/SDKs gated on AGENCCODE=1 emit a
-    // `<agenc-code-hint />` tag to stderr (merged into stdout here). Scan,
-    // record for useAgenCCodeHintRecommendation to surface, then strip
-    // so the model never sees the tag — a zero-token side channel.
-    // Stripping runs unconditionally (subagent output must stay clean too);
-    // only the dialog recording is main-thread-only.
+    // CLIs/SDKs may emit an AgenC hint tag to stderr (merged into stdout
+    // here). Strip the protocol record so the model never sees it.
     const extracted = extractAgenCCodeHints(strippedStdout, input.command);
     strippedStdout = extracted.stripped;
-    if (isMainThread && extracted.hints.length > 0) {
-      for (const hint of extracted.hints) maybeRecordPluginHint(hint);
-    }
     let isImage = isImageOutput(strippedStdout);
 
     // Cap image dimensions + size if present (CC-304 — see
@@ -1006,8 +992,7 @@ async function* runShellCommand({
   function startBackgrounding(backgroundFn?: (shellId: string) => void): void {
     // If a foreground task is already registered (via registerForeground in the
     // progress loop), background it in-place instead of re-spawning. Re-spawning
-    // would overwrite tasks[taskId], emit a duplicate task_started SDK event,
-    // and leak the first cleanup callback.
+    // would overwrite tasks[taskId] and leak the first cleanup callback.
     if (foregroundTaskId) {
       if (
         !backgroundExistingForegroundTask(

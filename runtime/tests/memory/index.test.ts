@@ -25,6 +25,7 @@ vi.mock("../utils/hooks.js", () => ({
 vi.mock("../utils/settings/settings.js", () => ({
   getExecutionAuthoritySettings: () => ({ agencMdExcludes: [] }),
   getInitialSettings: () => ({ agencMdExcludes: [] }),
+  getSettingsForSource: () => ({ agencMdExcludes: [] }),
 }));
 vi.mock("../tools.js", () => ({}));
 vi.mock("src/tools.js", () => ({}));

@@ -1,17 +1,14 @@
 # Eval pilot executor
 
-Status: design accepted; phase 1 (model-free preflight executor) and phase 2a
-(offline real-agent run) implemented. Phase 2b real-model operation remains
-deferred for normal use; its contained egress prototype and proof are recorded
-separately. Evidence-ledger binding is designed but not yet implemented.
+Status: phases 1, 2a, and 2b are implemented (`eval:executor preflight`,
+`run-agent`, `run-agent-real`, `run-agent-real-batch`, `trust-run`). Operator
+path: [`../eval/real-agent-baseline-runbook.md`](../eval/real-agent-baseline-runbook.md)
+and [`../eval-pilot-executor-phase2b-egress.md`](eval-pilot-executor-phase2b-egress.md).
+Evidence-ledger binding inside `eval-executor` is still target (the ledger
+module exists and is used by workflows, not this CLI).
 
-Roadmap anchor: `todo.txt` M1 — "Build a 30-task pilot, then a powered
-superiority set" and "Run the actual AgenC agent, not a mock executor".
-Wave B of the execution order is gated on the first M1 seed baseline, and the
-verified gap (2026-07-16 audit) is that the merged evaluation stack —
-`eval-contract`, `eval-suites`, `eval-pilot`, `eval-power` — is schemas,
-validators, and frozen candidate data with **no execution layer**: nothing can
-take a pinned pilot task and actually run it.
+This page is the original design record. Do not treat the 2026-07-16 "no
+execution layer" paragraph as current product truth.
 
 ## Goals
 
@@ -177,7 +174,7 @@ with the hidden verifier — all offline.
 ## Phase 2b — real-model lane (deferred; requires egress control)
 
 A lane that runs a real provider needs container egress to reach the model
-API, which reintroduces an oracle-leak surface: a `--yolo` agent with open
+API, which reintroduces an oracle-leak surface: a `--dangerously-bypass-approvals-and-sandbox` agent with open
 egress could fetch the upstream fix (the tasks are cut from merged public
 GitHub PRs) or exfiltrate provider keys under prompt injection from the
 untrusted issue text. This lane is therefore NOT part of 2a. It requires:
@@ -202,7 +199,7 @@ untrusted issue text. This lane is therefore NOT part of 2a. It requires:
   verifies at start (`ldd` probe) with `infrastructure_error` on mismatch.
 - **Invocation:** `agenc -p --output-format json` with `AGENC_WORKSPACE` set
   to the repo checkout, an isolated in-container `AGENC_HOME`, and the
-  daemon autostarted inside the container. `tokenUsage`/`cacheStats` from the
+  daemon autostarted inside the container. `tokenUsage` from the
   JSON result feed `RunRecordDocument.usage`; exit codes 0/1/2/130 map onto
   `FinalOutcome`.
 - **Network:** default-deny egress; a loopback proxy inside the container

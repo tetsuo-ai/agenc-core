@@ -26,7 +26,7 @@ function makeAgentTask(
     startTime: 1,
     agentId: id,
     prompt: "inspect",
-    agentType: "worker",
+    agentType: "runner",
     retrieved: false,
     messages: undefined,
     lastReportedToolCount: 0,

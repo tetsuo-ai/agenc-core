@@ -19,6 +19,7 @@ import {
   APPROVAL_POLICY_ON_REQUEST_RULE_REQUEST_PERMISSION,
   APPROVAL_POLICY_UNLESS_TRUSTED,
   SANDBOX_MODE_DANGER_FULL_ACCESS,
+  SANDBOX_MODE_EXTERNAL,
   SANDBOX_MODE_READ_ONLY,
   SANDBOX_MODE_WORKSPACE_WRITE,
   getPermissionsSection,
@@ -31,6 +32,18 @@ import {
 
 function ctxForMode(mode: PermissionMode): ToolPermissionContext {
   return createEmptyToolPermissionContext({ mode });
+}
+
+const WORKSPACE_AUTHORITY = {
+  sandboxPolicy: "workspace_write" as const,
+  networkSandboxPolicy: { enabled: false },
+};
+
+function permissionsSection(
+  mode: PermissionMode,
+  authority = WORKSPACE_AUTHORITY,
+): string | null {
+  return getPermissionsSection(ctxForMode(mode), authority);
 }
 
 function unattendedCtx(
@@ -97,15 +110,24 @@ describe("sandbox-mode constants", () => {
       "Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The sandbox only permits reading files. Network access is {{network_access}}.\n",
     );
   });
+
+  test("external_sandbox.md", () => {
+    expect(SANDBOX_MODE_EXTERNAL).toContain(
+      "`sandbox_mode` is `external-sandbox`",
+    );
+  });
 });
 
 describe("getPermissionsSection", () => {
   test("returns null when ctx is null", () => {
-    expect(getPermissionsSection(null)).toBeNull();
+    expect(getPermissionsSection(null, WORKSPACE_AUTHORITY)).toBeNull();
   });
 
   test("plan mode → unless_trusted approval + read_only sandbox (restricted network)", () => {
-    const out = getPermissionsSection(ctxForMode("plan"));
+    const out = getPermissionsSection(ctxForMode("plan"), {
+      sandboxPolicy: "read_only",
+      networkSandboxPolicy: { enabled: false },
+    });
     expect(out).not.toBeNull();
     expect(out).toContain("# Permission Mode: plan");
     // Sandbox first. Trailing newline of the .md is stripped.
@@ -126,7 +148,7 @@ describe("getPermissionsSection", () => {
   });
 
   test("default mode → on_request approval + workspace_write sandbox", () => {
-    const out = getPermissionsSection(ctxForMode("default"));
+    const out = permissionsSection("default");
     expect(out).not.toBeNull();
     expect(out).toContain("# Permission Mode: default");
     expect(out).toContain("`sandbox_mode` is `workspace-write`");
@@ -137,7 +159,7 @@ describe("getPermissionsSection", () => {
   });
 
   test("acceptEdits mode → on_failure approval + workspace_write sandbox", () => {
-    const out = getPermissionsSection(ctxForMode("acceptEdits"));
+    const out = permissionsSection("acceptEdits");
     expect(out).not.toBeNull();
     expect(out).toContain("# Permission Mode: acceptEdits");
     expect(out).toContain("`sandbox_mode` is `workspace-write`");
@@ -145,35 +167,45 @@ describe("getPermissionsSection", () => {
     expect(out).toContain("Network access is restricted.");
   });
 
-  test("bypassPermissions mode → never approval + danger_full_access sandbox (network enabled)", () => {
-    const out = getPermissionsSection(ctxForMode("bypassPermissions"));
+  test("ordinary bypass keeps the effective workspace sandbox", () => {
+    const out = permissionsSection("bypassPermissions");
     expect(out).not.toBeNull();
     expect(out).toContain("# Permission Mode: bypassPermissions");
-    expect(out).toContain("`sandbox_mode` is `danger-full-access`");
-    expect(out).toContain("Network access is enabled.");
+    expect(out).toContain("`sandbox_mode` is `workspace-write`");
+    expect(out).toContain("Network access is restricted.");
     expect(out).toContain("Approval policy is currently never");
   });
 
+  test("combined dangerous authority reports the effective unrestricted sandbox", () => {
+    const out = getPermissionsSection(ctxForMode("bypassPermissions"), {
+      sandboxPolicy: "danger_full_access",
+      networkSandboxPolicy: { enabled: true },
+    });
+    expect(out).toContain("`sandbox_mode` is `danger-full-access`");
+    expect(out).toContain("Network access is enabled.");
+  });
+
   test("bypassPermissions mode → appends the autonomy note so the agent does not pause for approval", () => {
-    const out = getPermissionsSection(ctxForMode("bypassPermissions"));
+    const out = permissionsSection("bypassPermissions");
     expect(out).not.toBeNull();
     expect(out).toContain("pre-authorized every action");
     expect(out).toContain("do not pause to ask for confirmation");
     // Only bypass gets the autonomy note — other modes must not.
-    expect(getPermissionsSection(ctxForMode("default"))).not.toContain(
+    expect(permissionsSection("default")).not.toContain(
       "pre-authorized every action",
     );
   });
 
   test("unsupported permission modes return null (auto, dontAsk, bubble)", () => {
-    expect(getPermissionsSection(ctxForMode("auto"))).toBeNull();
-    expect(getPermissionsSection(ctxForMode("dontAsk"))).toBeNull();
-    expect(getPermissionsSection(ctxForMode("bubble"))).toBeNull();
+    expect(permissionsSection("auto")).toBeNull();
+    expect(permissionsSection("dontAsk")).toBeNull();
+    expect(permissionsSection("bubble")).toBeNull();
   });
 
   test("unattended mode describes allow, deny, and pause behavior", () => {
     const out = getPermissionsSection(
       unattendedCtx(["FileRead", "Grep"], ["system.bash"]),
+      WORKSPACE_AUTHORITY,
     );
     expect(out).not.toBeNull();
     expect(out).toContain("# Permission Mode: unattended");
@@ -183,14 +215,14 @@ describe("getPermissionsSection", () => {
   });
 
   test("unattended mode uses the default policy when context has no policy", () => {
-    const out = getPermissionsSection(ctxForMode("unattended"));
+    const out = permissionsSection("unattended");
     expect(out).not.toBeNull();
     expect(out).toContain("Unattended allowlist: (none)");
     expect(out).toContain("Unattended denylist: (none)");
   });
 
   test("composition uses a blank line between heading, sandbox, and approval", () => {
-    const out = getPermissionsSection(ctxForMode("default"));
+    const out = permissionsSection("default");
     expect(out).not.toBeNull();
     // Three blocks joined with "\n\n" → two blank lines total.
     const blanks = out!.match(/\n\n/g);

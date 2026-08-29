@@ -88,6 +88,8 @@ import {
   QuickOpenDialog,
 } from "src/tui/components/QuickOpenDialog.js";
 
+const SETTINGS_AUTHORITY = Object.freeze({}) as never;
+
 type TestStdin = PassThrough & {
   isTTY: boolean;
   ref: () => void;
@@ -187,7 +189,13 @@ async function renderDialog(): Promise<{
     stdout: stdout as unknown as NodeJS.WriteStream,
   });
 
-  root.render(<QuickOpenDialog onDone={onDone} onInsert={onInsert} />);
+  root.render(
+    <QuickOpenDialog
+      onDone={onDone}
+      onInsert={onInsert}
+      settingsAuthority={SETTINGS_AUTHORITY}
+    />,
+  );
   await waitFor(
     () => harness.pickerProps !== undefined,
     "QuickOpenDialog did not render",

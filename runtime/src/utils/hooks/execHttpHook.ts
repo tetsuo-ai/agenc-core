@@ -1,13 +1,17 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-import axios from 'axios'
 import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
 import { createCombinedAbortSignal } from '../combinedAbortSignal.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../errors.js'
-import { getProxyUrl, shouldBypassProxy } from '../proxy.js'
+import {
+  createAxiosInstance,
+  getNoProxy,
+  getProxyUrl,
+  shouldBypassProxy,
+} from '../proxy.js'
 // Import as namespace so spyOn works in tests (direct imports bypass spies)
 import * as settingsModule from '../settings/settings.js'
-import type { HttpHook } from '../settings/types.js'
+import type { HttpHook } from '../../schemas/hooks.js'
 import { ssrfGuardedLookup } from './ssrfGuard.js'
 
 const DEFAULT_HTTP_HOOK_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes (matches TOOL_HOOK_EXECUTION_TIMEOUT_MS)
@@ -47,8 +51,8 @@ async function getSandboxProxyConfig(): Promise<
  * environment variables through an otherwise trusted hook.
  */
 function getHttpHookPolicy(): {
-  allowedUrls: string[] | undefined
-  allowedEnvVars: string[] | undefined
+  allowedUrls: readonly string[] | undefined
+  allowedEnvVars: readonly string[] | undefined
 } {
   const settings = settingsModule.getExecutionAuthoritySettings()
   return {
@@ -79,8 +83,8 @@ function sanitizeHeaderValue(value: string): string {
 }
 
 /**
- * Interpolate $VAR_NAME and ${VAR_NAME} patterns in a string using process.env,
- * but only for variable names present in the allowlist. References to variables
+ * Interpolate $VAR_NAME and ${VAR_NAME} patterns from the immutable session
+ * environment, but only for names present in the allowlist. References
  * not in the allowlist are replaced with empty strings to prevent exfiltration
  * of secrets via project-configured HTTP hooks.
  *
@@ -89,6 +93,7 @@ function sanitizeHeaderValue(value: string): string {
 function interpolateEnvVars(
   value: string,
   allowedEnvVars: ReadonlySet<string>,
+  environment: Readonly<Record<string, string | undefined>>,
 ): string {
   const interpolated = value.replace(
     /\$\{([A-Z_][A-Z0-9_]*)\}|\$([A-Z_][A-Z0-9_]*)/g,
@@ -101,7 +106,7 @@ function interpolateEnvVars(
         )
         return ''
       }
-      return process.env[varName] ?? ''
+      return environment[varName] ?? ''
     },
   )
   return sanitizeHeaderValue(interpolated)
@@ -116,7 +121,7 @@ function interpolateEnvVars(
  * blocked domains.
  *
  * Header values support $VAR_NAME and ${VAR_NAME} env var interpolation so that
- * secrets (e.g. "Authorization: Bearer $MY_TOKEN") are not stored in settings.json.
+ * secrets (e.g. "Authorization: Bearer $MY_TOKEN") are not stored in config.toml.
  * Only env vars explicitly listed in the hook's `allowedEnvVars` array are resolved;
  * all other references are replaced with empty strings.
  */
@@ -124,6 +129,7 @@ export async function execHttpHook(
   hook: HttpHook,
   _hookEvent: HookEvent,
   jsonInput: string,
+  environment: Readonly<Record<string, string | undefined>>,
   signal?: AbortSignal,
 ): Promise<{
   ok: boolean
@@ -167,7 +173,11 @@ export async function execHttpHook(
           : hookVars
       const allowedEnvVars = new Set(effectiveVars)
       for (const [name, value] of Object.entries(hook.headers)) {
-        headers[name] = interpolateEnvVars(value, allowedEnvVars)
+        headers[name] = interpolateEnvVars(
+          value,
+          allowedEnvVars,
+          environment,
+        )
       }
     }
 
@@ -175,16 +185,13 @@ export async function execHttpHook(
     // the domain allowlist and returns 403 for blocked domains.
     const sandboxProxy = await getSandboxProxyConfig()
 
-    // Detect env var proxy (HTTP_PROXY / HTTPS_PROXY, respecting NO_PROXY).
-    // When set, configureGlobalAgents() has already installed a request
-    // interceptor that sets httpsAgent to an HttpsProxyAgent — the proxy
-    // handles DNS for the target. Skip the SSRF guard in that case, same
-    // as we do for the sandbox proxy, so that we don't accidentally block
-    // a corporate proxy sitting on a private IP (e.g. 10.0.0.1:3128).
+    // Detect the session-owned proxy (HTTP_PROXY / HTTPS_PROXY, respecting
+    // NO_PROXY). The scoped axios instance below owns its agents; no request
+    // inherits axios defaults or a daemon-global interceptor.
     const envProxyActive =
       !sandboxProxy &&
-      getProxyUrl() !== undefined &&
-      !shouldBypassProxy(hook.url)
+      getProxyUrl(environment) !== undefined &&
+      !shouldBypassProxy(hook.url, getNoProxy(environment))
 
     if (sandboxProxy) {
       logForDebugging(
@@ -198,15 +205,17 @@ export async function execHttpHook(
       logForDebugging(`Hooks: HTTP hook POST to ${hook.url}`)
     }
 
-    const response = await axios.post<string>(hook.url, jsonInput, {
+    const httpClient = sandboxProxy
+      ? createAxiosInstance(Object.freeze({}))
+      : createAxiosInstance(environment)
+    const response = await httpClient.post<string>(hook.url, jsonInput, {
       headers,
       signal: combinedSignal,
       responseType: 'text',
       validateStatus: () => true,
       maxRedirects: 0,
-      // Explicit false prevents axios's own env-var proxy detection; when an
-      // env-var proxy is configured, the global axios interceptor installed
-      // by configureGlobalAgents() handles it via httpsAgent instead.
+      // Explicit false prevents axios's own ambient env-var proxy detection;
+      // the scoped client already carries the selected session proxy agent.
       proxy: sandboxProxy ?? false,
       // SSRF guard: validate resolved IPs, block private/link-local ranges
       // (but allow loopback for local dev). Skipped when any proxy is in

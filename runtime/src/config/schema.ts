@@ -1,15 +1,58 @@
 // T10 Group D — AgenC config schema.
 //
 // Merges AgenC config surfaces, profile selection, and runtime additions
-// such as tool budgets, stream watchdog settings, and agenc_home.
+// such as tool budgets and stream watchdog settings.
 //
 // All public types are readonly. `defaultConfig()` returns a frozen snapshot;
 // `mergeConfigs()` is a right-biased deep merge that preserves immutability
 // of the inputs and returns a fresh frozen result.
 //
-// Unknown keys are preserved on a `_unknown` side table (I-26 forward-compat).
+// `normalizeRawConfig` retains unknown fields only for the explicit v1/JSON
+// migration planner. Canonical schema-v2 documents are closed and reject
+// unknown top-level keys before normalization.
 
 import { isAbsolute } from "node:path";
+import {
+  MarketplaceSourceSchema,
+  type MarketplaceSource,
+} from "../utils/plugins/schemas.js";
+import {
+  parseAutoFixConfig,
+  type AutoFixInputConfig,
+} from "../services/autoFix/autoFixConfig.js";
+import {
+  validateStrictAgenCConfigFields,
+  validateToolsConfig,
+} from "./strict-schema.js";
+import {
+  normalizeProviderIdentity,
+  RetiredProviderSelectorError,
+} from "../provider-identity.js";
+import {
+  DEFAULT_BUILT_IN_PROVIDER_SELECTION,
+  resolveBuiltInProviderSlug,
+} from "../llm/registry/provider-info.js";
+import {
+  USER_ADDRESSABLE_PERMISSION_MODES,
+  type UserAddressablePermissionMode,
+} from "../types/permissions.js";
+import {
+  parseRuleString,
+} from "../permissions/rules.js";
+import { isRemovedLiveToolName } from "../permissions/tool-names.js";
+import {
+  bindingCommandError,
+  isKeybindingContextName,
+  keybindingChordError,
+  nonRebindableBindingError,
+  normalizeKeyForComparison,
+} from "../tui/keybindings/grammar.js";
+import type {
+  BindingCommand,
+  KeybindingContextName,
+} from "../tui/keybindings/types.js";
+import { isDynamicSessionCredentialEnvironmentKey } from "../session/environment.js";
+import { mcpServerNameValidationIssue } from "../mcp-client/server-name.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Core enums / unions
@@ -23,21 +66,7 @@ export type PermissionDefaultMode = ApprovalPolicy;
 export type SandboxMode =
   "read-only" | "workspace-write" | "danger-full-access";
 
-export type SandboxConfigMode = "off" | "read-only" | "workspace-write";
-
-/**
- * `none` disables reasoning and `max` sits above `xhigh`; both are
- * documented values the type used to reject, so a model that offers them
- * (the gpt-5.6 family tops out at max) could not be driven to its ends.
- */
-export type ReasoningEffort =
-  | "none"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "max";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "none";
 
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
 
@@ -47,53 +76,46 @@ export type WebSearchMode = "auto" | "always" | "never";
 
 export type ModelVerbosity = "low" | "medium" | "high";
 
-export type ServiceTier = "fast" | "flex";
+export type ServiceTier = "priority" | "flex";
 
-export type ApprovalsReviewer = "user" | "auto_review" | "guardian_subagent";
+export type ApprovalsReviewer = "user" | "auto_review";
 
-export type EditorMode = "default" | "vim";
-
-/**
- * Permission mode variants accepted by config files. This intentionally
- * excludes the background-agent-only `unattended` runtime mode from
- * `src/permissions/types.ts` so users cannot make it a global default.
- * Kept inline here to avoid a `config → permissions → config` import
- * cycle (permissions settings.ts already depends on `config/schema.ts`).
- *
- * If a user-addressable variant is ever added or removed in
- * `src/permissions/types.ts`, update this union in lockstep.
- */
-export type PermissionMode =
-  | "default"
-  | "acceptEdits"
-  | "plan"
-  | "bypassPermissions"
-  | "dontAsk"
-  | "auto"
-  | "bubble";
-
-const PERMISSION_MODE_VALUES: readonly PermissionMode[] = Object.freeze([
-  "default",
-  "acceptEdits",
-  "plan",
-  "bypassPermissions",
-  "dontAsk",
-  "auto",
-  "bubble",
-] as const);
+export type PermissionMode = UserAddressablePermissionMode;
 
 // ─────────────────────────────────────────────────────────────────────
 // Sub-config shapes
 // ─────────────────────────────────────────────────────────────────────
 
-export interface SandboxPolicy {
-  readonly mode: SandboxMode;
-  readonly network_access?: boolean;
-  readonly writable_roots?: readonly string[];
+export interface SandboxNetworkConfig {
+  readonly allowedDomains?: readonly string[];
+  readonly allowManagedDomainsOnly?: boolean;
+  readonly allowUnixSockets?: readonly string[];
+  readonly allowAllUnixSockets?: boolean;
+  readonly allowLocalBinding?: boolean;
+  readonly httpProxyPort?: number;
+  readonly socksProxyPort?: number;
 }
 
+export interface SandboxFilesystemConfig {
+  readonly allowWrite?: readonly string[];
+  readonly denyWrite?: readonly string[];
+  readonly denyRead?: readonly string[];
+  readonly allowRead?: readonly string[];
+  readonly allowManagedReadPathsOnly?: boolean;
+}
+
+export interface SandboxRipgrepConfig {
+  readonly command: string;
+  readonly args?: readonly string[];
+}
+
+export type SandboxIgnoreViolations = Readonly<
+  Record<string, readonly string[]>
+>;
+
 export interface SandboxConfig {
-  readonly mode?: SandboxConfigMode;
+  /** Explicit network policy; defaults to true only in danger-full-access. */
+  readonly network_access?: boolean;
   /**
    * Opt-in GPU compute (Metal) inside the macOS sandbox. GPU IOKit user
    * clients are kernel attack surface, so this is off by default; when
@@ -103,18 +125,22 @@ export interface SandboxConfig {
    * stay denied either way.
    */
   readonly allow_gpu?: boolean;
+  readonly autoAllowBashIfSandboxed?: boolean;
+  readonly allowUnsandboxedCommands?: boolean;
+  readonly network?: SandboxNetworkConfig;
+  readonly filesystem?: SandboxFilesystemConfig;
+  readonly ignoreViolations?: SandboxIgnoreViolations;
+  readonly enableWeakerNestedSandbox?: boolean;
+  readonly enableWeakerNetworkIsolation?: boolean;
+  readonly excludedCommands?: readonly string[];
+  readonly ripgrep?: SandboxRipgrepConfig;
 }
 
 export interface ShellEnvironmentPolicy {
-  readonly inherit?: "all" | "core" | "none";
-  readonly ignore_default_excludes?: boolean;
-  readonly exclude?: readonly string[];
   readonly set?: Readonly<Record<string, string>>;
-  readonly include_only?: readonly string[];
 }
 
 export interface ToolsConfig {
-  readonly web_search?: boolean | PerToolConfig;
   /**
    * Search backend for the WebSearch tool on providers without native
    * web search. `AGENC_WEB_SEARCH_ENDPOINT` env wins over this value.
@@ -128,21 +154,13 @@ export interface ToolsConfig {
    */
   readonly web_search_endpoint_kind?:
     "duckduckgo" | "searxng" | "brave" | "json";
-  readonly view_image?: boolean | PerToolConfig;
   readonly enabled_tools?: readonly string[];
   readonly disabled_tools?: readonly string[];
   readonly [k: string]: unknown;
 }
 
 export interface PerToolConfig {
-  readonly enabled?: boolean;
   readonly default_permission_mode?: PermissionDefaultMode;
-  readonly defaultPermissionMode?: PermissionDefaultMode;
-  /**
-   * Compatibility with plugin manifests that call this approval_mode.
-   * `auto` means "use the session policy".
-   */
-  readonly approval_mode?: "auto" | "prompt" | "approve";
 }
 
 export interface ProfileOverride {
@@ -156,16 +174,7 @@ export interface ProfileOverride {
   readonly model_verbosity?: ModelVerbosity;
   readonly service_tier?: ServiceTier;
   readonly personality?: Personality;
-  readonly web_search?: WebSearchMode | boolean;
-  readonly tools?: ToolsConfig;
-}
-
-export interface ToolBudget {
-  // From T10 #11
-  readonly max_calls_per_turn?: number;
-  readonly max_bytes_per_call?: number;
-  readonly max_bytes_per_turn?: number;
-  readonly reserved_tokens?: number;
+  readonly tools_config?: ToolsConfig;
 }
 
 export interface AgentBudgetConfig {
@@ -181,7 +190,7 @@ export interface AgentRunRetentionConfig {
   readonly snapshot_max_count?: number;
   readonly snapshot_max_bytes?: number;
   // Rollout/session disk retention window (days). Lights up the reserved
-  // `cleanupPeriodDays`/`history` retention intent: when set, the daemon's
+  // `agent.retention.rollout_days` retention intent: when set, the daemon's
   // throttled sweep deletes session dirs + their rollout JSONL + the
   // thread_rollout_items mirror rows once their newest rollout is older than
   // this many days. Unset → DISABLED (no pruning; the conservative default,
@@ -213,11 +222,6 @@ export interface DurableTurnsCheckpointConfig {
 export interface DurableTurnsResumeConfig {
   /** Attempt resume-continuation on restart vs today's abort+restart. */
   readonly onRestart?: boolean;
-  /**
-   * "safe" = re-run only read-only/idempotent dangling tools; HALT on any
-   * ambiguous side-effecting/interactive step. Stage 1 supports only "safe".
-   */
-  readonly policy?: "safe";
   /** Single-writer resume lease (per-turnId flock). */
   readonly requireLease?: boolean;
   /** Refuse cross-build resume (determinism guard via `turn_started.buildId`). */
@@ -263,36 +267,7 @@ export const HOOK_EVENT_NAMES = Object.freeze([
 
 export type HookEventName = (typeof HOOK_EVENT_NAMES)[number];
 
-export interface ExperimentsConfig {
-  readonly [k: string]: boolean | string | number;
-}
-
-export interface IdeConnectorConfig {
-  readonly enabled?: boolean;
-  readonly port?: number;
-  readonly [k: string]: unknown;
-}
-
-export interface PrivateStorageConfig {
-  readonly path?: string;
-  readonly [k: string]: unknown;
-}
-
-export interface ManagedWorkspacesConfig {
-  readonly paths?: readonly string[];
-  readonly [k: string]: unknown;
-}
-
-export type McpTransport = "stdio" | "sse" | "http" | "websocket" | "ws";
-
-export interface PluginMcpSandboxMetadata {
-  readonly mode: "stdio-child-process";
-  readonly pluginName: string;
-  readonly pluginRoot: string;
-  readonly pluginDataDir: string;
-  readonly serverName: string;
-  readonly scopedServerName: string;
-}
+export type McpTransport = "stdio" | "sse" | "http" | "websocket";
 
 export interface McpServerConfig {
   readonly command?: string;
@@ -310,7 +285,6 @@ export interface McpServerConfig {
   readonly enabled_tools?: readonly string[];
   readonly disabled_tools?: readonly string[];
   readonly tools?: Readonly<Record<string, PerToolConfig>>;
-  readonly pluginSandbox?: PluginMcpSandboxMetadata;
 }
 
 export type McpServerModeTransport = "stdio" | "sse";
@@ -341,13 +315,15 @@ export interface McpConfig {
  * `@solana/web3.js`/Anchor, no wallet reads, no signing. Mutating
  * protocol verbs stay owner-gated regardless of this block.
  */
-export type ProtocolAdapterKind = "null" | "marketplace-cli";
+export type ProtocolAdapterKind = "marketplace-cli";
 
-export interface ProtocolConfig {
-  /** Master switch. Default false — protocol commands stay stubs. */
-  readonly enabled?: boolean;
-  /** Transport adapter to construct. Default "null" (typed no-op). */
-  readonly adapter?: ProtocolAdapterKind;
+export interface DisabledProtocolConfig {
+  readonly enabled: false;
+}
+
+export interface MarketplaceCliProtocolConfig {
+  readonly enabled: true;
+  readonly adapter: ProtocolAdapterKind;
   /**
    * Trusted local path override for the `agenc-marketplace` binary.
    * Resolution order: this value → `AGENC_MARKETPLACE_CLI` env →
@@ -356,11 +332,41 @@ export interface ProtocolConfig {
   readonly cli_path?: string;
 }
 
-export type DaemonTransport = "unix" | "stdio";
+export type ProtocolConfig =
+  | DisabledProtocolConfig
+  | MarketplaceCliProtocolConfig;
 
 export interface DaemonConfig {
-  readonly transport?: DaemonTransport;
   readonly autostart?: boolean;
+}
+
+export type GatewayDmPolicy = "pairing" | "allowlist" | "open" | "disabled";
+
+export interface GatewayChannelConfig {
+  readonly dmPolicy: GatewayDmPolicy;
+  readonly allowlist?: readonly string[];
+}
+
+export interface GatewayBindingConfig {
+  readonly agent: string;
+  readonly channelId: string;
+  readonly peerId?: string;
+  readonly groupId?: string;
+}
+
+export interface GatewayHooksConfig {
+  readonly enabled?: boolean;
+  readonly host?: string;
+  readonly port?: number;
+  readonly allowNonLoopback?: boolean;
+}
+
+/** Operator-owned channel-gateway policy persisted only in config.toml. */
+export interface GatewayConfig {
+  readonly channels?: Readonly<Record<string, GatewayChannelConfig>>;
+  readonly bindings?: readonly GatewayBindingConfig[];
+  readonly defaultAgent?: string;
+  readonly hooks?: GatewayHooksConfig;
 }
 
 /**
@@ -373,20 +379,65 @@ export interface DaemonConfig {
  * defensively at render time, so a misspelled key just omits that
  * segment instead of crashing the cockpit.
  */
-export interface PartialStatusLineConfig {
-  readonly items?: readonly string[];
+export interface StatusLineConfig {
+  readonly type: "command";
+  readonly command: string;
+  readonly padding?: number;
 }
 
-/**
- * T12 Wave 4-B: output style configuration.
- *
- * Thin field reserved for cockpit palette selection (`"dark"`, `"light"`,
- * etc.). Kept deliberately open-ended so later waves can light up
- * additional theme names without another schema round-trip.
- */
-export interface PartialOutputStyleConfig {
-  readonly theme?: string;
+export interface FileSuggestionConfig {
+  readonly type: "command";
+  readonly command: string;
 }
+
+export interface AttributionConfig {
+  readonly commit?: string;
+  readonly pr?: string;
+}
+
+export interface WorktreeConfig {
+  readonly symlinkDirectories?: readonly string[];
+  readonly sparsePaths?: readonly string[];
+}
+
+export interface SpinnerVerbsConfig {
+  readonly mode: "append" | "replace";
+  readonly verbs: readonly string[];
+}
+
+export type PluginPreferenceValue =
+  | string
+  | number
+  | boolean
+  | readonly string[];
+
+export interface PluginPreferenceConfig {
+  readonly mcpServers?: Readonly<
+    Record<string, Readonly<Record<string, PluginPreferenceValue>>>
+  >;
+  readonly options?: Readonly<Record<string, PluginPreferenceValue>>;
+}
+
+export interface AutoModePreferenceConfig {
+  readonly allow?: readonly string[];
+  readonly soft_deny?: readonly string[];
+  readonly environment?: readonly string[];
+}
+
+/** Non-secret OIDC connection metadata for MCP Cross-App Access. */
+export interface XaaIdpConfig {
+  readonly issuer: string;
+  readonly client_id: string;
+  readonly callback_port?: number;
+}
+
+export interface ManagedMcpServerPolicyEntry {
+  readonly serverName?: string;
+  readonly serverCommand?: readonly string[];
+  readonly serverUrl?: string;
+}
+
+export type CustomizationSurface = "skills" | "agents" | "hooks" | "mcp";
 
 /**
  * Prompt attachment configuration for interactive `@file` mentions.
@@ -399,14 +450,48 @@ export interface AttachmentsConfig {
   readonly allowedRoots?: readonly string[];
 }
 
-export interface TuiLayoutConfig {
-  readonly mode?: "single" | "multi-pane";
-  readonly sidePane?: "status" | "context" | "none";
-  readonly minColumns?: number;
+export const TUI_THEME_SETTINGS = Object.freeze([
+  "auto",
+  "dark",
+  "light",
+  "light-daltonized",
+  "dark-daltonized",
+  "light-ansi",
+  "dark-ansi",
+] as const);
+
+export type TuiThemeSetting = (typeof TUI_THEME_SETTINGS)[number];
+
+/**
+ * One ordered canonical keybinding override block. TOML cannot encode null,
+ * so explicit unbindings use `unbind`; actions remain in `bindings`.
+ */
+export interface TuiKeybindingConfig {
+  readonly context: KeybindingContextName;
+  readonly bindings?: Readonly<Record<string, BindingCommand>>;
+  readonly unbind?: readonly string[];
 }
 
 export interface TuiConfig {
   readonly vimMode?: boolean;
+  readonly theme?: TuiThemeSetting;
+  readonly showTurnDuration?: boolean;
+  readonly terminalProgressBarEnabled?: boolean;
+  readonly copyOnSelect?: boolean;
+  readonly flickerFreeMode?: boolean;
+  readonly prStatusFooterEnabled?: boolean;
+  readonly keybindings?: readonly TuiKeybindingConfig[];
+}
+
+export interface IdeConnectorConfig {
+  readonly autoInstallExtension?: boolean;
+}
+
+export interface TeammatesConfig {
+  readonly mode?: "auto" | "tmux" | "in-process";
+  /** "inherit" follows the leader model; absent uses the built-in teammate default. */
+  readonly defaultModel?: string;
+  readonly preferTmuxOverIterm2?: boolean;
 }
 
 export type BufferProviderMode = "auto" | "neovim" | "inline" | "external";
@@ -449,17 +534,13 @@ export interface BufferConfig {
 }
 
 /**
- * Permissions block as it appears in `~/.agenc/config.toml` (or any
- * settings.json the loader folds in). Mirrors the subset of
- * `SettingsPermissionsBlock` in `src/permissions/settings.ts` that is
- * surfaced through the top-level AgenC config.
+ * Canonical permissions block as it appears in `config.toml`.
  *
  * Rule arrays (`allow` / `deny` / `ask`) carry rule strings in the
  * `Tool(filter)` or bare `Tool` form parsed by
- * `src/permissions/rules.ts::parseRuleString`. `default_mode` is the PE-04
- * scaffold for AgenC's permission approval default and accepts the
- * config-file `ApprovalPolicy` literals. `defaultMode` keeps the
- * upstream-style permission mode surface used by settings files.
+ * `src/permissions/rules.ts::parseRuleString`. `defaultMode` is the distinct
+ * user-facing session mode; approval behavior belongs only to the top-level
+ * `approval_policy` key.
  *
  * Precedence (top-down, highest wins) for the runtime permission
  * context — implemented progressively across T11:
@@ -468,24 +549,17 @@ export interface BufferConfig {
  *   3. Top-level `permissions` (this field)
  *   4. Built-in defaults
  *
- * The 5-source on-disk rule ingestion (user / project / local / flag /
- * policy settings files) is handled by
- * `src/permissions/settings.ts::loadAllPermissionRulesFromDisk`. Those
- * settings files are the primary source of rule strings; a
- * ConfigStore-backed `permissions` block acts as a session-transient
- * overlay or a TOML-side mirror of the same shape.
- *
- * Follow-up T11-closeout: reconcile ConfigStore.permissions vs settings-file
- * permissions precedence (evaluator currently prefers settings-file
- * sources; top-level config block is reserved for overlays).
+ * The canonical repository resolves user / project / local / flag / managed
+ * TOML layers once. Permission consumers project this single resolved block;
+ * there is no parallel settings-file authority.
  */
 export interface PermissionsConfig {
   readonly allow?: readonly string[];
   readonly deny?: readonly string[];
   readonly ask?: readonly string[];
   readonly additionalDirectories?: readonly string[];
-  readonly default_mode?: PermissionDefaultMode;
   readonly defaultMode?: PermissionMode;
+  readonly bypassPermissionsMode?: "allow" | "disable";
 }
 
 export interface ProviderCapabilityOverrides {
@@ -511,13 +585,11 @@ export interface ProviderFallbackTargetConfig {
 
 export interface ProviderFallbackConfig {
   readonly targets?: readonly ProviderFallbackTargetConfig[];
-  readonly models?: readonly string[];
   readonly max_failures?: number;
   readonly statuses?: readonly number[];
 }
 
 export interface ProviderConfig {
-  readonly api_key_env?: string;
   readonly base_url?: string;
   readonly default_model?: string;
   readonly context_window_tokens?: number;
@@ -529,54 +601,54 @@ export interface ProviderConfig {
    */
   readonly timeout_ms?: number;
   readonly capability_overrides?: ProviderCapabilityOverrides;
-  readonly fallback_models?: readonly string[];
   readonly fallback?: ProviderFallbackConfig;
+  /** Grok-only native capabilities. Rejected on every other provider table. */
+  readonly web_search?: boolean;
+  readonly x_search?: boolean;
+  readonly code_execution?: boolean;
+  readonly enable_image_search?: boolean;
+  readonly enable_image_understanding?: boolean;
+  readonly enable_video_understanding?: boolean;
+  readonly collections?: GrokCollectionsConfig;
+  readonly remote_mcp?: GrokRemoteMcpConfig;
 }
 
 /**
- * `[llm.xai]` — Grok/xAI server-tool capability profile.
+ * `[providers.grok]` native server-tool capability profile.
  * Applied only when session provider is grok on a direct xAI host.
  * See `runtime/src/llm/xai-capability-config.ts`.
  */
-export interface LlmXaiCollectionsConfig {
+export interface GrokCollectionsConfig {
   readonly enabled?: boolean;
   readonly vector_store_ids?: readonly string[];
   readonly max_num_results?: number;
 }
 
-export interface LlmXaiRemoteMcpServerConfig {
+export interface GrokRemoteMcpServerConfig {
   readonly server_url: string;
   readonly server_label: string;
   readonly server_description?: string;
   readonly allowed_tools?: readonly string[];
-  readonly authorization?: string;
+  /** Name of a captured environment variable containing the authorization value. */
+  readonly authorization_env?: string;
 }
 
-export interface LlmXaiRemoteMcpConfig {
+export interface GrokRemoteMcpConfig {
   readonly enabled?: boolean;
-  readonly servers?: readonly LlmXaiRemoteMcpServerConfig[];
+  readonly servers?: readonly GrokRemoteMcpServerConfig[];
 }
 
-export interface LlmXaiConfig {
-  /** Prefer native web_search for LIVE WebSearch (default true). */
-  readonly web_search?: boolean;
-  /** Enable native x_search (default false). */
-  readonly x_search?: boolean;
-  /** Enable native code_interpreter (default false). */
-  readonly code_execution?: boolean;
-  /** Top-level web_search enable_image_search (default false). */
-  readonly enable_image_search?: boolean;
-  /** Image understanding for web/x search (default false). */
-  readonly enable_image_understanding?: boolean;
-  /** Video understanding for x_search (default false). */
-  readonly enable_video_understanding?: boolean;
-  readonly collections?: LlmXaiCollectionsConfig;
-  readonly remote_mcp?: LlmXaiRemoteMcpConfig;
-}
-
-export interface LlmConfig {
-  readonly xai?: LlmXaiConfig;
-}
+export type GrokCapabilityConfig = Pick<
+  ProviderConfig,
+  | "web_search"
+  | "x_search"
+  | "code_execution"
+  | "enable_image_search"
+  | "enable_image_understanding"
+  | "enable_video_understanding"
+  | "collections"
+  | "remote_mcp"
+>;
 
 export type AuthBackendConfigKind = "local" | "remote";
 
@@ -603,10 +675,6 @@ export interface LspServerConfigInput {
 export interface PluginEntryConfig {
   readonly enabled?: boolean;
   readonly path?: string;
-  readonly source?: string;
-  readonly version?: string;
-  readonly required?: boolean;
-  readonly options?: Readonly<Record<string, unknown>>;
   readonly mcp_servers?: Readonly<Record<string, PluginMcpServerConfig>>;
 }
 
@@ -622,7 +690,7 @@ export interface PluginsConfig {
   readonly dirs?: readonly string[];
   readonly enabled?: boolean;
   readonly allowlist?: readonly string[];
-  readonly plugins?: Readonly<Record<string, boolean | PluginEntryConfig>>;
+  readonly plugins?: Readonly<Record<string, PluginEntryConfig>>;
 }
 
 export type TransactionGuardFailMode = "open" | "closed";
@@ -631,32 +699,28 @@ export type TransactionGuardFailMode = "open" | "closed";
  * `[transaction_guard]` — SLM transaction-guard block
  * (docs/security/slm-transaction-guard.md). The guard runs a local
  * CourtGuard-style classification against an Ollama endpoint before
- * transaction-like tool calls execute. Env vars remain overrides:
- * `AGENC_TRANSACTION_GUARD` (= "slm" enables, any other value disables),
- * `AGENC_TRANSACTION_GUARD_MODEL`, `AGENC_TRANSACTION_GUARD_OLLAMA_URL`,
- * and `AGENC_TRANSACTION_GUARD_FAIL_MODE` win over these fields; built-in
- * defaults apply when neither is set (env > config > defaults — see
- * `transaction-guard/config.ts`).
+ * transaction-like tool calls execute. Environment values are converted into
+ * this block once by `config/env.ts`; consumers read only the resolved block.
  */
 export interface TransactionGuardConfig {
   readonly enabled?: boolean;
   readonly model?: string;
   readonly endpoint?: string;
   readonly fail_mode?: TransactionGuardFailMode;
+  readonly timeout_ms?: number;
+  readonly max_docket_bytes?: number;
 }
 
 /**
  * `[heartbeat]` — proactive autonomous ticks (task 14). Disabled by default.
- * `AGENC_HEARTBEAT*` env vars override (see `heartbeat/config.ts`).
+ * Environment values are layered into this block by `config/env.ts`.
  */
 export interface HeartbeatConfig {
   readonly enabled?: boolean;
   readonly interval_seconds?: number;
-  readonly model?: string;
   /** [startHour, endHour) in local 24h; omit for always-active. */
   readonly active_hours?: readonly number[];
   readonly skip_when_busy?: boolean;
-  readonly agent?: string;
   readonly target_channel?: string;
   readonly target_conversation?: string;
 }
@@ -665,7 +729,7 @@ export interface HeartbeatConfig {
  * `[browser]` — built-in browser tool (task 18). Operational settings for the
  * isolated Chromium instance the `Browser` tool drives. Enable/disable the
  * tool itself via `tools_config`; this block only tunes how it runs.
- * `AGENC_BROWSER_*` env vars override (see `browser/config.ts`).
+ * Environment values are layered into this block by `config/env.ts`.
  */
 export interface BrowserConfig {
   /** Absolute path to a Chromium-family binary; auto-detected when absent. */
@@ -677,7 +741,7 @@ export interface BrowserConfig {
    * endpoints stay blocked regardless. Only enable for local-dev targets.
    */
   readonly allow_private_network?: boolean;
-  /** Dedicated profile dir; defaults to `<agenc_home>/browser/profile`. */
+  /** Dedicated profile dir; defaults beneath the canonical AgenC home. */
   readonly profile_dir?: string;
   /** Pass Chromium `--no-sandbox` (default false; needed in some containers). */
   readonly no_sandbox?: boolean;
@@ -688,8 +752,8 @@ export interface BrowserConfig {
 /**
  * `[budget]` — cost-bounded autonomy (task 15). Per-agent hard spend caps
  * enforced daemon-side around autonomous turns. Disabled by default; a cap of
- * 0/absent means no cap. `AGENC_BUDGET*` env vars override
- * (see `budget/config.ts`).
+ * 0/absent means no cap. Environment values are layered into this block by
+ * `config/env.ts`.
  */
 export interface BudgetConfig {
   readonly enabled?: boolean;
@@ -715,11 +779,9 @@ export interface AgenCConfig {
   readonly approval_policy?: ApprovalPolicy;
   readonly sandbox_mode?: SandboxMode;
   readonly sandbox?: SandboxConfig;
-  readonly sandbox_policy?: SandboxPolicy;
   readonly shell_environment_policy?: ShellEnvironmentPolicy;
   readonly reasoning_effort?: ReasoningEffort;
   readonly reasoning_summary?: ReasoningSummary;
-  readonly review_model?: string;
   readonly approvals_reviewer?: ApprovalsReviewer;
   readonly model_verbosity?: ModelVerbosity;
   readonly service_tier?: ServiceTier;
@@ -732,42 +794,85 @@ export interface AgenCConfig {
   readonly project_root_markers?: readonly string[];
   readonly project_doc_max_bytes?: number;
   readonly tools_config?: ToolsConfig;
-  readonly compact_prompt?: string;
   readonly experimental_realtime_start_instructions?: string;
   readonly experimental_realtime_ws_backend_prompt?: string;
   readonly hooks?: HooksMap;
   readonly mcp?: McpConfig;
   readonly mcp_servers?: Readonly<Record<string, McpServerConfig>>;
+  readonly xaa_idp?: XaaIdpConfig;
   readonly daemon?: DaemonConfig;
+  readonly gateway?: GatewayConfig;
   readonly protocol?: ProtocolConfig;
   readonly lsp_servers?: Readonly<Record<string, LspServerConfigInput>>;
   readonly plugins?: PluginsConfig;
 
   // ── Settings fields ────────────────────────────────────────────────
   readonly autoUpdates?: boolean;
-  readonly remoteControlAtStartup?: boolean;
-  readonly bypassPermissionsModeAcceptedIn?: readonly string[];
-  readonly enabledPlugins?: Readonly<
-    Record<string, boolean | PluginEntryConfig>
-  >;
-  readonly experiments?: ExperimentsConfig;
   readonly ideConnector?: IdeConnectorConfig;
-  readonly managedWorkspaces?: ManagedWorkspacesConfig;
   readonly permissions?: PermissionsConfig;
-  readonly privateStorage?: PrivateStorageConfig;
-  readonly statusLine?: PartialStatusLineConfig;
-  readonly outputStyle?: PartialOutputStyleConfig;
+  readonly statusLine?: StatusLineConfig;
+  /** Named assistant response style. Terminal colors live under `[tui]`. */
+  readonly outputStyle?: string;
   readonly attachments?: AttachmentsConfig;
-  readonly editorMode?: EditorMode;
   readonly buffer?: BufferConfig;
   readonly tui?: TuiConfig;
-  readonly tuiLayout?: TuiLayoutConfig;
-  readonly autoFix?: unknown;
+  readonly autoFix?: AutoFixInputConfig;
+  readonly fileSuggestion?: FileSuggestionConfig;
+  readonly respectGitignore?: boolean;
+  readonly transcriptPersistenceEnabled?: boolean;
+  readonly attribution?: AttributionConfig;
+  readonly includeGitInstructions?: boolean;
+  readonly worktree?: WorktreeConfig;
+  readonly defaultShell?: "bash" | "powershell";
+  readonly language?: string;
+  readonly spinnerTipsEnabled?: boolean;
+  readonly spinnerVerbs?: SpinnerVerbsConfig;
+  readonly syntaxHighlightingDisabled?: boolean;
+  readonly alwaysThinkingEnabled?: boolean;
+  readonly swarmMode?: boolean;
+  readonly fastMode?: boolean;
+  readonly promptSuggestionEnabled?: boolean;
+  readonly pluginConfigs?: Readonly<Record<string, PluginPreferenceConfig>>;
+  readonly autoUpdatesChannel?: "latest" | "stable";
+  readonly plansDirectory?: string;
+  readonly prefersReducedMotion?: boolean;
+  readonly autoMemoryEnabled?: boolean;
+  readonly autoMemoryDirectory?: string;
+  readonly autoDreamEnabled?: boolean;
+  readonly autoDreamMinHours?: number;
+  readonly autoDreamMinSessions?: number;
+  readonly showThinkingSummaries?: boolean;
+  readonly autoMode?: AutoModePreferenceConfig;
+  readonly teammates?: TeammatesConfig;
+  readonly speculationEnabled?: boolean;
+  readonly fileCheckpointingEnabled?: boolean;
+
+  // Canonical managed-policy fields. They remain top-level so existing policy
+  // consumers can project them without a second policy schema or precedence
+  // engine; only managed TOML should normally set these values.
+  readonly availableModels?: readonly string[];
+  readonly modelOverrides?: Readonly<Record<string, string>>;
+  readonly allowedMcpServers?: readonly ManagedMcpServerPolicyEntry[];
+  readonly deniedMcpServers?: readonly ManagedMcpServerPolicyEntry[];
+  readonly disableAllHooks?: boolean;
+  readonly allowManagedHooksOnly?: boolean;
+  readonly allowedHttpHookUrls?: readonly string[];
+  readonly httpHookAllowedEnvVars?: readonly string[];
+  readonly allowManagedPermissionRulesOnly?: boolean;
+  readonly allowManagedMcpServersOnly?: boolean;
+  readonly strictPluginOnlyCustomization?: boolean | readonly CustomizationSurface[];
+  readonly strictKnownMarketplaces?: readonly MarketplaceSource[];
+  readonly blockedMarketplaces?: readonly MarketplaceSource[];
+  readonly forceLoginOrgUUID?: string;
+  readonly skipWebFetchPreflight?: boolean;
+  readonly minimumVersion?: string;
+  readonly disableAutoMode?: "disable";
+  readonly agencMdExcludes?: readonly string[];
+  readonly pluginTrustMessage?: string;
 
   // ── AgenC-specific additions ──────────────────────────────────────
   readonly agent?: AgentConfig;
   readonly durableTurns?: DurableTurnsConfig;
-  readonly toolBudget?: ToolBudget;
   readonly stream_watchdog_timeout_ms?: number;
   readonly max_output_tokens?: number;
   readonly capped_default_max_output_tokens?: boolean;
@@ -777,7 +882,8 @@ export interface AgenCConfig {
   /**
    * Coordinator mode: the main session orchestrates work through
    * spawned agents (spawn_agent/send_message/wait_agent) instead of
-   * editing code itself. `AGENC_COORDINATOR_MODE` env overrides.
+   * editing code itself. Environment overrides are folded into the canonical
+   * snapshot by the config repository.
    */
   readonly coordinator_mode?: boolean;
   /**
@@ -801,16 +907,8 @@ export interface AgenCConfig {
    * `AGENC_HEARTBEAT*` env vars override. See `heartbeat/config.ts`.
    */
   readonly heartbeat?: HeartbeatConfig;
-  /**
-   * LLM provider capability profiles (`[llm]`). Today only `[llm.xai]` for
-   * Grok server-side tools; applied when provider is grok on direct xAI.
-   */
-  readonly llm?: LlmConfig;
-  readonly agenc_home?: string;
-  readonly workspace?: string;
-  readonly simpleMode?: boolean;
-
-  // ── Forward-compat side-table ─────────────────────────────────────
+  // ── Explicit-migration side-table ─────────────────────────────────
+  // Never populated by the strict schema-v2 repository.
   readonly _unknown?: Readonly<Record<string, unknown>>;
 }
 
@@ -818,71 +916,10 @@ export interface AgenCConfig {
 // defaultConfig
 // ─────────────────────────────────────────────────────────────────────
 
-/*
- * DEFERRED_KEYS — in-file audit trail (T10 A+ Fix-β).
- *
- * Top-level keys accepted by AgenC config surfaces that
- * AgenC intentionally routes into `_unknown` today. They are NOT silent
- * drops: `normalizeRawConfig` preserves them verbatim so a future
- * tranche can light them up without losing operator intent already
- * stored on disk. Grep-anchor: "DEFERRED_KEYS".
- *
- * Runtime deferred:
- *   - notify           → T11 (hook-style post-turn notifications)
- *   - history          → T11 (rollout/history retention policy)
- *   - log_dir          → T11 (operator-overridable log root)
- *   - file_opener      → T11 (editor integration)
- *
- * Settings deferred:
- *   - env              → T11 (shell env injection policy)
- *   - apiKeyHelper     → T11 (external API-key resolver hook)
- *   - cleanupPeriodDays → T11 (rollout/history retention)
- *
- * Lit up by PK-01 (no longer deferred):
- *   - plugins          → see `PluginsConfig` above.
- *   - enabledPlugins   → see `PluginEntryConfig` above.
- *
- * Lit up by T11 (no longer deferred):
- *   - permissions      → see `PermissionsConfig` above.
- *
- * Lit up by T12 Wave 4-B (no longer deferred):
- *   - statusLine       → see `PartialStatusLineConfig` above.
- *   - outputStyle      → see `PartialOutputStyleConfig` above.
- *
- * Lit up by T13 closeout:
- *   - attachments      → see `AttachmentsConfig` above.
- *
- * Lit up by runtime/TUI upstream closeout:
- *   - editorMode       → see `EditorMode` above.
- *   - tui              → see `TuiConfig` above.
- *   - tuiLayout        → see `TuiLayoutConfig` above.
- *
- * Lit up by S-05:
- *   - autoFix          → see `services/autoFix/autoFixConfig.ts`.
- *
- * Lit up by S-07:
- *   - lsp_servers      → see `services/lsp/config.ts`.
- *
- * Lit up by CF-11:
- *   - mcp              → see `McpConfig` above.
- *
- * Adding one of these to the schema means: (a) add it to
- * `KNOWN_CONFIG_KEYS`, (b) add a typed field to `AgenCConfig`, (c)
- * extend the merge + env-override paths if it reaches the runtime,
- * (d) remove it from this block. Don't forget to drop the matching
- * `_unknown` test if the key is tested via `_unknown` today.
- */
-
-export const DEFERRED_SETTINGS_KEYS: readonly string[] = Object.freeze([
-  "env",
-  "apiKeyHelper",
-  "cleanupPeriodDays",
-]);
-
-// Known top-level keys — anything else goes into `_unknown` (I-26).
-// See the deferred-key block above for keys intentionally absent from this
-// array while their tranches catch up. Forward-compat: unknown keys land on
-// `_unknown` rather than being dropped.
+// Complete schema-v2 top-level key allowlist. The canonical repository rejects
+// anything absent from this list. Migration normalization can retain an
+// unrecognized v1/JSON field in `_unknown` so the planner can report it as a
+// conflict instead of silently discarding operator data.
 export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "configVersion",
   "model",
@@ -890,11 +927,9 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "approval_policy",
   "sandbox_mode",
   "sandbox",
-  "sandbox_policy",
   "shell_environment_policy",
   "reasoning_effort",
   "reasoning_summary",
-  "review_model",
   "approvals_reviewer",
   "model_verbosity",
   "service_tier",
@@ -907,35 +942,75 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "project_root_markers",
   "project_doc_max_bytes",
   "tools_config",
-  "compact_prompt",
   "experimental_realtime_start_instructions",
   "experimental_realtime_ws_backend_prompt",
   "hooks",
   "mcp",
   "mcp_servers",
+  "xaa_idp",
   "daemon",
+  "gateway",
   "protocol",
   "lsp_servers",
   "plugins",
   "autoUpdates",
-  "remoteControlAtStartup",
-  "bypassPermissionsModeAcceptedIn",
-  "enabledPlugins",
-  "experiments",
   "ideConnector",
-  "managedWorkspaces",
   "permissions",
-  "privateStorage",
   "statusLine",
   "outputStyle",
   "attachments",
-  "editorMode",
   "buffer",
   "tui",
-  "tuiLayout",
   "autoFix",
+  "fileSuggestion",
+  "respectGitignore",
+  "transcriptPersistenceEnabled",
+  "attribution",
+  "includeGitInstructions",
+  "worktree",
+  "defaultShell",
+  "language",
+  "spinnerTipsEnabled",
+  "spinnerVerbs",
+  "syntaxHighlightingDisabled",
+  "alwaysThinkingEnabled",
+  "swarmMode",
+  "fastMode",
+  "promptSuggestionEnabled",
+  "pluginConfigs",
+  "autoUpdatesChannel",
+  "plansDirectory",
+  "prefersReducedMotion",
+  "autoMemoryEnabled",
+  "autoMemoryDirectory",
+  "autoDreamEnabled",
+  "autoDreamMinHours",
+  "autoDreamMinSessions",
+  "showThinkingSummaries",
+  "autoMode",
+  "teammates",
+  "speculationEnabled",
+  "fileCheckpointingEnabled",
+  "availableModels",
+  "modelOverrides",
+  "allowedMcpServers",
+  "deniedMcpServers",
+  "disableAllHooks",
+  "allowManagedHooksOnly",
+  "allowedHttpHookUrls",
+  "httpHookAllowedEnvVars",
+  "allowManagedPermissionRulesOnly",
+  "allowManagedMcpServersOnly",
+  "strictPluginOnlyCustomization",
+  "strictKnownMarketplaces",
+  "blockedMarketplaces",
+  "forceLoginOrgUUID",
+  "skipWebFetchPreflight",
+  "minimumVersion",
+  "disableAutoMode",
+  "agencMdExcludes",
+  "pluginTrustMessage",
   "agent",
-  "toolBudget",
   "stream_watchdog_timeout_ms",
   "max_output_tokens",
   "capped_default_max_output_tokens",
@@ -947,24 +1022,17 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "budget",
   "browser",
   "heartbeat",
-  "llm",
   "durableTurns",
-  "agenc_home",
-  "workspace",
-  "simpleMode",
   "_unknown",
 ]);
 
 export function defaultConfig(): AgenCConfig {
   return Object.freeze({
-    configVersion: 1,
-    model: "grok-4.6",
-    model_provider: "grok",
+    configVersion: 2,
+    model: DEFAULT_BUILT_IN_PROVIDER_SELECTION.model,
+    model_provider: DEFAULT_BUILT_IN_PROVIDER_SELECTION.provider,
     approval_policy: "on-request" as ApprovalPolicy,
     sandbox_mode: "workspace-write" as SandboxMode,
-    sandbox: Object.freeze({
-      mode: "workspace-write",
-    }) as SandboxConfig,
     reasoning_effort: "medium" as ReasoningEffort,
     approvals_reviewer: "user" as ApprovalsReviewer,
     agent_max_depth: 1,
@@ -985,24 +1053,20 @@ export function defaultConfig(): AgenCConfig {
       }) as McpServerModeConfig,
     }) as McpConfig,
     daemon: Object.freeze({
-      transport: "unix",
       autostart: true,
     }) as DaemonConfig,
-    permissions: Object.freeze({
-      default_mode: "on-request",
-    }) as PermissionsConfig,
     // Full Grok surface on by default (subscription + BYOK). Operators can
-    // still set individual flags false under [llm.xai].
-    llm: Object.freeze({
-      xai: Object.freeze({
+    // set individual flags false under the one canonical provider table.
+    providers: Object.freeze({
+      grok: Object.freeze({
         web_search: true,
         x_search: true,
         code_execution: true,
         enable_image_search: true,
         enable_image_understanding: true,
         enable_video_understanding: true,
-      }) as LlmXaiConfig,
-    }) as LlmConfig,
+      }) as ProviderConfig,
+    }),
     project_root_markers: Object.freeze([
       ".git",
       "package.json",
@@ -1016,19 +1080,11 @@ export function defaultConfig(): AgenCConfig {
     // stream_watchdog_timeout_ms explicitly.
     // No default turn cap. Interactive / long-running agents stop on the
     // model’s own stop signal (or explicit cancel / budget). Operators who
-    // want a runaway-loop backstop can set `max_turns` or AGENC_MAX_TURNS.
+    // want a runaway-loop backstop can set `max_turns` (or its documented env
+    // override, which the repository maps onto the same canonical field).
     // max_turns intentionally unset.
-    // NOTE: `autoUpdates` is intentionally NOT defaulted here. The effective
-    // auto-update state is governed solely by the global config
-    // (`GlobalConfig.autoUpdates`, default undefined = enabled-unless-disabled)
-    // and surfaced by `getAutoUpdaterDisabledReason()` / `agenc doctor`. The
-    // TOML `AgenCConfig.autoUpdates` field is not read by the auto-updater, so
-    // injecting a concrete `false` default here only made `config get
-    // autoUpdates` report a hardcoded `false` that contradicted doctor's
-    // "enabled" — see runtime/src/utils/config.ts. Leaving it unset makes
-    // `config get autoUpdates` report "not set: autoUpdates" when the user has
-    // not explicitly configured it, consistent with the effective state.
-    editorMode: "default" as EditorMode,
+    // `autoUpdates` is intentionally not defaulted. An absent operator setting
+    // means enabled; every consumer reads the effective ConfigStore snapshot.
     buffer: Object.freeze({
       provider: "auto",
       show_tabs: "auto",
@@ -1045,11 +1101,25 @@ export function defaultConfig(): AgenCConfig {
         max_output_tokens: 256,
       }) as BufferPredictionConfig,
     }) as BufferConfig,
-    tuiLayout: Object.freeze({
-      mode: "single",
-      sidePane: "status",
-      minColumns: 120,
-    }) as TuiLayoutConfig,
+    tui: Object.freeze({
+      theme: "dark",
+      showTurnDuration: true,
+      terminalProgressBarEnabled: true,
+      copyOnSelect: true,
+      flickerFreeMode: true,
+      prStatusFooterEnabled: true,
+    }) as TuiConfig,
+    ideConnector: Object.freeze({
+      autoInstallExtension: true,
+    }) as IdeConnectorConfig,
+    teammates: Object.freeze({
+      mode: "auto",
+      preferTmuxOverIterm2: false,
+    }) as TeammatesConfig,
+    speculationEnabled: true,
+    fileCheckpointingEnabled: true,
+    transcriptPersistenceEnabled: true,
+    promptSuggestionEnabled: false,
     agent: Object.freeze({
       // Default budget is intentionally empty: caps are designed for
       // explicit `agenc agent start` background agents, but the daemon
@@ -1068,11 +1138,6 @@ export function defaultConfig(): AgenCConfig {
         snapshot_max_bytes: 67_108_864,
       }) as AgentRunRetentionConfig,
     }) as AgentConfig,
-    toolBudget: Object.freeze({
-      max_calls_per_turn: 32,
-      max_bytes_per_call: 256_000,
-      max_bytes_per_turn: 2_000_000,
-    }) as ToolBudget,
   } satisfies AgenCConfig);
 }
 
@@ -1138,74 +1203,10 @@ export function mergeConfigs(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// AgenC TOML alias normalization
+// Canonical raw config normalization
 // ─────────────────────────────────────────────────────────────────────
 
-// AgenC TOML accepts some field names that differ from canonical keys.
-// This mapping lets users keep existing config.toml field names and have them
-// work. Aliases are applied BEFORE `normalizeRawConfig` so renamed fields
-// land on the `KNOWN_CONFIG_KEYS` fast path instead of `_unknown`.
-const AGENC_TOP_LEVEL_ALIASES: Readonly<Record<string, string>> = Object.freeze(
-  {
-    tools: "tools_config",
-    model_reasoning_effort: "reasoning_effort",
-    model_reasoning_summary: "reasoning_summary",
-  },
-);
-
-/**
- * Remap accepted TOML aliases onto canonical AgenC keys.
- *
- * Rules:
- * - Top-level aliases from `AGENC_TOP_LEVEL_ALIASES` are renamed; if the
- *   canonical key is also present, the canonical key wins and the alias is
- *   dropped (forward-compat for mixed configs).
- * - `agents.max_threads` → `agent_max_threads`.
- * - `agents.max_depth` → `agent_max_depth`.
- *
- * The returned object is a shallow copy; nested values are passed through
- * by reference. Callers should not mutate `raw` after calling.
- */
-export function normalizeAgenCKeyAliases(
-  raw: Record<string, unknown>,
-): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...raw };
-  for (const [alias, canonical] of Object.entries(AGENC_TOP_LEVEL_ALIASES)) {
-    if (alias in out) {
-      if (!(canonical in out)) {
-        out[canonical] = out[alias];
-      }
-      delete out[alias];
-    }
-  }
-  // agents.max_threads → agent_max_threads
-  // agents.max_depth → agent_max_depth
-  const agents = out.agents;
-  if (typeof agents === "object" && agents !== null && !Array.isArray(agents)) {
-    const agentsObj = agents as Record<string, unknown>;
-    if ("max_threads" in agentsObj && !("agent_max_threads" in out)) {
-      out.agent_max_threads = agentsObj.max_threads;
-    }
-    if ("max_depth" in agentsObj && !("agent_max_depth" in out)) {
-      out.agent_max_depth = agentsObj.max_depth;
-    }
-    // Drop the `agents` table if thread/depth aliases were the only things
-    // we care about;
-    // otherwise leave it for _unknown preservation.
-    const remaining = { ...agentsObj };
-    delete remaining.max_threads;
-    delete remaining.max_depth;
-    if (Object.keys(remaining).length === 0) {
-      delete out.agents;
-    } else {
-      out.agents = remaining;
-    }
-  }
-  return out;
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Normalize raw object → AgenCConfig (unknown keys → _unknown)
+// Normalize migration input → AgenCConfig (unknown keys → _unknown)
 // ─────────────────────────────────────────────────────────────────────
 
 export function normalizeRawConfig(raw: Record<string, unknown>): AgenCConfig {
@@ -1282,6 +1283,12 @@ export class InvalidTransactionGuardConfigError extends InvalidNamedConfigError 
 export class InvalidMcpServerModeConfigError extends InvalidNamedConfigError {
   constructor(field: string, detail: string) {
     super("mcp.server", "InvalidMcpServerModeConfigError", field, detail);
+  }
+}
+
+export class InvalidMcpServersConfigError extends InvalidNamedConfigError {
+  constructor(field: string, detail: string) {
+    super("mcp_servers", "InvalidMcpServersConfigError", field, detail);
   }
 }
 
@@ -1372,15 +1379,6 @@ function optionalStringArray(
     }
   }
   return Object.freeze([...(value as string[])]);
-}
-
-function optionalRecord(
-  value: unknown,
-  field: string,
-  makeError: InvalidConfigFactory,
-): Readonly<Record<string, unknown>> | undefined {
-  if (value === undefined) return undefined;
-  return deepFreeze({ ...requirePlainObject(value, field, makeError) });
 }
 
 function optionalPositiveInteger(
@@ -1503,16 +1501,197 @@ export function validateAuthConfig(raw: unknown): AuthConfig | undefined {
 }
 
 const PROVIDER_KEYS: ReadonlySet<string> = new Set([
-  "api_key_env",
   "base_url",
   "default_model",
   "context_window_tokens",
   "max_output_tokens",
   "timeout_ms",
   "capability_overrides",
-  "fallback_models",
   "fallback",
+  "web_search",
+  "x_search",
+  "code_execution",
+  "enable_image_search",
+  "enable_image_understanding",
+  "enable_video_understanding",
+  "collections",
+  "remote_mcp",
 ]);
+
+const GROK_CAPABILITY_BOOLEAN_KEYS = Object.freeze([
+  "web_search",
+  "x_search",
+  "code_execution",
+  "enable_image_search",
+  "enable_image_understanding",
+  "enable_video_understanding",
+] as const);
+
+function validateGrokCapabilities(
+  record: Readonly<Record<string, unknown>>,
+  providerId: string,
+): Partial<ProviderConfig> {
+  const capabilityKeys = [
+    ...GROK_CAPABILITY_BOOLEAN_KEYS,
+    "collections",
+    "remote_mcp",
+  ] as const;
+  if (
+    providerId !== "grok" &&
+    capabilityKeys.some(key => record[key] !== undefined)
+  ) {
+    throw new InvalidProviderConfigError(
+      providerId,
+      "Grok capability fields are allowed only under providers.grok",
+    );
+  }
+  if (providerId !== "grok") return {};
+
+  const makeError: InvalidConfigFactory = (field, detail) =>
+    new InvalidProviderConfigError(field, detail);
+  const out: Record<string, unknown> = {};
+  for (const key of GROK_CAPABILITY_BOOLEAN_KEYS) {
+    const value = optionalBoolean(
+      record[key],
+      fieldPath(providerId, key),
+      makeError,
+    );
+    if (value !== undefined) out[key] = value;
+  }
+  if (record.collections !== undefined) {
+    const field = fieldPath(providerId, "collections");
+    const collections = requirePlainObject(record.collections, field, makeError);
+    rejectUnknownFields(
+      collections,
+      new Set(["enabled", "vector_store_ids", "max_num_results"]),
+      makeError,
+      field,
+    );
+    const enabled = optionalBoolean(
+      collections.enabled,
+      fieldPath(field, "enabled"),
+      makeError,
+    );
+    const vectorStoreIds = optionalStringArray(
+      collections.vector_store_ids,
+      fieldPath(field, "vector_store_ids"),
+      makeError,
+    );
+    const maxNumResults = optionalPositiveInteger(
+      collections.max_num_results,
+      fieldPath(field, "max_num_results"),
+      makeError,
+    );
+    out.collections = Object.freeze({
+      ...(enabled !== undefined ? { enabled } : {}),
+      ...(vectorStoreIds !== undefined
+        ? { vector_store_ids: vectorStoreIds }
+        : {}),
+      ...(maxNumResults !== undefined
+        ? { max_num_results: maxNumResults }
+        : {}),
+    });
+  }
+  if (record.remote_mcp !== undefined) {
+    const field = fieldPath(providerId, "remote_mcp");
+    const remote = requirePlainObject(record.remote_mcp, field, makeError);
+    rejectUnknownFields(
+      remote,
+      new Set(["enabled", "servers"]),
+      makeError,
+      field,
+    );
+    const enabled = optionalBoolean(
+      remote.enabled,
+      fieldPath(field, "enabled"),
+      makeError,
+    );
+    let servers: readonly GrokRemoteMcpServerConfig[] | undefined;
+    if (remote.servers !== undefined) {
+      if (!Array.isArray(remote.servers)) {
+        throw makeError(fieldPath(field, "servers"), "expected array");
+      }
+      servers = Object.freeze(remote.servers.map((value, index) => {
+        const serverField = `${field}.servers.${index}`;
+        const server = requirePlainObject(value, serverField, makeError);
+        rejectUnknownFields(
+          server,
+          new Set([
+            "server_url",
+            "server_label",
+            "server_description",
+            "allowed_tools",
+            "authorization_env",
+          ]),
+          makeError,
+          serverField,
+        );
+        const serverUrl = optionalString(
+          server.server_url,
+          fieldPath(serverField, "server_url"),
+          makeError,
+        )?.trim();
+        const serverLabel = optionalString(
+          server.server_label,
+          fieldPath(serverField, "server_label"),
+          makeError,
+        )?.trim();
+        if (!serverUrl) {
+          throw makeError(
+            fieldPath(serverField, "server_url"),
+            "required non-empty string",
+          );
+        }
+        if (!serverLabel) {
+          throw makeError(
+            fieldPath(serverField, "server_label"),
+            "required non-empty string",
+          );
+        }
+        const serverDescription = optionalString(
+          server.server_description,
+          fieldPath(serverField, "server_description"),
+          makeError,
+        );
+        const allowedTools = optionalStringArray(
+          server.allowed_tools,
+          fieldPath(serverField, "allowed_tools"),
+          makeError,
+        );
+        const authorizationEnv = optionalString(
+          server.authorization_env,
+          fieldPath(serverField, "authorization_env"),
+          makeError,
+        )?.trim();
+        if (
+          authorizationEnv !== undefined &&
+          !isDynamicSessionCredentialEnvironmentKey(authorizationEnv)
+        ) {
+          throw makeError(
+            fieldPath(serverField, "authorization_env"),
+            "expected an AGENC_CREDENTIAL_* environment variable name",
+          );
+        }
+        return Object.freeze({
+          server_url: serverUrl,
+          server_label: serverLabel,
+          ...(serverDescription !== undefined
+            ? { server_description: serverDescription }
+            : {}),
+          ...(allowedTools !== undefined
+            ? { allowed_tools: allowedTools }
+            : {}),
+          ...(authorizationEnv !== undefined ? { authorization_env: authorizationEnv } : {}),
+        });
+      }));
+    }
+    out.remote_mcp = Object.freeze({
+      ...(enabled !== undefined ? { enabled } : {}),
+      ...(servers !== undefined ? { servers } : {}),
+    });
+  }
+  return out as Partial<ProviderConfig>;
+}
 
 const PROVIDER_CAPABILITY_KEYS: ReadonlySet<string> = new Set([
   "supportsToolUse",
@@ -1531,7 +1710,6 @@ const PROVIDER_CAPABILITY_KEYS: ReadonlySet<string> = new Set([
 
 const PROVIDER_FALLBACK_KEYS: ReadonlySet<string> = new Set([
   "targets",
-  "models",
   "max_failures",
   "statuses",
 ]);
@@ -1601,6 +1779,13 @@ function validateProviderFallbackTarget(
     fieldPath(field, "provider"),
     (path, detail) => new InvalidProviderConfigError(path, detail),
   );
+  if (provider !== undefined) {
+    validateLiveProviderIdentity(
+      provider,
+      fieldPath(field, "provider"),
+      (path, detail) => new InvalidProviderConfigError(path, detail),
+    );
+  }
   const reason = optionalString(
     record.reason,
     fieldPath(field, "reason"),
@@ -1648,12 +1833,6 @@ function validateProviderFallback(
       ),
     );
   }
-  const models = optionalStringArray(
-    record.models,
-    fieldPath(parent, "models"),
-    (field, detail) => new InvalidProviderConfigError(field, detail),
-  );
-  if (models !== undefined) out.models = models;
   const maxFailures = optionalPositiveInteger(
     record.max_failures,
     fieldPath(parent, "max_failures"),
@@ -1685,7 +1864,7 @@ function validateSingleProviderConfig(
     providerId,
   );
   const out: { -readonly [K in keyof ProviderConfig]: ProviderConfig[K] } = {};
-  for (const key of ["api_key_env", "base_url", "default_model"] as const) {
+  for (const key of ["base_url", "default_model"] as const) {
     const value = optionalString(
       record[key],
       fieldPath(providerId, key),
@@ -1716,17 +1895,12 @@ function validateSingleProviderConfig(
     fieldPath(providerId, "capability_overrides"),
   );
   if (capabilities !== undefined) out.capability_overrides = capabilities;
-  const fallbackModels = optionalStringArray(
-    record.fallback_models,
-    fieldPath(providerId, "fallback_models"),
-    (field, detail) => new InvalidProviderConfigError(field, detail),
-  );
-  if (fallbackModels !== undefined) out.fallback_models = fallbackModels;
   const fallback = validateProviderFallback(
     record.fallback,
     fieldPath(providerId, "fallback"),
   );
   if (fallback !== undefined) out.fallback = fallback;
+  Object.assign(out, validateGrokCapabilities(record, providerId));
   return Object.freeze(out as ProviderConfig);
 }
 
@@ -1744,7 +1918,22 @@ export function validateProviderConfig(
     if (providerId.trim().length === 0) {
       throw new InvalidProviderConfigError(providerId, "provider id is empty");
     }
-    out[providerId] = validateSingleProviderConfig(providerConfig, providerId);
+    validateLiveProviderIdentity(
+      providerId,
+      providerId,
+      (field, detail) => new InvalidProviderConfigError(field, detail),
+    );
+    const canonicalProvider = resolveBuiltInProviderSlug(providerId);
+    if (canonicalProvider === undefined || canonicalProvider !== providerId) {
+      throw new InvalidProviderConfigError(
+        providerId,
+        "expected a canonical built-in provider id",
+      );
+    }
+    out[canonicalProvider] = validateSingleProviderConfig(
+      providerConfig,
+      canonicalProvider,
+    );
   }
   return deepFreeze(out);
 }
@@ -1864,10 +2053,7 @@ export function validateAgentConfig(raw: unknown): AgentConfig | undefined {
 }
 
 const PER_TOOL_CONFIG_KEYS: ReadonlySet<string> = new Set([
-  "enabled",
   "default_permission_mode",
-  "defaultPermissionMode",
-  "approval_mode",
 ]);
 
 function validatePerToolConfig(raw: unknown, field: string): PerToolConfig {
@@ -1883,38 +2069,14 @@ function validatePerToolConfig(raw: unknown, field: string): PerToolConfig {
     field,
   );
   const out: { -readonly [K in keyof PerToolConfig]: PerToolConfig[K] } = {};
-  const enabled = optionalBoolean(
-    record.enabled,
-    fieldPath(field, "enabled"),
-    (path, detail) => new InvalidPluginsConfigError(path, detail),
-  );
-  if (enabled !== undefined) out.enabled = enabled;
-  for (const key of [
-    "default_permission_mode",
-    "defaultPermissionMode",
-  ] as const) {
-    if (record[key] !== undefined) {
-      if (!isValidPermissionDefaultMode(record[key])) {
-        throw new InvalidPluginsConfigError(
-          fieldPath(field, key),
-          "unknown approval policy",
-        );
-      }
-      out[key] = record[key];
-    }
-  }
-  if (record.approval_mode !== undefined) {
-    if (
-      record.approval_mode !== "auto" &&
-      record.approval_mode !== "prompt" &&
-      record.approval_mode !== "approve"
-    ) {
+  if (record.default_permission_mode !== undefined) {
+    if (!isValidPermissionDefaultMode(record.default_permission_mode)) {
       throw new InvalidPluginsConfigError(
-        fieldPath(field, "approval_mode"),
-        'expected "auto", "prompt", or "approve"',
+        fieldPath(field, "default_permission_mode"),
+        "unknown approval policy",
       );
     }
-    out.approval_mode = record.approval_mode;
+    out.default_permission_mode = record.default_permission_mode;
   }
   return Object.freeze(out as PerToolConfig);
 }
@@ -1993,10 +2155,6 @@ function validatePluginMcpServerConfig(
 const PLUGIN_ENTRY_KEYS: ReadonlySet<string> = new Set([
   "enabled",
   "path",
-  "source",
-  "version",
-  "required",
-  "options",
   "mcp_servers",
 ]);
 
@@ -2024,26 +2182,12 @@ function validatePluginEntryConfig(
     (path, detail) => new InvalidPluginsConfigError(path, detail),
   );
   if (enabled !== undefined) out.enabled = enabled;
-  for (const key of ["path", "source", "version"] as const) {
-    const value = optionalString(
-      record[key],
-      fieldPath(field, key),
-      (path, detail) => new InvalidPluginsConfigError(path, detail),
-    );
-    if (value !== undefined) out[key] = value;
-  }
-  const required = optionalBoolean(
-    record.required,
-    fieldPath(field, "required"),
+  const path = optionalString(
+    record.path,
+    fieldPath(field, "path"),
     (path, detail) => new InvalidPluginsConfigError(path, detail),
   );
-  if (required !== undefined) out.required = required;
-  const options = optionalRecord(
-    record.options,
-    fieldPath(field, "options"),
-    (path, detail) => new InvalidPluginsConfigError(path, detail),
-  );
-  if (options !== undefined) out.options = options;
+  if (path !== undefined) out.path = path;
   if (record.mcp_servers !== undefined) {
     const servers = requirePlainObject(
       record.mcp_servers,
@@ -2065,21 +2209,17 @@ function validatePluginEntryConfig(
 function validatePluginEntryMap(
   raw: unknown,
   field: string,
-): Readonly<Record<string, boolean | PluginEntryConfig>> | undefined {
+): Readonly<Record<string, PluginEntryConfig>> | undefined {
   if (raw === undefined) return undefined;
   const record = requirePlainObject(
     raw,
     field,
     (path, detail) => new InvalidPluginsConfigError(path, detail),
   );
-  const out: Record<string, boolean | PluginEntryConfig> = {};
+  const out: Record<string, PluginEntryConfig> = {};
   for (const [pluginId, pluginConfig] of Object.entries(record)) {
     const pluginField = fieldPath(field, pluginId);
-    if (typeof pluginConfig === "boolean") {
-      out[pluginId] = pluginConfig;
-    } else {
-      out[pluginId] = validatePluginEntryConfig(pluginConfig, pluginField);
-    }
+    out[pluginId] = validatePluginEntryConfig(pluginConfig, pluginField);
   }
   return deepFreeze(out);
 }
@@ -2116,23 +2256,14 @@ export function validatePluginsConfig(raw: unknown): PluginsConfig | undefined {
     (field, detail) => new InvalidPluginsConfigError(field, detail),
   );
   if (allowlist !== undefined) out.allowlist = allowlist;
-  let legacyEnabledPlugins:
-    Readonly<Record<string, boolean | PluginEntryConfig>> | undefined;
   if (record.enabled !== undefined) {
-    if (typeof record.enabled === "boolean") {
-      out.enabled = record.enabled;
-    } else {
-      legacyEnabledPlugins = validatePluginEntryMap(record.enabled, "enabled");
+    if (typeof record.enabled !== "boolean") {
+      throw new InvalidPluginsConfigError("enabled", "must be a boolean");
     }
+    out.enabled = record.enabled;
   }
   const plugins = validatePluginEntryMap(record.plugins, "plugins");
-  const mergedPlugins = {
-    ...(legacyEnabledPlugins ?? {}),
-    ...(plugins ?? {}),
-  };
-  if (Object.keys(mergedPlugins).length > 0) {
-    out.plugins = Object.freeze(mergedPlugins);
-  }
+  if (plugins !== undefined) out.plugins = plugins;
   return Object.freeze(out) as PluginsConfig;
 }
 
@@ -2160,29 +2291,224 @@ export function validateProtocolConfig(
     PROTOCOL_KEYS,
     (field, detail) => new InvalidProtocolConfigError(field, detail),
   );
-  const out: { -readonly [K in keyof ProtocolConfig]: ProtocolConfig[K] } = {};
   const enabled = optionalBoolean(
     record.enabled,
     "enabled",
     (field, detail) => new InvalidProtocolConfigError(field, detail),
   );
-  if (enabled !== undefined) out.enabled = enabled;
+  if (enabled === undefined) {
+    throw new InvalidProtocolConfigError(
+      "enabled",
+      "is required when the protocol block is present",
+    );
+  }
+  let adapter: ProtocolAdapterKind | undefined;
   if (record.adapter !== undefined) {
-    if (record.adapter !== "null" && record.adapter !== "marketplace-cli") {
+    if (record.adapter !== "marketplace-cli") {
       throw new InvalidProtocolConfigError(
         "adapter",
-        'expected "null" or "marketplace-cli"',
+        'expected "marketplace-cli"',
       );
     }
-    out.adapter = record.adapter;
+    adapter = record.adapter;
   }
   const cliPath = optionalString(
     record.cli_path,
     "cli_path",
     (field, detail) => new InvalidProtocolConfigError(field, detail),
   );
-  if (cliPath !== undefined) out.cli_path = cliPath;
-  return Object.freeze(out as ProtocolConfig);
+  if (enabled && adapter !== "marketplace-cli") {
+    throw new InvalidProtocolConfigError(
+      "adapter",
+      'must be "marketplace-cli" when protocol.enabled is true',
+    );
+  }
+  if (!enabled && adapter !== undefined) {
+    throw new InvalidProtocolConfigError(
+      "adapter",
+      "must be absent when protocol.enabled is false",
+    );
+  }
+  if (!enabled && cliPath !== undefined) {
+    throw new InvalidProtocolConfigError(
+      "cli_path",
+      "must be absent when protocol.enabled is false",
+    );
+  }
+  if (!enabled) return Object.freeze({ enabled: false });
+  return Object.freeze({
+    enabled: true,
+    adapter: "marketplace-cli",
+    ...(cliPath !== undefined ? { cli_path: cliPath } : {}),
+  });
+}
+
+const EXTERNAL_MCP_SERVER_KEYS: ReadonlySet<string> = new Set([
+  "command",
+  "args",
+  "env",
+  "env_vars",
+  "cwd",
+  "transport",
+  "endpoint",
+  "headers",
+  "enabled",
+  "timeout",
+  "required",
+  "default_tools_approval_mode",
+  "enabled_tools",
+  "disabled_tools",
+  "tools",
+]);
+
+function validateMcpStringRecord(
+  raw: unknown,
+  field: string,
+): Readonly<Record<string, string>> | undefined {
+  if (raw === undefined) return undefined;
+  const makeError: InvalidConfigFactory = (path, detail) =>
+    new InvalidMcpServersConfigError(path, detail);
+  const record = requirePlainObject(raw, field, makeError);
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value !== "string") {
+      throw makeError(`${field}.${key}`, "expected string");
+    }
+  }
+  return Object.freeze({ ...record }) as Readonly<Record<string, string>>;
+}
+
+function validateExternalMcpToolConfig(
+  raw: unknown,
+  field: string,
+): PerToolConfig {
+  const makeError: InvalidConfigFactory = (path, detail) =>
+    new InvalidMcpServersConfigError(path, detail);
+  const record = requirePlainObject(raw, field, makeError);
+  rejectUnknownFields(
+    record,
+    new Set(["default_permission_mode"]),
+    makeError,
+    field,
+  );
+  const out: { -readonly [K in keyof PerToolConfig]: PerToolConfig[K] } = {};
+  if (record.default_permission_mode !== undefined) {
+    if (!isValidPermissionDefaultMode(record.default_permission_mode)) {
+      throw makeError(
+        `${field}.default_permission_mode`,
+        "unknown approval policy",
+      );
+    }
+    out.default_permission_mode = record.default_permission_mode;
+  }
+  return Object.freeze(out as PerToolConfig);
+}
+
+function validateExternalMcpServerConfig(
+  raw: unknown,
+  serverName: string,
+): McpServerConfig {
+  const makeError: InvalidConfigFactory = (field, detail) =>
+    new InvalidMcpServersConfigError(field, detail);
+  const record = requirePlainObject(raw, serverName, makeError);
+  rejectUnknownFields(record, EXTERNAL_MCP_SERVER_KEYS, makeError, serverName);
+  const out: { -readonly [K in keyof McpServerConfig]: McpServerConfig[K] } = {};
+
+  for (const key of ["command", "cwd", "endpoint"] as const) {
+    const value = optionalString(record[key], `${serverName}.${key}`, makeError);
+    if (value !== undefined) out[key] = value;
+  }
+  for (const key of [
+    "args",
+    "env_vars",
+    "enabled_tools",
+    "disabled_tools",
+  ] as const) {
+    const value = optionalStringArray(
+      record[key],
+      `${serverName}.${key}`,
+      makeError,
+    );
+    if (value !== undefined) out[key] = value;
+  }
+  const env = validateMcpStringRecord(record.env, `${serverName}.env`);
+  if (env !== undefined) out.env = env;
+  const headers = validateMcpStringRecord(
+    record.headers,
+    `${serverName}.headers`,
+  );
+  if (headers !== undefined) out.headers = headers;
+
+  if (record.transport !== undefined) {
+    if (
+      record.transport !== "stdio" &&
+      record.transport !== "sse" &&
+      record.transport !== "http" &&
+      record.transport !== "websocket"
+    ) {
+      throw makeError(
+        `${serverName}.transport`,
+        'expected "stdio", "sse", "http", or "websocket"',
+      );
+    }
+    out.transport = record.transport;
+  }
+  for (const key of ["enabled", "required"] as const) {
+    const value = optionalBoolean(record[key], `${serverName}.${key}`, makeError);
+    if (value !== undefined) out[key] = value;
+  }
+  const timeout = optionalPositiveInteger(
+    record.timeout,
+    `${serverName}.timeout`,
+    makeError,
+  );
+  if (timeout !== undefined) out.timeout = timeout;
+  if (record.default_tools_approval_mode !== undefined) {
+    if (!isValidPermissionDefaultMode(record.default_tools_approval_mode)) {
+      throw makeError(
+        `${serverName}.default_tools_approval_mode`,
+        "unknown approval policy",
+      );
+    }
+    out.default_tools_approval_mode = record.default_tools_approval_mode;
+  }
+  if (record.tools !== undefined) {
+    const tools = requirePlainObject(
+      record.tools,
+      `${serverName}.tools`,
+      makeError,
+    );
+    out.tools = Object.freeze(Object.fromEntries(
+      Object.entries(tools).map(([toolName, config]) => [
+        toolName,
+        validateExternalMcpToolConfig(
+          config,
+          `${serverName}.tools.${toolName}`,
+        ),
+      ]),
+    ));
+  }
+  return Object.freeze(out as McpServerConfig);
+}
+
+export function validateMcpServersConfig(
+  raw: unknown,
+): Readonly<Record<string, McpServerConfig>> | undefined {
+  if (raw === undefined) return undefined;
+  const makeError: InvalidConfigFactory = (field, detail) =>
+    new InvalidMcpServersConfigError(field, detail);
+  const record = requirePlainObject(raw, "", makeError);
+  const out: Record<string, McpServerConfig> = {};
+  for (const [serverName, config] of Object.entries(record)) {
+    const serverNameIssue = mcpServerNameValidationIssue(serverName);
+    if (serverNameIssue !== undefined) {
+      throw makeError(
+        "",
+        `server name ${JSON.stringify(serverName)} ${serverNameIssue}`,
+      );
+    }
+    out[serverName] = validateExternalMcpServerConfig(config, serverName);
+  }
+  return Object.freeze(out);
 }
 
 const MCP_SERVER_MODE_KEYS: ReadonlySet<string> = new Set([
@@ -2282,16 +2608,17 @@ function validateMcpConfigTable(raw: unknown): Readonly<{
 }
 
 /**
- * Validate config blocks with closed sub-schemas. Top-level unknown keys still
- * flow to `_unknown` for forward compatibility; once a block is known, its
- * nested fields are deny-by-default so misspellings cannot silently change
- * runtime behavior.
+ * Validate config blocks with closed sub-schemas. The strict repository has
+ * already rejected unknown top-level fields; known nested blocks are likewise
+ * deny-by-default so misspellings cannot silently change runtime behavior.
  */
 const TRANSACTION_GUARD_KEYS: ReadonlySet<string> = new Set([
   "enabled",
   "model",
   "endpoint",
   "fail_mode",
+  "timeout_ms",
+  "max_docket_bytes",
 ]);
 
 export function validateTransactionGuardConfig(
@@ -2317,10 +2644,738 @@ export function validateTransactionGuardConfig(
     }
     out.fail_mode = record.fail_mode;
   }
+  for (const key of ["timeout_ms", "max_docket_bytes"] as const) {
+    const value = record[key];
+    if (value === undefined) continue;
+    if (
+      typeof value !== "number" ||
+      !Number.isSafeInteger(value) ||
+      value <= 0
+    ) {
+      throw makeError(key, "expected positive safe integer");
+    }
+    out[key] = value;
+  }
   return Object.freeze(out as TransactionGuardConfig);
 }
 
+export class InvalidOperatorPreferenceConfigError extends InvalidNamedConfigError {
+  constructor(field: string, detail: string) {
+    super("preferences", "InvalidOperatorPreferenceConfigError", field, detail);
+  }
+}
+
+export class InvalidProfilesConfigError extends InvalidNamedConfigError {
+  constructor(field: string, detail: string) {
+    super("profiles", "InvalidProfilesConfigError", field, detail);
+  }
+}
+
+export class InvalidSandboxConfigError extends InvalidNamedConfigError {
+  constructor(field: string, detail: string) {
+    super("sandbox", "InvalidSandboxConfigError", field, detail);
+  }
+}
+
+const SANDBOX_NETWORK_KEYS: ReadonlySet<string> = new Set([
+  "allowedDomains",
+  "allowManagedDomainsOnly",
+  "allowUnixSockets",
+  "allowAllUnixSockets",
+  "allowLocalBinding",
+  "httpProxyPort",
+  "socksProxyPort",
+]);
+
+const SANDBOX_FILESYSTEM_KEYS: ReadonlySet<string> = new Set([
+  "allowWrite",
+  "denyWrite",
+  "denyRead",
+  "allowRead",
+  "allowManagedReadPathsOnly",
+]);
+
+const SANDBOX_RIPGREP_KEYS: ReadonlySet<string> = new Set([
+  "command",
+  "args",
+]);
+
+function optionalSandboxTcpPort(
+  value: unknown,
+  field: string,
+  makeError: InvalidConfigFactory,
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > 65_535
+  ) {
+    throw makeError(field, "expected integer TCP port in range 1..65535");
+  }
+  return value;
+}
+
+function validateSandboxNetworkConfig(
+  raw: unknown,
+  makeError: InvalidConfigFactory,
+): SandboxNetworkConfig {
+  const record = requirePlainObject(raw, "network", makeError);
+  rejectUnknownFields(record, SANDBOX_NETWORK_KEYS, makeError, "network");
+  const out: {
+    -readonly [K in keyof SandboxNetworkConfig]: SandboxNetworkConfig[K];
+  } = {};
+  for (const key of ["allowedDomains", "allowUnixSockets"] as const) {
+    const value = optionalStringArray(record[key], `network.${key}`, makeError);
+    if (value !== undefined) out[key] = value;
+  }
+  for (const key of [
+    "allowManagedDomainsOnly",
+    "allowAllUnixSockets",
+    "allowLocalBinding",
+  ] as const) {
+    const value = optionalBoolean(record[key], `network.${key}`, makeError);
+    if (value !== undefined) out[key] = value;
+  }
+  for (const key of ["httpProxyPort", "socksProxyPort"] as const) {
+    const value = optionalSandboxTcpPort(
+      record[key],
+      `network.${key}`,
+      makeError,
+    );
+    if (value !== undefined) out[key] = value;
+  }
+  return deepFreeze(out);
+}
+
+function validateSandboxFilesystemConfig(
+  raw: unknown,
+  makeError: InvalidConfigFactory,
+): SandboxFilesystemConfig {
+  const record = requirePlainObject(raw, "filesystem", makeError);
+  rejectUnknownFields(
+    record,
+    SANDBOX_FILESYSTEM_KEYS,
+    makeError,
+    "filesystem",
+  );
+  const out: {
+    -readonly [K in keyof SandboxFilesystemConfig]: SandboxFilesystemConfig[K];
+  } = {};
+  for (const key of [
+    "allowWrite",
+    "denyWrite",
+    "denyRead",
+    "allowRead",
+  ] as const) {
+    const value = optionalStringArray(
+      record[key],
+      `filesystem.${key}`,
+      makeError,
+    );
+    if (value !== undefined) out[key] = value;
+  }
+  const allowManagedReadPathsOnly = optionalBoolean(
+    record.allowManagedReadPathsOnly,
+    "filesystem.allowManagedReadPathsOnly",
+    makeError,
+  );
+  if (allowManagedReadPathsOnly !== undefined) {
+    out.allowManagedReadPathsOnly = allowManagedReadPathsOnly;
+  }
+  return deepFreeze(out);
+}
+
+function validateSandboxRipgrepConfig(
+  raw: unknown,
+  makeError: InvalidConfigFactory,
+): SandboxRipgrepConfig {
+  const record = requirePlainObject(raw, "ripgrep", makeError);
+  rejectUnknownFields(record, SANDBOX_RIPGREP_KEYS, makeError, "ripgrep");
+  const command = optionalString(record.command, "ripgrep.command", makeError);
+  if (command === undefined || command.trim().length === 0) {
+    throw makeError("ripgrep.command", "expected non-empty string");
+  }
+  const args = optionalStringArray(record.args, "ripgrep.args", makeError);
+  return deepFreeze({
+    command,
+    ...(args === undefined ? {} : { args }),
+  });
+}
+
+function validateSandboxIgnoreViolations(
+  raw: unknown,
+  makeError: InvalidConfigFactory,
+): SandboxIgnoreViolations {
+  const record = requirePlainObject(raw, "ignoreViolations", makeError);
+  const out: Record<string, readonly string[]> = {};
+  for (const [key, value] of Object.entries(record)) {
+    const paths = optionalStringArray(
+      value,
+      `ignoreViolations.${key}`,
+      makeError,
+    );
+    if (paths !== undefined) out[key] = paths;
+  }
+  return deepFreeze(out);
+}
+
+export function validateSandboxConfig(
+  raw: unknown,
+): SandboxConfig | undefined {
+  if (raw === undefined) return undefined;
+  const makeError: InvalidConfigFactory = (field, detail) =>
+    new InvalidSandboxConfigError(field, detail);
+  const record = requirePlainObject(raw, "", makeError);
+  const booleanKeys = [
+    "network_access",
+    "allow_gpu",
+    "autoAllowBashIfSandboxed",
+    "allowUnsandboxedCommands",
+    "enableWeakerNestedSandbox",
+    "enableWeakerNetworkIsolation",
+  ] as const;
+  rejectUnknownFields(
+    record,
+    new Set([
+      ...booleanKeys,
+      "network",
+      "filesystem",
+      "ripgrep",
+      "ignoreViolations",
+      "excludedCommands",
+    ]),
+    makeError,
+  );
+  const out: {
+    -readonly [K in keyof SandboxConfig]: SandboxConfig[K];
+  } = {};
+  for (const key of booleanKeys) {
+    const value = optionalBoolean(record[key], key, makeError);
+    if (value !== undefined) out[key] = value;
+  }
+  const excludedCommands = optionalStringArray(
+    record.excludedCommands,
+    "excludedCommands",
+    makeError,
+  );
+  if (excludedCommands !== undefined) out.excludedCommands = excludedCommands;
+  if (record.network !== undefined) {
+    out.network = validateSandboxNetworkConfig(record.network, makeError);
+  }
+  if (record.filesystem !== undefined) {
+    out.filesystem = validateSandboxFilesystemConfig(
+      record.filesystem,
+      makeError,
+    );
+  }
+  if (record.ignoreViolations !== undefined) {
+    out.ignoreViolations = validateSandboxIgnoreViolations(
+      record.ignoreViolations,
+      makeError,
+    );
+  }
+  if (record.ripgrep !== undefined) {
+    out.ripgrep = validateSandboxRipgrepConfig(record.ripgrep, makeError);
+  }
+  return deepFreeze(out);
+}
+
+const OPERATOR_BOOLEAN_FIELDS = Object.freeze([
+  "respectGitignore",
+  "includeGitInstructions",
+  "spinnerTipsEnabled",
+  "syntaxHighlightingDisabled",
+  "alwaysThinkingEnabled",
+  "swarmMode",
+  "fastMode",
+  "promptSuggestionEnabled",
+  "prefersReducedMotion",
+  "autoMemoryEnabled",
+  "autoDreamEnabled",
+  "showThinkingSummaries",
+  "transcriptPersistenceEnabled",
+] as const);
+
+const OPERATOR_STRING_FIELDS = Object.freeze([
+  "outputStyle",
+  "language",
+  "plansDirectory",
+  "autoMemoryDirectory",
+] as const);
+
+function operatorPreferenceError(field: string, detail: string): Error {
+  return new InvalidOperatorPreferenceConfigError(field, detail);
+}
+
+function validateStringRecord(raw: unknown, field: string): void {
+  const record = requirePlainObject(raw, field, operatorPreferenceError);
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value !== "string") {
+      throw operatorPreferenceError(`${field}.${key}`, "expected string");
+    }
+  }
+}
+
+function validatePluginPreferenceValue(value: unknown, field: string): void {
+  if (
+    typeof value === "string" ||
+    typeof value === "number" && Number.isFinite(value) ||
+    typeof value === "boolean"
+  ) return;
+  if (Array.isArray(value) && value.every((item) => typeof item === "string")) return;
+  throw operatorPreferenceError(
+    field,
+    "expected string, finite number, boolean, or string[]",
+  );
+}
+
+const MANAGED_POLICY_BOOLEAN_FIELDS = Object.freeze([
+  "disableAllHooks",
+  "allowManagedHooksOnly",
+  "allowManagedPermissionRulesOnly",
+  "allowManagedMcpServersOnly",
+  "skipWebFetchPreflight",
+] as const);
+
+const CUSTOMIZATION_SURFACE_VALUES: readonly CustomizationSurface[] = Object.freeze([
+  "skills",
+  "agents",
+  "hooks",
+  "mcp",
+]);
+
+function validateManagedMcpServerPolicies(
+  value: unknown,
+  field: "allowedMcpServers" | "deniedMcpServers",
+): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) throw operatorPreferenceError(field, "expected array");
+  const keys = new Set(["serverName", "serverCommand", "serverUrl"]);
+  for (const [index, item] of value.entries()) {
+    const itemField = `${field}.${index}`;
+    const record = requirePlainObject(item, itemField, operatorPreferenceError);
+    rejectUnknownFields(record, keys, operatorPreferenceError, itemField);
+    const selectors = [record.serverName, record.serverCommand, record.serverUrl]
+      .filter((selector) => selector !== undefined);
+    if (selectors.length !== 1) {
+      throw operatorPreferenceError(
+        itemField,
+        "expected exactly one of serverName, serverCommand, or serverUrl",
+      );
+    }
+    if (record.serverName !== undefined) {
+      if (
+        typeof record.serverName !== "string" ||
+        !/^[a-zA-Z0-9_-]+$/u.test(record.serverName)
+      ) {
+        throw operatorPreferenceError(
+          `${itemField}.serverName`,
+          "expected letters, numbers, hyphens, and underscores",
+        );
+      }
+    }
+    if (record.serverCommand !== undefined) {
+      const command = optionalStringArray(
+        record.serverCommand,
+        `${itemField}.serverCommand`,
+        operatorPreferenceError,
+      );
+      if (command?.length === 0) {
+        throw operatorPreferenceError(
+          `${itemField}.serverCommand`,
+          "expected at least one command element",
+        );
+      }
+    }
+    optionalString(record.serverUrl, `${itemField}.serverUrl`, operatorPreferenceError);
+  }
+}
+
+function validateMarketplaceSourcePolicy(value: unknown, field: string): void {
+  const record = requirePlainObject(value, field, operatorPreferenceError);
+  const source = record.source;
+  if (typeof source !== "string") {
+    throw operatorPreferenceError(`${field}.source`, "expected string discriminator");
+  }
+  const keysBySource: Readonly<Record<string, ReadonlySet<string>>> = {
+    url: new Set(["source", "url", "headers"]),
+    github: new Set(["source", "repo", "ref", "path", "sparsePaths"]),
+    git: new Set(["source", "url", "ref", "path", "sparsePaths"]),
+    file: new Set(["source", "path"]),
+    directory: new Set(["source", "path"]),
+    hostPattern: new Set(["source", "hostPattern"]),
+    pathPattern: new Set(["source", "pathPattern"]),
+  };
+  const allowed = keysBySource[source];
+  if (!allowed) {
+    throw operatorPreferenceError(`${field}.source`, "unknown marketplace source");
+  }
+  rejectUnknownFields(record, allowed, operatorPreferenceError, field);
+
+  const parsed = MarketplaceSourceSchema().safeParse(value);
+  if (!parsed.success) {
+    throw operatorPreferenceError(
+      field,
+      parsed.error.issues
+        .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+        .join("; "),
+    );
+  }
+}
+
+function validateMarketplaceSourcePolicies(value: unknown, field: string): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) throw operatorPreferenceError(field, "expected array");
+  for (const [index, source] of value.entries()) {
+    validateMarketplaceSourcePolicy(source, `${field}.${index}`);
+  }
+}
+
+function validateManagedPolicy(config: AgenCConfig): void {
+  for (const key of MANAGED_POLICY_BOOLEAN_FIELDS) {
+    optionalBoolean(config[key], key, operatorPreferenceError);
+  }
+  for (const key of [
+    "availableModels",
+    "allowedHttpHookUrls",
+    "httpHookAllowedEnvVars",
+    "agencMdExcludes",
+  ] as const) {
+    optionalStringArray(config[key], key, operatorPreferenceError);
+  }
+  if (config.modelOverrides !== undefined) {
+    validateStringRecord(config.modelOverrides, "modelOverrides");
+  }
+  validateManagedMcpServerPolicies(config.allowedMcpServers, "allowedMcpServers");
+  validateManagedMcpServerPolicies(config.deniedMcpServers, "deniedMcpServers");
+
+  if (config.strictPluginOnlyCustomization !== undefined) {
+    if (typeof config.strictPluginOnlyCustomization !== "boolean") {
+      const surfaces = optionalStringArray(
+        config.strictPluginOnlyCustomization,
+        "strictPluginOnlyCustomization",
+        operatorPreferenceError,
+      );
+      for (const surface of surfaces ?? []) {
+        if (!CUSTOMIZATION_SURFACE_VALUES.includes(surface as CustomizationSurface)) {
+          throw operatorPreferenceError(
+            "strictPluginOnlyCustomization",
+            `unknown customization surface: ${surface}`,
+          );
+        }
+      }
+    }
+  }
+  validateMarketplaceSourcePolicies(config.strictKnownMarketplaces, "strictKnownMarketplaces");
+  validateMarketplaceSourcePolicies(config.blockedMarketplaces, "blockedMarketplaces");
+
+  for (const key of ["forceLoginOrgUUID", "minimumVersion", "pluginTrustMessage"] as const) {
+    optionalString(config[key], key, operatorPreferenceError);
+  }
+  if (config.disableAutoMode !== undefined && config.disableAutoMode !== "disable") {
+    throw operatorPreferenceError("disableAutoMode", 'expected "disable"');
+  }
+}
+
+function validateOperatorPreferences(config: AgenCConfig): void {
+  for (const key of OPERATOR_BOOLEAN_FIELDS) {
+    if (config[key] !== undefined && typeof config[key] !== "boolean") {
+      throw operatorPreferenceError(key, "expected boolean");
+    }
+  }
+  for (const key of OPERATOR_STRING_FIELDS) {
+    if (config[key] !== undefined && typeof config[key] !== "string") {
+      throw operatorPreferenceError(key, "expected string");
+    }
+  }
+  if (
+    config.autoDreamMinHours !== undefined &&
+    (typeof config.autoDreamMinHours !== "number" ||
+      !Number.isFinite(config.autoDreamMinHours) || config.autoDreamMinHours <= 0)
+  ) throw operatorPreferenceError("autoDreamMinHours", "expected positive number");
+  if (
+    config.autoDreamMinSessions !== undefined &&
+    (!Number.isInteger(config.autoDreamMinSessions) || config.autoDreamMinSessions <= 0)
+  ) throw operatorPreferenceError("autoDreamMinSessions", "expected positive integer");
+
+  const enums: readonly [string, unknown, readonly string[]][] = [
+    ["defaultShell", config.defaultShell, ["bash", "powershell"]],
+    ["autoUpdatesChannel", config.autoUpdatesChannel, ["latest", "stable"]],
+  ];
+  for (const [field, value, allowed] of enums) {
+    if (value !== undefined && !allowed.includes(value as string)) {
+      throw operatorPreferenceError(field, `expected one of: ${allowed.join(", ")}`);
+    }
+  }
+
+  if (config.fileSuggestion !== undefined) {
+    const raw = requirePlainObject(config.fileSuggestion, "fileSuggestion", operatorPreferenceError);
+    rejectUnknownFields(raw, new Set(["type", "command"]), operatorPreferenceError, "fileSuggestion");
+    if (raw.type !== "command") throw operatorPreferenceError("fileSuggestion.type", 'expected "command"');
+    if (typeof raw.command !== "string") throw operatorPreferenceError("fileSuggestion.command", "expected string");
+  }
+  if (config.attribution !== undefined) {
+    const raw = requirePlainObject(config.attribution, "attribution", operatorPreferenceError);
+    rejectUnknownFields(raw, new Set(["commit", "pr"]), operatorPreferenceError, "attribution");
+    for (const key of ["commit", "pr"] as const) {
+      if (raw[key] !== undefined && typeof raw[key] !== "string") {
+        throw operatorPreferenceError(`attribution.${key}`, "expected string");
+      }
+    }
+  }
+  if (config.worktree !== undefined) {
+    const raw = requirePlainObject(config.worktree, "worktree", operatorPreferenceError);
+    rejectUnknownFields(raw, new Set(["symlinkDirectories", "sparsePaths"]), operatorPreferenceError, "worktree");
+    optionalStringArray(raw.symlinkDirectories, "worktree.symlinkDirectories", operatorPreferenceError);
+    optionalStringArray(raw.sparsePaths, "worktree.sparsePaths", operatorPreferenceError);
+  }
+  if (config.spinnerVerbs !== undefined) {
+    const raw = requirePlainObject(config.spinnerVerbs, "spinnerVerbs", operatorPreferenceError);
+    rejectUnknownFields(raw, new Set(["mode", "verbs"]), operatorPreferenceError, "spinnerVerbs");
+    if (raw.mode !== "append" && raw.mode !== "replace") {
+      throw operatorPreferenceError("spinnerVerbs.mode", 'expected "append" or "replace"');
+    }
+    if (optionalStringArray(raw.verbs, "spinnerVerbs.verbs", operatorPreferenceError) === undefined) {
+      throw operatorPreferenceError("spinnerVerbs.verbs", "required");
+    }
+  }
+  if (config.autoMode !== undefined) {
+    const raw = requirePlainObject(config.autoMode, "autoMode", operatorPreferenceError);
+    rejectUnknownFields(raw, new Set(["allow", "soft_deny", "environment"]), operatorPreferenceError, "autoMode");
+    for (const key of ["allow", "soft_deny", "environment"] as const) {
+      optionalStringArray(raw[key], `autoMode.${key}`, operatorPreferenceError);
+    }
+  }
+  if (config.xaa_idp !== undefined) {
+    const raw = requirePlainObject(config.xaa_idp, "xaa_idp", operatorPreferenceError);
+    rejectUnknownFields(
+      raw,
+      new Set(["issuer", "client_id", "callback_port"]),
+      operatorPreferenceError,
+      "xaa_idp",
+    );
+    if (typeof raw.issuer !== "string") {
+      throw operatorPreferenceError("xaa_idp.issuer", "expected string");
+    }
+    let issuer: URL;
+    try {
+      issuer = new URL(raw.issuer);
+    } catch {
+      throw operatorPreferenceError("xaa_idp.issuer", "expected valid URL");
+    }
+    const loopbackHttp = issuer.protocol === "http:" &&
+      ["localhost", "127.0.0.1", "[::1]"].includes(issuer.hostname);
+    if (issuer.protocol !== "https:" && !loopbackHttp) {
+      throw operatorPreferenceError(
+        "xaa_idp.issuer",
+        "expected https URL (http is allowed only for loopback)",
+      );
+    }
+    if (typeof raw.client_id !== "string" || raw.client_id.length === 0) {
+      throw operatorPreferenceError("xaa_idp.client_id", "expected non-empty string");
+    }
+    if (
+      raw.callback_port !== undefined &&
+      (!Number.isInteger(raw.callback_port) ||
+        (raw.callback_port as number) <= 0 ||
+        (raw.callback_port as number) > 65_535)
+    ) {
+      throw operatorPreferenceError("xaa_idp.callback_port", "expected TCP port");
+    }
+  }
+  if (config.pluginConfigs !== undefined) {
+    const plugins = requirePlainObject(config.pluginConfigs, "pluginConfigs", operatorPreferenceError);
+    for (const [pluginId, pluginValue] of Object.entries(plugins)) {
+      const plugin = requirePlainObject(pluginValue, `pluginConfigs.${pluginId}`, operatorPreferenceError);
+      rejectUnknownFields(plugin, new Set(["mcpServers", "options"]), operatorPreferenceError, `pluginConfigs.${pluginId}`);
+      if (plugin.options !== undefined) {
+        const options = requirePlainObject(plugin.options, `pluginConfigs.${pluginId}.options`, operatorPreferenceError);
+        for (const [name, value] of Object.entries(options)) {
+          validatePluginPreferenceValue(value, `pluginConfigs.${pluginId}.options.${name}`);
+        }
+      }
+      if (plugin.mcpServers !== undefined) {
+        const servers = requirePlainObject(plugin.mcpServers, `pluginConfigs.${pluginId}.mcpServers`, operatorPreferenceError);
+        for (const [serverName, serverValue] of Object.entries(servers)) {
+          const server = requirePlainObject(serverValue, `pluginConfigs.${pluginId}.mcpServers.${serverName}`, operatorPreferenceError);
+          for (const [name, value] of Object.entries(server)) {
+            validatePluginPreferenceValue(value, `pluginConfigs.${pluginId}.mcpServers.${serverName}.${name}`);
+          }
+        }
+      }
+    }
+  }
+  if (config.autoFix !== undefined) {
+    const autoFix = requirePlainObject(config.autoFix, "autoFix", operatorPreferenceError);
+    rejectUnknownFields(
+      autoFix,
+      new Set(["enabled", "lint", "test", "maxRetries", "timeout"]),
+      operatorPreferenceError,
+      "autoFix",
+    );
+    const parsed = parseAutoFixConfig(config.autoFix);
+    if (!parsed.success) throw operatorPreferenceError("autoFix", parsed.reason);
+  }
+  validateManagedPolicy(config);
+}
+
+export const PROFILE_OVERRIDE_KEYS = Object.freeze([
+  "model",
+  "model_provider",
+  "approval_policy",
+  "sandbox_mode",
+  "reasoning_effort",
+  "reasoning_summary",
+  "approvals_reviewer",
+  "model_verbosity",
+  "service_tier",
+  "personality",
+  "tools_config",
+] as const satisfies readonly (keyof ProfileOverride)[]);
+
+const PROFILE_OVERRIDE_KEY_SET: ReadonlySet<string> = new Set(PROFILE_OVERRIDE_KEYS);
+
+function validateLiveProviderIdentity(
+  value: string,
+  field: string,
+  makeError: InvalidConfigFactory,
+): void {
+  try {
+    normalizeProviderIdentity(value, `config ${field}`);
+  } catch (error) {
+    if (error instanceof RetiredProviderSelectorError) {
+      throw makeError(
+        field,
+        `retired provider selector "${error.selector}"; use "${error.replacement}"`,
+      );
+    }
+    throw error;
+  }
+}
+
+function validateEnumValue(
+  value: unknown,
+  field: string,
+  allowed: readonly string[],
+  makeError: InvalidConfigFactory,
+): void {
+  if (value !== undefined && !allowed.includes(value as string)) {
+    throw makeError(field, `expected one of: ${allowed.join(", ")}`);
+  }
+}
+
+export function validateProfilesConfig(
+  raw: unknown,
+): Readonly<Record<string, ProfileOverride>> | undefined {
+  if (raw === undefined) return undefined;
+  const makeError: InvalidConfigFactory = (field, detail) =>
+    new InvalidProfilesConfigError(field, detail);
+  const profiles = requirePlainObject(raw, "", makeError);
+  const out: Record<string, ProfileOverride> = {};
+  for (const [name, value] of Object.entries(profiles)) {
+    const profile = requirePlainObject(value, name, makeError);
+    rejectUnknownFields(profile, PROFILE_OVERRIDE_KEY_SET, makeError, name);
+    optionalString(profile.model, `${name}.model`, makeError);
+    const modelProvider = optionalString(
+      profile.model_provider,
+      `${name}.model_provider`,
+      makeError,
+    );
+    if (modelProvider !== undefined) {
+      validateLiveProviderIdentity(
+        modelProvider,
+        `${name}.model_provider`,
+        makeError,
+      );
+    }
+    validateEnumValue(
+      profile.approval_policy,
+      `${name}.approval_policy`,
+      ["untrusted", "on-failure", "on-request", "never"],
+      makeError,
+    );
+    validateEnumValue(
+      profile.sandbox_mode,
+      `${name}.sandbox_mode`,
+      ["read-only", "workspace-write", "danger-full-access"],
+      makeError,
+    );
+    validateEnumValue(
+      profile.reasoning_effort,
+      `${name}.reasoning_effort`,
+      ["low", "medium", "high", "xhigh", "none"],
+      makeError,
+    );
+    validateEnumValue(
+      profile.reasoning_summary,
+      `${name}.reasoning_summary`,
+      ["auto", "concise", "detailed", "none"],
+      makeError,
+    );
+    validateEnumValue(
+      profile.approvals_reviewer,
+      `${name}.approvals_reviewer`,
+      ["user", "auto_review"],
+      makeError,
+    );
+    validateEnumValue(
+      profile.model_verbosity,
+      `${name}.model_verbosity`,
+      ["low", "medium", "high"],
+      makeError,
+    );
+    validateEnumValue(
+      profile.service_tier,
+      `${name}.service_tier`,
+      ["priority", "flex"],
+      makeError,
+    );
+    validateEnumValue(
+      profile.personality,
+      `${name}.personality`,
+      ["none", "friendly", "pragmatic"],
+      makeError,
+    );
+    if (profile.tools_config !== undefined) {
+      validateToolsConfig(profile.tools_config, `${name}.tools_config`);
+    }
+    out[name] = deepFreeze({ ...profile }) as ProfileOverride;
+  }
+  return deepFreeze(out);
+}
+
 export function validateAgenCConfigBlocks(config: AgenCConfig): AgenCConfig {
+  const rejectRemovedNestedAliases = (value: unknown, path = ""): void => {
+    if (Array.isArray(value)) {
+      value.forEach((entry, index) =>
+        rejectRemovedNestedAliases(entry, path ? `${path}.${index}` : String(index))
+      );
+      return;
+    }
+    if (!isPlainObject(value)) return;
+    for (const [key, child] of Object.entries(value)) {
+      const field = path ? `${path}.${key}` : key;
+      if (key === "defaultPermissionMode" || key === "approval_mode") {
+        throw new Error(
+          `Invalid ${field}: removed alias; use default_permission_mode`,
+        );
+      }
+      rejectRemovedNestedAliases(child, field);
+    }
+  };
+  rejectRemovedNestedAliases(config);
+  validateStrictAgenCConfigFields(config);
+  if (config.model_provider !== undefined) {
+    validateLiveProviderIdentity(
+      config.model_provider,
+      "model_provider",
+      (field, detail) => new Error(`Invalid ${field}: ${detail}`),
+    );
+  }
+
   const out: Record<string, unknown> = { ...config };
   let changed = false;
 
@@ -2335,12 +3390,41 @@ export function validateAgenCConfigBlocks(config: AgenCConfig): AgenCConfig {
     changed = true;
   }
 
+  if (config.outputStyle !== undefined && typeof config.outputStyle !== "string") {
+    throw new Error("Invalid outputStyle: expected string");
+  }
+  validateOperatorPreferences(config);
+
   if (config.auth !== undefined) {
     out.auth = validateAuthConfig(config.auth);
     changed = true;
   }
+  if (config.permissions !== undefined) {
+    out.permissions = validatePermissionsConfig(config.permissions);
+    changed = true;
+  }
+  if (config.tools_config !== undefined) {
+    out.tools_config = validateToolsConfig(config.tools_config);
+    changed = true;
+  }
+  if (config.hooks !== undefined) {
+    out.hooks = validateHooksConfig(config.hooks);
+    changed = true;
+  }
+  if (config.sandbox !== undefined) {
+    out.sandbox = validateSandboxConfig(config.sandbox);
+    changed = true;
+  }
+  if (config.statusLine !== undefined) {
+    out.statusLine = validateStatusLineConfig(config.statusLine);
+    changed = true;
+  }
   if (config.providers !== undefined) {
     out.providers = validateProviderConfig(config.providers);
+    changed = true;
+  }
+  if (config.profiles !== undefined) {
+    out.profiles = validateProfilesConfig(config.profiles);
     changed = true;
   }
   if (config.agent !== undefined) {
@@ -2349,6 +3433,10 @@ export function validateAgenCConfigBlocks(config: AgenCConfig): AgenCConfig {
   }
   if (config.plugins !== undefined) {
     out.plugins = validatePluginsConfig(config.plugins);
+    changed = true;
+  }
+  if (config.mcp_servers !== undefined) {
+    out.mcp_servers = validateMcpServersConfig(config.mcp_servers);
     changed = true;
   }
   if (config.tui !== undefined) {
@@ -2401,11 +3489,138 @@ export class InvalidTuiConfigError extends Error {
   }
 }
 
+function validateTuiKeybindings(
+  raw: unknown,
+): readonly TuiKeybindingConfig[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) {
+    throw new InvalidTuiConfigError("keybindings", "expected array");
+  }
+
+  const seenByContext = new Map<KeybindingContextName, Map<string, string>>();
+  const blocks: TuiKeybindingConfig[] = [];
+  raw.forEach((entry, index) => {
+    const blockField = `keybindings.${index}`;
+    if (!isPlainObject(entry)) {
+      throw new InvalidTuiConfigError(blockField, "expected plain object");
+    }
+    rejectUnknownFields(
+      entry,
+      new Set(["context", "bindings", "unbind"]),
+      (field, detail) => new InvalidTuiConfigError(field, detail),
+      blockField,
+    );
+    if (!isKeybindingContextName(entry.context)) {
+      throw new InvalidTuiConfigError(
+        `${blockField}.context`,
+        "expected a supported keybinding context",
+      );
+    }
+    const context = entry.context;
+    if (entry.bindings === undefined && entry.unbind === undefined) {
+      throw new InvalidTuiConfigError(
+        blockField,
+        "expected bindings and/or unbind",
+      );
+    }
+
+    const seen = seenByContext.get(context) ?? new Map<string, string>();
+    seenByContext.set(context, seen);
+    const claimChord = (chord: string, field: string): void => {
+      const syntaxError = keybindingChordError(chord);
+      if (syntaxError !== null) {
+        throw new InvalidTuiConfigError(field, syntaxError);
+      }
+      const normalized = normalizeKeyForComparison(chord);
+      const prior = seen.get(normalized);
+      if (prior !== undefined) {
+        throw new InvalidTuiConfigError(
+          field,
+          `conflicts with ${prior} after key alias normalization`,
+        );
+      }
+      seen.set(normalized, field);
+    };
+
+    let bindings: Readonly<Record<string, BindingCommand>> | undefined;
+    if (entry.bindings !== undefined) {
+      if (!isPlainObject(entry.bindings)) {
+        throw new InvalidTuiConfigError(
+          `${blockField}.bindings`,
+          "expected plain object",
+        );
+      }
+      const validated: Record<string, BindingCommand> = {};
+      for (const [chord, action] of Object.entries(entry.bindings)) {
+        const field = `${blockField}.bindings.${JSON.stringify(chord)}`;
+        claimChord(chord, field);
+        const actionError = bindingCommandError(action, context);
+        if (actionError !== null) {
+          throw new InvalidTuiConfigError(field, actionError);
+        }
+        const nonRebindableError = nonRebindableBindingError(
+          chord,
+          action as BindingCommand,
+        );
+        if (nonRebindableError !== null) {
+          throw new InvalidTuiConfigError(field, nonRebindableError);
+        }
+        validated[chord] = action as BindingCommand;
+      }
+      bindings = Object.freeze(validated);
+    }
+
+    let unbind: readonly string[] | undefined;
+    if (entry.unbind !== undefined) {
+      if (
+        !Array.isArray(entry.unbind) ||
+        entry.unbind.some((chord) => typeof chord !== "string")
+      ) {
+        throw new InvalidTuiConfigError(
+          `${blockField}.unbind`,
+          "expected string[]",
+        );
+      }
+      const validated = [...entry.unbind] as string[];
+      validated.forEach((chord, chordIndex) => {
+        const field = `${blockField}.unbind.${chordIndex}`;
+        claimChord(chord, field);
+        const nonRebindableError = nonRebindableBindingError(chord, null);
+        if (nonRebindableError !== null) {
+          throw new InvalidTuiConfigError(field, nonRebindableError);
+        }
+      });
+      unbind = Object.freeze(validated);
+    }
+
+    blocks.push(Object.freeze({
+      context,
+      ...(bindings !== undefined ? { bindings } : {}),
+      ...(unbind !== undefined ? { unbind } : {}),
+    }));
+  });
+  return Object.freeze(blocks);
+}
+
 export function validateTuiConfig(raw: unknown): TuiConfig | undefined {
   if (raw === undefined) return undefined;
   if (!isPlainObject(raw)) {
     throw new InvalidTuiConfigError("", "expected plain object");
   }
+  rejectUnknownFields(
+    raw,
+    new Set([
+      "vimMode",
+      "theme",
+      "showTurnDuration",
+      "terminalProgressBarEnabled",
+      "copyOnSelect",
+      "flickerFreeMode",
+      "prStatusFooterEnabled",
+      "keybindings",
+    ]),
+    (field, detail) => new InvalidTuiConfigError(field, detail),
+  );
 
   const out: { -readonly [K in keyof TuiConfig]: TuiConfig[K] } = {};
   if (raw.vimMode !== undefined) {
@@ -2414,6 +3629,31 @@ export function validateTuiConfig(raw: unknown): TuiConfig | undefined {
     }
     out.vimMode = raw.vimMode;
   }
+  if (raw.theme !== undefined) {
+    if (!TUI_THEME_SETTINGS.includes(raw.theme as TuiThemeSetting)) {
+      throw new InvalidTuiConfigError(
+        "theme",
+        `expected one of ${TUI_THEME_SETTINGS.join(", ")}`,
+      );
+    }
+    out.theme = raw.theme as TuiThemeSetting;
+  }
+  for (const key of [
+    "showTurnDuration",
+    "terminalProgressBarEnabled",
+    "copyOnSelect",
+    "flickerFreeMode",
+    "prStatusFooterEnabled",
+  ] as const) {
+    if (raw[key] !== undefined) {
+      if (typeof raw[key] !== "boolean") {
+        throw new InvalidTuiConfigError(key, "expected boolean");
+      }
+      out[key] = raw[key];
+    }
+  }
+  const keybindings = validateTuiKeybindings(raw.keybindings);
+  if (keybindings !== undefined) out.keybindings = keybindings;
   return Object.freeze(out as TuiConfig);
 }
 
@@ -2618,6 +3858,18 @@ export function validateBrowserConfig(raw: unknown): BrowserConfig | undefined {
   if (!isPlainObject(raw)) {
     throw new InvalidBrowserConfigError("", "expected plain object");
   }
+  rejectUnknownFields(
+    raw,
+    new Set([
+      "executable_path",
+      "headless",
+      "allow_private_network",
+      "profile_dir",
+      "no_sandbox",
+      "navigation_timeout_ms",
+    ]),
+    (field, detail) => new InvalidBrowserConfigError(field, detail),
+  );
   const out: { -readonly [K in keyof BrowserConfig]: BrowserConfig[K] } = {};
   for (const key of [
     "headless",
@@ -2681,7 +3933,7 @@ export class InvalidPermissionsConfigError extends Error {
 export function isValidPermissionMode(value: unknown): value is PermissionMode {
   return (
     typeof value === "string" &&
-    (PERMISSION_MODE_VALUES as readonly string[]).includes(value)
+    (USER_ADDRESSABLE_PERMISSION_MODES as readonly string[]).includes(value)
   );
 }
 
@@ -2715,16 +3967,33 @@ function validateStringArray(
   return Object.freeze([...(value as string[])]);
 }
 
+function validatePermissionRuleArray(
+  value: unknown,
+  field: string,
+): readonly string[] | undefined {
+  const rules = validateStringArray(value, field);
+  if (rules === undefined) return undefined;
+  for (const rule of rules) {
+    const toolName = parseRuleString(rule)?.toolName ?? rule;
+    if (isRemovedLiveToolName(toolName)) {
+      throw new InvalidPermissionsConfigError(
+        field,
+        `removed tool name '${toolName}'; run agenc config migrate`,
+      );
+    }
+  }
+  return rules;
+}
+
 /**
- * Validate a raw `permissions` block (typically coming from TOML or
- * settings.json) and return a frozen `PermissionsConfig`. Returns
+ * Validate a raw canonical TOML `permissions` block and return a frozen
+ * `PermissionsConfig`. Returns
  * `undefined` for `undefined` input. Throws
  * `InvalidPermissionsConfigError` on shape violations (wrong types,
  * unknown mode literal, etc.).
  *
- * Unknown sub-fields are silently dropped — the keys declared on
- * `PermissionsConfig` are the contract surface. If a new key is added
- * to `PermissionsConfig`, it must be wired through here too.
+ * Unknown sub-fields fail closed. If a new key is added to
+ * `PermissionsConfig`, it must be wired through here too.
  */
 export function validatePermissionsConfig(
   raw: unknown,
@@ -2733,16 +4002,28 @@ export function validatePermissionsConfig(
   if (!isPlainObject(raw)) {
     throw new InvalidPermissionsConfigError("", "expected plain object");
   }
+  rejectUnknownFields(
+    raw,
+    new Set([
+      "allow",
+      "deny",
+      "ask",
+      "additionalDirectories",
+      "defaultMode",
+      "bypassPermissionsMode",
+    ]),
+    (field, detail) => new InvalidPermissionsConfigError(field, detail),
+  );
 
   const out: {
     -readonly [K in keyof PermissionsConfig]: PermissionsConfig[K];
   } = {};
 
-  const allow = validateStringArray(raw.allow, "allow");
+  const allow = validatePermissionRuleArray(raw.allow, "allow");
   if (allow !== undefined) out.allow = allow;
-  const deny = validateStringArray(raw.deny, "deny");
+  const deny = validatePermissionRuleArray(raw.deny, "deny");
   if (deny !== undefined) out.deny = deny;
-  const ask = validateStringArray(raw.ask, "ask");
+  const ask = validatePermissionRuleArray(raw.ask, "ask");
   if (ask !== undefined) out.ask = ask;
   const addl = validateStringArray(
     raw.additionalDirectories,
@@ -2760,14 +4041,17 @@ export function validatePermissionsConfig(
     out.defaultMode = raw.defaultMode;
   }
 
-  if (raw.default_mode !== undefined) {
-    if (!isValidPermissionDefaultMode(raw.default_mode)) {
+  if (raw.bypassPermissionsMode !== undefined) {
+    if (
+      raw.bypassPermissionsMode !== "allow" &&
+      raw.bypassPermissionsMode !== "disable"
+    ) {
       throw new InvalidPermissionsConfigError(
-        "default_mode",
-        `unknown mode '${String(raw.default_mode)}'`,
+        "bypassPermissionsMode",
+        'expected "allow" or "disable"',
       );
     }
-    out.default_mode = raw.default_mode;
+    out.bypassPermissionsMode = raw.bypassPermissionsMode;
   }
 
   return Object.freeze(out as PermissionsConfig);
@@ -2791,122 +4075,49 @@ export class InvalidStatusLineConfigError extends Error {
   }
 }
 
-export class InvalidOutputStyleConfigError extends Error {
-  readonly field: string;
-  constructor(field: string, detail: string) {
-    super(`Invalid outputStyle.${field}: ${detail}`);
-    this.name = "InvalidOutputStyleConfigError";
-    this.field = field;
-  }
-}
-
 /**
- * Validate a raw `statusLine` block (typically coming from TOML or
- * settings.json) and return a frozen {@link PartialStatusLineConfig}.
+ * Validate a raw executable `statusLine` block from canonical TOML.
  * Returns `undefined` for `undefined` input. Throws
  * {@link InvalidStatusLineConfigError} on shape violations.
  *
- * Unknown sub-fields are silently dropped — `items` is the single
- * contract surface today. If a new key is added to
- * `PartialStatusLineConfig`, it must be wired through here too.
+ * Unknown sub-fields are rejected so this command-bearing surface cannot
+ * acquire implicit behavior.
  */
 export function validateStatusLineConfig(
   raw: unknown,
-): PartialStatusLineConfig | undefined {
+): StatusLineConfig | undefined {
   if (raw === undefined) return undefined;
   if (!isPlainObject(raw)) {
     throw new InvalidStatusLineConfigError("", "expected plain object");
   }
 
-  const out: {
-    -readonly [K in keyof PartialStatusLineConfig]: PartialStatusLineConfig[K];
-  } = {};
-
-  if (raw.items !== undefined) {
-    if (!Array.isArray(raw.items)) {
-      throw new InvalidStatusLineConfigError("items", "expected string[]");
-    }
-    for (const item of raw.items) {
-      if (typeof item !== "string") {
-        throw new InvalidStatusLineConfigError(
-          "items",
-          `array element is not a string: ${typeof item}`,
-        );
-      }
-    }
-    out.items = Object.freeze([...(raw.items as string[])]);
+  rejectUnknownFields(
+    raw,
+    new Set(["type", "command", "padding"]),
+    (field, detail) => new InvalidStatusLineConfigError(field, detail),
+  );
+  if (raw.type !== "command") {
+    throw new InvalidStatusLineConfigError("type", 'expected "command"');
   }
-
-  return Object.freeze(out as PartialStatusLineConfig);
-}
-
-/**
- * Validate a raw `outputStyle` block and return a frozen
- * {@link PartialOutputStyleConfig}. Returns `undefined` for `undefined`
- * input. Throws {@link InvalidOutputStyleConfigError} on shape
- * violations.
- */
-export function validateOutputStyleConfig(
-  raw: unknown,
-): PartialOutputStyleConfig | undefined {
-  if (raw === undefined) return undefined;
-  if (!isPlainObject(raw)) {
-    throw new InvalidOutputStyleConfigError("", "expected plain object");
+  if (typeof raw.command !== "string" || raw.command.length === 0) {
+    throw new InvalidStatusLineConfigError("command", "expected non-empty string");
   }
-
-  const out: {
-    -readonly [
-      K in keyof PartialOutputStyleConfig
-    ]: PartialOutputStyleConfig[K];
-  } = {};
-
-  if (raw.theme !== undefined) {
-    if (typeof raw.theme !== "string") {
-      throw new InvalidOutputStyleConfigError("theme", "expected string");
-    }
-    out.theme = raw.theme;
+  if (
+    raw.padding !== undefined &&
+    (typeof raw.padding !== "number" || !Number.isFinite(raw.padding))
+  ) {
+    throw new InvalidStatusLineConfigError("padding", "expected finite number");
   }
-
-  return Object.freeze(out as PartialOutputStyleConfig);
+  return Object.freeze({
+    type: "command",
+    command: raw.command,
+    ...(raw.padding !== undefined ? { padding: raw.padding } : {}),
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────
 // Hooks block validation
 // ─────────────────────────────────────────────────────────────────────
-
-const HOOK_EVENT_ALIASES: Readonly<Record<string, HookEventName>> =
-  Object.freeze({
-    PreToolUse: "PreToolUse",
-    preToolUse: "PreToolUse",
-    PostToolUse: "PostToolUse",
-    postToolUse: "PostToolUse",
-    PostToolUseFailure: "PostToolUseFailure",
-    postToolUseFailure: "PostToolUseFailure",
-    PermissionRequest: "PermissionRequest",
-    permissionRequest: "PermissionRequest",
-    UserPromptSubmit: "UserPromptSubmit",
-    userPromptSubmit: "UserPromptSubmit",
-    SessionStart: "SessionStart",
-    sessionStart: "SessionStart",
-    SubagentStop: "SubagentStop",
-    subagentStop: "SubagentStop",
-    SessionEnd: "SessionEnd",
-    sessionEnd: "SessionEnd",
-    Notification: "Notification",
-    notification: "Notification",
-    Stop: "Stop",
-    stop: "Stop",
-    StopFailure: "StopFailure",
-    stopFailure: "StopFailure",
-    PreCompact: "PreCompact",
-    preCompact: "PreCompact",
-    PostCompact: "PostCompact",
-    postCompact: "PostCompact",
-  });
-
-export function normalizeHookEventName(raw: string): HookEventName | undefined {
-  return HOOK_EVENT_ALIASES[raw];
-}
 
 export class InvalidHooksConfigError extends Error {
   readonly field: string;
@@ -2943,6 +4154,12 @@ function validateHookCommand(raw: unknown, field: string): HookCommand {
   if (!isPlainObject(raw)) {
     throw new InvalidHooksConfigError(field, "expected command object");
   }
+  rejectUnknownFields(
+    raw,
+    new Set(["type", "command", "timeout_ms", "enabled", "statusMessage"]),
+    (path, detail) => new InvalidHooksConfigError(path, detail),
+    field,
+  );
   if (raw.type !== "command") {
     throw new InvalidHooksConfigError(`${field}.type`, 'expected "command"');
   }
@@ -2981,6 +4198,12 @@ function validateHookMatcher(raw: unknown, field: string): HookMatcher {
   if (!isPlainObject(raw)) {
     throw new InvalidHooksConfigError(field, "expected matcher object");
   }
+  rejectUnknownFields(
+    raw,
+    new Set(["matcher", "enabled", "hooks"]),
+    (path, detail) => new InvalidHooksConfigError(path, detail),
+    field,
+  );
   const hooks = raw.hooks;
   if (!Array.isArray(hooks)) {
     throw new InvalidHooksConfigError(`${field}.hooks`, "expected array");
@@ -3006,13 +4229,13 @@ export function validateHooksConfig(raw: unknown): HooksMap | undefined {
   }
   const out: Record<string, HookMatcher[]> = {};
   for (const [eventKey, matchers] of Object.entries(raw)) {
-    const eventName = normalizeHookEventName(eventKey);
-    if (eventName === undefined) {
+    if (!(HOOK_EVENT_NAMES as readonly string[]).includes(eventKey)) {
       throw new InvalidHooksConfigError(
         eventKey,
         `unsupported event; expected one of ${HOOK_EVENT_NAMES.join(", ")}`,
       );
     }
+    const eventName = eventKey as HookEventName;
     if (!Array.isArray(matchers)) {
       throw new InvalidHooksConfigError(eventKey, "expected matcher array");
     }

@@ -2,7 +2,6 @@ import { describe, expect, test, vi } from "vitest";
 
 import type { KeybindingBlock, ParsedBinding } from "./types.js";
 import {
-  checkDuplicateKeysInJson,
   checkDuplicates,
   checkReservedShortcuts,
   formatWarning,
@@ -19,9 +18,9 @@ describe("keybinding validation", () => {
   test("rejects non-array configs and malformed blocks", () => {
     expect(validateUserConfig({})).toEqual([
       expect.objectContaining({
-        message: "keybindings.json must contain an array",
+        message: "tui.keybindings must contain an array",
         severity: "error",
-        suggestion: "Wrap your bindings in [ ]",
+        suggestion: "Set tui.keybindings to an array of override blocks",
         type: "parse_error",
       }),
     ]);
@@ -80,13 +79,7 @@ describe("keybinding validation", () => {
       expect.arrayContaining([
         expect.objectContaining({
           key: "ctrl++",
-          message: 'Empty key part in "ctrl++"',
-          suggestion: 'Remove extra "+" characters',
-          type: "parse_error",
-        }),
-        expect.objectContaining({
-          key: " ",
-          message: 'Empty key part in " "',
+          message: expect.stringContaining('Invalid chord "ctrl++"'),
           type: "parse_error",
         }),
         expect.objectContaining({
@@ -115,35 +108,6 @@ describe("keybinding validation", () => {
         }),
       ]),
     );
-  });
-
-  test("detects duplicate JSON keys inside one bindings object", () => {
-    const warnings = checkDuplicateKeysInJson(`[
-      {
-        "context": "Chat",
-        "bindings": {
-          "enter": "chat:submit",
-          "enter": "chat:newline",
-          "escape": "chat:cancel"
-        }
-      },
-      {
-        "context": "Global",
-        "bindings": {
-          "ctrl+t": "app:toggleTodos"
-        }
-      }
-    ]`);
-
-    expect(warnings).toEqual([
-      expect.objectContaining({
-        context: "Chat",
-        key: "enter",
-        message: 'Duplicate key "enter" in Chat bindings',
-        severity: "warning",
-        type: "duplicate",
-      }),
-    ]);
   });
 
   test("detects duplicate normalized bindings within a context only when action differs", () => {

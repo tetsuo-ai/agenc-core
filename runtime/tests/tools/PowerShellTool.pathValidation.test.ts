@@ -9,7 +9,7 @@ import type {
   ParsedCommandElement,
   ParsedPowerShellCommand,
 } from "../../src/utils/powershell/parser.js";
-import { applyPermissionUpdate } from "../permissions/rules.js";
+import { applyPermissionUpdate } from "../permissions/permission-updates.js";
 import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,

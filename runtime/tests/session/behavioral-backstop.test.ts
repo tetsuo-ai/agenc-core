@@ -12,7 +12,7 @@
  * defense (status polling, progressing retries).
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 import {
   evaluateBehavioralBackstop,
   recordBehavioralStep,
@@ -77,43 +77,16 @@ const usage: LLMUsage = {
   totalTokens: 0,
 };
 
-/** Default config with only env overrides applied (no ctx.config). */
+/** Default internal detector config with optional test-only overrides. */
 function cfg(overrides: Partial<BehavioralConfig> = {}): BehavioralConfig {
-  return { ...resolveBehavioralConfig({}), ...overrides };
+  return { ...resolveBehavioralConfig(), ...overrides };
 }
-
-const ENV_KEYS = [
-  "AGENC_BEHAVIORAL_BACKSTOP",
-  "AGENC_NOPROGRESS_WARN",
-  "AGENC_NOPROGRESS_TERMINATE",
-  "AGENC_ABAB_TERMINATE",
-  "AGENC_LOWGAIN_TERMINATE",
-  "AGENC_PROGRESS_WINDOW",
-  "AGENC_TURN_DEADLINE_MS",
-  "AGENC_TURN_TOKEN_CAP",
-  "AGENC_TURN_STEP_CAP",
-  "AGENC_NOPROGRESS_IGNORE_TOOLS",
-  "AGENC_PROGRESS_RESULT_PREFIX",
-  "AGENC_PROGRESS_NORMALIZE_VOLATILE",
-  "AGENC_BEHAVIORAL_OBSERVER",
-  "AGENC_BEHAVIORAL_OBSERVER_K",
-] as const;
-const savedEnv: Record<string, string | undefined> = {};
-beforeEach(() => {
-  for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
-});
-afterEach(() => {
-  for (const k of ENV_KEYS) {
-    if (savedEnv[k] === undefined) delete process.env[k];
-    else process.env[k] = savedEnv[k];
-  }
-});
 
 // ── Default config discipline ───────────────────────────────────────
 
 describe("resolveBehavioralConfig — defaults", () => {
   test("master switch ON, result-aware detectors ON, risky caps OFF", () => {
-    const c = resolveBehavioralConfig({});
+    const c = resolveBehavioralConfig();
     expect(c.enabled).toBe(true);
     expect(c.repeatSoft).toBe(3);
     expect(c.repeatHard).toBe(8);
@@ -132,24 +105,6 @@ describe("resolveBehavioralConfig — defaults", () => {
     expect(c.resultHashPrefixBytes).toBe(64 * 1024);
   });
 
-  test("precedence: ctx.config > env > default", () => {
-    process.env.AGENC_NOPROGRESS_TERMINATE = "20";
-    // env wins over default
-    expect(resolveBehavioralConfig({}).repeatHard).toBe(20);
-    // ctx.config wins over env
-    expect(
-      resolveBehavioralConfig({ config: { progressRepeatHard: 5 } }).repeatHard,
-    ).toBe(5);
-  });
-
-  test("master switch OFF via env", () => {
-    process.env.AGENC_BEHAVIORAL_BACKSTOP = "0";
-    expect(resolveBehavioralConfig({}).enabled).toBe(false);
-    process.env.AGENC_BEHAVIORAL_BACKSTOP = "off";
-    expect(resolveBehavioralConfig({}).enabled).toBe(false);
-    process.env.AGENC_BEHAVIORAL_BACKSTOP = "1";
-    expect(resolveBehavioralConfig({}).enabled).toBe(true);
-  });
 });
 
 // ── Signature + result hash ─────────────────────────────────────────

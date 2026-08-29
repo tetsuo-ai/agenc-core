@@ -22,8 +22,6 @@ function features(defaultMode = false): ManagedFeatures {
   return {
     enabled: (key) =>
       key === "default_mode_request_user_input" && defaultMode,
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
   };
 }
 

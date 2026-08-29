@@ -24,6 +24,7 @@ describe("attachment-state", () => {
     expect(state.lastMcpInstructionsHash).toBeUndefined();
     expect(state.lastMcpInstructionsMap).toBeUndefined();
     expect(state.pendingCriticalReminder).toBeUndefined();
+    expect(state.dynamicSkillDirTriggers.size).toBe(0);
     _resetAttachmentTrackingStateForTest(sessionKey);
   });
 

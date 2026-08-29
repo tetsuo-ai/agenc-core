@@ -1,197 +1,130 @@
-import { afterEach, expect, test } from 'bun:test'
+import { afterEach, expect, test } from "bun:test";
 import {
   getAPIProvider,
   isGithubNativeAnthropicMode,
+  type ProviderRuntimeSelection,
+  runWithStartupProviderSelection,
   usesAnthropicAccountFlow,
-} from '../../../src/utils/model/providers.ts'
+} from "../../../src/utils/model/providers.ts";
+
+function selection(
+  provider: string,
+  model = "test-model",
+): ProviderRuntimeSelection {
+  return { provider, model, environment: Object.freeze({ ...process.env }) };
+}
 
 const originalEnv = {
-  AGENC_USE_GEMINI: process.env.AGENC_USE_GEMINI,
-  AGENC_USE_GITHUB: process.env.AGENC_USE_GITHUB,
-  AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,
-  AGENC_USE_MISTRAL: process.env.AGENC_USE_MISTRAL,
-  AGENC_USE_MINIMAX: process.env.AGENC_USE_MINIMAX,
-  NVIDIA_NIM: process.env.NVIDIA_NIM,
+  AGENC_PROVIDER: process.env.AGENC_PROVIDER,
   MINIMAX_API_KEY: process.env.MINIMAX_API_KEY,
-  OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
-  OPENAI_API_BASE: process.env.OPENAI_API_BASE,
-  OPENAI_MODEL: process.env.OPENAI_MODEL,
   XAI_API_KEY: process.env.XAI_API_KEY,
-}
+};
 
 afterEach(() => {
-  for (const key of Object.keys(originalEnv) as Array<keyof typeof originalEnv>) {
-    if (originalEnv[key] === undefined) {
-      delete process.env[key]
-    } else {
-      process.env[key] = originalEnv[key]
-    }
+  for (const key of Object.keys(originalEnv) as Array<
+    keyof typeof originalEnv
+  >) {
+    const value = originalEnv[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
   }
-})
+});
 
 function clearProviderEnv(): void {
-  delete process.env.AGENC_USE_GEMINI
-  delete process.env.AGENC_USE_GITHUB
-  delete process.env.AGENC_USE_OPENAI
-  delete process.env.AGENC_USE_MISTRAL
-  delete process.env.AGENC_USE_MINIMAX
-  delete process.env.NVIDIA_NIM
-  delete process.env.MINIMAX_API_KEY
-  delete process.env.OPENAI_BASE_URL
-  delete process.env.OPENAI_API_BASE
-  delete process.env.OPENAI_MODEL
-  delete process.env.XAI_API_KEY
+  delete process.env.AGENC_PROVIDER;
+  delete process.env.MINIMAX_API_KEY;
+  delete process.env.XAI_API_KEY;
 }
 
-test('first-party provider keeps provider account setup flow enabled', () => {
-  clearProviderEnv()
-  expect(getAPIProvider()).toBe('firstParty')
-  expect(usesAnthropicAccountFlow()).toBe(true)
-})
+test("explicit provider lookup does not depend on ambient selectors", () => {
+  clearProviderEnv();
+  expect(getAPIProvider("grok")).toBe("xai");
+  expect(usesAnthropicAccountFlow("grok")).toBe(false);
+});
 
 test.each([
-  ['AGENC_USE_OPENAI', 'openai'],
-  ['AGENC_USE_GITHUB', 'github'],
-  ['AGENC_USE_GEMINI', 'gemini'],
-  ['AGENC_USE_MISTRAL', 'mistral'],
-  ['AGENC_USE_MINIMAX', 'minimax'],
-  ['NVIDIA_NIM', 'nvidia-nim'],
+  ["anthropic", "firstParty", true],
+  ["amazon-bedrock", "firstParty", true],
+  ["openai", "openai", false],
+  ["openai-compatible", "openai", false],
+  ["github", "github", false],
+  ["gemini", "gemini", false],
+  ["mistral", "mistral", false],
+  ["minimax", "minimax", false],
+  ["nvidia-nim", "nvidia-nim", false],
+  ["agenc", "agenc", false],
+  ["grok", "xai", false],
 ] as const)(
-  '%s disables provider account setup flow',
-  (envKey, provider) => {
-    clearProviderEnv()
-    process.env[envKey] = '1'
-
-    expect(getAPIProvider()).toBe(provider)
-    expect(usesAnthropicAccountFlow()).toBe(false)
+  "canonical startup provider %s selects exactly one provider authority",
+  (provider, apiProvider, usesAccountFlow) => {
+    clearProviderEnv();
+    runWithStartupProviderSelection(selection(provider), () => {
+      expect(getAPIProvider()).toBe(apiProvider);
+      expect(usesAnthropicAccountFlow()).toBe(usesAccountFlow);
+    });
   },
-)
+);
 
-test('MINIMAX_API_KEY disables provider account setup flow', () => {
-  clearProviderEnv()
-  process.env.MINIMAX_API_KEY = 'minimax-test-key'
+test("credentials never select a provider", () => {
+  clearProviderEnv();
+  process.env.MINIMAX_API_KEY = "minimax-test-key";
+  process.env.XAI_API_KEY = "xai-test-key";
 
-  expect(getAPIProvider()).toBe('minimax')
-  expect(usesAnthropicAccountFlow()).toBe(false)
-})
+  runWithStartupProviderSelection(selection("grok"), () => {
+    expect(getAPIProvider()).toBe("xai");
+  });
+  runWithStartupProviderSelection(selection("openai"), () => {
+    expect(getAPIProvider()).toBe("openai");
+  });
+});
 
-test('GEMINI takes precedence over GitHub when both are set', () => {
-  clearProviderEnv()
-  process.env.AGENC_USE_GEMINI = '1'
-  process.env.AGENC_USE_GITHUB = '1'
+test("provider selection is not inferred from an unknown model identifier", () => {
+  clearProviderEnv();
 
-  expect(getAPIProvider()).toBe('gemini')
-})
+  runWithStartupProviderSelection(selection("openai", "custom-model"), () => {
+    expect(getAPIProvider()).toBe("openai");
+  });
+});
+
+test("isGithubNativeAnthropicMode is false outside a GitHub session", () => {
+  clearProviderEnv();
+  runWithStartupProviderSelection(
+    selection("openai", "claude-sonnet-4-5"),
+    () => {
+      expect(isGithubNativeAnthropicMode("claude-sonnet-4-5")).toBe(false);
+    },
+  );
+});
 
 test.each([
-  ['AGENC_USE_MISTRAL', 'mistral'],
-  ['AGENC_USE_GITHUB', 'github'],
-  ['AGENC_USE_OPENAI', 'openai'],
+  ["claude-sonnet-4-5", true],
+  ["github:copilot:claude-sonnet-4", true],
+  ["claude-haiku-4-5", true],
+  ["github:copilot", false],
+  ["gpt-4o", false],
+  ["github:copilot:gpt-4o", false],
 ] as const)(
-  '%s takes precedence over ambient MiniMax credentials',
-  (envKey, provider) => {
-    clearProviderEnv()
-    process.env.MINIMAX_API_KEY = 'ambient-minimax-key'
-    process.env[envKey] = '1'
-    if (envKey === 'AGENC_USE_OPENAI') {
-      process.env.OPENAI_MODEL = 'gpt-4o'
-    }
-
-    expect(getAPIProvider()).toBe(provider)
+  "GitHub native-mode detection uses the required resolved model %s",
+  (resolvedModel, expected) => {
+    clearProviderEnv();
+    runWithStartupProviderSelection(
+      selection("github", "ambient-ignored"),
+      () => {
+        expect(isGithubNativeAnthropicMode(resolvedModel)).toBe(expected);
+      },
+    );
   },
-)
+);
 
-test('explicit openai flag takes precedence over stale NVIDIA_NIM', () => {
-  clearProviderEnv()
-  process.env.NVIDIA_NIM = '1'
-  process.env.AGENC_USE_OPENAI = '1'
-  process.env.OPENAI_MODEL = 'gpt-4o'
+test("post-capture process env mutation cannot change startup provider authority", async () => {
+  clearProviderEnv();
+  await runWithStartupProviderSelection(selection("github"), async () => {
+    process.env.AGENC_PROVIDER = "anthropic";
+    await Promise.resolve();
+    expect(getAPIProvider()).toBe("github");
 
-  expect(getAPIProvider()).toBe('openai')
-})
-
-test('explicit local openai-compatible base URLs stay on the openai provider', () => {
-  clearProviderEnv()
-  process.env.AGENC_USE_OPENAI = '1'
-  process.env.OPENAI_BASE_URL = 'http://127.0.0.1:8080/v1'
-  process.env.OPENAI_MODEL = 'gpt-5.4'
-
-  expect(getAPIProvider()).toBe('openai')
-})
-
-test('agenc aliases still resolve to the agenc provider without a non-agenc base URL', () => {
-  clearProviderEnv()
-  process.env.AGENC_USE_OPENAI = '1'
-  process.env.OPENAI_MODEL = 'agencplan'
-
-  expect(getAPIProvider()).toBe('agenc')
-})
-
-test('XAI_API_KEY resolves to the xai provider', () => {
-  clearProviderEnv()
-  process.env.AGENC_USE_OPENAI = '1'
-  process.env.XAI_API_KEY = 'xai-test-key'
-  process.env.OPENAI_BASE_URL = 'https://api.x.ai/v1'
-  process.env.OPENAI_MODEL = 'grok-4'
-
-  expect(getAPIProvider()).toBe('xai')
-})
-
-test('official openai base URLs now keep provider detection on openai for aliases', () => {
-  clearProviderEnv()
-  process.env.AGENC_USE_OPENAI = '1'
-  process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
-  process.env.OPENAI_MODEL = 'gpt-5.4'
-
-  expect(getAPIProvider()).toBe('openai')
-})
-
-// isGithubNativeAnthropicMode
-
-test('isGithubNativeAnthropicMode: false when AGENC_USE_GITHUB is not set', () => {
-  clearProviderEnv()
-  process.env.OPENAI_MODEL = 'claude-sonnet-4-5'
-  expect(isGithubNativeAnthropicMode()).toBe(false)
-})
-
-test('isGithubNativeAnthropicMode: true for bare provider-native model via OPENAI_MODEL', () => {
-  clearProviderEnv()
-  process.env.AGENC_USE_GITHUB = '1'
-  process.env.OPENAI_MODEL = 'claude-sonnet-4-5'
-  expect(isGithubNativeAnthropicMode()).toBe(true)
-})
-
-test('isGithubNativeAnthropicMode: true for github:copilot provider-native compound format', () => {
-  clearProviderEnv()
-  process.env.AGENC_USE_GITHUB = '1'
-  process.env.OPENAI_MODEL = 'github:copilot:claude-sonnet-4'
-  expect(isGithubNativeAnthropicMode()).toBe(true)
-})
-
-test('isGithubNativeAnthropicMode: true when resolvedModel is provider-native', () => {
-  clearProviderEnv()
-  process.env.AGENC_USE_GITHUB = '1'
-  process.env.OPENAI_MODEL = 'github:copilot'
-  expect(isGithubNativeAnthropicMode('claude-haiku-4-5')).toBe(true)
-})
-
-test('isGithubNativeAnthropicMode: false for generic github:copilot alias', () => {
-  clearProviderEnv()
-  process.env.AGENC_USE_GITHUB = '1'
-  process.env.OPENAI_MODEL = 'github:copilot'
-  expect(isGithubNativeAnthropicMode()).toBe(false)
-})
-
-test('isGithubNativeAnthropicMode: false for non-AgenC model', () => {
-  clearProviderEnv()
-  process.env.AGENC_USE_GITHUB = '1'
-  process.env.OPENAI_MODEL = 'gpt-4o'
-  expect(isGithubNativeAnthropicMode()).toBe(false)
-})
-
-test('isGithubNativeAnthropicMode: false for github:copilot:gpt- model', () => {
-  clearProviderEnv()
-  process.env.AGENC_USE_GITHUB = '1'
-  process.env.OPENAI_MODEL = 'github:copilot:gpt-4o'
-  expect(isGithubNativeAnthropicMode()).toBe(false)
-})
+    process.env.AGENC_PROVIDER = "openai";
+    await Promise.resolve();
+    expect(getAPIProvider()).toBe("github");
+  });
+});

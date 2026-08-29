@@ -48,8 +48,6 @@ function logOperation(
 // All commands — user input, task notifications, orphaned permissions — go
 // through this single queue. React components subscribe via
 // useSyncExternalStore (subscribeToCommandQueue / getCommandQueueSnapshot).
-// Non-React code (print.ts streaming loop) reads directly via
-// getCommandQueue() / getCommandQueueLength().
 //
 // Priority determines dequeue order: 'now' > 'next' > 'later'.
 // Within the same priority, commands are processed FIFO.
@@ -161,18 +159,6 @@ export function getCommandQueueSnapshot(): readonly QueuedCommand[] {
   return snapshot;
 }
 
-// ============================================================================
-// Read operations (for non-React code)
-// ============================================================================
-
-/**
- * Get a mutable copy of the current queue.
- * Use for one-off reads where you need the actual commands.
- */
-export function getCommandQueue(): QueuedCommand[] {
-  return [...commandQueue];
-}
-
 /**
  * Resolve the workspace that owns a queued command.
  *
@@ -186,30 +172,12 @@ export function queuedCommandWorkspaceView(
 }
 
 /**
- * Get the current queue length without copying.
- */
-export function getCommandQueueLength(): number {
-  return commandQueue.length;
-}
-
-/**
  * Check if there are commands in the queue.
  */
 export function hasCommandsInQueue(
   predicate: (command: QueuedCommand) => boolean = () => true,
 ): boolean {
   return commandQueue.some(predicate);
-}
-
-/**
- * Trigger a re-check by notifying subscribers.
- * Use after async processing completes to ensure remaining commands
- * are picked up by useSyncExternalStore consumers.
- */
-export function recheckCommandQueue(): void {
-  if (commandQueue.length > 0) {
-    notifySubscribers();
-  }
 }
 
 // ============================================================================
@@ -298,26 +266,6 @@ export function dequeue(
   notifySubscribers();
   logOperation("dequeue", undefined, dequeued?.queueOwner);
   return dequeued;
-}
-
-/**
- * Remove and return all commands from the queue.
- * Logs a dequeue operation for each command.
- */
-export function dequeueAll(): QueuedCommand[] {
-  if (commandQueue.length === 0) {
-    return [];
-  }
-
-  const commands = [...commandQueue];
-  commandQueue.length = 0;
-  notifySubscribers();
-
-  for (const command of commands) {
-    logOperation("dequeue", undefined, command.queueOwner);
-  }
-
-  return commands;
 }
 
 /**
@@ -414,20 +362,6 @@ function isQueuedUserInput(cmd: QueuedCommand): boolean {
 }
 
 /**
- * Number of user-typed inputs currently queued for dispatch.
- * Mirrors the prompt banner's count so a UI affordance can decide
- * whether to show/enable a per-item removal hint without re-deriving
- * the filter.
- */
-export function getQueuedUserInputCount(): number {
-  let count = 0;
-  for (const cmd of commandQueue) {
-    if (isQueuedUserInput(cmd)) count++;
-  }
-  return count;
-}
-
-/**
  * Remove the most-recently-queued user input (prompt/bash) from the queue,
  * returning the removed command or undefined when there is none.
  *
@@ -499,10 +433,9 @@ export function clearCommandQueue(
 }
 
 /**
- * Clear all commands and reset snapshot.
- * Used for test cleanup.
+ * Clear all commands, owners, and the external-store snapshot between tests.
  */
-export function resetCommandQueue(): void {
+export function resetCommandQueueForTesting(): void {
   commandQueue.length = 0;
   activeQueueOwners.clear();
   snapshot = Object.freeze([]);
@@ -518,7 +451,7 @@ const NON_EDITABLE_MODES = new Set<PromptInputMode>([
   Exclude<PromptInputMode, EditablePromptInputMode>
 >[]);
 
-export function isPromptInputModeEditable(
+function isPromptInputModeEditable(
   mode: PromptInputMode,
 ): mode is EditablePromptInputMode {
   return !NON_EDITABLE_MODES.has(mode);
@@ -636,8 +569,8 @@ export function popAllEditable(
   const images: PastedContent[] = [];
   let nextImageId = Date.now(); // Use timestamp as base for unique IDs
   for (const cmd of editable) {
-    // handlePromptSubmit queues images in pastedContents (value is a string).
-    // Preserve the original PastedContent id so imageStore lookups still work.
+    // Composer queue entries keep images in pastedContents while value remains
+    // a string. Preserve the original id so imageStore lookups still work.
     if (cmd.pastedContents) {
       for (const content of Object.values(cmd.pastedContents)) {
         if (content.type === "image") {
@@ -666,38 +599,6 @@ export function popAllEditable(
 
   return { text: newInput, cursorOffset, images };
 }
-
-// ============================================================================
-// Backward-compatible aliases (deprecated — prefer new names)
-// ============================================================================
-
-/** @deprecated Use subscribeToCommandQueue */
-export const subscribeToPendingNotifications = subscribeToCommandQueue;
-
-/** @deprecated Use getCommandQueueSnapshot */
-export function getPendingNotificationsSnapshot(): readonly QueuedCommand[] {
-  return snapshot;
-}
-
-/** @deprecated Use hasCommandsInQueue */
-export const hasPendingNotifications = hasCommandsInQueue;
-
-/** @deprecated Use getCommandQueueLength */
-export const getPendingNotificationsCount = getCommandQueueLength;
-
-/** @deprecated Use recheckCommandQueue */
-export const recheckPendingNotifications = recheckCommandQueue;
-
-/** @deprecated Use dequeue */
-export function dequeuePendingNotification(): QueuedCommand | undefined {
-  return dequeue();
-}
-
-/** @deprecated Use resetCommandQueue */
-export const resetPendingNotifications = resetCommandQueue;
-
-/** @deprecated Use clearCommandQueue */
-export const clearPendingNotifications = clearCommandQueue;
 
 /**
  * Get commands at or above a given priority level without removing them.

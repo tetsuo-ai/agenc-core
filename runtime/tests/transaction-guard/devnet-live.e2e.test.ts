@@ -6,9 +6,11 @@ import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 
 import {
-  createTransactionGuardContextFromEnv,
+  createTransactionGuardContext,
   TRANSACTION_GUARD_DENIED,
 } from "../../src/transaction-guard/index.js";
+import { applyEnvOverrides } from "../../src/config/env.js";
+import { defaultConfig } from "../../src/config/schema.js";
 import { runToolUse } from "../../src/tools/execution.js";
 import { createExecCommandTool } from "../../src/tools/system/exec-command.js";
 import type { ToolInvocation } from "../../src/tools/context.js";
@@ -164,13 +166,15 @@ describe.skipIf(!LIVE)("transaction guard live DevNet validation", () => {
           keypair,
         ]);
         await ensureDevnetFunding(address, verifiedDevnetRpc);
-        const context = createTransactionGuardContextFromEnv({
-          ...process.env,
+        const resolved = applyEnvOverrides(defaultConfig(), {
           AGENC_TRANSACTION_GUARD: "slm",
           AGENC_TRANSACTION_GUARD_MODEL: MODEL,
           AGENC_TRANSACTION_GUARD_TIMEOUT_MS:
             process.env.AGENC_TRANSACTION_GUARD_TIMEOUT_MS ?? "120000",
         });
+        const context = createTransactionGuardContext(
+          resolved.transaction_guard,
+        );
         expect(context).not.toBeNull();
 
         let executed = false;

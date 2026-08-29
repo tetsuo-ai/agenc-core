@@ -14,10 +14,10 @@ export const SETTING_SOURCES = [
   // Local settings (gitignored)
   'localSettings',
 
-  // Flag settings (from --settings flag)
+  // Explicit ephemeral config layers (profile/environment/CLI)
   'flagSettings',
 
-  // Policy settings (managed-settings.json or remote settings from API)
+  // Policy settings (canonical managed TOML or remote policy)
   'policySettings',
 ] as const
 
@@ -157,13 +157,12 @@ export function parseSettingSourcesFlag(flag: string): SettingSource[] {
  * @returns Array of enabled SettingSource values
  */
 export function getEnabledSettingSources(): SettingSource[] {
-  const allowed = getAllowedSettingSources()
-
-  // Always include policy and flag settings
-  const result = new Set<SettingSource>(allowed as SettingSource[])
-  result.add('policySettings')
-  result.add('flagSettings')
-  return Array.from(result)
+  const enabled = new Set<SettingSource>([
+    ...(getAllowedSettingSources() as SettingSource[]),
+    'flagSettings',
+    'policySettings',
+  ])
+  return SETTING_SOURCES.filter(source => enabled.has(source))
 }
 
 /**
@@ -193,10 +192,3 @@ export const SOURCES = [
   'projectSettings',
   'userSettings',
 ] as const satisfies readonly EditableSettingSource[]
-
-/**
- * The JSON Schema URL for AgenC settings
- * You can edit the contents at https://github.com/SchemaStore/schemastore/blob/master/src/schemas/json/agenc-code-settings.json
- */
-export const AGENC_SETTINGS_SCHEMA_URL =
-  'https://json.schemastore.org/agenc-code-settings.json'

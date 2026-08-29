@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { MAX_PRODUCTION_MODULES_PER_CASE } from "./contract.mjs";
 import { readBoundedRegularFile } from "./bounded-file.mjs";
+import { formatBoundedDiagnostic } from "./diagnostic.mjs";
 
 export const BOUNDED_COMMAND_TIMEOUT_MS = 5_000;
 export const MAX_BOUND_COMMAND_TIMEOUT_MS = 30_000;
@@ -237,7 +238,7 @@ export function runBoundedCommandText(
       timeoutMs,
     });
     if (result.exitCode !== 0 || result.signal !== null) {
-      const diagnostic = boundedCommandDiagnostic(result.stderr);
+      const diagnostic = formatBoundedDiagnostic(result.stderr);
       throw new Error(
         `bounded command exited with ${String(result.exitCode)} / ${String(result.signal)}` +
           (diagnostic.length > 0 ? `: ${diagnostic}` : ""),
@@ -252,14 +253,6 @@ export function runBoundedCommandText(
       },
     );
   }
-}
-
-function boundedCommandDiagnostic(stderr) {
-  const maximumCharacters = 2_000;
-  const value = stderr.toString("utf8").trim();
-  return value.length <= maximumCharacters
-    ? value
-    : `${value.slice(0, maximumCharacters)}…`;
 }
 
 /** @returns {Record<string, string>} */

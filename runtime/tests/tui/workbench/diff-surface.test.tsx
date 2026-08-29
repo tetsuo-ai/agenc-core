@@ -291,7 +291,10 @@ describe("DiffSurface", () => {
         state.workbench?.activeSurfaceMode === "buffer" &&
         state.workbench.activeFilePath === "src/file-00.ts"
       )).toBe(true);
-      expect(changes.at(-1)?.workbench?.activeSurfaceMode).toBe("transcript");
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        activeSurfaceMode: "transcript",
+        focusedPane: "composer",
+      });
     } finally {
       root.unmount();
       stdin.end();

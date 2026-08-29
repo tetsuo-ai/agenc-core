@@ -13,6 +13,10 @@
  * @module
  */
 import type { HookResultMessage } from "../../types/message.js";
+import type {
+  PostCompactHookInput as SdkPostCompactHookInput,
+  PreCompactHookInput as SdkPreCompactHookInput,
+} from "../../entrypoints/sdk/coreTypes.js";
 
 export type LifecycleHookEvent =
   | "PreCompact"
@@ -22,7 +26,7 @@ export type LifecycleHookEvent =
   | "SessionEnd"
   | "Notification";
 
-export type CompactTrigger = "manual" | "auto";
+export type CompactTrigger = SdkPreCompactHookInput["trigger"];
 export type SessionStartSource = "startup" | "resume" | "clear" | "compact";
 export type SubagentOutcome =
   | "completed"
@@ -31,21 +35,11 @@ export type SubagentOutcome =
   | "aborted";
 export type SessionEndReason = "exit" | "clear" | "logout" | "other";
 
-/** Input passed to a `PreCompact` hook. Shape mirrors upstream
- *  `PreCompactHookInput` but trimmed to the fields the gut compact
- *  pipeline actually supplies. */
-export interface PreCompactHookInput {
-  readonly hook_event_name: "PreCompact";
-  readonly trigger: CompactTrigger;
-  readonly custom_instructions: string | null;
-}
+/** Canonical SDK input passed to a `PreCompact` hook. */
+export type PreCompactHookInput = SdkPreCompactHookInput;
 
-/** Input passed to a `PostCompact` hook. */
-export interface PostCompactHookInput {
-  readonly hook_event_name: "PostCompact";
-  readonly trigger: CompactTrigger;
-  readonly compact_summary: string;
-}
+/** Canonical SDK input passed to a `PostCompact` hook. */
+export type PostCompactHookInput = SdkPostCompactHookInput;
 
 /** Input passed to a `SessionStart` hook. */
 export interface SessionStartHookInput {

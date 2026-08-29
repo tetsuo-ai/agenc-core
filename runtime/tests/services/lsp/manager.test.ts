@@ -1,5 +1,6 @@
 import { describe, expect, test, beforeEach, vi } from "vitest";
 import { setTimeout as sleep } from "node:timers/promises";
+import { resolve } from "node:path";
 
 import { normalizeLspServerConfig } from "./config.js";
 import {
@@ -14,7 +15,8 @@ import {
 } from "./manager.js";
 import type { LSPServerInstance } from "./LSPServerInstance.js";
 import { notifyLspFileChanged } from "./fileNotifications.js";
-import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
+import { SandboxExecutionBroker } from "../../sandbox/execution-broker.js";
+import { transitionSandboxExecutionBroker } from "../../sandbox/execution-lifecycle.js";
 
 describe("LSP singleton manager", () => {
   beforeEach(() => {
@@ -69,14 +71,14 @@ describe("LSP singleton manager", () => {
   });
 
   test("keeps simultaneous broker scopes isolated from manager substitution", async () => {
-    const restrictedBroker = {
+    const restrictedBroker = new SandboxExecutionBroker({
       mode: "workspace_write",
-      cwd: "/workspace/restricted",
-    } as SandboxExecutionBrokerLike;
-    const dangerBroker = {
+      cwd: process.cwd(),
+    });
+    const dangerBroker = new SandboxExecutionBroker({
       mode: "danger_full_access",
-      cwd: "/workspace/danger",
-    } as SandboxExecutionBrokerLike;
+      cwd: process.cwd(),
+    });
     const restrictedConfig = normalizeLspServerConfig("restricted", {
       command: "restricted-language-server",
       extensionToLanguage: { ".ts": "typescript" },
@@ -137,6 +139,71 @@ describe("LSP singleton manager", () => {
         shutdownLspServerManager(restrictedBroker),
         shutdownLspServerManager(dangerBroker),
       ]);
+    }
+  });
+
+  test("quiesces and recreates the scoped manager through a real broker transition", async () => {
+    const initialCwd = resolve("lsp-manager-transition-initial");
+    const rebasedCwd = resolve("lsp-manager-transition-rebased");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: initialCwd,
+    });
+    const config = normalizeLspServerConfig("ts", {
+      command: "typescript-language-server",
+      extensionToLanguage: { ".ts": "typescript" },
+    });
+    const starts: number[] = [];
+    const stops: number[] = [];
+    let factoryCalls = 0;
+    const instanceFactory = (name: string): LSPServerInstance => {
+      const instanceId = ++factoryCalls;
+      let state: LSPServerInstance["state"] = "stopped";
+      return {
+        name,
+        config,
+        get state() {
+          return state;
+        },
+        start: async () => {
+          starts.push(instanceId);
+          state = "running";
+        },
+        stop: async () => {
+          stops.push(instanceId);
+          state = "stopped";
+        },
+        restart: async () => {},
+        isHealthy: () => state === "running",
+        sendRequest: async () => ({}),
+        sendNotification: async () => {},
+        onNotification: () => {},
+        onRequest: () => {},
+      } as unknown as LSPServerInstance;
+    };
+
+    try {
+      initializeLspServerManager({
+        sandboxExecutionBroker: broker,
+        workspaceRoot: initialCwd,
+        configSource: () => ({ ts: config }),
+        instanceFactory,
+      });
+      await waitForInitialization(broker);
+      const initialManager = getLspServerManager(broker);
+      expect(initialManager).toBeDefined();
+      await initialManager!.ensureServerStarted("src/before.ts");
+      expect(starts).toEqual([1]);
+
+      await transitionSandboxExecutionBroker(broker, rebasedCwd);
+
+      expect(broker.cwd).toBe(rebasedCwd);
+      expect(stops).toEqual([1]);
+      expect(factoryCalls).toBe(2);
+      expect(getInitializationStatus(broker).status).toBe("success");
+      expect(getLspServerManager(broker)).not.toBe(initialManager);
+    } finally {
+      await shutdownLspServerManager(broker);
     }
   });
 

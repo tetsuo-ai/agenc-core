@@ -28,29 +28,29 @@ agenc gateway install-service
 
 | Command | Purpose |
 |---|---|
-| `run` | Connect to the daemon (autostart if needed), load `gateway/config.json`, start enabled channels. Runs until Ctrl-C. |
+| `run` | Connect to the daemon (autostart if needed), use canonical `[gateway]` policy, start enabled channels. Runs until Ctrl-C. |
 | `status` | Channels, DM policies, bindings, paired-sender counts |
 | `pairing list` | Paired senders per channel |
 | `pairing pending` | Pending pairing requests not yet approved |
 | `pairing approve` | Approve a pending peer (`<channel> <peerId>`) |
 | `pairing revoke` | Remove a paired sender |
-| `install-service` | Install + start the always-on user service (systemd on Linux, launchd on macOS); unit reads `gateway/env` |
+| `install-service` | Install + start the always-on user service. Both systemd `agenc-gateway.service` and launchd `dev.agenc.gateway` read credentials from home-scoped native secure storage. |
 
 `run` enables surfaces from flags **and** environment/config:
 
 - `--stdio` — local line-oriented dev channel
 - `--webchat` — loopback token-gated browser UI
 - `--heartbeat` — force proactive ticks for this process (or enable via `[heartbeat]` / `AGENC_HEARTBEAT`)
-- `--hooks` — force inbound `POST /hooks/agent` (or enable via gateway config `hooks.enabled`)
+- `--hooks` — force inbound `POST /hooks/agent` (or enable via `[gateway.hooks]`)
 - Telegram when `AGENC_TELEGRAM_BOT_TOKEN` is set
 - Discord when `AGENC_DISCORD_BOT_TOKEN` is set
 - Slack when **both** `AGENC_SLACK_BOT_TOKEN` and `AGENC_SLACK_APP_TOKEN` are set
 
-Channel tokens belong in `<AGENC_HOME>/gateway/env` (mode `0600`), not in
-config JSON. `agenc gateway run` and `install-service` load that file;
-explicit shell exports still win. Gateway-only secrets are stripped from the
-environment passed to an autostarted daemon so agent sessions cannot inherit
-bot tokens or hook tokens.
+Channel tokens saved by onboarding belong to the native secure storage,
+under the same `AGENC_HOME` identity as config and daemon state. Explicit
+shell exports are supported for one-shot runs and win over stored values.
+Gateway-only secrets are stripped from the environment passed to an
+autostarted daemon so agent sessions cannot inherit bot or hook tokens.
 
 A heartbeat-only or hooks-only run (no messaging channel) is valid. With no
 channel, no heartbeat, and no hooks, `run` errors.
@@ -64,7 +64,7 @@ agenc gateway run --stdio
 # Browser chat (prints loopback URL + token)
 agenc gateway run --webchat
 
-# Telegram (token from env or gateway/env)
+# Telegram (explicit env or the native secure storage)
 AGENC_TELEGRAM_BOT_TOKEN=123:ABC agenc gateway run
 
 # Always-on after onboarding
@@ -77,9 +77,10 @@ agenc gateway install-service
 ### stdio (dev)
 
 `agenc gateway run --stdio` is the fastest way to exercise pairing, framing,
-and approvals. On the first line without an allowlist entry you get a pairing
-code; confirm with `agenc gateway pairing list`, reply with the code in the
-channel, or allowlist peer `local` in config to skip pairing.
+and approvals. Pairing codes are **host-only** (logs and
+`agenc gateway pairing pending`). They are not printed as a redeemable line
+in the channel. TTL is 10 minutes. Allowlist peer `local` (stdio) or `web`
+(WebChat with `--webchat`) to skip pairing.
 
 ### WebChat
 
@@ -89,8 +90,8 @@ Serves a minimal browser chat from the gateway process.
   explicit override.
 - Every request is gated by a shared token. The run command prints
   `http://127.0.0.1:<port>/?token=<token>`.
-- Token is persisted at `gateway/webchat-token` (`0600`), or set
-  `AGENC_WEBCHAT_TOKEN` (min length 16).
+- Token is persisted in the native secure storage, or set
+  `AGENC_WEBCHAT_TOKEN` for this run (minimum length 16).
 - The web sender is allowlisted by default (no pairing with your own browser
   after presenting the token).
 - Streaming replies update in place over SSE; approval requests render
@@ -106,7 +107,7 @@ Official Bot API only (long-poll; no inbound listener, no reverse-engineered
 client). Create a bot with @BotFather, store the token:
 
 ```bash
-# in <AGENC_HOME>/gateway/env (0600), or export for a one-shot run
+# export for a one-shot run; onboarding stores it in the native secure storage
 AGENC_TELEGRAM_BOT_TOKEN=123:ABC
 ```
 
@@ -144,11 +145,12 @@ The first owner DMs `/owner <code>` to claim the bot. After that:
 - group traffic bypasses pairing while public replies are on.
 
 Owner/control state lives at `<AGENC_HOME>/gateway/control.json` (`0600`).
-Command menus install public media commands in groups; owner controls only on
-configured owner/admin chats. `/start` and `/stop` must not be advertised as
-public group commands.
+Public command menus are empty. Owner controls stay on configured owner/admin
+chats. `/start` and `/stop` must not be advertised as public group commands.
 
-**Group addressing.** Mentions-only mode:
+**Group addressing.** Telegram default is `"all"` (every group message)
+unless `AGENC_TELEGRAM_GROUP_ADDRESSING=mentions`. Discord and Slack default
+`"mentions"` unless `..._GROUP_ADDRESSING=all`. Mentions-only mode:
 
 ```bash
 AGENC_TELEGRAM_GROUP_ADDRESSING=mentions
@@ -192,19 +194,19 @@ gateway logs a warning.
 
 Typical app setup: enable Socket Mode; bot scopes `chat:write`,
 `app_mentions:read`, `im:history`, `channels:history`; event subscriptions
-for `message.im`, `message.channels`, `app_mention`.
+for `message.im`, `message.channels`. Do not rely on `app_mention`: the Slack
+adapter ignores it to avoid double-firing the same message.
 
 ## Heartbeat (proactive ticks) — live
 
 `agenc gateway run --heartbeat` (or `[heartbeat] enabled = true` /
 `AGENC_HEARTBEAT=on`) runs a periodic autonomous turn: each tick the agent
 reads `HEARTBEAT.md` from the workspace and acts, replying `HEARTBEAT_OK`
-(delivery suppressed) when there is nothing to do.
+(delivery suppressed) when there is nothing to do. Env wins over config:
+`AGENC_HEARTBEAT=off` plus `--heartbeat` still does not start.
 
-**Budget-bounded.** Every tick is admitted pre-flight against the agent's
-daily/monthly spend envelope. If the cap would be exceeded, the turn is
-skipped and a "heartbeat paused" notice is delivered instead of silently
-spending — a heartbeat can never become an idle-burn furnace.
+**Budget-bounded.** Each tick is a normal `session.prompt` through daemon
+admission. Spend denial is reported as the normal daemon admission error.
 
 Config (`[heartbeat]` / env):
 
@@ -213,18 +215,17 @@ Config (`[heartbeat]` / env):
 | `enabled` / `AGENC_HEARTBEAT` | off | `on`/`1`/`true`/`yes` |
 | `interval_seconds` / `AGENC_HEARTBEAT_INTERVAL` | `1800` | seconds between ticks |
 | `active_hours` / `AGENC_HEARTBEAT_ACTIVE_HOURS` | always | e.g. `8-22` local |
-| `model` / `AGENC_HEARTBEAT_MODEL` | — | optional utility model |
 | `target_channel` + `target_conversation` (TOML) / `AGENC_HEARTBEAT_TARGET` (env) | `none` | Env uses combined `channelId:conversationId` or `none`; TOML stores the split fields |
-| `agent` / `AGENC_HEARTBEAT_AGENT` | `default` | budget envelope + session |
 
-Also: `skip_when_busy`. Disabled by default until you opt in (onboarding Act 3
-or config).
+Heartbeat `enabled` is off by default until you opt in (onboarding Act 3 or
+config). `skip_when_busy` defaults **true**: a tick is skipped while a session
+is already running.
 
 ## Inbound webhooks (`--hooks`)
 
 ```bash
 agenc gateway run --hooks
-# or gateway/config.json: { "hooks": { "enabled": true } }
+# or config.toml: [gateway.hooks] enabled = true
 ```
 
 Serves loopback `POST /hooks/agent` (default port `8377`). Security:
@@ -233,7 +234,7 @@ Serves loopback `POST /hooks/agent` (default port `8377`). Security:
 - Loopback bind; non-loopback host refused without explicit override.
 - Bearer token in the `Authorization` header only — query-string tokens are
   rejected even if the header is also valid.
-- Token from `AGENC_HOOKS_TOKEN` or persisted `gateway/hooks-token` (`0600`).
+- Token from `AGENC_HOOKS_TOKEN` or the home-bound native secure storage.
 - Payload `message` is sanitized and framed like channel text; hook turns
   deny permission requests (autonomous).
 - Every request passes the budget envelope; refusal is HTTP 429, never silent
@@ -251,20 +252,28 @@ Request shape:
 }
 ```
 
-With `deliver`: `202` immediately, result streams to the channel. Without:
-wait for the turn, `200` with `{ ok, sessionKey, finalMessage, stopReason }`.
+The hooks handler waits for the full turn, then returns `202` `{ ok, sessionKey }`
+(no `finalMessage`). Immediate-202-then-stream is not implemented. Without
+`deliver`, wait for the turn and get `200` `{ ok, sessionKey, finalMessage, stopReason }`.
+Body cap 64 KiB, message cap 32 KiB. Optional JSON fields `host`, `port`,
+`allowNonLoopback` on the hooks config. Default port `8377`.
 
 ## Cron delivery
 
-Delivery-routed cron jobs (`announceChannel` / webhook on CronCreate) run in
-isolated gateway sessions and post results to a channel or webhook. Jobs
-re-arm on daemon restart. Spend rides the same budget envelope as other
-autonomous surfaces.
+Delivery-routed cron jobs (`announceChannel` / `announceTo` / webhook on
+CronCreate) persist as `deliver.{channel,to,webhook}` in
+`.agenc/scheduled_tasks.json`. They run only while **`agenc gateway run`**
+is up (`startCronDelivery`), not from a daemon restart alone. Isolated session
+key `cron|<id>`. Permissions denied. Scan cap 5 minutes. Webhook POST is
+HTTPS/HTTP only; localhost and private/link-local addresses are blocked after
+DNS. Spend rides the same budget envelope as other autonomous surfaces.
 
 ## Security model (non-negotiable)
 
-- **Pairing by default.** An unknown DM sender gets a one-time, expiring
-  pairing code and **no agent access** until it is redeemed. `dmPolicy`:
+- **Pairing by default.** An unknown sender (DMs **and** groups, unless
+  Telegram owner `bypassAccess`) gets no agent access until paired. Codes are
+  host-only, 10-minute TTL; see them with `agenc gateway pairing pending`.
+  `approve` can pair a peer without the peer seeing a code. `dmPolicy`:
   `pairing` (default), `allowlist`, `open`, or `disabled`.
 - **`open` requires an explicit `"*"`.** `dmPolicy: "open"` alone still
   denies; the allowlist must literally contain `"*"`.
@@ -277,10 +286,11 @@ autonomous surfaces.
   `<system-reminder>` tags, zero-width/bidi controls, and wrapper-break
   attempts are neutralized. Privilege-escalation directives in chat text are
   inert by architecture, not by prompt hope.
-- **Approvals round-trip in-channel.** When a turn needs permission, the
-  gateway renders it and blocks on exact `approve <token>` / `deny <token>`.
-  Free text containing the token does not authorize; a different sender with
-  a leaked token does not authorize; timeout is **deny**.
+- **Approvals.** Discord, Slack, stdio, and WebChat can round-trip
+  `approve <token>` / `deny <token>` (timeout 5 minutes is **deny**). Telegram
+  always denies privileged tools and never renders those tokens. Free text
+  containing the token does not authorize; a different sender with a leaked
+  token does not authorize.
 
 ### Public answer context (Telegram answer-only)
 
@@ -295,7 +305,7 @@ change.
 ### Unattended tool policy
 
 Gateway agents default to a tiny unattended allowlist: `SendUserMessage` and
-`Brief`. That answers normally without leaking approval prompts into chat;
+`SendUserMessage`. That answers normally without leaking approval prompts into chat;
 privileged tools still pause and are denied by the gateway instead of
 rendering `approve <token>` to public users. Override with
 `AGENC_GATEWAY_AGENT_UNATTENDED_ALLOW` and
@@ -306,34 +316,17 @@ rendering `approve <token>` to public users. Override with
 These use **server-side** credentials and never put those keys into model
 prompts or autostarted daemon env.
 
-### Generated media (xAI)
+### Generated media and X search (not installed)
 
-```bash
-AGENC_GATEWAY_MEME_ENABLED=1
-AGENC_GATEWAY_MEME_DAILY_LIMIT=20
-AGENC_GATEWAY_VOICE_ENABLED=1
-AGENC_GATEWAY_VOICE_DAILY_LIMIT=20
-# Grok credentials: OAuth from /grok-login wins; else XAI_API_KEY / GROK_API_KEY
-```
+`startGateway` does **not** install meme / voice / X-search features. Env flags
+`AGENC_GATEWAY_MEME_ENABLED`, `AGENC_GATEWAY_VOICE_ENABLED`, and
+`AGENC_GATEWAY_X_SEARCH_ENABLED` do not turn those routes on. Public Telegram
+command menus are empty (`publicTelegramCommands: []`). Owner `/help` may still
+list `/image`, `/meme`, `/voice`, `/song`; those commands are not live.
 
-Shortcuts and clear natural-language requests (`/image`, `/meme`, `/voice`,
-`/song`, `make an image of …`, etc.) are handled before the prompt reaches the
-agent. Normal questions (`explain this image`) still go to the agent. Soft
-daily caps are local.
-
-### Read-only X research
-
-```bash
-AGENC_GATEWAY_X_SEARCH_ENABLED=1
-AGENC_GATEWAY_X_SEARCH_MODEL=grok-4.5
-AGENC_GATEWAY_X_SEARCH_DAILY_LIMIT=100
-AGENC_GATEWAY_X_SEARCH_PER_PEER_LIMIT=4
-AGENC_GATEWAY_X_SEARCH_TIMEOUT_MS=90000
-```
-
-Uses xAI's hosted `x_search` only — no X write tools, no X Developer OAuth.
-Query and X content are untrusted data; citations require structured
-`x.com`/`twitter.com` evidence; `store: false` on Responses API.
+Use the coding-agent `ImagineImage` / `ImagineVideo` tools in a grok session
+instead ([imagine.md](imagine.md)). Helius on-chain reads still install when
+configured.
 
 ### Read-only Solana (Helius)
 
@@ -349,30 +342,41 @@ Bounded holder/buy/wallet/network reads; unknown tickers are never guessed.
 
 ## Configuration
 
-`<AGENC_HOME>/gateway/config.json` (absent → fail-closed defaults):
+`<AGENC_HOME>/config.toml` is the sole persistent policy authority. An absent
+`[gateway]` block uses fail-closed defaults:
 
-```json
-{
-  "defaultAgent": "home",
-  "channels": {
-    "telegram": { "dmPolicy": "pairing", "allowlist": [] },
-    "discord": { "dmPolicy": "pairing", "allowlist": [] },
-    "slack": { "dmPolicy": "pairing", "allowlist": [] }
-  },
-  "bindings": [
-    { "agent": "work", "channelId": "telegram", "peerId": "123456789" },
-    { "agent": "team", "channelId": "telegram", "groupId": "-100987" }
-  ],
-  "hooks": { "enabled": false }
-}
+```toml
+config_version = 2
+
+[gateway]
+defaultAgent = "default"
+bindings = [
+  { agent = "work", channelId = "telegram", peerId = "123456789" },
+  { agent = "team", channelId = "telegram", groupId = "-100987" },
+]
+
+[gateway.channels.telegram]
+dmPolicy = "pairing"
+allowlist = []
+
+[gateway.channels.discord]
+dmPolicy = "pairing"
+allowlist = []
+
+[gateway.channels.slack]
+dmPolicy = "pairing"
+allowlist = []
+
+[gateway.hooks]
+enabled = false
 ```
 
 **Binding resolution** (most-specific wins): peer (exact sender) → group
 (exact conversation) → channel default → gateway `defaultAgent`. Two agents
 never share a session, so bound conversations stay isolated.
 
-Malformed channel policies or bindings are dropped with a warning — never
-coerced into something more permissive.
+Malformed or unknown gateway policy fails the canonical config load. Nothing
+is dropped or coerced into a more permissive shape.
 
 ## Operating state
 
@@ -384,13 +388,11 @@ agenc gateway pairing revoke telegram 123456789
 
 | Path | Mode | Role |
 |---|---|---|
-| `gateway/config.json` | 0600 | policies, bindings, hooks flag |
-| `gateway/env` | 0600 | bot tokens and channel secrets |
+| `config.toml` `[gateway]` | 0600 | policies, bindings, hooks flag |
+| Native secure storage | OS-managed | bot tokens and gateway bearer tokens |
 | `gateway/pairing.json` | 0600 | paired senders |
 | `gateway/sessions.json` | 0600 | channel → daemon session map |
 | `gateway/control.json` | 0600 | Telegram owner/public state |
-| `gateway/webchat-token` | 0600 | WebChat shared token |
-| `gateway/hooks-token` | 0600 | hooks bearer |
 | `gateway/conversation-recovery.json` | 0600 | bounded recovery journal |
 
 Session mappings reattach conversations after gateway restart; the daemon

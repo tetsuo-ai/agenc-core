@@ -1,4 +1,4 @@
-/** Versioned workflow manifest schemas and v1 compatibility normalization. */
+/** Canonical version-2 workflow manifest schema and validation. */
 
 import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
 
@@ -36,11 +36,7 @@ export const MAX_WORKFLOW_MAX_CONCURRENCY = 64;
 export const DEFAULT_WORKFLOW_MAX_HANDOFF_TOKENS = 8_192;
 export const MAX_WORKFLOW_HANDOFF_TOKENS = 32_768;
 
-const LEGACY_IDENTIFIER_PATTERN = "^[A-Za-z0-9_-]{1,128}$";
 const INPUT_ALIAS_PATTERN = "^[A-Za-z][A-Za-z0-9_-]{0,127}$";
-const LEGACY_TEMPLATE_PATTERN =
-  /^\{\{\s*(steps|group)\.([A-Za-z0-9_-]+)\s*\}\}$/u;
-const MUSTACHE_PATTERN = /\{\{[\s\S]*?\}\}/gu;
 const MAX_SCHEMA_ERRORS = 20;
 
 const WORKFLOW_JSON_LIMITS: FiniteJsonLimits = Object.freeze({
@@ -80,36 +76,10 @@ export interface WorkflowDagManifestV2 {
   readonly steps: readonly WorkflowStepV2[];
 }
 
-export interface LegacyWorkflowCommandManifest {
-  readonly command: string;
-  readonly description?: string;
-}
-
-export interface WorkflowManifestDiagnostic {
-  readonly code: "WORKFLOW_MANIFEST_V1_COMPAT";
-  readonly message: string;
-}
-
-export interface NormalizedWorkflowDagDocument {
-  readonly kind: "agent_dag";
-  readonly formatVersion: 2;
-  readonly sourceVersion: 1 | 2;
+export interface ValidatedWorkflowManifest {
   readonly manifest: WorkflowDagManifestV2;
   readonly manifestDigest: Sha256Digest;
-  readonly diagnostics: readonly WorkflowManifestDiagnostic[];
 }
-
-export interface NormalizedLegacyCommandDocument {
-  readonly kind: "legacy_command";
-  readonly formatVersion: 1;
-  readonly sourceVersion: 1;
-  readonly manifest: LegacyWorkflowCommandManifest;
-  readonly manifestDigest: Sha256Digest;
-  readonly diagnostics: readonly WorkflowManifestDiagnostic[];
-}
-
-export type NormalizedWorkflowManifest =
-  NormalizedWorkflowDagDocument | NormalizedLegacyCommandDocument;
 
 export class WorkflowManifestValidationError extends Error {
   readonly code: string;
@@ -195,82 +165,15 @@ export const WORKFLOW_MANIFEST_V2_SCHEMA = Object.freeze({
   additionalProperties: false,
 });
 
-export const LEGACY_WORKFLOW_DAG_V1_SCHEMA = Object.freeze({
-  $id: "agenc.workflow.agent-dag.legacy-v1",
-  type: "object",
-  properties: {
-    description: { type: "string" },
-    steps: {
-      type: "array",
-      minItems: 1,
-      maxItems: MAX_WORKFLOW_STEPS,
-      items: {
-        type: "object",
-        properties: {
-          id: { type: "string", pattern: LEGACY_IDENTIFIER_PATTERN },
-          message: { type: "string", minLength: 1 },
-          task_name: { type: "string", pattern: LEGACY_IDENTIFIER_PATTERN },
-          agent_type: { type: "string", minLength: 1 },
-          model: { type: "string", minLength: 1 },
-          isolation: { enum: ["none", "cwd", "worktree"] },
-          group: { type: "string", pattern: LEGACY_IDENTIFIER_PATTERN },
-          after: {
-            type: "array",
-            maxItems: MAX_WORKFLOW_EXPANDED_EDGES,
-            items: { type: "string", pattern: LEGACY_IDENTIFIER_PATTERN },
-          },
-        },
-        required: ["id", "message"],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ["steps"],
-  additionalProperties: false,
-});
-
-export const LEGACY_WORKFLOW_COMMAND_SCHEMA = Object.freeze({
-  $id: "agenc.workflow.command.legacy-v1",
-  type: "object",
-  properties: {
-    command: { type: "string", minLength: 1 },
-    description: { type: "string" },
-  },
-  required: ["command"],
-  additionalProperties: false,
-});
-
 const ajv = new Ajv({ allErrors: true, strict: true });
 const validateV2 = ajv.compile(
   WORKFLOW_MANIFEST_V2_SCHEMA,
 ) as ValidateFunction<WorkflowDagManifestV2>;
-const validateLegacyDag = ajv.compile(
-  LEGACY_WORKFLOW_DAG_V1_SCHEMA,
-) as ValidateFunction<LegacyDagManifest>;
-const validateLegacyCommand = ajv.compile(
-  LEGACY_WORKFLOW_COMMAND_SCHEMA,
-) as ValidateFunction<LegacyWorkflowCommandManifest>;
-
-interface LegacyStep {
-  readonly id: string;
-  readonly message: string;
-  readonly task_name?: string;
-  readonly agent_type?: string;
-  readonly model?: string;
-  readonly isolation?: WorkflowIsolationMode;
-  readonly group?: string;
-  readonly after?: readonly string[];
-}
-
-interface LegacyDagManifest {
-  readonly description?: string;
-  readonly steps: readonly LegacyStep[];
-}
 
 export function parseWorkflowManifestBytes(
   bytes: Uint8Array,
   label: string,
-): NormalizedWorkflowManifest {
+): ValidatedWorkflowManifest {
   const parsed = parseFiniteJsonBytes(bytes, label, WORKFLOW_JSON_LIMITS);
   return normalizeFiniteWorkflowManifest(parsed, label);
 }
@@ -279,7 +182,7 @@ export function parseWorkflowManifestBytes(
 export function validateWorkflowManifestValue(
   value: unknown,
   label = "workflow manifest",
-): NormalizedWorkflowManifest {
+): ValidatedWorkflowManifest {
   const finite = cloneFiniteJsonValue(value, label, WORKFLOW_JSON_LIMITS);
   return normalizeFiniteWorkflowManifest(finite, label);
 }
@@ -287,7 +190,7 @@ export function validateWorkflowManifestValue(
 function normalizeFiniteWorkflowManifest(
   value: FiniteJsonValue,
   label: string,
-): NormalizedWorkflowManifest {
+): ValidatedWorkflowManifest {
   if (!isFiniteJsonRecord(value)) {
     throw new WorkflowManifestValidationError(
       "WORKFLOW_SCHEMA",
@@ -295,136 +198,13 @@ function normalizeFiniteWorkflowManifest(
     );
   }
 
-  if (Object.hasOwn(value, "format_version") || Object.hasOwn(value, "kind")) {
-    assertSchema(validateV2, value, label, "version-2 DAG manifest");
-    enforceAggregateLimits(value, label);
-    validateDagSemantics(value, label);
-    return Object.freeze({
-      kind: "agent_dag",
-      formatVersion: WORKFLOW_MANIFEST_VERSION,
-      sourceVersion: WORKFLOW_MANIFEST_VERSION,
-      manifest: value,
-      manifestDigest: digestCanonicalJson("agenc.workflow.manifest.v2", value),
-      diagnostics: Object.freeze([]),
-    });
-  }
-
-  if (Object.hasOwn(value, "steps")) {
-    assertSchema(validateLegacyDag, value, label, "legacy v1 DAG manifest");
-    const manifest = convertLegacyDag(value, label);
-    enforceAggregateLimits(manifest, label);
-    validateDagSemantics(manifest, label);
-    const diagnostic: WorkflowManifestDiagnostic = Object.freeze({
-      code: "WORKFLOW_MANIFEST_V1_COMPAT",
-      message:
-        "unversioned workflow DAG accepted for the v2 format epoch; migrate it to format_version 2 before v3",
-    });
-    return Object.freeze({
-      kind: "agent_dag",
-      formatVersion: WORKFLOW_MANIFEST_VERSION,
-      sourceVersion: 1,
-      manifest,
-      manifestDigest: digestCanonicalJson(
-        "agenc.workflow.manifest.v2",
-        manifest,
-      ),
-      diagnostics: Object.freeze([diagnostic]),
-    });
-  }
-
-  assertSchema(validateLegacyCommand, value, label, "legacy command manifest");
+  assertSchema(validateV2, value, label, "version-2 DAG manifest");
+  enforceAggregateLimits(value, label);
+  validateDagSemantics(value, label);
   return Object.freeze({
-    kind: "legacy_command",
-    formatVersion: 1,
-    sourceVersion: 1,
     manifest: value,
-    manifestDigest: digestCanonicalJson("agenc.workflow.command.v1", value),
-    diagnostics: Object.freeze([]),
+    manifestDigest: digestCanonicalJson("agenc.workflow.manifest.v2", value),
   });
-}
-
-function convertLegacyDag(
-  legacy: LegacyDagManifest,
-  label: string,
-): WorkflowDagManifestV2 {
-  const stepIds = new Set(legacy.steps.map((step) => step.id));
-  const groupNames = new Set(
-    legacy.steps
-      .map((step) => step.group)
-      .filter((group): group is string => group !== undefined),
-  );
-  for (const collision of stepIds) {
-    if (groupNames.has(collision)) {
-      throw new WorkflowManifestValidationError(
-        "WORKFLOW_LEGACY_AMBIGUOUS_REF",
-        `${label} legacy step/group name ${JSON.stringify(collision)} is ambiguous`,
-      );
-    }
-  }
-
-  const steps = legacy.steps.map((step): WorkflowStepV2 => {
-    assertLegacyTemplates(step.message, label, stepIds, groupNames);
-    const after = step.after?.map((reference): WorkflowRef => {
-      if (stepIds.has(reference)) return inertRecord({ step: reference });
-      if (groupNames.has(reference)) return inertRecord({ group: reference });
-      throw new WorkflowManifestValidationError(
-        "WORKFLOW_LEGACY_UNKNOWN_REF",
-        `${label} legacy step ${JSON.stringify(step.id)} references unknown step/group ${JSON.stringify(reference)}`,
-      );
-    });
-    return inertRecord({
-      id: step.id,
-      message: step.message,
-      ...(step.task_name === undefined ? {} : { task_name: step.task_name }),
-      ...(step.agent_type === undefined ? {} : { agent_type: step.agent_type }),
-      ...(step.model === undefined ? {} : { model: step.model }),
-      ...(step.isolation === undefined ? {} : { isolation: step.isolation }),
-      ...(step.group === undefined ? {} : { group: step.group }),
-      ...(after === undefined ? {} : { after: Object.freeze(after) }),
-    });
-  });
-  return inertRecord({
-    format_version: WORKFLOW_MANIFEST_VERSION,
-    kind: "agent_dag",
-    ...(legacy.description === undefined
-      ? {}
-      : { description: legacy.description }),
-    steps: Object.freeze(steps),
-  });
-}
-
-function assertLegacyTemplates(
-  message: string,
-  label: string,
-  stepIds: ReadonlySet<string>,
-  groupNames: ReadonlySet<string>,
-): void {
-  const unmatched = message.replace(MUSTACHE_PATTERN, "");
-  if (unmatched.includes("{{") || unmatched.includes("}}")) {
-    throw new WorkflowManifestValidationError(
-      "WORKFLOW_LEGACY_TEMPLATE",
-      `${label} contains malformed legacy template syntax`,
-    );
-  }
-  for (const match of message.matchAll(MUSTACHE_PATTERN)) {
-    const parsed = LEGACY_TEMPLATE_PATTERN.exec(match[0]);
-    if (parsed === null) {
-      throw new WorkflowManifestValidationError(
-        "WORKFLOW_LEGACY_TEMPLATE",
-        `${label} contains unsupported legacy template ${JSON.stringify(match[0])}`,
-      );
-    }
-    const namespace = parsed[1];
-    const name = parsed[2]!;
-    const known =
-      namespace === "steps" ? stepIds.has(name) : groupNames.has(name);
-    if (!known) {
-      throw new WorkflowManifestValidationError(
-        "WORKFLOW_LEGACY_TEMPLATE",
-        `${label} legacy template references unknown ${namespace} name ${JSON.stringify(name)}`,
-      );
-    }
-  }
 }
 
 function enforceAggregateLimits(
@@ -562,17 +342,4 @@ function isFiniteJsonRecord(
   value: FiniteJsonValue,
 ): value is { readonly [key: string]: FiniteJsonValue } {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function inertRecord<T extends object>(value: T): Readonly<T> {
-  const record = Object.create(null) as Record<string, unknown>;
-  for (const [key, entry] of Object.entries(value)) {
-    Object.defineProperty(record, key, {
-      configurable: false,
-      enumerable: true,
-      value: entry,
-      writable: false,
-    });
-  }
-  return Object.freeze(record) as Readonly<T>;
 }

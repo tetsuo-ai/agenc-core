@@ -10,7 +10,7 @@ export const explicitDangerBroker = new SandboxExecutionBroker({
 
 /**
  * Unit tests that intentionally exercise host process mechanics must declare
- * that intent explicitly, just like an operator selecting --yolo.
+ * that intent explicitly, just like an operator selecting --dangerously-bypass-approvals-and-sandbox.
  */
 export function bindExplicitDangerBoundary<
   T extends {

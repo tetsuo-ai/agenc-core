@@ -5,7 +5,7 @@ import {
 } from "../../src/unified-exec/process-ownership.js";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
 import { UnifiedExecError } from "../../src/unified-exec/types.js";
-import { toolNameAliases, SHELL_TOOL_FAMILY } from "../../src/permissions/rules.js";
+import { toolNamesInPermissionRiskFamily, SHELL_TOOL_FAMILY } from "../../src/permissions/rules.js";
 import { normalizeUnattendedToolList } from "../../src/permissions/unattended-policy.js";
 
 describe("process ownership (TOOL-01)", () => {
@@ -99,14 +99,14 @@ describe("shell family covers write_stdin/kill (TOOL-02)", () => {
     expect(SHELL_TOOL_FAMILY).toContain("kill_process");
     expect(SHELL_TOOL_FAMILY).toContain("Monitor");
     expect(SHELL_TOOL_FAMILY).toContain("PowerShell");
-    expect(toolNameAliases("write_stdin")).toContain("exec_command");
-    expect(toolNameAliases("kill_process")).toContain("Bash");
-    expect(toolNameAliases("Monitor")).toContain("exec_command");
+    expect(toolNamesInPermissionRiskFamily("write_stdin")).toContain("exec_command");
+    expect(toolNamesInPermissionRiskFamily("kill_process")).toContain("system.bash");
+    expect(toolNamesInPermissionRiskFamily("Monitor")).toContain("exec_command");
   });
 
-  it("unattended denylist Bash covers write_stdin, kill_process, and Monitor", () => {
+  it("unattended canonical shell family collapses to one risk bucket", () => {
     const list = normalizeUnattendedToolList([
-      "Bash",
+      "system.bash",
       "write_stdin",
       "kill_process",
       "Monitor",

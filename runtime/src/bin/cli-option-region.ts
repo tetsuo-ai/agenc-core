@@ -9,6 +9,7 @@ export const STARTUP_VALUE_OPTIONS = Object.freeze([
   "--provider",
   "--model",
   "--profile",
+  "--config",
   "--permission-mode",
   "--output-format",
   "--input-format",

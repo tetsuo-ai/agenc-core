@@ -41,6 +41,7 @@ const TOOL_METADATA_KEYS = new Set([
 const PRIORITY_TOOL_NAMES = new Set([
   "exec_command",
   "write_stdin",
+  "system.bash",
   // AgenC-owned file/search tools (lifted into AgenC).
   "FileRead",
   "Edit",
@@ -52,7 +53,6 @@ const PRIORITY_TOOL_NAMES = new Set([
   "ExitPlanMode",
   "system.searchTools",
   "system.agent.delegate",
-  "desktop.bash",
   "desktop.screenshot",
   "desktop.window_list",
   "desktop.click",

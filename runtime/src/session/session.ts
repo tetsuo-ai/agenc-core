@@ -48,7 +48,7 @@ import {
 } from "../mcp-client/tui-connections.js";
 import type { MCPServerConnection } from "../services/mcp/types.js";
 import { ProviderHttpClient } from "../llm/client.js";
-import { setContextWindowUpgradeContext } from "../llm/context-window-upgrade.js";
+import { isFactoryProvider } from "../llm/provider.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type { LLMProvider } from "../llm/types.js";
 import {
@@ -82,48 +82,35 @@ import {
   type CompactionHistoryMarkerV1,
 } from "./compaction-history-marker.js";
 import {
-  normalizeProviderName,
-  normalizeManagedGatewayModel,
-  prepareProviderSwitch,
-  type ProviderFactoryOptions,
-  type PreparedProviderSwitch,
-  type ProviderName,
-  readProviderFactoryOptions,
-  readProviderIdentity,
-} from "../llm/provider.js";
-import type { ProviderFallbackLadderOptions } from "../llm/api/fallback-ladder.js";
+  MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
+  type ProviderEnvironment,
+} from "../llm/provider-options.js";
+import {
+  SessionProviderService,
+  type PreparedProviderBinding,
+  type ProviderBinding,
+} from "./provider-service.js";
+import { resolveProviderModelSelection } from "./provider-model-selection.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
-import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
-import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
 import type { BudgetTracker } from "../conversation/token-budget.js";
 import { shutdownEffectSettlementSupervisor } from "../budget/effect-settlement-supervisor.js";
 import type { SessionSubmitOptions } from "./autonomous-mode.js";
 import type { CostSidecar } from "./cost.js";
 import type { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
+import type { HookExecutionAuthority } from "../hooks/execution-authority.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import type { ToolRegistry } from "./_deps/tool-registry.js";
-import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
-import {
-  createEmptyToolPermissionContext,
-  type PermissionMode,
-  type ToolPermissionContext,
-} from "../permissions/types.js";
 import type { QuerySource } from "./_deps/query-source.js";
 import {
   freshDenialTracking,
   type DenialTrackingState,
 } from "../permissions/denial-tracking.js";
 import type { ConfigStore } from "../config/store.js";
-import { getCompactSystemPrompt,
-  getSystemPrompt } from "../constants/prompts.js";
+import { assembleBaseInstructionsForModel } from "../prompts/system-prompt.js";
 import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
-import type { Tools as PromptTools } from "../tools/Tool.js";
-import {
-  resolveProviderSettings,
-  type ResolvedProviderSettings,
-} from "../config/resolve-provider.js";
 import type {
   ApprovalResolver,
   PermissionRequestHook,
@@ -134,10 +121,15 @@ import type {
 } from "../permissions/permission-audit-log.js";
 import {
   startMcpManagerForSession,
+  type McpAuthorityRefreshOptions,
   type McpRefreshResult,
   type McpStartupCancellationToken,
 } from "./mcp-startup.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
+import {
+  retainBundledSkillExtractionRoot,
+  type BundledSkillExtractionLease,
+} from "../skills/bundled-extraction-registry.js";
 import {
   assertAgentRoleWorkspaceMatches,
   createAgentRoleWorkspace,
@@ -173,6 +165,7 @@ import {
 } from "./transcript-replacement.js";
 import {
   buildPerTurnConfig,
+  buildTurnContext,
   newDefaultTurnWithSubId as buildDefaultTurnWithSubId,
   newTurnWithSubId as buildTurnWithSubId,
   type Config,
@@ -191,6 +184,7 @@ import type { ExternalInstructionApprovalStore } from "../prompts/secure-instruc
 import type { PhaseEvent } from "../phases/events.js";
 import type { RunTurnOptions, Terminal } from "./run-turn.js";
 import { runWithCurrentRuntimeSession } from "./current-session.js";
+import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
 import type { CodeModeService } from "../tools/code-mode/types.js";
 import type { ToolLatencyStore } from "../tools/tool-latency-store.js";
@@ -198,9 +192,19 @@ import type { PolicyLimitsService } from "../services/policyLimits/index.js";
 import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import type { AgentStatus as RuntimeAgentStatus } from "../agents/status.js";
 import type {
+  AgentRuntimeOptions,
+  CommandExecutionAuthority,
+} from "./runtime-options.js";
+import type {
+  PostCompactHookInput,
+  PreCompactHookInput,
   SessionStartHookInput,
   SessionStartSource as HookSessionStartSource,
 } from "../llm/hooks/types.js";
+import type {
+  PostCompactDispatchResult,
+  PreCompactDispatchResult,
+} from "../llm/hooks/dispatcher.js";
 import type { LifecycleHookRegistry } from "../llm/hooks/registry.js";
 import type { HookResultMessage } from "../types/message.js";
 import type {
@@ -1058,25 +1062,31 @@ export interface McpManager {
     auth: unknown,
   ): Promise<Map<string, McpServerInfo>>;
   toolPluginProvenance(config: unknown): Promise<unknown>;
-  refreshFromConfig?(config: unknown): Promise<McpRefreshResult>;
+  refreshFromAuthority?(
+    options?: McpAuthorityRefreshOptions,
+  ): Promise<McpRefreshResult>;
+  dispose?(): Promise<void>;
   reconnectServer?(name: string): Promise<McpServerMutationResult>;
   enableServer?(name: string): Promise<McpServerMutationResult>;
   disableServer?(name: string): Promise<McpServerMutationResult>;
   addServer?(config: McpSessionServerConfig): Promise<McpServerMutationResult>;
+  /**
+   * Canonical live-manager tool boundary for callers that have already
+   * acquired session effect admission. Callers must propagate that admitted
+   * boundary's call id and signal through the manager options.
+   */
+  callTool?: MCPManager["callTool"];
   getTools?(): ReadonlyArray<McpSessionToolInfo>;
   getToolsByServer?(name: string): ReadonlyArray<McpSessionToolInfo>;
   getConfiguredServers?(): readonly McpSessionServerConfig[];
   getConnectionState?(name: string): McpConnectionProjection | undefined;
   getConnectedConnection?(name: string): MCPServerConnection | undefined;
-  getResources?(signal?: AbortSignal): Promise<ReadonlyArray<unknown>>;
-  getResourcesByServer?(
-    name: string,
-    signal?: AbortSignal,
-  ): Promise<ReadonlyArray<unknown>>;
-  readResource?(
-    namespacedName: string,
-    signal?: AbortSignal,
-  ): Promise<unknown | null>;
+  getResources?: MCPManager["getResources"];
+  getResourcesByServer?: MCPManager["getResourcesByServer"];
+  readResource?: MCPManager["readResource"];
+  listPrompts?: MCPManager["listPrompts"];
+  listPromptsByServer?: MCPManager["listPromptsByServer"];
+  renderPrompt?: MCPManager["renderPrompt"];
   /**
    * Live runtime readiness seam used by the delegate/subagent path.
    * Optional so compatibility shims remain structurally valid, but the
@@ -1100,6 +1110,43 @@ export interface McpManager {
    * consumer as `getConnectedServers`.
    */
   getServerInstructions?(name: string): string | undefined;
+  /**
+   * Atomic, credential-free projection captured only after an MCP transaction
+   * has committed (or finished rolling back). Daemon clients consume this
+   * instead of constructing a second connection manager.
+   */
+  mcpSurfaceSnapshot?(): McpSurfaceSnapshot;
+  /** Subscribe to committed status revisions; candidate transaction state is never emitted. */
+  subscribeMcpSurfaceInvalidations?(
+    listener: (revision: number) => void,
+  ): () => void;
+}
+
+export interface McpSurfaceServer {
+  readonly name: string;
+  readonly transport: "stdio" | "sse" | "http" | "websocket";
+  readonly enabled: boolean;
+  readonly required: boolean;
+  readonly state:
+    | "connected"
+    | "pending"
+    | "failed"
+    | "disabled"
+    | "needs-auth"
+    | "disconnected";
+  readonly displayTarget?: string;
+  readonly toolCount: number;
+}
+
+export interface McpSurfaceTool {
+  readonly serverName: string;
+  readonly name: string;
+}
+
+export interface McpSurfaceSnapshot {
+  readonly revision: number;
+  readonly servers: readonly McpSurfaceServer[];
+  readonly tools: readonly McpSurfaceTool[];
 }
 
 export interface McpServerMutationResult {
@@ -1111,7 +1158,7 @@ export interface McpServerMutationResult {
 
 export interface McpSessionServerConfig {
   readonly name: string;
-  readonly transport?: "stdio" | "sse" | "http" | "websocket" | "ws";
+  readonly transport?: "stdio" | "sse" | "http" | "websocket";
   readonly command?: string;
   readonly args?: readonly string[];
   readonly endpoint?: string;
@@ -1173,8 +1220,14 @@ export interface Hooks {
     input: SessionStartHookInput,
     opts?: { readonly signal?: AbortSignal },
   ): Promise<HookResultMessage[]>;
-  executePreCompact(...args: unknown[]): Promise<unknown>;
-  executePostCompact(...args: unknown[]): Promise<unknown>;
+  executePreCompact(
+    input: PreCompactHookInput,
+    signal?: AbortSignal,
+  ): Promise<PreCompactDispatchResult>;
+  executePostCompact(
+    input: PostCompactHookInput,
+    signal?: AbortSignal,
+  ): Promise<PostCompactDispatchResult>;
   executeStop(...args: unknown[]): Promise<unknown>;
   executeStopFailure(...args: unknown[]): Promise<unknown>;
 }
@@ -1268,8 +1321,7 @@ export interface NetworkApprovalService {
 }
 
 /** agenc runtime `Shell`. */
-export interface UserShell {
-  readonly path: string;
+export interface UserShell extends CommandExecutionAuthority {
   deriveExecArgs(input: string, useLoginShell: boolean): string[];
 }
 
@@ -1286,6 +1338,8 @@ export interface StateDbContext {
 
 /** agenc runtime `SessionServices` — DI container of all session-scoped services. */
 export interface SessionServices {
+  /** Immutable operator policy captured for this session at creation time. */
+  readonly runtimeOptions: AgentRuntimeOptions;
   readonly mcpConnectionManager: McpConnectionManager;
   readonly mcpStartupCancellationToken: McpStartupCancellationToken;
   readonly unifiedExecManager: UnifiedExecProcessManager;
@@ -1377,6 +1431,15 @@ export interface SessionServices {
   readonly codeModeService: CodeModeService;
   readonly environment?: Environment;
   // T-future: AgenC-specific additions
+  /**
+   * Canonical provider authority. Session construction supplies a read-only
+   * binding when a standalone embedder provides only `provider`; callers that
+   * support live switching bind the preparation resolver at environment ingress.
+   */
+  readonly providerService?: SessionProviderService;
+  /** Immutable provider-only environment captured for this session. */
+  readonly providerEnvironment?: ProviderEnvironment;
+  /** Read-only projection of `providerService.current().instance`. */
   readonly provider: LLMProvider;
   readonly registry: ToolRegistry;
   /** Daemon-owned M3 execution authority shared by model/tool/spawn paths. */
@@ -1403,10 +1466,8 @@ export interface SessionServices {
   /**
    * T11 W3-A: authoritative permission-mode registry. Commands (`/permissions`,
    * `/plan`) and the evaluator both read from the same registry instance so
-   * I-3 live-read semantics are honoured. When omitted, `Session`
-   * bootstraps a default registry seeded with `createEmptyToolPermissionContext()`
-   * so test fixtures can continue constructing Sessions without wiring
-   * the full permissions subsystem.
+   * I-3 live-read semantics are honoured. Every Session constructor must
+   * receive this authority explicitly.
    */
   readonly permissionModeRegistry: PermissionModeRegistry;
   /**
@@ -1419,6 +1480,8 @@ export interface SessionServices {
   /** Trusted embedding-host channel for exact external instruction grants. */
   readonly externalInstructionApprovals?: ExternalInstructionApprovalStore;
   readonly costSidecar?: CostSidecar;
+  /** External hook effects fail closed unless this session-owned authority permits them. */
+  readonly hookExecutionAuthority?: HookExecutionAuthority;
   readonly hooksRuntime?: ConfiguredHooksRuntime;
   readonly policyLimits?: PolicyLimitsService;
   /**
@@ -1441,45 +1504,18 @@ export interface PendingProviderSwitch {
   readonly profile?: string;
 }
 
+export interface PreparedSessionProviderSwitch {
+  readonly pending: PendingProviderSwitch;
+  readonly provider: PreparedProviderBinding;
+  readonly modelInfo: ModelInfo;
+  readonly baseInstructions: string;
+}
+
 export interface AppliedProviderSwitchResult {
   readonly applied: boolean;
   readonly provider?: string;
   readonly model?: string;
   readonly reason?: string;
-}
-
-function buildProviderFallbackLadderOptions(params: {
-  readonly provider: string;
-  readonly model: string;
-  readonly settings: ResolvedProviderSettings | undefined;
-}): ProviderFallbackLadderOptions | undefined {
-  const targets = params.settings?.fallbackTargets;
-  if (!targets || targets.length === 0) return undefined;
-  return {
-    provider: params.provider,
-    model: params.model,
-    targets,
-    ...(params.settings?.fallbackMaxFailures !== undefined
-      ? { maxFailures: params.settings.fallbackMaxFailures }
-      : {}),
-    ...(params.settings?.fallbackStatuses !== undefined &&
-    params.settings.fallbackStatuses.length > 0
-      ? { statuses: params.settings.fallbackStatuses }
-      : {}),
-  };
-}
-
-const MANAGED_KEY_PROVIDERS = new Set<ProviderName>(["openrouter"]);
-
-const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 2_048;
-
-function isManagedCredentialProviderOptions(
-  options: ProviderFactoryOptions | undefined,
-): boolean {
-  return (
-    options?.extra?.managedCredential === true ||
-    options?.extra?.managedGateway === true
-  );
 }
 
 function capManagedOpenRouterModelInfo(modelInfo: ModelInfo): ModelInfo {
@@ -1497,209 +1533,6 @@ function capManagedOpenRouterModelInfo(modelInfo: ModelInfo): ModelInfo {
   };
 }
 
-async function buildBaseInstructionsForModel(params: {
-  readonly registry: ToolRegistry;
-  readonly model: string;
-  readonly compactProfile?: boolean;
-}): Promise<string> {
-  if (params.compactProfile === true) {
-    return getCompactSystemPrompt().join("\n\n");
-  }
-  const sections = await getSystemPrompt(
-    params.registry.tools as unknown as PromptTools,
-    params.model,
-  );
-  return sections.join("\n\n");
-}
-
-function isRemoteAuthBackend(authBackend: AuthBackend | undefined): boolean {
-  return authBackend?.kind === "remote";
-}
-
-function isSubscriptionEntitled(
-  tier: AuthSubscriptionTier | undefined,
-): boolean {
-  return tier === "pro" || tier === "team" || tier === "enterprise";
-}
-
-function requiresHostedModelRouting(provider: string, model: string): boolean {
-  const normalizedProvider = provider.trim().toLowerCase();
-  const normalizedModel = model.trim().toLowerCase();
-  return (
-    normalizedProvider === "agenc" ||
-    normalizedModel === "agenc" ||
-    normalizedModel.startsWith("agenc:")
-  );
-}
-
-function allowsFreeManagedProviderKey(params: {
-  readonly provider: string;
-  readonly model: string;
-  readonly subscriptionTier?: AuthSubscriptionTier;
-}): boolean {
-  return (
-    params.subscriptionTier === "free" &&
-    isFreeSubscriptionManagedModel(params.provider, params.model)
-  );
-}
-
-function firstNonEmpty(
-  ...values: Array<string | undefined>
-): string | undefined {
-  for (const value of values) {
-    const trimmed = value?.trim();
-    if (trimmed) return trimmed;
-  }
-  return undefined;
-}
-
-async function vendManagedProviderKey(params: {
-  readonly provider: ProviderName;
-  readonly authBackend: AuthBackend | undefined;
-  readonly sessionId: string;
-  readonly model: string;
-}): Promise<
-  | {
-      readonly apiKey: string;
-      readonly baseURL?: string;
-      readonly model?: string;
-    }
-  | undefined
-> {
-  if (!params.authBackend || !MANAGED_KEY_PROVIDERS.has(params.provider)) {
-    return undefined;
-  }
-  const key = await params.authBackend.vendKey(
-    params.provider,
-    params.sessionId,
-  );
-  const apiKey = firstNonEmpty(key.apiKey);
-  if (apiKey === undefined) return undefined;
-  const baseURL = firstNonEmpty(key.baseUrl);
-  const model =
-    baseURL !== undefined
-      ? normalizeManagedGatewayModel(params.provider, params.model)
-      : params.model;
-  return {
-    apiKey,
-    ...(baseURL !== undefined ? { baseURL } : {}),
-    model,
-  };
-}
-
-async function providerFactoryOptionsFromSettings(params: {
-  readonly provider: string;
-  readonly model: string;
-  readonly settings: ResolvedProviderSettings | undefined;
-  readonly authBackend?: AuthBackend;
-  readonly authSubscriptionTier?: AuthSubscriptionTier;
-  readonly managedKeysEnabled: boolean;
-  readonly sessionId: string;
-  readonly reusableApiKey?: string;
-  readonly executionAdmissionRequired?: boolean;
-}): Promise<ProviderFactoryOptions> {
-  const extra: Record<string, unknown> = {};
-  if (params.settings?.contextWindowTokens !== undefined) {
-    extra.contextWindowTokens = params.settings.contextWindowTokens;
-  }
-  if (params.settings?.maxOutputTokens !== undefined) {
-    extra.maxTokens = params.settings.maxOutputTokens;
-  }
-  if (params.executionAdmissionRequired === true) {
-    extra.maxRetries = 0;
-  } else {
-    const providerFallback = buildProviderFallbackLadderOptions(params);
-    if (providerFallback !== undefined) {
-      extra.providerFallback = providerFallback;
-    }
-  }
-  const normalizedProvider = normalizeProviderName(params.provider);
-  if (normalizedProvider === "agenc" && params.authBackend !== undefined) {
-    extra.authBackend = params.authBackend;
-    extra.sessionId = params.sessionId;
-    if (params.authSubscriptionTier !== undefined) {
-      extra.subscriptionTier = params.authSubscriptionTier;
-    }
-  }
-  const byokApiKey = params.settings?.apiKey ?? params.reusableApiKey;
-  if (
-    isRemoteAuthBackend(params.authBackend) &&
-    !isSubscriptionEntitled(params.authSubscriptionTier) &&
-    !allowsFreeManagedProviderKey({
-      provider: params.provider,
-      model: params.model,
-      subscriptionTier: params.authSubscriptionTier,
-    })
-  ) {
-    if (requiresHostedModelRouting(params.provider, params.model)) {
-      throw new Error(
-        "Hosted AgenC model routing requires an active AgenC subscription",
-      );
-    }
-    if (
-      params.managedKeysEnabled &&
-      byokApiKey === undefined &&
-      normalizedProvider !== null &&
-      MANAGED_KEY_PROVIDERS.has(normalizedProvider)
-    ) {
-      throw new Error(
-        "Managed provider keys require an active AgenC subscription; configure BYOK provider credentials instead",
-      );
-    }
-  }
-  const managedCredential =
-    byokApiKey === undefined &&
-    params.managedKeysEnabled &&
-    normalizedProvider !== null
-      ? await vendManagedProviderKey({
-          provider: normalizedProvider,
-          authBackend: params.authBackend,
-          sessionId: params.sessionId,
-          model: params.model,
-        })
-      : undefined;
-  const hasManagedCredential = managedCredential !== undefined;
-  if (
-    hasManagedCredential &&
-    normalizedProvider === "openrouter" &&
-    params.settings?.maxOutputTokens === undefined
-  ) {
-    extra.maxTokens = MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS;
-    extra.managedCredential = true;
-  }
-  const apiKey = params.settings?.apiKey ?? managedCredential?.apiKey;
-  const baseURL = params.settings?.baseURL ?? managedCredential?.baseURL;
-  return {
-    ...(apiKey ? { apiKey } : {}),
-    ...(baseURL ? { baseURL } : {}),
-    ...(params.settings?.timeoutMs !== undefined
-      ? { timeoutMs: params.settings.timeoutMs }
-      : {}),
-    ...(managedCredential?.baseURL !== undefined
-      ? { extra: { ...extra, managedGateway: true } }
-      : {}),
-    ...(managedCredential?.baseURL === undefined &&
-    Object.keys(extra).length > 0
-      ? { extra }
-      : {}),
-  };
-}
-
-function mergeProviderFactoryOptions(
-  base: ProviderFactoryOptions | undefined,
-  override: ProviderFactoryOptions,
-): ProviderFactoryOptions {
-  const mergedExtra = {
-    ...(base?.extra ?? {}),
-    ...(override.extra ?? {}),
-  };
-  return {
-    ...(base ?? {}),
-    ...override,
-    ...(Object.keys(mergedExtra).length > 0 ? { extra: mergedExtra } : {}),
-  };
-}
-
 export const DEFAULT_LEGACY_EVENT_QUEUE_DEPTH = 1024;
 
 /** Abort reason classification (per I-7). */
@@ -1708,6 +1541,7 @@ export type AbortReason =
   | "parent_interrupt"
   | "recovery"
   | "mode_changed"
+  | "permission_authority_failure"
   | "auth_failed"
   | "stdin_lost"
   | "provider_switched"
@@ -1726,6 +1560,12 @@ export interface SessionOpts {
   readonly initialState: SessionState;
   readonly features: ManagedFeatures;
   readonly services: SessionServices;
+  /**
+   * MCP transport ownership is explicit because child sessions may borrow the
+   * parent's service projection. Only the owning root may dispose that live
+   * authority; omitted means borrowed for compatibility and fail-safe teardown.
+   */
+  readonly mcpManagerOwnership?: "owned" | "borrowed";
   readonly jsRepl: JsReplHandle;
   /** Immutable role trust-domain identity; distinct from mutable execution cwd. */
   readonly roleWorkspace?: AgentRoleWorkspace;
@@ -1986,8 +1826,7 @@ function normalizeHistoryMessages(
                 : {}),
               ...(candidate.runtimeOnly?.compactionHistory !== undefined
                 ? {
-                    compactionHistory:
-                      candidate.runtimeOnly.compactionHistory,
+                    compactionHistory: candidate.runtimeOnly.compactionHistory,
                   }
                 : {}),
             },
@@ -2011,7 +1850,9 @@ const NON_SELECTABLE_USER_TAGS = [
   "teammate-message",
 ] as const;
 
-export function isCompactBoundaryMessage(message: LLMMessage | undefined): boolean {
+export function isCompactBoundaryMessage(
+  message: LLMMessage | undefined,
+): boolean {
   return isAuthenticatedCompactionBoundary(message);
 }
 
@@ -2019,9 +1860,11 @@ export function isTransactionalCompactSummaryMessage(
   message: LLMMessage | undefined,
 ): boolean {
   const marker = message?.runtimeOnly?.compactionHistory;
-  return message?.role === "user" &&
+  return (
+    message?.role === "user" &&
     marker?.version === COMPACTION_HISTORY_MARKER_VERSION &&
-    marker.kind === "summary";
+    marker.kind === "summary"
+  );
 }
 
 function isCompactSummaryMessage(message: LLMMessage | undefined): boolean {
@@ -2491,6 +2334,8 @@ export class Session {
    * once ConfigStore tracks it.
    */
   pendingProviderSwitch: PendingProviderSwitch | null = null;
+  private preparedPendingProviderSwitch: PreparedSessionProviderSwitch | null =
+    null;
 
   /**
    * T11 W3: active worktree binding for the slash-command adapters.
@@ -2562,7 +2407,13 @@ export class Session {
   private sessionStartLifecycleReady = true;
   private deferredOrdinarySubmitHooks: Array<() => Promise<void>> = [];
   private deferredOrdinarySubmitHookPromise: Promise<void> | null = null;
+  private readonly ownsMcpManager: boolean;
+  private mcpDisposeTask: Promise<void> | null = null;
+  private mcpDisposeCompletionTask: Promise<void> | null = null;
+  private mcpDisposeState: "idle" | "pending" | "fulfilled" | "rejected" =
+    "idle";
   private lifecycleState: "open" | "shutting_down" | "closed" = "open";
+  private readonly bundledSkillExtractionLease: BundledSkillExtractionLease | null;
 
   /** Serialize submit calls so the session keeps a single active turn. */
   private submitQueue: Promise<void> = Promise.resolve();
@@ -2601,16 +2452,12 @@ export class Session {
   /**
    * Session bootstrap.
    *
-   * Notable defaults:
-   *   - `opts.services.permissionModeRegistry` is constructed with a
-   *     default `PermissionModeRegistry` seeded from
-   *     `createEmptyToolPermissionContext()` when absent, so test
-   *     fixtures that do not wire the full permissions subsystem still
-   *     get a working registry. Production bootstrap paths supply the
-   *     real registry built during startup by the CLI.
+   * The permission-mode registry has no constructor fallback. Every caller
+   * must supply the same registry used by commands and tool evaluation.
    */
   constructor(opts: SessionOpts) {
     this.conversationId = opts.conversationId;
+    this.ownsMcpManager = opts.mcpManagerOwnership === "owned";
     // Keep legacy producers that were handed `session.eventLog` on the same
     // canonical persist-before-publish path as direct `session.emit` callers.
     this.eventLog.setEmitDelegate((event) => this.emit(event));
@@ -2666,46 +2513,45 @@ export class Session {
       drain: () => this.sessionMailbox.drain(),
     });
     this.guardianReviewSession = { enabled: false };
-    // Bootstrap a default permission-mode registry when the caller did
-    // not supply one. `SessionServices.permissionModeRegistry` is
-    // required on the interface, but historical test fixtures that
-    // loose-cast through `unknown as SessionServices` can still reach
-    // this branch with an `undefined` slot, so treat the cast-through
-    // case as a missing registry and fall back to the empty default.
-    const rawRegistry = (
-      opts.services as unknown as {
-        permissionModeRegistry?: PermissionModeRegistry;
-      }
-    ).permissionModeRegistry;
-    const resolvedRegistry =
-      rawRegistry ??
-      new PermissionModeRegistry(createEmptyToolPermissionContext());
-    opts.initialState.sessionConfiguration = {
-      ...opts.initialState.sessionConfiguration,
-      permissionContext: {
-        mode: resolvedRegistry.current().mode,
-        ...(resolvedRegistry.current().isAutoModeAvailable !== undefined
-          ? {
-              isAutoModeAvailable:
-                resolvedRegistry.current().isAutoModeAvailable,
-            }
+    const resolvedRegistry = opts.services.permissionModeRegistry;
+    if (resolvedRegistry === undefined) {
+      throw new Error("Session requires services.permissionModeRegistry");
+    }
+    const initialSelection = opts.initialState
+      .sessionConfiguration as SessionConfiguration & {
+      readonly provider?: { readonly slug?: string };
+    };
+    const initialProviderIsFactoryBound = isFactoryProvider(
+      opts.services.provider,
+    );
+    const providerService =
+      opts.services.providerService ??
+      new SessionProviderService({
+        initialProvider: opts.services.provider,
+        ...(!initialProviderIsFactoryBound &&
+        initialSelection.provider?.slug !== undefined
+          ? { initialProviderName: initialSelection.provider.slug }
           : {}),
-        ...(resolvedRegistry.current().autoModeActive !== undefined
-          ? { autoModeActive: resolvedRegistry.current().autoModeActive }
+        ...(!initialProviderIsFactoryBound &&
+        initialSelection.collaborationMode?.model !== undefined
+          ? { initialModel: initialSelection.collaborationMode.model }
           : {}),
-        ...(resolvedRegistry.current().bypassPermissionsAcceptedIn !== undefined
-          ? {
-              bypassPermissionsAcceptedIn:
-                resolvedRegistry.current().bypassPermissionsAcceptedIn,
-            }
-          : {}),
-      },
-    } as SessionConfiguration;
-    this.services = {
+        environment: opts.services.providerEnvironment ?? {},
+      });
+    const services = {
       ...opts.services,
+      providerService,
       permissionModeRegistry: resolvedRegistry,
       querySource: opts.services.querySource ?? "repl_main_thread",
     };
+    // `provider` is a read-only projection for consumers; all mutations are
+    // transactional operations on the session-owned provider service.
+    Object.defineProperty(services, "provider", {
+      enumerable: true,
+      configurable: false,
+      get: () => providerService.current().instance,
+    });
+    this.services = services;
     this.jsRepl = opts.jsRepl;
     this.config =
       opts.config ??
@@ -2729,12 +2575,6 @@ export class Session {
     this.budgetTracker = opts.budgetTracker ?? null;
     this.initialTranscriptEvents = opts.initialTranscriptEvents ?? [];
     this.bindProviderConversation();
-    resolvedRegistry.subscribeToModeChange((newMode) => {
-      void this.syncPermissionContextFromRegistry({
-        ...resolvedRegistry.current(),
-        mode: newMode,
-      });
-    });
     // Per-turn attachment exit-pulse wiring. The plan-mode and auto-mode
     // attachment producers fire a one-shot exit reminder when these flags
     // are set; the registry is the canonical event source for mode
@@ -2749,6 +2589,11 @@ export class Session {
         getAttachmentTrackingState(this).needsAutoModeExitAttachment = true;
       }
     });
+    const sessionTempRoot = opts.services.runtimeOptions?.sessionTempRoot;
+    this.bundledSkillExtractionLease =
+      sessionTempRoot === undefined
+        ? null
+        : retainBundledSkillExtractionRoot(sessionTempRoot);
   }
 
   // ───────────────────────────────────────────────────────────
@@ -2764,6 +2609,102 @@ export class Session {
    */
   setPendingProviderSwitch(pendingSwitch: PendingProviderSwitch | null): void {
     this.pendingProviderSwitch = pendingSwitch;
+    this.preparedPendingProviderSwitch = null;
+  }
+
+  async prepareProviderSwitch(
+    pending: PendingProviderSwitch,
+    configSnapshot?: ReturnType<ConfigStore["current"]>,
+  ): Promise<PreparedSessionProviderSwitch> {
+    const liveBinding = this.providerService.current();
+    const configStore = (this.services as Partial<SessionServices>).configStore;
+    const admittedSelection = resolveProviderModelSelection(
+      configSnapshot ?? configStore?.current(),
+      {
+        provider: liveBinding.provider,
+        model: liveBinding.model,
+      },
+      { model_provider: pending.provider, model: pending.model },
+    );
+    const admittedPending: PendingProviderSwitch = Object.freeze({
+      ...pending,
+      provider: admittedSelection.provider,
+      model: admittedSelection.model,
+    });
+    const provider = await this.providerService.prepare({
+      provider: admittedPending.provider,
+      model: admittedPending.model,
+    });
+    const rawModelInfo = await deriveNextModelInfo(
+      this.services.modelsManager,
+      provider.binding.model,
+    );
+    const modelInfo = provider.managedDefaultOutputCap
+      ? capManagedOpenRouterModelInfo(rawModelInfo)
+      : rawModelInfo;
+    const permissionContext = this.permissionModeRegistry.current();
+    const promptContext = buildTurnContext({
+      conversationId: this.conversationId,
+      subId: "provider-switch-system-prompt",
+      config: { ...this.config, model: provider.binding.model },
+      modelInfo,
+      provider: provider.binding.instance,
+      providerBinding: provider.binding,
+      sessionConfiguration: {
+        ...this.sessionConfiguration,
+        collaborationMode: {
+          ...this.sessionConfiguration.collaborationMode,
+          model: provider.binding.model,
+        },
+      },
+      ...(this.authManager !== undefined
+        ? { authManager: this.authManager }
+        : {}),
+      ...(this.environment !== undefined
+        ? { environment: this.environment }
+        : {}),
+      ...(this.network !== undefined ? { network: this.network } : {}),
+      permissionMode: permissionContext.mode,
+    });
+    const baseInstructions = await assembleBaseInstructionsForModel({
+      session: this,
+      ctx: promptContext,
+      registry: this.services.registry,
+      provider: provider.binding.provider,
+      permissionContext,
+      profile: this.config.coordinatorMode === true
+        ? "coordinator"
+        : usesLocalToolProfile(provider.binding.provider)
+          ? "compact"
+          : "standard",
+    });
+    return Object.freeze({
+      pending: admittedPending,
+      provider,
+      modelInfo,
+      baseInstructions,
+    });
+  }
+
+  stagePreparedProviderSwitch(
+    prepared: PreparedSessionProviderSwitch,
+    expectedPending: PendingProviderSwitch | null,
+  ): void {
+    if (this.pendingProviderSwitch !== expectedPending) {
+      throw new Error(
+        "pending provider selection changed while the replacement was prepared",
+      );
+    }
+    if (
+      prepared.provider.expectedRevision !==
+      this.providerService.current().revision
+    ) {
+      throw new Error(
+        "live provider binding changed while the replacement was prepared",
+      );
+    }
+    this.pendingProviderSwitch = prepared.pending;
+    this.preparedPendingProviderSwitch = prepared;
   }
 
   setPendingWorktreeState(
@@ -2852,11 +2793,11 @@ export class Session {
 
   /**
    * Session-scoped provider accessor for the canonical turn builder path.
-   * Throws when a loose-cast test fixture omitted the provider and then
-   * attempted to use the live turn owner path.
+   * The active binding belongs to `SessionProviderService`; the service
+   * container's `provider` property is only a compatibility projection.
    */
   get provider(): LLMProvider {
-    const provider = (this.services as Partial<SessionServices>).provider;
+    const provider = this.providerService.current().instance;
     if (!provider) {
       throw new Error(
         "Session provider is required to build or run a live turn",
@@ -2865,21 +2806,30 @@ export class Session {
     return provider;
   }
 
+  get providerService(): SessionProviderService {
+    const service = this.services.providerService;
+    if (!service) {
+      throw new Error("Session provider service was not initialized");
+    }
+    return service;
+  }
+
+  get providerBinding(): ProviderBinding {
+    return this.providerService.current();
+  }
+
   bindProviderConversation(provider?: LLMProvider): void {
-    const target =
-      provider ?? (this.services as Partial<SessionServices>).provider;
+    const target = provider ?? this.provider;
     readProviderHttpClient(target)?.bindConversationId(this.conversationId);
   }
 
   clearProviderResponseId(provider?: LLMProvider): void {
-    const target =
-      provider ?? (this.services as Partial<SessionServices>).provider;
+    const target = provider ?? this.provider;
     readProviderHttpClient(target)?.clearResponsesResponseId();
   }
 
   resetProviderIncrementalState(provider?: LLMProvider): void {
-    const target =
-      provider ?? (this.services as Partial<SessionServices>).provider;
+    const target = provider ?? this.provider;
     const client = readProviderHttpClient(target);
     client?.bindConversationId(this.conversationId);
     client?.resetResponsesContinuation();
@@ -2899,46 +2849,6 @@ export class Session {
 
   get permissionModeRegistry(): PermissionModeRegistry {
     return this.services.permissionModeRegistry;
-  }
-
-  async syncPermissionContextFromRegistry(
-    nextCtx: Pick<
-      ToolPermissionContext,
-      | "mode"
-      | "isAutoModeAvailable"
-      | "autoModeActive"
-      | "bypassPermissionsAcceptedIn"
-    > = this.permissionModeRegistry.current(),
-  ): Promise<void> {
-    const state = this.state.unsafePeek();
-    const currentPermissionContext = (
-      state.sessionConfiguration as SessionConfiguration & {
-        permissionContext?: {
-          readonly mode?: PermissionMode;
-          readonly isAutoModeAvailable?: boolean;
-          readonly autoModeActive?: boolean;
-          readonly bypassPermissionsAcceptedIn?: readonly string[];
-        };
-      }
-    ).permissionContext;
-    state.sessionConfiguration = {
-      ...state.sessionConfiguration,
-      permissionContext: {
-        ...(currentPermissionContext ?? {}),
-        mode: nextCtx.mode,
-        ...(nextCtx.isAutoModeAvailable !== undefined
-          ? { isAutoModeAvailable: nextCtx.isAutoModeAvailable }
-          : {}),
-        ...(nextCtx.autoModeActive !== undefined
-          ? { autoModeActive: nextCtx.autoModeActive }
-          : {}),
-        ...(nextCtx.bypassPermissionsAcceptedIn !== undefined
-          ? {
-              bypassPermissionsAcceptedIn: nextCtx.bypassPermissionsAcceptedIn,
-            }
-          : {}),
-      },
-    } as SessionConfiguration;
   }
 
   buildPerTurnConfig(overrides?: Partial<Config>): Readonly<Config> {
@@ -2972,105 +2882,33 @@ export class Session {
         collaborationMode?: { model?: string };
       };
     };
-    const liveProvider = (this.services as Partial<SessionServices>).provider;
-    const liveProviderOptions = liveProvider
-      ? readProviderFactoryOptions(liveProvider)
-      : undefined;
+    const providerService = this.providerService;
+    const liveBinding = providerService.current();
+    const liveProvider = liveBinding.instance;
     const beforeModel =
-      liveProviderOptions?.model ??
+      liveBinding.model ??
       peeked.sessionConfiguration?.collaborationMode?.model ??
       "unknown";
     const beforeProvider =
-      readProviderIdentity(
-        liveProvider,
-        peeked.sessionConfiguration?.provider?.slug,
-      ) ??
+      liveBinding.provider ??
       peeked.sessionConfiguration?.provider?.slug ??
       "unknown";
 
-    let resolvedModel = pending.model;
-    let resolvedProvider = pending.provider;
-    if (pending.profile) {
-      const configStore = (this.services as Partial<SessionServices>)
-        .configStore;
-      if (configStore && typeof configStore.current === "function") {
-        try {
-          const { resolveProfile } = await import("../config/profiles.js");
-          const overlaid = resolveProfile(
-            configStore.current(),
-            pending.profile,
-          );
-          if (overlaid.model && overlaid.model.length > 0) {
-            resolvedModel = overlaid.model;
-          }
-          if (
-            typeof overlaid.model_provider === "string" &&
-            overlaid.model_provider.length > 0
-          ) {
-            resolvedProvider = overlaid.model_provider;
-          }
-        } catch {
-          // The staging site already validated the profile; keep the marker's
-          // raw model when the overlay lookup is unavailable here.
-        }
-      }
-    }
-
-    let preparedSwitch: PreparedProviderSwitch;
-    let targetProviderSettings: ResolvedProviderSettings | undefined;
+    let prepared: PreparedSessionProviderSwitch;
     try {
-      const targetNormalizedProvider = normalizeProviderName(resolvedProvider);
-      const liveProviderIdentity = readProviderIdentity(
-        liveProvider,
-        peeked.sessionConfiguration?.provider?.slug,
-      );
-      const reusableLiveProviderOptions =
-        liveProviderOptions &&
-        liveProviderIdentity !== null &&
-        liveProviderIdentity === targetNormalizedProvider
-          ? liveProviderOptions
-          : undefined;
-      const configStore = (this.services as Partial<SessionServices>)
-        .configStore;
-      targetProviderSettings =
-        targetNormalizedProvider !== null && configStore?.current
-          ? resolveProviderSettings(
-              targetNormalizedProvider,
-              configStore.current(),
-              process.env,
-            )
-          : undefined;
-      const settingsOptions =
-        targetNormalizedProvider !== null
-          ? await providerFactoryOptionsFromSettings({
-              provider: targetNormalizedProvider,
-              model: resolvedModel,
-              settings: targetProviderSettings,
-              authBackend: this.services.authBackend,
-              authSubscriptionTier: this.services.authSubscriptionTier,
-              managedKeysEnabled: configStore?.current
-                ? resolveAuthManagedKeysEnabled(configStore.current())
-                : false,
-              sessionId: this.conversationId,
-              reusableApiKey: reusableLiveProviderOptions?.apiKey,
-              executionAdmissionRequired:
-                this.services.admissionRequired !== false,
-            })
-          : {};
-      preparedSwitch = prepareProviderSwitch(resolvedProvider, {
-        ...mergeProviderFactoryOptions(
-          reusableLiveProviderOptions,
-          settingsOptions,
-        ),
-        model: settingsOptions.model ?? resolvedModel,
-        tools: this.services.registry.toLLMTools(),
-      });
+      const retained = this.preparedPendingProviderSwitch;
+      prepared =
+        retained !== null && retained.pending === pending
+          ? retained
+          : await this.prepareProviderSwitch(pending);
     } catch (error) {
       const reason =
         error instanceof Error && error.message.length > 0
           ? error.message
           : "provider rebuild failed";
-      this.setPendingProviderSwitch(null);
+      if (this.pendingProviderSwitch === pending) {
+        this.setPendingProviderSwitch(null);
+      }
       this.emit({
         id: this.nextInternalSubId(),
         msg: {
@@ -3083,28 +2921,14 @@ export class Session {
       });
       return { applied: false, reason };
     }
-
-    const rawNextModelInfo = await deriveNextModelInfo(
-      this.services.modelsManager,
-      preparedSwitch.model,
-    );
-    const preparedSwitchOptions = readProviderFactoryOptions(
-      preparedSwitch.instance,
-    );
-    const nextModelInfo =
-      normalizeProviderName(preparedSwitch.provider) === "openrouter" &&
-      isManagedCredentialProviderOptions(preparedSwitchOptions) &&
-      targetProviderSettings?.maxOutputTokens === undefined
-        ? capManagedOpenRouterModelInfo(rawNextModelInfo)
-        : rawNextModelInfo;
-    const nextBaseInstructions = await buildBaseInstructionsForModel({
-      registry: this.services.registry,
-      model: preparedSwitch.model,
-      compactProfile: usesLocalToolProfile(preparedSwitch.provider),
-    });
+    if (this.pendingProviderSwitch !== pending) {
+      return { applied: false, reason: "provider switch superseded" };
+    }
+    const preparedSwitch = prepared.provider;
     const previousClient = readProviderHttpClient(liveProvider);
-    const nextClient = readProviderHttpClient(preparedSwitch.instance);
+    const nextClient = readProviderHttpClient(preparedSwitch.binding.instance);
 
+    providerService.commit(preparedSwitch);
     await this.state.with((state) => {
       const cfg = (
         state as {
@@ -3116,36 +2940,26 @@ export class Session {
         }
       ).sessionConfiguration;
       if (!cfg) return;
-      cfg.provider = { slug: preparedSwitch.provider };
+      cfg.provider = { slug: preparedSwitch.binding.provider };
       cfg.collaborationMode = {
         ...(cfg.collaborationMode ?? {}),
-        model: preparedSwitch.model,
+        model: preparedSwitch.binding.model,
       };
-      cfg.baseInstructions = nextBaseInstructions;
+      cfg.baseInstructions = prepared.baseInstructions;
     });
 
-    (this as { modelInfo: ModelInfo }).modelInfo = nextModelInfo;
+    (this as { modelInfo: ModelInfo }).modelInfo = prepared.modelInfo;
     (this as { config: Config }).config = {
       ...this.config,
-      model: preparedSwitch.model,
+      model: preparedSwitch.binding.model,
     };
-    (this.services as { provider: LLMProvider }).provider =
-      preparedSwitch.instance;
     previousClient?.resetResponsesContinuation();
     nextClient?.bindConversationId(this.conversationId);
     nextClient?.resetResponsesContinuation();
 
-    // Keep the sync upgrade-message snapshot in sync with the live model.
-    // Bootstrap registers the initial snapshot; subsequent /model switches
-    // (or recovery-driven model fallbacks) flow through here so the
-    // post-compact stdout breadcrumb continues to surface accurate
-    // upgrade tips after a switch.
-    setContextWindowUpgradeContext({
-      currentModel: preparedSwitch.model,
-      modelsManager: this.services.modelsManager,
-    });
-
-    this.setPendingProviderSwitch(null);
+    if (this.pendingProviderSwitch === pending) {
+      this.setPendingProviderSwitch(null);
+    }
 
     this.emit({
       id: this.nextInternalSubId(),
@@ -3153,7 +2967,7 @@ export class Session {
         type: "warning",
         payload: {
           cause: "provider_switched",
-          message: `provider ${beforeProvider} -> ${preparedSwitch.provider}; model ${beforeModel} -> ${preparedSwitch.model}; previous_response_id reset${
+          message: `provider ${beforeProvider} -> ${preparedSwitch.binding.provider}; model ${beforeModel} -> ${preparedSwitch.binding.model}; previous_response_id reset${
             pending.profile ? `; profile ${pending.profile}` : ""
           }`,
         },
@@ -3161,8 +2975,8 @@ export class Session {
     });
     return {
       applied: true,
-      provider: preparedSwitch.provider,
-      model: preparedSwitch.model,
+      provider: preparedSwitch.binding.provider,
+      model: preparedSwitch.binding.model,
     };
   }
 
@@ -3179,17 +2993,33 @@ export class Session {
         "Session.runTurn accepts either ctx or subId/configOverrides, not both",
       );
     }
-    if (opts.ctx === undefined && this.pendingProviderSwitch !== null) {
-      await this.consumePendingProviderSwitch();
+    const configStore = this.services.configStore;
+    if (configStore === undefined) {
+      throw new Error(
+        "Session.runTurn requires the session's canonical ConfigStore authority",
+      );
     }
-    const ctx =
-      opts.ctx ??
-      (opts.configOverrides !== undefined
-        ? this.newTurnWithSubId(
-            opts.subId ?? this.nextInternalSubId(),
-            opts.configOverrides,
-          )
-        : this.newDefaultTurnWithSubId(opts.subId ?? this.nextInternalSubId()));
+    const withTurnAuthority = <T>(operation: () => T): T =>
+      runWithCurrentRuntimeSession(this, () =>
+        runWithCanonicalSettingsAuthority(configStore, operation),
+      );
+    if (opts.ctx === undefined) {
+      while (this.pendingProviderSwitch !== null) {
+        await withTurnAuthority(() => this.consumePendingProviderSwitch());
+      }
+    }
+    const ctx = withTurnAuthority(
+      () =>
+        opts.ctx ??
+        (opts.configOverrides !== undefined
+          ? this.newTurnWithSubId(
+              opts.subId ?? this.nextInternalSubId(),
+              opts.configOverrides,
+            )
+          : this.newDefaultTurnWithSubId(
+              opts.subId ?? this.nextInternalSubId(),
+            )),
+    );
     const {
       ctx: _ctx,
       subId: _subId,
@@ -3199,11 +3029,13 @@ export class Session {
     void _ctx;
     void _subId;
     void _configOverrides;
-    const { runTurnKernel } = await import("./run-turn.js");
+    const { runTurnKernel } = await withTurnAuthority(
+      () => import("./run-turn.js"),
+    );
     const history =
       runOpts.history ??
       normalizeHistoryMessages(this.state.unsafePeek().history);
-    const iter = runWithCurrentRuntimeSession(this, () =>
+    const iter = withTurnAuthority(() =>
       runTurnKernel(this, ctx, userMessage, {
         ...runOpts,
         history,
@@ -3212,9 +3044,7 @@ export class Session {
     let completed = false;
     try {
       while (true) {
-        const next = await runWithCurrentRuntimeSession(this, () =>
-          iter.next(),
-        );
+        const next = await withTurnAuthority(() => iter.next());
         if (next.done) {
           completed = true;
           return next.value;
@@ -3223,9 +3053,7 @@ export class Session {
       }
     } finally {
       if (!completed) {
-        await runWithCurrentRuntimeSession(this, () =>
-          iter.return({ reason: "cancelled" }),
-        );
+        await withTurnAuthority(() => iter.return({ reason: "cancelled" }));
       }
     }
   }
@@ -3312,13 +3140,86 @@ export class Session {
   beginShutdown(): void {
     if (this.lifecycleState !== "open") return;
     this.lifecycleState = "shutting_down";
-    this.services.mcpStartupCancellationToken.cancel();
+    if (this.ownsMcpManager) {
+      this.services.mcpStartupCancellationToken.cancel();
+      this.startOwnedMcpDisposal(false);
+    }
     if (this.deferredSessionStartHookPromise === null) {
       this.deferredSessionStartHook = null;
     }
     if (this.deferredOrdinarySubmitHookPromise === null) {
       this.deferredOrdinarySubmitHooks = [];
     }
+  }
+
+  /**
+   * Complete disposal for the MCP authority this session owns. A rejected
+   * attempt is retried because the MCP service preserves unresolved cleanup
+   * state and makes a later dispose call resume that strict teardown.
+   * Borrowed child sessions deliberately return no task.
+   *
+   * @internal Prepared at the root shutdown boundary; Session.shutdown later
+   * awaits the captured operation after critical state has drained.
+   */
+  prepareOwnedMcpDisposalForShutdown(
+    retryDeadlineMs: number,
+  ): Promise<void> | undefined {
+    if (!this.ownsMcpManager) return undefined;
+    if (this.mcpDisposeCompletionTask !== null) {
+      return this.mcpDisposeCompletionTask;
+    }
+    const initial = this.startOwnedMcpDisposal(false);
+    if (initial === null) return undefined;
+    const completion = initial.catch(async (initialError: unknown) => {
+      if (monotonicMs() >= retryDeadlineMs) throw initialError;
+      if (this.mcpDisposeTask === initial) {
+        this.mcpDisposeState = "rejected";
+      }
+      const retry = this.startOwnedMcpDisposal(true);
+      if (retry === null || retry === initial) throw initialError;
+      try {
+        await retry;
+      } catch (retryError) {
+        throw new AggregateError(
+          [initialError, retryError],
+          "owned MCP disposal failed after retry",
+        );
+      }
+    });
+    this.mcpDisposeCompletionTask = completion;
+    void completion.catch(() => undefined);
+    return completion;
+  }
+
+  private startOwnedMcpDisposal(retryRejected: boolean): Promise<void> | null {
+    if (!this.ownsMcpManager) return null;
+    if (
+      this.mcpDisposeTask !== null &&
+      (this.mcpDisposeState !== "rejected" || !retryRejected)
+    ) {
+      return this.mcpDisposeTask;
+    }
+    const dispose = this.services.mcpManager?.dispose;
+    if (dispose === undefined) return null;
+
+    let task: Promise<void>;
+    try {
+      task = Promise.resolve(dispose.call(this.services.mcpManager));
+    } catch (error) {
+      task = Promise.reject(error);
+    }
+    this.mcpDisposeTask = task;
+    this.mcpDisposeState = "pending";
+    void task.then(
+      () => {
+        if (this.mcpDisposeTask === task) this.mcpDisposeState = "fulfilled";
+      },
+      () => {
+        if (this.mcpDisposeTask === task) this.mcpDisposeState = "rejected";
+      },
+    );
+    void task.catch(() => undefined);
+    return task;
   }
 
   async drainDeferredStartupForShutdown(): Promise<void> {
@@ -3562,16 +3463,17 @@ export class Session {
       if (compactionResult.transaction === undefined) {
         this.throwIfPartialCompactAborted(abortController.signal);
       }
-      const replacementHistory = compactionResult.transaction !== undefined
-        ? compactionResult.transaction.committed.replacement_history
-          .map(responseItemToLlmMessage)
-          .map(cloneLlmMessage)
-        : [
-            ...prefixBeforeActive,
-            ...fromCompactRuntimeMessages(
-              buildPostCompactMessages(compactionResult),
-            ),
-          ].map(cloneLlmMessage);
+      const replacementHistory =
+        compactionResult.transaction !== undefined
+          ? compactionResult.transaction.committed.replacement_history
+              .map(responseItemToLlmMessage)
+              .map(cloneLlmMessage)
+          : [
+              ...prefixBeforeActive,
+              ...fromCompactRuntimeMessages(
+                buildPostCompactMessages(compactionResult),
+              ),
+            ].map(cloneLlmMessage);
       const event = createHistoryReplacedEvent({
         replacementHistory,
         id: `history-replaced-${task.subId}`,
@@ -3717,7 +3619,8 @@ export class Session {
         sessionId: this.conversationId,
         eventAlreadyEmitted: false,
         code: "ROLLOUT_DEGRADED",
-        message: "Compaction rollback is disabled while durable history is degraded.",
+        message:
+          "Compaction rollback is disabled while durable history is degraded.",
       };
     }
 
@@ -3729,7 +3632,10 @@ export class Session {
         autoStart: false,
       });
     } catch (error) {
-      if (error instanceof Error && error.message.includes("turn is currently in flight")) {
+      if (
+        error instanceof Error &&
+        error.message.includes("turn is currently in flight")
+      ) {
         return {
           ok: false,
           sessionId: this.conversationId,
@@ -3762,7 +3668,10 @@ export class Session {
           attemptId: params.attemptId,
           nowMs: Date.now(),
           ...(params.reviewedBranchTargetSessionId !== undefined
-            ? { reviewedBranchTargetSessionId: params.reviewedBranchTargetSessionId }
+            ? {
+                reviewedBranchTargetSessionId:
+                  params.reviewedBranchTargetSessionId,
+              }
             : {}),
         });
         if (rollback.mode === "reviewed_branch") {
@@ -3794,9 +3703,12 @@ export class Session {
           try {
             rolloutStore.recordProjectionFailure(rollback.attemptId, error);
           } catch (recordError) {
-            throw new CompactionReconstructionRequiredError(rollback.attemptId, {
-              cause: new AggregateError([error, recordError]),
-            });
+            throw new CompactionReconstructionRequiredError(
+              rollback.attemptId,
+              {
+                cause: new AggregateError([error, recordError]),
+              },
+            );
           }
           throw new CompactionReconstructionRequiredError(rollback.attemptId, {
             cause: error,
@@ -3811,9 +3723,12 @@ export class Session {
           try {
             rolloutStore.markCleanupPending(rollback.attemptId, error);
           } catch (markError) {
-            throw new CompactionReconstructionRequiredError(rollback.attemptId, {
-              cause: new AggregateError([error, markError]),
-            });
+            throw new CompactionReconstructionRequiredError(
+              rollback.attemptId,
+              {
+                cause: new AggregateError([error, markError]),
+              },
+            );
           }
           this.registerCompactionCleanupRetry(rollback.attemptId, cleanup);
         }
@@ -3829,7 +3744,8 @@ export class Session {
           displayText: "Compaction rolled back in the current session",
         };
       });
-      if (result === null) throw new Error("compaction rollback produced no result");
+      if (result === null)
+        throw new Error("compaction rollback produced no result");
       return result;
     } finally {
       if (task !== null) await this.onTaskFinished(task.subId);
@@ -3845,7 +3761,8 @@ export class Session {
         ok: false,
         sessionId: this.conversationId,
         code: "ROLLOUT_UNAVAILABLE",
-        message: "Compaction retention extension requires a durable session history.",
+        message:
+          "Compaction retention extension requires a durable session history.",
       };
     }
     if (rolloutStore.isDegraded) {
@@ -3853,7 +3770,8 @@ export class Session {
         ok: false,
         sessionId: this.conversationId,
         code: "ROLLOUT_DEGRADED",
-        message: "Compaction retention cannot change while durable history is degraded.",
+        message:
+          "Compaction retention cannot change while durable history is degraded.",
       };
     }
 
@@ -3865,12 +3783,16 @@ export class Session {
         autoStart: false,
       });
     } catch (error) {
-      if (error instanceof Error && error.message.includes("turn is currently in flight")) {
+      if (
+        error instanceof Error &&
+        error.message.includes("turn is currently in flight")
+      ) {
         return {
           ok: false,
           sessionId: this.conversationId,
           code: "ACTIVE_TURN",
-          message: "Cannot extend compaction retention while a turn is in flight.",
+          message:
+            "Cannot extend compaction retention while a turn is in flight.",
         };
       }
       throw error;
@@ -4106,10 +4028,10 @@ export class Session {
       readonly setStreamMode?: CompactContext["setStreamMode"];
       readonly setResponseLength?: CompactContext["setResponseLength"];
       readonly onCompactProgress?: CompactContext["onCompactProgress"];
-      readonly setSDKStatus?: CompactContext["setSDKStatus"];
     };
     return {
       abortController,
+      cwd: this.sessionConfiguration.cwd,
       provider: this.services.provider,
       admissionSession: this,
       ...(this.rolloutStore !== null
@@ -4119,7 +4041,6 @@ export class Session {
       setStreamMode: surface.setStreamMode,
       setResponseLength: surface.setResponseLength,
       onCompactProgress: surface.onCompactProgress,
-      setSDKStatus: surface.setSDKStatus,
       options: {
         mainLoopModel:
           this.modelInfo.slug ??
@@ -4135,7 +4056,8 @@ export class Session {
         cleanup: {
           clearReadFileState: () => this.compactionReadFileState()?.clear(),
           clearProviderResponseId: () => this.clearProviderResponseId(),
-          clearSearchIndexes: this.compactionCleanupCallback("clearSearchIndexes"),
+          clearSearchIndexes:
+            this.compactionCleanupCallback("clearSearchIndexes"),
           clearToolIndexes: this.compactionCleanupCallback("clearToolIndexes"),
           resetMicrocompactState,
         },
@@ -4157,7 +4079,9 @@ export class Session {
     key: "clearSearchIndexes" | "clearToolIndexes",
   ): (() => void) | undefined {
     const value = (this as unknown as Record<string, unknown>)[key];
-    return typeof value === "function" ? value.bind(this) as () => void : undefined;
+    return typeof value === "function"
+      ? (value.bind(this) as () => void)
+      : undefined;
   }
 
   private runPostCompactionCleanup(): void {
@@ -4234,9 +4158,10 @@ export class Session {
           { durable: true },
         );
       }
-      const projectedItems = params.compactionResult.transaction === undefined
-        ? replacementItems
-        : params.compactionResult.transaction.committed.replacement_history;
+      const projectedItems =
+        params.compactionResult.transaction === undefined
+          ? replacementItems
+          : params.compactionResult.transaction.committed.replacement_history;
       const applyProjection = async (): Promise<void> => {
         await this.state.with((sessionState) => {
           sessionState.history = projectedItems.map(responseItemToLlmMessage);
@@ -4310,20 +4235,14 @@ export class Session {
   }
 
   /**
-   * Synchronously emit an event. Routes through:
-   *
-   *   1. EventLog (T6) — assigns monotonic seq (I-27), fans to
-   *      subscribed sidecars (I-43 per-sidecar isolation).
-   *   2. RolloutStore (T6, when wired) — appends to the JSONL
-   *      rollout; durable events (TurnComplete, TurnAborted, Error,
-   *      ContextCompacted) force fsync before returning (I-4).
-   *   3. txEvent (compatibility) — kept for consumers that still use
-   *      `for await ... of session.txEvent.stream()`.
-   *
-   * I-8: every error site MUST funnel through this or the dedicated
-   * `emitError` helper (event-log.ts).
+   * Stamp and durably append an event without publishing it. The caller must
+   * invoke the returned one-shot `publish` only after the in-memory state
+   * described by the event has become visible.
    */
-  emit(event: Event, appendOpts: AppendOptions = {}): Event {
+  prepareEmit(
+    event: Event,
+    appendOpts: AppendOptions = {},
+  ): { readonly event: Event; publish(): Event } {
     if (this.canonicalJournalSealed) {
       throw new Error(
         `cannot append ${event.msg.type}: canonical run journal is sealed`,
@@ -4343,10 +4262,18 @@ export class Session {
       // retaining caller-supplied coordinates would let the live bridge claim
       // an event that run.replay can never return.
       const ephemeral: Event = { id: event.id, msg: event.msg };
-      this.eventLog.publish(ephemeral, (published) => {
-        this.txEvent.send(published);
-      });
-      return ephemeral;
+      let published = false;
+      return {
+        event: ephemeral,
+        publish: () => {
+          if (published) return ephemeral;
+          published = true;
+          this.eventLog.publish(ephemeral, (publishedEvent) => {
+            this.txEvent.send(publishedEvent);
+          });
+          return ephemeral;
+        },
+      };
     }
     // I-27 + M4: allocate identity/sequence first, but do not let a listener
     // observe a durable transition until its rollout append has fsynced.
@@ -4377,15 +4304,37 @@ export class Session {
         );
       }
     }
+    let published = false;
+    return {
+      event: stamped,
+      publish: () => {
+        if (published) return stamped;
+        published = true;
+        return this.publishPreparedEvent(stamped);
+      },
+    };
+  }
+
+  /** Publish an event already stamped and appended by {@link prepareEmit}. */
+  publishPreparedEvent(event: Event): Event {
     hitM4DurabilityFailpoint("before_event_publish");
-    this.eventLog.publish(stamped, (published) => {
+    this.eventLog.publish(event, (published) => {
       // Compatibility consumers belong to the same FIFO publication queue.
       // A listener may synchronously emit another event; keeping this callback
       // inside EventLog prevents txEvent from observing N+1 before N.
       this.txEvent.send(published);
       hitM4DurabilityFailpoint("after_event_publish");
     });
-    return stamped;
+    return event;
+  }
+
+  /**
+   * Synchronously emit an event. Durable persistence completes before the
+   * event becomes observable; ordinary callers publish immediately after the
+   * append, while state-transition owners may use {@link prepareEmit}.
+   */
+  emit(event: Event, appendOpts: AppendOptions = {}): Event {
+    return this.prepareEmit(event, appendOpts).publish();
   }
 
   /**
@@ -5487,6 +5436,9 @@ export class Session {
   async shutdown(): Promise<void> {
     const MAX_DRAIN_MS = 2_000;
     this.beginShutdown();
+    const mcpDisposeTask = this.prepareOwnedMcpDisposalForShutdown(
+      monotonicMs() + MAX_DRAIN_MS,
+    );
     await this.drainDeferredStartupForShutdown();
     // SessionEnd hooks fire first (bounded, failure-contained) once the
     // matching SessionStart hook has run. A cold Editor-only session keeps
@@ -5511,7 +5463,12 @@ export class Session {
             // Dispatch against THIS session's registry (plus process-global
             // hooks); shutdown runs outside the turn ALS scope, so ambient
             // resolution cannot identify the session on its own.
-            lifecycleHooks !== undefined ? { registry: lifecycleHooks } : {},
+            {
+              ...(lifecycleHooks !== undefined
+                ? { registry: lifecycleHooks }
+                : {}),
+              runtimeOptions: this.services.runtimeOptions,
+            },
           ),
           hookTimeout,
         ]);
@@ -5631,8 +5588,59 @@ export class Session {
     } catch {
       /* best-effort */
     }
+    // MCP disposal starts synchronously in beginShutdown(), but it must not
+    // consume the shutdown budget before active tasks, mailboxes, and durable
+    // state have drained. Give it a bounded tail wait after those critical
+    // teardown steps; the outer lifecycle performs its own final bounded wait.
+    if (mcpDisposeTask !== undefined) {
+      let mcpDisposeTimer: ReturnType<typeof setTimeout> | undefined;
+      const mcpDisposeTimeout = new Promise<void>((resolveTimeout) => {
+        mcpDisposeTimer = setTimeout(resolveTimeout, MAX_DRAIN_MS);
+        mcpDisposeTimer.unref?.();
+      });
+      try {
+        await Promise.race([
+          mcpDisposeTask.catch(() => undefined),
+          mcpDisposeTimeout,
+        ]);
+      } finally {
+        if (mcpDisposeTimer !== undefined) clearTimeout(mcpDisposeTimer);
+      }
+    }
     this.eventLog.close();
     this.txEvent.close();
+    const sessionEnvironmentHome = this.services.configStore?.homeContext?.path;
+    if (sessionEnvironmentHome !== undefined) {
+      try {
+        const { disposeSessionEnvironment } =
+          await import("../utils/sessionEnvironment.js");
+        disposeSessionEnvironment({
+          homePath: sessionEnvironmentHome,
+          sessionId: String(this.conversationId),
+        });
+      } catch {
+        /* best-effort cache release; no session state may survive shutdown */
+      }
+    }
+    try {
+      const { clearSessionReadCache, clearSessionReadState } =
+        await import("../tools/system/filesystem.js");
+      const sessionTempRoot = this.services.runtimeOptions?.sessionTempRoot;
+      if (sessionTempRoot !== undefined) {
+        clearSessionReadState(this.conversationId, sessionTempRoot);
+      } else {
+        // Test doubles may omit runtime options.
+        // Never guess a process-global temp root during session teardown.
+        clearSessionReadCache(this.conversationId);
+      }
+    } catch {
+      /* best-effort cache release; shutdown must retain its durable result */
+    }
+    try {
+      await this.bundledSkillExtractionLease?.release();
+    } catch {
+      /* best-effort extraction cleanup; shutdown must retain its durable result */
+    }
     this.agentStatus.next({ status: "shutdown", endedAtMs: monotonicMs() });
     this.agentStatus.complete();
     this.lifecycleState = "closed";

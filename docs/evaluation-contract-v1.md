@@ -13,7 +13,7 @@ It completes the contract-definition slice only. Public pilot candidates and
 their qualification/power protocol now exist in
 [`evaluation-pilot-v1.md`](evaluation-pilot-v1.md), but no qualified/scored
 pilot, paid baseline, comparator run, or superiority result is claimed; those
-remain separate M1 deliverables in [`todo.txt`](../todo.txt).
+remain separate M1 deliverables in [`roadmap.md`](roadmap.md).
 
 ## Files and command
 

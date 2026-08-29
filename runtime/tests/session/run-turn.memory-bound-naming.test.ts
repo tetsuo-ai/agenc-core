@@ -40,6 +40,8 @@ vi.mock("axios", () => {
 });
 
 import { AsyncQueue } from "../../src/utils/async-queue.js";
+import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
 import { FILE_READ_TOOL_NAME } from "../../src/tools/system/file-read.js";
 import {
   Session,
@@ -63,6 +65,8 @@ import type {
 } from "../../src/llm/types.js";
 import type { ToolRegistry } from "../../src/tool-registry.js";
 import type { Tool } from "../../src/tools/types.js";
+import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
+import { createTestConfigStore } from "../fixtures.js";
 
 const LARGE_TOOL_OUTPUT_BYTES = 80_000; // > clear threshold (6_000).
 const KEEP_RECENT = 5; // mirrors the in-memory keep-recent window.
@@ -73,22 +77,9 @@ const UNTRUSTED_TOOL_RESULT_BOUNDARY =
 // here (no exported source constant) so the test keys on the LIVE name.
 const EXEC_COMMAND_TOOL_NAME = "exec_command";
 
-let restoreEnv: (() => void) | undefined;
-
 afterEach(() => {
   vi.restoreAllMocks();
-  restoreEnv?.();
-  restoreEnv = undefined;
 });
-
-function disableAutoCompact(): void {
-  const prev = process.env.DISABLE_AUTO_COMPACT;
-  process.env.DISABLE_AUTO_COMPACT = "1";
-  restoreEnv = () => {
-    if (prev === undefined) delete process.env.DISABLE_AUTO_COMPACT;
-    else process.env.DISABLE_AUTO_COMPACT = prev;
-  };
-}
 
 function mkCtx(): TurnContext {
   return {
@@ -190,7 +181,10 @@ function mkLargeToolRegistry(): ToolRegistry {
   const out = (): { content: string; isError: boolean } => {
     dispatchCount += 1;
     const tag = `TOOLOUT_${dispatchCount}_`;
-    return { content: `${tag}${"x".repeat(LARGE_TOOL_OUTPUT_BYTES)}`, isError: false };
+    return {
+      content: `${tag}${"x".repeat(LARGE_TOOL_OUTPUT_BYTES)}`,
+      isError: false,
+    };
   };
   const mkTool = (name: string): Tool => ({
     name,
@@ -207,10 +201,7 @@ function mkLargeToolRegistry(): ToolRegistry {
 }
 
 function mkFeatures(): ManagedFeatures {
-  return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
-  } as unknown as ManagedFeatures;
+  return {} as unknown as ManagedFeatures;
 }
 
 function mkConfig(): Config {
@@ -286,7 +277,15 @@ function mkSession(opts: {
     totalTokenUsage: 0,
   };
   const services: SessionServices = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     admissionRequired: false,
+    runtimeOptions: resolveAgentRuntimeOptions({}),
+    configStore: createTestConfigStore({
+      cwd: state.sessionConfiguration.cwd,
+    }),
+    providerEnvironment: { AGENC_DISABLE_AUTO_COMPACT: "1" },
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},
@@ -357,7 +356,6 @@ describe("runTurn — memory-bound-naming in-memory bound (FileRead)", () => {
     "(a) FileRead tool-result bytes stay bounded across many large-output " +
       "turns (regresses when 'FileRead' is absent from the in-memory bound)",
     async () => {
-      disableAutoCompact();
       // Every turn re-reads the SAME file (the realistic working-file loop:
       // edit → re-read). Path-aware retention keeps only its latest result, so
       // growth is bounded by the recent-N window. With the naming bug FileRead
@@ -435,7 +433,6 @@ describe("runTurn — memory-bound-naming in-memory bound (FileRead)", () => {
       "the recent-N window (path-aware retention; regresses when FileRead is " +
       "not path-bearing in the in-memory bound — then it is evicted)",
     async () => {
-      disableAutoCompact();
       const ACTIVE_PATH = "/src/active.ts";
       const OTHER_PATH = "/src/other.ts";
       // Turn 1 reads the ACTIVE path ONCE. Turns 2..TOTAL repeatedly read the

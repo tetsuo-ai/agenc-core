@@ -74,7 +74,7 @@ Top-level entries under `runtime/src/mcp-client/`:
 | `resilient-client.ts`            | `ResilientMCPBridge` wrapper that detects connection-error patterns on tool calls (epipe, channel closed, process exited, …) and reconnects with exponential backoff (1 s → 30 s, ×2). |
 | `supply-chain.ts`                | I-74: SHA-256 pin over the canonical JSON of an MCP server's tool catalog. Refuses to load the bridge if the advertised catalog drifts from the pin. |
 | `tui-connections.ts`             | Projects an `McpManagerLike` into the `MCPServerConnection[]` shape the TUI consumes for connection-status rendering. |
-| `types.ts`                       | `MCPServerConfig`, `MCPToolBridge`, `MCPElicitationHandlers`, `MCPReconnectResult`, `MCPServerMutationResult`. The config shape covers all four transports. |
+| `types.ts`                       | `MCPServerConfig`, `MCPToolBridge`, `MCPElicitationHandlers`, and `MCPReconnectResult`. The config shape covers all four transports. |
 | `transports/`                    | Per-transport factories (stdio / sse / http / websocket). See table above. |
 | `_deps/`                         | Per-directory dependency carving: minimal `Logger` and `Tool`/`ToolResult`/`JSONSchema` surfaces re-exported here to keep this subsystem isolated from broader reference modules. |
 | `test-fixtures/`                 | Helper MCP servers for tests (e.g. `stdio-pid-server.cjs` exercised by `manager.stdio-lifecycle.test.ts`). |
@@ -95,3 +95,9 @@ the manager's own `listResources` / `readResource` / `listPrompts` /
 `renderPrompt`. Direct transport-factory calls are reserved for tests and for
 `connection.ts` itself; everything else flows through the manager so permission
 integration, reconnect, and supply-chain checks apply uniformly.
+
+Connection-set mutations (`add`, `enable`, `disable`, and authority reload) go
+through the session MCP service in `src/session/mcp-startup.ts`. That service
+serializes each transaction and re-resolves canonical policy before replacing
+the manager's configuration. The low-level manager intentionally exposes only
+single-server reconnect as a direct live operation.

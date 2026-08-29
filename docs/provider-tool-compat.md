@@ -37,15 +37,9 @@ validation (`runtime/src/tools/execution.ts`, which still understands
   `strict: false` (a union means the fields are conditional).
 - **Any other non-object root** → permissive empty object, `strict: false`.
 
-It is applied at every place tools are serialized into a provider request, so
-whichever API path a provider uses is covered:
-
-- `runtime/src/llm/wire/tools.ts` → `toolParameters()` (feeds chat-completions,
-  OpenAI Responses, xAI Responses, and Anthropic tool builders)
-- `runtime/src/services/api/openAiCodeTransform.ts` →
-  `convertToolsToResponsesTools()` (normalize before `enforceStrictSchema`;
-  union roots skip all-required and emit `strict: false`)
-- `runtime/src/services/api/openaiShim.ts` → `convertTools()` (chat-completions)
+`runtime/src/llm/wire/tools.ts` applies the normalizer in `toolParameters()`,
+which feeds chat-completions, OpenAI Responses, xAI Responses, and Anthropic
+tool builders.
 
 Object-root tools keep their previous behavior exactly (`strict: true` +
 strict-schema enforcement).

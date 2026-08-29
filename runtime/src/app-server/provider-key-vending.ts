@@ -2,7 +2,7 @@ import type {
   AuthBackend,
   AuthProviderSlug,
   AuthSessionId,
-  AuthVendedKey,
+  AuthVendedCredential,
 } from "../auth/backend.js";
 
 /**
@@ -13,7 +13,7 @@ import type {
 const VENDED_KEY_EXPIRY_SKEW_MS = 5_000;
 
 interface CachedVendedKey {
-  readonly promise: Promise<AuthVendedKey>;
+  readonly promise: Promise<AuthVendedCredential>;
   /**
    * Resolved expiry (epoch ms) of the vended key, or undefined while the
    * vend is still in flight or when the key carries no expiry. A `null`

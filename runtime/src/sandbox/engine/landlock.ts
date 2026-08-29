@@ -17,7 +17,7 @@ export interface SpawnLinuxSandboxCommandParams {
   readonly commandCwd: string;
   readonly permissionProfile: PermissionProfile;
   readonly sandboxPolicyCwd: string;
-  readonly useLegacyLandlock: boolean;
+  readonly sessionTempRoot: string;
   readonly allowNetworkForProxy: boolean;
   readonly env?: NodeJS.ProcessEnv;
   readonly arg0?: string;
@@ -32,8 +32,8 @@ export function createLinuxSandboxCommandArgsForPermissionProfile(
   commandCwd: string,
   permissionProfile: PermissionProfile,
   sandboxPolicyCwd: string,
-  useLegacyLandlock: boolean,
   allowNetworkForProxyValue: boolean,
+  sessionTempRoot: string,
   inheritedReadOnlyCwd = false,
 ): string[] {
   const args = [
@@ -47,8 +47,9 @@ export function createLinuxSandboxCommandArgsForPermissionProfile(
         ]),
     "--permission-profile",
     JSON.stringify(permissionProfile),
+    "--session-temp-root",
+    sessionTempRoot,
   ];
-  if (useLegacyLandlock) args.push("--use-legacy-landlock");
   if (allowNetworkForProxyValue) args.push("--allow-network-for-proxy");
   args.push("--", ...command);
   return args;
@@ -63,8 +64,8 @@ export function spawnLinuxSandboxCommand(
     params.commandCwd,
     params.permissionProfile,
     params.sandboxPolicyCwd,
-    params.useLegacyLandlock,
     params.allowNetworkForProxy,
+    params.sessionTempRoot,
     false,
   );
   return spawn(params.executablePath, args, {

@@ -56,6 +56,7 @@ import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
 import { runSandboxedToolCommand } from "./coding-common.js";
+import { verifiedPlanFileContextFromArgs } from "./filesystem.js";
 import {
   hardenGitWorktreeMutationArgs,
   worktreeCheckoutPermissions,
@@ -156,7 +157,7 @@ const ENTER_WORKTREE_PROMPT = `Use this tool ONLY when the user explicitly asks 
 
 ## Requirements
 
-- Must be in a git repository, OR have WorktreeCreate/WorktreeRemove hooks configured in settings.json
+- Must be in a git repository, OR have WorktreeCreate/WorktreeRemove hooks configured in config.toml
 - Must not already be in a worktree
 
 ## Behavior
@@ -327,28 +328,6 @@ async function countWorktreeChanges(
   return { changedFiles, commits: Number.isFinite(commits) ? commits : 0 };
 }
 
-function resolveSessionId(
-  args: Record<string, unknown>,
-): string | undefined {
-  return asNonEmptyString(
-    (args as ToolExecutionInjectedArgs & { __agencSessionId?: unknown })
-      .__agencSessionId,
-  );
-}
-
-function defaultPlanCtx(sessionId: string): {
-  readonly sessionId: string;
-  readonly agencHome?: string;
-} {
-  if (
-    typeof process.env.AGENC_HOME === "string" &&
-    process.env.AGENC_HOME.length > 0
-  ) {
-    return { sessionId, agencHome: process.env.AGENC_HOME };
-  }
-  return { sessionId };
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // EnterWorktree
 // ─────────────────────────────────────────────────────────────────────
@@ -385,12 +364,13 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as ToolExecutionInjectedArgs & { name?: unknown };
-      const sessionId = resolveSessionId(rawArgs);
-      if (sessionId === undefined) {
+      const planContext = verifiedPlanFileContextFromArgs(rawArgs);
+      if (planContext === null || planContext.sessionId === undefined) {
         return errorResult(
-          "EnterWorktree requires session context (no __agencSessionId injected); call from a session-bound dispatcher.",
+          "EnterWorktree requires signed session and canonical home context from a session-bound dispatcher.",
         );
       }
+      const sessionId = planContext.sessionId;
       // Refuse if this session already has an active worktree —
       // matches donor `EnterWorktreeTool.call:79-81`.
       const existing = getCurrentWorktreeSession(sessionId);
@@ -413,9 +393,9 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
       } else {
         // Auto-name: use the AgenC plan slug. Mirrors donor
         // `EnterWorktreeTool.call:90` which calls `getPlanSlug()`.
-        const planFilePath = getPlanFilePath(defaultPlanCtx(sessionId));
+        const planFilePath = getPlanFilePath(planContext);
         // getPlanFilePath returns `<plansDir>/<slug>.md`. Extract the slug.
-        const plansDir = getPlansDirectory(defaultPlanCtx(sessionId));
+        const plansDir = getPlansDirectory(planContext);
         const filename = planFilePath.startsWith(plansDir)
           ? planFilePath.slice(plansDir.length).replace(/^\/+/, "")
           : planFilePath;
@@ -647,12 +627,13 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
         action?: unknown;
         discard_changes?: unknown;
       };
-      const sessionId = resolveSessionId(rawArgs);
-      if (sessionId === undefined) {
+      const planContext = verifiedPlanFileContextFromArgs(rawArgs);
+      if (planContext === null || planContext.sessionId === undefined) {
         return errorResult(
-          "ExitWorktree requires session context (no __agencSessionId injected).",
+          "ExitWorktree requires signed session and canonical home context from a session-bound dispatcher.",
         );
       }
+      const sessionId = planContext.sessionId;
       const action = asNonEmptyString(args.action);
       if (action !== "keep" && action !== "remove") {
         return errorResult('action must be "keep" or "remove"');

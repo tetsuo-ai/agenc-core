@@ -5,16 +5,23 @@ import { MCPManager } from "./manager.js";
 import type { MCPServerConfig } from "./types.js";
 import type { MCPToolBridgePermissionOptions } from "./tools.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
-import { transitionSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
+import {
+  registerSandboxExecutionLifecycleParticipant,
+  transitionSandboxExecutionBroker,
+} from "../sandbox/execution-lifecycle.js";
 import { MCPTransportCleanupError } from "./transports/connect-with-cleanup.js";
 
 // Mock the connection and tools modules
 vi.mock("./connection.js", () => ({
   createMCPConnection: vi.fn(),
 }));
-vi.mock("./tools.js", () => ({
-  createToolBridge: vi.fn(),
-}));
+vi.mock("./tools.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./tools.js")>();
+  return {
+    ...actual,
+    createToolBridge: vi.fn(),
+  };
+});
 vi.mock("./resources.js", () => ({
   createResourceBridge: vi.fn(),
 }));
@@ -96,6 +103,56 @@ function makeMockBridge(serverName: string, toolNames: string[]) {
   };
 }
 
+function deferred<T = void>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (error: unknown) => void;
+} {
+  let resolvePromise: ((value: T) => void) | undefined;
+  let rejectPromise: ((error: unknown) => void) | undefined;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return {
+    promise,
+    resolve: (value) => resolvePromise?.(value),
+    reject: (error) => rejectPromise?.(error),
+  };
+}
+
+async function expectMcpAuthorityPermanentlyClosed(
+  manager: MCPManager,
+  broker: SandboxExecutionBroker,
+  serverName: string,
+): Promise<void> {
+  expect(broker.isClosedAfterLifecycleAuthorityFailure()).toBe(true);
+  expect(manager.getConnectionState(serverName)).toEqual({
+    type: "failed",
+    error: expect.stringContaining("permanently closed"),
+  });
+  expect(manager.getTools()).toEqual([]);
+  expect(manager.getToolsByServer(serverName)).toEqual([]);
+  expect(manager.getConnectedServers()).toEqual([]);
+  expect(manager.getConnectedConnection(serverName)).toBeUndefined();
+  expect(manager.getServerInstructions(serverName)).toBeUndefined();
+  expect(manager.isConnected(serverName)).toBe(false);
+  expect(manager.resolveMcpToolInfo(`mcp.${serverName}.tool`)).toBeUndefined();
+  await expect(manager.getResources()).resolves.toEqual([]);
+  await expect(manager.listPrompts()).resolves.toEqual([]);
+  await expect(manager.callTool(serverName, "tool", {})).resolves.toEqual({
+    content: expect.stringContaining("permanently closed"),
+    isError: true,
+  });
+  await expect(
+    manager.refreshServers([makeConfig("replacement")]),
+  ).rejects.toThrow(/permanently closed/u);
+  await expect(manager.reconnectServer(serverName)).resolves.toMatchObject({
+    success: false,
+    error: expect.stringContaining("permanently closed"),
+  });
+}
+
 describe("MCPManager", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -107,6 +164,23 @@ describe("MCPManager", () => {
     mockCreatePromptBridge.mockImplementation((_client, serverName) =>
       Promise.resolve(makeMockPromptBridge(serverName)),
     );
+  });
+
+  it.each(["", "bad name", "bad.name", "bad\nname", "a".repeat(257)])(
+    "rejects invalid server identity %j before constructing runtime state",
+    (name) => {
+      expect(() => new MCPManager([{ name, command: "node" }])).toThrow(
+        /Invalid MCP server name/u,
+      );
+    },
+  );
+
+  it("accepts plugin-scoped server identities", () => {
+    expect(
+      new MCPManager([
+        { name: "plugin:sample:local", command: "node" },
+      ]).getConfiguredServers(),
+    ).toHaveLength(1);
   });
 
   // --------------------------------------------------------------------------
@@ -140,6 +214,59 @@ describe("MCPManager", () => {
         client: "client1",
       }),
     );
+  });
+
+  it("passes its immutable provider environment to the canonical tool bridge", async () => {
+    const environment: Record<string, string | undefined> = {
+      MAX_MCP_OUTPUT_TOKENS: "1234",
+    };
+    mockCreateMCPConnection.mockResolvedValueOnce("client1");
+    mockCreateToolBridge.mockResolvedValueOnce(makeMockBridge("srv1", ["toolA"]));
+
+    const manager = new MCPManager(
+      [makeConfig("srv1")],
+      undefined,
+      environment,
+    );
+    environment.MAX_MCP_OUTPUT_TOKENS = "9999";
+    await manager.start();
+
+    const bridgeEnvironment = mockCreateToolBridge.mock.calls[0]?.[3]?.environment;
+    expect(bridgeEnvironment).toEqual({ MAX_MCP_OUTPUT_TOKENS: "1234" });
+    expect(Object.isFrozen(bridgeEnvironment)).toBe(true);
+    expect(bridgeEnvironment).not.toBe(environment);
+  });
+
+  it("isolates surface subscribers and supports idempotent unsubscribe", async () => {
+    const bridge = makeMockBridge("srv1", ["toolA"]);
+    mockCreateMCPConnection.mockResolvedValueOnce("client1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      error: vi.fn(),
+      warn: vi.fn(),
+    };
+    const manager = new MCPManager([makeConfig("srv1")], logger);
+    const healthyListener = vi.fn();
+    const unsubscribeBroken = manager.subscribeSurfaceChanges(() => {
+      throw new Error("projection failed");
+    });
+    const unsubscribeHealthy = manager.subscribeSurfaceChanges(healthyListener);
+
+    await expect(manager.start()).resolves.toBeUndefined();
+
+    expect(healthyListener).toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      "MCP surface change listener failed:",
+      expect.objectContaining({ message: "projection failed" }),
+    );
+    const callsBeforeUnsubscribe = healthyListener.mock.calls.length;
+    unsubscribeBroken();
+    unsubscribeHealthy();
+    unsubscribeHealthy();
+    await manager.stop();
+    expect(healthyListener).toHaveBeenCalledTimes(callsBeforeUnsubscribe);
   });
 
   it("skips disabled servers", async () => {
@@ -284,6 +411,299 @@ describe("MCPManager", () => {
     manager.setSandboxExecutionBroker(undefined);
   });
 
+  it("serializes a server refresh with sandbox quiesce and resumes only the current config", async () => {
+    const oldCwd = resolve("refresh-transition-old");
+    const newCwd = resolve("refresh-transition-new");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: oldCwd,
+    });
+    let resolveRacedClient:
+      | ((client: { close: ReturnType<typeof vi.fn> }) => void)
+      | undefined;
+    const racedClient = { close: vi.fn().mockResolvedValue(undefined) };
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolveClient) => {
+            resolveRacedClient = resolveClient;
+          }),
+      )
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(makeMockBridge("old", ["before"]))
+      .mockResolvedValueOnce(makeMockBridge("current", ["after"]));
+
+    const manager = new MCPManager([makeConfig("old")]);
+    manager.setSandboxExecutionBroker(broker);
+    const quiesceObserved = deferred();
+    const unregisterQuiesceObserver =
+      registerSandboxExecutionLifecycleParticipant(broker, {
+        name: "refresh-transition-observer",
+        quiesce: async () => quiesceObserved.resolve(),
+        resume: async () => {},
+      });
+    await manager.start();
+
+    const refresh = manager.refreshServers([makeConfig("current")]);
+    await vi.waitFor(() => {
+      expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+    });
+    const transition = transitionSandboxExecutionBroker(broker, newCwd);
+    await quiesceObserved.promise;
+
+    let refreshSettled = false;
+    void refresh.finally(() => {
+      refreshSettled = true;
+    });
+    await Promise.resolve();
+    expect(refreshSettled).toBe(false);
+    expect(manager.getConnectedServers()).toEqual([]);
+    expect(broker.cwd).toBe(oldCwd);
+
+    resolveRacedClient?.(racedClient);
+    await Promise.all([transition, refresh]);
+
+    expect(racedClient.close).toHaveBeenCalledOnce();
+    expect(mockCreateMCPConnection).toHaveBeenCalledTimes(3);
+    expect(manager.getConfiguredServers().map(({ name }) => name)).toEqual([
+      "current",
+    ]);
+    expect(manager.getConnectedServers()).toEqual(["current"]);
+    expect(manager.getTools().map(({ name }) => name)).toEqual([
+      "mcp.current.after",
+    ]);
+
+    await manager.stop();
+    unregisterQuiesceObserver();
+    manager.setSandboxExecutionBroker(undefined);
+  });
+
+  it("supersedes a deferred refresh before sandbox resume without starting stale config", async () => {
+    const oldCwd = resolve("deferred-refresh-old");
+    const newCwd = resolve("deferred-refresh-new");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: oldCwd,
+    });
+    const holdTransition = deferred();
+    const unregisterBlocker = registerSandboxExecutionLifecycleParticipant(
+      broker,
+      {
+        name: "test-transition-blocker",
+        quiesce: () => holdTransition.promise,
+        resume: async () => {},
+      },
+    );
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(makeMockBridge("old", ["before"]))
+      .mockResolvedValueOnce(makeMockBridge("current", ["after"]));
+
+    const manager = new MCPManager([makeConfig("old")]);
+    manager.setSandboxExecutionBroker(broker);
+    await manager.start();
+    const transition = transitionSandboxExecutionBroker(broker, newCwd);
+    await vi.waitFor(() => {
+      expect(manager.getConnectedServers()).toEqual([]);
+    });
+
+    const staleRefresh = manager.refreshServers([makeConfig("stale")]);
+    await vi.waitFor(() => {
+      expect(manager.getConfiguredServers().map(({ name }) => name)).toEqual([
+        "stale",
+      ]);
+    });
+    const currentRefresh = manager.refreshServers([makeConfig("current")]);
+    await expect(staleRefresh).rejects.toThrow(/superseded/);
+    await vi.waitFor(() => {
+      expect(manager.getConfiguredServers().map(({ name }) => name)).toEqual([
+        "current",
+      ]);
+    });
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+
+    holdTransition.resolve();
+    await Promise.all([transition, currentRefresh]);
+
+    expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+    expect(manager.getConnectedServers()).toEqual(["current"]);
+    expect(manager.getTools().map(({ name }) => name)).toEqual([
+      "mcp.current.after",
+    ]);
+
+    unregisterBlocker();
+    await manager.stop();
+    manager.setSandboxExecutionBroker(undefined);
+  });
+
+  it("signals refresh deferral only after the old MCP surface is revoked and the replacement is staged", async () => {
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: resolve("refresh-handshake-old"),
+    });
+    const holdTransition = deferred();
+    const unregisterBlocker = registerSandboxExecutionLifecycleParticipant(
+      broker,
+      {
+        name: "test-refresh-handshake-blocker",
+        quiesce: () => holdTransition.promise,
+        resume: async () => {},
+      },
+    );
+    const oldClient = { close: vi.fn().mockResolvedValue(undefined) };
+    const oldBridge = makeMockBridge("old", ["before"]);
+    mockCreateMCPConnection
+      .mockResolvedValueOnce(oldClient)
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(oldBridge)
+      .mockResolvedValueOnce(makeMockBridge("current", ["after"]));
+
+    const manager = new MCPManager([makeConfig("old")]);
+    manager.setSandboxExecutionBroker(broker);
+    await manager.start();
+    const restartSpy = vi.spyOn(manager, "start");
+    const transition = transitionSandboxExecutionBroker(
+      broker,
+      resolve("refresh-handshake-new"),
+    );
+    await vi.waitFor(() => {
+      expect(manager.getConnectedServers()).toEqual([]);
+    });
+
+    const refreshDeferred = deferred();
+    const onSandboxRefreshDeferred = vi.fn(() => {
+      refreshDeferred.resolve();
+    });
+    const refresh = manager.refreshServers([makeConfig("current")], {
+      onSandboxRefreshDeferred,
+    });
+    await refreshDeferred.promise;
+
+    expect(oldBridge.dispose).toHaveBeenCalledOnce();
+    expect(manager.getConfiguredServers().map(({ name }) => name)).toEqual([
+      "current",
+    ]);
+    expect(manager.getConnectedServers()).toEqual([]);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+    await expect(manager.callTool("old", "before", {})).resolves.toEqual({
+      content: 'MCP server "old" is not connected',
+      isError: true,
+    });
+    expect(oldBridge.tools[0]?.execute).not.toHaveBeenCalled();
+    expect(onSandboxRefreshDeferred).toHaveBeenCalledOnce();
+
+    holdTransition.resolve();
+    await Promise.all([transition, refresh]);
+
+    expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+    expect(restartSpy).toHaveBeenCalledOnce();
+    expect(restartSpy).toHaveBeenCalledWith({});
+    expect(manager.getConnectedServers()).toEqual(["current"]);
+    expect(manager.getTools().map(({ name }) => name)).toEqual([
+      "mcp.current.after",
+    ]);
+    expect(onSandboxRefreshDeferred).toHaveBeenCalledOnce();
+
+    unregisterBlocker();
+    await manager.stop();
+    manager.setSandboxExecutionBroker(undefined);
+  });
+
+  it("rejects direct start and reconnect while sandbox execution is quiesced", async () => {
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: resolve("direct-lifecycle-old"),
+    });
+    const holdTransition = deferred();
+    const unregisterBlocker = registerSandboxExecutionLifecycleParticipant(
+      broker,
+      {
+        name: "test-direct-lifecycle-blocker",
+        quiesce: () => holdTransition.promise,
+        resume: async () => {},
+      },
+    );
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["before"]))
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["after"]));
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    manager.setSandboxExecutionBroker(broker);
+    await manager.start();
+    const transition = transitionSandboxExecutionBroker(
+      broker,
+      resolve("direct-lifecycle-new"),
+    );
+    await vi.waitFor(() => {
+      expect(manager.getConnectedServers()).toEqual([]);
+    });
+
+    await expect(manager.start()).rejects.toThrow(/sandbox execution is quiesced/);
+    await expect(manager.reconnectServer("srv1")).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("sandbox execution is quiesced"),
+    });
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+
+    holdTransition.resolve();
+    await transition;
+    expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+    expect(manager.getConnectedServers()).toEqual(["srv1"]);
+
+    unregisterBlocker();
+    await manager.stop();
+    manager.setSandboxExecutionBroker(undefined);
+  });
+
+  it("does not revive a server removed while sandbox authority is quiesced", async () => {
+    const oldCwd = resolve("fail-close-transition-old");
+    const newCwd = resolve("fail-close-transition-new");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: oldCwd,
+    });
+    let releaseDisposal: (() => void) | undefined;
+    const oldBridge = makeMockBridge("old", ["before"]);
+    oldBridge.dispose.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolveDisposal) => {
+          releaseDisposal = resolveDisposal;
+        }),
+    );
+    mockCreateMCPConnection.mockResolvedValueOnce({
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    mockCreateToolBridge.mockResolvedValueOnce(oldBridge);
+
+    const manager = new MCPManager([makeConfig("old")]);
+    manager.setSandboxExecutionBroker(broker);
+    await manager.start();
+
+    const transition = transitionSandboxExecutionBroker(broker, newCwd);
+    await vi.waitFor(() => {
+      expect(oldBridge.dispose).toHaveBeenCalledOnce();
+    });
+    const failCloseRefresh = manager.refreshServers([]);
+    releaseDisposal?.();
+
+    await Promise.all([transition, failCloseRefresh]);
+    expect(broker.cwd).toBe(newCwd);
+    expect(manager.getConfiguredServers()).toEqual([]);
+    expect(manager.getConnectedServers()).toEqual([]);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+
+    await manager.stop();
+    manager.setSandboxExecutionBroker(undefined);
+  });
+
   it("fails a sandbox transition when strict MCP teardown cannot prove shutdown", async () => {
     const oldCwd = resolve("stable-workspace");
     const newCwd = resolve("next-workspace");
@@ -307,15 +727,11 @@ describe("MCPManager", () => {
 
     await expect(
       transitionSandboxExecutionBroker(broker, newCwd),
-    ).rejects.toThrow(/old authority restored/);
+    ).rejects.toThrow(/recovery resume failed and broker was closed/u);
 
     expect(broker.cwd).toBe(oldCwd);
     expect(failingBridge.dispose).toHaveBeenCalledOnce();
-    expect(manager.getConnectionState("srv1")).toEqual({
-      type: "failed",
-      error: expect.stringContaining("cleanup remains unproven"),
-    });
-    expect(manager.getConnectedServers()).toEqual([]);
+    await expectMcpAuthorityPermanentlyClosed(manager, broker, "srv1");
 
     await manager.stop();
     manager.setSandboxExecutionBroker(undefined);
@@ -529,6 +945,61 @@ describe("MCPManager", () => {
     await manager.stop(); // should not throw
   });
 
+  it("stopStrict reports cleanup that cannot be proven", async () => {
+    const bridge = makeMockBridge("srv1", ["a"]);
+    bridge.dispose.mockRejectedValueOnce(new Error("close failed"));
+
+    mockCreateMCPConnection.mockResolvedValueOnce("c1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    await manager.start();
+    await expect(manager.stopStrict()).rejects.toThrow(
+      /strict shutdown failed/,
+    );
+    expect(manager.getConnectedServers()).toEqual([]);
+  });
+
+  it("clearServersStrict revokes connections and configs without restarting", async () => {
+    mockCreateMCPConnection.mockResolvedValueOnce("c1");
+    mockCreateToolBridge.mockResolvedValueOnce(makeMockBridge("srv1", ["a"]));
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    await manager.start();
+    const start = vi.spyOn(manager, "start");
+
+    await manager.clearServersStrict();
+
+    expect(start).not.toHaveBeenCalled();
+    expect(manager.getConfiguredServers()).toEqual([]);
+    expect(manager.getConnectedServers()).toEqual([]);
+    expect(manager.getTools()).toEqual([]);
+  });
+
+  it("clearServersStrict hides revoked authority while cleanup is retained for retry", async () => {
+    const bridge = makeMockBridge("srv1", ["a"]);
+    bridge.dispose
+      .mockRejectedValueOnce(new Error("close failed"))
+      .mockResolvedValueOnce(undefined);
+    mockCreateMCPConnection.mockResolvedValueOnce("c1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    await manager.start();
+
+    await expect(manager.clearServersStrict()).rejects.toThrow(
+      /strict shutdown failed/,
+    );
+    expect(manager.getConfiguredServers()).toEqual([]);
+    expect(manager.getConnectedServers()).toEqual([]);
+    expect(manager.getConnectionState("srv1")).toBeUndefined();
+    expect(manager.getTools()).toEqual([]);
+
+    await expect(manager.clearServersStrict()).resolves.toBeUndefined();
+    expect(bridge.dispose).toHaveBeenCalledTimes(2);
+    expect(manager.getConfiguredServers()).toEqual([]);
+  });
+
   it("refreshServers replaces configs and restarts the same manager instance", async () => {
     const firstBridge = makeMockBridge("old", ["before"]);
     const nextBridge = makeMockBridge("new", ["after"]);
@@ -551,6 +1022,29 @@ describe("MCPManager", () => {
     expect(manager.getTools().map((tool) => tool.name)).toEqual([
       "mcp.new.after",
     ]);
+  });
+
+  it("captures nested supply-chain policy immutably at construction and refresh", async () => {
+    const firstSupplyChain = { catalogSha256: "a".repeat(64) };
+    const manager = new MCPManager([
+      makeConfig("old", { supplyChain: firstSupplyChain }),
+    ]);
+    firstSupplyChain.catalogSha256 = "b".repeat(64);
+
+    const capturedFirst = manager.getServerConfig("old")?.supplyChain;
+    expect(capturedFirst).toEqual({ catalogSha256: "a".repeat(64) });
+    expect(Object.isFrozen(capturedFirst)).toBe(true);
+
+    const secondSupplyChain = { catalogSha256: "c".repeat(64) };
+    const refresh = manager.refreshServers([
+      makeConfig("current", { supplyChain: secondSupplyChain }),
+    ]);
+    secondSupplyChain.catalogSha256 = "d".repeat(64);
+    await refresh;
+
+    const capturedSecond = manager.getServerConfig("current")?.supplyChain;
+    expect(capturedSecond).toEqual({ catalogSha256: "c".repeat(64) });
+    expect(Object.isFrozen(capturedSecond)).toBe(true);
   });
 
   // --------------------------------------------------------------------------
@@ -590,6 +1084,173 @@ describe("MCPManager", () => {
 
     expect(manager.getToolsByServer("srv1")).toHaveLength(2);
     expect(manager.getToolsByServer("unknown")).toEqual([]);
+  });
+
+  it("calls an exact raw tool through the canonical bridge without exposing its client", async () => {
+    const bridge = makeMockBridge("srv1", [
+      "toolA_extra",
+      "x_toolA",
+      "toolA",
+    ]);
+    const prefixExecute = vi.mocked(bridge.tools[0]!.execute);
+    const suffixExecute = vi.mocked(bridge.tools[1]!.execute);
+    const exactExecute = vi.mocked(bridge.tools[2]!.execute);
+    const canonicalResult = {
+      content: "ok",
+      codeModeResult: { rows: [1, 2, 3] },
+      metadata: { source: "canonical-normalizer" },
+    };
+    exactExecute.mockResolvedValue(canonicalResult);
+    const controller = new AbortController();
+    const onProgress = vi.fn();
+    const callId = "manager-call-1";
+    const spoofedSignal = new AbortController().signal;
+    const spoofedProgress = vi.fn();
+    const args = {
+      value: 42,
+      __abortSignal: spoofedSignal,
+      __callId: "model-visible-spoof",
+      __onProgress: spoofedProgress,
+      __sandboxExecutionBroker: { execute: vi.fn() },
+      __agencFutureSecret: "must-not-cross-manager-boundary",
+    };
+    mockCreateMCPConnection.mockResolvedValueOnce("client1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    try {
+      await manager.start();
+
+      const result = await manager.callTool(
+        "srv1",
+        "toolA",
+        args,
+        { signal: controller.signal, callId, onProgress },
+      );
+      expect(result).toBe(canonicalResult);
+      expect(exactExecute).toHaveBeenCalledOnce();
+      expect(prefixExecute).not.toHaveBeenCalled();
+      expect(suffixExecute).not.toHaveBeenCalled();
+      const executionArgs = exactExecute.mock.calls[0]?.[0];
+      expect(executionArgs).not.toBe(args);
+      expect(executionArgs).toEqual({ value: 42 });
+      expect(Object.keys(executionArgs ?? {})).toEqual(["value"]);
+      expect(
+        Object.hasOwn(executionArgs ?? {}, "__sandboxExecutionBroker"),
+      ).toBe(false);
+      expect(
+        Object.hasOwn(executionArgs ?? {}, "__agencFutureSecret"),
+      ).toBe(false);
+      expect(
+        Object.getOwnPropertyDescriptor(executionArgs, "__abortSignal"),
+      ).toEqual(
+        expect.objectContaining({
+          value: controller.signal,
+          enumerable: false,
+          writable: false,
+        }),
+      );
+      expect(
+        Object.getOwnPropertyDescriptor(executionArgs, "__callId"),
+      ).toEqual(
+        expect.objectContaining({
+          value: callId,
+          enumerable: false,
+          writable: false,
+        }),
+      );
+      expect(
+        Object.getOwnPropertyDescriptor(executionArgs, "__onProgress"),
+      ).toEqual(
+        expect.objectContaining({
+          value: onProgress,
+          enumerable: false,
+          writable: false,
+        }),
+      );
+      expect(args.__abortSignal).toBe(spoofedSignal);
+      expect(args.__callId).toBe("model-visible-spoof");
+      expect(args.__onProgress).toBe(spoofedProgress);
+      expect(args.__agencFutureSecret).toBe(
+        "must-not-cross-manager-boundary",
+      );
+    } finally {
+      await manager.stop();
+    }
+  });
+
+  it("keeps manager-owned tool calls on the replacement bridge after automatic reconnect", async () => {
+    vi.useFakeTimers();
+    const initialExecute = vi.fn().mockResolvedValue({
+      content: "transport closed",
+      isError: true,
+    });
+    const replacementExecute = vi
+      .fn()
+      .mockResolvedValue({ content: "from replacement" });
+    const initialBridge = makeMockBridge("srv1", ["tool"]);
+    initialBridge.tools[0]!.execute = initialExecute;
+    const replacementBridge = makeMockBridge("srv1", ["tool"]);
+    replacementBridge.tools[0]!.execute = replacementExecute;
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(initialBridge)
+      .mockResolvedValueOnce(replacementBridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    try {
+      await manager.start();
+
+      await expect(manager.callTool("srv1", "tool", {})).resolves.toEqual({
+        content: 'MCP server "srv1" lost connection — reconnecting...',
+        isError: true,
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(manager.callTool("srv1", "tool", {})).resolves.toEqual({
+        content: "from replacement",
+      });
+
+      expect(initialExecute).toHaveBeenCalledOnce();
+      expect(replacementExecute).toHaveBeenCalledOnce();
+    } finally {
+      await manager.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails closed when a manager-owned MCP call has no exact live tool", async () => {
+    const bridge = makeMockBridge("srv1", ["known"]);
+    const execute = vi.mocked(bridge.tools[0]!.execute);
+    mockCreateMCPConnection.mockResolvedValueOnce("client1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    try {
+      await manager.start();
+
+      await expect(manager.callTool("srv1", "unknown", {})).resolves.toEqual({
+        content: 'MCP tool "unknown" is not available on server "srv1"',
+        isError: true,
+      });
+      await expect(manager.callTool("missing", "known", {})).resolves.toEqual({
+        content: 'MCP server "missing" is not connected',
+        isError: true,
+      });
+      const cancellation = new Error("cancelled before MCP dispatch");
+      const controller = new AbortController();
+      controller.abort(cancellation);
+      await expect(
+        manager.callTool("srv1", "known", {}, { signal: controller.signal }),
+      ).rejects.toBe(cancellation);
+      await expect(
+        manager.callTool("missing", "known", {}, { signal: controller.signal }),
+      ).rejects.toBe(cancellation);
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await manager.stop();
+    }
   });
 
   it("getConnectedServers returns server names", async () => {
@@ -663,6 +1324,13 @@ describe("MCPManager", () => {
 
     const manager = new MCPManager([makeConfig("srv1")]);
     manager.setSandboxExecutionBroker(broker);
+    const quiesceObserved = deferred();
+    const unregisterQuiesceObserver =
+      registerSandboxExecutionLifecycleParticipant(broker, {
+        name: "dynamic-reconnect-transition-observer",
+        quiesce: async () => quiesceObserved.resolve(),
+        resume: async () => {},
+      });
     await manager.start();
     const reconnecting = manager.reconnectServer("srv1");
     await vi.waitFor(() => {
@@ -675,7 +1343,7 @@ describe("MCPManager", () => {
         transitioned = true;
       },
     );
-    await Promise.resolve();
+    await quiesceObserved.promise;
     expect(transitioned).toBe(false);
     expect(broker.cwd).toBe(oldCwd);
 
@@ -688,6 +1356,7 @@ describe("MCPManager", () => {
     expect(manager.getTools()[0]?.name).toBe("mcp.srv1.recovered");
 
     await manager.stop();
+    unregisterQuiesceObserver();
     manager.setSandboxExecutionBroker(undefined);
   });
 
@@ -780,10 +1449,12 @@ describe("MCPManager", () => {
       success: false,
       error: expect.stringContaining("connection cleanup failed"),
     });
-    await expect(transition).rejects.toThrow(/old authority restored/);
+    await expect(transition).rejects.toThrow(
+      /recovery resume failed and broker was closed/u,
+    );
 
     expect(broker.cwd).toBe(oldCwd);
-    expect(manager.getTools()).toEqual([]);
+    await expectMcpAuthorityPermanentlyClosed(manager, broker, "srv1");
     expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
     await manager.stop();
     manager.setSandboxExecutionBroker(undefined);
@@ -819,13 +1490,9 @@ describe("MCPManager", () => {
         broker,
         resolve("settled-reconnect-cleanup-new"),
       ),
-    ).rejects.toThrow(/quiesce failed; old authority restored/);
+    ).rejects.toThrow(/recovery resume failed and broker was closed/u);
     expect(broker.cwd).toBe(oldCwd);
-
-    await expect(manager.reconnectServer("srv1")).resolves.toMatchObject({
-      success: false,
-      error: expect.stringContaining("connection cleanup failed"),
-    });
+    await expectMcpAuthorityPermanentlyClosed(manager, broker, "srv1");
     expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
 
     await manager.stop();
@@ -858,11 +1525,8 @@ describe("MCPManager", () => {
         broker,
         resolve("pre-client-cleanup-new"),
       ),
-    ).rejects.toThrow(/quiesce failed; old authority restored/);
-    await expect(manager.reconnectServer("srv1")).resolves.toMatchObject({
-      success: false,
-      error: expect.stringContaining("connection cleanup failed"),
-    });
+    ).rejects.toThrow(/recovery resume failed and broker was closed/u);
+    await expectMcpAuthorityPermanentlyClosed(manager, broker, "srv1");
     expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
     expect(broker.cwd).toBe(oldCwd);
 
@@ -981,123 +1645,6 @@ describe("MCPManager", () => {
     expect(manager.getConnectionState("srv1")).toEqual({
       type: "failed",
       error: "refused",
-    });
-  });
-
-  it("enables a configured disabled server and connects it", async () => {
-    const bridge = makeMockBridge("srv1", ["toolA"]);
-    mockCreateMCPConnection.mockResolvedValueOnce("client1");
-    mockCreateToolBridge.mockResolvedValueOnce(bridge);
-
-    const manager = new MCPManager([makeConfig("srv1", { enabled: false })]);
-    const result = await manager.enableServer("srv1");
-
-    expect(result).toEqual({
-      serverName: "srv1",
-      success: true,
-      toolCount: 1,
-    });
-    expect(manager.getConnectedServers()).toEqual(["srv1"]);
-    expect(manager.getServerConfig("srv1")?.enabled).toBe(true);
-  });
-
-  it("disables a configured server and disposes all live bridges", async () => {
-    const bridge = makeMockBridge("srv1", ["toolA"]);
-    const resourceBridge = makeMockResourceBridge("srv1", [
-      { uri: "file://a" },
-    ]);
-    const promptBridge = makeMockPromptBridge("srv1", [{ name: "prompt" }]);
-    mockCreateMCPConnection.mockResolvedValueOnce("client1");
-    mockCreateToolBridge.mockResolvedValueOnce(bridge);
-    mockCreateResourceBridge.mockResolvedValueOnce(resourceBridge);
-    mockCreatePromptBridge.mockResolvedValueOnce(promptBridge);
-
-    const manager = new MCPManager([makeConfig("srv1")]);
-    await manager.start();
-    const result = await manager.disableServer("srv1");
-
-    expect(result).toEqual({
-      serverName: "srv1",
-      success: true,
-      toolCount: 0,
-    });
-    expect(bridge.dispose).toHaveBeenCalledOnce();
-    expect(resourceBridge.dispose).toHaveBeenCalledOnce();
-    expect(promptBridge.dispose).toHaveBeenCalledOnce();
-    expect(manager.getConnectedServers()).toEqual([]);
-    expect(manager.getToolsByServer("srv1")).toEqual([]);
-    expect(manager.getServerConfig("srv1")?.enabled).toBe(false);
-  });
-
-  it("adds a session server and rejects duplicate or invalid names", async () => {
-    const bridge = makeMockBridge("added", ["toolA"]);
-    mockCreateMCPConnection.mockResolvedValueOnce("client1");
-    mockCreateToolBridge.mockResolvedValueOnce(bridge);
-
-    const manager = new MCPManager([]);
-    await expect(
-      manager.addServer({ name: "bad name", command: "node", args: [] }),
-    ).resolves.toMatchObject({
-      success: false,
-      error: expect.stringContaining("Invalid MCP server name"),
-    });
-
-    await expect(
-      manager.addServer({
-        name: "added",
-        command: "node",
-        args: ["server.js"],
-      }),
-    ).resolves.toEqual({
-      serverName: "added",
-      success: true,
-      toolCount: 1,
-    });
-    expect(manager.getServerConfig("added")).toMatchObject({
-      name: "added",
-      command: "node",
-      args: ["server.js"],
-    });
-    await expect(
-      manager.addServer({ name: "added", command: "node", args: [] }),
-    ).resolves.toMatchObject({
-      success: false,
-      error: 'MCP server "added" is already configured.',
-    });
-  });
-
-  it("rolls back a failed session add so the server name can be retried", async () => {
-    const bridge = makeMockBridge("added", ["toolA"]);
-    mockCreateMCPConnection
-      .mockRejectedValueOnce(new Error("no such command"))
-      .mockResolvedValueOnce("client1");
-    mockCreateToolBridge.mockResolvedValueOnce(bridge);
-
-    const manager = new MCPManager([]);
-    await expect(
-      manager.addServer({ name: "added", command: "missing", args: [] }),
-    ).resolves.toEqual({
-      serverName: "added",
-      success: false,
-      toolCount: 0,
-      error: "no such command",
-    });
-    expect(manager.getServerConfig("added")).toBeUndefined();
-
-    await expect(
-      manager.addServer({
-        name: "added",
-        command: "node",
-        args: ["server.js"],
-      }),
-    ).resolves.toEqual({
-      serverName: "added",
-      success: true,
-      toolCount: 1,
-    });
-    expect(manager.getServerConfig("added")).toMatchObject({
-      name: "added",
-      command: "node",
     });
   });
 
@@ -1387,6 +1934,54 @@ describe("MCPManager", () => {
     }
   });
 
+  it("notifies surface subscribers when automatic reconnect succeeds", async () => {
+    vi.useFakeTimers();
+    const initialBridge = makeMockBridge("srv1", ["tool"]);
+    initialBridge.tools[0]!.execute = vi.fn().mockResolvedValue({
+      content: "transport closed",
+      isError: true,
+    });
+    const reconnectedBridge = makeMockBridge("srv1", ["tool"]);
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(initialBridge)
+      .mockResolvedValueOnce(reconnectedBridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    let unsubscribe = (): void => {};
+    try {
+      await manager.start();
+      const observations: Array<{
+        readonly state: unknown;
+        readonly tools: readonly string[];
+      }> = [];
+      unsubscribe = manager.subscribeSurfaceChanges(() => {
+        observations.push({
+          state: manager.getConnectionState("srv1"),
+          tools: manager.getTools().map((tool) => tool.name),
+        });
+      });
+
+      await manager.getTools()[0]!.execute({});
+      expect(observations).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
+      expect(observations).toEqual([
+        {
+          state: { type: "connected" },
+          tools: ["mcp.srv1.tool"],
+        },
+      ]);
+    } finally {
+      unsubscribe();
+      await manager.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("retains failed automatic reconnect cleanup and blocks replacement", async () => {
     vi.useFakeTimers();
     const oldCwd = resolve("automatic-reconnect-cleanup-old");
@@ -1441,16 +2036,12 @@ describe("MCPManager", () => {
           broker,
           resolve("automatic-reconnect-cleanup-new"),
         ),
-      ).rejects.toThrow(/quiesce failed; old authority restored/);
+      ).rejects.toThrow(/recovery resume failed and broker was closed/u);
       expect(broker.cwd).toBe(oldCwd);
       expect(freshClient.close).toHaveBeenCalledTimes(2);
-
-      await expect(manager.reconnectServer("srv1")).resolves.toMatchObject({
-        success: false,
-        error: expect.stringContaining("connection cleanup failed"),
-      });
+      await expectMcpAuthorityPermanentlyClosed(manager, broker, "srv1");
       expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
-      expect(freshClient.close).toHaveBeenCalledTimes(3);
+      expect(freshClient.close).toHaveBeenCalledTimes(2);
     } finally {
       await manager.stop();
       manager.setSandboxExecutionBroker(undefined);
@@ -1476,8 +2067,19 @@ describe("MCPManager", () => {
     mockCreateToolBridge.mockResolvedValueOnce(initialBridge);
 
     const manager = new MCPManager([makeConfig("srv1")]);
+    let unsubscribe = (): void => {};
     try {
       await manager.start();
+      const observations: Array<{
+        readonly state: unknown;
+        readonly toolCount: number;
+      }> = [];
+      unsubscribe = manager.subscribeSurfaceChanges(() => {
+        observations.push({
+          state: manager.getConnectionState("srv1"),
+          toolCount: manager.getTools().length,
+        });
+      });
       const staleTool = manager.getTools()[0]!;
       await staleTool.execute({});
       await vi.advanceTimersByTimeAsync(1_000);
@@ -1487,6 +2089,15 @@ describe("MCPManager", () => {
         type: "failed",
         error: expect.stringContaining("cleanup remains unproven"),
       });
+      expect(observations).toEqual([
+        {
+          state: {
+            type: "failed",
+            error: expect.stringContaining("cleanup remains unproven"),
+          },
+          toolCount: 0,
+        },
+      ]);
       await expect(staleTool.execute({})).resolves.toEqual({
         content: 'MCP server "srv1" cleanup remains unproven',
         isError: true,
@@ -1494,6 +2105,7 @@ describe("MCPManager", () => {
       await vi.advanceTimersByTimeAsync(60_000);
       expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
     } finally {
+      unsubscribe();
       await manager.stop();
       vi.useRealTimers();
     }

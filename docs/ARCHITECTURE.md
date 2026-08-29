@@ -65,18 +65,19 @@ Everything past the launcher lives in the single runtime workspace
 
 | Dir                                                                      | Responsibility                                                                                                                                                                                                                                 |
 | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bin/`                                                                   | CLI entry (`agenc.ts`) and subcommand adapters: auth, config, mcp, doctor, init, providers, state, budget, gateway, remote, security, onboard, update, trajectories, …                                                                         |
+| `bin/`                                                                   | Order-safe CLI wrapper (`agenc.ts`), implementation (`agenc-main.ts`), and subcommand adapters: auth, config, mcp, doctor, init, providers, state, budget, gateway, remote, security, onboard, update, trajectories, …                           |
 | `app-server/`                                                            | Daemon: transports, JSON-RPC dispatch, agent/session lifecycle, durable run inspection/replay, auth, health, background-agent runner, command exec, realtime, overload limits                                                                  |
 | `app-server-client/`                                                     | In-process / client helpers for talking to the daemon                                                                                                                                                                                          |
 | `app-server-protocol/`                                                   | Shared protocol constants (e.g. portal default local endpoint)                                                                                                                                                                                 |
 | `session/`                                                               | Session engine: turn loop, transcript, canonical append-only rollout journal + `index.json`, persist-before-publish events, resume, cost, autonomous mode                                                                                      |
-| `agents/`                                                                | Background-agent state, registry, roles, mailbox, worktree isolation, workflow runner, delegate/fork                                                                                                                                           |
-| `auth/`                                                                  | Local and remote auth backends, BYOK precedence, provider auth selection, session auth state                                                                                                                                                   |
+| `agents/`                                                                | Background-agent state, registry, roles, mailbox, worktree isolation, multi-agent v2 tools, CSV jobs (`agents/jobs/`), `WorkflowTool` DAG (`agents/workflow-*.ts`), delegate/fork                                                                 |
+| `workflow/`                                                              | M5 verified-change pipeline (`agenc run start`). Not the `WorkflowTool` DAG.                                                                                                                                                                    |
+| `auth/`                                                                  | Local and remote auth backends, native secure storage credential namespaces, BYOK precedence, provider auth selection, session auth metadata                                                                                                                                                   |
 | `llm/`                                                                   | Provider-neutral client/request shaping, provider-aware complete-request [token accounting](design/provider-aware-token-accounting.md), model catalog, retries, streaming, wire adapters, OAuth refresh                                                                                                       |
 | `tools/`                                                                 | Built-in model tools (Bash, File read/write/edit, `apply_patch`, Web fetch/search, LSP, MCP, Agent/subagent, Task*, …)                                                                                                                         |
 | `tool-registry.ts` / `tools.ts`                                          | Tool registration and assembly entry points                                                                                                                                                                                                    |
 | `permissions/`                                                           | Trust, approval policy, rules, modes, sandbox policy, unattended policy, guardian/classifier, audit log                                                                                                                                        |
-| `sandbox/`                                                               | OS sandbox launch helpers (bubblewrap/Landlock on Linux, Seatbelt on macOS via `@anthropic-ai/sandbox-runtime`)                                                                                                                                |
+| `sandbox/`                                                               | OS sandbox: Linux `bwrap` via `agenc-linux-sandbox` with `agenc-landlock-run` fallback; macOS in-tree Seatbelt (`engine/seatbelt.ts` + `/usr/bin/sandbox-exec`); Windows restricted-token fail-closed. Lifecycle brokers are separate (`agenc-process-broker`, `agenc-process-job-broker.exe`). See [tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md). |
 | `mcp-client/` / `mcp-server/` / `mcp/`                                   | Outbound MCP client, server framework, and serve bootstrap                                                                                                                                                                                     |
 | `gateway/`                                                               | Channel gateway as a **daemon client**: Telegram, Discord, Slack, WebChat, stdio; pairing, bindings, approvals, session routing, untrusted framing, hooks HTTP, cron delivery, optional media/onchain helpers. See [`gateway.md`](gateway.md). |
 | `heartbeat/`                                                             | Proactive ticks: policy, `HEARTBEAT.md` reader, runner, scheduler, gateway/budget wire. See [`reference/autonomy.md`](reference/autonomy.md).                                                                                                  |
@@ -96,16 +97,18 @@ Everything past the launcher lives in the single runtime workspace
 | `prompts/`                                                               | System prompt assembly, sections, attachments                                                                                                                                                                                                  |
 | `cost/`                                                                  | Session cost tracker + hook                                                                                                                                                                                                                    |
 | `coordinator/`                                                           | Coordinator mode (orchestrate via spawned agents)                                                                                                                                                                                              |
-| `personality/`                                                           | Personality migration / resolution helpers                                                                                                                                                                                                     |
 | `planning/`                                                              | Plan files and exit-plan approval                                                                                                                                                                                                              |
 | `thread-store/`                                                          | Live thread + file thread store for rollouts                                                                                                                                                                                                   |
 | `tasks/`                                                                 | Task UI / task store surface for agent work items                                                                                                                                                                                              |
 | `file-watcher/`                                                          | Workspace file-watch helpers                                                                                                                                                                                                                   |
 | `transport/`                                                             | Transport fallback ladder                                                                                                                                                                                                                      |
-| `services/`                                                              | Concrete provider/API wire layer, caching, and related services                                                                                                                                                                                |
+| `services/`                                                              | Wire-layer helpers the turn loop and daemon call: LLM API adapters (`api/`), compaction (`compact/`), LSP, Ledger wallet CLI, code prediction, MCP transport glue, memory extraction, autoFix post-tool hook, heap watchdog. Most of these are not separate CLIs.                                                                                                                                                                                |
+| `search/`                                                                | Persistent fuzzy file index used by `fs.fuzzy_search`                                                                                                                                                                                          |
+| `workspace/`                                                             | Editor mutation leases and topology fences for BUFFER (`workspace.editor.*`)                                                                                                                                                                   |
+| `contracts/`                                                             | Frozen run/admission/CSV/invocation types shared by daemon, SDK, and tests                                                                                                                                                                     |
 | `recovery/`                                                              | Crash/recovery helpers for in-flight work                                                                                                                                                                                                      |
 | `onboarding/`                                                            | Guided `agenc onboard` wizard UI                                                                                                                                                                                                               |
-| `eval/`                                                                  | Legacy diagnostic agent-eval report schema (runner lives under `runtime/scripts` + `runtime/eval`)                                                                                                                                             |
+| `eval/`                                                                  | Diagnostic agent-eval report schema (runner lives under `runtime/scripts` + `runtime/eval`)                                                                                                                                                    |
 | `eval-contract/`                                                         | Immutable task/preregistration/evidence/score contract v1                                                                                                                                                                                      |
 | `eval-suites/`                                                           | Versioned competitive/trust suite definitions, catalog, schedule compiler, and validators                                                                                                                                                      |
 | `tui/`                                                                   | Terminal UI (custom Ink reconciler fork under `tui/ink`)                                                                                                                                                                                       |
@@ -129,7 +132,7 @@ The daemon and runtime persist under one home. Relocate with an absolute
 | `daemon.log`                                                       | Daemon log sink                                                                                                                      |
 | `daemon-snapshot.json` / runtime info files                        | Restart/recovery metadata                                                                                                            |
 | `config.toml`                                                      | Operator config (`[budget]`, `[heartbeat]`, providers, …)                                                                            |
-| `auth.json`                                                        | Stored credentials / auth backend state                                                                                              |
+| `auth.json`                                                        | Non-secret auth identity, subscription, and timestamp metadata                                                                       |
 | `runtime/<version>/<artifact-key>-sha256-<digest>/`                | Immutable content-addressed, ABI-keyed runtimes; staged/backup promotion is crash-recoverable                                        |
 | `runtime/.activation-lock.sqlite` / `.activation-transaction.json` | `AGENC_HOME` activation lock and durable roll-forward journal; canonical wrapper locks live in a private per-user registry           |
 | `gateway/`                                                         | Gateway sessions map, pairing, webchat token, heartbeat session id, control plane                                                    |
@@ -137,6 +140,33 @@ The daemon and runtime persist under one home. Relocate with an absolute
 | `projects/<slug>/agenc-state_1.pre-v15.sqlite`                     | Automatic verified rollback snapshot created before upgrading an existing project database to schema v15                             |
 | `sessions/` (project-scoped)                                       | Canonical append-only JSONL rollouts + advisory `index.json` (atomic tmp+fsync+rename)                                               |
 | logs / state DBs                                                   | SQLite state + logs databases under project/home layout                                                                              |
+
+Login tokens, provider BYOK keys, remote bearers, and persisted remote
+subprocess credentials are not file state. They live only in the native OS
+secure storage, in home-scoped `localAuth`, `remoteAuth`, and
+`remoteRuntimeAuth` namespaces; OpenAI/ChatGPT OAuth uses the separate
+`openAiOauth` namespace. GitHub Models access/OAuth tokens, xAI OAuth, and
+AgenC AI subscription OAuth use the `githubModels`, `xaiOauth`, and
+`agencAiOauth` namespaces respectively. Gemini access-token and Application
+Default Credentials auth has no provider-specific secure-storage namespace; Gemini API
+keys explicitly saved through local BYOK live under `localAuth.byokKeys`.
+Native updates use a cross-process
+locked read-modify-write so one namespace cannot overwrite another, and an
+OAuth refresh compare-and-swaps the credential version it read before making
+the network request. Read caches, refresh single-flights, and refresh lock
+paths are keyed by that same explicit home, so two homes cannot share or
+overwrite credentials in one process. `auth.json` is a
+metadata projection; `byok-keys.json` and the former `.agenc/remote` token
+files, plus ProviderCode `auth.json`, are one-way migration inputs only and are
+never ordinary runtime authorities. Every native adapter is bound to the
+resolved `HomeContext`; macOS caches, Linux service names, and Windows DPAPI
+paths/entropy cannot be redirected by later ambient environment changes.
+macOS credential CRUD goes through the bundled `agenc-keychain-helper`, which
+enumerates Security.framework generic-password matches and mutates only one
+verified persistent reference; ambiguity fails closed. Credential bytes cross
+that helper boundary only through stdin/stdout, never process arguments,
+successful writes are byte-verified, and records at or above 16 MiB are
+rejected before a write.
 
 Optional trajectory export writes redacted rollout items via
 `AGENC_TRAJECTORY_EXPORT_PATH` or `AGENC_TRAJECTORY_EXPORT_DIR`.
@@ -152,7 +182,8 @@ they reach either live subscriber surface:
 event stamp -> rollout append + fsync -> EventLog / txEvent publish
                     |
                     +-> thread_rollout_items -> run.replay / run.evidence
-                    +-> v15 projections      -> run.status / run.result
+                    +-> durability projections (landed at schema v15; live
+                        registry continues through v27) -> run.status / run.result
 ```
 
 Effects add `effect_intent` before physical dispatch, followed by a proven
@@ -198,6 +229,9 @@ ceilings cover line bytes, source bytes, event count, aggregate two-pass read
 bytes, elapsed scan time, and descriptor reservations. Integrity ceilings are
 quarantine reasons; aggregate time/byte and descriptor pressure remain
 retryable operational failures.
+
+Do not confuse this with `runtime/src/recovery/` (stream/model fallback
+ladder, `post-sample-recovery`). Journal quarantine lives in `state/`.
 
 Schema v18 adds bounded `run_recovery_quarantine`,
 `run_recovery_quarantine_observations`, `run_recovery_deferred`, and immutable
@@ -267,15 +301,21 @@ layer resolves an approval decision from the active mode and rule set.
 | `default`           | Ask on request for sensitive tools                              |
 | `acceptEdits`       | Auto-allow file edits; still ask for riskier actions            |
 | `plan`              | Plan-only posture; mutating work gated until exit-plan approval |
-| `bypassPermissions` | YOLO-style: skip prompts down to a deny floor (`--yolo`)        |
+| `bypassPermissions` | Restricted. Skips prompts down to a deny floor after exact-workspace consent. The dangerous startup flag also disables sandboxing. |
 | `dontAsk`           | Deny when would-ask (no interactive prompt)                     |
 | `auto`              | Classifier-assisted auto mode (feature-gated)                   |
 | `unattended`        | Background-agent policy (allowlist/denylist / pause)            |
 | `bubble`            | Bubble permission decisions to a parent context                 |
 
 When enabled, the OS sandbox confines shell execution at the kernel level.
-`--yolo` / bypass waives approval prompts — it does **not** enable kernel
-confinement unless the sandbox is explicitly on.
+`bypassPermissions` waives approval prompts and leaves the configured sandbox
+intact. `--dangerously-bypass-approvals-and-sandbox` selects bypass mode and
+`danger-full-access` together.
+
+The TUI requires `/permissions accept-bypass` before switching to
+`bypassPermissions`. AgenC stores that consent against the workspace's
+canonical path and directory identity. A configured bypass default does not
+grant consent by itself.
 
 The `read_only` and `workspace_write` runtime profiles retain a full-disk read
 baseline, matching the live policy's empty allow-read semantics. Explicit
@@ -350,8 +390,8 @@ Default provider is **`grok`** (xAI). Model defaults are dual-sourced:
 Bare interactive startup with an empty/fresh config uses the **config** default
 (`grok-4.6`). The direct Grok provider map also uses **4.6**; paid managed
 OpenRouter intentionally remains on **`x-ai/grok-4.5`**.
-API key resolution for grok: `XAI_API_KEY` → `GROK_API_KEY` →
-`AGENC_XAI_API_KEY`.
+API key resolution for grok: `XAI_API_KEY` → `GROK_API_KEY`. The retired
+`AGENC_XAI_API_KEY` alias is rejected at ingress.
 
 `grok-4.6` is a full catalog entry (500k context, text/image, tools, structured
 output, low/medium/high/xhigh effort with high default); `grok-4.5` remains a
@@ -360,6 +400,10 @@ and cost assumptions: [`reference/providers.md`](reference/providers.md).
 
 There are **16 built-in provider slugs**. Full table, env vars, and base URLs:
 [`reference/providers.md`](reference/providers.md).
+`runtime/src/llm/registry/provider-info.ts` contains one authored definition
+row per slug. That row owns its display name, default model and base URL,
+onboarding classification, and ordered API-key/base-URL environment names;
+the exported lookup maps are derived projections rather than parallel tables.
 
 `runtime/src/llm` is provider-neutral; concrete HTTP/SDK shims live under
 `llm/providers/` and `services/`.
@@ -416,18 +460,15 @@ crashing the process.
   pristine checkouts to prove byte-identical recursive OCI layouts with an
   exact Buildx client and digest-pinned BuildKit daemon.
 - **Local required verification** — the complete platform-independent stable
-  contract runs locally. GitHub Actions carries only exact, narrow Linux-kernel
-  sandbox, PowerShell, Neovim, macOS, and Windows capability lanes. Each PR
-  records the exact locally tested SHA, commands, results, and skips before
-  merge; release verification repeats the gates at exact current `main` before
-  any release tag exists and retains the defined local evidence record. GitHub
-  remains the branch/PR/merge record. The untagged runtime candidate first
-  runs three hosted-toolchain jobs as a complete barrier for every artifact
-  builder, then builds all five native artifacts and gates macOS/Windows
-  construction on one Seatbelt probe or three atomic-artifact/`.cmd` probes in
-  two files with zero skips. The tagged workflow later promotes and re-attests
-  those exact candidate bytes without rebuilding them. Those probes do not
-  replace the local test plan.
+  contract runs locally. GitHub Actions adds `default-suite` (four Ubuntu
+  Vitest shards plus runtime typecheck, no Docker hermetic/red-probe path)
+  and capability lanes: Linux-kernel sandbox, PowerShell, Neovim (five
+  OS/arch), macOS native, Windows native. Each PR records the exact locally
+  tested SHA, commands, results, and skips before merge; release verification
+  repeats the gates at exact current `main` before any release tag exists.
+  GitHub remains the branch/PR/merge record. Candidate macOS/Windows
+  inventories are in [ci-required-gates.md](ci-required-gates.md), not a
+  one-probe summary. Those hosted jobs do not replace the local test plan.
   The repository-scoped App/ruleset
   implementation is retained as
   an inactive optional design, not a current merge requirement. Reproduction

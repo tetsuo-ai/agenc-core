@@ -13,6 +13,7 @@
  */
 
 import type { Event, EventLog } from "../../session/event-log.js";
+import { isHookExecutionSuppressed } from "../../hooks/runtime-policy.js";
 import { asRecord } from "../../utils/record.js";
 import { nonEmptyString as stringValue } from "../../utils/stringUtils.js";
 import type { ToolInvocation, ToolPayload } from "../../tools/context.js";
@@ -89,7 +90,7 @@ export interface GuardianClassifyToolOptions {
   readonly granular?: GranularApprovalConfig;
   /**
    * Set when the session-wide permission mode is `bypassPermissions`
-   * (the `--yolo` flag). Short-circuits the arbiter to `skip` for every
+   * (the `--dangerously-bypass-approvals-and-sandbox` flag). Short-circuits the arbiter to `skip` for every
    * tool — the user opted out of approval gating and approvalPolicy
    * being `untrusted` shouldn't override that. Mirrors the bypass
    * short-circuits in permissions/bash.ts and the filesystem helpers.
@@ -114,7 +115,7 @@ export function classifyToolApproval(
   if (opts.toolAllowlist?.has(name)) {
     return { kind: "skip", bypassSandbox: false };
   }
-  // Permission-mode bypass: under `--yolo` (mode === bypassPermissions)
+  // Permission-mode bypass: under `--dangerously-bypass-approvals-and-sandbox` (mode === bypassPermissions)
   // every approval gate should skip, regardless of approvalPolicy.
   // Without this, approvalPolicy="untrusted" surfaces a "approve every
   // call" overlay even though the user opted out at the mode level.
@@ -464,22 +465,31 @@ async function resolveApproval(
     return { decision: { kind: "abort" }, source: "aborted" };
   }
 
-  for (const hook of opts.hooks ?? []) {
-    let result: ReviewDecision | undefined;
-    try {
-      result = await awaitWithAbort(Promise.resolve(hook(opts.ctx)), signal);
-    } catch (err) {
-      if (alreadyAborted(signal) || isAbortError(err, signal)) {
-        return { decision: { kind: "abort" }, source: "aborted" };
+  const hookExecutionSuppressed = isHookExecutionSuppressed(
+    opts.ctx.invocation.session.services.runtimeOptions,
+  );
+  if (!hookExecutionSuppressed) {
+    for (const hook of opts.hooks ?? []) {
+      let result: ReviewDecision | undefined;
+      try {
+        result = await awaitWithAbort(Promise.resolve(hook(opts.ctx)), signal);
+      } catch (err) {
+        if (alreadyAborted(signal) || isAbortError(err, signal)) {
+          return { decision: { kind: "abort" }, source: "aborted" };
+        }
+        throw err;
       }
-      throw err;
-    }
-    if (result !== undefined) {
-      return { decision: result, source: "hook" };
+      if (result !== undefined) {
+        return { decision: result, source: "hook" };
+      }
     }
   }
 
-  if (opts.permissionDecisionHooks && opts.permissionDecisionHooks.length > 0) {
+  if (
+    !hookExecutionSuppressed &&
+    opts.permissionDecisionHooks &&
+    opts.permissionDecisionHooks.length > 0
+  ) {
     let decision;
     try {
       decision = await awaitWithAbort(
@@ -933,7 +943,7 @@ export async function arbitratePermissionMode(
     };
   }
   if (decision.behavior === "ask") {
-    // bypassPermissions mode override: --yolo opts the user out of approval
+    // bypassPermissions mode override: --dangerously-bypass-approvals-and-sandbox opts the user out of approval
     // gating. The evaluator's per-tool checkPermissions may return "ask"
     // for non-rule, non-safetyCheck reasons (e.g. working-dir prompts that
     // didn't reach the mode bypass at evaluator.ts:389 because of the
@@ -1113,11 +1123,16 @@ function emitApprovalPromptEvents(
     try {
       const { dispatchNotification } =
         await import("../../llm/hooks/dispatcher.js");
-      await dispatchNotification({
-        hook_event_name: "Notification",
-        notification_type: "permission_request",
-        message: `AgenC is waiting for permission to run ${opts.tool.name}`,
-      });
+      await dispatchNotification(
+        {
+          hook_event_name: "Notification",
+          notification_type: "permission_request",
+          message: `AgenC is waiting for permission to run ${opts.tool.name}`,
+        },
+        {
+          runtimeOptions: opts.invocation.session.services.runtimeOptions,
+        },
+      );
     } catch {
       /* notification hooks are best-effort */
     }
@@ -1274,7 +1289,6 @@ function buildApprovalCacheKeys(
   if (
     tool.name === "exec_command" ||
     tool.name === "system.bash" ||
-    tool.name === "Bash" ||
     invocation.payload.kind === "local_shell"
   ) {
     const command = Array.isArray(args.args)

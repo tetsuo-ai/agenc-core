@@ -5,7 +5,7 @@ import type { ToolEvaluatorContext } from "../../src/permissions/bash.js";
 import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
 import type { ToolPermissionContext } from "../../src/permissions/types.js";
 
-// M-PERM-1: under bypassPermissions (--yolo), bashToolHasPermission
+// M-PERM-1: under bypassPermissions (--dangerously-bypass-approvals-and-sandbox), bashToolHasPermission
 // short-circuited to `allow` for any subcommand set with no explicit deny, silently
 // waiving user-configured content-specific ASK rules. The sandbox-override path guards
 // this with aggregateAskCameFromRule; the bypass early-return did not. A rule-based ASK
@@ -15,7 +15,7 @@ function evalCtx(ctx: ToolPermissionContext): ToolEvaluatorContext {
   return { getAppState: () => ({ toolPermissionContext: ctx }) };
 }
 
-const ASK_RULE = { alwaysAskRules: { userSettings: ["Bash(git push:*)"] } };
+const ASK_RULE = { alwaysAskRules: { userSettings: ["system.bash(git push:*)"] } };
 
 describe("bashToolHasPermission — M-PERM-1 bypass must not waive ASK rules", () => {
   test("a rule-based ASK fires in default mode (baseline)", async () => {
@@ -46,7 +46,7 @@ describe("bashToolHasPermission — M-PERM-1 bypass must not waive ASK rules", (
 
   test("bypassPermissions still denies a command that matches a deny rule", async () => {
     const ctx = createEmptyToolPermissionContext({
-      alwaysDenyRules: { userSettings: ["Bash(rm:*)"] },
+      alwaysDenyRules: { userSettings: ["system.bash(rm:*)"] },
       mode: "bypassPermissions",
     });
     const result = await bashToolHasPermission({ command: "rm -rf scratch" }, evalCtx(ctx));

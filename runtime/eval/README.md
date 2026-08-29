@@ -15,8 +15,9 @@ npm run check:eval-suites -- --json
 ```
 
 The suite layer also defines deterministic competitive/trust fault plans and
-strict, separately namespaced reset/report evidence envelopes. It does not yet
-execute the real-agent matrix or deterministic trust scenarios.
+strict, separately namespaced reset/report evidence envelopes. Run them with
+`npm run eval:executor -- trust-run` and `run-agent-real-batch` (see
+[`../../docs/eval/real-agent-baseline-runbook.md`](../../docs/eval/real-agent-baseline-runbook.md)).
 
 Local, deterministic coding-task suite plus a regression gate over
 agent-eval reports (`src/eval/agent-eval-report.schema.json`).

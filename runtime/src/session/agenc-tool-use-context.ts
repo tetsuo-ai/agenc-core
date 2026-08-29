@@ -1,6 +1,5 @@
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 import { assertAgentRoleWorkspaceMatches } from "../agents/role-workspace.js";
-import { readProviderFactoryOptions } from "../llm/provider.js";
 import type { LLMProvider, LLMTool } from "../llm/types.js";
 import {
   createEmptyToolPermissionContext,
@@ -15,6 +14,11 @@ import {
 import { asRecord, isRecord } from "../utils/record.js";
 import type { Session } from "./session.js";
 import { modelContextWindow, type TurnContext } from "./turn-context.js";
+import { getAttachmentTrackingState } from "./attachment-state.js";
+import {
+  asSystemPrompt,
+  type SystemPrompt,
+} from "../utils/systemPromptType.js";
 
 export interface AgenCModelContext {
   readonly model: string;
@@ -33,12 +37,8 @@ export interface AgenCToolUseContext {
     readonly mcpClients: readonly unknown[];
     readonly contextWindowTokens: number;
     readonly maxOutputTokens?: number;
+    readonly maxBudgetUsd?: number;
     readonly systemPrompt?: string;
-    readonly providerOverride?: {
-      readonly model: string;
-      readonly baseURL: string;
-      readonly apiKey: string;
-    };
     readonly querySource?: string;
     readonly agentDefinitions: {
       readonly agentRoleWorkspaceId?: string;
@@ -68,10 +68,11 @@ export interface AgenCToolUseContext {
   readonly appendSystemMessage?: (message: unknown) => void;
   readonly readFileState: FileStateCache;
   readonly loadedNestedMemoryPaths: Set<string>;
+  readonly dynamicSkillDirTriggers: Set<string>;
+  readonly skillsManager: Session["services"]["skillsManager"];
   readonly setStreamMode: (mode: "requesting" | "responding" | null) => void;
   readonly setResponseLength: (updater: (length: number) => number) => void;
   readonly onCompactProgress: (event: unknown) => void;
-  readonly setSDKStatus: (status: "compacting" | null) => void;
   readonly addNotification: (notification: unknown) => void;
   readonly emitWarning: (warning: {
     readonly cause: string;
@@ -88,6 +89,8 @@ export interface AgenCToolUseContext {
   readonly admissionSession?: Session;
   readonly provider?: LLMProvider;
   readonly cwd?: string;
+  /** Exact prompt snapshot admitted for the active turn. */
+  readonly renderedSystemPrompt: SystemPrompt;
 }
 
 export type AgenCRuntimeTool = LLMTool & {
@@ -107,6 +110,7 @@ type SessionSurface = {
   readonly appendSystemMessage?: (message: unknown) => void;
   readonly readFileState?: FileStateCache;
   readonly loadedNestedMemoryPaths?: Set<string>;
+  readonly dynamicSkillDirTriggers?: Set<string>;
   readonly mcpClients?: readonly unknown[];
   readonly agentDefinitions?: {
     readonly agentRoleWorkspaceId?: string;
@@ -123,7 +127,6 @@ type SessionSurface = {
   readonly setStreamMode?: (mode: "requesting" | "responding" | null) => void;
   readonly setResponseLength?: (updater: (length: number) => number) => void;
   readonly onCompactProgress?: (event: unknown) => void;
-  readonly setSDKStatus?: (status: "compacting" | null) => void;
   readonly addNotification?: (notification: unknown) => void;
   readonly emitWarning?: (warning: {
     readonly cause: string;
@@ -175,7 +178,6 @@ export function buildAgenCToolUseContext(
     session.rolloutStore !== undefined &&
     session.isRolloutPersistenceSuspended?.() !== true;
   const model = toAgenCModelContext(ctx);
-  const providerOverride = buildProviderOverride(session, model.model);
   const surface = readSessionSurface(session);
   const agentDefinitions = resolveAgentDefinitionsForContext(
     session,
@@ -198,6 +200,7 @@ export function buildAgenCToolUseContext(
   const setAppStateForTasks = surface.setAppStateForTasks ?? setAppState;
   const appendSystemMessage =
     surface.appendSystemMessage ?? createSessionSystemMessageAppender(session);
+  const attachmentState = getAttachmentTrackingState(session);
 
   return {
     abortController: session.abortController ?? new AbortController(),
@@ -212,8 +215,10 @@ export function buildAgenCToolUseContext(
       ...(model.maxOutputTokens !== undefined
         ? { maxOutputTokens: model.maxOutputTokens }
         : {}),
+      ...(session.config.maxBudgetUsd !== undefined
+        ? { maxBudgetUsd: session.config.maxBudgetUsd }
+        : {}),
       ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
-      ...(providerOverride !== undefined ? { providerOverride } : {}),
       ...(opts.querySource !== undefined
         ? { querySource: opts.querySource }
         : {}),
@@ -230,11 +235,13 @@ export function buildAgenCToolUseContext(
       surface.readFileState ??
       createFileStateCacheWithSizeLimit(READ_FILE_STATE_CACHE_SIZE),
     loadedNestedMemoryPaths:
-      surface.loadedNestedMemoryPaths ?? new Set<string>(),
+      surface.loadedNestedMemoryPaths ?? attachmentState.loadedNestedMemoryPaths,
+    dynamicSkillDirTriggers:
+      surface.dynamicSkillDirTriggers ?? attachmentState.dynamicSkillDirTriggers,
+    skillsManager: session.services.skillsManager,
     setStreamMode: surface.setStreamMode ?? (() => {}),
     setResponseLength: surface.setResponseLength ?? (() => {}),
     onCompactProgress: surface.onCompactProgress ?? (() => {}),
-    setSDKStatus: surface.setSDKStatus ?? (() => {}),
     addNotification: surface.addNotification ?? (() => {}),
     emitWarning:
       surface.emitWarning ??
@@ -260,6 +267,9 @@ export function buildAgenCToolUseContext(
     admissionSession: session,
     provider: session.services.provider,
     cwd,
+    renderedSystemPrompt: asSystemPrompt(
+      systemPrompt.length === 0 ? [] : [systemPrompt],
+    ),
   };
 }
 
@@ -275,34 +285,6 @@ function toAgenCRuntimeTools(tools: readonly LLMTool[]): AgenCRuntimeTool[] {
       maxResultSizeChars: DEFAULT_MAX_RESULT_SIZE_CHARS,
     };
   });
-}
-
-function buildProviderOverride(
-  session: Session,
-  fallbackModel: string,
-): AgenCToolUseContext["options"]["providerOverride"] | undefined {
-  const provider = session.services.provider;
-  if (!provider) return undefined;
-  const options = readProviderFactoryOptions(provider);
-  const model = firstNonEmpty(options.model, fallbackModel);
-  const baseURL = firstNonEmpty(options.baseURL);
-  if (!model || !baseURL) return undefined;
-  return {
-    model,
-    baseURL,
-    apiKey: options.apiKey ?? "",
-  };
-}
-
-function firstNonEmpty(
-  ...values: Array<string | undefined>
-): string | undefined {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim().length > 0) {
-      return value.trim();
-    }
-  }
-  return undefined;
 }
 
 function normalizeAgentDefinitions(
@@ -448,6 +430,7 @@ function readSessionSurface(session: Session): SessionSurface {
     ),
     readFileState: read<FileStateCache>("readFileState"),
     loadedNestedMemoryPaths: read<Set<string>>("loadedNestedMemoryPaths"),
+    dynamicSkillDirTriggers: read<Set<string>>("dynamicSkillDirTriggers"),
     mcpClients: read<readonly unknown[]>("mcpClients"),
     agentDefinitions:
       read<SessionSurface["agentDefinitions"]>("agentDefinitions"),
@@ -462,7 +445,6 @@ function readSessionSurface(session: Session): SessionSurface {
     setResponseLength:
       read<(updater: (length: number) => number) => void>("setResponseLength"),
     onCompactProgress: read<(event: unknown) => void>("onCompactProgress"),
-    setSDKStatus: read<(status: "compacting" | null) => void>("setSDKStatus"),
     addNotification: read<(notification: unknown) => void>("addNotification"),
     emitWarning:
       read<

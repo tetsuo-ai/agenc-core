@@ -12,6 +12,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
+import {
+  clearCurrentRuntimeSession,
+  getCurrentRuntimeSession,
+  setCurrentRuntimeSession,
+} from "./current-session.js";
+import type { Session } from "./session.js";
 import type { AgentMetadata } from "../agents/registry.js";
 import { upsertAgentRun } from "../state/agent-runs.js";
 import { createOperatorEffectReviewResolution } from "../state/effect-review.js";
@@ -35,11 +41,14 @@ function openStore(opts: {
   reopenTerminalRun?: boolean;
   resumeSuspendedRun?: boolean;
   suspendedResumeReason?: "daemon_startup_restore" | "explicit_continue";
+  sessionTempRoot?: string;
 }): RolloutStore {
   const store = new RolloutStore({
     cwd: opts.cwd,
     sessionId: opts.sessionId,
     agencVersion: "0.2.0",
+    sessionTempRoot:
+      opts.sessionTempRoot ?? join(agencHome, "rollout-temp"),
     ...(opts.resume ? { resume: true } : {}),
     ...(opts.reopenTerminalRun ? { reopenTerminalRun: true } : {}),
     ...(opts.resumeSuspendedRun ? { resumeSuspendedRun: true } : {}),
@@ -215,9 +224,61 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearCurrentRuntimeSession();
   if (originalAgencHome) process.env.AGENC_HOME = originalAgencHome;
   else delete process.env.AGENC_HOME;
   if (agencHome) rmSync(agencHome, { recursive: true, force: true });
+});
+
+describe("RolloutStore temporary authority", () => {
+  it("rejects a relative session temp root", () => {
+    expect(
+      () =>
+        new RolloutStore({
+          cwd: agencHome,
+          sessionId: "relative-temp-root",
+          agencVersion: "0.2.0",
+          sessionTempRoot: "relative-temp",
+        }),
+    ).toThrow(/sessionTempRoot must be absolute/u);
+  });
+
+  it("opens with its captured root while ambient session selection is ambiguous", () => {
+    const cwdA = mkdtempSync(join(tmpdir(), "agenc-rollout-cwd-a-"));
+    const cwdB = mkdtempSync(join(tmpdir(), "agenc-rollout-cwd-b-"));
+    const rootA = join(agencHome, "session-temp-a");
+    const rootB = join(agencHome, "session-temp-b");
+    const sessionA = { conversationId: "ambient-a" } as Session;
+    const sessionB = { conversationId: "ambient-b" } as Session;
+    setCurrentRuntimeSession(sessionA);
+    setCurrentRuntimeSession(sessionB);
+    expect(() => getCurrentRuntimeSession()).toThrow(/Ambiguous runtime session/u);
+
+    let storeA: RolloutStore | undefined;
+    let storeB: RolloutStore | undefined;
+    try {
+      storeA = openStore({
+        cwd: cwdA,
+        sessionId: "captured-root-a",
+        sessionTempRoot: rootA,
+      });
+      storeB = openStore({
+        cwd: cwdB,
+        sessionId: "captured-root-b",
+        sessionTempRoot: rootB,
+      });
+      expect(storeA.sessionTempRoot).toBe(rootA);
+      expect(storeB.sessionTempRoot).toBe(rootB);
+      expect(readdirSync(rootA)).toEqual([]);
+      expect(readdirSync(rootB)).toEqual([]);
+    } finally {
+      storeA?.close();
+      storeB?.close();
+      clearCurrentRuntimeSession();
+      rmSync(cwdA, { recursive: true, force: true });
+      rmSync(cwdB, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("RolloutStore thread-spawn edges", () => {
@@ -903,6 +964,7 @@ describe("RolloutStore thread-spawn edges", () => {
         cwd,
         sessionId,
         agencVersion: "0.2.0",
+        sessionTempRoot: join(agencHome, "rollout-temp"),
         resume: true,
         resumeRolloutPath: recoveryPath,
         resumeSuspendedRun: true,
@@ -1244,7 +1306,7 @@ describe("RolloutStore thread-spawn edges", () => {
             parentPath: "/root",
             metadata: {
               ...baseMetadata,
-              agentRole: "worker",
+              agentRole: "runner",
               agentRoleFingerprint: "worker-role-fingerprint",
             },
             status: "open",

@@ -20,9 +20,10 @@
  */
 
 import { createHash } from "node:crypto";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, win32 } from "node:path";
+import { basename, dirname, isAbsolute, join, win32 } from "node:path";
 import { createConnection, type Socket } from "node:net";
 import { spawn as nodeSpawn } from "node:child_process";
 import {
@@ -54,31 +55,91 @@ const UNBOUNDED_DAEMON_METHODS: ReadonlySet<AgencDaemonMethod> = new Set([
   "message.stream",
 ]);
 
+export class RetiredConfigDirError extends Error {
+  readonly name = "RetiredConfigDirError";
+}
+
+export class InvalidHomePathError extends Error {
+  readonly name = "InvalidHomePathError";
+}
+
+function nonEmpty(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function assertNoRetiredConfigDir(env: NodeJS.ProcessEnv): void {
+  if (env.AGENC_CONFIG_DIR === undefined) return;
+  const retired = nonEmpty(env.AGENC_CONFIG_DIR);
+  const replacement = retired === undefined
+    ? "set AGENC_HOME to the intended absolute home directory"
+    : `set AGENC_HOME=${JSON.stringify(retired)}`;
+  throw new RetiredConfigDirError(
+    `AGENC_CONFIG_DIR is no longer a runtime configuration authority; ` +
+      `${replacement} and remove AGENC_CONFIG_DIR. ` +
+      `Only "agenc config migrate" may inspect this retired variable.`,
+  );
+}
+
+function canonicalizeAgencHomePath(path: string): string {
+  const normalized = path.normalize("NFC");
+  if (!isAbsolute(normalized)) {
+    throw new InvalidHomePathError(
+      `AGENC_HOME must be an absolute path so daemon, lock, and secure-storage identity is stable: ${JSON.stringify(path)}`,
+    );
+  }
+  const missingComponents: string[] = [];
+  let existingAncestor = normalized;
+  while (!existsSync(existingAncestor)) {
+    const parent = dirname(existingAncestor);
+    if (parent === existingAncestor) {
+      throw new InvalidHomePathError(
+        `AGENC_HOME has no resolvable existing ancestor: ${JSON.stringify(path)}`,
+      );
+    }
+    missingComponents.unshift(basename(existingAncestor));
+    existingAncestor = parent;
+  }
+  if (!statSync(existingAncestor).isDirectory()) {
+    throw new InvalidHomePathError(
+      `AGENC_HOME must resolve beneath a directory: ${JSON.stringify(path)}`,
+    );
+  }
+  return join(realpathSync(existingAncestor), ...missingComponents).normalize("NFC");
+}
+
+/** Canonical `$AGENC_HOME`, or canonical `$HOME/.agenc` when unset. */
 export function resolveAgencHome(
   env: NodeJS.ProcessEnv = process.env,
   userHome = homedir(),
 ): string {
-  const configured = env.AGENC_HOME?.trim();
-  return configured && configured.length > 0
-    ? configured
-    : join(userHome, ".agenc");
+  assertNoRetiredConfigDir(env);
+  const configured = nonEmpty(env.AGENC_HOME);
+  return canonicalizeAgencHomePath(configured ?? join(userHome, ".agenc"));
 }
 
-export function resolveDaemonSocketPath(
-  env: NodeJS.ProcessEnv = process.env,
-  userHome?: string,
-  platform: NodeJS.Platform = process.platform,
+function daemonSocketPathFromHome(
+  daemonHome: string,
+  platform: NodeJS.Platform,
 ): string {
-  const daemonHome = resolveAgencHome(env, userHome);
-  if (platform !== "win32") {
-    return join(daemonHome, "daemon.sock");
-  }
+  if (platform !== "win32") return join(daemonHome, "daemon.sock");
   const identity = createHash("sha256")
     .update(win32.resolve(daemonHome).toLowerCase())
     .digest("hex");
   return `\\\\.\\pipe\\agenc-daemon-${identity}`;
 }
 
+/** Unix socket under the home, or a stable per-home named pipe on Windows. */
+export function resolveDaemonSocketPath(
+  env: NodeJS.ProcessEnv = process.env,
+  userHome?: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const daemonHome = resolveAgencHome(env, userHome);
+  return daemonSocketPathFromHome(daemonHome, platform);
+}
+
+/** Path of `daemon.cookie` under the AgenC home. */
 export function resolveDaemonCookiePath(
   env: NodeJS.ProcessEnv = process.env,
   userHome?: string,
@@ -301,10 +362,11 @@ export async function connect(
   options: AgencConnectOptions = {},
 ): Promise<AgencClient> {
   const env = options.env ?? process.env;
+  const daemonHome = resolveAgencHome(env, options.userHome);
   const socketPath =
-    options.socketPath ?? resolveDaemonSocketPath(env, options.userHome);
+    options.socketPath ?? daemonSocketPathFromHome(daemonHome, process.platform);
   const cookiePath =
-    options.cookiePath ?? resolveDaemonCookiePath(env, options.userHome);
+    options.cookiePath ?? join(daemonHome, "daemon.cookie");
   const readyTimeoutMs =
     options.readyTimeoutMs ??
     positiveIntFromEnv(env.AGENC_DAEMON_READY_TIMEOUT_MS) ??

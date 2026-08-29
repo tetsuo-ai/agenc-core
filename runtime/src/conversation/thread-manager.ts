@@ -468,10 +468,6 @@ export class ConversationThreadManager extends ThreadManager {
     return this.submitTurn(threadId, { type: "append_message", message });
   }
 
-  override async refreshMcpServers(config: unknown): Promise<void> {
-    await this.threadManager.refreshMcpServers(config);
-  }
-
   override async shutdownAllThreadsBounded(
     timeoutMs: number,
   ): ReturnType<ThreadManager["shutdownAllThreadsBounded"]> {
@@ -1032,11 +1028,6 @@ class ForkedConversationThread implements ManagedThread {
         return this.threadId;
       case "shutdown":
         await this.shutdown();
-        return this.threadId;
-      case "refresh_mcp_servers":
-        await this.sourceSessionRef.services.mcpManager.refreshFromConfig?.(
-          op.config,
-        );
         return this.threadId;
     }
   }

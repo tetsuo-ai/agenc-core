@@ -2,7 +2,7 @@ import { createHash } from 'crypto'
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getAgenCConfigHomeDir } from './envUtils.js'
+import { getAgenCHomeDir } from './envUtils.js'
 import { isENOENT } from './errors.js'
 
 const PASTE_STORE_DIR = 'paste-cache'
@@ -11,7 +11,7 @@ const PASTE_STORE_DIR = 'paste-cache'
  * Get the paste store directory (persistent across sessions).
  */
 function getPasteStoreDir(): string {
-  return join(getAgenCConfigHomeDir(), PASTE_STORE_DIR)
+  return join(getAgenCHomeDir(), PASTE_STORE_DIR)
 }
 
 /**

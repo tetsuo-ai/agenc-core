@@ -22,9 +22,9 @@ describe("provider fallback ladder", () => {
     ]);
   });
 
-  test("normalizes provider aliases and case before dedupe and active-target skip", () => {
+  test("normalizes canonical provider case before dedupe and active-target skip", () => {
     expect(
-      normalizeFallbackTargets(" XAI ", "grok-4-fast", [
+      normalizeFallbackTargets(" Grok ", "grok-4-fast", [
         { provider: "grok", model: "grok-4-fast" },
         { provider: " OpenAI ", model: "gpt-5" }, // branding-scan: allow real provider alias input
         { provider: "openai", model: "gpt-5" },

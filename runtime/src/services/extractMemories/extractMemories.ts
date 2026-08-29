@@ -508,6 +508,8 @@ export function initExtractMemories(
     const pathResult = await (deps.resolveMemoryDirectory ?? resolveAutoMemoryDirectory)({
       env: deps.env,
       cwd: queued.context.ctx.cwd,
+      configStore: queued.context.session.services?.configStore,
+      runtimeOptions: queued.context.session.services.runtimeOptions,
     });
     if (!pathResult.enabled || !pathResult.path) return;
 

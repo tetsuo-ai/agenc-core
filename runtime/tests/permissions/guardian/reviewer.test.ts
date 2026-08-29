@@ -13,13 +13,17 @@ import {
   GUARDIAN_PREFERRED_MODEL,
   parseGuardianAssessment,
 } from "./reviewer.js";
+import { PermissionModeRegistry } from "../permission-mode.js";
+import { createEmptyToolPermissionContext } from "../types.js";
 import { ReviewManager } from "../../session/review.js";
+import { createTestConfigStore } from "../../fixtures.js";
 import {
   Session,
   type Event,
   type SessionOpts,
   type SessionServices,
 } from "../../session/session.js";
+import { resolveAgentRuntimeOptions } from "../../session/runtime-options.js";
 import {
   newDefaultTurnWithSubId,
   type Config,
@@ -45,8 +49,6 @@ const ALLOW_ASSESSMENT = JSON.stringify({
 
 function mkFeatures(): ManagedFeatures {
   return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
   };
 }
 
@@ -165,6 +167,7 @@ function mkSession(opts: {
   const events: Event[] = [];
   const breaker = opts.breaker ?? createGuardianRejectionCircuitBreaker();
   const models = opts.models ?? [mkModelInfo()];
+  const configStore = createTestConfigStore({ cwd: "/tmp" });
   const services = {
     admissionRequired: false,
     mcpConnectionManager: {
@@ -176,6 +179,13 @@ function mkSession(opts: {
       cancel: () => {},
       isCancelled: () => false,
     },
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
+    configStore,
+    runtimeOptions: resolveAgentRuntimeOptions({
+      AGENC_HOME: configStore.homeContext.path,
+    }),
     provider: opts.provider,
     registry: {
       tools: [],

@@ -26,7 +26,6 @@ import { AgentControl } from "./control.js";
 import { AgentRegistry } from "./registry.js";
 import {
   buildFilteredRegistry,
-  drainChildMailboxForTesting,
   initMcpForAgent,
   MAX_PARENT_RECEIPT_FIELD_BYTES,
   MCP_INIT_TIMEOUT_MS,
@@ -35,15 +34,24 @@ import {
   runAgent,
   setParentNotificationOutboxLimitsForTesting,
   TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
+  wrapProviderForAgentSummary,
   type RunAgentProgressEvent,
   type RunAgentResult,
 } from "./run-agent.js";
 import {
+  createProvider,
+  readProviderFactoryOptions,
+  readProviderIdentity,
+} from "../llm/provider.js";
+import { createGeminiEndpointPlan } from "../llm/providers/gemini/endpoint-plan.js";
+import {
   _resetAgentRolesForTesting,
   _resetNicknamePoolForTesting,
   createAgentRoleWorkspace,
+  listBuiltInAgentRoles,
   registerAgentRole,
 } from "./role.js";
+import { roleToAgentDefinition } from "../tools/AgentTool/loadAgentsDir.js";
 import { BUILTIN_READONLY_DISALLOWLIST } from "./built-in-prompts.js";
 import {
   createMailboxMetadataRecord,
@@ -124,6 +132,9 @@ import {
   shutdownLspServerManager,
   waitForInitialization,
 } from "../services/lsp/manager.js";
+import { ConfigStore } from "../config/store.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import { enterCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
@@ -131,8 +142,6 @@ import {
 
 function mkFeatures(): ManagedFeatures {
   return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
   };
 }
 
@@ -235,6 +244,16 @@ function makeStubSession(
       }),
     history: [],
   };
+  const config = opts.config ?? mkConfig();
+  const configStore =
+    opts.services?.configStore ??
+    new ConfigStore({
+      home:
+        process.env.AGENC_HOME ??
+        join(tmpdir(), "agenc-run-agent-test-home"),
+      cwd: config.cwd,
+    });
+  enterCanonicalSettingsAuthority(configStore);
   const session = new Session({
     conversationId: opts.conversationId ?? "conv-parent",
     ...(opts.roleWorkspace !== undefined
@@ -246,6 +265,9 @@ function makeStubSession(
     initialState: state as unknown as SessionOpts["initialState"],
     features: mkFeatures(),
     services: {
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext(),
+      ),
       mcpConnectionManager: {
         setApprovalPolicy: () => {},
         setSandboxPolicy: () => {},
@@ -261,10 +283,12 @@ function makeStubSession(
         executeStop: async () => ({}),
       },
       admissionRequired: false,
+      configStore,
+      runtimeOptions: resolveAgentRuntimeOptions({}),
       ...(opts.services ?? {}),
     } as unknown as SessionServices,
     jsRepl: { id: "repl-test" },
-    config: opts.config ?? mkConfig(),
+    config,
     modelInfo: opts.modelInfo ?? mkModelInfo(),
     eventQueue: new AsyncQueue<Event>(),
   });
@@ -604,6 +628,42 @@ afterEach(() => {
 // runAgent
 // ─────────────────────────────────────────────────────────────────────
 
+describe("wrapProviderForAgentSummary", () => {
+  it("preserves canonical Gemini and Anthropic factory state", () => {
+    const providers = [
+      createProvider("gemini", {
+        model: "gemini-2.5-pro",
+        extra: {
+          gemini: {
+            credentialPlan: {
+              kind: "api-key",
+              credential: "saved-key",
+              source: "saved-byok",
+            },
+            endpointPlan: createGeminiEndpointPlan(),
+          },
+        },
+      }),
+      createProvider("anthropic", {
+        apiKey: "anthropic-test-key",
+        baseURL: "https://api.anthropic.com",
+        model: "claude-opus-4-7",
+      }),
+    ];
+
+    for (const provider of providers) {
+      const factoryOptions = readProviderFactoryOptions(provider);
+      const wrapped = wrapProviderForAgentSummary(provider, () => {});
+
+      expect(wrapped).not.toBe(provider);
+      expect(readProviderIdentity(wrapped)).toBe(
+        readProviderIdentity(provider),
+      );
+      expect(readProviderFactoryOptions(wrapped)).toEqual(factoryOptions);
+    }
+  });
+});
+
 describe("runAgent", () => {
   it.each([
     ["success", "completed"],
@@ -638,12 +698,8 @@ describe("runAgent", () => {
 
   it("forks the LSP manager into the child authority and stops it before provider disposal", async () => {
     const lspEnv = {
-      AGENC_SIMPLE: process.env.AGENC_SIMPLE,
-      AGENC_BARE: process.env.AGENC_BARE,
       AGENC_DISABLE_LSP: process.env.AGENC_DISABLE_LSP,
     };
-    delete process.env.AGENC_SIMPLE;
-    delete process.env.AGENC_BARE;
     delete process.env.AGENC_DISABLE_LSP;
     const cleanupOrder: string[] = [];
     const openedUris: string[] = [];
@@ -770,12 +826,8 @@ describe("runAgent", () => {
 
   it("cleans child broker participants when Session construction fails", async () => {
     const lspEnv = {
-      AGENC_SIMPLE: process.env.AGENC_SIMPLE,
-      AGENC_BARE: process.env.AGENC_BARE,
       AGENC_DISABLE_LSP: process.env.AGENC_DISABLE_LSP,
     };
-    delete process.env.AGENC_SIMPLE;
-    delete process.env.AGENC_BARE;
     delete process.env.AGENC_DISABLE_LSP;
     const parentBroker = new SandboxExecutionBroker({
       mode: "danger_full_access",
@@ -870,14 +922,14 @@ describe("runAgent", () => {
   });
 
   it("keeps parent MCP transports and MCP-origin tool closures out of child sessions", async () => {
-    const refreshFromConfig = vi.fn(async () => ({
+    const refreshFromAuthority = vi.fn(async () => ({
       configuredServers: ["parent"],
       requiredServers: [],
     }));
     const parentMcpManager = {
       effectiveServers: async () => new Map(),
       toolPluginProvenance: async () => null,
-      refreshFromConfig,
+      refreshFromAuthority,
       getTools: () => [],
       getConnectedServers: () => ["parent"],
       isConnected: () => true,
@@ -889,7 +941,7 @@ describe("runAgent", () => {
       metadata: { source: "mcp", family: "mcp" },
     };
     const resourceMcp = {
-      ...mkNamedTool("ListMcpResources"),
+      ...mkNamedTool("ListMcpResourcesTool"),
       metadata: { source: "builtin", family: "mcp" },
     };
     const registry = {
@@ -910,15 +962,6 @@ describe("runAgent", () => {
       services: { provider, registry, mcpManager: parentMcpManager },
     });
     const { control, live } = await spawnLive(session);
-    live.pendingMcpRefresh = { config: { servers: ["child"] } };
-    live.downInbox.send({
-      author: "/root",
-      recipient: live.agentPath,
-      content: "",
-      triggerTurn: false,
-      direction: "down",
-      metadata: createMailboxMetadataRecord("mcp_refresh"),
-    });
     let childServices: SessionServices | undefined;
     const originalShutdown = Session.prototype.shutdown;
     const shutdownSpy = vi
@@ -939,7 +982,7 @@ describe("runAgent", () => {
       );
 
       expect(result).toMatchObject({ outcome: "completed" });
-      expect(refreshFromConfig).not.toHaveBeenCalled();
+      expect(refreshFromAuthority).not.toHaveBeenCalled();
       expect(childServices?.mcpManager).not.toBe(parentMcpManager);
       expect(childServices?.mcpManager.getConnectedServers?.()).toEqual([]);
       expect(childServices?.registry.tools.map((tool) => tool.name)).toEqual([
@@ -1105,6 +1148,7 @@ describe("runAgent", () => {
       cwd: workspace,
       sessionId: session.conversationId,
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
     });
     parentRollout.open({
       sessionId: session.conversationId,
@@ -1189,6 +1233,7 @@ describe("runAgent", () => {
       cwd: workspace,
       sessionId: session.conversationId,
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
     });
     parentRollout.open({
       sessionId: session.conversationId,
@@ -1264,9 +1309,10 @@ describe("runAgent", () => {
       const session = makeStubSession({
         services: {
           provider,
-          configStore: {
-            current: () => ({}),
-          } as SessionServices["configStore"],
+          configStore: new ConfigStore({
+            home: join(workspace, ".agenc"),
+            cwd: workspace,
+          }),
         },
         roleWorkspace: createAgentRoleWorkspace(workspace),
         config: { ...mkConfig(), cwd: workspace },
@@ -1623,7 +1669,7 @@ describe("runAgent", () => {
         description: "Review quickly.",
         configToml: [
           'model = "gpt-5.4"',
-          'model_reasoning_effort = "high"',
+          'reasoning_effort = "high"',
           'service_tier = "priority"',
         ].join("\n"),
       },
@@ -1764,17 +1810,22 @@ describe("runAgent", () => {
     const provider = makeProvider([{ content: "nested catalog" }]);
     const exactPluginAgent = {
       agentType: "plugin:strict-reviewer",
-      description: "workspace exact plugin role",
-      source: "plugin",
+      whenToUse: "workspace exact plugin role",
+      source: "plugin" as const,
+      plugin: "plugin",
       getSystemPrompt: () => "strict reviewer prompt",
     };
+    const canonicalDefinitions = [
+      ...listBuiltInAgentRoles().map(roleToAgentDefinition),
+      exactPluginAgent,
+    ];
     const session = makeStubSession({
       services: { provider },
       roleWorkspace: ROLE_WORKSPACE,
       agentDefinitions: {
         agentRoleWorkspaceId: ROLE_WORKSPACE.id,
-        activeAgents: [exactPluginAgent],
-        allAgents: [exactPluginAgent],
+        activeAgents: canonicalDefinitions,
+        allAgents: canonicalDefinitions,
         allowedAgentTypes: ["plugin:strict-reviewer"],
       },
     });
@@ -1817,8 +1868,8 @@ describe("runAgent", () => {
 
     expect(childCatalog).toMatchObject({
       agentRoleWorkspaceId: ROLE_WORKSPACE.id,
-      activeAgents: [exactPluginAgent],
-      allAgents: [exactPluginAgent],
+      activeAgents: canonicalDefinitions,
+      allAgents: canonicalDefinitions,
       allowedAgentTypes: ["plugin:strict-reviewer"],
     });
     expect(childCatalog?.activeAgents).not.toBe(
@@ -2824,28 +2875,6 @@ describe("runAgent", () => {
     }
   });
 
-  it("surfaces a refresh_mcp_servers control message from the child downInbox", async () => {
-    const provider = makeProvider([]);
-    const session = makeStubSession({ services: { provider } });
-    const { live } = await spawnLive(session);
-
-    live.pendingMcpRefresh = { config: { servers: ["x"] } };
-    live.downInbox.send({
-      author: live.agentPath,
-      recipient: live.agentPath,
-      content: "",
-      triggerTurn: false,
-      direction: "down",
-      metadata: createMailboxMetadataRecord("mcp_refresh"),
-    });
-
-    const drained = drainChildMailboxForTesting(live);
-    // Routed to the child as a control message (applied between turns); it
-    // surfaces the config and does NOT trigger a follow-up turn.
-    expect(drained.refreshMcpConfig).toEqual({ servers: ["x"] });
-    expect(drained.nextUserMessage).toBeUndefined();
-  });
-
   it("injects child session metadata and worktree roots into wrapped child tools", async () => {
     const childBroker = new SandboxExecutionBroker({
       mode: "danger_full_access",
@@ -2910,6 +2939,7 @@ describe("runAgent", () => {
       cwd: childCwd,
       sessionId: childSession.conversationId,
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
     });
     childRolloutStore.open({
       sessionId: childSession.conversationId,
@@ -3705,14 +3735,12 @@ describe("runAgent", () => {
       "TaskList",
       "TaskOutput",
       "TaskStop",
-      "Brief",
       "SendUserMessage",
       "VerifyPlanExecution",
       "CronCreate",
       "CronDelete",
       "CronList",
       "WorkflowTool",
-      "RemoteTrigger",
       "EnterPlanMode",
       "ExitPlanMode",
     ];
@@ -3904,6 +3932,7 @@ describe("runAgent", () => {
       cwd,
       sessionId: session.conversationId,
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
     });
     parentRolloutStore.open({
       sessionId: session.conversationId,
@@ -4046,6 +4075,7 @@ describe("runAgent", () => {
       cwd,
       sessionId: session.conversationId,
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
     });
     parentRolloutStore.open({
       sessionId: session.conversationId,
@@ -4136,6 +4166,7 @@ describe("runAgent", () => {
       cwd,
       sessionId: session.conversationId,
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
     });
     parentRolloutStore.open({
       sessionId: session.conversationId,
@@ -4207,12 +4238,10 @@ describe("runAgent", () => {
   });
 
   it("keeps root spawn evidence and child model evidence in their canonical run journals", async () => {
-    const previousConfigDir = process.env.AGENC_CONFIG_DIR;
     const previousAgencHome = process.env.AGENC_HOME;
     const home = mkdtempSync(join(tmpdir(), "agenc-child-journal-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "agenc-child-journal-workspace-"));
     mkdirSync(join(cwd, ".git"));
-    process.env.AGENC_CONFIG_DIR = home;
     process.env.AGENC_HOME = home;
     const kernel = new ExecutionAdmissionKernel({
       agencHome: home,
@@ -4274,6 +4303,7 @@ describe("runAgent", () => {
       cwd,
       sessionId: session.conversationId,
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
     });
     parentRolloutStore.open({
       sessionId: session.conversationId,
@@ -4410,8 +4440,6 @@ describe("runAgent", () => {
     } finally {
       await session.shutdown();
       kernel.close();
-      if (previousConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR;
-      else process.env.AGENC_CONFIG_DIR = previousConfigDir;
       if (previousAgencHome === undefined) delete process.env.AGENC_HOME;
       else process.env.AGENC_HOME = previousAgencHome;
       rmSync(home, { recursive: true, force: true });
@@ -4464,6 +4492,7 @@ describe("runAgent", () => {
         cwd,
         sessionId: session.conversationId,
         agencVersion: "0.2.0",
+        sessionTempRoot: tmpdir(),
       });
       parentRolloutStore.open({
         sessionId: session.conversationId,
@@ -4525,6 +4554,7 @@ describe("runAgent", () => {
   it("suppresses parent mailbox notifications but preserves the child rollout in silent mode", async () => {
     const provider = makeProvider([{ content: "silent complete" }]);
     const cwd = mkdtempSync(join(tmpdir(), "agenc-run-agent-silent-"));
+    mkdirSync(join(cwd, ".git"));
     const session = makeStubSession({
       services: { provider },
       sessionConfiguration: mkSessionConfiguration({
@@ -4540,6 +4570,7 @@ describe("runAgent", () => {
       cwd,
       sessionId: session.conversationId,
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
     });
     parentRolloutStore.open({
       sessionId: session.conversationId,

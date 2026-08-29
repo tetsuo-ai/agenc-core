@@ -14,6 +14,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EventLog } from "../session/event-log.js";
+import { runWithCurrentRuntimeSession } from "../session/current-session.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import { resolveHomeContext } from "../config/home.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
@@ -55,6 +58,7 @@ import { verifyToolResultIntegrity } from "../session/tool-result-integrity.js";
 
 const UNTRUSTED_TOOL_RESULT_BOUNDARY =
   "===== AGENC UNTRUSTED TOOL RESULT DATA =====";
+const TEST_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
 
 function expectFramedWorkspaceResult(content: unknown, raw: string): void {
   expect(content).toEqual(expect.stringContaining("untrusted workspace data"));
@@ -176,6 +180,7 @@ function mkSession(opts: MkSessionOpts): Session {
   }> = [];
   const servicesRecord: Record<string, unknown> = {
     admissionRequired: false,
+    runtimeOptions: TEST_RUNTIME_OPTIONS,
     registry: opts.registry,
     provider: opts.provider ?? { name: "stub-provider" },
     hooks: {
@@ -3249,6 +3254,14 @@ describe("executeTools — T7 gap #109 pipeline", () => {
         },
       },
     });
+    Object.assign(session.services, {
+      configStore: {
+        homeContext: resolveHomeContext(
+          { AGENC_HOME: agencHome, HOME: agencHome },
+          { platformHome: agencHome },
+        ),
+      },
+    });
     const state = mkState({
       toolCalls: [
         {
@@ -3259,14 +3272,16 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       ],
     });
 
-    await executeTools(
-      state,
-      {
-        ...mkCtx(),
-        approvalPolicy: { value: "on_request" },
-        sandboxPolicy: { value: "workspace_write" },
-      } as unknown as TurnContext,
-      session,
+    await runWithCurrentRuntimeSession(session, () =>
+      executeTools(
+        state,
+        {
+          ...mkCtx(),
+          approvalPolicy: { value: "on_request" },
+          sandboxPolicy: { value: "workspace_write" },
+        } as unknown as TurnContext,
+        session,
+      ),
     );
 
     expect(approvalInput?.["plan"]).toContain("Wire approval gate");

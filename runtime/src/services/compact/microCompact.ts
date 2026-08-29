@@ -21,8 +21,9 @@ const MCP_TOOL_PREFIX = "mcp__";
 // Tool names MUST match the names the LIVE tool registry registers, not the
 // legacy/upstream-snapshot names. The whole-file reader registers as
 // "FileRead" (canonical `FILE_READ_TOOL_NAME` in
-// `src/tools/system/file-read.ts`) and the shell tool registers as
-// "exec_command" (`src/tools/system/exec-command.ts`) — NOT "Read"/"Bash".
+// `src/tools/system/file-read.ts`) and shell tools register as
+// "exec_command" / "system.bash". Removed spellings below exist only so
+// persisted historical transcripts remain compactable.
 // Keying on the upstream names left FileRead/exec_command results unbounded
 // (the largest OOM contributors) and excluded from path-aware retention.
 // The remaining names (Grep/Glob/Edit/Write) already match the live registry.
@@ -30,11 +31,13 @@ const COMPACTABLE_TOOLS = new Set([
   "FileRead",
   "Read",
   "exec_command",
+  "system.bash",
   "Bash",
   "PowerShell",
   "Grep",
   "Glob",
   "WebSearch",
+  "web_fetch",
   "WebFetch",
   "Edit",
   "Write",
@@ -42,8 +45,8 @@ const COMPACTABLE_TOOLS = new Set([
 
 // Path-bearing readers whose result carries a `file_path` argument, so the
 // LATEST result per active path can be retained beyond the flat recent-N
-// window. "FileRead" is the live whole-file reader; "Read" is kept for the
-// upstream snapshot / parity.
+// window. "FileRead" is the live whole-file reader; "Read" is retained only
+// for persisted historical transcripts.
 const PATH_BEARING_READ_TOOLS = new Set(["FileRead", "Read"]);
 
 let microcompactSequence = 0;
@@ -325,17 +328,3 @@ function isWithinTimeWindow(
   const timestamp = Date.parse(message.timestamp);
   return Number.isFinite(timestamp) && now - timestamp < clearAfterMs;
 }
-
-export function consumePendingCacheEdits(): readonly never[] {
-  return [];
-}
-
-export function getPinnedCacheEdits(): readonly never[] {
-  return [];
-}
-
-export function markToolsSentToAPIState(): void {}
-
-// Open-build no-op stub. Accepts the upstream (userMessageIndex, block) args so
-// callers type-check; the values are intentionally ignored in this build.
-export function pinCacheEdits(_userMessageIndex?: number, _block?: unknown): void {}

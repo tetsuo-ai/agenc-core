@@ -59,6 +59,7 @@ describe("GroupedToolUseContent", () => {
         lookups: lookups(),
         message: message(),
         shouldAnimate: true,
+        fullscreen: false,
         tools: [],
       }),
     ).toBeNull();
@@ -69,6 +70,7 @@ describe("GroupedToolUseContent", () => {
         lookups: lookups(),
         message: message(),
         shouldAnimate: true,
+        fullscreen: false,
         tools: [{ name: "Agent" }] as never,
       }),
     ).toBeNull();
@@ -94,6 +96,7 @@ describe("GroupedToolUseContent", () => {
         results: [resultMessage("tool-1", output)],
       }),
       shouldAnimate: true,
+      fullscreen: true,
       tools: [{ name: "Agent", renderGroupedToolUse }] as never,
     });
 
@@ -117,6 +120,7 @@ describe("GroupedToolUseContent", () => {
       ],
       {
         shouldAnimate: true,
+        fullscreen: true,
         tools: [{ name: "Agent", renderGroupedToolUse }],
       },
     );
@@ -129,6 +133,7 @@ describe("GroupedToolUseContent", () => {
       lookups: lookups(),
       message: message(),
       shouldAnimate: false,
+      fullscreen: false,
       tools: [
         {
           name: "Agent",
@@ -147,6 +152,7 @@ describe("GroupedToolUseContent", () => {
       lookups: lookups(),
       message: message(),
       shouldAnimate: true,
+      fullscreen: false,
       tools: [
         {
           name: "Agent",

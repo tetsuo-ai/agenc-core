@@ -1,4 +1,6 @@
 import { isRecord } from "../utils/record.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
+import { getProxyFetchOptions } from "../utils/proxy.js";
 
 type StartupInternalEvent = {
   readonly payload: Record<string, unknown>;
@@ -40,6 +42,7 @@ function normalizeStartupInternalEventPage(
 export async function fetchStartupInternalEvents(params: {
   readonly sessionBaseUrl: string;
   readonly headers: Record<string, string>;
+  readonly environment: ProviderEnvironment;
   readonly subagents?: boolean;
 }): Promise<StartupInternalEvent[] | null> {
   const allEvents: StartupInternalEvent[] = [];
@@ -61,6 +64,7 @@ export async function fetchStartupInternalEvents(params: {
 
     const response = await fetch(url, {
       headers: params.headers,
+      ...getProxyFetchOptions({ environment: params.environment }),
     });
     if (!response.ok) {
       return null;

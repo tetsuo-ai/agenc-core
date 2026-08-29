@@ -4,6 +4,9 @@
  */
 
 import pMap from 'p-map';
+import type { HomeContext } from '../../config/home.js';
+import type { ProviderEnvironment } from '../../llm/provider-options.js';
+import type { CanonicalSettingsAuthority } from '../../utils/settings/canonicalAuthority.js';
 import { MCPServerDesktopImportDialog } from '../../tui/components/MCPServerDesktopImportDialog.js';
 import { render } from '../../tui/ink.js';
 import { KeybindingSetup } from '../../tui/keybindings/KeybindingProviderSetup.js';
@@ -20,8 +23,11 @@ import { redactMcpDisplayValue } from '../../services/mcp/redaction.js';
 import { normalizeNameForMCP } from '../../services/mcp/normalization.js';
 import type { ConfigScope, ScopedMcpServerConfig } from '../../services/mcp/types.js';
 import { describeMcpConfigFilePath, ensureConfigScope, getScopeLabel, projectMcpServerApprovalDigest } from '../../services/mcp/utils.js';
+import {
+  approveProjectMcpServerSync,
+  resetProjectMcpServerChoicesSync,
+} from '../../permissions/trust/project-trust.js'
 import { AppStateProvider } from '../../tui/state/AppState.js';
-import { getCurrentProjectConfig, saveCurrentProjectConfig } from '../../utils/config.js';
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js';
 import { safeParseJSON } from '../../utils/json.js';
 import { cliError, cliOk } from '../exit.js';
@@ -94,6 +100,9 @@ function formatDoctorReport(report: McpDoctorReport): string {
 }
 
 export async function mcpDoctorHandler(name: string | undefined, options: {
+  authority: CanonicalSettingsAuthority;
+  environment: ProviderEnvironment;
+  pluginStorageRoot: string;
   scope?: string;
   configOnly?: boolean;
   json?: boolean;
@@ -102,8 +111,18 @@ export async function mcpDoctorHandler(name: string | undefined, options: {
     const scopeFilter = options.scope ? ensureConfigScope(options.scope) as McpDoctorScopeFilter : undefined
     const configOnly = !!options.configOnly
     const report = name
-      ? await doctorServer(name, { configOnly, scopeFilter })
-      : await doctorAllServers({ configOnly, scopeFilter })
+      ? await doctorServer(options.authority, name, {
+          configOnly,
+          scopeFilter,
+          environment: options.environment,
+          pluginStorageRoot: options.pluginStorageRoot,
+        })
+      : await doctorAllServers(options.authority, {
+          configOnly,
+          scopeFilter,
+          environment: options.environment,
+          pluginStorageRoot: options.pluginStorageRoot,
+        })
 
     if (options.json) {
       process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
@@ -121,9 +140,17 @@ export async function mcpDoctorHandler(name: string | undefined, options: {
     cliError((error as Error).message)
   }
 }
-async function checkMcpServerHealth(name: string, server: ScopedMcpServerConfig): Promise<string> {
+async function checkMcpServerHealth(
+  home: HomeContext,
+  name: string,
+  server: ScopedMcpServerConfig,
+  environment: ProviderEnvironment,
+): Promise<string> {
   try {
-    const result = await connectToServer(name, server);
+    const result = await connectToServer(name, server, undefined, {
+      home,
+      environment,
+    });
     if (result.type === 'connected') {
       return '✓ Connected';
     } else if (result.type === 'needs-auth') {
@@ -137,56 +164,61 @@ async function checkMcpServerHealth(name: string, server: ScopedMcpServerConfig)
 }
 
 // mcp remove (lines 4545–4635)
-export async function mcpRemoveHandler(name: string, options: {
+export async function mcpRemoveHandler(
+  authority: CanonicalSettingsAuthority,
+  name: string,
+  options: {
   scope?: string;
-}): Promise<void> {
+  },
+): Promise<void> {
   // Look up config before removing so we can clean up secure storage
-  const serverBeforeRemoval = getMcpConfigByName(name);
+  const serverBeforeRemoval = getMcpConfigByName(name, authority);
   const cleanupSecureStorage = () => {
     if (serverBeforeRemoval && (serverBeforeRemoval.type === 'sse' || serverBeforeRemoval.type === 'http')) {
-      clearServerTokensFromSecureStorage(name, serverBeforeRemoval);
-      clearMcpClientConfig(name, serverBeforeRemoval);
+      clearServerTokensFromSecureStorage(authority.homeContext, name, serverBeforeRemoval);
+      clearMcpClientConfig(authority.homeContext, name, serverBeforeRemoval);
     }
   };
   try {
     if (options.scope) {
       const scope = ensureConfigScope(options.scope);
-      await removeMcpConfig(name, scope);
+      await removeMcpConfig(name, scope, authority);
       cleanupSecureStorage();
       process.stdout.write(`Removed MCP server ${name} from ${scope} config\n`);
-      cliOk(`File modified: ${describeMcpConfigFilePath(scope)}`);
+      cliOk(`File modified: ${describeMcpConfigFilePath(scope, authority)}`);
     }
 
     // If no scope specified, check where the server exists
-    const projectConfig = getCurrentProjectConfig();
-    // Check if server exists in project scope (.mcp.json)
     const {
       servers: projectServers
-    } = getMcpConfigsByScope('project');
+    } = getMcpConfigsByScope('project', authority);
     const {
       servers: userServers
-    } = getMcpConfigsByScope('user');
-    const mcpJsonExists = !!projectServers[name];
+    } = getMcpConfigsByScope('user', authority);
+    const {
+      servers: localServers
+    } = getMcpConfigsByScope('local', authority);
+    const projectConfigExists = !!projectServers[name];
 
     // Count how many scopes contain this server
     const scopes: Array<Exclude<ConfigScope, 'dynamic'>> = [];
-    if (projectConfig.mcpServers?.[name]) scopes.push('local');
-    if (mcpJsonExists) scopes.push('project');
+    if (localServers[name]) scopes.push('local');
+    if (projectConfigExists) scopes.push('project');
     if (userServers[name]) scopes.push('user');
     if (scopes.length === 0) {
       cliError(`No MCP server found with name: "${name}"`);
     } else if (scopes.length === 1) {
       // Server exists in only one scope, remove it
       const scope = scopes[0]!;
-      await removeMcpConfig(name, scope);
+      await removeMcpConfig(name, scope, authority);
       cleanupSecureStorage();
       process.stdout.write(`Removed MCP server "${name}" from ${scope} config\n`);
-      cliOk(`File modified: ${describeMcpConfigFilePath(scope)}`);
+      cliOk(`File modified: ${describeMcpConfigFilePath(scope, authority)}`);
     } else {
       // Server exists in multiple scopes
       process.stderr.write(`MCP server "${name}" exists in multiple scopes:\n`);
       scopes.forEach(scope => {
-        process.stderr.write(`  - ${getScopeLabel(scope)} (${describeMcpConfigFilePath(scope)})\n`);
+        process.stderr.write(`  - ${getScopeLabel(scope)} (${describeMcpConfigFilePath(scope, authority)})\n`);
       });
       process.stderr.write('\nTo remove from a specific scope, use:\n');
       scopes.forEach(scope => {
@@ -200,10 +232,18 @@ export async function mcpRemoveHandler(name: string, options: {
 }
 
 // mcp list (lines 4641–4688)
-export async function mcpListHandler(): Promise<void> {
+export async function mcpListHandler(
+  authority: CanonicalSettingsAuthority,
+  environment: ProviderEnvironment,
+  pluginStorageRoot: string,
+): Promise<void> {
   const {
     servers: configs
-  } = await getAllMcpConfigs();
+  } = await getAllMcpConfigs(
+    authority,
+    { pluginStorageRoot },
+    environment,
+  );
   if (Object.keys(configs).length === 0) {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log('No MCP servers configured. Use `agenc mcp add` to add a server.');
@@ -216,7 +256,12 @@ export async function mcpListHandler(): Promise<void> {
     const results = await pMap(entries, async ([name, server]) => ({
       name,
       server,
-      status: await checkMcpServerHealth(name, server)
+      status: await checkMcpServerHealth(
+        authority.homeContext,
+        name,
+        server,
+        environment,
+      )
     }), {
       concurrency: getMcpServerConnectionBatchSize()
     });
@@ -248,8 +293,12 @@ export async function mcpListHandler(): Promise<void> {
 }
 
 // mcp get (lines 4694–4786)
-export async function mcpGetHandler(name: string): Promise<void> {
-  const server = getMcpConfigByName(name);
+export async function mcpGetHandler(
+  authority: CanonicalSettingsAuthority,
+  name: string,
+  environment: ProviderEnvironment,
+): Promise<void> {
+  const server = getMcpConfigByName(name, authority, environment);
   if (!server) {
     cliError(`No MCP server found with name: ${name}`);
   }
@@ -260,7 +309,12 @@ export async function mcpGetHandler(name: string): Promise<void> {
   console.log(`  Scope: ${getScopeLabel(server.scope)}`);
 
   // Check server health
-  const status = await checkMcpServerHealth(name, server);
+  const status = await checkMcpServerHealth(
+    authority.homeContext,
+    name,
+    server,
+    environment,
+  );
   // biome-ignore lint/suspicious/noConsole:: intentional console output
   console.log(`  Status: ${status}`);
 
@@ -278,14 +332,9 @@ export async function mcpGetHandler(name: string): Promise<void> {
         console.log(`    ${key}: ${redactMcpDisplayValue(key, value)}`);
       }
     }
-    if (server.oauth?.clientId || server.oauth?.callbackPort) {
-      const parts: string[] = [];
-      if (server.oauth.clientId) {
-        parts.push('oauth client configured');
-      }
-      if (server.oauth.callbackPort) parts.push('callback port configured');
+    if (server.oauth?.clientId) {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
-      console.log(`  OAuth: ${parts.join(', ')}`);
+      console.log('  OAuth: oauth client configured');
     }
   } else if (server.type === 'http') {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
@@ -300,14 +349,9 @@ export async function mcpGetHandler(name: string): Promise<void> {
         console.log(`    ${key}: ${redactMcpDisplayValue(key, value)}`);
       }
     }
-    if (server.oauth?.clientId || server.oauth?.callbackPort) {
-      const parts: string[] = [];
-      if (server.oauth.clientId) {
-        parts.push('oauth client configured');
-      }
-      if (server.oauth.callbackPort) parts.push('callback port configured');
+    if (server.oauth?.clientId) {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
-      console.log(`  OAuth: ${parts.join(', ')}`);
+      console.log('  OAuth: oauth client configured');
     }
   } else if (server.type === 'stdio') {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
@@ -335,6 +379,8 @@ export async function mcpGetHandler(name: string): Promise<void> {
 
 // mcp add-json (lines 4801–4870)
 export async function mcpAddJsonHandler(name: string, json: string, options: {
+  authority: CanonicalSettingsAuthority;
+  environment: ProviderEnvironment;
   scope?: string;
   clientSecret?: true;
 }): Promise<void> {
@@ -344,11 +390,13 @@ export async function mcpAddJsonHandler(name: string, json: string, options: {
 
     // Read secret before writing config so cancellation doesn't leave partial state
     const needsSecret = options.clientSecret && parsedJson && typeof parsedJson === 'object' && 'type' in parsedJson && (parsedJson.type === 'sse' || parsedJson.type === 'http') && 'url' in parsedJson && typeof parsedJson.url === 'string' && 'oauth' in parsedJson && parsedJson.oauth && typeof parsedJson.oauth === 'object' && 'clientId' in parsedJson.oauth;
-    const clientSecret = needsSecret ? await readClientSecret() : undefined;
-    await addMcpConfig(name, parsedJson, scope);
+    const clientSecret = needsSecret
+      ? await readClientSecret(options.environment)
+      : undefined;
+    await addMcpConfig(name, parsedJson, scope, options.authority);
     const transportType = parsedJson && typeof parsedJson === 'object' && 'type' in parsedJson ? String(parsedJson.type || 'stdio') : 'stdio';
     if (clientSecret && parsedJson && typeof parsedJson === 'object' && 'type' in parsedJson && (parsedJson.type === 'sse' || parsedJson.type === 'http') && 'url' in parsedJson && typeof parsedJson.url === 'string') {
-      saveMcpClientSecret(name, {
+      saveMcpClientSecret(options.authority.homeContext, name, {
         type: parsedJson.type,
         url: parsedJson.url
       }, clientSecret);
@@ -360,9 +408,14 @@ export async function mcpAddJsonHandler(name: string, json: string, options: {
 }
 
 // mcp add-from-agenc-desktop (lines 4881–4927)
-export async function mcpAddFromDesktopHandler(options: {
-  scope?: string;
-}): Promise<void> {
+export async function mcpAddFromDesktopHandler(
+  authority: CanonicalSettingsAuthority,
+  options: {
+    environment: ProviderEnvironment;
+    pluginStorageRoot: string;
+    scope?: string;
+  },
+): Promise<void> {
   try {
     const scope = ensureConfigScope(options.scope);
     const {
@@ -375,8 +428,8 @@ export async function mcpAddFromDesktopHandler(options: {
     const {
       unmount
     } = await render(<AppStateProvider>
-        <KeybindingSetup>
-          <MCPServerDesktopImportDialog servers={servers} scope={scope} onDone={() => {
+        <KeybindingSetup configStore={authority}>
+          <MCPServerDesktopImportDialog authority={authority} environment={options.environment} pluginStorageRoot={options.pluginStorageRoot} servers={servers} scope={scope} onDone={() => {
           unmount();
         }} />
         </KeybindingSetup>
@@ -389,9 +442,12 @@ export async function mcpAddFromDesktopHandler(options: {
 }
 
 // mcp reset-project-choices (lines 4935–4952)
-export async function mcpApproveProjectHandler(name: string): Promise<void> {
+export async function mcpApproveProjectHandler(
+  authority: CanonicalSettingsAuthority,
+  name: string,
+): Promise<void> {
   try {
-    const { servers, errors } = getMcpConfigsByScope('project')
+    const { servers, errors } = getMcpConfigsByScope('project', authority)
     const normalizedName = normalizeNameForMCP(name)
     const match = Object.entries(servers).find(
       ([candidate]) => normalizeNameForMCP(candidate) === normalizedName,
@@ -402,31 +458,24 @@ export async function mcpApproveProjectHandler(name: string): Promise<void> {
     }
     const [serverName, config] = match
     const digest = projectMcpServerApprovalDigest(config)
-    saveCurrentProjectConfig(current => ({
-      ...current,
-      approvedMcpjsonServerDigests: {
-        ...current.approvedMcpjsonServerDigests,
-        [normalizeNameForMCP(serverName)]: digest,
-      },
-      disabledMcpjsonServers: (current.disabledMcpjsonServers ?? []).filter(
-        candidate => normalizeNameForMCP(candidate) !== normalizedName,
-      ),
-    }))
+    approveProjectMcpServerSync(normalizeNameForMCP(serverName), digest, {
+      agencHome: authority.homeContext.path,
+      projectRoot: authority.projectRoot,
+    })
     cliOk(
-      `Approved the current definition of project MCP server ${serverName}. Changes to .mcp.json require approval again.`,
+      `Approved the current definition of project MCP server ${serverName}. Changes to .agenc/config.toml require approval again.`,
     )
   } catch (error) {
     cliError((error as Error).message)
   }
 }
 
-export async function mcpResetChoicesHandler(): Promise<void> {
-  saveCurrentProjectConfig(current => ({
-    ...current,
-    enabledMcpjsonServers: [],
-    disabledMcpjsonServers: [],
-    enableAllProjectMcpServers: false,
-    approvedMcpjsonServerDigests: {},
-  }));
-  cliOk('All project-scoped (.mcp.json) server approvals and rejections have been reset.\n' + 'You will be prompted for approval next time you start AgenC.');
+export async function mcpResetChoicesHandler(
+  authority: CanonicalSettingsAuthority,
+): Promise<void> {
+  resetProjectMcpServerChoicesSync({
+    agencHome: authority.homeContext.path,
+    projectRoot: authority.projectRoot,
+  });
+  cliOk('All project-scoped (.agenc/config.toml) server approvals and rejections have been reset.\n' + 'You will be prompted for approval next time you start AgenC.');
 }

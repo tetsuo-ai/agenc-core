@@ -5,8 +5,8 @@ vi.mock("bun:bundle", () => ({
 }));
 
 vi.mock("../../../utils/config.js", () => ({
-  getGlobalConfig: () => ({}),
-  saveGlobalConfig: () => {},
+  getRuntimeState: () => ({}),
+  updateRuntimeState: () => {},
 }));
 
 vi.mock("../../history/history.js", () => ({
@@ -24,9 +24,9 @@ vi.mock("../../../utils/messageQueueManager.js", async () => {
 });
 
 import {
-  getCommandQueue,
+  getCommandQueueSnapshot,
   registerCommandQueueOwner,
-  resetCommandQueue,
+  resetCommandQueueForTesting,
 } from "../../../utils/messageQueueManager.js";
 import {
   applyBusyInputSubmissionPolicy,
@@ -55,7 +55,7 @@ describe("PromptInput fullscreen layout budget", () => {
 
 describe("PromptInput busy input policy", () => {
   afterEach(() => {
-    resetCommandQueue();
+    resetCommandQueueForTesting();
   });
 
   test("queues bash input for the next turn while the live TUI is busy", () => {
@@ -93,7 +93,7 @@ describe("PromptInput busy input policy", () => {
       unregister();
     }
 
-    expect(getCommandQueue()).toMatchObject([
+    expect(getCommandQueueSnapshot()).toMatchObject([
       {
         value: "echo queued",
         preExpansionValue: "!echo queued",
@@ -133,7 +133,7 @@ describe("PromptInput busy input policy", () => {
       }),
     ).toBe(true);
 
-    expect(getCommandQueue()).toEqual([]);
+    expect(getCommandQueueSnapshot()).toEqual([]);
     expect(setInput).not.toHaveBeenCalled();
     expect(addNotification).toHaveBeenCalledWith(
       expect.objectContaining({

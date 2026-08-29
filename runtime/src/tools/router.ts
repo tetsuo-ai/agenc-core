@@ -97,7 +97,6 @@ import {
   type PlanFileContext,
 } from "../planning/plan-files.js";
 import { markLoadedToolNamesDiscovered } from "./deferred-discovery.js";
-import { canonicalModelToolName } from "./model-tool-aliases.js";
 import {
   buildToolRuntimeAttemptContext,
   buildToolRuntimeCallContext,
@@ -133,7 +132,7 @@ export interface ConfiguredToolSpec {
   /** When true, the tool is unavailable for direct invocation but may
    *  still appear in the spec catalog for telemetry/tracing. */
   readonly unavailable?: boolean;
-  /** When true, the tool is loaded on-demand via ToolSearch and
+  /** When true, the tool is loaded on demand through system.searchTools and
    *  should not be advertised in `modelVisibleSpecs()`. */
   readonly deferred?: boolean;
   /** When true, the tool was injected as a discoverable late-load
@@ -375,7 +374,7 @@ export class ToolRouter {
   }
 
   /** LLMTool array for provider requests. Deferred tools are hidden
-   *  (loaded on-demand via ToolSearch) to match donor runtime behavior. */
+   *  (loaded on demand through system.searchTools). */
   modelVisibleSpecs(): ReadonlyArray<LLMTool> {
     return this.specs
       .filter((config) => config.deferred !== true)
@@ -456,7 +455,7 @@ export class ToolRouter {
    *     `false` regardless of the spec flag. Matches donor runtime
    *     `configured_tool_supports_parallel` (router.rs:142-145).
    *   - Non-Function/Freeform spec kinds: donor runtime hard-codes `false` for
-   *     `ToolSpec::Namespace | ToolSpec::ToolSearch | ToolSpec::LocalShell |
+   *     namespace, discovery, local shell,
    *     ToolSpec::ImageGeneration | ToolSpec::WebSearch` (router.rs:
    *     150-158). AgenC detects these by spec shape — any spec whose
    *     `tool.name` matches a forbidden built-in returns `false`.
@@ -478,7 +477,7 @@ export class ToolRouter {
     if (spec === undefined) return false;
     if (!spec.supportsParallelToolCalls) return false;
     // Hard-false list — spec variants donor runtime forbids from parallel:
-    // Namespace / ToolSearch / LocalShell / ImageGeneration / WebSearch
+    // Namespace / discovery / local shell / image generation / web search
     // (router.rs:150-158). AgenC carries these as plain tool entries
     // rather than a ToolSpec union, so guard by the canonical name.
     if (isNonParallelSpecTool(spec.tool.name)) return false;
@@ -810,8 +809,7 @@ export class ToolRouter {
     toolCall: LLMToolCall,
     opts: LiveToolDispatchOptions,
   ): Promise<ToolDispatchResult> {
-    const toolName = canonicalModelToolName(toolCall.name);
-    const spec = this.findSpec(toolName);
+    const spec = this.findSpec(toolCall.name);
     if (spec === undefined) {
       return this.dispatchModelToolCallUnfenced(toolCall, opts);
     }
@@ -856,14 +854,11 @@ export class ToolRouter {
     toolCall: LLMToolCall,
     opts: LiveToolDispatchOptions,
   ): Promise<ToolDispatchResult> {
-    const toolName = canonicalModelToolName(toolCall.name);
-    const routedToolCall =
-      toolName === toolCall.name ? toolCall : { ...toolCall, name: toolName };
-    const routed = toolCallFromLLMToolCall(routedToolCall, {
+    const routed = toolCallFromLLMToolCall(toolCall, {
       session: opts.session,
     });
 
-    const spec = this.findSpec(toolName);
+    const spec = this.findSpec(toolCall.name);
     if (!spec) {
       return {
         content: JSON.stringify({ error: `unknown tool: ${toolCall.name}` }),
@@ -924,7 +919,7 @@ export class ToolRouter {
       turn: opts.turn,
       tracker: opts.tracker,
       callId: toolCall.id,
-      toolName: parseToolName(toolName),
+      toolName: parseToolName(toolCall.name),
       payload: routed.payload,
       source: opts.source ?? "direct",
     };
@@ -2108,7 +2103,7 @@ function parseToolSearchArguments(
  *   - `ToolSpec::Namespace(_)`        — MCP umbrella (handled by name/
  *     serverId above; listed here for spec-registry entries that carry
  *     the umbrella tool-name directly)
- *   - `ToolSpec::ToolSearch { .. }`   — `tool_search`
+ *   - discovery tool specifications
  *   - `ToolSpec::LocalShell {}`       — `local_shell`
  *   - `ToolSpec::ImageGeneration`     — `image_generation`
  *   - `ToolSpec::WebSearch`           — `web_search`

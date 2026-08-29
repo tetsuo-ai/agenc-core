@@ -8,6 +8,7 @@ import type {
   StreamProgressCallback,
 } from "../../types.js";
 import { AgenCProvider } from "./index.js";
+import { BUILT_IN_PROVIDER_DEFAULT_MODELS } from "../../registry/provider-info.js";
 
 function response(model: string): LLMResponse {
   return {
@@ -49,12 +50,47 @@ function makeDelegateProvider(model: string): LLMProvider {
 }
 
 describe("AgenCProvider", () => {
+  it("uses the registry model when direct construction receives an empty model", async () => {
+    const inferAgencModel = vi.fn(() => ({
+      provider: "grok" as const,
+      model: "grok-managed",
+    }));
+    const authBackend: AuthBackend = {
+      login: () => ({ authenticated: true, provider: "remote" }),
+      logout: () => ({ authenticated: false }),
+      whoami: () => ({ authenticated: true, provider: "remote" }),
+      vendKey: (provider, sessionId) => ({
+        kind: "api-key",
+        provider,
+        sessionId,
+        apiKey: "managed-key",
+      }),
+      inferAgencModel,
+      getSubscriptionTier: () => "team",
+    };
+    const provider = new AgenCProvider({
+      authBackend,
+      sessionId: "session-default-model",
+      model: "",
+      providerFactory: () => makeDelegateProvider("grok-managed"),
+    });
+
+    await provider.chat([{ role: "user", content: "hello" }]);
+
+    expect(inferAgencModel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestedModel: BUILT_IN_PROVIDER_DEFAULT_MODELS.agenc,
+      }),
+    );
+  });
+
   it("forks an independently-owned, tool-free editor prediction route", async () => {
     const authBackend: AuthBackend = {
       login: () => ({ authenticated: true, provider: "remote" }),
       logout: () => ({ authenticated: false }),
       whoami: () => ({ authenticated: true, provider: "remote" }),
       vendKey: (provider, sessionId) => ({
+        kind: "api-key",
         provider,
         sessionId,
         apiKey: "prediction-key",
@@ -132,7 +168,12 @@ describe("AgenCProvider", () => {
       whoami: () => ({ authenticated: true, provider: "remote" }),
       vendKey: (provider, sessionId) => {
         calls.push(`vendKey:${provider}:${sessionId}`);
-        return { provider, sessionId, apiKey: "managed-key" };
+        return {
+          kind: "api-key",
+          provider,
+          sessionId,
+          apiKey: "managed-key",
+        };
       },
       inferAgencModel: ({
         provider,
@@ -242,6 +283,7 @@ describe("AgenCProvider", () => {
         calls.push(`vendKey:${provider}:${sessionId}`);
         vendCount += 1;
         return {
+          kind: "api-key",
           provider,
           sessionId,
           apiKey: `managed-key-${vendCount}`,
@@ -316,6 +358,7 @@ describe("AgenCProvider", () => {
       whoami: () => ({ authenticated: true, provider: "remote" }),
       inferAgencModel,
       vendKey: (provider: string, sessionId: string) => ({
+        kind: "api-key",
         provider,
         sessionId,
         apiKey: "managed-key",
@@ -393,6 +436,7 @@ describe("AgenCProvider", () => {
         calls.push(`vendKey:${provider}:${sessionId}`);
         vendCount += 1;
         return {
+          kind: "api-key",
           provider,
           sessionId,
           apiKey: `managed-key-${vendCount}`,
@@ -456,6 +500,7 @@ describe("AgenCProvider", () => {
       logout: () => ({ authenticated: false }),
       whoami: () => ({ authenticated: true, provider: "remote" }),
       vendKey: (provider, sessionId) => ({
+        kind: "api-key",
         provider,
         sessionId,
         apiKey: "managed-key",

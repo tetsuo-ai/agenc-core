@@ -89,8 +89,8 @@ export function GlobalKeybindingHandlers({
   useAppState(s_0 => s_0.isBriefOnly) : false;
   const handleToggleTranscript = useCallback(() => {
     if (feature('KAIROS') || feature('KAIROS_BRIEF')) {
-      // Escape hatch: GB kill-switch while defaultView=chat was persisted
-      // can leave isBriefOnly stuck on, showing a blank filterForBriefTool
+      // Escape hatch: a GB kill-switch after Brief was activated can leave
+      // isBriefOnly stuck on, showing a blank filterForBriefTool
       // view. Users will reach for ctrl+o — clear the stuck state first.
       // Only needed in the prompt screen — transcript mode already ignores
       // isBriefOnly (Messages.tsx filter is gated on !isTranscriptMode).

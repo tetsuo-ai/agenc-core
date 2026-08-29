@@ -21,6 +21,7 @@ import {
 } from "./orchestrator.js";
 import type { Tool } from "./types.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
+import { createHookExecutionAuthority } from "../hooks/execution-authority.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 import { Policy } from "../sandbox/execpolicy/policy.js";
 import { REJECT_RULES_APPROVAL_REASON } from "../sandbox/escalation/unix-escalation.js";
@@ -40,6 +41,22 @@ const writeTool: Tool = {
   execute: async () => ({ content: "ok" }),
   isReadOnly: false,
 };
+
+function approvalSession(
+  overrides: Readonly<Record<string, unknown>> = {},
+): ApprovalCtx["invocation"]["session"] {
+  const services =
+    typeof overrides.services === "object" && overrides.services !== null
+      ? (overrides.services as Readonly<Record<string, unknown>>)
+      : {};
+  return {
+    ...overrides,
+    services: {
+      runtimeOptions: { simpleMode: false },
+      ...services,
+    },
+  } as unknown as ApprovalCtx["invocation"]["session"];
+}
 
 describe("classifyToolApproval", () => {
   test("approvalPolicy=never → skip (bypass sandbox only on danger_full_access)", () => {
@@ -271,7 +288,9 @@ describe("defaultToolRetryPolicy classifier", () => {
 
 describe("requestApproval pipeline", () => {
   const mkCtx = (): ApprovalCtx => ({
-    invocation: {} as ApprovalCtx["invocation"],
+    invocation: {
+      session: approvalSession(),
+    } as ApprovalCtx["invocation"],
     callId: "c-1",
     toolName: "test.tool",
     turnId: "t-1",
@@ -282,7 +301,7 @@ describe("requestApproval pipeline", () => {
     approvalPolicy: "never" | "on_failure" | "on_request" | "granular" | "untrusted" = "on_request",
   ): ApprovalCtx => ({
     invocation: {
-      session: {} as ApprovalCtx["invocation"]["session"],
+      session: approvalSession(),
       turn: {
         subId: "t-1",
         approvalPolicy: { value: approvalPolicy },
@@ -527,7 +546,9 @@ describe("classifyToolApproval — payload-variant routing", () => {
 
 describe("requestApproval — permissionDecisionHooks wiring", () => {
   const mkCtx = (): ApprovalCtx => ({
-    invocation: {} as ApprovalCtx["invocation"],
+    invocation: {
+      session: approvalSession(),
+    } as ApprovalCtx["invocation"],
     callId: "c-1",
     toolName: "test.tool",
     turnId: "t-1",
@@ -569,6 +590,10 @@ describe("requestApproval — permissionDecisionHooks wiring", () => {
       shellPath: process.env.SHELL ?? "/bin/sh",
       sandboxExecutionBroker: explicitDangerBroker,
       admissionRequired: false,
+      executionAuthority: createHookExecutionAuthority({
+        runtimeOptions: { simpleMode: false, allowUntrustedHooks: false },
+        isWorkspaceTrusted: () => true,
+      }),
     });
     const target = {
       preToolUseHooks: [],
@@ -580,7 +605,7 @@ describe("requestApproval — permissionDecisionHooks wiring", () => {
       stopFailureHooks: [],
     };
     runtime.attachTarget(target);
-    runtime.load({
+    runtime.loadForTesting({
       PermissionRequest: [
         {
           matcher: "Edit",
@@ -598,7 +623,7 @@ describe("requestApproval — permissionDecisionHooks wiring", () => {
     const res = await requestApproval({
       ctx: {
         invocation: {
-          session: {},
+          session: approvalSession(),
           turn: {},
           tracker: {
             appendFileDiff: () => {},
@@ -660,7 +685,9 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
   });
 
   const mkCtx = (): ApprovalCtx => ({
-    invocation: {} as ApprovalCtx["invocation"],
+    invocation: {
+      session: approvalSession(),
+    } as ApprovalCtx["invocation"],
     callId: "c-1",
     toolName: "test.cmd",
     turnId: "t-1",
@@ -670,7 +697,7 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     approvalPolicy: "never" | "on_failure" | "on_request" | "granular" | "untrusted" = "on_request",
   ): ApprovalCtx => ({
     invocation: {
-      session: {} as ApprovalCtx["invocation"]["session"],
+      session: approvalSession(),
       turn: {
         subId: "t-1",
         approvalPolicy: { value: approvalPolicy },
@@ -1032,7 +1059,7 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
       tool: mkTool(),
       approvalCtx: {
         invocation: {
-          session: { conversationId: "session_1" },
+          session: approvalSession({ conversationId: "session_1" }),
         } as ApprovalCtx["invocation"],
         callId: "call_audit",
         toolName: "Write",
@@ -1471,11 +1498,11 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
       approvalCtx: {
         ...mkCtx(),
         invocation: {
-          session: {
+          session: approvalSession({
             permissionModeRegistry: {
               current: () => spoofedMode,
             },
-          },
+          }),
         } as never,
       },
       approvalPolicy: "granular",

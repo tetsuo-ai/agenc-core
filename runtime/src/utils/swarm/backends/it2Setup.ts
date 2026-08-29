@@ -1,11 +1,15 @@
 import { homedir } from 'os'
-import { getGlobalConfig, saveGlobalConfig } from '../../config.js'
+import { getRuntimeState, updateRuntimeState } from '../../config.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import {
   execFileNoThrow,
   execFileNoThrowWithCwd,
 } from '../../execFileNoThrow.js'
 import { logError } from '../../log.js'
+import {
+  getExecutionAuthoritySettings,
+  updateSettingsForSource,
+} from '../../settings/settings.js'
 
 /**
  * Package manager types for installing it2.
@@ -212,9 +216,9 @@ export function getPythonApiInstructions(): string[] {
  * This prevents showing the setup prompt again.
  */
 export function markIt2SetupComplete(): void {
-  const config = getGlobalConfig()
+  const config = getRuntimeState()
   if (config.iterm2It2SetupComplete !== true) {
-    saveGlobalConfig(current => ({
+    updateRuntimeState(current => ({
       ...current,
       iterm2It2SetupComplete: true,
     }))
@@ -227,12 +231,14 @@ export function markIt2SetupComplete(): void {
  * This prevents showing the setup prompt when in iTerm2.
  */
 export function setPreferTmuxOverIterm2(prefer: boolean): void {
-  const config = getGlobalConfig()
-  if (config.preferTmuxOverIterm2 !== prefer) {
-    saveGlobalConfig(current => ({
-      ...current,
-      preferTmuxOverIterm2: prefer,
-    }))
+  if (
+    getExecutionAuthoritySettings().teammates?.preferTmuxOverIterm2 !== prefer
+  ) {
+    void updateSettingsForSource('userSettings', {
+      teammates: { preferTmuxOverIterm2: prefer },
+    }).then(({ error }) => {
+      if (error) logError(error)
+    })
     logForDebugging(`[it2Setup] Set preferTmuxOverIterm2 = ${prefer}`)
   }
 }
@@ -241,5 +247,7 @@ export function setPreferTmuxOverIterm2(prefer: boolean): void {
  * Checks if the user prefers tmux over iTerm2 split panes.
  */
 export function getPreferTmuxOverIterm2(): boolean {
-  return getGlobalConfig().preferTmuxOverIterm2 === true
+  return (
+    getExecutionAuthoritySettings().teammates?.preferTmuxOverIterm2 === true
+  )
 }

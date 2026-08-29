@@ -23,10 +23,6 @@ vi.mock("../agents/role-definitions.js", () => ({
   listAgentRoleDefinitions: () => [],
 }));
 
-vi.mock("./model-switch.js", () => ({
-  buildPendingProviderSwitch: () => null,
-}));
-
 vi.mock("../llm/pasted-content.js", () => ({
   pastedContentsToLLMMessage: () => null,
 }));
@@ -101,11 +97,11 @@ vi.mock("./tool-rendering.js", () => ({
 }));
 
 import {
-  createDaemonTuiSession,
   type AgenCDaemonConnectionState,
   type AgenCDaemonTuiClient,
   type AgenCTuiBridgeSession,
 } from "./daemon-session.js";
+import { createDaemonTuiSessionFixture as createDaemonTuiSession } from "../helpers/daemon-tui-session.js";
 import type {
   AgenCDaemonInternalMethod,
   AgenCDaemonMethod,

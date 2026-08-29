@@ -3,6 +3,7 @@ import { afterEach, expect, test } from 'bun:test'
 import { getEmptyToolPermissionContext } from '../../../src/tools/Tool.ts'
 import { SandboxManager } from '../../../src/utils/sandbox/sandbox-runtime.ts'
 import { bashToolHasPermission } from '../../../src/tools/BashTool/bashPermissions.ts'
+import { runWithCanonicalRuntimeAuthority } from '../../helpers/canonical-runtime-authority.bun.ts'
 
 const originalSandboxMethods = {
   isSandboxingEnabled: SandboxManager.isSandboxingEnabled,
@@ -48,9 +49,11 @@ test('sandbox auto-allow still enforces Bash path constraints', async () => {
   SandboxManager.areUnsandboxedCommandsAllowed = () => true
   SandboxManager.getExcludedCommands = () => []
 
-  const result = await bashToolHasPermission(
-    { command: 'cat ../../../../../etc/passwd' },
-    makeToolUseContext(),
+  const result = await runWithCanonicalRuntimeAuthority(() =>
+    bashToolHasPermission(
+      { command: 'cat ../../../../../etc/passwd' },
+      makeToolUseContext(),
+    ),
   )
 
   expect(result.behavior).toBe('ask')

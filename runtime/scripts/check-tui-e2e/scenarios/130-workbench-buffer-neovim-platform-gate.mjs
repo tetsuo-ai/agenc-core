@@ -119,6 +119,12 @@ export default async function (session) {
 async function openEmbeddedNeovim(session) {
   await session.start();
   await session.waitForPrompt({ timeout: 20_000 });
+  await waitForFrameText(
+    session,
+    /target\.txt/u,
+    "hosted-platform target in Explorer",
+    20_000,
+  );
   await sleep(300);
   session.send("\x17h");
   await session.waitForIdle({ idleWindow: 300, timeout: 10_000 });

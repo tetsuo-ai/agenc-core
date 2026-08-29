@@ -158,7 +158,7 @@ describe("LIVE full Grok surface e2e", () => {
       getSession: () => null,
       sessionProvider: "openai",
       env: { XAI_API_KEY: "should-not-matter" },
-      llmXai: {
+      grokCapabilities: {
         x_search: true,
         web_search: true,
       },
@@ -177,7 +177,7 @@ describe("LIVE full Grok surface e2e", () => {
       sessionBaseURL: "https://api.x.ai/v1",
       // no env BYOK — OAuth credentials present via storage
       env: {},
-      llmXai: {
+      grokCapabilities: {
         x_search: true,
         web_search: true,
       },
@@ -324,7 +324,7 @@ describe("LIVE full Grok surface e2e", () => {
         sessionProvider: "grok",
         sessionBaseURL: "https://api.x.ai/v1",
         env: {},
-        llmXai: { x_search: true },
+        grokCapabilities: { x_search: true },
       });
       const xsearch = tools.find((t) => t.name === "XSearch");
       expect(xsearch).toBeDefined();
@@ -421,7 +421,8 @@ describe("LIVE full Grok surface e2e", () => {
     const extra = resolveXaiCapabilityExtra({
       provider: "grok",
       baseURL: "https://api.x.ai/v1",
-      llmXai: undefined,
+      env: process.env,
+      grokCapabilities: undefined,
     });
     expect(extra.codeExecution).toBe(true);
     expect(extra.webSearch).toBeUndefined(); // Pattern A

@@ -13,6 +13,8 @@
  *   - `lastDeferredToolsHash` — gates `deferred-tools-delta.ts`
  *   - `lastAgentListingHash` — gates `agent-listing-delta.ts`
  *   - `lastMcpInstructionsHash` — gates `mcp-delta.ts`
+ *   - `lastMcpResourceMentionTurnId` — makes MCP resource mentions one-shot
+ *     for the exact authoritative root-human turn
  *   - `pendingCriticalReminder` — one-shot, set by external producer,
  *     cleared by `critical-reminder.ts` on emission
  *   - `needsPlanModeExitAttachment` / `needsAutoModeExitAttachment` —
@@ -69,6 +71,8 @@ export interface AttachmentTrackingState {
   lastAgentListingSet?: ReadonlyMap<string, string>;
   /** Hash of the MCP server instructions last announced. */
   lastMcpInstructionsHash?: string;
+  /** Exact root-human turn whose MCP resource mentions were consumed. */
+  lastMcpResourceMentionTurnId?: string;
   /** Hash of the skill listing last announced to the model. */
   lastSkillListingHash?: string;
   /**
@@ -113,6 +117,12 @@ export interface AttachmentTrackingState {
    * producer consumes it.
    */
   nestedMemoryAttachmentTriggers: Set<string>;
+  /**
+   * Nested skill roots discovered by file operations and awaiting one
+   * `dynamic_skill` attachment. Skill activation itself is owned by the
+   * session's SkillsManager; this set only carries display notifications.
+   */
+  dynamicSkillDirTriggers: Set<string>;
   /**
    * Non-evicting dedupe set for nested instruction/rule files already
    * injected into this session. Kept separate from FileRead's read cache
@@ -177,6 +187,7 @@ export function getAttachmentTrackingState(
       hasExitedPlanModeInSession: false,
       hasExitedAutoModeInSession: false,
       nestedMemoryAttachmentTriggers: new Set(),
+      dynamicSkillDirTriggers: new Set(),
       loadedNestedMemoryPaths: new Set(),
       sessionStartMemoryRecallChecked: false,
       surfacedRelevantMemoryPaths: new Set(),

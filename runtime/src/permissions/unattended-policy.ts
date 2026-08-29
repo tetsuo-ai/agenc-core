@@ -1,9 +1,11 @@
-import type {
-  PermissionAllowDecision,
-  PermissionAskDecision,
-  PermissionDenyDecision,
-  ToolPermissionContext,
+import {
+  immutableToolPermissionContext,
+  type PermissionAllowDecision,
+  type PermissionAskDecision,
+  type PermissionDenyDecision,
+  type ToolPermissionContext,
 } from "./types.js";
+import { isRemovedLiveToolName } from "./tool-names.js";
 
 export interface UnattendedPermissionPolicy {
   readonly allowlist: readonly string[];
@@ -17,42 +19,31 @@ export type UnattendedPermissionDecision =
 
 export const DEFAULT_UNATTENDED_ALLOWLIST = Object.freeze([] as const);
 
-const REMOVED_DAEMON_SEARCH_ALIASES = Object.freeze({
-  ["system" + ".grep"]: "Grep",
-  ["system" + ".glob"]: "Glob",
-} as const);
-
-const TOOL_ALIASES = Object.freeze({
-  bash: "system.bash",
-  // gaphunt3 #27: collapse the whole shell-exec tool family onto system.bash so
-  // an operator denylist of Bash/bash/system.bash also covers exec_command and
-  // desktop.bash, which run identical arbitrary shell commands. Without these
-  // aliases canonicalUnattendedToolName("exec_command") stayed literal and a
-  // "Bash" deny silently left exec_command/desktop.bash un-denied (paused or
-  // allowed) in unattended/--autonomous mode.
+// Distinct canonical tools that carry the same execution risk intentionally
+// collapse to one unattended-policy bucket. Removed spellings are not accepted
+// here; the explicit config migration rewrites them once.
+const TOOL_RISK_FAMILIES = Object.freeze({
   exec_command: "system.bash",
-  "desktop.bash": "system.bash",
-  // TOOL-02 / SEC-04: stdin/kill/shell aliases collapse onto system.bash.
   write_stdin: "system.bash",
   kill_process: "system.bash",
-  shell: "system.bash",
-  powershell: "system.bash",
-  monitor: "system.bash",
-  fileedit: "Edit",
-  filewrite: "Write",
-  // TOOL-05: mutation family collapses onto Edit for unattended denylist.
-  multiedit: "Edit",
+  PowerShell: "system.bash",
+  Monitor: "system.bash",
+  Write: "Edit",
+  MultiEdit: "Edit",
   apply_patch: "Edit",
-  read: "FileRead",
-  grep: "Grep",
-  glob: "Glob",
-  ...REMOVED_DAEMON_SEARCH_ALIASES,
 } as const);
 
 function canonicalUnattendedToolName(value: string): string {
   const trimmed = value.trim();
-  const alias = TOOL_ALIASES[trimmed.toLowerCase() as keyof typeof TOOL_ALIASES];
-  return alias ?? trimmed;
+  if (isRemovedLiveToolName(trimmed)) {
+    throw new Error(
+      `removed unattended tool name '${trimmed}'; use its canonical dispatch name`,
+    );
+  }
+  const family = TOOL_RISK_FAMILIES[
+    trimmed as keyof typeof TOOL_RISK_FAMILIES
+  ];
+  return family ?? trimmed;
 }
 
 export function normalizeUnattendedToolList(
@@ -100,14 +91,14 @@ export function applyUnattendedPermissionPolicyToContext(
   } = {},
 ): ToolPermissionContext {
   // Preserve modes the user explicitly opted into. The user chose
-  // bypassPermissions (--yolo), plan (--permission-mode plan / EnterPlanMode),
+  // bypassPermissions (--dangerously-bypass-approvals-and-sandbox), plan (--permission-mode plan / EnterPlanMode),
   // or acceptEdits (--permission-mode acceptEdits / approving a plan with
   // auto-accept); the background-agent-runner's default unattended-policy
   // install — which runs on every startAgent/restoreAgent because the daemon
   // always forces --autonomous — MUST NOT override those.
   //
   // Without this guard, every daemon session with an explicit mode had it
-  // silently rewritten to "unattended": with --yolo the evaluator's unattended
+  // silently rewritten to "unattended": with --dangerously-bypass-approvals-and-sandbox the evaluator's unattended
   // branch surfaced "Permission required" overlays (GAP-PE-PREHOOK-BYPASS-LEAK);
   // with plan mode the registry the live ExitPlanMode reads
   // (planning.ts: registry.current().mode) saw "unattended" instead of "plan",
@@ -120,11 +111,11 @@ export function applyUnattendedPermissionPolicyToContext(
     context.mode === "bypassPermissions" ||
     context.mode === "plan" ||
     context.mode === "acceptEdits";
-  return {
+  return immutableToolPermissionContext({
     ...context,
     mode: preserveMode ? context.mode : "unattended",
     unattendedPolicy: createUnattendedPermissionPolicy(opts),
-  };
+  });
 }
 
 export function resolveUnattendedPermissionDecision(

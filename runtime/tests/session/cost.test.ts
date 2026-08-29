@@ -238,6 +238,28 @@ describe("cost helpers", () => {
     }
   });
 
+  test("current DeepSeek and Mistral defaults use their official cached-token tiers", () => {
+    expect(DEFAULT_MODEL_COSTS["deepseek:deepseek-v4-flash"]).toMatchObject({
+      inputUsdPer1K: 0.00014,
+      outputUsdPer1K: 0.00028,
+      cachedInputUsdPer1K: 0.0000028,
+      cachedInputIncludedInInputTokens: true,
+    });
+    expect(DEFAULT_MODEL_COSTS["deepseek:deepseek-v4-pro"]).toMatchObject({
+      inputUsdPer1K: 0.000435,
+      outputUsdPer1K: 0.00087,
+      cachedInputUsdPer1K: 0.000003625,
+      cachedInputIncludedInInputTokens: true,
+    });
+    expect(DEFAULT_MODEL_COSTS["mistral:mistral-medium-latest"])
+      .toMatchObject({
+        inputUsdPer1K: 0.0015,
+        outputUsdPer1K: 0.0075,
+        cachedInputUsdPer1K: 0.00015,
+        cachedInputIncludedInInputTokens: true,
+      });
+  });
+
   test("default + catalog grok models price as known and non-reasoning ones are not charged the reasoning surcharge", () => {
     // grok-4.3 is the grok provider default (provider-info.ts). Both it and
     // grok-build-0.1 used to mis-resolve: grok-4.3 collapsed onto the

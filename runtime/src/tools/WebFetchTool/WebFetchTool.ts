@@ -7,6 +7,7 @@ import type { PermissionDecision } from '../../utils/permissions/PermissionResul
 import { getRuleByContentsForTool } from '../../utils/permissions/permissions.js'
 import { isPreapprovedHost } from './preapproved.js'
 import { DESCRIPTION, WEB_FETCH_TOOL_NAME } from './prompt.js'
+import { getSelectedProviderEnvironment } from '../../utils/model/providers.js'
 import {
   getToolUseSummary,
   renderToolResultMessage,
@@ -21,12 +22,14 @@ import {
   MAX_MARKDOWN_LENGTH,
 } from './utils.js'
 function isFirecrawlEnabled(): boolean {
-  return Boolean(process.env.FIRECRAWL_API_KEY)
+  return Boolean(getSelectedProviderEnvironment().FIRECRAWL_API_KEY)
 }
 
 async function scrapeWithFirecrawl(url: string): Promise<{ markdown: string; bytes: number }> {
   const { FirecrawlClient } = await import('@mendable/firecrawl-js')
-  const app = new FirecrawlClient({ apiKey: process.env.FIRECRAWL_API_KEY! })
+  const app = new FirecrawlClient({
+    apiKey: getSelectedProviderEnvironment().FIRECRAWL_API_KEY!,
+  })
   const result = await app.scrape(url, { formats: ['markdown'] })
   const markdown = (result as { markdown?: string }).markdown ?? ''
   return { markdown, bytes: Buffer.byteLength(markdown) }
@@ -79,7 +82,6 @@ export const WebFetchTool = buildTool({
   searchHint: 'fetch and extract content from a URL',
   // 100K chars - tool result persistence threshold
   maxResultSizeChars: 100_000,
-  shouldDefer: true,
   async description(input) {
     const { url } = input as { url: string }
     try {
@@ -206,13 +208,13 @@ export const WebFetchTool = buildTool({
     }
   },
   async prompt(_options) {
-    // Always include the auth warning regardless of whether ToolSearch is
+    // Always include the auth warning regardless of whether discovery is
     // currently in the tools list. Conditionally toggling this prefix based
-    // on ToolSearch availability caused the tool description to flicker
-    // between SDK query() calls (when ToolSearch enablement varies due to
+    // on discovery availability caused the tool description to flicker
+    // between SDK query() calls (when discovery availability varies due to
     // MCP tool count thresholds), invalidating the provider API prompt
     // cache on each toggle — two consecutive cache misses per flicker event.
-    return `IMPORTANT: WebFetch WILL FAIL for authenticated or private URLs. Before using this tool, check if the URL points to an authenticated service (e.g. Google Docs, Confluence, Jira, GitHub). If so, look for a specialized MCP tool that provides authenticated access.
+    return `IMPORTANT: web_fetch WILL FAIL for authenticated or private URLs. Before using this tool, check if the URL points to an authenticated service (e.g. Google Docs, Confluence, Jira, GitHub). If so, look for a specialized MCP tool that provides authenticated access.
 ${DESCRIPTION}`
   },
   async validateInput(input) {
@@ -278,7 +280,7 @@ Original URL: ${response.originalUrl}
 Redirect URL: ${response.redirectUrl}
 Status: ${response.statusCode} ${statusText}
 
-To complete your request, I need to fetch content from the redirected URL. Please use WebFetch again with these parameters:
+To complete your request, I need to fetch content from the redirected URL. Please use web_fetch again with these parameters:
 - url: "${response.redirectUrl}"
 - prompt: "${prompt}"`
 

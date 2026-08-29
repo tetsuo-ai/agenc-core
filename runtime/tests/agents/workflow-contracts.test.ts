@@ -22,7 +22,6 @@ import {
   WorkflowManifestValidationError,
 } from "../../src/agents/workflow-manifest-schema.js";
 import {
-  assertLegacyCommandInvocation,
   resolveEffectiveWorkflowLimits,
   validateWorkflowInvocationToolArgs,
   validateWorkflowInvocationValue,
@@ -164,25 +163,13 @@ describe("finite workflow JSON", () => {
 });
 
 describe("workflow manifest schema and loader", () => {
-  it("normalizes the one-epoch legacy DAG without mutating caller input", () => {
-    const source = {
-      steps: [
-        { id: "producer", message: "produce", group: "workers" },
-        { id: "consumer", message: "{{steps.producer}}", after: ["workers"] },
-      ],
-    };
-    const document = validateWorkflowManifestValue(source);
-
-    expect(document.kind).toBe("agent_dag");
-    expect(document.sourceVersion).toBe(1);
-    expect(document.diagnostics).toHaveLength(1);
-    expect(Object.isFrozen(document.manifest)).toBe(true);
-    expect(source).toEqual({
-      steps: [
-        { id: "producer", message: "produce", group: "workers" },
-        { id: "consumer", message: "{{steps.producer}}", after: ["workers"] },
-      ],
-    });
+  it.each([
+    ["an unversioned DAG", { steps: [{ id: "one", message: "one" }] }],
+    ["a command-only manifest", { command: "must-not-run" }],
+  ])("rejects %s instead of selecting a compatibility reader", (_name, value) => {
+    expect(() => validateWorkflowManifestValue(value)).toThrowError(
+      expect.objectContaining({ code: "WORKFLOW_SCHEMA" }),
+    );
   });
 
   it.each([
@@ -219,7 +206,7 @@ describe("workflow manifest schema and loader", () => {
     }));
     expect(
       validateWorkflowManifestValue({ format_version: 2, kind: "agent_dag", steps }),
-    ).toMatchObject({ kind: "agent_dag" });
+    ).toMatchObject({ manifest: { kind: "agent_dag" } });
     expect(() =>
       validateWorkflowManifestValue({
         format_version: 2,
@@ -272,14 +259,25 @@ describe("workflow manifest schema and loader", () => {
     const second = join(root, "second");
     await mkdir(first);
     await mkdir(second);
-    await writeFile(join(first, "safe.json"), '{"command":"first"}', { mode: 0o600 });
-    await writeFile(join(second, "safe.json"), '{"command":"second"}', { mode: 0o600 });
+    await writeFile(
+      join(first, "safe.json"),
+      '{"format_version":2,"kind":"agent_dag","steps":[{"id":"first","message":"first"}]}',
+      { mode: 0o600 },
+    );
+    await writeFile(
+      join(second, "safe.json"),
+      '{"format_version":2,"kind":"agent_dag","steps":[{"id":"second","message":"second"}]}',
+      { mode: 0o600 },
+    );
 
     const loaded = await loadNamedWorkflowManifest({ name: "safe", roots: [first, second] });
     expect(loaded.sourceRoot).toBe(first);
     expect(loaded.document).toMatchObject({
-      kind: "legacy_command",
-      manifest: { command: "first" },
+      manifest: {
+        format_version: 2,
+        kind: "agent_dag",
+        steps: [{ id: "first", message: "first" }],
+      },
     });
   });
 
@@ -287,14 +285,22 @@ describe("workflow manifest schema and loader", () => {
     const root = await temporaryRoot("agenc-workflow-race-");
     const workflows = join(root, "workflows");
     await mkdir(workflows);
-    await writeFile(join(root, "outside.json"), '{"command":"outside"}', { mode: 0o600 });
+    await writeFile(
+      join(root, "outside.json"),
+      '{"format_version":2,"kind":"agent_dag","steps":[{"id":"outside","message":"outside"}]}',
+      { mode: 0o600 },
+    );
     await symlink(join(root, "outside.json"), join(workflows, "linked.json"));
     await expect(loadNamedWorkflowManifest({ name: "linked", roots: [workflows] })).rejects.toMatchObject({
       code: "WORKFLOW_MANIFEST_UNSAFE",
     });
 
     const candidate = join(workflows, "raced.json");
-    await writeFile(candidate, '{"command":"before"}', { mode: 0o600 });
+    await writeFile(
+      candidate,
+      '{"format_version":2,"kind":"agent_dag","steps":[{"id":"before","message":"before"}]}',
+      { mode: 0o600 },
+    );
     await expect(
       loadNamedWorkflowManifest({
         name: "raced",
@@ -302,7 +308,11 @@ describe("workflow manifest schema and loader", () => {
         hooks: {
           async afterCandidateOpen() {
             await rename(candidate, `${candidate}.old`);
-            await writeFile(candidate, '{"command":"after"}', { mode: 0o600 });
+            await writeFile(
+              candidate,
+              '{"format_version":2,"kind":"agent_dag","steps":[{"id":"after","message":"after"}]}',
+              { mode: 0o600 },
+            );
           },
         },
       }),
@@ -323,7 +333,6 @@ describe("WorkflowTool invocation contract", () => {
       max_handoff_tokens: 8_192,
       steps: [{ id: "a", message: "a" }],
     });
-    if (manifest.kind !== "agent_dag") throw new Error("expected DAG");
     expect(resolveEffectiveWorkflowLimits(manifest.manifest, invocation, 6, 3_000)).toEqual({
       formatVersion: 2,
       maxConcurrency: 6,
@@ -352,12 +361,5 @@ describe("WorkflowTool invocation contract", () => {
       WorkflowInvocationValidationError,
     );
     expect(calls).toBe(0);
-  });
-
-  it("keeps legacy command invocations override-free", () => {
-    expect(() => assertLegacyCommandInvocation({ name: "legacy", args: {} })).not.toThrow();
-    expect(() =>
-      assertLegacyCommandInvocation({ name: "legacy", args: { max_concurrency: 1 } }),
-    ).toThrow(WorkflowInvocationValidationError);
   });
 });

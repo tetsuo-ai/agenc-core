@@ -35,15 +35,15 @@ describe("OpenAIProvider streaming gaps", () => {
   test("captures delta.reasoning_content on the chat-completions streaming path", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       sseResponse([
-        'data: {"id":"chatcmpl_r","model":"deepseek-reasoner","choices":[{"index":0,"delta":{"reasoning_content":"Step 1. "}}]}\n\n',
-        'data: {"id":"chatcmpl_r","model":"deepseek-reasoner","choices":[{"index":0,"delta":{"reasoning_content":"Step 2."}}]}\n\n',
-        'data: {"id":"chatcmpl_r","model":"deepseek-reasoner","choices":[{"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10,"completion_tokens_details":{"reasoning_tokens":6}}}\n\n',
+        'data: {"id":"chatcmpl_r","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"reasoning_content":"Step 1. "}}]}\n\n',
+        'data: {"id":"chatcmpl_r","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"reasoning_content":"Step 2."}}]}\n\n',
+        'data: {"id":"chatcmpl_r","model":"deepseek-v4-pro","choices":[{"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10,"completion_tokens_details":{"reasoning_tokens":6}}}\n\n',
         "data: [DONE]\n\n",
       ]),
     );
     const provider = new OpenAIProvider({
       apiKey: "sk-test",
-      model: "deepseek-reasoner",
+      model: "deepseek-v4-pro",
       useResponsesApi: false,
       fetchImpl,
     });
@@ -84,15 +84,15 @@ describe("OpenAIProvider streaming gaps", () => {
   test("keeps visible content while still forwarding reasoning deltas", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       sseResponse([
-        'data: {"id":"chatcmpl_m","model":"deepseek-reasoner","choices":[{"index":0,"delta":{"reasoning_content":"thinking..."}}]}\n\n',
-        'data: {"id":"chatcmpl_m","model":"deepseek-reasoner","choices":[{"index":0,"delta":{"content":"Answer."}}]}\n\n',
-        'data: {"id":"chatcmpl_m","model":"deepseek-reasoner","choices":[{"index":0,"finish_reason":"stop"}]}\n\n',
+        'data: {"id":"chatcmpl_m","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"reasoning_content":"thinking..."}}]}\n\n',
+        'data: {"id":"chatcmpl_m","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"Answer."}}]}\n\n',
+        'data: {"id":"chatcmpl_m","model":"deepseek-v4-pro","choices":[{"index":0,"finish_reason":"stop"}]}\n\n',
         "data: [DONE]\n\n",
       ]),
     );
     const provider = new OpenAIProvider({
       apiKey: "sk-test",
-      model: "deepseek-reasoner",
+      model: "deepseek-v4-pro",
       useResponsesApi: false,
       fetchImpl,
     });

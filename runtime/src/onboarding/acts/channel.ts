@@ -2,15 +2,15 @@
  * Onboarding Act 2b — "take it with you" (onboarding-plan-2026-07 O-3).
  *
  * Guided channel setup: pick a surface, acquire + LIVE-VALIDATE the token,
- * store it in the sanitized gateway env file (0600 — never in config.json),
+ * store it in the home-bound native secure storage,
  * explain the pairing default in one sentence, then run the live smoke: the
  * gateway starts in-process, the user messages their bot from their phone,
  * pairs with the code, and sees the agent answer before the act completes.
  *
  * Security posture is narrated, never weakened: tokens are validated before
- * anything persists, secrets live in `<agencHome>/gateway/env` (loaded by
- * `agenc gateway run` and the service unit, stripped from daemon autostart
- * env), and unknown senders stay pairing-gated.
+ * anything persists, secrets live in native secure storage and are scoped by
+ * the same HomeContext as config and daemon identity, and unknown senders stay
+ * pairing-gated.
  */
 
 import { readFileSync } from "node:fs";
@@ -18,10 +18,9 @@ import { join } from "node:path";
 
 import { FetchDiscordTransport } from "../../gateway/discord-channel.js";
 import {
-  gatewayEnvFilePath,
-  readGatewayEnvFile,
-  writeGatewayEnvEntries,
-} from "../../gateway/env-file.js";
+  mergeGatewayCredentialEnvironment,
+  updateGatewayCredentialEnvironment,
+} from "../../gateway/credentials.js";
 import { FetchSlackTransport } from "../../gateway/slack-channel.js";
 import { FetchTelegramTransport } from "../../gateway/telegram-channel.js";
 import {
@@ -31,6 +30,7 @@ import {
 } from "../../gateway/run.js";
 import type { ActIO } from "./io.js";
 import { markOnboardingActComplete } from "./state.js";
+import { captureSecureStorageIngress } from "../../utils/secureStorage/home.js";
 
 export interface ChannelValidators {
   telegram(token: string): Promise<{ ok: boolean; detail?: string }>;
@@ -128,7 +128,12 @@ export async function runChannelAct(
   options: ChannelActOptions,
 ): Promise<number> {
   const { io, agencHome } = options;
-  const env = options.env ?? process.env;
+  const ingress = captureSecureStorageIngress(
+    options.env ?? process.env,
+    agencHome,
+  );
+  const env = ingress.environment;
+  const home = ingress.home;
   const validators = options.validators ?? DEFAULT_VALIDATORS;
   const start = options.startGatewayFn ?? startGateway;
 
@@ -194,9 +199,9 @@ export async function runChannelAct(
   }
 
   if (Object.keys(entries).length > 0) {
-    writeGatewayEnvEntries(agencHome, entries);
-    io.say(`Stored (0600) in ${gatewayEnvFilePath(agencHome)} — picked up by`);
-    io.say("`agenc gateway run` and the gateway service, never by the daemon.");
+    updateGatewayCredentialEnvironment(home, entries);
+    io.say("Stored in the home-bound native secure storage — available to");
+    io.say("`agenc gateway run` and the gateway service, never the daemon.");
   }
 
   io.say("");
@@ -216,7 +221,7 @@ export async function runChannelAct(
     try {
       handle = await start({
         agencHome,
-        env: { ...env, ...readGatewayEnvFile(agencHome) },
+        env: mergeGatewayCredentialEnvironment(home, env),
         webchat: channel === "webchat",
         log: (line) => io.say(`  ${line}`),
       });

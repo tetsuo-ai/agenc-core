@@ -3,7 +3,10 @@ import {
   getBuiltinPluginSkillCommands as readRegisteredSkillCommands,
   registerBuiltinPlugin,
 } from "../builtinPlugins.js";
-import { shippedPluginSkill } from "./repositoryPluginSkill.js";
+import {
+  resolveShippedPluginDir,
+  shippedPluginSkill,
+} from "./repositoryPluginSkill.js";
 
 let initialized = false;
 
@@ -41,11 +44,10 @@ export function initBuiltinPlugins(): void {
   // a plugin with no skills would show an empty entry in /plugin, so skip it
   // entirely and let the surface simply not be offered.
   if (zerodayHunter !== null) {
+    const pluginRoot = resolveShippedPluginDir("zeroday-hunter");
+    if (pluginRoot === null) return;
     registerBuiltinPlugin({
-      name: "zeroday-hunter",
-      description:
-        "Exploit-first 0-day hunting: campaigns with quantitative gates, " +
-        "deterministic proof and hashed evidence.",
+      root: pluginRoot,
       skills: [zerodayHunter],
     });
   }

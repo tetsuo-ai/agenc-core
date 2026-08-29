@@ -6,20 +6,26 @@ import {
 } from "./tool-result-routing.js";
 
 describe("pickToolResultDispatch — TUI tool routing", () => {
-  test("Bash tool with <bash-stdout> envelope routes to bash-output-view", () => {
+  test("system.bash with <bash-stdout> envelope routes to bash-output-view", () => {
     const target = pickToolResultDispatch(
-      "Bash",
+      "system.bash",
       "<bash-stdout>hello</bash-stdout>[exit_code=0]",
     );
     expect(target).toBe("bash-output-view");
   });
 
-  test("Bash tool with empty <bash-stdout></bash-stdout> envelope still routes to bash-output-view (silent successful command)", () => {
+  test("system.bash with empty <bash-stdout></bash-stdout> envelope still routes to bash-output-view (silent successful command)", () => {
     const target = pickToolResultDispatch(
-      "Bash",
+      "system.bash",
       "<bash-stdout></bash-stdout>[exit_code=0]",
     );
     expect(target).toBe("bash-output-view");
+  });
+
+  test("historical Bash transcript envelopes remain renderable", () => {
+    expect(
+      pickToolResultDispatch("Bash", "<bash-stdout>old</bash-stdout>"),
+    ).toBe("bash-output-view");
   });
 
   test("Bash tool with no envelope (legacy plain string) falls through to generic — guards the renderer's tag extraction against null", () => {

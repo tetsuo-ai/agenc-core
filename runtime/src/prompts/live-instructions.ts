@@ -8,7 +8,6 @@ import {
   getPersonaMemoryFiles,
 } from "../memory/persona.js";
 import {
-  getAgenCConfigHomeDir,
   isBareMode,
   isEnvTruthy,
 } from "../utils/envUtils.js";
@@ -147,7 +146,13 @@ export async function resolveLiveInstructionEnvelope(input: {
     };
   }
 
-  const config = input.session.services.configStore?.current();
+  const configStore = input.session.services.configStore;
+  if (configStore === undefined) {
+    throw new Error(
+      "Live instruction discovery requires a session ConfigStore authority",
+    );
+  }
+  const config = configStore.current();
   const discoveryDisabled =
     isEnvTruthy(process.env.AGENC_DISABLE_AGENC_MDS) ||
     isBareMode();
@@ -159,12 +164,10 @@ export async function resolveLiveInstructionEnvelope(input: {
         ...(isSettingSourceEnabled("projectSettings") ? ["project" as const] : []),
         ...(isSettingSourceEnabled("localSettings") ? ["local" as const] : []),
       ];
-  const configuredHome = process.env.AGENC_CONFIG_DIR
-    ? getAgenCConfigHomeDir()
-    : input.session.services.configStore?.agencHome ?? getAgenCConfigHomeDir();
   let tiers = await loadTieredInstructions({
     cwd: input.ctx.cwd,
-    configHomeDir: configuredHome,
+    configHomeDir: configStore.homeContext.path,
+    managedPath: configStore.managedPaths.instructions,
     enabledTiers,
     ...(input.session.services.externalInstructionApprovals !== undefined
       ? {

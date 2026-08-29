@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { parseToml } from "../config/loader.js";
 import {
   PROJECT_CONFIG_DIR,
   PROJECT_CONFIG_FILENAME,
@@ -88,7 +89,7 @@ describe("agenc init CLI", () => {
     });
   });
 
-  it("creates .agenc/config.json and AGENC.md in the current project", async () => {
+  it("creates canonical .agenc/config.toml and AGENC.md in the current project", async () => {
     const cwd = tempProject();
     mkdirSync(join(cwd, "src"));
     writeFileSync(
@@ -121,17 +122,17 @@ describe("agenc init CLI", () => {
     expect(code).toBe(0);
     expect(io.stderrText()).toBe("");
     expect(io.stdoutText()).toContain("Initialized AgenC project");
-    expect(io.stdoutText()).toContain(".agenc/config.json");
+    expect(io.stdoutText()).toContain(".agenc/config.toml");
     expect(io.stdoutText()).toContain("AGENC.md");
 
-    const config = JSON.parse(readFileSync(configPath(cwd), "utf8")) as {
+    const config = parseToml(readFileSync(configPath(cwd), "utf8")) as {
+      config_version?: number;
       model_provider?: string;
       model?: string;
-      sandbox?: { mode?: string };
     };
+    expect(config.config_version).toBe(2);
     expect(config.model_provider).toBe("grok");
     expect(config.model).toBe("grok-4.6");
-    expect(config.sandbox?.mode).toBe("workspace-write");
     expect(readFileSync(instructionsPath(cwd), "utf8")).toContain(
       "# Repository Guidelines",
     );
@@ -163,7 +164,7 @@ describe("agenc init CLI", () => {
 
     expect(code).toBe(0);
     expect(io.stdoutText()).toContain("AgenC project already initialized");
-    expect(io.stdoutText()).toContain("kept .agenc/config.json");
+    expect(io.stdoutText()).toContain("kept .agenc/config.toml");
     expect(io.stdoutText()).toContain("kept AGENC.md");
     expect(readFileSync(configPath(cwd), "utf8")).toBe(
       "{\"model\":\"custom\"}\n",
@@ -186,11 +187,12 @@ describe("agenc init CLI", () => {
     );
 
     expect(code).toBe(0);
-    expect(io.stdoutText()).toContain("overwrote .agenc/config.json");
+    expect(io.stdoutText()).toContain("overwrote .agenc/config.toml");
     expect(io.stdoutText()).toContain("overwrote AGENC.md");
-    expect(readFileSync(configPath(cwd), "utf8")).toContain(
-      "\"model\": \"grok-4.6\"",
-    );
+    expect(parseToml(readFileSync(configPath(cwd), "utf8"))).toMatchObject({
+      config_version: 2,
+      model: "grok-4.6",
+    });
     expect(readFileSync(instructionsPath(cwd), "utf8")).toContain(
       "## Operational Notes",
     );

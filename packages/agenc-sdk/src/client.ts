@@ -8,6 +8,7 @@
  * as the dispatcher transport's `sendNotification` callback.
  */
 
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import {
@@ -65,6 +66,21 @@ import type {
   CsvJobReviewShowResult,
 } from "./csv-jobs.js";
 
+function safeSdkRuntimeOptions(
+  pluginStorageRoot: string,
+  dangerouslyBypassApprovalsAndSandbox: boolean,
+) {
+  return Object.freeze({
+    simpleMode: false,
+    dangerouslyBypassApprovalsAndSandbox,
+    stdinDataMode: false,
+    remoteMode: false,
+    pluginStorageRoot,
+    allowUntrustedHooks: false,
+  });
+}
+const AGENT_ATTACH_RUNTIME_AUTHORITY_PROTOCOL_MINOR = 8;
+
 /**
  * Minimal transport contract. The runtime's
  * `AgenCInProcessDaemonTransport` (exported from `@tetsuo-ai/runtime`)
@@ -77,6 +93,7 @@ export interface AgencTransport {
   close?(): Promise<void>;
 }
 
+/** JSON-RPC error object returned by the daemon. */
 export class AgencRpcError extends Error {
   readonly code: number;
   readonly data?: unknown;
@@ -97,6 +114,7 @@ export class AgencRpcError extends Error {
   }
 }
 
+/** Daemon response body is not a valid result for the requested method. */
 export class AgencMalformedResponseError extends Error {
   readonly response: unknown;
 
@@ -107,6 +125,7 @@ export class AgencMalformedResponseError extends Error {
   }
 }
 
+/** A second prompt() on a session that already has an active run. */
 export class AgencPromptRunInProgressError extends Error {
   readonly sessionId: string;
   readonly clientMessageId: string;
@@ -119,6 +138,7 @@ export class AgencPromptRunInProgressError extends Error {
   }
 }
 
+/** Reused clientMessageId whose prior submit has no durable terminal outcome. */
 export class AgencDuplicateSubmissionIncompleteError extends Error {
   readonly sessionId: string;
   readonly clientMessageId: string;
@@ -133,6 +153,7 @@ export class AgencDuplicateSubmissionIncompleteError extends Error {
   }
 }
 
+/** Caller required a protocol capability the negotiated daemon does not have. */
 export class AgencCapabilityUnavailableError extends Error {
   readonly capability: string;
   readonly negotiatedProtocolVersion?: string;
@@ -230,6 +251,18 @@ export interface AgencClientOptions {
   readonly onPermissionRequest?: AgencPermissionCallback;
   /** Default elicitation handler for every prompt run on this client. */
   readonly onElicitationRequest?: AgencElicitationCallback;
+}
+
+export interface AgencCreateSessionParams extends SessionCreateParams {
+  /** Existing agents must be opened with attachAgent(), preserving their owning authority. */
+  readonly agentId?: never;
+  /** Exact plugin storage root captured by the embedding ingress. */
+  readonly pluginStorageRoot: string;
+  /**
+   * Disable approval prompts and the OS sandbox for this new session.
+   * Existing sessions retain the authority captured when they were created.
+   */
+  readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
 }
 
 export interface AgencPromptOptions {
@@ -391,6 +424,7 @@ export interface AgencPromptRun extends AsyncIterable<AgencPromptEvent> {
   cancel(reason?: string): Promise<void>;
 }
 
+/** One daemon session. Prompt, transcript, snapshot, cancel, terminate. */
 export class AgencSession {
   readonly sessionId: string;
   readonly agentId: string | undefined;
@@ -410,24 +444,28 @@ export class AgencSession {
     return this.#client.runPrompt(this.sessionId, content, options);
   }
 
+  /** Canonical transcript (`session.transcript`). */
   transcript(): Promise<SessionTranscriptResult> {
     return this.#client.request("session.transcript", {
       sessionId: this.sessionId,
     });
   }
 
+  /** Identity-bearing transcript (`session.transcript.v2`). Requires protocol 1.2. */
   transcriptV2(): Promise<SessionTranscriptV2Result> {
     return this.#client.request("session.transcript.v2", {
       sessionId: this.sessionId,
     });
   }
 
+  /** Live turn count and token usage (`session.snapshot`). */
   snapshot(): Promise<SessionSnapshotResult> {
     return this.#client.request("session.snapshot", {
       sessionId: this.sessionId,
     });
   }
 
+  /** Interrupt the active turn. Protocol 1.2 can scope this with `expectedTurnId`. */
   async cancelTurn(reason?: string, expectedTurnId?: string): Promise<void> {
     await this.#client.request("session.cancelTurn", {
       sessionId: this.sessionId,
@@ -436,6 +474,7 @@ export class AgencSession {
     });
   }
 
+  /** Close the session on the daemon (`session.terminate`). */
   async terminate(reason?: string): Promise<void> {
     await this.#client.request("session.terminate", {
       sessionId: this.sessionId,
@@ -743,6 +782,7 @@ class ClientRunAttachment implements AgencRunAttachment {
   }
 }
 
+/** Typed JSON-RPC client for the 54 public daemon methods. */
 export class AgencClient {
   readonly #transport: AgencTransport;
   readonly #createRequestId: () => RequestId;
@@ -775,22 +815,27 @@ export class AgencClient {
     this.#onElicitationRequest = options.onElicitationRequest;
   }
 
+  /** Client id sent on `session.attach` / `agent.attach`. */
   get clientId(): string {
     return this.#clientId;
   }
 
+  /** True after a successful `initialize` handshake. */
   get initialized(): boolean {
     return this.#initialized;
   }
 
+  /** Protocol version this client negotiated (may be older than the server). */
   get negotiatedProtocolVersion(): string | undefined {
     return this.#negotiatedClientProtocolVersion;
   }
 
+  /** Protocol version reported by the daemon. */
   get serverProtocolVersion(): string | undefined {
     return this.#initializeResult?.protocol.version;
   }
 
+  /** Capability object from `initialize`, including `daemon.methods`. */
   get serverCapabilities(): InitializeResult["capabilities"] | undefined {
     return this.#initializeResult?.capabilities;
   }
@@ -849,6 +894,18 @@ export class AgencClient {
     params?: AgencParamsByMethod[Method],
   ): Promise<AgencResultByMethod[Method]> {
     if (this.#closed) throw new Error("AgenC SDK client is closed");
+    if (
+      method === "agent.attach" &&
+      this.#negotiatedClientProtocolVersion !== undefined &&
+      !supportsAgentAttachRuntimeAuthority(
+        this.#negotiatedClientProtocolVersion,
+      )
+    ) {
+      throw new AgencCapabilityUnavailableError(
+        "agent.attach runtime authority",
+        this.#negotiatedClientProtocolVersion,
+      );
+    }
     const id = this.#createRequestId();
     const request: AgencDaemonRequest<Method> =
       params === undefined
@@ -899,42 +956,77 @@ export class AgencClient {
 
   /**
    * Create a runnable daemon session and attach this client to it.
-   * Prefer gateway-style `agent.create` first so `message.send` has a live
-   * agent (todo-133). Falls back to bare `session.create` when `agentId` is
-   * already supplied.
+   * Uses `agent.create` so the exact plugin storage authority is owned by the
+   * new agent. Existing agents must be opened with `attachAgent()`.
    */
-  async createSession(params: SessionCreateParams = {}): Promise<AgencSession> {
-    const existingAgentId =
-      typeof (params as { agentId?: unknown }).agentId === "string"
-        ? String((params as { agentId: string }).agentId).trim()
-        : "";
+  async createSession(params: AgencCreateSessionParams): Promise<AgencSession> {
+    const {
+      pluginStorageRoot: requestedPluginStorageRoot,
+      dangerouslyBypassApprovalsAndSandbox = false,
+      initialPrompt,
+      metadata,
+      ...sessionParams
+    } = params;
+    const pluginStorageRoot = normalizePluginStorageRoot(
+      requestedPluginStorageRoot,
+    );
+    if (Object.prototype.hasOwnProperty.call(sessionParams, "agentId")) {
+      throw new Error(
+        "AgencClient.createSession cannot apply pluginStorageRoot to an existing agentId; use attachAgent() instead",
+      );
+    }
     // DAE-02: always send absolute client workspace cwd on the wire.
     const cwd = resolveClientCwd(
-      typeof (params as { cwd?: unknown }).cwd === "string"
-        ? String((params as { cwd: string }).cwd)
+      typeof (sessionParams as { cwd?: unknown }).cwd === "string"
+        ? String((sessionParams as { cwd: string }).cwd)
         : undefined,
     );
-    if (existingAgentId.length === 0) {
-      const agent = await this.spawnAgent({
-        objective:
-          typeof (params as { objective?: unknown }).objective === "string" &&
-          String((params as { objective: string }).objective).trim().length > 0
-            ? String((params as { objective: string }).objective).trim()
-            : "Interactive session",
-        cwd,
-        initialContent: [],
-      } as AgentCreateParams);
-      const attached = await this.attachAgent(agent.agentId);
-      if (attached.session !== null) {
-        return attached.session;
-      }
+    const negotiatedVersion = this.#negotiatedClientProtocolVersion;
+    const canAttachWithRuntimeAuthority =
+      negotiatedVersion === undefined ||
+      supportsAgentAttachRuntimeAuthority(negotiatedVersion);
+    if (!canAttachWithRuntimeAuthority) {
+      throw new AgencCapabilityUnavailableError(
+        "createSession plugin storage authority",
+        negotiatedVersion,
+      );
     }
-    const created = await this.request("session.create", {
-      ...params,
+
+    const agent = await this.spawnAgent({
+      objective:
+        typeof (sessionParams as { objective?: unknown }).objective ===
+          "string" &&
+        String((sessionParams as { objective: string }).objective).trim()
+          .length > 0
+          ? String((sessionParams as { objective: string }).objective).trim()
+          : "Interactive session",
       cwd,
-    });
-    await this.#attachSession(created.sessionId);
-    return new AgencSession(this, created.sessionId, created.agentId);
+      initialContent: initialPrompt === undefined ? [] : initialPrompt,
+      ...(metadata !== undefined ? { metadata } : {}),
+      runtimeOptions: safeSdkRuntimeOptions(
+        pluginStorageRoot,
+        dangerouslyBypassApprovalsAndSandbox,
+      ),
+    } as AgentCreateParams);
+    try {
+      const attached = await this.attachAgent(agent.agentId);
+      if (attached.session === null) {
+        throw new Error(
+          `AgenC agent ${agent.agentId} did not expose a session with its owning plugin storage authority`,
+        );
+      }
+      return attached.session;
+    } catch (error) {
+      try {
+        await this.stopAgent(
+          agent.agentId,
+          "SDK session creation failed before attachment completed",
+        );
+      } catch {
+        // Preserve the attachment failure that made createSession unusable.
+      }
+      throw error;
+    }
   }
 
   /** Attach to an existing daemon-owned session by id. */
@@ -1155,7 +1247,7 @@ export class AgencClient {
       unsubscribe();
       removeAbortListener();
       releaseReservation();
-      let usageFields: Pick<AgencPromptResult, "usage" | "cacheStats"> = {};
+      let usageFields: Pick<AgencPromptResult, "usage"> = {};
       if (options.includeUsage !== false) {
         try {
           const snapshot = await this.request("session.snapshot", {
@@ -1163,7 +1255,6 @@ export class AgencClient {
           });
           usageFields = {
             usage: snapshot.tokenUsage,
-            cacheStats: snapshot.cacheStats,
           };
         } catch {
           /* usage is best-effort */
@@ -1436,6 +1527,7 @@ export class AgencClient {
   }
 }
 
+/** Build a client around an already-open transport (in-process tests, custom sockets). */
 export function createAgencClient(options: AgencClientOptions): AgencClient {
   return new AgencClient(options);
 }
@@ -1522,12 +1614,16 @@ function effectiveNegotiatedVersion(
   requestedVersion: string,
   serverVersion: string,
 ): string {
-  const requested = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(requestedVersion);
-  const server = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(serverVersion);
-  if (requested === null || server === null || requested[1] !== server[1]) {
+  const requested = parseDaemonProtocolVersion(requestedVersion);
+  const server = parseDaemonProtocolVersion(serverVersion);
+  if (
+    requested === undefined ||
+    server === undefined ||
+    requested.major !== server.major
+  ) {
     return requestedVersion;
   }
-  return Number.parseInt(requested[2]!, 10) <= Number.parseInt(server[2]!, 10)
+  return requested.minor <= server.minor
     ? requestedVersion
     : serverVersion;
 }
@@ -1541,12 +1637,39 @@ function compatibleServerVersionFromInitializeError(
   if (error.data.code !== "PROTOCOL_VERSION_UNSUPPORTED") return undefined;
   const serverVersion = error.data.serverVersion;
   if (typeof serverVersion !== "string") return undefined;
-  const match = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(serverVersion);
-  if (match === null) return undefined;
-  const major = Number.parseInt(match[1]!, 10);
-  const minor = Number.parseInt(match[2]!, 10);
-  if (major !== 1 || minor < 0 || minor >= 2) return undefined;
+  const server = parseDaemonProtocolVersion(serverVersion);
+  const current = parseDaemonProtocolVersion(AGENC_SDK_DAEMON_PROTOCOL_VERSION);
+  if (
+    server === undefined ||
+    current === undefined ||
+    server.major !== current.major ||
+    server.minor >= current.minor
+  ) {
+    return undefined;
+  }
   return serverVersion;
+}
+
+function supportsAgentAttachRuntimeAuthority(version: string): boolean {
+  const parsed = parseDaemonProtocolVersion(version);
+  const current = parseDaemonProtocolVersion(AGENC_SDK_DAEMON_PROTOCOL_VERSION);
+  return (
+    parsed !== undefined &&
+    current !== undefined &&
+    parsed.major === current.major &&
+    parsed.minor >= AGENT_ATTACH_RUNTIME_AUTHORITY_PROTOCOL_MINOR
+  );
+}
+
+function parseDaemonProtocolVersion(
+  version: string,
+): { readonly major: number; readonly minor: number } | undefined {
+  const match = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(version);
+  if (match === null) return undefined;
+  return {
+    major: Number.parseInt(match[1]!, 10),
+    minor: Number.parseInt(match[2]!, 10),
+  };
 }
 
 function parseResponse<Method extends AgencDaemonMethod>(
@@ -1585,11 +1708,276 @@ function parseResponse<Method extends AgencDaemonMethod>(
       response,
     );
   }
-  return (
+  const result = (
     response as AgencDaemonResponse<Method> & {
       result: AgencResultByMethod[Method];
     }
   ).result;
+  if (method === "agent.attach") {
+    assertValidAgentAttachRuntimeAuthority(result, response);
+  }
+  return result;
+}
+
+function assertValidAgentAttachRuntimeAuthority(
+  result: unknown,
+  response: unknown,
+): void {
+  if (!isJsonObject(result)) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach response must be an object",
+      response,
+    );
+  }
+  const boundedSettingString = (value: unknown, maxBytes: number): boolean =>
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    Buffer.byteLength(value, "utf8") <= maxBytes;
+  if (
+    !boundedSettingString(result.agentId, 1_024) ||
+    !boundedSettingString(result.attachmentId, 1_024) ||
+    !Array.isArray(result.sessionIds) ||
+    result.sessionIds.length === 0 ||
+    !result.sessionIds.every((sessionId) =>
+      boundedSettingString(sessionId, 1_024)
+    ) ||
+    new Set(result.sessionIds).size !== result.sessionIds.length
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach response must include bounded agent, attachment, and unique session ids",
+      response,
+    );
+  }
+  if (!Array.isArray(result.sessions)) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach response must include session summaries",
+      response,
+    );
+  }
+  const primarySessionId = result.sessionIds[0];
+  const primarySessions = result.sessions.filter(
+    (session) =>
+      isJsonObject(session) && session.sessionId === primarySessionId,
+  );
+  const primarySession = primarySessions[0];
+  if (
+    primarySessions.length !== 1 ||
+    !isJsonObject(primarySession) ||
+    primarySession.agentId !== result.agentId ||
+    !["idle", "running", "waiting"].includes(
+      primarySession.status as string,
+    ) ||
+    !boundedSettingString(primarySession.cwd, 4_096) ||
+    (primarySession.cwd as string).trim() !== primarySession.cwd ||
+    !isAbsolute(primarySession.cwd as string)
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach primary session must be unique, active, and include a bounded absolute cwd",
+      response,
+    );
+  }
+  if (!isJsonObject(result.runtimeOptions)) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach response must include runtimeOptions",
+      response,
+    );
+  }
+  if (!isJsonObject(result.runtimeSettings)) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach response must include runtimeSettings",
+      response,
+    );
+  }
+  if (
+    typeof result.runtimeSettingsEventId !== "string" ||
+    result.runtimeSettingsEventId.length === 0
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach response must include runtimeSettingsEventId",
+      response,
+    );
+  }
+  const runtimeOptions = result.runtimeOptions;
+  for (const key of [
+    "simpleMode",
+    "stdinDataMode",
+    "remoteMode",
+    "allowUntrustedHooks",
+  ] as const) {
+    if (typeof runtimeOptions[key] !== "boolean") {
+      throw new AgencMalformedResponseError(
+        `AgenC agent.attach runtimeOptions.${key} must be boolean`,
+        response,
+      );
+    }
+  }
+  if (
+    runtimeOptions.dangerouslyBypassApprovalsAndSandbox !== undefined &&
+    typeof runtimeOptions.dangerouslyBypassApprovalsAndSandbox !== "boolean"
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach runtimeOptions.dangerouslyBypassApprovalsAndSandbox must be boolean",
+      response,
+    );
+  }
+  for (const key of [
+    "remoteMemoryRoot",
+    "coworkMemoryPathOverride",
+    "coworkMemoryExtraGuidelines",
+    "posixShellPath",
+    "sessionTempRoot",
+  ] as const) {
+    const value = runtimeOptions[key];
+    if (value !== undefined && typeof value !== "string") {
+      throw new AgencMalformedResponseError(
+        `AgenC agent.attach runtimeOptions.${key} must be a string`,
+        response,
+      );
+    }
+  }
+  if (
+    !boundedSettingString(runtimeOptions.pluginStorageRoot, 4_096) ||
+    (runtimeOptions.pluginStorageRoot as string).trim() !==
+      runtimeOptions.pluginStorageRoot ||
+    !isAbsolute(runtimeOptions.pluginStorageRoot as string)
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach runtimeOptions.pluginStorageRoot must be a bounded absolute path",
+      response,
+    );
+  }
+  const commandWrapperArgv = runtimeOptions.commandWrapperArgv;
+  if (
+    commandWrapperArgv !== undefined &&
+    (!Array.isArray(commandWrapperArgv) ||
+      !commandWrapperArgv.every(
+        (entry) => typeof entry === "string" && entry.length > 0,
+      ))
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach runtimeOptions.commandWrapperArgv must be an array of non-empty strings",
+      response,
+    );
+  }
+
+  const runtimeSettings = result.runtimeSettings;
+  const permissionModes = new Set([
+    "default",
+    "plan",
+    "acceptEdits",
+    "bypassPermissions",
+    "dontAsk",
+    "auto",
+    "unattended",
+  ]);
+  if (!permissionModes.has(runtimeSettings.permissionMode as string)) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach runtimeSettings.permissionMode is invalid",
+      response,
+    );
+  }
+  if (
+    runtimeSettings.prePlanMode !== null &&
+    !permissionModes.has(runtimeSettings.prePlanMode as string)
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach runtimeSettings.prePlanMode is invalid",
+      response,
+    );
+  }
+  for (const key of [
+    "autoModeActive",
+    "autoModeAvailable",
+    "bypassPermissionsModeAvailable",
+    "hooksDisabled",
+  ] as const) {
+    if (typeof runtimeSettings[key] !== "boolean") {
+      throw new AgencMalformedResponseError(
+        `AgenC agent.attach runtimeSettings.${key} must be boolean`,
+        response,
+      );
+    }
+  }
+  for (const key of ["model", "provider"] as const) {
+    const maxBytes = key === "model" ? 1_024 : 256;
+    if (!boundedSettingString(runtimeSettings[key], maxBytes)) {
+      throw new AgencMalformedResponseError(
+        `AgenC agent.attach runtimeSettings.${key} must be a bounded non-empty string`,
+        response,
+      );
+    }
+  }
+  for (const key of [
+    "bypassPermissionsWorkspace",
+    "bypassPermissionsConsentWorkspace",
+    "profile",
+  ] as const) {
+    const value = runtimeSettings[key];
+    if (value !== null && typeof value !== "string") {
+      throw new AgencMalformedResponseError(
+        `AgenC agent.attach runtimeSettings.${key} must be a string or null`,
+        response,
+      );
+    }
+  }
+  if (
+    runtimeSettings.profile !== null &&
+    !boundedSettingString(runtimeSettings.profile, 256)
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach runtimeSettings.profile must be a bounded non-empty string or null",
+      response,
+    );
+  }
+  for (const [key, values] of [
+    ["reasoningEffort", ["low", "medium", "high", "xhigh", "none"]],
+    ["modelVerbosity", ["low", "medium", "high"]],
+    ["serviceTier", ["priority", "flex"]],
+  ] as const) {
+    const value = runtimeSettings[key];
+    if (value !== null && !values.includes(value as never)) {
+      throw new AgencMalformedResponseError(
+        `AgenC agent.attach runtimeSettings.${key} is invalid`,
+        response,
+      );
+    }
+  }
+
+  const permissionMode = runtimeSettings.permissionMode as string;
+  const prePlanMode = runtimeSettings.prePlanMode as string | null;
+  const bypassTransitionCritical =
+    permissionMode === "bypassPermissions" ||
+    prePlanMode === "bypassPermissions";
+  if (
+    (permissionMode === "plan"
+      ? prePlanMode === null || prePlanMode === "plan"
+      : prePlanMode !== null) ||
+    (permissionMode === "auto"
+      ? runtimeSettings.autoModeActive !== true
+      : permissionMode !== "plan" &&
+        runtimeSettings.autoModeActive !== false) ||
+    (runtimeSettings.autoModeActive &&
+      !runtimeSettings.autoModeAvailable) ||
+    (runtimeSettings.bypassPermissionsConsentWorkspace !== null &&
+      (runtimeSettings.bypassPermissionsConsentWorkspace !==
+        primarySession.cwd ||
+        !runtimeSettings.bypassPermissionsModeAvailable)) ||
+    (bypassTransitionCritical
+      ? !boundedSettingString(
+          runtimeSettings.bypassPermissionsWorkspace,
+          4_096,
+        ) ||
+        runtimeSettings.bypassPermissionsWorkspace !== primarySession.cwd ||
+        !runtimeSettings.bypassPermissionsModeAvailable ||
+        runtimeSettings.bypassPermissionsConsentWorkspace !==
+          primarySession.cwd
+      : runtimeSettings.bypassPermissionsWorkspace !== null)
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach runtimeSettings are not canonically consistent",
+      response,
+    );
+  }
 }
 
 /** Absolute workspace path for daemon create RPCs (DAE-02 client boundary). */
@@ -1600,6 +1988,26 @@ function resolveClientCwd(cwd: string | undefined): string {
     return isAbsolute(trimmed) ? resolve(trimmed) : resolve(base, trimmed);
   }
   return resolve(base);
+}
+
+function normalizePluginStorageRoot(pluginStorageRoot: unknown): string {
+  if (pluginStorageRoot === undefined) {
+    throw new Error(
+      "AgencClient.createSession requires pluginStorageRoot captured at embedding ingress",
+    );
+  }
+  if (
+    typeof pluginStorageRoot !== "string" ||
+    pluginStorageRoot.length === 0 ||
+    pluginStorageRoot.trim() !== pluginStorageRoot ||
+    Buffer.byteLength(pluginStorageRoot, "utf8") > 4_096 ||
+    !isAbsolute(pluginStorageRoot)
+  ) {
+    throw new Error(
+      "pluginStorageRoot must be a non-empty absolute path of at most 4096 UTF-8 bytes with no surrounding whitespace",
+    );
+  }
+  return pluginStorageRoot;
 }
 
 function normalizeClientMessageId(value: string | undefined): string {

@@ -2,7 +2,6 @@ import {
   type Dirent,
   closeSync,
   constants,
-  existsSync,
   fstatSync,
   lstatSync,
   openSync,
@@ -11,7 +10,6 @@ import {
   realpathSync,
   statSync,
 } from 'node:fs'
-import { homedir } from 'node:os'
 import {
   basename,
   dirname,
@@ -23,9 +21,9 @@ import {
 } from 'node:path'
 
 import yaml from 'js-yaml'
-import memoize from 'lodash-es/memoize.js'
 import { z } from 'zod/v4'
 
+import type { AgenCConfig } from '../../config/schema.js'
 import {
   createAgentRoleWorkspace,
   listBuiltInAgentRoles,
@@ -45,7 +43,14 @@ import {
   clearPluginAgentCache,
   loadPluginAgents,
 } from '../../plugins/registration/load-plugin-agents.js'
+import type { PluginLoadIssue } from '../../plugins/loader.js'
 import { isRecord } from '../../utils/record.js'
+import { isBareMode } from '../../utils/envUtils.js'
+import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
+import {
+  CanonicalAuthorityCache,
+  getCanonicalSettingsAuthority,
+} from '../../utils/settings/canonicalAuthority.js'
 import { AGENT_COLORS, setAgentColor, type AgentColorName } from './agentColorManager.js'
 import { loadAgentMemoryPrompt } from './agentMemory.js'
 
@@ -105,14 +110,6 @@ const McpIdeServerConfigSchema = (type: 'sse-ide' | 'ws-ide') =>
     })
     .passthrough()
 
-const McpSdkServerConfigSchema = () =>
-  z
-    .object({
-      type: z.literal('sdk'),
-      name: z.string().min(1),
-    })
-    .passthrough()
-
 const McpServerConfigSchema = () =>
   z.union([
     McpStdioServerConfigSchema(),
@@ -121,7 +118,6 @@ const McpServerConfigSchema = () =>
     McpUrlServerConfigSchema('ws'),
     McpIdeServerConfigSchema('sse-ide'),
     McpIdeServerConfigSchema('ws-ide'),
-    McpSdkServerConfigSchema(),
   ])
 
 const AgentMcpServerSpecSchema = () =>
@@ -242,9 +238,6 @@ type MarkdownAgentFile = {
   source: SettingSource
 }
 
-type SettingSourceWithLocal = SettingSource | 'localSettings'
-type SettingSourceEnabled = (source: SettingSourceWithLocal) => boolean
-
 const VALID_MEMORY_SCOPES = ['user', 'project', 'local'] as const
 const MEMORY_TOOLS = [
   FILE_WRITE_TOOL_NAME,
@@ -282,8 +275,15 @@ const HOOK_EVENTS = new Set([
   'FileChanged',
 ])
 
+type PluginAgentLoadAuthority = {
+  readonly cwd: string
+  readonly pluginStorageRoot: string
+  readonly fresh: boolean
+  readonly config: Pick<AgenCConfig, 'plugins'>
+}
+
 let pluginAgentsLoaderForTesting:
-  | (() => Promise<PluginAgentDefinition[]>)
+  | ((authority: PluginAgentLoadAuthority) => Promise<PluginAgentDefinition[]>)
   | undefined
 let pluginAgentCacheClearer: (() => void) | undefined
 let pluginAgentCacheClearerForTesting: (() => void) | undefined
@@ -487,11 +487,10 @@ function systemPromptWithMemory(
 }
 
 function isAutoMemoryEnabled(): boolean {
-  if (process.env.AGENC_DISABLE_AUTO_MEMORY === '1') return false
-  if (process.env.AGENC_SIMPLE === '1' || process.env.AGENC_SIMPLE === 'true') {
+  if (isBareMode()) {
     return false
   }
-  return true
+  return getExecutionAuthoritySettings().autoMemoryEnabled !== false
 }
 
 export function roleToAgentDefinition(
@@ -651,99 +650,51 @@ function collectMarkdownFiles(dir: string, visitedDirs = new Set<string>()): str
   return out.sort()
 }
 
-async function getSettingSourceEnabled(): Promise<SettingSourceEnabled> {
-  try {
-    // Literal specifier so esbuild discovers the module at bundle time.
-    const module = (await import('../../utils/settings/constants.js')) as {
-      isSettingSourceEnabled?: SettingSourceEnabled
-    }
-    if (typeof module.isSettingSourceEnabled === 'function') {
-      return source => module.isSettingSourceEnabled?.(source) ?? true
-    }
-  } catch {
-    // Fall back to allowing sources when the shared settings module is absent.
-  }
-  return () => true
-}
-
-function projectAgentDirs(
-  cwd: string,
-  isSettingSourceEnabled: SettingSourceEnabled,
-): Array<{ dir: string; source: SettingSource }> {
-  if (markdownDirsForTesting) return markdownDirsForTesting
-  const dirs: Array<{ dir: string; source: SettingSource }> = []
-  const managed = process.env.AGENC_MANAGED_AGENTS_DIR
-  if (managed) {
-    dirs.push({ dir: managed, source: 'policySettings' })
-  }
-  if (isSettingSourceEnabled('userSettings')) {
-    const userRoot = process.env.AGENC_CONFIG_DIR ?? join(homedir(), '.agenc')
-    dirs.push({ dir: join(userRoot, 'agents'), source: 'userSettings' })
-  }
-
-  if (!isSettingSourceEnabled('projectSettings')) return dirs
-
-  let current = resolve(cwd)
-  const home = resolve(homedir())
-  while (true) {
-    dirs.push({ dir: join(current, '.agenc', 'agents'), source: 'projectSettings' })
-    if (current === home || current === dirname(current)) break
-    if (existsSync(join(current, '.git'))) break
-    current = dirname(current)
-  }
-  return dirs
-}
-
 async function loadSharedMarkdownAgentFiles(
   cwd: string,
   fresh = false,
-): Promise<MarkdownAgentFile[] | null> {
-  try {
-    // Literal specifier so esbuild discovers the module at bundle time.
-    const module = (await import('../../utils/markdownConfigLoader.js')) as {
-      loadMarkdownFilesForSubdir: {
-        (subdir: string, cwd: string): Promise<MarkdownAgentFile[]>
-        cache: { clear?: () => void }
-      }
-      loadMarkdownFilesForSubdirFresh: (
-        subdir: 'agents',
-        cwd: string,
-      ) => Promise<MarkdownAgentFile[]>
+): Promise<MarkdownAgentFile[]> {
+  // Literal specifier so esbuild discovers the module at bundle time.
+  const module = (await import('../../utils/markdownConfigLoader.js')) as {
+    loadMarkdownFilesForSubdir: {
+      (subdir: string, cwd: string): Promise<MarkdownAgentFile[]>
+      cache: { clear?: () => void }
     }
-    sharedMarkdownCacheClearer = module.loadMarkdownFilesForSubdir.cache.clear?.bind(
-      module.loadMarkdownFilesForSubdir.cache,
-    )
-    const files = fresh
-      ? await module.loadMarkdownFilesForSubdirFresh('agents', cwd)
-      : await module.loadMarkdownFilesForSubdir('agents', cwd)
-    return files
-      .filter(file => isSafeAgentDefinitionPath(file.baseDir, file.filePath))
-      .map(file => ({
-        filePath: file.filePath,
-        baseDir: file.baseDir,
-        frontmatter: file.frontmatter,
-        content: file.content,
-        source: file.source as SettingSource,
-      }))
-  } catch {
-    return null
+    loadMarkdownFilesForSubdirFresh: (
+      subdir: 'agents',
+      cwd: string,
+    ) => Promise<MarkdownAgentFile[]>
   }
+  sharedMarkdownCacheClearer = module.loadMarkdownFilesForSubdir.cache.clear?.bind(
+    module.loadMarkdownFilesForSubdir.cache,
+  )
+  const files = fresh
+    ? await module.loadMarkdownFilesForSubdirFresh('agents', cwd)
+    : await module.loadMarkdownFilesForSubdir('agents', cwd)
+  return files
+    .filter(file => isSafeAgentDefinitionPath(file.baseDir, file.filePath))
+    .map(file => ({
+      filePath: file.filePath,
+      baseDir: file.baseDir,
+      frontmatter: file.frontmatter,
+      content: file.content,
+      source: file.source as SettingSource,
+    }))
 }
 
 async function loadMarkdownAgentFiles(
   cwd: string,
   fresh = false,
 ): Promise<{ files: MarkdownAgentFile[]; failedFiles: FailedAgentFile[] }> {
-  if (!markdownDirsForTesting) {
+  if (markdownDirsForTesting === undefined) {
     const sharedFiles = await loadSharedMarkdownAgentFiles(cwd, fresh)
-    if (sharedFiles) return { files: sharedFiles, failedFiles: [] }
+    return { files: sharedFiles, failedFiles: [] }
   }
 
   const files: MarkdownAgentFile[] = []
   const failedFiles: FailedAgentFile[] = []
   const seenFileIds = new Set<string>()
-  const isSettingSourceEnabled = await getSettingSourceEnabled()
-  for (const { dir, source } of projectAgentDirs(cwd, isSettingSourceEnabled)) {
+  for (const { dir, source } of markdownDirsForTesting) {
     let filePaths: string[]
     try {
       filePaths = collectMarkdownFiles(dir)
@@ -1004,15 +955,35 @@ async function initializeAgentMemorySnapshots(
 
 async function loadPluginAgentsSafe(
   cwd: string,
+  pluginStorageRoot: string,
+  config: Pick<AgenCConfig, 'plugins'>,
   fresh = false,
-): Promise<PluginAgentDefinition[]> {
+): Promise<{
+  readonly agents: PluginAgentDefinition[]
+  readonly failedFiles: FailedAgentFile[]
+}> {
   try {
     if (pluginAgentsLoaderForTesting) {
-      return await pluginAgentsLoaderForTesting()
+      return {
+        agents: await pluginAgentsLoaderForTesting({
+          cwd,
+          pluginStorageRoot,
+          fresh,
+          config,
+        }),
+        failedFiles: [],
+      }
     }
     pluginAgentCacheClearer = clearPluginAgentCache
-    const loaded = await loadPluginAgents({ cwd, fresh })
-    return Array.isArray(loaded)
+    const issues: PluginLoadIssue[] = []
+    const loaded = await loadPluginAgents({
+      cwd,
+      pluginStorageRoot,
+      fresh,
+      config,
+      errors: issues,
+    })
+    const agents = Array.isArray(loaded)
       ? loaded.filter((agent): agent is PluginAgentDefinition =>
           isRecord(agent) &&
           agent.source === 'plugin' &&
@@ -1021,19 +992,37 @@ async function loadPluginAgentsSafe(
           typeof agent.getSystemPrompt === 'function',
         )
       : []
-  } catch {
-    return []
+    return {
+      agents,
+      failedFiles: issues.map(pluginLoadIssueToFailedFile),
+    }
+  } catch (error) {
+    return {
+      agents: [],
+      failedFiles: [{ path: 'plugins', error: errorToMessage(error) }],
+    }
+  }
+}
+
+function pluginLoadIssueToFailedFile(issue: PluginLoadIssue): FailedAgentFile {
+  return {
+    path: issue.path ?? issue.source,
+    error: issue.message,
   }
 }
 
 async function loadAgentDefinitions(
   cwd: string,
-  options: { readonly fresh?: boolean } = {},
+  options: {
+    readonly pluginStorageRoot: string
+    readonly config: Pick<AgenCConfig, 'plugins'>
+    readonly fresh?: boolean
+  },
 ): Promise<WorkspaceAgentDefinitionsResult> {
   const workspace = createAgentRoleWorkspace(cwd)
   const builtInAgents = getBuiltInAgents()
   const registeredAgents = getRegisteredAgents(workspace)
-  if (process.env.AGENC_SIMPLE === '1' || process.env.AGENC_SIMPLE === 'true') {
+  if (isBareMode()) {
     // Simple mode skips disk/plugin discovery, but programmatic roles are
     // already explicit in-process configuration. Keep the same workspace
     // overrides that AgentControl resolves instead of silently falling back to
@@ -1073,10 +1062,16 @@ async function loadAgentDefinitions(
       })
       .filter((agent): agent is CustomAgentDefinition => agent !== null)
 
-    const [pluginAgents] = await Promise.all([
-      loadPluginAgentsSafe(cwd, options.fresh === true),
+    const [pluginResult] = await Promise.all([
+      loadPluginAgentsSafe(
+        cwd,
+        options.pluginStorageRoot,
+        options.config,
+        options.fresh === true,
+      ),
       initializeAgentMemorySnapshots(parsedCustomAgents, cwd),
     ])
+    failedFiles.push(...pluginResult.failedFiles)
 
     const customAgents = parsedCustomAgents.map(
       agent =>
@@ -1086,7 +1081,7 @@ async function loadAgentDefinitions(
         ) as CustomAgentDefinition,
     )
 
-    const scopedPluginAgents = pluginAgents.map(
+    const scopedPluginAgents = pluginResult.agents.map(
       agent => bindAgentDefinitionToWorkspace(agent, workspace) as PluginAgentDefinition,
     )
     // Programmatic roles live in the same immutable workspace registry used
@@ -1137,21 +1132,68 @@ function getParseError(frontmatter: Record<string, unknown>): string {
   return 'Unknown parsing error'
 }
 
-export const getAgentDefinitionsWithOverrides = memoize(
-  async (cwd: string): Promise<WorkspaceAgentDefinitionsResult> =>
-    loadAgentDefinitions(cwd),
-  cwd => cwd,
-)
+const agentDefinitionsByAuthority = new CanonicalAuthorityCache<
+  Promise<WorkspaceAgentDefinitionsResult>
+>()
+
+function agentDefinitionsCacheKey(
+  cwd: string,
+  pluginStorageRoot: string,
+): string {
+  return `${pluginStorageRoot}\u0000${resolve(cwd)}`
+}
+
+/**
+ * Load the catalog for an exact captured plugin root.
+ */
+export function getAgentDefinitionsWithOverrides(
+  cwd: string,
+  pluginStorageRoot: string,
+): Promise<WorkspaceAgentDefinitionsResult> {
+  const authority = getCanonicalSettingsAuthority()
+  if (authority === null) {
+    throw new Error(
+      'Agent definition loading requires a session ConfigStore authority',
+    )
+  }
+  const key = agentDefinitionsCacheKey(cwd, pluginStorageRoot)
+  const cached = agentDefinitionsByAuthority.get(key, authority)
+  if (cached !== undefined) return cached
+  const loaded = loadAgentDefinitions(cwd, {
+    pluginStorageRoot,
+    config: authority.authoritySnapshot().config,
+  }).catch(
+    (error: unknown) => {
+      agentDefinitionsByAuthority.delete(key, authority)
+      throw error
+    },
+  )
+  agentDefinitionsByAuthority.set(key, loaded, authority)
+  return loaded
+}
 
 /** Bypass the UI memoizer when validating a persisted role during resume. */
 export async function loadFreshAgentDefinitions(
   cwd: string,
+  pluginStorageRoot: string,
 ): Promise<WorkspaceAgentDefinitionsResult> {
-  return loadAgentDefinitions(cwd, { fresh: true })
+  const authority = getCanonicalSettingsAuthority()
+  if (authority === null) {
+    throw new Error(
+      'Agent definition loading requires a session ConfigStore authority',
+    )
+  }
+  return loadAgentDefinitions(cwd, {
+    pluginStorageRoot,
+    config: authority.authoritySnapshot().config,
+    fresh: true,
+  })
 }
 
 export function clearAgentDefinitionsCache(): void {
-  getAgentDefinitionsWithOverrides.cache.clear?.()
+  const authority = getCanonicalSettingsAuthority()
+  if (authority === null) agentDefinitionsByAuthority.clear()
+  else agentDefinitionsByAuthority.clearAuthority(authority)
   sharedMarkdownCacheClearer?.()
   if (pluginAgentCacheClearerForTesting) {
     pluginAgentCacheClearerForTesting()
@@ -1165,7 +1207,9 @@ export function clearAgentDefinitionsCache(): void {
 }
 
 export function __setPluginAgentsLoaderForTesting(
-  loader: (() => Promise<PluginAgentDefinition[]>) | undefined,
+  loader:
+    | ((authority: PluginAgentLoadAuthority) => Promise<PluginAgentDefinition[]>)
+    | undefined,
 ): void {
   pluginAgentsLoaderForTesting = loader
   clearAgentDefinitionsCache()

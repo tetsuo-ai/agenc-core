@@ -44,13 +44,13 @@ afterEach(async () => {
 
 describe('debug utilities', () => {
   it('uses the active session id for the default debug log path', async () => {
-    const configDir = await makeTempDir()
-    process.env.AGENC_CONFIG_DIR = configDir
+    const agencHome = await makeTempDir()
+    process.env.AGENC_HOME = agencHome
 
     const debug = await loadDebugModule('session-active')
 
     expect(debug.getDebugLogPath()).toBe(
-      join(configDir, 'debug', 'session-active.txt'),
+      join(agencHome, 'debug', 'session-active.txt'),
     )
   })
 
@@ -63,8 +63,8 @@ describe('debug utilities', () => {
   })
 
   it('writes internal-user debug logs without a debug flag', async () => {
-    const configDir = await makeTempDir()
-    process.env.AGENC_CONFIG_DIR = configDir
+    const agencHome = await makeTempDir()
+    process.env.AGENC_HOME = agencHome
     process.env.NODE_ENV = 'production'
     process.env.USER_TYPE = 'ant'
 
@@ -74,15 +74,15 @@ describe('debug utilities', () => {
     await debug.flushDebugLogs()
 
     const content = await readFile(
-      join(configDir, 'debug', 'session-ant.txt'),
+      join(agencHome, 'debug', 'session-ant.txt'),
       'utf8',
     )
     expect(content).toContain('[DEBUG] api: background diagnostic')
   })
 
   it('drains buffered internal-user debug logs during registered cleanup', async () => {
-    const configDir = await makeTempDir()
-    process.env.AGENC_CONFIG_DIR = configDir
+    const agencHome = await makeTempDir()
+    process.env.AGENC_HOME = agencHome
     process.env.NODE_ENV = 'production'
     process.env.USER_TYPE = 'ant'
 
@@ -95,7 +95,7 @@ describe('debug utilities', () => {
     await runCleanupFunctions()
 
     const content = await readFile(
-      join(configDir, 'debug', 'session-cleanup.txt'),
+      join(agencHome, 'debug', 'session-cleanup.txt'),
       'utf8',
     )
     expect(content).toContain('[DEBUG] api: cleanup diagnostic')

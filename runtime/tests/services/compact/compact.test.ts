@@ -63,10 +63,9 @@ describe("compact service", () => {
       summaryMessages: [message("summary")],
       messagesToKeep: [message("kept")],
       attachments: [message("attachment")],
-      hookResults: [message("hook")],
     };
     expect(buildPostCompactMessages(result).map((entry) => entry.content))
-      .toEqual(["boundary", "summary", "kept", "attachment", "hook"]);
+      .toEqual(["boundary", "summary", "kept", "attachment"]);
   });
 
   test("fails closed without a canonical rollout owner and leaves history untouched", async () => {
@@ -87,29 +86,24 @@ describe("compact service", () => {
 
   test("clears progress state after a fail-closed manual attempt", async () => {
     const onCompactProgress = vi.fn();
-    const setSDKStatus = vi.fn();
     await expect(manualCompactCall("", {
       messages: [message("older"), message("newer", "assistant")],
       onCompactProgress,
-      setSDKStatus,
     })).rejects.toThrow(/history was not changed/i);
     expect(onCompactProgress.mock.calls.map(([event]) => event)).toEqual([
-      { type: "hooks_start", hookType: "pre_compact" },
       { type: "compact_start" },
       { type: "compact_end" },
     ]);
-    expect(setSDKStatus.mock.calls.map(([status]) => status)).toEqual([
-      "compacting",
-      null,
-    ]);
   });
 
-  test("uses the real transaction for attachments, hooks, and durable replacement", async () => {
+  test("uses the real transaction for attachments, lifecycle hooks, and durable replacement", async () => {
     const messages = sizeableMessages(10, 2_000);
     const createAttachments = vi.fn(() => [message("attachment")]);
-    const createHookResults = vi.fn(() => [message("hook")]);
     const harness = createHarness(messages, {
-      deps: { createAttachments, createHookResults },
+      deps: { createAttachments },
+    });
+    const hooks = installCompactionHooks(harness.context, {
+      preInstructions: "preserve hook guidance",
     });
     const result = await manualCompactCall("retain decisions", {
       ...harness.context,
@@ -117,11 +111,32 @@ describe("compact service", () => {
     });
     expect(result.compactionResult.transaction).toBeDefined();
     expect(createAttachments).toHaveBeenCalledOnce();
-    expect(createHookResults).toHaveBeenCalledOnce();
+    expect(hooks.executePreCompact).toHaveBeenCalledOnce();
+    expect(hooks.executePostCompact).toHaveBeenCalledOnce();
     expect(result.compactionResult.attachments.map((item) => item.content))
       .toEqual(["attachment"]);
-    expect(result.compactionResult.hookResults.map((item) => item.content))
-      .toEqual(["hook"]);
+    const preInput = hookInput(hooks.executePreCompact);
+    expect(preInput).toEqual(expect.objectContaining({
+      hook_event_name: "PreCompact",
+      trigger: "manual",
+      custom_instructions: "retain decisions",
+    }));
+    expectCommonCompactionMetadata(preInput);
+    const postInput = hookInput(hooks.executePostCompact);
+    expect(postInput).toEqual(expect.objectContaining({
+      hook_event_name: "PostCompact",
+      trigger: "manual",
+    }));
+    expect(postInput.compact_summary).toBe(
+      result.compactionResult.summaryMessages[0]?.content,
+    );
+    expect(JSON.parse(String(postInput.compact_summary))).toEqual(
+      expect.objectContaining({
+        kind: "agenc_compaction_context_v1",
+        body: expect.objectContaining({ narrative: "Bounded summary." }),
+      }),
+    );
+    expectCommonCompactionMetadata(postInput);
     const compactionRows = harness.store.readAll().filter((item) =>
       item.type.startsWith("compaction_")
     );
@@ -164,6 +179,7 @@ describe("compact service", () => {
     const harness = createHarness(messages, {
       options: { contextWindowTokens: 32_000, maxOutputTokens: 256 },
     });
+    const hooks = installCompactionHooks(harness.context);
     const result = await compactConversation(
       messages,
       harness.context,
@@ -171,6 +187,8 @@ describe("compact service", () => {
     );
     expect(result.transaction).toBeDefined();
     expect(harness.provider.chat.mock.calls.length).toBeGreaterThan(1);
+    expect(hooks.executePreCompact).toHaveBeenCalledOnce();
+    expect(hooks.executePostCompact).toHaveBeenCalledOnce();
     for (const [providerMessages, options] of harness.provider.chat.mock.calls) {
       const payload = String((providerMessages as LLMMessage[])[0]?.content);
       expect(() => JSON.parse(payload)).not.toThrow();
@@ -200,6 +218,9 @@ describe("compact service", () => {
       ...sizeableMessages(6, 2_000),
     ];
     const harness = createHarness(messages);
+    const hooks = installCompactionHooks(harness.context, {
+      preInstructions: "retain hook-selected evidence",
+    });
     const result = await partialCompactConversationAsync(
       messages,
       1,
@@ -210,6 +231,16 @@ describe("compact service", () => {
     expect(result.messagesToKeep?.[0]?.content).toEqual(keptContent);
     expect(result.transaction?.committed.replacement_history[0]?.content)
       .toEqual(keptContent);
+    expect(hooks.executePreCompact).toHaveBeenCalledOnce();
+    expect(hookInput(hooks.executePreCompact)).toEqual(expect.objectContaining({
+      hook_event_name: "PreCompact",
+      trigger: "manual",
+      custom_instructions: "retain media references",
+    }));
+    expect(new Set(providerCoveragePriorities(harness.provider))).toEqual(
+      new Set(["retain media references\n\nretain hook-selected evidence"]),
+    );
+    expect(hooks.executePostCompact).toHaveBeenCalledOnce();
   });
 
   test("fails closed before provider dispatch when admission ownership is missing", async () => {
@@ -269,6 +300,7 @@ describe("compactConversation per-context lock", () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const harness = createHarness(messages, { providerGate: gate });
+    const hooks = installCompactionHooks(harness.context);
     const first = compactConversation(messages, harness.context);
     const second = compactConversation(messages, harness.context);
     await vi.waitFor(() => expect(harness.provider.chat).toHaveBeenCalledOnce());
@@ -276,6 +308,8 @@ describe("compactConversation per-context lock", () => {
     const [firstResult, secondResult] = await Promise.all([first, second]);
     expect(firstResult).toBe(secondResult);
     expect(harness.provider.chat).toHaveBeenCalledOnce();
+    expect(hooks.executePreCompact).toHaveBeenCalledOnce();
+    expect(hooks.executePostCompact).toHaveBeenCalledOnce();
     const admissionEvents = harness.store.readAll().flatMap((item) =>
       item.type === "event_msg" &&
           item.payload.msg.type === "execution_admission" &&
@@ -292,6 +326,61 @@ describe("compactConversation per-context lock", () => {
     expect(new Set(admissionEvents.map((event) => event.runId)).size).toBe(1);
   });
 });
+
+interface CompactionHookSpies {
+  readonly executePreCompact: ReturnType<typeof vi.fn>;
+  readonly executePostCompact: ReturnType<typeof vi.fn>;
+}
+
+function installCompactionHooks(
+  context: CompactContext,
+  options: { readonly preInstructions?: string } = {},
+): CompactionHookSpies {
+  const session = context.admissionSession;
+  if (session === undefined) throw new Error("test compaction session is required");
+  const executePreCompact = vi.fn(async () =>
+    options.preInstructions === undefined
+      ? {}
+      : { newCustomInstructions: options.preInstructions }
+  );
+  const executePostCompact = vi.fn(async () => ({}));
+  const services = session.services as unknown as {
+    hooks?: {
+      executePreCompact: typeof executePreCompact;
+      executePostCompact: typeof executePostCompact;
+    };
+  };
+  services.hooks = { executePreCompact, executePostCompact };
+  return { executePreCompact, executePostCompact };
+}
+
+function hookInput(spy: ReturnType<typeof vi.fn>): Record<string, unknown> {
+  const input = spy.mock.calls[0]?.[0];
+  if (typeof input !== "object" || input === null) {
+    throw new Error("expected a lifecycle hook input object");
+  }
+  return input as Record<string, unknown>;
+}
+
+function expectCommonCompactionMetadata(input: Record<string, unknown>): void {
+  expect(input).toHaveProperty("session_id");
+  expect(input).toHaveProperty("transcript_path");
+  expect(input).toHaveProperty("cwd");
+  expect(input).toHaveProperty("permission_mode");
+}
+
+function providerCoveragePriorities(
+  provider: CompactHarness["provider"],
+): string[] {
+  return provider.chat.mock.calls.flatMap(([messages]) => {
+    const payload = JSON.parse(String((messages as LLMMessage[])[0]?.content)) as {
+      readonly coverage_priority?: unknown;
+    };
+    return typeof payload.coverage_priority === "string"
+      ? [payload.coverage_priority]
+      : [];
+  });
+}
 
 describe("resolveAtomicSliceIndex", () => {
   test("walks past one or many leading tool results", () => {
@@ -331,6 +420,7 @@ function createHarness(
     cwd,
     sessionId,
     agencVersion: "0.13.0",
+    sessionTempRoot: tmpdir(),
     autoStartScheduler: false,
   });
   store.open({
@@ -374,6 +464,10 @@ function createHarness(
       provider,
       executionAdmission: admission.client,
       admissionRequired: true,
+      hooks: {
+        executePreCompact: async () => ({}),
+        executePostCompact: async () => ({}),
+      },
     },
   } as unknown as Session;
   const unbindAdmission = bindExecutionAdmissionJournal(
@@ -386,6 +480,7 @@ function createHarness(
     provider,
     admission,
     context: {
+      cwd,
       provider,
       admissionSession,
       compactionTransaction: store,

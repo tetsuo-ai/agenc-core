@@ -24,6 +24,10 @@ import {
 } from "../utils/xaiOauthCredentials.js";
 import { resolveApiKey } from "../config/env.js";
 import { openUrlInBrowser } from "./auth.js";
+import {
+  providerEnvironmentFromCommandContext,
+  requireCommandConfigStore,
+} from "./config-context.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { applyProviderSwitch } from "./provider.js";
 import {
@@ -48,13 +52,14 @@ export const grokLogoutCommand: SlashCommand = {
   description: "Sign out of the X / xAI account used for Grok",
   immediate: true,
   supportsNonInteractive: true,
-  execute: async () =>
+  execute: async (ctx) =>
     safeExecute(async () => {
-      const existing = readXaiOauthCredentials();
+      const home = requireCommandConfigStore(ctx).homeContext;
+      const existing = readXaiOauthCredentials(home);
       if (existing === undefined) {
         return { kind: "text", text: "No xAI sign-in stored." };
       }
-      const result = clearXaiOauthCredentials();
+      const result = clearXaiOauthCredentials(home);
       if (!result.success) {
         return {
           kind: "error",
@@ -78,6 +83,8 @@ async function executeGrokLogin(
   ctx: SlashCommandContext,
 ): Promise<SlashCommandResult> {
   return safeExecute(async () => {
+    const home = requireCommandConfigStore(ctx).homeContext;
+    const environment = providerEnvironmentFromCommandContext(ctx);
     const arg = ctx.argsRaw.trim().toLowerCase();
     if (arg !== "" && arg !== "device") {
       return {
@@ -98,7 +105,7 @@ async function executeGrokLogin(
     const blob = xaiOauthTokensToBlob(login.tokens, {
       tokenEndpoint: login.tokenEndpoint,
     });
-    const saved = saveXaiOauthCredentials(blob);
+    const saved = saveXaiOauthCredentials(home, blob);
     if (!saved.success) {
       return {
         kind: "error",
@@ -110,14 +117,14 @@ async function executeGrokLogin(
     const lines = [`Signed in to xAI as ${who}.`];
 
     // OAuth always wins over env BYOK — switch to grok regardless of keys.
-    const switchSummary = await applyProviderSwitch(ctx.session, "grok");
-    lines.push(switchSummary);
+    const switchOutcome = await applyProviderSwitch(ctx.session, "grok");
+    lines.push(switchOutcome.summary);
     lines.push("Run /model to pick a Grok model (e.g. grok-4.5).");
     lines.push(
       "This sign-in takes precedence over any XAI_API_KEY / GROK_API_KEY " +
         "in the environment (subscription Grok Build access).",
     );
-    const envKey = resolveApiKey(process.env);
+    const envKey = resolveApiKey(environment);
     if (envKey !== undefined) {
       lines.push(
         "Note: an API key is also set in the environment but is ignored " +

@@ -17,6 +17,11 @@ import { normalizeMessagesForAPI } from "../messages.js";
 import { validateToolCall, validateToolCallDetailed } from "../types.js";
 import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
 import { validateAgentInvocationMessageSequence } from "../../contracts/agent-invocation-envelope.js";
+import {
+  SYSTEM_PROMPT_DYNAMIC_BOUNDARY as SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER,
+} from "../../prompts/system-prompt-boundary.js";
+
+export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER };
 
 function readContentPartRecord(part: unknown): Record<string, unknown> | null {
   return part && typeof part === "object" && !Array.isArray(part)
@@ -75,15 +80,6 @@ function toAnthropicImageSource(
     url: imageUrl,
   };
 }
-
-/**
- * The system-prompt static/dynamic boundary marker. Must stay byte-equal
- * to `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` exported by
- * `src/prompts/system-prompt.ts` (the producer of `options.systemPrompt`);
- * a regression test asserts the two never diverge. Single-sourced here so
- * every wire can split without importing the prompt-assembly graph.
- */
-export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER = "<!-- dynamic-boundary -->";
 
 /**
  * Split an assembled system prompt into its cross-turn-stable head and

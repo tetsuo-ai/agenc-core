@@ -3,7 +3,7 @@
  * (`packages/agenc-sdk/src/subprocess.ts`) with a fake `agenc -p` child:
  * no daemon, no real spawn. The fake replays the CLI's
  * `--output-format stream-json` contract (`{type:"event"}` lines followed
- * by one `{type:"result"}` line) exactly as `runtime/src/bin/agenc.ts`
+ * by one `{type:"result"}` line) exactly as `runtime/src/bin/agenc-main.ts`
  * emits it.
  */
 
@@ -100,6 +100,31 @@ function eventLine(event: unknown): unknown {
 }
 
 describe("agenc-sdk subprocess transport", () => {
+  it("uses the combined dangerous flag only when explicitly requested", async () => {
+    const { spawn, capture } = createFakeSpawn({
+      stdoutLines: [
+        {
+          type: "result",
+          sessionId,
+          agentId,
+          exitCode: 0,
+          finalMessage: "done",
+          deniedPermissionRequestIds: [],
+        },
+      ],
+      exitCode: 0,
+    });
+
+    const run = promptViaSubprocess("do it", {
+      spawn,
+      permissionMode: "default",
+      dangerouslyBypassApprovalsAndSandbox: true,
+    });
+    expect(capture.args).toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(capture.args).toContain("--permission-mode");
+    await expect(run.result()).resolves.toMatchObject({ exitCode: 0 });
+  });
+
   it("spawns the headless CLI with the stream-json contract and adapts events", async () => {
     const { spawn, capture } = createFakeSpawn({
       stdoutLines: [
@@ -136,7 +161,6 @@ describe("agenc-sdk subprocess transport", () => {
             totalTokens: 8,
             costUsd: 0.001,
           },
-          cacheStats: { requestCount: 1 },
         },
       ],
       exitCode: 0,
@@ -145,6 +169,7 @@ describe("agenc-sdk subprocess transport", () => {
     const run = promptViaSubprocess("what is the answer?", {
       agencCommand: ["/opt/agenc/bin/agenc"],
       model: "grok-4",
+      configPath: "/workspace/operator.toml",
       spawn,
     });
     const events: AgencPromptEvent[] = [];
@@ -162,6 +187,8 @@ describe("agenc-sdk subprocess transport", () => {
       "stream-json",
       "--model",
       "grok-4",
+      "--config",
+      "/workspace/operator.toml",
     ]);
     expect(capture.stdinEnded).toBe(true);
     expect(capture.stdinChunks.join("")).toBe(
@@ -185,7 +212,6 @@ describe("agenc-sdk subprocess transport", () => {
       finalMessage: "The answer is 42",
       deniedPermissionRequestIds: [],
       usage: { totalTokens: 8 },
-      cacheStats: { requestCount: 1 },
     });
   });
 

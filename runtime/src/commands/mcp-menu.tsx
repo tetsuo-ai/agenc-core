@@ -11,6 +11,7 @@ import type {
   McpServerStatus,
   McpToolStatus,
 } from "./mcp.js";
+import { mcpServerNameValidationIssue } from "../mcp-client/server-name.js";
 
 type McpMode =
   | { readonly name: "list" }
@@ -173,15 +174,16 @@ function createFields(form: CreateForm): readonly Field[] {
       label: "create",
       value: "scaffold and connect",
       editable: false,
-      detail: "writes .agenc/mcp/<server>.mjs and connects it for this session",
+      detail: "writes a collision-safe .agenc/mcp script and connects it for this session",
     },
   ];
 }
 
 function addValidation(form: AddForm): readonly string[] {
   const errors: string[] = [];
-  if (!/^[A-Za-z0-9_-]+$/u.test(form.serverName.trim())) {
-    errors.push("Server name must use only letters, numbers, hyphens, and underscores.");
+  const serverNameIssue = mcpServerNameValidationIssue(form.serverName.trim());
+  if (serverNameIssue !== undefined) {
+    errors.push(`Server name ${serverNameIssue}.`);
   }
   if (form.commandLine.trim().length === 0) {
     errors.push("Command is required.");
@@ -191,8 +193,9 @@ function addValidation(form: AddForm): readonly string[] {
 
 function createValidation(form: CreateForm): readonly string[] {
   const errors: string[] = [];
-  if (!/^[A-Za-z0-9_-]+$/u.test(form.serverName.trim())) {
-    errors.push("Server name must use only letters, numbers, hyphens, and underscores.");
+  const serverNameIssue = mcpServerNameValidationIssue(form.serverName.trim());
+  if (serverNameIssue !== undefined) {
+    errors.push(`Server name ${serverNameIssue}.`);
   }
   if (!/^[A-Za-z][A-Za-z0-9_-]*$/u.test(form.toolName.trim())) {
     errors.push("Tool name must start with a letter and contain only letters, numbers, hyphens, and underscores.");

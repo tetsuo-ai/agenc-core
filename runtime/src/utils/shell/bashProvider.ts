@@ -1,11 +1,10 @@
 import { feature } from 'bun:bundle'
 import { access } from 'fs/promises'
-import { tmpdir as osTmpdir } from 'os'
 import { join as nativeJoin } from 'path'
 import { join as posixJoin } from 'path/posix'
 import { rearrangePipeCommand } from '../bash/bashPipeCommand.js'
 import { createAndSaveSnapshot } from '../bash/ShellSnapshot.js'
-import { formatShellPrefixCommand } from '../bash/shellPrefix.js'
+import { formatShellWrapperCommand } from '../bash/shellPrefix.js'
 import { quote } from '../bash/shellQuote.js'
 import {
   quoteShellCommand,
@@ -15,14 +14,13 @@ import {
 import { logForDebugging } from 'src/utils/debug.js'
 import { getPlatform } from '../platform.js'
 import { getSessionEnvironmentScript } from '../sessionEnvironment.js'
-import { getSessionEnvVars } from '../sessionEnvVars.js'
 import {
   ensureSocketInitialized,
   getAgenCTmuxEnv,
   hasTmuxToolBeenUsed,
 } from '../tmuxSocket.js'
 import { windowsPathToPosixPath } from '../windowsPaths.js'
-import type { ShellProvider } from './shellProvider.js'
+import type { PreparedShellCommand, ShellProvider } from './shellProvider.js'
 
 /**
  * Returns a shell command to disable extended glob patterns for security.
@@ -36,10 +34,13 @@ import type { ShellProvider } from './shellProvider.js'
  *
  * When no shell prefix is set, we use the appropriate command for the detected shell.
  */
-function getDisableExtglobCommand(shellPath: string): string | null {
+function getDisableExtglobCommand(
+  shellPath: string,
+  hasCommandWrapper: boolean,
+): string | null {
   // When AGENC_SHELL_PREFIX is set, the wrapper may use a different shell
   // than shellPath, so we include both bash and zsh commands
-  if (process.env.AGENC_SHELL_PREFIX) {
+  if (hasCommandWrapper) {
     // Redirect both stdout and stderr because zsh's command_not_found_handler
     // writes to stdout instead of stderr
     return '{ shopt -u extglob || setopt NO_EXTENDED_GLOB; } >/dev/null 2>&1 || true'
@@ -57,36 +58,36 @@ function getDisableExtglobCommand(shellPath: string): string | null {
 
 export async function createBashShellProvider(
   shellPath: string,
-  options?: { skipSnapshot?: boolean },
+  options: {
+    skipSnapshot?: boolean
+    commandWrapperArgv?: readonly string[]
+    childEnvironment: Readonly<NodeJS.ProcessEnv>
+  },
 ): Promise<ShellProvider> {
-  let currentSandboxTmpDir: string | undefined
-  const snapshotPromise: Promise<string | undefined> = options?.skipSnapshot
+  const snapshotPromise: Promise<string | undefined> = options.skipSnapshot
     ? Promise.resolve(undefined)
-    : createAndSaveSnapshot(shellPath).catch(error => {
+    : createAndSaveSnapshot(shellPath, options.childEnvironment).catch(error => {
         logForDebugging(`Failed to create shell snapshot: ${error}`)
         return undefined
       })
-  // Track the last resolved snapshot path for use in getSpawnArgs
-  let lastSnapshotFilePath: string | undefined
-
   return {
     type: 'bash',
     shellPath,
     detached: true,
 
-    async buildExecCommand(
+    async prepareExecCommand(
       command: string,
       opts: {
         id: number | string
         sandboxTmpDir?: string
+        tempRoot: string
         useSandbox: boolean
       },
-    ): Promise<{ commandString: string; cwdFilePath: string }> {
+    ): Promise<PreparedShellCommand> {
       let snapshotFilePath = await snapshotPromise
-      // This access() check is NOT pure TOCTOU — it's the fallback decision
-      // point for getSpawnArgs. When the snapshot disappears mid-session
-      // (tmpdir cleanup), we must clear lastSnapshotFilePath so getSpawnArgs
-      // adds -l and the command gets login-shell init. Without this check,
+      // This access() check is NOT pure TOCTOU — it decides whether this
+      // invocation needs login-shell initialization. When the snapshot
+      // disappears mid-session, the prepared argv adds -l. Without this check,
       // `source ... || true` silently fails and commands run with NO shell
       // init (neither snapshot env nor login profile). The `|| true` on source
       // still guards the race between this check and the spawned shell.
@@ -100,12 +101,7 @@ export async function createBashShellProvider(
           snapshotFilePath = undefined
         }
       }
-      lastSnapshotFilePath = snapshotFilePath
-
-      // Stash sandboxTmpDir for use in getEnvironmentOverrides
-      currentSandboxTmpDir = opts.sandboxTmpDir
-
-      const tmpdir = osTmpdir()
+      const tmpdir = opts.tempRoot
       const isWindows = getPlatform() === 'windows'
       const shellTmpdir = isWindows ? windowsPathToPosixPath(tmpdir) : tmpdir
 
@@ -173,7 +169,10 @@ export async function createBashShellProvider(
       }
 
       // Disable extended glob patterns for security (after sourcing user config to override)
-      const disableExtglobCmd = getDisableExtglobCommand(shellPath)
+      const disableExtglobCmd = getDisableExtglobCommand(
+        shellPath,
+        (options?.commandWrapperArgv?.length ?? 0) > 0,
+      )
       if (disableExtglobCmd) {
         commandParts.push(disableExtglobCmd)
       }
@@ -186,28 +185,13 @@ export async function createBashShellProvider(
       commandParts.push(`pwd -P >| ${quote([shellCwdFilePath])}`)
       let commandString = commandParts.join(' && ')
 
-      // Apply AGENC_SHELL_PREFIX if set
-      if (process.env.AGENC_SHELL_PREFIX) {
-        commandString = formatShellPrefixCommand(
-          process.env.AGENC_SHELL_PREFIX,
+      if ((options?.commandWrapperArgv?.length ?? 0) > 0) {
+        commandString = formatShellWrapperCommand(
+          options.commandWrapperArgv!,
           commandString,
         )
       }
 
-      return { commandString, cwdFilePath }
-    },
-
-    getSpawnArgs(commandString: string): string[] {
-      const skipLoginShell = lastSnapshotFilePath !== undefined
-      if (skipLoginShell) {
-        logForDebugging('Spawning shell without login (-l flag skipped)')
-      }
-      return ['-c', ...(skipLoginShell ? [] : ['-l']), commandString]
-    },
-
-    async getEnvironmentOverrides(
-      command: string,
-    ): Promise<Record<string, string>> {
       // TMUX SOCKET ISOLATION (DEFERRED):
       // We initialize AgenC's tmux socket ONLY AFTER the Tmux tool has been used
       // at least once, OR if the current command appears to use tmux.
@@ -219,7 +203,7 @@ export async function createBashShellProvider(
       // See tmuxSocket.ts for the full isolation architecture documentation.
       const commandUsesTmux = command.includes('tmux')
       if (
-        process.env.USER_TYPE === 'ant' &&
+        options.childEnvironment.USER_TYPE === 'ant' &&
         (hasTmuxToolBeenUsed() || commandUsesTmux)
       ) {
         await ensureSocketInitialized()
@@ -232,8 +216,8 @@ export async function createBashShellProvider(
       if (agencTmuxEnv) {
         env.TMUX = agencTmuxEnv
       }
-      if (currentSandboxTmpDir) {
-        let posixTmpDir = currentSandboxTmpDir
+      if (opts.sandboxTmpDir) {
+        let posixTmpDir = opts.sandboxTmpDir
         if (getPlatform() === 'windows') {
           posixTmpDir = windowsPathToPosixPath(posixTmpDir)
         }
@@ -245,11 +229,18 @@ export async function createBashShellProvider(
         // Safe to set unconditionally — non-zsh shells ignore TMPPREFIX.
         env.TMPPREFIX = posixJoin(posixTmpDir, 'zsh')
       }
-      // Apply session env vars set via /env (child processes only, not the REPL)
-      for (const [key, value] of getSessionEnvVars()) {
-        env[key] = value
-      }
-      return env
+      const skipLoginShell = snapshotFilePath !== undefined
+      return Object.freeze({
+        commandString,
+        cwdFilePath,
+        spawnArgs: (finalCommandString: string): readonly string[] => {
+          if (skipLoginShell) {
+            logForDebugging('Spawning shell without login (-l flag skipped)')
+          }
+          return ['-c', ...(skipLoginShell ? [] : ['-l']), finalCommandString]
+        },
+        environmentOverrides: Object.freeze(env),
+      })
     },
   }
 }

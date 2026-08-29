@@ -27,6 +27,7 @@
 
 import path from "node:path";
 import { markEffectBoundaryNotCrossed } from "../tools/effect-boundary.js";
+import { resolveSessionTempRoot } from "../session/runtime-options.js";
 
 // ---------------------------------------------------------------------
 // Leaf types
@@ -200,10 +201,7 @@ export function getWritableRootsWithCwd(
     push("/tmp");
   }
   if (!policy.exclude_tmpdir_env_var) {
-    const tmpdir = process.env["TMPDIR"];
-    if (tmpdir && tmpdir.length > 0) {
-      push(tmpdir);
-    }
+    push(resolveSessionTempRoot());
   }
 
   // For each collected root, compute the read-only subpaths. If the

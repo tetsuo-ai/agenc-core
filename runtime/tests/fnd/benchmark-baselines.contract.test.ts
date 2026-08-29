@@ -45,6 +45,12 @@ function sha256(value: string | Buffer): string {
 }
 
 describe("FND benchmark baseline contract", () => {
+  test("keeps evidence paths in canonical provenance order", () => {
+    expect(BENCHMARK_EVIDENCE_PATHS).toEqual(
+      [...new Set(BENCHMARK_EVIDENCE_PATHS)].sort(),
+    );
+  });
+
   test("keeps canonical JSON, generated Markdown, digest, and schema in lockstep", () => {
     const json = readFileSync(BASELINE_JSON_PATH, "utf8");
     const report = JSON.parse(json) as Record<string, any>;

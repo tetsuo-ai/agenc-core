@@ -50,6 +50,7 @@ export interface PreferredBubblewrapLauncherOptions {
 export interface SpawnBubblewrapOptions extends SpawnOptions {
   readonly seccompMode?: NetworkSeccompMode | null;
   readonly inheritedCwdFd?: number;
+  readonly sessionTempRoot: string;
 }
 
 export function preferredBubblewrapLauncher(
@@ -151,17 +152,18 @@ function systemBubblewrapHelp(
 export function spawnBubblewrap(
   launcher: BubblewrapLauncher,
   args: readonly string[],
-  options: SpawnBubblewrapOptions = {},
+  options: SpawnBubblewrapOptions,
 ): { readonly child: ChildProcess; readonly cleanup: () => void } {
   const {
     inheritedCwdFd,
     seccompMode,
+    sessionTempRoot,
     ...spawnOptions
   } = options;
   const seccompFile =
     seccompMode === undefined || seccompMode === null
       ? null
-      : openNetworkSeccompProgramFile(seccompMode);
+      : openNetworkSeccompProgramFile(seccompMode, sessionTempRoot);
   const stdio = stdioWithBoundaryFds(
     spawnOptions.stdio,
     seccompFile,
@@ -180,14 +182,20 @@ export function spawnBubblewrap(
 }
 
 export function findSystemBubblewrapInPath(
-  searchPath: string | undefined = process.env["PATH"],
+  searchPath?: string,
   cwd: string = process.cwd(),
   trustedDirectories: readonly string[] = TRUSTED_BWRAP_DIRECTORIES,
 ): string | null {
-  if (!searchPath) return null;
+  // A supplied `undefined` is an authoritative missing session PATH (for
+  // example, after decoding a daemon protocol tombstone). Only a caller that
+  // omits the search-path argument entirely opts into this process's PATH.
+  const effectiveSearchPath = arguments.length === 0
+    ? process.env["PATH"]
+    : searchPath;
+  if (!effectiveSearchPath) return null;
   const cwdReal = realpathOrSelf(cwd);
   const trusted = trustedDirectories.map((directory) => realpathOrSelf(directory));
-  for (const segment of searchPath.split(path.delimiter)) {
+  for (const segment of effectiveSearchPath.split(path.delimiter)) {
     if (!segment) continue;
     for (const program of [DEFAULT_BWRAP_PROGRAM, FALLBACK_BWRAP_PROGRAM]) {
       const candidate = path.join(segment, program);

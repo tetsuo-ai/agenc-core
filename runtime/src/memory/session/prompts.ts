@@ -7,7 +7,6 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { roughTokenCountEstimation } from "../../llm/token-estimation.js";
-import { getAgenCConfigHomeDir } from "../../utils/envUtils.js";
 
 const MAX_SECTION_LENGTH = 2_000;
 const MAX_TOTAL_SESSION_MEMORY_TOKENS = 12_000;
@@ -103,10 +102,11 @@ function debugLog(error: unknown): void {
  * Load a custom session memory template from config home if it exists.
  */
 export async function loadSessionMemoryTemplate(
+  configHomeDir: string,
   signal?: AbortSignal,
 ): Promise<string> {
   const templatePath = join(
-    getAgenCConfigHomeDir(),
+    configHomeDir,
     "session-memory",
     "config",
     "template.md",
@@ -125,9 +125,12 @@ export async function loadSessionMemoryTemplate(
 /**
  * Load a custom session memory update prompt from config home if it exists.
  */
-async function loadSessionMemoryPrompt(): Promise<string> {
+async function loadSessionMemoryPrompt(
+  configHomeDir: string | undefined,
+): Promise<string> {
+  if (configHomeDir === undefined) return getDefaultUpdatePrompt();
   const promptPath = join(
-    getAgenCConfigHomeDir(),
+    configHomeDir,
     "session-memory",
     "config",
     "prompt.md",
@@ -223,8 +226,9 @@ function escapeSessionMemoryNotesForPrompt(notes: string): string {
 export async function buildSessionMemoryUpdatePrompt(
   currentNotes: string,
   notesPath: string,
+  configHomeDir?: string,
 ): Promise<string> {
-  const promptTemplate = await loadSessionMemoryPrompt();
+  const promptTemplate = await loadSessionMemoryPrompt(configHomeDir);
   const sectionSizes = analyzeSectionSizes(currentNotes);
   const totalTokens = roughTokenCountEstimation(currentNotes);
   const sectionReminders = generateSectionReminders(sectionSizes, totalTokens);

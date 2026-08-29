@@ -7,20 +7,20 @@
 //   - approval_policy
 //   - sandbox_mode
 //   - reasoning_effort
+//   - reasoning_summary
 //   - model_verbosity
 //   - service_tier
 //   - personality
-//   - web_search
-//   - tools (→ tools_config)
+//   - tools_config
 //
-// Any other key in the profile is ignored (forward-compat silent drop).
+// Strict schema-v2 validation rejects any other profile key.
 
 import type {
   AgenCConfig,
   ProfileOverride,
-  ToolsConfig,
 } from "./schema.js";
-import { mergeConfigs } from "./schema.js";
+import { PROFILE_OVERRIDE_KEYS } from "./schema.js";
+import { mergeProviderModelLayer } from "./provider-model-authority.js";
 
 // Writable scratch view — `AgenCConfig` fields are readonly by design,
 // but building the override payload needs assignability.
@@ -39,28 +39,11 @@ export class UnknownProfileError extends Error {
   }
 }
 
-/**
- * Allowed overrideable fields. Everything else in a profile is ignored.
- */
-const OVERRIDABLE_PROFILE_KEYS: readonly (keyof ProfileOverride)[] = Object.freeze([
-  "model",
-  "model_provider",
-  "approval_policy",
-  "sandbox_mode",
-  "reasoning_effort",
-  "approvals_reviewer",
-  "model_verbosity",
-  "service_tier",
-  "personality",
-  "web_search",
-  "tools",
-]);
-
 function hasProfileOverride(
   profile: ProfileOverride,
   key: keyof ProfileOverride,
 ): boolean {
-  return OVERRIDABLE_PROFILE_KEYS.includes(key) && profile[key] !== undefined;
+  return PROFILE_OVERRIDE_KEYS.includes(key) && profile[key] !== undefined;
 }
 
 /**
@@ -68,8 +51,8 @@ function hasProfileOverride(
  *
  * - `profileName === undefined` → returns `config` unchanged.
  * - Unknown profile → `UnknownProfileError`.
- * - Only `OVERRIDABLE_PROFILE_KEYS` fields are applied; the rest is ignored.
- * - `tools` maps to `tools_config` on the canonical config.
+ * - Strict schema-v2 validation rejects fields outside `PROFILE_OVERRIDE_KEYS`.
+ * - Profile fields use the same canonical names as top-level config.
  */
 export function resolveProfile(
   config: AgenCConfig,
@@ -92,6 +75,8 @@ export function resolveProfile(
     override.sandbox_mode = profile.sandbox_mode;
   if (hasProfileOverride(profile, "reasoning_effort"))
     override.reasoning_effort = profile.reasoning_effort;
+  if (hasProfileOverride(profile, "reasoning_summary"))
+    override.reasoning_summary = profile.reasoning_summary;
   if (hasProfileOverride(profile, "approvals_reviewer"))
     override.approvals_reviewer = profile.approvals_reviewer;
   if (hasProfileOverride(profile, "model_verbosity")) {
@@ -102,28 +87,14 @@ export function resolveProfile(
   }
   if (hasProfileOverride(profile, "personality"))
     override.personality = profile.personality;
-  if (hasProfileOverride(profile, "web_search")) {
-    const tools: ToolsConfig = {
-      ...(config.tools_config ?? {}),
-      web_search:
-        typeof profile.web_search === "boolean"
-          ? profile.web_search
-          : profile.web_search !== "never",
-    };
-    override.tools_config = tools;
-  }
-  if (hasProfileOverride(profile, "tools")) {
-    // Compose on top of any tools_config already built above (e.g. from a
-    // web_search override) rather than re-reading the base config — otherwise a
-    // profile that sets both web_search and tools silently drops web_search.
-    // An explicit profile.tools.web_search still wins (spread last).
+  if (hasProfileOverride(profile, "tools_config")) {
     override.tools_config = {
-      ...(override.tools_config ?? config.tools_config ?? {}),
-      ...profile.tools,
+      ...(config.tools_config ?? {}),
+      ...profile.tools_config,
     };
   }
 
-  return mergeConfigs(config, override);
+  return mergeProviderModelLayer(config, override);
 }
 
 /** List all profile names declared in `config.profiles`. */

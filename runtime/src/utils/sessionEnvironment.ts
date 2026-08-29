@@ -1,22 +1,42 @@
 import { mkdir, readdir, readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
-import { getSessionId } from '../bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getAgenCConfigHomeDir } from './envUtils.js'
+import { requireCurrentRuntimeSession } from '../session/current-session.js'
 import { errorMessage, getErrnoCode } from './errors.js'
 import { getPlatform } from './platform.js'
 
-// Cache states:
-// undefined = not yet loaded (need to check disk)
-// null = checked disk, no files exist (don't check again)
-// string = loaded and cached (use cached value)
-let sessionEnvScript: string | null | undefined = undefined
+export interface SessionEnvironmentAuthority {
+  readonly homePath: string
+  readonly sessionId: string
+}
 
-export async function getSessionEnvDirPath(): Promise<string> {
+const sessionEnvironmentScripts = new Map<
+  string,
+  Promise<string | null>
+>()
+
+function currentSessionEnvironmentAuthority(): SessionEnvironmentAuthority {
+  const session = requireCurrentRuntimeSession('session environment')
+  const homePath = session.services?.configStore?.homeContext?.path
+  if (homePath === undefined) {
+    throw new Error(
+      'Active runtime session has no canonical ConfigStore home authority',
+    )
+  }
+  return { homePath, sessionId: String(session.conversationId) }
+}
+
+function authorityKey(authority: SessionEnvironmentAuthority): string {
+  return `${authority.homePath}\u0000${authority.sessionId}`
+}
+
+export async function getSessionEnvDirPath(
+  authority: SessionEnvironmentAuthority = currentSessionEnvironmentAuthority(),
+): Promise<string> {
   const sessionEnvDir = join(
-    getAgenCConfigHomeDir(),
+    authority.homePath,
     'session-env',
-    getSessionId(),
+    authority.sessionId,
   )
   await mkdir(sessionEnvDir, { recursive: true })
   return sessionEnvDir
@@ -25,14 +45,20 @@ export async function getSessionEnvDirPath(): Promise<string> {
 export async function getHookEnvFilePath(
   hookEvent: 'Setup' | 'SessionStart' | 'CwdChanged' | 'FileChanged',
   hookIndex: number,
+  authority: SessionEnvironmentAuthority = currentSessionEnvironmentAuthority(),
 ): Promise<string> {
   const prefix = hookEvent.toLowerCase()
-  return join(await getSessionEnvDirPath(), `${prefix}-hook-${hookIndex}.sh`)
+  return join(
+    await getSessionEnvDirPath(authority),
+    `${prefix}-hook-${hookIndex}.sh`,
+  )
 }
 
-export async function clearCwdEnvFiles(): Promise<void> {
+export async function clearCwdEnvFiles(
+  authority: SessionEnvironmentAuthority = currentSessionEnvironmentAuthority(),
+): Promise<void> {
   try {
-    const dir = await getSessionEnvDirPath()
+    const dir = await getSessionEnvDirPath(authority)
     const files = await readdir(dir)
     await Promise.all(
       files
@@ -52,49 +78,51 @@ export async function clearCwdEnvFiles(): Promise<void> {
   }
 }
 
-export function invalidateSessionEnvCache(): void {
+export function invalidateSessionEnvCache(
+  authority: SessionEnvironmentAuthority = currentSessionEnvironmentAuthority(),
+): void {
   logForDebugging('Invalidating session environment cache')
-  sessionEnvScript = undefined
+  sessionEnvironmentScripts.delete(authorityKey(authority))
 }
 
-export async function getSessionEnvironmentScript(): Promise<string | null> {
+/** Release all cached shell state owned by a session during its shutdown. */
+export function disposeSessionEnvironment(
+  authority: SessionEnvironmentAuthority,
+): void {
+  invalidateSessionEnvCache(authority)
+}
+
+export function getSessionEnvironmentScript(
+  authority: SessionEnvironmentAuthority = currentSessionEnvironmentAuthority(),
+): Promise<string | null> {
   if (getPlatform() === 'windows') {
     logForDebugging('Session environment not yet supported on Windows')
-    return null
+    return Promise.resolve(null)
   }
 
-  if (sessionEnvScript !== undefined) {
-    return sessionEnvScript
-  }
+  const key = authorityKey(authority)
+  const cached = sessionEnvironmentScripts.get(key)
+  if (cached !== undefined) return cached
 
+  const loading = loadSessionEnvironmentScript(authority).catch(error => {
+    sessionEnvironmentScripts.delete(key)
+    throw error
+  })
+  sessionEnvironmentScripts.set(key, loading)
+  return loading
+}
+
+async function loadSessionEnvironmentScript(
+  authority: SessionEnvironmentAuthority,
+): Promise<string | null> {
   const scripts: string[] = []
 
-  // Check for AGENC_ENV_FILE passed from parent process (e.g., HFI trajectory runner)
-  // This allows venv/conda activation to persist across shell commands
-  const envFile = process.env.AGENC_ENV_FILE
-  if (envFile) {
-    try {
-      const envScript = (await readFile(envFile, 'utf8')).trim()
-      if (envScript) {
-        scripts.push(envScript)
-        logForDebugging(
-          `Session environment loaded from AGENC_ENV_FILE: ${envFile} (${envScript.length} chars)`,
-        )
-      }
-    } catch (e: unknown) {
-      const code = getErrnoCode(e)
-      if (code !== 'ENOENT') {
-        logForDebugging(`Failed to read AGENC_ENV_FILE: ${errorMessage(e)}`)
-      }
-    }
-  }
-
   // Load hook environment files from session directory
-  const sessionEnvDir = await getSessionEnvDirPath()
+  const sessionEnvDir = await getSessionEnvDirPath(authority)
   try {
     const files = await readdir(sessionEnvDir)
     // We are sorting the hook env files by the order in which they are listed
-    // in the settings.json file so that the resulting env is deterministic
+    // in canonical config.toml so that the resulting env is deterministic
     const hookFiles = files
       .filter(f => HOOK_ENV_REGEX.test(f))
       .sort(sortHookEnvFiles)
@@ -132,11 +160,10 @@ export async function getSessionEnvironmentScript(): Promise<string | null> {
 
   if (scripts.length === 0) {
     logForDebugging('No session environment scripts found')
-    sessionEnvScript = null
-    return sessionEnvScript
+    return null
   }
 
-  sessionEnvScript = scripts.join('\n')
+  const sessionEnvScript = scripts.join('\n')
   logForDebugging(
     `Session environment script ready (${sessionEnvScript.length} chars total)`,
   )

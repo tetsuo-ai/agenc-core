@@ -3,11 +3,9 @@
  *
  * Capabilities verified against provider docs 2026-07-08: 1M context
  * (the default window for the model), 128K max output, $10/$50 pricing,
- * structured outputs, effort incl. max, always-on thinking (adaptive is
+ * effort including max, always-on thinking (adaptive is
  * the only accepted explicit config; `disabled`/budget_tokens 400), NO
  * fast mode, NO assistant prefill, and the `refusal` stop reason. The
- * advisor pairing table in the docs does NOT list Fable 5 (as executor
- * or advisor), so it is deliberately left out of the advisor tables.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -17,15 +15,10 @@ import {
   modelSupports1M,
 } from '../../src/utils/context.js'
 import { getModelCosts } from '../../src/utils/modelCost.js'
-import { modelSupportsStructuredOutputs } from '../../src/utils/betas.js'
 import {
   modelSupportsEffort,
   modelSupportsMaxEffort,
 } from '../../src/utils/effort.js'
-import {
-  isValidAdvisorModel,
-  modelSupportsAdvisor,
-} from '../../src/utils/advisor.js'
 import { isFastModeSupportedByModel } from '../../src/utils/fastMode.js'
 import {
   modelSupportsAdaptiveThinking,
@@ -42,22 +35,14 @@ import {
   getMarketingNameForModel,
 } from '../../src/utils/model/model.js'
 import { BUILT_IN_PROVIDER_MODEL_CATALOG } from '../../src/llm/registry/provider-info.js'
+import { runWithStartupProviderSelection } from '../../src/utils/model/providers.js'
 
 const FABLE_5 = 'claude-fable-5'
 
 beforeEach(() => {
   vi.stubEnv('AGENC_DISABLE_1M_CONTEXT', '')
   vi.stubEnv('USER_TYPE', '')
-  // Pin the provider to firstParty regardless of the host machine's env
-  // (an ambient XAI_API_KEY/AGENC_USE_* would flip getAPIProvider()).
-  vi.stubEnv('XAI_API_KEY', '')
-  vi.stubEnv('MINIMAX_API_KEY', '')
-  vi.stubEnv('AGENC_USE_OPENAI', '')
-  vi.stubEnv('AGENC_USE_GEMINI', '')
-  vi.stubEnv('AGENC_USE_GITHUB', '')
-  vi.stubEnv('AGENC_USE_MISTRAL', '')
-  vi.stubEnv('AGENC_USE_MINIMAX', '')
-  vi.stubEnv('NVIDIA_NIM', '')
+  vi.stubEnv('AGENC_PROVIDER', 'anthropic')
 })
 
 afterEach(() => {
@@ -112,10 +97,15 @@ describe('Fable 5 onboarding', () => {
     expect(costs.outputTokens).toBe(50)
   })
 
-  it('supports structured outputs and effort (incl. max)', () => {
-    expect(modelSupportsStructuredOutputs(FABLE_5)).toBe(true)
-    expect(modelSupportsEffort(FABLE_5)).toBe(true)
-    expect(modelSupportsMaxEffort(FABLE_5)).toBe(true)
+  it('supports effort including max', () => {
+    runWithStartupProviderSelection({
+      provider: 'anthropic',
+      model: FABLE_5,
+      environment: { ...process.env },
+    }, () => {
+      expect(modelSupportsEffort(FABLE_5)).toBe(true)
+      expect(modelSupportsMaxEffort(FABLE_5)).toBe(true)
+    })
   })
 
   it('has NO fast mode', () => {
@@ -133,11 +123,6 @@ describe('Fable 5 onboarding', () => {
     expect(isAlwaysOnThinkingAnthropicModel('claude-opus-4-8')).toBe(false)
     expect(modelSupportsThinking(FABLE_5)).toBe(true)
     expect(modelSupportsAdaptiveThinking(FABLE_5)).toBe(true)
-  })
-
-  it('is deliberately NOT in the advisor pairing tables (docs omit it)', () => {
-    expect(modelSupportsAdvisor(FABLE_5)).toBe(false)
-    expect(isValidAdvisorModel(FABLE_5)).toBe(false)
   })
 
   it('sanitizes commit attribution to the public fable-5 name', () => {

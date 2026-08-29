@@ -1,33 +1,31 @@
 /**
- * Ports upstream `src/utils/providerDiscovery.ts` and
- * `src/utils/providerAutoDetect.ts` provider-readiness probes onto AgenC's
- * provider registry, BYOK config, and auth backend.
- *
- * Shape difference from upstream:
- *   - AgenC reports readiness for built-in runtime providers rather than
- *     writing profile environment files.
- *   - Hosted/managed-key readiness is checked through AuthBackend instead of
- *     local profile secrets.
+ * Reports built-in provider readiness from the canonical provider registry,
+ * session environment, BYOK state, local health probes, and auth backend.
  */
 
 import type { AuthBackend, AuthBackendKind, AuthSubscriptionTier } from "../../auth/backend.js";
-import { loadConfig } from "../../config/loader.js";
-import { resolveAgencHome } from "../../config/env.js";
-import { resolveProviderSettings } from "../../config/resolve-provider.js";
+import { loadCanonicalConfig } from "../../config/repository.js";
+import { readProviderConfig } from "../../config/resolve-provider.js";
 import type { AgenCConfig } from "../../config/schema.js";
-import { readXaiOauthAccessToken } from "../../utils/xaiOauthCredentials.js";
+import type { HomeContext } from "../../config/home.js";
+import { readLocalByokCredential } from "../../auth/native-credentials.js";
+import { captureSecureStorageIngress } from "../../utils/secureStorage/home.js";
 import {
-  BUILT_IN_PROVIDER_API_KEY_ENVS,
-  BUILT_IN_PROVIDER_BASE_URLS,
+  resolveProviderBaseURLEnvironment,
+  type ProviderCredentialProvenance,
+} from "../registry/provider-ingress.js";
+import {
+  BUILT_IN_PROVIDER_DEFINITIONS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
 } from "../registry/provider-info.js";
 import {
-  normalizeProviderName,
+  resolveBuiltInProviderSlug,
   type ProviderName,
 } from "../provider.js";
+import { resolveProviderCredentialAuthority } from "../provider-options.js";
 
 export type ProviderAvailabilityStatus = "usable" | "unusable";
-export type ProviderKeyStatus =
+export type ProviderCredentialStatus =
   | "present"
   | "missing"
   | "managed"
@@ -35,31 +33,6 @@ export type ProviderKeyStatus =
   | "optional"
   | "not-required";
 export type ProviderLocalStatus = "up" | "down" | "unchecked" | "n/a";
-
-const PROVIDERS_REQUIRING_KEY = new Set<ProviderName>([
-  "grok",
-  "openai",
-  "anthropic",
-  "openrouter",
-  "groq",
-  "deepseek",
-  "gemini",
-  "mistral",
-  "nvidia-nim",
-  "minimax",
-  "github",
-  "amazon-bedrock",
-]);
-
-const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
-  "openrouter",
-]);
-
-const LOCAL_PROVIDERS = new Set<ProviderName>([
-  "ollama",
-  "lmstudio",
-  "openai-compatible",
-]);
 
 const HOSTED_AGENC_DELEGATE_PROVIDERS = new Set<ProviderName>([
   "grok",
@@ -85,8 +58,8 @@ export interface ProviderAvailabilityEntry {
   readonly model: string;
   readonly status: ProviderAvailabilityStatus;
   readonly usable: boolean;
-  readonly keyStatus: ProviderKeyStatus;
-  readonly keyEnvVar?: string;
+  readonly credentialStatus: ProviderCredentialStatus;
+  readonly credentialProvenance?: ProviderCredentialProvenance;
   readonly localStatus: ProviderLocalStatus;
   readonly localUrl?: string;
   readonly localStatusCode?: number;
@@ -120,9 +93,11 @@ interface SubscriptionContext {
 export async function collectProviderAvailability(
   options: CollectProviderAvailabilityOptions = {},
 ): Promise<ProviderAvailabilityReport> {
-  const env = options.env ?? process.env;
+  const ingress = captureSecureStorageIngress(options.env ?? process.env);
+  const env = ingress.environment;
+  const home = ingress.home;
   const config = options.config ??
-    (await loadConfig({ home: resolveAgencHome(env) })).config;
+    (await loadCanonicalConfig({ home, env })).config;
   const subscription = await resolveSubscriptionContext(options.authBackend);
   const entries = await Promise.all(
     (Object.keys(BUILT_IN_PROVIDER_DEFAULT_MODELS) as ProviderName[]).map(
@@ -131,6 +106,7 @@ export async function collectProviderAvailability(
           provider,
           authBackend: options.authBackend,
           config,
+          home,
           env,
           subscription,
           checkLocal: options.checkLocal !== false,
@@ -164,12 +140,12 @@ export function formatProviderAvailabilityReport(
     "",
     "",
     table([
-      ["Provider", "Model", "Usable", "Key", "Local", "Tier", "Detail"],
+      ["Provider", "Model", "Usable", "Credential", "Local", "Tier", "Detail"],
       ...report.entries.map((entry) => [
         entry.provider,
         entry.model,
         entry.usable ? "yes" : "no",
-        formatKeyStatus(entry),
+        formatCredentialStatus(entry),
         formatLocalStatus(entry),
         entry.subscriptionTier ?? "unknown",
         entry.detail,
@@ -203,46 +179,70 @@ async function resolveProviderAvailabilityEntry(params: {
   readonly provider: ProviderName;
   readonly authBackend?: AuthBackend;
   readonly config: AgenCConfig;
+  readonly home: HomeContext;
   readonly env: NodeJS.ProcessEnv;
   readonly subscription: SubscriptionContext;
   readonly checkLocal: boolean;
   readonly fetchImpl?: typeof fetch;
   readonly localProbeTimeoutMs: number;
 }): Promise<ProviderAvailabilityEntry> {
-  const settings = resolveProviderSettings(
-    params.provider,
-    params.config,
-    params.env,
-  );
+  const providerConfig = readProviderConfig(params.config, params.provider);
   const model =
-    settings?.defaultModel ?? BUILT_IN_PROVIDER_DEFAULT_MODELS[params.provider];
-  const credential = resolveProviderCredential({
-    provider: params.provider,
-    config: params.config,
-    env: params.env,
-    settingsApiKey: settings?.apiKey,
-  });
-  const keyEnvVar = credential.sourceEnvVar ?? credential.primaryEnvVar;
-  const hasKey = credential.apiKey !== undefined;
-  const hasRequiredAwsSecret = params.provider !== "amazon-bedrock" ||
-    firstNonEmptyString(params.env.AWS_BEDROCK_SECRET_ACCESS_KEY) !== undefined ||
-    firstNonEmptyString(params.env.AWS_SECRET_ACCESS_KEY) !== undefined;
+    providerConfig?.default_model?.trim() ??
+    BUILT_IN_PROVIDER_DEFAULT_MODELS[params.provider];
+  const configuredBaseURL =
+    resolveProviderBaseURLEnvironment(params.provider, params.env)?.value ??
+    providerConfig?.base_url?.trim();
+  let authority: ReturnType<typeof resolveProviderCredentialAuthority>;
+  try {
+    authority = resolveProviderCredentialAuthority(
+      params.provider,
+      {
+        credentialHome: params.home,
+        model,
+        ...(configuredBaseURL ? { baseURL: configuredBaseURL } : {}),
+      },
+      params.env,
+      {
+        savedApiKey: readLocalByokCredential(
+          params.home,
+          params.provider,
+        )?.apiKey,
+      },
+    );
+  } catch (error) {
+    return buildEntry({
+      provider: params.provider,
+      model,
+      credentialStatus: "unavailable",
+      localProbe: { localStatus: "n/a" },
+      subscription: params.subscription,
+      usable: false,
+      detail: error instanceof Error ? error.message : String(error),
+    });
+  }
+  const credential = authority.credential;
+  const credentialReady = credential.status === "ready";
+  const credentialProvenance = "provenance" in credential
+    ? credential.provenance
+    : undefined;
   const subscriptionTier = params.subscription.tier;
   const paidSubscription = isPaidSubscriptionTier(subscriptionTier);
   const localUrl = localProviderProbeUrl(
     params.provider,
     resolveProviderBaseURLForDiscovery({
       provider: params.provider,
-      config: params.config,
-      env: params.env,
-      settingsBaseURL: settings?.baseURL,
+      settingsBaseURL: configuredBaseURL,
     }),
   );
   const localProbe =
     localUrl !== undefined
       ? await probeLocalProvider({
           url: localUrl,
-          apiKey: localProbeApiKey(params.provider, credential.apiKey),
+          apiKey: localProbeApiKey(
+            params.provider,
+            authority.factoryOptions.apiKey,
+          ),
           checkLocal: params.checkLocal,
           fetchImpl: params.fetchImpl,
           timeoutMs: params.localProbeTimeoutMs,
@@ -263,7 +263,7 @@ async function resolveProviderAvailabilityEntry(params: {
     return buildEntry({
       provider: params.provider,
       model,
-      keyStatus: "not-required",
+      credentialStatus: "not-required",
       localProbe,
       subscription: params.subscription,
       usable: hostedRoute.usable,
@@ -276,7 +276,10 @@ async function resolveProviderAvailabilityEntry(params: {
     return buildEntry({
       provider: params.provider,
       model,
-      keyStatus: localProviderKeyStatus(params.provider, hasKey),
+      credentialStatus: localProviderCredentialStatus(
+        params.provider,
+        credentialReady,
+      ),
       localProbe,
       subscription: params.subscription,
       usable,
@@ -285,37 +288,52 @@ async function resolveProviderAvailabilityEntry(params: {
         : params.checkLocal
           ? `start local server or check ${localUrl}`
           : "local server check skipped",
-      ...(hasKey && keyEnvVar !== undefined ? { keyEnvVar } : {}),
+      ...(credentialProvenance !== undefined
+        ? { credentialProvenance }
+        : {}),
     });
   }
 
-  if (PROVIDERS_REQUIRING_KEY.has(params.provider)) {
-    if (hasKey && !hasRequiredAwsSecret) {
+  if (credential.status === "not-required") {
+    return buildEntry({
+      provider: params.provider,
+      model,
+      credentialStatus: "not-required",
+      localProbe,
+      subscription: params.subscription,
+      usable: true,
+      detail: "available",
+    });
+  }
+
+  if (
+    ["api-key", "environment"].includes(
+      BUILT_IN_PROVIDER_DEFINITIONS[params.provider].onboarding.access,
+    )
+  ) {
+    if (credentialReady) {
       return buildEntry({
         provider: params.provider,
         model,
-        keyStatus: "missing",
-        localProbe,
-        subscription: params.subscription,
-        usable: false,
-        detail: "set AWS_SECRET_ACCESS_KEY for Amazon Bedrock SigV4 signing",
-        ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
-      });
-    }
-    if (hasKey) {
-      return buildEntry({
-        provider: params.provider,
-        model,
-        keyStatus: "present",
+        credentialStatus: "present",
         localProbe,
         subscription: params.subscription,
         usable: true,
-        detail: `BYOK credential found${keyEnvVar ? ` via ${keyEnvVar}` : ""}`,
-        ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
+        detail: params.provider === "gemini"
+          ? `Gemini credential found via ${credential.label}`
+          : credentialProvenance?.kind === "oauth"
+            ? "xAI OAuth credential found"
+            : credential.source === "native-sign-in"
+              ? `${credential.label} credential found`
+              : `BYOK credential found via ${credentialProvenance?.fields.map((field) => field.envVar).join(" + ") ?? credential.label}`,
+        ...(credentialProvenance !== undefined
+          ? { credentialProvenance }
+          : {}),
       });
     }
     if (
-      MANAGED_KEY_PROVIDERS.has(params.provider) &&
+      BUILT_IN_PROVIDER_DEFINITIONS[params.provider].onboarding
+        .supportsManagedKeyAccess &&
       params.subscription.authBackendKind === "remote" &&
       paidSubscription
     ) {
@@ -327,29 +345,27 @@ async function resolveProviderAvailabilityEntry(params: {
         return buildEntry({
           provider: params.provider,
           model,
-          keyStatus: "unavailable",
+          credentialStatus: "unavailable",
           localProbe,
           subscription: params.subscription,
           usable: false,
           detail: managedKey.detail,
-          ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
         });
       }
       return buildEntry({
         provider: params.provider,
         model,
-        keyStatus: "managed",
+        credentialStatus: "managed",
         localProbe,
         subscription: params.subscription,
         usable: true,
         detail: "managed key available through AgenC subscription",
-        ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
       });
     }
     return buildEntry({
       provider: params.provider,
       model,
-      keyStatus: "missing",
+      credentialStatus: "missing",
       localProbe,
       subscription: params.subscription,
       usable: false,
@@ -357,15 +373,17 @@ async function resolveProviderAvailabilityEntry(params: {
         params.subscription.authBackendKind === "remote" &&
           subscriptionTier === "free"
           ? "set BYOK credential or upgrade subscription for managed keys"
-          : `set ${keyEnvVar ?? "provider API key"}`,
-      ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
+          : `set ${credential.status === "missing" ? credential.missingLabel : "provider credentials"}`,
+      ...(credentialProvenance !== undefined
+        ? { credentialProvenance }
+        : {}),
     });
   }
 
   return buildEntry({
     provider: params.provider,
     model,
-    keyStatus: "not-required",
+    credentialStatus: "not-required",
     localProbe,
     subscription: params.subscription,
     usable: true,
@@ -376,7 +394,7 @@ async function resolveProviderAvailabilityEntry(params: {
 function buildEntry(params: {
   readonly provider: ProviderName;
   readonly model: string;
-  readonly keyStatus: ProviderKeyStatus;
+  readonly credentialStatus: ProviderCredentialStatus;
   readonly localProbe: {
     readonly localStatus: ProviderLocalStatus;
     readonly localStatusCode?: number;
@@ -385,15 +403,17 @@ function buildEntry(params: {
   readonly subscription: SubscriptionContext;
   readonly usable: boolean;
   readonly detail: string;
-  readonly keyEnvVar?: string;
+  readonly credentialProvenance?: ProviderCredentialProvenance;
 }): ProviderAvailabilityEntry {
   return {
     provider: params.provider,
     model: params.model,
     status: params.usable ? "usable" : "unusable",
     usable: params.usable,
-    keyStatus: params.keyStatus,
-    ...(params.keyEnvVar !== undefined ? { keyEnvVar: params.keyEnvVar } : {}),
+    credentialStatus: params.credentialStatus,
+    ...(params.credentialProvenance !== undefined
+      ? { credentialProvenance: params.credentialProvenance }
+      : {}),
     localStatus: params.localProbe.localStatus,
     ...(params.localProbe.localUrl !== undefined
       ? { localUrl: params.localProbe.localUrl }
@@ -411,159 +431,23 @@ function buildEntry(params: {
   };
 }
 
-function localProviderKeyStatus(
+function localProviderCredentialStatus(
   provider: ProviderName,
-  hasKey: boolean,
-): ProviderKeyStatus {
+  credentialReady: boolean,
+): ProviderCredentialStatus {
   if (provider === "ollama") return "not-required";
-  return hasKey ? "present" : "optional";
-}
-
-function resolveProviderCredential(params: {
-  readonly provider: ProviderName;
-  readonly config: AgenCConfig;
-  readonly env: NodeJS.ProcessEnv;
-  readonly settingsApiKey?: string;
-}): {
-  readonly apiKey?: string;
-  readonly sourceEnvVar?: string;
-  readonly primaryEnvVar?: string;
-} {
-  const configuredEnvVar = readProviderApiKeyEnvVar(
-    params.config,
-    params.provider,
-  );
-  if (configuredEnvVar !== undefined && params.env[configuredEnvVar] !== undefined) {
-    const apiKey = firstNonEmptyString(params.env[configuredEnvVar]);
-    return {
-      ...(apiKey !== undefined ? { apiKey, sourceEnvVar: configuredEnvVar } : {}),
-      primaryEnvVar: configuredEnvVar,
-    };
-  }
-  const candidates = providerApiKeyEnvCandidates(params.provider);
-  for (const candidate of candidates) {
-    const apiKey = firstNonEmptyString(params.env[candidate]);
-    if (apiKey !== undefined) {
-      return {
-        apiKey,
-        sourceEnvVar: candidate,
-        primaryEnvVar: configuredEnvVar ?? candidates[0],
-      };
-    }
-  }
-  const settingsApiKey = firstNonEmptyString(params.settingsApiKey);
-  if (settingsApiKey === undefined && params.provider === "grok") {
-    // Sign in with X / xAI OAuth: a stored subscription bearer counts as a
-    // present credential so grok reports usable without XAI_API_KEY.
-    const oauthBearer = readXaiOauthAccessToken();
-    if (oauthBearer !== undefined) {
-      return {
-        apiKey: oauthBearer,
-        primaryEnvVar: configuredEnvVar ?? candidates[0],
-      };
-    }
-  }
-  return {
-    ...(settingsApiKey !== undefined ? { apiKey: settingsApiKey } : {}),
-    primaryEnvVar: configuredEnvVar ?? candidates[0] ??
-      BUILT_IN_PROVIDER_API_KEY_ENVS[params.provider],
-  };
-}
-
-function providerApiKeyEnvCandidates(provider: ProviderName): readonly string[] {
-  switch (provider) {
-    case "grok":
-      return ["XAI_API_KEY", "GROK_API_KEY", "AGENC_XAI_API_KEY"];
-    case "lmstudio":
-      return ["LMSTUDIO_API_KEY", "OPENAI_API_KEY"];
-    case "openai-compatible":
-      return ["OPENAI_COMPATIBLE_API_KEY", "OPENAI_API_KEY"];
-    case "openai":
-    case "anthropic":
-    case "openrouter":
-    case "groq":
-    case "deepseek":
-    case "gemini": {
-      const envVar = BUILT_IN_PROVIDER_API_KEY_ENVS[provider];
-      return envVar !== undefined ? [envVar] : [];
-    }
-    case "mistral":
-      return ["MISTRAL_API_KEY"];
-    case "nvidia-nim":
-      return ["NVIDIA_API_KEY"];
-    case "minimax":
-      return ["MINIMAX_API_KEY"];
-    case "github":
-      return ["GITHUB_TOKEN", "GH_TOKEN"];
-    case "amazon-bedrock":
-      return ["AWS_BEDROCK_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"];
-    case "agenc":
-    case "ollama":
-      return [];
-  }
+  return credentialReady ? "present" : "optional";
 }
 
 function resolveProviderBaseURLForDiscovery(params: {
   readonly provider: ProviderName;
-  readonly config: AgenCConfig;
-  readonly env: NodeJS.ProcessEnv;
   readonly settingsBaseURL?: string;
 }): string | undefined {
-  const configuredBaseURL = readProviderBaseURL(params.config, params.provider);
-  switch (params.provider) {
-    case "ollama":
-      return normalizeOllamaHost(
-        firstNonEmptyString(params.env.OLLAMA_BASE_URL) ??
-          configuredBaseURL ??
-          BUILT_IN_PROVIDER_BASE_URLS.ollama,
-      );
-    case "lmstudio":
-      return firstNonEmptyString(params.env.LMSTUDIO_BASE_URL) ??
-        (!firstNonEmptyString(params.env.LMSTUDIO_API_KEY) &&
-            firstNonEmptyString(params.env.OPENAI_API_KEY)
-          ? firstNonEmptyString(params.env.OPENAI_BASE_URL)
-          : undefined) ??
-        configuredBaseURL ??
-        BUILT_IN_PROVIDER_BASE_URLS.lmstudio;
-    case "openai-compatible":
-      return firstNonEmptyString(params.env.OPENAI_COMPATIBLE_BASE_URL) ??
-        firstNonEmptyString(params.env.OPENAI_BASE_URL) ??
-        firstNonEmptyString(params.env.OPENAI_API_BASE) ??
-        configuredBaseURL ??
-        BUILT_IN_PROVIDER_BASE_URLS["openai-compatible"];
-    case "mistral":
-      return firstNonEmptyString(params.env.MISTRAL_BASE_URL) ??
-        configuredBaseURL ??
-        BUILT_IN_PROVIDER_BASE_URLS.mistral;
-    case "nvidia-nim":
-      return firstNonEmptyString(params.env.NVIDIA_BASE_URL) ??
-        configuredBaseURL ??
-        BUILT_IN_PROVIDER_BASE_URLS["nvidia-nim"];
-    case "minimax":
-      return firstNonEmptyString(params.env.MINIMAX_BASE_URL) ??
-        configuredBaseURL ??
-        BUILT_IN_PROVIDER_BASE_URLS.minimax;
-    case "github":
-      return firstNonEmptyString(params.env.GITHUB_BASE_URL) ??
-        configuredBaseURL ??
-        BUILT_IN_PROVIDER_BASE_URLS.github;
-    default:
-      return params.settingsBaseURL ?? BUILT_IN_PROVIDER_BASE_URLS[params.provider];
-  }
-}
-
-function readProviderApiKeyEnvVar(
-  config: AgenCConfig,
-  provider: ProviderName,
-): string | undefined {
-  return firstNonEmptyString(config.providers?.[provider]?.api_key_env);
-}
-
-function readProviderBaseURL(
-  config: AgenCConfig,
-  provider: ProviderName,
-): string | undefined {
-  return firstNonEmptyString(config.providers?.[provider]?.base_url);
+  const baseURL = params.settingsBaseURL ??
+    BUILT_IN_PROVIDER_DEFINITIONS[params.provider].baseURL;
+  return params.provider === "ollama"
+    ? normalizeOllamaHost(baseURL)
+    : baseURL;
 }
 
 function localProbeApiKey(
@@ -586,7 +470,10 @@ function localProviderProbeUrl(
   provider: ProviderName,
   baseURL: string | undefined,
 ): string | undefined {
-  if (!LOCAL_PROVIDERS.has(provider) || baseURL === undefined) {
+  if (
+    BUILT_IN_PROVIDER_DEFINITIONS[provider].onboarding.access !== "local" ||
+    baseURL === undefined
+  ) {
     return undefined;
   }
   if (provider === "ollama") {
@@ -672,6 +559,13 @@ async function verifyManagedProviderKey(params: {
       params.provider,
       PROVIDER_CHECK_SESSION_ID,
     );
+    if (key.kind !== "api-key") {
+      return {
+        usable: false,
+        detail:
+          `managed key unavailable: expected api-key credential for ${params.provider}, received ${key.kind}`,
+      };
+    }
     const apiKey = firstNonEmptyString(key.apiKey);
     if (apiKey === undefined) {
       return {
@@ -724,9 +618,9 @@ async function verifyHostedAgencRoute(params: {
         ? { subscriptionTier: params.subscriptionTier }
         : {}),
     });
-    const provider = normalizeProviderName(inferred.provider);
+    const provider = resolveBuiltInProviderSlug(inferred.provider);
     const model = firstNonEmptyString(inferred.model);
-    if (provider === null) {
+    if (provider === undefined) {
       return {
         usable: false,
         detail:
@@ -772,14 +666,19 @@ async function verifyHostedAgencRoute(params: {
   }
 }
 
-function formatKeyStatus(entry: ProviderAvailabilityEntry): string {
-  if (entry.keyStatus === "missing" && entry.keyEnvVar !== undefined) {
-    return `missing(${entry.keyEnvVar})`;
+function formatCredentialStatus(entry: ProviderAvailabilityEntry): string {
+  if (
+    entry.credentialStatus === "present" &&
+    entry.credentialProvenance !== undefined
+  ) {
+    if (entry.credentialProvenance.kind === "oauth") {
+      return "present(xAI OAuth)";
+    }
+    if (entry.credentialProvenance.kind === "environment") {
+      return `present(${entry.credentialProvenance.fields.map((field) => field.envVar).join("+")})`;
+    }
   }
-  if (entry.keyStatus === "present" && entry.keyEnvVar !== undefined) {
-    return `present(${entry.keyEnvVar})`;
-  }
-  return entry.keyStatus;
+  return entry.credentialStatus;
 }
 
 function formatLocalStatus(entry: ProviderAvailabilityEntry): string {

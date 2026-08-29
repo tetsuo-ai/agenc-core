@@ -72,7 +72,6 @@ export const TeamCreateTool: Tool<InputSchema, Output> = buildTool({
   name: TEAM_CREATE_TOOL_NAME,
   searchHint: 'create a multi-agent swarm team',
   maxResultSizeChars: 100_000,
-  shouldDefer: true,
 
   userFacingName() {
     return ''

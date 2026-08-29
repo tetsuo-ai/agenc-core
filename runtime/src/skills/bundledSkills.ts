@@ -1,12 +1,12 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
-import { constants as fsConstants } from 'fs'
-import { mkdir, open } from 'fs/promises'
-import { dirname, isAbsolute, join, normalize, sep as pathSep } from 'path'
 import type { ToolUseContext } from '../tools/Tool.js'
 import type { Command } from '../types/command.js'
-import { logForDebugging } from 'src/utils/debug.js'
-import { getBundledSkillsRoot } from '../utils/permissions/filesystem.js'
-import type { HooksSettings } from '../utils/settings/types.js'
+import type { HooksSettings } from '../schemas/hooks.js'
+import {
+  extractBundledSkillFiles,
+  getBundledSkillDirectory,
+} from './bundled-extraction-registry.js'
+import { getCurrentBundledSkillExtractionRoot } from './bundled-root-authority.js'
 // Pure data (type-only back-reference to this module — no runtime cycle).
 import { AGENC_MARKETPLACE_KIT_INSTALLER_SKILL } from './bundled/agencMarketplaceKitInstaller.js'
 import { BROWSER_AUTOMATION_SKILL } from './bundled/browserAutomation.js'
@@ -61,14 +61,14 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
   let getPromptForCommand = definition.getPromptForCommand
 
   if (hasFiles) {
-    // Closure-local memoization: extract once per process.
-    // Memoize the promise (not the result) so concurrent callers await
-    // the same extraction instead of racing into separate writes.
-    let extractionPromise: Promise<string | null> | undefined
     const inner = definition.getPromptForCommand
     getPromptForCommand = async (args, ctx) => {
-      extractionPromise ??= extractBundledSkillFiles(definition.name, files)
-      const extractedDir = await extractionPromise
+      const root = getCurrentBundledSkillExtractionRoot()
+      const extractedDir = await extractBundledSkillFiles(
+        root,
+        definition.name,
+        files,
+      )
       const blocks = await inner(args, ctx)
       if (extractedDir === null) return blocks
       return prependBaseDir(blocks, extractedDir)
@@ -91,12 +91,8 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
     source: 'bundled',
     loadedFrom: 'bundled',
     hooks: definition.hooks,
-    // Lazy on purpose. getBundledSkillExtractDir() reads the build-time
-    // MACRO.VERSION define, so resolving it here — at module load, since
-    // registration runs at import — would make merely IMPORTING this module
-    // throw wherever MACRO is absent, and take every bundled skill down with
-    // it (the `/skills` listing, the command palette). Nothing needs the path
-    // until the files are actually extracted on first invocation.
+    // Resolve lazily so the path follows the active session's captured temp
+    // authority instead of the import-time process context.
     get skillRoot(): string | undefined {
       return hasFiles ? getBundledSkillExtractDir(definition.name) : undefined
     },
@@ -129,91 +125,10 @@ export function clearBundledSkills(): void {
  * Deterministic extraction directory for a bundled skill's reference files.
  */
 export function getBundledSkillExtractDir(skillName: string): string {
-  return join(getBundledSkillsRoot(), skillName)
-}
-
-/**
- * Extract a bundled skill's reference files to disk so the model can
- * Read/Grep them on demand. Called lazily on first skill invocation.
- *
- * Returns the directory written to, or null if write failed (skill
- * continues to work, just without the base-directory prefix).
- */
-async function extractBundledSkillFiles(
-  skillName: string,
-  files: Record<string, string>,
-): Promise<string | null> {
-  const dir = getBundledSkillExtractDir(skillName)
-  try {
-    await writeSkillFiles(dir, files)
-    return dir
-  } catch (e) {
-    logForDebugging(
-      `Failed to extract bundled skill '${skillName}' to ${dir}: ${e instanceof Error ? e.message : String(e)}`,
-    )
-    return null
-  }
-}
-
-async function writeSkillFiles(
-  dir: string,
-  files: Record<string, string>,
-): Promise<void> {
-  // Group by parent dir so we mkdir each subtree once, then write.
-  const byParent = new Map<string, [string, string][]>()
-  for (const [relPath, content] of Object.entries(files)) {
-    const target = resolveSkillFilePath(dir, relPath)
-    const parent = dirname(target)
-    const entry: [string, string] = [target, content]
-    const group = byParent.get(parent)
-    if (group) group.push(entry)
-    else byParent.set(parent, [entry])
-  }
-  await Promise.all(
-    [...byParent].map(async ([parent, entries]) => {
-      await mkdir(parent, { recursive: true, mode: 0o700 })
-      await Promise.all(entries.map(([p, c]) => safeWriteFile(p, c)))
-    }),
+  return getBundledSkillDirectory(
+    getCurrentBundledSkillExtractionRoot(),
+    skillName,
   )
-}
-
-// The per-process nonce in getBundledSkillsRoot() is the primary defense
-// against pre-created symlinks/dirs. Explicit 0o700/0o600 modes keep the
-// nonce subtree owner-only even on umask=0, so an attacker who learns the
-// nonce via inotify on the predictable parent still can't write into it.
-// O_NOFOLLOW|O_EXCL is belt-and-suspenders (O_NOFOLLOW only protects the
-// final component); we deliberately do NOT unlink+retry on EEXIST — unlink()
-// follows intermediate symlinks too.
-const O_NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0
-// On Windows, use string flags — numeric O_EXCL can produce EINVAL through libuv.
-const SAFE_WRITE_FLAGS =
-  process.platform === 'win32'
-    ? 'wx'
-    : fsConstants.O_WRONLY |
-      fsConstants.O_CREAT |
-      fsConstants.O_EXCL |
-      O_NOFOLLOW
-
-async function safeWriteFile(p: string, content: string): Promise<void> {
-  const fh = await open(p, SAFE_WRITE_FLAGS, 0o600)
-  try {
-    await fh.writeFile(content, 'utf8')
-  } finally {
-    await fh.close()
-  }
-}
-
-/** Normalize and validate a skill-relative path; throws on traversal. */
-function resolveSkillFilePath(baseDir: string, relPath: string): string {
-  const normalized = normalize(relPath)
-  if (
-    isAbsolute(normalized) ||
-    normalized.split(pathSep).includes('..') ||
-    normalized.split('/').includes('..')
-  ) {
-    throw new Error(`bundled skill file path escapes skill dir: ${relPath}`)
-  }
-  return join(baseDir, normalized)
 }
 
 function prependBaseDir(

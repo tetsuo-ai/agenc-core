@@ -51,11 +51,13 @@ import {
   signSessionId,
 } from "./filesystem.js";
 import { notifyLspFileChanged } from "../../services/lsp/fileNotifications.js";
+import { ConfigStore } from "../../config/store.js";
 import {
   clearAllPlanSlugs,
   getPlanFilePath,
   setPlanSlug,
 } from "../../planning/plan-files.js";
+import { runWithCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
 import { workspaceMutationCoordinators } from "../../workspace/mutation-coordinator.js";
 
 const SESSION_ID = "edit-tool-test-session";
@@ -72,7 +74,7 @@ describe("Edit tool", () => {
     if (root) await rm(root, { recursive: true, force: true });
     root = "";
     workspaceMutationCoordinators.clearForTests();
-    clearSessionReadState(SESSION_ID);
+    clearSessionReadState(SESSION_ID, tmpdir());
     clearAllPlanSlugs();
   });
 
@@ -379,52 +381,65 @@ describe("Edit tool", () => {
 
   test("Edit and MultiEdit report a completed create with failed audit truthfully", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-edit-audit-home-"));
-    const originalAgencHome = process.env.AGENC_HOME;
-    process.env.AGENC_HOME = agencHome;
-    workspaceMutationCoordinators.clearForTests();
-    workspaceMutationCoordinators.getOrCreate(root);
-    const workspaceKey = createHash("sha256")
-      .update(root)
-      .digest("hex")
-      .slice(0, 32);
-    await mkdir(
-      join(agencHome, "workspace-mutations", workspaceKey, "ledger-v1.jsonl"),
-      { recursive: true },
-    );
+    const configStore = new ConfigStore({
+      home: agencHome,
+      env: {},
+      cwd: root,
+      projectRoot: root,
+      projectTrusted: false,
+    });
 
     const editPath = join(root, "edit-created.txt");
     const multiEditPath = join(root, "multi-edit-created.txt");
     try {
-      const edit = createFileEditTool({ allowedPaths: [root] });
-      const editResult = await edit.execute({
-        file_path: editPath,
-        old_string: "",
-        new_string: "created by Edit\n",
-        [SESSION_ID_ARG]: SESSION_ID,
-      });
-      const multiEdit = createFileMultiEditTool({ allowedPaths: [root] });
-      const multiEditResult = await multiEdit.execute({
-        file_path: multiEditPath,
-        edits: [{ old_string: "", new_string: "created by MultiEdit\n" }],
-        [SESSION_ID_ARG]: SESSION_ID,
-      });
+      await runWithCanonicalSettingsAuthority(configStore, async () => {
+        workspaceMutationCoordinators.clearForTests();
+        workspaceMutationCoordinators.getOrCreate(root);
+        const workspaceKey = createHash("sha256")
+          .update(root)
+          .digest("hex")
+          .slice(0, 32);
+        await mkdir(
+          join(
+            agencHome,
+            "workspace-mutations",
+            workspaceKey,
+            "ledger-v1.jsonl",
+          ),
+          { recursive: true },
+        );
 
-      for (const result of [editResult, multiEditResult]) {
-        expect(result.isError).toBe(true);
-        expect(String(result.content)).toContain("Disk mutation completed for");
-        expect(String(result.content)).toContain("outcome is marked unknown");
-        expect(String(result.content)).not.toContain("Failed to create file");
-      }
-      await expect(readFile(editPath, "utf8")).resolves.toBe(
-        "created by Edit\n",
-      );
-      await expect(readFile(multiEditPath, "utf8")).resolves.toBe(
-        "created by MultiEdit\n",
-      );
+        const edit = createFileEditTool({ allowedPaths: [root] });
+        const editResult = await edit.execute({
+          file_path: editPath,
+          old_string: "",
+          new_string: "created by Edit\n",
+          [SESSION_ID_ARG]: SESSION_ID,
+        });
+        const multiEdit = createFileMultiEditTool({ allowedPaths: [root] });
+        const multiEditResult = await multiEdit.execute({
+          file_path: multiEditPath,
+          edits: [{ old_string: "", new_string: "created by MultiEdit\n" }],
+          [SESSION_ID_ARG]: SESSION_ID,
+        });
+
+        for (const result of [editResult, multiEditResult]) {
+          expect(result.isError).toBe(true);
+          expect(String(result.content)).toContain(
+            "Disk mutation completed for",
+          );
+          expect(String(result.content)).toContain("outcome is marked unknown");
+          expect(String(result.content)).not.toContain("Failed to create file");
+        }
+        await expect(readFile(editPath, "utf8")).resolves.toBe(
+          "created by Edit\n",
+        );
+        await expect(readFile(multiEditPath, "utf8")).resolves.toBe(
+          "created by MultiEdit\n",
+        );
+      });
     } finally {
       workspaceMutationCoordinators.clearForTests();
-      if (originalAgencHome === undefined) delete process.env.AGENC_HOME;
-      else process.env.AGENC_HOME = originalAgencHome;
       await rm(agencHome, { recursive: true, force: true });
     }
   });

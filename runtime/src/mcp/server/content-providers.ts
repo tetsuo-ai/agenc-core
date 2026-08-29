@@ -209,6 +209,8 @@ export interface MemoryResourceProviderOptions {
   readonly instructionFiles?: readonly string[];
   /** Canonical containment root; candidates resolving outside it are omitted. */
   readonly scopeRoot?: string;
+  /** Captured config home used to exclude private session files. */
+  readonly configHomeDir?: string;
   /** Resource body reader. Exposed for deterministic embedding and tests. */
   readonly readResourceContent?: (canonicalPath: string) => Promise<string>;
 }
@@ -232,7 +234,7 @@ async function listMemoryResources(
     for (const header of headers) {
       // Session memory/transcripts are excluded outright — same boundary
       // the permission layer enforces for in-process reads.
-      if (detectSessionFileType(header.filePath) !== null) continue;
+      if (detectSessionFileType(header.filePath, options.configHomeDir) !== null) continue;
       const canonicalPath = await resolveScopedRegularFile(
         header.filePath,
         scopeRoot,
@@ -274,7 +276,7 @@ async function listMemoryResources(
   ).entries()) {
     const canonicalPath = await resolveScopedRegularFile(filePath, scopeRoot);
     if (canonicalPath === null) continue;
-    if (detectSessionFileType(filePath) !== null) continue;
+    if (detectSessionFileType(filePath, options.configHomeDir) !== null) continue;
     const uri = `${INSTRUCTIONS_URI_SCHEME}${fileIndex}/${basename(filePath)}`;
     resources.set(uri, {
       definition: {

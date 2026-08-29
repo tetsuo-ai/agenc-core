@@ -73,6 +73,15 @@ describe("current runtime session fallback", () => {
     expect(getCurrentRuntimeSession()).toBe(b);
   });
 
+  it("restores the older session when the newest session shuts down first", () => {
+    const a = fakeSession("conv-a");
+    const b = fakeSession("conv-b");
+    setCurrentRuntimeSession(a);
+    setCurrentRuntimeSession(b);
+    clearCurrentRuntimeSession(b);
+    expect(getCurrentRuntimeSession()).toBe(a);
+  });
+
   it("sequential bootstrap-shutdown-bootstrap keeps the fallback working", () => {
     const a = fakeSession("conv-a");
     setCurrentRuntimeSession(a);

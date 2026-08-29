@@ -172,6 +172,119 @@ function killMarker(marker: string): void {
 }
 
 describe("UnifiedExecProcessManager", () => {
+  test("forces pipe children onto the manager's captured temp root", async () => {
+    const sessionTempRoot = await mkdtemp(
+      join(tmpdir(), "agenc-unified-exec-temp-"),
+    );
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sessionTempRoot,
+      baseEnv: {
+        ...process.env,
+        AGENC_TMPDIR: "/ambient/agenc",
+        TMPDIR: "/ambient/posix",
+        TEMP: "C:\\ambient\\temp",
+        TMP: "C:\\ambient\\tmp",
+      },
+      env: {
+        AGENC_TMPDIR: "/override/agenc",
+        TMPDIR: "/override/posix",
+        TEMP: "C:\\override\\temp",
+        TMP: "C:\\override\\tmp",
+      },
+    });
+    const script =
+      "process.stdout.write(JSON.stringify({" +
+      "agenc:process.env.AGENC_TMPDIR," +
+      "posix:process.env.TMPDIR," +
+      "temp:process.env.TEMP," +
+      "tmp:process.env.TMP}))";
+    try {
+      const result = await manager.execCommand({
+        cmd: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+        yield_time_ms: 5_000,
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        agenc: sessionTempRoot,
+        posix: sessionTempRoot,
+        temp: sessionTempRoot,
+        tmp: sessionTempRoot,
+      });
+    } finally {
+      await manager.closeAll("test_cleanup");
+    }
+  });
+
+  test("forces PTY children onto the manager's captured temp root", async () => {
+    const sessionTempRoot = join(tmpdir(), "agenc-unified-exec-pty-temp");
+    let spawnedEnvironment: Record<string, string> | undefined;
+    const baseSandboxManager = ptyCompatibleSandboxManager();
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sessionTempRoot,
+      baseEnv: {
+        PATH: process.env.PATH,
+        AGENC_TMPDIR: "/ambient/agenc",
+        TMPDIR: "/ambient/posix",
+        TEMP: "C:\\ambient\\temp",
+        TMP: "C:\\ambient\\tmp",
+      },
+      env: {
+        AGENC_TMPDIR: "/override/agenc",
+        TMPDIR: "/override/posix",
+        TEMP: "C:\\override\\temp",
+        TMP: "C:\\override\\tmp",
+      },
+      sandboxManager: {
+        selectInitial: baseSandboxManager.selectInitial,
+        transform: (request) => {
+          const transformed = baseSandboxManager.transform(request);
+          return {
+            ...transformed,
+            env: {
+              ...transformed.env,
+              AGENC_TMPDIR: "/transform/agenc",
+              TMPDIR: "/transform/posix",
+              TEMP: "C:\\transform\\temp",
+              TMP: "C:\\transform\\tmp",
+            },
+          };
+        },
+      },
+    });
+    installFakePty(manager, (_file, _args, options) => {
+      spawnedEnvironment = options.env;
+    });
+    try {
+      const result = await manager.execCommand({
+        cmd: "exit 0",
+        tty: true,
+        yield_time_ms: 250,
+        runtimeSandbox: {
+          permissionProfile: permissionProfileFromRuntimePermissions(
+            unrestrictedFileSystemPolicy(),
+            "enabled",
+          ),
+          sandboxPolicyCwd: process.cwd(),
+          sessionTempRoot,
+          preference: "require",
+        },
+      });
+
+      expect(result.process_id).toEqual(expect.any(Number));
+      expect(spawnedEnvironment).toMatchObject({
+        AGENC_TMPDIR: sessionTempRoot,
+        TMPDIR: sessionTempRoot,
+        TEMP: sessionTempRoot,
+        TMP: sessionTempRoot,
+      });
+    } finally {
+      await manager.closeAll("test_cleanup");
+    }
+  });
+
   test("keeps Editor acquisition fenced until a yielded process exits", async () => {
     if (process.platform === "win32") return;
     const root = await mkdtemp(join(tmpdir(), "agenc-exec-editor-fence-"));
@@ -323,6 +436,55 @@ describe("UnifiedExecProcessManager", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("agenc-runtime");
     expect(result.process_id).toBeUndefined();
+  });
+
+  test("uses the captured shell and wrapper for default commands", async () => {
+    if (process.platform === "win32") return;
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      shellPath: "/bin/sh",
+      commandWrapperArgv: [
+        "env",
+        "AGENC_WRAPPER_TEST=wrapped-unified-exec",
+        "/bin/sh",
+        "-c",
+      ],
+    });
+
+    try {
+      const result = await manager.execCommand({
+        cmd: 'printf "%s" "$AGENC_WRAPPER_TEST"',
+        yield_time_ms: 250,
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("wrapped-unified-exec");
+    } finally {
+      await manager.closeAll("test cleanup");
+    }
+  });
+
+  test("snapshots its base child environment at construction", async () => {
+    if (process.platform === "win32") return;
+    const baseEnv = {
+      ...process.env,
+      AGENC_UNIFIED_EXEC_ENV_TEST: "captured",
+    };
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      baseEnv,
+      shellPath: "/bin/sh",
+    });
+    baseEnv.AGENC_UNIFIED_EXEC_ENV_TEST = "changed";
+
+    try {
+      const result = await manager.execCommand({
+        cmd: 'printf "%s" "$AGENC_UNIFIED_EXEC_ENV_TEST"',
+        yield_time_ms: 250,
+      });
+      expect(result.stdout).toBe("captured");
+    } finally {
+      await manager.closeAll("test cleanup");
+    }
   });
 
   test("transforms restricted commands through the configured sandbox manager", async () => {
@@ -658,6 +820,7 @@ describe("UnifiedExecProcessManager", () => {
     const runtimeSandbox = {
       permissionProfile,
       sandboxPolicyCwd: process.cwd(),
+      sessionTempRoot: tmpdir(),
       preference: "require" as const,
     };
     const manager = new UnifiedExecProcessManager({
@@ -682,6 +845,19 @@ describe("UnifiedExecProcessManager", () => {
           runtimeSandbox: {
             ...runtimeSandbox,
             preference: "auto",
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: "write_stdin",
+      } satisfies Partial<UnifiedExecError>);
+      await expect(
+        manager.writeStdin({
+          session_id: sessionId,
+          chars: "",
+          yield_time_ms: 250,
+          runtimeSandbox: {
+            ...runtimeSandbox,
+            sessionTempRoot: join(tmpdir(), "different-session"),
           },
         }),
       ).rejects.toMatchObject({
@@ -872,6 +1048,129 @@ describe("UnifiedExecProcessManager", () => {
       code: "unknown_process",
     } satisfies Partial<UnifiedExecError>);
   }, 10_000);
+
+  test("rejects a precomputed sandbox command if quiesce starts while PTY loading is deferred", async () => {
+    const permissionProfile = permissionProfileFromRuntimePermissions(
+      restrictedFileSystemPolicy(),
+      "enabled",
+    );
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sandboxManager: ptyCompatibleSandboxManager(),
+    });
+    let announceLoad!: () => void;
+    const loadEntered = new Promise<void>((resolvePromise) => {
+      announceLoad = resolvePromise;
+    });
+    let releaseLoad!: () => void;
+    const loadGate = new Promise<void>((resolvePromise) => {
+      releaseLoad = resolvePromise;
+    });
+    const spawn = vi.fn();
+    (
+      manager as unknown as {
+        loadPty: () => Promise<{
+          spawn: typeof spawn;
+        }>;
+      }
+    ).loadPty = async () => {
+      announceLoad();
+      await loadGate;
+      return { spawn };
+    };
+
+    const execution = manager.execCommand({
+      cmd: "bash -i",
+      tty: true,
+      yield_time_ms: 250,
+      runtimeSandbox: {
+        permissionProfile,
+        sandboxPolicyCwd: process.cwd(),
+        preference: "require",
+      },
+    });
+    void execution.catch(() => undefined);
+    await loadEntered;
+
+    const token = manager.beginSandboxAuthorityQuiesce();
+    await manager.finishSandboxAuthorityQuiesce(token);
+    releaseLoad();
+
+    await expect(execution).rejects.toThrow(
+      /quiesced while sandbox runtime authority changes/u,
+    );
+    expect(spawn).not.toHaveBeenCalled();
+    manager.resumeSandboxAuthorityAfterQuiesce(token);
+  });
+
+  test("retains an uncooperative process and permanently closes admission when strict quiesce cannot prove exit", async () => {
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sandboxAuthorityQuiesceTimeoutMs: 20,
+    });
+    let exitListener:
+      | ((event: { readonly exitCode: number; readonly signal?: string }) => void)
+      | undefined;
+    (
+      manager as unknown as {
+        loadPty: () => Promise<{
+          spawn: () => {
+            readonly pid: number;
+            write(data: string): void;
+            resize(columns: number, rows: number): void;
+            kill(signal?: string): void;
+            onData(listener: (data: string) => void): { dispose(): void };
+            onExit(
+              listener: (event: {
+                readonly exitCode: number;
+                readonly signal?: string;
+              }) => void,
+            ): { dispose(): void };
+          };
+        }>;
+      }
+    ).loadPty = async () => ({
+      spawn: () => ({
+        pid: 0,
+        write: vi.fn(),
+        resize: vi.fn(),
+        kill: vi.fn(),
+        onData: () => ({ dispose: vi.fn() }),
+        onExit: (listener) => {
+          exitListener = listener;
+          return { dispose: vi.fn() };
+        },
+      }),
+    });
+
+    const started = await manager.execCommand({
+      cmd: "bash -i",
+      tty: true,
+      yield_time_ms: 250,
+    });
+    expect(started.process_id).toEqual(expect.any(Number));
+    const token = manager.beginSandboxAuthorityQuiesce();
+
+    await expect(
+      manager.finishSandboxAuthorityQuiesce(token),
+    ).rejects.toThrow(/could not prove process-tree cleanup/u);
+    expect(
+      (
+        manager as unknown as {
+          processes: Map<number, unknown>;
+        }
+      ).processes.size,
+    ).toBe(1);
+    await expect(
+      manager.execCommand({ cmd: "printf should-not-run" }),
+    ).rejects.toThrow(/permanently closed/u);
+    expect(() =>
+      manager.resumeSandboxAuthorityAfterQuiesce(token),
+    ).toThrow();
+
+    exitListener?.({ exitCode: 137, signal: "SIGKILL" });
+    await manager.closeAll("test_cleanup");
+  });
 });
 
 describe("background-shell trio (task 8)", () => {

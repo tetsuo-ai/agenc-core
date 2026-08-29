@@ -667,7 +667,15 @@ npm --workspace=@tetsuo-ai/runtime run check:tui-runtime-startup
 node scripts/check-embedded-neovim-buffer.mjs
 ```
 
+The TUI talks to the daemon over `AGENC_DAEMON_INTERNAL_METHODS`
+(`workspace.editor.acquire` / `sync` / `heartbeat` / `release`, topology,
+proposal, `predict`, plus session compaction/rewind and `session.setModel`).
+Those methods are not part of the public 54-method SDK. Names:
+[`reference/daemon.md`](reference/daemon.md) (Internal methods). Config:
+[`reference/config.md`](reference/config.md) `[buffer]`.
+
 ## Related
 
 - TUI / workbench overview: [`reference/tui-workbench.md`](reference/tui-workbench.md)
 - In-tree TUI notes: [`runtime/src/tui/README.md`](../runtime/src/tui/README.md)
+- Public vs internal RPC: [`reference/daemon.md`](reference/daemon.md)

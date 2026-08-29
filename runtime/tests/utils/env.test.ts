@@ -2,106 +2,43 @@ import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { getGlobalAgenCFile } from '../../src/utils/env.ts'
+import { resolveHomeContext } from '../../src/config/home.ts'
 
-const originalEnv = {
-  AGENC_CONFIG_DIR: process.env.AGENC_CONFIG_DIR,
-  AGENC_CUSTOM_OAUTH_URL: process.env.AGENC_CUSTOM_OAUTH_URL,
-  USER_TYPE: process.env.USER_TYPE,
-}
-
+const originalHome = process.env.AGENC_HOME
+const originalConfigDir = process.env.AGENC_CONFIG_DIR
 let tempDir: string
 
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'agenc-env-test-'))
-  process.env.AGENC_CONFIG_DIR = tempDir
-  delete process.env.AGENC_CUSTOM_OAUTH_URL
-  delete process.env.USER_TYPE
-  getGlobalAgenCFile.cache.clear?.()
+  process.env.AGENC_HOME = tempDir
+  delete process.env.AGENC_CONFIG_DIR
 })
 
 afterEach(() => {
   rmSync(tempDir, { recursive: true, force: true })
-  if (originalEnv.AGENC_CONFIG_DIR === undefined) {
-    delete process.env.AGENC_CONFIG_DIR
-  } else {
-    process.env.AGENC_CONFIG_DIR = originalEnv.AGENC_CONFIG_DIR
-  }
-  if (originalEnv.AGENC_CUSTOM_OAUTH_URL === undefined) {
-    delete process.env.AGENC_CUSTOM_OAUTH_URL
-  } else {
-    process.env.AGENC_CUSTOM_OAUTH_URL = originalEnv.AGENC_CUSTOM_OAUTH_URL
-  }
-  if (originalEnv.USER_TYPE === undefined) {
-    delete process.env.USER_TYPE
-  } else {
-    process.env.USER_TYPE = originalEnv.USER_TYPE
-  }
-  getGlobalAgenCFile.cache.clear?.()
+  if (originalHome === undefined) delete process.env.AGENC_HOME
+  else process.env.AGENC_HOME = originalHome
+  if (originalConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR
+  else process.env.AGENC_CONFIG_DIR = originalConfigDir
 })
 
-function getFreshGlobalAgenCFile(): string {
-  getGlobalAgenCFile.cache.clear?.()
-  return getGlobalAgenCFile()
-}
-
-// getGlobalAgenCFile — three migration branches
-
-test('getGlobalAgenCFile: new install returns .agenc.json when neither file exists', () => {
-  expect(getFreshGlobalAgenCFile()).toBe(join(tempDir, '.agenc.json'))
+test('HomeContext resolves state.json under explicit AGENC_HOME', () => {
+  expect(resolveHomeContext({ AGENC_HOME: tempDir }).statePath).toBe(
+    join(tempDir, 'state.json'),
+  )
 })
 
-test('getGlobalAgenCFile: existing user keeps .agenc.json when only legacy file exists', () => {
+test('legacy global JSON files never change the canonical state path', () => {
+  writeFileSync(join(tempDir, '.config.json'), '{}')
   writeFileSync(join(tempDir, '.agenc.json'), '{}')
-  expect(getFreshGlobalAgenCFile()).toBe(join(tempDir, '.agenc.json'))
+  expect(resolveHomeContext({ AGENC_HOME: tempDir }).statePath).toBe(
+    join(tempDir, 'state.json'),
+  )
 })
 
-test('getGlobalAgenCFile: migrated user uses .agenc.json when both files exist', () => {
-  writeFileSync(join(tempDir, '.agenc.json'), '{}')
-  writeFileSync(join(tempDir, '.agenc.json'), '{}')
-  expect(getFreshGlobalAgenCFile()).toBe(join(tempDir, '.agenc.json'))
-})
-
-// AGENC_HOME unification: the secrets-bearing global config must resolve from
-// the same home AGENC_HOME selects for config.toml/auth.json, instead of being
-// stranded at $HOME. (os.homedir() ignores $HOME under Bun, so these write the
-// file at the AGENC_HOME location to stay deterministic regardless of the real
-// home — which also exercises the resolved-path-exists branch.)
-test('getGlobalAgenCFile: AGENC_HOME is honored instead of being ignored', () => {
-  const savedConfigDir = process.env.AGENC_CONFIG_DIR
-  const savedHome = process.env.AGENC_HOME
-  const agencHome = mkdtempSync(join(tmpdir(), 'agenc-home-'))
-  try {
-    delete process.env.AGENC_CONFIG_DIR
-    process.env.AGENC_HOME = agencHome
-    writeFileSync(join(agencHome, '.agenc.json'), '{}')
-    // Before the fix this returned $HOME/.agenc.json (AGENC_HOME ignored),
-    // splitting provider keys away from config.toml.
-    expect(getFreshGlobalAgenCFile()).toBe(join(agencHome, '.agenc.json'))
-  } finally {
-    rmSync(agencHome, { recursive: true, force: true })
-    if (savedConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR
-    else process.env.AGENC_CONFIG_DIR = savedConfigDir
-    if (savedHome === undefined) delete process.env.AGENC_HOME
-    else process.env.AGENC_HOME = savedHome
-  }
-})
-
-test('getGlobalAgenCFile: AGENC_CONFIG_DIR takes precedence over AGENC_HOME', () => {
-  const savedConfigDir = process.env.AGENC_CONFIG_DIR
-  const savedHome = process.env.AGENC_HOME
-  const configDir = mkdtempSync(join(tmpdir(), 'agenc-cfg-'))
-  const agencHome = mkdtempSync(join(tmpdir(), 'agenc-home-'))
-  try {
-    process.env.AGENC_CONFIG_DIR = configDir
-    process.env.AGENC_HOME = agencHome
-    expect(getFreshGlobalAgenCFile()).toBe(join(configDir, '.agenc.json'))
-  } finally {
-    rmSync(configDir, { recursive: true, force: true })
-    rmSync(agencHome, { recursive: true, force: true })
-    if (savedConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR
-    else process.env.AGENC_CONFIG_DIR = savedConfigDir
-    if (savedHome === undefined) delete process.env.AGENC_HOME
-    else process.env.AGENC_HOME = savedHome
-  }
+test('AGENC_CONFIG_DIR is rejected instead of taking precedence', () => {
+  process.env.AGENC_CONFIG_DIR = join(tempDir, 'legacy')
+  expect(() => resolveHomeContext(process.env)).toThrow(
+    'AGENC_CONFIG_DIR is no longer a runtime configuration authority',
+  )
 })

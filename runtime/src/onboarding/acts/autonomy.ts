@@ -6,27 +6,26 @@
  * visibly picks "no cap"). Every sub-step is skippable and ends with the
  * live proof where one is possible.
  *
- * Config writes are append-only and conservative: a `[budget]`/`[heartbeat]`
- * section is appended to config.toml ONLY when absent; an existing section
- * is displayed with edit instructions — this wizard never rewrites TOML it
- * did not author. Cron jobs are written through the real task-file helpers;
- * hooks enablement goes through the gateway config's own JSON (merged, other
- * keys preserved).
+ * Canonical config writes are conservative: a `[budget]`/`[heartbeat]`
+ * section is created ONLY when absent through the locked configuration
+ * authority; an existing section is displayed with edit instructions. Cron
+ * jobs are written through the real task-file helpers; hooks enablement uses
+ * the same locked canonical config.toml authority.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { loadConfig } from "../../config/loader.js";
+import type { JsonRecord } from "../../config/json.js";
+import { loadCanonicalConfig } from "../../config/repository.js";
+import { mutateCanonicalUserConfigSync } from "../../config/update-sync.js";
 import { resolveBudgetPolicy } from "../../budget/index.js";
 import { resolveHeartbeatPolicy } from "../../heartbeat/config.js";
 import {
-  gatewayEnvFilePath,
-  readGatewayEnvFile,
-} from "../../gateway/env-file.js";
-import { resolveGatewayConfigPath } from "../../gateway/config.js";
+  readGatewayCredentialEnvironment,
+} from "../../gateway/credentials.js";
 import { resolveHooksToken } from "../../gateway/run.js";
 import { HOOKS_PATH } from "../../gateway/hooks.js";
 import {
@@ -37,6 +36,7 @@ import {
 } from "../../utils/cronTasks.js";
 import type { ActIO } from "./io.js";
 import { markOnboardingActComplete, readOnboardingActs } from "./state.js";
+import { captureSecureStorageIngress } from "../../utils/secureStorage/home.js";
 
 export interface AutonomyActOptions {
   readonly agencHome: string;
@@ -51,51 +51,58 @@ function configTomlPath(agencHome: string): string {
 }
 
 /**
- * Append a TOML section iff no section with that header exists. Returns
- * false (and writes nothing) when the section is already present.
+ * Create one canonical config section iff it is absent. The shared updater
+ * owns parsing, strict validation, schema versioning, locking, serialization,
+ * and atomic installation. Returns false without rewriting an existing
+ * section.
  */
-export function appendTomlSectionIfAbsent(
+export function setCanonicalConfigSectionIfAbsent(
   agencHome: string,
   header: string,
-  lines: readonly string[],
+  value: Readonly<JsonRecord>,
 ): boolean {
   const path = configTomlPath(agencHome);
-  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
-  if (current.includes(`[${header}]`)) return false;
-  const block = [`\n[${header}]`, ...lines, ""].join("\n");
-  writeFileSync(path, current.length > 0 ? `${current}${block}` : block.trimStart() + "\n");
-  return true;
+  let wrote = false;
+  mutateCanonicalUserConfigSync(path, (raw) => {
+    if (Object.hasOwn(raw, header)) return;
+    raw[header] = { ...value };
+    wrote = true;
+  });
+  return wrote;
 }
 
-/** Merge a `hooks.enabled` flag into gateway/config.json, preserving keys. */
-export function enableHooksInGatewayConfig(agencHome: string): void {
-  const path = resolveGatewayConfigPath(agencHome);
-  let raw: Record<string, unknown> = {};
-  if (existsSync(path)) {
-    try {
-      const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-      if (parsed !== null && typeof parsed === "object") {
-        raw = parsed as Record<string, unknown>;
-      }
-    } catch {
-      // Unparseable config would fail-closed everywhere else too; start over.
-      raw = {};
-    }
-  }
-  const hooks =
-    raw.hooks !== null && typeof raw.hooks === "object"
-      ? (raw.hooks as Record<string, unknown>)
-      : {};
-  raw.hooks = { ...hooks, enabled: true };
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`, { mode: 0o600 });
+/** Enable gateway hooks through the canonical locked config authority. */
+export function enableHooksInCanonicalConfig(agencHome: string): void {
+  mutateCanonicalUserConfigSync(configTomlPath(agencHome), (raw) => {
+    const gateway =
+      raw.gateway !== null &&
+      typeof raw.gateway === "object" &&
+      !Array.isArray(raw.gateway)
+        ? (raw.gateway as JsonRecord)
+        : {};
+    const hooks =
+      gateway.hooks !== null &&
+      typeof gateway.hooks === "object" &&
+      !Array.isArray(gateway.hooks)
+        ? (gateway.hooks as JsonRecord)
+        : {};
+    raw.gateway = {
+      ...gateway,
+      hooks: { ...hooks, enabled: true },
+    };
+  });
 }
 
 export async function runAutonomyAct(
   options: AutonomyActOptions,
 ): Promise<number> {
   const { io, agencHome } = options;
-  const env = options.env ?? process.env;
+  const ingress = captureSecureStorageIngress(
+    options.env ?? process.env,
+    agencHome,
+  );
+  const env = ingress.environment;
+  const home = ingress.home;
   const now = options.now ?? Date.now;
 
   io.say("");
@@ -104,8 +111,12 @@ export async function runAutonomyAct(
   io.say("autonomy pauses and tells you — never silently spends or stops.");
 
   // ── 1. Budget ─────────────────────────────────────────────────────────
-  const { config } = await loadConfig({ home: agencHome, onWarn: io.say });
-  const { policy: budget } = resolveBudgetPolicy(config.budget, env);
+  const { config } = await loadCanonicalConfig({
+    home: agencHome,
+    env,
+    onWarn: io.say,
+  });
+  const budget = resolveBudgetPolicy(config.budget);
   let hasCap = budget.enabled;
   if (budget.enabled) {
     io.say("");
@@ -130,11 +141,10 @@ export async function runAutonomyAct(
         io.say("That is not a positive number — try the act again.");
         return 1;
       }
-      const wrote = appendTomlSectionIfAbsent(agencHome, "budget", [
-        "# Written by `agenc onboard autonomy` — daily cap for autonomous turns.",
-        "enabled = true",
-        `daily_usd = ${cap}`,
-      ]);
+      const wrote = setCanonicalConfigSectionIfAbsent(agencHome, "budget", {
+        enabled: true,
+        daily_usd: cap,
+      });
       if (wrote) {
         io.say(`Cap set: $${cap}/day (config.toml [budget]).`);
         io.say("Check anytime with: agenc budget status");
@@ -148,7 +158,7 @@ export async function runAutonomyAct(
   }
 
   // ── 2. Heartbeat ──────────────────────────────────────────────────────
-  const heartbeat = resolveHeartbeatPolicy(config.heartbeat, env);
+  const heartbeat = resolveHeartbeatPolicy(config.heartbeat);
   io.say("");
   if (heartbeat.enabled) {
     io.say("Heartbeat already enabled — keeping your configuration.");
@@ -186,7 +196,7 @@ export async function runAutonomyAct(
         );
         io.say(`Wrote a starter ${heartbeatPath} — edit it to change the job.`);
       }
-      const envEntries = readGatewayEnvFile(agencHome);
+      const envEntries = readGatewayCredentialEnvironment(home);
       const channelHint =
         envEntries.AGENC_TELEGRAM_BOT_TOKEN !== undefined
           ? "telegram"
@@ -206,16 +216,19 @@ export async function runAutonomyAct(
               "",
             )
           : "";
-      const lines = [
-        "# Written by `agenc onboard autonomy`.",
-        "enabled = true",
-        "interval_seconds = 1800",
-      ];
+      const heartbeatConfig: JsonRecord = {
+        enabled: true,
+        interval_seconds: 1800,
+      };
       if (channel.length > 0 && conversation.length > 0) {
-        lines.push(`target_channel = "${channel}"`);
-        lines.push(`target_conversation = "${conversation}"`);
+        heartbeatConfig.target_channel = channel;
+        heartbeatConfig.target_conversation = conversation;
       }
-      const wrote = appendTomlSectionIfAbsent(agencHome, "heartbeat", lines);
+      const wrote = setCanonicalConfigSectionIfAbsent(
+        agencHome,
+        "heartbeat",
+        heartbeatConfig,
+      );
       io.say(
         wrote
           ? "Heartbeat configured (every 30 min while the gateway runs)."
@@ -282,8 +295,8 @@ export async function runAutonomyAct(
     if (!hasCap) {
       io.say("Refusing: set a budget cap first.");
     } else {
-      enableHooksInGatewayConfig(agencHome);
-      const token = resolveHooksToken(agencHome, env);
+      enableHooksInCanonicalConfig(agencHome);
+      const token = resolveHooksToken(home, env);
       io.say("Hooks enabled (loopback + bearer token; audit-checked).");
       io.say("Try it once the gateway is running:");
       io.say("");
@@ -292,7 +305,7 @@ export async function runAutonomyAct(
       io.say('    -H "content-type: application/json" \\');
       io.say('    -d \'{"message":"ping from my first webhook"}\'');
       io.say("");
-      io.say(`(Token stored 0600 at ${gatewayEnvFilePath(agencHome).replace(/env$/, "hooks-token")}.)`);
+      io.say("(Token stored in the home-bound native secure storage.)");
     }
   }
 

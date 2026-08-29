@@ -117,7 +117,7 @@ describe("formatDiagnosticText ripgrep probes", () => {
 
       const text = formatDiagnosticText(fixture);
 
-      expect(text).toContain(`Configured rg (TUI/legacy): ${configuredText}`);
+      expect(text).toContain(`Configured rg:        ${configuredText}`);
       expect(text).toContain(
         `Packaged rg (Grep/Glob/Orient): ${packagedText}`,
       );
@@ -134,7 +134,7 @@ describe("getTransactionGuardDoctorStatus", () => {
     });
     expect(status).toEqual({
       enabled: true,
-      source: "config",
+      source: "resolved-config",
       model: "guard-model",
       endpoint,
       failMode: "closed",
@@ -168,7 +168,7 @@ describe("getTransactionGuardDoctorStatus", () => {
     });
     expect(status).toEqual({
       enabled: false,
-      source: "default",
+      source: "resolved-config",
       model: "gemma4:e4b",
       endpoint: "http://127.0.0.1:11434",
       failMode: "closed",
@@ -177,17 +177,19 @@ describe("getTransactionGuardDoctorStatus", () => {
     expect(buildTransactionGuardWarning(status)).toBeNull();
   });
 
-  it("reports env as the enablement source and fail-open in the warning", async () => {
+  it("does not re-resolve environment after receiving a config snapshot", async () => {
     const endpoint = await unreachableEndpoint();
     const status = await getTransactionGuardDoctorStatus({
-      config: null,
+      config: { enabled: true, endpoint, fail_mode: "open" },
       env: {
-        AGENC_TRANSACTION_GUARD: "slm",
-        AGENC_TRANSACTION_GUARD_OLLAMA_URL: endpoint,
-        AGENC_TRANSACTION_GUARD_FAIL_MODE: "open",
+        AGENC_TRANSACTION_GUARD: "off",
+        AGENC_TRANSACTION_GUARD_OLLAMA_URL: "http://stale.example",
+        AGENC_TRANSACTION_GUARD_FAIL_MODE: "closed",
       },
     });
-    expect(status.source).toBe("env");
+    expect(status.source).toBe("resolved-config");
+    expect(status.enabled).toBe(true);
+    expect(status.endpoint).toBe(endpoint);
     expect(status.failMode).toBe("open");
     expect(status.endpointReachable).toBe(false);
     const warning = buildTransactionGuardWarning(status);
@@ -231,7 +233,7 @@ describe("doctor output includes the transaction guard section", () => {
     });
     const text = formatDiagnosticText(diagnosticFixture(status));
     expect(text).toContain(
-      "Transaction guard:  enabled (source: config, fail-closed)",
+      "Transaction guard:  enabled (source: resolved-config, fail-closed)",
     );
     expect(text).toContain("model:    guard-model");
     expect(text).toContain(`endpoint: ${endpoint} (reachable)`);
@@ -254,7 +256,7 @@ describe("doctor output includes the transaction guard section", () => {
     });
     const text = formatDiagnosticText(diagnosticFixture(status));
     expect(text).toContain(
-      "Transaction guard:  disabled (source: default, fail-closed)",
+      "Transaction guard:  disabled (source: resolved-config, fail-closed)",
     );
     expect(text).not.toContain("endpoint:");
   });

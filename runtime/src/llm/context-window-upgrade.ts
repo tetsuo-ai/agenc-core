@@ -11,14 +11,15 @@
  *
  * The gut runtime is multi-provider, so the gut equivalent works off
  * the `ModelsManager` catalog instead of provider-specific entitlement
- * RPCs. The runtime owner registers a snapshot of:
+ * RPCs. The active runtime session owns the exact snapshot of:
  *
  *   - the currently selected model slug
  *   - the available models (from `tryListModels()`, kept sync)
  *
- * via `setContextWindowUpgradeContext()`. The post-compact stdout
- * breadcrumb (and any other sync caller) then reads that snapshot to
- * decide whether to emit a tip.
+ * The post-compact stdout breadcrumb (and any other sync caller) resolves
+ * those values from the AsyncLocalStorage-bound session. With more than one
+ * live session, an unscoped call fails instead of guessing which model won a
+ * process-global race.
  *
  * The upgrade rule is intentionally conservative: only surface a tip
  * when the catalog contains a model that:
@@ -32,6 +33,7 @@
  * actually configured.
  */
 
+import { getCurrentRuntimeSession } from "../session/current-session.js";
 import type { ModelsManager } from "../session/session.js";
 import type { ModelInfo } from "../session/turn-context.js";
 
@@ -46,27 +48,13 @@ export interface ContextWindowUpgradeSnapshot {
   readonly modelsManager: ModelsManager;
 }
 
-let activeSnapshot: ContextWindowUpgradeSnapshot | null = null;
-
-/**
- * Register (or replace) the runtime snapshot used by
- * `getUpgradeMessage`. Called by bootstrap once a Session is built;
- * called again when the user switches models via `/model`.
- *
- * Pass `null` to clear (e.g. on shutdown / for tests).
- */
-export function setContextWindowUpgradeContext(
-  snapshot: ContextWindowUpgradeSnapshot | null,
-): void {
-  activeSnapshot = snapshot;
-}
-
-/**
- * Read the active snapshot, if any. Exposed primarily for tests so
- * they can assert clean lifecycle.
- */
-export function getContextWindowUpgradeContext(): ContextWindowUpgradeSnapshot | null {
-  return activeSnapshot;
+function currentSnapshot(): ContextWindowUpgradeSnapshot | null {
+  const session = getCurrentRuntimeSession();
+  if (session === null) return null;
+  return {
+    currentModel: session.config.model,
+    modelsManager: session.services.modelsManager,
+  };
 }
 
 /**
@@ -125,7 +113,7 @@ function findUpgradeCandidate(
  *     post-compact stdout breadcrumb.
  */
 export function getUpgradeMessage(context: "warning" | "tip"): string | null {
-  const snapshot = activeSnapshot;
+  const snapshot = currentSnapshot();
   if (snapshot === null) return null;
 
   const available = snapshot.modelsManager.tryListModels();

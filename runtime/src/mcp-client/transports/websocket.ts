@@ -30,6 +30,13 @@ import {
   type McpSamplingHandlers,
 } from "../../services/mcp/hostCapabilities.js";
 import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
+import { getWebSocketTLSOptions } from "../../utils/mtls.js";
+import { getWebSocketProxyAgent } from "../../utils/proxy.js";
+import type { ProviderEnvironment } from "../../llm/provider-options.js";
+import {
+  EMPTY_MCP_REQUEST_ENVIRONMENT,
+  snapshotMcpRequestEnvironment,
+} from "../environment.js";
 
 const MCP_WEBSOCKET_SUBPROTOCOL = "mcp";
 export const WEBSOCKET_CLOSE_WAIT_MS = 1_000;
@@ -49,10 +56,15 @@ export class MCPWebSocketClientTransport implements Transport {
   onerror?: (error: Error) => void;
   onmessage?: (message: JSONRPCMessage) => void;
 
+  readonly environment: ProviderEnvironment;
+
   constructor(
     readonly url: URL,
     readonly headers?: Readonly<Record<string, string>>,
-  ) {}
+    environment: ProviderEnvironment = EMPTY_MCP_REQUEST_ENVIRONMENT,
+  ) {
+    this.environment = snapshotMcpRequestEnvironment(environment);
+  }
 
   async start(): Promise<void> {
     if (this.socket !== undefined) {
@@ -60,8 +72,14 @@ export class MCPWebSocketClientTransport implements Transport {
     }
 
     await new Promise<void>((resolve, reject) => {
+      const proxyAgent = getWebSocketProxyAgent(
+        this.url.href,
+        this.environment,
+      );
       const socket = new WebSocket(this.url, MCP_WEBSOCKET_SUBPROTOCOL, {
         ...(this.headers !== undefined ? { headers: { ...this.headers } } : {}),
+        ...(proxyAgent !== undefined ? { agent: proxyAgent } : {}),
+        ...(getWebSocketTLSOptions(this.environment) ?? {}),
       });
       this.socket = socket;
       this.closedNotified = false;
@@ -166,10 +184,12 @@ export class MCPWebSocketClientTransport implements Transport {
 
 function createWebSocketMCPTransport(
   config: MCPServerWebSocketConfig,
+  environment: ProviderEnvironment,
 ): MCPWebSocketClientTransport {
   return new MCPWebSocketClientTransport(
     new URL(config.endpoint),
     config.headers,
+    environment,
   );
 }
 
@@ -178,11 +198,12 @@ export async function createWebSocketMCPConnection(
   logger: Logger = silentLogger,
   elicitationHandlers?: MCPElicitationHandlers,
   samplingHandlers?: McpSamplingHandlers,
+  environment: ProviderEnvironment = EMPTY_MCP_REQUEST_ENVIRONMENT,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const timeout = config.timeout ?? 30_000;
-  const transport = createWebSocketMCPTransport(config);
+  const transport = createWebSocketMCPTransport(config, environment);
   const client = new Client(
     { name: "agenc-runtime", version: VERSION },
     {

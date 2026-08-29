@@ -1,7 +1,10 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getSecureStorage } from "../../utils/secureStorage/index.js";
+import { readNativeSecureStorage } from "../../utils/secureStorage/native.js";
+import { resolveSecureStorageHome } from "../../utils/secureStorage/home.js";
 import { LocalAuthBackend } from "./local.js";
 
 const TEST_TOKEN = "00000000-0000-4000-8000-000000000000";
@@ -14,13 +17,18 @@ async function makeTempHome(): Promise<string> {
 describe("LocalAuthBackend", () => {
   const homes: string[] = [];
 
+  beforeEach(() => {
+    getSecureStorage(resolveSecureStorageHome(process.env)).delete();
+  });
+
   afterEach(async () => {
+    getSecureStorage(resolveSecureStorageHome(process.env)).delete();
     await Promise.all(
       homes.splice(0).map((home) => rm(home, { recursive: true, force: true })),
     );
   });
 
-  it("persists a UUID token to $HOME/.agenc/auth.json with mode 0600 on login", async () => {
+  it("persists the login token only in native secure storage", async () => {
     const home = await makeTempHome();
     homes.push(home);
     const backend = new LocalAuthBackend({
@@ -48,7 +56,6 @@ describe("LocalAuthBackend", () => {
     >;
     expect(parsed).toEqual({
       version: 1,
-      token: TEST_TOKEN,
       createdAt: TEST_TIME.toISOString(),
       provider: "local",
       identity: {
@@ -57,7 +64,62 @@ describe("LocalAuthBackend", () => {
         plan: "free",
       },
     });
+    expect(JSON.stringify(parsed)).not.toContain(TEST_TOKEN);
+    expect(
+      readNativeSecureStorage(
+        resolveSecureStorageHome({ HOME: home }, join(home, ".agenc")),
+      )
+        .localAuth?.login,
+    ).toEqual({
+      token: TEST_TOKEN,
+      createdAt: TEST_TIME.toISOString(),
+    });
     expect((await stat(authFile)).mode & 0o777).toBe(0o600);
+  });
+
+  it("captures the custom-OAuth secure-storage identity before caller env mutation", async () => {
+    const agencHome = await makeTempHome();
+    homes.push(agencHome);
+    const environment: Record<string, string> = {
+      AGENC_HOME: agencHome,
+      HOME: tmpdir(),
+      AGENC_CUSTOM_OAUTH_URL: "https://agenc.tech",
+    };
+    const credentialHome = resolveSecureStorageHome(
+      { ...environment },
+      agencHome,
+    );
+    const backend = new LocalAuthBackend({
+      agencHome,
+      env: environment,
+      now: () => TEST_TIME,
+      randomUUID: () => TEST_TOKEN,
+    });
+    delete environment.AGENC_CUSTOM_OAUTH_URL;
+    environment.AGENC_HOME = join(agencHome, "mutated");
+
+    await backend.login();
+    expect(readNativeSecureStorage(credentialHome).localAuth?.login).toEqual({
+      token: TEST_TOKEN,
+      createdAt: TEST_TIME.toISOString(),
+    });
+  });
+
+  it("rolls back the native login when metadata persistence fails", async () => {
+    const agencHome = await makeTempHome();
+    homes.push(agencHome);
+    await mkdir(join(agencHome, "auth.json"));
+    const nativeHome = resolveSecureStorageHome({}, agencHome);
+    const backend = new LocalAuthBackend({
+      agencHome,
+      now: () => TEST_TIME,
+      randomUUID: () => TEST_TOKEN,
+    });
+
+    await expect(backend.login()).rejects.toMatchObject({
+      code: expect.stringMatching(/EISDIR|ENOTDIR|ENOTEMPTY/u),
+    });
+    expect(readNativeSecureStorage(nativeHome).localAuth?.login).toBeUndefined();
   });
 
   it("reports local identity from disk and clears it on logout", async () => {
@@ -102,7 +164,7 @@ describe("LocalAuthBackend", () => {
     });
   });
 
-  it("treats malformed BYOK key records as logged out", async () => {
+  it("ignores legacy plaintext login and BYOK secrets", async () => {
     const agencHome = await makeTempHome();
     homes.push(agencHome);
     const authFile = join(agencHome, "auth.json");
@@ -136,7 +198,7 @@ describe("LocalAuthBackend", () => {
     await expect(backend.readByokKey("grok")).resolves.toBeUndefined();
   });
 
-  it("persists and reads provider BYOK keys without logging in", async () => {
+  it("persists and reads provider BYOK keys only in native secure storage", async () => {
     const agencHome = await makeTempHome();
     homes.push(agencHome);
     const backend = new LocalAuthBackend({
@@ -157,11 +219,10 @@ describe("LocalAuthBackend", () => {
     });
     await expect(backend.readByokKey("grok")).resolves.toBe("xai-test-key");
 
-    const parsed = JSON.parse(
-      await readFile(join(agencHome, "byok-keys.json"), "utf8"),
-    ) as Record<string, unknown>;
-    expect(parsed).toMatchObject({
-      version: 1,
+    expect(
+      readNativeSecureStorage(resolveSecureStorageHome({}, agencHome))
+        .localAuth,
+    ).toMatchObject({
       byokKeys: {
         grok: {
           provider: "grok",
@@ -175,9 +236,9 @@ describe("LocalAuthBackend", () => {
     ).rejects.toMatchObject({
       code: "ENOENT",
     });
-    expect((await stat(join(agencHome, "byok-keys.json"))).mode & 0o777).toBe(
-      0o600,
-    );
+    await expect(
+      readFile(join(agencHome, "byok-keys.json"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("does not clobber a remote auth session when saving BYOK keys", async () => {
@@ -187,7 +248,6 @@ describe("LocalAuthBackend", () => {
     const remoteAuth = {
       version: 1,
       provider: "remote",
-      token: "remote-token",
       createdAt: TEST_TIME.toISOString(),
       identity: {
         accountId: "acct-1",

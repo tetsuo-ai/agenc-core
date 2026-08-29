@@ -337,34 +337,21 @@ export function buildAnthropicMessagesRequest(
       name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
     };
   }
-  // Effort is a first-class request field here (`output_config.effort`,
-  // low…max), not something to approximate with a thinking budget. It
-  // shapes the whole response — text, tool calls and thinking — and needs
-  // no beta header. Sending it is what lets the app's dial mean anything
-  // on this provider.
-  if (input.options?.reasoningEffort !== undefined) {
-    // `minimal` is an upstream-provider rung with no counterpart here;
-    // low is this family's floor. Every other value is accepted as-is.
-    const effort = input.options.reasoningEffort;
-    body.output_config = { effort: effort === "minimal" ? "low" : effort };
-  }
   // Task 28: never attach a `thinking` config for the Fable/Mythos 5
   // family — thinking is always on and any explicit configuration other
   // than `{type:"adaptive"}` (incl. `disabled` and `enabled`/budget_tokens)
   // returns a 400; omitting the param runs adaptive thinking. Depth is the
   // effort parameter's job on that family. Opus-family (>= 4.6) behavior
   // below is unchanged.
-  // Current models reject an explicit `thinking.type.enabled` outright —
-  // "Use thinking.type.adaptive and output_config.effort to control
-  // thinking behaviour" — so where effort is carrying the decision, the
-  // thinking block is left off entirely and adaptive thinking runs. The
-  // budget form stays only for a request that set no effort at all.
-  if (
-    thinkingEnabled &&
-    !alwaysOnThinking &&
-    body.output_config === undefined
-  ) {
-    body.thinking = { type: "adaptive" };
+  if (thinkingEnabled && !alwaysOnThinking) {
+    body.thinking = {
+      type: "enabled",
+      budget_tokens:
+        input.options?.reasoningEffort === "high" ||
+          input.options?.reasoningEffort === "xhigh"
+          ? 4096
+          : 2048,
+    };
   }
   if (input.contextManagement) {
     body.context_management = input.contextManagement;

@@ -1,58 +1,78 @@
-/**
- * Lightweight helpers shared between keychainPrefetch.ts and
- * macOsKeychainStorage.ts.
- *
- * This module MUST NOT import execa, execFileNoThrow, or
- * execFileNoThrowPortable. keychainPrefetch.ts fires at the very top of
- * main.tsx (before the ~65ms of module evaluation it parallelizes), and Bun's
- * __esm wrapper evaluates the ENTIRE module when any symbol is accessed —
- * so a heavy transitive import here defeats the prefetch. The execa →
- * human-signals → cross-spawn chain alone is ~58ms of synchronous init.
- *
- * The imports below (envUtils, oauth constants, crypto, os) are already
- * evaluated by startupProfiler.ts at main.tsx:5, so they add no module-init
- * cost when keychainPrefetch.ts pulls this file in.
- */
+/** Lightweight service-name and cache helpers for macOS secure storage. */
 
 import { createHash } from 'crypto'
 import { userInfo } from 'os'
-import { getOauthConfig } from 'src/constants/oauth.js'
-import { getAgenCConfigHomeDir } from '../envUtils.js'
+import type { HomeContext } from '../../config/home.js'
 import type { SecureStorageData } from './index.js'
 
-// Suffix distinguishing the OAuth credentials keychain entry from the compatibility
-// API key entry (which uses no suffix). Both share the service name base.
-// DO NOT change this value — it's part of the keychain lookup key and would
+// Suffix identifying the canonical credentials entry in the macOS Keychain.
+// Do not change this value. It is part of the macOS Keychain lookup key and would
 // orphan existing stored credentials.
 export const CREDENTIALS_SERVICE_SUFFIX = '-credentials'
 
 /**
- * Get the service/resource name for secure storage, scoped by AGENC_CONFIG_DIR
- * if it's set to a non-default location.
+ * Format the native secure storage service name. A scoped path is hashed; omitting it
+ * preserves the original default namespace. Migration code uses this same
+ * formatter to locate the retired config-directory-derived identity without
+ * giving that variable any ordinary runtime authority.
+ */
+function formatSecureStorageServiceName(
+  serviceSuffix: string,
+  scopedPath: string | undefined,
+  oauthFileSuffix: string,
+  hashLength: number,
+): string {
+  const dirHash = scopedPath === undefined
+    ? ''
+    : `-${createHash('sha256').update(scopedPath).digest('hex').slice(0, hashLength)}`
+  return `AgenC${oauthFileSuffix}${serviceSuffix}${dirHash}`
+}
+
+/** Reconstruct the historical 32-bit directory hash during explicit migration. */
+export function formatRetiredSecureStorageServiceName(
+  serviceSuffix: string,
+  scopedPath: string | undefined,
+  oauthFileSuffix: string,
+): string {
+  return formatSecureStorageServiceName(
+    serviceSuffix,
+    scopedPath,
+    oauthFileSuffix,
+    8,
+  )
+}
+
+/**
+ * Get the service/resource name for secure storage, scoped by canonical
+ * AGENC_HOME when it selects a non-default location.
  */
 export function getSecureStorageServiceName(
-  serviceSuffix: string = '',
+  home: HomeContext,
+  serviceSuffix: string,
 ): string {
-  const configDir = getAgenCConfigHomeDir()
-  const isDefaultDir = !process.env.AGENC_CONFIG_DIR
-
-  // Use a hash of the config dir path to create a unique but stable suffix
-  // Only add suffix for non-default directories to maintain backwards compatibility
-  const dirHash = isDefaultDir
-    ? ''
-    : `-${createHash('sha256').update(configDir).digest('hex').substring(0, 8)}`
-  return `AgenC${getOauthConfig().OAUTH_FILE_SUFFIX}${serviceSuffix}${dirHash}`
+  // Use a hash of the canonical home path to create a unique but stable suffix.
+  // Only add a suffix for non-default homes. An explicitly configured
+  // default path has the same native secure storage identity as the implicit default.
+  return formatSecureStorageServiceName(
+    serviceSuffix,
+    home.isDefault ? undefined : home.identityKey,
+    home.oauthFileSuffix,
+    32,
+  )
 }
 
 export function getMacOsKeychainStorageServiceName(
-  serviceSuffix: string = '',
+  home: HomeContext,
+  serviceSuffix: string,
 ): string {
-  return getSecureStorageServiceName(serviceSuffix)
+  return getSecureStorageServiceName(home, serviceSuffix)
 }
 
-export function getUsername(): string {
+export function getUsername(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): string {
   try {
-    return process.env.USER || userInfo().username
+    return environment.USER || userInfo().username
   } catch {
     return 'agenc-code-user'
   }
@@ -60,8 +80,8 @@ export function getUsername(): string {
 
 // --
 
-// Cache for keychain reads to avoid repeated expensive security CLI calls.
-// TTL bounds staleness for cross-process scenarios (another CC instance
+// Cache for macOS Keychain reads to avoid repeated expensive security CLI calls.
+// TTL bounds staleness for cross-process scenarios (another AgenC instance
 // refreshing/invalidating tokens) without forcing a blocking spawnSync on
 // every read. In-process writes invalidate via clearKeychainCache() directly.
 //
@@ -70,15 +90,12 @@ export function getUsername(): string {
 // triggers repeat sync reads — observed as a 5.5s event-loop stall
 // (go/ccshare/adamj-20260326-212235). 30s of cross-process staleness is fine:
 // OAuth tokens expire in hours, and the only cross-process writer is another
-// CC instance's /login or refresh.
+// AgenC instance's /login or refresh.
 //
-// Lives here (not in macOsKeychainStorage.ts) so keychainPrefetch.ts can
-// prime it without pulling in execa. Wrapped in an object because ES module
-// `let` bindings aren't writable across module boundaries — both this file
-// and macOsKeychainStorage.ts need to mutate all three fields.
+// Wrapped in an object so storage reads and writes share invalidation state.
 export const KEYCHAIN_CACHE_TTL_MS = 30_000
 
-export const keychainCacheState: {
+export interface KeychainCacheState {
   cache: { data: SecureStorageData | null; cachedAt: number } // cachedAt 0 = invalid
   // Incremented on every cache invalidation. readAsync() captures this before
   // spawning and skips its cache write if a newer generation exists, preventing
@@ -88,34 +105,41 @@ export const keychainCacheState: {
   // one subprocess, not N. Cleared on invalidation so fresh reads don't join
   // a stale in-flight promise.
   readInFlight: Promise<SecureStorageData | null> | null
-} = {
-  cache: { data: null, cachedAt: 0 },
-  generation: 0,
-  readInFlight: null,
 }
 
-export function clearKeychainCache(): void {
-  keychainCacheState.cache = { data: null, cachedAt: 0 }
-  keychainCacheState.generation++
-  keychainCacheState.readInFlight = null
-}
+const keychainCacheStates = new Map<string, KeychainCacheState>()
 
 /**
- * Prime the keychain cache from a prefetch result (keychainPrefetch.ts).
- * Only writes if the cache hasn't been touched yet — if sync read() or
- * update() already ran, their result is authoritative and we discard this.
+ * Return the cache owned by one concrete macOS Keychain entry. The service/account
+ * identity is captured when the storage adapter is constructed, so changing
+ * ambient environment variables cannot redirect a read or share cached bytes
+ * with another AgenC home.
  */
-export function primeKeychainCacheFromPrefetch(stdout: string | null): void {
-  if (keychainCacheState.cache.cachedAt !== 0) return
-  let data: SecureStorageData | null = null
-  if (stdout) {
-    try {
-      // eslint-disable-next-line custom-rules/no-direct-json-operations -- jsonParse() pulls slowOperations (lodash-es/cloneDeep) into the early-startup import chain; see file header
-      data = JSON.parse(stdout)
-    } catch {
-      // malformed prefetch result — let sync read() re-fetch
-      return
-    }
+export function getKeychainCacheState(
+  serviceName: string,
+  username: string,
+): KeychainCacheState {
+  const identity = `${serviceName}\0${username}`
+  const existing = keychainCacheStates.get(identity)
+  if (existing) return existing
+  const created: KeychainCacheState = {
+    cache: { data: null, cachedAt: 0 },
+    generation: 0,
+    readInFlight: null,
   }
-  keychainCacheState.cache = { data, cachedAt: Date.now() }
+  keychainCacheStates.set(identity, created)
+  return created
+}
+
+export function clearKeychainCacheState(state: KeychainCacheState): void {
+  state.cache = { data: null, cachedAt: 0 }
+  state.generation++
+  state.readInFlight = null
+}
+
+/** Clear every bound macOS Keychain cache after a global authentication reset. */
+export function clearKeychainCache(): void {
+  for (const state of keychainCacheStates.values()) {
+    clearKeychainCacheState(state)
+  }
 }

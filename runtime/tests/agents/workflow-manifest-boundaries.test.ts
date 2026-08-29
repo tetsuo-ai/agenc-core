@@ -62,7 +62,7 @@ describe("workflow manifest named boundaries", () => {
         max_concurrency: MAX_WORKFLOW_MAX_CONCURRENCY,
         max_handoff_tokens: MAX_WORKFLOW_HANDOFF_TOKENS,
       }),
-    ).toMatchObject({ kind: "agent_dag" });
+    ).toMatchObject({ manifest: { kind: "agent_dag" } });
     expect(() =>
       manifest(steps, { max_concurrency: MAX_WORKFLOW_MAX_CONCURRENCY + 1 }),
     ).toThrow();

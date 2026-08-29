@@ -22,8 +22,8 @@ vi.mock('bun:bundle', () => ({
   feature: (name: string) => harness.features.has(name),
 }))
 
-vi.mock('../../utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => harness.fullscreen,
+vi.mock('../context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => harness.fullscreen,
 }))
 
 vi.mock('../../utils/log.js', () => ({

@@ -148,29 +148,37 @@ test(
         }),
         "utf8",
       ).toString("base64");
-      const prepared = broker.prepareSpawn("tool", {
-        program: process.execPath,
-        args: [
-          "--input-type=module",
-          "--eval",
-          kernelProbeScript(),
-          payload,
-        ],
-        cwd: workspace,
-        env: childEnv,
-      });
-      expect(prepared.program).toBe(realpathSync(process.execPath));
-      expect(prepared.args[0]).toBe(realpathSync(launcherEntry));
-      expect(prepared.args).toContain("--permission-profile");
-      expect(prepared.args).toContain("--");
+      const { command: prepared, result } = await broker
+        .prepareSpawn("tool", {
+          program: process.execPath,
+          args: [
+            "--input-type=module",
+            "--eval",
+            kernelProbeScript(),
+            payload,
+          ],
+          cwd: workspace,
+          env: childEnv,
+        })
+        .run(async (command) => {
+          expect(command.program).toBe(realpathSync(process.execPath));
+          expect(command.args[0]).toBe(realpathSync(launcherEntry));
+          expect(command.args).toContain("--permission-profile");
+          expect(command.args).toContain("--");
 
-      launcher = spawn(prepared.program, [...prepared.args], {
-        cwd: prepared.cwd,
-        env: prepared.env,
-        argv0: prepared.argv0,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      const result = await waitForProcess(launcher, 20_000);
+          const child = spawn(command.program, [...command.args], {
+            cwd: command.cwd,
+            env: command.env,
+            argv0: command.argv0,
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+          launcher = child;
+          child.stdin.end();
+          return {
+            command,
+            result: await waitForProcess(child, 20_000),
+          };
+        });
       const diagnostics = [
         `bubblewrap=${bubblewrap}`,
         `version=${version.stdout.trim()}`,
@@ -312,38 +320,41 @@ test(
         mode: "workspace_write",
         platform: "linux",
       });
-      const boundPrepared = boundBroker.prepareSpawn("tool", {
-        program: process.execPath,
-        args: [
-          "--input-type=module",
-          "--eval",
-          descriptorBoundProbeScript(),
-          Buffer.from(
-            JSON.stringify({ originalWorkspace: boundWorkspace }),
-            "utf8",
-          ).toString("base64"),
-        ],
-        cwd: ".",
-        cwdBinding: "inherited_readonly",
-        env: childEnv,
-      });
-      expect(boundPrepared.args).toContain(
-        "--inherited-readonly-command-cwd",
-      );
-      expect(boundPrepared.args).not.toContain(boundWorkspace);
+      const boundResult = await boundBroker
+        .prepareSpawn("tool", {
+          program: process.execPath,
+          args: [
+            "--input-type=module",
+            "--eval",
+            descriptorBoundProbeScript(),
+            Buffer.from(
+              JSON.stringify({ originalWorkspace: boundWorkspace }),
+              "utf8",
+            ).toString("base64"),
+          ],
+          cwd: ".",
+          cwdBinding: "inherited_readonly",
+          env: childEnv,
+        })
+        .run(async (command) => {
+          expect(command.args).toContain(
+            "--inherited-readonly-command-cwd",
+          );
+          expect(command.args).not.toContain(boundWorkspace);
 
-      renameSync(boundWorkspace, displacedWorkspace);
-      symlinkSync(outsideWorkspace, boundWorkspace, "dir");
-      const boundResult = await boundCapability.runRipgrep({
-        program: boundPrepared.program,
-        args: boundPrepared.args,
-        env: boundPrepared.env,
-        ...(boundPrepared.argv0 === undefined
-          ? {}
-          : { argv0: boundPrepared.argv0 }),
-        timeoutMs: 10_000,
-        maxOutputBytes: 16 * 1024,
-      });
+          renameSync(boundWorkspace, displacedWorkspace);
+          symlinkSync(outsideWorkspace, boundWorkspace, "dir");
+          return boundCapability.runRipgrep({
+            program: command.program,
+            args: command.args,
+            env: command.env,
+            ...(command.argv0 === undefined
+              ? {}
+              : { argv0: command.argv0 }),
+            timeoutMs: 10_000,
+            maxOutputBytes: 16 * 1024,
+          });
+        });
       const boundDiagnostics = [
         `exit=${String(boundResult.exitCode)}`,
         `signal=${String(boundResult.signal)}`,
@@ -683,7 +694,7 @@ function tcpRoundTrip(port: number, payload: string): Promise<string> {
       socket.write(payload);
     });
     socket.on("data", (chunk) => {
-      chunks.push(chunk);
+      chunks.push(Buffer.from(chunk));
     });
     socket.once("end", () => {
       clearTimeout(timer);

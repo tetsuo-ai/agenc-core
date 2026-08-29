@@ -27,17 +27,13 @@ describe("kill_process tool", () => {
     expect(result.isError).toBeUndefined();
   });
 
-  it("accepts the process_id alias and reports benign no-ops", async () => {
+  it("rejects the removed process_id input alias", async () => {
     const manager = fakeManager(false);
     const tool = createKillProcessTool({ unifiedExecManager: manager });
     const result = await tool.execute({ process_id: 9 });
-    const payload = JSON.parse(String(result.content)) as {
-      terminated: boolean;
-      note?: string;
-    };
-    expect(payload.terminated).toBe(false);
-    expect(payload.note).toContain("already exited or unknown");
-    expect(result.isError).toBeUndefined();
+    expect(result.isError).toBe(true);
+    expect(String(result.content)).toContain("unknown field `process_id`");
+    expect(manager.terminateProcess).not.toHaveBeenCalled();
   });
 
   it("forwards owner id and surfaces owner_denied errors", async () => {

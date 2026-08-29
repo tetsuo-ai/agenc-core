@@ -19,11 +19,29 @@ import {
   clearCurrentRuntimeSession,
   setCurrentRuntimeSession,
 } from '../../src/session/current-session.ts'
+import {
+  resolveAgentRuntimeOptions,
+  resolveCommandExecutionAuthority,
+} from '../../src/session/runtime-options.ts'
+import { subprocessEnv } from '../../src/utils/subprocessEnv.ts'
 
 let tempRoot: string | undefined
+const testRuntimeOptions = resolveAgentRuntimeOptions({})
+const testCommandExecutionAuthority = resolveCommandExecutionAuthority(
+  testRuntimeOptions,
+  '/bin/bash',
+  subprocessEnv(process.env),
+)
 const legacyTestSession = {
   conversationId: 'powershell-execution-test-session',
-  services: { admissionRequired: false },
+  services: {
+    admissionRequired: false,
+    runtimeOptions: testRuntimeOptions,
+    userShell: {
+      ...testCommandExecutionAuthority,
+      deriveExecArgs: (input: string) => ['-c', input],
+    },
+  },
 } as never
 
 function findPowerShellExecutable(): string | null {

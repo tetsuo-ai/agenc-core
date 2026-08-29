@@ -37,7 +37,6 @@ import {
   OVERLAY_CONTAINER_PATH,
   OVERLAY_NODE,
   OVERLAY_NODE_COMPAT_LIB,
-  OVERLAY_PROXY_PRELOAD,
 } from "./overlay-paths.js";
 
 export const EVAL_BASELINE_TAG = "agenc-eval-baseline";
@@ -119,13 +118,11 @@ export async function assertOverlayLayout(
     path.join(overlay.hostDir, "node", "compat", "libatomic.so.1"),
     path.join(overlay.hostDir, OVERLAY_AGENT_ENTRY_SUBPATH),
     path.join(overlay.hostDir, "mock", "serve.mjs"),
-    // The real-model lane also needs the proxy sidecar, the containment
-    // probe, and the daemon proxy preload staged in the overlay.
+    // The real-model lane also needs the proxy sidecar and containment probe.
     ...(options.egress
       ? [
         path.join(overlay.hostDir, "proxy", "allowlist-proxy.mjs"),
         path.join(overlay.hostDir, "proxy", "eval-egress-probe.mjs"),
-        path.join(overlay.hostDir, "proxy", "eval-proxy-preload.cjs"),
       ]
       : []),
   ];
@@ -195,14 +192,14 @@ function buildAgentScript(): string {
     `MOCK_URL=$(grep -o 'MOCK_URL=.*' ${AGENT_HELPER_DIR}/mock.log | head -1 | cut -d= -f2-)`,
     `if [ -z "$MOCK_URL" ]; then echo "AGENC_MOCK_FAILED" > ${AGENT_HELPER_DIR}/infra-failure; kill "$MOCK_PID" 2>/dev/null || true; exit 86; fi`,
     `export AGENC_PROVIDER=openai-compatible AGENC_MODEL=local-pipeline-model`,
-    `export OPENAI_COMPATIBLE_MODEL=local-pipeline-model OPENAI_COMPATIBLE_API_KEY=local-pipeline-key`,
+    `export AGENC_MODEL=local-pipeline-model OPENAI_COMPATIBLE_API_KEY=local-pipeline-key`,
     `export OPENAI_COMPATIBLE_BASE_URL="$MOCK_URL/v1" API_TIMEOUT_MS=600000`,
     `export AGENC_HOME=${AGENT_HOME} AGENC_WORKSPACE="$PWD" AGENC_AUTH_MANAGED_KEYS_ENABLED=0`,
     // Workspace trust is granted by the evaluator, never by repository
     // content: the store is written before the agent runs.
     `printf '%s' "{\\"version\\":1,\\"trustedProjects\\":[{\\"path\\":\\"$PWD\\",\\"trustedAt\\":\\"1970-01-01T00:00:00Z\\"}]}" > ${AGENT_HOME}/trusted-projects.json`,
     `node ${AGENT_RUNTIME_ENTRY} -p "$(cat ${AGENT_HELPER_DIR}/prompt.txt)" ` +
-      `--output-format json --yolo > ${AGENT_HELPER_DIR}/agent-result.json 2> ${AGENT_HELPER_DIR}/agent-stderr.log`,
+      `--output-format json --dangerously-bypass-approvals-and-sandbox > ${AGENT_HELPER_DIR}/agent-result.json 2> ${AGENT_HELPER_DIR}/agent-stderr.log`,
     `AGENC_RC=$?`,
     `kill "$MOCK_PID" 2>/dev/null || true`,
     `exit $AGENC_RC`,
@@ -565,18 +562,14 @@ export function buildRealProviderAgentScript(config: {
     buildBaselineGitScript(),
     `export HTTPS_PROXY=${proxyUrl} HTTP_PROXY=${proxyUrl} NO_PROXY=`,
     `export AGENC_PROXY_RESOLVES_HOSTS=1`,
-    // Install the undici proxy dispatcher in the CLI AND the daemon it spawns
-    // (NODE_OPTIONS is inherited): the runtime only configures the proxy in
-    // TUI mode, so a headless agent would otherwise ignore HTTPS_PROXY.
-    `export NODE_OPTIONS="--require ${OVERLAY_PROXY_PRELOAD}"`,
     `export AGENC_PROVIDER=openai-compatible AGENC_MODEL=${config.model}`,
-    `export OPENAI_COMPATIBLE_MODEL=${config.model}`,
+    `export AGENC_MODEL=${config.model}`,
     `export OPENAI_COMPATIBLE_BASE_URL="${config.baseUrl}" API_TIMEOUT_MS=600000`,
     `export AGENC_HOME=${AGENT_HOME} AGENC_WORKSPACE="$PWD" AGENC_AUTH_MANAGED_KEYS_ENABLED=0`,
     // OPENAI_COMPATIBLE_API_KEY is injected via `docker exec -e`, never here.
     `printf '%s' "{\\"version\\":1,\\"trustedProjects\\":[{\\"path\\":\\"$PWD\\",\\"trustedAt\\":\\"1970-01-01T00:00:00Z\\"}]}" > ${AGENT_HOME}/trusted-projects.json`,
     `node ${AGENT_RUNTIME_ENTRY} -p "$(cat ${AGENT_HELPER_DIR}/prompt.txt)" ` +
-      `--output-format json --yolo > ${AGENT_HELPER_DIR}/agent-result.json 2> ${AGENT_HELPER_DIR}/agent-stderr.log`,
+      `--output-format json --dangerously-bypass-approvals-and-sandbox > ${AGENT_HELPER_DIR}/agent-result.json 2> ${AGENT_HELPER_DIR}/agent-stderr.log`,
     `exit $?`,
   ].join("\n");
 }

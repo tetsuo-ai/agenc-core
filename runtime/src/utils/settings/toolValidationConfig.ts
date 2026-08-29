@@ -9,7 +9,7 @@ export type ToolValidationConfig = {
   /** Tools that accept file glob patterns (e.g., *.ts, src/**) */
   filePatternTools: string[]
 
-  /** Tools that accept bash wildcard patterns (* anywhere) and compatibility :* prefix syntax */
+  /** Tools that accept bash wildcard patterns (* anywhere) and canonical :* prefix syntax */
   bashPrefixTools: string[]
 
   /** Custom validation rules for specific tools */
@@ -26,7 +26,7 @@ export type ToolValidationConfig = {
 export const TOOL_VALIDATION_CONFIG: ToolValidationConfig = {
   // File pattern tools (accept *.ts, src/**, etc.)
   filePatternTools: [
-    'Read',
+    'FileRead',
     'Write',
     'Edit',
     'Glob',
@@ -34,8 +34,8 @@ export const TOOL_VALIDATION_CONFIG: ToolValidationConfig = {
     'NotebookEdit',
   ],
 
-  // Bash wildcard tools (accept * anywhere, and compatibility command:* syntax)
-  bashPrefixTools: ['Bash'],
+  // Bash wildcard tools (accept * anywhere, plus word-boundary command:* syntax)
+  bashPrefixTools: ['system.bash', 'exec_command'],
 
   // Custom validation (only if needed)
   customValidation: {
@@ -52,17 +52,17 @@ export const TOOL_VALIDATION_CONFIG: ToolValidationConfig = {
       return { valid: true }
     },
 
-    // WebFetch uses domain: prefix for hostname-based permissions
-    WebFetch: content => {
+    // web_fetch uses domain: prefix for hostname-based permissions
+    web_fetch: content => {
       // Check if it's trying to use a URL format
       if (content.includes('://') || content.startsWith('http')) {
         return {
           valid: false,
-          error: 'WebFetch permissions use domain format, not URLs',
+          error: 'web_fetch permissions use domain format, not URLs',
           suggestion: 'Use "domain:hostname" format',
           examples: [
-            'WebFetch(domain:example.com)',
-            'WebFetch(domain:github.com)',
+            'web_fetch(domain:example.com)',
+            'web_fetch(domain:github.com)',
           ],
         }
       }
@@ -71,11 +71,11 @@ export const TOOL_VALIDATION_CONFIG: ToolValidationConfig = {
       if (!content.startsWith('domain:')) {
         return {
           valid: false,
-          error: 'WebFetch permissions must use "domain:" prefix',
+          error: 'web_fetch permissions must use "domain:" prefix',
           suggestion: 'Use "domain:hostname" format',
           examples: [
-            'WebFetch(domain:example.com)',
-            'WebFetch(domain:*.google.com)',
+            'web_fetch(domain:example.com)',
+            'web_fetch(domain:*.google.com)',
           ],
         }
       }

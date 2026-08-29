@@ -1,8 +1,5 @@
 /** Shared types for user-facing budget-policy resolution. */
 
-/** Where a resolved budget policy field came from. */
-export type BudgetValueSource = "env" | "config" | "default";
-
 /** A per-agent spend envelope. Caps of 0 or undefined mean "no cap". */
 export interface BudgetCaps {
   /** Hard daily dollar cap (calendar day). */
@@ -28,15 +25,4 @@ export interface BudgetPolicy {
    * turns are gated ("manual turns unaffected unless configured").
    */
   readonly enforceInteractive: boolean;
-}
-
-export interface BudgetPolicySources {
-  readonly enabled: BudgetValueSource;
-  readonly dailyUsd: BudgetValueSource;
-  readonly monthlyUsd: BudgetValueSource;
-}
-
-export interface ResolvedBudgetPolicy {
-  readonly policy: BudgetPolicy;
-  readonly sources: BudgetPolicySources;
 }

@@ -12,7 +12,7 @@ function runtimeRel(file: string | null): string | null {
 
 describe('Z-PURGEC build resolution boundaries', () => {
   it('does not classify migrated files from ts-nocheck comments alone', () => {
-    const importer = resolve(repoRuntimeRoot, 'src/services/api/client.ts')
+    const importer = resolve(repoRuntimeRoot, 'src/llm/provider.ts')
 
     expect(__agencBuildConfigTest.shouldUseAgenCResolution(importer)).toBe(false)
     expect(
@@ -32,6 +32,15 @@ describe('Z-PURGEC build resolution boundaries', () => {
     expect(__agencBuildConfigTest.isKnownMissingOptionalModule('../tools/SleepTool/SleepTool.js')).toBe(false)
     expect(__agencBuildConfigTest.isKnownMissingOptionalModule('./not-present.js')).toBe(false)
     expect(__agencBuildConfigTest.isKnownMissingOptionalModule('@mendable/firecrawl-js')).toBe(true)
+  })
+
+  it('bundles jsonc-parser so its extensionless internal imports never escape into dist', () => {
+    expect(__agencBuildConfigTest.isBundledBareImport('jsonc-parser')).toBe(true)
+    expect(
+      __agencBuildConfigTest.isBundledBareImport(
+        'jsonc-parser/lib/esm/main.js',
+      ),
+    ).toBe(true)
   })
 
   it('inlines copied-tree feature gates before unresolved import resolution', () => {

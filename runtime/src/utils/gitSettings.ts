@@ -7,12 +7,8 @@
 //
 // If you're tempted to add `import settings` to git.ts — don't. Put it here.
 
-import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import { getExecutionAuthoritySettings } from './settings/settings.js'
 
 export function shouldIncludeGitInstructions(): boolean {
-  const envVal = process.env.AGENC_DISABLE_GIT_INSTRUCTIONS
-  if (isEnvTruthy(envVal)) return false
-  if (isEnvDefinedFalsy(envVal)) return true
   return getExecutionAuthoritySettings().includeGitInstructions ?? true
 }

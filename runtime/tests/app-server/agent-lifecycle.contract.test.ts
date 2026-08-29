@@ -34,6 +34,7 @@ import {
 } from "./agent-lifecycle.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
+import { DAEMON_CLIENT_ENV_SNAPSHOT_KEYS } from "./client-env-snapshot.js";
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
@@ -53,7 +54,11 @@ import type {
   AgenCBackgroundAgentSessionEventBinding,
   AgenCBackgroundAgentStartParams,
 } from "./background-agent-runner.js";
-import { AgenCBackgroundAgentSuspensionShutdownError } from "./background-agent-runner.js";
+import {
+  AgenCBackgroundAgentMessageError,
+  AgenCBackgroundAgentSuspensionShutdownError,
+} from "./background-agent-runner.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
@@ -66,6 +71,8 @@ function sequence(values: readonly string[]): () => string {
     return value;
   };
 }
+
+const registerNoopSessionRoute = (): (() => void) => () => {};
 
 function createThreadStoreTestDirs(): {
   readonly cwd: string;
@@ -96,6 +103,7 @@ function openRollout(
     cwd,
     sessionId,
     agencVersion: "0.2.0",
+    sessionTempRoot: tmpdir(),
   });
   rollout.open({
     sessionId,
@@ -105,7 +113,7 @@ function openRollout(
     ...(source !== null ? { source } : {}),
     agencVersion: "0.2.0",
     model: "grok-4",
-    modelProvider: "xai",
+    modelProvider: "grok",
   });
   return rollout;
 }
@@ -327,14 +335,21 @@ function canonicalRuntimeSettings(
   cwd: string,
   overrides: Partial<RunRuntimeSettingsSnapshot> = {},
 ): RunRuntimeSettingsSnapshot {
+  const prePlanMode =
+    overrides.prePlanMode ?? (permissionMode === "plan" ? "default" : null);
+  const bypassTransitionCritical =
+    permissionMode === "bypassPermissions" ||
+    prePlanMode === "bypassPermissions";
   return {
     permissionMode,
-    prePlanMode: permissionMode === "plan" ? "default" : null,
+    prePlanMode,
     autoModeActive: permissionMode === "auto",
-    bypassPermissionsWorkspace:
-      permissionMode === "bypassPermissions" ? cwd : null,
+    autoModeAvailable: true,
+    bypassPermissionsModeAvailable: bypassTransitionCritical,
+    bypassPermissionsWorkspace: bypassTransitionCritical ? cwd : null,
+    bypassPermissionsConsentWorkspace: bypassTransitionCritical ? cwd : null,
     model: "grok-5",
-    provider: "xai",
+    provider: "grok",
     profile: null,
     reasoningEffort: null,
     modelVerbosity: null,
@@ -342,6 +357,27 @@ function canonicalRuntimeSettings(
     hooksDisabled: false,
     ...overrides,
   };
+}
+
+const TEST_AGENT_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
+
+type TestAgentCreateParams = Omit<
+  Parameters<AgenCDaemonAgentManager["createAgent"]>[0],
+  "runtimeOptions"
+> & {
+  readonly runtimeOptions?: Parameters<
+    AgenCDaemonAgentManager["createAgent"]
+  >[0]["runtimeOptions"];
+};
+
+function createTestAgent(
+  agents: AgenCDaemonAgentManager,
+  params: TestAgentCreateParams,
+) {
+  return agents.createAgent({
+    ...params,
+    runtimeOptions: params.runtimeOptions ?? TEST_AGENT_RUNTIME_OPTIONS,
+  });
 }
 
 afterEach(() => {
@@ -725,7 +761,7 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
-  it("attaches to persisted agents when source agent id differs from thread id", async () => {
+  it("fails closed attaching a persisted agent without runtime authority", async () => {
     const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
     const rollout = openRollout(cwd, "thread-distinct-agent-attach");
     const threadStore = new FileThreadStore({ cwd, agencHome: home });
@@ -762,22 +798,16 @@ describe("AgenC background agent lifecycle", () => {
         ],
       });
       await expect(
-        recreated.attachAgent({
-          agentId: "agent-distinct-attach",
-          clientId: "tui_1",
-        }),
-      ).resolves.toMatchObject({
-        agentId: "agent-distinct-attach",
-        attachmentId: "attachment-persisted-agent",
-        runtimeSessionId: "agent-distinct-attach",
-        sessionIds: ["thread-distinct-agent-attach"],
-        sessions: [
+        recreated.attachAgent(
           {
-            sessionId: "thread-distinct-agent-attach",
             agentId: "agent-distinct-attach",
-            status: "waiting",
+            clientId: "tui_1",
           },
-        ],
+          registerNoopSessionRoute,
+        ),
+      ).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: expect.stringContaining("runtime-options authority"),
       });
     } finally {
       threadStore.close();
@@ -1026,7 +1056,7 @@ describe("AgenC background agent lifecycle", () => {
               completionTokens: 12,
               totalTokens: 42,
               model: "grok-4",
-              provider: "xai",
+              provider: "grok",
             },
           },
         },
@@ -1050,7 +1080,7 @@ describe("AgenC background agent lifecycle", () => {
         payload: {
           turnId: "turn-1",
           model: "grok-4",
-          provider: "xai",
+          provider: "grok",
         },
       } as RolloutItem);
       threadStore.shutdownThread("stored-agent-full-log");
@@ -1068,7 +1098,7 @@ describe("AgenC background agent lifecycle", () => {
       expect(result.transcript).toContain("event:request_permissions");
       expect(result.transcript).toContain('"permissions":');
       expect(result.transcript).toContain("rollout:turn_context");
-      expect(result.transcript).toContain('"provider": "xai"');
+      expect(result.transcript).toContain('"provider": "grok"');
     } finally {
       threadStore.close();
       rollout.close();
@@ -1223,6 +1253,72 @@ describe("AgenC background agent lifecycle", () => {
     ]);
   });
 
+  it("routes session.shell.execute to the owning runner with the request AbortSignal", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      now: () => "2026-08-27T00:00:00.000Z",
+    });
+    await sessions.restoreSession({
+      sessionId: "session-shell-restored",
+      agentId: "agent-shell-restored",
+      status: "waiting",
+      createdAt: "2026-08-27T00:00:00.000Z",
+      initialPrompt: "deferred shell session",
+    });
+    const executeAgentShell = vi.fn(async () => ({
+      commandId: "shell-manager-1",
+      content: "manager routed output",
+      stdout: "manager routed output",
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      truncated: false,
+      isError: false,
+    }));
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-08-27T00:00:00.000Z",
+          status: "running",
+        }),
+        executeAgentShell,
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-shell-restored",
+      objective: "deferred shell session",
+      startedAt: "2026-08-27T00:00:00.000Z",
+      lastActiveAt: "2026-08-27T00:00:00.000Z",
+      sessionIds: ["session-shell-restored"],
+      runtimeAvailable: true,
+    });
+    const params = {
+      sessionId: "session-shell-restored",
+      commandId: "shell-manager-1",
+      command: "printf manager-route",
+    } as const;
+    const controller = new AbortController();
+
+    await expect(
+      agents.executeSessionShell(params, controller.signal),
+    ).resolves.toEqual({
+      commandId: "shell-manager-1",
+      content: "manager routed output",
+      stdout: "manager routed output",
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      truncated: false,
+      isError: false,
+    });
+    expect(executeAgentShell).toHaveBeenCalledWith(
+      "agent-shell-restored",
+      params,
+      controller.signal,
+    );
+  });
+
   it("routes session.clear to the runner that owns the daemon session", async () => {
     const sessions = new AgenCDaemonSessionManager({
       now: () => "2026-05-01T12:07:01.000Z",
@@ -1267,6 +1363,91 @@ describe("AgenC background agent lifecycle", () => {
       sessionId: "session-clear-restored",
       clearedAt: "2026-05-01T12:06:00.000Z",
     });
+  });
+
+  it("reads passive MCP status from the runner that owns the daemon session", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session-mcp-status",
+      agentId: "agent-mcp-status",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "inspect MCP",
+    });
+    const getMcpStatus = vi.fn(async () => ({
+      revision: 4,
+      servers: [
+        {
+          name: "audit-ping",
+          transport: "stdio" as const,
+          enabled: true,
+          required: false,
+          state: "connected" as const,
+          displayTarget: "node",
+          toolCount: 1,
+          error: "https://operator:hunter2@example.test/private",
+          command: "node --token hunter2",
+          args: ["--token", "hunter2"],
+          env: { API_KEY: "hunter2" },
+          headers: { Authorization: "Bearer hunter2" },
+          client: { secret: "hunter2" },
+        },
+      ],
+      tools: [
+        {
+          serverName: "audit-ping",
+          name: "mcp.audit-ping.check",
+          description:
+            "Use https://operator:hunter2@example.test/private?token=hunter2",
+          inputSchema: { token: "hunter2" },
+          client: { secret: "hunter2" },
+        },
+      ],
+    }));
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        getMcpStatus,
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-mcp-status",
+      objective: "inspect MCP",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-mcp-status"],
+      runtimeAvailable: true,
+    });
+
+    await expect(
+      agents.getMcpStatusForSession({ sessionId: "session-mcp-status" }),
+    ).resolves.toEqual({
+      sessionId: "session-mcp-status",
+      revision: 4,
+      servers: [
+        {
+          name: "audit-ping",
+          transport: "stdio",
+          enabled: true,
+          required: false,
+          state: "connected",
+          displayTarget: "node",
+          toolCount: 1,
+        },
+      ],
+      tools: [
+        {
+          serverName: "audit-ping",
+          name: "mcp.audit-ping.check",
+        },
+      ],
+    });
+    expect(getMcpStatus).toHaveBeenCalledWith("agent-mcp-status");
   });
 
   it("routes session.mcp.addServer to the runner that owns the daemon session", async () => {
@@ -1485,6 +1666,9 @@ describe("AgenC background agent lifecycle", () => {
     });
     const setAgentModel = vi.fn(async () => ({
       applied: true,
+      provider: "openai",
+      model: "gpt-x",
+      runtimeSettingsEventId: "settings-1",
       summary: 'Model switched to "gpt-x" on "openai".',
     }));
     const agents = new AgenCDaemonAgentManager({
@@ -1516,6 +1700,9 @@ describe("AgenC background agent lifecycle", () => {
     ).resolves.toEqual({
       sessionId: "session-setmodel",
       applied: true,
+      provider: "openai",
+      model: "gpt-x",
+      runtimeSettingsEventId: "settings-1",
       summary: 'Model switched to "gpt-x" on "openai".',
     });
     expect(setAgentModel).toHaveBeenCalledWith("agent-setmodel", {
@@ -1576,6 +1763,65 @@ describe("AgenC background agent lifecycle", () => {
     });
   });
 
+  it("routes session.permissions.mutateRule to the owning runner authority", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session-rule",
+      agentId: "agent-rule",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const mutateAgentPermissionRule = vi.fn(async () => ({
+      applied: true,
+      operation: "add" as const,
+      behavior: "deny" as const,
+      rule: "Write",
+      sessionRules: { allow: [], deny: ["Write"], ask: [] },
+    }));
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        mutateAgentPermissionRule,
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-rule",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-rule"],
+      runtimeAvailable: true,
+    });
+
+    await expect(
+      agents.mutateSessionPermissionRule({
+        sessionId: "session-rule",
+        operation: "add",
+        behavior: "deny",
+        rule: "Write",
+      }),
+    ).resolves.toEqual({
+      sessionId: "session-rule",
+      applied: true,
+      operation: "add",
+      behavior: "deny",
+      rule: "Write",
+      sessionRules: { allow: [], deny: ["Write"], ask: [] },
+    });
+    expect(mutateAgentPermissionRule).toHaveBeenCalledWith("agent-rule", {
+      sessionId: "session-rule",
+      operation: "add",
+      behavior: "deny",
+      rule: "Write",
+    });
+  });
+
   it("routes session.hooks.status to the runner that owns the daemon session", async () => {
     const sessions = new AgenCDaemonSessionManager();
     await sessions.restoreSession({
@@ -1589,6 +1835,9 @@ describe("AgenC background agent lifecycle", () => {
       available: true,
       sourcePath: "/home/agent/.agenc/config.toml",
       disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode" as const,
       issues: [],
       hooks: [
         {
@@ -1628,6 +1877,10 @@ describe("AgenC background agent lifecycle", () => {
       sessionId: "session-hooks",
       available: true,
       sourcePath: "/home/agent/.agenc/config.toml",
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode",
       hooks: [{ event: "PreToolUse", index: 0 }],
     });
     expect(getAgentHooksStatus).toHaveBeenCalledWith("agent-hooks");
@@ -1644,7 +1897,10 @@ describe("AgenC background agent lifecycle", () => {
     });
     const setAgentHooksDisabled = vi.fn(async () => ({
       applied: true,
-      disabled: true,
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode" as const,
     }));
     const agents = new AgenCDaemonAgentManager({
       sessionManager: sessions,
@@ -1669,15 +1925,18 @@ describe("AgenC background agent lifecycle", () => {
     await expect(
       agents.setSessionHooksDisabled({
         sessionId: "session-hooks-toggle",
-        disabled: true,
+        disabled: false,
       }),
     ).resolves.toEqual({
       sessionId: "session-hooks-toggle",
       applied: true,
-      disabled: true,
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode",
     });
     expect(setAgentHooksDisabled).toHaveBeenCalledWith("agent-hooks-toggle", {
-      disabled: true,
+      disabled: false,
     });
   });
 
@@ -1775,6 +2034,7 @@ describe("AgenC background agent lifecycle", () => {
       status: "waiting",
       createdAt: "2026-05-01T12:00:00.000Z",
       initialPrompt: "inspect recovery",
+      metadata: { runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS },
     });
     const interruptAgentTurn = vi.fn(async () => true);
     const agents = new AgenCDaemonAgentManager({
@@ -1799,9 +2059,13 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.attachAgent({ agentId: "agent-cancel-recovered" }),
-    ).resolves.toMatchObject({
-      sessionIds: ["session-cancel-recovered"],
+      agents.attachAgent(
+        { agentId: "agent-cancel-recovered" },
+        registerNoopSessionRoute,
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: expect.stringContaining("live runtime-settings authority"),
     });
     await expect(
       agents.cancelSessionTurn({
@@ -1917,7 +2181,10 @@ describe("AgenC background agent lifecycle", () => {
       status: "stopped",
     });
     await expect(
-      agents.attachAgent({ agentId: "agent-terminate-recovered" }),
+      agents.attachAgent(
+        { agentId: "agent-terminate-recovered" },
+        registerNoopSessionRoute,
+      ),
     ).rejects.toMatchObject({
       code: "AGENT_NOT_FOUND",
     });
@@ -1943,7 +2210,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         cwd: process.cwd(),
         objective: "inspect live termination",
       }),
@@ -1968,7 +2235,10 @@ describe("AgenC background agent lifecycle", () => {
       status: "stopped",
     });
     await expect(
-      agents.attachAgent({ agentId: "agent-terminate-live" }),
+      agents.attachAgent(
+        { agentId: "agent-terminate-live" },
+        registerNoopSessionRoute,
+      ),
     ).rejects.toMatchObject({
       code: "AGENT_NOT_FOUND",
     });
@@ -2001,7 +2271,7 @@ describe("AgenC background agent lifecycle", () => {
     });
     agentsRef = agents;
 
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "reentrant stop",
     });
@@ -2207,6 +2477,7 @@ describe("AgenC background agent lifecycle", () => {
       now: sequence(["2026-05-01T12:00:01.000Z", "2026-05-01T12:00:02.000Z"]),
     });
     const starts: AgenCBackgroundAgentStartParams[] = [];
+    const runtimeSettings = canonicalRuntimeSettings("default", process.cwd());
     const runner: AgenCBackgroundAgentRunner = {
       startAgent: async (params) => {
         starts.push(params);
@@ -2217,6 +2488,12 @@ describe("AgenC background agent lifecycle", () => {
           status: "running",
         };
       },
+      getAgentSnapshot: async () => ({
+        status: "running",
+        lastActiveAt: "2026-05-01T12:00:00.500Z",
+        runtimeSettings,
+        runtimeSettingsEventId: "settings:agent_1:default",
+      }),
     };
     const agents = new AgenCDaemonAgentManager({
       defaultCwd: () => "/workspace",
@@ -2226,7 +2503,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         cwd: process.cwd(),
         objective: "  build the parser  ",
         metadata: { ticket: "F-06a" },
@@ -2245,6 +2522,7 @@ describe("AgenC background agent lifecycle", () => {
         ticket: "F-06a",
         unattendedAllow: [],
         unattendedDeny: [],
+        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
       sessionId: "session_1",
     });
@@ -2256,11 +2534,16 @@ describe("AgenC background agent lifecycle", () => {
           ticket: "F-06a",
           unattendedAllow: [],
           unattendedDeny: [],
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
         },
         unattendedAllow: [],
         unattendedDeny: [],
+        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
     ]);
+    expect(starts[0]?.runtimeOptions).toBe(
+      starts[0]?.metadata.runtimeOptions,
+    );
     await expect(sessions.getSession("session_1")).resolves.toEqual({
       sessionId: "session_1",
       agentId: "agent_1",
@@ -2273,6 +2556,7 @@ describe("AgenC background agent lifecycle", () => {
         source: "agent.start",
         unattendedAllow: [],
         unattendedDeny: [],
+        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
     });
     await expect(agents.listAgents()).resolves.toEqual({
@@ -2291,16 +2575,23 @@ describe("AgenC background agent lifecycle", () => {
             ticket: "F-06a",
             unattendedAllow: [],
             unattendedDeny: [],
+            runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           },
         },
       ],
     });
     await expect(
-      agents.attachAgent({ agentId: "agent_1", clientId: "tui_1" }),
+      agents.attachAgent(
+        { agentId: "agent_1", clientId: "tui_1" },
+        registerNoopSessionRoute,
+      ),
     ).resolves.toEqual({
       agentId: "agent_1",
       attachmentId: "attachment_1",
       sessionIds: ["session_1"],
+      runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+      runtimeSettings,
+      runtimeSettingsEventId: "settings:agent_1:default",
       runtimeSessionId: "agent_1",
       sessions: [
         {
@@ -2315,6 +2606,7 @@ describe("AgenC background agent lifecycle", () => {
             source: "agent.start",
             unattendedAllow: [],
             unattendedDeny: [],
+            runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           },
           activeAttachmentIds: ["attachment_1"],
         },
@@ -2323,6 +2615,233 @@ describe("AgenC background agent lifecycle", () => {
     await expect(sessions.getSession("session_1")).resolves.toMatchObject({
       activeAttachmentIds: ["attachment_1"],
     });
+  });
+
+  it("agent.attach rehydrates the live default-to-bypass transition after detach", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_attach_runtime"]),
+      createAttachmentId: sequence(["attachment_default", "attachment_bypass"]),
+      now: sequence([
+        "2026-05-01T12:00:01.000Z",
+        "2026-05-01T12:00:02.000Z",
+        "2026-05-01T12:00:03.000Z",
+      ]),
+    });
+    let liveSettings = canonicalRuntimeSettings("default", process.cwd());
+    let liveSettingsEventId = "settings:agent_attach_runtime:default";
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_attach_runtime",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      getAgentSnapshot: async () => ({
+        status: "running",
+        lastActiveAt: "2026-05-01T12:00:00.500Z",
+        runtimeSettings: liveSettings,
+        runtimeSettingsEventId: liveSettingsEventId,
+      }),
+    };
+    const agents = new AgenCDaemonAgentManager({
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+      runner,
+      sessionManager: sessions,
+    });
+    await createTestAgent(agents, {
+      cwd: process.cwd(),
+      objective: "preserve live attach authority",
+    });
+
+    const initial = await agents.attachAgent(
+      {
+        agentId: "agent_attach_runtime",
+        clientId: "tui_default",
+      },
+      registerNoopSessionRoute,
+    );
+    expect(initial.runtimeSettings.permissionMode).toBe("default");
+    await sessions.detachSession({
+      sessionId: "session_attach_runtime",
+      attachmentId: initial.attachmentId,
+    });
+
+    liveSettings = canonicalRuntimeSettings("bypassPermissions", process.cwd());
+    liveSettingsEventId = "settings:agent_attach_runtime:bypass";
+    const reattached = await agents.attachAgent(
+      {
+        agentId: "agent_attach_runtime",
+        clientId: "tui_bypass",
+      },
+      registerNoopSessionRoute,
+    );
+    expect(reattached.runtimeSettings).toEqual(liveSettings);
+    expect(reattached.runtimeSettingsEventId).toBe(liveSettingsEventId);
+    expect(reattached.runtimeSettings.bypassPermissionsWorkspace).toBe(
+      process.cwd(),
+    );
+  });
+
+  it("returns a detached frozen runtime-settings snapshot from in-process attach", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: () => "session_attach_snapshot",
+      createAttachmentId: () => "attachment_attach_snapshot",
+      now: () => "2026-05-01T12:00:01.000Z",
+    });
+    const runnerOwned = canonicalRuntimeSettings("default", process.cwd());
+    const canonical = structuredClone(runnerOwned);
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_attach_snapshot",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      getAgentSnapshot: async () => ({
+        status: "running",
+        lastActiveAt: "2026-05-01T12:00:00.500Z",
+        runtimeSettings: runnerOwned,
+        runtimeSettingsEventId: "settings:agent_attach_snapshot:default",
+      }),
+    };
+    const agents = new AgenCDaemonAgentManager({
+      now: () => "2026-05-01T12:00:00.000Z",
+      runner,
+      sessionManager: sessions,
+    });
+    await createTestAgent(agents, {
+      cwd: process.cwd(),
+      objective: "isolate attach authority",
+    });
+
+    const attached = await agents.attachAgent(
+      { agentId: "agent_attach_snapshot", clientId: "tui_snapshot" },
+      registerNoopSessionRoute,
+    );
+    expect(attached.runtimeSettings).toEqual(canonical);
+    expect(attached.runtimeSettings).not.toBe(runnerOwned);
+    expect(Object.isFrozen(attached.runtimeSettings)).toBe(true);
+    for (const [key, value] of Object.entries(attached.runtimeSettings)) {
+      const replacement =
+        typeof value === "boolean"
+          ? !value
+          : typeof value === "string"
+            ? `${value}-mutated`
+            : "mutated";
+      expect(Reflect.set(attached.runtimeSettings, key, replacement)).toBe(
+        false,
+      );
+    }
+    expect(runnerOwned).toEqual(canonical);
+    expect(Reflect.set(runnerOwned, "model", "runner-side-change")).toBe(true);
+    expect(attached.runtimeSettings.model).toBe(canonical.model);
+  });
+
+  it.each(["route registration", "runtime settings snapshot"] as const)(
+    "agent.attach rolls back its attachment when %s fails",
+    async (failurePoint) => {
+      const sessions = new AgenCDaemonSessionManager({
+        createSessionId: () => "session_attach_rollback",
+        createAttachmentId: () => "attachment_attach_rollback",
+        now: () => "2026-05-01T12:00:01.000Z",
+      });
+      const snapshotFailure = new Error("snapshot failed");
+      let snapshotReads = 0;
+      const runner: AgenCBackgroundAgentRunner = {
+        startAgent: async () => ({
+          agentId: "agent_attach_rollback",
+          startedAt: "2026-05-01T12:00:00.500Z",
+          status: "running",
+        }),
+        getAgentSnapshot: async () => {
+          snapshotReads += 1;
+          if (
+            failurePoint === "runtime settings snapshot" &&
+            snapshotReads === 2
+          ) {
+            throw snapshotFailure;
+          }
+          return {
+            status: "running",
+            lastActiveAt: "2026-05-01T12:00:00.500Z",
+            runtimeSettings: canonicalRuntimeSettings(
+              "default",
+              process.cwd(),
+            ),
+            runtimeSettingsEventId: "settings:agent_attach_rollback:default",
+          };
+        },
+      };
+      const agents = new AgenCDaemonAgentManager({
+        now: () => "2026-05-01T12:00:00.000Z",
+        runner,
+        sessionManager: sessions,
+      });
+      await createTestAgent(agents, {
+        cwd: process.cwd(),
+        objective: "rollback failed attach",
+      });
+      const rollbackRoute = vi.fn(async () => {});
+      const registrationFailure = new Error("registration failed");
+
+      await expect(
+        agents.attachAgent(
+          {
+            agentId: "agent_attach_rollback",
+            clientId: "tui_attach_rollback",
+          },
+          async () => {
+            if (failurePoint === "route registration") {
+              throw registrationFailure;
+            }
+            return rollbackRoute;
+          },
+        ),
+      ).rejects.toBe(
+        failurePoint === "route registration"
+          ? registrationFailure
+          : snapshotFailure,
+      );
+      expect(rollbackRoute).toHaveBeenCalledTimes(
+        failurePoint === "runtime settings snapshot" ? 1 : 0,
+      );
+      await expect(
+        sessions.getSession("session_attach_rollback"),
+      ).resolves.not.toHaveProperty("activeAttachmentIds");
+    },
+  );
+
+  it("agent.attach fails closed without valid session runtime authority", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session_missing_runtime_options",
+      agentId: "agent_missing_runtime_options",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "inspect authority",
+      metadata: { runtimeOptions: { simpleMode: true } },
+    });
+    const agents = new AgenCDaemonAgentManager({ sessionManager: sessions });
+    await agents.restoreAgent({
+      agentId: "agent_missing_runtime_options",
+      objective: "inspect authority",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session_missing_runtime_options"],
+      runtimeAvailable: true,
+    });
+
+    await expect(
+      agents.attachAgent(
+        { agentId: "agent_missing_runtime_options" },
+        registerNoopSessionRoute,
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: expect.stringContaining("runtime-options authority"),
+    });
+    const session = await sessions.getSession(
+      "session_missing_runtime_options",
+    );
+    expect(session).not.toHaveProperty("activeAttachmentIds");
   });
 
   it("agent.create explicitly reopens a retained canonical session", async () => {
@@ -2344,7 +2863,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: "conv-retained1",
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2386,6 +2905,7 @@ describe("AgenC background agent lifecycle", () => {
         permissionMode: "acceptEdits",
         unattendedAllow: [],
         unattendedDeny: [],
+        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
       restoreAttemptId: expect.any(String),
       reopenTerminalRun: true,
@@ -2394,6 +2914,7 @@ describe("AgenC background agent lifecycle", () => {
       provider: "grok",
       permissionMode: "acceptEdits",
       envOverrides: { AGENC_MODEL: "grok-4.3" },
+      runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
     });
     await expect(sessions.getSession("session_resumed")).resolves.toMatchObject(
       {
@@ -2412,7 +2933,7 @@ describe("AgenC background agent lifecycle", () => {
         canonicalRuntimeSettings("plan", cwd, {
           prePlanMode: "acceptEdits",
           model: "grok-5-fast",
-          provider: "xai",
+          provider: "grok",
           profile: "deep-work",
           reasoningEffort: "high",
           modelVerbosity: "low",
@@ -2423,7 +2944,7 @@ describe("AgenC background agent lifecycle", () => {
     const expectedSettings = canonicalRuntimeSettings("plan", fixture.cwd, {
       prePlanMode: "acceptEdits",
       model: "grok-5-fast",
-      provider: "xai",
+      provider: "grok",
       profile: "deep-work",
       reasoningEffort: "high",
       modelVerbosity: "low",
@@ -2431,6 +2952,9 @@ describe("AgenC background agent lifecycle", () => {
       hooksDisabled: true,
     });
     const restoreRuntime = vi.fn(async () => true);
+    const retainedRuntimeOptions = resolveAgentRuntimeOptions({}, {
+      dangerouslyBypassApprovalsAndSandbox: true,
+    });
     const agents = new AgenCDaemonAgentManager({
       runner: {
         startAgent: vi.fn(async () => ({
@@ -2455,11 +2979,12 @@ describe("AgenC background agent lifecycle", () => {
         provider: "stale-provider",
         profile: "stale-profile",
         permissionMode: "default",
+        runtimeOptions: retainedRuntimeOptions,
       },
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: "conv-runtime-overlay1",
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2468,7 +2993,7 @@ describe("AgenC background agent lifecycle", () => {
     ).resolves.toMatchObject({
       metadata: {
         model: "grok-5-fast",
-        provider: "xai",
+        provider: "grok",
         profile: "deep-work",
         permissionMode: "plan",
       },
@@ -2476,9 +3001,10 @@ describe("AgenC background agent lifecycle", () => {
     expect(restoreRuntime).toHaveBeenCalledWith(
       expect.objectContaining({
         model: "grok-5-fast",
-        provider: "xai",
+        provider: "grok",
         profile: "deep-work",
         permissionMode: "plan",
+        runtimeOptions: retainedRuntimeOptions,
         runtimeSettings: expectedSettings,
       }),
     );
@@ -2510,7 +3036,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2546,7 +3072,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2593,13 +3119,50 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
         cwd: fixture.cwd,
       }),
     ).rejects.toThrow("is unattended and cannot be resumed");
+    expect(restoreRuntime).not.toHaveBeenCalled();
+  });
+
+  it("rejects legacy runtime-settings events without required capability fields", async () => {
+    const sessionId = "conv-runtime-missing-capabilities1";
+    const fixture = createResumeFixture(sessionId, {
+      runtimeSettings: (cwd) => {
+        const {
+          autoModeAvailable: _autoModeAvailable,
+          bypassPermissionsModeAvailable: _bypassPermissionsModeAvailable,
+          bypassPermissionsConsentWorkspace:
+            _bypassPermissionsConsentWorkspace,
+          ...legacySettings
+        } = canonicalRuntimeSettings("default", cwd);
+        return legacySettings as never;
+      },
+    });
+    const restoreRuntime = vi.fn(async () => true);
+    const agents = new AgenCDaemonAgentManager({
+      runner: {
+        startAgent: vi.fn(async () => ({
+          agentId: "unused",
+          startedAt: "2026-08-19T12:00:00.000Z",
+          status: "running" as const,
+        })),
+        restoreAgent: restoreRuntime,
+      },
+    });
+
+    await expect(
+      createTestAgent(agents, {
+        resumeSessionId: sessionId,
+        resumeRolloutPath: fixture.rolloutPath,
+        resumeSourceProof: fixture.sourceProof,
+        cwd: fixture.cwd,
+      }),
+    ).rejects.toThrow("failed strict canonical validation");
     expect(restoreRuntime).not.toHaveBeenCalled();
   });
 
@@ -2621,7 +3184,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2672,7 +3235,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2723,7 +3286,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2759,7 +3322,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: "conv-homealias-server1",
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2806,7 +3369,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: "conv-cwdalias-server1",
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: sourceProof,
@@ -2832,7 +3395,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: "conv-longobjective1",
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2883,7 +3446,7 @@ describe("AgenC background agent lifecycle", () => {
       });
 
       await expect(
-        agents.createAgent({
+        createTestAgent(agents, {
           resumeSessionId: sessionId,
           resumeRolloutPath: fixture.rolloutPath,
           resumeSourceProof: fixture.sourceProof,
@@ -2911,7 +3474,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         objective: "replace retained work",
         resumeSessionId: "conv-objective-lock1",
         resumeRolloutPath: fixture.rolloutPath,
@@ -2941,7 +3504,7 @@ describe("AgenC background agent lifecycle", () => {
       { unattendedDeny: ["Edit(*)"] },
     ] as const) {
       await expect(
-        agents.createAgent({
+        createTestAgent(agents, {
           resumeSessionId: "conv-policy-lock1",
           resumeRolloutPath: fixture.rolloutPath,
           resumeSourceProof: fixture.sourceProof,
@@ -2972,7 +3535,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: "conv-child-source1",
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -3000,7 +3563,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -3031,7 +3594,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -3060,7 +3623,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: "conv-cancel-request1",
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -3101,7 +3664,7 @@ describe("AgenC background agent lifecycle", () => {
       });
 
       await expect(
-        agents.createAgent({
+        createTestAgent(agents, {
           resumeSessionId: sessionId,
           resumeRolloutPath: rolloutPath,
           resumeSourceProof: fixture.sourceProof,
@@ -3215,7 +3778,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -3244,7 +3807,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -3254,7 +3817,7 @@ describe("AgenC background agent lifecycle", () => {
     expect(restoreAgent).not.toHaveBeenCalled();
   });
 
-  it("rejects concurrent duplicate canonical resume attempts", async () => {
+  it("coalesces identical concurrent canonical resume attempts", async () => {
     const fixture = createResumeFixture("conv-concurrent1");
     const restored = createDeferred<boolean>();
     const restoreAgent = vi.fn(() => restored.promise);
@@ -3276,18 +3839,26 @@ describe("AgenC background agent lifecycle", () => {
       cwd: fixture.cwd,
     } as const;
 
-    const first = agents.createAgent(params);
+    const first = createTestAgent(agents, params);
     await vi.waitFor(() => expect(restoreAgent).toHaveBeenCalledOnce());
-    await expect(agents.createAgent(params)).rejects.toThrow(
-      "canonical session conv-concurrent1 is already being resumed",
-    );
+    const repeated = createTestAgent(agents, params);
+    await expect(
+      createTestAgent(agents, { ...params, provider: "openai" }),
+    ).rejects.toThrow("already being resumed with different authority");
     expect(restoreAgent).toHaveBeenCalledOnce();
 
     restored.resolve(true);
-    await expect(first).resolves.toMatchObject({
-      agentId: "conv-concurrent1",
-      status: "running",
-    });
+    await expect(Promise.all([first, repeated])).resolves.toEqual([
+      expect.objectContaining({
+        agentId: "conv-concurrent1",
+        status: "running",
+      }),
+      expect.objectContaining({
+        agentId: "conv-concurrent1",
+        status: "running",
+      }),
+    ]);
+    expect(restoreAgent).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -3330,7 +3901,7 @@ describe("AgenC background agent lifecycle", () => {
         cwd: fixture.cwd,
       } as const;
 
-      const failure = await agents.createAgent(params).then(
+      const failure = await createTestAgent(agents, params).then(
         () => null,
         (error: unknown) => error,
       );
@@ -3348,7 +3919,7 @@ describe("AgenC background agent lifecycle", () => {
       expect(restoreAgent).not.toHaveBeenCalled();
 
       __setAgentLifecycleResumeSourceTestHooksForTest();
-      await expect(agents.createAgent(params)).rejects.toThrow(
+      await expect(createTestAgent(agents, params)).rejects.toThrow(
         "is unattended and cannot be resumed",
       );
       await expect(
@@ -3387,7 +3958,7 @@ describe("AgenC background agent lifecycle", () => {
         suspendIdleAgentForDaemonShutdown,
       },
     });
-    const create = agents.createAgent({
+    const create = createTestAgent(agents, {
       resumeSessionId: "conv-shutdown-race1",
       resumeRolloutPath: fixture.rolloutPath,
       resumeSourceProof: fixture.sourceProof,
@@ -3460,7 +4031,7 @@ describe("AgenC background agent lifecycle", () => {
       metadata: {
         agentPath: "/root",
         model: "grok-4",
-        provider: "xai",
+        provider: "grok",
       },
     });
     const params = {
@@ -3470,7 +4041,7 @@ describe("AgenC background agent lifecycle", () => {
       cwd: fixture.cwd,
     } as const;
 
-    await expect(agents.createAgent(params)).rejects.toThrow(
+    await expect(createTestAgent(agents, params)).rejects.toThrow(
       "agent run publication failed",
     );
     expect(rollbackRestoredAgent).toHaveBeenCalledWith(
@@ -3485,7 +4056,7 @@ describe("AgenC background agent lifecycle", () => {
       sessions.getSession("session_historical_closed"),
     ).resolves.toMatchObject({ status: "closed" });
 
-    await expect(agents.createAgent(params)).resolves.toMatchObject({
+    await expect(createTestAgent(agents, params)).resolves.toMatchObject({
       agentId: sessionId,
       status: "running",
     });
@@ -3518,7 +4089,7 @@ describe("AgenC background agent lifecycle", () => {
 
     let failure: unknown;
     try {
-      await agents.createAgent({
+      await createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -3575,7 +4146,7 @@ describe("AgenC background agent lifecycle", () => {
         },
       });
 
-      await agents.createAgent({ objective: "persist me", cwd });
+      await createTestAgent(agents, { objective: "persist me", cwd });
       expect(agentRunRow(driver, "agent_run_live")).toMatchObject({
         id: "agent_run_live",
         objective: "persist me",
@@ -3660,7 +4231,7 @@ describe("AgenC background agent lifecycle", () => {
         },
       });
 
-      await agents.createAgent({ objective: "persist terminal replay", cwd });
+      await createTestAgent(agents, { objective: "persist terminal replay", cwd });
 
       expect(agentRunRow(driver, "agent_replayed_terminal")).toMatchObject({
         id: "agent_replayed_terminal",
@@ -3716,7 +4287,7 @@ describe("AgenC background agent lifecycle", () => {
       });
 
       await expect(
-        agents.createAgent({ objective: "rollback attach failure", cwd }),
+        createTestAgent(agents, { objective: "rollback attach failure", cwd }),
       ).rejects.toThrow("attach failed");
       expect(stopAgent).toHaveBeenCalledWith(
         "agent_rollback",
@@ -3750,6 +4321,12 @@ describe("AgenC background agent lifecycle", () => {
         startedAt: "2026-05-01T12:00:00.500Z",
         status: "running",
       }),
+      getAgentSnapshot: async () => ({
+        status: "running",
+        lastActiveAt: "2026-05-01T12:00:00.500Z",
+        runtimeSettings: canonicalRuntimeSettings("default", process.cwd()),
+        runtimeSettingsEventId: "settings:agent_stop:default",
+      }),
       stopAgent,
     };
     const agents = new AgenCDaemonAgentManager({
@@ -3759,12 +4336,15 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
     });
 
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "build the parser",
     });
     await expect(
-      agents.attachAgent({ agentId: "agent_stop", clientId: "tui_1" }),
+      agents.attachAgent(
+        { agentId: "agent_stop", clientId: "tui_1" },
+        registerNoopSessionRoute,
+      ),
     ).resolves.toMatchObject({
       agentId: "agent_stop",
       sessionIds: ["session_1"],
@@ -3786,6 +4366,7 @@ describe("AgenC background agent lifecycle", () => {
       metadata: {
         unattendedAllow: [],
         unattendedDeny: [],
+        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
     });
     const stoppedSession = await sessions.getSession("session_1");
@@ -3795,7 +4376,10 @@ describe("AgenC background agent lifecycle", () => {
     });
     expect(stoppedSession).not.toHaveProperty("activeAttachmentIds");
     await expect(
-      agents.attachAgent({ agentId: "agent_stop" }),
+      agents.attachAgent(
+        { agentId: "agent_stop" },
+        registerNoopSessionRoute,
+      ),
     ).rejects.toMatchObject({ code: "AGENT_NOT_FOUND" });
     await expect(agents.stopAgent({ agentId: "agent_stop" })).resolves.toEqual({
       agentId: "agent_stop",
@@ -3837,8 +4421,8 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
     });
 
-    await agents.createAgent({ cwd: process.cwd(), objective: "one" });
-    await agents.createAgent({ cwd: process.cwd(), objective: "two" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "one" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "two" });
 
     await expect(agents.stopAll("daemon_shutdown")).resolves.toBe(2);
 
@@ -3893,7 +4477,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
 
-    await agents.createAgent({ cwd: process.cwd(), objective: "resume later" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "resume later" });
     await expect(
       agents.stopAll("daemon_shutdown", { disposition: "suspend_idle" }),
     ).resolves.toBe(1);
@@ -3950,7 +4534,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
 
-    await agents.createAgent({ cwd: process.cwd(), objective: "resume later" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "resume later" });
     await expect(
       agents.stopAll("daemon_shutdown", { disposition: "suspend_idle" }),
     ).rejects.toThrow(
@@ -4002,8 +4586,8 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
     });
 
-    await agents.createAgent({ cwd: process.cwd(), objective: "one" });
-    await agents.createAgent({ cwd: process.cwd(), objective: "two" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "one" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "two" });
 
     await expect(agents.stopAll("daemon_shutdown")).rejects.toThrow(
       "AgenC daemon cleanup failed for 1 agent(s): agent_one",
@@ -4047,7 +4631,7 @@ describe("AgenC background agent lifecycle", () => {
       runner,
     });
 
-    const create = agents.createAgent({
+    const create = createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "late create",
     });
@@ -4067,7 +4651,7 @@ describe("AgenC background agent lifecycle", () => {
     expect(stopAgent).toHaveBeenCalledWith("agent_late", "daemon_shutdown");
     await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
     await expect(
-      agents.createAgent({ cwd: process.cwd(), objective: "after shutdown" }),
+      createTestAgent(agents, { cwd: process.cwd(), objective: "after shutdown" }),
     ).rejects.toMatchObject({
       code: "INVALID_ARGUMENT",
       message: "agent.start rejected because the daemon is shutting down",
@@ -4097,7 +4681,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
 
-    await agents.createAgent({ cwd: process.cwd(), objective: "snapshot me" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "snapshot me" });
     await agents.stopAll("daemon_shutdown");
 
     await expect(agents.flushSnapshots("daemon_shutdown")).resolves.toBe(1);
@@ -4117,6 +4701,7 @@ describe("AgenC background agent lifecycle", () => {
             metadata: {
               unattendedAllow: [],
               unattendedDeny: [],
+              runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
             },
           },
         ],
@@ -4158,7 +4743,7 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
     });
 
-    await agents.createAgent({ cwd: process.cwd(), objective: "race stop" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "race stop" });
     const stop = agents.stopAgent({ agentId: "agent_race" });
     await stopStarted.promise;
 
@@ -4169,7 +4754,10 @@ describe("AgenC background agent lifecycle", () => {
       lastActiveAt: "2026-05-01T12:00:02.000Z",
     });
     await expect(
-      agents.attachAgent({ agentId: "agent_race" }),
+      agents.attachAgent(
+        { agentId: "agent_race" },
+        registerNoopSessionRoute,
+      ),
     ).rejects.toMatchObject({ code: "AGENT_NOT_FOUND" });
 
     releaseStop.resolve(undefined);
@@ -4210,7 +4798,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
 
-    await agents.createAgent({ cwd: process.cwd(), objective: "fail stop" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "fail stop" });
     await expect(
       agents.stopAgent({ agentId: "agent_fail_stop" }),
     ).rejects.toThrow("shutdown failed");
@@ -4273,11 +4861,11 @@ describe("AgenC background agent lifecycle", () => {
       runner,
     });
 
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "watch active work",
     });
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "finish quickly",
     });
@@ -4300,6 +4888,7 @@ describe("AgenC background agent lifecycle", () => {
           metadata: {
             unattendedAllow: [],
             unattendedDeny: [],
+            runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           },
         },
         {
@@ -4313,6 +4902,7 @@ describe("AgenC background agent lifecycle", () => {
           metadata: {
             unattendedAllow: [],
             unattendedDeny: [],
+            runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           },
         },
       ],
@@ -4354,9 +4944,9 @@ describe("AgenC background agent lifecycle", () => {
       runner,
     });
 
-    await agents.createAgent({ cwd: process.cwd(), objective: "first" });
-    await agents.createAgent({ cwd: process.cwd(), objective: "second" });
-    await agents.createAgent({ cwd: process.cwd(), objective: "third" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "first" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "second" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "third" });
 
     await expect(agents.listAgents({ limit: 2 })).resolves.toMatchObject({
       agents: [
@@ -4416,7 +5006,7 @@ describe("AgenC background agent lifecycle", () => {
     };
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         cwd: process.cwd(),
         objective: "describe this",
         initialContent: [
@@ -4476,7 +5066,7 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "inspect image",
     });
@@ -4556,7 +5146,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
 
-    await agents.createAgent({ objective: "snapshot policy", cwd });
+    await createTestAgent(agents, { objective: "snapshot policy", cwd });
     await agents.streamAgentMessage({
       sessionId: "session_snapshot",
       content: "continue",
@@ -4671,7 +5261,7 @@ describe("AgenC background agent lifecycle", () => {
         },
       });
 
-      await agents.createAgent({ objective: "dedupe snapshots", cwd });
+      await createTestAgent(agents, { objective: "dedupe snapshots", cwd });
       await agents.streamAgentMessage({
         sessionId: "session_combined_snapshot",
         content: "continue",
@@ -4735,7 +5325,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
 
-    await agents.createAgent({ cwd, objective: "watch status" });
+    await createTestAgent(agents, { cwd, objective: "watch status" });
     currentSnapshot = {
       status: "idle",
       lastActiveAt: "2026-05-01T12:00:02.000Z",
@@ -4808,7 +5398,7 @@ describe("AgenC background agent lifecycle", () => {
         },
       });
 
-      await agents.createAgent({
+      await createTestAgent(agents, {
         cwd: process.cwd(),
         objective: "watch budget status",
       });
@@ -4879,7 +5469,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         cwd: process.cwd(),
         objective: "snapshot failures should not block",
       }),
@@ -4939,10 +5529,13 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.attachAgent({ agentId: "agent_missing" }),
+      agents.attachAgent(
+        { agentId: "agent_missing" },
+        registerNoopSessionRoute,
+      ),
     ).rejects.toMatchObject({ code: "AGENT_NOT_FOUND" });
 
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "closed session",
     });
@@ -4951,21 +5544,25 @@ describe("AgenC background agent lifecycle", () => {
       reason: "test closed",
     });
     await expect(
-      agents.attachAgent({ agentId: "agent_closed" }),
+      agents.attachAgent(
+        { agentId: "agent_closed" },
+        registerNoopSessionRoute,
+      ),
     ).rejects.toMatchObject({ code: "AGENT_NOT_FOUND" });
 
     active = false;
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "inactive before attach",
     });
     await expect(
-      agents.attachAgent({ agentId: "agent_inactive" }),
-    ).resolves.toMatchObject({
-      agentId: "agent_inactive",
-      attachmentId: "attachment_inactive",
-      sessionIds: ["session_2"],
-      runtimeSessionId: "agent_inactive",
+      agents.attachAgent(
+        { agentId: "agent_inactive" },
+        registerNoopSessionRoute,
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: expect.stringContaining("live runtime-settings authority"),
     });
   });
 
@@ -4973,7 +5570,7 @@ describe("AgenC background agent lifecycle", () => {
     const agents = new AgenCDaemonAgentManager();
 
     await expect(
-      agents.createAgent({ cwd: process.cwd(), objective: "build the parser" }),
+      createTestAgent(agents, { cwd: process.cwd(), objective: "build the parser" }),
     ).rejects.toMatchObject({
       code: "BACKGROUND_RUNNER_UNAVAILABLE",
     });
@@ -5126,7 +5723,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({ cwd: process.cwd(), objective: "build the parser" }),
+      createTestAgent(agents, { cwd: process.cwd(), objective: "build the parser" }),
     ).rejects.toThrow("session store unavailable");
     expect(stopAgent).toHaveBeenCalledWith(
       "agent_orphan",
@@ -5144,17 +5741,85 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
     await expect(
-      agents.createAgent({ cwd: process.cwd(), objective: "   " }),
+      createTestAgent(agents, { cwd: process.cwd(), objective: "   " }),
     ).rejects.toBeInstanceOf(AgenCDaemonAgentLifecycleError);
   });
 
-  it("requires initialize before agent.create on a daemon JSON-RPC connection", async () => {
-    const runner: AgenCBackgroundAgentRunner = {
-      startAgent: async () => ({
-        agentId: "agent_rpc",
-        startedAt: "2026-05-01T12:00:00.500Z",
-        status: "running",
+  it("translates a startup prompt block into a lifecycle error", async () => {
+    const agents = new AgenCDaemonAgentManager({
+      runner: {
+        startAgent: async () => {
+          throw new AgenCBackgroundAgentMessageError(
+            "PROMPT_BLOCKED",
+            "startup prompt blocked by hook",
+          );
+        },
+      },
+    });
+
+    await expect(
+      createTestAgent(agents, {
+        cwd: process.cwd(),
+        objective: "blocked startup prompt",
       }),
+    ).rejects.toMatchObject({
+      name: AgenCDaemonAgentLifecycleError.name,
+      code: "PROMPT_BLOCKED",
+      message: "startup prompt blocked by hook",
+    });
+  });
+
+  it("preserves a startup prompt block in the JSON-RPC error data", async () => {
+    const agents = new AgenCDaemonAgentManager({
+      runner: {
+        startAgent: async () => {
+          throw new AgenCBackgroundAgentMessageError(
+            "PROMPT_BLOCKED",
+            "startup prompt blocked by hook",
+          );
+        },
+      },
+    });
+    const connection = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: agents,
+    }).createConnection();
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "initialize-prompt-block",
+      method: "initialize",
+      params: { protocolVersion: "1.0.0", clientName: "contract-test" },
+    });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "create-prompt-blocked",
+        method: "agent.create",
+        params: {
+          objective: "blocked startup prompt",
+          cwd: process.cwd(),
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "create-prompt-blocked",
+      error: {
+        code: -32602,
+        message: "startup prompt blocked by hook",
+        data: { code: "PROMPT_BLOCKED" },
+      },
+    });
+  });
+
+  it("requires initialize before agent.create on a daemon JSON-RPC connection", async () => {
+    const startAgent = vi.fn(async () => ({
+      agentId: "agent_rpc",
+      startedAt: "2026-05-01T12:00:00.500Z",
+      status: "running" as const,
+    }));
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent,
       stopAgent: vi.fn(async () => {}),
     };
     const agents = new AgenCDaemonAgentManager({
@@ -5226,7 +5891,7 @@ describe("AgenC background agent lifecycle", () => {
         id: "future-protocol",
         method: "initialize",
         params: {
-          protocol: { version: "1.3.0" },
+          protocol: { version: "1.10.0" },
           clientName: "contract-test",
         },
       }),
@@ -5238,8 +5903,8 @@ describe("AgenC background agent lifecycle", () => {
         message: "Unsupported protocol version",
         data: {
           code: "PROTOCOL_VERSION_UNSUPPORTED",
-          clientVersion: "1.3.0",
-          serverVersion: "1.2.0",
+          clientVersion: "1.10.0",
+          serverVersion: "1.9.0",
         },
       },
     });
@@ -5265,13 +5930,16 @@ describe("AgenC background agent lifecycle", () => {
         data: { code: "CONNECTION_AUTHENTICATION_FAILED" },
       },
     });
-
     await expect(
       connection.dispatch({
         jsonrpc: JSON_RPC_VERSION,
         id: 1,
         method: "agent.create",
-        params: { objective: "ship a daemon task", cwd: process.cwd() },
+        params: {
+          objective: "ship a daemon task",
+          cwd: process.cwd(),
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+        },
       }),
     ).resolves.toEqual({
       jsonrpc: JSON_RPC_VERSION,
@@ -5301,16 +5969,16 @@ describe("AgenC background agent lifecycle", () => {
       id: 1,
       result: {
         type: "initialized",
-        protocolVersion: "1.2.0",
-        protocol: { version: "1.2.0" },
+        protocolVersion: "1.9.0",
+        protocol: { version: "1.9.0" },
         capabilities: {},
       },
     });
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.2.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.9.0");
     expect(connection.initializeState).toMatchObject({
-      protocol: { version: "1.2.0" },
+      protocol: { version: "1.9.0" },
       clientProtocol: { version: "1.0.0" },
-      serverProtocol: { version: "1.2.0" },
+      serverProtocol: { version: "1.9.0" },
       clientCapabilities: { experimentalApi: true },
     });
     expect(
@@ -5353,7 +6021,11 @@ describe("AgenC background agent lifecycle", () => {
         jsonrpc: JSON_RPC_VERSION,
         id: 2,
         method: "agent.create",
-        params: { objective: "ship a daemon task", cwd: process.cwd() },
+        params: {
+          objective: "ship a daemon task",
+          cwd: process.cwd(),
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+        },
       }),
     ).resolves.toEqual({
       jsonrpc: JSON_RPC_VERSION,
@@ -5369,8 +6041,21 @@ describe("AgenC background agent lifecycle", () => {
         metadata: {
           unattendedAllow: [],
           unattendedDeny: [],
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
         },
       },
+    });
+
+    const rawCreateParams = startAgent.mock.calls[0]?.[0];
+    expect(Object.keys(rawCreateParams?.envOverrides ?? {}).sort()).toEqual(
+      [...DAEMON_CLIENT_ENV_SNAPSHOT_KEYS].sort(),
+    );
+    expect(rawCreateParams?.envOverrides).toMatchObject({
+      AGENC_PROVIDER: "",
+      AGENC_MODEL: "",
+      OPENAI_API_KEY: "",
+      FIRECRAWL_API_KEY: "",
+      WEB_SEARCH_PROVIDER: "",
     });
 
     await expect(
@@ -5396,6 +6081,7 @@ describe("AgenC background agent lifecycle", () => {
             metadata: {
               unattendedAllow: [],
               unattendedDeny: [],
+              runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
             },
           },
         ],
@@ -5487,6 +6173,27 @@ describe("AgenC background agent lifecycle", () => {
       error: {
         code: -32602,
         message: "daemon request params must be an object",
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "relative-config",
+        method: "agent.create",
+        params: {
+          cwd: process.cwd(),
+          objective: "ship",
+          configPath: "operator.toml",
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "relative-config",
+      error: {
+        code: -32602,
+        message:
+          "agent.create param 'configPath' must be a non-empty absolute path",
         data: { code: "INVALID_ARGUMENT" },
       },
     });
@@ -5635,7 +6342,7 @@ describe("AgenC background agent lifecycle", () => {
         params: {
           cwd: process.cwd(),
           objective: "ship",
-          envOverrides: { AGENC_MCP_SERVERS: [] },
+          envOverrides: { XAI_API_KEY: [] },
         },
       }),
     ).resolves.toEqual({
@@ -5644,10 +6351,49 @@ describe("AgenC background agent lifecycle", () => {
       error: {
         code: -32602,
         message:
-          "agent.create param 'envOverrides.AGENC_MCP_SERVERS' must be a string",
+          "agent.create param 'envOverrides.XAI_API_KEY' must be a string",
         data: { code: "INVALID_ARGUMENT" },
       },
     });
+    for (const [id, envOverrides, message] of [
+      [
+        "unknown-env-override",
+        { RANDOM_SECRET: "secret" },
+        /envOverrides.*unsupported key.*RANDOM_SECRET/i,
+      ],
+      [
+        "home-env-override",
+        { AGENC_HOME: "/redirected" },
+        /envOverrides.*unsupported key.*AGENC_HOME/i,
+      ],
+      [
+        "workspace-env-override",
+        { AGENC_WORKSPACE: "/redirected" },
+        /envOverrides.*unsupported key.*AGENC_WORKSPACE/i,
+      ],
+      [
+        "retired-model-env-override",
+        { OPENAI_MODEL: "retired" },
+        /envOverrides.*obsolete configuration environment variable.*OPENAI_MODEL/i,
+      ],
+    ] as const) {
+      await expect(
+        connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id,
+          method: "agent.create",
+          params: { cwd: process.cwd(), objective: "ship", envOverrides },
+        }),
+      ).resolves.toMatchObject({
+        jsonrpc: JSON_RPC_VERSION,
+        id,
+        error: {
+          code: -32602,
+          message: expect.stringMatching(message),
+          data: { code: "INVALID_ARGUMENT" },
+        },
+      });
+    }
     expect(startAgent).not.toHaveBeenCalled();
   });
 
@@ -5699,7 +6445,11 @@ describe("AgenC background agent lifecycle", () => {
         jsonrpc: JSON_RPC_VERSION,
         id: "create",
         method: "agent.create",
-        params: { cwd: process.cwd(), objective: "answer from the portal" },
+        params: {
+          cwd: process.cwd(),
+          objective: "answer from the portal",
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+        },
       }),
     ).resolves.toMatchObject({
       result: {
@@ -5836,6 +6586,7 @@ describe("AgenC background agent lifecycle", () => {
           {
             objective: "  index queued work  ",
             cwd: process.cwd(),
+            runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
             unattendedAllow: ["FileRead"],
             metadata: { source: "portal.dashboard" },
           },
@@ -5856,6 +6607,7 @@ describe("AgenC background agent lifecycle", () => {
           source: "portal.dashboard",
           unattendedAllow: ["FileRead"],
           unattendedDeny: [],
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
         },
       },
     });
@@ -5863,15 +6615,24 @@ describe("AgenC background agent lifecycle", () => {
       {
         objective: "index queued work",
         cwd: process.cwd(),
+        envOverrides: expect.any(Object),
         metadata: {
           source: "portal.dashboard",
           unattendedAllow: ["FileRead"],
           unattendedDeny: [],
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
         },
         unattendedAllow: ["FileRead"],
         unattendedDeny: [],
+        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
     ]);
+    expect(starts[0]?.envOverrides).toMatchObject({
+      AGENC_PROVIDER: "",
+      AGENC_MODEL: "",
+      XAI_API_KEY: "",
+      OPENAI_API_KEY: "",
+    });
     await expect(
       connection.dispatch(
         createAgenCPortalAgentListRequest({ limit: 5 }, "list-background"),
@@ -5961,7 +6722,11 @@ describe("AgenC background agent lifecycle", () => {
       jsonrpc: JSON_RPC_VERSION,
       id: "create",
       method: "agent.create",
-      params: { cwd: process.cwd(), objective: "validate portal actions" },
+      params: {
+        cwd: process.cwd(),
+        objective: "validate portal actions",
+        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+      },
     });
 
     await expect(
@@ -6566,7 +7331,7 @@ describe("AgenC background agent lifecycle", () => {
       runner,
       permissionAuditLogger: auditLogger,
     });
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "wait for approval",
     });
@@ -6670,7 +7435,9 @@ describe("AgenC background agent lifecycle", () => {
         status: "running",
       }),
       setAgentPermissionMode: async (agentId, params) => {
-        order.push(`mode:${agentId}:${params.sessionId}:${params.mode}`);
+        order.push(
+          `mode:${agentId}:${params.sessionId}:${params.mode}:${params.bypassAuthority ?? "none"}`,
+        );
         return {
           applied: true,
           previousMode: "default",
@@ -6688,7 +7455,7 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "wait for all-tool approval",
     });
@@ -6703,7 +7470,7 @@ describe("AgenC background agent lifecycle", () => {
     ).resolves.toEqual({ requestId: "call_allow_all", decision: "approved" });
 
     expect(order).toEqual([
-      "mode:agent_allow_all:session_allow_all:bypassPermissions",
+      "mode:agent_allow_all:session_allow_all:bypassPermissions:operator_tool_approval",
       "resolve:agent_allow_all:call_allow_all:approved_for_session",
     ]);
   });
@@ -6713,7 +7480,10 @@ describe("AgenC background agent lifecycle", () => {
       createSessionId: sequence(["session_stale_allow_all"]),
       now: sequence(["2026-05-01T12:00:00.000Z"]),
     });
-    const modes: string[] = [];
+    const modeUpdates: Array<{
+      readonly mode: string;
+      readonly bypassAuthority?: string;
+    }> = [];
     const runner: AgenCBackgroundAgentRunner = {
       startAgent: async () => ({
         agentId: "agent_stale_allow_all",
@@ -6721,7 +7491,12 @@ describe("AgenC background agent lifecycle", () => {
         status: "running",
       }),
       setAgentPermissionMode: async (_agentId, params) => {
-        modes.push(params.mode);
+        modeUpdates.push({
+          mode: params.mode,
+          ...(params.bypassAuthority !== undefined
+            ? { bypassAuthority: params.bypassAuthority }
+            : {}),
+        });
         return {
           applied: true,
           previousMode: "default",
@@ -6734,7 +7509,7 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "stale approval",
     });
@@ -6747,7 +7522,13 @@ describe("AgenC background agent lifecycle", () => {
         allowAllToolsForSession: true,
       }),
     ).rejects.toThrow(/not pending/);
-    expect(modes).toEqual(["bypassPermissions", "default"]);
+    expect(modeUpdates).toEqual([
+      {
+        mode: "bypassPermissions",
+        bypassAuthority: "operator_tool_approval",
+      },
+      { mode: "default" },
+    ]);
   });
 
   it("keeps daemon tool decisions successful when audit logging fails", async () => {
@@ -6771,7 +7552,7 @@ describe("AgenC background agent lifecycle", () => {
       },
       onPermissionAuditError,
     });
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "wait for approval",
     });
@@ -6811,7 +7592,7 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "list permissions",
     });
@@ -6924,6 +7705,12 @@ describe("AgenC background agent lifecycle", () => {
           startedAt: "2026-05-01T12:00:00.500Z",
           status: "running",
         }),
+        getAgentSnapshot: async () => ({
+          status: "running",
+          lastActiveAt: "2026-05-01T12:00:00.500Z",
+          runtimeSettings: canonicalRuntimeSettings("default", process.cwd()),
+          runtimeSettingsEventId: "settings:agent_dup:default",
+        }),
       },
       sessionManager: sessions,
       broadcastSessionEvent: async (sessionId, event) => {
@@ -6955,7 +7742,11 @@ describe("AgenC background agent lifecycle", () => {
         jsonrpc: JSON_RPC_VERSION,
         id: "create",
         method: "agent.create",
-        params: { cwd: process.cwd(), objective: "run background work" },
+        params: {
+          cwd: process.cwd(),
+          objective: "run background work",
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+        },
       }),
     ).resolves.toMatchObject({
       result: { agentId: "agent_dup", sessionId: "session_1" },
@@ -7030,25 +7821,28 @@ describe("AgenC background agent lifecycle", () => {
           sessions: [],
           transcript: "agent_id\tagent_multi\nNo transcript entries",
         }),
-        attachAgent: async () => ({
-          agentId: "agent_multi",
-          attachmentId: "attachment_new",
-          sessionIds: ["session_new", "session_old"],
-          sessions: [
-            {
-              sessionId: "session_new",
-              agentId: "agent_multi",
-              status: "idle",
-              createdAt: "2026-05-01T12:00:00.000Z",
-            },
-            {
-              sessionId: "session_old",
-              agentId: "agent_multi",
-              status: "idle",
-              createdAt: "2026-05-01T12:00:01.000Z",
-            },
-          ],
-        }),
+        attachAgent: async (_params, registerSessionRoute) => {
+          await registerSessionRoute("session_new");
+          return {
+            agentId: "agent_multi",
+            attachmentId: "attachment_new",
+            sessionIds: ["session_new", "session_old"],
+            sessions: [
+              {
+                sessionId: "session_new",
+                agentId: "agent_multi",
+                status: "idle",
+                createdAt: "2026-05-01T12:00:00.000Z",
+              },
+              {
+                sessionId: "session_old",
+                agentId: "agent_multi",
+                status: "idle",
+                createdAt: "2026-05-01T12:00:01.000Z",
+              },
+            ],
+          };
+        },
       },
       clientMultiplexer,
     });
@@ -7116,7 +7910,7 @@ describe("AgenC background agent lifecycle", () => {
       agents.handleRunnerTerminated(id, snapshot),
     );
 
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "do work then end",
     });
@@ -7189,7 +7983,7 @@ describe("AgenC background agent lifecycle", () => {
       agents.handleRunnerTerminated(id, snapshot),
     );
 
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "finish immediately",
     });

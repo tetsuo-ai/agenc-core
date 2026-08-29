@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
 
-import { chatCompletionsCapabilityHintsForProvider } from "./capability-gating.js";
+import {
+  chatCompletionsCapabilityHintsForProvider,
+  filterToolsForLocalProfile,
+  usesLocalToolProfile,
+} from "./capability-gating.js";
 import { buildChatCompletionsRequest } from "./chat-completions.js";
 
 describe("chatCompletionsCapabilityHintsForProvider", () => {
@@ -96,14 +100,14 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
       ).toBe(false);
     });
 
-    test("xai slug normalizes to grok", () => {
+    test("rejects the retired xai provider selector", () => {
       // branding-scan: allow real model identifiers used as test fixtures
       expect(
-        chatCompletionsCapabilityHintsForProvider(
+        () => chatCompletionsCapabilityHintsForProvider(
           "xai",
           "grok-4.20-multi-agent",
-        ).acceptsReasoningEffort,
-      ).toBe(true);
+        ),
+      ).toThrow(/retired provider selector/);
     });
 
     test("non-openai non-grok providers never accept reasoning_effort", () => {
@@ -149,7 +153,6 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
         "groq",
         "mistral",
         "grok",
-        "xai",
         "anthropic",
         "gemini",
       ];
@@ -198,6 +201,77 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
           .acceptsStreamUsage,
       ).toBe(true);
     });
+  });
+
+  describe("local chat-completions profile", () => {
+    test.each(["lmstudio", "openai-compatible"])(
+      "%s enables grammar-safe schemas and the local output ceiling",
+      (provider) => {
+        expect(
+          chatCompletionsCapabilityHintsForProvider(provider, "local-model"),
+        ).toMatchObject({
+          requiresGrammarSafeToolSchemas: true,
+          outputTokensCeiling: 8192,
+        });
+        expect(usesLocalToolProfile(provider)).toBe(true);
+      },
+    );
+
+    test("only local qwen3 models receive the no-think prompt switch", () => {
+      expect(
+        chatCompletionsCapabilityHintsForProvider(
+          "lmstudio",
+          "qwen/qwen3-14b",
+        ).reasoningSoftSwitchSuffix,
+      ).toBe("/no_think");
+      expect(
+        chatCompletionsCapabilityHintsForProvider(
+          "openai-compatible",
+          "qwen-3:8b",
+        ).reasoningSoftSwitchSuffix,
+      ).toBe("/no_think");
+      expect(
+        chatCompletionsCapabilityHintsForProvider("lmstudio", "llama-3.3")
+          .reasoningSoftSwitchSuffix,
+      ).toBeUndefined();
+      expect(
+        chatCompletionsCapabilityHintsForProvider("openai", "qwen3")
+          .reasoningSoftSwitchSuffix,
+      ).toBeUndefined();
+    });
+
+    test("cloud providers retain their existing unrestricted wire profile", () => {
+      const hints = chatCompletionsCapabilityHintsForProvider(
+        "openai",
+        "gpt-4.1",
+      );
+      expect(hints.requiresGrammarSafeToolSchemas).toBe(false);
+      expect(hints.outputTokensCeiling).toBeUndefined();
+      expect(hints.reasoningSoftSwitchSuffix).toBeUndefined();
+      expect(usesLocalToolProfile("openai")).toBe(false);
+    });
+
+    test("advertises SendUserMessage and never the retired Brief tool name", () => {
+      const tools = [
+        { function: { name: "exec_command" } },
+        { function: { name: "SendUserMessage" } },
+        { function: { name: "Brief" } },
+        { function: { name: "spawn_agent" } },
+      ];
+
+      expect(
+        filterToolsForLocalProfile(tools).map((tool) => tool.function.name),
+      ).toEqual(["exec_command", "SendUserMessage"]);
+    });
+
+    test.each(["xai", "custom", "openai_compatible"])(
+      "rejects retired selector %s at the local profile boundary",
+      (provider) => {
+        expect(() => usesLocalToolProfile(provider)).toThrow(
+          /retired provider selector/,
+        );
+      },
+    );
   });
 
   test("undefined provider name resolves to safe defaults", () => {

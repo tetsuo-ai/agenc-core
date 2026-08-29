@@ -4,6 +4,7 @@ import { SandboxManager } from '../../../src/utils/sandbox/sandbox-runtime.ts'
 import { BashTool } from '../../../src/tools/BashTool/BashTool.tsx'
 import { PowerShellTool } from '../../../src/tools/PowerShellTool/PowerShellTool.tsx'
 import { shouldUseSandbox } from '../../../src/tools/BashTool/shouldUseSandbox.ts'
+import { runWithCanonicalRuntimeAuthority } from '../../helpers/canonical-runtime-authority.bun.ts'
 
 const originalSandboxMethods = {
   isSandboxingEnabled: SandboxManager.isSandboxingEnabled,
@@ -40,10 +41,12 @@ test('model-controlled dangerouslyDisableSandbox does not bypass sandbox', () =>
   SandboxManager.areUnsandboxedCommandsAllowed = () => true
 
   expect(
-    shouldUseSandbox({
-      command: 'cat /etc/passwd',
-      dangerouslyDisableSandbox: true,
-    }),
+    runWithCanonicalRuntimeAuthority(() =>
+      shouldUseSandbox({
+        command: 'cat /etc/passwd',
+        dangerouslyDisableSandbox: true,
+      }),
+    ),
   ).toBe(true)
 })
 
@@ -52,11 +55,13 @@ test('trusted internal approval can disable sandbox when policy allows it', () =
   SandboxManager.areUnsandboxedCommandsAllowed = () => true
 
   expect(
-    shouldUseSandbox({
-      command: 'cat /etc/passwd',
-      dangerouslyDisableSandbox: true,
-      _dangerouslyDisableSandboxApproved: true,
-    }),
+    runWithCanonicalRuntimeAuthority(() =>
+      shouldUseSandbox({
+        command: 'cat /etc/passwd',
+        dangerouslyDisableSandbox: true,
+        _dangerouslyDisableSandboxApproved: true,
+      }),
+    ),
   ).toBe(false)
 })
 
@@ -65,10 +70,12 @@ test('trusted internal approval cannot disable sandbox when policy forbids it', 
   SandboxManager.areUnsandboxedCommandsAllowed = () => false
 
   expect(
-    shouldUseSandbox({
-      command: 'cat /etc/passwd',
-      dangerouslyDisableSandbox: true,
-      _dangerouslyDisableSandboxApproved: true,
-    }),
+    runWithCanonicalRuntimeAuthority(() =>
+      shouldUseSandbox({
+        command: 'cat /etc/passwd',
+        dangerouslyDisableSandbox: true,
+        _dangerouslyDisableSandboxApproved: true,
+      }),
+    ),
   ).toBe(true)
 })

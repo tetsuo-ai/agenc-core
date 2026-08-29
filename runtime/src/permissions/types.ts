@@ -26,6 +26,14 @@ import type {
   InternalPermissionMode,
   PermissionRuleSource as PermissionRuleSourceType,
 } from "../types/permissions.js";
+import {
+  ALL_PERMISSION_MODES,
+  USER_ADDRESSABLE_PERMISSION_MODES,
+} from "../types/permissions.js";
+export {
+  ALL_PERMISSION_MODES,
+  USER_ADDRESSABLE_PERMISSION_MODES,
+} from "../types/permissions.js";
 
 /**
  * All permission mode variants supported by the runtime.
@@ -44,30 +52,6 @@ export type PermissionMode = InternalPermissionMode;
  * Modes that can be referenced by CLI flags / settings JSON. Excludes
  * internal-only `"unattended"` and `"bubble"` modes.
  */
-export const USER_ADDRESSABLE_PERMISSION_MODES: readonly PermissionMode[] =
-  Object.freeze([
-    "default",
-    "acceptEdits",
-    "plan",
-    "bypassPermissions",
-    "dontAsk",
-    "auto",
-  ] as const);
-
-/**
- * All permission modes including internal-only variants.
- */
-export const ALL_PERMISSION_MODES: readonly PermissionMode[] = Object.freeze([
-  "default",
-  "acceptEdits",
-  "plan",
-  "bypassPermissions",
-  "dontAsk",
-  "auto",
-  "unattended",
-  "bubble",
-] as const);
-
 export function isPermissionMode(value: unknown): value is PermissionMode {
   return (
     typeof value === "string" &&
@@ -120,9 +104,9 @@ export const PERMISSION_RULE_SOURCES: readonly PermissionRuleSource[] =
   ] as const);
 
 /**
- * Sources whose rules are stored in JSON settings files on disk. These
- * are the only sources that `loadAllPermissionRulesFromDisk` and
- * `syncPermissionRulesFromDisk` walk.
+ * Canonical configuration sources that may supply permission rules.
+ * `loadAllPermissionRulesFromConfig` and `syncPermissionRulesFromConfig`
+ * walk only these sources.
  */
 export const SETTING_SOURCES: readonly PermissionRuleSource[] = Object.freeze([
   "userSettings",
@@ -323,13 +307,12 @@ export type PermissionResult<
 
 /**
  * For each source, a list of on-disk rule strings. The list is a
- * plain mutable array at the type level so builders (e.g. mode.ts'
- * strip/restore helpers) can compose new buckets before
- * `deepFreeze`-ing them at the context boundary. Callers should
- * never mutate a bucket they received from an existing context.
+ * readonly array. Builders compose mutable local arrays and freeze/cast only
+ * at the context boundary; consumers can never mutate a rule bucket obtained
+ * from the authoritative context.
  */
 export type ToolPermissionRulesBySource = {
-  [S in PermissionRuleSource]?: string[];
+  readonly [S in PermissionRuleSource]?: readonly string[];
 };
 
 export interface ToolPermissionContext {
@@ -342,6 +325,8 @@ export interface ToolPermissionContext {
   readonly alwaysDenyRules: ToolPermissionRulesBySource;
   readonly alwaysAskRules: ToolPermissionRulesBySource;
   readonly isBypassPermissionsModeAvailable: boolean;
+  /** Managed policy has explicitly revoked all session bypass authority. */
+  readonly bypassPermissionsModeDisabledByPolicy?: boolean;
   readonly strippedDangerousRules?: ToolPermissionRulesBySource;
   readonly shouldAvoidPermissionPrompts?: boolean;
   readonly awaitAutomatedChecksBeforeDialog?: boolean;
@@ -357,7 +342,7 @@ export interface ToolPermissionContext {
   /**
    * Session-scoped allowlist of workspace directories in which the user
    * has accepted `bypassPermissions` mode. The evaluator consults this
-   * alongside `config.bypassPermissionsModeAcceptedIn`.
+   * alongside the canonical user-state acceptance list.
    */
   readonly bypassPermissionsAcceptedIn?: readonly string[];
   /**
@@ -369,30 +354,181 @@ export interface ToolPermissionContext {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Deep-freeze helpers (module-private)
+// Immutable snapshot helpers
 // ─────────────────────────────────────────────────────────────────────
 
-/**
- * Deep-freeze an arbitrary value in place and return it. Used by
- * constructors of permission structures to produce the documented
- * `readonly` guarantee at runtime (not only at the type level).
- */
-export function deepFreeze<T>(value: T): T {
-  if (value === null || typeof value !== "object") return value;
-  if (Object.isFrozen(value)) return value;
-  Object.freeze(value);
-  if (Array.isArray(value)) {
-    for (const item of value) deepFreeze(item);
-  } else if (value instanceof Map) {
-    // Freeze map values (Maps themselves cannot be frozen, but we can
-    // freeze the elements they expose through iteration).
-    for (const v of value.values()) deepFreeze(v);
-  } else {
-    for (const key of Object.keys(value as object)) {
-      deepFreeze((value as Record<string, unknown>)[key]);
+const immutablePermissionValues = new WeakSet<object>();
+const immutablePermissionContexts = new WeakSet<ToolPermissionContext>();
+
+/** Build a read-only map facade around immutable closure-owned entries. */
+function immutableReadonlyMap<K, V>(
+  source: ReadonlyMap<K, V>,
+  cloneValue: (value: V) => V,
+): ReadonlyMap<K, V> {
+  const snapshot: Array<readonly [K, V]> = [];
+  for (const [key, value] of source) {
+    snapshot.push(Object.freeze([key, cloneValue(value)] as const));
+  }
+  Object.freeze(snapshot);
+
+  const keyMatches = (left: K, right: K): boolean =>
+    left === right || (left !== left && right !== right);
+  const entryAt = (index: number): readonly [K, V] | undefined =>
+    snapshot[index];
+  function* iterateEntries(): Generator<[K, V], void, undefined> {
+    for (let index = 0; index < snapshot.length; index += 1) {
+      yield entryAt(index)! as [K, V];
     }
   }
-  return value;
+  function* iterateKeys(): Generator<K, void, undefined> {
+    for (let index = 0; index < snapshot.length; index += 1) {
+      yield entryAt(index)![0];
+    }
+  }
+  function* iterateValues(): Generator<V, void, undefined> {
+    for (let index = 0; index < snapshot.length; index += 1) {
+      yield entryAt(index)![1];
+    }
+  }
+
+  let facade: ReadonlyMap<K, V>;
+  facade = {
+    get size(): number {
+      return snapshot.length;
+    },
+    get(key: K): V | undefined {
+      for (let index = 0; index < snapshot.length; index += 1) {
+        const entry = entryAt(index)!;
+        if (keyMatches(entry[0], key)) return entry[1];
+      }
+      return undefined;
+    },
+    has(key: K): boolean {
+      for (let index = 0; index < snapshot.length; index += 1) {
+        if (keyMatches(entryAt(index)![0], key)) return true;
+      }
+      return false;
+    },
+    entries(): MapIterator<[K, V]> {
+      return iterateEntries() as MapIterator<[K, V]>;
+    },
+    keys(): MapIterator<K> {
+      return iterateKeys() as MapIterator<K>;
+    },
+    values(): MapIterator<V> {
+      return iterateValues() as MapIterator<V>;
+    },
+    forEach(
+      callbackfn: (value: V, key: K, map: ReadonlyMap<K, V>) => void,
+      thisArg?: unknown,
+    ): void {
+      for (let index = 0; index < snapshot.length; index += 1) {
+        const entry = entryAt(index)!;
+        callbackfn.call(thisArg, entry[1], entry[0], facade);
+      }
+    },
+    [Symbol.iterator](): MapIterator<[K, V]> {
+      return iterateEntries() as MapIterator<[K, V]>;
+    },
+  };
+  Object.freeze(facade);
+  immutablePermissionValues.add(facade as object);
+  return facade;
+}
+
+function cloneDeeplyImmutable<T>(value: T, forceClone = false): T {
+  if (value === null || typeof value !== "object") return value;
+  if (!forceClone && immutablePermissionValues.has(value as object)) return value;
+
+  if (value instanceof Map) {
+    return immutableReadonlyMap(
+      value,
+      (entry) => cloneDeeplyImmutable(entry, forceClone),
+    ) as T;
+  }
+
+  if (Array.isArray(value)) {
+    const clone = value.map((entry) =>
+      cloneDeeplyImmutable(entry, forceClone),
+    );
+    Object.freeze(clone);
+    immutablePermissionValues.add(clone);
+    return clone as T;
+  }
+
+  const clone = {} as Record<PropertyKey, unknown>;
+  for (const key of Reflect.ownKeys(value as object)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value as object, key);
+    if (descriptor === undefined) continue;
+    Object.defineProperty(clone, key, {
+      configurable: true,
+      enumerable: descriptor.enumerable,
+      writable: true,
+      value: cloneDeeplyImmutable(
+        Reflect.get(value as object, key, value as object),
+        forceClone,
+      ),
+    });
+  }
+  Object.freeze(clone);
+  immutablePermissionValues.add(clone);
+  return clone as T;
+}
+
+/**
+ * Clone an arbitrary value into a deeply immutable snapshot. Native Maps are
+ * replaced by a read-only facade because `Object.freeze(new Map())` leaves
+ * `set`, `delete`, and `clear` fully operational.
+ */
+export function deepFreeze<T>(value: T): T {
+  return cloneDeeplyImmutable(value);
+}
+
+/**
+ * Canonical publication boundary for permission authority. Every mutable
+ * collection and nested value is cloned before it can become visible.
+ */
+export function immutableToolPermissionContext(
+  context: ToolPermissionContext,
+  options: { readonly forceClone?: boolean } = {},
+): ToolPermissionContext {
+  if (
+    options.forceClone !== true &&
+    immutablePermissionContexts.has(context)
+  ) {
+    return context;
+  }
+
+  const snapshot = cloneDeeplyImmutable<ToolPermissionContext>({
+    ...context,
+    additionalWorkingDirectories: new Map(
+      context.additionalWorkingDirectories,
+    ),
+    alwaysAllowRules: { ...context.alwaysAllowRules },
+    alwaysDenyRules: { ...context.alwaysDenyRules },
+    alwaysAskRules: { ...context.alwaysAskRules },
+    ...(context.strippedDangerousRules === undefined
+      ? {}
+      : { strippedDangerousRules: { ...context.strippedDangerousRules } }),
+    ...(context.bypassPermissionsAcceptedIn === undefined
+      ? {}
+      : {
+          bypassPermissionsAcceptedIn: [
+            ...context.bypassPermissionsAcceptedIn,
+          ],
+        }),
+    ...(context.unattendedPolicy === undefined
+      ? {}
+      : {
+          unattendedPolicy: {
+            ...context.unattendedPolicy,
+            allowlist: [...context.unattendedPolicy.allowlist],
+            denylist: [...context.unattendedPolicy.denylist],
+          },
+        }),
+  }, options.forceClone === true);
+  immutablePermissionContexts.add(snapshot);
+  return snapshot;
 }
 
 /**
@@ -411,5 +547,5 @@ export function createEmptyToolPermissionContext(
     isBypassPermissionsModeAvailable: false,
     ...(overrides ?? {}),
   };
-  return deepFreeze(base);
+  return immutableToolPermissionContext(base);
 }

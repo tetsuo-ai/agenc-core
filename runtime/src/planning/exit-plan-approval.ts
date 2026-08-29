@@ -1,4 +1,4 @@
-import type { PermissionMode, PermissionUpdate } from "../permissions/types.js";
+import type { PermissionUpdate } from "../permissions/types.js";
 import { asRecord } from "../utils/record.js";
 
 export interface ExitPlanAllowedPrompt {
@@ -71,23 +71,6 @@ export function buildPlanPromptPermissionUpdates(
       ),
     },
   ] satisfies PermissionUpdate[]);
-}
-
-export function targetPermissionModeForPlanApproval(
-  requested: ExitPlanApprovalMode | undefined,
-  prePlanMode: PermissionMode | undefined,
-): PermissionMode {
-  switch (requested) {
-    case "acceptEdits":
-      return "acceptEdits";
-    case "bypassPermissions":
-      return "bypassPermissions";
-    case "auto":
-      return "auto";
-    case "default":
-    case undefined:
-      return prePlanMode && prePlanMode !== "plan" ? prePlanMode : "default";
-  }
 }
 
 export function recordExitPlanModeApproval(

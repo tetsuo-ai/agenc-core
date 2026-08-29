@@ -7,6 +7,7 @@ import { filterToolProgressMessages, type Tool, type Tools } from '../../../tool
 import type { ProgressMessage } from '../../../types/message';
 import type { buildMessageLookups } from '../../../utils/messages.js';
 import { FallbackToolUseRejectedMessage } from '../../components/FallbackToolUseRejectedMessage';
+import { useFullscreenMode } from '../../context/fullscreenModeContext.js';
 type Props = {
   input: {
     [key: string]: unknown;
@@ -20,7 +21,7 @@ type Props = {
   isTranscriptMode?: boolean;
 };
 export function UserToolRejectMessage(t0) {
-  const $ = _c(13);
+  const $ = _c(14);
   const {
     input,
     progressMessagesForMessage,
@@ -36,6 +37,7 @@ export function UserToolRejectMessage(t0) {
   const inheritedContentWidth = useContentWidth();
   const effectiveColumns = inheritedContentWidth ?? columns;
   const [theme] = useTheme();
+  const fullscreen = useFullscreenMode();
   if (!tool || !tool.renderToolUseRejectedMessage) {
     let t1;
     if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
@@ -49,17 +51,17 @@ export function UserToolRejectMessage(t0) {
   const t1 = tool.inputSchema;
   let t2;
   let t3;
-  if ($[1] !== effectiveColumns || $[2] !== input || $[3] !== isTranscriptMode || $[4] !== progressMessagesForMessage || $[5] !== style || $[6] !== theme || $[7] !== tool || $[8] !== tools || $[9] !== verbose) {
+  if ($[1] !== effectiveColumns || $[2] !== input || $[3] !== isTranscriptMode || $[4] !== progressMessagesForMessage || $[5] !== style || $[6] !== theme || $[7] !== tool || $[8] !== tools || $[9] !== verbose || $[10] !== fullscreen) {
     t3 = Symbol.for("react.early_return_sentinel");
     bb0: {
       const parsedInput = t1.safeParse(input);
       if (!parsedInput.success) {
         let t4;
-        if ($[12] === Symbol.for("react.memo_cache_sentinel")) {
+        if ($[13] === Symbol.for("react.memo_cache_sentinel")) {
           t4 = <FallbackToolUseRejectedMessage />;
-          $[12] = t4;
+          $[13] = t4;
         } else {
-          t4 = $[12];
+          t4 = $[13];
         }
         t3 = t4;
         break bb0;
@@ -72,7 +74,8 @@ export function UserToolRejectMessage(t0) {
         progressMessagesForMessage: filterToolProgressMessages(progressMessagesForMessage),
         style,
         theme,
-        isTranscriptMode
+        isTranscriptMode,
+        fullscreen,
       }) ?? <FallbackToolUseRejectedMessage />;
     }
     $[1] = effectiveColumns;
@@ -84,11 +87,12 @@ export function UserToolRejectMessage(t0) {
     $[7] = tool;
     $[8] = tools;
     $[9] = verbose;
-    $[10] = t2;
-    $[11] = t3;
+    $[10] = fullscreen;
+    $[11] = t2;
+    $[12] = t3;
   } else {
-    t2 = $[10];
-    t3 = $[11];
+    t2 = $[11];
+    t3 = $[12];
   }
   if (t3 !== Symbol.for("react.early_return_sentinel")) {
     return t3;

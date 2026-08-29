@@ -197,9 +197,10 @@ describe("gaphunt3 #41 — auto-compaction does not count aborts as failures", (
 
   it("still counts a genuine (non-abort) compaction failure", async () => {
     // Control: a real error that propagates to autoCompactIfNeeded's catch
-    // (here a hook-results dep failure — provider summary errors are swallowed
-    // into a fallback summary) must still increment the circuit-breaker counter
-    // so the abort carve-out does not mask genuine failures.
+    // (here attachment construction fails before intent; lifecycle-hook
+    // failures are deliberately non-fatal) must still increment the
+    // circuit-breaker counter so the abort carve-out does not mask genuine
+    // failures.
     const messages = [makeMessage("x".repeat(10_000)), makeMessage("recent request")];
     const harness = createCompactionTransactionHarness(messages, {
       compactionMode: "automatic",
@@ -210,8 +211,8 @@ describe("gaphunt3 #41 — auto-compaction does not count aborts as failures", (
       {
         ...harness.context,
         deps: {
-          createHookResults: () => {
-            throw new Error("post-compact hook exploded");
+          createAttachments: () => {
+            throw new Error("compaction attachment construction exploded");
           },
         },
       },

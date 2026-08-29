@@ -27,20 +27,17 @@ import {
   BackgroundTaskLifecycle,
   registerAgentThreadTask,
 } from "../../tasks/index.js";
-import { HOOK_EVENT_NAMES, normalizeHookEventName } from "../../config/schema.js";
+import { HOOK_EVENT_NAMES } from "../../config/schema.js";
 
 afterEach(() => {
   resetLifecycleHookRegistry();
 });
 
 describe("schema surface", () => {
-  it("registers the three new events with aliases", () => {
+  it("registers the three canonical event names", () => {
     expect(HOOK_EVENT_NAMES).toContain("SubagentStop");
     expect(HOOK_EVENT_NAMES).toContain("SessionEnd");
     expect(HOOK_EVENT_NAMES).toContain("Notification");
-    expect(normalizeHookEventName("subagentStop")).toBe("SubagentStop");
-    expect(normalizeHookEventName("sessionEnd")).toBe("SessionEnd");
-    expect(normalizeHookEventName("notification")).toBe("Notification");
   });
 });
 
@@ -127,6 +124,61 @@ describe("dispatchSessionEnd / dispatchNotification", () => {
   });
 });
 
+describe("bare lifecycle authority", () => {
+  it("hard-neutralizes SubagentStop, SessionEnd, and Notification", async () => {
+    const subagentStop = vi.fn(async () => ({
+      succeeded: false,
+      output: "must not run",
+    }));
+    const sessionEnd = vi.fn(async () => ({
+      succeeded: true,
+      output: "must not run",
+    }));
+    const notification = vi.fn(async () => ({
+      succeeded: true,
+      output: "must not run",
+    }));
+    const runtimeOptions = { simpleMode: true } as const;
+
+    await expect(
+      dispatchSubagentStop(
+        {
+          hook_event_name: "SubagentStop",
+          task_name: "bare-task",
+          agent_id: "bare-agent",
+          outcome: "completed",
+          final_message: "done",
+        },
+        { hooks: [subagentStop], runtimeOptions },
+      ),
+    ).resolves.toEqual({});
+    await expect(
+      dispatchSessionEnd(
+        {
+          hook_event_name: "SessionEnd",
+          reason: "exit",
+          session_id: "bare-session",
+        },
+        { hooks: [sessionEnd], runtimeOptions },
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      dispatchNotification(
+        {
+          hook_event_name: "Notification",
+          notification_type: "permission_request",
+          message: "waiting",
+        },
+        { hooks: [notification], runtimeOptions },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(subagentStop).not.toHaveBeenCalled();
+    expect(sessionEnd).not.toHaveBeenCalled();
+    expect(notification).not.toHaveBeenCalled();
+  });
+});
+
 describe("SubagentStop feedback reaches the parent's completion output", () => {
   it("appends hook feedback to the lifecycle task output the parent reads", async () => {
     registerSubagentStopHook(async (input) =>
@@ -163,7 +215,9 @@ describe("SubagentStop feedback reaches the parent's completion output", () => {
       },
       join: () => joinPromise,
     };
-    registerAgentThreadTask(lifecycle, thread as never);
+    registerAgentThreadTask(lifecycle, thread as never, {
+      runtimeOptions: { simpleMode: false },
+    });
 
     resolveJoin({
       threadId: "agent-hooked",
@@ -180,6 +234,50 @@ describe("SubagentStop feedback reaches the parent's completion output", () => {
     expect(output).toContain("<subagent-stop-hook-feedback>");
     expect(output).toContain(
       "BLOCKED: run the test suite before reporting done",
+    );
+  });
+
+  it("keeps the captured bare authority after the spawning turn detaches", async () => {
+    const hook = vi.fn(async () => ({
+      succeeded: false,
+      output: "must not reach the parent",
+    }));
+    registerSubagentStopHook(hook);
+
+    const lifecycle = new BackgroundTaskLifecycle();
+    const joined = Promise.withResolvers<{
+      threadId: string;
+      durationMs: number;
+      outcome: "completed";
+      finalMessage: string;
+    }>();
+    const thread = {
+      threadId: "agent-bare",
+      taskPrompt: "implement without hooks",
+      live: {
+        agentId: "agent-bare",
+        abortController: new AbortController(),
+        status: { value: "running" },
+      },
+      join: () => joined.promise,
+    };
+    registerAgentThreadTask(lifecycle, thread as never, {
+      runtimeOptions: { simpleMode: true },
+    });
+
+    joined.resolve({
+      threadId: "agent-bare",
+      durationMs: 5,
+      outcome: "completed",
+      finalMessage: "completed without hooks",
+    });
+    await vi.waitFor(() => {
+      expect(lifecycle.get("agent-bare")?.status).toBe("completed");
+    });
+
+    expect(hook).not.toHaveBeenCalled();
+    expect(lifecycle.readOutput("agent-bare")).toBe(
+      "completed without hooks",
     );
   });
 });

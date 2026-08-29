@@ -7,6 +7,7 @@ import {
   AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET,
   AGENC_DAEMON_PROTOCOL_SCHEMA_EXPORT,
   AGENC_DAEMON_PROTOCOL_SCHEMA_ID,
+  AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_METHOD_SPECS,
   AGENC_DAEMON_INTERNAL_METHODS,
@@ -20,12 +21,15 @@ import {
   type AgenCDaemonRequest,
   type AgenCDaemonNotification,
   type AgenCDaemonInternalResultByMethod,
+  type EventMcpStatusChangedParams,
+  type SessionMcpStatusResult,
 } from "./protocol/index.js";
 
 interface ProtocolSchema {
   readonly $id: string;
   readonly definitions: {
     readonly AgenCDaemonRequest: object;
+    readonly [name: string]: object;
   };
   readonly "x-agenc-package": {
     readonly name: string;
@@ -60,8 +64,10 @@ const expectedMethods = [
   "session.clear",
   "session.snapshot",
   "session.transcript",
+  "session.transcript.v2",
   "session.cancelTurn",
   "session.resolveToolCall",
+  "session.mcp.status",
   "session.mcp.addServer",
   "message.send",
   "message.stream",
@@ -84,6 +90,7 @@ const expectedMethods = [
   "health.ready",
   "health.stats",
   "daemon.reload",
+  "daemon.shutdown",
   "auth.login",
   "auth.whoami",
   "auth.logout",
@@ -96,6 +103,7 @@ const expectedNotifications = [
   "event.permission_request",
   "event.user_input_request",
   "event.mcp_elicitation_request",
+  "event.mcp_status_changed",
   "event.agent_status",
   "event.session_event",
   "event.event_gap",
@@ -134,8 +142,10 @@ const expectedInternalMethods = [
   "session.rewindConversationToMessage",
   "session.previewFileRewind",
   "session.rewindFilesToMessage",
+  "session.shell.execute",
   "session.setModel",
   "session.setPermissionMode",
+  "session.permissions.mutateRule",
   "session.hooks.status",
   "session.hooks.setDisabled",
   "session.applyConfig",
@@ -168,7 +178,57 @@ function compileNotificationValidator(schema: ProtocolSchema) {
   });
 }
 
+function compileDefinitionValidator(
+  schema: ProtocolSchema,
+  definition: string,
+) {
+  const ajv = new Ajv({ strict: false });
+  return ajv.compile({
+    $schema: "http://json-schema.org/draft-07/schema#",
+    definitions: schema.definitions,
+    $ref: `#/definitions/${definition}`,
+  });
+}
+
 describe("AgenC daemon protocol surface", () => {
+  it("defines the current live attach-settings contract", () => {
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.9.0");
+
+    const status: AgenCDaemonInternalResultByMethod["session.hooks.status"] = {
+      sessionId: "session-bare",
+      available: true,
+      sourcePath: "/home/agent/.agenc/config.toml",
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode",
+      issues: [],
+      hooks: [],
+      diagnostics: [],
+    };
+    const enabled: AgenCDaemonInternalResultByMethod["session.hooks.setDisabled"] = {
+      sessionId: "session-bare",
+      applied: true,
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode",
+    };
+
+    expect(status).toMatchObject({
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode",
+    });
+    expect(enabled).toMatchObject({
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode",
+    });
+  });
+
   it("exports the exact initial daemon method list", () => {
     expect(AGENC_DAEMON_METHODS).toEqual(expectedMethods);
     expect(Object.keys(AGENC_DAEMON_METHOD_SPECS)).toEqual(expectedMethods);
@@ -239,10 +299,37 @@ describe("AgenC daemon protocol surface", () => {
         baseChangedtick: 4,
         bufferHandle: 7,
       };
+    const permissionRuleMutation: AgenCDaemonInternalResultByMethod["session.permissions.mutateRule"] =
+      {
+        sessionId: "session_contract",
+        applied: true,
+        operation: "add",
+        behavior: "allow",
+        rule: "system.bash(ls)",
+        sessionRules: {
+          allow: ["system.bash(ls)"],
+          deny: [],
+          ask: [],
+        },
+      };
+    const shell: AgenCDaemonInternalResultByMethod["session.shell.execute"] = {
+      commandId: "command_contract",
+      content: "ok\n",
+      stdout: "ok\n",
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      truncated: false,
+      isError: false,
+    };
 
     expect(partial.ok).toBe(true);
     expect(rewind.message).toBe("missing");
     expect(proposalStatus.status).toBe("committed");
+    expect(permissionRuleMutation.sessionRules.allow).toEqual([
+      "system.bash(ls)",
+    ]);
+    expect(shell).toMatchObject({ commandId: "command_contract", exitCode: 0 });
   });
 
   it("publishes a schema with the same method list and package target", () => {
@@ -309,6 +396,140 @@ describe("AgenC daemon protocol surface", () => {
     ).toBe(false);
   });
 
+  it("publishes only passive, non-authority MCP status fields", () => {
+    const validate = compileDefinitionValidator(
+      readProtocolSchema(),
+      "SessionMcpStatusResult",
+    );
+    const status = {
+      sessionId: "session_1",
+      revision: 7,
+      servers: [
+        {
+          name: "audit-ping",
+          transport: "http",
+          enabled: true,
+          required: false,
+          state: "connected",
+          displayTarget: "https://example.com",
+          toolCount: 1,
+        },
+      ],
+      tools: [
+        {
+          serverName: "audit-ping",
+          name: "mcp.audit-ping.ping",
+        },
+      ],
+    } satisfies SessionMcpStatusResult;
+    const invalidation = {
+      sessionId: "session_1",
+      revision: 7,
+    } satisfies EventMcpStatusChangedParams;
+
+    expect(validate(status), JSON.stringify(validate.errors)).toBe(true);
+    expect(Object.keys(status)).toEqual([
+      "sessionId",
+      "revision",
+      "servers",
+      "tools",
+    ]);
+    expect(Object.keys(status.servers[0]!)).toEqual([
+      "name",
+      "transport",
+      "enabled",
+      "required",
+      "state",
+      "displayTarget",
+      "toolCount",
+    ]);
+    expect(Object.keys(status.tools[0]!)).toEqual(["serverName", "name"]);
+    expect(invalidation).toEqual({ sessionId: "session_1", revision: 7 });
+
+    for (const forbidden of [
+      "client",
+      "env",
+      "headers",
+      "args",
+      "auth",
+      "url",
+      "error",
+    ]) {
+      expect(
+        validate({
+          ...status,
+          servers: [{ ...status.servers[0], [forbidden]: "forbidden" }],
+        }),
+        `${forbidden} must not be accepted by the MCP status server DTO`,
+      ).toBe(false);
+    }
+    expect(validate({ ...status, clients: [] })).toBe(false);
+    expect(
+      validate({
+        ...status,
+        servers: [
+          {
+            ...status.servers[0],
+            displayTarget: "https://operator:redacted@example.com/mcp",
+          },
+        ],
+      }),
+      "credential-bearing display targets must be rejected",
+    ).toBe(false);
+    for (const displayTarget of [
+      "https://example.com/private",
+      "https://example.com?token=hunter2",
+      "https://example.com#private",
+    ]) {
+      expect(
+        validate({
+          ...status,
+          servers: [{ ...status.servers[0], displayTarget }],
+        }),
+        `${displayTarget} must not be accepted as a public display target`,
+      ).toBe(false);
+    }
+    for (const serverName of [
+      "bad.name",
+      "bad name",
+      "bad\nname",
+      "a".repeat(257),
+    ]) {
+      expect(
+        validate({
+          ...status,
+          servers: [{ ...status.servers[0], name: serverName }],
+        }),
+        `${JSON.stringify(serverName)} must not be accepted as a server identity`,
+      ).toBe(false);
+      expect(
+        validate({
+          ...status,
+          tools: [{ ...status.tools[0], serverName }],
+        }),
+        `${JSON.stringify(serverName)} must not be accepted as a tool owner`,
+      ).toBe(false);
+    }
+    expect(
+      validate({
+        ...status,
+        tools: [{ ...status.tools[0], inputSchema: { type: "object" } }],
+      }),
+    ).toBe(false);
+    expect(
+      validate({
+        ...status,
+        tools: [
+          {
+            ...status.tools[0],
+            description: "Use https://operator:hunter2@example.test/mcp",
+          },
+        ],
+      }),
+      "untrusted MCP descriptions must not enter the passive DTO",
+    ).toBe(false);
+  });
+
   it("validates all request-bearing methods through the published schema", () => {
     const validate = compileRequestValidator(readProtocolSchema());
     const samples: readonly AgenCDaemonRequest[] = [
@@ -343,7 +564,7 @@ describe("AgenC daemon protocol surface", () => {
           unattendedAllow: ["FileRead", "Grep"],
           unattendedDeny: ["exec_command"],
           envOverrides: {
-            AGENC_MCP_SERVERS: "[]",
+            XAI_API_KEY: "test-key",
           },
         },
       },
@@ -494,9 +715,21 @@ describe("AgenC daemon protocol surface", () => {
       },
       {
         jsonrpc: JSON_RPC_VERSION,
+        id: "transcript-v2",
+        method: "session.transcript.v2",
+        params: { sessionId: "session_1" },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
         id: 13,
         method: "session.cancelTurn",
         params: { sessionId: "session_1", reason: "user_interrupt" },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: "mcp-status",
+        method: "session.mcp.status",
+        params: { sessionId: "session_1" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
@@ -698,6 +931,12 @@ describe("AgenC daemon protocol surface", () => {
         jsonrpc: JSON_RPC_VERSION,
         id: 24,
         method: "daemon.reload",
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: "daemon-shutdown",
+        method: "daemon.shutdown",
+        params: { instanceId: "daemon-instance-1" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
@@ -959,6 +1198,14 @@ describe("AgenC daemon protocol surface", () => {
       },
       {
         jsonrpc: JSON_RPC_VERSION,
+        method: "event.mcp_status_changed",
+        params: {
+          sessionId: "session_1",
+          revision: 7,
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
         method: "event.agent_status",
         params: {
           sessionId: "session_1",
@@ -1079,6 +1326,24 @@ describe("AgenC daemon protocol surface", () => {
           requestId: "permission_1",
           permissions: "tool.use",
         },
+      }),
+    ).toBe(false);
+    expect(
+      validate({
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.mcp_status_changed",
+        params: {
+          sessionId: "session_1",
+          revision: 7,
+          eventId: "must-not-enter-session-history",
+        },
+      }),
+    ).toBe(false);
+    expect(
+      validate({
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.mcp_status_changed",
+        params: { sessionId: "session_1", revision: -1 },
       }),
     ).toBe(false);
     expect(

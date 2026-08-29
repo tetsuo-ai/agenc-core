@@ -1446,14 +1446,20 @@ describe("FND red-probe supervisor", () => {
       source: probeSource({
         imports: ['import "../../helpers/nonzero-exit.js";'],
       }),
+      timeoutMs: 5_000,
     });
     writeFileSync(
       join(fixtureRoot, "tests/helpers/nonzero-exit.ts"),
-      "process.exitCode = 1;\n",
+      [
+        "setInterval(() => undefined, 1_000);",
+        "process.exitCode = 23;",
+        "process.exit = (() => undefined) as typeof process.exit;",
+        "",
+      ].join("\n"),
       "utf8",
     );
     await expect(auditRedProbes({ runtimeRoot: fixtureRoot })).rejects.toThrow(
-      "did not exit expected-red",
+      "did not exit expected-red: exit=23",
     );
   });
 
@@ -1626,7 +1632,7 @@ describe("FND red-probe supervisor", () => {
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
       probes: Array<{ sourceSha256: string; timeoutMs: number }>;
     };
-    manifest.probes[0]!.timeoutMs = 500;
+    manifest.probes[0]!.timeoutMs = coldModuleFixtureTimeoutMs;
     manifest.probes[0]!.sourceSha256 = sha256(source);
     writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`, "utf8");
 
@@ -1639,7 +1645,9 @@ describe("FND red-probe supervisor", () => {
           },
         },
       }),
-    ).rejects.toThrow("timed out after 500ms");
+    ).rejects.toThrow(
+      `timed out after ${coldModuleFixtureTimeoutMs}ms`,
+    );
     const descendantPid = Number.parseInt(readFileSync(marker, "utf8"), 10);
     expect(Number.isSafeInteger(descendantPid)).toBe(true);
     expect(() => process.kill(descendantPid, 0)).toThrow();

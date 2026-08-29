@@ -345,6 +345,7 @@ describe("AgenC daemon command exec", () => {
   });
 
   it("routes legacy sandboxPolicy commands through the sandbox transform before spawning", async () => {
+    const sessionTempRoot = process.cwd();
     const sandboxManager = {
       selectInitial: vi.fn(() => "linux_seccomp" as const),
       transform: vi.fn((request: SandboxTransformRequest): SandboxExecRequest => ({
@@ -370,6 +371,7 @@ describe("AgenC daemon command exec", () => {
     };
     const service = new ExplicitDangerCommandExecService({
       sandboxManager,
+      sessionTempRoot,
       agencLinuxSandboxExe: process.execPath,
       sandboxProbe: readySandboxProbe,
     });
@@ -398,6 +400,7 @@ describe("AgenC daemon command exec", () => {
       expect.objectContaining({
         sandbox: "linux_seccomp",
         sandboxPolicyCwd: process.cwd(),
+        sessionTempRoot,
         permissions: expect.objectContaining({
           fileSystem: expect.objectContaining({ kind: "restricted" }),
           network: "enabled",

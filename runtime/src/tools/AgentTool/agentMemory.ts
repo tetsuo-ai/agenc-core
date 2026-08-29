@@ -22,7 +22,11 @@ import {
   sep,
 } from 'path'
 import { peekAmbientRuntimeSession } from '../../session/current-session.js'
-import { getAgenCConfigHomeDir } from '../../utils/envUtils.js'
+import {
+  getSessionCoworkMemoryExtraGuidelines,
+  getSessionRemoteMemoryRoot,
+} from '../../session/runtime-options.js'
+import { getAgenCHomeDir } from '../../utils/envUtils.js'
 
 // Persistent agent memory scope: 'user' (~/.agenc/agent-memory/), 'project' (.agenc/agent-memory/), or 'local' (.agenc/agent-memory-local/)
 export type AgentMemoryScope = 'user' | 'project' | 'local'
@@ -83,10 +87,11 @@ function getLocalAgentMemoryDir(
   dirName: string,
   cwd: string = getRoleWorkspaceCwd(),
 ): string {
-  if (process.env.AGENC_REMOTE_MEMORY_DIR) {
+  const remoteMemoryRoot = getSessionRemoteMemoryRoot()
+  if (remoteMemoryRoot !== undefined) {
     return (
       join(
-        process.env.AGENC_REMOTE_MEMORY_DIR,
+        remoteMemoryRoot,
         'projects',
         projectMemoryNamespace(cwd),
         'agent-memory-local',
@@ -98,7 +103,7 @@ function getLocalAgentMemoryDir(
 }
 
 function getMemoryBaseDir(): string {
-  return process.env.AGENC_REMOTE_MEMORY_DIR ?? getAgenCConfigHomeDir()
+  return getSessionRemoteMemoryRoot() ?? getAgenCHomeDir()
 }
 
 function getAgentMemoryScopeRoot(
@@ -107,9 +112,10 @@ function getAgentMemoryScopeRoot(
 ): string {
   if (scope === 'user') return join(getMemoryBaseDir(), 'agent-memory')
   if (scope === 'project') return join(cwd, '.agenc', 'agent-memory')
-  if (process.env.AGENC_REMOTE_MEMORY_DIR) {
+  const remoteMemoryRoot = getSessionRemoteMemoryRoot()
+  if (remoteMemoryRoot !== undefined) {
     return join(
-      process.env.AGENC_REMOTE_MEMORY_DIR,
+      remoteMemoryRoot,
       'projects',
       projectMemoryNamespace(cwd),
       'agent-memory-local',
@@ -123,8 +129,9 @@ function getAgentMemoryTrustAnchor(
   cwd: string,
 ): string {
   if (scope === 'user') return getMemoryBaseDir()
-  if (scope === 'local' && process.env.AGENC_REMOTE_MEMORY_DIR) {
-    return process.env.AGENC_REMOTE_MEMORY_DIR
+  const remoteMemoryRoot = getSessionRemoteMemoryRoot()
+  if (scope === 'local' && remoteMemoryRoot !== undefined) {
+    return remoteMemoryRoot
   }
   return cwd
 }
@@ -359,7 +366,7 @@ export function isAnyAgentMemoryPath(
     }
   }
 
-  const remoteMemoryDir = process.env.AGENC_REMOTE_MEMORY_DIR
+  const remoteMemoryDir = getSessionRemoteMemoryRoot()
   if (!remoteMemoryDir) {
     return isWithinPathBoundary(
       absolutePath,
@@ -479,8 +486,7 @@ export function loadAgentMemoryPrompt(
 
   void mkdir(memoryDir, { recursive: true }).catch(() => {})
 
-  const coworkExtraGuidelines =
-    process.env.AGENC_COWORK_MEMORY_EXTRA_GUIDELINES
+  const coworkExtraGuidelines = getSessionCoworkMemoryExtraGuidelines()
   const extraGuidelines =
     coworkExtraGuidelines && coworkExtraGuidelines.trim().length > 0
       ? [scopeNote, coworkExtraGuidelines]

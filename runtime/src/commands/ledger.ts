@@ -18,7 +18,6 @@
  * @module
  */
 
-import { join } from "node:path";
 import {
   getLedgerStatusSnapshot,
   refreshLedgerStatus,
@@ -42,6 +41,7 @@ import {
   type SlashCommand,
   type SlashCommandResult,
 } from "./types.js";
+import { agencHomeFromCommandContext } from "./config-context.js";
 
 const READONLY_TIMEOUT_MS = 30_000;
 
@@ -256,9 +256,10 @@ function ringSafetyError(args: readonly string[]): string | null {
   }
   if (subcommand === "init" && !process.env.WALLET_PASS) {
     return [
-      "/ledger ring init requires WALLET_PASS to already be provided by your",
-      "user session or OS keychain. AgenC will never ask for or embed the",
-      "password in the command.",
+      "/ledger ring init requires WALLET_PASS to already be present in the",
+      "command environment. Load it from your OS credential store before",
+      "starting AgenC. AgenC will never ask for or embed the password in the",
+      "command.",
     ].join(" ");
   }
   if (subcommand === "destroy") {
@@ -322,7 +323,7 @@ export const ledgerCommand: SlashCommand = {
       const parsed = parseLedgerArguments(ctx.argsRaw);
       if (!parsed.ok) return { kind: "error", message: parsed.error };
       const args = parsed.args;
-      const agencHome = ctx.agencHome ?? join(ctx.home, ".agenc");
+      const agencHome = agencHomeFromCommandContext(ctx);
 
       if (
         args.length === 1 &&

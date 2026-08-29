@@ -5,6 +5,7 @@ import {
   _resetErrorLogForTesting,
   getInMemoryErrors,
 } from '../../src/utils/log.js'
+import { runWithStartupProviderSelection } from '../../src/utils/model/providers.js'
 
 type Handler = (...args: unknown[]) => void
 
@@ -89,28 +90,38 @@ describe('installGlobalErrorNet persists crashes to the local sink', () => {
   })
 
   test('uncaughtException reaches the persisted error log (no diag file)', () => {
-    const proc = fakeProc()
-    installGlobalErrorNet(proc as never)
-    const uncaught = proc.handlers.get('uncaughtException')![0]!
+    runWithStartupProviderSelection(
+      { provider: 'openai', model: 'gpt-5', environment: {} },
+      () => {
+        const proc = fakeProc()
+        installGlobalErrorNet(proc as never)
+        const uncaught = proc.handlers.get('uncaughtException')![0]!
 
-    expect(getInMemoryErrors()).toHaveLength(0)
-    uncaught(new Error('local-daemon-crash-marker'))
+        expect(getInMemoryErrors()).toHaveLength(0)
+        uncaught(new Error('local-daemon-crash-marker'))
 
-    const errors = getInMemoryErrors()
-    expect(errors).toHaveLength(1)
-    expect(errors[0]!.error).toContain('local-daemon-crash-marker')
+        const errors = getInMemoryErrors()
+        expect(errors).toHaveLength(1)
+        expect(errors[0]!.error).toContain('local-daemon-crash-marker')
+      },
+    )
   })
 
   test('unhandledRejection reaches the persisted error log (no diag file)', () => {
-    const proc = fakeProc()
-    installGlobalErrorNet(proc as never)
-    const rejection = proc.handlers.get('unhandledRejection')![0]!
+    runWithStartupProviderSelection(
+      { provider: 'openai', model: 'gpt-5', environment: {} },
+      () => {
+        const proc = fakeProc()
+        installGlobalErrorNet(proc as never)
+        const rejection = proc.handlers.get('unhandledRejection')![0]!
 
-    expect(getInMemoryErrors()).toHaveLength(0)
-    rejection(new Error('local-rejection-marker'))
+        expect(getInMemoryErrors()).toHaveLength(0)
+        rejection(new Error('local-rejection-marker'))
 
-    const errors = getInMemoryErrors()
-    expect(errors).toHaveLength(1)
-    expect(errors[0]!.error).toContain('local-rejection-marker')
+        const errors = getInMemoryErrors()
+        expect(errors).toHaveLength(1)
+        expect(errors[0]!.error).toContain('local-rejection-marker')
+      },
+    )
   })
 })

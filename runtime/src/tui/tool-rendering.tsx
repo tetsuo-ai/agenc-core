@@ -921,7 +921,9 @@ function toolUseSummaryForInput(name: string, input: unknown): string {
     // surfaced in the result preview, not stuffed into the args row.
     return displayPath.length > 0 ? displayPath : "edit";
   }
-  if (name === "Bash" && typeof record.command === "string") {
+  // The second spelling is a display-only persisted-transcript reader; live
+  // tool creation and dispatch use system.bash exclusively.
+  if ((name === "system.bash" || name === "Bash") && typeof record.command === "string") {
     return truncateInline(record.command);
   }
   if (name === "TodoWrite" || name === "TodoRead") {
@@ -1167,7 +1169,7 @@ export function createTuiTool(name: string): any {
 export function createTuiTools(names: Iterable<string>): readonly any[] {
   const unique = new Set<string>([
     "AskUserQuestion",
-    "Bash",
+    "system.bash",
     "Edit",
     "FileRead",
     "Write",

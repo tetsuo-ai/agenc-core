@@ -9,11 +9,11 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { loadConfig } from "../../config/loader.js";
+import { loadCanonicalConfig } from "../../config/repository.js";
 import { resolveBudgetPolicy } from "../../budget/index.js";
 import { resolveHeartbeatPolicy } from "../../heartbeat/config.js";
-import { loadGatewayConfig } from "../../gateway/config.js";
-import { readGatewayEnvFile } from "../../gateway/env-file.js";
+import { gatewayConfigFromCanonical } from "../../gateway/config.js";
+import { readGatewayCredentialEnvironment } from "../../gateway/credentials.js";
 import {
   buildSecurityAuditReport,
   securityAuditExitCode,
@@ -21,6 +21,7 @@ import {
 } from "../../bin/security-cli.js";
 import { readOnboardingActs, type OnboardingActsState } from "./state.js";
 import type { ActIO } from "./io.js";
+import { captureSecureStorageIngress } from "../../utils/secureStorage/home.js";
 
 export interface OnboardingSurfaceSummary {
   readonly acts: OnboardingActsState;
@@ -36,6 +37,8 @@ export async function buildOnboardingSurfaceSummary(
   agencHome: string,
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): Promise<OnboardingSurfaceSummary> {
+  const ingress = captureSecureStorageIngress(env, agencHome);
+  const environment = ingress.environment;
   const acts = readOnboardingActs(agencHome);
   const workspace = acts.acts.identity?.detail?.workspace;
   const personaFiles: string[] = [];
@@ -44,7 +47,8 @@ export async function buildOnboardingSurfaceSummary(
       if (existsSync(join(workspace, name))) personaFiles.push(name);
     }
   }
-  const gatewayEnv = readGatewayEnvFile(agencHome);
+  const home = ingress.home;
+  const gatewayEnv = readGatewayCredentialEnvironment(home);
   const channels: string[] = [];
   if (gatewayEnv.AGENC_TELEGRAM_BOT_TOKEN !== undefined) channels.push("telegram");
   if (gatewayEnv.AGENC_DISCORD_BOT_TOKEN !== undefined) channels.push("discord");
@@ -54,16 +58,20 @@ export async function buildOnboardingSurfaceSummary(
   ) {
     channels.push("slack");
   }
-  const gatewayConfig = loadGatewayConfig({ agencHome });
-  const { config } = await loadConfig({ home: agencHome, onWarn: () => {} });
+  const { config } = await loadCanonicalConfig({
+    home: agencHome,
+    env: environment,
+    onWarn: () => {},
+  });
+  const gatewayConfig = gatewayConfigFromCanonical(config);
   return {
     acts,
     ...(workspace !== undefined ? { personaWorkspace: workspace } : {}),
     personaFiles,
     channels,
     hooksEnabled: gatewayConfig.hooks?.enabled === true,
-    budgetEnabled: resolveBudgetPolicy(config.budget, env).policy.enabled,
-    heartbeatEnabled: resolveHeartbeatPolicy(config.heartbeat, env).enabled,
+    budgetEnabled: resolveBudgetPolicy(config.budget).enabled,
+    heartbeatEnabled: resolveHeartbeatPolicy(config.heartbeat).enabled,
   };
 }
 
@@ -83,7 +91,10 @@ export async function runRecap(options: {
   readonly buildAuditReport?: () => Promise<SecurityAuditReport>;
 }): Promise<number> {
   const { io, agencHome } = options;
-  const env = options.env ?? process.env;
+  const env = captureSecureStorageIngress(
+    options.env ?? process.env,
+    agencHome,
+  ).environment;
   const summary = await buildOnboardingSurfaceSummary(agencHome, env);
   const report = await (options.buildAuditReport?.() ??
     buildSecurityAuditReport({ env }));

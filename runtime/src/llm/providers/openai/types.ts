@@ -15,8 +15,7 @@ export interface OpenAIOAuthConfig extends OAuthRefreshCallbacks {
 export type OpenAIProviderAuthStrategy =
   | "bearer"
   | "optional_bearer"
-  | "none"
-  | "google_api_key";
+  | "none";
 
 export interface OpenAIProviderConfig extends LLMProviderConfig {
   readonly apiKey?: string;
@@ -26,6 +25,8 @@ export interface OpenAIProviderConfig extends LLMProviderConfig {
   readonly project?: string;
   readonly useResponsesApi?: boolean;
   readonly store?: boolean;
+  /** Fixed ChatGPT subscription transport, distinct from the platform API. */
+  readonly chatgptBackend?: boolean;
   readonly authMode?: "api_key" | "oauth";
   readonly oauth?: OpenAIOAuthConfig;
   readonly defaultHeaders?: Readonly<Record<string, string>>;

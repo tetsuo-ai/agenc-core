@@ -173,7 +173,6 @@ export function createGateEnvironment(privateRoot) {
   }
   return {
     AGENC_AUTH_BACKEND: "local",
-    AGENC_CONFIG_DIR: agencHome,
     AGENC_HOME: agencHome,
     AGENC_HERMETIC_RUN_BASE: dockerVisibleRunBase,
     CI: "1",
@@ -949,7 +948,6 @@ export async function stopOwnedDaemon(env) {
 
   const expectedEntrypoint = path.join(repositoryRoot, "runtime", "dist", "bin", "agenc.js");
   const expectedHome = `AGENC_HOME=${env.AGENC_HOME}`;
-  const expectedConfig = `AGENC_CONFIG_DIR=${env.AGENC_CONFIG_DIR}`;
   const entrypointIndex = commandLine.indexOf(expectedEntrypoint);
   const owned =
     entrypointIndex > 0 &&
@@ -958,7 +956,6 @@ export async function stopOwnedDaemon(env) {
     commandLine[entrypointIndex + 2] === "start" &&
     commandLine[entrypointIndex + 3] === "--foreground" &&
     daemonEnvironment.includes(expectedHome) &&
-    daemonEnvironment.includes(expectedConfig) &&
     executable === realpathSync(process.execPath) &&
     identity.processGroup === pid &&
     identity.session === pid &&

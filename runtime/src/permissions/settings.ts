@@ -1,61 +1,39 @@
-/**
- * T11 Wave 1 — disk-facing glue for permission rules.
- *
- * Settings sources + JSON file paths:
- *
- *   userSettings    ~/.agenc/settings.json
- *   projectSettings <projectRoot>/.agenc/settings.json
- *   localSettings   <projectRoot>/.agenc/settings.local.json
- *   flagSettings    CLI-provided (--settings-file <path>)
- *   policySettings  /etc/agenc/managed-settings.json
- *                   (or $AGENC_MANAGED_SETTINGS)
- *
- * JSON shape:
- *   {
- *     "permissions": {
- *       "allow": ["Bash(git commit:*)", "Read"],
- *       "deny":  ["Bash(rm -rf:*)"],
- *       "ask":   ["Bash(npm publish:*)"],
- *       "additionalDirectories": ["/abs/path"],
- *       "defaultMode": "acceptEdits",
- *       "disableBypassPermissionsMode": "disable"
- *     },
- *     "disableAutoMode": "disable"
- *   }
- *
- * Invariants:
- *   - Every disk read routes through `utils/file-read::readTextFile`
- *     (I-80 LF normalization + I-81 UTF-8 BOM strip).
- *   - Reading settings for append uses a lenient parser: if the JSON
- *     fails a stricter schema check elsewhere, we still preserve
- *     existing permission rules so a bad `hooks` block doesn't wipe
- *     unrelated permission edits.
- *   - Writes are atomic (write to `.tmp` then `rename`).
- *
- * @module
- */
+/** Canonical permission projection and persistence over layered config.toml. */
 
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import type { ConfigStore } from "../config/store.js";
-import type { AgenCConfig } from "../config/schema.js";
+import { existsSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
+import {
+  ConfigStore,
+  type ConfigStoreAuthority,
+} from "../config/store.js";
+import {
+  isValidPermissionMode,
+  type AgenCConfig,
+  type PermissionsConfig,
+} from "../config/schema.js";
 import { findProjectRootSync } from "../session/session-store.js";
-import { readTextFile } from "./_deps/file-read.js";
-import { applyToolApprovalConfigToPermissionContext } from "./tool-approval.js";
+import {
+  getSettingsForSource as getCanonicalSettingsForSource,
+  updateSettingsForSource as updateCanonicalSettingsForSource,
+} from "../utils/settings/settings.js";
+import {
+  getEnabledSettingSources as getCanonicalEnabledSettingSources,
+} from "../utils/settings/constants.js";
 import {
   applyPermissionRulesToPermissionContext,
-  applyPermissionUpdate,
   clearAllRulesFromSource,
   parseRuleString,
   serializeRuleValue,
   setRulesForSource,
 } from "./rules.js";
+import { applyPermissionUpdate } from "./permission-updates.js";
 import {
   EDITABLE_SOURCES,
   PERMISSION_BEHAVIORS,
   PERMISSION_RULE_SOURCES,
   SETTING_SOURCES,
   createEmptyToolPermissionContext,
+  immutableToolPermissionContext,
   isUserAddressablePermissionMode,
   type EditablePermissionRuleSource,
   type PermissionBehavior,
@@ -63,9 +41,24 @@ import {
   type PermissionRule,
   type PermissionRuleSource,
   type PermissionRuleValue,
+  type PermissionUpdate,
   type ToolPermissionContext,
 } from "./types.js";
-import { isAutoModeGateEnabled } from "./permission-mode.js";
+import {
+  createDisabledAutoModeContext,
+  createDisabledBypassPermissionsContext,
+  isAutoModeGateEnabled,
+  restoreDangerousPermissions,
+  stripDangerousPermissionsForAutoMode,
+  transitionPlanAutoMode,
+  transitionPermissionMode,
+} from "./permission-mode.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
+import {
+  authorizeBypassPermissionsConsent,
+  canonicalizeBypassPermissionsCwd,
+  loadBypassPermissionsConsent,
+} from "./bypass-consent-state.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Re-exports so callers can `import { SETTING_SOURCES, EDITABLE_SOURCES } from "./settings.js"`
@@ -74,51 +67,18 @@ import { isAutoModeGateEnabled } from "./permission-mode.js";
 export { SETTING_SOURCES, EDITABLE_SOURCES };
 
 // ─────────────────────────────────────────────────────────────────────
-// Settings JSON shape
-// ─────────────────────────────────────────────────────────────────────
-
-export interface SettingsPermissionsBlock {
-  readonly allow?: readonly string[];
-  readonly deny?: readonly string[];
-  readonly ask?: readonly string[];
-  readonly additionalDirectories?: readonly string[];
-  readonly defaultMode?: string;
-  readonly disableBypassPermissionsMode?: "disable" | "enable";
-  readonly disableAutoMode?: "disable" | "enable";
-  readonly allowManagedPermissionRulesOnly?: boolean;
-  readonly [k: string]: unknown;
-}
-
-export interface SettingsJson {
-  readonly permissions?: SettingsPermissionsBlock;
-  readonly disableAutoMode?: "disable" | "enable";
-  readonly [k: string]: unknown;
-}
-
-// ─────────────────────────────────────────────────────────────────────
 // Path resolution
 // ─────────────────────────────────────────────────────────────────────
 
 export interface DiskEnv {
-  /** Defaults to `process.env.HOME`. */
+  /** Canonical AgenC home, not the platform home directory. */
   readonly home?: string;
   /** Defaults to `process.cwd()`. */
   readonly cwd?: string;
-  /** Optional config store (used for `--settings-file` path etc.). */
-  readonly configStore?: ConfigStore;
-  /** Full path to a --settings-file. */
-  readonly flagSettingsPath?: string;
-  /** Override the managed-settings path. */
-  readonly managedSettingsPath?: string;
-}
-
-function resolveHome(env: DiskEnv | undefined): string {
-  if (env?.home) return env.home;
-  const h = process.env.HOME;
-  if (!h) {
-    throw new Error("HOME unset and no env.home provided");
-  }
-  return h;
+  /** Active strict layered repository snapshot. */
+  readonly configStore?: ConfigStoreAuthority;
+  /** Override the managed config.toml path. */
+  readonly managedConfigPath?: string;
 }
 
 function resolveCwd(env: DiskEnv | undefined): string {
@@ -127,127 +87,63 @@ function resolveCwd(env: DiskEnv | undefined): string {
 
 function resolveProjectRoot(
   env: DiskEnv | undefined,
-  configStore?: ConfigStore,
+  configStore?: ConfigStoreAuthority,
 ): string {
   const cwd = resolveCwd(env);
-  const markers = configStore?.current().project_root_markers;
-  const found = findProjectRootSync(
-    cwd,
-    markers && markers.length > 0 ? markers : undefined,
-  );
+  if (configStore) return configStore.projectRoot;
+  const found = findProjectRootSync(cwd);
   return found ? found.rootDir : cwd;
 }
 
-/**
- * Return the JSON file path for a given source, or `null` when this
- * source has no on-disk file (e.g. in-memory-only sources).
- */
-export function getSettingsFilePathForSource(
+async function withCanonicalStore(env?: DiskEnv): Promise<DiskEnv> {
+  if (env?.configStore) return env;
+  const cwd = resolveCwd(env);
+  const configStore = new ConfigStore({
+    ...(env?.home !== undefined ? { home: env.home } : {}),
+    cwd,
+    projectRoot: resolveProjectRoot(env),
+    ...(env?.managedConfigPath !== undefined
+      ? { managedConfigPath: env.managedConfigPath }
+      : {}),
+    env: env?.home === undefined
+      ? process.env
+      : { ...process.env, AGENC_HOME: env.home },
+  });
+  await configStore.reload();
+  return { ...env, cwd, configStore };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Canonical projection
+// ─────────────────────────────────────────────────────────────────────
+
+function settingsForSource(
   source: PermissionRuleSource,
   env?: DiskEnv,
-): string | null {
-  const configStore = env?.configStore;
+): AgenCConfig | null {
   switch (source) {
-    case "userSettings": {
-      const home = resolveHome(env);
-      return join(home, ".agenc", "settings.json");
-    }
-    case "projectSettings": {
-      const root = resolveProjectRoot(env, configStore);
-      return join(root, ".agenc", "settings.json");
-    }
-    case "localSettings": {
-      const root = resolveProjectRoot(env, configStore);
-      return join(root, ".agenc", "settings.local.json");
-    }
-    case "flagSettings": {
-      return env?.flagSettingsPath ?? null;
-    }
-    case "policySettings": {
-      if (env?.managedSettingsPath) return env.managedSettingsPath;
-      const fromEnv = process.env.AGENC_MANAGED_SETTINGS;
-      if (fromEnv) return fromEnv;
-      return "/etc/agenc/managed-settings.json";
-    }
     case "cliArg":
     case "command":
     case "session":
       return null;
   }
+  return env?.configStore
+    ? getCanonicalSettingsForSource(source, env.configStore)
+    : getCanonicalSettingsForSource(source);
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// JSON parse (lenient)
-// ─────────────────────────────────────────────────────────────────────
-
-function safeParseJSON(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Lenient settings reader — returns `null` when the file is missing
- * or unparseable. Never throws. Does NOT perform schema validation so
- * an invalid `hooks` block cannot clobber a permission edit.
- *
- * Uses {@link readTextFile} so every read respects I-80 (line-ending
- * normalization) and I-81 (BOM strip).
- */
-export async function readSettingsFileLenient(
-  path: string,
-): Promise<SettingsJson | null> {
-  if (!existsSync(path)) return null;
-  let raw: string;
-  try {
-    raw = await readTextFile(path);
-  } catch {
-    return null;
-  }
-  if (raw.trim() === "") return {};
-  const parsed = safeParseJSON(raw);
-  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-    return parsed as SettingsJson;
-  }
-  return null;
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Enabled sources
+// canonical permission projection → rules[]
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Returns the list of setting sources the runtime should consult,
- * derived from the active config. Policy and flag settings are always
- * included (matching AgenC behavior). Pass the config store so
- * consumers do not depend on any process-global.
- */
-export function getEnabledSettingSources(
-  configStore?: ConfigStore,
-): PermissionRuleSource[] {
-  // Today AgenC has no per-source opt-out knob; mirror AgenC's
-  // "all settings sources enabled" default. When such a knob is added
-  // to AgenCConfig, it should be read here.
-  void configStore;
-  const out: PermissionRuleSource[] = [];
-  for (const s of SETTING_SOURCES) out.push(s);
-  return out;
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// settings JSON → rules[]
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * Convert a parsed settings blob into flat `PermissionRule[]`. The
+ * Convert a canonical permission projection into flat `PermissionRule[]`. The
  * `source` field is stamped on every emitted rule so downstream code
- * (e.g. `syncPermissionRulesFromDisk`) knows which disk file the rule
+ * (e.g. `syncPermissionRulesFromConfig`) knows which canonical layer the rule
  * came from.
  */
-export function settingsJsonToRules(
-  json: SettingsJson | null,
+export function permissionSettingsToRules(
+  json: Pick<AgenCConfig, "permissions"> | null,
   source: PermissionRuleSource,
 ): PermissionRule[] {
   if (!json || !json.permissions) return [];
@@ -270,9 +166,9 @@ export function settingsJsonToRules(
 // ─────────────────────────────────────────────────────────────────────
 
 export function shouldAllowManagedPermissionRulesOnly(
-  policySettings: SettingsJson | null | undefined,
+  policySettings: AgenCConfig | null | undefined,
 ): boolean {
-  return policySettings?.permissions?.allowManagedPermissionRulesOnly === true;
+  return policySettings?.allowManagedPermissionRulesOnly === true;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -280,35 +176,96 @@ export function shouldAllowManagedPermissionRulesOnly(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Walk every on-disk settings source in priority order and return a
- * single flat `PermissionRule[]`. When managed-settings has
- * `allowManagedPermissionRulesOnly=true`, only the `policySettings`
- * source is consulted.
+ * Walk every canonical config source in priority order and return a
+ * single flat `PermissionRule[]`. When managed TOML has
+ * `allowManagedPermissionRulesOnly=true`, only `policySettings` may add rules
+ * or directories. Every enabled layer is still scanned for restrictions.
  */
-export async function loadAllPermissionRulesFromDisk(
-  env?: DiskEnv,
-): Promise<PermissionRule[]> {
-  // Pre-load policy so we can honor the managed-only gate.
-  const policyPath = getSettingsFilePathForSource("policySettings", env);
-  const policyJson = policyPath
-    ? await readSettingsFileLenient(policyPath)
-    : null;
+export interface PermissionRulesSnapshot {
+  readonly rules: readonly PermissionRule[];
+  readonly directories: readonly {
+    readonly path: string;
+    readonly source: PermissionRuleSource;
+  }[];
+  readonly managedOnly: boolean;
+  readonly bypassPermissionsModeDisabled: boolean;
+  readonly disableAutoMode: boolean;
+}
 
-  if (shouldAllowManagedPermissionRulesOnly(policyJson)) {
-    return settingsJsonToRules(policyJson, "policySettings");
+/**
+ * Load the complete canonical permission policy once. Consumers that need
+ * both the rules and policy flags must use this snapshot instead of re-reading
+ * individual config sources and deriving a second policy decision.
+ */
+export async function loadPermissionRulesSnapshot(
+  env?: DiskEnv,
+): Promise<PermissionRulesSnapshot> {
+  const canonicalEnv = await withCanonicalStore(env);
+  if (canonicalEnv.configStore === undefined) {
+    throw new Error("Canonical ConfigStore is required to load permission policy");
   }
+  return readPermissionRulesSnapshot(canonicalEnv.configStore);
+}
+
+/** Read one already-published ConfigStore generation without yielding. */
+export function readPermissionRulesSnapshot(
+  configStore: ConfigStoreAuthority,
+): PermissionRulesSnapshot {
+  const canonicalEnv: DiskEnv = { configStore };
+  const policyJson = settingsForSource("policySettings", canonicalEnv);
+  const managedOnly = shouldAllowManagedPermissionRulesOnly(policyJson);
+
+  let bypassPermissionsModeDisabled = false;
+  let disableAutoMode = false;
+  const directories = new Map<
+    string,
+    { readonly path: string; readonly source: PermissionRuleSource }
+  >();
+
+  const notePolicyFlags = (json: AgenCConfig | null): void => {
+    bypassPermissionsModeDisabled ||=
+      json?.permissions?.bypassPermissionsMode === "disable";
+    disableAutoMode ||= getAutoModeDisableSetting(json) === "disable";
+  };
+  notePolicyFlags(policyJson);
+
+  const noteDirectories = (
+    json: AgenCConfig | null,
+    source: PermissionRuleSource,
+  ): void => {
+    if (source === "projectSettings" || source === "localSettings") return;
+    for (const path of json?.permissions?.additionalDirectories ?? []) {
+      if (typeof path === "string" && path.length > 0) {
+        directories.set(path, Object.freeze({ path, source }));
+      }
+    }
+  };
 
   const rules: PermissionRule[] = [];
-  for (const source of getEnabledSettingSources(env?.configStore)) {
-    const path = getSettingsFilePathForSource(source, env);
-    if (!path) continue;
+  for (const source of getCanonicalEnabledSettingSources()) {
     const json =
       source === "policySettings"
         ? policyJson
-        : await readSettingsFileLenient(path);
-    rules.push(...settingsJsonToRules(json, source));
+        : settingsForSource(source, canonicalEnv);
+    if (json === null) continue;
+    notePolicyFlags(json);
+    if (managedOnly && source !== "policySettings") continue;
+    noteDirectories(json, source);
+    rules.push(...permissionSettingsToRules(json, source));
   }
-  return rules;
+  return {
+    rules,
+    directories: Object.freeze([...directories.values()]),
+    managedOnly,
+    bypassPermissionsModeDisabled,
+    disableAutoMode,
+  };
+}
+
+export async function loadAllPermissionRulesFromConfig(
+  env?: DiskEnv,
+): Promise<PermissionRule[]> {
+  return [...(await loadPermissionRulesSnapshot(env)).rules];
 }
 
 export function filterRepositoryControlledPermissionGrants(
@@ -321,18 +278,6 @@ export function filterRepositoryControlledPermissionGrants(
   );
 }
 
-/**
- * @deprecated Project path trust never turns repository settings into an
- * authority channel. Kept as a source-compatible alias for callers migrating
- * from the old path-trust policy.
- */
-export function filterRulesForProjectTrust(
-  rules: readonly PermissionRule[],
-  _projectTrust?: "trusted" | "untrusted",
-): PermissionRule[] {
-  return filterRepositoryControlledPermissionGrants(rules);
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // Sync (replacement-on-change)
 // ─────────────────────────────────────────────────────────────────────
@@ -340,17 +285,37 @@ export function filterRulesForProjectTrust(
 /**
  * Re-read every disk-origin source and replace (not merge) the
  * context's rules for that source. Without this, deleting a rule
- * from a settings file would leave the rule orphaned in memory
+ * from config.toml would leave the rule orphaned in memory
  * because `convertRulesToUpdates` only produces replaceRules for
  * source×behavior pairs that have rules.
  */
-export async function syncPermissionRulesFromDisk(
+export async function syncPermissionRulesFromConfig(
   ctx: ToolPermissionContext,
   env?: DiskEnv,
 ): Promise<ToolPermissionContext> {
-  let out = ctx;
+  return applyPermissionRulesSnapshot(
+    ctx,
+    await loadPermissionRulesSnapshot(env),
+  );
+}
+
+/**
+ * Apply a previously loaded snapshot to the current context. This pure half of
+ * the reload operation lets UI subscribers perform I/O before entering a
+ * state-updater callback, then apply the result to the freshest state rather
+ * than overwriting a concurrent mode change with a stale context.
+ */
+export function applyPermissionRulesSnapshot(
+  ctx: ToolPermissionContext,
+  snapshot: PermissionRulesSnapshot,
+): ToolPermissionContext {
+  // The auto-mode stash is part of the effective allow-rule set. Restore it
+  // before source replacement so deleted sources and managed-only filtering
+  // remove stashed rules through the same path as live rules. If auto remains
+  // active, the final canonical rule set is stripped again below.
+  let out = restoreDangerousPermissions(ctx);
   const rules = filterRepositoryControlledPermissionGrants(
-    await loadAllPermissionRulesFromDisk(env),
+    snapshot.rules,
   );
 
   // Clear the three editable disk-origin sources before re-apply so
@@ -360,6 +325,13 @@ export async function syncPermissionRulesFromDisk(
   // them via a direct rule-bucket scrub below instead.
   for (const source of EDITABLE_SOURCES) {
     out = clearAllRulesFromSource(out, source);
+  }
+
+  if (snapshot.managedOnly) {
+    // Managed-only means policy is the sole rule authority. Session/CLI rule
+    // buckets must not survive a settings reload and silently bypass policy.
+    out = clearAllRulesFromSource(out, "cliArg");
+    out = clearAllRulesFromSource(out, "session");
   }
 
   // Scrub policySettings + flagSettings rule buckets directly so a
@@ -374,19 +346,192 @@ export async function syncPermissionRulesFromDisk(
 
   // Re-apply the freshly-loaded rules.
   out = applyPermissionRulesToPermissionContext(out, rules);
-  return out;
+
+  // Replace directory grants with the same source-aware snapshot. Repository
+  // layers may restrict execution but cannot grant new filesystem roots.
+  const clearedDirectorySources = new Set<PermissionRuleSource>([
+    ...SETTING_SOURCES,
+    ...(snapshot.managedOnly
+      ? (["cliArg", "session"] as const)
+      : []),
+  ]);
+  const additionalWorkingDirectories = new Map(
+    [...out.additionalWorkingDirectories].filter(
+      ([, entry]) => !clearedDirectorySources.has(entry.source),
+    ),
+  );
+  for (const directory of snapshot.directories) {
+    additionalWorkingDirectories.set(directory.path, directory);
+  }
+  const withDirectories = {
+    ...out,
+    additionalWorkingDirectories,
+  } as ToolPermissionContext;
+  const withBypassPolicy =
+    snapshot.bypassPermissionsModeDisabled
+      ? createDisabledBypassPermissionsContext(withDirectories)
+      : {
+          ...withDirectories,
+          bypassPermissionsModeDisabledByPolicy: false,
+        };
+  const withCurrentAutoRules =
+    !snapshot.disableAutoMode &&
+    (withBypassPolicy.mode === "auto" ||
+      (withBypassPolicy.mode === "plan" &&
+        withBypassPolicy.autoModeActive === true))
+      ? {
+          ...stripDangerousPermissionsForAutoMode(withBypassPolicy),
+          autoModeActive: true,
+        }
+      : withBypassPolicy;
+  const canonical = immutableToolPermissionContext(
+    snapshot.disableAutoMode
+      ? createDisabledAutoModeContext(withCurrentAutoRules)
+      : withCurrentAutoRules,
+  ) as ToolPermissionContext;
+  return snapshot.disableAutoMode
+    ? canonical
+    : transitionPlanAutoMode(canonical);
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Atomic write
+// Canonical persistence
 // ─────────────────────────────────────────────────────────────────────
 
-function writeJsonAtomic(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp-${process.pid}`;
-  const text = `${JSON.stringify(value, null, 2)}\n`;
-  writeFileSync(tmp, text, { encoding: "utf8", mode: 0o600 });
-  renameSync(tmp, path);
+function editableDestination(
+  destination: PermissionUpdate["destination"],
+): destination is EditablePermissionRuleSource {
+  return (EDITABLE_SOURCES as readonly string[]).includes(destination);
+}
+
+/**
+ * Sole disk-persistence entrypoint for permission updates. In-memory-only
+ * destinations are treated as successful no-ops. Repository-controlled
+ * settings may tighten policy (deny/ask/remove), but cannot create durable
+ * capabilities (allow/default-mode/additional-directory).
+ */
+export async function persistPermissionUpdateToConfig(
+  update: PermissionUpdate,
+  env?: DiskEnv,
+): Promise<boolean> {
+  if (update.type === "setMode" && update.mode === "bypassPermissions") {
+    return false;
+  }
+  if (!editableDestination(update.destination)) return true;
+
+  const repositoryControlled =
+    update.destination === "projectSettings" ||
+    update.destination === "localSettings";
+  const createsCapability =
+    update.type === "setMode" ||
+    update.type === "addDirectories" ||
+    ((update.type === "addRules" || update.type === "replaceRules") &&
+      update.behavior === "allow");
+  if (repositoryControlled && createsCapability) return false;
+
+  const canonicalEnv = await withCanonicalStore(env);
+  const policyJson = settingsForSource("policySettings", canonicalEnv);
+  if (shouldAllowManagedPermissionRulesOnly(policyJson)) return false;
+
+  const current = settingsForSource(update.destination, canonicalEnv) ?? {};
+  const permissions = current.permissions ?? {};
+  let nextPermissions: PermissionsConfig;
+  let changed = false;
+
+  const normalizeRule = (raw: string): string => {
+    const parsed = parseRuleString(raw);
+    return parsed ? serializeRuleValue(parsed) : raw;
+  };
+
+  switch (update.type) {
+    case "addRules": {
+      if (update.rules.length === 0) return true;
+      const existing = permissions[update.behavior] ?? [];
+      const normalizedExisting = new Set(existing.map(normalizeRule));
+      const additions = update.rules
+        .map(serializeRuleValue)
+        .filter((rule) => !normalizedExisting.has(rule));
+      if (additions.length === 0) return true;
+      nextPermissions = {
+        ...permissions,
+        [update.behavior]: [...existing, ...additions],
+      };
+      changed = true;
+      break;
+    }
+    case "removeRules": {
+      const existing = permissions[update.behavior] ?? [];
+      const removals = new Set(update.rules.map(serializeRuleValue));
+      const filtered = existing.filter(
+        (rule) => !removals.has(normalizeRule(rule)),
+      );
+      if (filtered.length === existing.length) return false;
+      nextPermissions = {
+        ...permissions,
+        [update.behavior]: filtered,
+      };
+      changed = true;
+      break;
+    }
+    case "replaceRules": {
+      const replacements = update.rules.map(serializeRuleValue);
+      const existing = permissions[update.behavior] ?? [];
+      if (
+        existing.length === replacements.length &&
+        existing.every((rule, index) =>
+          normalizeRule(rule) === replacements[index]
+        )
+      ) {
+        return true;
+      }
+      nextPermissions = {
+        ...permissions,
+        [update.behavior]: replacements,
+      };
+      changed = true;
+      break;
+    }
+    case "addDirectories": {
+      const existing = permissions.additionalDirectories ?? [];
+      const known = new Set(existing);
+      const additions = update.directories.filter((dir) => !known.has(dir));
+      if (additions.length === 0) return true;
+      nextPermissions = {
+        ...permissions,
+        additionalDirectories: [...existing, ...additions],
+      };
+      changed = true;
+      break;
+    }
+    case "removeDirectories": {
+      const existing = permissions.additionalDirectories ?? [];
+      const removals = new Set(update.directories);
+      const filtered = existing.filter((dir) => !removals.has(dir));
+      if (filtered.length === existing.length) return false;
+      nextPermissions = {
+        ...permissions,
+        additionalDirectories: filtered,
+      };
+      changed = true;
+      break;
+    }
+    case "setMode": {
+      if (
+        !isUserAddressablePermissionMode(update.mode) ||
+        !isValidPermissionMode(update.mode)
+      ) return false;
+      if (permissions.defaultMode === update.mode) return true;
+      nextPermissions = { ...permissions, defaultMode: update.mode };
+      changed = true;
+      break;
+    }
+  }
+
+  if (!changed) return true;
+  const result = await updateCanonicalSettingsForSource(update.destination, {
+    permissions: nextPermissions,
+  } satisfies Partial<AgenCConfig>, canonicalEnv.configStore);
+  return result.error === null;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -401,58 +546,23 @@ export interface AddPermissionRulesOpts {
 }
 
 /**
- * Persist `rules` to the JSON settings file for `destination`,
+ * Persist `rules` to canonical config.toml for `destination`,
  * deduping against existing entries (roundtrip-normalized). When
  * `allowManagedPermissionRulesOnly` is set, this function is a no-op
  * and returns false.
  */
-export async function addPermissionRulesToSettings(
+export async function addPermissionRulesToConfig(
   opts: AddPermissionRulesOpts,
 ): Promise<boolean> {
-  const { destination, behavior, rules, env } = opts;
-  if (rules.length === 0) return true;
-  if (
-    behavior === "allow" &&
-    (destination === "projectSettings" || destination === "localSettings")
-  ) {
-    // Repository files are mutable inputs, not approval records. Persisting an
-    // allow rule here would let a later checkout edit impersonate the operator.
-    return false;
-  }
-
-  // Policy gate short-circuit.
-  const policyPath = getSettingsFilePathForSource("policySettings", env);
-  const policyJson = policyPath
-    ? await readSettingsFileLenient(policyPath)
-    : null;
-  if (shouldAllowManagedPermissionRulesOnly(policyJson)) return false;
-
-  const path = getSettingsFilePathForSource(destination, env);
-  if (!path) return false;
-
-  const current =
-    (await readSettingsFileLenient(path)) ?? ({} as SettingsJson);
-  const permissions = (current.permissions ?? {}) as SettingsPermissionsBlock;
-  const existingList =
-    (permissions[behavior] as readonly string[] | undefined) ?? [];
-  const ruleStrings = rules.map(serializeRuleValue);
-
-  const normalizedExisting = new Set(
-    existingList.map((raw) => {
-      const parsed = parseRuleString(raw);
-      return parsed ? serializeRuleValue(parsed) : raw;
-    }),
+  return persistPermissionUpdateToConfig(
+    {
+      type: "addRules",
+      destination: opts.destination,
+      behavior: opts.behavior,
+      rules: opts.rules,
+    },
+    opts.env,
   );
-  const additions = ruleStrings.filter((r) => !normalizedExisting.has(r));
-  if (additions.length === 0) return true;
-
-  const nextPermissions: SettingsPermissionsBlock = {
-    ...permissions,
-    [behavior]: [...existingList, ...additions],
-  };
-  const next: SettingsJson = { ...current, permissions: nextPermissions };
-  writeJsonAtomic(path, next);
-  return true;
 }
 
 export interface DeletePermissionRuleOpts {
@@ -464,83 +574,15 @@ export interface DeletePermissionRuleOpts {
 export async function deletePermissionRule(
   opts: DeletePermissionRuleOpts,
 ): Promise<boolean> {
-  const { destination, rule, env } = opts;
-  const path = getSettingsFilePathForSource(destination, env);
-  if (!path) return false;
-  const current = await readSettingsFileLenient(path);
-  if (!current || !current.permissions) return false;
-
-  const list =
-    (current.permissions[rule.ruleBehavior] as readonly string[] | undefined) ??
-    [];
-  const target = serializeRuleValue(rule.ruleValue);
-
-  const normalizedTarget = target;
-  const filtered = list.filter((raw) => {
-    const parsed = parseRuleString(raw);
-    const normalized = parsed ? serializeRuleValue(parsed) : raw;
-    return normalized !== normalizedTarget;
-  });
-  if (filtered.length === list.length) return false;
-
-  const nextPermissions: SettingsPermissionsBlock = {
-    ...current.permissions,
-    [rule.ruleBehavior]: filtered,
-  };
-  const next: SettingsJson = { ...current, permissions: nextPermissions };
-  writeJsonAtomic(path, next);
-  return true;
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// bypassPermissions consent persistence
-// ─────────────────────────────────────────────────────────────────────
-
-export interface RecordBypassPermissionsAcceptanceOpts {
-  /**
-   * Absolute path to the workspace directory the operator has consented
-   * to activate `bypassPermissions` mode in. Appended (deduped) to the
-   * user settings file's top-level `bypassPermissionsModeAcceptedIn`
-   * array so follow-up sessions opened against the same directory skip
-   * the consent prompt.
-   */
-  readonly workspacePath: string;
-  readonly env?: DiskEnv;
-}
-
-/**
- * Persist explicit operator consent for `bypassPermissions` mode to the
- * user settings file (`~/.agenc/settings.json`). Returns `true` when the
- * file was written (including the no-op case where the workspace was
- * already listed) and `false` when the target path is unavailable. The
- * session-level mirror of this list lives on
- * `ToolPermissionContext.bypassPermissionsAcceptedIn` and is updated by
- * the `/permissions accept-bypass` command separately.
- */
-export async function recordBypassPermissionsAcceptance(
-  opts: RecordBypassPermissionsAcceptanceOpts,
-): Promise<boolean> {
-  const { workspacePath, env } = opts;
-  const path = getSettingsFilePathForSource("userSettings", env);
-  if (!path) return false;
-
-  const current =
-    (await readSettingsFileLenient(path)) ?? ({} as SettingsJson);
-  const existingRaw = (current as { bypassPermissionsModeAcceptedIn?: unknown })
-    .bypassPermissionsModeAcceptedIn;
-  const existing = Array.isArray(existingRaw)
-    ? (existingRaw.filter((v): v is string => typeof v === "string"))
-    : [];
-  if (existing.includes(workspacePath)) {
-    // Already recorded — nothing to write, but still treat as success.
-    return true;
-  }
-  const next: SettingsJson = {
-    ...current,
-    bypassPermissionsModeAcceptedIn: [...existing, workspacePath],
-  } as SettingsJson;
-  writeJsonAtomic(path, next);
-  return true;
+  return persistPermissionUpdateToConfig(
+    {
+      type: "removeRules",
+      destination: opts.destination,
+      behavior: opts.rule.ruleBehavior,
+      rules: [opts.rule.ruleValue],
+    },
+    opts.env,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -553,9 +595,9 @@ export async function recordBypassPermissionsAcceptance(
  * and whitespace-separated values; parentheses are respected so
  * `"Bash(git commit:*), Read"` parses into two rule strings.
  */
-export function parseToolListFromCLI(
+export function parseToolRuleStringsFromCLI(
   tools: readonly string[],
-): PermissionRule[] {
+): string[] {
   if (!tools || tools.length === 0) return [];
   const stringRules: string[] = [];
   for (const toolString of tools) {
@@ -581,9 +623,14 @@ export function parseToolListFromCLI(
     }
     if (current.trim()) stringRules.push(current.trim());
   }
+  return stringRules;
+}
 
+export function parseToolListFromCLI(
+  tools: readonly string[],
+): PermissionRule[] {
   const rules: PermissionRule[] = [];
-  for (const raw of stringRules) {
+  for (const raw of parseToolRuleStringsFromCLI(tools)) {
     const parsed = parseRuleString(raw);
     if (!parsed) continue;
     rules.push({
@@ -615,14 +662,13 @@ export function parseBaseToolsFromCLI(
 export interface InitialPermissionModeInput {
   /** Raw CLI `--permission-mode` value, if present. */
   readonly permissionModeCli?: string;
-  /** `--dangerously-bypass-approvals-and-sandbox` flag (runtime alias
-   * for `--dangerously-skip-permissions`). */
+  /** Canonical `--dangerously-bypass-approvals-and-sandbox` flag. */
   readonly dangerouslySkipPermissions?: boolean;
-  /** Resolved `policySettings` blob (for disableBypassPermissionsMode). */
-  readonly policySettings?: SettingsJson | null;
-  /** Resolved `userSettings.permissions.defaultMode`. */
+  /** Resolved managed policy (for permissions.bypassPermissionsMode). */
+  readonly policySettings?: AgenCConfig | null;
+  /** Resolved user `config.toml` `permissions.defaultMode`. */
   readonly userDefaultMode?: string;
-  /** Effective auto-mode availability after settings resolution. */
+  /** Effective auto-mode availability after config resolution. */
   readonly isAutoModeAvailable?: boolean;
   /** Live circuit-breaker state for auto mode. */
   readonly isAutoModeGateEnabled?: boolean;
@@ -639,7 +685,7 @@ export interface InitialPermissionModeResult {
  *
  *   1. `--dangerously-bypass-approvals-and-sandbox` → bypassPermissions
  *   2. `--permission-mode <mode>`
- *   3. `settings.permissions.defaultMode`
+ *   3. user `config.toml` `permissions.defaultMode`
  *
  * If the resolved mode is `bypassPermissions` and policy disables it,
  * the mode falls back to `"default"` and a `notification` string is
@@ -649,7 +695,7 @@ export function initialPermissionModeFromCLI(
   input: InitialPermissionModeInput,
 ): InitialPermissionModeResult {
   const disableBypass =
-    input.policySettings?.permissions?.disableBypassPermissionsMode ===
+    input.policySettings?.permissions?.bypassPermissionsMode ===
     "disable";
   const autoModeDisabled = input.isAutoModeAvailable === false;
   const autoModeGateEnabled = input.isAutoModeGateEnabled !== false;
@@ -672,11 +718,11 @@ export function initialPermissionModeFromCLI(
   let notification: string | undefined;
   for (const mode of ordered) {
     if (mode === "bypassPermissions" && disableBypass) {
-      notification = "Bypass permissions mode was disabled by settings";
+      notification = "Bypass permissions mode was disabled by configuration";
       continue;
     }
     if (mode === "auto" && autoModeDisabled) {
-      notification = "Auto mode was disabled by settings";
+      notification = "Auto mode was disabled by configuration";
       continue;
     }
     if (mode === "auto" && !autoModeGateEnabled) {
@@ -690,15 +736,11 @@ export function initialPermissionModeFromCLI(
 }
 
 function getAutoModeDisableSetting(
-  json: SettingsJson | null,
-): "disable" | "enable" | null {
+  json: AgenCConfig | null,
+): "disable" | null {
   if (!json) return null;
-  const permissionValue = json.permissions?.disableAutoMode;
-  if (permissionValue === "disable" || permissionValue === "enable") {
-    return permissionValue;
-  }
   const rootValue = json.disableAutoMode;
-  if (rootValue === "disable" || rootValue === "enable") {
+  if (rootValue === "disable") {
     return rootValue;
   }
   return null;
@@ -707,33 +749,32 @@ function getAutoModeDisableSetting(
 async function loadModeSettingsInputs(
   env?: DiskEnv,
 ): Promise<{
-  readonly policySettings: SettingsJson | null;
+  readonly policySettings: AgenCConfig | null;
   readonly defaultMode?: string;
   readonly autoModeDisabled: boolean;
+  readonly bypassPermissionsModePolicy?: "allow" | "disable";
 }> {
-  const sources: readonly PermissionRuleSource[] = [
-    "userSettings",
-    "projectSettings",
-    "localSettings",
-    "flagSettings",
-    "policySettings",
-  ];
-
   let defaultMode: string | undefined;
   let authoritativeAutoModeDisabled = false;
   let repositoryAutoModeRestricted = false;
-  let policySettings: SettingsJson | null = null;
+  let bypassPermissionsModePolicy: "allow" | "disable" | undefined;
+  let policySettings: AgenCConfig | null = null;
 
-  for (const source of sources) {
-    const path = getSettingsFilePathForSource(source, env);
-    if (!path) continue;
-    const json = await readSettingsFileLenient(path);
+  for (const source of getCanonicalEnabledSettingSources()) {
+    const json = settingsForSource(source, env);
     if (json === null) continue;
     if (source === "policySettings") {
       policySettings = json;
     }
     const repositoryControlled =
       source === "projectSettings" || source === "localSettings";
+    if (
+      !repositoryControlled &&
+      (json.permissions?.bypassPermissionsMode === "allow" ||
+        json.permissions?.bypassPermissionsMode === "disable")
+    ) {
+      bypassPermissionsModePolicy = json.permissions.bypassPermissionsMode;
+    }
     if (
       !repositoryControlled &&
       typeof json.permissions?.defaultMode === "string" &&
@@ -758,6 +799,9 @@ async function loadModeSettingsInputs(
     defaultMode,
     autoModeDisabled:
       authoritativeAutoModeDisabled || repositoryAutoModeRestricted,
+    ...(bypassPermissionsModePolicy !== undefined
+      ? { bypassPermissionsModePolicy }
+      : {}),
   };
 }
 
@@ -767,6 +811,8 @@ async function loadModeSettingsInputs(
 
 export interface InitializeToolPermissionContextOpts {
   readonly env?: DiskEnv;
+  /** Immutable provider environment captured at the session ingress. */
+  readonly providerEnvironment?: ProviderEnvironment;
   readonly permissionMode?: PermissionMode;
   readonly allowDangerouslySkipPermissions?: boolean;
   readonly projectTrust?: "trusted" | "untrusted";
@@ -786,17 +832,22 @@ export interface InitializeToolPermissionContextResult {
 }
 
 /**
- * Compose a `ToolPermissionContext` from disk settings + CLI flags.
+ * Compose a `ToolPermissionContext` from canonical config + CLI flags.
  * Pure async: no globals touched, so tests can pass synthetic `env`
  * and `configStore` values.
  */
 export async function initializeToolPermissionContext(
   opts: InitializeToolPermissionContextOpts = {},
 ): Promise<InitializeToolPermissionContextResult> {
+  const canonicalEnv = await withCanonicalStore(opts.env);
   const warnings: string[] = [];
   const untrustedProject = opts.projectTrust === "untrusted";
-  const { policySettings, defaultMode, autoModeDisabled } =
-    await loadModeSettingsInputs(opts.env);
+  const {
+    policySettings,
+    defaultMode,
+    autoModeDisabled,
+    bypassPermissionsModePolicy,
+  } = await loadModeSettingsInputs(canonicalEnv);
 
   const { mode: resolvedMode, notification } = initialPermissionModeFromCLI({
     permissionModeCli: opts.permissionMode,
@@ -804,7 +855,7 @@ export async function initializeToolPermissionContext(
     policySettings,
     userDefaultMode: defaultMode,
     isAutoModeAvailable: !autoModeDisabled,
-    isAutoModeGateEnabled: isAutoModeGateEnabled(),
+    isAutoModeGateEnabled: isAutoModeGateEnabled(opts.providerEnvironment),
   });
   if (notification) {
     warnings.push(notification);
@@ -824,8 +875,9 @@ export async function initializeToolPermissionContext(
 
   const isBypassPermissionsModeAvailable =
     (effectiveMode === "bypassPermissions" ||
-      opts.allowDangerouslySkipPermissions === true) &&
-    policySettings?.permissions?.disableBypassPermissionsMode !== "disable";
+      opts.allowDangerouslySkipPermissions === true ||
+      bypassPermissionsModePolicy === "allow") &&
+    bypassPermissionsModePolicy !== "disable";
 
   // Parse CLI rule flags.
   const cliAllowRules = parseToolListFromCLI(opts.cliAllows ?? []).map(
@@ -842,8 +894,10 @@ export async function initializeToolPermissionContext(
 
   // Empty starting context.
   let ctx: ToolPermissionContext = createEmptyToolPermissionContext({
-    mode: effectiveMode,
+    mode: "default",
     isBypassPermissionsModeAvailable,
+    bypassPermissionsModeDisabledByPolicy:
+      bypassPermissionsModePolicy === "disable",
     isAutoModeAvailable: !autoModeDisabled,
   });
 
@@ -855,29 +909,34 @@ export async function initializeToolPermissionContext(
     ...cliAskRules,
   ]);
 
-  // Then pull disk rules.
-  const rawDiskRules = await loadAllPermissionRulesFromDisk(opts.env);
-  const diskRules = filterRepositoryControlledPermissionGrants(rawDiskRules);
-  const ignoredGrantCount = rawDiskRules.length - diskRules.length;
+  // Then apply one source-aware canonical snapshot. Reusing the flattened
+  // ConfigStore projection here would erase provenance and could reintroduce
+  // lower-priority grants after a managed-only policy filtered them out.
+  const permissionSnapshot = await loadPermissionRulesSnapshot(canonicalEnv);
+  const canonicalRules = filterRepositoryControlledPermissionGrants(
+    permissionSnapshot.rules,
+  );
+  const ignoredGrantCount =
+    permissionSnapshot.rules.length - canonicalRules.length +
+    (canonicalEnv.configStore?.ignored().filter(
+      (item) =>
+        (item.scope === "project" || item.scope === "local") &&
+        item.key === "permissions.allow",
+    ).length ?? 0);
   if (ignoredGrantCount > 0) {
     warnings.push(
       `Ignored ${ignoredGrantCount} repository-controlled permission allow ${ignoredGrantCount === 1 ? "rule" : "rules"}; project/local settings may restrict but cannot grant capabilities`,
     );
   }
-  ctx = applyPermissionRulesToPermissionContext(ctx, diskRules);
-
-  // Apply the config snapshot's permissions overlay after disk rules. The
-  // ConfigStore block is transient for this session, so it uses the
-  // session source instead of pretending to be an on-disk settings file.
-  ctx = applyToolApprovalConfigToPermissionContext(
-    ctx,
-    opts.env?.configStore?.current().permissions,
-    "session",
-  );
+  ctx = applyPermissionRulesSnapshot(ctx, permissionSnapshot);
 
   // Add --add-dir directories.
-  if (opts.addDirs && opts.addDirs.length > 0) {
-    const cwd = opts.env?.cwd ?? process.cwd();
+  if (permissionSnapshot.managedOnly && (opts.addDirs?.length ?? 0) > 0) {
+    warnings.push(
+      "Ignored --add-dir because managed policy allows only managed permission rules",
+    );
+  } else if (opts.addDirs && opts.addDirs.length > 0) {
+    const cwd = canonicalEnv.cwd ?? process.cwd();
     const absoluteDirs: string[] = [];
     for (const d of opts.addDirs) {
       const abs = isAbsolute(d) ? d : resolve(cwd, d);
@@ -896,25 +955,80 @@ export async function initializeToolPermissionContext(
     }
   }
 
-  // Merge settings.permissions.additionalDirectories (user settings).
-  const userPath = getSettingsFilePathForSource("userSettings", opts.env);
-  const userJson = userPath ? await readSettingsFileLenient(userPath) : null;
-  const settingsDirs = collectSettingsDirs(userJson);
-  if (settingsDirs.length > 0) {
-    ctx = applyPermissionUpdate(ctx, {
-      type: "addDirectories",
-      destination: "userSettings",
-      directories: settingsDirs,
-    });
+  // Bind durable consent during every trusted initialization, even when the
+  // session starts in default mode. A later default -> bypass transition must
+  // use the exact-cwd consent restored at startup rather than requiring the
+  // operator to accept again after each process restart.
+  let canonicalCwd: ReturnType<typeof canonicalizeBypassPermissionsCwd> |
+    undefined;
+  try {
+    canonicalCwd = canonicalizeBypassPermissionsCwd(
+      canonicalEnv.cwd ?? process.cwd(),
+    );
+    if (ctx.bypassPermissionsModeDisabledByPolicy !== true) {
+      const explicitStartupBypass =
+        effectiveMode === "bypassPermissions" &&
+        (opts.allowDangerouslySkipPermissions === true ||
+          opts.permissionMode === "bypassPermissions");
+      if (explicitStartupBypass) {
+        ctx = authorizeBypassPermissionsConsent(ctx, canonicalCwd);
+      } else if (
+        !untrustedProject &&
+        canonicalEnv.configStore !== undefined
+      ) {
+        for (const acceptedCwd of loadBypassPermissionsConsent(
+          canonicalEnv.configStore.stateRepository,
+          canonicalCwd,
+          { reload: true },
+        )) {
+          ctx = authorizeBypassPermissionsConsent(ctx, acceptedCwd);
+        }
+      }
+    }
+  } catch {
+    if (effectiveMode === "bypassPermissions") {
+      effectiveMode = "default";
+    }
   }
 
-  return { toolPermissionContext: ctx, warnings };
-}
+  // Rules and restored consent must exist before the mode transition. In
+  // particular, entering auto strips dangerous allow rules into the canonical
+  // restoration stash; constructing an auto context first would let those
+  // grants pre-empt the classifier while leaving autoModeActive false.
+  if (effectiveMode === "bypassPermissions") {
+    if (canonicalCwd === undefined) {
+      effectiveMode = "default";
+    } else {
+      try {
+        const transitioned = transitionPermissionMode(
+          ctx.mode,
+          effectiveMode,
+          ctx,
+          { workspacePath: canonicalCwd },
+        );
+        if ("error" in transitioned) {
+          effectiveMode = "default";
+        } else {
+          ctx = { ...transitioned, mode: effectiveMode };
+        }
+      } catch {
+        effectiveMode = "default";
+      }
+    }
+  }
+  if (effectiveMode !== "bypassPermissions") {
+    const transitioned = transitionPermissionMode(
+      ctx.mode,
+      effectiveMode,
+      ctx,
+    );
+    ctx = { ...transitioned, mode: effectiveMode };
+  }
 
-function collectSettingsDirs(json: SettingsJson | null): string[] {
-  const list = json?.permissions?.additionalDirectories;
-  if (!Array.isArray(list)) return [];
-  return list.filter((d): d is string => typeof d === "string" && d.length > 0);
+  return {
+    toolPermissionContext: immutableToolPermissionContext(ctx),
+    warnings,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -922,7 +1036,7 @@ function collectSettingsDirs(json: SettingsJson | null): string[] {
 // ─────────────────────────────────────────────────────────────────────
 
 export function getConfigFromStore(
-  configStore?: ConfigStore,
+  configStore?: ConfigStoreAuthority,
 ): AgenCConfig | null {
   return configStore ? configStore.current() : null;
 }

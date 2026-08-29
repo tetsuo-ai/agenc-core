@@ -3,8 +3,9 @@
 The first-run model-access step can sign you into xAI directly; choose
 **Sign in with X / xAI** without entering a slash command. The same flow is
 available later through `/grok-login`. It uses an eligible **SuperGrok or
-X Premium subscription** for Grok inference — including `grok-4.5` — instead
-of a metered `XAI_API_KEY`.
+X Premium subscription** for Grok inference, including `grok-4.6`, instead
+of a metered `XAI_API_KEY`. There is no `agenc grok-login` CLI; use the TUI
+`/grok-login` or `/grok-login device`.
 
 ## Usage
 
@@ -26,15 +27,19 @@ request carries `referrer=agenc` so xAI can attribute usage (their request).
 
 ## How it interacts with API keys
 
-- `/grok-login` OAuth **always wins** over `XAI_API_KEY` / `GROK_API_KEY` /
-  `AGENC_XAI_API_KEY`. While a stored OAuth token is present, leftover env
+- `/grok-login` OAuth **always wins** over `XAI_API_KEY` / `GROK_API_KEY`.
+  While a stored OAuth token is present, leftover env
   API keys are **ignored** for Grok inference.
 - Env BYOK applies only when no OAuth token is available (never signed in, or
   after `/grok-logout`). Credential order is then:
-  explicit session key → `XAI_API_KEY` → `GROK_API_KEY` → `AGENC_XAI_API_KEY`.
-- Tokens are stored in AgenC secure storage (OS keychain / libsecret, with
-  the usual plaintext fallback), refresh automatically (~6 h access tokens,
-  rotating refresh tokens), and recover transparently on 401.
+  explicit session key → `XAI_API_KEY` → `GROK_API_KEY`.
+- Tokens are stored in native secure storage (macOS Keychain, Linux Secret
+  Service, or a DPAPI-protected file under `AGENC_HOME` on Windows; no
+  plaintext fallback). Tokens refresh automatically (~6 h access tokens with
+  rotating refresh tokens). xAI expired bearers are often **403**; refresh
+  runs on 401 and 403 (two attempts). Admitted turns do not in-band retry:
+  they pre-flight refresh if the stored token is near expiry. Transient
+  refresh failure does not force `/grok-login`.
 - The OAuth bearer is only ever sent to `api.x.ai` / `*.grok.com`. A custom
   grok base-URL override refuses to start in OAuth mode — set a real API
   key (and no OAuth token) to use gateways.

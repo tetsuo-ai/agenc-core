@@ -6,7 +6,7 @@
  * the user pastes via a path that strips the `\x1b[200~` / `\x1b[201~`
  * markers, raw bytes land in the composer as if the user had typed them
  * one character at a time. If the user then submits in bash mode (`! …`)
- * or in `--yolo` mode, the pasted content executes without any rate or
+ * or in `--dangerously-bypass-approvals-and-sandbox` mode, the pasted content executes without any rate or
  * intent guard.
  *
  * This detector tracks recent byte arrivals in a small sliding window.

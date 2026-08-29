@@ -13,6 +13,7 @@ import type { RouterResponseItem } from "./router.js";
 import type { ToolInvocation, ToolName } from "./context.js";
 import type { Tool } from "./types.js";
 import { EventLog } from "../session/event-log.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import type { GuardianApprovalReviewOptions } from "../permissions/guardian/reviewer.js";
 import { buildGuardianApprovalRequest } from "../permissions/guardian/approval-request.js";
 import {
@@ -22,6 +23,7 @@ import {
 
 const coherenceTemporaryPaths: string[] = [];
 const originalAgencHome = process.env.AGENC_HOME;
+const TEST_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
 
 afterEach(async () => {
   if (originalAgencHome === undefined) delete process.env.AGENC_HOME;
@@ -98,7 +100,7 @@ const jsReplTool: Tool = {
 function makeInvocation(toolName: ToolName, callId = "c0"): ToolInvocation {
   return {
     session: {
-      services: { admissionRequired: false },
+      services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
     } as ToolInvocation["session"],
     turn: {} as ToolInvocation["turn"],
     tracker: {
@@ -139,7 +141,7 @@ describe("ToolRouter", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
           cwd: workspaceRoot,
         } as never,
         turn: { subId: "turn-editor-external", cwd: workspaceRoot } as never,
@@ -193,7 +195,7 @@ describe("ToolRouter", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
           cwd: workspaceRoot,
         } as never,
         turn: { subId: "turn-editor-write", cwd: workspaceRoot } as never,
@@ -273,7 +275,7 @@ describe("ToolRouter", () => {
     ]);
     const session = {
       eventLog: new EventLog(),
-      services: { admissionRequired: false },
+      services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
       currentRootHumanTurn: () => ({
         turnId: "turn-ledger",
         text: "@LEDGER send exactly 1 lamport",
@@ -328,7 +330,7 @@ describe("ToolRouter", () => {
     expect(router.findSpec("unknown")).toBeUndefined();
   });
 
-  test("dispatchModelToolCall routes legacy Read calls to FileRead", async () => {
+  test("dispatchModelToolCall rejects removed Read alias", async () => {
     const execute = vi.fn(async (args: Record<string, unknown>) => ({
       content: `read ${String(args.file_path)}`,
     }));
@@ -348,7 +350,7 @@ describe("ToolRouter", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: { subId: "turn-read-alias" } as never,
         tracker: {
@@ -361,11 +363,11 @@ describe("ToolRouter", () => {
       },
     );
 
-    expect(result.isError).toBeFalsy();
-    expect(result.content).toBe("read main.c");
-    expect(execute).toHaveBeenCalledWith(
-      expect.objectContaining({ file_path: "main.c" }),
-    );
+    expect(result).toEqual({
+      content: JSON.stringify({ error: "unknown tool: Read" }),
+      isError: true,
+    });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   test("dispatchModelToolCall strips model-supplied __agenc* keys before tool.execute", async () => {
@@ -397,7 +399,7 @@ describe("ToolRouter", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: { subId: "turn-injection" } as never,
         tracker: {
@@ -827,7 +829,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       ...makeInvocation({ name: "Write" }, "direct-approval"),
       session: {
         eventLog: new EventLog(),
-        services: { admissionRequired: false },
+        services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
       } as never,
       turn: {
         subId: "turn-direct-approval",
@@ -958,7 +960,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       ...makeInvocation({ name: "Write" }, "direct-ask"),
       session: {
         eventLog: new EventLog(),
-        services: { admissionRequired: false },
+        services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
       } as never,
       turn: {
         subId: "turn-direct-ask",
@@ -1014,7 +1016,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: { subId: "turn-approval-1" } as never,
         tracker: {
@@ -1078,7 +1080,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: {
           subId: "turn-evaluator-ask",
@@ -1146,7 +1148,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: {
           subId: "turn-guardian-denied",
@@ -1231,7 +1233,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: {
           subId: "turn-guardian-network-interfaces",
@@ -1318,7 +1320,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: {
           subId: "turn-hook-ask",
@@ -1383,7 +1385,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: {
           subId: "turn-model-bigint-rewrite",
@@ -1438,7 +1440,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
         session: {
           conversationId: "session_router",
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: { subId: "turn-denied" } as never,
         tracker: {
@@ -1507,7 +1509,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
         session: {
           conversationId: "session_router",
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: { subId: "turn-auto-approved" } as never,
         tracker: {
@@ -1566,7 +1568,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
         session: {
           conversationId: "session_router",
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: { subId: "turn-forbidden" } as never,
         tracker: {

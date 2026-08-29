@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import Database from "better-sqlite3";
@@ -42,6 +42,12 @@ import {
 } from "./recovery-journal-contract.js";
 
 const RECOVERY_IDENTITY_CACHE_KIB = 1_024;
+/**
+ * Recovery validation is daemon-owned work rather than session scratch state.
+ * Capture its process-global root once so a client-scoped temporary-directory
+ * selection cannot redirect another recovery run.
+ */
+const DAEMON_GLOBAL_RECOVERY_TEMP_ROOT = resolve(tmpdir());
 const recoveryFailureSources = new WeakMap<object, string>();
 
 export interface RecoveryFileLimits {
@@ -227,7 +233,10 @@ export function withPinnedCanonicalJournalRun<T>(
           budget,
           limits,
           options.createIdentityRegistry ??
-            (() => new DiskCanonicalIdentityRegistry()),
+            (() =>
+              new DiskCanonicalIdentityRegistry(
+                DAEMON_GLOBAL_RECOVERY_TEMP_ROOT,
+              )),
         );
         const result = operation(prepared.map(({ replay }) => replay));
         for (const journal of prepared) {
@@ -1009,24 +1018,53 @@ export class DiskCanonicalIdentityRegistry implements RecoveryRunIdentityRegistr
   readonly #insert: BetterSqlite3.Statement<[number, string]>;
   #closed = false;
 
-  constructor() {
-    this.#directory = mkdtempSync(join(tmpdir(), "agenc-recovery-identities-"));
-    const databasePath = join(this.#directory, "identities.sqlite");
-    this.#database = new Database(databasePath);
-    this.#database.pragma("journal_mode = OFF");
-    this.#database.pragma("synchronous = OFF");
-    this.#database.pragma(`cache_size = -${RECOVERY_IDENTITY_CACHE_KIB}`);
-    this.#database.exec(
-      `CREATE TABLE identities (
-         kind INTEGER NOT NULL,
-         identity TEXT NOT NULL,
-         PRIMARY KEY (kind, identity)
-       ) WITHOUT ROWID;
-       BEGIN`,
+  constructor(temporaryRoot: string) {
+    mkdirSync(temporaryRoot, { recursive: true, mode: 0o700 });
+    const directory = mkdtempSync(
+      join(temporaryRoot, "agenc-recovery-identities-"),
     );
-    this.#insert = this.#database.prepare(
-      "INSERT OR IGNORE INTO identities (kind, identity) VALUES (?, ?)",
-    );
+    let database: BetterSqlite3.Database | undefined;
+    try {
+      database = new Database(join(directory, "identities.sqlite"));
+      database.pragma("journal_mode = OFF");
+      database.pragma("synchronous = OFF");
+      database.pragma(`cache_size = -${RECOVERY_IDENTITY_CACHE_KIB}`);
+      database.exec(
+        `CREATE TABLE identities (
+           kind INTEGER NOT NULL,
+           identity TEXT NOT NULL,
+           PRIMARY KEY (kind, identity)
+         ) WITHOUT ROWID;
+         BEGIN`,
+      );
+      const insert = database.prepare<[number, string]>(
+        "INSERT OR IGNORE INTO identities (kind, identity) VALUES (?, ?)",
+      );
+      this.#directory = directory;
+      this.#database = database;
+      this.#insert = insert;
+    } catch (initializationError) {
+      const cleanupFailures: unknown[] = [];
+      if (database !== undefined) {
+        try {
+          database.close();
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
+      }
+      try {
+        rmSync(directory, { recursive: true, force: true });
+      } catch (error) {
+        cleanupFailures.push(error);
+      }
+      if (cleanupFailures.length > 0) {
+        throw new AggregateError(
+          [initializationError, ...cleanupFailures],
+          "recovery identity registry initialization cleanup failed",
+        );
+      }
+      throw initializationError;
+    }
   }
 
   claimEventId(eventId: string): boolean {

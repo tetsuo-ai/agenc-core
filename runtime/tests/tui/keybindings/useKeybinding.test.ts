@@ -4,7 +4,12 @@ import { parseBindings } from "./parser.js";
 import { DEFAULT_BINDINGS } from "./defaultBindings.js";
 import { getBindingDisplayText, resolveKeyWithChordState } from "./resolver.js";
 import type { Key } from "../ink.js";
-import type { KeybindingContextName, ParsedKeystroke } from "./types.js";
+import {
+  KEYBINDING_ACTION_NAMES,
+  KEYBINDING_CONTEXT_NAMES,
+  type KeybindingContextName,
+  type ParsedKeystroke,
+} from "./types.js";
 
 vi.mock("../ink.js", () => ({
   useInput: () => {},
@@ -58,7 +63,6 @@ const MENU_CONTEXTS = new Set<KeybindingContextName>([
   "MessageSelector",
   "MessageActions",
   "DiffDialog",
-  "ModelPicker",
   "Select",
   "Plugin",
 ]);
@@ -133,6 +137,22 @@ function eventForStroke(stroke: ParsedKeystroke): {
 }
 
 describe("useKeybinding exports and resolver contract", () => {
+  test("does not expose retired picker or fast-mode bindings", () => {
+    expect(KEYBINDING_CONTEXT_NAMES).not.toContain("ModelPicker");
+    expect(KEYBINDING_ACTION_NAMES).not.toContain("chat:fastMode");
+    expect(KEYBINDING_ACTION_NAMES).not.toContain(
+      "modelPicker:decreaseEffort",
+    );
+    expect(KEYBINDING_ACTION_NAMES).not.toContain(
+      "modelPicker:increaseEffort",
+    );
+
+    const defaults = JSON.stringify(DEFAULT_BINDINGS);
+    expect(defaults).not.toContain("ModelPicker");
+    expect(defaults).not.toContain("chat:fastMode");
+    expect(defaults).not.toContain("modelPicker:");
+  });
+
   test("exports singular and aggregate hooks from the canonical module", async () => {
     const { useKeybinding, useKeybindings } =
       await import("./useKeybinding.js");

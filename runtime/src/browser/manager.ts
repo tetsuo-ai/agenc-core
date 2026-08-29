@@ -14,7 +14,6 @@
 
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import type { ChildProcess } from "node:child_process";
 import {
   BrowserLaunchCleanupError,
@@ -31,6 +30,7 @@ import {
   signalProcessTree,
   terminateProcessTreeAndWait,
 } from "../utils/supervisedProcess.js";
+import { resolveSessionTempRoot } from "../session/runtime-options.js";
 
 const IDLE_SHUTDOWN_MS = 5 * 60 * 1000;
 const MAX_TABS = 8;
@@ -128,7 +128,9 @@ export class BrowserManager {
     // processes would silently collapse their authority boundary.
     if ((this.#options.sandboxExecutionBroker?.forkDepth ?? 0) > 0) {
       if (this.#tempProfileDir === undefined) {
-        this.#tempProfileDir = mkdtempSync(join(tmpdir(), "agenc-browser-child-"));
+        this.#tempProfileDir = mkdtempSync(
+          join(resolveSessionTempRoot(), "agenc-browser-child-"),
+        );
       }
       return this.#tempProfileDir;
     }
@@ -143,7 +145,9 @@ export class BrowserManager {
       return dir;
     }
     if (this.#tempProfileDir === undefined) {
-      this.#tempProfileDir = mkdtempSync(join(tmpdir(), "agenc-browser-"));
+      this.#tempProfileDir = mkdtempSync(
+        join(resolveSessionTempRoot(), "agenc-browser-"),
+      );
     }
     return this.#tempProfileDir;
   }

@@ -8,10 +8,14 @@ import {
 } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { resolveHomeContext } from "../config/home.js";
 import { asRecord } from "../utils/record.js";
 import { nonEmptyString } from "../utils/stringUtils.js";
+import { getAgenCHomeDir } from "../utils/envUtils.js";
 
-type EnvLike = Pick<NodeJS.ProcessEnv, "AGENC_HOME" | "HOME" | "USERPROFILE">;
+type EnvLike = Partial<
+  Pick<NodeJS.ProcessEnv, "AGENC_HOME" | "HOME" | "USERPROFILE">
+>;
 
 export interface PlanFileContext {
   readonly agencHome?: string;
@@ -55,15 +59,20 @@ const nouns = [
 const planSlugs = new Map<string, string>();
 
 function resolveAgencHome(ctx: PlanFileContext = {}): string {
-  if (ctx.agencHome && ctx.agencHome.trim().length > 0) {
-    return ctx.agencHome;
+  if (
+    ctx.agencHome === undefined &&
+    ctx.home === undefined &&
+    ctx.env === undefined
+  ) {
+    return getAgenCHomeDir();
   }
-  const env = ctx.env ?? process.env;
-  if (env.AGENC_HOME && env.AGENC_HOME.trim().length > 0) {
-    return env.AGENC_HOME;
-  }
-  const home = ctx.home ?? env.HOME ?? env.USERPROFILE ?? ".";
-  return join(home, ".agenc");
+  const env: EnvLike = ctx.env ?? {};
+  const configured = ctx.agencHome?.trim();
+  const platformHome = ctx.home ?? env.HOME ?? env.USERPROFILE;
+  return resolveHomeContext(
+    configured ? { ...env, AGENC_HOME: configured } : env,
+    platformHome === undefined ? {} : { platformHome },
+  ).path;
 }
 
 export function getPlansDirectory(ctx: PlanFileContext = {}): string {

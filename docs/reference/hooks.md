@@ -60,7 +60,7 @@ Schema-validated command hook (`HookCommand`):
 
 ```toml
 [[hooks.PreToolUse]]
-matcher = "Bash"
+matcher = "system.bash"
 enabled = true
 hooks = [
   { type = "command", command = "/path/to/check-bash.sh", timeout_ms = 5000, statusMessage = "pre-bash hook" },
@@ -70,20 +70,60 @@ hooks = [
 Flattened runtime entries carry `source: "config"`, `sourcePath`, and index
 (`IndividualHookConfig` in `hooks/engine/types.ts`).
 
-### Extended hook kinds (settings / schema package)
+### Skill frontmatter hook kinds
 
-`runtime/src/schemas/hooks.ts` also defines discriminated hook kinds for
-settings-style config: `command`, `prompt`, `http`, `agent` (with optional
-`if` permission-rule filters, timeouts in **seconds**, async flags, etc.).
-That Zod surface is broader than the TOML `validateHooksConfig` command-only
-path. Prefer matching the path you edit (TOML vs settings JSON).
+Skill frontmatter has its own typed metadata surface. Its `hooks:` block is
+validated by `runtime/src/schemas/hooks.ts` and supports `command`, `prompt`,
+`http`, and `agent` hooks, including permission-rule `if` filters, timeouts in
+**seconds**, and kind-specific fields. It does not create another operator
+configuration file.
+
+Canonical `config.toml` and inline plugin-manifest hook declarations both use
+the command-only `validateHooksConfig` path described above. A plugin can also
+ship skill frontmatter; those hooks retain their skill provenance and use the
+skill metadata schema.
 
 ### Security
 
-- Config/plugin **command** hooks run arbitrary shell → require a **trusted**
-  workspace (`isProjectTrustedSync`), unless
-  `AGENC_ALLOW_UNTRUSTED_HOOKS=1|true|yes` (automation opt-in).
-- Secrets redacted in diagnostics where wired (`configured-hooks.ts`).
+Every session has one hook execution policy. The policy checks the captured
+runtime options, project trust, and hook effect before anything runs.
+
+- Internal callback and function hooks use code already loaded by AgenC. They
+  do not require workspace trust.
+- Command, HTTP, prompt, and agent hook effects require a trusted workspace.
+- An operator may set `AGENC_ALLOW_UNTRUSTED_HOOKS=1` at startup to permit
+  command effects in an untrusted workspace. AgenC captures the value once as
+  `runtimeOptions.allowUntrustedHooks`. The capability also covers
+  command-backed `statusLine`, `fileSuggestion`, and `autoFix`. It never
+  permits HTTP, prompt, or agent effects.
+- Pane teammates inherit the captured boolean through the same child runtime
+  projection as shell, temporary-directory, and plugin-storage authority.
+  AgenC does not install it as mutable shared daemon state, so later process
+  environment changes cannot alter a running session.
+- SDK embedders pass the typed capability explicitly after vetting the
+  workspace.
+- AgenC redacts secrets from configured-hook diagnostics where that path is
+  wired (`configured-hooks.ts`).
+
+`--bare` is an immutable, run-owned hard suppression boundary for **every**
+session hook extension point: configured commands, plugin/SDK callbacks,
+prompt/HTTP/agent hooks, tool and permission hooks, lifecycle hooks, async-hook
+responses, and internal post-sampling hooks. Hook registration may still be
+visible for inspection, but no callback, subprocess, request, or background
+hook task is executed for that run.
+
+`--bare` takes precedence over `runtimeOptions.allowUntrustedHooks`. The
+command capability cannot lift hard hook suppression.
+
+This hard state is separate from the mutable session switch:
+
+- `hardSuppressed` comes only from the owning run's captured `simpleMode`.
+- `disabled` is the operator-controlled, durably persisted session switch.
+- `effectiveDisabled` is true when either state is true.
+
+Consequently, `/hooks enable` can clear `disabled` but cannot lift `--bare`.
+Status and mutation responses report why execution remains suppressed instead
+of claiming hooks were enabled.
 
 ### Engine
 
@@ -112,8 +152,12 @@ Plugin hooks merge via `plugins/registration/load-plugin-hooks.ts`.
 ```
 
 - No args / interactive: menu (`hooks-menu.tsx`) when runtime available
-- Against daemon: `test` and `clear-diagnostics` may report deferred;
-  `enable`/`disable` need daemon RPC support
+- Against daemon: `enable`/`disable` use `session.hooks.setDisabled`.
+  `test` and `clear-diagnostics` may still report deferred.
+- A daemon-backed TUI always reads and mutates the daemon-owned runtime, even
+  when its bridge session also contains a local inspection runtime.
+- Under `--bare`, `test` is recorded as skipped and `enable` changes only the
+  mutable switch; the UI continues to report immutable suppression.
 - Description: “Inspect and test AgenC hook configuration”
 
 ---

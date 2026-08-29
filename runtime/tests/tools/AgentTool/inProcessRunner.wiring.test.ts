@@ -28,10 +28,6 @@ vi.mock('../../../src/utils/task/framework.js', () => ({
   evictTerminalTask: vi.fn(),
 }))
 
-vi.mock('../../../src/utils/sdkEventQueue.js', () => ({
-  emitTaskTerminatedSdk: vi.fn(),
-}))
-
 describe('in-process teammate production runner policy wiring', () => {
   it('passes the selected restrictive definition into runAgent', async () => {
     const abortController = new AbortController()

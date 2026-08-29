@@ -132,6 +132,7 @@ async function openRolloutSession(
     cwd: paths.cwd,
     sessionId: RUN_ID,
     agencVersion: "0.6.2",
+    sessionTempRoot: paths.root,
     autoStartScheduler: false,
     ...(options.resume === true ? { resume: true } : {}),
   });
@@ -252,12 +253,14 @@ async function crashModel(paths: FixturePaths): Promise<never> {
     { runAdmittedModelCall },
     { ExecutionAdmissionKernel },
     { bindExecutionAdmissionJournal },
+    { runWithStartupProviderSelection },
   ] =
     await Promise.all([
       openRolloutSession(paths),
       import("../../../src/budget/admitted-model-call.js"),
       import("../../../src/budget/execution-admission-kernel.js"),
       import("../../../src/session/execution-admission-journal.js"),
+      import("../../../src/utils/model/providers.js"),
     ]);
   const kernel = new ExecutionAdmissionKernel({
     agencHome: paths.home,
@@ -288,31 +291,35 @@ async function crashModel(paths: FixturePaths): Promise<never> {
       supportsMaxOutputTokens: true,
     }),
   };
-  await runAdmittedModelCall({
-    session: session as never,
-    provider: provider as never,
-    messages: [{ role: "user", content: "hello" }],
-    options: { maxOutputTokens: 32 },
-    stepId: "model-step",
-    model: "grok-4.5",
-    providerName: "grok",
-    invoke: async () => {
-      appendJsonDurably(paths.modelReceipt, { attempt: 1, response: "ok" });
-      return {
-        content: "ok",
-        toolCalls: [],
+  await runWithStartupProviderSelection(
+    { provider: "grok", model: "grok-4.5", environment: {} },
+    () =>
+      runAdmittedModelCall({
+        session: session as never,
+        provider: provider as never,
+        messages: [{ role: "user", content: "hello" }],
+        options: { maxOutputTokens: 32 },
+        stepId: "model-step",
         model: "grok-4.5",
-        finishReason: "stop",
-        usage: {
-          promptTokens: 8,
-          completionTokens: 4,
-          totalTokens: 12,
-          availability: "reported",
-          provenance: "provider",
+        providerName: "grok",
+        invoke: async () => {
+          appendJsonDurably(paths.modelReceipt, { attempt: 1, response: "ok" });
+          return {
+            content: "ok",
+            toolCalls: [],
+            model: "grok-4.5",
+            finishReason: "stop",
+            usage: {
+              promptTokens: 8,
+              completionTokens: 4,
+              totalTokens: 12,
+              availability: "reported",
+              provenance: "provider",
+            },
+          };
         },
-      };
-    },
-  });
+      }),
+  );
   throw new Error("model failpoint did not terminate the child");
 }
 

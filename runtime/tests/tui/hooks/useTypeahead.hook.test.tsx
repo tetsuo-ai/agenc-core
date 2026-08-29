@@ -3,6 +3,12 @@ import { PassThrough } from "node:stream";
 import React from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
+import { ConfigStore } from "../../config/store.js";
+import {
+  type CanonicalSettingsAuthority,
+  getCanonicalSettingsAuthority,
+} from "../../utils/settings/canonicalAuthority.js";
+
 const harness = vi.hoisted(() => ({
   addNotification: vi.fn(),
   logError: vi.fn(),
@@ -212,6 +218,7 @@ import { KeyboardEvent } from "../ink/events/keyboard-event.js";
 import type { SuggestionItem } from "../components/PromptInput/PromptInputFooterSuggestions.js";
 import type { PromptInputMode } from "../../types/textInputTypes.js";
 import { useTypeahead } from "./useTypeahead.js";
+import { startBackgroundCacheRefresh } from "./fileSuggestions";
 import { generateUnifiedSuggestions } from "./unifiedSuggestions";
 import { getShellCompletions } from "../../utils/bash/shellCompletion.js";
 import {
@@ -234,12 +241,19 @@ type HookSnapshot = ReturnType<typeof useTypeahead> & {
 
 const EMPTY_AGENTS: readonly never[] = [];
 const EMPTY_COMMANDS: readonly never[] = [];
+const EMPTY_RUNTIME_STATE = Object.freeze({});
+const DEFAULT_SETTINGS_AUTHORITY = new ConfigStore({
+  home: "/tmp/agenc-use-typeahead-hook-test",
+});
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 const generateUnifiedSuggestionsMock = vi.mocked(generateUnifiedSuggestions);
+const startBackgroundCacheRefreshMock = vi.mocked(
+  startBackgroundCacheRefresh,
+);
 const getShellCompletionsMock = vi.mocked(getShellCompletions);
 const getShellHistoryCompletionMock = vi.mocked(getShellHistoryCompletion);
 const getDirectoryCompletionsMock = vi.mocked(getDirectoryCompletions);
@@ -303,6 +317,7 @@ function TypeaheadHarness(props: {
     isSubmittingSlashCommand?: boolean,
   ) => void;
   readonly setCursorOffset: (offset: number) => void;
+  readonly settingsAuthority?: CanonicalSettingsAuthority;
   readonly snapshot: (value: HookSnapshot) => void;
 }): React.ReactNode {
   const [suggestionsState, setSuggestionsState] =
@@ -324,6 +339,8 @@ function TypeaheadHarness(props: {
     setCursorOffset: props.setCursorOffset,
     setSuggestionsState,
     suggestionsState,
+    runtimeState: EMPTY_RUNTIME_STATE,
+    settingsAuthority: props.settingsAuthority ?? DEFAULT_SETTINGS_AUTHORITY,
   });
 
   React.useEffect(() => {
@@ -344,6 +361,7 @@ async function renderHookHarness(props: {
     isSubmittingSlashCommand?: boolean,
   ) => void;
   readonly setCursorOffset?: (offset: number) => void;
+  readonly settingsAuthority?: CanonicalSettingsAuthority;
 }): Promise<{
   dispose: () => Promise<void>;
   getSnapshot: () => HookSnapshot;
@@ -424,11 +442,65 @@ describe("useTypeahead hook paths", () => {
   beforeEach(() => {
     harness.reset();
     generateUnifiedSuggestionsMock.mockClear();
+    startBackgroundCacheRefreshMock.mockClear();
     getShellCompletionsMock.mockClear();
     getShellHistoryCompletionMock.mockClear();
     getDirectoryCompletionsMock.mockClear();
     searchSessionsByCustomTitleMock.mockClear();
     getSlackChannelSuggestionsMock.mockClear();
+  });
+
+  test("binds the supplied settings authority for prewarm, debounced, and Tab file suggestions", async () => {
+    const settingsAuthority = new ConfigStore({
+      home: "/tmp/agenc-use-typeahead-bound-authority-test",
+    });
+    const observedAuthorities: Array<CanonicalSettingsAuthority | null> = [];
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    startBackgroundCacheRefreshMock.mockImplementationOnce(() => {
+      observedAuthorities.push(getCanonicalSettingsAuthority());
+    });
+    generateUnifiedSuggestionsMock
+      .mockImplementationOnce(async () => {
+        observedAuthorities.push(getCanonicalSettingsAuthority());
+        return [];
+      })
+      .mockImplementationOnce(async () => {
+        observedAuthorities.push(getCanonicalSettingsAuthority());
+        return [];
+      });
+
+    const rendered = await renderHookHarness({
+      input: "@READ",
+      settingsAuthority,
+    });
+
+    try {
+      await waitFor(
+        () => startBackgroundCacheRefreshMock.mock.calls.length === 1,
+        "authority-bound file index prewarm",
+      );
+      await waitFor(
+        () => generateUnifiedSuggestionsMock.mock.calls.length === 1,
+        "authority-bound debounced file suggestions",
+      );
+
+      rendered.getSnapshot().handleKeyDown(createKey("tab"));
+      await waitFor(
+        () => generateUnifiedSuggestionsMock.mock.calls.length === 2,
+        "authority-bound Tab file suggestions",
+      );
+
+      expect(observedAuthorities).toEqual([
+        settingsAuthority,
+        settingsAuthority,
+        settingsAuthority,
+      ]);
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      await rendered.dispose();
+    }
   });
 
   test("generates slash command suggestions and navigates them with autocomplete keybindings", async () => {

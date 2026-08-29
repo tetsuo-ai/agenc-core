@@ -3,7 +3,6 @@ import type { ContentBlockParam } from '@anthropic-ai/sdk/resources';
 import { randomUUID } from 'crypto';
 import * as React from 'react';
 import { BashModeProgress } from '../components/BashModeProgress.js';
-import { PasteConfirmDialog } from '../components/PasteConfirmDialog.js';
 import type { SetToolJSXFn } from '../../tools/Tool.js';
 import { CanonicalBashTool } from '../../tools/canonicalToolSurface.js';
 import { PowerShellTool } from '../../tools/PowerShellTool/PowerShellTool.js';
@@ -15,7 +14,7 @@ import { resolveDefaultShell } from '../../utils/shell/resolveDefaultShell.js';
 import { isPowerShellToolEnabled } from '../../utils/shell/shellToolUtils.js';
 import { processToolResultBlock } from '../../utils/toolResultStorage.js';
 import { escapeXml } from '../../utils/xml.js';
-import { consumeSuspectedPaste } from './burst-detector.js';
+import { confirmSuspectedShellPaste } from './shell-paste-confirmation.js';
 import type { PromptInputContext } from './inputContext.js';
 
 function canonicalShellOut(data: unknown): {
@@ -42,34 +41,14 @@ function canonicalShellOut(data: unknown): {
   };
 }
 
-function awaitPasteConfirmation(command: string, setToolJSX: SetToolJSXFn): Promise<boolean> {
-  // Render the paste-confirm dialog through setToolJSX (same channel as
-  // BashModeProgress) and resolve when the user picks y or n/Esc.
-  // shouldHidePromptInput keeps composer keystrokes out of the picture so
-  // y/n is not echoed into the next command.
-  return new Promise<boolean>(resolve => {
-    let resolved = false;
-    const decide = (allow: boolean) => {
-      if (resolved) return;
-      resolved = true;
-      resolve(allow);
-    };
-    setToolJSX({
-      jsx: <PasteConfirmDialog command={command} onDecide={decide} />,
-      shouldHidePromptInput: true
-    });
-  });
-}
-
 export async function processBashCommand(inputString: string, precedingInputBlocks: ContentBlockParam[], attachmentMessages: AttachmentMessage[], context: PromptInputContext, setToolJSX: SetToolJSXFn): Promise<{
   messages: (UserMessage | AttachmentMessage | SystemMessage)[];
   shouldQuery: boolean;
 }> {
-  // Shell routing (docs/design/ps-shell-selection.md §5.2): consult
-  // defaultShell, fall back to bash. isPowerShellToolEnabled() applies the
-  // same platform + env-var gate as tools.ts so input-box routing matches
-  // tool-list visibility. Computed up front so telemetry records the
-  // actual shell, not the raw setting.
+  // Input-box shell routing consults defaultShell and falls back to Bash.
+  // isPowerShellToolEnabled() applies the same Windows capability gate as
+  // tools.ts so input-box routing matches tool-list visibility. Computed up
+  // front so telemetry records the actual shell, not the raw setting.
   const usePowerShell = isPowerShellToolEnabled() && resolveDefaultShell() === 'powershell';
   const userMessage = createUserMessage({
     content: prepareUserContent({
@@ -83,17 +62,13 @@ export async function processBashCommand(inputString: string, precedingInputBloc
   // window. A pasted shell command still needs explicit confirmation before
   // it reaches the authenticated sandbox execution boundary. The flag is
   // consumed (one-shot) so the next legitimate submission is not gated.
-  if (consumeSuspectedPaste()) {
-    const allowed = await awaitPasteConfirmation(inputString, setToolJSX);
-    if (!allowed) {
-      setToolJSX(null);
-      return {
-        messages: [createSyntheticUserCaveatMessage(), userMessage, ...attachmentMessages, createUserMessage({
-          content: `<bash-stderr>Bash submission aborted: input looked like a paste and was not confirmed.</bash-stderr>`
-        })],
-        shouldQuery: false
-      };
-    }
+  if (!(await confirmSuspectedShellPaste(inputString, setToolJSX))) {
+    return {
+      messages: [createSyntheticUserCaveatMessage(), userMessage, ...attachmentMessages, createUserMessage({
+        content: `<bash-stderr>Bash submission aborted: input looked like a paste and was not confirmed.</bash-stderr>`
+      })],
+      shouldQuery: false
+    };
   }
 
   // ctrl+b to background indicator

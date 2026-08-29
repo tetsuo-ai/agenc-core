@@ -61,7 +61,15 @@ describe("system.bash workspace-operation containment", () => {
         args: [launcherPath, path],
       }),
     );
-    expect(result.isError, result.content).not.toBe(true);
+    expect(result).toMatchObject({
+      isError: true,
+      metadata: {
+        exitCode: 0,
+        stopReason: "residual_process",
+        timedOut: false,
+      },
+    });
+    expect(result.content).toContain("left a residual process tree");
     await lifetime.release();
     await lifetime.settled();
 

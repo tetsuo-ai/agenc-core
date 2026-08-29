@@ -31,9 +31,10 @@ export function scrubEnvForChildProcess(
  */
 export function buildScrubbedSpawnEnv(
   overrides?: Record<string, string> | undefined,
+  baseEnvironment: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>> = process.env,
 ): Record<string, string> {
   return {
-    ...scrubEnvForChildProcess(process.env),
+    ...scrubEnvForChildProcess(baseEnvironment),
     ...scrubEnvForChildProcess(overrides),
   };
 }

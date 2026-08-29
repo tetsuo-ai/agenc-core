@@ -11,7 +11,7 @@ type SelectOption = {
 
 type SelectProps = {
   onCancel: () => void;
-  onChange: (value: string) => void;
+  onChange: (value: string) => void | Promise<void>;
   options: SelectOption[];
 };
 
@@ -26,10 +26,22 @@ const harness = vi.hoisted(() => ({
   dialogProps: [] as DialogProps[],
   selectProps: [] as SelectProps[],
   updateSettingsForSource: vi.fn(),
+  recordSecurityAcknowledgement: vi.fn(),
 }));
 
 vi.mock("../../../src/utils/settings/settings.js", () => ({
+  getExecutionAuthoritySettings: () => ({}),
   updateSettingsForSource: harness.updateSettingsForSource,
+}));
+
+vi.mock("../../../src/utils/settings/canonicalAuthority.js", () => ({
+  getCanonicalSettingsAuthority: () => ({
+    homeContext: { path: "/agenc-home" },
+  }),
+}));
+
+vi.mock("../../../src/permissions/trust/project-trust.js", () => ({
+  recordSecurityAcknowledgement: harness.recordSecurityAcknowledgement,
 }));
 
 vi.mock("../../../src/tui/components/CustomSelect/select.js", async () => {
@@ -93,6 +105,7 @@ describe("AutoModeOptInDialog coverage swarm row 107", () => {
     harness.dialogProps = [];
     harness.selectProps = [];
     harness.updateSettingsForSource.mockReset();
+    harness.recordSecurityAcknowledgement.mockReset();
   });
 
   test("renders the warning dialog with the default decline label", async () => {
@@ -133,19 +146,18 @@ describe("AutoModeOptInDialog coverage swarm row 107", () => {
     });
   });
 
-  test("accept stores the skip-prompt setting and accepts the dialog", async () => {
+  test("accept records consent in the trust ledger and accepts the dialog", async () => {
     const onAccept = vi.fn();
     const onDecline = vi.fn();
     await renderDialog({ onAccept, onDecline });
 
-    latestSelectProps().onChange("accept");
+    await latestSelectProps().onChange("accept");
 
-    expect(harness.updateSettingsForSource).toHaveBeenCalledWith(
-      "userSettings",
-      {
-        skipAutoPermissionPrompt: true,
-      },
+    expect(harness.recordSecurityAcknowledgement).toHaveBeenCalledWith(
+      "auto-mode-permission-prompt",
+      { agencHome: "/agenc-home" },
     );
+    expect(harness.updateSettingsForSource).not.toHaveBeenCalled();
     expect(onAccept).toHaveBeenCalledOnce();
     expect(onDecline).not.toHaveBeenCalled();
   });
@@ -154,15 +166,18 @@ describe("AutoModeOptInDialog coverage swarm row 107", () => {
     const onAccept = vi.fn();
     await renderDialog({ onAccept });
 
-    latestSelectProps().onChange("accept-default");
+    await latestSelectProps().onChange("accept-default");
 
+    expect(harness.recordSecurityAcknowledgement).toHaveBeenCalledWith(
+      "auto-mode-permission-prompt",
+      { agencHome: "/agenc-home" },
+    );
     expect(harness.updateSettingsForSource).toHaveBeenCalledWith(
       "userSettings",
       {
         permissions: {
           defaultMode: "auto",
         },
-        skipAutoPermissionPrompt: true,
       },
     );
     expect(onAccept).toHaveBeenCalledOnce();
@@ -173,9 +188,10 @@ describe("AutoModeOptInDialog coverage swarm row 107", () => {
     const onDecline = vi.fn();
     await renderDialog({ onAccept, onDecline });
 
-    latestSelectProps().onChange("decline");
+    await latestSelectProps().onChange("decline");
 
     expect(harness.updateSettingsForSource).not.toHaveBeenCalled();
+    expect(harness.recordSecurityAcknowledgement).not.toHaveBeenCalled();
     expect(onAccept).not.toHaveBeenCalled();
     expect(onDecline).toHaveBeenCalledOnce();
   });

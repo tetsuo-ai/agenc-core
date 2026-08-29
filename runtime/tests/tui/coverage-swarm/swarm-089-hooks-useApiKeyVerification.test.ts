@@ -2,48 +2,43 @@ import { PassThrough } from 'node:stream'
 
 import React from 'react'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../remoteAuthSessionContext.fixture.js'
+import { defaultConfig } from '../../../src/config/schema.js'
+
+const TEST_CONFIG = defaultConfig()
 
 const authHarness = vi.hoisted(() => {
   const state = {
     authEnabled: true,
     key: undefined as string | undefined,
-    nonInteractive: false,
     remoteSession: false,
     source: undefined as string | undefined,
     subscriber: false,
+    remoteAuthContexts: [] as unknown[],
   }
 
   return {
     state,
-    getApiKeyFromApiKeyHelper: vi.fn(async () => undefined),
-    getAnthropicApiKeyWithSource: vi.fn(
-      (_options?: { skipRetrievingKeyFromApiKeyHelper?: boolean }) => ({
+    getAnthropicApiKeyWithSource: vi.fn(() => ({
         key: state.key,
         source: state.source,
-      }),
-    ),
+      })),
     reset() {
       state.authEnabled = true
       state.key = undefined
-      state.nonInteractive = false
       state.remoteSession = false
       state.source = undefined
       state.subscriber = false
-      this.getApiKeyFromApiKeyHelper.mockClear()
+      state.remoteAuthContexts = []
       this.getAnthropicApiKeyWithSource.mockClear()
       this.verifyApiKey.mockReset()
-      this.verifyApiKey.mockResolvedValue(true)
+      this.verifyApiKey.mockResolvedValue({ status: 'valid' })
     },
-    verifyApiKey: vi.fn(async () => true),
+    verifyApiKey: vi.fn(async () => ({ status: 'valid' })),
   }
 })
 
-vi.mock('../../../src/bootstrap/state', async importOriginal => ({
-  ...(await importOriginal()),
-  getIsNonInteractiveSession: () => authHarness.state.nonInteractive,
-}))
-
-vi.mock('../../../src/services/api/anthropic', () => ({
+vi.mock('../../../src/onboarding/useApiKeyVerification', () => ({
   verifyApiKey: authHarness.verifyApiKey,
 }))
 
@@ -52,14 +47,17 @@ vi.mock('../../../src/services/api/anthropic', () => ({
 // tests are hermetic against the developer's real ~/.agenc/auth.json.
 vi.mock('../../../src/auth/session-state', async importOriginal => ({
   ...(await importOriginal()),
-  hasRemoteAuthSessionSync: () => authHarness.state.remoteSession,
+  hasRemoteAuthSessionSync: (context: unknown) => {
+    authHarness.state.remoteAuthContexts.push(context)
+    return authHarness.state.remoteSession
+  },
 }))
 
 vi.mock('../../../src/utils/auth.js', () => ({
-  getAnthropicApiKeyWithSource: authHarness.getAnthropicApiKeyWithSource,
-  getApiKeyFromApiKeyHelper: authHarness.getApiKeyFromApiKeyHelper,
-  isAgenCAISubscriber: () => authHarness.state.subscriber,
-  isAnthropicAuthEnabled: () => authHarness.state.authEnabled,
+  getAnthropicApiKeyWithSourceForContext:
+    authHarness.getAnthropicApiKeyWithSource,
+  isAgenCAISubscriberForContext: () => authHarness.state.subscriber,
+  isAnthropicAuthEnabledForContext: () => authHarness.state.authEnabled,
 }))
 
 import { createRoot } from '../../../src/tui/ink/root.js'
@@ -143,7 +141,10 @@ async function renderVerificationHook(): Promise<{
   const snapshots: Snapshot[] = []
 
   function Harness(): null {
-    const result = useApiKeyVerification()
+    const result = useApiKeyVerification(
+      TEST_REMOTE_AUTH_SESSION_CONTEXT,
+      TEST_CONFIG,
+    )
     latest = result
 
     React.useEffect(() => {
@@ -189,6 +190,25 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
     authHarness.reset()
   })
 
+  test('passes the session-owned auth context to every remote-session read', async () => {
+    const rendered = await renderVerificationHook()
+
+    try {
+      await waitForCondition(
+        () => authHarness.state.remoteAuthContexts.length > 0,
+        'Timed out waiting for a remote-session read',
+      )
+
+      expect(
+        authHarness.state.remoteAuthContexts.every(
+          context => context === TEST_REMOTE_AUTH_SESSION_CONTEXT,
+        ),
+      ).toBe(true)
+    } finally {
+      await rendered.cleanup()
+    }
+  })
+
   test.each([
     {
       name: 'disabled auth',
@@ -215,7 +235,6 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
       await rendered.getLatest().reverify()
 
       expect(rendered.getLatest().status).toBe('valid')
-      expect(authHarness.getApiKeyFromApiKeyHelper).not.toHaveBeenCalled()
       expect(authHarness.getAnthropicApiKeyWithSource).not.toHaveBeenCalled()
       expect(authHarness.verifyApiKey).not.toHaveBeenCalled()
     } finally {
@@ -224,15 +243,14 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
   })
 
   test.each([
-    { expectedStatus: 'valid' as const, verifierResult: true },
-    { expectedStatus: 'invalid' as const, verifierResult: false },
+    { expectedStatus: 'valid' as const, verifierStatus: 'valid' as const },
+    { expectedStatus: 'invalid' as const, verifierStatus: 'invalid' as const },
   ])(
     'sets $expectedStatus after rechecking an existing key',
-    async ({ expectedStatus, verifierResult }) => {
+    async ({ expectedStatus, verifierStatus }) => {
       authHarness.state.key = 'sk-ant-test'
-      authHarness.state.nonInteractive = true
       authHarness.state.source = 'environment'
-      authHarness.verifyApiKey.mockResolvedValueOnce(verifierResult)
+      authHarness.verifyApiKey.mockResolvedValueOnce({ status: verifierStatus })
       const rendered = await renderVerificationHook()
 
       try {
@@ -241,11 +259,9 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
           'Timed out waiting for loading initial status',
         )
 
-        expect(
-          authHarness.getAnthropicApiKeyWithSource,
-        ).toHaveBeenCalledWith({
-          skipRetrievingKeyFromApiKeyHelper: true,
-        })
+        expect(authHarness.getAnthropicApiKeyWithSource).toHaveBeenCalledWith(
+          TEST_REMOTE_AUTH_SESSION_CONTEXT,
+        )
 
         await rendered.getLatest().reverify()
 
@@ -254,13 +270,16 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
           `Timed out waiting for ${expectedStatus} status`,
         )
 
-        expect(authHarness.getApiKeyFromApiKeyHelper).toHaveBeenCalledWith(
-          true,
+        expect(authHarness.getAnthropicApiKeyWithSource).toHaveBeenLastCalledWith(
+          TEST_REMOTE_AUTH_SESSION_CONTEXT,
         )
-        expect(authHarness.getAnthropicApiKeyWithSource).toHaveBeenLastCalledWith()
         expect(authHarness.verifyApiKey).toHaveBeenCalledWith(
-          'sk-ant-test',
-          false,
+          {
+            provider: 'anthropic',
+            apiKey: 'sk-ant-test',
+            config: TEST_CONFIG,
+            env: TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
+          },
         )
         expect(rendered.getLatest().error).toBeNull()
       } finally {
@@ -285,8 +304,9 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
         'Timed out waiting for missing reverify status',
       )
 
-      expect(authHarness.getApiKeyFromApiKeyHelper).toHaveBeenCalledWith(false)
-      expect(authHarness.getAnthropicApiKeyWithSource).toHaveBeenLastCalledWith()
+      expect(authHarness.getAnthropicApiKeyWithSource).toHaveBeenLastCalledWith(
+        TEST_REMOTE_AUTH_SESSION_CONTEXT,
+      )
       expect(authHarness.verifyApiKey).not.toHaveBeenCalled()
       expect(rendered.getLatest().error).toBeNull()
     } finally {
@@ -342,8 +362,8 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
   test('keeps the newest verifier result when rechecks resolve out of order', async () => {
     authHarness.state.key = 'sk-ant-test'
     authHarness.state.source = 'environment'
-    const stale = deferred<boolean>()
-    const latest = deferred<boolean>()
+    const stale = deferred<{ status: 'invalid' }>()
+    const latest = deferred<{ status: 'valid' }>()
     authHarness.verifyApiKey
       .mockReturnValueOnce(stale.promise)
       .mockReturnValueOnce(latest.promise)
@@ -366,14 +386,14 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
         'Timed out waiting for second verifier call',
       )
 
-      latest.resolve(true)
+      latest.resolve({ status: 'valid' })
       await latestRun
       await waitForCondition(
         () => rendered.getLatest().status === 'valid',
         'Timed out waiting for latest verifier status',
       )
 
-      stale.resolve(false)
+      stale.resolve({ status: 'invalid' })
       await staleRun
       await sleep()
 
@@ -404,7 +424,7 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
         'Timed out waiting for verifier error status',
       )
 
-      authHarness.verifyApiKey.mockResolvedValueOnce(true)
+      authHarness.verifyApiKey.mockResolvedValueOnce({ status: 'valid' })
       await rendered.getLatest().reverify()
 
       await waitForCondition(

@@ -7,7 +7,7 @@ import type {
   LLMWebSearchConfig,
 } from "./types.js";
 import type { GatewayLLMConfig as ContextGatewayLLMConfig } from "./_deps/context-window.js";
-import { normalizeGrokModel } from "./_deps/context-window.js";
+import { normalizeGrokModelId } from "./_deps/context-window.js";
 
 // Lean-rebuild alias: provider-native-search was written against the
 // full gateway/types.ts GatewayLLMConfig. The rebuilt gateway stub
@@ -42,7 +42,7 @@ type ProviderNativeToolConfig = Pick<
 /**
  * xAI multi-agent models do not support client-side function calling — only
  * built-in server tools and remote MCP. Detect those model IDs (including
- * aliases and provider-prefixed forms) so adapters can strip LIVE tools.
+ * provider-prefixed forms) so adapters can strip LIVE tools.
  *
  * @see https://docs.x.ai/developers/model-capabilities/text/multi-agent
  */
@@ -51,7 +51,7 @@ export function isGrokMultiAgentModel(model: string | undefined): boolean {
   const trimmed = model.trim().toLowerCase();
   if (trimmed.length === 0) return false;
   const normalized =
-    normalizeGrokModel(trimmed)?.trim().toLowerCase() ?? trimmed;
+    normalizeGrokModelId(trimmed)?.trim().toLowerCase() ?? trimmed;
   const unqualified = normalized.slice(
     Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf(":")) + 1,
   );
@@ -60,10 +60,10 @@ export function isGrokMultiAgentModel(model: string | undefined): boolean {
 
 /**
  * Fail-closed: empty/unknown/unnormalizable models never enable xAI server
- * tools. Only explicit Grok 4 family IDs (after alias normalize) qualify.
+ * tools. Only explicit Grok 4 family IDs qualify.
  */
 export function supportsGrokServerSideTools(model: string | undefined): boolean {
-  const normalized = normalizeGrokModel(model)?.trim().toLowerCase();
+  const normalized = normalizeGrokModelId(model)?.trim().toLowerCase();
   if (!normalized) return false;
   return normalized.startsWith(GROK_SERVER_SIDE_TOOL_PREFIX);
 }

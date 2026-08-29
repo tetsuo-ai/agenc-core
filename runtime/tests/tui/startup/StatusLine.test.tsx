@@ -4,6 +4,7 @@ import React from 'react'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import { createRoot } from '../ink/root.js'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../remoteAuthSessionContext.fixture.js'
 import { StatusLine } from './StatusLine.js'
 
 const mocks = vi.hoisted(() => ({
@@ -29,17 +30,12 @@ vi.mock('src/utils/debug.js', () => ({
   logForDebugging: () => {},
 }))
 
-vi.mock('../rate-limits/agenc-ai-limits.js', () => ({
-  getRawUtilization: () => ({}),
-}))
-
 vi.mock('../../bootstrap/state.js', () => ({
   flushInteractionTime: () => {},
   getIsRemoteMode: () => false,
   getKairosActive: () => false,
   getMainThreadAgentType: () => undefined,
   getOriginalCwd: () => '/workspace',
-  getSdkBetas: () => [],
   getSessionId: () => 'session-statusline-test',
   updateLastInteractionTime: () => {},
 }))
@@ -75,12 +71,18 @@ vi.mock('../../permissions/trust/project-trust.js', () => ({
 }))
 
 vi.mock('../../utils/config.js', () => ({
-  getGlobalConfig: () => ({ tui: { vimMode: true } }),
+  getRuntimeState: () => ({ tui: { vimMode: true } }),
+}))
+
+vi.mock('../../utils/settings/canonicalAuthority.js', () => ({
+  getCanonicalSettingsAuthority: () => ({
+    current: () => ({ tui: { vimMode: true } }),
+  }),
 }))
 
 vi.mock('../../utils/context.js', () => ({
   calculateContextPercentages: () => ({ used: 0, remaining: 100 }),
-  getContextWindowForModel: () => 100000,
+  getContextWindowForModelForContext: () => 100000,
 }))
 
 vi.mock('../../utils/cwd.js', () => ({
@@ -91,8 +93,8 @@ vi.mock('../../utils/debug.js', () => ({
   logForDebugging: () => {},
 }))
 
-vi.mock('../../utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => false,
+vi.mock('../context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => false,
 }))
 
 vi.mock('../../utils/hooks.js', () => ({
@@ -105,7 +107,6 @@ vi.mock('../../utils/messages.js', () => ({
 }))
 
 vi.mock('../../utils/model/model.js', () => ({
-  getRuntimeMainLoopModel: () => 'gpt-5',
   renderModelName: (model: string) => model,
 }))
 
@@ -202,6 +203,7 @@ describe('StatusLine vim mode display', () => {
           <StatusLine
             messagesRef={{ current: [] }}
             lastAssistantMessageId={null}
+            providerContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
             vimMode={vimMode}
           />,
         )

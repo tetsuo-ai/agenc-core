@@ -49,6 +49,8 @@ export type RuntimeMessage = {
 
 export type CompactContext = {
   readonly abortController?: AbortController;
+  /** Canonical workspace for lifecycle hook metadata. */
+  readonly cwd?: string;
   readonly provider?: LLMProvider;
   /** Live owner used to admit every provider-backed compaction pass. */
   readonly admissionSession?: Session;
@@ -59,7 +61,6 @@ export type CompactContext = {
   readonly setStreamMode?: (mode: "requesting" | "responding" | null) => void;
   readonly setResponseLength?: (updater: (length: number) => number) => void;
   readonly onCompactProgress?: (event: CompactProgressEvent) => void;
-  readonly setSDKStatus?: (status: "compacting" | null) => void;
   readonly options?: {
     readonly mainLoopModel?: string;
     readonly contextWindowTokens?: number;
@@ -99,10 +100,6 @@ export type CompactRuntimeDeps = {
     messages: readonly RuntimeMessage[],
     context: CompactContext,
   ) => RuntimeMessage[] | Promise<RuntimeMessage[]>;
-  readonly createHookResults?: (
-    summary: string,
-    context: CompactContext,
-  ) => RuntimeMessage[] | Promise<RuntimeMessage[]>;
   readonly cleanup?: CompactCleanupDeps;
   readonly sessionMemory?: {
     readonly getContent?: () => string | null | Promise<string | null>;
@@ -114,7 +111,6 @@ export type CompactionResult = {
   readonly boundaryMarker: RuntimeMessage;
   readonly summaryMessages: readonly RuntimeMessage[];
   readonly attachments: readonly RuntimeMessage[];
-  readonly hookResults: readonly RuntimeMessage[];
   readonly messagesToKeep?: readonly RuntimeMessage[];
   readonly userDisplayMessage?: string;
   readonly preCompactTokenCount?: number;

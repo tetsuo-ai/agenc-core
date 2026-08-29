@@ -14,6 +14,7 @@ import {
 } from '../../tools/Tool.js'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import type { TaskState } from '../../tasks/types.js'
+import type { AgenCConfig } from '../../config/schema.js'
 import type { AgentColorName } from '../../tools/AgentTool/agentColorManager.js'
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js'
 import type { AllowedPrompt } from '../../tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
@@ -35,9 +36,10 @@ import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import type { WorkbenchState } from '../workbench/types.js'
 import { getDefaultWorkbenchState } from '../workbench/reducer.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
-import type { SettingsJson } from '../../utils/settings/types.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { shouldEnableThinkingByDefault } from '../../utils/thinking.js'
+import { getSelectedProviderEnvironment } from '../../utils/model/providers.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
 import { isPlanModeRequired, isTeammate } from '../../utils/teammate.js'
 import type { Store } from './store.js'
 
@@ -91,7 +93,7 @@ export type FooterItem =
   | 'teams'
 
 export type AppState = DeepImmutable<{
-  settings: SettingsJson
+  settings: AgenCConfig
   verbose: boolean
   mainLoopModel: ModelSetting
   mainLoopModelForSession: ModelSetting
@@ -239,7 +241,7 @@ export type AppState = DeepImmutable<{
     command: string // The command string to display (e.g., "Enter", "echo hello")
     timestamp: number // When the command was sent
   }
-  // Sticky tmux panel visibility — mirrors globalConfig.tungstenPanelVisible for reactivity.
+  // Session-local tmux panel visibility.
   tungstenPanelVisible?: boolean
   // Transient auto-hide at turn end — separate from tungstenPanelVisible so the
   // pill stays in the footer (user can reopen) but the panel content doesn't take
@@ -373,8 +375,6 @@ export type AppState = DeepImmutable<{
   denialTracking?: DenialTrackingState
   // Active overlays (Select dialogs, etc.) for Escape key coordination
   activeOverlays: ReadonlySet<string>
-  // Fast mode
-  fastMode?: boolean
   // Advisor model for server-side advisor tool (undefined = disabled).
   advisorModel?: string
   // Effort value
@@ -388,7 +388,21 @@ export type AppState = DeepImmutable<{
 export type AppStateStore = Store<AppState>
 
 export function getDefaultAppState(): AppState {
-  const initialSettings = getInitialSettings()
+  return getDefaultAppStateForProviderEnvironment(
+    getSelectedProviderEnvironment(),
+    getInitialSettings(),
+  )
+}
+
+/**
+ * Construct initial TUI state from the immutable provider environment already
+ * captured by startup/session ingress. Interactive App startup uses this path
+ * so React render timing never determines provider authority.
+ */
+export function getDefaultAppStateForProviderEnvironment(
+  providerEnvironment: ProviderEnvironment,
+  initialSettings: AgenCConfig,
+): AppState {
   const initialMode: PermissionMode =
     isTeammate() && isPlanModeRequired()
       ? 'plan'
@@ -465,10 +479,12 @@ export function getDefaultAppState(): AppState {
     elicitation: {
       queue: [],
     },
-    thinkingEnabled: shouldEnableThinkingByDefault(),
+    thinkingEnabled: shouldEnableThinkingByDefault({
+      environment: providerEnvironment,
+      alwaysThinkingEnabled: initialSettings.alwaysThinkingEnabled,
+    }),
     promptSuggestionEnabled: shouldEnablePromptSuggestion({
       ...initialSettings,
-      promptSuggestionFeatureEnabled: false,
       agentSwarmsEnabled: isAgentSwarmsEnabled(),
       isNonInteractiveSession: getIsNonInteractiveSession(),
       isTeammateSession: isTeammate(),
@@ -503,6 +519,5 @@ export function getDefaultAppState(): AppState {
     // enabled in the daemon while the badge and local command state said off.
     swarmMode: initialSettings.swarmMode === true,
     activeOverlays: new Set<string>(),
-    fastMode: false,
   }
 }

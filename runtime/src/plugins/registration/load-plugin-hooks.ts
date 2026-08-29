@@ -1,6 +1,5 @@
 import type { HookCommand, HookMatcher, HooksMap } from "../../config/schema.js";
 import { validateHooksConfig } from "../../config/schema.js";
-import type { ConfiguredHooksRuntime } from "../../hooks/configured-hooks.js";
 import {
   isRepositoryControlledPlugin,
   type LoadedPlugin,
@@ -26,13 +25,21 @@ function substituteHookCommand(
     ...command,
     command: substitutePluginTemplate(command.command, plugin, {
       sessionId: options.sessionId,
+      ...(options.pluginStorageRoot !== undefined
+        ? { pluginStorageRoot: options.pluginStorageRoot }
+        : {}),
     }),
     ...(command.statusMessage !== undefined
       ? {
           statusMessage: substitutePluginTemplate(
             command.statusMessage,
             plugin,
-            { sessionId: options.sessionId },
+            {
+              sessionId: options.sessionId,
+              ...(options.pluginStorageRoot !== undefined
+                ? { pluginStorageRoot: options.pluginStorageRoot }
+                : {}),
+            },
           ),
         }
       : {}),
@@ -79,7 +86,7 @@ async function resolvePlugins(
 }
 
 export async function loadPluginHooks(
-  options: PluginHookRegistrationOptions = {},
+  options: PluginHookRegistrationOptions,
 ): Promise<HooksMap | undefined> {
   const plugins = await resolvePlugins(options);
   let merged: HooksMap | undefined;
@@ -90,17 +97,4 @@ export async function loadPluginHooks(
     }
   }
   return validateHooksConfig(merged);
-}
-
-export function clearPluginHookCache(): void {
-  // Hook loading is uncached; this keeps the registration cache API uniform.
-}
-
-export async function registerPluginHooks(
-  runtime: Pick<ConfiguredHooksRuntime, "load">,
-  options: PluginHookRegistrationOptions = {},
-): Promise<HooksMap | undefined> {
-  const hooks = await loadPluginHooks(options);
-  runtime.load(hooks);
-  return hooks;
 }

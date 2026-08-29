@@ -20,7 +20,7 @@ export interface LinuxSandboxLauncherOptions {
   readonly commandCwd: string;
   readonly inheritedCwd: boolean;
   readonly permissionProfile: PermissionProfile;
-  readonly useLegacyLandlock: boolean;
+  readonly sessionTempRoot: string;
   readonly applySeccompThenExec: boolean;
   readonly allowNetworkForProxy: boolean;
   readonly proxyRouteSpec: string | null;
@@ -35,7 +35,7 @@ export function parseLinuxSandboxLauncherArgs(
   let commandCwd: string | null = null;
   let inheritedCwd = false;
   let permissionProfile: PermissionProfile | null = null;
-  let useLegacyLandlock = false;
+  let sessionTempRoot: string | null = null;
   let applySeccompThenExec = false;
   let allowNetworkForProxy = false;
   let proxyRouteSpec: string | null = null;
@@ -64,8 +64,9 @@ export function parseLinuxSandboxLauncherArgs(
         permissionProfile = parsePermissionProfile(readValue(argv, index, arg));
         index += 1;
         break;
-      case "--use-legacy-landlock":
-        useLegacyLandlock = true;
+      case "--session-temp-root":
+        sessionTempRoot = normalizeSessionTempRoot(readValue(argv, index, arg));
+        index += 1;
         break;
       case "--apply-seccomp-then-exec":
         applySeccompThenExec = true;
@@ -91,6 +92,9 @@ export function parseLinuxSandboxLauncherArgs(
   if (permissionProfile === null) {
     throw new LinuxSandboxCliError("Linux sandbox permission profile is missing");
   }
+  if (sessionTempRoot === null) {
+    throw new LinuxSandboxCliError("Linux sandbox session temp root is missing");
+  }
   if (inheritedCwd && (sandboxPolicyCwd !== null || commandCwd !== null)) {
     throw new LinuxSandboxCliError(
       "--inherited-readonly-command-cwd cannot be combined with explicit cwd arguments",
@@ -107,18 +111,12 @@ export function parseLinuxSandboxLauncherArgs(
   const resolvedCommandCwd = inheritedCwd
     ? INHERITED_CWD_SANDBOX_PATH
     : commandCwd ?? resolvedSandboxCwd;
-  if (applySeccompThenExec && useLegacyLandlock) {
-    throw new LinuxSandboxCliError(
-      "--apply-seccomp-then-exec cannot be combined with --use-legacy-landlock",
-    );
-  }
-
   return {
     sandboxPolicyCwd: resolvedSandboxCwd,
     commandCwd: resolvedCommandCwd,
     inheritedCwd,
     permissionProfile,
-    useLegacyLandlock,
+    sessionTempRoot,
     applySeccompThenExec,
     allowNetworkForProxy,
     proxyRouteSpec,
@@ -293,6 +291,15 @@ function normalizeCwd(value: string): string {
     throw new LinuxSandboxCliError("cwd argument cannot be empty");
   }
   return path.resolve(value);
+}
+
+function normalizeSessionTempRoot(value: string): string {
+  if (value.length === 0 || !path.isAbsolute(value)) {
+    throw new LinuxSandboxCliError(
+      "Linux sandbox session temp root must be an absolute path",
+    );
+  }
+  return path.normalize(value);
 }
 
 function readValue(argv: readonly string[], index: number, flag: string): string {

@@ -1,5 +1,4 @@
 import { LRUCache } from 'lru-cache'
-import { logError } from './log.js'
 import { jsonStringify } from './slowOperations.js'
 
 type CacheEntry<T> = {
@@ -39,9 +38,9 @@ export function memoizeWithTTLAsync<Args extends unknown[], Result>(
   // stored the Promise before the first await, so concurrent callers shared
   // one f() invocation. This async variant awaits before cache.set, so
   // concurrent cold-miss callers would
-  // each invoke f() independently without this map. For
-  // refreshAndGetAwsCredentials that means N concurrent `aws sso login`
-  // spawns. Same pattern as pending401Handlers in auth.ts:1171.
+  // each invoke f() independently without this map. For a credential or
+  // discovery refresh that would mean N concurrent
+  // subprocesses. Same pattern as pending401Handlers in auth.ts.
   const inFlight = new Map<string, Promise<Result>>()
 
   const memoized = async (...args: Args): Promise<Result> => {
@@ -102,7 +101,7 @@ export function memoizeWithTTLAsync<Args extends unknown[], Result>(
           }
         })
         .catch(e => {
-          logError(e)
+          reportRefreshError(e)
           if (cache.get(key) === staleEntry) {
             cache.delete(key)
           }
@@ -130,6 +129,21 @@ export function memoizeWithTTLAsync<Args extends unknown[], Result>(
   return memoized as ((...args: Args) => Promise<Result>) & {
     cache: { clear: () => void }
   }
+}
+
+/**
+ * Error logging depends on provider selection, whose registry can load a
+ * memoized credential resolver while modules are still initializing. Keep
+ * that dependency out of this low-level cache module and resolve it only on
+ * the asynchronous refresh-error path, after module initialization is done.
+ */
+function reportRefreshError(error: unknown): void {
+  void import('./log.js')
+    .then(({ logError }) => logError(error))
+    .catch(() => {
+      // Logging must never turn a best-effort background refresh into an
+      // unhandled rejection. The failed cache entry is invalidated by caller.
+    })
 }
 
 /**

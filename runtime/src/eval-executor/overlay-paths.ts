@@ -20,4 +20,3 @@ export const OVERLAY_NODE = `${OVERLAY_CONTAINER_PATH}/node/bin/node`;
 export const OVERLAY_NODE_COMPAT_LIB = `${OVERLAY_CONTAINER_PATH}/node/compat`;
 export const OVERLAY_PROXY_ENTRY = `${OVERLAY_CONTAINER_PATH}/proxy/allowlist-proxy.mjs`;
 export const OVERLAY_PROBE_ENTRY = `${OVERLAY_CONTAINER_PATH}/proxy/eval-egress-probe.mjs`;
-export const OVERLAY_PROXY_PRELOAD = `${OVERLAY_CONTAINER_PATH}/proxy/eval-proxy-preload.cjs`;

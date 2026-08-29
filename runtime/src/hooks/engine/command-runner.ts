@@ -4,11 +4,15 @@
  * Runs configured hook commands through Node child processes.
  */
 
-import { spawn } from "node:child_process";
 import {
   missingSandboxExecutionBoundary,
   type SandboxExecutionBrokerLike,
 } from "../../sandbox/execution-broker.js";
+import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
+import {
+  commandShellArgs,
+  wrapCommandForShell,
+} from "../../utils/shell/commandExecution.js";
 
 import type { CommandRunResult } from "./types.js";
 
@@ -19,6 +23,7 @@ export interface RunHookCommandOptions {
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
   readonly shellPath: string;
+  readonly commandWrapperArgv?: readonly string[];
   readonly stdin: string;
   readonly timeoutMs: number;
   readonly signal?: AbortSignal;
@@ -42,116 +47,60 @@ export async function runHookCommand(
   if (opts.sandboxExecutionBroker === undefined) {
     throw missingSandboxExecutionBoundary("hook");
   }
-  const command = opts.sandboxExecutionBroker.prepareSpawn("hook", {
+  const command = wrapCommandForShell(
+    opts.shellPath,
+    opts.commandWrapperArgv,
+    opts.command,
+  );
+  const preparedSpawn = opts.sandboxExecutionBroker.prepareSpawn("hook", {
     program: opts.shellPath,
-    args: ["-c", opts.command],
+    args: commandShellArgs(opts.shellPath, command),
     cwd: opts.cwd,
     env,
   });
-  return new Promise((resolve) => {
-    const child = spawn(command.program, [...command.args], {
-      cwd: command.cwd,
-      env: command.env,
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: process.platform !== "win32",
-      ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
-    });
-    let stdout = "";
-    let stderr = "";
-    let outputTruncated = false;
-    let settled = false;
-    let abortListener: (() => void) | null = null;
-    let terminationResult:
-      | Omit<CommandRunResult, "durationMs" | "stdout" | "stderr">
-      | null = null;
-    let killEscalation: NodeJS.Timeout | null = null;
-    const finish = (
-      result: Omit<CommandRunResult, "durationMs" | "stdout" | "stderr">,
-    ) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (killEscalation !== null) clearTimeout(killEscalation);
-      if (abortListener !== null && opts.signal !== undefined) {
-        opts.signal.removeEventListener("abort", abortListener);
-        abortListener = null;
-      }
-      resolve({
-        ...result,
-        stdout,
-        stderr,
-        ...(result.error !== undefined
-          ? { error: result.error }
-          : outputTruncated
-            ? { error: `hook output truncated at ${MAX_HOOK_OUTPUT_CHARS} characters per stream` }
-            : {}),
-        durationMs: Date.now() - started,
-      });
-    };
-    const requestTermination = (
-      result: Omit<CommandRunResult, "durationMs" | "stdout" | "stderr">,
-    ) => {
-      if (settled || terminationResult !== null) return;
-      terminationResult = result;
-      signalChild(child.pid, "SIGTERM");
-      killEscalation = setTimeout(() => {
-        signalChild(child.pid, "SIGKILL");
-      }, 250);
-    };
-    const timeout = setTimeout(() => {
-      requestTermination({
-        status: "timeout",
-        error: `hook timed out after ${Math.max(1, Math.ceil(opts.timeoutMs / 1000))}s`,
-      });
-    }, opts.timeoutMs);
-    if (opts.signal !== undefined) {
-      abortListener = () => {
-        requestTermination({ status: "skipped", error: "hook aborted" });
-      };
-      opts.signal.addEventListener("abort", abortListener, { once: true });
-    }
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      const appended = appendBoundedOutput(stdout, String(chunk));
-      stdout = appended.value;
-      outputTruncated ||= appended.truncated;
-    });
-    child.stderr.on("data", (chunk) => {
-      const appended = appendBoundedOutput(stderr, String(chunk));
-      stderr = appended.value;
-      outputTruncated ||= appended.truncated;
-    });
-    child.on("error", (err) => {
-      finish({
-        status: "non_blocking_error",
-        error: err.message,
-      });
-    });
-    child.on("close", (code) => {
-      if (terminationResult !== null) {
-        finish(terminationResult);
-        return;
-      }
-      if (code === 0) {
-        finish({ status: "success", exitCode: 0 });
-        return;
-      }
-      if (code === 2) {
-        finish({ status: "blocking", exitCode: 2 });
-        return;
-      }
-      finish({
-        status: "non_blocking_error",
-        ...(code !== null ? { exitCode: code } : {}),
-      });
-    });
-    child.stdin.on("error", () => {
-      // Hooks may exit before reading stdin. The process exit status remains
-      // the authoritative result.
-    });
-    child.stdin.end(opts.stdin);
+  const result = await runSupervisedProcess(preparedSpawn, {
+    timeoutMs: opts.timeoutMs,
+    maxOutputBytes: MAX_HOOK_OUTPUT_CHARS * 2,
+    stdin: opts.stdin,
+    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
   });
+  const boundedStdout = appendBoundedOutput("", result.stdout.toString("utf8"));
+  const boundedStderr = appendBoundedOutput("", result.stderr.toString("utf8"));
+  const outputTruncated = boundedStdout.truncated || boundedStderr.truncated;
+  const common = {
+    stdout: boundedStdout.value,
+    stderr: boundedStderr.value,
+    durationMs: Date.now() - started,
+  };
+  if (result.stopReason === "timeout") {
+    return {
+      ...common,
+      status: "timeout",
+      error: `hook timed out after ${Math.max(1, Math.ceil(opts.timeoutMs / 1000))}s`,
+    };
+  }
+  if (result.stopReason === "aborted") {
+    return { ...common, status: "skipped", error: "hook aborted" };
+  }
+  if (result.exitCode === 0 && result.stopReason === undefined) {
+    return {
+      ...common,
+      status: "success",
+      exitCode: 0,
+      ...(outputTruncated
+        ? { error: `hook output truncated at ${MAX_HOOK_OUTPUT_CHARS} characters per stream` }
+        : {}),
+    };
+  }
+  if (result.exitCode === 2 && result.stopReason === undefined) {
+    return { ...common, status: "blocking", exitCode: 2 };
+  }
+  return {
+    ...common,
+    status: "non_blocking_error",
+    ...(result.exitCode !== null ? { exitCode: result.exitCode } : {}),
+    ...(result.error !== undefined ? { error: result.error.message } : {}),
+  };
 }
 
 function stringOnlyEnv(env: NodeJS.ProcessEnv): Record<string, string> {
@@ -177,21 +126,4 @@ function appendBoundedOutput(
     value: current + chunk.slice(0, remaining),
     truncated: true,
   };
-}
-
-function signalChild(pid: number | undefined, signal: NodeJS.Signals): void {
-  if (pid === undefined) return;
-  try {
-    if (process.platform === "win32") {
-      process.kill(pid, signal);
-    } else {
-      process.kill(-pid, signal);
-    }
-  } catch {
-    try {
-      process.kill(pid, signal);
-    } catch {
-      // Best effort; close/error events remain authoritative.
-    }
-  }
 }

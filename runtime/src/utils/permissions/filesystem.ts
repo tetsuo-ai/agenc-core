@@ -1,9 +1,8 @@
 // Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
-import { randomBytes } from 'crypto'
 import ignore from 'ignore'
 import memoize from 'lodash-es/memoize.js'
-import { homedir, tmpdir } from 'os'
+import { homedir } from 'os'
 import { join, normalize, posix, sep } from 'path'
 import {
   hasAutoMemPathOverride,
@@ -15,6 +14,11 @@ import {
   isAuthorizedAgentMemoryPath,
 } from 'src/tools/AgentTool/agentMemory.js'
 import { peekAmbientRuntimeSession } from '../../session/current-session.js'
+import {
+  getSessionTempNamespaceName,
+  resolveSessionTempRoot,
+} from '../../session/runtime-options.js'
+import { getCurrentBundledSkillExtractionRoot } from '../../skills/bundled-root-authority.js'
 import { getAgentMemoryAuthorization } from '../agentContext.js'
 import {
   AGENC_FOLDER_PERMISSION_PATTERN,
@@ -26,7 +30,7 @@ import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
 import type { AnyObject, Tool, ToolPermissionContext } from '../../tools/Tool.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
 import { getCwd } from '../cwd.js'
-import { getAgenCConfigHomeDir } from '../envUtils.js'
+import { getAgenCHomeDir } from '../envUtils.js'
 import {
   getFsImplementation,
   getPathsForPermissionCheck,
@@ -72,9 +76,6 @@ export const DANGEROUS_FILES = [
   '.zprofile',
   '.profile',
   '.ripgreprc',
-  '.mcp.json',
-  '.agenc.json',
-  '.agenc.json',
 ] as const
 
 /**
@@ -85,7 +86,6 @@ export const DANGEROUS_DIRECTORIES = [
   '.git',
   '.vscode',
   '.idea',
-  '.agenc',
   '.agenc',
 ] as const
 
@@ -107,7 +107,8 @@ export function normalizeCaseForComparison(path: string): string {
  * return the skill name and a session-allow pattern scoped to just that skill.
  * Used to offer a narrower "allow edits to this skill only" option in the
  * permission dialog and SDK suggestions, so iterating on one skill doesn't
- * require granting session access to all of .agenc/ (settings.json, hooks/, etc.).
+ * require granting session access to all of .agenc/ (legacy migration inputs,
+ * hooks/, etc.).
  */
 export function getAgenCSkillScope(
   filePath: string,
@@ -121,7 +122,7 @@ export function getAgenCSkillScope(
       prefix: '/.agenc/skills/',
     },
     {
-      dir: expandPath(join(homedir(), '.agenc', 'skills')),
+      dir: expandPath(join(getAgenCHomeDir(), 'skills')),
       prefix: '~/.agenc/skills/',
     },
   ]
@@ -202,61 +203,66 @@ export function toPosixPath(path: string): string {
   return path
 }
 
-function getSettingsPaths(): string[] {
+function getActiveConfigPaths(): string[] {
   return SETTING_SOURCES.map(source =>
     getSettingsFilePathForSource(source),
   ).filter(path => path !== undefined)
 }
 
-export function isAgenCSettingsPath(filePath: string): boolean {
+const PROTECTED_AGENC_CONFIG_FILENAMES = new Set([
+  // Canonical repository configuration surfaces.
+  'config.toml',
+  'config.local.toml',
+  // Explicit migration inputs remain protected even though runtime loading
+  // never treats them as configuration authorities.
+  'config.json',
+  'settings.json',
+  'settings.local.json',
+])
+
+export function isAgenCConfigPath(filePath: string): boolean {
   // SECURITY: Normalize path structure first to prevent bypass via redundant ./
-  // sequences like `./.agenc/./settings.json` which would evade the endsWith() check
+  // sequences like `./.agenc/./config.toml` which would evade a raw suffix check.
   const expandedPath = expandPath(filePath)
 
   // Normalize for case-insensitive comparison to prevent bypassing security
-  // with paths like .cLauDe/Settings.locaL.json
+  // with mixed-case path segments.
   const normalizedPath = normalizeCaseForComparison(expandedPath)
 
-  // Use platform separator so endsWith checks work on both Unix (/) and Windows (\)
+  // Recognize canonical config files in every repository, not only the active
+  // project. Legacy JSON names are protection-only migration inputs.
+  const marker = `${sep}.agenc${sep}`
+  const markerIndex = normalizedPath.lastIndexOf(marker)
   if (
-    normalizedPath.endsWith(`${sep}.agenc${sep}settings.json`) ||
-    normalizedPath.endsWith(`${sep}.agenc${sep}settings.local.json`) ||
-    normalizedPath.endsWith(`${sep}.agenc${sep}settings.json`) ||
-    normalizedPath.endsWith(`${sep}.agenc${sep}settings.local.json`)
+    markerIndex >= 0 &&
+    PROTECTED_AGENC_CONFIG_FILENAMES.has(
+      normalizedPath.slice(markerIndex + marker.length),
+    )
   ) {
-    // Include .agenc/settings.json even for other projects
     return true
   }
-  // Check for current project's settings files (including managed settings and CLI args)
+
+  // Also protect active user, managed, and explicit flag configuration paths.
   // Both paths are now absolute and normalized for consistent comparison
-  return getSettingsPaths().some(
-    settingsPath => normalizeCaseForComparison(settingsPath) === normalizedPath,
+  return getActiveConfigPaths().some(
+    configPath => normalizeCaseForComparison(configPath) === normalizedPath,
   )
 }
 
 // Always ask when AgenC tries to edit its own config files
 function isAgenCConfigFilePath(filePath: string): boolean {
-  if (isAgenCSettingsPath(filePath)) {
+  if (isAgenCConfigPath(filePath)) {
     return true
   }
 
-  // Check if file is within .agenc/commands or .agenc/agents directories
-  // using proper path segment validation (not string matching with includes())
-  // pathInWorkingPath now handles case-insensitive comparison to prevent bypasses
-  const commandsDir = join(getOriginalCwd(), '.agenc', 'commands')
+  // Protect the live agent and skill authority directories with path-segment
+  // checks. Retired command directories are ordinary workspace paths.
   const agentsDir = join(getOriginalCwd(), '.agenc', 'agents')
   const skillsDir = join(getOriginalCwd(), '.agenc', 'skills')
-  const openCommandsDir = join(getOriginalCwd(), '.agenc', 'commands')
-  const openAgentsDir = join(getOriginalCwd(), '.agenc', 'agents')
-  const openSkillsDir = join(getOriginalCwd(), '.agenc', 'skills')
 
   return (
-    pathInWorkingPath(filePath, commandsDir) ||
     pathInWorkingPath(filePath, agentsDir) ||
-    pathInWorkingPath(filePath, skillsDir) ||
-    pathInWorkingPath(filePath, openCommandsDir) ||
-    pathInWorkingPath(filePath, openAgentsDir) ||
-    pathInWorkingPath(filePath, openSkillsDir)
+    pathInWorkingPath(filePath, skillsDir)
   )
 }
 
@@ -319,25 +325,8 @@ export function isScratchpadEnabled(): boolean {
 }
 
 /**
- * Returns the user-specific AgenC temp directory name.
- * On Unix: 'agenc-{uid}' to prevent multi-user permission conflicts
- * On Windows: 'agenc' (tmpdir() is already per-user)
- */
-export function getAgenCTempDirName(): string {
-  if (getPlatform() === 'windows') {
-    return 'agenc'
-  }
-  // Use UID to create per-user directories, preventing permission conflicts
-  // when multiple users share the same /tmp directory
-  const uid = process.getuid?.() ?? 0
-  return `agenc-${uid}`
-}
-
-/**
  * Returns the AgenC temp directory path with symlinks resolved.
- * Uses TMPDIR env var if set, otherwise:
- * - On Unix: /tmp/agenc-{uid}/ (resolved to /private/tmp/agenc-{uid}/ on macOS)
- * - On Windows: {tmpdir}/agenc/ (e.g., C:\Users\{user}\AppData\Local\Temp\agenc\)
+ * Uses the temporary root captured for the active session.
  * This is a per-user short-lived directory used by AgenC for all temp files.
  *
  * NOTE: We resolve symlinks to ensure this path matches the resolved paths used
@@ -345,12 +334,15 @@ export function getAgenCTempDirName(): string {
  * resolution, paths like /tmp/agenc-{uid}/... wouldn't match /private/tmp/agenc-{uid}/...
  */
 // Memoized: called per-tool from permission checks (yoloClassifier, sandbox-runtime)
-// and per-turn from BashTool prompt. Inputs (AGENC_TMPDIR env + platform) are
-// fixed at startup, and the realpath of the system tmp dir does not change mid-session.
-export const getAgenCTempDir = memoize(function getAgenCTempDir(): string {
-  const baseTmpDir =
-    process.env.AGENC_TMPDIR ||
-    (getPlatform() === 'windows' ? tmpdir() : '/tmp')
+// and per-turn from BashTool prompt. The captured root is fixed at startup,
+// and the realpath of the system temp directory does not change mid-session.
+const agencTempDirs = new Map<string, string>()
+
+export function getAgenCTempDir(): string {
+  const baseTmpDir = resolveSessionTempRoot()
+
+  const cached = agencTempDirs.get(baseTmpDir)
+  if (cached !== undefined) return cached
 
   // Resolve symlinks in the base temp directory (e.g., /tmp -> /private/tmp on macOS)
   // This ensures the path matches resolved paths in permission checks
@@ -362,31 +354,10 @@ export const getAgenCTempDir = memoize(function getAgenCTempDir(): string {
     // If resolution fails, use the original path
   }
 
-  return join(resolvedBaseTmpDir, getAgenCTempDirName()) + sep
-})
-
-/**
- * Root for bundled-skill file extraction (see bundledSkills.ts).
- *
- * SECURITY: The per-process random nonce is the load-bearing defense here.
- * Every other path component (uid, VERSION, skill name, file keys) is public
- * knowledge, so without it a local attacker can pre-create the tree on a
- * shared /tmp — sticky bit prevents deletion, not creation — and either
- * symlink an intermediate directory (O_NOFOLLOW only checks the final
- * component) or own a parent dir and swap file contents post-write for prompt
- * injection via the read allowlist. diskOutput.ts gets the same property from
- * the session-ID UUID in its path.
- *
- * Memoized so the extraction writes and the permission check agree on the
- * path for the life of the process. Version-scoped so stale extractions from
- * other binaries don't fall under the allowlist.
- */
-export const getBundledSkillsRoot = memoize(
-  function getBundledSkillsRoot(): string {
-    const nonce = randomBytes(16).toString('hex')
-    return join(getAgenCTempDir(), 'bundled-skills', MACRO.VERSION, nonce)
-  },
-)
+  const resolved = join(resolvedBaseTmpDir, getSessionTempNamespaceName()) + sep
+  agencTempDirs.set(baseTmpDir, resolved)
+  return resolved
+}
 
 /**
  * Returns the project temp directory path with trailing separator.
@@ -472,15 +443,16 @@ function isDangerousFilePathToAutoEdit(path: string): boolean {
         continue
       }
 
-      // Special case: .agenc/worktrees/ is a structural path (where AgenC stores
-      // git worktrees), not a user-created dangerous directory. Skip the .agenc
-      // segment when it's followed by 'worktrees'. Any nested .agenc directories
-      // within the worktree (not followed by 'worktrees') are still blocked.
+      // Worktrees are structural, and the retired commands directory has no
+      // runtime authority. Neither inherits the blanket `.agenc` protection.
+      // A nested live `.agenc` directory is still checked on its own segment.
       if (dir === '.agenc') {
         const nextSegment = pathSegments[i + 1]
         if (
           nextSegment &&
-          normalizeCaseForComparison(nextSegment) === 'worktrees'
+          ['commands', 'worktrees'].includes(
+            normalizeCaseForComparison(nextSegment),
+          )
         ) {
           break // Skip this .agenc, continue checking other segments
         }
@@ -626,7 +598,7 @@ function hasSuspiciousWindowsPathPattern(path: string): boolean {
  *
  * This function performs comprehensive safety checks including:
  * - Suspicious Windows path patterns (NTFS streams, 8.3 names, long path prefixes, etc.)
- * - AgenC config files (.agenc/settings.json, .agenc/commands/, .agenc/agents/)
+ * - Protected AgenC control files and live agent/skill authority directories
  * - MCP CLI state files (managed internally by AgenC)
  * - Dangerous files (.bashrc, .gitconfig, .git/, .vscode/, .idea/, etc.)
  *
@@ -1060,7 +1032,7 @@ export function checkReadPermissionForTool(
   const path = tool.getPath(input)
   const decision = computeReadDecision(tool, input, path, toolPermissionContext)
 
-  // --yolo / bypassPermissions short-circuit. Same rationale as
+  // --dangerously-bypass-approvals-and-sandbox / bypassPermissions short-circuit. Same rationale as
   // checkToolPathPermission and permissions/bash.ts:431 ("hadDeny" guard):
   // the user opted out of all approval gating, so filesystem reads must not
   // surface the working-dir prompt. See GAP-PE-YOLO-LEAK.
@@ -1356,8 +1328,9 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
     // Check if this rule is scoped under .agenc/ (project or global).
     // Accepts both the broad patterns ('/.agenc/**', '~/.agenc/**') and
     // narrowed ones like '/.agenc/skills/my-skill/**' so users can grant
-    // session access to a single skill without also exposing settings.json
-    // or hooks/. The rule already matched the path via matchingRuleForInput;
+    // session access to a single skill without also exposing the retired
+    // settings.json migration input or hooks/. The rule already matched the path
+    // via matchingRuleForInput;
     // this is an additional scope check. Reject '..' to prevent a rule like
     // '/.agenc/../**' from leaking this bypass outside .agenc/.
     const ruleContent = agencFolderAllowRule.ruleValue.ruleContent
@@ -1388,7 +1361,8 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
   if (!safetyCheck.safe) {
     // SDK suggestion: if under .agenc/skills/{name}/, emit the narrowed
     // session-scoped addRules that step 1.6 will honor on the next call.
-    // Everything else (.agenc/settings.json, .git/, .vscode/, .idea/) falls
+    // Everything else (the retired .agenc/settings.json migration input,
+    // .git/, .vscode/, .idea/) falls
     // back to generateSuggestions — its setMode suggestion doesn't bypass
     // this check, but preserving it avoids a surprising empty array.
     const skillScope = getAgenCSkillScope(path)
@@ -1648,7 +1622,7 @@ export function checkEditableInternalPath(
   if (feature('TEMPLATES')) {
     const jobDir = process.env.AGENC_JOB_DIR
     if (jobDir) {
-      const jobsRoot = join(getAgenCConfigHomeDir(), 'jobs')
+      const jobsRoot = join(getAgenCHomeDir(), 'jobs')
       const jobDirForms = getPathsForPermissionCheck(jobDir).map(normalize)
       const jobsRootForms = getPathsForPermissionCheck(jobsRoot).map(normalize)
       // Hijack guard: every resolved form of the job dir must sit under
@@ -1885,7 +1859,7 @@ export function checkReadableInternalPath(
   }
 
   // Tasks directory (~/.agenc/tasks/) for swarm task coordination
-  const tasksDir = join(getAgenCConfigHomeDir(), 'tasks') + sep
+  const tasksDir = join(getAgenCHomeDir(), 'tasks') + sep
   if (
     normalizedPath === tasksDir.slice(0, -1) ||
     normalizedPath.startsWith(tasksDir)
@@ -1901,7 +1875,7 @@ export function checkReadableInternalPath(
   }
 
   // Teams directory (~/.agenc/teams/) for swarm coordination
-  const teamsReadDir = join(getAgenCConfigHomeDir(), 'teams') + sep
+  const teamsReadDir = join(getAgenCHomeDir(), 'teams') + sep
   if (
     normalizedPath === teamsReadDir.slice(0, -1) ||
     normalizedPath.startsWith(teamsReadDir)
@@ -1917,11 +1891,10 @@ export function checkReadableInternalPath(
   }
 
   // Bundled skill reference files extracted on first invocation.
-  // SECURITY: See getBundledSkillsRoot() — the per-process nonce in the path
-  // is the load-bearing defense; uid/VERSION alone are public knowledge and
-  // squattable. We always write-before-read on invocation, so content under
-  // this subtree is harness-controlled.
-  const bundledSkillsRoot = getBundledSkillsRoot() + sep
+  // The canonical bundled-root authority includes a per-root nonce. The uid
+  // and VERSION are public, so they cannot safely authorize a shared temp path
+  // on their own. Invocation always writes before reading this subtree.
+  const bundledSkillsRoot = getCurrentBundledSkillExtractionRoot() + sep
   if (normalizedPath.startsWith(bundledSkillsRoot)) {
     return {
       behavior: 'allow',

@@ -1,4 +1,14 @@
-import { readFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import vm from "node:vm";
 
 import { transformSync } from "esbuild";
@@ -15,18 +25,64 @@ import {
   type AgenCEnsureAgentControlFunction,
   managedTokenUsage,
 } from "./background-agent-runner.js";
+import { collectDaemonClientEnvOverrides } from "./agent-cli.js";
 import type { AgentStatus } from "../agents/status.js";
 import type { AuthBackend } from "../auth/backend.js";
-import type { AgentBudgetConfig } from "../config/schema.js";
+import type {
+  AdmissionAcquireInput,
+  ExecutionAdmissionClient,
+} from "../budget/admission-client.js";
+import type { AdmissionLease } from "../budget/admission-types.js";
 import type { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
 import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
 } from "../permissions/types.js";
+import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
 import { requestApproval } from "../tools/orchestrator.js";
 import type { CsvAgentJobsRepositoryProvider } from "./csv-agent-jobs-authority.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import type {
+  PermissionContextPreparedUpdate,
+  PermissionContextPublication,
+  PermissionContextPublicationCoordinator,
+} from "../permissions/permission-mode.js";
+import {
+  sandboxExecutionBrokerAuthorityFromSessionAuthority,
+  sessionExecutionAuthorityFromAgenCConfig,
+  type SessionExecutionAuthority,
+} from "../session/configuration.js";
+import {
+  readSandboxExecutionBroker,
+  readSandboxExecutionSurface,
+  SandboxExecutionBroker,
+} from "../sandbox/execution-broker.js";
+import {
+  clearCurrentRuntimeSession,
+  peekScopedRuntimeSession,
+  setCurrentRuntimeSession,
+} from "../session/current-session.js";
+import type { Session } from "../session/session.js";
+import type { TurnContext } from "../session/turn-context.js";
+import type { Tool, ToolResult } from "../tools/types.js";
+import { readToolRuntimeContext } from "../tools/runtimes/context.js";
+import type { ToolRegistry } from "../tool-registry.js";
+import {
+  getCanonicalSettingsAuthority,
+  runWithCanonicalSettingsAuthority,
+  type CanonicalSettingsAuthority,
+} from "../utils/settings/canonicalAuthority.js";
+import { workspaceMutationCoordinators } from "../workspace/mutation-coordinator.js";
+import {
+  COORDINATED_CONFIG_STORE_PUBLICATION,
+  type CoordinatedConfigStorePublishOptions,
+} from "../config/store.js";
+import {
+  registerSandboxExecutionLifecycleParticipant,
+  transitionSandboxExecutionBroker,
+} from "../sandbox/execution-lifecycle.js";
 
 const backgroundAgentRunnerSourcePath = new URL(
   "../../src/app-server/background-agent-runner.ts",
@@ -170,6 +226,7 @@ function makeAuthBackend(
     logout: vi.fn(() => ({ authenticated: false })),
     whoami: vi.fn(() => ({ authenticated: true, provider: kind })),
     vendKey: vi.fn((provider, sessionId) => ({
+      kind: "api-key",
       provider: String(provider),
       sessionId,
       apiKey,
@@ -182,11 +239,113 @@ function makeAuthBackend(
   };
 }
 
+function runtimeSettingsRolloutItem(
+  runId: string,
+  settings: RunRuntimeSettingsSnapshot,
+): unknown {
+  const eventId = `runtime-settings:${runId}:initial`;
+  return {
+    type: "event_msg",
+    payload: {
+      id: eventId,
+      eventId,
+      seq: 1,
+      msg: {
+        type: "run_runtime_settings_changed",
+        payload: {
+          runId,
+          epoch: 1,
+          previousSettingsEventId: null,
+          rollbackOfSettingsEventId: null,
+          reason: "initial",
+          changedAt: "2026-05-09T00:00:00.000Z",
+          ...settings,
+        },
+      },
+    },
+  };
+}
+
+function canonicalRuntimeSettings(
+  overrides: Partial<RunRuntimeSettingsSnapshot> = {},
+): RunRuntimeSettingsSnapshot {
+  return {
+    permissionMode: "default",
+    prePlanMode: null,
+    autoModeActive: false,
+    autoModeAvailable: false,
+    bypassPermissionsModeAvailable: false,
+    bypassPermissionsWorkspace: null,
+    bypassPermissionsConsentWorkspace: null,
+    model: "base-model",
+    provider: "grok",
+    profile: null,
+    reasoningEffort: null,
+    modelVerbosity: null,
+    serviceTier: null,
+    hooksDisabled: false,
+    ...overrides,
+  };
+}
+
+function recordedRuntimeSettingsEvents(
+  rolloutItems: readonly unknown[],
+): Array<{
+  readonly eventId?: string;
+  readonly msg?: {
+    readonly type?: unknown;
+    readonly payload?: Record<string, unknown>;
+  };
+}> {
+  return rolloutItems.flatMap((item) => {
+    const event = item as {
+      readonly payload?: {
+        readonly eventId?: string;
+        readonly msg?: {
+          readonly type?: unknown;
+          readonly payload?: Record<string, unknown>;
+        };
+      };
+    };
+    return event.payload?.msg?.type === "run_runtime_settings_changed"
+      ? [event.payload]
+      : [];
+  });
+}
+
+function bypassRestoreSettings(
+  permissionMode: "bypassPermissions" | "plan",
+  workspace: string,
+): RunRuntimeSettingsSnapshot {
+  return {
+    permissionMode,
+    prePlanMode: permissionMode === "plan" ? "bypassPermissions" : null,
+    autoModeActive: false,
+    autoModeAvailable: true,
+    bypassPermissionsModeAvailable: true,
+    bypassPermissionsWorkspace: workspace,
+    bypassPermissionsConsentWorkspace: workspace,
+    model: "base-model",
+    provider: "grok",
+    profile: null,
+    reasoningEffort: null,
+    modelVerbosity: null,
+    serviceTier: null,
+    hooksDisabled: false,
+  };
+}
+
 function makeTopLevelRunner(opts: {
   readonly conversationId: string;
   readonly bootstrapShutdown?: ReturnType<typeof vi.fn>;
   readonly bootstrapShutdownAfterFinalizers?: ReturnType<typeof vi.fn>;
   readonly emitAfterAppendError?: Error;
+  readonly emitAfterAppendAfter?: number;
+  readonly runtimeSettingsFailpoint?: {
+    readonly eventOrdinal: number;
+    readonly phase: "before_append" | "publish";
+    readonly error: Error;
+  };
   readonly syncCanonicalTail?: ReturnType<typeof vi.fn>;
   readonly threadShutdown?: ReturnType<typeof vi.fn>;
   readonly threadAppendMessage?: ReturnType<typeof vi.fn>;
@@ -195,7 +354,7 @@ function makeTopLevelRunner(opts: {
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
   readonly now?: () => string;
-  readonly agentBudget?: AgentBudgetConfig;
+  readonly additionalRunnerOptions?: Readonly<Record<string, unknown>>;
   readonly executionAdmissionKernel?: ExecutionAdmissionKernel;
   readonly csvAgentJobsRepositories?: CsvAgentJobsRepositoryProvider;
   readonly rolloutItems?: unknown[];
@@ -207,30 +366,149 @@ function makeTopLevelRunner(opts: {
     readonly totalTokens: number;
   };
   readonly canonicalRuntimeSettings?: boolean;
+  readonly workspaceRoot?: string;
+  readonly persistedBypassConsent?: readonly string[];
+  readonly userPromptSubmitHooks?: readonly UserPromptSubmitHook[];
+  readonly flushDeferredSessionStartHook?: ReturnType<typeof vi.fn>;
+  readonly runtimeSimpleMode?: boolean;
+  readonly permissionBeforeUpdateGate?: (
+    next: ToolPermissionContext,
+    current: ToolPermissionContext,
+  ) => Promise<void> | void;
+  readonly configLayers?: readonly {
+    readonly scope: "managed" | "user" | "project" | "local";
+    readonly label: string;
+    readonly config: Record<string, unknown>;
+  }[];
 }) {
   const shutdownImpl = opts.bootstrapShutdown ?? vi.fn(async () => {});
   const durableOperations = new Set<Promise<unknown>>();
   const beforeDurableClose = new Set<() => void | Promise<void>>();
   const permissionUpdates: ToolPermissionContext[] = [];
-  let permissionContext = createEmptyToolPermissionContext();
+  let permissionContext = createEmptyToolPermissionContext({
+    isAutoModeAvailable:
+      typeof opts.env?.XAI_API_KEY === "string" ||
+      typeof opts.env?.GROK_API_KEY === "string",
+  });
+  let permissionRegistryQueue: Promise<void> = Promise.resolve();
+  const withPermissionRegistryLock = <T>(
+    work: () => Promise<T>,
+  ): Promise<T> => {
+    const result = permissionRegistryQueue.then(work);
+    permissionRegistryQueue = result.then(
+      () => {},
+      () => {},
+    );
+    return result;
+  };
   let permissionBeforeUpdate:
     | ((
         next: ToolPermissionContext,
         current: ToolPermissionContext,
         metadata: unknown,
-      ) => void | Promise<void>)
+      ) =>
+        | void
+        | (() => void | Promise<void>)
+        | PermissionContextPreparedUpdate
+        | Promise<
+            | void
+            | (() => void | Promise<void>)
+            | PermissionContextPreparedUpdate
+          >)
     | undefined;
+  let permissionPublicationCoordinator:
+    PermissionContextPublicationCoordinator | undefined;
+  const publishPermissionContext = async (
+    next: ToolPermissionContext,
+    current: ToolPermissionContext,
+    metadata: unknown,
+  ): Promise<void> => {
+    await opts.permissionBeforeUpdateGate?.(next, current);
+    const preparedResult = await permissionBeforeUpdate?.(
+      next,
+      current,
+      metadata,
+    );
+    const prepared =
+      typeof preparedResult === "function"
+        ? { commit: preparedResult }
+        : preparedResult;
+    let state: "prepared" | "committed" | "rolled_back" = "prepared";
+    const publication: PermissionContextPublication = {
+      commit: async () => {
+        if (opts.canonicalRuntimeSettings !== false) permissionContext = next;
+        try {
+          await prepared?.commit();
+          state = "committed";
+        } catch (error) {
+          if (opts.canonicalRuntimeSettings !== false) {
+            permissionContext = current;
+          }
+          state = "rolled_back";
+          await prepared?.rollback?.();
+          throw error;
+        }
+      },
+      rollback: async () => {
+        if (state === "rolled_back") return;
+        if (opts.canonicalRuntimeSettings !== false)
+          permissionContext = current;
+        state = "rolled_back";
+        await prepared?.rollback?.();
+      },
+    };
+    try {
+      if (permissionPublicationCoordinator === undefined) {
+        await publication.commit();
+      } else {
+        await permissionPublicationCoordinator(
+          next,
+          current,
+          metadata,
+          publication,
+        );
+      }
+    } catch (error) {
+      await publication.rollback();
+      throw error;
+    } finally {
+      await prepared?.settle?.();
+    }
+    permissionUpdates.push(next);
+  };
   const permissionModeRegistry = {
     current: () =>
-      opts.canonicalRuntimeSettings === true
+      opts.canonicalRuntimeSettings !== false
         ? permissionContext
         : createEmptyToolPermissionContext(),
-    update: vi.fn(
-      async (context: ToolPermissionContext, metadata?: unknown) => {
-        await permissionBeforeUpdate?.(context, permissionContext, metadata);
-        if (opts.canonicalRuntimeSettings === true) permissionContext = context;
-        permissionUpdates.push(context);
-      },
+    update: vi.fn((context: ToolPermissionContext, metadata?: unknown) =>
+      withPermissionRegistryLock(async () => {
+        await publishPermissionContext(context, permissionContext, metadata);
+      }),
+    ),
+    transact: vi.fn(
+      <T>(
+        transaction: (current: ToolPermissionContext) => Promise<{
+          readonly next: ToolPermissionContext | null;
+          readonly metadata?: unknown;
+          readonly result: () => T;
+        }>,
+      ): Promise<T> =>
+        withPermissionRegistryLock(async () => {
+          const current =
+            opts.canonicalRuntimeSettings !== false
+              ? permissionContext
+              : createEmptyToolPermissionContext();
+          const mutation = await transaction(current);
+          if (mutation.next !== null) {
+            await publishPermissionContext(
+              mutation.next,
+              current,
+              mutation.metadata,
+            );
+          }
+          return mutation.result();
+        }),
     ),
     installBeforeUpdateHook: vi.fn((hook: typeof permissionBeforeUpdate) => {
       permissionBeforeUpdate = hook;
@@ -238,6 +516,21 @@ function makeTopLevelRunner(opts: {
         if (permissionBeforeUpdate === hook) permissionBeforeUpdate = undefined;
       };
     }),
+    installPublicationCoordinator: vi.fn(
+      (coordinator: PermissionContextPublicationCoordinator) => {
+        if (permissionPublicationCoordinator !== undefined) {
+          throw new Error(
+            "permission context publication coordinator already installed",
+          );
+        }
+        permissionPublicationCoordinator = coordinator;
+        return () => {
+          if (permissionPublicationCoordinator === coordinator) {
+            permissionPublicationCoordinator = undefined;
+          }
+        };
+      },
+    ),
   };
   const stub = makeStubConversationThreadManager({
     threadId: opts.conversationId,
@@ -263,6 +556,8 @@ function makeTopLevelRunner(opts: {
       ? Math.max(highest, seq)
       : highest;
   }, 0);
+  let preparedEventCount = 0;
+  let preparedRuntimeSettingsEventCount = 0;
   const publishSessionEvent = (event: unknown) => {
     for (const listener of [...eventLogSubscribers]) listener(event);
   };
@@ -272,7 +567,7 @@ function makeTopLevelRunner(opts: {
     assertRunSuspendable: vi.fn(() => {}),
     recordRunSuspensionEvent: vi.fn(() => {}),
     recordRunStartupActivationEvent: vi.fn(() => {}),
-    ...(opts.canonicalRuntimeSettings === true
+    ...(opts.canonicalRuntimeSettings !== false
       ? { recordRunRuntimeSettingsEvent: vi.fn(() => {}) }
       : {}),
     syncCanonicalTail: opts.syncCanonicalTail ?? vi.fn(() => {}),
@@ -286,16 +581,142 @@ function makeTopLevelRunner(opts: {
   const activeTurn = {
     unsafePeek: () => activeTurnValue,
   };
+  // Runtime workspace identity is security-sensitive and must resolve to a
+  // physical directory even in skeletal runner tests. Individual rejection
+  // tests can still pass an explicit invalid workspaceRoot.
+  const workspaceRoot = opts.workspaceRoot ?? process.cwd();
+  const persistedBypassConsent = new Set(opts.persistedBypassConsent ?? []);
+  const stateRepository = {
+    reload: vi.fn(() => ({})),
+    getNamespace: vi.fn((namespace: string) =>
+      namespace === "permissions" && persistedBypassConsent.size > 0
+        ? {
+            bypassPermissionsAcceptedByCwd: Object.fromEntries(
+              [...persistedBypassConsent].map((cwd) => {
+                const canonicalCwd = realpathSync(cwd);
+                const identity = statSync(canonicalCwd);
+                return [
+                  canonicalCwd,
+                  {
+                    version: 1,
+                    canonicalCwd,
+                    dev: identity.dev.toString(10),
+                    ino: identity.ino.toString(10),
+                  },
+                ] as const;
+              }),
+            ),
+          }
+        : {},
+    ),
+  };
+  const configPublicationOptions: unknown[] = [];
+  const configStore = {
+    current: () => ({}),
+    stateRepository,
+    projectRoot: workspaceRoot,
+    authoritySnapshot: () => ({
+      config: {},
+      layers: [...(opts.configLayers ?? [])],
+    }),
+    sources: (scope: string) =>
+      (opts.configLayers ?? []).filter((layer) => layer.scope === scope),
+  };
+  Object.assign(configStore, {
+    prepareReload: async function (this: Record<string, unknown>) {
+      const reload = this.reload;
+      const staged =
+        typeof reload === "function"
+          ? await (reload as () => Promise<Record<string, unknown>>)()
+          : (this.current as () => Record<string, unknown>)();
+      let state: "prepared" | "committed" | "published" | "rolled_back" =
+        "prepared";
+      let settled = false;
+      const authority = {
+        ...this,
+        current: () => staged,
+        authoritySnapshot: () => ({
+          config: staged,
+          layers: [...(opts.configLayers ?? [])],
+        }),
+        sources: (scope: string) =>
+          (opts.configLayers ?? []).filter((layer) => layer.scope === scope),
+        ignored: () => [],
+        warnings: () => [],
+        provenance: () => undefined,
+      };
+      return {
+        config: staged,
+        authority,
+        get state() {
+          return state;
+        },
+        get settled() {
+          return settled;
+        },
+        commit: () => {
+          state = "committed";
+        },
+        publish: (options?: unknown) => {
+          state = "published";
+          configPublicationOptions.push(options);
+        },
+        rollback: () => {
+          state = "rolled_back";
+        },
+        settle: () => {
+          settled = true;
+        },
+      };
+    },
+  });
+  let configuredExecutionAuthority: SessionExecutionAuthority =
+    sessionExecutionAuthorityFromAgenCConfig({
+      config: {},
+      workspaceRoot,
+      projectTrust: "trusted",
+    });
+  const sandboxExecutionBroker = new SandboxExecutionBroker({
+    cwd: workspaceRoot,
+    ...sandboxExecutionBrokerAuthorityFromSessionAuthority(
+      configuredExecutionAuthority,
+      workspaceRoot,
+    ),
+  });
   const sessionState = {
     sessionConfiguration: {
-      cwd: "/workspace",
+      cwd: workspaceRoot,
+      ...configuredExecutionAuthority,
       collaborationMode: { model: "base-model" },
-      provider: { slug: "base-provider" },
+      provider: { slug: "grok" },
+      dynamicTools: [],
+      sessionSource: "cli_main" as const,
     },
     history: [] as unknown[],
   };
+  const providerEnvironment = Object.freeze({
+    XAI_API_KEY: opts.env?.XAI_API_KEY,
+    GROK_API_KEY: opts.env?.GROK_API_KEY,
+  });
+  const providerService = {
+    environment: () => providerEnvironment,
+    current: () => ({
+      provider: sessionState.sessionConfiguration.provider.slug,
+      model: sessionState.sessionConfiguration.collaborationMode.model,
+      revision: 0,
+    }),
+  };
+  let nextInternalSubId = 0;
+  const sessionAbortController = new AbortController();
   const session = {
+    abortController: sessionAbortController,
+    abortTerminal: vi.fn((reason: string) => {
+      if (!sessionAbortController.signal.aborted) {
+        sessionAbortController.abort(reason);
+      }
+    }),
     conversationId: opts.conversationId,
+    providerService,
     permissionModeRegistry,
     get sessionConfiguration() {
       return sessionState.sessionConfiguration;
@@ -305,6 +726,38 @@ function makeTopLevelRunner(opts: {
       model: string;
       profile?: string;
     } | null,
+    prepareProviderSwitch: vi.fn(
+      async (spec: { provider: string; model: string; profile?: string }) => ({
+        pending: Object.freeze({ ...spec }),
+        provider: { expectedRevision: providerService.current().revision },
+        modelInfo: { slug: spec.model },
+        baseInstructions: "",
+      }),
+    ),
+    stagePreparedProviderSwitch(
+      prepared: {
+        pending: { provider: string; model: string; profile?: string };
+        provider: { expectedRevision: number };
+      },
+      expectedPending: {
+        provider: string;
+        model: string;
+        profile?: string;
+      } | null,
+    ) {
+      if (this.pendingProviderSwitch !== expectedPending) {
+        throw new Error(
+          "pending provider selection changed during test preparation",
+        );
+      }
+      if (
+        prepared.provider.expectedRevision !==
+        providerService.current().revision
+      ) {
+        throw new Error("provider binding changed during test preparation");
+      }
+      this.pendingProviderSwitch = prepared.pending;
+    },
     setPendingProviderSwitch(
       spec: {
         provider: string;
@@ -315,6 +768,8 @@ function makeTopLevelRunner(opts: {
       this.pendingProviderSwitch = spec;
     },
     syncPermissionContextFromRegistry: vi.fn(async () => {}),
+    flushDeferredSessionStartHook:
+      opts.flushDeferredSessionStartHook ?? vi.fn(async () => {}),
     state: {
       with: vi.fn(async (apply: (state: typeof sessionState) => void) => {
         await apply(sessionState);
@@ -356,6 +811,8 @@ function makeTopLevelRunner(opts: {
     emitPhaseEvent: (phase: unknown) => {
       for (const listener of [...phaseSubscribers]) listener(phase);
     },
+    nextInternalSubId: () =>
+      `background-runner-hook-${(nextInternalSubId += 1)}`,
     emitSessionEvent: (event: unknown) => {
       const sequence = (event as { seq?: unknown }).seq;
       if (typeof sequence === "number" && Number.isSafeInteger(sequence)) {
@@ -363,8 +820,22 @@ function makeTopLevelRunner(opts: {
       }
       publishSessionEvent(event);
     },
-    emit: vi.fn((event: unknown) => {
+    prepareEmit: vi.fn((event: unknown) => {
+      const runtimeSettingsEvent =
+        (event as { msg?: { type?: unknown } }).msg?.type ===
+        "run_runtime_settings_changed";
+      const runtimeSettingsEventOrdinal = runtimeSettingsEvent
+        ? (preparedRuntimeSettingsEventCount += 1)
+        : 0;
+      if (
+        opts.runtimeSettingsFailpoint?.phase === "before_append" &&
+        opts.runtimeSettingsFailpoint.eventOrdinal ===
+          runtimeSettingsEventOrdinal
+      ) {
+        throw opts.runtimeSettingsFailpoint.error;
+      }
       const sequence = ++lastSeq;
+      preparedEventCount += 1;
       const stamped = {
         ...(event as object),
         eventId:
@@ -372,14 +843,53 @@ function makeTopLevelRunner(opts: {
         seq: sequence,
       };
       rolloutItems.push({ type: "event_msg", payload: stamped });
-      publishSessionEvent(stamped);
-      if (opts.emitAfterAppendError !== undefined) {
+      if (
+        opts.emitAfterAppendError !== undefined &&
+        preparedEventCount > (opts.emitAfterAppendAfter ?? 0)
+      ) {
         throw opts.emitAfterAppendError;
       }
-      return stamped;
+      let published = false;
+      return {
+        event: stamped,
+        publish: () => {
+          if (
+            opts.runtimeSettingsFailpoint?.phase === "publish" &&
+            opts.runtimeSettingsFailpoint.eventOrdinal ===
+              runtimeSettingsEventOrdinal
+          ) {
+            throw opts.runtimeSettingsFailpoint.error;
+          }
+          if (!published) {
+            published = true;
+            publishSessionEvent(stamped);
+          }
+          return stamped;
+        },
+      };
+    }),
+    publishPreparedEvent: vi.fn((event: unknown) => {
+      publishSessionEvent(event);
+      return event;
+    }),
+    emit: vi.fn((event: unknown) => {
+      const prepared = session.prepareEmit(event);
+      return prepared.publish();
     }),
     rolloutStore,
-    services: { conversationThreadManager: stub },
+    services: {
+      conversationThreadManager: stub,
+      providerService,
+      configStore,
+      runtimeOptions: resolveAgentRuntimeOptions(
+        {},
+        { simpleMode: opts.runtimeSimpleMode ?? false },
+      ),
+      hooks: {
+        userPromptSubmitHooks: [...(opts.userPromptSubmitHooks ?? [])],
+      },
+      sandboxExecutionBroker,
+    },
   };
   if (opts.hydrateStateWith !== undefined) {
     Object.assign(session, { state: { with: opts.hydrateStateWith } });
@@ -406,7 +916,32 @@ function makeTopLevelRunner(opts: {
     clearConversationHistory: vi.fn(async () => {}),
   };
   const bootstrap = vi.fn(async () => ({
-    workspaceRoot: "/workspace",
+    workspaceRoot,
+    configStore,
+    get configuredExecutionAuthority() {
+      return configuredExecutionAuthority;
+    },
+    prepareConfiguredExecutionAuthority: (config: Record<string, unknown>) => {
+      const previous = configuredExecutionAuthority;
+      const authority = sessionExecutionAuthorityFromAgenCConfig({
+        config,
+        workspaceRoot,
+        projectTrust: "trusted",
+      });
+      let committed = false;
+      return {
+        authority,
+        commit: () => {
+          configuredExecutionAuthority = authority;
+          committed = true;
+        },
+        rollback: () => {
+          if (!committed) return;
+          configuredExecutionAuthority = previous;
+          committed = false;
+        },
+      };
+    },
     session,
     rolloutStore,
     registry: {
@@ -417,6 +952,7 @@ function makeTopLevelRunner(opts: {
     shutdown,
   })) as unknown as ReturnType<typeof vi.fn> & AgenCBootstrapFunction;
   const runner = new AgenCDelegateBackgroundAgentRunner({
+    ...opts.additionalRunnerOptions,
     ...(opts.authBackend !== undefined
       ? { authBackend: opts.authBackend }
       : {}),
@@ -427,9 +963,6 @@ function makeTopLevelRunner(opts: {
     })) as unknown as AgenCEnsureAgentControlFunction,
     ...(opts.env !== undefined ? { env: opts.env } : {}),
     ...(opts.argv !== undefined ? { argv: opts.argv } : {}),
-    ...(opts.agentBudget !== undefined
-      ? { agentBudget: opts.agentBudget }
-      : {}),
     ...(opts.executionAdmissionKernel !== undefined
       ? { executionAdmissionKernel: opts.executionAdmissionKernel }
       : {}),
@@ -452,15 +985,1294 @@ function makeTopLevelRunner(opts: {
     permissionModeRegistry,
     rolloutItems,
     rolloutStore,
+    configStore,
+    configPublicationOptions,
+    sandboxExecutionBroker,
+    sessionState,
+    stateRepository,
+    persistedBypassConsent,
     abortTurnIfActive,
     activeTurn,
     setActiveTurn(turnId: string | null) {
       activeTurnValue = turnId === null ? null : { turnId };
     },
+    forcePermissionContextForTesting(next: ToolPermissionContext) {
+      permissionContext = next;
+    },
+  };
+}
+
+function configureSessionShellHarness(
+  harness: ReturnType<typeof makeTopLevelRunner>,
+  options: {
+    readonly defaultShell?: "bash" | "powershell";
+    readonly settingsHome?: string;
+    readonly execute?: (
+      args: Record<string, unknown>,
+      toolName: "system.bash" | "PowerShell",
+    ) => Promise<ToolResult>;
+  } = {},
+) {
+  const leaseFallback = new AbortController();
+  const acquire = vi.fn(
+    async (
+      input: AdmissionAcquireInput,
+      signal?: AbortSignal,
+    ): Promise<AdmissionLease> => ({
+      decision: "allow",
+      reservation: {
+        reservationId: `shell-reservation:${input.stepId}`,
+        step: { runId: harness.session.conversationId, stepId: input.stepId },
+        reservedCostUsd: input.maxCostUsd ?? 0,
+        reservedTokens: input.maxInputTokens + input.maxOutputTokens,
+        reservedAt: "2026-08-27T00:00:00.000Z",
+      },
+      request: {
+        step: { runId: harness.session.conversationId, stepId: input.stepId },
+        kind: input.kind,
+        estimate: {
+          maxInputTokens: input.maxInputTokens,
+          maxOutputTokens: input.maxOutputTokens,
+          maxCostUsd: input.maxCostUsd,
+        },
+        workspaceId: harness.session.conversationId,
+        sessionId: input.sessionId ?? harness.session.conversationId,
+        parentScopeId: input.parentScopeId,
+        autonomous: false,
+      },
+      signal: signal ?? leaseFallback.signal,
+    }),
+  );
+  const markDispatched = vi.fn();
+  const reconcile = vi.fn(() => ({
+    applied: true as const,
+    outcome: "reconciled" as const,
+  }));
+  const admission = {
+    scope: {
+      runId: harness.session.conversationId,
+      workspaceId: harness.session.conversationId,
+      sessionId: harness.session.conversationId,
+      budgetIdentity: harness.session.conversationId,
+      autonomous: false,
+    },
+    acquire,
+    markDispatched,
+    reconcile,
+    holdUnknown: vi.fn(),
+    cancelRun: vi.fn(),
+    void: vi.fn(),
+    acknowledgeCompletion: vi.fn(),
+    recordFallback: vi.fn(),
+    forSession: vi.fn(() => admission),
+    subscribe: vi.fn(() => () => {}),
+  } as unknown as ExecutionAdmissionClient;
+
+  const preHook = vi.fn(
+    ({ args }: { readonly args: Record<string, unknown> }) => ({
+      kind: "continue" as const,
+      args: { ...args, observedByPreHook: true },
+    }),
+  );
+  const postHook = vi.fn(() => ({ kind: "continue" as const }));
+  const checkPermissions = vi.fn((input: unknown) => ({
+    behavior: "allow" as const,
+    updatedInput: input as Record<string, unknown>,
+  }));
+  const executeShell =
+    options.execute ??
+    (async (): Promise<ToolResult> => ({
+      content: "shell output",
+      metadata: {
+        stdout: "shell stdout",
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+      },
+    }));
+  const shellTool = (name: "system.bash" | "PowerShell"): Tool => ({
+    name,
+    description: `test ${name}`,
+    inputSchema: {
+      type: "object",
+      properties: { command: { type: "string" } },
+      required: ["command"],
+    },
+    metadata: { source: "builtin", mutating: true },
+    recoveryCategory: "side-effecting",
+    admissionEstimate: () => ({
+      maxInputTokens: 0,
+      maxOutputTokens: 0,
+      maxCostUsd: 0,
+    }),
+    checkPermissions,
+    execute: vi.fn((args: Record<string, unknown>) => executeShell(args, name)),
+  });
+  const bashTool = shellTool("system.bash");
+  const powerShellTool = shellTool("PowerShell");
+  const registry: ToolRegistry = {
+    tools: [bashTool, powerShellTool],
+    toLLMTools: () => [],
+    dispatch: vi.fn(async () => ({ content: "registry dispatch unused" })),
+  };
+
+  const settings = { defaultShell: options.defaultShell ?? "bash" };
+  const settingsHome =
+    options.settingsHome ??
+    join(tmpdir(), `${harness.session.conversationId}-settings-home`);
+  Object.assign(harness.configStore, {
+    current: () => settings,
+    authoritySnapshot: () => ({ config: settings, layers: [] }),
+    homeContext: {
+      path: settingsHome,
+      identityKey: settingsHome,
+      secureStorageAccount: "test-account",
+      oauthFileSuffix: "test",
+      source: "agenc-home",
+      isDefault: false,
+      configTomlPath: join(settingsHome, "config.toml"),
+      statePath: join(settingsHome, "state.json"),
+      authPath: join(settingsHome, "auth.json"),
+      trustedProjectsPath: join(settingsHome, "trusted-projects.json"),
+    },
+    reload: async () => settings,
+    subscribe: () => () => {},
+  });
+  const subscribeToModeChange = vi.fn(() => () => {});
+  Object.assign(harness.permissionModeRegistry, { subscribeToModeChange });
+  Object.assign(harness.rolloutStore, {
+    assertToolAdmissionAllowed: vi.fn(),
+    assertToolEffectAttemptAllowed: vi.fn(() => 1),
+    recordEffectEvent: vi.fn(),
+  });
+
+  const session = harness.session as unknown as {
+    readonly conversationId: string;
+    readonly services: Record<string, unknown> & {
+      hooks?: Readonly<Record<string, unknown>>;
+    };
+    readonly eventLog: Record<string, unknown>;
+    readonly emit: (event: unknown, options?: unknown) => unknown;
+    newDefaultTurnWithSubId?: (subId: string) => TurnContext;
+  };
+  const hooks = session.services.hooks ?? {};
+  Object.assign(session.services, {
+    registry,
+    executionAdmission: admission,
+    admissionRequired: true,
+    permissionModeRegistry: harness.permissionModeRegistry,
+    hooks: {
+      ...hooks,
+      preToolUseHooks: [preHook],
+      postToolUseHooks: [postHook],
+    },
+  });
+  Object.assign(session.eventLog, {
+    emit: (event: unknown) => session.emit(event),
+  });
+  const newDefaultTurnWithSubId = vi.fn(
+    (subId: string) =>
+      ({
+        subId,
+        cwd: harness.sessionState.sessionConfiguration.cwd,
+        approvalPolicy: { value: "never" },
+        sandboxPolicy: { value: "danger_full_access" },
+        config: {},
+      }) as unknown as TurnContext,
+  );
+  session.newDefaultTurnWithSubId = newDefaultTurnWithSubId;
+
+  return {
+    acquire,
+    admission,
+    bashExecute: bashTool.execute as ReturnType<typeof vi.fn>,
+    checkPermissions,
+    markDispatched,
+    newDefaultTurnWithSubId,
+    postHook,
+    powerShellExecute: powerShellTool.execute as ReturnType<typeof vi.fn>,
+    preHook,
+    reconcile,
+    registry,
+    subscribeToModeChange,
   };
 }
 
 describe("AgenC delegate background-agent runner", () => {
+  it("[managed-thread] runs a deferred session shell through the canonical live router authorities", async () => {
+    const harness = makeTopLevelRunner({
+      conversationId: "session-direct-shell-authorities",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    let dispatchSawDurableInput = false;
+    const shell = configureSessionShellHarness(harness, {
+      defaultShell: "powershell",
+      execute: async (args, toolName) => {
+        const calls = vi.mocked(harness.session.emit).mock
+          .calls as unknown as Array<readonly [unknown, unknown?]>;
+        const input = calls.find(([event]) => {
+          const payload = (
+            event as {
+              readonly msg?: {
+                readonly type?: unknown;
+                readonly payload?: { readonly message?: unknown };
+              };
+            }
+          ).msg;
+          return (
+            payload?.type === "user_message" &&
+            typeof payload.payload?.message === "string" &&
+            payload.payload.message.startsWith("<bash-input>")
+          );
+        });
+        dispatchSawDurableInput = input?.[1] !== undefined;
+        expect(input?.[1]).toEqual({ durable: true });
+        expect(toolName).toBe("PowerShell");
+        expect(args).toMatchObject({
+          command: "printf shell-route",
+          observedByPreHook: true,
+        });
+        expect(readSandboxExecutionBroker(args)).toBe(
+          harness.sandboxExecutionBroker,
+        );
+        expect(readSandboxExecutionSurface(args)).toBe("tool");
+        expect(readToolRuntimeContext(args)).toMatchObject({
+          source: "direct",
+          toolName: "PowerShell",
+          requestedSandboxMode: "danger_full_access",
+          sandboxMode: "danger_full_access",
+        });
+        expect(getCanonicalSettingsAuthority()).toBe(harness.configStore);
+        expect(peekScopedRuntimeSession()).toBe(harness.session);
+        return {
+          content: "shell content",
+          metadata: {
+            stdout: "shell stdout",
+            stderr: "shell stderr",
+            exitCode: 0,
+            timedOut: false,
+          },
+        };
+      },
+    });
+
+    await harness.runner.startAgent({
+      objective: "deferred direct shell",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
+    const execution = harness.runner.executeAgentShell(
+      "session-direct-shell-authorities",
+      {
+        sessionId: "session-direct-shell-authorities",
+        commandId: "shell-authorities-1",
+        command: "printf shell-route",
+      },
+    );
+    const result = await execution.then((resolved) => {
+      const calls = vi.mocked(harness.session.emit).mock
+        .calls as unknown as Array<readonly [unknown, unknown?]>;
+      const durableMessages = calls
+        .map(([event, options], index) => ({
+          index,
+          options,
+          msg: (
+            event as {
+              readonly msg?: {
+                readonly type?: unknown;
+                readonly payload?: { readonly message?: unknown };
+              };
+            }
+          ).msg,
+        }))
+        .filter(({ msg }) => msg?.type === "user_message");
+      const input = durableMessages.find(({ msg }) =>
+        String(msg?.payload?.message).startsWith("<bash-input>"),
+      );
+      const output = durableMessages.find(({ msg }) =>
+        String(msg?.payload?.message).startsWith("<bash-stdout>"),
+      );
+      expect(input?.options).toEqual({ durable: true });
+      expect(output?.options).toEqual({ durable: true });
+      expect(output?.index).toBeGreaterThan(input?.index ?? Number.MAX_VALUE);
+      return resolved;
+    });
+
+    expect(result).toEqual({
+      commandId: "shell-authorities-1",
+      content: "shell content",
+      stdout: "shell stdout",
+      stderr: "shell stderr",
+      exitCode: 0,
+      timedOut: false,
+      truncated: false,
+      isError: false,
+    });
+    expect(dispatchSawDurableInput).toBe(true);
+    expect(shell.powerShellExecute).toHaveBeenCalledOnce();
+    expect(shell.bashExecute).not.toHaveBeenCalled();
+    expect(shell.newDefaultTurnWithSubId).toHaveBeenCalledWith(
+      expect.stringMatching(/^shell-/u),
+    );
+    expect(shell.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "tool_exec",
+        sessionId: "session-direct-shell-authorities",
+      }),
+      expect.any(AbortSignal),
+    );
+    expect(shell.markDispatched).toHaveBeenCalledWith(
+      expect.stringContaining("shell-reservation:"),
+      expect.objectContaining({ boundary: "tool_effect" }),
+    );
+    expect(shell.reconcile).toHaveBeenCalledOnce();
+    expect(shell.checkPermissions).toHaveBeenCalled();
+    expect(shell.preHook).toHaveBeenCalledOnce();
+    expect(shell.postHook).toHaveBeenCalledOnce();
+    expect(shell.subscribeToModeChange).toHaveBeenCalledOnce();
+    const canonicalToolEvents = (
+      vi.mocked(harness.session.emit).mock.calls as unknown as Array<
+        readonly [
+          {
+            readonly msg?: {
+              readonly type?: unknown;
+              readonly payload?: Readonly<Record<string, unknown>>;
+            };
+          },
+          unknown?,
+        ]
+      >
+    )
+      .map(([event, options]) => ({ msg: event.msg, options }))
+      .filter(({ msg }) =>
+        msg?.type === "tool_call_started" ||
+        msg?.type === "tool_call_completed",
+      );
+    expect(canonicalToolEvents).toEqual([
+      {
+        msg: {
+          type: "tool_call_started",
+          payload: expect.objectContaining({
+            callId: "shell-authorities-1",
+            toolName: "PowerShell",
+          }),
+        },
+        options: { durable: true },
+      },
+      {
+        msg: {
+          type: "tool_call_completed",
+          payload: expect.objectContaining({
+            callId: "shell-authorities-1",
+            toolName: "PowerShell",
+            result: "shell content",
+            isError: false,
+            metadata: expect.objectContaining({ toolName: "PowerShell" }),
+          }),
+        },
+        options: {
+          durable: true,
+          turnId: expect.stringMatching(/^shell-/u),
+          toolResultBytes: Buffer.byteLength("shell content", "utf8"),
+        },
+      },
+    ]);
+    const durableShellEvents = harness.rolloutItems.flatMap((item) => {
+      const payload = (item as {
+        readonly type?: unknown;
+        readonly payload?: {
+          readonly msg?: {
+            readonly type?: unknown;
+            readonly payload?: Readonly<Record<string, unknown>>;
+          };
+        };
+      });
+      if (payload.type !== "event_msg" || payload.payload?.msg === undefined) {
+        return [];
+      }
+      const message = payload.payload.msg;
+      if (
+        message.type !== "user_message" &&
+        message.type !== "tool_call_started" &&
+        message.type !== "tool_call_completed"
+      ) {
+        return [];
+      }
+      const callId = message.payload?.callId;
+      const queuedCommandUuid = message.payload?.queuedCommandUuid;
+      return callId === "shell-authorities-1" ||
+        queuedCommandUuid === "shell-authorities-1"
+        ? [message]
+        : [];
+    });
+    expect(durableShellEvents.map(event => event.type)).toEqual([
+      "user_message",
+      "tool_call_started",
+      "tool_call_completed",
+      "user_message",
+    ]);
+    expect(harness.stub.thread.submit).not.toHaveBeenCalled();
+    expect(harness.control.sendInput).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] durably closes direct shell state when dispatch rejects after start", async () => {
+    const agentId = "session-direct-shell-dispatch-rejection";
+    const harness = makeTopLevelRunner({
+      conversationId: agentId,
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    const shell = configureSessionShellHarness(harness);
+    await harness.runner.startAgent({
+      objective: "deferred direct shell",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
+    const registeredTools = shell.registry.tools;
+    let toolReads = 0;
+    Object.defineProperty(shell.registry, "tools", {
+      configurable: true,
+      get: () => {
+        toolReads += 1;
+        if (toolReads === 1) return registeredTools;
+        throw new Error("injected router construction failure");
+      },
+    });
+
+    await expect(
+      harness.runner.executeAgentShell(agentId, {
+        sessionId: agentId,
+        commandId: "shell-dispatch-rejection-1",
+        command: "printf never-dispatched",
+      }),
+    ).rejects.toThrow("injected router construction failure");
+
+    const lifecycle = harness.rolloutItems.flatMap((item) => {
+      const message = (item as {
+        readonly type?: unknown;
+        readonly payload?: {
+          readonly msg?: {
+            readonly type?: unknown;
+            readonly payload?: Readonly<Record<string, unknown>>;
+          };
+        };
+      }).payload?.msg;
+      return message?.payload?.callId === "shell-dispatch-rejection-1" &&
+        (message.type === "tool_call_started" ||
+          message.type === "tool_call_completed")
+        ? [message]
+        : [];
+    });
+    expect(lifecycle).toEqual([
+      expect.objectContaining({
+        type: "tool_call_started",
+        payload: expect.objectContaining({
+          callId: "shell-dispatch-rejection-1",
+          toolName: "system.bash",
+        }),
+      }),
+      expect.objectContaining({
+        type: "tool_call_completed",
+        payload: expect.objectContaining({
+          callId: "shell-dispatch-rejection-1",
+          toolName: "system.bash",
+          result: "injected router construction failure",
+          isError: true,
+        }),
+      }),
+    ]);
+    expect(shell.bashExecute).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] durably closes direct shell state when validation fails before dispatch", async () => {
+    const agentId = "session-direct-shell-prestart-rejection";
+    const harness = makeTopLevelRunner({
+      conversationId: agentId,
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    const shell = configureSessionShellHarness(harness);
+    await harness.runner.startAgent({
+      objective: "deferred direct shell",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
+    Object.defineProperty(shell.registry, "tools", {
+      configurable: true,
+      get: () => [],
+    });
+
+    await expect(
+      harness.runner.executeAgentShell(agentId, {
+        sessionId: agentId,
+        commandId: "shell-prestart-rejection-1",
+        command: "printf never-started",
+      }),
+    ).rejects.toThrow("Configured shell system.bash is not available");
+
+    const lifecycle = harness.rolloutItems.flatMap((item) => {
+      const message = (item as {
+        readonly payload?: {
+          readonly msg?: {
+            readonly type?: unknown;
+            readonly payload?: Readonly<Record<string, unknown>>;
+          };
+        };
+      }).payload?.msg;
+      return message?.payload?.callId === "shell-prestart-rejection-1" &&
+        (message.type === "tool_call_started" ||
+          message.type === "tool_call_completed")
+        ? [message]
+        : [];
+    });
+    expect(lifecycle).toEqual([
+      expect.objectContaining({
+        type: "tool_call_started",
+        payload: expect.objectContaining({
+          callId: "shell-prestart-rejection-1",
+          toolName: "system.bash",
+        }),
+      }),
+      expect.objectContaining({
+        type: "tool_call_completed",
+        payload: expect.objectContaining({
+          callId: "shell-prestart-rejection-1",
+          toolName: "system.bash",
+          result: expect.stringContaining("is not available"),
+          isError: true,
+        }),
+      }),
+    ]);
+    expect(shell.bashExecute).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] denies direct shell while Editor owns the workspace", async () => {
+    const workspaceRoot = mkdtempSync(
+      join(tmpdir(), "agenc-direct-shell-editor-owned-workspace-"),
+    );
+    const settingsHome = mkdtempSync(
+      join(tmpdir(), "agenc-direct-shell-editor-owned-home-"),
+    );
+    try {
+      const harness = makeTopLevelRunner({
+        conversationId: "session-direct-shell-editor-owned",
+        threadInitialStatus: { status: "pending_init" } as AgentStatus,
+        workspaceRoot,
+      });
+      const shell = configureSessionShellHarness(harness, { settingsHome });
+      const settingsAuthority =
+        harness.configStore as unknown as CanonicalSettingsAuthority;
+      await harness.runner.startAgent({
+        objective: "deferred direct shell",
+        deferInitialTurn: true,
+        unattendedAllow: [],
+        unattendedDeny: [],
+      });
+      harness.forcePermissionContextForTesting(
+        createEmptyToolPermissionContext({
+          mode: "bypassPermissions",
+          isBypassPermissionsModeAvailable: true,
+        }),
+      );
+      const lease = runWithCanonicalSettingsAuthority(settingsAuthority, () =>
+        workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
+          workspaceRoot,
+          editorInstanceId: "editor-before-direct-shell",
+        }),
+      );
+
+      const result = await harness.runner.executeAgentShell(
+        "session-direct-shell-editor-owned",
+        {
+          sessionId: "session-direct-shell-editor-owned",
+          commandId: "shell-editor-owned-1",
+          command: "printf blocked-by-editor",
+        },
+      );
+
+      expect(result).toMatchObject({
+        commandId: "shell-editor-owned-1",
+        isError: true,
+        stdout: "",
+        exitCode: null,
+      });
+      expect(`${result.content}\n${result.stderr}`).toMatch(
+        /Tool 'system\.bash' is blocked while this workspace has protected Editor authority/u,
+      );
+      expect(shell.bashExecute).not.toHaveBeenCalled();
+      expect(shell.acquire).not.toHaveBeenCalled();
+
+      await runWithCanonicalSettingsAuthority(settingsAuthority, () =>
+        workspaceMutationCoordinators.getOrCreate(workspaceRoot).release({
+          workspaceRoot,
+          editorInstanceId: lease.editorInstanceId,
+          leaseToken: lease.leaseToken,
+          epoch: lease.epoch,
+        }),
+      );
+    } finally {
+      workspaceMutationCoordinators.clearForTests();
+      rmSync(workspaceRoot, { recursive: true, force: true });
+      rmSync(settingsHome, { recursive: true, force: true });
+    }
+  });
+
+  it("[managed-thread] keeps Editor acquisition fenced until direct shell cleanup", async () => {
+    const workspaceRoot = mkdtempSync(
+      join(tmpdir(), "agenc-direct-shell-inflight-workspace-"),
+    );
+    const settingsHome = mkdtempSync(
+      join(tmpdir(), "agenc-direct-shell-inflight-home-"),
+    );
+    const resultGate = Promise.withResolvers<ToolResult>();
+    let execution: Promise<unknown> | undefined;
+    try {
+      const harness = makeTopLevelRunner({
+        conversationId: "session-direct-shell-inflight",
+        threadInitialStatus: { status: "pending_init" } as AgentStatus,
+        workspaceRoot,
+      });
+      const shell = configureSessionShellHarness(harness, {
+        settingsHome,
+        execute: async () => resultGate.promise,
+      });
+      const settingsAuthority =
+        harness.configStore as unknown as CanonicalSettingsAuthority;
+      const acquireEditor = (editorInstanceId: string) =>
+        runWithCanonicalSettingsAuthority(settingsAuthority, () =>
+          workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
+            workspaceRoot,
+            editorInstanceId,
+          }),
+        );
+      await harness.runner.startAgent({
+        objective: "deferred direct shell",
+        deferInitialTurn: true,
+        unattendedAllow: [],
+        unattendedDeny: [],
+      });
+      harness.forcePermissionContextForTesting(
+        createEmptyToolPermissionContext({
+          mode: "bypassPermissions",
+          isBypassPermissionsModeAvailable: true,
+        }),
+      );
+
+      execution = harness.runner.executeAgentShell(
+        "session-direct-shell-inflight",
+        {
+          sessionId: "session-direct-shell-inflight",
+          commandId: "shell-inflight-1",
+          command: "printf held-open",
+        },
+      );
+      await vi.waitFor(() => expect(shell.bashExecute).toHaveBeenCalledOnce());
+      expect(() => acquireEditor("editor-during-direct-shell")).toThrow(
+        /waiting for active tool 'system\.bash'/u,
+      );
+
+      resultGate.resolve({
+        content: "shell completed",
+        metadata: {
+          stdout: "shell completed",
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+        },
+      });
+      await expect(execution).resolves.toMatchObject({
+        commandId: "shell-inflight-1",
+        isError: false,
+        stdout: "shell completed",
+      });
+
+      const lease = acquireEditor("editor-after-direct-shell");
+      expect(lease).toMatchObject({
+        workspaceRoot,
+        editorInstanceId: "editor-after-direct-shell",
+      });
+      await runWithCanonicalSettingsAuthority(settingsAuthority, () =>
+        workspaceMutationCoordinators.getOrCreate(workspaceRoot).release({
+          workspaceRoot,
+          editorInstanceId: lease.editorInstanceId,
+          leaseToken: lease.leaseToken,
+          epoch: lease.epoch,
+        }),
+      );
+    } finally {
+      resultGate.resolve({ content: "test cleanup" });
+      await execution?.catch(() => {});
+      workspaceMutationCoordinators.clearForTests();
+      rmSync(workspaceRoot, { recursive: true, force: true });
+      rmSync(settingsHome, { recursive: true, force: true });
+    }
+  });
+
+  it("[managed-thread] deduplicates identical shell command ids and rejects conflicting reuse", async () => {
+    const resultGate = Promise.withResolvers<ToolResult>();
+    const harness = makeTopLevelRunner({
+      conversationId: "session-direct-shell-deduplication",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    const shell = configureSessionShellHarness(harness, {
+      execute: async () => resultGate.promise,
+    });
+    await harness.runner.startAgent({
+      objective: "deferred direct shell",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
+    const params = {
+      sessionId: "session-direct-shell-deduplication",
+      commandId: "shell-deduplication-1",
+      command: "printf once",
+    } as const;
+
+    const first = harness.runner.executeAgentShell(
+      "session-direct-shell-deduplication",
+      params,
+    );
+    await vi.waitFor(() => expect(shell.bashExecute).toHaveBeenCalledOnce());
+    const duplicate = harness.runner.executeAgentShell(
+      "session-direct-shell-deduplication",
+      params,
+    );
+    await expect(
+      harness.runner.executeAgentShell("session-direct-shell-deduplication", {
+        ...params,
+        command: "printf conflicting",
+      }),
+    ).rejects.toThrow(/already used for different content/u);
+    expect(shell.bashExecute).toHaveBeenCalledOnce();
+
+    resultGate.resolve({
+      content: "once",
+      metadata: { stdout: "once", stderr: "", exitCode: 0 },
+    });
+    const [firstResult, duplicateResult] = await Promise.all([
+      first,
+      duplicate,
+    ]);
+    expect(duplicateResult).toEqual(firstResult);
+    expect(shell.bashExecute).toHaveBeenCalledOnce();
+  });
+
+  it("[managed-thread] rejects direct shell while the session owns an active model turn", async () => {
+    const harness = makeTopLevelRunner({
+      conversationId: "session-direct-shell-active-turn",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+      scopedTurnCancellation: true,
+    });
+    const shell = configureSessionShellHarness(harness);
+    await harness.runner.startAgent({
+      objective: "deferred direct shell",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    harness.setActiveTurn("active-model-turn");
+
+    await expect(
+      harness.runner.executeAgentShell("session-direct-shell-active-turn", {
+        sessionId: "session-direct-shell-active-turn",
+        commandId: "shell-active-turn-1",
+        command: "printf blocked",
+      }),
+    ).rejects.toThrow(/active or queued model turn/u);
+    expect(shell.acquire).not.toHaveBeenCalled();
+    expect(shell.bashExecute).not.toHaveBeenCalled();
+    expect(harness.control.sendInput).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] admits direct shell when canonical runtime state is idle despite a stale thread status", async () => {
+    const harness = makeTopLevelRunner({
+      conversationId: "session-direct-shell-thread-running",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    const shell = configureSessionShellHarness(harness);
+    await harness.runner.startAgent({
+      objective: "deferred direct shell",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    harness.stub.pushStatus({
+      status: "running",
+      turnId: "untracked-model-turn",
+      startedAtMs: 1,
+    });
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
+
+    await expect(
+      harness.runner.executeAgentShell("session-direct-shell-thread-running", {
+        sessionId: "session-direct-shell-thread-running",
+        commandId: "shell-thread-running-1",
+        command: "printf admitted",
+      }),
+    ).resolves.toMatchObject({
+      commandId: "shell-thread-running-1",
+      isError: false,
+      stdout: "shell stdout",
+    });
+    expect(shell.acquire).toHaveBeenCalledOnce();
+    expect(shell.bashExecute).toHaveBeenCalledOnce();
+    expect(harness.control.sendInput).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] queues direct shell until a cancelled message submission finishes cleanup", async () => {
+    const messageStarted = Promise.withResolvers<void>();
+    const releaseMessageCleanup = Promise.withResolvers<void>();
+    const harness = makeTopLevelRunner({
+      conversationId: "session-direct-shell-after-cancel",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+      scopedTurnCancellation: true,
+    });
+    const shell = configureSessionShellHarness(harness);
+    harness.control.sendInput.mockImplementationOnce(async () => {
+      harness.setActiveTurn("turn-direct-shell-cancelled");
+      harness.stub.pushStatus({
+        status: "running",
+        turnId: "turn-direct-shell-cancelled",
+        startedAtMs: 1,
+      });
+      harness.session.emit({
+        id: "turn-direct-shell-cancelled",
+        msg: {
+          type: "turn_started",
+          payload: { turnId: "turn-direct-shell-cancelled" },
+        },
+      });
+      messageStarted.resolve();
+      await releaseMessageCleanup.promise;
+      harness.stub.pushStatus({
+        status: "interrupted",
+        turnId: "turn-direct-shell-cancelled",
+        endedAtMs: 2,
+        reason: "user_cancel",
+      } as AgentStatus);
+    });
+
+    await harness.runner.startAgent({
+      objective: "deferred direct shell after cancellation",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
+    const message = harness.runner.submitAgentMessage(
+      "session-direct-shell-after-cancel",
+      {
+        sessionId: "session-direct-shell-after-cancel",
+        content: "cancel this turn",
+        originalContent: "cancel this turn",
+        messageId: "message-direct-shell-cancelled",
+        streamId: "stream-direct-shell-cancelled",
+        acceptedAt: "2026-08-27T00:00:00.000Z",
+      },
+    );
+    await messageStarted.promise;
+
+    await expect(
+      harness.runner.interruptAgentTurnIfMatches(
+        "session-direct-shell-after-cancel",
+        "user_cancel",
+        "turn-direct-shell-cancelled",
+      ),
+    ).resolves.toEqual({
+      cancelled: true,
+      activeTurnId: "turn-direct-shell-cancelled",
+    });
+    harness.session.emitPhaseEvent({
+      type: "turn_complete",
+      content: "",
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      stopReason: "cancelled",
+    });
+    harness.session.emit({
+      id: "turn-direct-shell-aborted",
+      msg: {
+        type: "turn_aborted",
+        payload: {
+          turnId: "turn-direct-shell-cancelled",
+          reason: "user_cancel",
+        },
+      },
+    });
+    expect(harness.stub.thread.status()).toMatchObject({ status: "running" });
+
+    const execution = harness.runner.executeAgentShell(
+      "session-direct-shell-after-cancel",
+      {
+        sessionId: "session-direct-shell-after-cancel",
+        commandId: "shell-after-cancel-1",
+        command: "printf after-cancel",
+      },
+    );
+    void execution.catch(() => {});
+    expect(shell.bashExecute).not.toHaveBeenCalled();
+
+    releaseMessageCleanup.resolve();
+    await expect(message).resolves.toMatchObject({
+      disposition: "started",
+      terminal: { code: 130 },
+    });
+    await expect(execution).resolves.toMatchObject({
+      commandId: "shell-after-cancel-1",
+      isError: false,
+      stdout: "shell stdout",
+    });
+    expect(shell.bashExecute).toHaveBeenCalledOnce();
+  });
+
+  it("[managed-thread] forwards direct-shell aborts into the admitted tool dispatch", async () => {
+    const reachedTool = Promise.withResolvers<AbortSignal>();
+    const harness = makeTopLevelRunner({
+      conversationId: "session-direct-shell-abort",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    const shell = configureSessionShellHarness(harness, {
+      execute: async (args) => {
+        const signal = (args as { readonly __abortSignal?: AbortSignal })
+          .__abortSignal;
+        if (signal === undefined) {
+          throw new Error("direct shell dispatch omitted its abort signal");
+        }
+        reachedTool.resolve(signal);
+        if (!signal.aborted) {
+          await new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
+        return {
+          content: "cancelled before the shell changed state",
+          isError: true,
+          effectDisposition: {
+            disposition: "confirmed_no_effect",
+            evidenceKind: "provider_receipt",
+            evidenceRef: "test:direct-shell-abort",
+            evidenceSha256: "a".repeat(64),
+          },
+        };
+      },
+    });
+    await harness.runner.startAgent({
+      objective: "deferred direct shell",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
+    const controller = new AbortController();
+    const execution = harness.runner.executeAgentShell(
+      "session-direct-shell-abort",
+      {
+        sessionId: "session-direct-shell-abort",
+        commandId: "shell-abort-1",
+        command: "printf abort",
+      },
+      controller.signal,
+    );
+    const dispatchSignal = await reachedTool.promise;
+    const reason = new Error("operator aborted direct shell");
+    controller.abort(reason);
+
+    await expect(execution).resolves.toMatchObject({
+      commandId: "shell-abort-1",
+      isError: true,
+      content: expect.stringContaining("operator aborted direct shell"),
+    });
+    expect(dispatchSignal.aborted).toBe(true);
+    expect(dispatchSignal.reason).toBe(reason);
+    expect(shell.bashExecute).toHaveBeenCalledOnce();
+    expect(shell.markDispatched).toHaveBeenCalledOnce();
+    expect(harness.stub.thread.submit).not.toHaveBeenCalled();
+    expect(harness.control.sendInput).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] keeps direct-shell errors session-scoped and accepts an immediate follow-up command", async () => {
+    const agentId = "session-direct-shell-error-scope";
+    const harness = makeTopLevelRunner({
+      conversationId: agentId,
+      threadInitialStatus: {
+        status: "idle",
+        turnId: "turn-direct-shell-idle",
+        endedAtMs: 1,
+      } as AgentStatus,
+    });
+    let executionCount = 0;
+    const shell = configureSessionShellHarness(harness, {
+      execute: async () => {
+        executionCount += 1;
+        if (executionCount === 1) {
+          harness.session.emit({
+            id: "shell-error-scope-1",
+            msg: {
+              type: "error",
+              payload: {
+                cause: "aborted",
+                message: "operator cancelled direct shell",
+              },
+            },
+          });
+          return {
+            content: "operator cancelled direct shell",
+            isError: true,
+            effectDisposition: {
+              disposition: "confirmed_no_effect",
+              evidenceKind: "provider_receipt",
+              evidenceRef: "test:direct-shell-error-scope",
+              evidenceSha256: "b".repeat(64),
+            },
+          };
+        }
+        return {
+          content: "second command succeeded",
+          metadata: {
+            stdout: "second command succeeded",
+            stderr: "",
+            exitCode: 0,
+            timedOut: false,
+          },
+        };
+      },
+    });
+    const emitted: JsonObject[] = [];
+
+    await harness.runner.startAgent({
+      objective: "deferred direct shell",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await harness.runner.attachAgentSessionEvents(agentId, {
+      sessionId: agentId,
+      emit: async (notification) => {
+        emitted.push(notification);
+      },
+    });
+    emitted.length = 0;
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
+
+    const first = harness.runner.executeAgentShell(agentId, {
+      sessionId: agentId,
+      commandId: "shell-error-scope-1",
+      command: "sleep 10",
+    });
+
+    await expect(first).resolves.toMatchObject({
+      commandId: "shell-error-scope-1",
+      isError: true,
+      content: expect.stringContaining("operator cancelled direct shell"),
+    });
+    await vi.waitFor(() => {
+      expect(emitted).toContainEqual(
+        expect.objectContaining({
+          method: "event.session_event",
+          params: expect.objectContaining({
+            agentId,
+            event: expect.objectContaining({
+              id: "shell-error-scope-1",
+              type: "error",
+              payload: expect.objectContaining({
+                message: "operator cancelled direct shell",
+              }),
+            }),
+          }),
+        }),
+      );
+    });
+    expect(
+      emitted.filter(
+        (notification) => notification.method === "event.agent_status",
+      ),
+    ).toEqual([]);
+    await expect(
+      harness.runner.getAgentSnapshot(agentId),
+    ).resolves.toMatchObject({ status: "idle" });
+
+    const second = await harness.runner.executeAgentShell(agentId, {
+      sessionId: agentId,
+      commandId: "shell-error-scope-2",
+      command: "printf second-command",
+    });
+    expect(second.content).toBe("second command succeeded");
+    expect(second).toMatchObject({
+      commandId: "shell-error-scope-2",
+      isError: false,
+      stdout: "second command succeeded",
+    });
+    expect(shell.bashExecute).toHaveBeenCalledTimes(2);
+    await expect(
+      harness.runner.getAgentSnapshot(agentId),
+    ).resolves.toMatchObject({ status: "idle" });
+  });
+
+  it("[managed-thread] scopes model input across an ambiguous fallback-session boundary", async () => {
+    const target = makeTopLevelRunner({
+      conversationId: "session-model-scope-target",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    const other = makeTopLevelRunner({
+      conversationId: "session-model-scope-other",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    const targetSession = target.session as unknown as Session;
+    const otherSession = other.session as unknown as Session;
+    const enteredSendInput = Promise.withResolvers<void>();
+    const releaseSendInput = Promise.withResolvers<void>();
+    const scopedSessions: Array<Session | null> = [];
+    target.control.sendInput.mockImplementation(async () => {
+      scopedSessions.push(peekScopedRuntimeSession());
+      enteredSendInput.resolve();
+      await releaseSendInput.promise;
+      scopedSessions.push(peekScopedRuntimeSession());
+      await Promise.resolve();
+      scopedSessions.push(peekScopedRuntimeSession());
+    });
+
+    clearCurrentRuntimeSession();
+    try {
+      await target.runner.startAgent({
+        objective: "deferred target session",
+        deferInitialTurn: true,
+        unattendedAllow: [],
+        unattendedDeny: [],
+      });
+      await other.runner.startAgent({
+        objective: "deferred other session",
+        deferInitialTurn: true,
+        unattendedAllow: [],
+        unattendedDeny: [],
+      });
+      setCurrentRuntimeSession(targetSession);
+      setCurrentRuntimeSession(otherSession);
+
+      const submission = target.runner.submitAgentMessage(
+        "session-model-scope-target",
+        {
+          sessionId: "session-model-scope-target",
+          content: "continue in the target session",
+          originalContent: "continue in the target session",
+          messageId: "message-model-scope-target",
+          streamId: "stream-model-scope-target",
+          acceptedAt: "2026-08-27T00:00:00.000Z",
+        },
+      );
+      await enteredSendInput.promise;
+      expect(peekScopedRuntimeSession()).toBeNull();
+      releaseSendInput.resolve();
+
+      await expect(submission).resolves.toMatchObject({
+        disposition: "started",
+        terminal: { code: 0 },
+      });
+      expect(scopedSessions).toEqual([
+        targetSession,
+        targetSession,
+        targetSession,
+      ]);
+    } finally {
+      releaseSendInput.resolve();
+      clearCurrentRuntimeSession();
+    }
+  });
+
+  it("fails closed when a skeletal session lacks canonical runtime-settings journal support", async () => {
+    const { runner, shutdown } = makeTopLevelRunner({
+      conversationId: "session-without-runtime-settings-journal",
+      canonicalRuntimeSettings: false,
+    });
+
+    await expect(
+      runner.startAgent({ objective: "reject ephemeral settings authority" }),
+    ).rejects.toThrow(/canonical .*runtime-settings journal/u);
+
+    expect(shutdown).toHaveBeenCalledTimes(1);
+    await expect(
+      runner.getAgentSnapshot("session-without-runtime-settings-journal"),
+    ).resolves.toBeNull();
+  });
+
+  it("clears stale daemon-start provider state with the client snapshot", async () => {
+    const { runner, bootstrap } = makeTopLevelRunner({
+      conversationId: "session-client-provider-snapshot",
+      env: {
+        AGENC_PROVIDER: "openai",
+        AGENC_MODEL: "stale-daemon-model",
+        OPENAI_BASE_URL: "https://stale-daemon.example/v1",
+        XAI_API_KEY: "stale-daemon-key",
+        AGENC_CREDENTIAL_DOCS_MCP: "stale-daemon-mcp-secret",
+        PATH: "/daemon/bin",
+      },
+    });
+
+    await runner.startAgent({
+      objective: "use the client provider snapshot",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+      runtimeOptions: resolveAgentRuntimeOptions({}),
+      envOverrides: collectDaemonClientEnvOverrides({
+        PATH: "/client/bin",
+      }),
+    });
+
+    expect(bootstrap).toHaveBeenCalledOnce();
+    const runtimeEnvironment = vi.mocked(bootstrap).mock.calls[0]?.[0].env;
+    expect(runtimeEnvironment).toMatchObject({ PATH: "/client/bin" });
+    expect(runtimeEnvironment).not.toHaveProperty("AGENC_PROVIDER");
+    expect(runtimeEnvironment).not.toHaveProperty("AGENC_MODEL");
+    expect(runtimeEnvironment).not.toHaveProperty("OPENAI_BASE_URL");
+    expect(runtimeEnvironment).not.toHaveProperty("XAI_API_KEY");
+    expect(runtimeEnvironment).not.toHaveProperty("AGENC_CREDENTIAL_DOCS_MCP");
+  });
+
   it("waits for the exact terminal generation cleanup before explicit restore", async () => {
     let releaseShutdown!: () => void;
     const shutdownBlocked = new Promise<void>((resolve) => {
@@ -568,7 +2380,7 @@ describe("AgenC delegate background-agent runner", () => {
     await expect(
       harness.runner.getAgentSnapshot("session-restore-hydration-retry"),
     ).resolves.not.toBeNull();
-    expect(hydrateStateWith).toHaveBeenCalledTimes(2);
+    expect(hydrateStateWith).toHaveBeenCalledTimes(3);
   });
 
   it("keeps the hydration failure primary when restore cleanup also fails", async () => {
@@ -659,9 +2471,12 @@ describe("AgenC delegate background-agent runner", () => {
         permissionMode: "default",
         prePlanMode: null,
         autoModeActive: false,
+        autoModeAvailable: false,
+        bypassPermissionsModeAvailable: false,
         bypassPermissionsWorkspace: null,
+        bypassPermissionsConsentWorkspace: null,
         model: "base-model",
-        provider: "base-provider",
+        provider: "grok",
         profile: null,
         reasoningEffort: null,
         modelVerbosity: null,
@@ -685,6 +2500,11 @@ describe("AgenC delegate background-agent runner", () => {
       expect(initialSettings?.payload.msg.payload).toMatchObject(baseline);
       expect(harness.permissionModeRegistry.current().mode).toBe("unattended");
 
+      await vi.waitFor(() =>
+        expect(harness.stub.thread.submit).toHaveBeenCalledOnce(),
+      );
+      await harness.stub.thread.submit.mock.results[0]?.value;
+      await Promise.resolve();
       harness.stub.pushStatus({
         status: "idle",
         turnId: "turn-before-cold-resume",
@@ -762,13 +2582,13 @@ describe("AgenC delegate background-agent runner", () => {
     );
 
     await harness.runner.startAgent({
-      objective: "honor explicit yolo",
+      objective: "honor explicit bypass",
       permissionMode: "bypassPermissions",
     });
 
     expect(harness.permissionModeRegistry.current()).toMatchObject({
       mode: "bypassPermissions",
-      bypassPermissionsAcceptedIn: ["/workspace"],
+      bypassPermissionsAcceptedIn: [process.cwd()],
     });
     const settingsEvents = harness.rolloutItems.flatMap((item) => {
       const event = item as {
@@ -781,8 +2601,356 @@ describe("AgenC delegate background-agent runner", () => {
     expect(settingsEvents).toHaveLength(1);
     expect(settingsEvents[0]).toMatchObject({
       permissionMode: "bypassPermissions",
-      bypassPermissionsWorkspace: "/workspace",
+      bypassPermissionsWorkspace: process.cwd(),
     });
+  });
+
+  it("uses one canonical workspace identity when startup uses a symlink spelling", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-runner-workspace-"));
+    try {
+      const workspace = join(root, "workspace");
+      const alias = join(root, "workspace-alias");
+      mkdirSync(workspace);
+      symlinkSync(workspace, alias, "dir");
+      const canonicalWorkspace = realpathSync(workspace);
+      const runId = "session-symlink-bypass-startup";
+      const harness = makeTopLevelRunner({
+        conversationId: runId,
+        canonicalRuntimeSettings: true,
+        workspaceRoot: alias,
+      });
+      await harness.permissionModeRegistry.update(
+        createEmptyToolPermissionContext({
+          mode: "bypassPermissions",
+          isBypassPermissionsModeAvailable: true,
+        }),
+      );
+
+      await harness.runner.startAgent({
+        objective: "honor canonical bypass",
+        permissionMode: "bypassPermissions",
+      });
+
+      expect(harness.permissionModeRegistry.current()).toMatchObject({
+        mode: "bypassPermissions",
+        bypassPermissionsAcceptedIn: [canonicalWorkspace],
+      });
+      const settingsEvents = harness.rolloutItems.flatMap((item) => {
+        const event = item as {
+          payload?: { msg?: { type?: unknown; payload?: unknown } };
+        };
+        return event.payload?.msg?.type === "run_runtime_settings_changed"
+          ? [event.payload.msg.payload]
+          : [];
+      });
+      expect(settingsEvents).toHaveLength(1);
+      expect(settingsEvents[0]).toMatchObject({
+        permissionMode: "bypassPermissions",
+        bypassPermissionsWorkspace: canonicalWorkspace,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("captures and restores bypass authority against the live rebased broker cwd", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-runner-rebase-cwd-"));
+    try {
+      const originalWorkspace = join(root, "original");
+      const rebasedWorkspace = join(root, "worktree");
+      mkdirSync(originalWorkspace);
+      mkdirSync(rebasedWorkspace);
+      const runId = "session-rebased-bypass-authority";
+      const harness = makeTopLevelRunner({
+        conversationId: runId,
+        canonicalRuntimeSettings: true,
+        workspaceRoot: originalWorkspace,
+      });
+      await harness.runner.startAgent({
+        objective: "carry authority into the worktree",
+      });
+
+      await transitionSandboxExecutionBroker(
+        harness.sandboxExecutionBroker,
+        rebasedWorkspace,
+      );
+      await expect(
+        harness.runner.setAgentPermissionMode(runId, {
+          sessionId: runId,
+          mode: "bypassPermissions",
+          bypassAuthority: "operator_tool_approval",
+        }),
+      ).resolves.toMatchObject({ applied: true, mode: "bypassPermissions" });
+
+      const captured = await harness.runner.getAgentSnapshot(runId);
+      const settings = captured?.runtimeSettings;
+      if (settings === undefined) {
+        throw new Error("expected canonical runtime settings after rebase");
+      }
+      expect(settings).toMatchObject({
+        bypassPermissionsWorkspace: rebasedWorkspace,
+        bypassPermissionsConsentWorkspace: rebasedWorkspace,
+      });
+      expect(JSON.stringify(settings)).not.toContain(originalWorkspace);
+      expect(
+        recordedRuntimeSettingsEvents(harness.rolloutItems).at(-1)?.msg
+          ?.payload,
+      ).toMatchObject({
+        bypassPermissionsWorkspace: rebasedWorkspace,
+        bypassPermissionsConsentWorkspace: rebasedWorkspace,
+      });
+
+      harness.persistedBypassConsent.add(rebasedWorkspace);
+      harness.stub.pushStatus({
+        status: "idle",
+        turnId: "turn-before-rebased-restore",
+        endedAtMs: 1,
+      });
+      const suspended =
+        await harness.runner.suspendIdleAgentForDaemonShutdown(runId);
+      expect(suspended.disposition).toBe("suspended");
+      if (suspended.disposition !== "suspended") {
+        throw new Error("expected rebased run to suspend");
+      }
+      harness.session.emit({
+        eventId: `run-resumed:${runId}:1:test`,
+        id: `run-resumed:${runId}:1:test`,
+        msg: {
+          type: "run_resumed",
+          payload: {
+            runId,
+            epoch: 1,
+            suspensionEventId: suspended.suspension.eventId,
+            reason: "explicit_continue",
+            resumedAt: "2026-05-09T00:01:00.000Z",
+          },
+        },
+      });
+
+      await expect(
+        harness.runner.restoreAgent({
+          agentId: runId,
+          objective: "carry authority into the worktree",
+          explicitColdResume: true,
+          resumeSuspendedRun: true,
+          suspendedResumeReason: "explicit_continue",
+          runtimeSettings: settings,
+        }),
+      ).resolves.toBe(true);
+      expect(harness.permissionModeRegistry.current()).toMatchObject({
+        mode: "bypassPermissions",
+        bypassPermissionsAcceptedIn: [rebasedWorkspace],
+      });
+      expect(
+        harness.permissionModeRegistry.current().bypassPermissionsAcceptedIn,
+      ).not.toContain(originalWorkspace);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      label: "active bypass",
+      permissionMode: "bypassPermissions" as const,
+      consentPresent: true,
+    },
+    {
+      label: "active bypass after consent revocation",
+      permissionMode: "bypassPermissions" as const,
+      consentPresent: false,
+    },
+    {
+      label: "plan mode with bypass restore",
+      permissionMode: "plan" as const,
+      consentPresent: true,
+    },
+    {
+      label: "plan mode with revoked bypass restore",
+      permissionMode: "plan" as const,
+      consentPresent: false,
+    },
+  ])(
+    "restores $label only while exact-cwd consent remains persisted",
+    async ({ label, permissionMode, consentPresent }) => {
+      const runId = `session-consent-restore-${label.replaceAll(" ", "-")}`;
+      const workspace = process.cwd();
+      const settings = bypassRestoreSettings(permissionMode, workspace);
+      const rolloutItems = [runtimeSettingsRolloutItem(runId, settings)];
+      const harness = makeTopLevelRunner({
+        conversationId: runId,
+        canonicalRuntimeSettings: true,
+        rolloutItems,
+        persistedBypassConsent: [workspace],
+      });
+      if (!consentPresent) harness.persistedBypassConsent.delete(workspace);
+
+      const restoring = harness.runner.restoreAgent({
+        agentId: runId,
+        objective: "restore exact-cwd permission authority",
+        explicitColdResume: true,
+        runtimeSettings: settings,
+      });
+
+      if (!consentPresent) {
+        await expect(restoring).rejects.toThrow(
+          /requires persisted exact-cwd consent/u,
+        );
+        const bootstrapArgv =
+          vi.mocked(harness.bootstrap).mock.calls[0]?.[0].argv ?? [];
+        expect(bootstrapArgv).not.toContain(
+          "--dangerously-bypass-approvals-and-sandbox",
+        );
+        expect(
+          harness.permissionModeRegistry.current()
+            .bypassPermissionsAcceptedIn ?? [],
+        ).toEqual([]);
+        return;
+      }
+
+      await expect(restoring).resolves.toBe(true);
+      expect(harness.stateRepository.reload).toHaveBeenCalled();
+      expect(harness.permissionModeRegistry.current()).toMatchObject({
+        mode: permissionMode,
+        ...(permissionMode === "plan"
+          ? { prePlanMode: "bypassPermissions" }
+          : {}),
+        bypassPermissionsAcceptedIn: [workspace],
+      });
+    },
+  );
+
+  it("captures inactive auto and exact-cwd durable bypass authority", async () => {
+    const runId = "session-inactive-permission-capabilities";
+    const workspace = process.cwd();
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      canonicalRuntimeSettings: true,
+      persistedBypassConsent: [workspace],
+    });
+    await harness.permissionModeRegistry.update(
+      createEmptyToolPermissionContext({
+        mode: "default",
+        isAutoModeAvailable: true,
+        isBypassPermissionsModeAvailable: false,
+      }),
+    );
+
+    await harness.runner.startAgent({
+      objective: "retain inactive permission capabilities",
+      cwd: workspace,
+    });
+
+    const initialSettings = harness.rolloutItems.find(
+      (item) =>
+        (item as { payload?: { msg?: { type?: unknown } } }).payload?.msg
+          ?.type === "run_runtime_settings_changed",
+    ) as {
+      readonly payload?: { readonly msg?: { readonly payload?: unknown } };
+    };
+    expect(initialSettings.payload?.msg?.payload).toMatchObject({
+      permissionMode: "default",
+      autoModeActive: false,
+      autoModeAvailable: true,
+      bypassPermissionsModeAvailable: true,
+      bypassPermissionsWorkspace: null,
+      bypassPermissionsConsentWorkspace: workspace,
+    });
+    expect(harness.stateRepository.reload).toHaveBeenCalled();
+  });
+
+  it("does not recreate revoked inactive bypass consent from the journal projection", async () => {
+    const runId = "session-revoked-inactive-bypass-consent";
+    const workspace = process.cwd();
+    const settings: RunRuntimeSettingsSnapshot = {
+      permissionMode: "default",
+      prePlanMode: null,
+      autoModeActive: false,
+      autoModeAvailable: true,
+      bypassPermissionsModeAvailable: true,
+      bypassPermissionsWorkspace: null,
+      bypassPermissionsConsentWorkspace: workspace,
+      model: "base-model",
+      provider: "grok",
+      profile: null,
+      reasoningEffort: null,
+      modelVerbosity: null,
+      serviceTier: null,
+      hooksDisabled: false,
+    };
+    const rolloutItems = [runtimeSettingsRolloutItem(runId, settings)];
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      canonicalRuntimeSettings: true,
+      rolloutItems,
+      env: { XAI_API_KEY: "auto-remains-available" },
+    });
+
+    await expect(
+      harness.runner.restoreAgent({
+        agentId: runId,
+        objective: "do not restore revoked inactive consent",
+        explicitColdResume: true,
+        runtimeSettings: settings,
+      }),
+    ).resolves.toBe(true);
+
+    expect(harness.permissionModeRegistry.current()).toMatchObject({
+      mode: "default",
+      isAutoModeAvailable: true,
+      isBypassPermissionsModeAvailable: false,
+      bypassPermissionsAcceptedIn: [],
+    });
+    const settingsEvents = rolloutItems.flatMap((item) => {
+      const event = item as {
+        readonly payload?: {
+          readonly msg?: {
+            readonly type?: unknown;
+            readonly payload?: unknown;
+          };
+        };
+      };
+      return event.payload?.msg?.type === "run_runtime_settings_changed"
+        ? [event.payload.msg.payload]
+        : [];
+    });
+    expect(settingsEvents).toHaveLength(2);
+    expect(settingsEvents.at(-1)).toMatchObject({
+      previousSettingsEventId:
+        "runtime-settings:session-revoked-inactive-bypass-consent:initial",
+      reason: "config_applied",
+      autoModeAvailable: true,
+      bypassPermissionsModeAvailable: false,
+      bypassPermissionsConsentWorkspace: null,
+    });
+    expect(harness.stateRepository.reload).toHaveBeenCalled();
+  });
+
+  it("rejects persisted bypass restore when managed policy disables it", async () => {
+    const runId = "session-consent-restore-policy-disabled";
+    const workspace = process.cwd();
+    const settings = bypassRestoreSettings("bypassPermissions", workspace);
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      canonicalRuntimeSettings: true,
+      rolloutItems: [runtimeSettingsRolloutItem(runId, settings)],
+      persistedBypassConsent: [workspace],
+    });
+    await harness.permissionModeRegistry.update(
+      createEmptyToolPermissionContext({
+        bypassPermissionsModeDisabledByPolicy: true,
+      }),
+    );
+
+    await expect(
+      harness.runner.restoreAgent({
+        agentId: runId,
+        objective: "restore managed permission authority",
+        explicitColdResume: true,
+        runtimeSettings: settings,
+      }),
+    ).rejects.toThrow(/disabled by managed policy/u);
+    expect(harness.stateRepository.reload).toHaveBeenCalled();
   });
 
   it("durably applies explicit restore overrides after the canonical settings baseline", async () => {
@@ -790,9 +2958,12 @@ describe("AgenC delegate background-agent runner", () => {
       permissionMode: "default" as const,
       prePlanMode: null,
       autoModeActive: false,
+      autoModeAvailable: true,
+      bypassPermissionsModeAvailable: false,
       bypassPermissionsWorkspace: null,
+      bypassPermissionsConsentWorkspace: null,
       model: "base-model",
-      provider: "base-provider",
+      provider: "grok",
       profile: null,
       reasoningEffort: null,
       modelVerbosity: null,
@@ -825,6 +2996,7 @@ describe("AgenC delegate background-agent runner", () => {
       conversationId: "session-settings-override",
       rolloutItems,
       canonicalRuntimeSettings: true,
+      env: { XAI_API_KEY: "auto-remains-available" },
     });
 
     await expect(
@@ -834,7 +3006,7 @@ describe("AgenC delegate background-agent runner", () => {
         explicitColdResume: true,
         runtimeSettings: baseline,
         model: "override-model",
-        provider: "override-provider",
+        provider: "openai",
         profile: "override-profile",
         permissionMode: "plan",
       }),
@@ -859,7 +3031,7 @@ describe("AgenC delegate background-agent runner", () => {
           permissionMode: "plan",
           prePlanMode: "default",
           model: "override-model",
-          provider: "override-provider",
+          provider: "openai",
           profile: "override-profile",
         },
       },
@@ -869,10 +3041,181 @@ describe("AgenC delegate background-agent runner", () => {
       prePlanMode: "default",
     });
     expect(harness.session.pendingProviderSwitch).toEqual({
-      provider: "override-provider",
+      provider: "openai",
       model: "override-model",
       profile: "override-profile",
     });
+  });
+
+  it.each([
+    {
+      label: "provider-only override",
+      config: { model_provider: "openai", model: "gpt-5-mini" },
+      override: { provider: "openai" },
+      expected: { provider: "openai", model: "gpt-5-mini" },
+    },
+    {
+      label: "model-only override",
+      config: {},
+      override: { model: "gpt-5" },
+      expected: { provider: "openai", model: "gpt-5" },
+    },
+  ])("canonically resolves a $label before durable restore", async (entry) => {
+    const runId = `session-settings-${entry.label.replaceAll(" ", "-")}`;
+    const baseline = canonicalRuntimeSettings();
+    const rolloutItems = [runtimeSettingsRolloutItem(runId, baseline)];
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      rolloutItems,
+      canonicalRuntimeSettings: true,
+    });
+    Object.assign(harness.configStore, {
+      current: () => entry.config,
+    });
+
+    await expect(
+      harness.runner.restoreAgent({
+        agentId: runId,
+        objective: "resolve one restore selection",
+        explicitColdResume: true,
+        runtimeSettings: baseline,
+        ...entry.override,
+      }),
+    ).resolves.toBe(true);
+
+    expect(harness.session.pendingProviderSwitch).toEqual(entry.expected);
+    expect(
+      recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload,
+    ).toMatchObject(entry.expected);
+  });
+
+  it.each([
+    {
+      label: "a conflicting pair",
+      override: { provider: "grok", model: "gpt-5" },
+    },
+    {
+      label: "an unknown provider",
+      override: { provider: "retired-provider" },
+    },
+  ])("rejects $label before committing restore overrides", async (entry) => {
+    const runId = `session-settings-reject-${entry.label.replaceAll(" ", "-")}`;
+    const baseline = canonicalRuntimeSettings();
+    const rolloutItems = [runtimeSettingsRolloutItem(runId, baseline)];
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      rolloutItems,
+      canonicalRuntimeSettings: true,
+    });
+
+    await expect(
+      harness.runner.restoreAgent({
+        agentId: runId,
+        objective: "reject an invalid restore selection",
+        explicitColdResume: true,
+        runtimeSettings: baseline,
+        ...entry.override,
+      }),
+    ).rejects.toThrow();
+
+    expect(recordedRuntimeSettingsEvents(rolloutItems)).toHaveLength(1);
+    expect(harness.session.pendingProviderSwitch).toBeNull();
+  });
+
+  it("rejects a noncanonical journal pair before applying restored state", async () => {
+    const runId = "session-settings-invalid-journal-pair";
+    const invalid = canonicalRuntimeSettings({
+      permissionMode: "plan",
+      prePlanMode: "default",
+      provider: "grok",
+      model: "gpt-5",
+    });
+    const rolloutItems = [runtimeSettingsRolloutItem(runId, invalid)];
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      rolloutItems,
+      canonicalRuntimeSettings: true,
+    });
+
+    await expect(
+      harness.runner.restoreAgent({
+        agentId: runId,
+        objective: "reject invalid journal authority",
+        explicitColdResume: true,
+        runtimeSettings: invalid,
+      }),
+    ).rejects.toThrow("runtime settings snapshot is not canonically valid");
+
+    expect(harness.session.pendingProviderSwitch).toBeNull();
+    expect(harness.sessionState.sessionConfiguration).toMatchObject({
+      provider: { slug: "grok" },
+      collaborationMode: { model: "base-model" },
+    });
+    expect(harness.permissionModeRegistry.current().mode).not.toBe("plan");
+  });
+
+  it("applies restored hook suppression before dispatching SessionStart", async () => {
+    const runId = "session-hooks-disabled-restore";
+    const settings: RunRuntimeSettingsSnapshot = {
+      permissionMode: "default",
+      prePlanMode: null,
+      autoModeActive: false,
+      autoModeAvailable: false,
+      bypassPermissionsModeAvailable: false,
+      bypassPermissionsWorkspace: null,
+      bypassPermissionsConsentWorkspace: null,
+      model: "base-model",
+      provider: "grok",
+      profile: null,
+      reasoningEffort: null,
+      modelVerbosity: null,
+      serviceTier: null,
+      hooksDisabled: true,
+    };
+    let hooksDisabled = false;
+    const startupHook = vi.fn();
+    const flushDeferredSessionStartHook = vi.fn(async () => {
+      if (!hooksDisabled) startupHook();
+    });
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      canonicalRuntimeSettings: true,
+      rolloutItems: [runtimeSettingsRolloutItem(runId, settings)],
+      flushDeferredSessionStartHook,
+    });
+    Object.assign(harness.session, {
+      services: {
+        ...(harness.session as { services: Record<string, unknown> }).services,
+        hooksRuntime: {
+          sourcePath: () => "/home/agent/.agenc/config.toml",
+          isDisabled: () => hooksDisabled,
+          isHardSuppressed: () => false,
+          isExecutionSuppressed: () => hooksDisabled,
+          issues: () => [],
+          listHooks: () => [],
+          latestDiagnostics: () => [],
+          setDisabled: (disabled: boolean) => {
+            hooksDisabled = disabled;
+          },
+        },
+      },
+    });
+
+    await expect(
+      harness.runner.restoreAgent({
+        agentId: runId,
+        objective: "restore hook authority",
+        explicitColdResume: true,
+        runtimeSettings: settings,
+      }),
+    ).resolves.toBe(true);
+
+    expect(vi.mocked(harness.bootstrap).mock.calls[0]?.[0]).toMatchObject({
+      deferSessionStartHooks: true,
+    });
+    expect(flushDeferredSessionStartHook).toHaveBeenCalledOnce();
+    expect(hooksDisabled).toBe(true);
+    expect(startupHook).not.toHaveBeenCalled();
   });
 
   it("commits startup activation before the first resumed user input", async () => {
@@ -1055,6 +3398,23 @@ describe("AgenC delegate background-agent runner", () => {
     });
   });
 
+  it("maps MCP invalidations to the strict passive status notification", () => {
+    expect(
+      notificationFromDaemonEvent("session-1", "agent-1", {
+        id: "mcp-status:agent-1:7",
+        type: "mcp_status_changed",
+        payload: { revision: 7 },
+      }),
+    ).toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.mcp_status_changed",
+      params: {
+        sessionId: "session-1",
+        revision: 7,
+      },
+    });
+  });
+
   it("derives collision-free legacy eventIds without changing reused envelope ids", () => {
     const first = daemonEventFromUnboundSessionEvent({
       id: "reused-tool-progress-sub-id",
@@ -1211,6 +3571,153 @@ describe("AgenC delegate background-agent runner", () => {
         (event as { params?: { sequence?: unknown } }).params?.sequence,
       ).toEqual(expect.any(Number));
     }
+  });
+
+  it("reads cached MCP status but keeps invalidations live-only and coalesced", async () => {
+    const { runner, session, stub, shutdown } = makeTopLevelRunner({
+      conversationId: "session-mcp-status",
+    });
+    const snapshot = Object.freeze({
+      revision: 7,
+      servers: Object.freeze([
+        Object.freeze({
+          name: "audit-ping",
+          transport: "stdio" as const,
+          enabled: true,
+          required: false,
+          state: "connected" as const,
+          displayTarget: "node",
+          toolCount: 1,
+        }),
+      ]),
+      tools: Object.freeze([
+        Object.freeze({
+          serverName: "audit-ping",
+          name: "mcp.audit-ping.check",
+        }),
+      ]),
+    });
+    let invalidationListener: ((revision: number) => void) | undefined;
+    const unsubscribe = vi.fn();
+    Object.assign(session.services, {
+      mcpManager: {
+        mcpSurfaceSnapshot: () => snapshot,
+        subscribeMcpSurfaceInvalidations: (
+          listener: (revision: number) => void,
+        ) => {
+          invalidationListener = listener;
+          return unsubscribe;
+        },
+      },
+    });
+
+    await runner.startAgent({
+      objective: "inspect MCP status",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await expect(runner.getMcpStatus("session-mcp-status")).resolves.toBe(
+      snapshot,
+    );
+
+    invalidationListener?.(8);
+    await new Promise((resolve) => setImmediate(resolve));
+    const emitted: unknown[] = [];
+    let markMcpDeliveryStarted!: () => void;
+    const mcpDeliveryStarted = new Promise<void>((resolve) => {
+      markMcpDeliveryStarted = resolve;
+    });
+    let releaseMcpDelivery!: () => void;
+    await runner.attachAgentSessionEvents("session-mcp-status", {
+      sessionId: "daemon-session-1",
+      emit: (event) => {
+        emitted.push(event);
+        if (
+          (event as { readonly method?: unknown }).method ===
+            "event.mcp_status_changed" &&
+          (event as { readonly params?: { readonly revision?: unknown } })
+            .params?.revision === 12
+        ) {
+          return new Promise<void>((resolve) => {
+            releaseMcpDelivery = resolve;
+            markMcpDeliveryStarted();
+          });
+        }
+      },
+    });
+    expect(
+      emitted.filter(
+        (event) =>
+          (event as { readonly method?: unknown }).method ===
+          "event.mcp_status_changed",
+      ),
+    ).toEqual([]);
+
+    invalidationListener?.(9);
+    invalidationListener?.(10);
+    invalidationListener?.(11);
+    await vi.waitFor(() => {
+      expect(
+        emitted.filter(
+          (event) =>
+            (event as { readonly method?: unknown }).method ===
+            "event.mcp_status_changed",
+        ),
+      ).toEqual([
+        {
+          jsonrpc: JSON_RPC_VERSION,
+          method: "event.mcp_status_changed",
+          params: { sessionId: "daemon-session-1", revision: 11 },
+        },
+      ]);
+    });
+
+    invalidationListener?.(12);
+    await mcpDeliveryStarted;
+
+    stub.pushStatus({
+      status: "completed",
+      turnId: "turn-mcp-status",
+      endedAtMs: 2,
+      lastMessage: "done",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(shutdown).not.toHaveBeenCalled();
+    invalidationListener?.(13);
+
+    releaseMcpDelivery();
+    await vi.waitFor(() => {
+      expect(
+        emitted.filter(
+          (event) =>
+            (event as { readonly method?: unknown }).method ===
+            "event.mcp_status_changed",
+        ),
+      ).toEqual([
+        {
+          jsonrpc: JSON_RPC_VERSION,
+          method: "event.mcp_status_changed",
+          params: { sessionId: "daemon-session-1", revision: 11 },
+        },
+        {
+          jsonrpc: JSON_RPC_VERSION,
+          method: "event.mcp_status_changed",
+          params: { sessionId: "daemon-session-1", revision: 12 },
+        },
+      ]);
+    });
+    await vi.waitFor(() => expect(shutdown).toHaveBeenCalledOnce());
+    await vi.waitFor(async () => {
+      await expect(
+        runner.getAgentSnapshot("session-mcp-status"),
+      ).resolves.toBeNull();
+    });
+    expect(unsubscribe).toHaveBeenCalledOnce();
+
+    const emittedAfterRetirement = emitted.length;
+    invalidationListener?.(14);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(emitted).toHaveLength(emittedAfterRetirement);
   });
 
   it("broadcasts a same-session rollback replacement before acknowledging it", async () => {
@@ -1604,20 +4111,16 @@ describe("AgenC delegate background-agent runner", () => {
 
   it("suspends a daemon-shutdown idle run without poisoning it terminal", async () => {
     let clock = "2026-05-09T00:00:00.000Z";
-    const { runner, stub, rolloutItems, rolloutStore } = makeTopLevelRunner({
+    const { runner, rolloutItems, rolloutStore } = makeTopLevelRunner({
       conversationId: "session-daemon-suspend-idle",
       now: () => clock,
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
     });
     await runner.startAgent({
       objective: "stay resumable",
       initialContent: [],
       unattendedAllow: [],
       unattendedDeny: [],
-    });
-    stub.pushStatus({
-      status: "idle",
-      turnId: "turn-finished",
-      endedAtMs: 1,
     });
     rolloutStore.assertRunSuspendable.mockImplementation(() => {
       clock = "2026-05-09T00:05:00.000Z";
@@ -1636,7 +4139,10 @@ describe("AgenC delegate background-agent runner", () => {
       const event = (item as { payload?: { msg?: { type?: string } } }).payload;
       return event?.msg?.type?.startsWith("run_") ? [event.msg.type] : [];
     });
-    expect(lifecycle).toEqual(["run_suspended"]);
+    expect(lifecycle).toEqual([
+      "run_runtime_settings_changed",
+      "run_suspended",
+    ]);
     expect(
       rolloutItems.find(
         (item) =>
@@ -1700,6 +4206,7 @@ describe("AgenC delegate background-agent runner", () => {
     const { runner, stub, rolloutItems, rolloutStore } = makeTopLevelRunner({
       conversationId: "session-daemon-suspend-fsync-failure",
       emitAfterAppendError: new Error("append completed but fsync failed"),
+      emitAfterAppendAfter: 1,
       syncCanonicalTail,
     });
     await runner.startAgent({
@@ -1821,7 +4328,7 @@ describe("AgenC delegate background-agent runner", () => {
       const event = (item as { payload?: { msg?: { type?: string } } }).payload;
       return event?.msg?.type?.startsWith("run_") ? [event.msg.type] : [];
     });
-    expect(lifecycle).toEqual(["run_terminal"]);
+    expect(lifecycle).toEqual(["run_runtime_settings_changed", "run_terminal"]);
   });
 
   it("cancels and quiesces when the root is idle but a child remains open", async () => {
@@ -1860,7 +4367,7 @@ describe("AgenC delegate background-agent runner", () => {
       const event = (item as { payload?: { msg?: { type?: string } } }).payload;
       return event?.msg?.type?.startsWith("run_") ? [event.msg.type] : [];
     });
-    expect(lifecycle).toEqual(["run_terminal"]);
+    expect(lifecycle).toEqual(["run_runtime_settings_changed", "run_terminal"]);
   });
 
   it("canonicalizes cancellation and admission decisions before the terminal tail", async () => {
@@ -1951,11 +4458,13 @@ describe("AgenC delegate background-agent runner", () => {
     expect(cancelAdmissions).toHaveBeenCalledOnce();
   });
 
-  it("aborts and journals a pending permission before a budget terminal", async () => {
+  it("does not revive the removed runner-side budget monitor from unknown input", async () => {
     let totalTokens = 0;
     const { runner, session, rolloutItems } = makeTopLevelRunner({
       conversationId: "session-budget-pending-permission",
-      agentBudget: { token_cap: 1 },
+      // A stale caller may still pass the retired field at runtime. Unknown
+      // constructor data must not recreate a second enforcement authority.
+      additionalRunnerOptions: { agentBudget: { token_cap: 1 } },
       totalTokenUsage: () => ({
         inputTokens: totalTokens,
         outputTokens: 0,
@@ -1985,12 +4494,12 @@ describe("AgenC delegate background-agent runner", () => {
             clear() {},
           },
           callId: "permission-budget-call",
-          toolName: { name: "Bash" },
+          toolName: { name: "exec_command" },
           payload: { kind: "function", arguments: '{"cmd":"true"}' },
           source: "direct",
         } as never,
         callId: "permission-budget-call",
-        toolName: "Bash",
+        toolName: "exec_command",
         turnId: "turn-budget-permission",
       },
       resolver: resolver as never,
@@ -2007,51 +4516,28 @@ describe("AgenC delegate background-agent runner", () => {
 
     totalTokens = 2;
     session.emitPhaseEvent({ type: "assistant_text", content: "budget tick" });
+    let settled = false;
+    void pending.finally(() => {
+      settled = true;
+    });
+    for (let index = 0; index < 10; index += 1) await Promise.resolve();
+
+    expect(settled).toBe(false);
+    expect(
+      rolloutItems.some(
+        (item) =>
+          (item as { payload?: { msg?: { type?: unknown } } }).payload?.msg
+            ?.type === "run_terminal",
+      ),
+    ).toBe(false);
+    expect(
+      await runner.getAgentSnapshot("session-budget-pending-permission"),
+    ).toMatchObject({ status: "running" });
+
+    await runner.stopAgent("session-budget-pending-permission", "test_cleanup");
     await expect(pending).resolves.toMatchObject({
       decision: { kind: "abort" },
     });
-    await vi.waitFor(() =>
-      expect(
-        rolloutItems.some(
-          (item) =>
-            (item as { payload?: { msg?: { type?: unknown } } }).payload?.msg
-              ?.type === "run_terminal",
-        ),
-      ).toBe(true),
-    );
-
-    const canonical = rolloutItems
-      .filter(
-        (
-          item,
-        ): item is {
-          readonly payload: {
-            readonly msg: {
-              readonly type: string;
-              readonly payload: Record<string, unknown>;
-            };
-          };
-        } => (item as { type?: unknown }).type === "event_msg",
-      )
-      .map((item) => item.payload);
-    const relevant = canonical.filter((event) =>
-      ["request_permissions", "permission_decision", "run_terminal"].includes(
-        event.msg.type,
-      ),
-    );
-    expect(relevant.map((event) => event.msg.type)).toEqual([
-      "request_permissions",
-      "permission_decision",
-      "run_terminal",
-    ]);
-    expect(relevant[1]?.msg.payload).toMatchObject({
-      callId: "permission-budget-call",
-      decision: "abort",
-    });
-    expect(relevant[2]?.msg.payload).toMatchObject({
-      stopReason: "budget_limit",
-    });
-    expect(canonical.at(-1)?.msg.type).toBe("run_terminal");
   });
 
   it("commits an epoch-aware terminal at the quiesced shutdown boundary and publishes it canonically", async () => {
@@ -2196,10 +4682,10 @@ describe("AgenC delegate background-agent runner", () => {
       params: {
         type: "event_gap",
         runId: "session-buffer-gap",
-        retiredCount: 6,
+        retiredCount: 7,
         coordinatesAvailable: true,
         afterSequence: 0,
-        firstAvailableSequence: 7,
+        firstAvailableSequence: 8,
       },
     });
   });
@@ -2388,13 +4874,21 @@ describe("AgenC delegate background-agent runner", () => {
       status: "running",
     });
 
-    expect(bootstrap).toHaveBeenCalledWith({
-      env: { AGENC_HOME: "/tmp/agenc-home" },
-      argv: ["/usr/bin/node", "/opt/agenc/bin/agenc.js", "--model", "grok-4"],
-      cwd: "/workspace",
-      executionAdmissionAutonomous: true,
-      csvAgentJobsRepositories,
-    });
+    expect(bootstrap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: expect.objectContaining({
+          AGENC_HOME: "/tmp/agenc-home",
+        }),
+        argv: ["/usr/bin/node", "/opt/agenc/bin/agenc.js", "--model", "grok-4"],
+        cwd: "/workspace",
+        executionAdmissionAutonomous: true,
+        csvAgentJobsRepositories,
+      }),
+    );
+    const runtimeEnvironment = vi.mocked(bootstrap).mock.calls[0]?.[0].env;
+    expect(runtimeEnvironment).not.toHaveProperty("AGENC_PROVIDER");
+    expect(runtimeEnvironment).not.toHaveProperty("AGENC_MODEL");
+    expect(runtimeEnvironment).not.toHaveProperty("XAI_API_KEY");
     expect(permissionModeRegistry.update).toHaveBeenCalledTimes(1);
     expect(permissionUpdates[0]).toMatchObject({
       mode: "unattended",
@@ -2406,10 +4900,19 @@ describe("AgenC delegate background-agent runner", () => {
     expect(shutdown).not.toHaveBeenCalled();
   });
 
-  it("inserts generated bootstrap options before a positional daemon argv", async () => {
+  it("uses only structured agent configuration, never inherited daemon argv", async () => {
     const { runner, bootstrap } = makeTopLevelRunner({
       conversationId: "positional-bootstrap-session",
-      argv: ["node", "agenc", "daemon", "run"],
+      argv: [
+        "node",
+        "agenc",
+        "--provider",
+        "grok",
+        "--config",
+        "/daemon-launch-config.toml",
+        "daemon",
+        "status",
+      ],
     });
 
     await runner.startAgent({
@@ -2417,6 +4920,7 @@ describe("AgenC delegate background-agent runner", () => {
       provider: "openai",
       model: "gpt-5",
       profile: "fast",
+      configPath: "/workspace/explicit-config.toml",
       permissionMode: "plan",
       unattendedAllow: [],
       unattendedDeny: [],
@@ -2433,20 +4937,71 @@ describe("AgenC delegate background-agent runner", () => {
           "gpt-5",
           "--profile",
           "fast",
+          "--config",
+          "/workspace/explicit-config.toml",
           "--permission-mode",
           "plan",
-          "daemon",
-          "run",
         ],
       }),
     );
   });
 
-  it("lets the shared admission kernel exclusively enforce agent budget caps", async () => {
+  it("keeps ordinary bypass out of the combined dangerous startup flag", async () => {
+    const { runner, bootstrap } = makeTopLevelRunner({
+      conversationId: "canonical-bypass-bootstrap-session",
+    });
+
+    await runner.startAgent({
+      objective: "compile without approval prompts",
+      permissionMode: "bypassPermissions",
+      unattendedAllow: [],
+      unattendedDeny: [],
+      runtimeOptions: resolveAgentRuntimeOptions({}),
+    });
+
+    const argv = vi.mocked(bootstrap).mock.calls[0]?.[0].argv ?? [];
+    expect(argv.slice(-2)).toEqual([
+      "--permission-mode",
+      "bypassPermissions",
+    ]);
+    expect(argv).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(argv).not.toContain("--yolo");
+    expect(argv).not.toContain("--allow-dangerously-skip-permissions");
+  });
+
+  it("forwards combined dangerous authority only through runtime options", async () => {
+    const { runner, bootstrap } = makeTopLevelRunner({
+      conversationId: "dangerous-runtime-options-bootstrap-session",
+    });
+    const runtimeOptions = resolveAgentRuntimeOptions({}, {
+      dangerouslyBypassApprovalsAndSandbox: true,
+    });
+
+    await runner.startAgent({
+      objective: "compile with explicit sandbox escape",
+      permissionMode: "bypassPermissions",
+      unattendedAllow: [],
+      unattendedDeny: [],
+      runtimeOptions,
+    });
+
+    expect(bootstrap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        argv: expect.arrayContaining([
+          "--permission-mode",
+          "bypassPermissions",
+        ]),
+        runtimeOptions,
+      }),
+    );
+    const argv = vi.mocked(bootstrap).mock.calls[0]?.[0].argv ?? [];
+    expect(argv).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+  });
+
+  it("passes the sole budget authority into session execution admission", async () => {
     const executionAdmissionKernel = {} as ExecutionAdmissionKernel;
     const { runner, bootstrap, shutdown } = makeTopLevelRunner({
       conversationId: "kernel-budget-session",
-      agentBudget: { token_cap: 0 },
       executionAdmissionKernel,
     });
 
@@ -2467,6 +5022,523 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
+  it("publishes a model successor only after the live provider selection is staged and keeps attach snapshots behind the mutation", async () => {
+    const agentId = "model-publication-order";
+    const { runner, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+
+    const observations: Array<{
+      readonly pending: unknown;
+      readonly snapshotSettled: boolean;
+    }> = [];
+    let attachSnapshot: ReturnType<typeof runner.getAgentSnapshot> | undefined;
+    let snapshotSettled = false;
+    let attachBarrierHeld = false;
+    let attachBarrierProbe: Promise<void> | undefined;
+    const unsubscribe = session.eventLog.subscribe((event: unknown) => {
+      if (
+        (event as { msg?: { type?: unknown } }).msg?.type !==
+        "run_runtime_settings_changed"
+      ) {
+        return;
+      }
+      attachSnapshot = runner.getAgentSnapshot(agentId);
+      void attachSnapshot.then(() => {
+        snapshotSettled = true;
+      });
+      attachBarrierProbe = Promise.resolve().then(() => {
+        attachBarrierHeld = !snapshotSettled;
+      });
+      observations.push({
+        pending: session.pendingProviderSwitch,
+        snapshotSettled,
+      });
+    });
+
+    const result = await runner.setAgentModel(agentId, {
+      model: "gpt-5",
+      provider: "openai",
+    });
+    expect(result).toMatchObject({
+      applied: true,
+      provider: "openai",
+      model: "gpt-5",
+    });
+    unsubscribe();
+
+    const successor = recordedRuntimeSettingsEvents(rolloutItems).at(-1);
+    expect(result.runtimeSettingsEventId).toBe(successor?.eventId);
+    expect(successor?.msg?.payload).toMatchObject({
+      provider: result.provider,
+      model: result.model,
+    });
+
+    expect(observations).toEqual([
+      {
+        pending: { provider: "openai", model: "gpt-5" },
+        snapshotSettled: false,
+      },
+    ]);
+    await expect(attachSnapshot).resolves.toMatchObject({
+      runtimeSettings: { provider: "openai", model: "gpt-5" },
+    });
+    await attachBarrierProbe;
+    expect(attachBarrierHeld).toBe(true);
+    expect(snapshotSettled).toBe(true);
+  });
+
+  it("resolves a model-only background change before staging durable settings", async () => {
+    const agentId = "model-only-canonical-selection";
+    const { runner, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+
+    await expect(
+      runner.setAgentModel(agentId, { model: "gpt-5" }),
+    ).resolves.toMatchObject({ applied: true });
+
+    expect(session.pendingProviderSwitch).toEqual({
+      provider: "openai",
+      model: "gpt-5",
+    });
+    expect(
+      recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload,
+    ).toMatchObject({
+      reason: "model_provider_changed",
+      provider: "openai",
+      model: "gpt-5",
+    });
+    await expect(runner.getAgentSnapshot(agentId)).resolves.toMatchObject({
+      runtimeSettings: { provider: "openai", model: "gpt-5" },
+    });
+  });
+
+  it("does not publish model settings when provider preparation fails", async () => {
+    const agentId = "model-provider-preparation-failure";
+    const { runner, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const before = recordedRuntimeSettingsEvents(rolloutItems);
+    vi.mocked(session.prepareProviderSwitch).mockRejectedValueOnce(
+      new Error("injected provider preparation failure"),
+    );
+
+    await expect(
+      runner.setAgentModel(agentId, {
+        provider: "openai",
+        model: "gpt-5",
+      }),
+    ).rejects.toThrow("injected provider preparation failure");
+
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(recordedRuntimeSettingsEvents(rolloutItems)).toEqual(before);
+    await expect(runner.getAgentSnapshot(agentId)).resolves.toMatchObject({
+      runtimeSettings: { provider: "grok", model: "base-model" },
+    });
+  });
+
+  it("keeps the runtime-settings cursor unchanged for the active provider/model pair", async () => {
+    const agentId = "unchanged-provider-model-pair";
+    const { runner, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const before = recordedRuntimeSettingsEvents(rolloutItems);
+    const cursor = before.at(-1)?.eventId;
+
+    await expect(
+      runner.setAgentModel(agentId, {
+        provider: "grok",
+        model: "base-model",
+      }),
+    ).resolves.toMatchObject({
+      applied: false,
+      provider: "grok",
+      model: "base-model",
+      runtimeSettingsEventId: cursor,
+      summary: "Model unchanged: grok/base-model.",
+    });
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(recordedRuntimeSettingsEvents(rolloutItems)).toHaveLength(
+      before.length,
+    );
+  });
+
+  it("rejects an impossible background provider/model pair before durable staging", async () => {
+    const agentId = "conflicting-model-provider-selection";
+    const { runner, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const before = recordedRuntimeSettingsEvents(rolloutItems);
+    const beforeEvents = before.length;
+    const originalCursor = before.at(-1)?.eventId;
+
+    const result = await runner.setAgentModel(agentId, {
+      provider: "grok",
+      model: "gpt-5",
+    });
+    expect(result).toMatchObject({
+      applied: false,
+      provider: "grok",
+      model: "base-model",
+      runtimeSettingsEventId: originalCursor,
+      summary: expect.stringContaining("belongs to provider 'openai'"),
+    });
+
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(recordedRuntimeSettingsEvents(rolloutItems)).toHaveLength(
+      beforeEvents,
+    );
+  });
+
+  it("keeps canonical runtime settings detached from mutable in-process snapshots", async () => {
+    const agentId = "runtime-settings-snapshot-isolation";
+    let hooksDisabled = false;
+    const { runner, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        hooksRuntime: {
+          sourcePath: () => "/home/agent/.agenc/config.toml",
+          isDisabled: () => hooksDisabled,
+          isHardSuppressed: () => false,
+          isExecutionSuppressed: () => hooksDisabled,
+          issues: () => [],
+          listHooks: () => [],
+          latestDiagnostics: () => [],
+          setDisabled: (next: boolean) => {
+            hooksDisabled = next;
+          },
+        },
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    await runner.setAgentPermissionMode(agentId, {
+      sessionId: agentId,
+      mode: "plan",
+    });
+
+    const exposed = (await runner.getAgentSnapshot(agentId))?.runtimeSettings;
+    if (exposed === undefined) {
+      throw new Error("expected exposed runtime settings");
+    }
+    const canonical = structuredClone(exposed);
+    expect(Object.isFrozen(exposed)).toBe(true);
+    for (const [key, value] of Object.entries(exposed)) {
+      const replacement =
+        typeof value === "boolean"
+          ? !value
+          : typeof value === "string"
+            ? `${value}-mutated`
+            : "mutated";
+      expect(Reflect.set(exposed, key, replacement)).toBe(false);
+    }
+    const detached = (await runner.getAgentSnapshot(agentId))?.runtimeSettings;
+    expect(detached).toEqual(canonical);
+    expect(detached).not.toBe(exposed);
+
+    const beforeNoOps = recordedRuntimeSettingsEvents(rolloutItems).length;
+    await expect(runner.setAgentModel(agentId, {})).resolves.toMatchObject({
+      applied: false,
+    });
+    await expect(
+      runner.setAgentHooksDisabled(agentId, { disabled: false }),
+    ).resolves.toMatchObject({ applied: false });
+    await expect(
+      runner.applyAgentConfig(agentId, { sessionId: agentId }),
+    ).resolves.toMatchObject({ applied: false });
+    await expect(
+      runner.setAgentPermissionMode(agentId, {
+        sessionId: agentId,
+        mode: "plan",
+      }),
+    ).resolves.toMatchObject({ applied: false });
+    expect(recordedRuntimeSettingsEvents(rolloutItems)).toHaveLength(
+      beforeNoOps,
+    );
+
+    let pending: {
+      provider: string;
+      model: string;
+      profile?: string;
+    } | null = null;
+    let failNextStage = true;
+    Object.defineProperty(session, "pendingProviderSwitch", {
+      configurable: true,
+      get: () => pending,
+    });
+    Object.assign(session, {
+      stagePreparedProviderSwitch: (prepared: {
+        pending: {
+          provider: string;
+          model: string;
+          profile?: string;
+        };
+      }) => {
+        if (failNextStage) {
+          failNextStage = false;
+          throw new Error("injected isolated snapshot staging failure");
+        }
+        pending = prepared.pending;
+      },
+      setPendingProviderSwitch: (
+        spec: {
+          provider: string;
+          model: string;
+          profile?: string;
+        } | null,
+      ) => {
+        pending = spec;
+      },
+    });
+
+    await expect(
+      runner.setAgentModel(agentId, {
+        model: "gpt-5",
+        provider: "openai",
+      }),
+    ).rejects.toThrow("injected isolated snapshot staging failure");
+    await expect(runner.getAgentSnapshot(agentId)).resolves.toMatchObject({
+      runtimeSettings: canonical,
+    });
+    expect(
+      recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload,
+    ).toMatchObject({
+      ...canonical,
+      reason: "compensating_rollback",
+    });
+  });
+
+  it("closes a failed prepared model successor with a durable compensation after restoring live state", async () => {
+    const agentId = "model-mutation-compensation-order";
+    const { runner, session, rolloutItems, rolloutStore } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    let pending: {
+      provider: string;
+      model: string;
+      profile?: string;
+    } | null = null;
+    let failNextStage = true;
+    Object.defineProperty(session, "pendingProviderSwitch", {
+      configurable: true,
+      get: () => pending,
+    });
+    Object.assign(session, {
+      stagePreparedProviderSwitch: (prepared: {
+        pending: {
+          provider: string;
+          model: string;
+          profile?: string;
+        };
+      }) => {
+        if (failNextStage) {
+          failNextStage = false;
+          throw new Error("injected provider staging failure");
+        }
+        pending = prepared.pending;
+      },
+      setPendingProviderSwitch: (
+        spec: {
+          provider: string;
+          model: string;
+          profile?: string;
+        } | null,
+      ) => {
+        pending = spec;
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+
+    const published: Array<{
+      readonly pending: unknown;
+      readonly payload: Record<string, unknown>;
+    }> = [];
+    const unsubscribe = session.eventLog.subscribe((event: unknown) => {
+      const message = (
+        event as {
+          msg?: { type?: unknown; payload?: Record<string, unknown> };
+        }
+      ).msg;
+      if (message?.type !== "run_runtime_settings_changed") return;
+      published.push({
+        pending,
+        payload: message.payload ?? {},
+      });
+    });
+
+    await expect(
+      runner.setAgentModel(agentId, {
+        model: "gpt-5",
+        provider: "openai",
+      }),
+    ).rejects.toThrow("injected provider staging failure");
+    unsubscribe();
+
+    expect(pending).toBeNull();
+    expect(published).toHaveLength(1);
+    expect(published[0]).toMatchObject({
+      pending: null,
+      payload: {
+        reason: "compensating_rollback",
+        provider: "grok",
+        model: "base-model",
+      },
+    });
+    const settingsEvents = rolloutItems.flatMap((item) => {
+      const event = item as {
+        payload?: {
+          eventId?: string;
+          msg?: { type?: unknown; payload?: Record<string, unknown> };
+        };
+      };
+      return event.payload?.msg?.type === "run_runtime_settings_changed"
+        ? [event.payload]
+        : [];
+    });
+    expect(settingsEvents).toHaveLength(3);
+    expect(settingsEvents[2]?.msg?.payload).toMatchObject({
+      previousSettingsEventId: settingsEvents[1]?.eventId,
+      rollbackOfSettingsEventId: settingsEvents[1]?.eventId,
+      reason: "compensating_rollback",
+    });
+    expect(rolloutStore.recordRunRuntimeSettingsEvent).toHaveBeenCalledTimes(3);
+    await expect(runner.getAgentSnapshot(agentId)).resolves.toMatchObject({
+      runtimeSettingsEventId: settingsEvents[2]?.eventId,
+      runtimeSettings: { provider: "grok", model: "base-model" },
+    });
+  });
+
+  it("terminal-fences a model change when its fsynced settings event cannot publish", async () => {
+    const agentId = "model-settings-publish-failure";
+    const publishError = new Error("injected settings publish failure");
+    const { runner, session, rolloutItems, sandboxExecutionBroker } =
+      makeTopLevelRunner({
+        conversationId: agentId,
+        canonicalRuntimeSettings: true,
+        runtimeSettingsFailpoint: {
+          eventOrdinal: 2,
+          phase: "publish",
+          error: publishError,
+        },
+      });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+
+    await expect(
+      runner.setAgentModel(agentId, {
+        model: "gpt-5",
+        provider: "openai",
+      }),
+    ).rejects.toBe(publishError);
+
+    const settingsEvents = recordedRuntimeSettingsEvents(rolloutItems);
+    expect(settingsEvents).toHaveLength(2);
+    expect(settingsEvents[1]?.msg?.payload).toMatchObject({
+      reason: "model_provider_changed",
+      provider: "openai",
+      model: "gpt-5",
+    });
+    expect(session.pendingProviderSwitch).toEqual({
+      provider: "openai",
+      model: "gpt-5",
+    });
+    await expect(runner.getAgentSnapshot(agentId)).resolves.toMatchObject({
+      runtimeSettingsEventId: settingsEvents[1]?.eventId,
+      runtimeSettings: { provider: "openai", model: "gpt-5" },
+    });
+    expect(
+      sandboxExecutionBroker.isClosedAfterLifecycleAuthorityFailure(),
+    ).toBe(true);
+    expect(session.abortTerminal).toHaveBeenCalledWith(
+      "permission_authority_failure",
+    );
+    await expect(
+      runner.setAgentModel(agentId, { model: "gpt-5-mini" }),
+    ).rejects.toThrow(`AgenC daemon agent not running: ${agentId}`);
+  });
+
+  it("terminal-fences a model rollback when compensation cannot append", async () => {
+    const agentId = "model-settings-compensation-append-failure";
+    const compensationError = new Error(
+      "injected settings compensation append failure",
+    );
+    const { runner, session, rolloutItems, sandboxExecutionBroker } =
+      makeTopLevelRunner({
+        conversationId: agentId,
+        canonicalRuntimeSettings: true,
+        runtimeSettingsFailpoint: {
+          eventOrdinal: 3,
+          phase: "before_append",
+          error: compensationError,
+        },
+      });
+    let pending: {
+      provider: string;
+      model: string;
+      profile?: string;
+    } | null = null;
+    let failNextStage = true;
+    Object.defineProperty(session, "pendingProviderSwitch", {
+      configurable: true,
+      get: () => pending,
+    });
+    Object.assign(session, {
+      setPendingProviderSwitch: (
+        spec: {
+          provider: string;
+          model: string;
+          profile?: string;
+        } | null,
+      ) => {
+        pending = spec;
+        if (spec !== null && failNextStage) {
+          failNextStage = false;
+          throw new Error("injected provider staging failure");
+        }
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+
+    await expect(
+      runner.setAgentModel(agentId, {
+        model: "gpt-5",
+        provider: "openai",
+      }),
+    ).rejects.toThrow(`agent model rollback failed for ${agentId}`);
+
+    expect(pending).toBeNull();
+    const settingsEvents = recordedRuntimeSettingsEvents(rolloutItems);
+    expect(settingsEvents).toHaveLength(2);
+    expect(settingsEvents[1]?.msg?.payload).toMatchObject({
+      reason: "model_provider_changed",
+      provider: "openai",
+      model: "gpt-5",
+    });
+    expect(
+      sandboxExecutionBroker.isClosedAfterLifecycleAuthorityFailure(),
+    ).toBe(true);
+    expect(session.abortTerminal).toHaveBeenCalledWith(
+      "permission_authority_failure",
+    );
+    await expect(
+      runner.setAgentModel(agentId, { model: "gpt-5-mini" }),
+    ).rejects.toThrow(`AgenC daemon agent not running: ${agentId}`);
+  });
+
   it("setAgentPermissionMode mutates the real session permission registry", async () => {
     const { runner, permissionModeRegistry, permissionUpdates } =
       makeTopLevelRunner({
@@ -2484,16 +5556,236 @@ describe("AgenC delegate background-agent runner", () => {
 
     expect(result).toEqual({
       applied: true,
-      previousMode: "default",
+      previousMode: "unattended",
       mode: "plan",
     });
     // The genuine daemon registry — the one the tool evaluator reads — is
     // updated to the new mode.
-    expect(permissionModeRegistry.update).toHaveBeenCalledTimes(1);
+    expect(permissionModeRegistry.transact).toHaveBeenCalledTimes(1);
     expect(permissionUpdates[0]).toMatchObject({ mode: "plan" });
   });
 
-  it("setAgentPermissionMode to bypass binds exact-workspace consent so canonical persistence accepts it", async () => {
+  it("rejects the 4097th session rule before the production registry publishes", async () => {
+    const agentId = "permission-rule-runner-bound";
+    const {
+      runner,
+      permissionModeRegistry,
+      permissionUpdates,
+      forcePermissionContextForTesting,
+    } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const existingRules = Array.from(
+      { length: 4_096 },
+      (_, index) => `tool-${index}`,
+    );
+    forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: permissionModeRegistry.current().mode,
+        alwaysAllowRules: { session: existingRules },
+      }),
+    );
+    permissionUpdates.length = 0;
+
+    await expect(
+      runner.mutateAgentPermissionRule(agentId, {
+        sessionId: agentId,
+        operation: "add",
+        behavior: "allow",
+        rule: "overflow-tool",
+      }),
+    ).rejects.toThrow(/exceeds 4096 rules/u);
+
+    expect(permissionUpdates).toEqual([]);
+    expect(permissionModeRegistry.current().alwaysAllowRules.session).toEqual(
+      existingRules,
+    );
+  });
+
+  it("rejects session rule mutation at the managed-only policy boundary", async () => {
+    const agentId = "permission-rule-managed-policy";
+    const { runner, permissionModeRegistry, permissionUpdates } =
+      makeTopLevelRunner({
+        conversationId: agentId,
+        canonicalRuntimeSettings: true,
+        configLayers: [
+          {
+            scope: "managed",
+            label: "managed-policy",
+            config: { allowManagedPermissionRulesOnly: true },
+          },
+        ],
+      });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const before = permissionModeRegistry.current();
+    permissionUpdates.length = 0;
+
+    await expect(
+      runner.mutateAgentPermissionRule(agentId, {
+        sessionId: agentId,
+        operation: "add",
+        behavior: "allow",
+        rule: "FileRead",
+      }),
+    ).rejects.toThrow(
+      "Session permission rules are disabled by managed-only policy",
+    );
+
+    expect(permissionUpdates).toEqual([]);
+    expect(permissionModeRegistry.current()).toBe(before);
+  });
+
+  it("publishes runtime settings only after the matching registry context is visible", async () => {
+    const { runner, session, permissionModeRegistry } = makeTopLevelRunner({
+      conversationId: "permission-publication-order",
+      canonicalRuntimeSettings: true,
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const observedModes: string[] = [];
+    const unsubscribe = session.eventLog.subscribe((event: unknown) => {
+      if (
+        (event as { msg?: { type?: unknown } }).msg?.type ===
+        "run_runtime_settings_changed"
+      ) {
+        observedModes.push(permissionModeRegistry.current().mode);
+      }
+    });
+
+    await runner.setAgentPermissionMode("permission-publication-order", {
+      sessionId: "session_1",
+      mode: "plan",
+    });
+    unsubscribe();
+
+    expect(observedModes).toEqual(["plan"]);
+  });
+
+  it("does not publish or mutate the registry when settings preparation fails", async () => {
+    const { runner, session, permissionModeRegistry } = makeTopLevelRunner({
+      conversationId: "permission-precommit-failure",
+      canonicalRuntimeSettings: true,
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const initialMode = permissionModeRegistry.current().mode;
+    const observed: unknown[] = [];
+    const unsubscribe = session.eventLog.subscribe((event: unknown) => {
+      if (
+        (event as { msg?: { type?: unknown } }).msg?.type ===
+        "run_runtime_settings_changed"
+      ) {
+        observed.push(event);
+      }
+    });
+    session.prepareEmit.mockImplementationOnce(() => {
+      throw new Error("injected settings append failure");
+    });
+
+    await expect(
+      runner.setAgentPermissionMode("permission-precommit-failure", {
+        sessionId: "session_1",
+        mode: "plan",
+      }),
+    ).rejects.toThrow("injected settings append failure");
+    unsubscribe();
+
+    expect(permissionModeRegistry.current().mode).toBe(initialMode);
+    expect(observed).toEqual([]);
+  });
+
+  it("setAgentPermissionMode resolves the auto gate inside the target session", async () => {
+    const { runner, permissionUpdates } = makeTopLevelRunner({
+      conversationId: "parent-session-auto",
+      argv: ["node", "agenc"],
+      env: { XAI_API_KEY: "session-auto-key" },
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+    permissionUpdates.length = 0;
+
+    const result = await runner.setAgentPermissionMode("parent-session-auto", {
+      sessionId: "session_1",
+      mode: "auto",
+    });
+
+    expect(result).toEqual({
+      applied: true,
+      previousMode: "unattended",
+      mode: "auto",
+    });
+    expect(permissionUpdates.at(-1)).toMatchObject({
+      mode: "auto",
+      autoModeActive: true,
+    });
+  });
+
+  it.each([
+    {
+      label: "canonical auto availability is revoked",
+      env: { XAI_API_KEY: "session-auto-key" },
+      isAutoModeAvailable: false,
+    },
+    {
+      label: "the live auto gate is closed",
+      env: {},
+      isAutoModeAvailable: true,
+    },
+  ])(
+    "same-mode auto normalizes authority when $label",
+    async ({ env, isAutoModeAvailable }) => {
+      const {
+        runner,
+        permissionModeRegistry,
+        permissionUpdates,
+        forcePermissionContextForTesting,
+      } = makeTopLevelRunner({
+        conversationId: `parent-session-auto-revoked-${String(isAutoModeAvailable)}`,
+        argv: ["node", "agenc"],
+        canonicalRuntimeSettings: true,
+        env,
+      });
+      const agentId = `parent-session-auto-revoked-${String(isAutoModeAvailable)}`;
+      await runner.startAgent({ objective: "work", cwd: process.cwd() });
+      forcePermissionContextForTesting(
+        createEmptyToolPermissionContext({
+          mode: "auto",
+          autoModeActive: true,
+          isAutoModeAvailable,
+          alwaysAllowRules: { userSettings: ["FileRead"] },
+          strippedDangerousRules: {
+            userSettings: ["system.bash(python:*)"],
+          },
+        }),
+      );
+      permissionUpdates.length = 0;
+
+      const result = await runner.setAgentPermissionMode(agentId, {
+        sessionId: "session_1",
+        mode: "auto",
+      });
+
+      expect(result).toEqual({
+        applied: true,
+        previousMode: "auto",
+        mode: "default",
+      });
+      expect(permissionModeRegistry.current()).toMatchObject({
+        mode: "default",
+        autoModeActive: false,
+        isAutoModeAvailable: false,
+        alwaysAllowRules: {
+          userSettings: ["FileRead", "system.bash(python:*)"],
+        },
+      });
+      expect(
+        permissionModeRegistry.current().strippedDangerousRules,
+      ).toBeUndefined();
+      expect(permissionUpdates).toHaveLength(1);
+      expect(permissionUpdates[0]?.mode).toBe("default");
+    },
+  );
+
+  it("setAgentPermissionMode refuses ordinary bypass RPC without consent", async () => {
     const { runner, permissionUpdates } = makeTopLevelRunner({
       conversationId: "parent-session",
       argv: ["node", "agenc"],
@@ -2502,19 +5794,92 @@ describe("AgenC delegate background-agent runner", () => {
     await runner.startAgent({ objective: "work", cwd: "/workspace" });
     permissionUpdates.length = 0;
 
-    // The explicit RPC is the operator's authority, same as --yolo at
-    // spawn: the runner binds consent for this exact workspace instead of
-    // refusing with the workspace-consent persistence error.
-    const result = await runner.setAgentPermissionMode("parent-session", {
-      sessionId: "session_1",
-      mode: "bypassPermissions",
+    await expect(
+      runner.setAgentPermissionMode("parent-session", {
+        sessionId: "session_1",
+        mode: "bypassPermissions",
+      }),
+    ).rejects.toThrow(/explicit consent/u);
+    expect(permissionUpdates).toEqual([]);
+  });
+
+  it("setAgentPermissionMode binds exact cwd for explicit tool approval", async () => {
+    const { runner, permissionUpdates } = makeTopLevelRunner({
+      conversationId: "parent-session-tool-approval",
+      argv: ["node", "agenc"],
+      canonicalRuntimeSettings: true,
     });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    permissionUpdates.length = 0;
+
+    const result = await runner.setAgentPermissionMode(
+      "parent-session-tool-approval",
+      {
+        sessionId: "session_1",
+        mode: "bypassPermissions",
+        bypassAuthority: "operator_tool_approval",
+      },
+    );
 
     expect(result).toMatchObject({ applied: true, mode: "bypassPermissions" });
     expect(permissionUpdates.at(-1)).toMatchObject({
       mode: "bypassPermissions",
-      bypassPermissionsAcceptedIn: ["/workspace"],
+      bypassPermissionsAcceptedIn: [process.cwd()],
     });
+  });
+
+  it("serializes a default request behind bypass durability without a stale no-op", async () => {
+    let releaseBypass!: () => void;
+    const bypassGate = new Promise<void>((resolve) => {
+      releaseBypass = resolve;
+    });
+    let bypassReachedGate!: () => void;
+    const bypassAtGate = new Promise<void>((resolve) => {
+      bypassReachedGate = resolve;
+    });
+    const { runner, permissionModeRegistry } = makeTopLevelRunner({
+      conversationId: "permission-serialized-transition",
+      canonicalRuntimeSettings: true,
+      permissionBeforeUpdateGate: async (next) => {
+        if (next.mode !== "bypassPermissions") return;
+        bypassReachedGate();
+        await bypassGate;
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+
+    const bypass = runner.setAgentPermissionMode(
+      "permission-serialized-transition",
+      {
+        sessionId: "session_1",
+        mode: "bypassPermissions",
+        bypassAuthority: "operator_tool_approval",
+      },
+    );
+    await bypassAtGate;
+    const toDefault = runner.setAgentPermissionMode(
+      "permission-serialized-transition",
+      { sessionId: "session_1", mode: "default" },
+    );
+    let defaultSettled = false;
+    void toDefault.finally(() => {
+      defaultSettled = true;
+    });
+    await Promise.resolve();
+    expect(defaultSettled).toBe(false);
+
+    releaseBypass();
+    await expect(bypass).resolves.toMatchObject({
+      applied: true,
+      previousMode: "unattended",
+      mode: "bypassPermissions",
+    });
+    await expect(toDefault).resolves.toMatchObject({
+      applied: true,
+      previousMode: "bypassPermissions",
+      mode: "default",
+    });
+    expect(permissionModeRegistry.current().mode).toBe("default");
   });
 
   it("getAgentHooksStatus maps the daemon session's real hooks runtime snapshot", async () => {
@@ -2530,6 +5895,8 @@ describe("AgenC delegate background-agent runner", () => {
         hooksRuntime: {
           sourcePath: () => "/home/agent/.agenc/config.toml",
           isDisabled: () => false,
+          isHardSuppressed: () => false,
+          isExecutionSuppressed: () => false,
           issues: () => [{ level: "warning", message: "heads up" }],
           listHooks: () => [
             {
@@ -2556,7 +5923,12 @@ describe("AgenC delegate background-agent runner", () => {
     const status = await runner.getAgentHooksStatus("parent-session");
     expect(status.available).toBe(true);
     expect(status.sourcePath).toBe("/home/agent/.agenc/config.toml");
-    expect(status.disabled).toBe(false);
+    expect(status).toMatchObject({
+      disabled: false,
+      hardSuppressed: false,
+      effectiveDisabled: false,
+      suppressionReason: null,
+    });
     expect(status.issues).toEqual([{ level: "warning", message: "heads up" }]);
     expect(status.hooks).toHaveLength(1);
     expect(status.hooks[0]).toMatchObject({
@@ -2579,6 +5951,9 @@ describe("AgenC delegate background-agent runner", () => {
       available: false,
       sourcePath: "",
       disabled: true,
+      hardSuppressed: false,
+      effectiveDisabled: true,
+      suppressionReason: null,
       issues: [],
       hooks: [],
       diagnostics: [],
@@ -2586,7 +5961,10 @@ describe("AgenC delegate background-agent runner", () => {
   });
 
   it("setAgentHooksDisabled toggles the daemon session's real hooks runtime", async () => {
-    const setDisabled = vi.fn();
+    let disabled = false;
+    const setDisabled = vi.fn((next: boolean) => {
+      disabled = next;
+    });
     const { runner, session } = makeTopLevelRunner({
       conversationId: "parent-session",
       argv: ["node", "agenc"],
@@ -2596,7 +5974,9 @@ describe("AgenC delegate background-agent runner", () => {
         ...(session as { services: Record<string, unknown> }).services,
         hooksRuntime: {
           sourcePath: () => "/home/agent/.agenc/config.toml",
-          isDisabled: () => false,
+          isDisabled: () => disabled,
+          isHardSuppressed: () => false,
+          isExecutionSuppressed: () => disabled,
           issues: () => [],
           listHooks: () => [],
           latestDiagnostics: () => [],
@@ -2609,8 +5989,327 @@ describe("AgenC delegate background-agent runner", () => {
     const result = await runner.setAgentHooksDisabled("parent-session", {
       disabled: true,
     });
-    expect(result).toEqual({ applied: true, disabled: true });
+    expect(result).toEqual({
+      applied: true,
+      disabled: true,
+      hardSuppressed: false,
+      effectiveDisabled: true,
+      suppressionReason: "session_disabled",
+    });
     expect(setDisabled).toHaveBeenCalledWith(true);
+  });
+
+  it("publishes a hooks successor only after the live hook authority changes and keeps attach snapshots behind the mutation", async () => {
+    const agentId = "hooks-publication-order";
+    let disabled = false;
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        hooksRuntime: {
+          sourcePath: () => "/home/agent/.agenc/config.toml",
+          isDisabled: () => disabled,
+          isHardSuppressed: () => false,
+          isExecutionSuppressed: () => disabled,
+          issues: () => [],
+          listHooks: () => [],
+          latestDiagnostics: () => [],
+          setDisabled: (next: boolean) => {
+            disabled = next;
+          },
+        },
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+
+    const observations: Array<{
+      readonly disabled: boolean;
+      readonly snapshotSettled: boolean;
+    }> = [];
+    let attachSnapshot: ReturnType<typeof runner.getAgentSnapshot> | undefined;
+    let snapshotSettled = false;
+    let attachBarrierHeld = false;
+    let attachBarrierProbe: Promise<void> | undefined;
+    const unsubscribe = session.eventLog.subscribe((event: unknown) => {
+      if (
+        (event as { msg?: { type?: unknown } }).msg?.type !==
+        "run_runtime_settings_changed"
+      ) {
+        return;
+      }
+      attachSnapshot = runner.getAgentSnapshot(agentId);
+      void attachSnapshot.then(() => {
+        snapshotSettled = true;
+      });
+      attachBarrierProbe = Promise.resolve().then(() => {
+        attachBarrierHeld = !snapshotSettled;
+      });
+      observations.push({ disabled, snapshotSettled });
+    });
+
+    await expect(
+      runner.setAgentHooksDisabled(agentId, { disabled: true }),
+    ).resolves.toMatchObject({ applied: true, disabled: true });
+    unsubscribe();
+
+    expect(observations).toEqual([{ disabled: true, snapshotSettled: false }]);
+    await expect(attachSnapshot).resolves.toMatchObject({
+      runtimeSettings: { hooksDisabled: true },
+    });
+    await attachBarrierProbe;
+    expect(attachBarrierHeld).toBe(true);
+    expect(snapshotSettled).toBe(true);
+  });
+
+  it("closes a failed prepared hooks successor with a durable compensation after restoring live state", async () => {
+    const agentId = "hooks-mutation-compensation-order";
+    let disabled = false;
+    let failNextDisable = true;
+    const { runner, session, rolloutItems, rolloutStore } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        hooksRuntime: {
+          sourcePath: () => "/home/agent/.agenc/config.toml",
+          isDisabled: () => disabled,
+          isHardSuppressed: () => false,
+          isExecutionSuppressed: () => disabled,
+          issues: () => [],
+          listHooks: () => [],
+          latestDiagnostics: () => [],
+          setDisabled: (next: boolean) => {
+            disabled = next;
+            if (next && failNextDisable) {
+              failNextDisable = false;
+              throw new Error("injected hooks mutation failure");
+            }
+          },
+        },
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+
+    const published: Array<{
+      readonly disabled: boolean;
+      readonly payload: Record<string, unknown>;
+    }> = [];
+    const unsubscribe = session.eventLog.subscribe((event: unknown) => {
+      const message = (
+        event as {
+          msg?: { type?: unknown; payload?: Record<string, unknown> };
+        }
+      ).msg;
+      if (message?.type !== "run_runtime_settings_changed") return;
+      published.push({
+        disabled,
+        payload: message.payload ?? {},
+      });
+    });
+
+    await expect(
+      runner.setAgentHooksDisabled(agentId, { disabled: true }),
+    ).rejects.toThrow("injected hooks mutation failure");
+    unsubscribe();
+
+    expect(disabled).toBe(false);
+    expect(published).toHaveLength(1);
+    expect(published[0]).toMatchObject({
+      disabled: false,
+      payload: {
+        reason: "compensating_rollback",
+        hooksDisabled: false,
+      },
+    });
+    const settingsEvents = rolloutItems.flatMap((item) => {
+      const event = item as {
+        payload?: {
+          eventId?: string;
+          msg?: { type?: unknown; payload?: Record<string, unknown> };
+        };
+      };
+      return event.payload?.msg?.type === "run_runtime_settings_changed"
+        ? [event.payload]
+        : [];
+    });
+    expect(settingsEvents).toHaveLength(3);
+    expect(settingsEvents[2]?.msg?.payload).toMatchObject({
+      previousSettingsEventId: settingsEvents[1]?.eventId,
+      rollbackOfSettingsEventId: settingsEvents[1]?.eventId,
+      reason: "compensating_rollback",
+    });
+    expect(rolloutStore.recordRunRuntimeSettingsEvent).toHaveBeenCalledTimes(3);
+  });
+
+  it("terminal-fences a hook change when its fsynced settings event cannot publish", async () => {
+    const agentId = "hooks-settings-publish-failure";
+    const publishError = new Error("injected settings publish failure");
+    let disabled = false;
+    const { runner, session, rolloutItems, sandboxExecutionBroker } =
+      makeTopLevelRunner({
+        conversationId: agentId,
+        canonicalRuntimeSettings: true,
+        runtimeSettingsFailpoint: {
+          eventOrdinal: 2,
+          phase: "publish",
+          error: publishError,
+        },
+      });
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        hooksRuntime: {
+          sourcePath: () => "/home/agent/.agenc/config.toml",
+          isDisabled: () => disabled,
+          isHardSuppressed: () => false,
+          isExecutionSuppressed: () => disabled,
+          issues: () => [],
+          listHooks: () => [],
+          latestDiagnostics: () => [],
+          setDisabled: (next: boolean) => {
+            disabled = next;
+          },
+        },
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+
+    await expect(
+      runner.setAgentHooksDisabled(agentId, { disabled: true }),
+    ).rejects.toBe(publishError);
+
+    expect(disabled).toBe(true);
+    const settingsEvents = recordedRuntimeSettingsEvents(rolloutItems);
+    expect(settingsEvents).toHaveLength(2);
+    expect(settingsEvents[1]?.msg?.payload).toMatchObject({
+      reason: "hooks_changed",
+      hooksDisabled: true,
+    });
+    await expect(runner.getAgentSnapshot(agentId)).resolves.toMatchObject({
+      runtimeSettingsEventId: settingsEvents[1]?.eventId,
+      runtimeSettings: { hooksDisabled: true },
+    });
+    expect(
+      sandboxExecutionBroker.isClosedAfterLifecycleAuthorityFailure(),
+    ).toBe(true);
+    expect(session.abortTerminal).toHaveBeenCalledWith(
+      "permission_authority_failure",
+    );
+  });
+
+  it("terminal-fences a hook rollback when compensation cannot append", async () => {
+    const agentId = "hooks-settings-compensation-append-failure";
+    const compensationError = new Error(
+      "injected settings compensation append failure",
+    );
+    let disabled = false;
+    let failNextDisable = true;
+    const { runner, session, rolloutItems, sandboxExecutionBroker } =
+      makeTopLevelRunner({
+        conversationId: agentId,
+        canonicalRuntimeSettings: true,
+        runtimeSettingsFailpoint: {
+          eventOrdinal: 3,
+          phase: "before_append",
+          error: compensationError,
+        },
+      });
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        hooksRuntime: {
+          sourcePath: () => "/home/agent/.agenc/config.toml",
+          isDisabled: () => disabled,
+          isHardSuppressed: () => false,
+          isExecutionSuppressed: () => disabled,
+          issues: () => [],
+          listHooks: () => [],
+          latestDiagnostics: () => [],
+          setDisabled: (next: boolean) => {
+            disabled = next;
+            if (next && failNextDisable) {
+              failNextDisable = false;
+              throw new Error("injected hooks mutation failure");
+            }
+          },
+        },
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+
+    await expect(
+      runner.setAgentHooksDisabled(agentId, { disabled: true }),
+    ).rejects.toThrow(`agent hooks rollback failed for ${agentId}`);
+
+    expect(disabled).toBe(false);
+    const settingsEvents = recordedRuntimeSettingsEvents(rolloutItems);
+    expect(settingsEvents).toHaveLength(2);
+    expect(settingsEvents[1]?.msg?.payload).toMatchObject({
+      reason: "hooks_changed",
+      hooksDisabled: true,
+    });
+    expect(
+      sandboxExecutionBroker.isClosedAfterLifecycleAuthorityFailure(),
+    ).toBe(true);
+    expect(session.abortTerminal).toHaveBeenCalledWith(
+      "permission_authority_failure",
+    );
+  });
+
+  it("keeps the mutable hook switch separate when enabling under immutable bare mode", async () => {
+    let disabled = false;
+    const setDisabled = vi.fn((next: boolean) => {
+      disabled = next;
+    });
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "parent-session",
+      argv: ["node", "agenc", "--bare"],
+      runtimeSimpleMode: true,
+    });
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        hooksRuntime: {
+          sourcePath: () => "/home/agent/.agenc/config.toml",
+          isDisabled: () => disabled,
+          isHardSuppressed: () => true,
+          isExecutionSuppressed: () => disabled || true,
+          issues: () => [],
+          listHooks: () => [],
+          latestDiagnostics: () => [],
+          setDisabled,
+        },
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+
+    await expect(
+      runner.getAgentHooksStatus("parent-session"),
+    ).resolves.toMatchObject({
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode",
+    });
+    await runner.setAgentHooksDisabled("parent-session", { disabled: true });
+    const enabled = await runner.setAgentHooksDisabled("parent-session", {
+      disabled: false,
+    });
+
+    expect(enabled).toEqual({
+      applied: true,
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode",
+    });
+    expect(setDisabled).toHaveBeenNthCalledWith(1, true);
+    expect(setDisabled).toHaveBeenNthCalledWith(2, false);
   });
 
   it("applyAgentConfig applies reasoning effort and stages a profile switch", async () => {
@@ -2656,6 +6355,16 @@ describe("AgenC delegate background-agent runner", () => {
       }) => {
         stagedSwitches.push(spec);
       },
+      stagePreparedProviderSwitch: (prepared: {
+        pending: {
+          provider: string;
+          model: string;
+          profile?: string;
+        };
+      }) => {
+        stagedSwitches.push(prepared.pending);
+        session.pendingProviderSwitch = prepared.pending;
+      },
       state: {
         with: async (fn: (state: unknown) => void) => {
           fn(stateObject);
@@ -2685,22 +6394,395 @@ describe("AgenC delegate background-agent runner", () => {
     ).toBe("high");
   });
 
-  it("applyAgentConfig reloads config from disk when requested", async () => {
+  it("publishes a config successor only after provider and session configuration mutation", async () => {
+    const agentId = "config-publication-order";
     const { runner, session } = makeTopLevelRunner({
-      conversationId: "parent-session",
-      argv: ["node", "agenc"],
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
     });
-    const reload = vi.fn(async () => ({}));
+    const liveState = session.state.unsafePeek();
     Object.assign(session, {
       services: {
         ...(session as { services: Record<string, unknown> }).services,
         configStore: {
+          current: () => ({
+            model: "base-model",
+            model_provider: "grok",
+            profiles: {
+              fast: {
+                model: "fast-model",
+                model_provider: "openai",
+                reasoning_effort: "high",
+              },
+            },
+          }),
+        },
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+
+    const observations: Array<{
+      readonly pending: unknown;
+      readonly reasoningEffort: unknown;
+    }> = [];
+    const unsubscribe = session.eventLog.subscribe((event: unknown) => {
+      if (
+        (event as { msg?: { type?: unknown } }).msg?.type !==
+        "run_runtime_settings_changed"
+      ) {
+        return;
+      }
+      observations.push({
+        pending: session.pendingProviderSwitch,
+        reasoningEffort:
+          liveState.sessionConfiguration.collaborationMode.reasoningEffort,
+      });
+    });
+
+    await expect(
+      runner.applyAgentConfig(agentId, {
+        sessionId: "session_1",
+        profile: "fast",
+      }),
+    ).resolves.toMatchObject({ applied: true });
+    unsubscribe();
+
+    expect(observations).toEqual([
+      {
+        pending: {
+          provider: "openai",
+          model: "fast-model",
+          profile: "fast",
+        },
+        reasoningEffort: "high",
+      },
+    ]);
+  });
+
+  it("does not publish config settings when provider preparation fails", async () => {
+    const agentId = "config-provider-preparation-failure";
+    const { runner, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        configStore: {
+          current: () => ({
+            model: "gpt-5",
+            model_provider: "openai",
+          }),
+        },
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const before = recordedRuntimeSettingsEvents(rolloutItems);
+    vi.mocked(session.prepareProviderSwitch).mockRejectedValueOnce(
+      new Error("injected config provider preparation failure"),
+    );
+
+    await expect(
+      runner.applyAgentConfig(agentId, { sessionId: agentId }),
+    ).rejects.toThrow("injected config provider preparation failure");
+
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(recordedRuntimeSettingsEvents(rolloutItems)).toEqual(before);
+    await expect(runner.getAgentSnapshot(agentId)).resolves.toMatchObject({
+      runtimeSettings: { provider: "grok", model: "base-model" },
+    });
+  });
+
+  it("restores provider and session configuration before publishing config compensation", async () => {
+    const agentId = "config-mutation-compensation-order";
+    const { runner, session, rolloutItems, rolloutStore } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    const liveState = session.state.unsafePeek();
+    let failNextConfigurationWrite = false;
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        configStore: {
+          current: () => ({
+            model: "base-model",
+            model_provider: "grok",
+            profiles: {
+              fast: {
+                model: "fast-model",
+                model_provider: "openai",
+                reasoning_effort: "high",
+              },
+            },
+          }),
+        },
+      },
+      state: {
+        unsafePeek: () => liveState,
+        with: async (apply: (state: typeof liveState) => void) => {
+          await apply(liveState);
+          if (failNextConfigurationWrite) {
+            failNextConfigurationWrite = false;
+            throw new Error("injected session configuration failure");
+          }
+        },
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    failNextConfigurationWrite = true;
+
+    const published: Array<{
+      readonly pending: unknown;
+      readonly reasoningEffort: unknown;
+      readonly payload: Record<string, unknown>;
+    }> = [];
+    const unsubscribe = session.eventLog.subscribe((event: unknown) => {
+      const message = (
+        event as {
+          msg?: { type?: unknown; payload?: Record<string, unknown> };
+        }
+      ).msg;
+      if (message?.type !== "run_runtime_settings_changed") return;
+      published.push({
+        pending: session.pendingProviderSwitch,
+        reasoningEffort:
+          liveState.sessionConfiguration.collaborationMode.reasoningEffort,
+        payload: message.payload ?? {},
+      });
+    });
+
+    await expect(
+      runner.applyAgentConfig(agentId, {
+        sessionId: "session_1",
+        profile: "fast",
+      }),
+    ).rejects.toThrow("injected session configuration failure");
+    unsubscribe();
+
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(
+      liveState.sessionConfiguration.collaborationMode.reasoningEffort,
+    ).toBeUndefined();
+    expect(published).toHaveLength(1);
+    expect(published[0]).toMatchObject({
+      pending: null,
+      reasoningEffort: undefined,
+      payload: {
+        reason: "compensating_rollback",
+        profile: null,
+        reasoningEffort: null,
+      },
+    });
+    const settingsEvents = rolloutItems.flatMap((item) => {
+      const event = item as {
+        payload?: {
+          eventId?: string;
+          msg?: { type?: unknown; payload?: Record<string, unknown> };
+        };
+      };
+      return event.payload?.msg?.type === "run_runtime_settings_changed"
+        ? [event.payload]
+        : [];
+    });
+    expect(settingsEvents).toHaveLength(3);
+    expect(settingsEvents[2]?.msg?.payload).toMatchObject({
+      previousSettingsEventId: settingsEvents[1]?.eventId,
+      rollbackOfSettingsEventId: settingsEvents[1]?.eventId,
+      reason: "compensating_rollback",
+    });
+    expect(rolloutStore.recordRunRuntimeSettingsEvent).toHaveBeenCalledTimes(3);
+  });
+
+  it("terminal-fences a profile change when its fsynced settings event cannot publish", async () => {
+    const agentId = "config-settings-publish-failure";
+    const publishError = new Error("injected settings publish failure");
+    const {
+      runner,
+      session,
+      sessionState,
+      rolloutItems,
+      sandboxExecutionBroker,
+    } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+      runtimeSettingsFailpoint: {
+        eventOrdinal: 2,
+        phase: "publish",
+        error: publishError,
+      },
+    });
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        configStore: {
+          current: () => ({
+            model: "base-model",
+            model_provider: "grok",
+            profiles: {
+              fast: {
+                model: "fast-model",
+                model_provider: "openai",
+                reasoning_effort: "high",
+              },
+            },
+          }),
+        },
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+
+    await expect(
+      runner.applyAgentConfig(agentId, {
+        sessionId: "session_1",
+        profile: "fast",
+      }),
+    ).rejects.toBe(publishError);
+
+    expect(session.pendingProviderSwitch).toEqual({
+      provider: "openai",
+      model: "fast-model",
+      profile: "fast",
+    });
+    expect(
+      sessionState.sessionConfiguration.collaborationMode.reasoningEffort,
+    ).toBe("high");
+    const settingsEvents = recordedRuntimeSettingsEvents(rolloutItems);
+    expect(settingsEvents).toHaveLength(2);
+    expect(settingsEvents[1]?.msg?.payload).toMatchObject({
+      reason: "config_applied",
+      provider: "openai",
+      model: "fast-model",
+      profile: "fast",
+      reasoningEffort: "high",
+    });
+    await expect(runner.getAgentSnapshot(agentId)).resolves.toMatchObject({
+      runtimeSettingsEventId: settingsEvents[1]?.eventId,
+      runtimeSettings: {
+        provider: "openai",
+        model: "fast-model",
+        profile: "fast",
+        reasoningEffort: "high",
+      },
+    });
+    expect(
+      sandboxExecutionBroker.isClosedAfterLifecycleAuthorityFailure(),
+    ).toBe(true);
+    expect(session.abortTerminal).toHaveBeenCalledWith(
+      "permission_authority_failure",
+    );
+  });
+
+  it("terminal-fences a profile rollback when compensation cannot append", async () => {
+    const agentId = "config-settings-compensation-append-failure";
+    const compensationError = new Error(
+      "injected settings compensation append failure",
+    );
+    const { runner, session, rolloutItems, sandboxExecutionBroker } =
+      makeTopLevelRunner({
+        conversationId: agentId,
+        canonicalRuntimeSettings: true,
+        runtimeSettingsFailpoint: {
+          eventOrdinal: 3,
+          phase: "before_append",
+          error: compensationError,
+        },
+      });
+    const liveState = session.state.unsafePeek();
+    let failNextConfigurationWrite = false;
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        configStore: {
+          current: () => ({
+            model: "base-model",
+            model_provider: "grok",
+            profiles: {
+              fast: {
+                model: "fast-model",
+                model_provider: "openai",
+                reasoning_effort: "high",
+              },
+            },
+          }),
+        },
+      },
+      state: {
+        unsafePeek: () => liveState,
+        with: async (apply: (state: typeof liveState) => void) => {
+          await apply(liveState);
+          if (failNextConfigurationWrite) {
+            failNextConfigurationWrite = false;
+            throw new Error("injected session configuration failure");
+          }
+        },
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    failNextConfigurationWrite = true;
+
+    await expect(
+      runner.applyAgentConfig(agentId, {
+        sessionId: "session_1",
+        profile: "fast",
+      }),
+    ).rejects.toThrow(`agent config rollback failed for ${agentId}`);
+
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(
+      liveState.sessionConfiguration.collaborationMode.reasoningEffort,
+    ).toBeUndefined();
+    const settingsEvents = recordedRuntimeSettingsEvents(rolloutItems);
+    expect(settingsEvents).toHaveLength(2);
+    expect(settingsEvents[1]?.msg?.payload).toMatchObject({
+      reason: "config_applied",
+      provider: "openai",
+      model: "fast-model",
+      profile: "fast",
+      reasoningEffort: "high",
+    });
+    expect(
+      sandboxExecutionBroker.isClosedAfterLifecycleAuthorityFailure(),
+    ).toBe(true);
+    expect(session.abortTerminal).toHaveBeenCalledWith(
+      "permission_authority_failure",
+    );
+  });
+
+  it("applyAgentConfig reloads config from disk when requested", async () => {
+    const { runner, session, sessionState } = makeTopLevelRunner({
+      conversationId: "parent-session",
+      argv: ["node", "agenc"],
+    });
+    const reload = vi.fn(async () => ({}));
+    const refreshFromAuthority = vi.fn(
+      async (options?: { readonly onSandboxRefreshDeferred?: () => void }) => {
+        options?.onSandboxRefreshDeferred?.();
+        return {
+          configuredServers: ["github"],
+          requiredServers: ["github"],
+        };
+      },
+    );
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        configStore: {
+          ...(
+            session as {
+              services: { configStore: Record<string, unknown> };
+            }
+          ).services.configStore,
           current: () => ({ model: "base-model", model_provider: "openai" }),
           reload,
         },
+        mcpManager: { refreshFromAuthority },
       },
       setPendingProviderSwitch: () => {},
-      state: { with: async (fn: (state: unknown) => void) => fn({}) },
+      state: {
+        with: async (fn: (state: typeof sessionState) => void) =>
+          fn(sessionState),
+      },
     });
 
     await runner.startAgent({ objective: "work", cwd: "/workspace" });
@@ -2711,8 +6793,372 @@ describe("AgenC delegate background-agent runner", () => {
     });
 
     expect(reload).toHaveBeenCalledTimes(1);
+    expect(refreshFromAuthority).toHaveBeenCalledTimes(1);
+    expect(reload.mock.invocationCallOrder[0]).toBeLessThan(
+      refreshFromAuthority.mock.invocationCallOrder[0]!,
+    );
     expect(result.applied).toBe(true);
     expect(result.summary).toContain("config reloaded from disk");
+    expect(result.summary).toContain(
+      "MCP refreshed (1 configured, 1 required)",
+    );
+  });
+
+  it("serializes a blocked prepared config reload after a permission-mode publication without mixed authority", async () => {
+    const agentId = "config-reload-permission-race";
+    const {
+      runner,
+      session,
+      configStore,
+      configPublicationOptions,
+      permissionModeRegistry,
+      permissionUpdates,
+      rolloutItems,
+      sandboxExecutionBroker,
+      sessionState,
+    } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    const originalPrepareReload = (
+      configStore as {
+        prepareReload(): Promise<unknown>;
+      }
+    ).prepareReload.bind(configStore);
+    let markPreparedReload!: () => void;
+    const preparedReload = new Promise<void>((resolve) => {
+      markPreparedReload = resolve;
+    });
+    let releasePreparedReload!: () => void;
+    const preparedReloadReleased = new Promise<void>((resolve) => {
+      releasePreparedReload = resolve;
+    });
+    const configPublications: Array<{
+      readonly registryMode: string;
+      readonly brokerMode: string;
+      readonly configurationMode: string;
+    }> = [];
+    Object.assign(configStore, {
+      reload: vi.fn(async () => ({ sandbox_mode: "read-only" })),
+      prepareReload: vi.fn(async () => {
+        const prepared = (await originalPrepareReload()) as {
+          publish(options?: CoordinatedConfigStorePublishOptions): void;
+        };
+        const publish = prepared.publish.bind(prepared);
+        prepared.publish = (options?: CoordinatedConfigStorePublishOptions) => {
+          publish(options);
+          configPublications.push({
+            registryMode: permissionModeRegistry.current().mode,
+            brokerMode: sandboxExecutionBroker.mode,
+            configurationMode:
+              sessionState.sessionConfiguration.sandboxPolicy.value,
+          });
+        };
+        markPreparedReload();
+        await preparedReloadReleased;
+        return prepared;
+      }),
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    permissionUpdates.length = 0;
+    const publications: Array<{
+      readonly reason: string;
+      readonly settingsMode: string;
+      readonly registryMode: string;
+      readonly brokerMode: string;
+      readonly configurationMode: string;
+    }> = [];
+    const unsubscribe = session.eventLog.subscribe((event: unknown) => {
+      const message = (
+        event as {
+          readonly msg?: {
+            readonly type?: unknown;
+            readonly payload?: {
+              readonly reason?: unknown;
+              readonly permissionMode?: unknown;
+            };
+          };
+        }
+      ).msg;
+      if (message?.type !== "run_runtime_settings_changed") return;
+      publications.push({
+        reason: String(message.payload?.reason),
+        settingsMode: String(message.payload?.permissionMode),
+        registryMode: permissionModeRegistry.current().mode,
+        brokerMode: sandboxExecutionBroker.mode,
+        configurationMode:
+          sessionState.sessionConfiguration.sandboxPolicy.value,
+      });
+    });
+
+    try {
+      const reload = runner.applyAgentConfig(agentId, {
+        sessionId: agentId,
+        reload: true,
+      });
+      await preparedReload;
+      let reloadSettled = false;
+      void reload.then(
+        () => {
+          reloadSettled = true;
+        },
+        () => {
+          reloadSettled = true;
+        },
+      );
+
+      await expect(
+        runner.setAgentPermissionMode(agentId, {
+          sessionId: agentId,
+          mode: "plan",
+        }),
+      ).resolves.toEqual({
+        applied: true,
+        previousMode: "unattended",
+        mode: "plan",
+      });
+      expect(reloadSettled).toBe(false);
+      expect(permissionModeRegistry.current().mode).toBe("plan");
+      expect(sandboxExecutionBroker.mode).toBe("workspace_write");
+
+      releasePreparedReload();
+      await expect(reload).resolves.toMatchObject({
+        applied: true,
+        summary: expect.stringContaining("config reloaded from disk"),
+      });
+
+      expect(permissionUpdates.map(({ mode }) => mode)).toEqual([
+        "plan",
+        "plan",
+      ]);
+      expect(permissionModeRegistry.current().mode).toBe("plan");
+      expect(sandboxExecutionBroker.mode).toBe("read_only");
+      expect(sessionState.sessionConfiguration.sandboxPolicy.value).toBe(
+        "read_only",
+      );
+      expect(publications).toEqual([
+        {
+          reason: "permission_mode_changed",
+          settingsMode: "plan",
+          registryMode: "plan",
+          brokerMode: "workspace_write",
+          configurationMode: "workspace_write",
+        },
+      ]);
+      expect(configPublications).toEqual([
+        {
+          registryMode: "plan",
+          brokerMode: "read_only",
+          configurationMode: "read_only",
+        },
+      ]);
+      expect(configPublicationOptions).toEqual([
+        COORDINATED_CONFIG_STORE_PUBLICATION,
+      ]);
+      expect(
+        recordedRuntimeSettingsEvents(rolloutItems).map(
+          (event) => event.msg?.payload?.permissionMode,
+        ),
+      ).toEqual(["default", "plan"]);
+    } finally {
+      releasePreparedReload();
+      unsubscribe();
+    }
+  });
+
+  it("keeps the old MCP tool surface revoked until a coordinated config refresh is deferred and settled", async () => {
+    const { runner, session, sessionState, sandboxExecutionBroker } =
+      makeTopLevelRunner({
+        conversationId: "config-mcp-refresh-quiesced",
+        argv: ["node", "agenc"],
+      });
+    const reload = vi.fn(async () => ({}));
+    let markRefreshStarted!: () => void;
+    const refreshStarted = new Promise<void>((resolve) => {
+      markRefreshStarted = resolve;
+    });
+    let releaseDeferral!: () => void;
+    const deferralReleased = new Promise<void>((resolve) => {
+      releaseDeferral = resolve;
+    });
+    let markResumeStarted!: () => void;
+    const resumeStarted = new Promise<void>((resolve) => {
+      markResumeStarted = resolve;
+    });
+    let releaseRefreshSettlement!: () => void;
+    const refreshSettlementReleased = new Promise<void>((resolve) => {
+      releaseRefreshSettlement = resolve;
+    });
+    let mcpSurface: "old" | "none" | "current" = "old";
+    const oldToolExecution = vi.fn();
+    const currentToolExecution = vi.fn();
+    const callTool = vi.fn(async () => {
+      if (mcpSurface === "old") {
+        oldToolExecution();
+        return { content: "old" };
+      }
+      if (mcpSurface === "current") {
+        currentToolExecution();
+        return { content: "current" };
+      }
+      return { content: "MCP authority is quiesced", isError: true };
+    });
+    const refreshFromAuthority = vi.fn(
+      async (options?: { readonly onSandboxRefreshDeferred?: () => void }) => {
+        markRefreshStarted();
+        await deferralReleased;
+        options?.onSandboxRefreshDeferred?.();
+        await resumeStarted;
+        await refreshSettlementReleased;
+        mcpSurface = "current";
+        return {
+          configuredServers: ["current"],
+          requiredServers: [],
+        };
+      },
+    );
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        configStore: {
+          ...(
+            session as {
+              services: { configStore: Record<string, unknown> };
+            }
+          ).services.configStore,
+          current: () => ({}),
+          reload,
+        },
+        mcpManager: { refreshFromAuthority, callTool },
+      },
+      state: {
+        with: async (fn: (state: typeof sessionState) => void) =>
+          fn(sessionState),
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+    const unregisterMcpLifecycle = registerSandboxExecutionLifecycleParticipant(
+      sandboxExecutionBroker,
+      {
+        name: "test-runner-mcp-surface",
+        quiesce: async () => {
+          mcpSurface = "none";
+        },
+        resume: async () => {
+          markResumeStarted();
+        },
+      },
+    );
+
+    try {
+      let applySettled = false;
+      const apply = runner.applyAgentConfig("config-mcp-refresh-quiesced", {
+        sessionId: "session_1",
+        reload: true,
+      });
+      void apply.then(
+        () => {
+          applySettled = true;
+        },
+        () => {
+          applySettled = true;
+        },
+      );
+      await refreshStarted;
+
+      expect(applySettled).toBe(false);
+      expect(mcpSurface).toBe("none");
+      await expect(callTool()).resolves.toEqual({
+        content: "MCP authority is quiesced",
+        isError: true,
+      });
+      expect(oldToolExecution).not.toHaveBeenCalled();
+
+      releaseDeferral();
+      await resumeStarted;
+      expect(applySettled).toBe(false);
+      expect(mcpSurface).toBe("none");
+      await expect(callTool()).resolves.toEqual({
+        content: "MCP authority is quiesced",
+        isError: true,
+      });
+      expect(oldToolExecution).not.toHaveBeenCalled();
+
+      releaseRefreshSettlement();
+      await expect(apply).resolves.toMatchObject({
+        applied: true,
+        summary: expect.stringContaining(
+          "MCP refreshed (1 configured, 0 required)",
+        ),
+      });
+      await expect(callTool()).resolves.toEqual({ content: "current" });
+      expect(currentToolExecution).toHaveBeenCalledOnce();
+      expect(oldToolExecution).not.toHaveBeenCalled();
+    } finally {
+      releaseDeferral();
+      markResumeStarted();
+      releaseRefreshSettlement();
+      unregisterMcpLifecycle();
+    }
+  });
+
+  it("closes daemon authority when MCP refresh fails after config publication", async () => {
+    const { runner, session, sessionState, sandboxExecutionBroker } =
+      makeTopLevelRunner({
+        conversationId: "config-mcp-refresh-failure",
+        argv: ["node", "agenc"],
+      });
+    const refreshFailure = new Error("injected MCP refresh failure");
+    const reload = vi.fn(async () => ({}));
+    const refreshFromAuthority = vi.fn(async () => {
+      throw refreshFailure;
+    });
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        configStore: {
+          ...(
+            session as {
+              services: { configStore: Record<string, unknown> };
+            }
+          ).services.configStore,
+          current: () => ({}),
+          reload,
+        },
+        mcpManager: { refreshFromAuthority },
+      },
+      state: {
+        with: async (fn: (state: typeof sessionState) => void) =>
+          fn(sessionState),
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+
+    await expect(
+      runner.applyAgentConfig("config-mcp-refresh-failure", {
+        sessionId: "session_1",
+        reload: true,
+      }),
+    ).rejects.toBe(refreshFailure);
+
+    expect(refreshFromAuthority).toHaveBeenCalledTimes(1);
+    expect(
+      sandboxExecutionBroker.isClosedAfterLifecycleAuthorityFailure(),
+    ).toBe(true);
+    expect(session.abortTerminal).toHaveBeenCalledWith(
+      "permission_authority_failure",
+    );
+    expect(() =>
+      sandboxExecutionBroker.prepareSpawn("tool", {
+        program: "git",
+        args: ["status"],
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH ?? "" },
+        trustedExecutable: true,
+      }),
+    ).toThrow(
+      /daemon permission authority failed after canonical publication/u,
+    );
   });
 
   it("setAgentPermissionMode rejects internal-only modes", async () => {
@@ -2790,6 +7236,8 @@ describe("AgenC delegate background-agent runner", () => {
       firstRuntimeAuthBackend.vendKey("grok", "daemon-session"),
     ).resolves.toMatchObject({ apiKey: "managed-key-after" });
 
+    await runner.stopAgent("parent-session");
+
     await runner.startAgent({
       objective: "after auth reload",
       unattendedAllow: [],
@@ -2816,10 +7264,15 @@ describe("AgenC delegate background-agent runner", () => {
 
     expect(result.agentId).toBe("session-storm-fix");
     expect(result.status).toBe("running");
-    expect(stub.thread.submit).toHaveBeenCalledWith({
-      type: "user_input",
-      input: "hi",
-    });
+    expect(stub.thread.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "user_input",
+        input: "hi",
+        submitOptions: expect.objectContaining({
+          displayUserMessage: "hi",
+        }),
+      }),
+    );
     const submittedInput = stub.thread.submit.mock.calls[0]?.[0];
     expect(JSON.stringify(submittedInput)).not.toContain(
       "You are a subagent spawned",
@@ -2845,16 +7298,53 @@ describe("AgenC delegate background-agent runner", () => {
     });
 
     expect(stub.thread.submit).toHaveBeenCalledTimes(1);
-    expect(stub.thread.submit.mock.calls[0]?.[0]).toEqual({
-      type: "user_input",
-      input: [
-        { type: "text", text: "hello" },
-        {
-          type: "image_url",
-          image_url: { url: "data:image/png;base64,iVBOR" },
-        },
-      ],
+    expect(stub.thread.submit.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        type: "user_input",
+        input: [
+          { type: "text", text: "hello" },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,iVBOR" },
+          },
+        ],
+        submitOptions: expect.objectContaining({
+          displayUserMessage: "hello\n[image]",
+        }),
+      }),
+    );
+  });
+
+  it("[managed-thread] runs initial prompt hooks against initialContent rather than the objective", async () => {
+    const inspectHook = vi.fn(() => ({}));
+    const { runner, stub } = makeTopLevelRunner({
+      conversationId: "session-initial-content-hook-authority",
+      userPromptSubmitHooks: [inspectHook],
     });
+
+    await runner.startAgent({
+      objective: "benign routing label",
+      initialContent: "actual raw initial model input",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    expect(inspectHook).toHaveBeenCalledOnce();
+    expect(inspectHook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "actual raw initial model input",
+        sessionId: "session-initial-content-hook-authority",
+      }),
+    );
+    expect(inspectHook).not.toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: "benign routing label" }),
+    );
+    expect(stub.thread.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "user_input",
+        input: [{ type: "text", text: "actual raw initial model input" }],
+      }),
+    );
   });
 
   it("[managed-thread] carries validated Editor policy into the atomic first turn", async () => {
@@ -2933,6 +7423,89 @@ describe("AgenC delegate background-agent runner", () => {
     expect(stub.thread.submit).not.toHaveBeenCalled();
   });
 
+  it("[managed-thread] rejects blocked initial prompt ingress before durable turn activation", async () => {
+    const blockHook = vi.fn(() => ({
+      blockingError: { blockingError: "initial prompt denied" },
+    }));
+    const { runner, session, control, stub, rolloutStore, shutdown } =
+      makeTopLevelRunner({
+        conversationId: "session-initial-prompt-blocked",
+        userPromptSubmitHooks: [blockHook],
+      });
+
+    await expect(
+      runner.startAgent({
+        objective: "blocked initial prompt",
+        unattendedAllow: [],
+        unattendedDeny: [],
+      }),
+    ).rejects.toMatchObject({
+      code: "PROMPT_BLOCKED",
+      message: expect.stringContaining("initial prompt denied"),
+    });
+
+    expect(blockHook).toHaveBeenCalledOnce();
+    expect(blockHook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "blocked initial prompt",
+        sessionId: "session-initial-prompt-blocked",
+      }),
+    );
+    const emittedTypes = vi
+      .mocked(session.emit)
+      .mock.calls.map(
+        ([event]) => (event as { msg?: { type?: unknown } }).msg?.type,
+      );
+    expect(emittedTypes).not.toContain("user_message");
+    expect(rolloutStore.recordRunStartupActivationEvent).not.toHaveBeenCalled();
+    expect(stub.thread.submit).not.toHaveBeenCalled();
+    expect(control.sendInput).not.toHaveBeenCalled();
+    expect(shutdown).toHaveBeenCalledOnce();
+  });
+
+  it("[managed-thread] buffers initial prompt warnings for canonical delivery after attach", async () => {
+    const throwingHook = vi.fn(() => {
+      throw new Error("startup prompt hook exploded");
+    });
+    const { runner, stub } = makeTopLevelRunner({
+      conversationId: "session-initial-prompt-warning",
+      userPromptSubmitHooks: [throwingHook],
+    });
+    const emitted: JsonObject[] = [];
+
+    await runner.startAgent({
+      objective: "continue after non-blocking hook failure",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-initial-prompt-warning", {
+      sessionId: "session_1",
+      emit: async (notification) => {
+        emitted.push(notification);
+      },
+    });
+
+    expect(throwingHook).toHaveBeenCalledOnce();
+    expect(stub.thread.submit).toHaveBeenCalledOnce();
+    expect(emitted).toContainEqual(
+      expect.objectContaining({
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.session_event",
+        params: expect.objectContaining({
+          sessionId: "session_1",
+          agentId: "session-initial-prompt-warning",
+          event: expect.objectContaining({
+            type: "warning",
+            payload: expect.objectContaining({
+              cause: "user_prompt_submit_hook_threw",
+              message: expect.stringContaining("startup prompt hook exploded"),
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
   it("[managed-thread] defers a cold Editor session without a model turn or Agent startup side effects", async () => {
     const { runner, stub, bootstrap } = makeTopLevelRunner({
       conversationId: "session-cold-editor-prediction",
@@ -2980,7 +7553,7 @@ describe("AgenC delegate background-agent runner", () => {
         params: {
           sessionId: "session_1",
           agentId: "session-user-order",
-          eventId: "event:2",
+          eventId: "event:3",
           acceptedAt: "2026-05-01T12:00:01.000Z",
           event: {
             id: "message_1",
@@ -3009,8 +7582,120 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.sendInput).toHaveBeenCalledWith(
       "session-user-order",
       "continue",
+      expect.objectContaining({ displayUserMessage: "continue" }),
     );
     expect(emitted).toHaveLength(1);
+  });
+
+  it("[managed-thread] rejects blocked follow-up ingress before durable user-message and run activation", async () => {
+    const blockHook = vi.fn(() => ({
+      blockingError: { blockingError: "follow-up prompt denied" },
+    }));
+    const { runner, session, control, stub, rolloutStore } = makeTopLevelRunner(
+      {
+        conversationId: "session-follow-up-prompt-blocked",
+        userPromptSubmitHooks: [blockHook],
+      },
+    );
+    await runner.startAgent({
+      objective: "passive hook test",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    vi.mocked(session.emit).mockClear();
+    rolloutStore.recordRunStartupActivationEvent.mockClear();
+
+    await expect(
+      runner.submitAgentMessage("session-follow-up-prompt-blocked", {
+        sessionId: "session_1",
+        content: "blocked follow-up prompt",
+        originalContent: "blocked follow-up prompt",
+        messageId: "blocked-follow-up-message",
+        streamId: "blocked-follow-up-stream",
+        acceptedAt: "2026-08-25T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      code: "PROMPT_BLOCKED",
+      message: expect.stringContaining("follow-up prompt denied"),
+    });
+
+    expect(blockHook).toHaveBeenCalledOnce();
+    expect(blockHook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "blocked follow-up prompt",
+        sessionId: "session-follow-up-prompt-blocked",
+      }),
+    );
+    const emittedTypes = vi
+      .mocked(session.emit)
+      .mock.calls.map(
+        ([event]) => (event as { msg?: { type?: unknown } }).msg?.type,
+      );
+    expect(emittedTypes).not.toContain("user_message");
+    expect(rolloutStore.recordRunStartupActivationEvent).not.toHaveBeenCalled();
+    expect(stub.thread.submit).not.toHaveBeenCalled();
+    expect(control.sendInput).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] applies owning-session hook context to follow-up model input exactly once", async () => {
+    const contextHook = vi.fn(() => ({
+      additionalContexts: ["session-owned daemon context"],
+    }));
+    const { runner, session, control } = makeTopLevelRunner({
+      conversationId: "session-follow-up-hook-context",
+      userPromptSubmitHooks: [contextHook],
+    });
+    await runner.startAgent({
+      objective: "passive hook test",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    await expect(
+      runner.submitAgentMessage("session-follow-up-hook-context", {
+        sessionId: "session_1",
+        content: "allowed follow-up prompt",
+        originalContent: "allowed follow-up prompt",
+        messageId: "allowed-follow-up-message",
+        streamId: "allowed-follow-up-stream",
+        acceptedAt: "2026-08-25T00:00:01.000Z",
+      }),
+    ).resolves.toMatchObject({ disposition: "started" });
+
+    expect(contextHook).toHaveBeenCalledOnce();
+    expect(contextHook).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: "allowed follow-up prompt" }),
+    );
+    expect(control.sendInput).toHaveBeenCalledTimes(1);
+    expect(control.sendInput).toHaveBeenCalledWith(
+      "session-follow-up-hook-context",
+      expect.stringContaining("session-owned daemon context"),
+      expect.objectContaining({
+        displayUserMessage: "allowed follow-up prompt",
+      }),
+    );
+    const sendInputCalls = control.sendInput.mock
+      .calls as unknown as ReadonlyArray<readonly unknown[]>;
+    const modelInput = sendInputCalls[0]?.[1];
+    expect(typeof modelInput).toBe("string");
+    expect(
+      String(modelInput).match(/session-owned daemon context/g),
+    ).toHaveLength(1);
+    expect(session.emit).toHaveBeenCalledWith({
+      id: "allowed-follow-up-message",
+      msg: {
+        type: "user_message",
+        payload: {
+          message: "allowed follow-up prompt",
+          displayText: "allowed follow-up prompt",
+          messageId: "allowed-follow-up-message",
+          streamId: "allowed-follow-up-stream",
+          acceptedAt: "2026-08-25T00:00:01.000Z",
+        },
+      },
+    });
   });
 
   it("[managed-thread] correlates every live turn surface to one admitted message", async () => {
@@ -3487,14 +8172,23 @@ describe("AgenC delegate background-agent runner", () => {
   });
 
   it("[managed-thread] rejects opt-in admission during the initial turn without changing legacy FIFO", async () => {
-    const { runner, control } = makeTopLevelRunner({
+    const initialSubmissionStarted = Promise.withResolvers<void>();
+    const releaseInitialSubmission = Promise.withResolvers<void>();
+    const { runner, control, stub } = makeTopLevelRunner({
       conversationId: "session-strict-busy",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    stub.thread.submit.mockImplementationOnce(async () => {
+      initialSubmissionStarted.resolve();
+      await releaseInitialSubmission.promise;
+      return "session-strict-busy";
     });
     await runner.startAgent({
       objective: "initial turn is running",
       unattendedAllow: [],
       unattendedDeny: [],
     });
+    await initialSubmissionStarted.promise;
 
     await expect(
       runner.submitAgentMessage("session-strict-busy", {
@@ -3508,19 +8202,23 @@ describe("AgenC delegate background-agent runner", () => {
       }),
     ).rejects.toMatchObject({ code: "TURN_IN_PROGRESS" });
 
-    await expect(
-      runner.submitAgentMessage("session-strict-busy", {
-        sessionId: "session_1",
-        content: "legacy queued turn",
-        originalContent: "legacy queued turn",
-        messageId: "legacy-message",
-        streamId: "legacy-message",
-        acceptedAt: "2026-08-17T00:00:01.000Z",
-      }),
-    ).resolves.toMatchObject({ disposition: "started" });
+    const legacySubmission = runner.submitAgentMessage("session-strict-busy", {
+      sessionId: "session_1",
+      content: "legacy queued turn",
+      originalContent: "legacy queued turn",
+      messageId: "legacy-message",
+      streamId: "legacy-message",
+      acceptedAt: "2026-08-17T00:00:01.000Z",
+    });
+    expect(control.sendInput).not.toHaveBeenCalled();
+    releaseInitialSubmission.resolve();
+    await expect(legacySubmission).resolves.toMatchObject({
+      disposition: "started",
+    });
     expect(control.sendInput).toHaveBeenCalledWith(
       "session-strict-busy",
       "legacy queued turn",
+      expect.objectContaining({ displayUserMessage: "legacy queued turn" }),
     );
   });
 
@@ -3552,31 +8250,52 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.sendInput).toHaveBeenCalledWith(
       "session-deferred-first-send",
       "first user message",
+      expect.objectContaining({ displayUserMessage: "first user message" }),
     );
   });
 
-  it("[managed-thread] still rejects opt-in admission while a spawn-submitted initial turn is in pending_init", async () => {
-    const { runner } = makeTopLevelRunner({
+  it("[managed-thread] serializes direct shell behind a spawn-submitted initial turn without consulting thread status", async () => {
+    const initialSubmissionStarted = Promise.withResolvers<void>();
+    const releaseInitialSubmission = Promise.withResolvers<void>();
+    const harness = makeTopLevelRunner({
       conversationId: "session-initial-pending-init",
       threadInitialStatus: { status: "pending_init" } as AgentStatus,
     });
-    await runner.startAgent({
+    const shell = configureSessionShellHarness(harness);
+    harness.stub.thread.submit.mockImplementationOnce(async () => {
+      initialSubmissionStarted.resolve();
+      await releaseInitialSubmission.promise;
+      return "session-initial-pending-init";
+    });
+    await harness.runner.startAgent({
       objective: "initial turn is starting",
       unattendedAllow: [],
       unattendedDeny: [],
     });
-
-    await expect(
-      runner.submitAgentMessage("session-initial-pending-init", {
-        sessionId: "session_1",
-        content: "raced the initial turn",
-        originalContent: "raced the initial turn",
-        messageId: "raced-message",
-        streamId: "raced-message",
-        acceptedAt: "2026-08-20T00:00:00.000Z",
-        ifBusy: "reject",
+    await initialSubmissionStarted.promise;
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
       }),
-    ).rejects.toMatchObject({ code: "TURN_IN_PROGRESS" });
+    );
+
+    const execution = harness.runner.executeAgentShell(
+      "session-initial-pending-init",
+      {
+        sessionId: "session-initial-pending-init",
+        commandId: "shell-after-initial-1",
+        command: "printf serialized",
+      },
+    );
+    expect(shell.bashExecute).not.toHaveBeenCalled();
+    releaseInitialSubmission.resolve();
+    await expect(execution).resolves.toMatchObject({
+      commandId: "shell-after-initial-1",
+      isError: false,
+      stdout: "shell stdout",
+    });
+    expect(shell.bashExecute).toHaveBeenCalledOnce();
   });
 
   it("[managed-thread] reports a persisted crash-tail retry as incomplete", async () => {
@@ -3743,7 +8462,7 @@ describe("AgenC delegate background-agent runner", () => {
         params: {
           sessionId: "session_1",
           agentId: "session-user-durable",
-          eventId: "event:2",
+          eventId: "event:3",
           event: {
             id: "message_2",
             type: "user_message",
@@ -3771,6 +8490,7 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.sendInput).toHaveBeenCalledWith(
       "session-user-durable",
       "second visible prompt",
+      expect.objectContaining({ displayUserMessage: "second visible prompt" }),
     );
     expect(emitted).toHaveLength(1);
     expect(session.emit).toHaveBeenCalledWith({
@@ -3852,10 +8572,15 @@ describe("AgenC delegate background-agent runner", () => {
       unattendedAllow: [],
       unattendedDeny: [],
     });
-    expect(stub.thread.submit).toHaveBeenCalledWith({
-      type: "user_input",
-      input: "audit first prompt",
-    });
+    expect(stub.thread.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "user_input",
+        input: "audit first prompt",
+        submitOptions: expect.objectContaining({
+          displayUserMessage: "audit first prompt",
+        }),
+      }),
+    );
 
     await runner.attachAgentSessionEvents("session-objective-first-prompt", {
       sessionId: "session_1",
@@ -4056,6 +8781,7 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.sendInput).toHaveBeenCalledWith(
       "session-cancelled-turn-status",
       "continue after cancel",
+      expect.objectContaining({ displayUserMessage: "continue after cancel" }),
     );
   });
 

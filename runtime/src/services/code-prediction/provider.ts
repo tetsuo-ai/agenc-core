@@ -1,6 +1,6 @@
 import {
   createProvider,
-  normalizeProviderName,
+  resolveBuiltInProviderSlug,
   readProviderFactoryOptions,
   readProviderIdentity,
   type ProviderFactoryOptions,
@@ -63,8 +63,8 @@ export async function createOwnedCodePredictionProvider(params: {
   const requestedName =
     params.provider === undefined
       ? sourceName
-      : normalizeProviderName(params.provider);
-  if (requestedName === null) {
+      : resolveBuiltInProviderSlug(params.provider);
+  if (requestedName === null || requestedName === undefined) {
     throw new Error(
       `code prediction provider is unknown: ${params.provider ?? params.source.provider.name}`,
     );

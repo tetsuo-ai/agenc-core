@@ -39,6 +39,24 @@ const NODE = "/usr/bin/node";
 const SCRIPT = "/opt/agenc/bin/agenc.js";
 
 describe("routeCLI (T12 Wave 5-B)", () => {
+  it.each([
+    ["--yolo", "--dangerously-bypass-approvals-and-sandbox"],
+    ["--allow-dangerously-skip-permissions", "--dangerously-bypass-approvals-and-sandbox"],
+    ["--proactive", "--autonomous"],
+  ])("rejects retired startup flag %s before routing", (flag, replacement) => {
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, flag],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({
+      kind: "errorAndExit",
+      message: `agenc: unknown option '${flag}'. Use '${replacement}' instead.`,
+      exitCode: 2,
+    });
+  });
+
   it("piped stdin + argv routes to oneShotCLI with the argv prompt", async () => {
     const { bootTUI, oneShotCLI, resumeTUI, continueTUI } = makeHandles();
     const exit = await routeCLI({
@@ -103,9 +121,11 @@ describe("routeCLI (T12 Wave 5-B)", () => {
         "--model=gpt-5",
         "--profile",
         "fast",
+        "--config",
+        "/workspace/operator.toml",
         "--permission-mode",
         "plan",
-        "--yolo",
+        "--dangerously-bypass-approvals-and-sandbox",
         "build",
         "a",
         "game",
@@ -432,7 +452,7 @@ describe("classifyCLI", () => {
   it("treats every option-looking token after the prompt begins as literal text", () => {
     const promptTokens = [
       "explain",
-      "--yolo",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--permission-mode",
       "bypassPermissions",
       "--provider",
@@ -465,7 +485,7 @@ describe("classifyCLI", () => {
       "explain",
       "--permission-mode",
       "bypassPermissions",
-      "--yolo",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5",
       "--help",
@@ -481,6 +501,30 @@ describe("classifyCLI", () => {
     ).toEqual({
       kind: "bootTUI",
       args: { initialPrompt: promptTokens.join(" ") },
+    });
+  });
+
+  it("consumes a leading --bare flag without consuming literal prompt text", () => {
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "--bare", "explain", "this"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({
+      kind: "bootTUI",
+      args: { initialPrompt: "explain this" },
+    });
+
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "--", "--bare", "explain", "this"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({
+      kind: "bootTUI",
+      args: { initialPrompt: "--bare explain this" },
     });
   });
 });
@@ -506,6 +550,10 @@ describe("classifyCLI startup selection value-flag missing-value guard", () => {
     [
       "--profile",
       "agenc --profile requires a value (usage: agenc --profile <name>)",
+    ],
+    [
+      "--config",
+      "agenc --config requires a value (usage: agenc --config <path>)",
     ],
     ["--image", "agenc --image requires a value (usage: agenc --image <path|url>)"],
   ] as const;
@@ -722,13 +770,12 @@ describe("extractFlagValue + stripRoutingFlags helpers", () => {
         "--permission-mode",
         "bypassPermissions",
         "--autonomous",
-        "--proactive",
         "--dangerously-bypass-approvals-and-sandbox",
-        "--allow-dangerously-skip-permissions",
         "hello",
       ]),
     ).toStrictEqual(["hello"]);
     expect(stripRoutingFlags(["hello"])).toStrictEqual(["hello"]);
+    expect(stripRoutingFlags(["--bare", "hello"])).toStrictEqual(["hello"]);
   });
 
   it("never extracts or strips flags after the prompt boundary", () => {
@@ -741,14 +788,14 @@ describe("extractFlagValue + stripRoutingFlags helpers", () => {
     expect(
       stripRoutingFlags([
         "explain",
-        "--yolo",
+        "--dangerously-bypass-approvals-and-sandbox",
         "--model",
         "gpt-5",
         "--no-tui",
       ]),
     ).toStrictEqual([
       "explain",
-      "--yolo",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5",
       "--no-tui",
@@ -758,12 +805,13 @@ describe("extractFlagValue + stripRoutingFlags helpers", () => {
         "--",
         "--permission-mode",
         "bypassPermissions",
-        "--yolo",
+        "--dangerously-bypass-approvals-and-sandbox",
       ]),
     ).toStrictEqual([
       "--permission-mode",
       "bypassPermissions",
-      "--yolo",
+      "--dangerously-bypass-approvals-and-sandbox",
     ]);
+    expect(stripRoutingFlags(["--", "--bare"])).toStrictEqual(["--bare"]);
   });
 });

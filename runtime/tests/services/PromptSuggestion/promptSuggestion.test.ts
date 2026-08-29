@@ -23,7 +23,6 @@ import {
   shouldEnablePromptSuggestion,
   shouldFilterSuggestion,
 } from "./promptSuggestion.js";
-import { setPromptSuggestionLimitsForTests } from "./limits.js";
 import {
   getIsNonInteractiveSession as getBootstrapIsNonInteractiveSession,
   resetStateForTests,
@@ -43,23 +42,47 @@ describe("PromptSuggestion service", () => {
     isSpeculationEnabledMock.mockReset();
     isSpeculationEnabledMock.mockReturnValue(false);
     startSpeculationMock.mockReset();
-    delete process.env.AGENC_ENABLE_PROMPT_SUGGESTION;
-    delete process.env.AGENC_INTERNAL_FC_OVERRIDES;
     delete process.env.USER_TYPE;
     clearDynamicTeamContext();
     resetStateForTests();
-    setPromptSuggestionLimitsForTests(null);
   });
 
-  it("honors the AgenC env override", () => {
-    process.env.AGENC_ENABLE_PROMPT_SUGGESTION = "0";
+  it("uses the canonical setting as its sole enablement authority", () => {
     expect(shouldEnablePromptSuggestion()).toBe(false);
-
-    process.env.AGENC_ENABLE_PROMPT_SUGGESTION = "1";
-    expect(shouldEnablePromptSuggestion()).toBe(true);
+    expect(
+      shouldEnablePromptSuggestion({
+        promptSuggestionEnabled: false,
+        agentSwarmsEnabled: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldEnablePromptSuggestion({
+        promptSuggestionEnabled: true,
+        agentSwarmsEnabled: false,
+      }),
+    ).toBe(true);
   });
 
-  it("honors persisted prompt-suggestion settings when the feature is enabled", () => {
+  it("uses the prepared swarm setting without reading ambient feature state", () => {
+    process.env.USER_TYPE = "ant";
+
+    expect(
+      shouldEnablePromptSuggestion({
+        promptSuggestionEnabled: true,
+        agentSwarmsEnabled: false,
+        isTeammateSession: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldEnablePromptSuggestion({
+        promptSuggestionEnabled: true,
+        agentSwarmsEnabled: true,
+        isTeammateSession: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("honors persisted prompt-suggestion settings", () => {
     process.env.USER_TYPE = "ant";
     setIsInteractive(true);
 
@@ -69,7 +92,7 @@ describe("PromptSuggestion service", () => {
     expect(
       shouldEnablePromptSuggestion(liveSettings({ promptSuggestionEnabled: true })),
     ).toBe(true);
-    expect(shouldEnablePromptSuggestion(liveSettings({}))).toBe(true);
+    expect(shouldEnablePromptSuggestion(liveSettings({}))).toBe(false);
   });
 
   it("suppresses prompt suggestions through the live non-interactive bootstrap state", () => {
@@ -140,9 +163,6 @@ describe("PromptSuggestion service", () => {
       }),
     ).toBe("plan_mode");
 
-    process.env.USER_TYPE = "external";
-    setPromptSuggestionLimitsForTests({ status: "rejected" });
-    expect(getSuggestionSuppressReason(baseState)).toBe("rate_limit");
   });
 
   it("filters meta, assistant-voice, and malformed suggestions", () => {
@@ -293,9 +313,11 @@ function assistantMessage(text: string) {
   };
 }
 
-function liveSettings(settings: { promptSuggestionEnabled?: boolean }) {
+function liveSettings(settings: {
+  promptSuggestionEnabled?: boolean;
+  agentSwarmsEnabled?: boolean;
+}) {
   return {
-    promptSuggestionFeatureEnabled: true,
     agentSwarmsEnabled: true,
     ...settings,
     isNonInteractiveSession: getBootstrapIsNonInteractiveSession(),

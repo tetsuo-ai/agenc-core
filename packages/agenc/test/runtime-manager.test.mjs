@@ -2130,7 +2130,7 @@ test("Windows system tools prove GLOBALROOT identity before using DOS process pa
   );
   const helperStart = source.indexOf("function trustedWindowsSystemPaths(");
   const helperEnd = source.indexOf(
-    "export function resolveAgenCHome",
+    "function canonicalizeAgenCHome",
     helperStart,
   );
   assert.ok(

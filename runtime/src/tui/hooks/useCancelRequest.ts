@@ -43,7 +43,6 @@ import {
   queuedCommandOwnedByConversation,
   queuedCommandOwnedByMount,
 } from "../../utils/messageQueueManager.js";
-import { emitTaskTerminatedSdk } from "../../utils/sdkEventQueue.js";
 
 /** Time window in ms during which a second press kills all background agents. */
 const KILL_AGENTS_CONFIRM_WINDOW_MS = 3000;
@@ -164,7 +163,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
 
   // Determine if this handler should be active
   // Other contexts (Transcript, HistorySearch, Help) have their own escape handlers
-  // Overlays (ModelPicker, ThinkingToggle, etc.) register themselves via useRegisterOverlay
+  // Overlays (ThinkingToggle, selectors, etc.) register via useRegisterOverlay.
   // Local JSX commands handle their own input
   const isModalOverlayActive = useIsModalOverlayActive();
   const hasQueuedCommands = queuedCommandsLength > 0;
@@ -214,8 +213,8 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     isActive: isEscapeActive,
   });
 
-  // Shared kill path: stop all agents, suppress per-agent notifications,
-  // emit SDK events, enqueue a single aggregate model-facing notification.
+  // Shared kill path: stop all agents, suppress per-agent notifications, and
+  // enqueue one aggregate model-facing notification.
   // Returns true if anything was killed.
   const killAllAgentsAndNotify = useCallback((): boolean => {
     const tasks = store.getState().tasks;
@@ -229,10 +228,6 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     for (const [taskId, task] of running) {
       markAgentsNotified(taskId, setAppState);
       killedAgents.push({ taskId, description: task.description });
-      emitTaskTerminatedSdk(taskId, "stopped", {
-        toolUseId: task.toolUseId,
-        summary: task.description,
-      });
     }
     const descriptions = killedAgents.map((agent) => agent.description);
     const summary =

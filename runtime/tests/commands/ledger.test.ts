@@ -419,6 +419,23 @@ describe("/ledger command", () => {
     expect(lastSpawn?.options.stdio?.[1]).toBe("ignore");
   });
 
+  test("directs ring passwords to an OS credential store outside AgenC", async () => {
+    const savedWalletPass = process.env.WALLET_PASS;
+    delete process.env.WALLET_PASS;
+    try {
+      const result = (await ledgerCommand.execute(
+        makeCtx("ring init"),
+      )) as { kind: string; message: string };
+      expect(result.kind).toBe("error");
+      expect(result.message).toContain("OS credential store");
+      expect(result.message).not.toContain("OS keychain");
+      expect(lastSpawn).toBeNull();
+    } finally {
+      if (savedWalletPass === undefined) delete process.env.WALLET_PASS;
+      else process.env.WALLET_PASS = savedWalletPass;
+    }
+  });
+
   test("rejects unknown Ledger actions instead of passing them through", async () => {
     const result = (await ledgerCommand.execute(
       makeCtx("not-a-command"),

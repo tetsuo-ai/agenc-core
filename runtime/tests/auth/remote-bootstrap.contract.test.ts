@@ -11,7 +11,7 @@ const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN";
 const REMOTE_AUTH_URL_ENV = "AGENC_REMOTE_AUTH_URL";
 
 describe("remote AuthBackend bootstrap key vending", () => {
-  it("vends a remote managed key through createAuthBackend during provider startup", async () => {
+  it("vends a remote managed key lazily through createAuthBackend", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-remote-auth-ws-"));
     // Managed subscription vending is OpenRouter-only (e4a54ec1 "route
@@ -46,24 +46,6 @@ describe("remote AuthBackend bootstrap key vending", () => {
       },
     );
 
-    const providerMod = await import("../llm/provider.js");
-    const createProviderSpy = vi
-      .spyOn(providerMod, "createProvider")
-      .mockImplementation(
-        () =>
-          ({
-            name: "stub",
-            chat: async () => ({
-              content: "ok",
-              toolCalls: [],
-              usage: {
-                promptTokens: 1,
-                completionTokens: 1,
-                totalTokens: 2,
-              },
-            }),
-          }) as never,
-      );
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
 
     let shutdown: (() => Promise<void>) | null = null;
@@ -80,7 +62,6 @@ describe("remote AuthBackend bootstrap key vending", () => {
           AGENC_MODEL: "x-ai/grok-4.3",
           AGENC_PROVIDER: "openrouter",
           AGENC_WORKSPACE: workspace,
-          AGENC_XAI_API_KEY: "",
           GROK_API_KEY: "",
           HOME: agencHome,
           OPENROUTER_API_KEY: "",
@@ -89,13 +70,8 @@ describe("remote AuthBackend bootstrap key vending", () => {
       });
       shutdown = boot.shutdown;
 
-      expect(createProviderSpy).toHaveBeenCalledWith(
-        "openrouter",
-        expect.objectContaining({
-          apiKey: "remote-managed-key",
-          model: "x-ai/grok-4.3",
-        }),
-      );
+      expect(remoteFetchImpl).not.toHaveBeenCalled();
+      await boot.provider.getExecutionProfile?.();
       expect(remoteFetchImpl).toHaveBeenCalledWith(
         "http://127.0.0.1:8787/vend-key",
         expect.objectContaining({

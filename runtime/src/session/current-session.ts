@@ -14,23 +14,24 @@ let currentRuntimeSession: Session | null = null;
  * wrong session. Single-session processes (CLI one-shots, tests) keep
  * the fallback behavior.
  */
-let trackedFallbackSessions = new WeakSet<Session>();
-let liveFallbackSessionCount = 0;
+const trackedFallbackSessions = new Set<Session>();
+
+/** Return only the session bound to the current async execution context. */
+export function peekScopedRuntimeSession(): Session | null {
+  return scopedRuntimeSession.getStore() ?? null;
+}
 
 export function setCurrentRuntimeSession(session: Session | null): void {
-  if (session !== null && !trackedFallbackSessions.has(session)) {
-    trackedFallbackSessions.add(session);
-    liveFallbackSessionCount += 1;
-  }
+  if (session !== null) trackedFallbackSessions.add(session);
   currentRuntimeSession = session;
 }
 
 export function getCurrentRuntimeSession(): Session | null {
   const scoped = scopedRuntimeSession.getStore();
   if (scoped !== undefined) return scoped;
-  if (liveFallbackSessionCount > 1) {
+  if (trackedFallbackSessions.size > 1) {
     throw new Error(
-      `Ambiguous runtime session: ${liveFallbackSessionCount} sessions are ` +
+      `Ambiguous runtime session: ${trackedFallbackSessions.size} sessions are ` +
         "bootstrapped in this process and no session is bound to the current " +
         "async context. The module-level fallback would return whichever " +
         "session bootstrapped last, which may be the wrong one. Access the " +
@@ -50,7 +51,7 @@ export function getCurrentRuntimeSession(): Session | null {
 export function peekAmbientRuntimeSession(): Session | null {
   const scoped = scopedRuntimeSession.getStore();
   if (scoped !== undefined) return scoped;
-  return liveFallbackSessionCount > 1 ? null : currentRuntimeSession;
+  return trackedFallbackSessions.size > 1 ? null : currentRuntimeSession;
 }
 
 export function requireCurrentRuntimeSession(label: string): Session {
@@ -65,17 +66,14 @@ export function clearCurrentRuntimeSession(session?: Session | null): void {
   if (session === undefined) {
     // Full reset (test cleanup / process teardown): drop the fallback AND
     // the ambiguity tracking so the next bootstrap starts unambiguous.
-    trackedFallbackSessions = new WeakSet<Session>();
-    liveFallbackSessionCount = 0;
+    trackedFallbackSessions.clear();
     currentRuntimeSession = null;
     return;
   }
-  if (session !== null && trackedFallbackSessions.has(session)) {
-    trackedFallbackSessions.delete(session);
-    liveFallbackSessionCount = Math.max(0, liveFallbackSessionCount - 1);
-  }
+  if (session !== null) trackedFallbackSessions.delete(session);
   if (currentRuntimeSession === session) {
-    currentRuntimeSession = null;
+    currentRuntimeSession =
+      trackedFallbackSessions.values().next().value ?? null;
   }
 }
 

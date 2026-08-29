@@ -4,8 +4,8 @@ import { c as _c } from "react-compiler-runtime";
  *
  * This file provides the bindings and a composed provider that can be
  * added to the app's component tree. It loads both default bindings and
- * user-defined bindings from ~/.agenc/keybindings.json, with hot-reload
- * support when the file changes.
+ * canonical user-defined bindings from ConfigStore, with hot reload when the
+ * canonical config repository reloads.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNotifications } from '../context/notifications.js';
@@ -17,7 +17,7 @@ import { type Key, useInput } from '../ink.js';
 import { logForDebugging } from '../../utils/debug.js';
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
 import { KeybindingProvider, type InputCaptureRegistration } from './KeybindingContext.js';
-import { initializeKeybindingWatcher, type KeybindingsLoadResult, loadKeybindingsSyncWithWarnings, subscribeToKeybindingChanges } from './loadUserBindings.js';
+import { initializeKeybindingSubscription, type KeybindingConfigStore, type KeybindingsLoadResult, loadKeybindingsSyncWithWarnings, subscribeToKeybindingChanges } from './loadUserBindings.js';
 import { keybindingContextPriority, resolveKeyWithChordState } from './resolver.js';
 import type { KeybindingContextName, ParsedBinding, ParsedKeystroke } from './types.js';
 import type { KeybindingWarning } from './validate.js';
@@ -29,6 +29,7 @@ import type { KeybindingWarning } from './validate.js';
 const CHORD_TIMEOUT_MS = 1000;
 type Props = {
   children: React.ReactNode;
+  configStore?: KeybindingConfigStore;
 };
 
 function countWarnings(warnings: readonly KeybindingWarning[], severity: KeybindingWarning["severity"]): number {
@@ -80,8 +81,8 @@ export function formatKeybindingWarningNotification(
  *
  * Features:
  * - Loads default bindings from code
- * - Merges with user bindings from ~/.agenc/keybindings.json
- * - Watches for file changes and reloads automatically (hot-reload)
+ * - Merges with canonical `tui.keybindings` overrides
+ * - Subscribes to ConfigStore reloads (hot reload)
  * - User bindings override defaults (later entries win)
  * - Chord support with automatic timeout
  */
@@ -138,14 +139,15 @@ function useKeybindingWarnings(
   useEffect(t0, t1);
 }
 export function KeybindingSetup({
-  children
+  children,
+  configStore,
 }: Props): React.ReactNode {
   // Load bindings synchronously for initial render
   const [{
     bindings,
     warnings
   }, setLoadResult] = useState<KeybindingsLoadResult>(() => {
-    const result = loadKeybindingsSyncWithWarnings();
+    const result = loadKeybindingsSyncWithWarnings(configStore);
     logForDebugging(`[keybindings] KeybindingSetup initialized with ${result.bindings.length} bindings, ${result.warnings.length} warnings`);
     return result;
   });
@@ -219,8 +221,8 @@ export function KeybindingSetup({
     setPendingChordState(pending);
   }, [clearChordTimeout]);
   useEffect(() => {
-    // Initialize file watcher (idempotent - only runs once)
-    void initializeKeybindingWatcher();
+    // Subscribe to the canonical ConfigStore (idempotent for one store).
+    initializeKeybindingSubscription(configStore);
 
     // Subscribe to changes
     const unsubscribe = subscribeToKeybindingChanges(result_0 => {
@@ -234,7 +236,7 @@ export function KeybindingSetup({
       unsubscribe();
       clearChordTimeout();
     };
-  }, [clearChordTimeout]);
+  }, [clearChordTimeout, configStore]);
   return <KeybindingProvider bindings={bindings} pendingChordRef={pendingChordRef} pendingChord={pendingChord} setPendingChord={setPendingChord} activeContexts={activeContextsRef.current} registerActiveContext={registerActiveContext} unregisterActiveContext={unregisterActiveContext} handlerRegistryRef={handlerRegistryRef} inputCaptureRegistryRef={inputCaptureRegistryRef}>
       <ChordInterceptor bindings={bindings} pendingChordRef={pendingChordRef} setPendingChord={setPendingChord} activeContexts={activeContextsRef.current} handlerRegistryRef={handlerRegistryRef} inputCaptureRegistryRef={inputCaptureRegistryRef} />
       {children}

@@ -5,6 +5,9 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveAgenCHome } from "../lib/home-authority.mjs";
+
+export { resolveAgenCHome } from "../lib/home-authority.mjs";
 
 const DEFAULT_READY_TIMEOUT_MS = 2000;
 const DEFAULT_POLL_MS = 25;
@@ -27,13 +30,6 @@ export function resolveReadyTimeoutMs(env = process.env) {
     throw new Error(`${READY_TIMEOUT_ENV} must be a positive integer`);
   }
   return parsed;
-}
-
-export function resolveAgenCHome(env = process.env, userHome = homedir()) {
-  const configured = env.AGENC_HOME?.trim();
-  return configured && configured.length > 0
-    ? configured
-    : join(userHome, ".agenc");
 }
 
 export function resolveDaemonPidPath(env = process.env, userHome = homedir()) {

@@ -57,6 +57,8 @@ async function runFallback(
       workspace,
       "--permission-profile",
       JSON.stringify(profile),
+      "--session-temp-root",
+      workspace,
       "--",
       ...command,
     ],
@@ -71,12 +73,68 @@ async function runFallback(
 describe("planLandlockConfinement refusals", () => {
   const base = {
     sandboxPolicyCwd: "/tmp",
+    sessionTempRoot: "/tmp/agenc-landlock-session-root",
     allowNetworkForProxy: false,
     inheritedCwd: false,
   } as const;
   const plainPolicy = restrictedFileSystemPolicy([
     { path: { kind: "path", path: "/tmp" }, access: "write" },
   ]);
+
+  it("accepts the plugin MCP profile shape (root read + data-dir writes)", () => {
+    // The tight plugin-server profile: no writable project root, so no
+    // existing .git/.agenc carve-outs — the fallback must express it, which
+    // is what keeps plugin MCP servers working on bubblewrap-less hosts.
+    const dataDir = withTempDir("agenc-landlock-plan-plugindata-");
+    fs.mkdirSync(path.join(dataDir, "tmp"));
+    const plan = planLandlockConfinement({
+      ...base,
+      fileSystem: restrictedFileSystemPolicy(
+        [
+          {
+            path: { kind: "special", value: { kind: "root" } },
+            access: "read",
+          },
+          { path: { kind: "path", path: dataDir }, access: "write" },
+          {
+            path: { kind: "path", path: path.join(dataDir, "tmp") },
+            access: "write",
+          },
+        ],
+        { includePlatformDefaults: true },
+      ),
+    });
+    expect(plan).toMatchObject({
+      kind: "ok",
+      readWrite: expect.arrayContaining([dataDir]),
+    });
+  });
+
+  it("still refuses the workspace profile over an existing .agenc (regression guard)", () => {
+    const project = withTempDir("agenc-landlock-plan-project-");
+    fs.mkdirSync(path.join(project, ".agenc"));
+    const plan = planLandlockConfinement({
+      ...base,
+      sandboxPolicyCwd: project,
+      fileSystem: restrictedFileSystemPolicy(
+        [
+          {
+            path: { kind: "special", value: { kind: "root" } },
+            access: "read",
+          },
+          {
+            path: { kind: "special", value: { kind: "project_roots" } },
+            access: "write",
+          },
+        ],
+        { includePlatformDefaults: true },
+      ),
+    });
+    expect(plan).toMatchObject({
+      kind: "refused",
+      reason: expect.stringContaining(".agenc"),
+    });
+  });
 
   it("refuses managed proxy networking", () => {
     const plan = planLandlockConfinement({

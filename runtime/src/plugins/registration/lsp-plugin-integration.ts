@@ -18,8 +18,6 @@ export interface PluginLspRegistrationOptions extends PluginRuntimeLoadOptions {
   readonly errors?: PluginLoadIssue[];
 }
 
-let pluginLspCache: Promise<Readonly<Record<string, LspServerConfigInput>>> | null = null;
-
 interface ServerResolutionIssues {
   readonly missingUserConfig: Set<string>;
   readonly missingEnv: Set<string>;
@@ -41,6 +39,9 @@ function resolveServerString(
   const result = resolvePluginServerTemplate(value, plugin, {
     sessionId: options.sessionId,
     env: options.env,
+    ...(options.pluginStorageRoot !== undefined
+      ? { pluginStorageRoot: options.pluginStorageRoot }
+      : {}),
   });
   result.missingUserConfig.forEach((key) => issues.missingUserConfig.add(key));
   result.missingEnv.forEach((key) => issues.missingEnv.add(key));
@@ -65,7 +66,7 @@ function substituteStringRecord(
 export function resolvePluginLspEnvironment(
   plugin: LoadedPlugin,
   server: LspServerConfigInput,
-  options: PluginLspRegistrationOptions = {},
+  options: PluginLspRegistrationOptions,
 ): LspServerConfigInput {
   return resolvePluginLspEnvironmentWithIssues(plugin, server, options).server;
 }
@@ -89,8 +90,11 @@ function resolvePluginLspEnvironmentWithIssues(
         : {}),
       env: {
         AGENC_PLUGIN_ROOT: plugin.root,
-        AGENC_PLUGIN_DATA: getPluginDataDir(plugin.source),
-        AGENC_PLUGIN_NAME: plugin.name,
+        AGENC_PLUGIN_DATA: getPluginDataDir(
+          plugin.id,
+          options.pluginStorageRoot,
+        ),
+        AGENC_PLUGIN_NAME: plugin.id,
         ...(substituteStringRecord(plugin, server.env, options, issues) ?? {}),
       },
       ...(server.workspaceFolder !== undefined
@@ -120,8 +124,8 @@ function reportServerIssues(
   if (missingUserConfig.length > 0) {
     options.errors?.push({
       type: "lsp",
-      source: `plugin:${plugin.name}`,
-      plugin: plugin.name,
+      source: `plugin:${plugin.id}`,
+      plugin: plugin.id,
       path: serverName,
       message: `Missing user configuration values: ${missingUserConfig.join(", ")}`,
     });
@@ -129,8 +133,8 @@ function reportServerIssues(
   if (missingEnv.length > 0) {
     options.errors?.push({
       type: "lsp",
-      source: `plugin:${plugin.name}`,
-      plugin: plugin.name,
+      source: `plugin:${plugin.id}`,
+      plugin: plugin.id,
       path: serverName,
       message: `Missing environment variables: ${missingEnv.join(", ")}`,
     });
@@ -141,13 +145,13 @@ function reportServerIssues(
 function addPluginScopeToLspServers(
   plugin: LoadedPlugin,
   servers: Readonly<Record<string, LspServerConfigInput>>,
-  options: PluginLspRegistrationOptions = {},
+  options: PluginLspRegistrationOptions,
 ): Readonly<Record<string, LspServerConfigInput>> {
   const scoped: Record<string, LspServerConfigInput> = {};
   for (const [name, server] of Object.entries(servers)) {
     const resolved = resolvePluginLspEnvironmentWithIssues(plugin, server, options);
     if (reportServerIssues(plugin, name, resolved.issues, options)) continue;
-    scoped[pluginScopedServerIdentifier(plugin.name, name)] = resolved.server;
+    scoped[pluginScopedServerIdentifier(plugin.id, name)] = resolved.server;
   }
   return scoped;
 }
@@ -160,7 +164,7 @@ async function resolvePlugins(
 
 async function extractLspServersFromPlugins(
   plugins: readonly LoadedPlugin[],
-  options: PluginLspRegistrationOptions = {},
+  options: PluginLspRegistrationOptions,
 ): Promise<Readonly<Record<string, LspServerConfigInput>>> {
   return Object.assign(
     {},
@@ -173,17 +177,8 @@ async function extractLspServersFromPlugins(
 }
 
 export async function loadPluginLspServers(
-  options: PluginLspRegistrationOptions = {},
+  options: PluginLspRegistrationOptions,
 ): Promise<Readonly<Record<string, LspServerConfigInput>>> {
   const plugins = await resolvePlugins(options);
   return extractLspServersFromPlugins(plugins, options);
-}
-
-export async function getPluginLspServers(): Promise<Readonly<Record<string, LspServerConfigInput>>> {
-  pluginLspCache ??= loadPluginLspServers();
-  return pluginLspCache;
-}
-
-export function clearPluginLspServerCache(): void {
-  pluginLspCache = null;
 }

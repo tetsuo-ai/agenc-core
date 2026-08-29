@@ -34,16 +34,17 @@ history; the linked pages below are current product truth.
 | [migrate-from-openclaw.md](migrate-from-openclaw.md) | Surface map from OpenClaw |
 | [migrate-from-hermes.md](migrate-from-hermes.md) | Surface map from Hermes Agent |
 | [trajectory-training-data.md](trajectory-training-data.md) | Enable trajectory export and curate SFT/DPO JSONL |
-| [agent-eval-reports.md](agent-eval-reports.md) | Local agent-eval suite, reports, and regression gate |
+| [agent-eval-reports.md](agent-eval-reports.md) | Legacy local diagnostic suite, reports, and regression gate (not TFR) |
 | [evaluation-contract-v1.md](evaluation-contract-v1.md) | Versioned real-agent task, preregistration, evidence, and score derivation contract |
 | [evaluation-suites-v1.md](evaluation-suites-v1.md) | Separate versioned competitive-coding and deterministic trust-conformance suite protocols |
 | [evaluation-pilot-v1.md](evaluation-pilot-v1.md) | Frozen 30-task public pilot candidates, qualification boundary, and powered-holdout design |
 | [eval/real-agent-baseline-runbook.md](eval/real-agent-baseline-runbook.md) | Operator runbook for reproducible real-agent pilot batches from pinned inputs |
-| [eval/seed-baseline-2026-07-17.md](eval/seed-baseline-2026-07-17.md) | First contained 10-task real-agent seed baseline and adjudicated results |
+| [eval/seed-baseline-2026-07-17.md](eval/seed-baseline-2026-07-17.md) | Dated snapshot: first contained 10-task real-agent scorecard (2026-07-17, runtime 0.6.1). Not a reproduction contract |
 | [ci-required-gates.md](ci-required-gates.md) | Local exact-SHA gates and the inactive optional GitHub App/ruleset design |
 | [provider-tool-compat.md](provider-tool-compat.md) | Tool JSON-schema root-type requirements for strict providers |
 | [embedded-neovim-buffer.md](embedded-neovim-buffer.md) | Embedded Neovim workspace, multi-buffer safety, recovery, editor/chat handoff, configuration, and troubleshooting |
 | [browser.md](browser.md) | Browser tool, Chromium profile, SSRF proxy, `[browser]` config |
+| [imagine.md](imagine.md) | Grok ImagineImage / ImagineVideo tools (direct xAI only) |
 | [sdk.md](sdk.md) | Embed via `@tetsuo-ai/agenc-sdk` (socket + subprocess) |
 | [security/slm-transaction-guard.md](security/slm-transaction-guard.md) | Opt-in SLM CourtGuard for Solana-like tool calls |
 | [security/mobile-ledger-transfer.md](security/mobile-ledger-transfer.md) | Typed Android `@ledger` SOL handoff: trust boundary, schemas, idempotency, recovery |
@@ -54,6 +55,7 @@ history; the linked pages below are current product truth.
 | --- | --- |
 | [reference/cli.md](reference/cli.md) | Full CLI: top-level flags, all subcommands |
 | [reference/config.md](reference/config.md) | `config.toml` sections, env overrides, `agenc config` |
+| [reference/env.md](reference/env.md) | Operator `AGENC_*` / provider key environment variables |
 | [reference/daemon.md](reference/daemon.md) | Daemon process model, socket auth, lifecycle |
 | [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs |
 | [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics |
@@ -72,7 +74,7 @@ history; the linked pages below are current product truth.
 | Doc | Summary |
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Process model, subsystem map, turn phases, recovery ladder, on-disk state |
-| [design/critical-path/README.md](design/critical-path/README.md) | Accepted target decisions for critical-path remediation; implementation is pending |
+| [design/critical-path/README.md](design/critical-path/README.md) | Critical-path ADRs. Several are shipped (see that README's per-ID status). Remaining target: CP-0008 flattening cutover |
 | [design/reproducible-installs-releases.md](design/reproducible-installs-releases.md) | M0 dependency, artifact, Docker, release, and crash-safe lock decisions |
 | [design/release-controller.md](design/release-controller.md) | Proposed one-command resumable release controller and automation safety contract |
 | [design/workspace-scoped-agent-roles.md](design/workspace-scoped-agent-roles.md) | Immutable workspace identity for role lookup, spawn, resume, and worktrees |
@@ -84,9 +86,11 @@ history; the linked pages below are current product truth.
 | [design/durable-runs-effects-events.md](design/durable-runs-effects-events.md) | M4 canonical run journal, honest effects, terminal results, replay-safe cursors, crash matrix, and rollback |
 | [design/shared-run-contracts-v1.md](design/shared-run-contracts-v1.md) | Frozen v1 run, admission, budget, effect, event, and cursor contracts |
 | [design/verified-change-workflow-m5.md](design/verified-change-workflow-m5.md) | Verified-change workflow contract, durable step semantics, recovery, and evidence |
-| [design/eval-pilot-executor.md](design/eval-pilot-executor.md) | Pilot preflight and offline-agent executor, deferred real-model lane, and designed evidence binding |
+| [design/eval-pilot-executor.md](design/eval-pilot-executor.md) | Pilot preflight and offline-agent executor. Phase 2b egress shipped. Evidence-ledger binding in eval-executor is still target |
 | [design/eval-pilot-executor-phase2b-egress.md](design/eval-pilot-executor-phase2b-egress.md) | Contained real-provider egress implementation and adversarial proof record |
 | [design/swarm-orchestration.md](design/swarm-orchestration.md) | Enforced initial delegation for parallel routing, durable task outcomes, immutable worktree evidence, external research, and local evaluation gate |
+| [design/mailbox-metadata-contract.md](design/mailbox-metadata-contract.md) | Bounded mailbox metadata decoder/builder (E3a). Implemented |
+| [design/mailbox-metadata-cutover.md](design/mailbox-metadata-cutover.md) | Mailbox.send admits only authenticated metadata handles (E3b) |
 | [roadmap.md](roadmap.md) | Shipped vs open backlog (current product truth) |
 
 ## Releases
@@ -95,6 +99,7 @@ history; the linked pages below are current product truth.
 | --- | --- |
 | [releases/0.17.0.md](releases/0.17.0.md) | AgenC 0.17.0: restart-safe resumable sessions, race-safe protocol 1.2 client sync, Linux Landlock fallback, and reliable large tool-output handling |
 | [releases/0.16.1.md](releases/0.16.1.md) | AgenC 0.16.1: stock-macOS installer repair, live install progress, launcher portability, and reliable supervised-process teardown |
+| [releases/0.16.0.md](releases/0.16.0.md) | AgenC 0.16.0: grok-4.6 as the startup default, first-party security plugin, and recovery from stale workspace process state |
 | [releases/0.15.0.md](releases/0.15.0.md) | AgenC 0.15.0: daemon port ownership and reaping, working mode-switcher keys, readable failures |
 | [releases/0.14.2.md](releases/0.14.2.md) | AgenC 0.14.2: scoped stale workspace quarantine and authoritative shell effect outcomes |
 | [releases/0.14.1.md](releases/0.14.1.md) | AgenC 0.14.1: emergency patch unbricking 0.13 to 0.14 daemon upgrades and surfacing failed submits |
@@ -102,8 +107,6 @@ history; the linked pages below are current product truth.
 | [releases/0.13.0.md](releases/0.13.0.md) | AgenC 0.13.0: unified Agent/Editor workspace, safe AI-assisted Neovim editing, and first-class Ledger verification |
 | [releases/0.12.0.md](releases/0.12.0.md) | AgenC 0.12.0: monochrome terminal workbench, reliable delegated-agent admission, and zero-skip native gates |
 | [releases/0.11.2.md](releases/0.11.2.md) | AgenC 0.11.2: first published self-contained Node 26 runtime, with Rocky-built compatibility bootstraps |
-| [releases/0.11.1.md](releases/0.11.1.md) | AgenC 0.11.1 source tag: unpublished bootstrap-identity correction attempt, superseded by 0.11.2 |
-| [releases/0.11.0.md](releases/0.11.0.md) | AgenC 0.11.0 source tag: unpublished Rocky-inventory correction attempt, superseded by 0.11.2 |
 | [releases/0.10.0.md](releases/0.10.0.md) | AgenC 0.10.0: parallel `/swarm` routes now perform a real initial worker-spawn attempt |
 | [releases/0.9.5.md](releases/0.9.5.md) | AgenC 0.9.5: accurate native-install diagnostics and an actionable Ubuntu AppArmor sandbox fix |
 | [releases/0.9.4.md](releases/0.9.4.md) | AgenC 0.9.4: first-run AgenC and X / xAI sign-in, free hosted models, and actionable onboarding |
@@ -118,9 +121,6 @@ history; the linked pages below are current product truth.
 | [releases/0.8.0.md](releases/0.8.0.md) | AgenC 0.8.0: the verified-change workflow (agenc run start), grok streaming resilience, picker redesign |
 | [releases/0.7.3.md](releases/0.7.3.md) | AgenC 0.7.3: grok stream idle timeout, provider timeout_ms, launcher perms repair and update-deadlock fixes |
 | [releases/0.7.2.md](releases/0.7.2.md) | AgenC 0.7.2: durable runs, verified distribution, TUI workbench, lifecycle and sandbox hardening |
-| [releases/0.7.1.md](releases/0.7.1.md) | Source-tag-only 0.7.1 candidate (no runtime or npm publication) |
-| [releases/0.7.0.md](releases/0.7.0.md) | Source-tag-only 0.7.0 candidate (no runtime or npm publication) |
-| [releases/0.6.2.md](releases/0.6.2.md) | Superseded 0.6.2 source candidate (no runtime or npm publication) |
 
 ---
 

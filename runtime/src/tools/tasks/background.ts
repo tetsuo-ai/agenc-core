@@ -10,7 +10,7 @@
  *
  * Cross-cuts deliberately NOT carried:
  *   - Donor React/Ink render components.
- *   - Deprecated donor shell output aliases beyond the `shell_id` input alias.
+ *   - Deprecated donor shell output aliases.
  */
 
 import {
@@ -179,16 +179,17 @@ export function createBackgroundTaskTools(
         type: "object",
         properties: {
           task_id: { type: "string" },
-          shell_id: { type: "string" },
         },
+        required: ["task_id"],
         additionalProperties: false,
       },
       execute: async (args) => {
         const strict = taskStrictArgs(args, {
-          allowed: new Set(["task_id", "shell_id"]),
+          allowed: new Set(["task_id"]),
+          required: ["task_id"],
         });
         if (strict) return strict;
-        const taskId = stringValue(args.task_id) ?? stringValue(args.shell_id);
+        const taskId = stringValue(args.task_id);
         if (!taskId) {
           return taskTextResult(
             "Missing required parameter: task_id",

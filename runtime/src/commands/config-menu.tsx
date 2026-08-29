@@ -22,6 +22,10 @@ import type { SlashCommandContext } from "./types.js";
 import { asRecord } from "../utils/record.js";
 import { discoverNeovim } from "../tui/workbench/buffer/neovim/NeovimDiscovery.js";
 import { bufferProviderConfigFromSources } from "../tui/workbench/buffer/providers/selectBufferEditorProvider.js";
+import {
+  readSessionSelection,
+  type SessionSelection,
+} from "../session/provider-model-selection.js";
 
 type ConfigRowKind =
   | "runtime"
@@ -48,6 +52,7 @@ type ConfigRow = {
 export type ConfigMenuSnapshot = {
   readonly configPath: string;
   readonly warningCount: number;
+  readonly sessionSelection: SessionSelection;
   readonly rows: readonly ConfigRow[];
   readonly activeIndex: number;
 };
@@ -55,6 +60,7 @@ export type ConfigMenuSnapshot = {
 type ConfigMenuSnapshotOptions = {
   readonly configPath: string;
   readonly warnings?: readonly string[];
+  readonly sessionSelection: SessionSelection;
 };
 
 function optionalRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
@@ -141,14 +147,33 @@ function createConfigMenuSnapshot(
   const providerCount = countRecord(config.providers);
   const pluginDirs = config.plugins?.dirs?.length ?? 0;
   const pluginAllowlist = config.plugins?.allowlist?.length ?? 0;
-  const rows: ConfigRow[] = [
+  const configuredProvider = scalar(config.model_provider);
+  const configuredModel = scalar(config.model);
+  const sessionMatchesConfig =
+    options.sessionSelection.provider === configuredProvider &&
+    options.sessionSelection.model === configuredModel;
+  const modelRows: ConfigRow[] = [
     row(
       "runtime",
-      "model",
-      config.model,
-      `provider ${scalar(config.model_provider)}; ${providerCount} provider override entries`,
+      "session model",
+      options.sessionSelection.model,
+      `provider ${options.sessionSelection.provider}; live selection for this session${sessionMatchesConfig ? "; matches configured startup selection" : ""}`,
       "active",
     ),
+  ];
+  if (!sessionMatchesConfig) {
+    modelRows.push(
+      row(
+        "runtime",
+        "configured model",
+        config.model,
+        `provider ${configuredProvider}; ${providerCount} provider override entries`,
+        "configured",
+      ),
+    );
+  }
+  const rows: ConfigRow[] = [
+    ...modelRows,
     row(
       "runtime",
       "reasoning",
@@ -159,20 +184,20 @@ function createConfigMenuSnapshot(
       "permissions",
       "approval",
       config.approval_policy,
-      `permission default ${scalar(config.permissions?.default_mode ?? config.permissions?.defaultMode, "default")}; reviewer ${scalar(config.approvals_reviewer)}`,
+      `permission default ${scalar(config.permissions?.defaultMode, "default")}; approval ${scalar(config.approval_policy)}; reviewer ${scalar(config.approvals_reviewer)}`,
       "active",
     ),
     row(
       "permissions",
       "sandbox",
-      config.sandbox_mode ?? config.sandbox?.mode,
-      `policy ${scalar(config.sandbox_policy?.mode, "default")}; network ${scalar(config.sandbox_policy?.network_access, "default")}`,
+      config.sandbox_mode,
+      `network ${scalar(config.sandbox?.network_access, "mode default")}; extra write roots ${config.sandbox?.filesystem?.allowWrite?.length ?? 0}`,
     ),
     row(
       "paths",
       "config.toml",
       options.configPath,
-      `workspace ${scalar(config.workspace, "current cwd")}; agenc_home ${scalar(config.agenc_home, "resolved from environment")}`,
+      "workspace follows the current process cwd",
       "active",
     ),
     row(
@@ -211,15 +236,15 @@ function createConfigMenuSnapshot(
     ),
     row(
       "tui",
-      "layout",
-      config.tuiLayout?.mode,
-      `side pane ${scalar(config.tuiLayout?.sidePane, "default")}; min columns ${scalar(config.tuiLayout?.minColumns, "default")}; editor ${scalar(config.editorMode)}`,
+      "theme",
+      config.tui?.theme,
+      `vim input ${scalar(config.tui?.vimMode, "off")}; turn duration ${scalar(config.tui?.showTurnDuration, "on")}; progress bar ${scalar(config.tui?.terminalProgressBarEnabled, "on")}`,
     ),
     row(
       "tui",
       "updates",
       config.autoUpdates,
-      `remote control at startup ${scalar(config.remoteControlAtStartup, "not set")}`,
+      `channel ${scalar(config.autoUpdatesChannel, "latest")}`,
     ),
   ];
 
@@ -238,6 +263,7 @@ function createConfigMenuSnapshot(
   return {
     configPath: options.configPath,
     warningCount: options.warnings?.length ?? 0,
+    sessionSelection: options.sessionSelection,
     rows,
     activeIndex: Math.max(0, rows.findIndex(item => item.status === "active")),
   };
@@ -249,9 +275,14 @@ export function readConfigMenuSnapshot(ctx: SlashCommandContext): ConfigMenuSnap
   if (!store) {
     throw new Error("ConfigStore not initialised");
   }
-  return createConfigMenuSnapshot(store.current(), {
+  const config = store.current();
+  return createConfigMenuSnapshot(config, {
     configPath: configFilePathFromCommandContext(ctx),
     warnings: store.warnings(),
+    sessionSelection: readSessionSelection(ctx.session, {
+      includePending: true,
+      fallbackConfig: config,
+    }),
   });
 }
 
@@ -307,8 +338,9 @@ export function ConfigMenuView({
     () => createConfigMenuSnapshot(config, {
       configPath: snapshot.configPath,
       warnings: store.warnings(),
+      sessionSelection: snapshot.sessionSelection,
     }),
-    [config, snapshot.configPath, store],
+    [config, snapshot.configPath, snapshot.sessionSelection, store],
   );
   const rows = liveSnapshot.rows;
   const [activeIndex, setActiveIndex] = React.useState(snapshot.activeIndex);
@@ -351,7 +383,7 @@ export function ConfigMenuView({
     <MenuModal
       title="config"
       count={`${rows.length}`}
-      summary={liveSnapshot.warningCount > 0 ? `${liveSnapshot.warningCount} warnings` : "effective settings"}
+      summary={liveSnapshot.warningCount > 0 ? `${liveSnapshot.warningCount} warnings` : "session + configuration"}
       headerRight={liveSnapshot.configPath}
       columns={[3, 13, 18, 24, 54]}
       headers={["", "status", "section", "key", "value"]}
@@ -379,9 +411,9 @@ export function ConfigMenuView({
       }}
       preview={
         <Box flexDirection="column" gap={1}>
-          <ThemedText color="agenc">Config Store</ThemedText>
+          <ThemedText color="agenc">Session and Configuration</ThemedText>
           <ThemedText color="text2" wrap="wrap">
-            Effective settings are read from the live ConfigStore. Use explicit subcommands for scripted output.
+            The active model comes from this session. Other rows come from layered configuration. Use explicit subcommands for scripted output.
           </ThemedText>
           <ThemedText color="subtle" wrap="wrap">
             Selected: {selected?.key ?? "none"}

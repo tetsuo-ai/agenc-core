@@ -1,26 +1,23 @@
 # Critical-path target decisions
 
-Status: accepted target architecture; implementation is pending.
+Status: mixed. CP-0001 through CP-0007 are in the 0.17.0 runtime. CP-0008
+still has a flattening cutover (fork context concatenates `taskPrompt`).
+Per-file headers that still say "implementation pending" are stale when this
+table says shipped.
 
-These decision records freeze the contracts required by the algorithmic
-critical-path remediation program. They were reviewed against commit
-`d2b228e87ea63bd6a5d93e6f599f36bce88d672b` on 2026-07-31.
+Reviewed against commit `d2b228e87ea63bd6a5d93e6f599f36bce88d672b` on
+2026-07-31. Re-checked against the 0.17.0 tree.
 
-They describe target behavior. They do not claim that the current runtime
-already implements it. Current implemented behavior remains documented by the
-other pages under `docs/design/` until the corresponding implementation PR is
-merged and those pages are updated.
-
-| ID | Decision | Implementation owner |
+| ID | Decision | Runtime |
 | --- | --- | --- |
-| CP-0001 | [Separate caller, admission, and physical-effect outcomes](0001-effect-outcome-separation.md) | Effect-outcome state machine and retry audit (A1) |
-| CP-0002 | [Use strict canonical recovery with quarantine](0002-strict-recovery-quarantine.md) | Strict recovery contracts, bounded projection, and authoritative cutover (A2a, E1a, A2b) |
-| CP-0003 | [Version durable checkpoints and bind complete tool results](0003-versioned-durable-checkpoints.md) | Checkpoint digest, ordered tool pairing, and legacy migration (A3) |
-| CP-0004 | [Separate CSV source, item, and path identities](0004-csv-identity-and-replay.md) | CSV identity, import visibility, and replay safety (B1) |
-| CP-0005 | [Publish only complete derived-index generations](0005-derived-index-freshness.md) | Persistent fuzzy-file indexing and full-corpus memory indexing (D2, C3b) |
-| CP-0006 | [Make compaction a rollback-capable transaction](0006-compaction-transaction.md) | Transactional, injection-safe context compaction (C2) |
-| CP-0007 | [Govern workflow handoff artifacts](0007-workflow-handoff-artifact.md) | Workflow artifact contract followed by bounded scheduler consumption (B3a, B3b) |
-| CP-0008 | [Preserve trusted instructions and untrusted data end to end](0008-agent-invocation-envelope.md) | CSV, workflow, memory, session, wire, and provider invocation adapters (B1, B3, C3) |
+| CP-0001 | [Separate caller, admission, and physical-effect outcomes](0001-effect-outcome-separation.md) | Shipped (schema v17) |
+| CP-0002 | [Use strict canonical recovery with quarantine](0002-strict-recovery-quarantine.md) | Shipped |
+| CP-0003 | [Version durable checkpoints and bind complete tool results](0003-versioned-durable-checkpoints.md) | Shipped |
+| CP-0004 | [Separate CSV source, item, and path identities](0004-csv-identity-and-replay.md) | Shipped |
+| CP-0005 | [Publish only complete derived-index generations](0005-derived-index-freshness.md) | Shipped |
+| CP-0006 | [Make compaction a rollback-capable transaction](0006-compaction-transaction.md) | Shipped |
+| CP-0007 | [Govern workflow handoff artifacts](0007-workflow-handoff-artifact.md) | Shipped |
+| CP-0008 | [Preserve trusted instructions and untrusted data end to end](0008-agent-invocation-envelope.md) | Mixed. Envelope types exist; fork still concatenates `Task: ${input.taskPrompt}` |
 
 ## Interpretation rules
 

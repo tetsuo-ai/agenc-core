@@ -16,7 +16,7 @@ import {
   isDangerousRemovalPath,
   validatePath,
 } from "./path-validation.js";
-import { applyPermissionUpdate } from "./rules.js";
+import { applyPermissionUpdate } from "./permission-updates.js";
 import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
@@ -251,7 +251,7 @@ describe("path-validation", () => {
     });
   });
 
-  // Regression: audit #3 — bypassPermissions / --yolo must not short-circuit
+  // Regression: audit #3 — bypassPermissions / --dangerously-bypass-approvals-and-sandbox must not short-circuit
   // to allow before path-specific Deny rules and write-safety gates run.
   describe("checkToolPathPermission honors deny + safety gates under bypassPermissions", () => {
     test("explicit Deny(Write) rule still denies under bypassPermissions", () => {

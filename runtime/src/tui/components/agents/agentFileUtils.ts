@@ -19,7 +19,7 @@ import {
   sep,
 } from 'path'
 import type { SettingSource } from '../../../utils/settings/constants.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { getManagedFilePath } from '../../../utils/settings/managedPath.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getManagedFilePath } from '../../../utils/settings/managedPath.js'
 import type { AgentMemoryScope } from '../../../tools/AgentTool/agentMemory.js'
 import {
   type AgentDefinition,
@@ -27,7 +27,7 @@ import {
   isPluginAgent,
 } from 'src/tools/AgentTool/loadAgentsDir.js'
 import type { EffortValue } from '../../../utils/effort.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { getAgenCConfigHomeDir } from '../../../utils/envUtils.js'
+import { getAgenCHomeDir } from '../../../utils/envUtils.js'
 import { getErrnoCode } from '../../../utils/errors.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { AGENT_PATHS } from './types.js'
 import {
@@ -151,7 +151,7 @@ function getAgentDirectoryPath(
     case 'flagSettings':
       throw new Error(`Cannot get directory path for ${location} agents`)
     case 'userSettings':
-      return join(getAgenCConfigHomeDir(), AGENT_PATHS.AGENTS_DIR)
+      return join(getAgenCHomeDir(), AGENT_PATHS.AGENTS_DIR)
     case 'projectSettings':
       return join(
         roleWorkspaceCwd,
@@ -189,7 +189,7 @@ function getAgentDirectoryLocation(
         directory,
       }
     case 'userSettings': {
-      const tierRoot = getAgenCConfigHomeDir()
+      const tierRoot = getAgenCHomeDir()
       return { trustAnchor: dirname(tierRoot), tierRoot, directory }
     }
     case 'policySettings': {

@@ -16,6 +16,7 @@ import {
 } from "../../oauth/refresh-loop.js";
 import type { ProviderAuthHeaderContext } from "../../client-session.js";
 import { LLMProviderError } from "../../errors.js";
+import { providerApiKeyEnvironmentLabel } from "../../registry/provider-info.js";
 import type { OpenAIProviderConfig } from "./types.js";
 
 export class OpenAIAuthSession {
@@ -28,7 +29,10 @@ export class OpenAIAuthSession {
   constructor(config: OpenAIProviderConfig) {
     this.config = config;
     this.providerName = config.providerName ?? "openai";
-    this.apiKeyEnvLabel = config.apiKeyEnvLabel ?? "OPENAI_API_KEY";
+    this.apiKeyEnvLabel =
+      config.apiKeyEnvLabel ??
+      providerApiKeyEnvironmentLabel(this.providerName) ??
+      "API key";
     this.oauthState =
       config.authMode === "oauth" && config.oauth
         ? {
@@ -94,19 +98,6 @@ export class OpenAIAuthSession {
       case "optional_bearer": {
         const token = this.config.apiKey?.trim();
         return token ? this.headersForBearerToken(token) : {};
-      }
-      case "google_api_key": {
-        const apiKey = assertNonEmptyApiKey(
-          this.providerName,
-          this.config.apiKey,
-          this.apiKeyEnvLabel,
-        );
-        return {
-          "x-goog-api-key": apiKey,
-          ...(this.config.project
-            ? { "x-goog-user-project": this.config.project }
-            : {}),
-        };
       }
       case "bearer":
       default: {

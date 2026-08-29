@@ -18,8 +18,7 @@ import {
   dequeue,
   enqueue,
   enqueuePendingNotification,
-  getCommandQueue,
-  getQueuedUserInputCount,
+  getCommandQueueSnapshot,
   peek,
   popAllEditable,
   queuedCommandOwnedByConversation,
@@ -27,13 +26,13 @@ import {
   queuedCommandWorkspaceView,
   registerCommandQueueOwner,
   removeLastQueuedInput,
-  resetCommandQueue,
+  resetCommandQueueForTesting,
 } from "./messageQueueManager.js";
 import type { QueuedCommand } from "../types/textInputTypes.js";
 
 describe("messageQueueManager workspace ownership", () => {
   afterEach(() => {
-    resetCommandQueue();
+    resetCommandQueueForTesting();
   });
 
   test("preserves explicit Editor commands while legacy commands drain as Agent-owned", () => {
@@ -59,7 +58,7 @@ describe("messageQueueManager workspace ownership", () => {
           queuedCommandWorkspaceView(command) === "agent",
       ),
     ).toBe(nextAgentCommand);
-    expect(getCommandQueue()).toEqual([
+    expect(getCommandQueueSnapshot()).toEqual([
       expect.objectContaining({
         value: "editor-owned",
         workspaceView: "editor",
@@ -89,15 +88,15 @@ describe("messageQueueManager workspace ownership", () => {
       queueOwner: owner,
     });
 
-    expect(getCommandQueue().map((command) => command.value)).toEqual([
+    expect(getCommandQueueSnapshot().map((command) => command.value)).toEqual([
       "same mount",
       "legacy",
     ]);
-    expect(queuedCommandOwnedByMount(getCommandQueue()[0]!, owner)).toBe(true);
-    expect(queuedCommandOwnedByMount(getCommandQueue()[1]!, owner)).toBe(false);
+    expect(queuedCommandOwnedByMount(getCommandQueueSnapshot()[0]!, owner)).toBe(true);
+    expect(queuedCommandOwnedByMount(getCommandQueueSnapshot()[1]!, owner)).toBe(false);
     expect(
       queuedCommandOwnedByConversation(
-        getCommandQueue()[0]!,
+        getCommandQueueSnapshot()[0]!,
         owner.conversationId,
       ),
     ).toBe(false);
@@ -126,7 +125,7 @@ describe("messageQueueManager workspace ownership", () => {
         queuedCommandOwnedByMount(command, ownerB),
       ),
     ).toMatchObject({ text: "from b" });
-    expect(getCommandQueue().map((command) => command.value)).toEqual([
+    expect(getCommandQueueSnapshot().map((command) => command.value)).toEqual([
       "from a",
     ]);
 
@@ -137,7 +136,7 @@ describe("messageQueueManager workspace ownership", () => {
 
 describe("messageQueueManager editable restore", () => {
   afterEach(() => {
-    resetCommandQueue();
+    resetCommandQueueForTesting();
   });
 
   test("restores a queued prompt without placing the cursor past the restored text", () => {
@@ -148,7 +147,7 @@ describe("messageQueueManager editable restore", () => {
       cursorOffset: "queued prompt".length,
       images: [],
     });
-    expect(getCommandQueue()).toEqual([]);
+    expect(getCommandQueueSnapshot()).toEqual([]);
   });
 
   test("restores queued prompt text before the current draft with the cursor inside the draft", () => {
@@ -181,13 +180,13 @@ describe("messageQueueManager editable restore", () => {
       cursorOffset: 0,
       images: [image],
     });
-    expect(getCommandQueue()).toEqual([]);
+    expect(getCommandQueueSnapshot()).toEqual([]);
   });
 });
 
 describe("messageQueueManager per-item removal (removeLastQueuedInput)", () => {
   afterEach(() => {
-    resetCommandQueue();
+    resetCommandQueueForTesting();
   });
 
   // Mirror of App.tsx's drain primitive: peek the next main-thread runnable
@@ -204,16 +203,6 @@ describe("messageQueueManager per-item removal (removeLastQueuedInput)", () => {
     return dequeue((command) => command === next);
   }
 
-  test("counts only user inputs (prompt/bash), not notifications", () => {
-    enqueue({ value: "first", mode: "prompt" });
-    enqueue({ value: "echo hi", mode: "bash" });
-    enqueuePendingNotification({
-      value: "<task-notification/>",
-      mode: "task-notification",
-    });
-    expect(getQueuedUserInputCount()).toBe(2);
-  });
-
   test("removes only the most recently queued input and leaves the rest intact", () => {
     enqueue({ value: "first", mode: "prompt" });
     enqueue({ value: "second", mode: "prompt" });
@@ -222,7 +211,7 @@ describe("messageQueueManager per-item removal (removeLastQueuedInput)", () => {
     const removed = removeLastQueuedInput();
 
     expect(removed?.value).toBe("third");
-    expect(getCommandQueue().map((c) => c.value)).toEqual(["first", "second"]);
+    expect(getCommandQueueSnapshot().map((c) => c.value)).toEqual(["first", "second"]);
   });
 
   test("queue 3 → remove the middle item is reachable by removing twice then re-checking dispatch order", () => {
@@ -236,7 +225,7 @@ describe("messageQueueManager per-item removal (removeLastQueuedInput)", () => {
     expect(removeLastQueuedInput()?.value).toBe("b");
 
     // Only "a" remains and only "a" can ever dispatch.
-    expect(getCommandQueue().map((c) => c.value)).toEqual(["a"]);
+    expect(getCommandQueueSnapshot().map((c) => c.value)).toEqual(["a"]);
     expect(dispatchNext()?.value).toBe("a");
     expect(dispatchNext()).toBeUndefined();
   });
@@ -263,13 +252,13 @@ describe("messageQueueManager per-item removal (removeLastQueuedInput)", () => {
     // The drain dispatches the item first (synchronous splice out of the queue).
     const dispatched = dispatchNext();
     expect(dispatched?.value).toBe("racing");
-    expect(getCommandQueue()).toEqual([]);
+    expect(getCommandQueueSnapshot()).toEqual([]);
 
     // The user's drop key lands a tick later — the item is already gone, so the
     // removal finds nothing and returns undefined. It does NOT remove some other
     // item, and the item is not sent a second time.
     expect(removeLastQueuedInput()).toBeUndefined();
-    expect(getCommandQueue()).toEqual([]);
+    expect(getCommandQueueSnapshot()).toEqual([]);
   });
 
   test("dispatch-boundary race: dropping the item BEFORE the drain runs means it is never dispatched", () => {
@@ -298,11 +287,11 @@ describe("messageQueueManager per-item removal (removeLastQueuedInput)", () => {
 
     // No droppable user input → no-op, queue untouched.
     expect(removeLastQueuedInput()).toBeUndefined();
-    expect(getCommandQueue()).toHaveLength(2);
+    expect(getCommandQueueSnapshot()).toHaveLength(2);
   });
 
   test("returns undefined and mutates nothing when the queue is empty", () => {
     expect(removeLastQueuedInput()).toBeUndefined();
-    expect(getCommandQueue()).toEqual([]);
+    expect(getCommandQueueSnapshot()).toEqual([]);
   });
 });

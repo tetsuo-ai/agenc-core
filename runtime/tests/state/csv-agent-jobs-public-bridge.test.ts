@@ -168,6 +168,7 @@ function seedUnknownEffect(runId: string): {
       cwd,
       sessionId: runId,
       agencVersion: "0.13.0",
+      sessionTempRoot: tmpdir(),
       autoStartScheduler: false,
       ...(resume ? { resume: true } : {}),
     });

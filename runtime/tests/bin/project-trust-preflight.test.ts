@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  attachAgentTuiEntry,
   main,
   oneShotCLI,
   resolveAttachTargetTrustRoot,
@@ -213,37 +214,41 @@ describe("project trust preflight", () => {
     }
   });
 
-  it("runs startup config migrations before trust enforcement", async () => {
+  it("fails closed on legacy settings before trust enforcement without mutation", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-trust-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-trust-ws-"));
     const env = makeEnv(home, workspace);
     const stdio = makeNonTtyStdio();
-    const settingsPath = join(home, ".agenc", "settings.json");
+    const settingsPath = join(home, "settings.json");
 
     try {
-      await mkdir(join(home, ".agenc"), { recursive: true });
       await writeFile(
         settingsPath,
-        `${JSON.stringify({ bypassPermissionsModeAccepted: true })}\n`,
+        `${JSON.stringify({ fastModePerSessionOptIn: true })}\n`,
         "utf8",
       );
 
-      const result = await runProjectTrustPreflightForTui({
-        env,
-        argv: ["node", "agenc"],
-        cwd: workspace,
-        stdin: stdio.stdin,
-        stdout: stdio.stdout,
-        stderr: stdio.stderr,
+      await expect(
+        runProjectTrustPreflightForTui({
+          env,
+          argv: ["node", "agenc"],
+          cwd: workspace,
+          stdin: stdio.stdin,
+          stdout: stdio.stdout,
+          stderr: stdio.stderr,
+        }),
+      ).rejects.toMatchObject({
+        code: "retired-input",
+        path: settingsPath,
+        message: expect.stringMatching(
+          /agenc config migrate check.*agenc config migrate apply/u,
+        ),
       });
-
-      expect(result.accepted).toBe(false);
-      const migrated = JSON.parse(
-        await readFile(settingsPath, "utf8"),
-      ) as Record<string, unknown>;
-      expect(migrated.bypassPermissionsModeAccepted).toBeUndefined();
-      expect(migrated.bypassPermissionsModeAcceptedIn).toEqual([workspace]);
-      expect(migrated.configMigrationVersion).toBe(11);
+      expect(await readFile(settingsPath, "utf8")).toBe(
+        `${JSON.stringify({ fastModePerSessionOptIn: true })}\n`,
+      );
+      await expect(readFile(join(home, "state.json"), "utf8")).rejects
+        .toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
@@ -284,6 +289,53 @@ describe("project trust preflight", () => {
       await rm(home, { recursive: true, force: true });
       await rm(envWorkspace, { recursive: true, force: true });
       await rm(attachWorkspace, { recursive: true, force: true });
+    }
+  });
+
+  it("uses flag-selected root markers before trust when a profile is selected", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-trust-marker-root-"));
+    const home = join(root, "home");
+    const projectRoot = join(root, "project");
+    const workspace = join(projectRoot, "packages", "worker");
+    const flagPath = join(root, "operator.toml");
+    const env = makeEnv(home, workspace);
+    const stdio = makeNonTtyStdio();
+    await mkdir(join(projectRoot, ".agenc"), { recursive: true });
+    await mkdir(workspace, { recursive: true });
+    await writeFile(join(projectRoot, ".operator-root"), "", "utf8");
+    await writeFile(flagPath, [
+      "config_version = 2",
+      'project_root_markers = [".operator-root"]',
+      "[profiles.operator]",
+      'model = "grok-4.5"',
+      "",
+    ].join("\n"), "utf8");
+    await writeFile(
+      join(projectRoot, ".agenc", "config.toml"),
+      "config_version = 2\nunknown_project_key = true\n",
+      "utf8",
+    );
+
+    try {
+      trustProjectSync({ agencHome: home, projectRoot, env });
+
+      await expect(runProjectTrustPreflightForTui({
+        env,
+        startupCliFlags: {
+          configPath: flagPath,
+          profile: "operator",
+        },
+        cwd: workspace,
+        stdin: stdio.stdin,
+        stdout: stdio.stdout,
+        stderr: stdio.stderr,
+        useEnvWorkspace: false,
+      })).rejects.toMatchObject({
+        code: "unknown-key",
+        path: join(projectRoot, ".agenc", "config.toml"),
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -351,7 +403,7 @@ describe("project trust preflight", () => {
       await expect(
         runProjectTrustPreflightForTui({
           env,
-          argv: ["node", "agenc", "--yolo"],
+          argv: ["node", "agenc", "--dangerously-bypass-approvals-and-sandbox"],
           cwd: workspace,
           stdin: stdio.stdin,
           stdout: stdio.stdout,
@@ -376,7 +428,7 @@ describe("project trust preflight", () => {
     }
   });
 
-  it("explains both approval bypass and sandbox bypass in --yolo trust copy", () => {
+  it("explains both approval bypass and sandbox bypass in --dangerously-bypass-approvals-and-sandbox trust copy", () => {
     expect(YOLO_TRUST_COPY).toContain("skips tool approval prompts");
     expect(YOLO_TRUST_COPY).toContain("danger-full-access sandbox mode");
     expect(YOLO_TRUST_COPY).toContain("project trust still requires confirmation");
@@ -494,6 +546,58 @@ describe("resolveAttachTargetTrustRoot", () => {
       /no workspace metadata/,
     );
   });
+
+  it("attach trust preflight uses captured startup flags instead of ambient argv", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-attach-flags-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-attach-flags-ws-"));
+    const configPath = join(workspace, "operator.toml");
+    await writeFile(configPath, "config_version = 2\n", "utf8");
+    const request = vi.fn(async (method: string) => {
+      if (method === "agent.list") {
+        return { agents: [{ agentId: "agent-1", cwd: workspace }] };
+      }
+      throw new Error(`unexpected daemon request: ${method}`);
+    });
+    const close = vi.fn(async () => undefined);
+    const daemonClient = { request, close } as unknown as NonNullable<
+      Parameters<typeof attachAgentTuiEntry>[0]["daemonClient"]
+    >;
+    const restoreFns = [
+      replaceProcessArgv([
+        "node",
+        "agenc",
+        "--config",
+        "ambient-missing.toml",
+        "agent",
+        "attach",
+        "agent-1",
+      ]),
+      replaceIsTTY(process.stdin, false),
+      replaceIsTTY(process.stdout, false),
+    ];
+    const stderr = captureStderr();
+
+    try {
+      await expect(attachAgentTuiEntry({
+        agentId: "agent-1",
+        clientId: "client-1",
+        env: makeEnv(home, workspace),
+        startupCliFlags: { configPath },
+        daemonClient,
+      })).resolves.toBe(1);
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledWith("agent.list", { limit: 100 });
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(stderr.text()).toBe(
+        `agenc: project is not trusted: ${workspace}\n`,
+      );
+    } finally {
+      stderr.restore();
+      for (const restore of restoreFns.reverse()) restore();
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("main project trust routing", () => {
@@ -529,9 +633,9 @@ describe("main project trust routing", () => {
     );
   });
 
-  it("fails closed before non-interactive one-shot --no-tui --yolo can bootstrap tools", async () => {
+  it("fails closed before non-interactive one-shot --no-tui --dangerously-bypass-approvals-and-sandbox can bootstrap tools", async () => {
     await withMainTrustProcess(
-      ["node", "agenc", "--yolo", "--no-tui", "run", "tools"],
+      ["node", "agenc", "--dangerously-bypass-approvals-and-sandbox", "--no-tui", "run", "tools"],
       { stdinTTY: false, stdoutTTY: false },
       async ({ workspace }) => {
         const stderr = captureStderr();

@@ -50,7 +50,7 @@ describe("permission audit log", () => {
       });
       await logger({
         ...baseEvent,
-        rule: "Bash(api_key=abcdefghijklmnopqrstuvwxyz123456)",
+        rule: "system.bash(api_key=abcdefghijklmnopqrstuvwxyz123456)",
         metadata: {
           approvalSource: "resolver",
           ignoredRawArgs: '{"command":"rm -rf /"}',

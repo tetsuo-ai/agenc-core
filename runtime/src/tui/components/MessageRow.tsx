@@ -47,7 +47,7 @@ export type Props = {
  * to each MessageRow (which React Compiler would pin in the fiber's memoCache,
  * accumulating every historical version of the array ≈ 1-2MB over a 7-turn session).
  */
-export function hasContentAfterIndex(messages: RenderableMessage[], index: number, tools: Tools, streamingToolUseIDs: Set<string>): boolean {
+export function hasContentAfterIndex(messages: RenderableMessage[], index: number, tools: Tools, streamingToolUseIDs: Set<string>, fullscreen: boolean): boolean {
   for (let i = index + 1; i < messages.length; i++) {
     const msg = messages[i];
     if (msg?.type === 'assistant') {
@@ -56,7 +56,7 @@ export function hasContentAfterIndex(messages: RenderableMessage[], index: numbe
         continue;
       }
       if (content?.type === 'tool_use') {
-        if (getToolSearchOrReadInfo(content.name, content.input, tools).isCollapsible) {
+        if (getToolSearchOrReadInfo(content.name, content.input, tools, fullscreen).isCollapsible) {
           continue;
         }
         // Non-collapsible tool uses appear in syntheticStreamingToolUseMessages
@@ -82,7 +82,7 @@ export function hasContentAfterIndex(messages: RenderableMessage[], index: numbe
     // merged into the current collapsed group on the next render cycle
     if (msg?.type === 'grouped_tool_use') {
       const firstInput = msg.messages[0]?.message.content[0]?.input;
-      if (getToolSearchOrReadInfo(msg.toolName, firstInput, tools).isCollapsible) {
+      if (getToolSearchOrReadInfo(msg.toolName, firstInput, tools, fullscreen).isCollapsible) {
         continue;
       }
     }

@@ -6,8 +6,8 @@ import {
   LLMServerError,
   LLMTimeoutError,
 } from "../../errors.js";
-import { GeminiProvider } from "../gemini/index.js";
 import { LMStudioProvider } from "../lmstudio/index.js";
+import { BUILT_IN_PROVIDER_BASE_URLS } from "../../registry/provider-info.js";
 import { OpenAIProvider } from "./adapter.js";
 
 const PROVIDER_TEST_LABEL = "Open" + "AI";
@@ -51,6 +51,117 @@ function expectNoRequestMetadataWarning(emitWarning: ReturnType<typeof vi.fn>): 
 }
 
 describe("OpenAIProvider", () => {
+  test("uses the registry endpoint for registered provider identities", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "chatcmpl_registry_endpoint",
+          model: "deepseek-v4-pro",
+          choices: [
+            {
+              message: { role: "assistant", content: "ok" },
+              finish_reason: "stop",
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "deepseek-test",
+      model: "deepseek-v4-pro",
+      providerName: "deepseek",
+      useResponsesApi: false,
+      fetchImpl,
+    });
+
+    await provider.chat([{ role: "user", content: "hello" }]);
+
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
+      `${BUILT_IN_PROVIDER_BASE_URLS.deepseek}/chat/completions`,
+    );
+  });
+
+  test("uses the registry credential label for registered provider identities", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new OpenAIProvider({
+      model: "deepseek-v4-pro",
+      providerName: "deepseek",
+      useResponsesApi: false,
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chat([{ role: "user", content: "hello" }]),
+    ).rejects.toThrow(/DEEPSEEK_API_KEY/u);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("fails closed for an unregistered provider without explicit routing metadata", () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+
+    expect(
+      () =>
+        new OpenAIProvider({
+          apiKey: "custom-test",
+          model: "custom-model",
+          providerName: "custom-provider",
+          fetchImpl,
+        }),
+    ).toThrow(/explicit baseURL because it is not registered/u);
+
+    expect(
+      () =>
+        new OpenAIProvider({
+          apiKey: "custom-test",
+          model: "custom-model",
+          providerName: "custom-provider",
+          baseURL: "https://custom.example/v1",
+          fetchImpl,
+        }),
+    ).toThrow(/explicit apiKeyEnvLabel because it is not registered/u);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("accepts an explicitly routed and labeled custom provider", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "chatcmpl_custom_endpoint",
+          model: "custom-model",
+          choices: [
+            {
+              message: { role: "assistant", content: "ok" },
+              finish_reason: "stop",
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "custom-test",
+      apiKeyEnvLabel: "CUSTOM_PROVIDER_API_KEY",
+      model: "custom-model",
+      providerName: "custom-provider",
+      baseURL: "https://custom.example/v1",
+      useResponsesApi: false,
+      fetchImpl,
+    });
+
+    await provider.chat([{ role: "user", content: "hello" }]);
+
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
+      "https://custom.example/v1/chat/completions",
+    );
+  });
+
   test.each([
     { api: "responses", useResponsesApi: true },
     { api: "chat completions", useResponsesApi: false },
@@ -1614,49 +1725,4 @@ describe("OpenAIProvider", () => {
     expect(headers.get("authorization")).toBeNull();
   });
 
-  test("normalizes Gemini /openai base URLs to native generateContent", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          model: "gemini-2.5-pro",
-          candidates: [
-            {
-              content: {
-                role: "model",
-                parts: [{ text: "ok" }],
-              },
-              finishReason: "STOP",
-            },
-          ],
-          usageMetadata: {
-            promptTokenCount: 4,
-            candidatesTokenCount: 1,
-            totalTokenCount: 5,
-          },
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        },
-      ),
-    );
-    const provider = new GeminiProvider({
-      apiKey: "gemini-test",
-      model: "gemini-2.5-pro",
-      baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
-      fetchImpl,
-    });
-
-    await provider.chat([{ role: "user", content: "hello" }]);
-
-    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(String(requestUrl)).toBe(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent",
-    );
-    const headers = init?.headers as Headers;
-    expect(headers.get("x-goog-api-key")).toBe("gemini-test");
-    expect(headers.get("authorization")).toBeNull();
-    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    expect("store" in requestBody).toBe(false);
-  });
 });

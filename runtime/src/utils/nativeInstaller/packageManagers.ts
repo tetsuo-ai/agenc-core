@@ -6,6 +6,7 @@ import { readFile } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { execFileNoThrow } from '../execFileNoThrow.js'
+import { findExecutableOnCapturedPath } from '../findExecutable.js'
 import { getPlatform } from '../platform.js'
 
 export type PackageManager =
@@ -18,6 +19,11 @@ export type PackageManager =
   | 'mise'
   | 'asdf'
   | 'unknown'
+
+export type PackageManagerIngress = {
+  readonly environment: NodeJS.ProcessEnv
+  readonly cwd: string
+}
 
 /**
  * Parses /etc/os-release to extract the distro ID and ID_LIKE fields.
@@ -187,7 +193,9 @@ export function detectWinget(): boolean {
  * like Ubuntu/Debian, 'pacman' in PATH may resolve to the pacman game
  * (/usr/games/pacman) rather than the Arch package manager.
  */
-export const detectPacman = memoize(async (): Promise<boolean> => {
+async function detectPacmanForEnvironment(
+  ingress: PackageManagerIngress,
+): Promise<boolean> {
   const platform = getPlatform()
 
   if (platform !== 'linux') {
@@ -201,9 +209,16 @@ export const detectPacman = memoize(async (): Promise<boolean> => {
 
   const execPath = process.execPath || process.argv[0] || ''
 
-  const result = await execFileNoThrow('pacman', ['-Qo', execPath], {
+  const executable = await findExecutableOnCapturedPath(
+    'pacman',
+    ingress.environment,
+    ingress.cwd,
+  )
+  if (executable === null) return false
+  const result = await execFileNoThrow(executable, ['-Qo', execPath], {
     timeout: 5000,
     useCwd: false,
+    env: ingress.environment,
   })
 
   if (result.code === 0 && result.stdout) {
@@ -212,7 +227,11 @@ export const detectPacman = memoize(async (): Promise<boolean> => {
   }
 
   return false
-})
+}
+
+export const detectPacman = memoize((): Promise<boolean> =>
+  detectPacmanForEnvironment({ environment: process.env, cwd: process.cwd() }),
+)
 
 /**
  * Detects if the currently running AgenC instance was installed via a .deb package
@@ -220,7 +239,9 @@ export const detectPacman = memoize(async (): Promise<boolean> => {
  *
  * We use `dpkg -S <execPath>` to check if the executable is owned by a dpkg-managed package.
  */
-export const detectDeb = memoize(async (): Promise<boolean> => {
+async function detectDebForEnvironment(
+  ingress: PackageManagerIngress,
+): Promise<boolean> {
   const platform = getPlatform()
 
   if (platform !== 'linux') {
@@ -234,9 +255,16 @@ export const detectDeb = memoize(async (): Promise<boolean> => {
 
   const execPath = process.execPath || process.argv[0] || ''
 
-  const result = await execFileNoThrow('dpkg', ['-S', execPath], {
+  const executable = await findExecutableOnCapturedPath(
+    'dpkg',
+    ingress.environment,
+    ingress.cwd,
+  )
+  if (executable === null) return false
+  const result = await execFileNoThrow(executable, ['-S', execPath], {
     timeout: 5000,
     useCwd: false,
+    env: ingress.environment,
   })
 
   if (result.code === 0 && result.stdout) {
@@ -245,7 +273,11 @@ export const detectDeb = memoize(async (): Promise<boolean> => {
   }
 
   return false
-})
+}
+
+export const detectDeb = memoize((): Promise<boolean> =>
+  detectDebForEnvironment({ environment: process.env, cwd: process.cwd() }),
+)
 
 /**
  * Detects if the currently running AgenC instance was installed via an RPM package
@@ -253,7 +285,9 @@ export const detectDeb = memoize(async (): Promise<boolean> => {
  *
  * We use `rpm -qf <execPath>` to check if the executable is owned by an RPM package.
  */
-export const detectRpm = memoize(async (): Promise<boolean> => {
+async function detectRpmForEnvironment(
+  ingress: PackageManagerIngress,
+): Promise<boolean> {
   const platform = getPlatform()
 
   if (platform !== 'linux') {
@@ -267,9 +301,16 @@ export const detectRpm = memoize(async (): Promise<boolean> => {
 
   const execPath = process.execPath || process.argv[0] || ''
 
-  const result = await execFileNoThrow('rpm', ['-qf', execPath], {
+  const executable = await findExecutableOnCapturedPath(
+    'rpm',
+    ingress.environment,
+    ingress.cwd,
+  )
+  if (executable === null) return false
+  const result = await execFileNoThrow(executable, ['-qf', execPath], {
     timeout: 5000,
     useCwd: false,
+    env: ingress.environment,
   })
 
   if (result.code === 0 && result.stdout) {
@@ -278,7 +319,11 @@ export const detectRpm = memoize(async (): Promise<boolean> => {
   }
 
   return false
-})
+}
+
+export const detectRpm = memoize((): Promise<boolean> =>
+  detectRpmForEnvironment({ environment: process.env, cwd: process.cwd() }),
+)
 
 /**
  * Detects if the currently running AgenC instance was installed via Alpine APK
@@ -287,7 +332,9 @@ export const detectRpm = memoize(async (): Promise<boolean> => {
  * We use `apk info --who-owns <execPath>` to check if the executable is owned
  * by an apk-managed package.
  */
-export const detectApk = memoize(async (): Promise<boolean> => {
+async function detectApkForEnvironment(
+  ingress: PackageManagerIngress,
+): Promise<boolean> {
   const platform = getPlatform()
 
   if (platform !== 'linux') {
@@ -301,12 +348,19 @@ export const detectApk = memoize(async (): Promise<boolean> => {
 
   const execPath = process.execPath || process.argv[0] || ''
 
-  const result = await execFileNoThrow(
+  const executable = await findExecutableOnCapturedPath(
     'apk',
+    ingress.environment,
+    ingress.cwd,
+  )
+  if (executable === null) return false
+  const result = await execFileNoThrow(
+    executable,
     ['info', '--who-owns', execPath],
     {
       timeout: 5000,
       useCwd: false,
+      env: ingress.environment,
     },
   )
 
@@ -316,44 +370,33 @@ export const detectApk = memoize(async (): Promise<boolean> => {
   }
 
   return false
-})
+}
+
+export const detectApk = memoize((): Promise<boolean> =>
+  detectApkForEnvironment({ environment: process.env, cwd: process.cwd() }),
+)
+
+export async function getPackageManagerForIngress(
+  ingress: PackageManagerIngress,
+): Promise<PackageManager> {
+  if (detectHomebrew()) return 'homebrew'
+  if (detectWinget()) return 'winget'
+  if (detectMise()) return 'mise'
+  if (detectAsdf()) return 'asdf'
+  if (await detectPacmanForEnvironment(ingress)) return 'pacman'
+  if (await detectApkForEnvironment(ingress)) return 'apk'
+  if (await detectDebForEnvironment(ingress)) return 'deb'
+  if (await detectRpmForEnvironment(ingress)) return 'rpm'
+  return 'unknown'
+}
 
 /**
  * Memoized function to detect which package manager installed AgenC
  * Returns 'unknown' if no package manager is detected
  */
 export const getPackageManager = memoize(async (): Promise<PackageManager> => {
-  if (detectHomebrew()) {
-    return 'homebrew'
-  }
-
-  if (detectWinget()) {
-    return 'winget'
-  }
-
-  if (detectMise()) {
-    return 'mise'
-  }
-
-  if (detectAsdf()) {
-    return 'asdf'
-  }
-
-  if (await detectPacman()) {
-    return 'pacman'
-  }
-
-  if (await detectApk()) {
-    return 'apk'
-  }
-
-  if (await detectDeb()) {
-    return 'deb'
-  }
-
-  if (await detectRpm()) {
-    return 'rpm'
-  }
-
-  return 'unknown'
+  return getPackageManagerForIngress({
+    environment: process.env,
+    cwd: process.cwd(),
+  })
 })

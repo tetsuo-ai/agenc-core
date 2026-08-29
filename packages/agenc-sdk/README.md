@@ -13,6 +13,16 @@ Node **>=26.5 <27** · ESM only · plain `tsc` build · no runtime dependencies.
 | `client.runStatus` / `runResult` / `replayRun` / `runEvidence` / `cancelRun` | Read durable run/admission state, replay or hash canonical journal evidence, or cancel a run tree.                                                                                                                     |
 | `client.reattachRun({ runId, afterSequence })`                               | Catch up from a durable cursor, suppress and report duplicate delivery, stop on any explicit replay gap, and fetch the durable terminal result after reconnect.                                                        |
 | `client.request(method, params)`                                             | Raw typed JSON-RPC for all **53** public daemon methods (mirrored in `./protocol`).                                                                                                                                    |
+| `client.listCsvJobReviews` / `showCsvJobReview` / `resolveCsvJobReview`      | Typed CSV unknown-outcome review helpers (`csvJob.review.*`).                                                                                                                                                          |
+
+Errors: `AgencRpcError`, `AgencMalformedResponseError`,
+`AgencPromptRunInProgressError`, `AgencDuplicateSubmissionIncompleteError`,
+`AgencCapabilityUnavailableError` (1.2 fail-closed), `AgencRunReplayGapError`,
+`AgencRunReplayProtocolError`. Full table: [`docs/sdk.md`](../../docs/sdk.md).
+
+Prompt events on protocol 1.2 also include `message_committed`,
+`history_reset`, `elicitation_request`, `gap`, and `session_event`. The sample
+loop below only prints `text`.
 
 The protocol mirror preserves trusted `event.user_input_request.clientAction`
 objects, typed `elicitation.respond.clientResult` receipts,
@@ -25,8 +35,14 @@ stable `clientMessageId` for correlation/idempotent retry. Protocol 1.2 adds
 opt-in `ifBusy: "reject"`, turn-scoped cancellation, identity-bearing
 `transcriptV2()`, distinct delta/committed assistant events, and
 `history_reset`. The SDK capability-falls back when initialization discovers a
-1.0/1.1 daemon; legacy queue behavior remains unchanged. Strict admission and
-scoped prompt cancellation fail closed when those guarantees are unavailable.
+1.0 through 1.8 daemon. Protocol 1.8 makes complete owning runtime authority,
+including the exact plugin storage root, part of `agent.create` and
+`agent.attach`. The SDK refuses attachment and session creation before dispatch
+on an older daemon. It does not fall back to `session.create`, which cannot bind
+that root. Strict admission and scoped prompt cancellation fail closed when
+those guarantees are unavailable.
+Protocol 1.9 adds a Core-only admitted shell method; it is not exposed by the
+SDK request union.
 
 ```js
 import { connect, promptViaSubprocess } from "@tetsuo-ai/agenc-sdk";
@@ -37,7 +53,9 @@ const client = await connect({
       ? { behavior: "allow", scope: "once" }
       : { behavior: "deny" },
 });
-const session = await client.createSession();
+const session = await client.createSession({
+  pluginStorageRoot: "/absolute/agenc-home/plugins",
+});
 const run = session.prompt("Summarize the protocol layer.");
 for await (const event of run) {
   if (event.type === "text") process.stdout.write(event.delta);
@@ -50,18 +68,27 @@ await client.close();
 
 - Local endpoint: `${AGENC_HOME:-~/.agenc}/daemon.sock` on Unix; a stable per-home named pipe on Windows
 - Cookie: `${AGENC_HOME:-~/.agenc}/daemon.cookie` (first message must be `initialize` with `authCookie`; `connect()` handles this)
+- Plugin storage: `createSession()` requires an exact absolute `pluginStorageRoot` of at most 4096 UTF-8 bytes, with no surrounding whitespace. `AgencClient` does not reread `AGENC_PLUGIN_CACHE_DIR`, derive a root from `AGENC_HOME`, or accept `agentId`; use `attachAgent()` for an existing agent.
 - Autostart: runs `agenc daemon start` when the socket is down (disable with `autostart: false`)
+- Hook authority: `createSession()` sends `allowUntrustedHooks: false`. A caller using `spawnAgent()` must send complete runtime options and may set the field to `true` only after vetting the workspace. It permits command effects only and cannot override `simpleMode` hook suppression.
+- Home authority: `AGENC_HOME` must be absolute and is canonicalized before daemon paths are derived. Explicit socket and cookie paths do not bypass home-authority validation.
+
+`promptViaSubprocess()` invokes `agenc -p`. The child captures
+`AGENC_ALLOW_UNTRUSTED_HOOKS` from `options.env`, or from its inherited
+environment when `options.env` is omitted, at automation startup.
 
 ## Docs & example
 
 - Full documentation: [`docs/sdk.md`](../../docs/sdk.md)
+- Doc map: [`docs/INDEX.md`](../../docs/INDEX.md)
 - Durable run/effect/replay contract:
   [`docs/design/durable-runs-effects-events.md`](../../docs/design/durable-runs-effects-events.md)
 - Runnable example: [`examples/one-shot.mjs`](./examples/one-shot.mjs)
 
 ```bash
 npm run build --workspace=@tetsuo-ai/agenc-sdk
-node packages/agenc-sdk/examples/one-shot.mjs "say hello in one word"
+AGENC_PLUGIN_CACHE_DIR=/absolute/path/to/agenc/plugins \
+  node packages/agenc-sdk/examples/one-shot.mjs "say hello in one word"
 node packages/agenc-sdk/examples/one-shot.mjs --transport subprocess "say hello"
 ```
 

@@ -364,10 +364,7 @@ function createMcpFramework(cwd?: string): McpServerFramework {
     toolProvider: UNADMITTED_MCP_TOOL_PROVIDER,
     promptProvider: createSkillPromptProvider({
       scopeRoot: workspaceRoot,
-      skillRoots: [
-        join(workspaceRoot, PROJECT_MEMORY_DIR, "skills"),
-        join(workspaceRoot, PROJECT_MEMORY_DIR, "commands"),
-      ],
+      skillRoots: [join(workspaceRoot, PROJECT_MEMORY_DIR, "skills")],
     }),
     resourceProvider: createMemoryResourceProvider({
       scopeRoot: workspaceRoot,

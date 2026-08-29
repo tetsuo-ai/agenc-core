@@ -292,9 +292,9 @@ describe("A3b raw checkpoint validation", () => {
   });
 });
 
-describe("A3b shared ordered validator cutover", () => {
-  it("rejects durable tool results that reverse the assistant's declared order", () => {
-    const sessionId = "ordered-live-reversal-session";
+describe("A3b shared ID-paired validator cutover", () => {
+  it("accepts durable parallel tool results in completion order", () => {
+    const sessionId = "parallel-live-reversal-session";
     const store = openRollout({
       sessionId,
       meta: {
@@ -316,7 +316,7 @@ describe("A3b shared ordered validator cutover", () => {
         ],
       },
     });
-    const reversedResult: ResponseItem = {
+    const secondResult: ResponseItem = {
       role: "tool",
       content: "result b",
       toolCallId: "ordered-call-b",
@@ -328,16 +328,23 @@ describe("A3b shared ordered validator cutover", () => {
       }),
     };
 
-    expect(() =>
-      store.appendRollout({ type: "response_item", payload: reversedResult }),
-    ).toThrowError(
-      expect.objectContaining<ToolPairHistoryBlockedError>({
-        outcome: expect.objectContaining({
-          status: "invalid",
-          failure: expect.objectContaining({ code: "tool_result_out_of_order" }),
-        }),
+    const firstResult: ResponseItem = {
+      role: "tool",
+      content: "result a",
+      toolCallId: "ordered-call-a",
+      toolName: "FileRead",
+      toolResultIntegrity: createToolResultIntegrity({
+        runId: sessionId,
+        toolCallId: "ordered-call-a",
+        content: "result a",
       }),
-    );
+    };
+
+    expect(() => {
+      store.appendRollout({ type: "response_item", payload: secondResult });
+      store.appendRollout({ type: "response_item", payload: firstResult });
+      store.flushDurable();
+    }).not.toThrow();
     store.close();
   });
 
@@ -474,6 +481,7 @@ describe("A3b atomic legacy publication", () => {
       cwd,
       sessionId,
       agencVersion: "0.13.0",
+      sessionTempRoot: tmpdir(),
       resume: true,
       autoStartScheduler: false,
       beforeCheckpointUpgradePublishForTestingOnly: () => {
@@ -573,6 +581,7 @@ describe("A3b atomic legacy publication", () => {
       cwd,
       sessionId,
       agencVersion: "0.13.0",
+      sessionTempRoot: tmpdir(),
       resume: true,
       autoStartScheduler: false,
     });
@@ -654,6 +663,7 @@ function openRollout(params: {
     cwd,
     sessionId: params.sessionId,
     agencVersion: params.meta.agencVersion,
+    sessionTempRoot: tmpdir(),
     autoStartScheduler: false,
     ...(params.resume === true ? { resume: true } : {}),
   });

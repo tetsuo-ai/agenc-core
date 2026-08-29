@@ -64,8 +64,10 @@ complete-request representation. It uses `TextEncoder` UTF-8 bytes, takes the
 maximum byte length across NFC, NFD, NFKC, and NFKD so tokenizer normalization
 cannot expand past the bound, applies a whole-request ceiling, and adds named
 nonzero request, message, tool, tool-choice, and media framing costs. It
-deliberately assumes at most one normalized UTF-8 byte per ordinary input
-token. This is expensive but safe for offline and unknown provider surfaces.
+deliberately assumes at most **two** normalized UTF-8 bytes per ordinary input
+token (`token-accounting-fallback-v2`). v1 used one byte/token and denied
+Grok 500k windows at about 16% real usage. This is expensive but safe for
+offline and unknown provider surfaces.
 
 The initial safety floor is applied once after the complete input and framing
 are summed, or once to a high-confidence native count:

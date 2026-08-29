@@ -11,7 +11,7 @@ export type ReadonlySettings = AppState['settings']
  * React hook to access current settings from AppState.
  * Settings automatically update when files change on disk via settingsChangeDetector.
  *
- * Use this instead of getSettings_DEPRECATED() in React components for reactive updates.
+ * Use this instead of a synchronous snapshot read in React components.
  */
 export function useSettings(): ReadonlySettings {
   return useAppState((s: AppState) => s.settings)

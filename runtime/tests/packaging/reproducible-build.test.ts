@@ -253,11 +253,11 @@ describe("reproducible install and release contract", () => {
     );
     const normalizedCiRequiredGates = ciRequiredGates.replace(/\s+/gu, " ");
     for (const inventory of [
-      "47 passing macOS tests in eight suites across five files",
+      "48 passing macOS tests in nine suites across six files",
       "50 passing Windows tests in twelve suites across seven files",
       "same 45-test, seven-suite, four-file FND set",
       "shared 81-test, eight-suite, five-file FND set",
-      "85 tests, eleven suites, and seven files",
+      "86 tests, twelve suites, and eight files",
       "93 tests, eighteen suites, and eleven files",
     ]) {
       expect(normalizedCiRequiredGates).toContain(inventory);
@@ -437,11 +437,14 @@ describe("reproducible install and release contract", () => {
       "tests/fnd/process-repository-helpers.native.test.ts",
     );
     expect(macosJob).toContain("tests/tools/runtimes/runtime.darwin.test.ts");
-    expect(macosJob).toContain("--config vitest.native.config.ts");
-    expect(macosJob).toContain("numTotalTestSuites: 11");
-    expect(macosJob).toContain("numTotalTests: 85");
     expect(macosJob).toContain(
-      "macOS FND/native capability lane passed 85 tests in 7 files with zero skipped",
+      "tests/utils/secureStorage/macOsKeychainHelper.darwin.test.ts",
+    );
+    expect(macosJob).toContain("--config vitest.native.config.ts");
+    expect(macosJob).toContain("numTotalTestSuites: 12");
+    expect(macosJob).toContain("numTotalTests: 94");
+    expect(macosJob).toContain(
+      "macOS FND/native capability lane passed 94 tests in 8 files with zero skipped",
     );
 
     const windowsJob = workflow.slice(workflow.indexOf("\n  windows-native:"));
@@ -508,7 +511,7 @@ describe("reproducible install and release contract", () => {
     );
     expect(windowsJob).toContain("--config vitest.native.config.ts");
     expect(windowsJob).toContain("numTotalTestSuites: 18");
-    expect(windowsJob).toContain("numTotalTests: 93");
+    expect(windowsJob).toContain("numTotalTests: 101");
     expect(windowsJob).toContain(
       "npm.cmd ci --ignore-scripts --no-audit --no-fund",
     );
@@ -518,7 +521,7 @@ describe("reproducible install and release contract", () => {
     );
     expect(windowsJob).not.toContain("npm_config_build_from_source");
     expect(windowsJob).toContain(
-      "Windows FND/native capability lane passed 93 tests in 11 files with zero skipped",
+      "Windows FND/native capability lane passed 101 tests in 11 files with zero skipped",
     );
 
     // Six lanes: default-suite plus the five hosted capability lanes.
@@ -1524,6 +1527,9 @@ describe("reproducible install and release contract", () => {
       '"tests/tools/runtimes/runtime.darwin.test.ts"',
     );
     expect(nativeBuild).toContain(
+      '"tests/utils/secureStorage/macOsKeychainHelper.darwin.test.ts"',
+    );
+    expect(nativeBuild).toContain(
       '"tests/durability/atomic-artifact.win32.test.ts"',
     );
     expect(nativeBuild).toContain(
@@ -1532,9 +1538,9 @@ describe("reproducible install and release contract", () => {
     expect(nativeBuild).toContain(
       '"tests/workspace/bound-helper-transport.win32.test.ts"',
     );
-    expect(nativeBuild).toContain("expected_native_tests=47");
+    expect(nativeBuild).toContain("expected_native_tests=48");
     expect(nativeBuild).toContain("expected_native_tests=50");
-    expect(nativeBuild).toContain("expected_native_suites=8");
+    expect(nativeBuild).toContain("expected_native_suites=9");
     expect(nativeBuild).toContain("expected_native_suites=12");
     expect(nativeBuild).toContain('run "${native_tests[@]}"');
     expect(nativeBuild).toContain("\"${native_tests[@]}\" <<'NODE'");

@@ -18,8 +18,9 @@ import type { CanUseToolFn } from "../tui/hooks/useCanUseTool.js";
 import { requireCurrentRuntimeSession } from "../session/current-session.js";
 import { runTurnCompat } from "../session/turn-compat.js";
 import type { LLMUsage } from "../llm/types.js";
-import { accumulateUsage } from "../services/api/anthropic.js";
-import { EMPTY_USAGE, type NonNullableUsage } from "../services/api/logging.js";
+import { accumulateUsage } from "./usage.js";
+import type { NonNullableUsage } from "../entrypoints/sdk/sdkUtilityTypes.js";
+import { EMPTY_USAGE } from "../services/api/emptyUsage.js";
 import type { ToolUseContext } from "../tools/Tool.js";
 import type { AgentDefinition } from "src/tools/AgentTool/loadAgentsDir.js";
 import type { AgentId } from "../types/ids.js";
@@ -36,7 +37,7 @@ import {
   isAssistantAPIErrorMessage,
 } from "./messages.js";
 import { createDenialTrackingState } from "./permissions/denialTracking.js";
-import { parseToolListFromCLI } from "./permissions/permissionSetup.js";
+import { parseToolRuleStringsFromCLI } from "../permissions/settings.js";
 import { recordSidechainTranscript } from "./sessionStorage.js";
 import type { SystemPrompt } from "./systemPromptType.js";
 import { captureToolQueueOwner } from "./queueOwnership.js";
@@ -69,19 +70,6 @@ export type CacheSafeParams = {
   /** Parent context messages for prompt cache sharing */
   forkContextMessages: Message[];
 };
-
-// Slot written by handleStopHooks after each turn so post-turn forks
-// can share the main loop's prompt cache without each caller threading
-// params through.
-let lastCacheSafeParams: CacheSafeParams | null = null;
-
-export function saveCacheSafeParams(params: CacheSafeParams | null): void {
-  lastCacheSafeParams = params;
-}
-
-export function getLastCacheSafeParams(): CacheSafeParams | null {
-  return lastCacheSafeParams;
-}
 
 export type ForkedAgentParams = {
   /** Messages to start the forked query loop with */
@@ -123,13 +111,7 @@ export type ForkedAgentResult = {
 };
 
 /**
- * Creates CacheSafeParams from REPLHookContext.
- * Use this helper when forking from a post-sampling hook context.
- *
- * To override specific fields (e.g., toolUseContext with cloned file state),
- * spread the result and override: `{ ...createCacheSafeParams(context), toolUseContext: clonedContext }`
- *
- * @param context - The REPLHookContext from the post-sampling hook
+ * Creates cache-safe fork parameters from a post-sampling hook context.
  */
 export function createCacheSafeParams(
   context: REPLHookContext,
@@ -212,7 +194,7 @@ export async function prepareForkedCommandContext(
     .join("\n");
 
   // Parse and prepare allowed tools
-  const allowedTools = parseToolListFromCLI([
+  const allowedTools = parseToolRuleStringsFromCLI([
     ...(isRepositoryControlledSkillSource(command.source)
       ? []
       : (command.allowedTools ?? [])),
@@ -414,6 +396,7 @@ export function createSubagentContext(
     nestedMemoryAttachmentTriggers: new Set<string>(),
     loadedNestedMemoryPaths: new Set<string>(),
     dynamicSkillDirTriggers: new Set<string>(),
+    skillsManager: parentContext.skillsManager,
     // Per-subagent: tracks skills surfaced by discovery for was_discovered telemetry (SkillTool.ts:116)
     discoveredSkillNames: new Set<string>(),
     toolDecisions: undefined,
@@ -470,7 +453,6 @@ export function createSubagentContext(
     addNotification: undefined,
     setToolJSX: undefined,
     setStreamMode: undefined,
-    setSDKStatus: undefined,
     openMessageSelector: undefined,
 
     // Fields that can be overridden or copied from parent

@@ -7,7 +7,6 @@
 import type { PermissionsConfig } from "../config/schema.js";
 import {
   applyPermissionRulesToPermissionContext,
-  applyPermissionUpdate,
   findMatchingContentRule,
   getAskRuleForTool,
   getDenyRuleForTool,
@@ -15,6 +14,7 @@ import {
   parseRuleString,
   toolAlwaysAllowedRule,
 } from "./rules.js";
+import { applyPermissionUpdate } from "./permission-updates.js";
 import type {
   PermissionBehavior,
   PermissionRule,

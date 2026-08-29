@@ -11,8 +11,8 @@ import { spawn } from "node:child_process";
 import { createAuthBackend } from "../auth/selection.js";
 import type { AuthBackend, AuthIdentity } from "../auth/backend.js";
 import type { RemoteAuthBackendOptions } from "../auth/backends/remote.js";
-import { loadConfig } from "../config/loader.js";
-import { resolveAgencHome } from "../config/env.js";
+import { loadCanonicalConfig } from "../config/repository.js";
+import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 
 export type AgenCAuthCliCommand =
   | { readonly kind: "login" }
@@ -141,15 +141,18 @@ async function resolveAgenCAuthBackend(
   io: AgenCAuthCliIo,
 ): Promise<AuthBackend> {
   if (options.backend !== undefined) return options.backend;
-  const env = options.env ?? process.env;
-  const agencHome = options.agencHome ?? resolveAgencHome(env);
-  const loadedConfig = await loadConfig({
-    home: agencHome,
+  const ingress = captureSecureStorageIngress(
+    options.env ?? process.env,
+    options.agencHome,
+  );
+  const loadedConfig = await loadCanonicalConfig({
+    home: ingress.home,
+    env: ingress.environment,
     onWarn: (message) => io.stderr.write(`${message}\n`),
   });
   return createAuthBackend(loadedConfig.config, {
-    agencHome,
-    env,
+    agencHome: ingress.home.path,
+    env: ingress.environment,
     remote: {
       ...remoteAuthCliOptions(io),
       ...(options.remote ?? {}),

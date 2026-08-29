@@ -9,6 +9,8 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ConfigStore } from "../../src/config/store.js";
+import { enterCanonicalSettingsAuthority } from "../../src/utils/settings/canonicalAuthority.js";
 
 import { McpServerFramework } from "../../src/mcp-server/framework.js";
 import {
@@ -20,7 +22,12 @@ let root: string;
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "agenc-mcp-content-"));
-  vi.stubEnv("AGENC_CONFIG_DIR", root);
+  vi.stubEnv("AGENC_HOME", root);
+  enterCanonicalSettingsAuthority(new ConfigStore({
+    home: root,
+    env: { ...process.env, AGENC_HOME: root },
+    cwd: root,
+  }));
 });
 
 afterEach(async () => {
@@ -162,6 +169,7 @@ describe("MCP resources backed by memory + instruction files", () => {
     await writeFile(join(root, "AGENC.md"), "# Project instructions\nhello");
     const server = new McpServerFramework({
       resourceProvider: createMemoryResourceProvider({
+        configHomeDir: root,
         memoryDirs: [memoryDir, sessionDir],
         instructionFiles: [join(root, "AGENC.md")],
         readResourceContent,

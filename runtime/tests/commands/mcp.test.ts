@@ -1,13 +1,12 @@
 import {
   existsSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join, relative } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -363,9 +362,11 @@ describe("mcpCommand", () => {
       expect(result).toMatchObject({
         serverName: "game-helper",
         toolName: "game_tip",
-        relativeScriptFile: ".agenc/mcp/game-helper.mjs",
       });
       if ("scriptFile" in result) {
+        expect(result.relativeScriptFile).toMatch(
+          /^\.agenc\/mcp\/game-helper-[a-f0-9]{64}\.mjs$/u,
+        );
         const source = readFileSync(result.scriptFile, "utf8");
         expect(source).toContain(
           'process.stdout.write(JSON.stringify(message) + "\\n")',
@@ -394,24 +395,30 @@ describe("mcpCommand", () => {
         home: "/home/test",
       });
 
-      expect(addServer).toHaveBeenCalledWith({
+      expect(addServer).toHaveBeenCalledOnce();
+      const added = addServer.mock.calls[0]![0];
+      expect(added).toMatchObject({
         name: "game-helper",
         transport: "stdio",
         command: "node",
-        args: [join(cwd, ".agenc", "mcp", "game-helper.mjs")],
         enabled: true,
       });
+      expect(added.args).toHaveLength(1);
+      expect(basename(added.args[0])).toMatch(
+        /^game-helper-[a-f0-9]{64}\.mjs$/u,
+      );
+      const relativeScriptFile = relative(cwd, added.args[0]);
       expect(result.kind).toBe("text");
       if (result.kind === "text") {
         expect(result.text).toContain(
-          "Created MCP server: .agenc/mcp/game-helper.mjs",
+          `Created MCP server: ${relativeScriptFile}`,
         );
         expect(result.text).toContain(
           "Connected for this session (1 tool): /mcp tools game-helper",
         );
         expect(result.text).toContain("Tool: game_tip");
         expect(result.text).toContain(
-          "Persist later: agenc mcp add game-helper node .agenc/mcp/game-helper.mjs",
+          `Persist later: agenc mcp add game-helper node ${relativeScriptFile}`,
         );
       }
     } finally {
@@ -432,10 +439,12 @@ describe("mcpCommand", () => {
       expect(result.kind).toBe("text");
       if (result.kind === "text") {
         expect(result.text).toContain("Add this session: /mcp add local-helper");
+        const relativeScriptFile = result.text.match(
+          /Created MCP server: (\.agenc\/mcp\/local-helper-[a-f0-9]{64}\.mjs)/u,
+        )?.[1];
+        expect(relativeScriptFile).toBeDefined();
+        expect(existsSync(join(cwd, relativeScriptFile!))).toBe(true);
       }
-      expect(existsSync(join(cwd, ".agenc", "mcp", "local-helper.mjs"))).toBe(
-        true,
-      );
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -448,7 +457,7 @@ describe("mcpCommand", () => {
         createProjectMcpServer(cwd, "../bad", "ping", "Bad"),
       ).resolves.toEqual({
         error:
-          "Invalid MCP server name. Use only letters, numbers, hyphens, and underscores.",
+          "Invalid MCP server name: must contain only ASCII letters, numbers, colons, hyphens, and underscores.",
       });
       await expect(
         createProjectMcpServer(cwd, "safe", "../bad", "Bad"),
@@ -465,17 +474,43 @@ describe("mcpCommand", () => {
   it("does not overwrite an existing MCP scaffold", async () => {
     const cwd = tmpRoot();
     try {
-      const serverDir = join(cwd, ".agenc", "mcp");
-      mkdirSync(serverDir, { recursive: true });
-      const scriptFile = join(serverDir, "existing.mjs");
-      writeFileSync(scriptFile, "original", "utf8");
+      const first = await createProjectMcpServer(
+        cwd,
+        "existing",
+        "ping",
+        "Original",
+      );
+      if (!("scriptFile" in first)) throw new Error(first.error);
+      writeFileSync(first.scriptFile, "original", "utf8");
 
       await expect(
         createProjectMcpServer(cwd, "existing", "ping", "Replacement"),
       ).resolves.toEqual({
-        error: "MCP server file already exists: .agenc/mcp/existing.mjs",
+        error: `MCP server file already exists: ${first.relativeScriptFile}`,
       });
-      expect(readFileSync(scriptFile, "utf8")).toBe("original");
+      expect(readFileSync(first.scriptFile, "utf8")).toBe("original");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("derives a Windows-safe collision-resistant script name for scoped servers", async () => {
+    const cwd = tmpRoot();
+    try {
+      const result = await createProjectMcpServer(
+        cwd,
+        "plugin:sample:local",
+        "ping",
+        "Scoped",
+      );
+      if (!("scriptFile" in result)) throw new Error(result.error);
+
+      const filename = basename(result.scriptFile);
+      expect(filename).toMatch(
+        /^plugin-sample-local-[a-f0-9]{64}\.mjs$/u,
+      );
+      expect(filename).not.toMatch(/[<>:"/\\|?*]/u);
+      expect(existsSync(result.scriptFile)).toBe(true);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

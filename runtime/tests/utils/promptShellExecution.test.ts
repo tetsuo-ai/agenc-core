@@ -37,7 +37,7 @@ function promptContext() {
       return {
         toolPermissionContext: {
           ...getEmptyToolPermissionContext(),
-          alwaysAllowRules: { command: ['Bash(*)'] },
+          alwaysAllowRules: { command: ['system.bash(*)'] },
         },
       }
     },

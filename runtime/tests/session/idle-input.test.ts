@@ -8,6 +8,10 @@
 
 import { describe, expect, it } from "vitest";
 import { createAgentRoleWorkspace } from "../agents/role.js";
+import { ConfigStore } from "../config/store.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { AsyncQueue } from "../utils/async-queue.js";
 import {
   MAILBOX_SOURCE_IDLE_INPUT,
@@ -28,6 +32,9 @@ function buildSession(mailboxLimits?: SessionOpts["mailboxLimits"]): Session {
   // mailbox + event log paths are exercised. Cast through `unknown`
   // to skirt the otherwise-heavy SessionServices interface.
   const services = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},
@@ -37,6 +44,22 @@ function buildSession(mailboxLimits?: SessionOpts["mailboxLimits"]): Session {
       cancel: () => {},
       isCancelled: () => false,
     },
+    provider: {
+      name: "idle-input-test",
+      config: { model: "idle-input-test-model" },
+      chat: async () => {
+        throw new Error("idle-input test provider must not be called");
+      },
+      chatStream: async () => {
+        throw new Error("idle-input test provider must not be called");
+      },
+      healthCheck: async () => true,
+    },
+    configStore: new ConfigStore({
+      home: "/tmp/agenc-idle-input-test-home",
+      cwd: ROLE_WORKSPACE.cwd,
+    }),
+    runtimeOptions: resolveAgentRuntimeOptions({}),
   } as unknown as SessionOpts["services"];
   const opts: SessionOpts = {
     conversationId: "conv-test",

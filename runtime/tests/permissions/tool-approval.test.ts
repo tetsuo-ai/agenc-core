@@ -10,9 +10,9 @@ import { createEmptyToolPermissionContext } from "./types.js";
 describe("toolApprovalRulesFromConfig", () => {
   test("maps config allow/ask/deny arrays to auto/prompt/deny rules", () => {
     const rules = toolApprovalRulesFromConfig({
-      allow: ["Read(*)"],
-      ask: ["Bash(npm publish *)"],
-      deny: ["Bash(rm -rf *)"],
+      allow: ["FileRead(*)"],
+      ask: ["system.bash(npm publish *)"],
+      deny: ["system.bash(rm -rf *)"],
     });
 
     expect(rules.map((entry) => entry.behavior)).toEqual([
@@ -26,9 +26,9 @@ describe("toolApprovalRulesFromConfig", () => {
       "allow",
     ]);
     expect(rules.map((entry) => entry.rule.ruleValue)).toEqual([
-      { toolName: "Bash", ruleContent: "rm -rf *" },
-      { toolName: "Bash", ruleContent: "npm publish *" },
-      { toolName: "Read" },
+      { toolName: "system.bash", ruleContent: "rm -rf *" },
+      { toolName: "system.bash", ruleContent: "npm publish *" },
+      { toolName: "FileRead" },
     ]);
   });
 
@@ -52,15 +52,15 @@ describe("applyToolApprovalConfigToPermissionContext", () => {
     const ctx = applyToolApprovalConfigToPermissionContext(
       createEmptyToolPermissionContext(),
       {
-        allow: ["Read"],
-        ask: ["Bash(npm publish *)"],
+        allow: ["FileRead"],
+        ask: ["system.bash(npm publish *)"],
         deny: ["Write"],
         additionalDirectories: ["/tmp/work"],
       },
     );
 
-    expect(ctx.alwaysAllowRules.session).toEqual(["Read"]);
-    expect(ctx.alwaysAskRules.session).toEqual(["Bash(npm publish *)"]);
+    expect(ctx.alwaysAllowRules.session).toEqual(["FileRead"]);
+    expect(ctx.alwaysAskRules.session).toEqual(["system.bash(npm publish *)"]);
     expect(ctx.alwaysDenyRules.session).toEqual(["Write"]);
     expect(ctx.additionalWorkingDirectories.get("/tmp/work")).toEqual({
       path: "/tmp/work",
@@ -73,11 +73,11 @@ describe("decideToolApproval", () => {
   test("returns none when no whole-tool or content rule matches", () => {
     const ctx = applyToolApprovalConfigToPermissionContext(
       createEmptyToolPermissionContext(),
-      { allow: ["Read"] },
+      { allow: ["FileRead"] },
     );
 
     expect(
-      decideToolApproval(ctx, { toolName: "Bash", ruleContent: "git status" }),
+      decideToolApproval(ctx, { toolName: "system.bash", ruleContent: "git status" }),
     ).toEqual({ behavior: "none" });
   });
 
@@ -85,13 +85,13 @@ describe("decideToolApproval", () => {
     const ctx = applyToolApprovalConfigToPermissionContext(
       createEmptyToolPermissionContext(),
       {
-        allow: ["Bash"],
-        deny: ["Bash(rm -rf *)"],
+        allow: ["system.bash"],
+        deny: ["system.bash(rm -rf *)"],
       },
     );
 
     const decision = decideToolApproval(ctx, {
-      toolName: "Bash",
+      toolName: "system.bash",
       ruleContent: "rm -rf build",
     });
 
@@ -103,13 +103,13 @@ describe("decideToolApproval", () => {
     const ctx = applyToolApprovalConfigToPermissionContext(
       createEmptyToolPermissionContext(),
       {
-        allow: ["Bash"],
-        ask: ["Bash(npm publish *)"],
+        allow: ["system.bash"],
+        ask: ["system.bash(npm publish *)"],
       },
     );
 
     const decision = decideToolApproval(ctx, {
-      toolName: "Bash",
+      toolName: "system.bash",
       ruleContent: "npm publish package",
     });
 
@@ -120,18 +120,18 @@ describe("decideToolApproval", () => {
   test("matches prefix-colon content rules with shared rule semantics", () => {
     const ctx = applyToolApprovalConfigToPermissionContext(
       createEmptyToolPermissionContext(),
-      { allow: ["Bash(git:*)"] },
+      { allow: ["system.bash(git:*)"] },
     );
 
     expect(
       decideToolApproval(ctx, {
-        toolName: "Bash",
+        toolName: "system.bash",
         ruleContent: "git status",
       }).behavior,
     ).toBe("auto");
     expect(
       decideToolApproval(ctx, {
-        toolName: "Bash",
+        toolName: "system.bash",
         ruleContent: "npm test",
       }).behavior,
     ).toBe("none");
@@ -141,14 +141,14 @@ describe("decideToolApproval", () => {
     const ctx = applyToolApprovalConfigToPermissionContext(
       createEmptyToolPermissionContext(),
       {
-        allow: ["Bash(git:*)"],
-        deny: ["Bash(git push:*)"],
+        allow: ["system.bash(git:*)"],
+        deny: ["system.bash(git push:*)"],
       },
     );
 
     expect(
       decideToolApproval(ctx, {
-        toolName: "Bash",
+        toolName: "system.bash",
         ruleContent: "git push origin main",
       }).behavior,
     ).toBe("deny");
@@ -158,29 +158,29 @@ describe("decideToolApproval", () => {
     const ctx = applyToolApprovalConfigToPermissionContext(
       createEmptyToolPermissionContext(),
       {
-        allow: ["Bash"],
-        ask: ["Bash(npm publish *)"],
+        allow: ["system.bash"],
+        ask: ["system.bash(npm publish *)"],
       },
     );
 
     const decision = decideToolApproval(ctx, {
-      toolName: "Bash",
+      toolName: "system.bash",
       ruleContent: "git status",
     });
 
     expect(decision.behavior).toBe("auto");
-    expect(decision.rule?.ruleValue).toEqual({ toolName: "Bash" });
+    expect(decision.rule?.ruleValue).toEqual({ toolName: "system.bash" });
   });
 
   test("treats a trailing space-wildcard pattern as optional arguments", () => {
     const ctx = applyToolApprovalConfigToPermissionContext(
       createEmptyToolPermissionContext(),
-      { ask: ["Bash(npm publish *)"] },
+      { ask: ["system.bash(npm publish *)"] },
     );
 
     expect(
       decideToolApproval(ctx, {
-        toolName: "Bash",
+        toolName: "system.bash",
         ruleContent: "npm publish",
       }).behavior,
     ).toBe("prompt");
@@ -189,18 +189,18 @@ describe("decideToolApproval", () => {
   test("keeps escaped wildcard literals from becoming patterns", () => {
     const ctx = applyToolApprovalConfigToPermissionContext(
       createEmptyToolPermissionContext(),
-      { deny: ["Bash(echo \\\\*)"] },
+      { deny: ["system.bash(echo \\\\*)"] },
     );
 
     expect(
       decideToolApproval(ctx, {
-        toolName: "Bash",
+        toolName: "system.bash",
         ruleContent: "echo *",
       }).behavior,
     ).toBe("deny");
     expect(
       decideToolApproval(ctx, {
-        toolName: "Bash",
+        toolName: "system.bash",
         ruleContent: "echo anything",
       }).behavior,
     ).toBe("none");

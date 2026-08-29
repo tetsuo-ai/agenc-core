@@ -1,22 +1,42 @@
-import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { resolveAgencHome } from "../../config/env.js";
-import { cloneRecord, stableJson, type JsonRecord } from "../../config/json.js";
-import { loadConfig, parseToml } from "../../config/loader.js";
-import { serializeConfigToml } from "../../config/migrate.js";
+import { randomUUID } from "node:crypto";
+import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { resolveHomeContext } from "../../config/home.js";
+import { loadCanonicalConfig } from "../../config/repository.js";
 import type { PluginEntryConfig } from "../../config/schema.js";
+import type { ConfigStore } from "../../config/store.js";
+import { mutateCanonicalUserConfigSync } from "../../config/update-sync.js";
+import { writeDurableAtomicFile } from "../../utils/durable-atomic-file.js";
 import { isRecord } from "../../utils/record.js";
 import { createPluginFromPath, loadPlugins, type LoadedPlugin } from "../loader.js";
-import { findPluginManifestPath } from "../manifest.js";
+import {
+  findPluginManifestPath,
+  loadPluginManifest,
+  PLUGIN_MANIFEST_RELATIVE_PATH,
+} from "../manifest.js";
+import {
+  CONVENTIONAL_APP_FILE,
+  CONVENTIONAL_HOOKS_FILE,
+  CONVENTIONAL_LSP_FILE,
+  inspectPluginPackageAuthority,
+  RETIRED_PLUGIN_MCP_FILE,
+  RETIRED_PLUGIN_SETTINGS_FILE,
+} from "../package-authority.js";
 import { validateMarketplaceManifest, validatePluginManifest, type ValidationResult } from "../validation.js";
-import { deletePluginDataDir, sanitizePluginId } from "../directories.js";
+import {
+  deletePluginDataDir,
+  isReservedPluginStorageChildName,
+  pluginDataDirPath,
+  pluginFilesystemKey,
+} from "../directories.js";
 import {
   pluginDependencyIdentityFromSource,
-  pluginSourceNeedsRedaction,
-  redactPluginSource,
+  parsePluginInstallSource,
+  pluginInstallSourceNeedsRedaction,
+  redactPluginInstallSource,
   resolvePluginSource,
   shouldCopyPluginPayloadPath,
+  type PluginInstallSource,
   type PluginProcessRunner,
   type PluginResolutionKind,
   type ResolvedPluginSource,
@@ -31,13 +51,17 @@ export interface PluginCliIo {
 
 export interface PluginOperationOptions {
   readonly agencHome?: string;
+  readonly pluginStorageRoot: string;
+  readonly sessionTempRoot: string;
   readonly workspaceRoot?: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly configStore?: ConfigStore;
   readonly now?: () => Date;
   readonly onWarn?: (message: string) => void;
 }
 
 export interface InstalledPluginSummary {
+  readonly id: string;
   readonly name: string;
   readonly version?: string;
   readonly description?: string;
@@ -52,7 +76,7 @@ export interface PluginListResult {
 }
 
 export interface InstallPluginInput extends PluginOperationOptions {
-  readonly source: string;
+  readonly source: PluginInstallSource;
   readonly scope?: PluginScope;
   readonly name?: string;
   readonly force?: boolean;
@@ -104,7 +128,7 @@ export interface DisableAllPluginsResult {
 export interface UpdatePluginInput extends PluginOperationOptions {
   readonly pluginId: string;
   readonly scope?: PluginScope;
-  readonly source?: string;
+  readonly source?: PluginInstallSource;
   readonly requireSignature?: boolean;
   readonly publishersPath?: string;
   readonly runResolutionProcess?: PluginProcessRunner;
@@ -113,39 +137,86 @@ export interface UpdatePluginInput extends PluginOperationOptions {
 
 export interface UpdatePluginResult extends InstallPluginResult {
   readonly previousRoot: string;
-  readonly source: string;
+  readonly source: PluginInstallSource;
 }
 
-const MANAGED_CONFIG_PREFIX = "# BEGIN agenc plugin";
-const MANAGED_CONFIG_SUFFIX = "# END agenc plugin";
 const INSTALL_METADATA_FILE = "agenc-install.json";
-const RESERVED_INSTALL_NAMES = new Set(["cache", "data"]);
 
-function resolvePluginAgencHome(options: PluginOperationOptions = {}): string {
-  return options.agencHome ?? resolveAgencHome(options.env);
+function resolvePluginAgencHome(options: PluginOperationOptions): string {
+  if (options.agencHome !== undefined) return resolve(options.agencHome);
+  const env = options.env;
+  if (env === undefined) {
+    throw new Error(
+      "Plugin operations require an explicit AgenC home or captured environment",
+    );
+  }
+  return resolveHomeContext(
+    env,
+    env.HOME === undefined ? {} : { platformHome: env.HOME },
+  ).path;
 }
 
-function resolvePluginWorkspaceRoot(options: PluginOperationOptions = {}): string {
-  return options.workspaceRoot ?? process.cwd();
+function resolvePluginWorkspaceRoot(options: PluginOperationOptions): string {
+  if (options.workspaceRoot === undefined) {
+    throw new Error("Plugin operations require an explicit workspace root");
+  }
+  return resolve(options.workspaceRoot);
 }
 
 function pluginScopeRoot(
   scope: PluginScope,
-  options: PluginOperationOptions = {},
+  options: PluginOperationOptions,
 ): string {
-  const agencHome = resolvePluginAgencHome(options);
   const workspaceRoot = resolvePluginWorkspaceRoot(options);
   switch (scope) {
     case "user":
-      return join(agencHome, "plugins");
+      return options.pluginStorageRoot;
     case "project":
     case "local":
       return join(workspaceRoot, ".agents", "plugins");
   }
 }
 
-function pluginConfigPath(options: PluginOperationOptions = {}): string {
+function pluginConfigPath(options: PluginOperationOptions): string {
   return join(resolvePluginAgencHome(options), "config.toml");
+}
+
+async function loadPluginOperationConfig(
+  options: PluginOperationOptions,
+  warnings: string[],
+) {
+  const agencHome = resolvePluginAgencHome(options);
+  const workspaceRoot = resolvePluginWorkspaceRoot(options);
+  if (options.configStore !== undefined) {
+    if (resolve(options.configStore.agencHome) !== agencHome) {
+      throw new Error(
+        "Plugin operation ConfigStore does not own the requested AgenC home",
+      );
+    }
+    if (resolve(options.configStore.projectRoot) !== workspaceRoot) {
+      throw new Error(
+        "Plugin operation ConfigStore does not own the requested workspace",
+      );
+    }
+    warnings.push(...options.configStore.warnings());
+    return options.configStore.current();
+  }
+  if (options.env === undefined) {
+    throw new Error(
+      "Plugin config reads require an exact ConfigStore or captured environment",
+    );
+  }
+  const loaded = await loadCanonicalConfig({
+    home: agencHome,
+    env: options.env,
+    cwd: workspaceRoot,
+    projectRoot: workspaceRoot,
+    onWarn: (message) => {
+      warnings.push(message);
+      options.onWarn?.(message);
+    },
+  });
+  return loaded.config;
 }
 
 export function formatPluginList(result: PluginListResult): string {
@@ -158,7 +229,10 @@ export function formatPluginList(result: PluginListResult): string {
   for (const plugin of result.plugins) {
     const version = plugin.version ? ` v${plugin.version}` : "";
     const state = plugin.enabled ? "enabled" : "disabled";
-    lines.push(`- ${plugin.name}${version} (${state}) ${plugin.root}`);
+    const manifestName = plugin.name === plugin.id
+      ? ""
+      : ` (manifest ${plugin.name})`;
+    lines.push(`- ${plugin.id}${manifestName}${version} (${state}) ${plugin.root}`);
   }
   if (result.errors.length > 0) {
     lines.push("", formatPluginErrors(result.errors));
@@ -167,27 +241,20 @@ export function formatPluginList(result: PluginListResult): string {
 }
 
 export async function listInstalledPlugins(
-  options: PluginOperationOptions = {},
+  options: PluginOperationOptions,
 ): Promise<PluginListResult> {
-  const agencHome = resolvePluginAgencHome(options);
   const workspaceRoot = resolvePluginWorkspaceRoot(options);
   const warnings: string[] = [];
-  const loadedConfig = await loadConfig({
-    home: agencHome,
-    onWarn: (message) => {
-      warnings.push(message);
-      options.onWarn?.(message);
-    },
-  });
+  const config = await loadPluginOperationConfig(options, warnings);
   const loaded = await loadPlugins({
-    agencHome,
+    pluginStorageRoot: options.pluginStorageRoot,
     workspaceRoot,
-    config: loadedConfig.config,
+    config,
   });
   return {
     plugins: [...loaded.enabled, ...loaded.disabled]
       .map(summarizeLoadedPlugin)
-      .sort((a, b) => a.name.localeCompare(b.name)),
+      .sort((a, b) => a.id.localeCompare(b.id) || a.root.localeCompare(b.root)),
     errors: [
       ...warnings,
       ...loaded.errors.map((issue) => `${issue.source}: ${issue.message}`),
@@ -197,9 +264,20 @@ export async function listInstalledPlugins(
 
 export async function validatePluginPath(
   inputPath: string,
-  options: { readonly marketplace?: boolean } = {},
+  options: {
+    readonly marketplace?: boolean;
+    readonly workspaceRoot?: string;
+  } = {},
 ): Promise<ValidationResult> {
-  const absolutePath = resolve(inputPath);
+  const absolutePath = isAbsolute(inputPath)
+    ? resolve(inputPath)
+    : options.workspaceRoot === undefined
+      ? (() => {
+          throw new Error(
+            "Relative plugin validation paths require an explicit workspace root",
+          );
+        })()
+      : resolve(options.workspaceRoot, inputPath);
   if (options.marketplace || basename(absolutePath) === "marketplace.json") {
     return validateMarketplaceManifest(absolutePath);
   }
@@ -210,22 +288,53 @@ export async function validatePluginPath(
     return validatePluginManifest(absolutePath);
   }
   if (stats.isDirectory()) {
-    const manifestPath = await findPluginManifestPath(absolutePath);
-    if (manifestPath) {
-      return validatePluginManifest(manifestPath);
-    }
-    if (await hasComponentOnlyPluginShape(absolutePath)) {
+    let manifestPath: string | null;
+    try {
+      manifestPath = await findPluginManifestPath(absolutePath);
+    } catch (error) {
+      const retiredManifestPath = join(absolutePath, "plugin.json");
       return {
-        success: true,
-        errors: [],
-        warnings: [{
-          path: absolutePath,
-          message: "Plugin has no manifest; AgenC will infer a minimal manifest from component directories.",
+        success: false,
+        errors: [{
+          path: retiredManifestPath,
+          message: error instanceof Error ? error.message : String(error),
         }],
+        warnings: [],
+        filePath: retiredManifestPath,
+        fileType: "plugin",
+      };
+    }
+    const parsedManifest = await loadPluginManifest(absolutePath).catch(() => null);
+    const packageIssues = await inspectPluginPackageAuthority(
+      absolutePath,
+      parsedManifest?.manifest ?? {},
+    );
+    if (packageIssues.length > 0) {
+      return {
+        success: false,
+        errors: packageIssues.map((issue) => ({
+          path: issue.path,
+          message: issue.message,
+        })),
+        warnings: [],
         filePath: absolutePath,
         fileType: "plugin",
       };
     }
+    if (manifestPath) {
+      return validatePluginManifest(manifestPath);
+    }
+    return {
+      success: false,
+      errors: [{
+        path: join(absolutePath, PLUGIN_MANIFEST_RELATIVE_PATH),
+        message:
+          `Required plugin manifest is missing. Add ${PLUGIN_MANIFEST_RELATIVE_PATH} to the package, or reinstall the plugin.`,
+      }],
+      warnings: [],
+      filePath: absolutePath,
+      fileType: "plugin",
+    };
   }
   return validatePluginManifest(absolutePath);
 }
@@ -235,17 +344,21 @@ export async function installPluginOp(
 ): Promise<InstallPluginResult> {
   const scope = input.scope ?? "user";
   const workspaceRoot = resolvePluginWorkspaceRoot(input);
-  const localSource = resolvePath(input.source, workspaceRoot);
+  const localSource = typeof input.source === "string"
+    ? resolvePath(input.source, workspaceRoot)
+    : undefined;
   let resolved: ResolvedPluginSource | null = null;
-  let source = localSource;
+  let source = localSource ?? "";
   let resolutionKind: PluginResolutionKind = "local";
   let signatureVerified = false;
-  if (!(await pathIsDirectory(localSource))) {
+  if (localSource === undefined || !(await pathIsDirectory(localSource))) {
     resolved = await resolvePluginSource(input.source, {
       agencHome: resolvePluginAgencHome(input),
+      pluginStorageRoot: input.pluginStorageRoot,
+      sessionTempRoot: input.sessionTempRoot,
       workspaceRoot,
       refreshCache: input.refreshCache,
-      requireSignature: input.requireSignature ?? true,
+      requireSignature: input.requireSignature,
       publishersPath: input.publishersPath,
       runProcess: input.runResolutionProcess,
       fetchBytes: input.fetchResolutionBytes,
@@ -262,26 +375,56 @@ export async function installPluginOp(
     const loaded = await createPluginFromPath(source, {
       source,
       enabled: true,
-      fallbackName: basename(source),
     });
-    if (loaded.errors.length > 0) {
+    if (loaded.plugin === null || loaded.errors.length > 0) {
       throw new Error(
         `plugin source failed validation: ${loaded.errors.map((issue) => issue.message).join("; ")}`,
       );
     }
-    const pluginName = input.name?.trim() || loaded.plugin.name || basename(source);
-    const safeName = sanitizeInstallName(pluginName);
+    const pluginId = resolveInstallPluginId(
+      input.name,
+      (typeof input.source === "string"
+        ? pluginDependencyIdentityFromSource(input.source)
+        : undefined) ?? loaded.plugin.id,
+    );
+    const safeName = sanitizeInstallName(pluginId);
+    const otherScope: PluginScope = scope === "user" ? "project" : "user";
+    const otherScopeRoots = await resolvePluginRootsForRemoval(
+      pluginId,
+      otherScope,
+      input,
+    );
+    if (otherScopeRoots.length > 0) {
+      throw new Error(
+        `plugin is already installed in another scope: ${pluginId}`,
+      );
+    }
     const installRoot = pluginScopeRoot(scope, input);
     await mkdir(installRoot, { recursive: true, mode: 0o700 });
-    const destination = join(installRoot, safeName);
+    const existingRoots = await resolvePluginRootsForRemoval(
+      pluginId,
+      scope,
+      input,
+    );
+    if (existingRoots.length > 1) {
+      throw new Error(
+        `plugin resolves to multiple install roots in ${scope} scope: ${pluginId}`,
+      );
+    }
+    const destination = existingRoots[0] ?? join(installRoot, safeName);
     await copyDirectoryAtomically(source, destination, {
       force: input.force === true,
     });
     await writeInstallMetadata(destination, {
-      name: pluginName,
-      source: resolutionKind === "local" ? source : redactPluginSource(input.source),
-      ...(resolutionKind !== "local" ? dependencyIdentityMetadata(input.source) : {}),
-      ...(resolutionKind !== "local" && pluginSourceNeedsRedaction(input.source) ? { sourceRedacted: true } : {}),
+      name: loaded.plugin.name,
+      dependencyIdentity: pluginId,
+      source: resolutionKind === "local"
+        ? source
+        : redactPluginInstallSource(input.source),
+      ...(resolutionKind !== "local" &&
+        pluginInstallSourceNeedsRedaction(input.source)
+        ? { sourceRedacted: true }
+        : {}),
       sourceRoot: source,
       scope,
       resolutionKind,
@@ -291,11 +434,15 @@ export async function installPluginOp(
     const plugin = await createPluginFromPath(destination, {
       source: scope,
       enabled: true,
-      fallbackName: safeName,
     });
-    await writePluginConfigEntry(pluginName, { enabled: true }, input);
+    if (plugin.plugin === null || plugin.errors.length > 0) {
+      throw new Error(
+        `installed plugin failed validation: ${plugin.errors.map((issue) => issue.message).join("; ")}`,
+      );
+    }
+    await writePluginConfigEntry(pluginId, { enabled: true }, input);
     return {
-      plugin: summarizeLoadedPlugin(plugin.plugin),
+      plugin: summarizeLoadedPlugin({ ...plugin.plugin, id: pluginId }),
       destination,
       scope,
       resolutionKind,
@@ -317,15 +464,20 @@ export async function uninstallPluginOp(
   for (const root of targetRoots) {
     await rm(root, { recursive: true, force: true });
   }
-  const removedConfig = await removePluginConfigEntry(input.pluginId, input);
+  const remainsInstalled = await pluginIdRemainsInstalled(input.pluginId, input);
+  const removedConfig = remainsInstalled
+    ? false
+    : await removePluginConfigEntry(input.pluginId, input);
   let removedData = false;
-  if (input.keepData !== true) {
-    await deletePluginDataDir(input.pluginId, input.env, homedir());
-    await rm(join(resolvePluginAgencHome(input), "plugins", "data", sanitizePluginId(input.pluginId)), {
-      recursive: true,
-      force: true,
-    });
-    removedData = true;
+  if (!remainsInstalled && input.keepData !== true) {
+    const authority = {
+      pluginStorageRoot: input.pluginStorageRoot,
+    };
+    const dataDir = pluginDataDirPath(input.pluginId, authority);
+    if (await pathExists(dataDir)) {
+      await deletePluginDataDir(input.pluginId, authority);
+      removedData = !(await pathExists(dataDir));
+    }
   }
   return {
     pluginId: input.pluginId,
@@ -351,10 +503,10 @@ export async function setPluginEnabledOp(
 }
 
 export async function disableAllPluginsOp(
-  options: PluginOperationOptions = {},
+  options: PluginOperationOptions,
 ): Promise<DisableAllPluginsResult> {
   const listed = await listInstalledPlugins(options);
-  const names = listed.plugins.filter((plugin) => plugin.enabled).map((plugin) => plugin.name);
+  const names = listed.plugins.filter((plugin) => plugin.enabled).map((plugin) => plugin.id);
   let configPath = pluginConfigPath(options);
   for (const name of names) {
     configPath = await writePluginConfigEntry(name, { enabled: false }, options);
@@ -386,12 +538,16 @@ export async function updatePluginOp(
       `plugin ${input.pluginId} has no recorded source; rerun with --source <path>`,
     );
   }
-  const localSource = resolvePath(source, workspaceRoot);
-  if (await pathExists(localSource)) {
-    const sourceReal = await realpath(localSource);
-    const rootReal = await realpath(previousRoot);
-    if (sourceReal === rootReal || sourceReal.startsWith(`${rootReal}/`)) {
-      throw new Error(`plugin update source cannot be the installed plugin root: ${source}`);
+  if (typeof source === "string") {
+    const localSource = resolvePath(source, workspaceRoot);
+    if (await pathExists(localSource)) {
+      const sourceReal = await realpath(localSource);
+      const rootReal = await realpath(previousRoot);
+      if (sourceReal === rootReal || sourceReal.startsWith(`${rootReal}/`)) {
+        throw new Error(
+          `plugin update source cannot be the installed plugin root: ${source}`,
+        );
+      }
     }
   }
   const installed = await installPluginOp({
@@ -410,7 +566,12 @@ export async function updatePluginOp(
 }
 
 async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
-  await writeTextAtomic(path, `${JSON.stringify(value, null, 2)}\n`, 0o600);
+  await writeDurableAtomicFile(
+    path,
+    `${path}.tmp-${process.pid}-${randomUUID()}`,
+    `${JSON.stringify(value, null, 2)}\n`,
+    0o600,
+  );
 }
 
 async function readJsonFile<T>(
@@ -425,35 +586,32 @@ async function readJsonFile<T>(
   }
 }
 
-async function writeTextAtomic(
-  path: string,
-  text: string,
-  mode = 0o600,
-): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const tempDir = await mkdtemp(join(dirname(path), ".tmp-"));
-  const tempPath = join(tempDir, basename(path));
-  try {
-    await writeFile(tempPath, text, { mode });
-    await rename(tempPath, path);
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
-}
-
 function sanitizeInstallName(name: string): string {
   const trimmed = name.trim();
   if (trimmed.length === 0) {
-    throw new Error("plugin name cannot be empty");
+    throw new Error("plugin ID cannot be empty");
   }
-  const safeName = sanitizePluginId(trimmed);
-  if (safeName.length === 0 || safeName === "." || safeName === "..") {
-    throw new Error(`plugin name cannot be used as an install directory: ${name}`);
+  if (isReservedPluginStorageChildName(trimmed)) {
+    throw new Error(`plugin ID is reserved for AgenC internal storage: ${name}`);
   }
-  if (RESERVED_INSTALL_NAMES.has(safeName.toLowerCase())) {
-    throw new Error(`plugin name is reserved for AgenC internal storage: ${name}`);
+  return pluginFilesystemKey(trimmed);
+}
+
+function resolveInstallPluginId(
+  requestedId: string | undefined,
+  fallbackId: string,
+): string {
+  if (requestedId === undefined) return fallbackId;
+  const pluginId = requestedId.trim();
+  if (pluginId.length === 0) {
+    throw new Error("plugin ID cannot be empty");
   }
-  return safeName;
+  if (pluginDependencyIdentityFromSource(pluginId) !== pluginId) {
+    throw new Error(
+      `plugin ID must be a canonical name or name@marketplace identifier: ${requestedId}`,
+    );
+  }
+  return pluginId;
 }
 
 function resolvePath(path: string, base: string): string {
@@ -462,6 +620,7 @@ function resolvePath(path: string, base: string): string {
 
 function summarizeLoadedPlugin(plugin: LoadedPlugin): InstalledPluginSummary {
   return {
+    id: plugin.id,
     name: plugin.name,
     ...(plugin.version !== undefined ? { version: plugin.version } : {}),
     ...(plugin.description !== undefined ? { description: plugin.description } : {}),
@@ -515,10 +674,11 @@ async function hasComponentOnlyPluginShape(path: string): Promise<boolean> {
     "agents",
     "skills",
     "output-styles",
-    "hooks/hooks.json",
-    ".mcp.json",
-    ".lsp.json",
-    ".app.json",
+    CONVENTIONAL_HOOKS_FILE,
+    RETIRED_PLUGIN_MCP_FILE,
+    RETIRED_PLUGIN_SETTINGS_FILE,
+    CONVENTIONAL_LSP_FILE,
+    CONVENTIONAL_APP_FILE,
   ];
   for (const relative of checks) {
     try {
@@ -570,16 +730,12 @@ async function copyDirectoryAtomically(
   }
 }
 
-function dependencyIdentityMetadata(source: string): { readonly dependencyIdentity?: string } {
-  const dependencyIdentity = pluginDependencyIdentityFromSource(source);
-  return dependencyIdentity === undefined ? {} : { dependencyIdentity };
-}
-
 async function writeInstallMetadata(
   pluginRoot: string,
   metadata: {
     readonly name: string;
-    readonly source: string;
+    readonly dependencyIdentity: string;
+    readonly source: PluginInstallSource;
     readonly sourceRedacted?: boolean;
     readonly sourceRoot?: string;
     readonly scope: PluginScope;
@@ -594,13 +750,13 @@ async function writeInstallMetadata(
 
 async function readInstalledPluginSource(
   pluginRoot: string,
-): Promise<string | undefined> {
+): Promise<PluginInstallSource | undefined> {
   const metadata = await readJsonFile<unknown>(
     join(pluginRoot, ".agenc-plugin", INSTALL_METADATA_FILE),
     null,
   );
-  return isRecord(metadata) && typeof metadata.source === "string" && metadata.sourceRedacted !== true
-    ? metadata.source
+  return isRecord(metadata) && metadata.sourceRedacted !== true
+    ? parsePluginInstallSource(metadata.source)
     : undefined;
 }
 
@@ -617,11 +773,12 @@ async function resolvePluginRootsForRemoval(
       roots.add(await realpath(directRoot));
     }
   } catch {
-    // Manifest-name lookup below handles installs whose directory name differs.
+    // The canonical-ID lookup below handles metadata-backed installs whose
+    // directory name differs from the current filesystem key.
   }
   const listed = await listInstalledPlugins(options);
   for (const plugin of listed.plugins) {
-    if (plugin.name !== pluginId && basename(plugin.root) !== pluginId) continue;
+    if (plugin.id !== pluginId) continue;
     if (isPathInside(plugin.root, installRoot)) {
       roots.add(await realpath(plugin.root));
     }
@@ -629,10 +786,28 @@ async function resolvePluginRootsForRemoval(
   return [...roots].sort((a, b) => a.localeCompare(b));
 }
 
+async function pluginIdRemainsInstalled(
+  pluginId: string,
+  options: PluginOperationOptions,
+): Promise<boolean> {
+  const installRoots = new Set([
+    pluginScopeRoot("user", options),
+    pluginScopeRoot("project", options),
+  ]);
+  const installDirectoryName = sanitizeInstallName(pluginId);
+  for (const installRoot of installRoots) {
+    if (await pathIsDirectory(join(installRoot, installDirectoryName))) {
+      return true;
+    }
+  }
+  const listed = await listInstalledPlugins(options);
+  return listed.plugins.some((plugin) => plugin.id === pluginId);
+}
+
 function isPathInside(path: string, root: string): boolean {
-  const normalizedPath = resolve(path);
-  const normalizedRoot = resolve(root);
-  return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`);
+  const relativePath = relative(resolve(root), resolve(path));
+  return relativePath === "" ||
+    (!relativePath.startsWith("..") && !isAbsolute(relativePath));
 }
 
 async function writePluginConfigEntry(
@@ -641,21 +816,26 @@ async function writePluginConfigEntry(
   options: PluginOperationOptions,
 ): Promise<string> {
   const path = pluginConfigPath(options);
-  const marker = managedMarker(pluginId);
-  const block = renderManagedPluginBlock(pluginId, entry, marker);
-  const text = await readOptionalText(path);
-  let base = removeManagedBlock(text, marker);
-  if (base === text.trimEnd()) {
-    // No managed block found (config migrations strip the comment markers
-    // when they canonically rewrite config.toml). Remove any bare entry so
-    // the appended managed block does not create duplicate TOML tables.
-    base = removePluginEntryFromToml(text, pluginId) ?? base;
-  }
-  const next = appendManagedBlock(
-    entry.enabled === false ? base : ensurePluginsFeatureEnabled(base),
-    block,
-  );
-  await writeTextAtomic(path, next);
+  mutateCanonicalUserConfigSync(path, (raw) => {
+    const plugins = isRecord(raw.plugins) ? raw.plugins : {};
+    if (!isRecord(raw.plugins)) raw.plugins = plugins;
+    const pluginEntries = isRecord(plugins.plugins)
+      ? plugins.plugins
+      : {};
+    if (!isRecord(plugins.plugins)) plugins.plugins = pluginEntries;
+    const currentEntry = pluginEntries[pluginId];
+    const current = Object.hasOwn(pluginEntries, pluginId) && isRecord(currentEntry)
+      ? currentEntry
+      : {};
+    Object.defineProperty(pluginEntries, pluginId, {
+      value: { ...current, ...entry },
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+    if (entry.enabled !== false) plugins.enabled = true;
+  });
+  await options.configStore?.reload();
   return path;
 }
 
@@ -664,222 +844,16 @@ async function removePluginConfigEntry(
   options: PluginOperationOptions,
 ): Promise<boolean> {
   const path = pluginConfigPath(options);
-  const marker = managedMarker(pluginId);
-  const text = await readOptionalText(path);
-  const withoutBlock = removeManagedBlock(text, marker);
-  if (withoutBlock !== text.trimEnd()) {
-    await writeTextAtomic(path, withoutBlock);
-    return true;
-  }
-  // No managed block found. Config migrations canonically rewrite
-  // config.toml and strip the managed-block comment markers, so fall back
-  // to TOML-aware removal of the plugin entry itself.
-  const withoutEntry = removePluginEntryFromToml(text, pluginId);
-  if (withoutEntry === undefined) return false;
-  await writeTextAtomic(path, withoutEntry);
-  return true;
-}
-
-/**
- * Remove `plugins.plugins.<pluginId>` from a config.toml that no longer has
- * managed-block markers (config migrations strip comments when rewriting).
- *
- * Prefers a surgical, formatting-preserving removal of the entry's table
- * section; falls back to a canonical re-serialization without the entry.
- * Every candidate is verified by re-parsing and comparing against the
- * expected parse result, so a failed edit never corrupts the file.
- * Returns `undefined` when the entry is absent or cannot be removed safely.
- */
-function removePluginEntryFromToml(
-  text: string,
-  pluginId: string,
-): string | undefined {
-  if (text.trim().length === 0) return undefined;
-  let sawDuplicateKey = false;
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = parseToml(text, {
-      onDuplicateKey: () => {
-        sawDuplicateKey = true;
-      },
-    });
-  } catch {
-    return undefined;
-  }
-  if (sawDuplicateKey) return undefined;
-  const pluginsTable = isRecord(parsed.plugins) ? parsed.plugins : undefined;
-  const entries = pluginsTable !== undefined && isRecord(pluginsTable.plugins)
-    ? pluginsTable.plugins
-    : undefined;
-  if (entries === undefined || !Object.hasOwn(entries, pluginId)) {
-    return undefined;
-  }
-  // Accept either shape after removal: an empty `plugins.plugins` table can
-  // legitimately disappear entirely (its only declaration was the removed
-  // table header) or stay as an explicit empty table.
-  const expected = [
-    expectedConfigWithoutPluginEntry(parsed, pluginId, true),
-    expectedConfigWithoutPluginEntry(parsed, pluginId, false),
-  ];
-  const surgical = removePluginTableSection(text, pluginId);
-  if (surgical !== undefined && parsesToOneOf(surgical, expected)) {
-    return surgical;
-  }
-  const canonical = serializeConfigToml(expected[0]!);
-  return parsesToOneOf(canonical, expected) ? canonical : undefined;
-}
-
-function expectedConfigWithoutPluginEntry(
-  parsed: Readonly<Record<string, unknown>>,
-  pluginId: string,
-  dropEmptyEntryTable: boolean,
-): JsonRecord {
-  const next = cloneRecord(parsed);
-  const pluginsTable = cloneRecord(next.plugins as Record<string, unknown>);
-  const entries = cloneRecord(pluginsTable.plugins as Record<string, unknown>);
-  delete entries[pluginId];
-  if (dropEmptyEntryTable && Object.keys(entries).length === 0) {
-    delete pluginsTable.plugins;
-  } else {
-    pluginsTable.plugins = entries;
-  }
-  next.plugins = pluginsTable;
-  return next;
-}
-
-function parsesToOneOf(
-  candidate: string,
-  expected: readonly JsonRecord[],
-): boolean {
-  let sawDuplicateKey = false;
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = parseToml(candidate, {
-      onDuplicateKey: () => {
-        sawDuplicateKey = true;
-      },
-    });
-  } catch {
-    return false;
-  }
-  if (sawDuplicateKey) return false;
-  const json = stableJson(parsed);
-  return expected.some((variant) => stableJson(variant) === json);
-}
-
-/**
- * Delete the `[plugins.plugins.<pluginId>]` table header line and its body
- * (up to the next table header or EOF), leaving every other line untouched.
- * Only the header spellings our own writers emit are matched; anything more
- * exotic falls through to the canonical re-serialization path, and the
- * result is always verified by the caller before being written.
- */
-function removePluginTableSection(
-  text: string,
-  pluginId: string,
-): string | undefined {
-  const quoted = tomlString(pluginId);
-  const headers = new Set([
-    `["plugins"."plugins".${quoted}]`,
-    `[plugins.plugins.${quoted}]`,
-  ]);
-  if (/^[A-Za-z0-9_-]+$/u.test(pluginId)) {
-    headers.add(`[plugins.plugins.${pluginId}]`);
-  }
-  const lines = text.split("\n");
-  let start = -1;
-  for (const [index, line] of lines.entries()) {
-    if (!headers.has(line.trim())) continue;
-    if (start !== -1) return undefined;
-    start = index;
-  }
-  if (start === -1) return undefined;
-  let end = lines.length;
-  for (let index = start + 1; index < lines.length; index += 1) {
-    if (/^\s*\[/u.test(lines[index]!)) {
-      end = index;
-      break;
+  let removed = false;
+  mutateCanonicalUserConfigSync(path, (raw) => {
+    if (!isRecord(raw.plugins) || !isRecord(raw.plugins.plugins)) return;
+    if (!Object.hasOwn(raw.plugins.plugins, pluginId)) return;
+    removed = true;
+    delete raw.plugins.plugins[pluginId];
+    if (Object.keys(raw.plugins.plugins).length === 0) {
+      delete raw.plugins.plugins;
     }
-  }
-  return [...lines.slice(0, start), ...lines.slice(end)].join("\n");
-}
-
-async function readOptionalText(path: string): Promise<string> {
-  try {
-    return await readFile(path, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
-    throw error;
-  }
-}
-
-function managedMarker(pluginId: string): string {
-  return Buffer.from(pluginId, "utf8").toString("base64url");
-}
-
-function removeManagedBlock(text: string, marker: string): string {
-  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  const re = new RegExp(
-    `\\n?${MANAGED_CONFIG_PREFIX} ${escaped}\\n[\\s\\S]*?${MANAGED_CONFIG_SUFFIX} ${escaped}\\n?`,
-    "gu",
-  );
-  return text.replace(re, "\n").trimEnd();
-}
-
-function appendManagedBlock(text: string, block: string): string {
-  const trimmed = text.trimEnd();
-  return `${trimmed}${trimmed.length > 0 ? "\n\n" : ""}${block}\n`;
-}
-
-function ensurePluginsFeatureEnabled(text: string): string {
-  const lines = text.replace(/\r\n/gu, "\n").split("\n");
-  let pluginsHeaderIndex = -1;
-  let enabledIndex = -1;
-  let inPluginsTable = false;
-  for (const [index, line] of lines.entries()) {
-    const table = line.match(/^\s*\[([^\]]+)\]\s*(?:#.*)?$/u)?.[1]?.trim();
-    if (table !== undefined) {
-      inPluginsTable = table === "plugins";
-      if (inPluginsTable && pluginsHeaderIndex === -1) {
-        pluginsHeaderIndex = index;
-      }
-      continue;
-    }
-    if (inPluginsTable && /^\s*enabled\s*=/u.test(line)) {
-      enabledIndex = index;
-      break;
-    }
-  }
-  if (enabledIndex !== -1) {
-    lines[enabledIndex] = "enabled = true";
-    return lines.join("\n").trimEnd();
-  }
-  if (pluginsHeaderIndex !== -1) {
-    lines.splice(pluginsHeaderIndex + 1, 0, "enabled = true");
-    return lines.join("\n").trimEnd();
-  }
-  const trimmed = text.trimEnd();
-  return `${trimmed}${trimmed.length > 0 ? "\n\n" : ""}[plugins]\nenabled = true`;
-}
-
-function renderManagedPluginBlock(
-  pluginId: string,
-  entry: PluginEntryConfig,
-  marker: string,
-): string {
-  const lines = [
-    `${MANAGED_CONFIG_PREFIX} ${marker}`,
-    `[plugins.plugins.${tomlString(pluginId)}]`,
-    `enabled = ${entry.enabled === false ? "false" : "true"}`,
-  ];
-  if (entry.path !== undefined) lines.push(`path = ${tomlString(entry.path)}`);
-  if (entry.source !== undefined) lines.push(`source = ${tomlString(entry.source)}`);
-  if (entry.version !== undefined) lines.push(`version = ${tomlString(entry.version)}`);
-  if (entry.required !== undefined) lines.push(`required = ${entry.required ? "true" : "false"}`);
-  lines.push(`${MANAGED_CONFIG_SUFFIX} ${marker}`);
-  return lines.join("\n");
-}
-
-function tomlString(value: string): string {
-  return JSON.stringify(value);
+  });
+  await options.configStore?.reload();
+  return removed;
 }

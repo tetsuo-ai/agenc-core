@@ -21,12 +21,12 @@ vi.mock("bun:bundle", () => ({
 }));
 
 vi.mock("../../utils/config.js", () => ({
-  getGlobalConfig: () => ({ theme: "dark" }),
-  saveGlobalConfig: vi.fn(),
+  getRuntimeState: () => ({ theme: "dark" }),
+  updateRuntimeState: vi.fn(),
 }));
 
-vi.mock("../../utils/systemTheme.js", () => ({
-  getSystemThemeName: () => "dark",
+vi.mock("../../utils/terminalBackground.js", () => ({
+  getTerminalBackground: () => "dark",
   resolveThemeSetting: () => "dark",
 }));
 

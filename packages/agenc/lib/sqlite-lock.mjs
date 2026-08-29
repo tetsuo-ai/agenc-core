@@ -225,6 +225,17 @@ function throwIfExpired(context, path, cause) {
   }
 }
 
+function reportProgress(context, phase) {
+  try {
+    const result = context.onProgress?.(phase);
+    if (result !== undefined) {
+      void Promise.resolve(result).catch(() => {});
+    }
+  } catch {
+    // Diagnostics must never change lock acquisition or release semantics.
+  }
+}
+
 function processLockRegistry() {
   const current = process[REGISTRY_SYMBOL];
   if (current !== undefined) {
@@ -706,6 +717,7 @@ export async function assertLocalPrivateDirectory(
     label = "AgenC operation",
     deadline: suppliedDeadline,
     allowTrustedStickyLeaf = false,
+    onProgress,
   } = {},
 ) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
@@ -717,6 +729,9 @@ export async function assertLocalPrivateDirectory(
   if (typeof allowTrustedStickyLeaf !== "boolean") {
     throw new TypeError("allowTrustedStickyLeaf must be boolean");
   }
+  if (onProgress !== undefined && typeof onProgress !== "function") {
+    throw new TypeError("lock onProgress must be a function");
+  }
   const context = {
     deadline: Math.min(
       suppliedDeadline ?? Number.POSITIVE_INFINITY,
@@ -724,7 +739,9 @@ export async function assertLocalPrivateDirectory(
     ),
     label,
     timeoutMs,
+    onProgress,
   };
+  reportProgress(context, "private directory validation started");
   const absolute = resolve(requestedPath);
   throwIfExpired(context, absolute);
   const canonical = await realpath(absolute);
@@ -764,6 +781,7 @@ export async function assertLocalPrivateDirectory(
     identityFromStats(stats, path);
   }
   if (process.platform === "win32") {
+    reportProgress(context, "Windows ancestor ACL validation started");
     await assertWindowsPathSecurity(
       ancestors.map((path, index) => ({
         path,
@@ -771,6 +789,7 @@ export async function assertLocalPrivateDirectory(
       })),
       context,
     );
+    reportProgress(context, "Windows ancestor ACL validation complete");
   } else {
     await assertLocalFilesystem(canonical, context);
     if (process.platform === "darwin") {
@@ -794,6 +813,7 @@ export async function assertLocalPrivateDirectory(
       throw new Error(`agenc: protected directory identity changed during validation: ${path}`);
     }
   }
+  reportProgress(context, "private directory validation complete");
   return canonical;
 }
 
@@ -840,6 +860,7 @@ export async function assertLocalPrivateFile(
     timeoutMs = 60_000,
     label = "AgenC operation",
     deadline: suppliedDeadline,
+    onProgress,
   } = {},
 ) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
@@ -848,6 +869,9 @@ export async function assertLocalPrivateFile(
   if (suppliedDeadline !== undefined && !Number.isFinite(suppliedDeadline)) {
     throw new TypeError("lock deadline must be finite");
   }
+  if (onProgress !== undefined && typeof onProgress !== "function") {
+    throw new TypeError("lock onProgress must be a function");
+  }
   const context = {
     deadline: Math.min(
       suppliedDeadline ?? Number.POSITIVE_INFINITY,
@@ -855,13 +879,16 @@ export async function assertLocalPrivateFile(
     ),
     label,
     timeoutMs,
+    onProgress,
   };
+  reportProgress(context, "private file validation started");
   const absolute = resolve(requestedPath);
   const parent = dirname(absolute);
   const canonicalParent = await assertLocalPrivateDirectory(parent, {
     timeoutMs,
     label,
     deadline: context.deadline,
+    ...(onProgress === undefined ? {} : { onProgress }),
   });
   if (canonicalParent !== parent) {
     throw new Error(`agenc: protected file parent must use its canonical path: ${parent}`);
@@ -886,7 +913,9 @@ export async function assertLocalPrivateFile(
     throw new Error(`agenc: protected file must use its canonical path: ${absolute}`);
   }
   if (process.platform === "win32") {
+    reportProgress(context, "Windows file ACL validation started");
     await assertWindowsPathSecurity([{ path: canonical, role: "file" }], context);
+    reportProgress(context, "Windows file ACL validation complete");
   } else if (process.platform === "darwin") {
     await assertDarwinPathSecurity(canonical, "file", context);
   }
@@ -898,21 +927,30 @@ export async function assertLocalPrivateFile(
   ) {
     throw new Error(`agenc: protected file identity changed during validation: ${canonical}`);
   }
+  reportProgress(context, "private file validation complete");
   return canonical;
 }
 
 async function prepareLockPath(requestedPath, context) {
   const absolute = resolve(requestedPath);
+  reportProgress(context, "lock path preparation started");
   throwIfExpired(context, absolute);
   await mkdir(dirname(absolute), { recursive: true, mode: 0o700 });
+  reportProgress(context, "lock parent creation complete");
   throwIfExpired(context, absolute);
   const parent = await realpath(dirname(absolute));
+  reportProgress(context, "lock parent canonicalization complete");
   throwIfExpired(context, absolute);
+  reportProgress(context, "lock parent security validation started");
   const validatedParent = await assertLocalPrivateDirectory(parent, {
     timeoutMs: context.timeoutMs,
     label: context.label,
     deadline: context.deadline,
+    ...(context.onProgress === undefined
+      ? {}
+      : { onProgress: context.onProgress }),
   });
+  reportProgress(context, "lock parent security validation complete");
   if (validatedParent !== parent) {
     throw new Error(`agenc: lock database parent must use its canonical path: ${parent}`);
   }
@@ -935,6 +973,7 @@ async function prepareLockPath(requestedPath, context) {
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
   }
+  reportProgress(context, "lock database file creation complete");
   throwIfExpired(context, path);
   const pathStats = await lstat(path, { bigint: true });
   assertRegularSingleLink(pathStats, path);
@@ -949,10 +988,12 @@ async function prepareLockPath(requestedPath, context) {
       await assertDarwinPathSecurity(canonical, "lock database file", context);
     }
   } else {
+    reportProgress(context, "lock database ACL validation started");
     await assertWindowsPathSecurity([
       { path: parent, role: "leafDirectory" },
       { path: canonical, role: "file" },
     ], context);
+    reportProgress(context, "lock database ACL validation complete");
   }
   throwIfExpired(context, canonical);
   const securedStats = await lstat(canonical, { bigint: true });
@@ -967,7 +1008,11 @@ async function prepareLockPath(requestedPath, context) {
   };
 }
 
-async function revalidatePreparedLock(prepared, context) {
+async function revalidatePreparedLock(
+  prepared,
+  context,
+  { validateWindowsAcl = false } = {},
+) {
   throwIfExpired(context, prepared.path);
   const parentStats = await lstat(prepared.parent, { bigint: true });
   if (!parentStats.isDirectory() || parentStats.isSymbolicLink()) {
@@ -980,7 +1025,7 @@ async function revalidatePreparedLock(prepared, context) {
   if (stats.dev !== prepared.dev || stats.ino !== prepared.ino) {
     throw new Error(`agenc: lock database identity changed during acquisition: ${prepared.path}`);
   }
-  if (process.platform === "win32") {
+  if (process.platform === "win32" && validateWindowsAcl) {
     await assertWindowsPathSecurity([
       { path: prepared.parent, role: "leafDirectory" },
       { path: prepared.path, role: "file" },
@@ -1076,18 +1121,27 @@ function busyTransitionError(path, mode) {
   );
 }
 
-function beginAndValidateLock(database, path) {
+function beginAndValidateLock(database, path, context) {
   for (let phase = 0; phase < 8; phase += 1) {
+    reportProgress(context, "SQLite transaction begin started");
     database.exec("BEGIN IMMEDIATE");
+    reportProgress(context, "SQLite transaction begin complete");
+    reportProgress(context, "SQLite lock database inspection started");
     const state = inspectLockDatabase(database, path);
+    reportProgress(context, "SQLite lock database inspection complete");
+    reportProgress(context, "SQLite journal mode inspection started");
     const journalMode = pragmaText(database, "journal_mode");
+    reportProgress(context, "SQLite journal mode inspection complete");
     if (journalMode !== "delete") {
+      reportProgress(context, "SQLite journal mode reset started");
       database.exec("ROLLBACK");
       const selected = pragmaText(database, "journal_mode=DELETE");
       if (selected !== "delete") throw busyTransitionError(path, selected);
+      reportProgress(context, "SQLite journal mode reset complete");
       continue;
     }
     if (state === "empty") {
+      reportProgress(context, "SQLite lock database initialization started");
       database.exec(`
         PRAGMA application_id = ${LOCK_APPLICATION_ID};
         CREATE TABLE agenc_local_process_lock (
@@ -1098,6 +1152,7 @@ function beginAndValidateLock(database, path) {
         VALUES (1, ${LOCK_FORMAT_VERSION});
         COMMIT;
       `);
+      reportProgress(context, "SQLite lock database initialization complete");
       continue;
     }
     return;
@@ -1143,16 +1198,29 @@ async function acquireSqliteDatabase(DatabaseSync, prepared, context) {
   let lastBusy;
   while (true) {
     throwIfExpired(context, prepared.path, lastBusy);
-    await revalidatePreparedLock(prepared, context);
+    reportProgress(context, "SQLite pre-open lock validation started");
+    await revalidatePreparedLock(prepared, context, {
+      // The creation path already validated the complete ancestor chain and
+      // the exact parent/file ACLs. Revalidate ACLs after contention because
+      // another holder and an unbounded interval have crossed this attempt.
+      validateWindowsAcl: attempt > 0,
+    });
+    reportProgress(context, "SQLite pre-open lock validation complete");
     let database;
     try {
+      reportProgress(context, "SQLite database open started");
       database = new DatabaseSync(prepared.path, {
         allowExtension: false,
         timeout: 0,
       });
+      reportProgress(context, "SQLite database open complete");
+      reportProgress(context, "SQLite connection hardening started");
       configureLocalSqliteLockConnection(database);
+      reportProgress(context, "SQLite connection hardening complete");
+      reportProgress(context, "SQLite post-open lock validation started");
       await revalidatePreparedLock(prepared, context);
-      beginAndValidateLock(database, prepared.path);
+      reportProgress(context, "SQLite post-open lock validation complete");
+      beginAndValidateLock(database, prepared.path, context);
       throwIfExpired(context, prepared.path, lastBusy);
       return database;
     } catch (error) {
@@ -1207,6 +1275,7 @@ export async function acquireLocalSqliteLocks(
     timeoutMs = 60_000,
     label = "AgenC operation",
     deadline: suppliedDeadline,
+    onProgress,
   } = {},
 ) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
@@ -1218,6 +1287,9 @@ export async function acquireLocalSqliteLocks(
   if (!Array.isArray(requestedPaths)) {
     throw new TypeError("lock paths must be an array");
   }
+  if (onProgress !== undefined && typeof onProgress !== "function") {
+    throw new TypeError("lock onProgress must be a function");
+  }
   if (requestedPaths.length === 0) return () => {};
 
   const startedAt = performance.now();
@@ -1228,6 +1300,7 @@ export async function acquireLocalSqliteLocks(
     ),
     label,
     timeoutMs,
+    onProgress,
   };
   const firstDisplayPath = resolve(requestedPaths[0]);
   throwIfExpired(context, firstDisplayPath);
@@ -1238,6 +1311,7 @@ export async function acquireLocalSqliteLocks(
     const prepared = await prepareLockPath(requestedPath, context);
     preparedByIdentity.set(prepared.identityKey, prepared);
   }
+  reportProgress(context, "lock path preparation complete");
   const preparedLocks = [...preparedByIdentity.values()].sort((left, right) =>
     left.identityKey < right.identityKey ? -1 : left.identityKey > right.identityKey ? 1 : 0);
   const pendingLocal = [];
@@ -1249,8 +1323,11 @@ export async function acquireLocalSqliteLocks(
       const release = await acquireInProcessLock(prepared, context);
       pendingLocal.push({ prepared, release });
     }
+    reportProgress(context, "in-process lock acquisition complete");
     throwIfExpired(context, currentPath);
+    reportProgress(context, "SQLite module import started");
     const { DatabaseSync } = await import("node:sqlite");
+    reportProgress(context, "SQLite module import complete");
     throwIfExpired(context, currentPath);
     for (const { prepared, release } of pendingLocal) {
       currentPath = prepared.path;
@@ -1260,7 +1337,9 @@ export async function acquireLocalSqliteLocks(
         inProcessReleased: false,
       };
       acquired.push(item);
+      reportProgress(context, "SQLite transaction acquisition started");
       item.database = await acquireSqliteDatabase(DatabaseSync, prepared, context);
+      reportProgress(context, "SQLite transaction acquisition complete");
     }
   } catch (error) {
     const cleanupErrors = [];

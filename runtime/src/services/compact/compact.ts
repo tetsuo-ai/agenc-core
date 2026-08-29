@@ -58,11 +58,6 @@ export async function manualCompactCall(
   if (messages.length === 0) {
     throw new Error("No messages to compact");
   }
-  context.onCompactProgress?.({
-    type: "hooks_start",
-    hookType: "pre_compact",
-  });
-  context.setSDKStatus?.("compacting");
   try {
     context.setStreamMode?.("requesting");
     context.setResponseLength?.(() => 0);
@@ -84,7 +79,6 @@ export async function manualCompactCall(
     context.setStreamMode?.("requesting");
     context.setResponseLength?.(() => 0);
     context.onCompactProgress?.({ type: "compact_end" });
-    context.setSDKStatus?.(null);
   }
 }
 
@@ -127,7 +121,6 @@ export function buildPostCompactMessages(
     ...result.summaryMessages,
     ...(result.messagesToKeep ?? []),
     ...result.attachments,
-    ...result.hookResults,
   ];
 }
 

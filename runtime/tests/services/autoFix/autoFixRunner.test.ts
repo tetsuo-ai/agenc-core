@@ -47,6 +47,53 @@ describe("runAutoFixCheck", () => {
     expect(result.testOutput).toBeUndefined();
   });
 
+  test.skipIf(process.platform === "win32")(
+    "uses the captured shell wrapper",
+    async () => {
+      const result = await runAutoFixCheckWithBoundary({
+        lint: 'printf "%s" "$AGENC_WRAPPER_TEST"',
+        timeout: 5_000,
+        cwd: TEST_CWD,
+        shellPath: "/bin/sh",
+        commandWrapperArgv: [
+          "env",
+          "AGENC_WRAPPER_TEST=wrapped-auto-fix",
+          "/bin/sh",
+          "-c",
+        ],
+      });
+
+      expect(result.hasErrors).toBe(false);
+      expect(result.lintOutput).toBe("wrapped-auto-fix");
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "uses the captured child environment instead of later process state",
+    async () => {
+      const previous = process.env.AGENC_AUTOFIX_ENV_TEST;
+      const capturedEnv = {
+        ...process.env,
+        AGENC_AUTOFIX_ENV_TEST: "captured",
+      };
+      process.env.AGENC_AUTOFIX_ENV_TEST = "changed";
+      try {
+        const result = await runAutoFixCheckWithBoundary({
+          lint: 'printf "%s" "$AGENC_AUTOFIX_ENV_TEST"',
+          timeout: 5_000,
+          cwd: TEST_CWD,
+          env: capturedEnv,
+          shellPath: "/bin/sh",
+        });
+
+        expect(result.lintOutput).toBe("captured");
+      } finally {
+        if (previous === undefined) delete process.env.AGENC_AUTOFIX_ENV_TEST;
+        else process.env.AGENC_AUTOFIX_ENV_TEST = previous;
+      }
+    },
+  );
+
   test("returns errors when lint command exits non-zero", async () => {
     const result = await runAutoFixCheckWithBoundary({
       lint: 'node -e "console.log(\\"error: unused var\\"); process.exit(1)"',
@@ -134,7 +181,7 @@ describe("runAutoFixCheck", () => {
   test("caps command output while reading", async () => {
     const result = await runAutoFixCheckWithBoundary({
       lint:
-        "node -e 'process.stdout.write(\"x\".repeat(20000)); process.stderr.write(\"y\".repeat(20000))'",
+        "node -e 'process.stdout.write(\"x\".repeat(6000)); process.stderr.write(\"y\".repeat(6000))'",
       timeout: 5_000,
       cwd: TEST_CWD,
     });

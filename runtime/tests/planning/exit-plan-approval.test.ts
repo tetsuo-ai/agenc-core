@@ -6,7 +6,6 @@ import {
   consumeExitPlanModeApproval,
   parseExitPlanAllowedPrompts,
   recordExitPlanModeApproval,
-  targetPermissionModeForPlanApproval,
 } from "../../src/planning/exit-plan-approval.js";
 
 describe("exit plan approval helpers", () => {
@@ -15,20 +14,20 @@ describe("exit plan approval helpers", () => {
   test("parses only complete non-empty allowed prompt entries", () => {
     expect(
       parseExitPlanAllowedPrompts([
-        { tool: " Bash ", prompt: " npm test " },
+        { tool: " system.bash ", prompt: " npm test " },
         { tool: "", prompt: "missing tool" },
-        { tool: "Read", prompt: "" },
+        { tool: "FileRead", prompt: "" },
         null,
         "bad",
       ]),
-    ).toEqual([{ tool: "Bash", prompt: "npm test" }]);
-    expect(parseExitPlanAllowedPrompts({ tool: "Bash" })).toEqual([]);
+    ).toEqual([{ tool: "system.bash", prompt: "npm test" }]);
+    expect(parseExitPlanAllowedPrompts({ tool: "system.bash" })).toEqual([]);
   });
 
   test("builds frozen session permission updates from allowed prompts", () => {
     const updates = buildPlanPromptPermissionUpdates([
-      { tool: "Bash", prompt: "npm test" },
-      { tool: "Read", prompt: "inspect files" },
+      { tool: "system.bash", prompt: "npm test" },
+      { tool: "FileRead", prompt: "inspect files" },
     ]);
 
     expect(updates).toEqual([
@@ -37,23 +36,14 @@ describe("exit plan approval helpers", () => {
         destination: "session",
         behavior: "allow",
         rules: [
-          { toolName: "Bash", ruleContent: "npm test" },
-          { toolName: "Read", ruleContent: "inspect files" },
+          { toolName: "system.bash", ruleContent: "npm test" },
+          { toolName: "FileRead", ruleContent: "inspect files" },
         ],
       },
     ]);
     expect(Object.isFrozen(updates)).toBe(true);
     expect(Object.isFrozen(updates[0].rules)).toBe(true);
     expect(buildPlanPromptPermissionUpdates([])).toEqual([]);
-  });
-
-  test("maps approval mode requests back to permission modes", () => {
-    expect(targetPermissionModeForPlanApproval("acceptEdits", "plan")).toBe("acceptEdits");
-    expect(targetPermissionModeForPlanApproval("bypassPermissions", "plan")).toBe("bypassPermissions");
-    expect(targetPermissionModeForPlanApproval("auto", "plan")).toBe("auto");
-    expect(targetPermissionModeForPlanApproval("default", "acceptEdits")).toBe("acceptEdits");
-    expect(targetPermissionModeForPlanApproval(undefined, "plan")).toBe("default");
-    expect(targetPermissionModeForPlanApproval(undefined, undefined)).toBe("default");
   });
 
   test("records, consumes, and clears approvals by call id", () => {
@@ -89,11 +79,6 @@ describe("exit plan approval helpers", () => {
     });
     // Consumed: a second consume returns null (the record is deleted on take).
     expect(consumeExitPlanModeApproval({ __callId: callId })).toBeNull();
-
-    // acceptEdits maps to the acceptEdits permission mode regardless of prePlan.
-    expect(targetPermissionModeForPlanApproval("acceptEdits", "default")).toBe(
-      "acceptEdits",
-    );
 
     // The revise mapping round-trips unchanged so execute() stays in plan mode.
     recordExitPlanModeApproval("call-revise", {

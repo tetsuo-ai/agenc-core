@@ -127,7 +127,19 @@ describe("compact supporting surfaces", () => {
       name: "gemini",
       config: {
         model: "gemini-2.5-pro",
-        cachedContent: "cachedContents/project-context",
+        gemini: {
+          credentialPlan: {
+            kind: "api-key",
+            credential: "test-key",
+            source: "factory",
+          },
+          endpointPlan: {
+            kind: "developer",
+            nativeBaseURL:
+              "https://generativelanguage.googleapis.com/v1beta",
+          },
+          cachedContent: "cachedContents/project-context",
+        },
       },
     } as unknown as CompactContext["provider"];
 

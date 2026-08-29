@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
-vi.mock('os', () => ({
+vi.mock('os', async importOriginal => ({
+  ...(await importOriginal<typeof import('node:os')>()),
   homedir: () => '/home/tester',
 }));
 

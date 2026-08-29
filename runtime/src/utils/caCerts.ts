@@ -1,7 +1,15 @@
 import memoize from 'lodash-es/memoize.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { hasNodeOption } from './envUtils.js'
 import { getFsImplementation } from './fsOperations.js'
+
+type EnvLike = Readonly<Record<string, string | undefined>>
+
+function hasNodeOption(
+  environment: EnvLike,
+  flag: string,
+): boolean {
+  return environment.NODE_OPTIONS?.split(/\s+/).includes(flag) ?? false
+}
 
 /**
  * Validate that a string contains only well-formed PEM certificate blocks.
@@ -30,17 +38,19 @@ export function isValidPemContent(content: string): boolean {
  * - --use-system-ca + NODE_EXTRA_CA_CERTS: system CAs + extra cert file contents
  *
  * Memoized for performance. Call clearCACertsCache() to invalidate after
- * environment variable changes (e.g., after trust dialog applies settings.json).
+ * environment variable changes (e.g., after trust activates repository config).
  *
- * Reads ONLY `process.env.NODE_EXTRA_CA_CERTS`. `caCertsConfig.ts` populates
- * that env var from settings.json at CLI init; this module stays config-free
- * so `proxy.ts`/`mtls.ts` don't transitively pull in the command registry.
+ * The environment is supplied explicitly by the owning session or process
+ * ingress; request paths cannot silently inherit process-global state.
  */
-export const getCACertificates = memoize((): string[] | undefined => {
+export const getCACertificates = memoize((
+  environment: EnvLike,
+): string[] | undefined => {
   const useSystemCA =
-    hasNodeOption('--use-system-ca') || hasNodeOption('--use-openssl-ca')
+    hasNodeOption(environment, '--use-system-ca') ||
+    hasNodeOption(environment, '--use-openssl-ca')
 
-  const extraCertsPath = process.env.NODE_EXTRA_CA_CERTS
+  const extraCertsPath = environment.NODE_EXTRA_CA_CERTS
 
   logForDebugging(
     `CA certs: useSystemCA=${useSystemCA}, extraCertsPath=${extraCertsPath}`,
@@ -113,7 +123,9 @@ export const getCACertificates = memoize((): string[] | undefined => {
   }
 
   return certs.length > 0 ? certs : undefined
-})
+}, (environment: EnvLike) =>
+  `${environment.NODE_OPTIONS ?? ''}\0${environment.NODE_EXTRA_CA_CERTS ?? ''}`,
+)
 
 /**
  * Clear the CA certificates cache.

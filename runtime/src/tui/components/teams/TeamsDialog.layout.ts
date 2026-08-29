@@ -50,10 +50,9 @@ export function fitTeamsDialogFooter(
 export function getTeamListFooterText(args: {
   glyphs: AgenCTuiGlyphs
   supportsHideShow: boolean
-  cycleModeShortcut: string
   columns: number
 }): string {
-  const { glyphs, supportsHideShow, cycleModeShortcut, columns } = args
+  const { glyphs, supportsHideShow, columns } = args
   const separator = ` ${glyphs.separator} `
   const text = [
     `${glyphs.arrowUp}/${glyphs.arrowDown} select`,
@@ -62,7 +61,6 @@ export function getTeamListFooterText(args: {
     's shutdown',
     'p prune idle',
     ...(supportsHideShow ? ['h hide/show', 'H hide/show all'] : []),
-    `${cycleModeShortcut} sync cycle modes for all`,
     'Esc close',
   ].join(separator)
   return fitTeamsDialogFooter(text, columns, glyphs.ellipsis)
@@ -71,10 +69,9 @@ export function getTeamListFooterText(args: {
 export function getTeammateDetailFooterText(args: {
   glyphs: AgenCTuiGlyphs
   supportsHideShow: boolean
-  cycleModeShortcut: string
   columns: number
 }): string {
-  const { glyphs, supportsHideShow, cycleModeShortcut, columns } = args
+  const { glyphs, supportsHideShow, columns } = args
   const separator = ` ${glyphs.separator} `
   const text = [
     'Left back',
@@ -82,7 +79,6 @@ export function getTeammateDetailFooterText(args: {
     'k kill',
     's shutdown',
     ...(supportsHideShow ? ['h hide/show'] : []),
-    `${cycleModeShortcut} cycle mode`,
   ].join(separator)
   return fitTeamsDialogFooter(text, columns, glyphs.ellipsis)
 }

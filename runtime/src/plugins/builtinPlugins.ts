@@ -16,10 +16,20 @@
 
 import type { Command } from '../types/command.js'
 import type { BundledSkillDefinition } from '../skills/bundledSkills.js'
-import type { BuiltinPluginDefinition, LoadedPlugin } from '../types/plugin.js'
+import type {
+  BuiltinPluginDefinition,
+  LoadedPlugin,
+  PluginManifest,
+} from '../types/plugin.js'
+import { loadRequiredPluginManifestSync } from './manifest.js'
 import { getExecutionAuthoritySettings } from '../utils/settings/settings.js'
 
-const BUILTIN_PLUGINS: Map<string, BuiltinPluginDefinition> = new Map()
+interface RegisteredBuiltinPlugin {
+  readonly definition: BuiltinPluginDefinition
+  readonly manifest: PluginManifest
+}
+
+const BUILTIN_PLUGINS: Map<string, RegisteredBuiltinPlugin> = new Map()
 
 export const BUILTIN_MARKETPLACE_NAME = 'builtin'
 
@@ -29,7 +39,8 @@ export const BUILTIN_MARKETPLACE_NAME = 'builtin'
 export function registerBuiltinPlugin(
   definition: BuiltinPluginDefinition,
 ): void {
-  BUILTIN_PLUGINS.set(definition.name, definition)
+  const { manifest } = loadRequiredPluginManifestSync(definition.root)
+  BUILTIN_PLUGINS.set(manifest.name, { definition, manifest })
 }
 
 /**
@@ -47,7 +58,7 @@ export function isBuiltinPluginId(pluginId: string): boolean {
 export function getBuiltinPluginDefinition(
   name: string,
 ): BuiltinPluginDefinition | undefined {
-  return BUILTIN_PLUGINS.get(name)
+  return BUILTIN_PLUGINS.get(name)?.definition
 }
 
 /**
@@ -63,33 +74,29 @@ export function getBuiltinPlugins(): {
   const enabled: LoadedPlugin[] = []
   const disabled: LoadedPlugin[] = []
 
-  for (const [name, definition] of BUILTIN_PLUGINS) {
+  for (const [name, registered] of BUILTIN_PLUGINS) {
+    const { definition, manifest } = registered
     if (definition.isAvailable && !definition.isAvailable()) {
       continue
     }
 
     const pluginId = `${name}@${BUILTIN_MARKETPLACE_NAME}`
-    const userSetting = settings?.enabledPlugins?.[pluginId]
+    const userSetting = settings.plugins?.plugins?.[pluginId]
     // Enabled state: user preference > plugin default > true
     const isEnabled =
       userSetting !== undefined
-        ? userSetting === true
+        ? userSetting.enabled !== false
         : (definition.defaultEnabled ?? true)
 
     const plugin: LoadedPlugin = {
+      id: pluginId,
       name,
-      manifest: {
-        name,
-        description: definition.description,
-        version: definition.version,
-      },
-      path: BUILTIN_MARKETPLACE_NAME, // sentinel — no filesystem path
+      manifest,
+      path: definition.root,
       source: pluginId,
       repository: pluginId,
       enabled: isEnabled,
       isBuiltin: true,
-      hooksConfig: definition.hooks,
-      mcpServers: definition.mcpServers,
     }
 
     if (isEnabled) {
@@ -111,7 +118,7 @@ export function getBuiltinPluginSkillCommands(): Command[] {
   const commands: Command[] = []
 
   for (const plugin of enabled) {
-    const definition = BUILTIN_PLUGINS.get(plugin.name)
+    const definition = BUILTIN_PLUGINS.get(plugin.name)?.definition
     if (!definition?.skills) continue
     for (const skill of definition.skills) {
       commands.push(skillDefinitionToCommand(skill))

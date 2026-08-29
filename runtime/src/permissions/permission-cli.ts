@@ -8,6 +8,7 @@
  */
 
 import { cwd as processCwd } from "node:process";
+import { resolveHomeContext } from "../config/home.js";
 import {
   createAgenCJsonLineDaemonRequestClient,
   defaultEnsureDaemonReady,
@@ -22,7 +23,7 @@ import type {
   ToolDenyParams,
 } from "../app-server/protocol/index.js";
 import {
-  addPermissionRulesToSettings,
+  addPermissionRulesToConfig,
   deletePermissionRule,
   initializeToolPermissionContext,
   type DiskEnv,
@@ -473,7 +474,7 @@ async function runPermissionRuleApproval(
       );
     }
     const ruleValue = parseRuleOrThrow(command.rule);
-    const applied = await addPermissionRulesToSettings({
+    const applied = await addPermissionRulesToConfig({
       destination: command.destination,
       behavior: "allow",
       rules: [ruleValue],
@@ -645,8 +646,14 @@ async function ensureDaemon(options: AgenCPermissionsCliOptions): Promise<void> 
 }
 
 function diskEnvFromOptions(options: AgenCPermissionsCliOptions): DiskEnv {
+  const env = options.env ?? process.env;
   return {
-    home: options.home ?? options.env?.HOME,
+    // `DiskEnv.home` is the canonical AgenC home, not the platform account
+    // home. Keep the explicit test/injection seam, but resolve HOME through
+    // the one home authority for normal CLI calls.
+    home: options.home ?? resolveHomeContext(env, {
+      platformHome: env.HOME,
+    }).path,
     cwd: options.cwd ?? processCwd(),
   };
 }

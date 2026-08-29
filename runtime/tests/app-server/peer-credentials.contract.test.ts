@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   compileAndLoadAgenCNativePeerCredentialBinding,
   loadAgenCNativePeerCredentialBinding,
@@ -44,16 +44,29 @@ describe("AgenC Unix peer credential native binding", () => {
     });
   });
 
-  const itNonRoot =
-    typeof process.getuid === "function" && process.getuid() !== 0 ? it : it.skip;
-
-  itNonRoot("rejects a current-user addon when system policy requires root ownership", () => {
+  it("rejects a non-root-owned addon when system policy requires root ownership", async () => {
     const dir = tempDir("agenc-peer-credentials-root-policy-");
     const addonPath = path.join(dir, "agenc-peer-credentials.node");
     writeFileSync(addonPath, "not-a-real-addon", { mode: 0o600 });
+    vi.resetModules();
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      return {
+        ...actual,
+        lstatSync: ((candidate: Parameters<typeof actual.lstatSync>[0]) => {
+          const metadata = actual.lstatSync(candidate);
+          if (path.resolve(String(candidate)) === addonPath) {
+            Object.defineProperty(metadata, "uid", { value: 1 });
+          }
+          return metadata;
+        }) as typeof actual.lstatSync,
+      };
+    });
     try {
+      const { loadAgenCNativePeerCredentialBinding: loadBinding } =
+        await import("./transport/peer-credentials.js");
       expect(
-        loadAgenCNativePeerCredentialBinding({
+        loadBinding({
           nativeAddonPath: addonPath,
           platform: "linux",
           requireRootOwnedNativeAddon: true,
@@ -63,6 +76,8 @@ describe("AgenC Unix peer credential native binding", () => {
         error: expect.stringContaining("not root-owned"),
       });
     } finally {
+      vi.doUnmock("node:fs");
+      vi.resetModules();
       rmSync(dir, { recursive: true, force: true });
     }
   });

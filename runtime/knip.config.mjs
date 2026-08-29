@@ -26,10 +26,8 @@ const intentionalEntryPointIssueIgnores = {
   "src/entrypoints/sdk/coreSchemas.ts": ["exports"],
   // Generated public SDK type surface, re-exported for external consumers.
   "src/entrypoints/sdk/coreTypes.generated.ts": ["types"],
-  // SDK control protocol and sandbox settings types are public declaration
-  // surfaces even when no production runtime file imports them directly.
-  "src/entrypoints/sdk/controlTypes.ts": ["types"],
-  "src/entrypoints/sandboxTypes.ts": ["types"],
+  // SDK control protocol types are public declaration surfaces even when no
+  // production runtime file imports them directly.
 };
 const serviceTestContractExportFiles = [
   // Contract tests and service-level harnesses import these directly; the
@@ -37,7 +35,6 @@ const serviceTestContractExportFiles = [
   "src/services/AgentSummary/agentSummary.ts",
   "src/services/MagicDocs/magicDocs.ts",
   "src/services/MagicDocs/prompts.ts",
-  "src/services/PromptSuggestion/limits.ts",
   "src/services/PromptSuggestion/speculation.ts",
   "src/services/autoDream/autoDream.ts",
   "src/services/autoFix/autoFixConfig.ts",
@@ -65,20 +62,9 @@ const servicePublicContractExportFiles = [
   // Service API surfaces are consumed by runtime integration, diagnostics,
   // optional provider paths, or external/manual harnesses outside the
   // production-only Knip graph.
-  "src/services/agencAiLimits.ts",
-  "src/services/api/anthropic.ts",
-  "src/services/api/cacheMetrics.ts",
-  "src/services/api/compressToolHistory.ts",
-  "src/services/api/errorUtils.ts",
-  "src/services/api/errors.ts",
-  "src/services/api/fetchWithProxyRetry.ts",
   "src/services/api/openAiCodeOAuthShared.ts",
-  "src/services/api/openaiErrorClassification.ts",
-  "src/services/api/providerConfig.ts",
   "src/services/api/sessionIngress.ts",
-  "src/services/api/withRetry.ts",
   "src/services/github/deviceFlow.ts",
-  "src/services/mcp/SdkControlTransport.ts",
   "src/services/mcp/auth.ts",
   "src/services/mcp/client.ts",
   "src/services/mcp/config.ts",
@@ -86,7 +72,6 @@ const servicePublicContractExportFiles = [
   "src/services/mcp/elicitationHandler.ts",
   "src/services/rateLimitMessages.ts",
   "src/services/tokenEstimation.ts",
-  "src/services/vcr.ts",
 ];
 const intentionalServiceIssueIgnores = {
   ...Object.fromEntries(
@@ -455,7 +440,6 @@ const binConfigTaskOnboardingContractExportFiles = [
   "src/bin/task-store.ts",
   "src/bin/tui-local-events.ts",
   "src/bin/web-fetch-preapproved.ts",
-  "src/config/init.ts",
   "src/config/loader.ts",
   "src/config/profiles.ts",
   "src/config/project-init.ts",
@@ -473,7 +457,6 @@ const binConfigTaskOnboardingContractExportFiles = [
   "src/tasks/LocalAgentTask/LocalAgentTask.tsx",
   "src/tasks/LocalMainSessionTask.ts",
   "src/tasks/LocalShellTask/LocalShellTask.tsx",
-  "src/tasks/MonitorMcpTask/MonitorMcpTask.ts",
   "src/tasks/index.ts",
   "src/tasks/registry.ts",
   "src/tasks/stopTask.ts",
@@ -503,7 +486,6 @@ const conversationRecoveryStateShellContractExportFiles = [
   "src/shell-command/safety.ts",
   "src/state/atomic-snapshot-writes.ts",
   "src/state/backfill.ts",
-  "src/state/migrations/config-migrations.ts",
   "src/state/pruning.ts",
   "src/state/sqlite-driver.ts",
   "src/state/tool-output-rotation.ts",
@@ -551,7 +533,6 @@ const remainingRuntimeContractExportFiles = [
   "src/mcp-server/http-sse.ts",
   "src/mcp-server/stdio.ts",
   "src/mcp/server/start.ts",
-  "src/personality/migration.ts",
   "src/phases/_deps/tool-runtime.ts",
   "src/phases/post-sample-recovery.ts",
   "src/phases/stop-hooks.ts",
@@ -657,7 +638,6 @@ export default {
     "powershell.exe",
     "rec",
     "rg",
-    "secret-tool",
     "security",
     "taskkill",
     "tmux",

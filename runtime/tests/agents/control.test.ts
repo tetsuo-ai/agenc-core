@@ -16,10 +16,8 @@ import { AgentRegistry, type AgentMetadata } from "./registry.js";
 import {
   _resetAgentRolesForTesting,
   _resetNicknamePoolForTesting,
-  agentRoleFingerprint,
   createAgentRoleWorkspace,
   registerAgentRole,
-  requireAgentRole,
 } from "./role.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { ThreadManager } from "./thread-manager.js";
@@ -96,6 +94,8 @@ function openRolloutStore(opts: {
     cwd: opts.cwd,
     sessionId: opts.sessionId,
     agencVersion: "0.2.0",
+    agencHome,
+    sessionTempRoot: tmpdir(),
     ...(opts.resume ? { resume: true } : {}),
   });
   store.open({
@@ -111,7 +111,7 @@ function openRolloutStore(opts: {
 }
 
 function seedRunningAgentRun(cwd: string, runId: string): void {
-  const driver = openStateDatabases({ cwd });
+  const driver = openStateDatabases({ cwd, agencHome });
   try {
     upsertAgentRun(driver, {
       id: runId,
@@ -135,11 +135,10 @@ function registerDurableSessionRoot(
 }
 
 function roleProvenance(control: AgentControl, roleName: string) {
+  const role = control.roleCatalog.require(roleName);
   return {
     agentRoleWorkspaceId: control.roleWorkspace.id,
-    agentRoleFingerprint: agentRoleFingerprint(
-      requireAgentRole(control.roleWorkspace, roleName),
-    ),
+    agentRoleFingerprint: control.roleCatalog.fingerprint(role),
   };
 }
 
@@ -283,21 +282,12 @@ describe("AgentControl", () => {
     const session = stubSession();
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry });
-    registerAgentRole(control.roleWorkspace, {
-      name: "scanner",
-      config: { disallowlist: ["Edit", "Write"] },
-    });
-    const expectedRole = requireAgentRole(control.roleWorkspace, "scanner");
+    const expectedRole = control.roleCatalog.require("scanner");
     const expectedRoleProvenance = {
       agentRole: expectedRole.name,
       agentRoleWorkspaceId: control.roleWorkspace.id,
-      agentRoleFingerprint: agentRoleFingerprint(expectedRole),
+      agentRoleFingerprint: "0".repeat(64),
     };
-
-    registerAgentRole(control.roleWorkspace, {
-      name: "scanner",
-      config: { disallowlist: [] },
-    });
 
     await expect(
       control.spawn({
@@ -313,21 +303,26 @@ describe("AgentControl", () => {
     ).toHaveLength(0);
   });
 
-  it("spawn() does not alias-fallback when an expected workspace role was removed", async () => {
-    const session = stubSession();
-    const registry = new AgentRegistry();
-    const control = new AgentControl({ session, registry });
-    registerAgentRole(control.roleWorkspace, {
+  it("spawn() rejects the built-in role when an expected workspace override was removed", async () => {
+    const workspace = createAgentRoleWorkspace(agencHome);
+    registerAgentRole(workspace, {
       name: "scanner",
       config: { disallowlist: ["Edit", "Write"] },
     });
-    const expectedRole = requireAgentRole(control.roleWorkspace, "scanner");
+    const originalControl = new AgentControl({
+      session: stubSession({ cwd: workspace.cwd }),
+      registry: new AgentRegistry(),
+    });
+    const expectedRole = originalControl.roleCatalog.require("scanner");
     const expectedRoleProvenance = {
       agentRole: expectedRole.name,
-      agentRoleWorkspaceId: control.roleWorkspace.id,
-      agentRoleFingerprint: agentRoleFingerprint(expectedRole),
+      agentRoleWorkspaceId: originalControl.roleWorkspace.id,
+      agentRoleFingerprint: originalControl.roleCatalog.fingerprint(expectedRole),
     };
     _resetAgentRolesForTesting();
+    const session = stubSession({ cwd: workspace.cwd });
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
 
     await expect(
       control.spawn({
@@ -335,7 +330,7 @@ describe("AgentControl", () => {
         roleName: "scanner",
         expectedRoleProvenance,
       }),
-    ).rejects.toThrow("cannot resume unknown agent role: scanner");
+    ).rejects.toThrow("cannot resume changed agent role: scanner");
     expect(registry.activeCount).toBe(0);
     expect(
       (session as unknown as { childInboxes: Map<string, unknown> })
@@ -436,20 +431,22 @@ describe("AgentControl", () => {
       cwd,
       sessionId: "nickname-persistence-rollback",
     });
-    const raw = new Database(resolveStateDatabasePaths({ cwd }).stateDbPath);
+    const raw = new Database(
+      resolveStateDatabasePaths({ cwd, agencHome }).stateDbPath,
+    );
     try {
       const session = stubSession({
         cwd,
         conversationId: "nickname-root",
         rolloutStore,
       });
-      const registry = new AgentRegistry();
-      const control = new AgentControl({ session, registry });
-      registerDurableSessionRoot(control, cwd, "nickname-root");
-      registerAgentRole(control.roleWorkspace, {
+      registerAgentRole(session.roleWorkspace, {
         name: "single-nickname",
         config: { nicknameCandidates: ["only-nickname"] },
       });
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry });
+      registerDurableSessionRoot(control, cwd, "nickname-root");
       raw.exec(`
         CREATE TRIGGER reject_control_spawn
         BEFORE INSERT ON thread_spawn_edges
@@ -610,7 +607,9 @@ describe("AgentControl", () => {
       cwd,
       sessionId: "spawn-settlement-failure",
     });
-    const raw = new Database(resolveStateDatabasePaths({ cwd }).stateDbPath);
+    const raw = new Database(
+      resolveStateDatabasePaths({ cwd, agencHome }).stateDbPath,
+    );
     const holdUnknown = vi.fn(() => {
       throw new Error("forced unknown-hold journal failure");
     });
@@ -839,6 +838,22 @@ describe("AgentControl", () => {
     expect(child.depth).toBe(2);
   });
 
+  it("treats canonical agent_max_depth zero as no subagent spawning", async () => {
+    const session = stubSession() as ReturnType<typeof stubSession> & {
+      config: { agent_max_depth: number };
+    };
+    session.config = { agent_max_depth: 0 };
+    const control = new AgentControl({
+      session,
+      registry: new AgentRegistry(),
+    });
+
+    await expect(control.spawn({ parentPath: "/root" })).rejects.toMatchObject({
+      cap: 0,
+      depth: 1,
+    });
+  });
+
   it("allows a per-call depth cap without changing the session cap", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
@@ -897,7 +912,9 @@ describe("AgentControl", () => {
       cwd,
       sessionId: "shutdown-durability-first",
     });
-    const raw = new Database(resolveStateDatabasePaths({ cwd }).stateDbPath);
+    const raw = new Database(
+      resolveStateDatabasePaths({ cwd, agencHome }).stateDbPath,
+    );
     try {
       const session = stubSession({
         cwd,
@@ -977,8 +994,8 @@ describe("AgentControl", () => {
       agentId: "thread-resume-1",
       agentPath: "/root/scout",
       agentNickname: "scout",
-      agentRole: "explorer",
-      ...roleProvenance(control, "explorer"),
+      agentRole: "scanner",
+      ...roleProvenance(control, "scanner"),
       depth: 1,
     };
     const live = await control.resume({ parentPath: "/root", metadata });
@@ -987,7 +1004,7 @@ describe("AgentControl", () => {
     expect(live!.agentPath).toBe("/root/scout");
     expect(live!.nickname).toBe("scout");
     expect(live!.depth).toBe(1);
-    expect(live!.role.name).toBe("explorer");
+    expect(live!.role.name).toBe("scanner");
     expect(registry.agentMetadataForThread("thread-resume-1")).toBeDefined();
     expect(registry.activeCount).toBe(1);
   });
@@ -1003,7 +1020,7 @@ describe("AgentControl", () => {
           agentId: "thread-legacy-role",
           agentPath: "/root/legacy_role",
           agentNickname: "legacy-role",
-          agentRole: "worker",
+          agentRole: "runner",
           depth: 1,
         },
       }),
@@ -1152,8 +1169,8 @@ describe("AgentControl", () => {
         parentPath: "/root",
         metadata: {
           ...base,
-          agentRole: "explorer",
-          ...roleProvenance(control, "explorer"),
+          agentRole: "scanner",
+          ...roleProvenance(control, "scanner"),
         },
       }),
     ).rejects.toThrow(/does not match registered metadata/);
@@ -1617,12 +1634,12 @@ describe("AgentControl", () => {
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry });
     // Don't register root — we want to assert the filter picks exactly
-    // the one explorer child, not the synthetic root entry.
-    await control.spawn({ parentPath: "/root", roleName: "explorer" });
-    await control.spawn({ parentPath: "/root", roleName: "worker" });
-    const explorers = control.listAgents({ roleName: "explorer" });
-    expect(explorers.every((a) => a.agentName !== "/root")).toBe(true);
-    expect(explorers.length).toBe(1);
+    // the one scanner child, not the synthetic root entry.
+    await control.spawn({ parentPath: "/root", roleName: "scanner" });
+    await control.spawn({ parentPath: "/root", roleName: "runner" });
+    const scanners = control.listAgents({ roleName: "scanner" });
+    expect(scanners.every((a) => a.agentName !== "/root")).toBe(true);
+    expect(scanners.length).toBe(1);
   });
 
   it("listAgents() applies pathPrefix filter", async () => {
@@ -1692,12 +1709,12 @@ describe("AgentControl", () => {
     const control = new AgentControl({ session, registry });
     const live = await control.spawn({
       parentPath: "/root",
-      roleName: "explorer",
+      roleName: "scanner",
     });
     const snap = control.getAgentConfigSnapshot(live.agentId);
     expect(snap).toBeDefined();
     expect(snap!.threadId).toBe(live.agentId);
-    expect(snap!.agentRole).toBe("explorer");
+    expect(snap!.agentRole).toBe("scanner");
     expect(snap!.depth).toBe(1);
   });
 
@@ -2129,11 +2146,11 @@ describe("AgentControl", () => {
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry });
     const live = await control.spawnAgentWithMetadata("/root", {
-      roleName: "worker",
+      roleName: "runner",
       threadId: "preset-thread-1",
     });
     expect(live.agentId).toBe("preset-thread-1");
-    expect(live.role.name).toBe("worker");
+    expect(live.role.name).toBe("runner");
   });
 
   it("spawnAgentWithMetadata() validates named metadata even with an explicit role", async () => {
@@ -2141,9 +2158,9 @@ describe("AgentControl", () => {
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry });
     const invalidMetadata = [
-      { agentRole: "worker" },
+      { agentRole: "runner" },
       {
-        agentRole: "worker",
+        agentRole: "runner",
         agentRoleWorkspaceId: createAgentRoleWorkspace(
           join(agencHome, "other-workspace"),
         ).id,
@@ -2153,7 +2170,7 @@ describe("AgentControl", () => {
     for (const metadata of invalidMetadata) {
       await expect(
         control.spawnAgentWithMetadata("/root", {
-          roleName: "worker",
+          roleName: "runner",
           metadata,
         }),
       ).rejects.toThrow(/workspace (provenance is missing|mismatch)/);

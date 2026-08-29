@@ -117,22 +117,15 @@ describe("ModelRegistry", () => {
     ).toBe(false);
   });
 
-  it("normalizes provider-qualified aliases at the registry boundary", () => {
+  it("rejects retired provider aliases at the registry boundary", () => {
     const registry = new ModelRegistry({ config: defaultConfig() });
 
-    expect(registry.resolveSelection("custom:local-model", "grok")).toEqual({
-      provider: "openai-compatible",
-      model: "local-model",
-    });
-
-    const entry = registry.resolveSync({
+    expect(() => registry.resolveSelection("custom:local-model", "grok"))
+      .toThrow('use "openai-compatible" instead');
+    expect(() => registry.resolveSync({
       provider: "openai_compatible",
       model: "local-model",
-    });
-    expect(entry.provider).toBe("openai-compatible");
-    expect(entry.capabilities.provider).toBe("openai-compatible");
-    expect(entry.cost.known).toBe(true);
-    expect(entry.cost.matchedKey).toBe("openai-compatible");
+    })).toThrow('use "openai-compatible" instead');
   });
 
   it("keeps provider-owned model IDs with colons intact", () => {
@@ -150,6 +143,29 @@ describe("ModelRegistry", () => {
     ).toEqual({
       provider: "amazon-bedrock",
       model: "amazon.nova-pro-v1:0",
+    });
+  });
+
+  it("resolves GitHub-qualified and provider-local Copilot IDs as one pair", () => {
+    const registry = new ModelRegistry({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "github",
+        model: "gpt-5.3-codex",
+      }),
+    });
+
+    expect(
+      registry.resolveSelection(
+        "github:copilot:gpt-5.3-codex",
+        "github",
+      ),
+    ).toEqual({
+      provider: "github",
+      model: "gpt-5.3-codex",
+    });
+    expect(registry.resolveSelection("gpt-5.3-codex", "github")).toEqual({
+      provider: "github",
+      model: "gpt-5.3-codex",
     });
   });
 

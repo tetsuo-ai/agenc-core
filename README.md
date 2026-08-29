@@ -83,7 +83,9 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   [`docs/embedded-neovim-buffer.md`](docs/embedded-neovim-buffer.md).
 - **16 built-in providers** — default provider **grok**; fresh-config session
   model **grok-4.6** (fresh config and direct-provider map). **Grok 4.6** has a
-  500k context window, low/medium/high/xhigh reasoning (high by default),
+  500k context window, low/medium/high/xhigh reasoning (catalog
+  `defaultReasoningLevel` is high; `defaultConfig().reasoning_effort` is
+  **medium** and bootstrap copies that onto the session),
   vision, tools, and structured output; **Grok 4.5** and **Grok 4.3** remain
   selectable in the catalog; also
   openai, anthropic, ollama, lmstudio, openai-compatible, openrouter, groq,
@@ -194,7 +196,7 @@ agenc gateway run [--stdio] [--webchat] [--heartbeat] [--hooks]
 agenc gateway status [--json]
 agenc gateway pairing list [--json] | pairing revoke <channel> <peerId>
 agenc gateway install-service
-agenc budget status [--json] | reset <agent>
+agenc budget status [--json]
 agenc remote on|off|status
 agenc login | logout | whoami
 agenc providers [--json] [--no-local-check]
@@ -215,15 +217,15 @@ Common session flags:
 --output-format <text|json|stream-json>
 --input-format <stream-json>
 --no-tui
+--bare
 -c, --continue
 -r, --resume <session-id>
 --profile <name>
 --provider <name>
 --model <id|provider:id>
 --permission-mode <mode>
---autonomous, --proactive
---dangerously-bypass-approvals-and-sandbox | --yolo
---allow-dangerously-skip-permissions
+--autonomous
+--dangerously-bypass-approvals-and-sandbox
 --image <file|url|data-url>
 ```
 
@@ -327,7 +329,7 @@ OCI blob before smoke-testing the proven image under a hardened daemon profile.
 Runtime-scoped gates (`npm --workspace=@tetsuo-ai/runtime run <name>`):
 
 ```text
-check:tui-runtime-startup   # real PTYs for agenc / agenc --yolo
+check:tui-runtime-startup   # real PTYs for agenc / agenc --dangerously-bypass-approvals-and-sandbox
 check:tui-e2e               # TUI scenarios (-- --filter <name>)
 check:daemon-errors
 check:llm-pipeline

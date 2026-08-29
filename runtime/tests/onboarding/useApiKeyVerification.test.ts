@@ -96,6 +96,107 @@ describe("verifyApiKey", () => {
     );
   });
 
+  test.each([
+    {
+      name: "default Developer endpoint",
+      env: {},
+      expectedURL:
+        "https://generativelanguage.googleapis.com/v1beta/models",
+    },
+    {
+      name: "configured native endpoint",
+      env: {
+        GEMINI_BASE_URL: "http://127.0.0.1:19080/v1beta",
+      },
+      expectedURL: "http://127.0.0.1:19080/v1beta/models",
+    },
+  ] as const)(
+    "verifies Gemini keys through the canonical native plan at $name",
+    async ({ env, expectedURL }) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ models: [] }), { status: 200 }),
+      );
+
+      await expect(
+        verifyApiKey({
+          provider: "gemini",
+          apiKey: "gemini-test-key",
+          config: defaultConfig(),
+          env,
+          fetchImpl,
+        }),
+      ).resolves.toEqual({ status: "valid" });
+
+      expect(fetchImpl).toHaveBeenCalledWith(
+        expectedURL,
+        expect.objectContaining({
+          method: "GET",
+          headers: { "x-goog-api-key": "gemini-test-key" },
+        }),
+      );
+    },
+  );
+
+  test.each([
+    {
+      mode: "access-token",
+      env: {
+        GEMINI_AUTH_MODE: "access-token",
+        GEMINI_ACCESS_TOKEN: "forced-access-token",
+        GEMINI_PROJECT_ID: "test-project",
+        GEMINI_VERTEX_LOCATION: "global",
+      },
+    },
+    {
+      mode: "adc",
+      env: {
+        GEMINI_AUTH_MODE: "adc",
+        GOOGLE_APPLICATION_CREDENTIALS:
+          "/definitely/missing/agenc-verification-adc.json",
+        GEMINI_PROJECT_ID: "test-project",
+        GEMINI_VERTEX_LOCATION: "global",
+      },
+    },
+  ] as const)(
+    "blocks pasted Gemini keys when $mode mode owns authentication",
+    async ({ env }) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+
+      await expect(
+        verifyApiKey({
+          provider: "gemini",
+          apiKey: "pasted-api-key",
+          config: defaultConfig(),
+          env,
+          fetchImpl,
+        }),
+      ).resolves.toEqual({
+        status: "error",
+        error:
+          "Gemini API-key verification is blocked by the configured non-API-key auth mode.",
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  test("rejects one-field Bedrock verification without making a request", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+
+    await expect(
+      verifyApiKey({
+        provider: "amazon-bedrock",
+        apiKey: "bedrock-one-field-key",
+        config: defaultConfig(),
+        fetchImpl,
+      }),
+    ).resolves.toEqual({
+      status: "error",
+      error:
+        "Amazon Bedrock uses an AWS SigV4 credential set and cannot be verified as a one-field API key.",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   test("distinguishes rejected keys from provider verification errors", async () => {
     await expect(
       verifyApiKey({
@@ -123,8 +224,8 @@ describe("verifyApiKey", () => {
   });
 
   test("treats HTTP 400 as a rejected key for providers that reject with 400", async () => {
-    // x.ai and Gemini's OpenAI-compat surface return 400 for bad keys
-    // (verified live), so 400 must read as "key rejected" there…
+    // x.ai and the Gemini Developer API return 400 for bad keys, so 400 must
+    // read as "key rejected" for those providers.
     for (const provider of ["grok", "gemini"] as const) {
       await expect(
         verifyApiKey({
@@ -139,7 +240,7 @@ describe("verifyApiKey", () => {
       });
     }
 
-    // …but stays a generic verification error for providers that use
+    // It stays a generic verification error for providers that use
     // 400 for malformed requests (OpenAI et al reject keys with 401).
     await expect(
       verifyApiKey({

@@ -26,7 +26,7 @@ import {
   statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 const { launchBrowserMock, terminationSeam } = vi.hoisted(() => ({
   launchBrowserMock: vi.fn(),
@@ -77,6 +77,10 @@ import {
 import { BrowserProxy } from "../../src/browser/proxy.js";
 import type { BrowserPolicy } from "../../src/browser/config.js";
 import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
+import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from "../../src/session/runtime-options.js";
 
 const BASE_POLICY: BrowserPolicy = {
   headless: true,
@@ -135,10 +139,6 @@ function makeFakeConnection(): {
     },
     send: async () => ({}),
   };
-}
-
-function listTempProfiles(): string[] {
-  return readdirSync(tmpdir()).filter((n) => n.startsWith("agenc-browser-"));
 }
 
 const tick = (ms = 50): Promise<void> =>
@@ -425,26 +425,84 @@ describe("BrowserManager shutdown/launch race", () => {
 });
 
 describe("BrowserManager fallback temp profile", () => {
+  test("isolates fallback profiles across concurrent session temp roots", async () => {
+    launchBrowserMock.mockImplementation(async () => ({
+      child: makeFakeChild(),
+      connection: makeFakeConnection(),
+    }));
+    const rootA = mkdtempSync(join(tmpdir(), "agenc-browser-session-a-"));
+    const rootB = mkdtempSync(join(tmpdir(), "agenc-browser-session-b-"));
+    const managerA = track(new BrowserManager({ policy: BASE_POLICY }));
+    const managerB = track(new BrowserManager({ policy: BASE_POLICY }));
+    try {
+      await Promise.all([
+        runWithAgentRuntimeOptions(
+          resolveAgentRuntimeOptions({}, { sessionTempRoot: rootA }),
+          async () => {
+            await Promise.resolve();
+            await managerA.page().catch(() => {});
+          },
+        ),
+        runWithAgentRuntimeOptions(
+          resolveAgentRuntimeOptions({}, { sessionTempRoot: rootB }),
+          async () => {
+            await Promise.resolve();
+            await managerB.page().catch(() => {});
+          },
+        ),
+      ]);
+
+      const profileDirs = launchBrowserMock.mock.calls.map(
+        ([options]) => (options as { userDataDir: string }).userDataDir,
+      );
+      expect(profileDirs.some((path) => path.startsWith(`${rootA}${sep}`))).toBe(
+        true,
+      );
+      expect(profileDirs.some((path) => path.startsWith(`${rootB}${sep}`))).toBe(
+        true,
+      );
+    } finally {
+      await managerA.closeAll().catch(() => {});
+      await managerB.closeAll().catch(() => {});
+      rmSync(rootA, { recursive: true, force: true });
+      rmSync(rootB, { recursive: true, force: true });
+    }
+  });
+
   test("uses an unpredictable mkdtemp dir with 0700 perms", async () => {
     launchBrowserMock.mockResolvedValue({
       child: makeFakeChild(),
       connection: makeFakeConnection(),
     });
-    const before = new Set(listTempProfiles());
-    // No agencHome and no profile_dir → the fallback temp branch.
-    const mgr = track(new BrowserManager({ policy: BASE_POLICY }));
-    await mgr.page().catch(() => {}); // triggers launch → creates the temp dir
+    const sessionRoot = mkdtempSync(join(tmpdir(), "agenc-browser-session-"));
+    try {
+      const before = new Set(
+        readdirSync(sessionRoot).filter((name) =>
+          name.startsWith("agenc-browser-"),
+        ),
+      );
+      // No agencHome and no profile_dir means the session temp fallback branch.
+      const mgr = track(new BrowserManager({ policy: BASE_POLICY }));
+      await runWithAgentRuntimeOptions(
+        resolveAgentRuntimeOptions({}, { sessionTempRoot: sessionRoot }),
+        () => mgr.page().catch(() => {}),
+      );
 
-    const created = listTempProfiles().filter((n) => !before.has(n));
-    expect(created).toHaveLength(1);
-    const name = created[0]!;
-    const dir = join(tmpdir(), name);
-    expect(statSync(dir).mode & 0o777).toBe(0o700);
-    // The predictable "<pid>-<ts>" name the fix replaced would embed the pid.
-    expect(name).not.toContain(String(process.pid));
+      const created = readdirSync(sessionRoot).filter(
+        (name) => name.startsWith("agenc-browser-") && !before.has(name),
+      );
+      expect(created).toHaveLength(1);
+      const name = created[0]!;
+      const dir = join(sessionRoot, name);
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+      // The predictable "<pid>-<ts>" name the fix replaced would embed the pid.
+      expect(name).not.toContain(String(process.pid));
 
-    await mgr.closeAll();
-    expect(existsSync(dir)).toBe(false);
+      await mgr.closeAll();
+      expect(existsSync(dir)).toBe(false);
+    } finally {
+      rmSync(sessionRoot, { recursive: true, force: true });
+    }
   });
 
   test("forked browser authorities never reuse the root persistent profile", async () => {

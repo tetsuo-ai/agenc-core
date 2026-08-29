@@ -15,6 +15,7 @@ import type {
   LLMChatOptions,
   LLMMessage,
   LLMProvider,
+  LLMProviderConfig,
   LLMRequestMetrics,
   LLMResponse,
   LLMStreamChunk,
@@ -26,10 +27,10 @@ import type {
 import { validateToolCallDetailed } from "../../types.js";
 import { coerceUsage } from "../../wire/shared.js";
 import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
-import type { OpenAIProviderConfig } from "../openai/types.js";
 import {
-  resolveGeminiCredential,
-  type GeminiResolvedCredential,
+  geminiCredentialHeaders,
+  materializeGeminiCredentialPlan,
+  type GeminiCredentialPlan,
 } from "../../../utils/geminiAuth.js";
 import {
   createTokenAccountingConfigurationRevision,
@@ -38,17 +39,24 @@ import {
   type TokenAccountingRequest,
 } from "../../token-accounting.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
+import {
+  providerApiKeyEnvironmentLabel,
+} from "../../registry/provider-info.js";
+import {
+  canonicalGeminiModelName,
+  geminiEndpointFor,
+  type GeminiEndpointPlan,
+} from "./endpoint-plan.js";
 
-export interface GeminiProviderConfig extends OpenAIProviderConfig {
+export interface GeminiProviderConfig extends Omit<LLMProviderConfig, "baseURL"> {
+  readonly credentialPlan: GeminiCredentialPlan;
+  readonly endpointPlan: GeminiEndpointPlan;
+  readonly contextWindowTokens?: number;
   readonly cachedContent?: string;
-  readonly accessToken?: string;
-  readonly resolveCredential?: (
-    env?: NodeJS.ProcessEnv,
-  ) => Promise<GeminiResolvedCredential>;
+  readonly defaultHeaders?: Readonly<Record<string, string>>;
+  readonly fetchImpl?: typeof fetch;
 }
 
-const DEFAULT_GEMINI_BASE_URL =
-  "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_GEMINI_MAX_OUTPUT_TOKENS = 4096;
 const GEMINI_INVALID_FUNCTION_CALL_MESSAGE =
   "Gemini response emitted invalid functionCall";
@@ -65,133 +73,68 @@ interface GeminiParsedResponse {
   readonly finishReason: LLMResponse["finishReason"];
 }
 
-function normalizeGeminiBaseURL(baseURL: string | undefined): string {
-  const normalized = baseURL?.trim();
-  if (!normalized) {
-    return DEFAULT_GEMINI_BASE_URL;
-  }
-  return normalized
-    .replace(/\/openai\/?$/iu, "")
-    .replace(/\/+$/u, "");
-}
-
-function normalizeGeminiModel(model: string): string {
-  return model.trim().replace(/^models\//iu, "");
-}
-
 function nonEmptyString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function isVertexGeminiBaseURL(baseURL: string | undefined): boolean {
-  if (!baseURL) return false;
-  try {
-    return new URL(baseURL).hostname.endsWith("aiplatform.googleapis.com");
-  } catch {
-    return false;
-  }
-}
-
-function hasVertexGooglePublisherBasePath(baseURL: string | undefined): boolean {
-  if (!baseURL) return false;
-  try {
-    return /\/publishers\/google\/?$/iu.test(new URL(baseURL).pathname);
-  } catch {
-    return false;
-  }
-}
-
-function geminiModelName(model: string): string {
-  return normalizeGeminiModel(model).replace(
-    /^publishers\/google\/models\//iu,
-    "",
-  );
-}
-
 function modelPath(
-  baseURL: string | undefined,
   model: string,
   operation: "generateContent" | "streamGenerateContent" | "countTokens",
 ): string {
-  const encodedModel = encodeURIComponent(geminiModelName(model));
-  if (isVertexGeminiBaseURL(baseURL) && !hasVertexGooglePublisherBasePath(baseURL)) {
-    return `/publishers/google/models/${encodedModel}:${operation}`;
-  }
+  const encodedModel = encodeURIComponent(canonicalGeminiModelName(model));
   return `/models/${encodedModel}:${operation}`;
 }
 
 function geminiCountModelResource(model: string): string {
-  return `models/${geminiModelName(model)}`;
-}
-
-function modelsListPath(baseURL: string | undefined): string {
-  return isVertexGeminiBaseURL(baseURL) && !hasVertexGooglePublisherBasePath(baseURL)
-    ? "/publishers/google/models"
-    : "/models";
-}
-
-function googleProjectHeaders(project: string | undefined): Record<string, string> {
-  const normalized = nonEmptyString(project);
-  return normalized ? { "x-goog-user-project": normalized } : {};
-}
-
-function authHeadersForCredential(
-  credential: GeminiResolvedCredential,
-  project: string | undefined,
-): Record<string, string> | undefined {
-  switch (credential.kind) {
-    case "api-key":
-      return {
-        "x-goog-api-key": credential.credential,
-        ...googleProjectHeaders(project),
-      };
-    case "access-token":
-    case "adc":
-      return {
-        authorization: `Bearer ${credential.credential}`,
-        ...googleProjectHeaders(project ?? credential.projectId),
-      };
-    case "none":
-      return undefined;
-  }
+  return `models/${canonicalGeminiModelName(model)}`;
 }
 
 async function resolveGeminiAuthHeaders(
   config: GeminiProviderConfig,
 ): Promise<Record<string, string>> {
-  const explicitAccessToken =
-    nonEmptyString(config.accessToken) ??
-    (config.authMode === "oauth"
-      ? nonEmptyString(config.oauth?.accessToken)
-      : undefined);
-  if (explicitAccessToken) {
-    return {
-      authorization: `Bearer ${explicitAccessToken}`,
-      ...googleProjectHeaders(config.project),
-    };
-  }
-
-  const apiKey = nonEmptyString(config.apiKey);
-  if (apiKey && config.authMode !== "oauth") {
-    return {
-      "x-goog-api-key": apiKey,
-      ...googleProjectHeaders(config.project),
-    };
-  }
-
-  const resolved = await (config.resolveCredential ?? resolveGeminiCredential)(
-    process.env,
+  const resolved = await materializeGeminiCredentialPlan(
+    config.credentialPlan,
   );
-  const headers = authHeadersForCredential(resolved, config.project);
+  const headers = geminiCredentialHeaders(resolved);
   if (headers) return headers;
+  if (resolved.kind !== "none") {
+    throw new Error("Gemini credential materialization produced no auth headers");
+  }
 
+  const expectation = resolved.expected === "api-key"
+    ? `set ${providerApiKeyEnvironmentLabel("gemini") ?? "a Gemini API key"}`
+    : resolved.expected === "access-token"
+      ? "set GEMINI_ACCESS_TOKEN"
+      : resolved.expected === "adc"
+        ? resolved.configuredPath === undefined
+          ? "configure Google Application Default Credentials"
+          : `provide the configured Google ADC file at ${resolved.configuredPath}`
+        : `set ${providerApiKeyEnvironmentLabel("gemini") ?? "a Gemini API key"}, GEMINI_ACCESS_TOKEN, or Google Application Default Credentials`;
   throw new LLMProviderError(
     "gemini",
-    "Gemini provider requires credentials: set GEMINI_API_KEY, GOOGLE_API_KEY, GEMINI_ACCESS_TOKEN, or Google ADC credentials",
+    `Gemini provider requires credentials: ${expectation}`,
     401,
   );
+}
+
+function assertNoGeminiAuthDefaultHeaders(
+  headers: Readonly<Record<string, string>> | undefined,
+): void {
+  const conflicting = Object.keys(headers ?? {}).filter((name) => {
+    const normalized = name.trim().toLowerCase();
+    return normalized === "authorization" ||
+      normalized === "x-api-key" ||
+      normalized === "api-key" ||
+      normalized === "x-goog-api-key" ||
+      normalized === "x-goog-user-project";
+  });
+  if (conflicting.length > 0) {
+    throw new Error(
+      `Gemini defaultHeaders cannot override canonical authentication headers: ${conflicting.sort().join(", ")}`,
+    );
+  }
 }
 
 function finiteInteger(value: unknown): number | undefined {
@@ -425,64 +368,6 @@ function buildGeminiContents(messages: readonly LLMMessage[]): {
   };
 }
 
-/**
- * The schema keys this provider's function declarations accept.
- *
- * Its dialect is an OpenAPI subset and it fails the WHOLE request on any
- * key outside it — `Unknown name "additionalProperties" … Cannot find
- * field`, then the same for our own `x-agenc-*` extensions. Every tool we
- * advertise carried at least one, so the provider answered 400 to every
- * turn and the app rendered it as an empty reply. An allowlist is the
- * only shape that stays correct as tool schemas grow.
- */
-const GEMINI_SCHEMA_KEYS = new Set([
-  "type",
-  "format",
-  "title",
-  "description",
-  "nullable",
-  "enum",
-  "items",
-  "properties",
-  "required",
-  "anyOf",
-  "propertyOrdering",
-  "default",
-  "example",
-  "minimum",
-  "maximum",
-  "minItems",
-  "maxItems",
-  "minLength",
-  "maxLength",
-  "minProperties",
-  "maxProperties",
-  "pattern",
-]);
-
-/** Keys under `properties` are field names, not schema keywords. */
-function sanitizeGeminiSchema(value: unknown, insideProperties = false): unknown {
-  if (Array.isArray(value)) {
-    return value.map((entry) => sanitizeGeminiSchema(entry, false));
-  }
-  if (value === null || typeof value !== "object") return value;
-  const out: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (!insideProperties && !GEMINI_SCHEMA_KEYS.has(key)) continue;
-    out[key] = sanitizeGeminiSchema(entry, !insideProperties && key === "properties");
-  }
-  if (insideProperties) return out;
-  // `required` and `properties` are only legal on an object here; carried
-  // onto a branch of an anyOf they fail the request with "only allowed
-  // for OBJECT type".
-  const type = typeof out.type === "string" ? out.type.toLowerCase() : undefined;
-  if (type !== "object") {
-    delete out.required;
-    delete out.properties;
-  }
-  return out;
-}
-
 function geminiTools(tools: readonly LLMTool[]): readonly Record<string, unknown>[] {
   if (tools.length === 0) return [];
   return [
@@ -490,7 +375,7 @@ function geminiTools(tools: readonly LLMTool[]): readonly Record<string, unknown
       functionDeclarations: tools.map((tool) => ({
         name: tool.function.name,
         description: tool.function.description,
-        parameters: sanitizeGeminiSchema(tool.function.parameters),
+        parameters: tool.function.parameters,
       })),
     },
   ];
@@ -529,24 +414,6 @@ function geminiGenerationConfig(
   }
   if (options?.stopSequences !== undefined && options.stopSequences.length > 0) {
     config.stopSequences = [...options.stopSequences];
-  }
-  // Thinking depth here is `thinking_level`, not a token budget: the
-  // documented rungs are minimal/low/medium/high depending on the model.
-  // Mapping the app's ladder onto them is what makes an effort choice
-  // reach this provider at all — without it the setting was inert.
-  const effort = options?.reasoningEffort;
-  if (effort !== undefined) {
-    // gemini-2.5-pro, the curated model here, documents low/medium/high
-    // only: minimal folds down, and xhigh/max fold up to its ceiling.
-    const level =
-      effort === "minimal" || effort === "low"
-        ? "low"
-        : effort === "medium"
-          ? "medium"
-          : "high";
-    // Nested under thinkingConfig, camelCase: the flat snake_case field
-    // is not part of this API's generation config and 400s the request.
-    config.thinkingConfig = { thinkingLevel: level };
   }
   const structuredSchema = options?.structuredOutput?.schema;
   if (options?.structuredOutput?.enabled || structuredSchema) {
@@ -930,16 +797,11 @@ export class GeminiProvider implements LLMProvider {
   private readonly client: ProviderHttpClient;
 
   constructor(config: GeminiProviderConfig) {
-    this.config = {
-      ...config,
-      providerName: "gemini",
-      apiKeyEnvLabel: "GEMINI_API_KEY",
-      useResponsesApi: false,
-      baseURL: normalizeGeminiBaseURL(config.baseURL),
-    };
+    assertNoGeminiAuthDefaultHeaders(config.defaultHeaders);
+    this.config = { ...config };
     this.client = new ProviderHttpClient({
       providerName: this.name,
-      baseURL: this.config.baseURL ?? DEFAULT_GEMINI_BASE_URL,
+      baseURL: geminiEndpointFor(this.config.endpointPlan),
       model: this.config.model,
       defaultHeaders: this.config.defaultHeaders,
       resolveAuthHeaders: () => resolveGeminiAuthHeaders(this.config),
@@ -956,7 +818,6 @@ export class GeminiProvider implements LLMProvider {
       configurationRevision: createTokenAccountingConfigurationRevision({
         cachedContent: this.config.cachedContent ?? null,
         defaultHeaders: this.config.defaultHeaders ?? {},
-        project: this.config.project ?? null,
         systemPrompt: this.config.systemPrompt ?? "",
         tools: this.config.tools ?? [],
       }),
@@ -983,7 +844,7 @@ export class GeminiProvider implements LLMProvider {
       tools,
       options: accountingRequest.options,
     });
-    const vertexCount = isVertexGeminiBaseURL(this.config.baseURL);
+    const vertexCount = this.config.endpointPlan.kind === "vertex";
     if (
       vertexCount &&
       (generateContentRequest.toolConfig !== undefined ||
@@ -999,7 +860,7 @@ export class GeminiProvider implements LLMProvider {
     }
     const session = this.client.createTurnSession({ wireApi: "custom" });
     const response = await session.requestJson<Record<string, unknown>>({
-      path: modelPath(this.config.baseURL, model, "countTokens"),
+      path: modelPath(model, "countTokens"),
       method: "POST",
       body: vertexCount
         ? generateContentRequest
@@ -1056,7 +917,7 @@ export class GeminiProvider implements LLMProvider {
     try {
       const session = this.client.createTurnSession({ wireApi: "custom" });
       const response = await session.requestJson<Record<string, unknown>>({
-        path: modelPath(this.config.baseURL, model, "generateContent"),
+        path: modelPath(model, "generateContent"),
         method: "POST",
         body,
         timeoutMs: options?.timeoutMs,
@@ -1094,7 +955,7 @@ export class GeminiProvider implements LLMProvider {
     try {
       const session = this.client.createTurnSession({ wireApi: "custom" });
       const response = await session.requestStream({
-        path: modelPath(this.config.baseURL, model, "streamGenerateContent"),
+        path: modelPath(model, "streamGenerateContent"),
         method: "POST",
         headers: { accept: "text/event-stream" },
         query: { alt: "sse" },
@@ -1127,7 +988,7 @@ export class GeminiProvider implements LLMProvider {
     try {
       const session = this.client.createTurnSession({ wireApi: "custom" });
       await session.requestJson<Record<string, unknown>>({
-        path: modelsListPath(this.config.baseURL),
+        path: "/models",
         method: "GET",
       });
       return true;

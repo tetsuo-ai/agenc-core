@@ -8,8 +8,13 @@ import {
 } from "./autoFixHook.js";
 import { runAutoFixCheck } from "./autoFixRunner.js";
 import { explicitDangerBroker } from "../../helpers/explicit-danger-boundary.js";
+import { createHookExecutionAuthority } from "../../hooks/execution-authority.js";
 
 const TEST_CWD = process.cwd();
+const TRUSTED_HOOK_AUTHORITY = createHookExecutionAuthority({
+  runtimeOptions: { simpleMode: false, allowUntrustedHooks: false },
+  isWorkspaceTrusted: () => true,
+});
 
 describe("autoFix end-to-end flow", () => {
   test("config to check to context", async () => {
@@ -46,6 +51,7 @@ describe("autoFix end-to-end flow", () => {
         timeout: 5_000,
       }),
       cwd: TEST_CWD,
+      executionAuthority: TRUSTED_HOOK_AUTHORITY,
       runCheck: async () => ({
         hasErrors: true,
         errorSummary: "Lint errors (exit code 1):\nsrc/foo.ts:1:1 bad",

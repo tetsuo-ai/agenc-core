@@ -2338,8 +2338,12 @@ function runtimeSettingsProjectionPayload(
     (prePlanMode !== null &&
       !RUN_RUNTIME_PERMISSION_MODES.includes(prePlanMode as never)) ||
     typeof payload.autoModeActive !== "boolean" ||
+    typeof payload.autoModeAvailable !== "boolean" ||
+    typeof payload.bypassPermissionsModeAvailable !== "boolean" ||
     (payload.bypassPermissionsWorkspace !== null &&
       typeof payload.bypassPermissionsWorkspace !== "string") ||
+    (payload.bypassPermissionsConsentWorkspace !== null &&
+      typeof payload.bypassPermissionsConsentWorkspace !== "string") ||
     (payload.profile !== null && typeof payload.profile !== "string") ||
     (reasoningEffort !== null &&
       !RUN_RUNTIME_REASONING_EFFORTS.includes(reasoningEffort as never)) ||
@@ -2356,8 +2360,12 @@ function runtimeSettingsProjectionPayload(
       permissionMode as RunRuntimeSettingsSnapshot["permissionMode"],
     prePlanMode: prePlanMode as RunRuntimeSettingsSnapshot["prePlanMode"],
     autoModeActive: payload.autoModeActive,
+    autoModeAvailable: payload.autoModeAvailable,
+    bypassPermissionsModeAvailable: payload.bypassPermissionsModeAvailable,
     bypassPermissionsWorkspace: payload.bypassPermissionsWorkspace as
       string | null,
+    bypassPermissionsConsentWorkspace:
+      payload.bypassPermissionsConsentWorkspace as string | null,
     model: requireString(payload.model, "model"),
     provider: requireString(payload.provider, "provider"),
     profile: payload.profile as string | null,
@@ -2377,7 +2385,12 @@ function runtimeSettingsSnapshot(
     permissionMode: settings.permissionMode,
     prePlanMode: settings.prePlanMode,
     autoModeActive: settings.autoModeActive,
+    autoModeAvailable: settings.autoModeAvailable,
+    bypassPermissionsModeAvailable:
+      settings.bypassPermissionsModeAvailable,
     bypassPermissionsWorkspace: settings.bypassPermissionsWorkspace,
+    bypassPermissionsConsentWorkspace:
+      settings.bypassPermissionsConsentWorkspace,
     model: settings.model,
     provider: settings.provider,
     profile: settings.profile,

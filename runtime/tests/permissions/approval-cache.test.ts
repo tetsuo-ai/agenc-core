@@ -218,77 +218,77 @@ describe("SessionApprovalCache", () => {
   test("records whole-tool approvals as session allow-rule updates", () => {
     const cache = new SessionApprovalCache();
 
-    const update = cache.approveTool("Read");
+    const update = cache.approveTool("FileRead");
 
     expect(update).toEqual({
       type: "addRules",
       destination: "session",
       behavior: "allow",
-      rules: [{ toolName: "Read" }],
+      rules: [{ toolName: "FileRead" }],
     });
-    expect(cache.hasTool("Read")).toBe(true);
-    expect(cache.snapshot().ruleStrings).toEqual(["Read"]);
+    expect(cache.hasTool("FileRead")).toBe(true);
+    expect(cache.snapshot().ruleStrings).toEqual(["FileRead"]);
   });
 
   test("records content-qualified patterns and dedupes equivalent strings", () => {
     const cache = new SessionApprovalCache();
 
-    const first = cache.approvePattern("Bash", "git status");
-    const duplicate = cache.approveRule("Bash(git status)");
+    const first = cache.approvePattern("system.bash", "git status");
+    const duplicate = cache.approveRule("system.bash(git status)");
 
     expect(first?.rules).toEqual([
-      { toolName: "Bash", ruleContent: "git status" },
+      { toolName: "system.bash", ruleContent: "git status" },
     ]);
     expect(duplicate).toBeNull();
-    expect(cache.hasPattern("Bash", "git status")).toBe(true);
+    expect(cache.hasPattern("system.bash", "git status")).toBe(true);
     expect(cache.size()).toBe(1);
   });
 
   test("hydrates from context session rules", () => {
     const ctx = createEmptyToolPermissionContext({
-      alwaysAllowRules: { session: ["Read", "Bash(git status)"] },
+      alwaysAllowRules: { session: ["FileRead", "system.bash(git status)"] },
     });
 
     const cache = createSessionApprovalCacheFromContext(ctx);
 
-    expect(cache.hasTool("Read")).toBe(true);
-    expect(cache.hasPattern("Bash", "git status")).toBe(true);
+    expect(cache.hasTool("FileRead")).toBe(true);
+    expect(cache.hasPattern("system.bash", "git status")).toBe(true);
     expect(cache.snapshot().ruleStrings).toEqual([
-      "Bash(git status)",
-      "Read",
+      "FileRead",
+      "system.bash(git status)",
     ]);
   });
 
   test("normalizes equivalent whole-tool encodings from context", () => {
     const ctx = createEmptyToolPermissionContext({
-      alwaysAllowRules: { session: ["Bash()", "Read(*)"] },
+      alwaysAllowRules: { session: ["system.bash()", "FileRead(*)"] },
     });
 
     const cache = createSessionApprovalCacheFromContext(ctx);
 
-    expect(cache.snapshot().ruleStrings).toEqual(["Bash", "Read"]);
-    expect(hasSessionApproval(ctx, "Bash")).toBe(true);
-    expect(hasSessionApproval(ctx, { toolName: "Read" })).toBe(true);
+    expect(cache.snapshot().ruleStrings).toEqual(["FileRead", "system.bash"]);
+    expect(hasSessionApproval(ctx, "system.bash")).toBe(true);
+    expect(hasSessionApproval(ctx, { toolName: "FileRead" })).toBe(true);
   });
 
   test("normalizes escaped pattern content from context", () => {
     const ctx = createEmptyToolPermissionContext({
-      alwaysAllowRules: { session: ["Bash(echo \\(hi\\))"] },
+      alwaysAllowRules: { session: ["system.bash(echo \\(hi\\))"] },
     });
 
     const cache = createSessionApprovalCacheFromContext(ctx);
 
-    expect(cache.hasPattern("Bash", "echo (hi)")).toBe(true);
+    expect(cache.hasPattern("system.bash", "echo (hi)")).toBe(true);
     expect(
       hasSessionApproval(ctx, {
-        toolName: "Bash",
+        toolName: "system.bash",
         ruleContent: "echo (hi)",
       }),
     ).toBe(true);
   });
 
   test("keeps malformed rule strings stable instead of over-normalizing", () => {
-    const malformed = "Bash(git status";
+    const malformed = "system.bash(git status";
     const ctx = createEmptyToolPermissionContext({
       alwaysAllowRules: { session: [malformed] },
     });
@@ -299,7 +299,7 @@ describe("SessionApprovalCache", () => {
     expect(hasSessionApproval(ctx, malformed)).toBe(true);
     expect(
       hasSessionApproval(ctx, {
-        toolName: "Bash",
+        toolName: "system.bash",
         ruleContent: "git status",
       }),
     ).toBe(false);
@@ -307,23 +307,23 @@ describe("SessionApprovalCache", () => {
 
   test("merges cache entries into alwaysAllowRules.session without duplicates", () => {
     const ctx = createEmptyToolPermissionContext({
-      alwaysAllowRules: { session: ["Read"] },
+      alwaysAllowRules: { session: ["FileRead"] },
     });
     const cache = new SessionApprovalCache([
-      "Read",
-      { toolName: "Bash", ruleContent: "git status" },
+      "FileRead",
+      { toolName: "system.bash", ruleContent: "git status" },
     ]);
 
     const next = cache.mergeIntoContext(ctx);
 
     expect(next.alwaysAllowRules.session).toEqual([
-      "Bash(git status)",
-      "Read",
+      "FileRead",
+      "system.bash(git status)",
     ]);
-    expect(hasSessionApproval(next, "Read")).toBe(true);
+    expect(hasSessionApproval(next, "FileRead")).toBe(true);
     expect(
       hasSessionApproval(next, {
-        toolName: "Bash",
+        toolName: "system.bash",
         ruleContent: "git status",
       }),
     ).toBe(true);
@@ -334,9 +334,9 @@ describe("SessionApprovalCache", () => {
       alwaysAllowRules: { session: ["Write"] },
     });
 
-    const next = mergeSessionApprovalsIntoContext(ctx, ["Read"]);
+    const next = mergeSessionApprovalsIntoContext(ctx, ["FileRead"]);
 
-    expect(next.alwaysAllowRules.session).toEqual(["Read", "Write"]);
+    expect(next.alwaysAllowRules.session).toEqual(["FileRead", "Write"]);
   });
 });
 

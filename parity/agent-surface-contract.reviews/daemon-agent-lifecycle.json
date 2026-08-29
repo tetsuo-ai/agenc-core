@@ -2,7 +2,7 @@
   "rowId": "daemon-agent-lifecycle",
   "contractName": "agent-surface-contract",
   "reviewer": "independent-parity-auditor",
-  "reviewedAt": "2026-07-23T05:33:14Z",
+  "reviewedAt": "2026-08-29T00:59:42Z",
   "verdict": "APPROVED",
   "behaviorCoverage": {
     "behaviorsAudited": [
@@ -40,10 +40,10 @@
       "runtime/tests/app-server/daemon-dispatcher.contract.test.ts"
     ],
     "testsExecuted": [
-      "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/app-server/agent-lifecycle.contract.test.ts tests/app-server/background-agent-runner.contract.test.ts tests/app-server/agent-cli.contract.test.ts tests/app-server/daemon-dispatcher.contract.test.ts --reporter=dot"
+      "node runtime/scripts/run-hermetic-test-boundary.mjs run tests/app-server/agent-lifecycle.contract.test.ts tests/app-server/background-agent-runner.contract.test.ts tests/app-server/agent-cli.contract.test.ts tests/app-server/daemon-dispatcher.contract.test.ts --reporter=dot"
     ],
     "commandResults": [
-      "PASS: 4 test files passed, 196 tests passed"
+      "PASS: 4 test files passed, 366 tests passed"
     ],
     "implementationEvidence": [
       "AgenCAgentLifecycleManager owns agent.create, message, stop, list, log, attach, reconnect, rollback, and terminal snapshot transitions.",

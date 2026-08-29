@@ -2,31 +2,25 @@ import React from "react";
 
 import {
   buildProviderModelCatalog,
-  normalizeProviderSlug,
-  readProviderConfig,
+  mergeProviderModelLayer,
   type ProviderSlug,
-} from "../config/resolve-provider.js";
-import {
-  configuredModelForProvider,
-  defaultModelForProvider,
-} from "../config/resolve-model.js";
-import type { AgenCConfig, ProviderConfig } from "../config/schema.js";
+} from "../config/provider-model-authority.js";
+import { readProviderConfig, resolveProviderSlug } from "../config/resolve-provider.js";
+import { configuredModelForProvider } from "../config/resolve-model.js";
+import { defaultConfig, type AgenCConfig } from "../config/schema.js";
 import { listBuiltInProviderInfo } from "../llm/registry/provider-info.js";
-import { readXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
 import { readCommandConfig } from "./config-context.js";
+import {
+  createProviderCommandAccessOverlay,
+  formatProviderCommandRejection,
+  type ProviderCommandAccess,
+} from "./provider-command-access.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
-import {
-  SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
-  hasHostedManagedAccess,
-  hostedManagedSubscriptionTier,
-  providerHasLiveSubscriptionRoute,
-  subscriptionManagedDefaultModelForTier,
-  visibleSubscriptionManagedModelsForTier,
-} from "./subscription-managed-models.js";
+import { readBuiltInSessionSelection } from "../session/provider-model-selection.js";
 import type { SlashCommandContext } from "./types.js";
 
 type ProviderRowStatus = "current" | "configured" | "default";
@@ -35,6 +29,7 @@ type ProviderRuntimeState =
   | "active"
   | "available"
   | "local"
+  | "unverified"
   | "unauthenticated"
   | "unavailable"
   | "error";
@@ -59,7 +54,6 @@ type ProviderMenuRow = {
   readonly auth: string;
   readonly credentialSource: string;
   readonly configured: boolean;
-  readonly supportsWebsockets: boolean;
   readonly detail: string;
   readonly error?: string;
 };
@@ -77,75 +71,29 @@ export type ProviderMenuSelectionResult = {
   readonly shouldClose: boolean;
 };
 
-function readSessionSelection(ctx: SlashCommandContext): {
-  readonly provider?: string;
-  readonly model?: string;
-} {
-  const peekState = (ctx.session as unknown as {
-    state?: { unsafePeek?: () => unknown };
-  }).state?.unsafePeek;
-  const rawState =
-    typeof peekState === "function"
-      ? (peekState.call((ctx.session as unknown as { state?: unknown }).state) as {
-          sessionConfiguration?: {
-            provider?: { slug?: string };
-            collaborationMode?: { model?: string };
-          };
-        })
-      : null;
-  const directConfig = (ctx.session as unknown as {
-    sessionConfiguration?: {
-      provider?: { slug?: string };
-      collaborationMode?: { model?: string };
-    };
-  }).sessionConfiguration;
-  const sessionConfiguration = rawState?.sessionConfiguration ?? directConfig;
-  return {
-    ...(sessionConfiguration?.provider?.slug
-      ? { provider: sessionConfiguration.provider.slug }
-      : {}),
-    ...(sessionConfiguration?.collaborationMode?.model
-      ? { model: sessionConfiguration.collaborationMode.model }
-      : {}),
-  };
-}
-
-function readAppStateModel(ctx: SlashCommandContext): string | undefined {
-  const state = ctx.appState?.getAppState?.();
-  if (typeof state !== "object" || state === null) return undefined;
-  const model = (state as { mainLoopModel?: unknown }).mainLoopModel;
-  return typeof model === "string" && model.trim().length > 0
-    ? model.trim()
-    : undefined;
-}
-
 function providerModel(params: {
   readonly config?: AgenCConfig;
   readonly provider: ProviderSlug;
   readonly currentProvider: ProviderSlug;
   readonly currentModel: string;
-  readonly managedKeysEnabled?: boolean;
-  readonly managedSubscriptionAvailable?: boolean;
-  readonly managedSubscriptionTier?: string;
+  readonly requestedModel?: string;
 }): string {
   if (params.provider === params.currentProvider) return params.currentModel;
-  if (params.managedSubscriptionAvailable === true) {
-    const managedDefault = subscriptionManagedDefaultModelForTier(
-      params.provider,
-      params.managedSubscriptionTier === "free" ||
-        params.managedSubscriptionTier === "pro" ||
-        params.managedSubscriptionTier === "team" ||
-        params.managedSubscriptionTier === "enterprise"
-        ? params.managedSubscriptionTier
-        : undefined,
-    );
-    if (managedDefault !== undefined) return managedDefault;
-  }
-  return (
-    (params.config !== undefined
-      ? configuredModelForProvider(params.config, params.provider)
-      : undefined) ?? defaultModelForProvider(params.provider)
+  const base = mergeProviderModelLayer(defaultConfig(), params.config ?? {});
+  const selection = mergeProviderModelLayer(
+    base,
+    {
+      model_provider: params.provider,
+      ...(params.requestedModel === undefined
+        ? {}
+        : { model: params.requestedModel }),
+    },
   );
+  const model = selection.model?.trim();
+  if (model === undefined || model.length === 0) {
+    throw new Error(`No model resolved for provider ${params.provider}`);
+  }
+  return model;
 }
 
 function rowStatus(params: {
@@ -174,33 +122,6 @@ function rowDetail(status: ProviderRowStatus): string {
   }
 }
 
-function providerBaseURL(
-  infoBaseURL: string,
-  config: ProviderConfig | undefined,
-): string {
-  return config?.base_url?.trim() || infoBaseURL;
-}
-
-function providerConfigApiKeyEnv(
-  config: ProviderConfig | undefined,
-): string | undefined {
-  return config?.api_key_env?.trim() || undefined;
-}
-
-function isLocalProviderEndpoint(baseURL: string): boolean {
-  try {
-    const url = new URL(baseURL);
-    return (
-      url.hostname === "localhost" ||
-      url.hostname === "127.0.0.1" ||
-      url.hostname === "::1" ||
-      url.hostname.endsWith(".local")
-    );
-  } catch {
-    return false;
-  }
-}
-
 function baseURLError(baseURL: string): string | undefined {
   try {
     new URL(baseURL);
@@ -210,105 +131,42 @@ function baseURLError(baseURL: string): string | undefined {
   }
 }
 
-function authState(params: {
-  readonly provider: ProviderSlug;
-  readonly requiresManagedAuth: boolean;
-  readonly configuredEnvVar?: string;
-  readonly defaultEnvVar?: string;
-  readonly baseURL: string;
-  readonly config?: AgenCConfig;
-  readonly managedSubscriptionAvailable: boolean;
-}): {
+function providerMenuAuth(access: ProviderCommandAccess): {
   readonly state: ProviderAuthState;
   readonly label: string;
   readonly source: string;
 } {
-  const managedKeysEnabled = params.config?.auth?.managedKeys?.enabled === true;
-  if (params.requiresManagedAuth) {
-    return {
-      state: "managed",
-      label: managedKeysEnabled ? "managed on" : "managed",
-      source: "managed key vending",
-    };
+  const rejection = formatProviderCommandRejection(access, "provider");
+  if (rejection !== undefined) {
+    const label = access.rejection?.code === "provider-managed-auth-required"
+      ? "AgenC sign-in required"
+      : access.rejection?.code === "login-required"
+        ? "login or BYOK required"
+        : access.rejection?.code === "upgrade-required"
+          ? "upgrade required"
+          : access.rejection?.code === "model-not-managed"
+            ? "hosted model unavailable"
+            : access.rejection?.code === "configuration"
+              ? "configuration error"
+              : access.auth.label;
+    return { state: "missing", label, source: rejection };
   }
-
-  // xAI OAuth (/grok-login) IS a credential for grok — without this check the
-  // row only looked at XAI_API_KEY and showed "credential required" to users
-  // who are fully signed in, making their OAuth account invisible in the
-  // picker (and pushing them onto other providers such as OpenRouter).
-  if (params.provider === "grok") {
-    const oauth = readXaiOauthCredentials();
-    if (oauth !== undefined && oauth.quarantinedAt === undefined) {
-      return {
-        state: "ready",
-        label: "xAI OAuth",
-        source: `signed in as ${oauth.accountLabel ?? "xAI account"} via /grok-login`,
-      };
-    }
-  }
-
-  const envVar = params.configuredEnvVar ?? params.defaultEnvVar;
-  if (envVar === undefined) {
-    return {
-      state: "optional",
-      label: "local",
-      source: "no key required",
-    };
-  }
-
-  const hasValue = (process.env[envVar]?.trim().length ?? 0) > 0;
-  if (hasValue) {
-    return {
-      state: "ready",
-      label: envVar,
-      source: `env ${envVar}`,
-    };
-  }
-
-  const localEndpoint = isLocalProviderEndpoint(params.baseURL);
-  if (localEndpoint) {
-    return {
-      state: "optional",
-      label: managedKeysEnabled ? "local only" : `${envVar} optional`,
-      source: managedKeysEnabled
-        ? `local endpoint; subscription is not used`
-        : `env ${envVar} optional for local endpoint`,
-    };
-  }
-
-  if (
-    managedKeysEnabled &&
-    providerHasLiveSubscriptionRoute(params.provider) &&
-    params.managedSubscriptionAvailable
-  ) {
-    return {
-      state: "managed",
-      label: "subscription",
-      source: `AgenC subscription-managed key; ${envVar} optional`,
-    };
-  }
-
-  if (managedKeysEnabled && providerHasLiveSubscriptionRoute(params.provider)) {
-    return {
-      state: "missing",
-      label: `${envVar} or Pro login`,
-      source: `run /login or set env ${envVar}`,
-    };
-  }
-
   return {
-    state: "missing",
-    label: `${envVar} missing`,
-    source: `set env ${envVar}`,
+    state: access.auth.state === "error" ? "missing" : access.auth.state,
+    label: access.auth.label,
+    source: access.auth.source,
   };
 }
 
 function runtimeState(params: {
   readonly status: ProviderRowStatus;
-  readonly authState: ProviderAuthState;
+  readonly access: ProviderCommandAccess;
   readonly models: readonly string[];
   readonly baseURL: string;
 }): { readonly state: ProviderRuntimeState; readonly error?: string } {
+  if (params.access.configurationError !== undefined) {
+    return { state: "error", error: params.access.configurationError };
+  }
   const baseError = baseURLError(params.baseURL);
   if (baseError !== undefined) {
     return { state: "error", error: baseError };
@@ -316,16 +174,19 @@ function runtimeState(params: {
   if (params.models.length === 0) {
     return { state: "unavailable", error: "no models available" };
   }
-  if (params.authState === "missing") {
+  if (
+    params.access.effect === "blocked" ||
+    params.access.route === "unavailable"
+  ) {
     return { state: "unauthenticated" };
   }
   if (params.status === "current") {
     return { state: "active" };
   }
-  if (
-    params.authState === "optional" &&
-    isLocalProviderEndpoint(params.baseURL)
-  ) {
+  if (params.access.route === "deferred") {
+    return { state: "unverified" };
+  }
+  if (params.access.route === "local") {
     return { state: "local" };
   }
   return { state: "available" };
@@ -344,6 +205,8 @@ function runtimeDetail(params: {
       return "local endpoint";
     case "available":
       return rowDetail(params.status);
+    case "unverified":
+      return "credential checked on switch";
     case "unauthenticated":
       return "credential required";
     case "unavailable":
@@ -361,6 +224,8 @@ function statusColor(state: ProviderRuntimeState): ProviderColor {
       return "inactive";
     case "available":
       return "agenc";
+    case "unverified":
+      return "warning";
     case "unauthenticated":
       return "warning";
     case "unavailable":
@@ -378,6 +243,8 @@ function statusGlyph(state: ProviderRuntimeState): string {
       return "○";
     case "available":
       return "●";
+    case "unverified":
+      return "?";
     case "unauthenticated":
       return "!";
     case "unavailable":
@@ -408,25 +275,22 @@ function providerRuntimeRank(state: ProviderRuntimeState): number {
       return 1;
     case "local":
       return 2;
-    case "unauthenticated":
+    case "unverified":
       return 3;
-    case "unavailable":
+    case "unauthenticated":
       return 4;
-    case "error":
+    case "unavailable":
       return 5;
+    case "error":
+      return 6;
   }
 }
 
 function sortProviderRows(
   rows: readonly ProviderMenuRow[],
   currentProvider: ProviderSlug,
-  hostedSubscriptionReady: boolean,
 ): readonly ProviderMenuRow[] {
   return [...rows].sort((left, right) => {
-    if (hostedSubscriptionReady) {
-      if (left.provider === SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER) return -1;
-      if (right.provider === SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER) return 1;
-    }
     if (left.provider === currentProvider) return -1;
     if (right.provider === currentProvider) return 1;
     const rankDelta =
@@ -439,67 +303,71 @@ function sortProviderRows(
 
 export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenuSnapshot {
   const config = readCommandConfig(ctx);
-  const sessionSelection = readSessionSelection(ctx);
+  const accessOverlay = createProviderCommandAccessOverlay(ctx);
+  const sessionSelection = readBuiltInSessionSelection(ctx.session, {
+    includePending: true,
+    ...(config !== undefined ? { fallbackConfig: config } : {}),
+  });
   const diagnostics: string[] = [];
-  if (
-    sessionSelection.provider !== undefined &&
-    normalizeProviderSlug(sessionSelection.provider) === undefined
-  ) {
-    diagnostics.push(`Unknown session provider: ${sessionSelection.provider}`);
+  if (sessionSelection.rejectedProvider !== undefined) {
+    diagnostics.push(
+      `Unknown session provider: ${sessionSelection.rejectedProvider}`,
+    );
   }
-  const currentProvider =
-    normalizeProviderSlug(sessionSelection.provider) ??
-    normalizeProviderSlug(config?.model_provider) ??
-    "grok";
-  const currentModel =
-    readAppStateModel(ctx) ??
-    sessionSelection.model?.trim() ??
-    config?.model?.trim() ??
-    defaultModelForProvider(currentProvider);
+  const currentProvider = sessionSelection.provider;
+  const currentModel = sessionSelection.model;
   const modelCatalog = buildProviderModelCatalog(config);
-  const managedKeysEnabled = config?.auth?.managedKeys?.enabled === true;
-  const managedSubscriptionAvailable = hasHostedManagedAccess(config, process.env);
-  const managedSubscriptionTier = hostedManagedSubscriptionTier(process.env);
 
   const unsortedRows = listBuiltInProviderInfo().map((info): ProviderMenuRow => {
     const provider = info.id;
     const providerConfig = config ? readProviderConfig(config, provider) : undefined;
     const status = rowStatus({ config, provider, currentProvider });
-    const baseURL = providerBaseURL(info.baseURL, providerConfig);
-    const configuredEnvVar = providerConfigApiKeyEnv(providerConfig);
-    const auth = authState({
+    const configuredModel = providerModel({
+      config,
       provider,
-      requiresManagedAuth: info.requiresManagedAuth,
-      ...(configuredEnvVar ? { configuredEnvVar } : {}),
-      ...(info.apiKeyEnvVar ? { defaultEnvVar: info.apiKeyEnvVar } : {}),
-      baseURL,
-      ...(config ? { config } : {}),
-      managedSubscriptionAvailable,
+      currentProvider,
+      currentModel,
     });
+    const configuredAccess = accessOverlay.inspect({
+      provider,
+      model: configuredModel,
+    });
+    const managedProjectionActive =
+      configuredAccess.directCredential?.status === "missing" &&
+      configuredAccess.managed.enabled &&
+      configuredAccess.managed.signedIn &&
+      configuredAccess.managed.defaultModel !== undefined;
+    const managedModelRequest = managedProjectionActive
+      ? configuredAccess.managed.defaultModel
+      : undefined;
+    const model = providerModel({
+      config,
+      provider,
+      currentProvider,
+      currentModel,
+      ...(managedModelRequest === undefined
+        ? {}
+        : { requestedModel: managedModelRequest }),
+    });
+    const access = model === configuredModel
+      ? configuredAccess
+      : accessOverlay.inspect({ provider, model });
+    const baseURL = access.endpoint?.baseURL ?? info.baseURL;
+    const auth = providerMenuAuth(access);
     const rawModels = modelCatalog[provider] ?? [];
-    const managedModels =
-      managedSubscriptionAvailable && providerHasLiveSubscriptionRoute(provider)
-        ? visibleSubscriptionManagedModelsForTier(provider, managedSubscriptionTier)
-        : undefined;
-    const models = managedModels !== undefined ? managedModels : rawModels;
+    const models = managedProjectionActive
+      ? access.managed.visibleModels
+      : rawModels;
     const state = runtimeState({
       status,
-      authState: auth.state,
+      access,
       models,
       baseURL,
     });
     return {
       provider,
       name: info.name,
-      model: providerModel({
-        config,
-        provider,
-        currentProvider,
-        currentModel,
-        managedKeysEnabled,
-        managedSubscriptionAvailable,
-        managedSubscriptionTier,
-      }),
+      model,
       models,
       baseURL,
       status,
@@ -510,8 +378,7 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
       configured:
         providerConfig !== undefined ||
         (config?.model_provider !== undefined &&
-          normalizeProviderSlug(config.model_provider) === provider),
-      supportsWebsockets: info.supportsWebsockets,
+          resolveProviderSlug(config.model_provider) === provider),
       detail: runtimeDetail({
         state: state.state,
         status,
@@ -521,22 +388,9 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     };
   });
 
-  const rows = sortProviderRows(
-    unsortedRows,
-    currentProvider,
-    managedSubscriptionAvailable,
-  );
-  const preferredActiveIndex =
-    managedSubscriptionAvailable
-      ? rows.findIndex(
-          row => row.provider === SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
-        )
-      : -1;
+  const rows = sortProviderRows(unsortedRows, currentProvider);
   const currentActiveIndex = rows.findIndex(row => row.provider === currentProvider);
-  const activeIndex = Math.max(
-    0,
-    preferredActiveIndex >= 0 ? preferredActiveIndex : currentActiveIndex,
-  );
+  const activeIndex = Math.max(0, currentActiveIndex);
   return {
     currentProvider,
     currentModel,
@@ -595,7 +449,6 @@ function ProviderDetailView({
     { key: "auth", value: row.credentialSource, color: authColor(row.authState) },
     { key: "base url", value: row.baseURL },
     { key: "configured", value: row.configured ? "yes" : "no" },
-    { key: "websocket", value: row.supportsWebsockets ? "yes" : "no" },
     { key: "models", value: `${row.models.length}` },
     ...models.map((model, index) => ({
       key: index === 0 ? "catalog" : "",

@@ -35,7 +35,7 @@ import {
 } from "node:path";
 import { createInterface as createReadlineInterface } from "node:readline";
 
-import { resolveAgencHome } from "../config/env.js";
+import { getCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 
 const DEFAULT_LEASE_TTL_MS = 10_000;
 const MAX_SYNCED_BUFFERS = 512;
@@ -591,7 +591,7 @@ export class WorkspaceMutationRejectedError extends Error {
 
 export interface WorkspaceMutationCoordinatorOptions {
   readonly workspaceRoot: string;
-  readonly agencHome?: string;
+  readonly agencHome: string;
   readonly now?: () => number;
   readonly leaseTtlMs?: number;
   /** Deterministic capacity seam for proposal-admission race tests. */
@@ -701,7 +701,7 @@ export class WorkspaceMutationCoordinator {
       );
     }
     this.#maxPendingProposals = maxPendingProposals;
-    const agencHome = options.agencHome ?? resolveAgencHome(process.env);
+    const agencHome = options.agencHome;
     this.#ledger = new WorkspaceChangeLedger({
       workspaceRoot: this.workspaceRoot,
       agencHome,
@@ -5181,17 +5181,17 @@ export class WorkspaceMutationCoordinatorRegistry {
   readonly #persistedWorkspaceRootScanFailures = new Map<string, Error>();
   readonly #toolOperations = new Map<string, WorkspaceToolOperationToken>();
   readonly #options: {
-    readonly agencHome?: string;
+    readonly agencHome: string;
     readonly now?: () => number;
     readonly leaseTtlMs?: number;
   };
 
   constructor(
     options: {
-      readonly agencHome?: string;
+      readonly agencHome: string;
       readonly now?: () => number;
       readonly leaseTtlMs?: number;
-    } = {},
+    },
   ) {
     this.#options = options;
   }
@@ -5414,9 +5414,7 @@ export class WorkspaceMutationCoordinatorRegistry {
 
   #hydratePersistedCoordinatorsOverlapping(target: string): void {
     this.#hydratePersistedCoordinatorForPath(target);
-    const agencHome = resolve(
-      this.#options.agencHome ?? resolveAgencHome(process.env),
-    );
+    const agencHome = resolve(this.#options.agencHome);
     const previousFailure =
       this.#persistedWorkspaceRootScanFailures.get(agencHome);
     if (previousFailure !== undefined) {
@@ -5477,7 +5475,7 @@ export class WorkspaceMutationCoordinatorRegistry {
   }
 
   #hydratePersistedCoordinatorForPath(target: string): void {
-    const agencHome = this.#options.agencHome ?? resolveAgencHome(process.env);
+    const agencHome = this.#options.agencHome;
     let candidate = target;
     for (;;) {
       const key = createHash("sha256")
@@ -5968,8 +5966,125 @@ class WorkspaceChangeLedger {
   }
 }
 
+type WorkspaceMutationHomeResolver = () => string;
+
+let workspaceMutationTestHomeResolver:
+  | WorkspaceMutationHomeResolver
+  | undefined;
+
+/** Test-harness seam; production home selection comes only from ConfigStore. */
+export function installWorkspaceMutationHomeResolverForTestingOnly(
+  resolver: WorkspaceMutationHomeResolver,
+): void {
+  workspaceMutationTestHomeResolver = resolver;
+}
+
+function activeWorkspaceMutationHome(): string {
+  const home =
+    getCanonicalSettingsAuthority()?.homeContext.path ??
+    workspaceMutationTestHomeResolver?.();
+  if (home === undefined || home.trim().length === 0) {
+    throw new WorkspaceMutationCoordinatorError(
+      "INVALID_WORKSPACE",
+      "Workspace mutation authority requires a canonical ConfigStore home",
+    );
+  }
+  return resolve(home);
+}
+
+/**
+ * Process-wide facade partitioned by immutable ConfigStore home. The daemon
+ * can host concurrent session chains without one home reusing another home's
+ * quarantine/ledger registry.
+ */
+class WorkspaceMutationCoordinatorAuthority {
+  readonly #registries = new Map<string, WorkspaceMutationCoordinatorRegistry>();
+
+  #current(): WorkspaceMutationCoordinatorRegistry {
+    return this.forHome(activeWorkspaceMutationHome());
+  }
+
+  /**
+   * Bind a daemon or other long-lived ingress to one immutable home registry.
+   * Callers capture the home before asynchronous work; ordinary session tools
+   * continue through the ConfigStore-scoped facade below and converge on the
+   * same registry identity.
+   */
+  forHome(agencHome: string): WorkspaceMutationCoordinatorRegistry {
+    const trimmed = agencHome.trim();
+    if (trimmed.length === 0 || !isAbsolute(trimmed)) {
+      throw new WorkspaceMutationCoordinatorError(
+        "INVALID_WORKSPACE",
+        "Workspace mutation home must be an absolute path",
+      );
+    }
+    const home = resolve(trimmed);
+    let registry = this.#registries.get(home);
+    if (registry === undefined) {
+      registry = new WorkspaceMutationCoordinatorRegistry({ agencHome: home });
+      this.#registries.set(home, registry);
+    }
+    return registry;
+  }
+
+  getOrCreate(workspaceRoot: string): WorkspaceMutationCoordinator {
+    return this.#current().getOrCreate(workspaceRoot);
+  }
+
+  findForWorkspaceRootIdentity(
+    workspaceRoot: string,
+  ): WorkspaceMutationCoordinator | null {
+    return this.#current().findForWorkspaceRootIdentity(workspaceRoot);
+  }
+
+  findForPath(path: string): WorkspaceMutationCoordinator | null {
+    return this.#current().findForPath(path);
+  }
+
+  findOverlappingPathIdentities(
+    path: string,
+    options: { readonly includeDescendants?: boolean } = {},
+  ): readonly WorkspaceMutationCoordinator[] {
+    return this.#current().findOverlappingPathIdentities(path, options);
+  }
+
+  acquireEditor(
+    workspaceRoot: string,
+    input: WorkspaceEditorAcquireInput,
+  ): WorkspaceEditorLease {
+    return this.#current().acquireEditor(workspaceRoot, input);
+  }
+
+  beginToolOperation(
+    workspaceRoot: string,
+    toolName: string,
+  ): WorkspaceToolOperationToken {
+    return this.#current().beginToolOperation(workspaceRoot, toolName);
+  }
+
+  beginReadToolOperation(
+    workspaceRoot: string,
+    toolName: string,
+  ): WorkspaceReadToolOperation {
+    return this.#current().beginReadToolOperation(workspaceRoot, toolName);
+  }
+
+  endToolOperation(token: WorkspaceToolOperationToken): void {
+    this.#current().endToolOperation(token);
+  }
+
+  hasProtectedEditorAuthority(path: string): boolean {
+    return this.#current().hasProtectedEditorAuthority(path);
+  }
+
+  clearForTests(): void {
+    for (const registry of this.#registries.values()) registry.clearForTests();
+    this.#registries.clear();
+  }
+}
+
 export const workspaceMutationCoordinators =
-  new WorkspaceMutationCoordinatorRegistry();
+  new WorkspaceMutationCoordinatorAuthority();
 
 export function sha256(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");

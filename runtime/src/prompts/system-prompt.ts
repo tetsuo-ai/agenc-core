@@ -24,7 +24,7 @@
  * approval-policy and sandbox-mode prose.
  *
  * Depends on:
- *   - `config/env.resolveSimpleMode()` — drives the AGENC_SIMPLE short-path
+ *   - session `runtimeOptions.simpleMode` — drives the reduced prompt path
  *   - `prompts/project-instructions` (optional, passed in by the caller)
  *   - `prompts/memory/loader` (optional, passed in as `memoryPrompt`)
  *   - `mcp-client/manager.MCPManager` (optional, used only if session
@@ -40,7 +40,6 @@
 import { spawnSync } from "node:child_process";
 import { platform as osPlatform, type as osType, release as osRelease } from "node:os";
 
-import { resolveSimpleMode } from "../config/env.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import { gitChildEnvironment } from "../sandbox/git-environment.js";
@@ -51,7 +50,6 @@ import {
 } from "../session/autonomous-mode.js";
 import { feature } from "bun:bundle";
 import { getTokenBudgetPromptSection } from "../conversation/token-budget.js";
-import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import { getPermissionsSection } from "./permissions-prompt.js";
 import {
@@ -65,27 +63,17 @@ import {
   type McpServerInstructionsInput,
 } from "./mcp-instructions-framing.js";
 import { sanitizeSystemReminderContent } from "./attachments/system-reminder-sanitizer.js";
+import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./system-prompt-boundary.js";
+import { BRIEF_TOOL_NAME } from "../tools/BriefTool/prompt.js";
 export type { McpServerInstructionsInput } from "./mcp-instructions-framing.js";
-
-/**
- * Boundary marker separating static (cross-session cacheable) content
- * from dynamic (session-specific) content.
- *
- * Everything BEFORE this marker can be hashed once and reused across
- * sessions that share the same static head. Everything AFTER contains
- * user/session-specific content and must not be cached across sessions.
- *
- * Consumers that split the system prompt for prompt-cache prefixing MUST
- * key on this exact string.
- */
-export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "<!-- dynamic-boundary -->";
+export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./system-prompt-boundary.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Shared string helpers
 // ─────────────────────────────────────────────────────────────────────
 
 /** Prefix top-level items with ` - ` and nested arrays with `   - `. */
-function prependBullets(items: Array<string | string[]>): string[] {
+export function prependBullets(items: Array<string | string[]>): string[] {
   return items.flatMap((item) =>
     Array.isArray(item)
       ? item.map((subitem) => `   - ${subitem}`)
@@ -197,16 +185,12 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
   const hasTool = (...names: readonly string[]): boolean =>
     names.some((name) => enabledTools.has(name));
 
-  const hasShell = hasTool("exec_command", "bash", "Bash", "system.bash", "shell");
+  const hasShell = hasTool("exec_command", "system.bash", "PowerShell");
   const shellName = enabledTools.has("exec_command")
     ? "exec_command"
-    : enabledTools.has("bash")
-      ? "bash"
-      : enabledTools.has("Bash")
-        ? "Bash"
-        : enabledTools.has("system.bash")
-          ? "system.bash"
-          : "shell";
+    : enabledTools.has("system.bash")
+      ? "system.bash"
+      : "PowerShell";
   const hasFileRead = hasTool("FileRead");
   const hasFileEdit = hasTool("Edit");
   const hasFileWrite = hasTool("Write");
@@ -391,27 +375,29 @@ function readGitBranch(
   sandboxExecutionBroker?: SandboxExecutionBrokerLike,
 ): string | null {
   if (sandboxExecutionBroker === undefined) return null;
-  const command = sandboxExecutionBroker.prepareSpawn("tool", {
-    program: "git",
-    args: hardenGitWorktreeMutationArgs([
-      "rev-parse",
-      "--abbrev-ref",
-      "HEAD",
-    ]),
-    cwd,
-    env: gitChildEnvironment(process.env),
-    argv0: "git",
-    trustedExecutable: true,
-  });
   try {
-    const result = spawnSync(command.program, [...command.args], {
-      cwd: command.cwd,
-      env: command.env,
-      argv0: command.argv0,
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf8",
-      timeout: 1_000,
+    const preparedSpawn = sandboxExecutionBroker.prepareSpawn("tool", {
+      program: "git",
+      args: hardenGitWorktreeMutationArgs([
+        "rev-parse",
+        "--abbrev-ref",
+        "HEAD",
+      ]),
+      cwd,
+      env: gitChildEnvironment(process.env),
+      argv0: "git",
+      trustedExecutable: true,
     });
+    const result = preparedSpawn.runSync((command) =>
+      spawnSync(command.program, [...command.args], {
+        cwd: command.cwd,
+        env: command.env,
+        argv0: command.argv0,
+        stdio: ["ignore", "pipe", "ignore"],
+        encoding: "utf8",
+        timeout: 1_000,
+      })
+    );
     if (result.error !== undefined || result.status !== 0) return null;
     const branch = result.stdout.trim();
     return branch.length > 0 ? branch : null;
@@ -453,6 +439,51 @@ export function buildEnvInfoSection(inputs: EnvInfoInputs): string {
     items.push(`Git branch: <not a git repository>`);
   }
   return joinSection("# Environment", items);
+}
+
+export interface AssembleSubagentSystemPromptInput {
+  readonly basePrompts: readonly string[];
+  readonly model: string;
+  readonly cwd: string;
+  readonly provider?: string;
+  readonly additionalWorkingDirectories?: readonly string[];
+  readonly enabledToolNames?: ReadonlySet<string>;
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+}
+
+/** Build the complete prompt for a selected subagent from explicit inputs. */
+export function assembleSubagentSystemPrompt(
+  input: AssembleSubagentSystemPromptInput,
+): string[] {
+  const additionalWorkingDirectories =
+    input.additionalWorkingDirectories?.filter((path) => path.length > 0) ?? [];
+  const discoveryGuidance = input.enabledToolNames?.has("system.searchTools")
+    ? `Use system.searchTools to discover deferred tools before calling them.`
+    : null;
+  return [
+    ...input.basePrompts,
+    `Notes:
+- Agent threads always have their cwd reset between shell calls, so use absolute file paths.
+- In your final response, share relevant absolute file paths. Include code only when its exact text matters.
+- Do not use emojis.
+- Do not put a colon immediately before a tool call.`,
+    ...(discoveryGuidance === null ? [] : [discoveryGuidance]),
+    ...(additionalWorkingDirectories.length === 0
+      ? []
+      : [
+          `Additional working directories:\n${additionalWorkingDirectories
+            .map((path) => `- ${path}`)
+            .join("\n")}`,
+        ]),
+    buildEnvInfoSection({
+      model: input.model,
+      cwd: input.cwd,
+      ...(input.provider !== undefined ? { provider: input.provider } : {}),
+      ...(input.sandboxExecutionBroker !== undefined
+        ? { sandboxExecutionBroker: input.sandboxExecutionBroker }
+        : {}),
+    }),
+  ];
 }
 
 /** language — configured locale. AgenC-original wrapper around the
@@ -563,9 +594,16 @@ Do not narrate each step, list every file you read, or explain routine actions. 
 // Main assembly entry point
 // ─────────────────────────────────────────────────────────────────────
 
+export interface SystemPromptSessionSnapshot {
+  readonly services?: {
+    readonly runtimeOptions?: { readonly simpleMode?: boolean };
+    readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+  };
+}
+
 export interface AssembleSystemPromptOpts {
-  /** Live session handle (for services/features). */
-  readonly session: Session;
+  /** Captured session services that affect prompt assembly. */
+  readonly session: SystemPromptSessionSnapshot;
   /** Per-turn immutable context. */
   readonly ctx: TurnContext;
   /** AGENC.md instruction content (from T10-B). */
@@ -594,8 +632,8 @@ export interface AssembleSystemPromptOpts {
    */
   readonly permissionContext?: ToolPermissionContext | null;
   readonly autonomousMode?: boolean;
-  /** Override process.env for simple-mode resolution (testing only). */
-  readonly envForSimpleMode?: NodeJS.ProcessEnv;
+  /** Explicit test/embedder override; production reads the session option. */
+  readonly simpleMode?: boolean;
 }
 
 export interface AssembledSystemPrompt {
@@ -621,6 +659,98 @@ export interface AssembledSystemPrompt {
   readonly dynamicSuffix: string;
 }
 
+export type SystemPromptProfile = "standard" | "compact" | "coordinator";
+
+export interface AssembleSystemPromptSnapshotOpts
+  extends AssembleSystemPromptOpts {
+  readonly profile?: SystemPromptProfile;
+}
+
+function fixedSystemPromptSnapshot(text: string): AssembledSystemPrompt {
+  return {
+    text,
+    sections: [text],
+    staticPrefix: text,
+    dynamicSuffix: "",
+  };
+}
+
+function compactSystemPromptSnapshot(ctx: TurnContext): AssembledSystemPrompt {
+  return fixedSystemPromptSnapshot(
+    [
+      `You are AgenC, an open-source coding agent. You work inside the user's repository and complete their request by calling tools.`,
+      ``,
+      `# How to work`,
+      `- Use tools to act; never invent file contents or command output. One tool call at a time is fine — wait for each result before the next step.`,
+      `- Read before you edit. After a change, verify it (run the code, re-read the file).`,
+      `- exec_command runs shell commands. FileRead/Edit/MultiEdit/Write handle files. Grep/Glob search. Orient maps the project.`,
+      `- TodoWrite is ONLY for work with 3+ distinct steps. Never call it for a single-step request (answering, writing one thing, one edit) — just do the work. EnterPlanMode/ExitPlanMode only when the user explicitly asks for a plan.`,
+      `- ${BRIEF_TOOL_NAME} sends the user a one-line progress note during long work. AskUserQuestion asks the user a question when you are blocked.`,
+      `- If a tool call fails, read the error and adjust; do not repeat the same call unchanged.`,
+      ``,
+      `# Rules`,
+      `- Never run destructive commands (rm -rf, force-push, DROP) unless the user explicitly asked for exactly that.`,
+      `- Keep secrets out of output. Do not read credential files unless the task requires it and the user asked.`,
+      `- Answer in the user's language. Be direct and concise: lead with the result, skip preambles.`,
+      ``,
+      `CWD: ${ctx.cwd}`,
+      `Date: ${ctx.currentDate ?? "unknown"}`,
+    ].join("\n"),
+  );
+}
+
+/**
+ * Capture the model-facing base prompt from one authority. Standard sessions
+ * use the full assembler; constrained local models and coordinator sessions
+ * select explicit profiles without falling back to the retired constants
+ * prompt builder.
+ */
+export async function assembleSystemPromptSnapshot(
+  opts: AssembleSystemPromptSnapshotOpts,
+): Promise<AssembledSystemPrompt> {
+  switch (opts.profile ?? "standard") {
+    case "compact":
+      return compactSystemPromptSnapshot(opts.ctx);
+    case "coordinator": {
+      const { getLiveCoordinatorSystemPrompt } =
+        await import("../coordinator/coordinatorMode.js");
+      return fixedSystemPromptSnapshot(getLiveCoordinatorSystemPrompt());
+    }
+    case "standard":
+      return assembleSystemPrompt(opts);
+  }
+}
+
+export async function assembleBaseInstructionsForModel(params: {
+  readonly session: SystemPromptSessionSnapshot;
+  readonly ctx: TurnContext;
+  readonly registry: {
+    readonly tools: ReadonlyArray<{ readonly name: string }>;
+  };
+  readonly provider: string;
+  readonly permissionContext: ToolPermissionContext | null;
+  readonly profile: SystemPromptProfile;
+}): Promise<string> {
+  const enabledToolNames = new Set(
+    params.registry.tools.map((tool) => tool.name),
+  );
+  const snapshot = await assembleSystemPromptSnapshot({
+    profile: params.profile,
+    session: params.session,
+    ctx: params.ctx,
+    projectInstructions: "",
+    memoryPrompt: "",
+    mcpServers: [],
+    enabledToolNames,
+    agentsEnabled: enabledToolNames.has("spawn_agent"),
+    provider: params.provider,
+    permissionContext: params.permissionContext,
+    autonomousMode: params.ctx.config.autonomousMode === true,
+    outputStyle: null,
+  });
+  return snapshot.text;
+}
+
 /**
  * Required inputs for assembling the per-turn system prompt. This is a
  * stricter sibling of {@link AssembleSystemPromptOpts} — every field is
@@ -632,7 +762,7 @@ export interface AssembledSystemPrompt {
  * shown in /context matches what the model actually receives.
  */
 export interface AssembleSystemPromptInputs {
-  readonly session: Session;
+  readonly session: SystemPromptSessionSnapshot;
   readonly ctx: TurnContext;
   readonly projectInstructions: string;
   readonly memoryPrompt: string;
@@ -723,7 +853,8 @@ export function buildEffectiveSystemPrompt(
  * Assemble the system prompt. Concatenates the static head, the boundary
  * marker, and the dynamic tail.
  *
- * When `AGENC_SIMPLE` resolves truthy, returns an ultra-minimal prompt:
+ * When the session's immutable simple-mode option is true, returns an
+ * ultra-minimal prompt:
  * `simple_intro + boundary + env_info_simple`.
  */
 export async function assembleSystemPrompt(
@@ -748,8 +879,11 @@ export async function assembleSystemPrompt(
       : {}),
   };
 
-  // AGENC_SIMPLE short-path.
-  if (resolveSimpleMode(opts.envForSimpleMode ?? (process.env as NodeJS.ProcessEnv))) {
+  // Session-scoped reduced-prompt path. Never re-read process.env here: a
+  // daemon can host concurrent sessions with different startup options.
+  const simpleMode = opts.simpleMode ??
+    session.services?.runtimeOptions?.simpleMode === true;
+  if (simpleMode) {
     const intro = getSimpleIntroSection(opts.outputStyle != null);
     const env = buildEnvInfoSection(envInfoInputs);
     const sections = [intro, SYSTEM_PROMPT_DYNAMIC_BOUNDARY, env];
@@ -792,7 +926,11 @@ export async function assembleSystemPrompt(
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "permissions",
-      () => getPermissionsSection(opts.permissionContext ?? null),
+      () =>
+        getPermissionsSection(opts.permissionContext ?? null, {
+          sandboxPolicy: opts.ctx.sandboxPolicy.value,
+          networkSandboxPolicy: opts.ctx.networkSandboxPolicy,
+        }),
       "permission mode can change mid-session via /mode and bypass toggles",
     ),
     DANGEROUS_uncachedSystemPromptSection(

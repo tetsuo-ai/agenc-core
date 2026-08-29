@@ -68,26 +68,26 @@ describe("buildToolUseConfirmQueue (TUI multi-approval queue)", () => {
   });
 
   it("returns empty when there are no pending requests", () => {
-    const got = buildToolUseConfirmQueue([], [{ name: "Bash" }]);
+    const got = buildToolUseConfirmQueue([], [{ name: "system.bash" }]);
     expect(got).toEqual([]);
   });
 
   it("projects a single pending request to one queue entry", () => {
-    const r = makeRequest("Bash", "call-1", () => {});
+    const r = makeRequest("system.bash", "call-1", () => {});
     const got = buildToolUseConfirmQueue(
       [r as never],
-      [{ name: "Bash" }],
+      [{ name: "system.bash" }],
     );
     expect(got.length).toBe(1);
   });
 
   it("projects every pending request — multi-approval queue does not collapse", () => {
-    const r1 = makeRequest("Bash", "call-1", () => {});
+    const r1 = makeRequest("system.bash", "call-1", () => {});
     const r2 = makeRequest("FileEdit", "call-2", () => {});
-    const r3 = makeRequest("Bash", "call-3", () => {});
+    const r3 = makeRequest("system.bash", "call-3", () => {});
     const got = buildToolUseConfirmQueue(
       [r1 as never, r2 as never, r3 as never],
-      [{ name: "Bash" }, { name: "FileEdit" }],
+      [{ name: "system.bash" }, { name: "FileEdit" }],
     );
     expect(got.length).toBe(3);
     expect(got.map((c) => (c as { toolUseID: string }).toolUseID)).toEqual([
@@ -98,11 +98,11 @@ describe("buildToolUseConfirmQueue (TUI multi-approval queue)", () => {
   });
 
   it("preserves arrival order", () => {
-    const r1 = makeRequest("Bash", "first", () => {});
-    const r2 = makeRequest("Bash", "second", () => {});
+    const r1 = makeRequest("system.bash", "first", () => {});
+    const r2 = makeRequest("system.bash", "second", () => {});
     const got = buildToolUseConfirmQueue(
       [r1 as never, r2 as never],
-      [{ name: "Bash" }],
+      [{ name: "system.bash" }],
     );
     expect((got[0] as { toolUseID: string }).toolUseID).toBe("first");
     expect((got[1] as { toolUseID: string }).toolUseID).toBe("second");
@@ -111,15 +111,15 @@ describe("buildToolUseConfirmQueue (TUI multi-approval queue)", () => {
   it("each entry resolves its own request — onAllow calls the right resolver", () => {
     let resolved1: ReviewDecision | null = null;
     let resolved2: ReviewDecision | null = null;
-    const r1 = makeRequest("Bash", "call-1", (d) => {
+    const r1 = makeRequest("system.bash", "call-1", (d) => {
       resolved1 = d;
     });
-    const r2 = makeRequest("Bash", "call-2", (d) => {
+    const r2 = makeRequest("system.bash", "call-2", (d) => {
       resolved2 = d;
     });
     const got = buildToolUseConfirmQueue(
       [r1 as never, r2 as never],
-      [{ name: "Bash" }],
+      [{ name: "system.bash" }],
     );
     (got[0] as { onAllow: (i: unknown, u: unknown[]) => void }).onAllow({}, []);
     expect(resolved1).toBe(APPROVED);
@@ -130,20 +130,20 @@ describe("buildToolUseConfirmQueue (TUI multi-approval queue)", () => {
 
   it("onAllow with permission updates resolves to APPROVED_FOR_SESSION; onAbort resolves to ABORT", () => {
     let resolved: ReviewDecision | null = null;
-    const r = makeRequest("Bash", "call-1", (d) => {
+    const r = makeRequest("system.bash", "call-1", (d) => {
       resolved = d;
     });
-    const queue = buildToolUseConfirmQueue([r as never], [{ name: "Bash" }]);
+    const queue = buildToolUseConfirmQueue([r as never], [{ name: "system.bash" }]);
     (queue[0] as { onAllow: (i: unknown, u: unknown[]) => void }).onAllow({}, [
       "some-update",
     ]);
     expect(resolved).toBe(APPROVED_FOR_SESSION);
 
     let abortResolved: ReviewDecision | null = null;
-    const r2 = makeRequest("Bash", "call-2", (d) => {
+    const r2 = makeRequest("system.bash", "call-2", (d) => {
       abortResolved = d;
     });
-    const queue2 = buildToolUseConfirmQueue([r2 as never], [{ name: "Bash" }]);
+    const queue2 = buildToolUseConfirmQueue([r2 as never], [{ name: "system.bash" }]);
     (queue2[0] as { onAbort: () => void }).onAbort();
     expect(abortResolved).toBe(ABORT);
   });
@@ -247,7 +247,7 @@ describe("buildToolUseConfirmQueue (TUI multi-approval queue)", () => {
   });
 
   it("returns empty when the tool registry is empty (no matching tool)", () => {
-    const r = makeRequest("Bash", "call-1", () => {});
+    const r = makeRequest("system.bash", "call-1", () => {});
     const got = buildToolUseConfirmQueue([r as never], []);
     expect(got).toEqual([]);
   });
@@ -257,7 +257,7 @@ describe("buildToolUseConfirmQueue (TUI multi-approval queue)", () => {
     const r = makeRequest("MissingTool", "call-1", (decision) => {
       resolved = decision;
     });
-    const got = buildToolUseConfirmQueue([r as never], [{ name: "Bash" }]);
+    const got = buildToolUseConfirmQueue([r as never], [{ name: "system.bash" }]);
     expect(got).toEqual([]);
     expect(resolved).toBe(DENIED);
   });

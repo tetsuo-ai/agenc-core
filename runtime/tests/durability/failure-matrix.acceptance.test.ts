@@ -254,7 +254,6 @@ async function connectFreshDaemon(stateDirectory: string): Promise<{
   const env = {
     ...cleanChildEnvironment(),
     AGENC_HOME: home,
-    AGENC_CONFIG_DIR: home,
     HOME: home,
   };
   const daemon = spawn(

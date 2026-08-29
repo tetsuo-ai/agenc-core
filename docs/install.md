@@ -4,8 +4,15 @@
 updater, and Homebrew template share the same reviewed immutable runtime
 contract.
 
-Three interchangeable install paths share one runtime contract. Each verified
-runtime lives at:
+User install is this page through **After install**. **Release/publish
+procedure** further down is maintainer-only (the agenc-release skill still
+points here).
+
+Install paths that actually work for users: Unix curl, Windows iwr, npm, and
+a local Docker build. The in-tree Homebrew formula is an unpublished template.
+There is no authorized GHCR image.
+
+Each verified runtime lives at:
 
 ```text
 $AGENC_HOME/runtime/<version>/<platform>-<arch>-<libc-or-native>-node-abi-<abi>-sha256-<digest>/
@@ -220,6 +227,21 @@ sudo apparmor_parser -R /etc/apparmor.d/agenc-native-userns
 sudo rm /etc/apparmor.d/agenc-native-userns
 ```
 
+Until the profile is installed, AgenC runs on its Landlock fallback. Landlock
+is a pure allow-list: it cannot grant write access to a project while keeping
+`.git`, `.agenc`, and `.agents` read-only inside it, so sandboxed spawns that
+need a writable project root (shell in git projects, most stdio MCP servers)
+are refused with a `[sandbox_policy_unexpressible]` error naming the path.
+There is no safe partial waiver for this: any flag that made those paths
+writable would let a confined process install git hooks that execute outside
+the sandbox. The supported options are installing the AppArmor profile above
+(restores full bubblewrap confinement), `sandbox_mode = "read-only"`, or the
+explicit `danger-full-access` posture. Plugin-declared MCP servers are exempt:
+they run under a tighter profile confined to their plugin data directory,
+which the Landlock fallback can express. `[sandbox].writable_roots` extends the
+workspace-write allowlist, but it cannot weaken protected `.git`, `.agenc`, or
+agent-control paths and therefore does not bypass this fallback limitation.
+
 ## npm launcher
 
 ```bash
@@ -262,24 +284,24 @@ Compose rejects missing source inputs. The image runs non-root, keeps state in
 the `/data` volume, and publishes no ports by default. Its Linux peer-credential
 addon is prebuilt and root-owned under `/usr/lib/agenc`; startup fails closed if
 that configured addon cannot load, and `/data` can be `noexec` without weakening
-socket authentication. VPS deployment shapes:
-[docs/deploy/vps.md](deploy/vps.md).
+socket authentication. No GHCR image is authorized. Build locally as above.
+VPS deployment shapes: [docs/deploy/vps.md](deploy/vps.md).
 
 ## Homebrew
 
 ```bash
+# Not a live public tap yet. The in-tree formula still has
+# REPLACE_WITH_DARWIN_* digest placeholders.
 brew install tetsuo-ai/agenc/agenc
 ```
 
-The tap formula installs the architecture-specific macOS runtime artifact
-directly and launches its bundled Node 26.5.0 executable, so Homebrew has no
-host-Node dependency. Homebrew upgrades the complete AgenC + private Node
-runtime together with `brew upgrade agenc`; `agenc update` is not the update
-path for formula installations.
+When an owner publishes the tap, the formula installs the architecture-specific
+macOS runtime artifact and its bundled Node 26.5.0. Homebrew upgrades AgenC
+and that Node together with `brew upgrade agenc`; `agenc update` is not the
+update path for formula installs.
 
-`packaging/homebrew/agenc.rb` remains the owner-publish template. Release
-operators replace its placeholder digests in the tap only after both native
-macOS release gates pass and the immutable release manifest is public.
+Until those placeholder digests are replaced after both native macOS release
+gates pass, use the Unix installer or npm instead.
 
 ## After install
 

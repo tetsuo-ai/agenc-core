@@ -1,5 +1,5 @@
 import React from "react";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 import {
   safeExecute,
@@ -12,6 +12,7 @@ import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
+import { requireCommandConfigStore } from "./config-context.js";
 import {
   installPluginOp,
   listInstalledPlugins,
@@ -31,15 +32,27 @@ import {
 } from "../plugins/marketplace/marketplace.js";
 
 type PluginRow = {
+  readonly id: string;
   readonly name: string;
+  readonly root?: string;
   readonly version: string;
   readonly status: "enabled" | "disabled" | "error";
   readonly detail: string;
 };
 
 type PluginSnapshot = {
-  readonly enabled: readonly { readonly name?: string; readonly version?: string }[];
-  readonly disabled: readonly { readonly name?: string; readonly version?: string }[];
+  readonly enabled: readonly {
+    readonly id?: string;
+    readonly name?: string;
+    readonly root?: string;
+    readonly version?: string;
+  }[];
+  readonly disabled: readonly {
+    readonly id?: string;
+    readonly name?: string;
+    readonly root?: string;
+    readonly version?: string;
+  }[];
   readonly errors: readonly { readonly message?: string }[];
   readonly needsRefresh: boolean;
 };
@@ -52,7 +65,7 @@ type PluginSnapshot = {
  */
 export interface PluginMenuActions {
   readonly setEnabled: (pluginId: string, enabled: boolean) => Promise<void>;
-  readonly uninstall: (pluginId: string) => Promise<void>;
+  readonly uninstall: (pluginId: string, pluginRoot?: string) => Promise<void>;
   readonly listMarketplaces: () => Promise<MarketplaceListOutcome>;
   readonly installFromMarketplace: (
     marketplace: Marketplace,
@@ -61,23 +74,47 @@ export interface PluginMenuActions {
 }
 
 /**
- * Uninstall targets the scope where the plugin is actually installed:
- * install roots under `<workspace>/.agents/plugins` are project scope,
- * everything else (including ambiguity) defaults to user scope.
+ * Uninstall targets the selected install root. Workspace plugin roots map to
+ * project scope, while roots under pluginStorageRoot map to user scope. When
+ * one ID exists in both scopes, the caller must provide the selected root.
  */
 async function resolveInstalledPluginScope(
   pluginId: string,
+  pluginRoot: string | undefined,
   options: PluginOperationOptions,
 ): Promise<PluginScope> {
-  const listed = await listInstalledPlugins(options);
-  const match = listed.plugins.find((plugin) => plugin.name === pluginId);
-  if (match !== undefined && options.workspaceRoot !== undefined) {
-    const projectRoot = join(options.workspaceRoot, ".agents", "plugins");
-    if (match.root === projectRoot || match.root.startsWith(`${projectRoot}/`)) {
-      return "project";
-    }
+  if (options.workspaceRoot === undefined) {
+    throw new Error("Plugin uninstall requires an explicit workspace root");
   }
-  return "user";
+  const listed = await listInstalledPlugins(options);
+  const matches = listed.plugins.filter((plugin) => plugin.id === pluginId);
+  const match = pluginRoot === undefined
+    ? matches.length === 1 ? matches[0] : undefined
+    : matches.find((plugin) => resolve(plugin.root) === resolve(pluginRoot));
+  if (match === undefined) {
+    if (matches.length > 1 && pluginRoot === undefined) {
+      throw new Error(
+        `plugin ${pluginId} is installed in multiple scopes. Select an exact install.`,
+      );
+    }
+    throw new Error(`plugin is not installed: ${pluginId}`);
+  }
+  const selectedRoot = resolve(match.root);
+  const projectRoot = resolve(join(options.workspaceRoot, ".agents", "plugins"));
+  if (isPathInside(selectedRoot, projectRoot)) {
+    return "project";
+  }
+  const userRoot = resolve(options.pluginStorageRoot);
+  if (isPathInside(selectedRoot, userRoot)) {
+    return "user";
+  }
+  throw new Error(`plugin install is outside the managed scopes: ${pluginId}`);
+}
+
+function isPathInside(path: string, root: string): boolean {
+  const relativePath = relative(resolve(root), resolve(path));
+  return relativePath === "" ||
+    (!relativePath.startsWith("..") && !isAbsolute(relativePath));
 }
 
 export function createPluginMenuActions(
@@ -87,8 +124,8 @@ export function createPluginMenuActions(
     setEnabled: async (pluginId, enabled) => {
       await setPluginEnabledOp({ ...options, pluginId, enabled });
     },
-    uninstall: async (pluginId) => {
-      const scope = await resolveInstalledPluginScope(pluginId, options);
+    uninstall: async (pluginId, pluginRoot) => {
+      const scope = await resolveInstalledPluginScope(pluginId, pluginRoot, options);
       await uninstallPluginOp({ ...options, pluginId, scope });
     },
     listMarketplaces: async () => {
@@ -107,11 +144,11 @@ export function createPluginMenuActions(
       );
       const source = resolved.source.type === "local"
         ? resolved.source.path
-        : resolved.source.url;
+        : resolved.source;
       const installed = await installPluginOp({
         ...options,
         source,
-        name: resolved.pluginName,
+        name: resolved.pluginId,
       });
       return installed.plugin;
     },
@@ -119,9 +156,19 @@ export function createPluginMenuActions(
 }
 
 function pluginMenuActionsFromContext(ctx: SlashCommandContext): PluginMenuActions {
+  const runtimeOptions = ctx.session.services.runtimeOptions;
+  if (runtimeOptions === undefined) {
+    throw new Error(
+      "Plugin menu requires captured runtime-options authority",
+    );
+  }
+  const configStore = requireCommandConfigStore(ctx);
   return createPluginMenuActions({
-    agencHome: ctx.agencHome ?? join(ctx.home, ".agenc"),
-    workspaceRoot: ctx.cwd,
+    agencHome: configStore.agencHome,
+    pluginStorageRoot: runtimeOptions.pluginStorageRoot,
+    sessionTempRoot: runtimeOptions.sessionTempRoot,
+    workspaceRoot: configStore.projectRoot,
+    configStore,
   });
 }
 
@@ -146,8 +193,8 @@ function readPluginSnapshot(ctx: SlashCommandContext): PluginSnapshot | null {
   if (typeof state !== "object" || state === null) return null;
   const plugins = (state as {
     plugins?: {
-      enabled?: readonly { name?: string; version?: string }[];
-      disabled?: readonly { name?: string; version?: string }[];
+      enabled?: readonly { id?: string; name?: string; root?: string; version?: string }[];
+      disabled?: readonly { id?: string; name?: string; root?: string; version?: string }[];
       errors?: readonly { message?: string }[];
       needsRefresh?: boolean;
     };
@@ -163,19 +210,32 @@ function readPluginSnapshot(ctx: SlashCommandContext): PluginSnapshot | null {
 
 function pluginRows(snapshot: PluginSnapshot): PluginRow[] {
   return [
-    ...snapshot.enabled.map((plugin): PluginRow => ({
-      name: plugin.name ?? "(unnamed)",
-      version: plugin.version ?? "—",
-      status: "enabled",
-      detail: "loaded",
-    })),
-    ...snapshot.disabled.map((plugin): PluginRow => ({
-      name: plugin.name ?? "(unnamed)",
-      version: plugin.version ?? "—",
-      status: "disabled",
-      detail: "disabled",
-    })),
+    ...snapshot.enabled.map((plugin): PluginRow => {
+      const name = plugin.name ?? "(unnamed)";
+      const id = plugin.id ?? name;
+      return {
+        id,
+        name,
+        ...(plugin.root !== undefined ? { root: plugin.root } : {}),
+        version: plugin.version ?? "—",
+        status: "enabled",
+        detail: id === name ? "loaded" : `manifest ${name}, loaded`,
+      };
+    }),
+    ...snapshot.disabled.map((plugin): PluginRow => {
+      const name = plugin.name ?? "(unnamed)";
+      const id = plugin.id ?? name;
+      return {
+        id,
+        name,
+        ...(plugin.root !== undefined ? { root: plugin.root } : {}),
+        version: plugin.version ?? "—",
+        status: "disabled",
+        detail: id === name ? "disabled" : `manifest ${name}, disabled`,
+      };
+    }),
     ...snapshot.errors.map((error, index): PluginRow => ({
+      id: `error-${index + 1}`,
       name: `error-${index + 1}`,
       version: "—",
       status: "error",
@@ -199,13 +259,19 @@ function pluginListFromSnapshot(snapshot: PluginSnapshot | null): string {
   if (enabled.length > 0) {
     lines.push("", "Enabled:");
     for (const plugin of enabled) {
-      lines.push(`  ${plugin.name ?? "(unnamed)"}${plugin.version ? ` ${plugin.version}` : ""}`);
+      const name = plugin.name ?? "(unnamed)";
+      const id = plugin.id ?? name;
+      const manifestName = id === name ? "" : ` (manifest ${name})`;
+      lines.push(`  ${id}${manifestName}${plugin.version ? ` ${plugin.version}` : ""}`);
     }
   }
   if (disabled.length > 0) {
     lines.push("", "Disabled:");
     for (const plugin of disabled) {
-      lines.push(`  ${plugin.name ?? "(unnamed)"}${plugin.version ? ` ${plugin.version}` : ""}`);
+      const name = plugin.name ?? "(unnamed)";
+      const id = plugin.id ?? name;
+      const manifestName = id === name ? "" : ` (manifest ${name})`;
+      lines.push(`  ${id}${manifestName}${plugin.version ? ` ${plugin.version}` : ""}`);
     }
   }
   if (snapshot.errors.length > 0) {
@@ -219,7 +285,7 @@ function pluginListFromSnapshot(snapshot: PluginSnapshot | null): string {
 
 type PluginsScreen =
   | { readonly kind: "list" }
-  | { readonly kind: "confirm-uninstall"; readonly pluginName: string }
+  | { readonly kind: "confirm-uninstall"; readonly plugin: PluginRow }
   | { readonly kind: "marketplaces" }
   | { readonly kind: "marketplace-plugins"; readonly marketplace: Marketplace };
 
@@ -296,9 +362,9 @@ export function PluginsMenuView({
   const toggleSelected = (row: PluginRow) => {
     const nextEnabled = row.status !== "enabled";
     runPluginOperation(async () => {
-      await actions.setEnabled(row.name, nextEnabled);
+      await actions.setEnabled(row.id, nextEnabled);
       setRows((current) => current.map((candidate) =>
-        candidate.name === row.name && candidate.status !== "error"
+        candidate.id === row.id && candidate.status !== "error"
           ? {
               ...candidate,
               status: nextEnabled ? "enabled" : "disabled",
@@ -309,19 +375,22 @@ export function PluginsMenuView({
       markChanged();
       setNotice({
         tone: "info",
-        text: `${row.name} ${nextEnabled ? "enabled" : "disabled"} — restart AgenC to apply`,
+        text: `${row.id} ${nextEnabled ? "enabled" : "disabled"}. Restart AgenC to apply.`,
       });
     });
   };
 
-  const uninstallConfirmed = (pluginName: string) => {
+  const uninstallConfirmed = (plugin: PluginRow) => {
     runPluginOperation(async () => {
-      await actions.uninstall(pluginName);
-      setRows((current) => current.filter((row) => row.name !== pluginName));
+      await actions.uninstall(plugin.id, plugin.root);
+      setRows((current) => current.filter((row) =>
+        row.id !== plugin.id ||
+        (plugin.root !== undefined && row.root !== plugin.root)
+      ));
       markChanged();
       setNotice({
         tone: "info",
-        text: `${pluginName} uninstalled — restart AgenC to apply`,
+        text: `${plugin.id} uninstalled. Restart AgenC to apply.`,
       });
     });
   };
@@ -341,18 +410,22 @@ export function PluginsMenuView({
         plugin.name,
       );
       setRows((current) => [
-        ...current.filter((row) => row.name !== installed.name),
+        ...current.filter((row) => row.id !== installed.id),
         {
+          id: installed.id,
           name: installed.name,
+          root: installed.root,
           version: installed.version ?? "—",
           status: "enabled",
-          detail: "installed · restart to load",
+          detail: installed.id === installed.name
+            ? "installed, restart to load"
+            : `manifest ${installed.name}, installed, restart to load`,
         },
       ]);
       markChanged();
       setNotice({
         tone: "info",
-        text: `installed ${installed.name} — restart AgenC to load it`,
+        text: `Installed ${installed.id}. Restart AgenC to load it.`,
       });
       setScreen({ kind: "list" });
       setActiveIndex(0);
@@ -370,7 +443,7 @@ export function PluginsMenuView({
     if (busy) return;
     if (screen.kind === "confirm-uninstall") {
       if (input === "y") {
-        uninstallConfirmed(screen.pluginName);
+        uninstallConfirmed(screen.plugin);
         showList();
         return;
       }
@@ -415,7 +488,7 @@ export function PluginsMenuView({
           setNotice({ tone: "error", text: "select an installed plugin to uninstall" });
           return;
         }
-        setScreen({ kind: "confirm-uninstall", pluginName: row.name });
+        setScreen({ kind: "confirm-uninstall", plugin: row });
       }
       return;
     }
@@ -557,12 +630,13 @@ export function PluginsMenuView({
   }
 
   const displayRows = rows.length > 0 ? rows : [{
+    id: "no plugins",
     name: "no plugins",
     version: "—",
     status: "disabled" as const,
     detail: "no plugin records loaded",
   }];
-  const confirming = screen.kind === "confirm-uninstall" ? screen.pluginName : null;
+  const confirming = screen.kind === "confirm-uninstall" ? screen.plugin.id : null;
   return (
     <MenuModal
       title="plugins"
@@ -570,7 +644,7 @@ export function PluginsMenuView({
       summary={`${enabledCount} enabled · ${disabledCount} disabled`}
       headerRight={headerRight}
       columns={[3, 12, 18, 12, 36]}
-      headers={["", "status", "name", "version", "detail"]}
+      headers={["", "status", "id", "version", "detail"]}
       items={displayRows}
       activeIndex={activeIndex}
       renderRow={(row, _index, active) => [
@@ -581,7 +655,7 @@ export function PluginsMenuView({
           {row.status}
         </ThemedText>,
         <ThemedText key="name" color={active ? "agenc" : "text2"} wrap="truncate-end">
-          {row.name}
+          {row.id}
         </ThemedText>,
         <ThemedText key="version" color="subtle" wrap="truncate-end">
           {row.version}

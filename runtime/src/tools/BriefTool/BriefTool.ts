@@ -11,7 +11,6 @@ import {
   BRIEF_TOOL_NAME,
   BRIEF_TOOL_PROMPT,
   DESCRIPTION,
-  LEGACY_BRIEF_TOOL_NAME,
 } from 'src/tools/BriefTool/prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
 
@@ -72,13 +71,13 @@ export type Output = z.infer<OutputSchema>
  * PROACTIVE || KAIROS): assistant mode depends on Brief, so KAIROS alone
  * must bundle it. KAIROS_BRIEF lets Brief ship independently.
  *
- * Use this to decide whether `--brief` / `defaultView: 'chat'` / `--tools`
+ * Use this to decide whether `--brief` / `/brief` / `--tools`
  * listing should be honored. Use `isBriefEnabled()` to decide whether the
  * tool is actually active in the current session.
  *
  * AGENC_BRIEF env var force-grants entitlement for dev/testing —
  * bypasses the GB gate so you can test without being enrolled. Still
- * requires an opt-in action to activate (--brief, defaultView, etc.), but
+ * requires an opt-in action to activate (`--brief`, `/brief`, etc.), but
  * the env var alone also sets userMsgOptIn via maybeActivateBrief().
  */
 function isBriefEntitled(): boolean {
@@ -98,9 +97,7 @@ function isBriefEntitled(): boolean {
  *
  * Activation requires explicit opt-in (userMsgOptIn) set by one of:
  *   - `--brief` CLI flag (maybeActivateBrief in main.tsx)
- *   - `defaultView: 'chat'` in settings (main.tsx init)
  *   - `/brief` slash command (brief.ts)
- *   - `/config` defaultView picker (Config.tsx)
  *   - SendUserMessage in `--tools` / SDK `tools` option (main.tsx)
  *   - AGENC_BRIEF env var (maybeActivateBrief — dev/testing bypass)
  * Assistant mode (kairosActive) bypasses opt-in since its system prompt
@@ -127,7 +124,6 @@ export function isBriefEnabled(): boolean {
 
 export const BriefTool = buildTool({
   name: BRIEF_TOOL_NAME,
-  aliases: [LEGACY_BRIEF_TOOL_NAME],
   searchHint:
     'send a message to the user — your primary visible output channel',
   maxResultSizeChars: 100_000,

@@ -21,6 +21,8 @@
     "src/launcher.mjs",
     "lib/activation-lock-identity.d.mts",
     "lib/activation-lock-identity.mjs",
+    "lib/home-authority.d.mts",
+    "lib/home-authority.mjs",
     "lib/generated-wrapper.d.mts",
     "lib/generated-wrapper.mjs",
     "lib/runtime-archive.d.mts",

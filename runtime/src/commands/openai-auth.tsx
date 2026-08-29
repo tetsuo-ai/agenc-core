@@ -2,10 +2,9 @@
  * /openai-login and /openai-logout — Sign in with ChatGPT for OpenAI
  * access without an OPENAI_API_KEY in the environment.
  *
- * Browser PKCE with a loopback callback on the shared CLI client's
- * well-known port; the login's id_token is exchanged (RFC 8693) for a
- * platform API key, which is what gets stored and consumed — the wire
- * path stays plain API-key auth.
+ * Browser PKCE uses one captured loopback authority. The shared completion
+ * path stores either an exchanged platform API key or the subscription access
+ * token/account pair; both command surfaces consume the same native record.
  */
 
 import { Box, Text } from "../tui/ink.js";
@@ -13,13 +12,19 @@ import {
   OpenAiOauthError,
   runOpenAiBrowserLogin,
 } from "../services/openai/oauth.js";
-import { exchangeProviderCodeIdTokenForApiKey } from "../services/api/openAiCodeOAuthShared.js";
 import {
   clearOpenAiOauthCredentials,
   readOpenAiOauthCredentials,
-  saveOpenAiOauthCredentials,
 } from "../utils/openAiOauthCredentials.js";
+import {
+  completeOpenAiLogin,
+  OpenAiLoginCompletionError,
+} from "../services/openai/login.js";
 import { openUrlInBrowser } from "./auth.js";
+import {
+  providerEnvironmentFromCommandContext,
+  requireCommandConfigStore,
+} from "./config-context.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { applyProviderSwitch } from "./provider.js";
 import {
@@ -32,7 +37,7 @@ import {
 export const openaiLoginCommand: SlashCommand = {
   name: "openai-login",
   aliases: ["chatgpt-login"],
-  description: "Sign in with your ChatGPT account to use OpenAI models",
+  description: "Sign in to ChatGPT for OpenAI models",
   immediate: true,
   supportsNonInteractive: false,
   execute: async (ctx) => executeOpenAiLogin(ctx),
@@ -41,16 +46,17 @@ export const openaiLoginCommand: SlashCommand = {
 export const openaiLogoutCommand: SlashCommand = {
   name: "openai-logout",
   aliases: ["chatgpt-logout"],
-  description: "Sign out of the ChatGPT account used for OpenAI",
+  description: "Sign out of ChatGPT for OpenAI models",
   immediate: true,
   supportsNonInteractive: true,
-  execute: async () =>
+  execute: async (ctx) =>
     safeExecute(async () => {
-      const existing = readOpenAiOauthCredentials();
+      const home = requireCommandConfigStore(ctx).homeContext;
+      const existing = readOpenAiOauthCredentials(home);
       if (existing === undefined) {
         return { kind: "text", text: "No ChatGPT sign-in stored." };
       }
-      const result = clearOpenAiOauthCredentials();
+      const result = clearOpenAiOauthCredentials(home);
       if (!result.success) {
         return {
           kind: "error",
@@ -60,7 +66,7 @@ export const openaiLogoutCommand: SlashCommand = {
       const label = existing.accountLabel ? ` (${existing.accountLabel})` : "";
       return {
         kind: "text",
-        text: `Signed out of ChatGPT${label}. The stored key was deleted.`,
+        text: `Signed out of ChatGPT${label}. The stored credential was deleted.`,
       };
     }),
 };
@@ -74,9 +80,12 @@ async function executeOpenAiLogin(
   ctx: SlashCommandContext,
 ): Promise<SlashCommandResult> {
   return safeExecute(async () => {
+    const home = requireCommandConfigStore(ctx).homeContext;
+    const environment = providerEnvironmentFromCommandContext(ctx);
     let login;
     try {
       login = await runOpenAiBrowserLogin({
+        environment,
         onAuthorizeUrl: async (url) => {
           showLoginNotice(ctx, {
             heading: "Sign in with your ChatGPT account to continue.",
@@ -127,55 +136,39 @@ async function executeOpenAiLogin(
       clearLoginNotice(ctx);
     }
 
-    if (login.tokens.idToken === undefined) {
-      return {
-        kind: "error",
-        message:
-          "Signed in, but the login carried no id_token to exchange for an API key.",
-      };
-    }
     showLoginNotice(ctx, {
-      heading: "Exchanging the login for an API key…",
+      heading: "Saving the ChatGPT sign-in…",
       url: "",
     });
-    let apiKey: string;
+    let completion;
     try {
-      apiKey = await exchangeProviderCodeIdTokenForApiKey(
-        login.tokens.idToken,
-      );
+      completion = await completeOpenAiLogin({
+        home,
+        environment,
+        login,
+      });
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
+      if (error instanceof OpenAiLoginCompletionError) {
+        return {
+          kind: "error",
+          message: `Sign-in failed: ${error.message} (${error.code}).`,
+        };
+      }
       return {
         kind: "error",
-        message:
-          `Sign-in failed: ChatGPT accepted the login, but exchanging it for an ` +
-          `API key was rejected — ${detail} If your ChatGPT account has no ` +
-          `OpenAI platform organization, sign in is not available for it; use an ` +
-          `OPENAI_API_KEY instead.`,
+        message: `Sign-in failed: ${error instanceof Error ? error.message : String(error)}.`,
       };
-    }
-    const saved = saveOpenAiOauthCredentials({
-      apiKey,
-      obtainedAt: Date.now(),
-      ...(login.accountLabel !== undefined
-        ? { accountLabel: login.accountLabel }
-        : {}),
-      idToken: login.tokens.idToken,
-      ...(login.tokens.refreshToken !== undefined
-        ? { refreshToken: login.tokens.refreshToken }
-        : {}),
-    });
-    if (!saved.success) {
-      return {
-        kind: "error",
-        message: `Signed in, but storing the key failed: ${saved.warning ?? "unknown error"}`,
-      };
+    } finally {
+      clearLoginNotice(ctx);
     }
 
-    const who = login.accountLabel ?? "ChatGPT account";
+    const who = completion.account;
     const lines = [`Signed in to ChatGPT as ${who}.`];
-    const switchSummary = await applyProviderSwitch(ctx.session, "openai");
-    lines.push(switchSummary);
+    if (completion.authMode === "chatgpt") {
+      lines[0] = `Signed in to ChatGPT as ${who} (subscription).`;
+    }
+    const switchOutcome = await applyProviderSwitch(ctx.session, "openai");
+    lines.push(switchOutcome.summary);
     lines.push(
       "This sign-in takes precedence over any OPENAI_API_KEY in the " +
         "environment. /openai-logout to fall back to the env key.",

@@ -42,7 +42,10 @@ import {
   type PostToolUseHook,
   type PreToolUseHook,
 } from "../tools/hooks.js";
-import { routerFromRegistry } from "../tools/router.js";
+import {
+  routerFromRegistry,
+  type LiveToolDispatchOptions,
+} from "../tools/router.js";
 import {
   type ApprovalPolicy as OrchestratorApprovalPolicy,
   type ApprovalResolver,
@@ -385,6 +388,52 @@ export function ensureStreamingToolExecutor(
 
   const runtime = createToolExecutionRuntime();
   const router = routerFromRegistry(session.services.registry);
+  const liveDispatchOptions = buildLiveToolDispatchOptions(
+    ctx,
+    session,
+    signal,
+  );
+
+  executor = new StreamingToolExecutor({
+    registry: session.services.registry,
+    maxConcurrency: resolveMaxToolUseConcurrency(),
+    abortSignal: signal,
+    parentAbortController: session.abortController,
+    runtime,
+    onSiblingAbort: (reason) => {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "sibling_tool_abort",
+            message: `sibling tools cancelled: ${reason}`,
+          },
+        },
+      });
+    },
+    liveToolDispatch: {
+      router,
+      options: liveDispatchOptions,
+    },
+  });
+  state.streamingToolExecutor = executor;
+  return executor;
+}
+
+/**
+ * Build the canonical admitted-tool policy envelope for one live Session.
+ *
+ * Model turns and operator-entered direct shell commands must cross the same
+ * permission, hook, guardian, sandbox, audit, and execution-admission path.
+ * Keeping that envelope here prevents daemon-owned physical effects from
+ * growing a second policy engine as new execution surfaces are added.
+ */
+export function buildLiveToolDispatchOptions(
+  ctx: TurnContext,
+  session: Session,
+  signal?: AbortSignal,
+): LiveToolDispatchOptions {
   // Editor interactions promise a daemon-enforced read-only/proposal-only
   // boundary. Ordinary tool hooks are operator-extensible command surfaces:
   // even an allowed FileRead could otherwise run a side-effecting pre/post,
@@ -423,110 +472,87 @@ export function ensureStreamingToolExecutor(
       })
     : null;
 
-  executor = new StreamingToolExecutor({
-    registry: session.services.registry,
-    maxConcurrency: resolveMaxToolUseConcurrency(),
-    abortSignal: signal,
-    parentAbortController: session.abortController,
-    runtime,
-    onSiblingAbort: (reason) => {
+  return {
+    session,
+    turn: ctx,
+    tracker: createNoopTracker(),
+    ...(signal !== undefined ? { signal } : {}),
+    approvalPolicy: orchestratorPolicy.approvalPolicy,
+    sandboxMode: orchestratorPolicy.sandboxMode,
+    ...(!editorInteractionActive &&
+    orchestratorPolicy.permissionHooks !== undefined
+      ? { permissionHooks: orchestratorPolicy.permissionHooks }
+      : {}),
+    ...(!editorInteractionActive &&
+    orchestratorPolicy.guardianApprovalReviewer !== undefined
+      ? {
+          guardianApprovalReviewer:
+            orchestratorPolicy.guardianApprovalReviewer,
+        }
+      : {}),
+    ...(!editorInteractionActive &&
+    orchestratorPolicy.approvalResolver !== undefined
+      ? { approvalResolver: orchestratorPolicy.approvalResolver }
+      : {}),
+    ...(session.services.permissionAuditLogger !== undefined
+      ? { permissionAuditLogger: session.services.permissionAuditLogger }
+      : {}),
+    onPermissionAuditError: (
+      error: unknown,
+      event: PermissionAuditEventInput,
+    ) => {
+      try {
+        session.services.onPermissionAuditError?.(error, event);
+      } catch (handlerError) {
+        session.emit({
+          id: session.nextInternalSubId(),
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "permission_audit_error_handler_failed",
+              message: `permission audit error handler failed:${handlerError instanceof Error ? handlerError.message : String(handlerError)}`,
+            },
+          },
+        });
+      }
       session.emit({
         id: session.nextInternalSubId(),
         msg: {
           type: "warning",
           payload: {
-            cause: "sibling_tool_abort",
-            message: `sibling tools cancelled: ${reason}`,
+            cause: "permission_audit_log_failed",
+            message: `permission audit log failed for ${event.eventKind}:${error instanceof Error ? error.message : String(error)}`,
           },
         },
       });
     },
-    liveToolDispatch: {
-      router,
-      options: {
-        session,
-        turn: ctx,
-        tracker: createNoopTracker(),
-        approvalPolicy: orchestratorPolicy.approvalPolicy,
-        sandboxMode: orchestratorPolicy.sandboxMode,
-        ...(!editorInteractionActive &&
-        orchestratorPolicy.permissionHooks !== undefined
-          ? { permissionHooks: orchestratorPolicy.permissionHooks }
-          : {}),
-        ...(!editorInteractionActive &&
-        orchestratorPolicy.guardianApprovalReviewer !== undefined
-          ? {
-              guardianApprovalReviewer:
-                orchestratorPolicy.guardianApprovalReviewer,
-            }
-          : {}),
-        ...(!editorInteractionActive &&
-        orchestratorPolicy.approvalResolver !== undefined
-          ? { approvalResolver: orchestratorPolicy.approvalResolver }
-          : {}),
-        ...(session.services.permissionAuditLogger !== undefined
-          ? { permissionAuditLogger: session.services.permissionAuditLogger }
-          : {}),
-        onPermissionAuditError: (
-          error: unknown,
-          event: PermissionAuditEventInput,
-        ) => {
-          try {
-            session.services.onPermissionAuditError?.(error, event);
-          } catch (handlerError) {
-            session.emit({
-              id: session.nextInternalSubId(),
-              msg: {
-                type: "warning",
-                payload: {
-                  cause: "permission_audit_error_handler_failed",
-                  message: `permission audit error handler failed:${handlerError instanceof Error ? handlerError.message : String(handlerError)}`,
-                },
-              },
-            });
-          }
-          session.emit({
-            id: session.nextInternalSubId(),
-            msg: {
-              type: "warning",
-              payload: {
-                cause: "permission_audit_log_failed",
-                message: `permission audit log failed for ${event.eventKind}:${error instanceof Error ? error.message : String(error)}`,
-              },
-            },
-          });
+    ...(preHooks.length > 0 ? { preHooks } : {}),
+    ...(postHooks.length > 0 ? { postHooks } : {}),
+    ...(failureHooks.length > 0 ? { failureHooks } : {}),
+    ...(permissionDecisionHooks.length > 0
+      ? { permissionDecisionHooks }
+      : {}),
+    ...(permissionContext !== null
+      ? {
+          canUseTool: hasPermissionsToUseTool,
+          permissionContext,
+          modeChangeRegistry: permissionModeRegistry,
+        }
+      : {}),
+    ...(discoveredToolNames !== undefined ? { discoveredToolNames } : {}),
+    onHookError: (phase: string, err: unknown, idx: number) => {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: `${phase}_tool_hook_threw`,
+            message: `${phase} hook ${idx} threw: ${err instanceof Error ? err.message : String(err)}`,
+          },
         },
-        ...(preHooks.length > 0 ? { preHooks } : {}),
-        ...(postHooks.length > 0 ? { postHooks } : {}),
-        ...(failureHooks.length > 0 ? { failureHooks } : {}),
-        ...(permissionDecisionHooks.length > 0
-          ? { permissionDecisionHooks }
-          : {}),
-        ...(permissionContext !== null
-          ? {
-              canUseTool: hasPermissionsToUseTool,
-              permissionContext,
-              modeChangeRegistry: permissionModeRegistry,
-            }
-          : {}),
-        ...(discoveredToolNames !== undefined ? { discoveredToolNames } : {}),
-        onHookError: (phase: string, err: unknown, idx: number) => {
-          session.emit({
-            id: session.nextInternalSubId(),
-            msg: {
-              type: "warning",
-              payload: {
-                cause: `${phase}_tool_hook_threw`,
-                message: `${phase} hook ${idx} threw: ${err instanceof Error ? err.message : String(err)}`,
-              },
-            },
-          });
-        },
-      },
+      });
     },
-  });
-  state.streamingToolExecutor = executor;
-  return executor;
+  };
 }
 
 const editorProposalQueuedExecutors = new WeakSet<StreamingToolExecutor>();

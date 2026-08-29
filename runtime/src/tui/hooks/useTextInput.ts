@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { isInputModeCharacter } from '../components/PromptInput/inputModes.js'
 import { useNotifications } from '../context/notifications.js'
+import { useFullscreenMode } from '../context/fullscreenModeContext.js'
 import stripAnsi from 'strip-ansi'
 import { markBackslashReturnUsed } from '../../commands/terminalSetup/terminalSetup.js'
 import { addToHistory } from '../history/history.js'
@@ -20,7 +21,6 @@ import {
   yankPop,
 } from '../../utils/TextCursor.js'
 import { env } from '../../utils/env.js'
-import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'
 import type { ImageDimensions } from '../../utils/imageResizer.js'
 import { isModifierPressed, prewarmModifiers } from '../../utils/modifiers.js'
 import { useDoublePress } from './useDoublePress.js'
@@ -96,6 +96,7 @@ export function useTextInput({
   inlineGhostText,
   dim,
 }: UseTextInputProps): TextInputState {
+  const isFullscreen = useFullscreenMode()
   // Pre-warm the modifiers module for Apple Terminal (has internal guard, safe to call multiple times)
   if (env.terminal === 'Apple_Terminal') {
     prewarmModifiers()
@@ -435,12 +436,12 @@ export function useTextInput({
       case key.pageDown:
         // In fullscreen mode, PgUp/PgDn scroll the message viewport instead
         // of moving the cursor — no-op here, ScrollKeybindingHandler handles it.
-        if (isFullscreenEnvEnabled()) {
+        if (isFullscreen) {
           return NOOP_HANDLER
         }
         return () => cursor.endOfLine()
       case key.pageUp:
-        if (isFullscreenEnvEnabled()) {
+        if (isFullscreen) {
           return NOOP_HANDLER
         }
         return () => cursor.startOfLine()
@@ -482,7 +483,7 @@ export function useTextInput({
               // is multi-line paste from a terminal without bracketed
               // paste — convert to \n. Backslash+\r is a stale VS Code
               // Shift+Enter binding (pre-#8991 setup wrote
-              // args.text "\\\r\n" to keybindings.json); keep the \r so
+              // args.text "\\\r\n" through a keybinding action); keep the \r so
               // it becomes \n below (anthropics/agenc-code#31316).
               const text = stripAnsi(input)
                 // eslint-disable-next-line custom-rules/no-lookbehind-regex -- .replace(re, str) on 1-2 char keystrokes: no-match returns same string (Object.is), regex never runs

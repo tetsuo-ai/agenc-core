@@ -1,9 +1,10 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 
 import {
   executeUserPromptSubmitHooks,
   type UserPromptSubmitHook,
 } from "../../src/hooks/user-prompt-submit.js";
+import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
 
 async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
   const values: T[] = [];
@@ -30,4 +31,22 @@ test("preserves array-returning UserPromptSubmit hooks", async () => {
     ["first"],
     ["second"],
   ]);
+});
+
+test("owner simple mode suppresses UserPromptSubmit callbacks", async () => {
+  const hook = vi.fn<UserPromptSubmitHook>(() => ({
+    blockingError: { blockingError: "must not block" },
+    additionalContexts: ["must not append"],
+  }));
+
+  const results = await collect(
+    executeUserPromptSubmitHooks("hello", "default", {
+      cwd: "/workspace",
+      runtimeOptions: resolveAgentRuntimeOptions({}, { simpleMode: true }),
+      userPromptSubmitHooks: [hook],
+    }),
+  );
+
+  expect(hook).not.toHaveBeenCalled();
+  expect(results).toEqual([]);
 });

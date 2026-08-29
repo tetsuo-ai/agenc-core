@@ -1153,9 +1153,10 @@ jobs:
                 "tests/fnd/portable-repository-path.test.ts"
                 "tests/fnd/process-repository-helpers.native.test.ts"
                 "tests/tools/runtimes/runtime.darwin.test.ts"
+                "tests/utils/secureStorage/macOsKeychainHelper.darwin.test.ts"
               )
-              expected_native_tests=47
-              expected_native_suites=8
+              expected_native_tests=48
+              expected_native_suites=9
               ;;
             win-x64)
               native_tests=(

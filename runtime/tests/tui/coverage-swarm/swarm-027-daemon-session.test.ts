@@ -8,11 +8,11 @@ import type {
 } from "../../app-server/protocol/index.js";
 import {
   attachDaemonAgentTuiSession,
-  createDaemonTuiSession,
   type AgenCDaemonConnectionState,
   type AgenCDaemonTuiClient,
   type AgenCTuiBridgeSession,
 } from "../daemon-session.js";
+import { createDaemonTuiSessionFixture as createDaemonTuiSession } from "../../helpers/daemon-tui-session.js";
 
 interface RecordedRequest {
   readonly method: string;
@@ -96,6 +96,14 @@ function createClient(
         return {
           sessionId: params?.sessionId,
           events: [{ id: "event_1", type: "message" }],
+        } as AgenCDaemonResultByMethod[Method];
+      }
+      if (method === "session.mcp.status") {
+        return {
+          sessionId: params?.sessionId,
+          revision: 0,
+          servers: [],
+          tools: [],
         } as AgenCDaemonResultByMethod[Method];
       }
       if (method === "session.mcp.addServer") {
@@ -258,7 +266,7 @@ describe("coverage swarm daemon session adapter", () => {
     ]);
   });
 
-  it("returns daemon MCP addServer results across local mirror edge cases", async () => {
+  it("replaces inherited MCP managers and returns only daemon mutation results", async () => {
     const nullManagerSession = createDaemonTuiSession({
       baseSession: createBaseSession({
         services: { mcpManager: null },
@@ -267,7 +275,10 @@ describe("coverage swarm daemon session adapter", () => {
       sessionId: "session_1",
       clientId: "tui_1",
     });
-    expect(nullManagerSession.services.mcpManager).toBeNull();
+    expect(nullManagerSession.services.mcpManager).toEqual(
+      expect.objectContaining({ addServer: expect.any(Function) }),
+    );
+    expect(nullManagerSession.listMcpClients).toBeUndefined();
 
     const remoteOnlySession = createDaemonTuiSession({
       baseSession: createBaseSession({
@@ -315,6 +326,7 @@ describe("coverage swarm daemon session adapter", () => {
       success: true,
       toolCount: 2,
     });
+    expect(alreadyConfiguredAddServer).not.toHaveBeenCalled();
 
     const fatalLocalAddServer = vi.fn(async () => ({
       serverName: "fatal-local",
@@ -341,6 +353,7 @@ describe("coverage swarm daemon session adapter", () => {
       success: true,
       toolCount: 2,
     });
+    expect(fatalLocalAddServer).not.toHaveBeenCalled();
   });
 
   it("bridges resolver fallbacks for permissions and elicitations", async () => {
@@ -512,7 +525,7 @@ describe("coverage swarm daemon session adapter", () => {
     ]);
   });
 
-  it("subscribes once, tears down after the last listener, and maps notices", () => {
+  it("keeps the authority subscription alive after listeners detach and maps notices", () => {
     const client = createClient();
     client.connectionState = {
       status: "reconnecting",
@@ -554,7 +567,6 @@ describe("coverage swarm daemon session adapter", () => {
     expect(client.notificationSubscribeCount).toBe(1);
     expect(client.connectionSubscribeCount).toBe(1);
 
-    client.emitConnection({ status: "connected" });
     client.emit("session_1", { method: 123, params: { ok: true } });
     client.emit("session_1", {
       method: "event.permission_request",
@@ -564,23 +576,13 @@ describe("coverage swarm daemon session adapter", () => {
       },
     });
     client.emit("session_1", {
-      msg: {
-        type: "background_agent_status",
-        payload: {
-          eventId: "",
-          status: "running",
-        },
-      },
-    });
-    expect(session.activeTurn?.unsafePeek()).toEqual({ turnId: "daemon-turn" });
-
-    client.emit("session_1", {
       method: "event.agent_status",
       params: {
         eventId: "",
         status: "running",
       },
     });
+    expect(session.activeTurn?.unsafePeek()).toEqual({ turnId: "status" });
 
     unsubscribeFirst();
     expect(client.sessionUnsubscribeCount).toBe(0);
@@ -594,9 +596,9 @@ describe("coverage swarm daemon session adapter", () => {
     expect(session.activeTurn?.unsafePeek()).toBeNull();
     unsubscribeSecond();
 
-    expect(client.sessionUnsubscribeCount).toBe(1);
-    expect(client.notificationUnsubscribeCount).toBe(1);
-    expect(client.connectionUnsubscribeCount).toBe(1);
+    expect(client.sessionUnsubscribeCount).toBe(0);
+    expect(client.notificationUnsubscribeCount).toBe(0);
+    expect(client.connectionUnsubscribeCount).toBe(0);
     expect(firstEvents).toEqual([
       { method: 123, params: { ok: true } },
       {
@@ -605,13 +607,6 @@ describe("coverage swarm daemon session adapter", () => {
         payload: {
           callId: "call_1",
           permissions: ["tool.use", "tool.admin"],
-        },
-      },
-      {
-        type: "background_agent_status",
-        payload: {
-          eventId: "",
-          status: "running",
         },
       },
       {

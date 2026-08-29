@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { createRoot } from "../../ink/root.js";
 import { TeammateSpinnerTree } from "./TeammateSpinnerTree.js";
 
+const TEST_SPINNER_VERBS = ["Working"] as const;
+
 const appStateMock = vi.hoisted(() => ({
   state: {
     showTeammateMessagePreview: true,
@@ -121,6 +123,7 @@ describe("TeammateSpinnerTree rendering", () => {
         selectedIndex={2}
         leaderTokenCount={26_000}
         leaderVerb="coordinating"
+        spinnerVerbs={TEST_SPINNER_VERBS}
       />,
     );
 
@@ -152,6 +155,7 @@ describe("TeammateSpinnerTree rendering", () => {
         isInSelectionMode
         leaderIdleText="Idle for 3s"
         selectedIndex={0}
+        spinnerVerbs={TEST_SPINNER_VERBS}
       />,
     );
 
@@ -166,7 +170,9 @@ describe("TeammateSpinnerTree rendering", () => {
   test("renders nothing when there are no running teammates", async () => {
     appStateMock.state.tasks = {};
 
-    const output = await renderTreeToText(<TeammateSpinnerTree />);
+    const output = await renderTreeToText(
+      <TeammateSpinnerTree spinnerVerbs={TEST_SPINNER_VERBS} />,
+    );
 
     expect(output).toBe("");
   });

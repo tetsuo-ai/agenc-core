@@ -36,6 +36,7 @@ import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type { AssistantMessage, TurnState } from "../session/turn-state.js";
 import type { Message } from "../types/message.js";
 import { asRecord } from "../utils/record.js";
+import { isHookExecutionSuppressed } from "../hooks/runtime-policy.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -119,6 +120,9 @@ export async function evaluateStopHooks(
   session: Session,
   _signal?: AbortSignal,
 ): Promise<StopResult> {
+  if (isHookExecutionSuppressed(session.services.runtimeOptions)) {
+    return { allowStop: true, blocking: false };
+  }
   // Configured Stop hooks are arbitrary operator commands. Editor
   // interactions have their own read-only/proposal-only contract and must
   // never widen that authority by entering the ordinary Agent hook ladder.
@@ -468,6 +472,7 @@ export async function executeStopFailureHooks(
   ctx: TurnContext,
   session: Session,
 ): Promise<void> {
+  if (isHookExecutionSuppressed(session.services.runtimeOptions)) return;
   // Keep the same authority boundary as normal Stop hooks. This central
   // guard covers every recovery callsite.
   if (ctx.editorInteraction !== undefined) {

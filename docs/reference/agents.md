@@ -13,17 +13,18 @@ AgenC runs concurrent agent work on two related surfaces:
 Implementation: `runtime/src/agents/v2/`. Parity notes:
 [`runtime/src/agents/v2/PARITY.md`](../../runtime/src/agents/v2/PARITY.md).
 
-Registered by `createMultiAgentV2Tools()` (plus CSV job tools from the same
-LIVE multi-agent surface):
+The six v2 tools are registered by `createMultiAgentV2Tools()`
+(`runtime/src/agents/v2/index.ts`). CSV job tools are a sibling registration
+in `runtime/src/bin/model-facing-tools.ts`, not inside `v2/index.ts`.
 
 | Tool | Role |
 | --- | --- |
-| `spawn_agent` | Spawn a reusable worker and its initial bounded task |
-| `wait_agent` | Wait for, then drain, all delivered mailbox updates |
+| `spawn_agent` | Spawn a reusable worker and its initial bounded task. Required `message` + `task_name`. Optional `agent_type`, `model`, `reasoning_effort`, `service_tier`, `fork_turns`, `isolation` (`none` \| `worktree`). `fork_context` is accepted then rejected (`use fork_turns instead`). |
+| `wait_agent` | Wait for, then drain, all delivered mailbox updates. `timeout_ms` only (default 30s, min 10s, max 1h). No target filter. |
 | `close_agent` | Terminally close a worker and its descendants |
 | `assign_task` | Admit one new task to an idle reusable worker (**triggers a turn**) |
 | `send_message` | Queue passive context (**does not** trigger a turn) |
-| `list_agents` | Read the live agent tree and current statuses |
+| `list_agents` | Read the live agent tree and current statuses. Optional `path_prefix`. |
 | `spawn_agents_on_csv` | Fan out workers from CSV rows (job orchestrator) |
 | `report_agent_job_result` | Report a CSV/job worker result back to the orchestrator |
 | `inspect_csv_agent_job` | Read a bounded job summary and keyset item page |
@@ -291,7 +292,7 @@ Unattended flags must come **before** the objective; the first non-flag token
 ends option parsing (flags after the objective become part of the objective
 text).
 
-Source: `runtime/src/app-server/agent-cli.ts` (dispatched from `bin/agenc.ts`).
+Source: `runtime/src/app-server/agent-cli.ts` (dispatched from `bin/agenc-main.ts`).
 See also [cli.md](cli.md).
 
 Related TUI: `/coordinator` (alias `/fleet`) toggles coordinator mode for the
@@ -321,6 +322,17 @@ session so one conversation maps to one agent = one session. Details:
 [`../gateway.md`](../gateway.md).
 
 ## Roles, registry, worktrees
+
+Built-in role IDs are their public names:
+
+| Role | Purpose |
+| --- | --- |
+| `scanner` | Read-only codebase reconnaissance |
+| `runner` | Execution and production work |
+
+The removed `explorer` and `worker` built-in IDs are not accepted as aliases.
+Use the canonical role names in `agent_type`, persisted metadata, role files,
+and automation.
 
 | Area | Location |
 | --- | --- |
@@ -352,9 +364,12 @@ for the boundary and compatibility contract.
 
 ## Related slash commands
 
-- `/agents` — interactive agent listing / management menu
+- `/agents` interactive agent listing / management menu
+- `/coordinator` (alias `/fleet`) reports or toggles coordinator mode
+- `/swarm` reports or sets adaptive routing (`on` / `off` / `status`)
+- `/tasks` live workers and shell tasks
 - Protocol marketplace commands (`/claim`, `/delegate`, …) are separate from
-  multi-agent v2; mutating marketplace stages remain owner-gated (see
+  multi-agent v2. Mutating marketplace stages remain owner-gated (see
   [`../roadmap.md`](../roadmap.md)).
 
 ## Validation

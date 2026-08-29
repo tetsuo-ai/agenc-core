@@ -395,30 +395,38 @@ export async function launchBrowser(
     throw missingSandboxExecutionBoundary("browser");
   }
   const env = scrubEnvForChildProcess(process.env);
-  const spawnCommand = sandboxExecutionBroker.prepareSpawn("browser", {
-    program: options.executablePath,
-    args: buildChromiumArgs(options),
-    cwd: sandboxExecutionBroker.cwd,
-    env,
-    additionalPermissions: {
-      network: { enabled: true },
-      fileSystem: {
-        entries: [
-          {
-            path: { kind: "path", path: options.userDataDir },
-            access: "write",
-          },
-        ],
+  const preparedSpawn = sandboxExecutionBroker.prepareSpawn(
+    "browser",
+    {
+      program: options.executablePath,
+      args: buildChromiumArgs(options),
+      cwd: sandboxExecutionBroker.cwd,
+      env,
+      additionalPermissions: {
+        network: { enabled: true },
+        fileSystem: {
+          entries: [
+            {
+              path: { kind: "path", path: options.userDataDir },
+              access: "write",
+            },
+          ],
+        },
       },
     },
-  });
-  const child = spawn(spawnCommand.program, [...spawnCommand.args], {
-    cwd: spawnCommand.cwd,
-    env: spawnCommand.env,
-    argv0: spawnCommand.argv0,
-    stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
-    detached: process.platform !== "win32",
-  });
+    { lifecycleParticipant: "browser" },
+  );
+  const child = preparedSpawn.spawnLifecycleParticipant(
+    "browser",
+    (spawnCommand) =>
+      spawn(spawnCommand.program, [...spawnCommand.args], {
+        cwd: spawnCommand.cwd,
+        env: spawnCommand.env,
+        argv0: spawnCommand.argv0,
+        stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
+        detached: process.platform !== "win32",
+      }),
+  );
 
   let stderrTail = "";
   child.stderr?.setEncoding("utf8");

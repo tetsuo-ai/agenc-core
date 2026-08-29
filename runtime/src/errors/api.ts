@@ -1,4 +1,10 @@
 import type { SDKAssistantMessageError } from "./runtime.js";
+import { getIsNonInteractiveSession } from "../bootstrap/state.js";
+import {
+  API_PDF_MAX_PAGES,
+  PDF_TARGET_RAW_SIZE,
+} from "../constants/apiLimits.js";
+import { formatFileSize } from "../utils/format.js";
 
 export type AgenCSystemAPIErrorMessage = {
   readonly type: "system";
@@ -334,6 +340,38 @@ export function isMediaSizeError(raw: string): boolean {
     (raw.includes("image dimensions exceed") && raw.includes("many-image")) ||
     /maximum of \d+ PDF pages/.test(raw)
   );
+}
+
+export function getPdfTooLargeErrorMessage(): string {
+  const limits = `max ${API_PDF_MAX_PAGES} pages, ${formatFileSize(PDF_TARGET_RAW_SIZE)}`;
+  return getIsNonInteractiveSession()
+    ? `PDF too large (${limits}). Try reading the file a different way (e.g., extract text with pdftotext).`
+    : `PDF too large (${limits}). Double press esc to go back and try again, or use pdftotext to convert to text first.`;
+}
+
+export function getPdfPasswordProtectedErrorMessage(): string {
+  return getIsNonInteractiveSession()
+    ? "PDF is password protected. Try using a CLI tool to extract or convert the PDF."
+    : "PDF is password protected. Please double press esc to edit your message and try again.";
+}
+
+export function getPdfInvalidErrorMessage(): string {
+  return getIsNonInteractiveSession()
+    ? "The PDF file was not valid. Try converting it to text first (e.g., pdftotext)."
+    : "The PDF file was not valid. Double press esc to go back and try again with a different file.";
+}
+
+export function getImageTooLargeErrorMessage(): string {
+  return getIsNonInteractiveSession()
+    ? "Image was too large. Try resizing the image or using a different approach."
+    : "Image was too large. Double press esc to go back and try again with a smaller image.";
+}
+
+export function getRequestTooLargeErrorMessage(): string {
+  const limits = `max ${formatFileSize(PDF_TARGET_RAW_SIZE)}`;
+  return getIsNonInteractiveSession()
+    ? `Request too large (${limits}). Try with a smaller file.`
+    : `Request too large (${limits}). Double press esc to go back and try with a smaller file.`;
 }
 
 export function extractApiErrorMessage(

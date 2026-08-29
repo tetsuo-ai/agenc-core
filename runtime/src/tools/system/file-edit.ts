@@ -127,9 +127,9 @@ function shouldBypassSessionGuard(args: Record<string, unknown>): boolean {
 const FILE_EDIT_DESCRIPTION = `Performs exact string replacements in files.
 
 Usage:
-- You must use your \`Read\` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
+- You must use your \`FileRead\` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
 - Use workspace-relative paths like \`game.py\` unless the user provided a real absolute path. Do not use \`/root/...\`; \`/root\` is the agent namespace, not the filesystem.
-- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + tab. Everything after that is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
+- When editing text from FileRead tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + tab. Everything after that is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
 - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
 - The edit will FAIL if \`old_string\` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use \`replace_all\` to change every instance of \`old_string\`.
@@ -139,7 +139,7 @@ const FILE_MULTI_EDIT_DESCRIPTION = `Performs multiple exact string replacements
 
 Usage:
 - Use this tool when you need to make several coordinated edits to the same file.
-- You must use your \`Read\` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
+- You must use your \`FileRead\` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
 - Use workspace-relative paths like \`game.py\` unless the user provided a real absolute path. Do not use \`/root/...\`; \`/root\` is the agent namespace, not the filesystem.
 - Each edit is applied in order to the result of the previous edit.
 - The file is only written after every edit validates successfully. If any edit fails, the file is left unchanged.

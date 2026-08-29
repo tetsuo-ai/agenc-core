@@ -664,7 +664,6 @@ function buildSemanticUnits(
       );
     }
     const expectedToolIds = new Set<string>();
-    const declaredToolIds: string[] = [];
     for (const call of toolCalls) {
       if (call.id.trim().length === 0) {
         throw new CompactionTransactionError(
@@ -685,7 +684,6 @@ function buildSemanticUnits(
         );
       }
       expectedToolIds.add(call.id);
-      declaredToolIds.push(call.id);
       allToolCallIds.add(call.id);
     }
     const unitMessages: StructuredMessageV1[] = [firstStructured];
@@ -697,15 +695,10 @@ function buildSemanticUnits(
       while (index < messages.length && roleOf(messages[index]!) === "tool") {
         const result = messages[index]!;
         const callId = result.toolCallId?.trim();
-        const expectedCallId = declaredToolIds[toolPairs.length];
-        if (
-          !callId ||
-          callId !== expectedCallId ||
-          !unresolved.delete(callId)
-        ) {
+        if (!callId || !unresolved.delete(callId)) {
           throw new CompactionTransactionError(
             "provenance_invalid",
-            "tool-result ordering or identity is not representable as one semantic unit",
+            "tool-result identity is not representable as one semantic unit",
           );
         }
         const authoritativeResult = authoritativeMessages[index]!;

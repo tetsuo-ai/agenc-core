@@ -26,9 +26,8 @@
  *     drop undefined (Python preserves null).
  *   - policyLimits: uses `localeCompare` (keeps compatibility behavior; locale-
  *     sensitive but stable for a given runtime).
- *   - this module (stableStringify): byte-identity for API body caching.
- *     Drops undefined to match `JSON.stringify` — the openaiShim/agencShim
- *     body is always downstream of `JSON.stringify` semantics.
+ *   - this module (stableStringify): byte-identity for request and state
+ *     caching. Drops undefined to match `JSON.stringify` semantics.
  * Do not consolidate without auditing the 3 callers — each has a
  * different server-compat contract.
  */
@@ -129,4 +128,3 @@ function deepSort(
     ancestors.delete(value as object)
   }
 }
-

@@ -10,10 +10,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
+import { isPathTrusted } from "../../../src/utils/config.js";
+
 import {
   __resetProjectTrustForTesting,
+  approveProjectMcpServerSync,
+  getProjectMcpServerApprovalStatusSync,
+  hasSecurityAcknowledgementSync,
   isProjectTrustedSync,
   readTrustedProjects,
+  recordSecurityAcknowledgement,
+  rejectProjectMcpServerSync,
+  resetProjectMcpServerChoicesSync,
   resolveProjectTrustRootSync,
   trustProject,
   trustProjectSync,
@@ -59,6 +67,71 @@ describe("project trust store", () => {
     ).toBe(false);
   });
 
+  test("records security consent in the trust ledger without trusting a project", async () => {
+    await recordSecurityAcknowledgement("auto-mode-permission-prompt", {
+      agencHome: home,
+      now: () => new Date("2026-08-23T00:00:00.000Z"),
+    });
+
+    expect(hasSecurityAcknowledgementSync(
+      "auto-mode-permission-prompt",
+      { agencHome: home },
+    )).toBe(true);
+    expect(isProjectTrustedSync({ agencHome: home, cwd: repo })).toBe(false);
+    await expect(readTrustedProjects({ agencHome: home })).resolves.toEqual({
+      version: 1,
+      trustedProjects: [],
+      securityAcknowledgements: {
+        "auto-mode-permission-prompt": "2026-08-23T00:00:00.000Z",
+      },
+    });
+  });
+
+  test("MCP choices are project-scoped and preserve path trust atomically", async () => {
+    const otherRepo = mkTmp();
+    mkdirSync(join(otherRepo, ".git"));
+    const digest = "a".repeat(64);
+    try {
+      trustProjectSync({ agencHome: home, cwd: repo });
+      approveProjectMcpServerSync("docs", digest, {
+        agencHome: home,
+        cwd: repo,
+      });
+
+      expect(
+        getProjectMcpServerApprovalStatusSync("docs", digest, {
+          agencHome: home,
+          cwd: repo,
+        }),
+      ).toBe("approved");
+      expect(
+        getProjectMcpServerApprovalStatusSync("docs", digest, {
+          agencHome: home,
+          cwd: otherRepo,
+        }),
+      ).toBe("pending");
+
+      rejectProjectMcpServerSync("docs", { agencHome: home, cwd: repo });
+      expect(
+        getProjectMcpServerApprovalStatusSync("docs", digest, {
+          agencHome: home,
+          cwd: repo,
+        }),
+      ).toBe("rejected");
+
+      resetProjectMcpServerChoicesSync({ agencHome: home, cwd: repo });
+      expect(
+        getProjectMcpServerApprovalStatusSync("docs", digest, {
+          agencHome: home,
+          cwd: repo,
+        }),
+      ).toBe("pending");
+      expect(isProjectTrustedSync({ agencHome: home, cwd: repo })).toBe(true);
+    } finally {
+      rmSync(otherRepo, { recursive: true, force: true });
+    }
+  });
+
   test("trust is keyed to the project root and covers descendants", async () => {
     const nested = join(repo, "src", "feature");
     mkdirSync(nested, { recursive: true });
@@ -85,6 +158,21 @@ describe("project trust store", () => {
         trustedAt: "2026-05-04T00:00:00.000Z",
       },
     ]);
+  });
+
+  test("runtime path checks consult only the canonical trust ledger", () => {
+    const nested = join(repo, "src", "feature");
+    mkdirSync(nested, { recursive: true });
+    const previousHome = process.env.AGENC_HOME;
+    process.env.AGENC_HOME = home;
+    try {
+      expect(isPathTrusted(nested)).toBe(false);
+      trustProjectSync({ agencHome: home, cwd: repo });
+      expect(isPathTrusted(nested)).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.AGENC_HOME;
+      else process.env.AGENC_HOME = previousHome;
+    }
   });
 
   test("trusting a child without a marker does not trust its parent", async () => {

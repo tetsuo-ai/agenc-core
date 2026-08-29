@@ -7,6 +7,7 @@
  */
 
 import { cwd as processCwd } from "node:process";
+import { resolveHomeContext } from "../config/home.js";
 import {
   exportAgentState,
   importAgentState,
@@ -633,7 +634,7 @@ async function runStateImport(
     const payload = parseAgenCStateExportPayload(input);
     return await withStateDriver(options, (driver) => {
       const result = importAgentState(driver, payload, {
-        agencHome: options.agencHome ?? options.env?.AGENC_HOME,
+        agencHome: resolveStateAgencHome(options),
       });
       io.stdout.write(
         `Imported state for ${result.agentId}: ${result.snapshotCount} snapshot(s), ${result.toolCallCount} tool call(s)\n`,
@@ -655,13 +656,23 @@ function withStateDriver<T>(
   if (options.driver !== undefined) return fn(options.driver);
   const driver = openStateDatabases({
     cwd: options.cwd ?? processCwd(),
-    agencHome: options.agencHome ?? options.env?.AGENC_HOME,
+    agencHome: resolveStateAgencHome(options),
   });
   try {
     return fn(driver);
   } finally {
     driver.close();
   }
+}
+
+function resolveStateAgencHome(options: AgenCStateCliOptions): string {
+  const env = options.env ?? process.env;
+  return resolveHomeContext(
+    options.agencHome === undefined
+      ? env
+      : { ...env, AGENC_HOME: options.agencHome },
+    env.HOME === undefined ? {} : { platformHome: env.HOME },
+  ).path;
 }
 
 async function readStdin(): Promise<string> {

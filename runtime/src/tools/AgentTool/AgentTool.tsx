@@ -6,20 +6,10 @@ import type {
 } from "src/types/message.js";
 import { getQuerySourceForAgent } from "src/utils/promptCategory.js";
 import { z } from "zod/v4";
-import {
-  clearInvokedSkillsForAgent,
-  getSdkAgentProgressSummariesEnabled,
-} from "../../bootstrap/state.js";
-import {
-  enhanceSystemPromptWithEnvDetails,
-  getSystemPrompt,
-} from "../../constants/prompts.js";
+import { clearInvokedSkillsForAgent } from "../../bootstrap/state.js";
+import { assembleSubagentSystemPrompt } from "../../prompts/system-prompt.js";
 import { isCoordinatorMode } from "../../coordinator/coordinatorMode.js";
 import { requireCurrentRuntimeSession } from "../../session/current-session.js";
-import {
-  startAgentSummarization,
-  toSummaryCacheSafeParams,
-} from "../../services/AgentSummary/agentSummary.js";
 import { clearDumpState } from "../../services/api/dumpPrompts.js";
 import {
   completeAgentTask as completeAsyncAgent,
@@ -35,7 +25,6 @@ import {
   registerAsyncAgent,
   unregisterAgentForeground,
   updateAgentProgress as updateAsyncAgentProgress,
-  updateAgentSummary as updateAsyncAgentSummary,
   updateProgressFromMessage,
 } from "../../tasks/LocalAgentTask/LocalAgentTask.js";
 
@@ -47,7 +36,6 @@ import { getCwd, runWithCwdOverride } from "../../utils/cwd.js";
 import { logForDebugging } from "src/utils/debug.js";
 import { isEnvTruthy } from "../../utils/envUtils.js";
 import { AbortError, errorMessage, toError } from "../../utils/errors.js";
-import type { CacheSafeParams } from "../../utils/forkedAgent.js";
 import { lazySchema } from "../../utils/lazySchema.js";
 import {
   createUserMessage,
@@ -62,12 +50,13 @@ import {
   filterDeniedAgents,
   getDenyRuleForAgent,
 } from "../../utils/permissions/permissions.js";
-import { enqueueSdkEvent } from "../../utils/sdkEventQueue.js";
 import { writeAgentMetadata } from "../../utils/sessionStorage.js";
 import { sessionQueueOwner } from "../../utils/queueOwnership.js";
 import { sleep } from "../../utils/sleep.js";
-import { buildEffectiveSystemPrompt } from "../../utils/systemPrompt.js";
-import { asSystemPrompt } from "../../utils/systemPromptType.js";
+import {
+  asSystemPrompt,
+  type SystemPrompt,
+} from "../../utils/systemPromptType.js";
 import { getTaskOutputPath } from "../../utils/task/diskOutput.js";
 import { getParentSessionId, isTeammate } from "../../utils/teammate.js";
 import { isInProcessTeammate } from "../../utils/teammateContext.js";
@@ -88,10 +77,8 @@ import { setAgentColor } from "src/tools/AgentTool/agentColorManager.js";
 import {
   agentToolResultSchema,
   classifyHandoffIfNeeded,
-  emitTaskProgress,
   extractPartialResult,
   finalizeAgentTool,
-  getLastToolUseName,
   runAsyncAgentLifecycle,
 } from "./agentToolUtils.js";
 import {
@@ -101,7 +88,6 @@ import {
 import { canonicalAgentRoleName } from "src/agents/role-presentation.js";
 import {
   AGENT_TOOL_NAME,
-  LEGACY_AGENT_TOOL_NAME,
   ONE_SHOT_BUILTIN_AGENT_TYPES,
 } from "src/tools/AgentTool/constants.js";
 import {
@@ -406,16 +392,11 @@ export const AgentTool = buildTool({
       AGENT_TOOL_NAME,
     );
 
-    // Use inline env check instead of coordinatorModule to avoid circular
-    // dependency issues during test module loading.
-    const isCoordinator = feature("COORDINATOR_MODE")
-      ? isEnvTruthy(process.env.AGENC_COORDINATOR_MODE)
-      : false;
+    const isCoordinator = isCoordinatorMode();
     return await getPrompt(filteredAgents, isCoordinator, allowedAgentTypes);
   },
   name: AGENT_TOOL_NAME,
   searchHint: "delegate work to a subagent",
-  aliases: [LEGACY_AGENT_TOOL_NAME],
   maxResultSizeChars: 100_000,
   async description() {
     return "Launch a new agent";
@@ -460,7 +441,6 @@ export const AgentTool = buildTool({
       parentSession.roleWorkspace,
       appState.agentDefinitions.agentRoleWorkspaceId,
     );
-    const permissionMode = appState.toolPermissionContext.mode;
     // In-process teammates get a no-op setAppState; setAppStateForTasks
     // reaches the root store so task registration/progress/kill stay visible.
     const rootSetAppState =
@@ -560,6 +540,7 @@ export const AgentTool = buildTool({
     } else {
       const freshCatalog = await loadFreshAgentDefinitions(
         parentSession.roleWorkspace.cwd,
+        parentSession.services.runtimeOptions.pluginStorageRoot,
       );
       assertAgentRoleWorkspaceMatches(
         parentSession.roleWorkspace,
@@ -694,7 +675,8 @@ export const AgentTool = buildTool({
         throw new Error(
           `Agent '${selectedAgent.agentType}' requires MCP servers matching: ${missing.join(", ")}. ` +
             `MCP servers with tools: ${serversWithTools.length > 0 ? serversWithTools.join(", ") : "none"}. ` +
-            `Use /mcp to configure and authenticate the required MCP servers.`,
+            `Use /mcp to configure or reconnect the required MCP servers. ` +
+            `If an XAA server reports needs-auth, run 'agenc mcp xaa login'.`,
         );
       }
     }
@@ -714,7 +696,6 @@ export const AgentTool = buildTool({
       repositoryControlledAgent ? undefined : selectedAgent.model,
       toolUseContext.options.mainLoopModel,
       repositoryControlledAgent || isForkPath ? undefined : model,
-      permissionMode,
     );
 
     // Resolve effective isolation mode (explicit param overrides agent def)
@@ -730,36 +711,15 @@ export const AgentTool = buildTool({
     // Normal path: build the selected agent's own system prompt with env
     // details, and use a simple user message for the prompt.
     let enhancedSystemPrompt: string[] | undefined;
-    let forkParentSystemPrompt:
-      ReturnType<typeof buildEffectiveSystemPrompt> | undefined;
+    let forkParentSystemPrompt: SystemPrompt | undefined;
     let promptMessages: MessageType[];
     if (isForkPath) {
       if (toolUseContext.renderedSystemPrompt) {
         forkParentSystemPrompt = toolUseContext.renderedSystemPrompt;
       } else {
-        // Fallback: recompute. May diverge from parent's cached bytes if
-        // GrowthBook state changed between parent turn-start and fork spawn.
-        const mainThreadAgentDefinition = appState.agent
-          ? appState.agentDefinitions.activeAgents.find(
-              (a) => a.agentType === appState.agent,
-            )
-          : undefined;
-        const additionalWorkingDirectories = Array.from(
-          appState.toolPermissionContext.additionalWorkingDirectories.keys(),
+        throw new Error(
+          "Cannot fork agent without the admitted parent system-prompt snapshot",
         );
-        const defaultSystemPrompt = await getSystemPrompt(
-          toolUseContext.options.tools,
-          toolUseContext.options.mainLoopModel,
-          additionalWorkingDirectories,
-          toolUseContext.options.mcpClients,
-        );
-        forkParentSystemPrompt = buildEffectiveSystemPrompt({
-          mainThreadAgentDefinition,
-          toolUseContext,
-          customSystemPrompt: toolUseContext.options.customSystemPrompt,
-          defaultSystemPrompt,
-          appendSystemPrompt: toolUseContext.options.appendSystemPrompt,
-        });
       }
       promptMessages = buildForkedMessages(prompt, assistantMessage);
     } else {
@@ -774,11 +734,15 @@ export const AgentTool = buildTool({
         });
 
         // Apply environment details enhancement
-        enhancedSystemPrompt = await enhanceSystemPromptWithEnvDetails(
-          [agentPrompt],
-          resolvedAgentModel,
+        enhancedSystemPrompt = assembleSubagentSystemPrompt({
+          basePrompts: [agentPrompt],
+          model: resolvedAgentModel,
+          cwd: getCwd(),
           additionalWorkingDirectories,
-        );
+          enabledToolNames: new Set(
+            toolUseContext.options.tools.map((tool) => tool.name),
+          ),
+        });
       } catch (error) {
         logForDebugging(
           `Failed to get system prompt for agent ${selectedAgent.agentType}: ${errorMessage(error)}`,
@@ -801,11 +765,7 @@ export const AgentTool = buildTool({
         !isBackgroundTasksDisabled,
     };
 
-    // Use inline env check instead of coordinatorModule to avoid circular
-    // dependency issues during test module loading.
-    const isCoordinator = feature("COORDINATOR_MODE")
-      ? isEnvTruthy(process.env.AGENC_COORDINATOR_MODE)
-      : false;
+    const isCoordinator = isCoordinatorMode();
 
     // Fork subagent experiment: force ALL spawns async for a unified
     // <task-notification> interaction model (not just fork spawns — all of them).
@@ -1004,7 +964,6 @@ export const AgentTool = buildTool({
         }),
         worktreePath: worktreeInfo?.worktreePath,
         description,
-        agentName: name,
         agentMetadataAlreadyPersisted: true,
         spawnAdmission,
       };
@@ -1124,11 +1083,10 @@ export const AgentTool = buildTool({
             : {}),
         };
 
-        // Workload propagation: handlePromptSubmit wraps the entire turn in
-        // runWithWorkload (AsyncLocalStorage). ALS context is captured at
-        // invocation time — when this `void` fires — and survives every await
-        // inside. No capture/restore needed; the detached closure sees the
-        // parent turn's workload automatically, isolated from its finally.
+        // Workload propagation uses AsyncLocalStorage. The context is captured
+        // at invocation time — when this `void` fires — and survives every
+        // await inside. No capture/restore is needed; the detached closure sees
+        // the parent turn's workload without sharing mutable process state.
         const asyncLifecycle = runWithAgentContext(asyncAgentContext, () =>
           wrapWithCwd(() =>
             runAsyncAgentLifecycle({
@@ -1150,9 +1108,7 @@ export const AgentTool = buildTool({
               rootSetAppState,
               agentIdForCleanup: asyncAgentId,
               enableSummarization:
-                isCoordinator ||
-                isForkSubagentEnabled() ||
-                getSdkAgentProgressSummariesEnabled(),
+                isCoordinator || isForkSubagentEnabled(),
               getWorktreeResult: cleanupWorktreeIfNeeded,
             }),
           ),
@@ -1208,10 +1164,6 @@ export const AgentTool = buildTool({
           wrapWithCwd(async () => {
             const agentMessages: MessageType[] = [];
             const agentStartTime = Date.now();
-            const syncTracker = createProgressTracker();
-            const syncResolveActivity = createActivityDescriptionResolver(
-              toolUseContext.options.tools,
-            );
 
             // Yield initial progress message to carry metadata (prompt)
             if (promptMessages.length > 0) {
@@ -1275,11 +1227,6 @@ export const AgentTool = buildTool({
             let backgroundHintShown = false;
             // Track if the agent was backgrounded (cleanup handled by backgrounded finally)
             let wasBackgrounded = false;
-            // Per-scope stop function — NOT shared with the backgrounded closure.
-            // idempotent: startAgentSummarization's stop() checks `stopped` flag.
-            let stopForegroundSummarization: (() => void) | undefined;
-            // const capture for sound type narrowing inside the callback below
-            const summaryTaskId = foregroundTaskId;
 
             // Get async iterator for the agent
             const agentIterator = runAgent({
@@ -1288,27 +1235,10 @@ export const AgentTool = buildTool({
                 ...runAgentParams.override,
                 agentId: syncAgentId,
               },
-              onCacheSafeParams:
-                summaryTaskId && getSdkAgentProgressSummariesEnabled()
-                  ? (params: CacheSafeParams) => {
-                      const { stop } = startAgentSummarization({
-                        taskId: summaryTaskId,
-                        agentId: syncAgentId,
-                        cacheSafeParams: toSummaryCacheSafeParams(params),
-                        getAgentTranscript: async () => ({
-                          messages: agentMessages,
-                        }),
-                        updateAgentSummary: (id, summary) =>
-                          updateAsyncAgentSummary(id, summary, rootSetAppState),
-                      });
-                      stopForegroundSummarization = stop;
-                    }
-                  : undefined,
             })[Symbol.asyncIterator]();
 
             // Track if an error occurred during iteration
             let syncAgentError: Error | undefined;
-            let wasAborted = false;
             let worktreeResult: {
               worktreePath?: string;
               worktreeBranch?: string;
@@ -1360,16 +1290,11 @@ export const AgentTool = buildTool({
                     // Capture the taskId for use in the async callback
                     const backgroundedTaskId = foregroundTaskId;
                     wasBackgrounded = true;
-                    // Stop foreground summarization; the backgrounded closure
-                    // below owns its own independent stop function.
-                    stopForegroundSummarization?.();
 
                     // Workload: inherited via ALS at `void` invocation time,
                     // same as the async-from-start path above.
                     // Continue agent in background and return async result
                     void runWithAgentContext(syncAgentContext, async () => {
-                      let stopBackgroundedSummarization:
-                        (() => void) | undefined;
                       try {
                         // Clean up the foreground iterator so its finally block runs
                         // (releases MCP connections, session hooks, prompt cache tracking, etc.)
@@ -1402,27 +1327,6 @@ export const AgentTool = buildTool({
                             agentId: asAgentId(backgroundedTaskId),
                             abortController: task.abortController,
                           },
-                          onCacheSafeParams:
-                            getSdkAgentProgressSummariesEnabled()
-                              ? (params: CacheSafeParams) => {
-                                  const { stop } = startAgentSummarization({
-                                    taskId: backgroundedTaskId,
-                                    agentId: asAgentId(backgroundedTaskId),
-                                    cacheSafeParams:
-                                      toSummaryCacheSafeParams(params),
-                                    getAgentTranscript: async () => ({
-                                      messages: agentMessages,
-                                    }),
-                                    updateAgentSummary: (id, summary) =>
-                                      updateAsyncAgentSummary(
-                                        id,
-                                        summary,
-                                        rootSetAppState,
-                                      ),
-                                  });
-                                  stopBackgroundedSummarization = stop;
-                                }
-                              : undefined,
                         })) {
                           agentMessages.push(msg);
 
@@ -1438,17 +1342,6 @@ export const AgentTool = buildTool({
                             getProgressUpdate(tracker),
                             rootSetAppState,
                           );
-                          const lastToolName = getLastToolUseName(msg);
-                          if (lastToolName) {
-                            emitTaskProgress(
-                              tracker,
-                              backgroundedTaskId,
-                              toolUseContext.toolUseId,
-                              description,
-                              startTime,
-                              lastToolName,
-                            );
-                          }
                         }
                         const agentResult = finalizeAgentTool(
                           agentMessages,
@@ -1537,7 +1430,6 @@ export const AgentTool = buildTool({
                           ...worktreeResult,
                         });
                       } finally {
-                        stopBackgroundedSummarization?.();
                         // Defensive cleanup: wrap each call so one failure doesn't
                         // prevent the other from running. Without this, if
                         // clearInvokedSkillsForAgent throws, clearDumpState is
@@ -1584,37 +1476,6 @@ export const AgentTool = buildTool({
                 if (result.done) break;
                 const message = result.value;
                 agentMessages.push(message);
-
-                // Emit task_progress for the VS Code subagent panel
-                updateProgressFromMessage(
-                  syncTracker,
-                  message,
-                  syncResolveActivity,
-                  toolUseContext.options.tools,
-                );
-                if (foregroundTaskId) {
-                  const lastToolName = getLastToolUseName(message);
-                  if (lastToolName) {
-                    emitTaskProgress(
-                      syncTracker,
-                      foregroundTaskId,
-                      toolUseContext.toolUseId,
-                      description,
-                      agentStartTime,
-                      lastToolName,
-                    );
-                    // Keep AppState task.progress in sync when SDK summaries are
-                    // enabled, so updateAgentSummary reads correct token/tool counts
-                    // instead of zeros.
-                    if (getSdkAgentProgressSummariesEnabled()) {
-                      updateAsyncAgentProgress(
-                        foregroundTaskId,
-                        getProgressUpdate(syncTracker),
-                        rootSetAppState,
-                      );
-                    }
-                  }
-                }
 
                 // Forward bash_progress events from sub-agent to parent so the SDK
                 // receives tool_progress events just as it does for the main agent.
@@ -1676,7 +1537,6 @@ export const AgentTool = buildTool({
               // Handle errors from the sync agent loop
               // AbortError should be re-thrown for proper interruption handling
               if (error instanceof AbortError) {
-                wasAborted = true;
                 throw error;
               }
 
@@ -1693,38 +1553,9 @@ export const AgentTool = buildTool({
                 toolUseContext.setToolJSX(null);
               }
 
-              // Stop foreground summarization. Idempotent — if already stopped at
-              // the backgrounding transition, this is a no-op. The backgrounded
-              // closure owns a separate stop function (stopBackgroundedSummarization).
-              stopForegroundSummarization?.();
-
               // Unregister foreground task if agent completed without being backgrounded
               if (foregroundTaskId) {
                 unregisterAgentForeground(foregroundTaskId, rootSetAppState);
-                // Notify SDK consumers (e.g. VS Code subagent panel) that this
-                // foreground agent is done. Goes through drainSdkEvents() — does
-                // NOT trigger the print.ts XML task_notification parser or the LLM loop.
-                if (!wasBackgrounded) {
-                  const progress = getProgressUpdate(syncTracker);
-                  enqueueSdkEvent({
-                    type: "system",
-                    subtype: "task_notification",
-                    task_id: foregroundTaskId,
-                    tool_use_id: toolUseContext.toolUseId,
-                    status: syncAgentError
-                      ? "failed"
-                      : wasAborted
-                        ? "stopped"
-                        : "completed",
-                    output_file: "",
-                    summary: description,
-                    usage: {
-                      total_tokens: progress.tokenCount,
-                      tool_uses: progress.toolUseCount,
-                      duration_ms: Date.now() - agentStartTime,
-                    },
-                  });
-                }
               }
 
               // Clean up scoped skills so they don't accumulate in the global map
@@ -1916,9 +1747,9 @@ The agent is now running and will receive instructions via mailbox.`,
                 text: "(Subagent completed but returned no output.)",
               },
             ];
-      // One-shot built-ins (Explore, Plan) are never continued via SendMessage
+      // One-shot built-ins (scanner, Plan) are never continued via SendMessage
       // — the agentId hint and <usage> block are dead weight (~135 chars ×
-      // 34M Explore runs/week ≈ 1-2 Gtok/week). The trailer is only useful for
+      // 34M scanner runs/week ≈ 1-2 Gtok/week). The trailer is only useful for
       // resumable agents, so dropping it here is safe.
       // agentType is optional for resume compat — missing means show trailer.
       if (

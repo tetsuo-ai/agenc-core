@@ -15,17 +15,18 @@ import {
   hasCommand,
 } from '../../commands.js'
 import {
+  assembleSubagentSystemPrompt,
   DEFAULT_AGENT_PROMPT,
-  enhanceSystemPromptWithEnvDetails,
-} from '../../constants/prompts.js'
+} from '../../prompts/system-prompt.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import { getSystemContext, getUserContext } from '../../context.js'
 import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
 import { requireCurrentRuntimeSession } from '../../session/current-session.js'
+import { transitionPermissionMode } from '../../permissions/permission-mode.js'
+import type { ToolPermissionContext as CanonicalToolPermissionContext } from '../../permissions/types.js'
 import { createSessionMcpSamplingHandlers } from '../../session/mcp-startup.js'
 import { runTurnCompat } from '../../session/turn-compat.js'
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js'
-import { cleanupAgentTracking } from '../../services/api/promptCacheBreakDetection.js'
 import {
   connectToServer,
   fetchToolsForClient,
@@ -36,14 +37,14 @@ import type {
   ScopedMcpServerConfig,
 } from '../../services/mcp/types.js'
 import type { McpSamplingHandlers } from '../../services/mcp/hostCapabilities.js'
+import type { CanonicalSettingsAuthority } from '../../utils/settings/canonicalAuthority.js'
 import type { Tool, Tools, ToolUseContext } from '../Tool.js'
 import { killShellTasksForAgent } from '../../tasks/LocalShellTask/killShellTasks.js'
 import type { AgentId } from '../../types/ids.js'
 import type {
   AdditionalWorkingDirectory,
-  InternalPermissionMode,
 } from '../../types/permissions.js'
-import type { HooksSettings } from '../../utils/settings/types.js'
+import type { HooksSettings } from '../../schemas/hooks.js'
 import type {
   AssistantMessage,
   Message,
@@ -73,8 +74,6 @@ import { executeSubagentStartHooks } from '../../utils/hooks.js'
 import { COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG } from '../../constants/xml.js'
 import { createUserMessage } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
-import { resolveAgentProvider } from '../../services/api/agentRouting.js'
-import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
 import type { ModelAlias } from '../../utils/model/aliases.js'
 import {
   clearAgentTranscriptSubdir,
@@ -92,6 +91,7 @@ import {
 } from '../../utils/systemPromptType.js'
 import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
+import { getCwd } from '../../utils/cwd.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import {
   beginLegacyAgentSpawnAdmission,
@@ -124,6 +124,8 @@ function formatSkillLoadingMetadata(skillName: string): string {
 async function initializeAgentMcpServers(
   agentDefinition: AgentDefinition,
   parentClients: MCPServerConnection[],
+  authority: CanonicalSettingsAuthority,
+  environment: Readonly<Record<string, string | undefined>>,
   sampling?: {
     readonly handlers: McpSamplingHandlers
     readonly cacheKey: string
@@ -166,6 +168,12 @@ async function initializeAgentMcpServers(
     }
   }
 
+  if (authority === undefined) {
+    throw new Error(
+      `Agent ${JSON.stringify(agentDefinition.agentType)} declares MCP servers but its session has no ConfigStore HomeContext`,
+    )
+  }
+
   const agentClients: MCPServerConnection[] = []
   // Track which clients were newly created (inline definitions) vs. shared from parent
   // Only newly created clients should be cleaned up when the agent finishes
@@ -181,7 +189,7 @@ async function initializeAgentMcpServers(
       // Reference by name - look up in existing MCP configs
       // This uses the memoized connectToServer, so we may get a shared client
       name = spec
-      config = getApprovedMcpConfigByName(spec)
+      config = getApprovedMcpConfigByName(spec, authority, environment)
       if (!config) {
         logForDebugging(
           `[Agent: ${agentDefinition.agentType}] MCP server not found: ${spec}`,
@@ -215,12 +223,16 @@ async function initializeAgentMcpServers(
       name,
       config,
       undefined,
-      isNewlyCreated && sampling !== undefined
-        ? {
-            samplingHandlers: sampling.handlers,
-            samplingCacheKey: `${sampling.cacheKey}:${name}`,
-          }
-        : undefined,
+      {
+        home: authority.homeContext,
+        environment,
+        ...(isNewlyCreated && sampling !== undefined
+          ? {
+              samplingHandlers: sampling.handlers,
+              samplingCacheKey: `${sampling.cacheKey}:${name}`,
+            }
+          : {}),
+      },
     )
     agentClients.push(client)
     if (isNewlyCreated) {
@@ -318,7 +330,6 @@ export async function* runAgent({
   description,
   transcriptSubdir,
   onQueryProgress,
-  agentName,
   agentMetadataAlreadyPersisted,
   spawnAdmission: transferredSpawnAdmission,
 }: {
@@ -380,8 +391,6 @@ export async function* runAgent({
    * during long single-block streams (e.g. thinking) where no assistant
    * message is yielded for >60s. */
   onQueryProgress?: () => void
-  /** Agent name (team member name) for routing resolution */
-  agentName?: string
   /** The launch boundary durably persisted this agent's role sidecar before
    * publishing the task. Direct callers omit this and runAgent persists it
    * before performing any agent work. */
@@ -393,7 +402,6 @@ export async function* runAgent({
   // Track subagent usage for feature discovery
 
   const appState = toolUseContext.getAppState()
-  const permissionMode = appState.toolPermissionContext.mode
   // Always-shared channel to the root AppState store. toolUseContext.setAppState
   // is a no-op when the *parent* is itself an async agent (nested async→async),
   // so session-scoped writes (hooks, bash tasks) must go through this instead.
@@ -417,16 +425,7 @@ export async function* runAgent({
     repositoryControlledAgent ? undefined : agentDefinition.model,
     toolUseContext.options.mainLoopModel,
     model,
-    permissionMode,
   )
-
-  // Resolve per-agent provider routing from settings
-  const providerOverride = resolveAgentProvider(
-    agentName,
-    agentDefinition.agentType,
-    getExecutionAuthoritySettings(),
-  )
-  const effectiveModel = providerOverride ? providerOverride.model : resolvedAgentModel
 
   const agentId = override?.agentId ? override.agentId : createAgentId()
   // Preserve legacy sync/async abort ownership while adding a child-only
@@ -511,7 +510,7 @@ export async function* runAgent({
   const { agencMd: _omittedAgenCMd, ...userContextNoAgenCMd } = baseUserContext // branding-scan: allow upstream user-context field name pending context absorb
   const resolvedUserContext = userContextNoAgenCMd
 
-  // scanner (Explore) / Plan are read-only search agents — the
+  // scanner / Plan are read-only search agents — the
   // parent-session-start gitStatus (up to 40KB, explicitly labeled stale) is
   // dead weight. If they need git info they run `git status` themselves and get
   // fresh data. Saves ~1-3 Gtok/week fleet-wide. Match on canonical role name
@@ -522,7 +521,7 @@ export async function* runAgent({
     agentDefinition.agentType ?? '',
   )
   const resolvedSystemContext =
-    canonicalAgentType === 'explorer' || canonicalAgentType === 'Plan'
+    canonicalAgentType === 'scanner' || canonicalAgentType === 'Plan'
       ? systemContextNoGit
       : baseSystemContext
 
@@ -535,25 +534,62 @@ export async function* runAgent({
   const agentGetAppState = () => {
     const state = toolUseContext.getAppState()
     let toolPermissionContext = state.toolPermissionContext
+    const workspacePath = getCwd()
+    const canonicalLiveContext =
+      toolPermissionContext as unknown as CanonicalToolPermissionContext
+    const validatedLiveContext = transitionPermissionMode(
+      canonicalLiveContext.mode,
+      canonicalLiveContext.mode,
+      canonicalLiveContext,
+      { workspacePath },
+    )
+    if ('error' in validatedLiveContext) {
+      logForDebugging(
+        `[Agent: ${agentDefinition.agentType}] Refusing inherited bypassPermissions without exact cwd consent for ${workspacePath}`,
+        { level: 'warn' },
+      )
+      toolPermissionContext = {
+        ...toolPermissionContext,
+        mode: 'default',
+      }
+    } else {
+      toolPermissionContext =
+        validatedLiveContext as unknown as typeof toolPermissionContext
+    }
 
     // Override permission mode if agent defines one (unless parent is bypassPermissions, acceptEdits, or auto)
     if (
       agentPermissionMode &&
-      state.toolPermissionContext.mode !== 'bypassPermissions' &&
-      state.toolPermissionContext.mode !== 'acceptEdits' &&
+      toolPermissionContext.mode !== 'bypassPermissions' &&
+      toolPermissionContext.mode !== 'acceptEdits' &&
       !(
         feature('TRANSCRIPT_CLASSIFIER') &&
-        state.toolPermissionContext.mode === 'auto'
+        toolPermissionContext.mode === 'auto'
       )
     ) {
-      toolPermissionContext = {
-        ...toolPermissionContext,
-        // agentPermissionMode is the permissions/types PermissionMode (which
-        // also lists the internal-only 'unattended'), while the context's mode
-        // is InternalPermissionMode. parsePermissionMode only ever yields
-        // USER_ADDRESSABLE_PERMISSION_MODES, all of which are valid
-        // InternalPermissionMode values, so this narrowing is sound.
-        mode: agentPermissionMode as InternalPermissionMode,
+      try {
+        const transitioned = transitionPermissionMode(
+          toolPermissionContext.mode,
+          agentPermissionMode,
+          toolPermissionContext as unknown as CanonicalToolPermissionContext,
+          { workspacePath },
+        )
+        if ('error' in transitioned) {
+          logForDebugging(
+            `[Agent: ${agentDefinition.agentType}] Refusing configured bypassPermissions without exact cwd consent for ${workspacePath}`,
+            { level: 'warn' },
+          )
+        } else {
+          toolPermissionContext = {
+            ...transitioned,
+            mode: agentPermissionMode,
+          } as unknown as typeof toolPermissionContext
+        }
+      } catch (error) {
+        logForDebugging(
+          `[Agent: ${agentDefinition.agentType}] Refusing permission mode ${agentPermissionMode}: ${String(error)}`,
+          { level: 'warn' },
+        )
       }
     }
 
@@ -713,7 +749,11 @@ export async function* runAgent({
     ? []
     : agentDefinition.skills ?? []
   if (skillsToPreload.length > 0) {
-    const allSkills = await getSkillToolCommands(getProjectRoot())
+    const allSkills = await getSkillToolCommands(
+      getProjectRoot(),
+      null,
+      toolUseContext.skillsManager,
+    )
 
     // Filter valid skills and warn about missing ones
     const validSkills: Array<{
@@ -790,6 +830,16 @@ export async function* runAgent({
   } = await initializeAgentMcpServers(
     agentDefinition,
     toolUseContext.options.mcpClients,
+    (() => {
+      const configStore = parentSession.services.configStore
+      if (configStore === undefined) {
+        throw new Error(
+          'Subagent MCP initialization requires the session ConfigStore authority',
+        )
+      }
+      return configStore
+    })(),
+    parentSession.services.providerEnvironment ?? Object.freeze({}),
     {
       handlers: createSessionMcpSamplingHandlers(parentSession),
       cacheKey: `${parentSession.conversationId}:${agentId}`,
@@ -816,8 +866,7 @@ export async function* runAgent({
     commands: [],
     debug: toolUseContext.options.debug,
     verbose: toolUseContext.options.verbose,
-    mainLoopModel: effectiveModel,
-    providerOverride: providerOverride ?? undefined,
+    mainLoopModel: resolvedAgentModel,
     // For fork children (useExactTools), inherit thinking config to match the
     // parent's API request prefix for prompt cache hits. For regular
     // sub-agents, disable thinking to control output token costs.
@@ -954,10 +1003,6 @@ export async function* runAgent({
     if (agentDefinition.hooks && !repositoryControlledAgent) {
       clearSessionHooks(rootSetAppState, agentId)
     }
-    // Clean up prompt cache tracking state for this agent
-    if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
-      cleanupAgentTracking(agentId)
-    }
     // Release cloned file state cache memory
     agentToolUseContext.readFileState.clear()
     // Release the cloned fork context messages
@@ -977,17 +1022,6 @@ export async function* runAgent({
     // `run_in_background` shell loop (e.g. test fixture fake-logs.sh) outlives
     // the agent as a PPID=1 zombie once the main session eventually exits.
     killShellTasksForAgent(agentId, toolUseContext.getAppState, rootSetAppState)
-    /* eslint-disable @typescript-eslint/no-require-imports */
-    if (feature('MONITOR_TOOL')) {
-      const mcpMod =
-        require('../../tasks/MonitorMcpTask/MonitorMcpTask.js') as typeof import('../../tasks/MonitorMcpTask/MonitorMcpTask.js')
-      mcpMod.killMonitorMcpTasksForAgent(
-        agentId,
-        toolUseContext.getAppState,
-        rootSetAppState,
-      )
-    }
-    /* eslint-enable @typescript-eslint/no-require-imports */
   }
   } finally {
     // Idempotent with the normal cleanup path and also covers failures during
@@ -1053,19 +1087,21 @@ async function getAgentSystemPrompt(
     const agentPrompt = agentDefinition.getSystemPrompt({ toolUseContext })
     const prompts = [agentPrompt]
 
-    return await enhanceSystemPromptWithEnvDetails(
-      prompts,
-      resolvedAgentModel,
+    return assembleSubagentSystemPrompt({
+      basePrompts: prompts,
+      model: resolvedAgentModel,
+      cwd: getCwd(),
       additionalWorkingDirectories,
       enabledToolNames,
-    )
+    })
   } catch (_error) {
-    return enhanceSystemPromptWithEnvDetails(
-      [DEFAULT_AGENT_PROMPT],
-      resolvedAgentModel,
+    return assembleSubagentSystemPrompt({
+      basePrompts: [DEFAULT_AGENT_PROMPT],
+      model: resolvedAgentModel,
+      cwd: getCwd(),
       additionalWorkingDirectories,
       enabledToolNames,
-    )
+    })
   }
 }
 

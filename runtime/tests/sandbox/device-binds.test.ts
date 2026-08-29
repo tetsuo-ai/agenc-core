@@ -4,6 +4,8 @@ import { resolveSandboxDeviceBinds } from "./linux-launcher/linux-run-main.js";
 import { createBwrapCommandArgs } from "./linux-launcher/bwrap.js";
 import { restrictedFileSystemPolicy } from "./engine/index.js";
 
+const TEST_SESSION_TEMP_ROOT = "/tmp/agenc-test-session-root";
+
 /**
  * `--dev /dev` builds a fresh minimal devtmpfs, so a board on /dev/ttyUSB0 is
  * visible in sysfs from inside the sandbox but cannot be opened. Observed
@@ -59,6 +61,7 @@ describe("sandbox device passthrough", () => {
       {
         mountProc: false,
         networkMode: "isolated",
+        sessionTempRoot: TEST_SESSION_TEMP_ROOT,
         extraDeviceBindPaths: ["/dev/null"],
       },
     );
@@ -79,7 +82,11 @@ describe("sandbox device passthrough", () => {
       restrictedFileSystemPolicy([], { includePlatformDefaults: true }),
       "/tmp",
       "/tmp",
-      { mountProc: false, networkMode: "isolated" },
+      {
+        mountProc: false,
+        networkMode: "isolated",
+        sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+      },
     );
     expect(args).not.toContain("--dev-bind");
   });

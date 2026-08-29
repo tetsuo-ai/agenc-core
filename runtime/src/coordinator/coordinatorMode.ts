@@ -2,31 +2,21 @@ import { feature } from 'bun:bundle'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
 import { TASK_STOP_TOOL_NAME } from '../tools/TaskStopTool/prompt.js'
-import { isEnvTruthy } from '../utils/envUtils.js'
+import { peekAmbientRuntimeSession } from '../session/current-session.js'
+import { isBareMode } from '../utils/envUtils.js'
 
 export function isCoordinatorMode(): boolean {
-  if (feature('COORDINATOR_MODE')) {
-    return isEnvTruthy(process.env.AGENC_COORDINATOR_MODE)
-  }
-  return false
+  if (!feature('COORDINATOR_MODE')) return false
+  return peekAmbientRuntimeSession()?.config.coordinatorMode === true
 }
 
 /**
  * First-class resolution for the LIVE surface: the
- * `coordinator_mode` config.toml flag turns the mode on; the
- * `AGENC_COORDINATOR_MODE` env var overrides in BOTH directions
- * (truthy forces on, explicit "0"/"false"/"off" forces off).
+ * `coordinator_mode` is already the final canonical value; any environment
+ * override was applied once by the config repository at session ingress.
  */
 export function isCoordinatorModeEnabled(configFlag?: boolean): boolean {
   if (!feature('COORDINATOR_MODE')) return false
-  const raw = process.env.AGENC_COORDINATOR_MODE
-  if (raw !== undefined && raw !== '') {
-    const lowered = raw.trim().toLowerCase()
-    if (lowered === '0' || lowered === 'false' || lowered === 'off') {
-      return false
-    }
-    return isEnvTruthy(raw)
-  }
   return configFlag === true
 }
 
@@ -86,7 +76,7 @@ When spawning workers:
 }
 
 export function getCoordinatorSystemPrompt(): string {
-  const workerCapabilities = isEnvTruthy(process.env.AGENC_SIMPLE)
+  const workerCapabilities = isBareMode()
     ? 'Workers have access to Bash, Read, and Edit tools, plus MCP tools from configured MCP servers.'
     : 'Workers have access to standard tools, MCP tools from configured MCP servers, and project skills via the Skill tool. Delegate skill invocations (e.g. /commit or project workflow skills) to workers.'
 
@@ -147,8 +137,8 @@ Each "You:" block is a separate coordinator turn. The "User:" block is a \`<task
 You:
   Let me start some research on that.
 
-  ${AGENT_TOOL_NAME}({ description: "Investigate auth bug", subagent_type: "worker", prompt: "..." })
-  ${AGENT_TOOL_NAME}({ description: "Research secure token storage", subagent_type: "worker", prompt: "..." })
+  ${AGENT_TOOL_NAME}({ description: "Investigate auth bug", subagent_type: "runner", prompt: "..." })
+  ${AGENT_TOOL_NAME}({ description: "Research secure token storage", subagent_type: "runner", prompt: "..." })
 
   Investigating both issues in parallel — I'll report back with findings.
 
@@ -168,7 +158,7 @@ You:
 
 ## 3. Workers
 
-When calling ${AGENT_TOOL_NAME}, use subagent_type \`worker\`. Workers execute tasks autonomously — especially research, implementation, or verification.
+When calling ${AGENT_TOOL_NAME}, use subagent_type \`runner\`. Runners execute tasks autonomously — especially research, implementation, or verification.
 
 ${workerCapabilities}
 
@@ -215,7 +205,7 @@ Use ${TASK_STOP_TOOL_NAME} to stop a worker you sent in the wrong direction — 
 
 \`\`\`
 // Launched a worker to refactor auth to use JWT
-${AGENT_TOOL_NAME}({ description: "Refactor auth to JWT", subagent_type: "worker", prompt: "Replace session-based auth with JWT..." })
+${AGENT_TOOL_NAME}({ description: "Refactor auth to JWT", subagent_type: "runner", prompt: "Replace session-based auth with JWT..." })
 // ... returns task_id: "agent-x7q" ...
 
 // User clarifies: "Actually, keep sessions — just fix the null pointer"
@@ -318,8 +308,8 @@ User: "There's a null pointer in the auth module. Can you fix it?"
 You:
   Let me investigate first.
 
-  ${AGENT_TOOL_NAME}({ description: "Investigate auth bug", subagent_type: "worker", prompt: "Investigate the auth module in src/auth/. Find where null pointer exceptions could occur around session handling and token validation... Report specific file paths, line numbers, and types involved. Do not modify files." })
-  ${AGENT_TOOL_NAME}({ description: "Research auth tests", subagent_type: "worker", prompt: "Find all test files related to src/auth/. Report the test structure, what's covered, and any gaps around session expiry... Do not modify files." })
+  ${AGENT_TOOL_NAME}({ description: "Investigate auth bug", subagent_type: "runner", prompt: "Investigate the auth module in src/auth/. Find where null pointer exceptions could occur around session handling and token validation... Report specific file paths, line numbers, and types involved. Do not modify files." })
+  ${AGENT_TOOL_NAME}({ description: "Research auth tests", subagent_type: "runner", prompt: "Find all test files related to src/auth/. Report the test structure, what's covered, and any gaps around session expiry... Do not modify files." })
 
   Investigating from two angles — I'll report back with findings.
 

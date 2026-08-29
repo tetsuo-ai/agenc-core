@@ -25,9 +25,12 @@
  * across the session-kernel test suites.
  */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { AsyncQueue } from "../utils/async-queue.js";
+import { createTestConfigStore } from "../fixtures.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {
   Session,
   type Event,
@@ -58,16 +61,15 @@ import {
   spawnReviewTask,
   type ReviewRequest,
 } from "./review.js";
+import { resolveAgentRuntimeOptions } from "./runtime-options.js";
+import { RolloutStore } from "./rollout-store.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Fixture (mirrors tasks.test.ts::buildSession)
 // ─────────────────────────────────────────────────────────────────────
 
 function mkFeatures(): ManagedFeatures {
-  return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
-  };
+  return {};
 }
 
 function mkConfig(): Config {
@@ -188,7 +190,12 @@ function mkSession(opts?: {
   provider?: LLMProvider;
 }): Session {
   const services = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     admissionRequired: false,
+    runtimeOptions: resolveAgentRuntimeOptions({}),
+    configStore: createTestConfigStore(),
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},
@@ -199,6 +206,7 @@ function mkSession(opts?: {
       isCancelled: () => false,
     },
     provider: opts?.provider ?? mkProvider(),
+    providerEnvironment: {},
     registry: {
       tools: [],
       toLLMTools: () => [],
@@ -222,6 +230,39 @@ function mkSession(opts?: {
     eventQueue: new AsyncQueue<Event>(),
   };
   return new Session(sessionOpts);
+}
+
+const mountedRolloutStores = new Set<RolloutStore>();
+
+afterEach(() => {
+  for (const store of mountedRolloutStores) store.close();
+  mountedRolloutStores.clear();
+});
+
+function mountTestRollout(session: Session): RolloutStore {
+  const configStore = session.services.configStore;
+  if (configStore === undefined) {
+    throw new Error("review fixture requires a canonical ConfigStore");
+  }
+  const store = new RolloutStore({
+    cwd: session.sessionConfiguration.cwd,
+    sessionId: session.conversationId,
+    agencVersion: "test",
+    agencHome: configStore.agencHome,
+    sessionTempRoot: session.services.runtimeOptions.sessionTempRoot,
+  });
+  store.open({
+    sessionId: session.conversationId,
+    timestamp: new Date().toISOString(),
+    cwd: session.sessionConfiguration.cwd,
+    originator: "review-test",
+    agencVersion: "test",
+    model: session.modelInfo.slug,
+    modelProvider: session.services.provider.name,
+  });
+  session.mountRolloutStore(store);
+  mountedRolloutStores.add(store);
+  return store;
 }
 
 const mkReviewRequest = (
@@ -338,7 +379,6 @@ describe("spawnReviewTask registry lifecycle", () => {
     let observedMessages: LLMMessage[] = [];
     let observedOptions: LLMChatOptions | undefined;
     const events: Event["msg"][] = [];
-    const rolloutItems: unknown[] = [];
     const provider = mkProvider({
       content: "review completed",
       onChat: (messages, options) => {
@@ -348,15 +388,7 @@ describe("spawnReviewTask registry lifecycle", () => {
     });
     const session = mkSession({ provider });
     session.eventLog.subscribe((event) => events.push(event.msg));
-    session.rolloutStore = {
-      store: { agencVersion: "test" },
-      append: (item: unknown) => {
-        rolloutItems.push(item);
-      },
-      appendRollout: (item: unknown) => {
-        rolloutItems.push(item);
-      },
-    } as Session["rolloutStore"];
+    const rolloutStore = mountTestRollout(session);
     const exitPromise = observeExitReviewMode(session);
     const spawned = await spawnReviewTask(session, {
       subId: "review-full-driver",
@@ -366,8 +398,10 @@ describe("spawnReviewTask registry lifecycle", () => {
     const outcome = await spawned.outcome;
     await spawned.done;
     const exit = await exitPromise;
+    rolloutStore.flushDurable();
+    const rolloutItems = rolloutStore.readAll();
 
-    expect(outcome?.verdict).toBe("pass");
+    expect(outcome?.verdict, outcome?.error?.stack).toBe("pass");
     expect(exit.reason).toBe("completed");
     expect(session.activeTurn.unsafePeek()).toBeNull();
     expect(

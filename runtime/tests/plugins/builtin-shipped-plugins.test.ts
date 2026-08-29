@@ -1,5 +1,12 @@
+import { execFileSync } from "node:child_process";
+import { readdirSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, relative, resolve, sep } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import { ConfigStore } from "../../src/config/store.js";
 import {
   clearBuiltinPlugins,
   getBuiltinPlugins,
@@ -13,6 +20,34 @@ import {
   readSkillReferenceFiles,
   resolveShippedPluginDir,
 } from "../../src/plugins/builtin/repositoryPluginSkill.js";
+import {
+  loadRequiredPluginManifestSync,
+  PLUGIN_MANIFEST_RELATIVE_PATH,
+} from "../../src/plugins/manifest.js";
+import { runWithCanonicalSettingsAuthority } from "../../src/utils/settings/canonicalAuthority.js";
+
+const repositoryRoot = resolve(import.meta.dirname, "../../..");
+const repositoryPluginsRoot = join(repositoryRoot, "plugins");
+
+async function withSettingsAuthority<T>(run: () => T): Promise<Awaited<T>> {
+  const root = await mkdtemp(join(tmpdir(), "agenc-builtin-plugin-"));
+  const home = join(root, "home");
+  try {
+    await writeFile(join(root, "config.toml"), "config_version = 2\n", "utf8");
+    const store = new ConfigStore({
+      home,
+      cwd: root,
+      projectRoot: root,
+      projectTrusted: false,
+      env: { AGENC_HOME: home, HOME: root },
+      userConfigPath: join(root, "config.toml"),
+    });
+    await store.reload();
+    return await runWithCanonicalSettingsAuthority(store, run);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
 
 /**
  * zeroday-hunter ships in the repo but never loaded: `plugins.enabled` gates
@@ -23,17 +58,51 @@ import {
  * runtime package, which a third-party repository cannot forge.
  */
 describe("plugins shipped in the runtime package", () => {
+  it("keeps every repo-source plugin manifest canonical and tracked", () => {
+    const pluginNames = readdirSync(repositoryPluginsRoot, {
+      withFileTypes: true,
+    })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+      .map((entry) => entry.name)
+      .sort();
+
+    expect(pluginNames.length).toBeGreaterThan(0);
+    for (const pluginName of pluginNames) {
+      const pluginRoot = join(repositoryPluginsRoot, pluginName);
+      const parsed = loadRequiredPluginManifestSync(pluginRoot);
+      expect(parsed.manifest.name, `${pluginName} manifest name`).toBe(
+        pluginName,
+      );
+
+      const manifestPath = join(pluginRoot, PLUGIN_MANIFEST_RELATIVE_PATH);
+      const repositoryPath = relative(repositoryRoot, manifestPath)
+        .split(sep)
+        .join("/");
+      const trackedPath = execFileSync(
+        "git",
+        ["-C", repositoryRoot, "ls-files", "--cached", "--", repositoryPath],
+        { encoding: "utf8" },
+      ).trim();
+      expect(
+        trackedPath,
+        `${repositoryPath} must be present in Git's index`,
+      ).toBe(repositoryPath);
+    }
+  });
+
   it("resolves zeroday-hunter from the package, not the workspace", () => {
     const dir = resolveShippedPluginDir("zeroday-hunter");
     expect(dir).not.toBeNull();
     expect(dir).toMatch(/plugins[/\\]zeroday-hunter$/u);
   });
 
-  it("registers it and offers its skill", () => {
+  it("registers it and offers its skill", async () => {
     clearBuiltinPlugins();
     resetBuiltinPluginInit();
 
-    const commands = getBuiltinPluginSkillCommands();
+    const commands = await withSettingsAuthority(() =>
+      getBuiltinPluginSkillCommands()
+    );
     const skill = commands.find((c) => c.name === "zeroday-hunter");
 
     expect(skill).toBeDefined();
@@ -44,12 +113,14 @@ describe("plugins shipped in the runtime package", () => {
     expect(skill?.whenToUse).toMatch(/vulnerabilit|0-day/iu);
   });
 
-  it("is enabled by default, with no [plugins] config present", () => {
+  it("is enabled by default, with no [plugins] config present", async () => {
     clearBuiltinPlugins();
     resetBuiltinPluginInit();
     initBuiltinPlugins();
 
-    const { enabled, disabled } = getBuiltinPlugins();
+    const { enabled, disabled } = await withSettingsAuthority(() =>
+      getBuiltinPlugins()
+    );
     expect(enabled.map((p) => p.name)).toContain("zeroday-hunter");
     expect(disabled.map((p) => p.name)).not.toContain("zeroday-hunter");
     expect(enabled.find((p) => p.name === "zeroday-hunter")?.isBuiltin).toBe(
@@ -57,14 +128,16 @@ describe("plugins shipped in the runtime package", () => {
     );
   });
 
-  it("registering twice does not duplicate the skill", () => {
+  it("registering twice does not duplicate the skill", async () => {
     clearBuiltinPlugins();
     resetBuiltinPluginInit();
 
     initBuiltinPlugins();
     initBuiltinPlugins();
 
-    const names = getBuiltinPluginSkillCommands().map((c) => c.name);
+    const names = (await withSettingsAuthority(() =>
+      getBuiltinPluginSkillCommands()
+    )).map((c) => c.name);
     expect(names.filter((n) => n === "zeroday-hunter")).toHaveLength(1);
   });
 

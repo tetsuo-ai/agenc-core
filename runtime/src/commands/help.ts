@@ -25,6 +25,7 @@ import {
 } from "./help-groups.js";
 import { openAsyncLocalJsxCommand } from "./local-jsx-command.js";
 import { sanitizeSuggestionMetadataText } from "../utils/suggestions/sanitizeSuggestionMetadataText.js";
+import { requireCommandConfigStore } from "./config-context.js";
 
 export interface HelpCommand {
   readonly name: string;
@@ -241,10 +242,12 @@ async function openHelpMenu(
 ): Promise<boolean> {
   return openAsyncLocalJsxCommand(ctx, async close => {
     const { HelpV2 } = await import("../tui/components/HelpV2/HelpV2.js");
+    const runtimeState = requireCommandConfigStore(ctx).stateRepository.get();
     return React.createElement(HelpV2, {
       commands: commands as never,
       query,
       onClose: close,
+      runtimeState,
     });
   });
 }

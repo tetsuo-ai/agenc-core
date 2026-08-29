@@ -27,10 +27,11 @@ import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { AgenCUnixSocketServer } from "./transport/unix-socket.js";
 import { AGENC_STDIO_DEFAULT_MAX_LINE_BYTES } from "./transport/stdio.js";
-import type {
-  AgentCreateParams,
-  AgentLogsParams,
-  AgentStopParams,
+import {
+  AGENC_DAEMON_PROTOCOL_VERSION,
+  type AgentCreateParams,
+  type AgentLogsParams,
+  type AgentStopParams,
 } from "./protocol/index.js";
 import type {
   AgenCBackgroundAgentMessageParams,
@@ -38,8 +39,10 @@ import type {
   AgenCBackgroundAgentSessionEventBinding,
   AgenCBackgroundAgentStartParams,
 } from "./background-agent-runner.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 
 const workspaces = createTempWorkspaceFixture("agenc-agent-cli-workspace-");
+const TEST_AGENT_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
 
 afterEach(async () => {
   await workspaces.cleanup();
@@ -226,9 +229,9 @@ describe("agenc agent start CLI", () => {
         },
         {
           cwd,
-          // Empty env: no allowlisted overrides get collected, so the
-          // create params stay exactly minimal.
-          env: {},
+          // Automation authority is captured into runtime options, not
+          // forwarded as a mutable daemon environment override.
+          env: { AGENC_ALLOW_UNTRUSTED_HOOKS: "true" },
           ensureDaemonReady: async () => {},
           io,
           client: {
@@ -255,16 +258,27 @@ describe("agenc agent start CLI", () => {
 
     expect(io.stdoutText()).toBe("agent_1\n");
     expect(io.stderrText()).toBe("");
-    expect(requests).toEqual([
-      {
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
         objective: "audit the repo",
         instructions: "audit the repo",
         cwd,
+        runtimeOptions: {
+          simpleMode: false,
+          allowUntrustedHooks: true,
+        },
         metadata: { source: "agenc agent start" },
         unattendedAllow: ["FileRead"],
         unattendedDeny: ["exec_command"],
-      },
-    ]);
+    });
+    expect(requests[0]?.envOverrides).toMatchObject({
+      AGENC_PROVIDER: "",
+      AGENC_MODEL: "",
+      OPENAI_BASE_URL: "",
+    });
+    expect(requests[0]?.envOverrides).not.toHaveProperty(
+      "AGENC_ALLOW_UNTRUSTED_HOOKS",
+    );
   });
 
   it("forwards allowlisted client env overrides with agent start", async () => {
@@ -284,10 +298,12 @@ describe("agenc agent start CLI", () => {
           cwd,
           env: {
             XAI_API_KEY: "rotated-key",
+            AGENC_CREDENTIAL_DOCS_MCP: "Bearer per-client",
             PATH: "/project/.venv/bin:/usr/bin",
             AGENC_WORKSPACE: "/should/not/forward",
             SHOULD_NOT_FORWARD: "ignored",
           },
+          runtimeOptions: resolveAgentRuntimeOptions({}, { simpleMode: true }),
           ensureDaemonReady: async () => {},
           io,
           client: {
@@ -313,10 +329,14 @@ describe("agenc agent start CLI", () => {
     ).resolves.toBe(0);
 
     expect(requests).toHaveLength(1);
-    expect(requests[0]?.envOverrides).toEqual({
+    expect(requests[0]?.envOverrides).toMatchObject({
       XAI_API_KEY: "rotated-key",
+      AGENC_CREDENTIAL_DOCS_MCP: "Bearer per-client",
       PATH: "/project/.venv/bin:/usr/bin",
+      AGENC_PROVIDER: "",
+      OPENAI_BASE_URL: "",
     });
+    expect(requests[0]?.runtimeOptions).toMatchObject({ simpleMode: true });
   });
 
   it("prints active agent list rows with the required columns", async () => {
@@ -482,6 +502,7 @@ describe("agenc agent start CLI", () => {
                 agentId: params.agentId,
                 attachmentId: "attachment_1",
                 sessionIds: ["session_1"],
+                runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
               };
             },
             stopAgent: async () => {
@@ -505,6 +526,7 @@ describe("agenc agent start CLI", () => {
         agentId: "agent_2",
         attachmentId: "attachment_2",
         sessionIds: [],
+        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       }),
     ).toBe(
       ["agent_id\tsession_id\tattachment_id", "agent_2\t-\tattachment_2"].join(
@@ -517,6 +539,7 @@ describe("agenc agent start CLI", () => {
           agentId: "agent_3",
           attachmentId: "attachment_3",
           sessionIds: ["session_remote"],
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           sessions: [
             {
               sessionId: "session_remote",
@@ -536,6 +559,7 @@ describe("agenc agent start CLI", () => {
           agentId: "agent_3",
           attachmentId: "attachment_3",
           sessionIds: ["session_remote"],
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           sessions: [
             {
               sessionId: "session_remote",
@@ -737,6 +761,8 @@ describe("agenc agent start CLI", () => {
     await writeFile(
       join(agencHome, "config.toml"),
       `
+config_version = 2
+
 [daemon]
 autostart = false
       `,
@@ -794,6 +820,27 @@ autostart = false
       attachAgentSessionEvents: async (_agentId, binding) => {
         sessionBinding = binding;
       },
+      getAgentSnapshot: async () => ({
+        status: "running",
+        lastActiveAt: "2026-05-01T12:00:00.500Z",
+        runtimeSettings: {
+          permissionMode: "default",
+          prePlanMode: null,
+          autoModeActive: false,
+          autoModeAvailable: true,
+          bypassPermissionsModeAvailable: false,
+          bypassPermissionsWorkspace: null,
+          bypassPermissionsConsentWorkspace: null,
+          model: "grok-4.5",
+          provider: "grok",
+          profile: null,
+          reasoningEffort: null,
+          modelVerbosity: null,
+          serviceTier: null,
+          hooksDisabled: false,
+        },
+        runtimeSettingsEventId: "settings:agent_socket:initial",
+      }),
       submitAgentMessage: async (_agentId, params) => {
         submitted.push(params);
         await sessionBinding?.emit({
@@ -1111,7 +1158,8 @@ autostart = false
             id: message.id,
             result: {
               type: "initialized",
-              protocolVersion: "1.1.0",
+              protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+              protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
               capabilities: {},
             },
           });
@@ -1126,6 +1174,7 @@ autostart = false
               agentId: "agent_replay",
               attachmentId: "attachment_replay",
               sessionIds: ["session_replay"],
+              runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
               sessions: [
                 {
                   sessionId: "session_replay",
@@ -1336,6 +1385,36 @@ autostart = false
             },
           },
         });
+        await context.send({
+          jsonrpc: "2.0",
+          method: "event.session_event",
+          sessionId: "session_buffered",
+          params: {
+            sessionId: "session_buffered",
+            eventId: "settings-successor",
+            event: {
+              id: "settings-successor",
+              type: "run_runtime_settings_changed",
+              payload: {
+                previousSettingsEventId: "settings-baseline",
+                permissionMode: "default",
+                prePlanMode: null,
+                autoModeActive: false,
+                autoModeAvailable: true,
+                bypassPermissionsModeAvailable: false,
+                bypassPermissionsWorkspace: null,
+                bypassPermissionsConsentWorkspace: null,
+                model: "grok-4.5",
+                provider: "grok",
+                profile: null,
+                reasoningEffort: null,
+                modelVerbosity: null,
+                serviceTier: null,
+                hooksDisabled: false,
+              },
+            },
+          },
+        });
         for (let index = 0; index < 1005; index += 1) {
           await context.send({
             jsonrpc: "2.0",
@@ -1374,6 +1453,79 @@ autostart = false
       expect(
         replayed.some((event) => event.method === "event.message_chunk"),
       ).toBe(true);
+      expect(replayed).toContainEqual(
+        expect.objectContaining({
+          method: "event.session_event",
+          params: expect.objectContaining({
+            event: expect.objectContaining({
+              type: "run_runtime_settings_changed",
+            }),
+          }),
+        }),
+      );
+    } finally {
+      await client.close();
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the bounded session map evicts pre-subscribe authority", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-agent-session-map-cap-"));
+    const socketPath = join(dir, "daemon.sock");
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      onMessage: async (message, context) => {
+        if (message.method !== "initialize") return;
+        await context.send({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            type: "initialized",
+            protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+            capabilities: {},
+          },
+        });
+        for (let index = 0; index < 51; index += 1) {
+          await context.send({
+            jsonrpc: "2.0",
+            method: "event.session_event",
+            params: {
+              sessionId: `session-${index}`,
+              event: {
+                id: `delta-${index}`,
+                type: "agent_message_delta",
+                payload: { delta: String(index) },
+              },
+            },
+          });
+        }
+      },
+    });
+
+    await server.listen();
+    const client = await createConnectedAgenCJsonLineDaemonTuiClient({
+      socketPath,
+      authCookie: "session-map-cap-cookie",
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const replayed: JsonObject[] = [];
+      const unsubscribe = client.subscribeToSessionEvents(
+        "session-0",
+        (event) => replayed.push(event),
+      );
+      unsubscribe();
+      expect(replayed[0]).toMatchObject({
+        method: "event.session_event",
+        params: {
+          sessionId: "session-0",
+          event: {
+            type: "runtime_settings_authority_gap",
+            payload: { reason: "session_map_limit" },
+          },
+        },
+      });
     } finally {
       await client.close();
       await server.close();
@@ -2117,6 +2269,7 @@ describe("resolveAgenCAgentAttachRoleWorkspace", () => {
       agentId: "agent_1",
       attachmentId: "attachment_1",
       sessionIds: ["session_1"],
+      runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       sessions: [
         {
           sessionId: "session_1",
@@ -2209,46 +2362,76 @@ describe("collectDaemonClientEnvOverrides", () => {
       AGENC_MODEL: "qwen3-coder-next-fp8",
       AGENC_PROVIDER: "openai-compatible",
       AGENC_PROFILE: "fast",
-      AGENC_MCP_SERVERS: '[{"name":"audit"}]',
       HTTP_PROXY: "http://proxy:3128",
       no_proxy: "localhost",
       PATH: "/project/.venv/bin:/usr/bin",
     });
 
-    expect(overrides).toEqual({
+    expect(overrides).toMatchObject({
       XAI_API_KEY: "rotated-xai-key",
       OPENAI_API_KEY: "rotated-openai-key",
       OPENAI_BASE_URL: "http://localhost:8000/v1",
       AGENC_MODEL: "qwen3-coder-next-fp8",
       AGENC_PROVIDER: "openai-compatible",
       AGENC_PROFILE: "fast",
-      AGENC_MCP_SERVERS: '[{"name":"audit"}]',
       HTTP_PROXY: "http://proxy:3128",
       no_proxy: "localhost",
       PATH: "/project/.venv/bin:/usr/bin",
     });
+    expect(overrides.GEMINI_API_KEY).toBe("");
   });
 
-  it("does not emit entries for keys unset in the client env", () => {
-    // Unset client keys must be absent from the overrides entirely: the
-    // daemon merges {...daemonEnv, ...overrides}, so an absent key lets
-    // the daemon's own value win instead of being force-deleted.
+  it("emits clear markers for keys unset in the client env", () => {
     const overrides = collectDaemonClientEnvOverrides({
       XAI_API_KEY: "only-this-one",
     });
 
-    expect(overrides).toEqual({ XAI_API_KEY: "only-this-one" });
-    expect(Object.keys(overrides)).not.toContain("OPENAI_API_KEY");
-    expect(Object.keys(overrides)).not.toContain("PATH");
+    expect(overrides).toMatchObject({
+      XAI_API_KEY: "only-this-one",
+      AGENC_PROVIDER: "",
+      AGENC_MODEL: "",
+      AGENC_PROFILE: "",
+      OPENAI_API_KEY: "",
+      OPENAI_BASE_URL: "",
+      PATH: "",
+    });
   });
 
-  it("treats empty and whitespace-only values as unset", () => {
-    expect(
-      collectDaemonClientEnvOverrides({
-        XAI_API_KEY: "",
-        OPENAI_API_KEY: "   ",
-      }),
-    ).toEqual({});
+  it("keeps consecutive client provider snapshots isolated from daemon state", () => {
+    const daemonEnv = {
+      AGENC_PROVIDER: "openai",
+      OPENAI_MODEL: "stale-daemon-model",
+      OPENAI_BASE_URL: "https://stale-daemon.example/v1",
+      GEMINI_MODEL: "stale-gemini-model",
+    };
+    const geminiClient = collectDaemonClientEnvOverrides({
+      AGENC_PROVIDER: "gemini",
+      AGENC_MODEL: "gemini-2.5-pro",
+    });
+    const configDrivenClient = collectDaemonClientEnvOverrides({});
+
+    expect({ ...daemonEnv, ...geminiClient }).toMatchObject({
+      AGENC_PROVIDER: "gemini",
+      AGENC_MODEL: "gemini-2.5-pro",
+      OPENAI_BASE_URL: "",
+    });
+    expect({ ...daemonEnv, ...configDrivenClient }).toMatchObject({
+      AGENC_PROVIDER: "",
+      AGENC_MODEL: "",
+      OPENAI_BASE_URL: "",
+    });
+    expect(geminiClient).not.toHaveProperty("GEMINI_MODEL");
+    expect(geminiClient).not.toHaveProperty("OPENAI_MODEL");
+  });
+
+  it("treats empty and whitespace-only values as explicit clears", () => {
+    const overrides = collectDaemonClientEnvOverrides({
+      XAI_API_KEY: "",
+      OPENAI_API_KEY: "   ",
+    });
+    expect(overrides.XAI_API_KEY).toBe("");
+    expect(overrides.OPENAI_API_KEY).toBe("");
+    expect(overrides.AGENC_PROVIDER).toBe("");
   });
 
   it("excludes AGENC_WORKSPACE and non-allowlisted keys", () => {
@@ -2259,6 +2442,10 @@ describe("collectDaemonClientEnvOverrides", () => {
       PATH: "/usr/bin",
     });
 
-    expect(overrides).toEqual({ PATH: "/usr/bin" });
+    expect(overrides.PATH).toBe("/usr/bin");
+    expect(overrides.AGENC_PROVIDER).toBe("");
+    expect(overrides.AGENC_WORKSPACE).toBeUndefined();
+    expect(overrides.AGENC_HOME).toBeUndefined();
+    expect(overrides.SOME_RANDOM_SECRET).toBeUndefined();
   });
 });

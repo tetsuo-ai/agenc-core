@@ -1,16 +1,8 @@
-/**
- * Ports source-reference `src/services/PromptSuggestion/speculation.ts` onto
- * AgenC's speculative prompt-followup runtime.
- *
- * Shape differences:
- *   - Uses AgenC temp-directory helpers and live TUI AppState types.
- *   - Keeps the source overlay/copy-on-write control flow so accepting a
- *     suggestion can inject already-completed speculative turns.
- */
+/** Speculative prompt follow-up runtime with overlay isolation. */
 
 import { randomUUID } from 'crypto'
-import { rm } from 'fs'
-import { appendFile, copyFile, mkdir } from 'fs/promises'
+import { rmSync } from 'fs'
+import { copyFile, mkdir, mkdtemp } from 'fs/promises'
 import { dirname, isAbsolute, join, relative } from 'path'
 import {
   type AppState,
@@ -37,10 +29,7 @@ import {
   formatDuration,
   formatNumber,
   getCurrentCwd,
-  getPromptSuggestionTempDir,
-  getTranscriptPath,
   isSpeculationConfigEnabled,
-  jsonStringify,
   logError,
   logForDebugging,
   mergeFileStateCaches,
@@ -55,31 +44,43 @@ import {
   logSuggestionSuppressed,
   shouldFilterSuggestion,
 } from './promptSuggestion.js'
+import { resolveSessionTempRoot } from '../../session/runtime-options.js'
+import { recordSpeculationAccept } from '../../utils/sessionStorage.js'
+import { SYSTEM_SEARCH_TOOLS_NAME } from '../../tools/system/tool-search-name.js'
 
 const MAX_SPECULATION_TURNS = 20
 const MAX_SPECULATION_MESSAGES = 100
 
 const WRITE_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit'])
 const SAFE_READ_ONLY_TOOLS = new Set([
-  'Read',
+  'FileRead',
   'Glob',
   'Grep',
-  'ToolSearch',
+  SYSTEM_SEARCH_TOOLS_NAME,
   'LSP',
   'TaskGet',
   'TaskList',
 ])
 
 function safeRemoveOverlay(overlayPath: string): void {
-  rm(
-    overlayPath,
-    { recursive: true, force: true, maxRetries: 3, retryDelay: 100 },
-    () => {},
-  )
+  try {
+    rmSync(overlayPath, {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 100,
+    })
+  } catch (error) {
+    logForDebugging(
+      `[Speculation] Failed to remove overlay: ${errorMessage(error)}`,
+    )
+  }
 }
 
-function getOverlayPath(id: string): string {
-  return join(getPromptSuggestionTempDir(), 'speculation', String(process.pid), id)
+async function createOverlayPath(): Promise<string> {
+  const sessionTempRoot = resolveSessionTempRoot()
+  await mkdir(sessionTempRoot, { recursive: true, mode: 0o700 })
+  return mkdtemp(join(sessionTempRoot, 'agenc-prompt-suggestion-overlay-'))
 }
 
 function denySpeculation(
@@ -162,7 +163,7 @@ function getBoundaryTool(
   if (!boundary) return undefined
   switch (boundary.type) {
     case 'bash':
-      return 'Bash'
+      return 'system.bash'
     case 'edit':
     case 'denied_tool':
       return boundary.toolName
@@ -417,11 +418,11 @@ export async function startSpeculation(
   const startTime = Date.now()
   const messagesRef = { current: [] as Message[] }
   const writtenPathsRef = { current: new Set<string>() }
-  const overlayPath = getOverlayPath(id)
   const cwd = getCurrentCwd(runtimeOptions.cwd ?? context.toolUseContext.cwd)
 
+  let overlayPath: string
   try {
-    await mkdir(overlayPath, { recursive: true })
+    overlayPath = await createOverlayPath()
   } catch {
     logForDebugging('[Speculation] Failed to create overlay directory')
     return
@@ -429,24 +430,30 @@ export async function startSpeculation(
 
   const contextRef = { current: context }
 
-  setAppState(prev => ({
-    ...prev,
-    speculation: {
-      status: 'active',
-      id,
-      abort: () => abortController.abort(),
-      startTime,
-      messagesRef,
-      writtenPathsRef,
-      boundary: null,
-      suggestionLength: suggestionText.length,
-      toolUseCount: 0,
-      isPipelined,
-      speculationEnabled: runtimeOptions.speculationEnabled,
-      cwd,
-      contextRef,
-    },
-  }))
+  try {
+    setAppState(prev => ({
+      ...prev,
+      speculation: {
+        status: 'active',
+        id,
+        abort: () => abortController.abort(),
+        startTime,
+        messagesRef,
+        writtenPathsRef,
+        boundary: null,
+        suggestionLength: suggestionText.length,
+        toolUseCount: 0,
+        isPipelined,
+        speculationEnabled: runtimeOptions.speculationEnabled,
+        cwd,
+        overlayPath,
+        contextRef,
+      },
+    }))
+  } catch (error) {
+    safeRemoveOverlay(overlayPath)
+    throw error
+  }
 
   logForDebugging(`[Speculation] Starting speculation ${id}`)
 
@@ -571,7 +578,7 @@ export async function startSpeculation(
         }
 
         // Stop at non-read-only bash commands
-        if (tool.name === 'Bash') {
+        if (tool.name === 'system.bash') {
           const command =
             'command' in input && typeof input.command === 'string'
               ? input.command
@@ -722,9 +729,9 @@ export async function acceptSpeculation(
     suggestionLength,
     isPipelined,
     cwd,
+    overlayPath,
   } = state
   const messages = messagesRef.current
-  const overlayPath = getOverlayPath(id)
   const acceptedAt = Date.now()
 
   abort()
@@ -792,9 +799,7 @@ export async function acceptSpeculation(
       timestamp: new Date().toISOString(),
       timeSavedMs,
     }
-    void appendFile(getTranscriptPath(), jsonStringify(entry) + '\n', {
-      mode: 0o600,
-    }).catch(() => {
+    void recordSpeculationAccept(entry).catch(() => {
       logForDebugging(
         '[Speculation] Failed to write speculation-accept to transcript',
       )
@@ -816,6 +821,7 @@ export function abortSpeculation(setAppState: SetAppState): void {
       suggestionLength,
       messagesRef,
       isPipelined,
+      overlayPath,
     } = prev.speculation
 
     logForDebugging(`[Speculation] Aborting ${id}`)
@@ -831,7 +837,7 @@ export function abortSpeculation(setAppState: SetAppState): void {
     )
 
     abort()
-    safeRemoveOverlay(getOverlayPath(id))
+    safeRemoveOverlay(overlayPath)
 
     return { ...prev, speculation: IDLE_SPECULATION_STATE }
   })
@@ -993,7 +999,7 @@ export async function handleSpeculationAccept(
         is_pipelined: speculationState.isPipelined,
       },
     )
-    safeRemoveOverlay(getOverlayPath(speculationState.id))
+    safeRemoveOverlay(speculationState.overlayPath)
     resetSpeculationState(setAppState)
     // Query required so user's message is processed normally (without speculated work)
     return { queryRequired: true }

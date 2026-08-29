@@ -15,7 +15,10 @@ type CapturedSelectProps = {
 }
 
 const harness = vi.hoisted(() => ({
-  appState: { fileHistory: { entries: [] } },
+  appState: {
+    fileHistory: { entries: [] },
+    settings: { fileCheckpointingEnabled: true },
+  },
   diffStats: {
     deletions: 1,
     filesChanged: ['/tmp/failing.ts'],
@@ -43,7 +46,9 @@ vi.mock('../state/AppState.js', () => ({
 
 vi.mock('../../utils/fileHistory.js', () => ({
   fileHistoryCanRestore: () => true,
-  fileHistoryEnabled: () => true,
+  fileHistoryEnabled: () => {
+    throw new Error('MessageSelector must read file history settings from AppState')
+  },
   fileHistoryGetDiffStats: vi.fn(async () => harness.diffStats),
 }))
 

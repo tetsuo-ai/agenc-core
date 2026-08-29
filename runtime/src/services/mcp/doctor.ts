@@ -1,5 +1,8 @@
 import type { ValidationError } from '../../utils/settings/validation.js'
 import { clearServerCache, connectToServer } from './client.js'
+import type { HomeContext } from '../../config/home.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
+import type { CanonicalSettingsAuthority } from '../../utils/settings/canonicalAuthority.js'
 import {
   getAllMcpConfigs,
   getMcpConfigsByScope,
@@ -211,8 +214,6 @@ function getConfigSignature(config: ScopedMcpServerConfig): string {
     case 'ws-ide':
     case 'agencai-proxy':
       return `${config.scope}:${config.type}:${config.url}`
-    case 'sdk':
-      return `${config.scope}:${config.type}:${config.name}`
     case 'stdio':
     case undefined:
       return `${config.scope}:${config.type ?? 'stdio'}:${config.command}:${JSON.stringify(config.args ?? [])}`
@@ -230,6 +231,7 @@ function isSameDefinition(
 }
 
 function buildScopeDefinitions(
+  authority: CanonicalSettingsAuthority,
   name: string,
   scope: ConfigScope,
   servers: Record<string, ScopedMcpServerConfig>,
@@ -243,16 +245,16 @@ function buildScopeDefinitions(
 
   const pendingApproval =
     scope === 'project'
-      ? deps.getProjectMcpServerStatus(name, config) === 'pending'
+      ? deps.getProjectMcpServerStatus(authority, name, config) === 'pending'
       : false
-  const disabled = deps.isMcpServerDisabled(name)
+  const disabled = deps.isMcpServerDisabled(name, config, authority)
   const runtimeActive = !disabled && isSameDefinition(config, activeConfig)
 
   return [
     {
       name,
       sourceType: getSourceType(config),
-      sourcePath: deps.describeMcpConfigFilePath(scope),
+      sourcePath: deps.describeMcpConfigFilePath(scope, authority),
       transport: getTransport(config),
       runtimeVisible: runtimeActive,
       runtimeActive,
@@ -315,6 +317,7 @@ function buildObservedDefinition(
 }
 
 function hasDefinitionForRuntimeSource(
+  authority: CanonicalSettingsAuthority,
   definitions: McpDoctorDefinition[],
   runtimeConfig: ScopedMcpServerConfig,
   deps: McpDoctorDependencies,
@@ -325,7 +328,7 @@ function hasDefinitionForRuntimeSource(
       ? `plugin:${runtimeConfig.pluginSource ?? 'unknown'}`
       : runtimeSourceType === 'agencai'
         ? 'agenc.tech'
-        : deps.describeMcpConfigFilePath(runtimeConfig.scope)
+        : deps.describeMcpConfigFilePath(runtimeConfig.scope, authority)
 
   return definitions.some(
     definition =>
@@ -423,11 +426,13 @@ function summarizeReport(report: McpDoctorReport): McpDoctorReport {
 }
 
 async function getLiveCheck(
+  home: HomeContext,
   name: string,
   activeConfig: ScopedMcpServerConfig | undefined,
   configOnly: boolean,
   definitions: McpDoctorDefinition[],
   deps: McpDoctorDependencies,
+  environment: ProviderEnvironment,
 ): Promise<McpDoctorLiveCheck> {
   if (configOnly) {
     return { attempted: false, result: 'skipped' }
@@ -444,7 +449,10 @@ async function getLiveCheck(
   }
 
   const startedAt = Date.now()
-  const connection = await deps.connectToServer(name, activeConfig)
+  const connection = await deps.connectToServer(name, activeConfig, undefined, {
+    home,
+    environment,
+  })
   const durationMs = Date.now() - startedAt
 
   try {
@@ -466,7 +474,7 @@ async function getLiveCheck(
         }
     }
   } finally {
-    await deps.clearServerCache(name, activeConfig).catch(() => {
+    await deps.clearServerCache(name, activeConfig, home, environment).catch(() => {
       // Best-effort cleanup for diagnostic connections.
     })
   }
@@ -485,7 +493,8 @@ function buildLiveFindings(
         blocking: false,
         code: 'auth.needs_auth',
         message: `${name} requires authentication before it can be used.`,
-        remediation: 'Authenticate the server and then rerun the doctor command.',
+        remediation:
+          "Configure credentials supported by the server, then rerun the doctor command. For XAA, run 'agenc mcp xaa login'.",
         serverName: name,
         severity: 'warn',
         sourcePath: activeDefinition?.sourcePath,
@@ -520,44 +529,59 @@ function buildLiveFindings(
 }
 
 async function buildServerReport(
+  authority: CanonicalSettingsAuthority,
   name: string,
   options: {
     configOnly: boolean
     requestedByUser: boolean
     scopeFilter?: McpDoctorScopeFilter
+    environment: ProviderEnvironment
+    pluginStorageRoot: string
   },
   validationFindingsByName: Map<string, McpDoctorFinding[]>,
   deps: McpDoctorDependencies,
 ): Promise<McpDoctorServerReport> {
   const scopeResults = {
-    enterprise: deps.getMcpConfigsByScope('enterprise'),
-    local: deps.getMcpConfigsByScope('local'),
-    project: deps.getMcpConfigsByScope('project'),
-    user: deps.getMcpConfigsByScope('user'),
+    enterprise: deps.getMcpConfigsByScope(
+      'enterprise',
+      authority,
+      options.environment,
+    ),
+    local: deps.getMcpConfigsByScope('local', authority, options.environment),
+    project: deps.getMcpConfigsByScope(
+      'project',
+      authority,
+      options.environment,
+    ),
+    user: deps.getMcpConfigsByScope('user', authority, options.environment),
   }
-  const { servers: activeServers } = await deps.getAllMcpConfigs()
-  const serverDisabled = deps.isMcpServerDisabled(name)
+  const { servers: activeServers } = await deps.getAllMcpConfigs(
+    authority,
+    { pluginStorageRoot: options.pluginStorageRoot },
+    options.environment,
+  )
   const runtimeConfig = activeServers[name] ?? undefined
+  const serverDisabled = deps.isMcpServerDisabled(name, runtimeConfig, authority)
   const activeConfig = serverDisabled ? undefined : runtimeConfig
 
   const definitions = [
     ...(shouldIncludeScope('enterprise', options.scopeFilter)
-      ? buildScopeDefinitions(name, 'enterprise', scopeResults.enterprise.servers, activeConfig, deps)
+      ? buildScopeDefinitions(authority, name, 'enterprise', scopeResults.enterprise.servers, activeConfig, deps)
       : []),
     ...(shouldIncludeScope('local', options.scopeFilter)
-      ? buildScopeDefinitions(name, 'local', scopeResults.local.servers, activeConfig, deps)
+      ? buildScopeDefinitions(authority, name, 'local', scopeResults.local.servers, activeConfig, deps)
       : []),
     ...(shouldIncludeScope('project', options.scopeFilter)
-      ? buildScopeDefinitions(name, 'project', scopeResults.project.servers, activeConfig, deps)
+      ? buildScopeDefinitions(authority, name, 'project', scopeResults.project.servers, activeConfig, deps)
       : []),
     ...(shouldIncludeScope('user', options.scopeFilter)
-      ? buildScopeDefinitions(name, 'user', scopeResults.user.servers, activeConfig, deps)
+      ? buildScopeDefinitions(authority, name, 'user', scopeResults.user.servers, activeConfig, deps)
       : []),
   ]
 
   const shouldAddObservedDefinition =
     !!runtimeConfig &&
-    !hasDefinitionForRuntimeSource(definitions, runtimeConfig, deps) &&
+    !hasDefinitionForRuntimeSource(authority, definitions, runtimeConfig, deps) &&
     ((definitions.length === 0 && !options.scopeFilter) ||
       (definitions.length > 0 && definitions.every(definition => !definition.runtimeActive)))
 
@@ -593,7 +617,15 @@ async function buildServerReport(
     })
   }
 
-  const liveCheck = await getLiveCheck(name, visibleRuntimeConfig, options.configOnly, definitions, deps)
+  const liveCheck = await getLiveCheck(
+    authority.homeContext,
+    name,
+    visibleRuntimeConfig,
+    options.configOnly,
+    definitions,
+    deps,
+    options.environment,
+  )
   findings.push(...buildLiveFindings(name, definitions, liveCheck))
 
   return {
@@ -620,23 +652,47 @@ function getServerNames(
 }
 
 export async function doctorAllServers(
-  options: { configOnly: boolean; scopeFilter?: McpDoctorScopeFilter } = {
-    configOnly: false,
+  authority: CanonicalSettingsAuthority,
+  options: {
+    configOnly: boolean
+    scopeFilter?: McpDoctorScopeFilter
+    environment?: ProviderEnvironment
+    pluginStorageRoot: string
   },
   deps: McpDoctorDependencies = DEFAULT_DEPENDENCIES,
 ): Promise<McpDoctorReport> {
   const report = buildEmptyDoctorReport(options)
   const scopeResults = {
-    enterprise: deps.getMcpConfigsByScope('enterprise'),
-    local: deps.getMcpConfigsByScope('local'),
-    project: deps.getMcpConfigsByScope('project'),
-    user: deps.getMcpConfigsByScope('user'),
+    enterprise: deps.getMcpConfigsByScope(
+      'enterprise',
+      authority,
+      options.environment ?? {},
+    ),
+    local: deps.getMcpConfigsByScope(
+      'local',
+      authority,
+      options.environment ?? {},
+    ),
+    project: deps.getMcpConfigsByScope(
+      'project',
+      authority,
+      options.environment ?? {},
+    ),
+    user: deps.getMcpConfigsByScope(
+      'user',
+      authority,
+      options.environment ?? {},
+    ),
   }
   const validationFindings = findingsFromValidationErrors(
     getValidationErrorsForSelectedScopes(scopeResults, options.scopeFilter),
   )
   const { globalFindings, serverFindingsByName } = splitValidationFindings(validationFindings)
-  const { servers: activeServers } = await deps.getAllMcpConfigs()
+  const { servers: activeServers } = await deps.getAllMcpConfigs(
+    authority,
+    { pluginStorageRoot: options.pluginStorageRoot },
+    options.environment ?? {},
+  )
   const names = getServerNames(
     [
       ...(shouldIncludeScope('enterprise', options.scopeFilter) ? [scopeResults.enterprise.servers] : []),
@@ -651,11 +707,14 @@ export async function doctorAllServers(
   const servers = await Promise.all(
     names.map(name =>
       buildServerReport(
+        authority,
         name,
         {
           configOnly: options.configOnly,
           requestedByUser: false,
           scopeFilter: options.scopeFilter,
+          environment: options.environment ?? {},
+          pluginStorageRoot: options.pluginStorageRoot,
         },
         serverFindingsByName,
         deps,
@@ -669,27 +728,52 @@ export async function doctorAllServers(
 }
 
 export async function doctorServer(
+  authority: CanonicalSettingsAuthority,
   name: string,
-  options: { configOnly: boolean; scopeFilter?: McpDoctorScopeFilter },
+  options: {
+    configOnly: boolean
+    scopeFilter?: McpDoctorScopeFilter
+    environment?: ProviderEnvironment
+    pluginStorageRoot: string
+  },
   deps: McpDoctorDependencies = DEFAULT_DEPENDENCIES,
 ): Promise<McpDoctorReport> {
   const report = buildEmptyDoctorReport({ ...options, targetName: name })
   const scopeResults = {
-    enterprise: deps.getMcpConfigsByScope('enterprise'),
-    local: deps.getMcpConfigsByScope('local'),
-    project: deps.getMcpConfigsByScope('project'),
-    user: deps.getMcpConfigsByScope('user'),
+    enterprise: deps.getMcpConfigsByScope(
+      'enterprise',
+      authority,
+      options.environment ?? {},
+    ),
+    local: deps.getMcpConfigsByScope(
+      'local',
+      authority,
+      options.environment ?? {},
+    ),
+    project: deps.getMcpConfigsByScope(
+      'project',
+      authority,
+      options.environment ?? {},
+    ),
+    user: deps.getMcpConfigsByScope(
+      'user',
+      authority,
+      options.environment ?? {},
+    ),
   }
   const validationFindings = findingsFromValidationErrors(
     getValidationErrorsForSelectedScopes(scopeResults, options.scopeFilter),
   )
   const { globalFindings, serverFindingsByName } = splitValidationFindings(validationFindings)
   const server = await buildServerReport(
+    authority,
     name,
     {
       configOnly: options.configOnly,
       requestedByUser: true,
       scopeFilter: options.scopeFilter,
+      environment: options.environment ?? {},
+      pluginStorageRoot: options.pluginStorageRoot,
     },
     serverFindingsByName,
     deps,

@@ -72,7 +72,9 @@
     "tests/fnd/red-probe-containment.test.ts",
     "tests/fnd/red-probe-markdown-loader.test.ts",
     "tests/fnd/red-probe-runner.contract.test.ts",
-    "tests/fnd/red-probes/**/*.red-probe.ts"
+    "tests/fnd/red-probes/**/*.red-probe.ts",
+    "tests/sandbox/landlock-seccomp.kernel.test.ts",
+    "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

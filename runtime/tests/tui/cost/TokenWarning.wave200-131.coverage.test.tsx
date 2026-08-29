@@ -6,6 +6,7 @@ const harness = vi.hoisted(() => ({
   collapseEnabled: false,
   effectiveWindow: 200_000,
   enabledFeatures: new Set<string>(),
+  environment: Object.freeze({ AGENC_HOME: "/test/agenc-home" }),
   percentLeft: 9,
   upgradeMessage: null as string | null,
 }));
@@ -15,15 +16,15 @@ vi.mock("bun:bundle", () => ({
 }));
 
 vi.mock("../../services/compact/autoCompact.js", () => ({
-  calculateTokenWarningState: () => ({
+  calculateTokenWarningStateForEnvironment: () => ({
     isAboveAutoCompactThreshold: true,
     isAboveErrorThreshold: false,
     isAboveWarningThreshold: true,
     isAtBlockingLimit: false,
     percentLeft: harness.percentLeft,
   }),
-  getEffectiveContextWindowSize: () => harness.effectiveWindow,
-  isAutoCompactEnabled: () => harness.autoCompactEnabled,
+  getEffectiveContextWindowSizeForEnvironment: () => harness.effectiveWindow,
+  isAutoCompactEnabledForEnvironment: () => harness.autoCompactEnabled,
 }));
 
 vi.mock("../../services/compact/compactWarningHook.js", () => ({
@@ -34,7 +35,7 @@ vi.mock("../../services/contextCollapse/index.js", () => ({
   isContextCollapseEnabled: () => harness.collapseEnabled,
 }));
 
-vi.mock("../../utils/model/contextWindowUpgradeCheck.js", () => ({
+vi.mock("../../llm/context-window-upgrade.js", () => ({
   getUpgradeMessage: () => harness.upgradeMessage,
 }));
 
@@ -51,7 +52,11 @@ describe("TokenWarning wave 200 worker 131 coverage", () => {
     harness.collapseEnabled = true;
 
     const collapseOutput = await renderToString(
-      <TokenWarning tokenUsage={190_000} model="sonnet" />,
+      <TokenWarning
+        tokenUsage={190_000}
+        model="sonnet"
+        environment={harness.environment}
+      />,
       120,
     );
 

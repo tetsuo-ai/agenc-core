@@ -6,8 +6,8 @@
  * input, daemon protocol payload limits.
  */
 export const meta = {
-  description: "--yolo: ~500 char prompt submitted without truncation or crash.",
-  args: ["--yolo"],
+  description: "--dangerously-bypass-approvals-and-sandbox: ~500 char prompt submitted without truncation or crash.",
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   timeoutMs: 180_000,
   slimCwd: true,
 };

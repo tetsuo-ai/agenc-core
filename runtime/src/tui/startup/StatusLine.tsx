@@ -2,9 +2,10 @@
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { memo, useCallback, useEffect, useRef } from 'react';
-import { getRawUtilization } from '../rate-limits/agenc-ai-limits.js';
-import { getIsRemoteMode, getKairosActive, getMainThreadAgentType, getOriginalCwd, getSdkBetas, getSessionId } from '../../bootstrap/state.js';
+import type { ProviderAuthReadContext } from '../../utils/auth.js';
+import { getIsRemoteMode, getKairosActive, getMainThreadAgentType, getOriginalCwd, getSessionId } from '../../bootstrap/state.js';
 import { DEFAULT_OUTPUT_STYLE_NAME } from '../../constants/outputStyles.js';
+import { useFullscreenMode } from '../context/fullscreenModeContext.js';
 import { useNotifications } from '../context/notifications.js';
 import { getTotalAPIDuration, getTotalCost, getTotalDuration, getTotalInputTokens, getTotalLinesAdded, getTotalLinesRemoved, getTotalOutputTokens } from '../../cost/tracker.js';
 import { useMainLoopModel } from '../hooks/useMainLoopModel.js';
@@ -12,13 +13,12 @@ import { type ReadonlySettings, useSettings } from '../hooks/useSettings.js';
 import type { Message } from '../../types/message.js';
 import type { StatusLineCommandInput } from '../../types/statusLine.js';
 import type { VimMode } from '../../types/textInputTypes.js';
-import { checkHasProjectTrustAcceptedSync } from '../../permissions/trust/project-trust.js';
-import { calculateContextPercentages, getContextWindowForModel } from '../../utils/context.js';
+import { resolveAmbientHookExecutionDecision } from '../../hooks/execution-authority.js';
+import { calculateContextPercentages, getContextWindowForModelForContext } from '../../utils/context.js';
 import { getCwd } from '../../utils/cwd.js';
-import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import { createBaseHookInput, executeStatusLineCommand } from '../../utils/hooks.js';
 import { getLastAssistantMessage } from '../../utils/messages.js';
-import { getRuntimeMainLoopModel, type ModelName, renderModelName } from '../../utils/model/model.js';
+import { type ModelName, renderModelName } from '../../utils/model/model.js';
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js';
 import { getCurrentSessionTitle } from '../../utils/sessionStorage.js';
 import { doesMostRecentAssistantMessageExceed200k, getCurrentUsage } from '../../utils/tokens.js';
@@ -33,43 +33,23 @@ export function statusLineShouldDisplay(settings: ReadonlySettings): boolean {
   if (feature('KAIROS') && getKairosActive()) return false;
   return settings?.statusLine !== undefined;
 }
-function buildStatusLineCommandInput(permissionMode: PermissionMode, exceeds200kTokens: boolean, settings: ReadonlySettings, messages: Message[], addedDirs: string[], mainLoopModel: ModelName, vimMode?: VimMode): StatusLineCommandInput {
+function buildStatusLineCommandInput(exceeds200kTokens: boolean, settings: ReadonlySettings, messages: Message[], addedDirs: string[], mainLoopModel: ModelName, providerContext: ProviderAuthReadContext, vimMode?: VimMode): StatusLineCommandInput {
   const agentType = getMainThreadAgentType();
   const worktreeSession = getCurrentWorktreeSession();
-  const runtimeModel = getRuntimeMainLoopModel({
-    permissionMode,
-    mainLoopModel,
-    exceeds200kTokens
-  });
   const outputStyleName = settings?.outputStyle || DEFAULT_OUTPUT_STYLE_NAME;
   const currentUsage = getCurrentUsage(messages);
-  const contextWindowSize = getContextWindowForModel(runtimeModel, getSdkBetas());
+  const contextWindowSize = getContextWindowForModelForContext(mainLoopModel, providerContext);
   const contextPercentages = calculateContextPercentages(currentUsage, contextWindowSize);
   const sessionId = getSessionId();
   const sessionName = getCurrentSessionTitle(sessionId);
-  const rawUtil = getRawUtilization();
-  const rateLimits: StatusLineCommandInput['rate_limits'] = {
-    ...(rawUtil.five_hour && {
-      five_hour: {
-        used_percentage: rawUtil.five_hour.utilization * 100,
-        resets_at: rawUtil.five_hour.resets_at
-      }
-    }),
-    ...(rawUtil.seven_day && {
-      seven_day: {
-        used_percentage: rawUtil.seven_day.utilization * 100,
-        resets_at: rawUtil.seven_day.resets_at
-      }
-    })
-  };
   return {
     ...createBaseHookInput(),
     ...(sessionName && {
       session_name: sessionName
     }),
     model: {
-      id: runtimeModel,
-      display_name: renderModelName(runtimeModel)
+      id: mainLoopModel,
+      display_name: renderModelName(mainLoopModel)
     },
     workspace: {
       current_dir: getCwd(),
@@ -96,9 +76,6 @@ function buildStatusLineCommandInput(permissionMode: PermissionMode, exceeds200k
       remaining_percentage: contextPercentages.remaining
     },
     exceeds_200k_tokens: exceeds200kTokens,
-    ...((rateLimits.five_hour || rateLimits.seven_day) && {
-      rate_limits: rateLimits
-    }),
     ...(isVimModeEnabled() && {
       vim: {
         mode: vimMode ?? 'INSERT'
@@ -130,6 +107,7 @@ type Props = {
   // lastAssistantMessageId is the actual re-render trigger.
   messagesRef: React.RefObject<Message[]>;
   lastAssistantMessageId: string | null;
+  providerContext: ProviderAuthReadContext;
   vimMode?: VimMode;
 };
 export function getLastAssistantMessageId(messages: Message[]): string | null {
@@ -138,6 +116,7 @@ export function getLastAssistantMessageId(messages: Message[]): string | null {
 function StatusLineInner({
   messagesRef,
   lastAssistantMessageId,
+  providerContext,
   vimMode
 }: Props): React.ReactNode {
   const abortControllerRef = useRef<AbortController | undefined>(undefined);
@@ -146,11 +125,12 @@ function StatusLineInner({
   const statusLineText = useAppState(s => s.statusLineText);
   const setAppState = useSetAppState();
   const settings = useSettings();
+  const isFullscreen = useFullscreenMode();
   const {
     addNotification
   } = useNotifications();
   // AppState-sourced model — same source as API requests. getMainLoopModel()
-  // re-reads settings.json on every call, so another session's /model write
+  // reads the session ConfigStore snapshot, so another session's /model write
   // would leak into this session's statusline (tracked in upstream issue #37596).
   const mainLoopModel = useMainLoopModel();
 
@@ -159,8 +139,6 @@ function StatusLineInner({
   settingsRef.current = settings;
   const vimModeRef = useRef(vimMode);
   vimModeRef.current = vimMode;
-  const permissionModeRef = useRef(permissionMode);
-  permissionModeRef.current = permissionMode;
   const addedDirsRef = useRef(additionalWorkingDirectories);
   addedDirsRef.current = additionalWorkingDirectories;
   const mainLoopModelRef = useRef(mainLoopModel);
@@ -210,7 +188,7 @@ function StatusLineInner({
         previousStateRef.current.messageId = currentMessageId;
         previousStateRef.current.exceeds200kTokens = exceeds200kTokens;
       }
-      const statusInput = buildStatusLineCommandInput(permissionModeRef.current, exceeds200kTokens, settingsRef.current, msgs, Array.from(addedDirsRef.current.keys()), mainLoopModelRef.current, vimModeRef.current);
+      const statusInput = buildStatusLineCommandInput(exceeds200kTokens, settingsRef.current, msgs, Array.from(addedDirsRef.current.keys()), mainLoopModelRef.current, providerContext, vimModeRef.current);
       const text = await executeStatusLineCommand(statusInput, controller.signal, undefined, logResult);
       if (!controller.signal.aborted) {
         setAppState(prev => {
@@ -224,7 +202,7 @@ function StatusLineInner({
     } catch {
       // Silently ignore errors in status line updates
     }
-  }, [messagesRef, setAppState]);
+  }, [messagesRef, providerContext, setAppState]);
 
   // Stable debounced schedule function — no deps, uses refs
   const scheduleUpdate = useCallback(() => {
@@ -271,17 +249,15 @@ function StatusLineInner({
           level: 'warn'
         });
       }
-      // executeStatusLineCommand (hooks.ts) returns undefined when trust is
-      // blocked — statusLineText stays undefined forever, user sees nothing.
-      const trustCwd = getOriginalCwd() || getCwd();
-      if (!checkHasProjectTrustAcceptedSync({ cwd: trustCwd })) {
+      const executionDecision = resolveAmbientHookExecutionDecision('command');
+      if (!executionDecision.allowed) {
         addNotification({
           key: 'statusline-trust-blocked',
-          text: 'statusline skipped until project trust is accepted',
+          text: 'status line command blocked by session hook policy',
           color: 'warning',
           priority: 'low'
         });
-        logForDebugging('Status line command skipped: workspace trust not accepted', {
+        logForDebugging(`Status line command skipped: ${executionDecision.reason}`, {
           level: 'warn'
         });
       }
@@ -315,7 +291,7 @@ function StatusLineInner({
       {vimModeIndicator ? <Text dimColor>{vimModeIndicator}</Text> : null}
       {statusLineText ? <Text dimColor wrap="truncate">
           <Ansi>{statusLineText}</Ansi>
-        </Text> : isFullscreenEnvEnabled() ? <Text> </Text> : null}
+        </Text> : isFullscreen ? <Text> </Text> : null}
     </Box>;
 }
 

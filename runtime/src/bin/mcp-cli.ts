@@ -7,6 +7,14 @@
 
 import type { Readable, Writable } from "node:stream";
 import type { AgenCConfig } from "../config/schema.js";
+import type { HomeContext } from "../config/home.js";
+import { ConfigStore } from "../config/store.js";
+import { assertCanonicalEnvironmentIngress } from "../config/environment-ingress.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
+import {
+  snapshotMcpRequestEnvironment,
+  snapshotMcpRequestEnvironmentForAuthority,
+} from "../mcp-client/environment.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import {
   formatMcpSseServeUrl,
@@ -14,6 +22,8 @@ import {
   runMcpStdioServe,
   startMcpSseServe,
 } from "../mcp/server/start.js";
+import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
+import { resolvePluginStorageRootAtIngress } from "../session/runtime-options.js";
 
 export {
   formatMcpSseServeUrl,
@@ -43,6 +53,14 @@ export interface AgenCMcpCliOptions {
   readonly io?: AgenCMcpCliIo;
   readonly toolRegistry?: ToolRegistry;
   readonly waitForClose?: boolean;
+  /** Test/embedding override; CLI ingress otherwise captures process env once. */
+  readonly homeContext?: HomeContext;
+  /** Existing canonical session authority for embedding/tests. */
+  readonly configStore?: ConfigStore;
+  /** Immutable environment captured by an embedding ingress. */
+  readonly environment?: ProviderEnvironment;
+  /** Exact plugin storage root captured by an embedding ingress. */
+  readonly pluginStorageRoot?: string;
 }
 
 const MCP_MANAGEMENT_COMMANDS = new Set([
@@ -173,6 +191,15 @@ export async function runAgenCMcpCli(
     stdout: process.stdout,
     stderr: process.stderr,
   };
+  const ingress = captureSecureStorageIngress(
+    options.environment ?? process.env,
+  );
+  assertCanonicalEnvironmentIngress(ingress.environment);
+  const ingressEnvironment = snapshotMcpRequestEnvironment(
+    ingress.environment,
+  );
+  const home =
+    options.configStore?.homeContext ?? options.homeContext ?? ingress.home;
   switch (command.kind) {
     case "help":
       io.stdout.write(`${command.text}\n`);
@@ -182,7 +209,35 @@ export async function runAgenCMcpCli(
       io.stderr.write(`${formatAgenCMcpCliHelpText()}\n`);
       return 1;
     case "management":
-      return runMcpManagementCommand(command.argv, io);
+      {
+        const configStore = options.configStore ?? new ConfigStore({
+          home: home.path,
+          cwd: options.cwd ?? process.cwd(),
+          env: { ...ingressEnvironment, AGENC_HOME: home.path },
+        });
+        if (options.configStore === undefined) await configStore.reload();
+        const pluginStorageRoot = resolvePluginStorageRootAtIngress(
+          {
+            ...ingress.environment,
+            AGENC_HOME: configStore.homeContext.path,
+          },
+          options.pluginStorageRoot,
+        );
+        const environment = snapshotMcpRequestEnvironmentForAuthority(
+          ingressEnvironment,
+          {
+            agencHome: configStore.homeContext.path,
+            pluginStorageRoot,
+          },
+        );
+        return runMcpManagementCommand(
+          command.argv,
+          io,
+          configStore,
+          environment,
+          pluginStorageRoot,
+        );
+      }
     case "serve":
       try {
         if (command.transport === "stdio") {
@@ -207,25 +262,28 @@ export async function runAgenCMcpCli(
 async function runMcpManagementCommand(
   argv: readonly string[],
   io: AgenCMcpCliIo,
+  configStore: ConfigStore,
+  environment: ProviderEnvironment,
+  pluginStorageRoot: string,
 ): Promise<number> {
   try {
     const action = argv[0];
     const rest = argv.slice(1);
     switch (action) {
       case "add":
-        await runMcpAddCommand(rest, io);
+        await runMcpAddCommand(rest, io, configStore, environment);
         return 0;
       case "list": {
         assertNoPositionals(rest, "Usage: agenc mcp list");
         const { mcpListHandler } = await import("../cli/handlers/mcp.js");
-        await mcpListHandler();
+        await mcpListHandler(configStore, environment, pluginStorageRoot);
         return 0;
       }
       case "get": {
         assertArity(rest, 1, "Usage: agenc mcp get <name>");
         const [name] = rest;
         const { mcpGetHandler } = await import("../cli/handlers/mcp.js");
-        await mcpGetHandler(name!);
+        await mcpGetHandler(configStore, name!, environment);
         return 0;
       }
       case "remove": {
@@ -235,7 +293,7 @@ async function runMcpManagementCommand(
         assertArity(parsed.positionals, 1, "Usage: agenc mcp remove <name>");
         const [name] = parsed.positionals;
         const { mcpRemoveHandler } = await import("../cli/handlers/mcp.js");
-        await mcpRemoveHandler(name!, { scope: parsed.options.scope });
+        await mcpRemoveHandler(configStore, name!, { scope: parsed.options.scope });
         return 0;
       }
       case "add-json": {
@@ -248,6 +306,8 @@ async function runMcpManagementCommand(
         const { mcpAddJsonHandler } = await import("../cli/handlers/mcp.js");
         await mcpAddJsonHandler(name!, json!, {
           scope: parsed.options.scope,
+          authority: configStore,
+          environment,
           ...(parsed.flags.has("client-secret") ? { clientSecret: true } : {}),
         });
         return 0;
@@ -258,19 +318,23 @@ async function runMcpManagementCommand(
         });
         assertNoPositionals(parsed.positionals, "Usage: agenc mcp add-from-agenc-desktop");
         const { mcpAddFromDesktopHandler } = await import("../cli/handlers/mcp.js");
-        await mcpAddFromDesktopHandler({ scope: parsed.options.scope });
+        await mcpAddFromDesktopHandler(configStore, {
+          environment,
+          pluginStorageRoot,
+          scope: parsed.options.scope,
+        });
         return 0;
       }
       case "reset-project-choices": {
         assertNoPositionals(rest, "Usage: agenc mcp reset-project-choices");
         const { mcpResetChoicesHandler } = await import("../cli/handlers/mcp.js");
-        await mcpResetChoicesHandler();
+        await mcpResetChoicesHandler(configStore);
         return 0;
       }
       case "approve-project": {
         assertArity(rest, 1, "Usage: agenc mcp approve-project <name>");
         const { mcpApproveProjectHandler } = await import("../cli/handlers/mcp.js");
-        await mcpApproveProjectHandler(rest[0]!);
+        await mcpApproveProjectHandler(configStore, rest[0]!);
         return 0;
       }
       case "doctor": {
@@ -283,6 +347,9 @@ async function runMcpManagementCommand(
         }
         const { mcpDoctorHandler } = await import("../cli/handlers/mcp.js");
         await mcpDoctorHandler(parsed.positionals[0], {
+          authority: configStore,
+          environment,
+          pluginStorageRoot,
           scope: parsed.options.scope,
           configOnly: parsed.flags.has("config-only"),
           json: parsed.flags.has("json"),
@@ -291,7 +358,11 @@ async function runMcpManagementCommand(
       }
       case "xaa": {
         const { runMcpXaaCommand } = await import("../cli/handlers/mcp-xaa.js");
-        await runMcpXaaCommand(rest, { io, env: process.env });
+        await runMcpXaaCommand(rest, {
+          io,
+          env: environment,
+          home: configStore.homeContext,
+        });
         return 0;
       }
     }
@@ -388,9 +459,11 @@ function parseSimpleOptions(
 async function runMcpAddCommand(
   argv: readonly string[],
   io: AgenCMcpCliIo,
+  configStore: ConfigStore,
+  environment: ProviderEnvironment,
 ): Promise<void> {
   const parsed = parseSimpleOptions(argv, {
-    value: new Set(["scope", "s", "transport", "t", "client-id", "callback-port"]),
+    value: new Set(["scope", "s", "transport", "t", "client-id"]),
     repeated: new Set(["env", "e", "header", "H"]),
     boolean: new Set(["client-secret", "xaa"]),
   });
@@ -407,9 +480,10 @@ async function runMcpAddCommand(
     header: parsed.repeated.header,
     clientId: parsed.options["client-id"],
     clientSecret: parsed.flags.has("client-secret"),
-    callbackPort: parsed.options["callback-port"],
     xaa: parsed.flags.has("xaa"),
     stdout: io.stdout,
     stderr: io.stderr,
+    authority: configStore,
+    environment,
   });
 }

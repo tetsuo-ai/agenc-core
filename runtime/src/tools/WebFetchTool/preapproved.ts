@@ -2,7 +2,7 @@
 // domains that the user has provided in some form. However, we make an
 // exception for a list of preapproved domains that are code-related.
 //
-// SECURITY WARNING: These preapproved domains are ONLY for WebFetch (GET requests only).
+// SECURITY WARNING: These preapproved domains are ONLY for web_fetch (GET requests only).
 // The sandbox system deliberately does NOT inherit this list for network restrictions,
 // as arbitrary network access (POST, uploads, etc.) to these domains could enable
 // data exfiltration. Some domains like huggingface.co, kaggle.com, and nuget.org

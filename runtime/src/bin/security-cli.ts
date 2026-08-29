@@ -11,7 +11,7 @@
  *   daemon-ws-exposure       non-loopback daemon WebSocket overrides (env)
  *   home-dir-perms           $AGENC_HOME group/world access        [fixable]
  *   sensitive-file-perms     auth.json/daemon.cookie/config/vaults [fixable]
- *   config-integrity         config.toml unparseable (falls back to defaults)
+ *   config-integrity         config.toml rejected by the strict loader
  *   default-permission-mode  configured approval-bypass default    (warn)
  *   hooks-exposure           inbound webhooks enabled without a bearer
  *                            token, or bound non-loopback (task 17)
@@ -20,11 +20,13 @@
  * (task 6) and skill/plugin provenance (task 26) land here as those
  * surfaces ship.
  */
-import { chmodSync, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import { resolveAgencHome } from "../config/env.js";
-import { loadConfig } from "../config/loader.js";
+import { loadCanonicalConfig } from "../config/repository.js";
+import type { GatewayConfig } from "../config/schema.js";
+import { readGatewayCredentialSnapshot } from "../gateway/credentials.js";
+import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 
 export type SecuritySeverity = "ok" | "warn" | "critical";
 
@@ -45,6 +47,8 @@ export interface SecurityAuditContext {
   readonly configExists: boolean;
   readonly configParseError?: string;
   readonly defaultPermissionMode?: string;
+  readonly gatewayConfig?: GatewayConfig;
+  readonly gatewayHooksTokenStatus: "present" | "missing" | "not-inspected";
   readonly applyFixes: boolean;
 }
 
@@ -165,7 +169,7 @@ const KNOWN_SENSITIVE_ENTRIES = [
   "onboarding.json",
   "trusted-projects.json",
   "credentials",
-  // Gateway secrets (channel tokens, webhook/webchat bearer tokens).
+  // Retired plaintext gateway credentials remain protected migration inputs.
   "gateway/env",
   "gateway/hooks-token",
   "gateway/webchat-token",
@@ -223,9 +227,9 @@ const checkConfigIntegrity: SecurityCheck = (ctx) => {
     return [
       {
         id: "config-integrity",
-        title: "config.toml is unparseable",
+        title: "config.toml is invalid",
         severity: "warn",
-        detail: `The runtime silently falls back to defaults, which can mask a hardened configuration you believe is active: ${ctx.configParseError}`,
+        detail: `The runtime will refuse this configuration instead of silently falling back to defaults: ${ctx.configParseError}`,
         remediation: "Fix or regenerate config.toml (agenc config validate).",
         fixable: false,
       },
@@ -246,16 +250,16 @@ const checkConfigIntegrity: SecurityCheck = (ctx) => {
 
 const checkDefaultPermissionMode: SecurityCheck = (ctx) => {
   const mode = ctx.defaultPermissionMode;
-  if (mode === "bypassPermissions" || mode === "dontAsk") {
+  if (mode === "never" || mode === "bypassPermissions" || mode === "dontAsk") {
     return [
       {
         id: "default-permission-mode",
         title: `Configured default permission mode is ${mode}`,
         severity: "warn",
         detail:
-          "Every session starts with tool approvals bypassed. Combined with untrusted inputs (web content, task text) this is the largest configured blast radius on this machine.",
+          "Every session starts without interactive tool approval. Combined with untrusted inputs (web content, task text) this is the largest configured blast radius on this machine.",
         remediation:
-          "Remove permissions.default_mode from config.toml and opt in per session (--yolo) instead.",
+          "Remove or tighten approval_policy/defaultMode in config.toml and opt in per session (--dangerously-bypass-approvals-and-sandbox) instead.",
         fixable: false,
       },
     ];
@@ -278,29 +282,14 @@ const checkDefaultPermissionMode: SecurityCheck = (ctx) => {
  * unnoticed. A non-loopback bind is the daemon-ws exposure class.
  */
 const checkHooksExposure: SecurityCheck = (ctx) => {
-  const configPath = join(ctx.agencHome, "gateway", "config.json");
-  let hooks: Record<string, unknown> | null = null;
-  try {
-    if (existsSync(configPath)) {
-      const raw = JSON.parse(readFileSync(configPath, "utf8")) as {
-        hooks?: unknown;
-      };
-      if (typeof raw.hooks === "object" && raw.hooks !== null) {
-        hooks = raw.hooks as Record<string, unknown>;
-      }
-    }
-  } catch {
-    // Unparseable gateway config is its own (fail-closed) problem; the
-    // hooks endpoint cannot be enabled by a file that does not parse.
-    hooks = null;
-  }
-  if (hooks === null || hooks.enabled !== true) {
+  const hooks = ctx.gatewayConfig?.hooks;
+  if (hooks?.enabled !== true) {
     return [
       {
         id: "hooks-exposure",
         title: "Inbound webhooks disabled",
         severity: "ok",
-        detail: "The /hooks/agent endpoint is not enabled in gateway config.",
+        detail: "The /hooks/agent endpoint is not enabled in config.toml.",
         fixable: false,
       },
     ];
@@ -308,24 +297,27 @@ const checkHooksExposure: SecurityCheck = (ctx) => {
 
   const findings: SecurityFinding[] = [];
   const envToken = ctx.env.AGENC_HOOKS_TOKEN?.trim() ?? "";
-  let fileToken = "";
-  try {
-    const tokenPath = join(ctx.agencHome, "gateway", "hooks-token");
-    if (existsSync(tokenPath)) {
-      fileToken = readFileSync(tokenPath, "utf8").trim();
-    }
-  } catch {
-    fileToken = "";
-  }
-  if (envToken.length < 16 && fileToken.length < 16) {
+  if (envToken.length < 16 && ctx.gatewayHooksTokenStatus === "missing") {
     findings.push({
       id: "hooks-exposure",
       title: "Inbound webhooks enabled without a bearer token",
       severity: "critical",
       detail:
-        "gateway/config.json enables the /hooks/agent endpoint but neither AGENC_HOOKS_TOKEN nor gateway/hooks-token provides a token (>=16 chars). The endpoint will mint one on next start, but until callers hold a token this configuration expresses unauthenticated-automation intent.",
+        "[gateway.hooks] enables the /hooks/agent endpoint but neither AGENC_HOOKS_TOKEN nor the native secure storage provides a token (>=16 chars). Until callers hold a token this configuration expresses unauthenticated-automation intent.",
       remediation:
-        "Set AGENC_HOOKS_TOKEN or start `agenc gateway run` once to mint gateway/hooks-token, then configure callers with it.",
+        "Set AGENC_HOOKS_TOKEN or start `agenc gateway run` once to mint the home-bound native secure storage token, then configure callers with it.",
+      fixable: false,
+    });
+  } else if (
+    envToken.length < 16 &&
+    ctx.gatewayHooksTokenStatus === "not-inspected"
+  ) {
+    findings.push({
+      id: "hooks-exposure:credential-inspection",
+      title: "Native webhook credential not inspected during daemon startup",
+      severity: "warn",
+      detail:
+        "The daemon startup audit does not open the native credential store. Run `agenc security audit` for the complete webhook credential check.",
       fixable: false,
     });
   }
@@ -336,7 +328,7 @@ const checkHooksExposure: SecurityCheck = (ctx) => {
       id: "hooks-exposure:bind",
       title: "Inbound webhooks host is not loopback",
       severity: "critical",
-      detail: `gateway/config.json binds /hooks/agent to '${host}'. An exposed automation endpoint on an agent host is the daemon-exposure disaster class.`,
+      detail: `config.toml binds /hooks/agent to '${host}'. An exposed automation endpoint on an agent host is the daemon-exposure disaster class.`,
       remediation:
         "Bind 127.0.0.1 and reach it via a tailnet or SSH tunnel instead.",
       fixable: false,
@@ -381,29 +373,74 @@ export interface SecurityAuditReport {
 export interface SecurityAuditOptions {
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly applyFixes?: boolean;
+  /** Startup uses config/filesystem checks only so credential prompts cannot block it. */
+  readonly inspectNativeCredentials?: boolean;
 }
 
 export async function buildSecurityAuditReport(
   options: SecurityAuditOptions = {},
 ): Promise<SecurityAuditReport> {
-  const env = options.env ?? process.env;
-  const agencHome = resolveAgencHome(env);
-  const loaded = await loadConfig({ home: agencHome, onWarn: () => {} });
+  const ingress = captureSecureStorageIngress(options.env ?? process.env);
+  const env = ingress.environment;
+  const home = ingress.home;
+  const agencHome = home.path;
+  const configPath = join(agencHome, "config.toml");
+  let loaded: Awaited<ReturnType<typeof loadCanonicalConfig>> | undefined;
+  let configParseError: string | undefined;
+  try {
+    loaded = await loadCanonicalConfig({
+      env,
+      home: agencHome,
+      onWarn: () => {},
+    });
+  } catch (error) {
+    configParseError = error instanceof Error ? error.message : String(error);
+  }
+  const hooksEnabled = loaded?.config.gateway?.hooks?.enabled === true;
+  const explicitHooksTokenPresent =
+    (env.AGENC_HOOKS_TOKEN?.trim().length ?? 0) >= 16;
+  let gatewayHooksTokenStatus: SecurityAuditContext["gatewayHooksTokenStatus"] =
+    options.inspectNativeCredentials === false
+      ? "not-inspected"
+      : "missing";
+  if (
+    hooksEnabled &&
+    !explicitHooksTokenPresent &&
+    options.inspectNativeCredentials !== false
+  ) {
+    try {
+      const gatewayCredentials = readGatewayCredentialSnapshot(home);
+      const environmentToken =
+        gatewayCredentials.environment.AGENC_HOOKS_TOKEN?.trim();
+      const generatedToken = gatewayCredentials.generatedTokens.hooks?.trim();
+      gatewayHooksTokenStatus =
+        (environmentToken?.length ?? 0) >= 16 ||
+        (generatedToken?.length ?? 0) >= 16
+          ? "present"
+          : "missing";
+    } catch {
+      // An unavailable native secure storage is reported as missing credential below.
+    }
+  }
   const ctx: SecurityAuditContext = {
     env,
     agencHome,
-    configExists: loaded.exists,
-    ...(loaded.parseError !== undefined
-      ? { configParseError: loaded.parseError }
+    configExists: existsSync(configPath),
+    ...(configParseError !== undefined
+      ? { configParseError }
       : {}),
-    ...(loaded.config.permissions?.default_mode !== undefined ||
-    loaded.config.permissions?.defaultMode !== undefined
+    ...(loaded?.config.approval_policy !== undefined ||
+    loaded?.config.permissions?.defaultMode !== undefined
       ? {
           defaultPermissionMode:
-            loaded.config.permissions?.default_mode ??
+            loaded.config.approval_policy ??
             loaded.config.permissions?.defaultMode,
         }
       : {}),
+    ...(loaded?.config.gateway !== undefined
+      ? { gatewayConfig: loaded.config.gateway }
+      : {}),
+    gatewayHooksTokenStatus,
     applyFixes: options.applyFixes === true,
   };
   const findings = runSecurityChecks(ctx);

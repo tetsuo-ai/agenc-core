@@ -1,10 +1,11 @@
-import type { EnvSnapshot } from "../config/env.js";
-import { normalizeProviderSlug, type ProviderSlug } from "../config/resolve-provider.js";
+import { resolveProviderSlug, type ProviderSlug } from "../config/resolve-provider.js";
+import { normalizeProviderIdentity } from "../provider-identity.js";
 import type { AgenCConfig } from "../config/schema.js";
 import {
   hasEntitledRemoteAuthSessionSync,
   hasRemoteAuthSessionSync,
   remoteAuthSessionSubscriptionTierSync,
+  type RemoteAuthSessionReadContext,
 } from "../auth/session-state.js";
 import type { AuthSubscriptionTier } from "../auth/backend.js";
 import { OPENROUTER_FREE_MODEL_IDS } from "../llm/registry/openrouter-free-models.js";
@@ -25,7 +26,6 @@ const OPENROUTER_PAID_MODELS = [
   "anthropic/claude-haiku-4.5",
   "google/gemini-2.5-flash",
   "google/gemini-2.5-flash-lite",
-  "deepseek/deepseek-chat",
   "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v3.2",
   "qwen/qwen3-coder-30b-a3b-instruct",
@@ -59,10 +59,20 @@ function normalizeModelId(model: string): string {
   return trimmed;
 }
 
+function subscriptionProviderIdentity(
+  provider: ProviderSlug | string,
+): string | undefined {
+  return (
+    resolveProviderSlug(provider) ??
+    normalizeProviderIdentity(provider, "subscription model provider")
+  );
+}
+
 export function subscriptionManagedModels(
   provider: ProviderSlug | string,
 ): readonly string[] {
-  const normalized = normalizeProviderSlug(provider) ?? provider.trim().toLowerCase();
+  const normalized = subscriptionProviderIdentity(provider);
+  if (normalized === undefined) return [];
   return LIVE_SUBSCRIPTION_MODELS[normalized] ?? [];
 }
 
@@ -70,7 +80,8 @@ export function subscriptionManagedModelsForTier(
   provider: ProviderSlug | string,
   tier: AuthSubscriptionTier | undefined,
 ): readonly string[] {
-  const normalized = normalizeProviderSlug(provider) ?? provider.trim().toLowerCase();
+  const normalized = subscriptionProviderIdentity(provider);
+  if (normalized === undefined) return [];
   if (tier === "free") return FREE_SUBSCRIPTION_MODELS[normalized] ?? [];
   if (tier === "pro" || tier === "team" || tier === "enterprise") {
     return LIVE_SUBSCRIPTION_MODELS[normalized] ?? [];
@@ -95,28 +106,28 @@ export function providerHasLiveSubscriptionRoute(
 
 export function hasHostedSubscriptionAccess(
   config: AgenCConfig | undefined,
-  env: EnvSnapshot = process.env,
+  context: RemoteAuthSessionReadContext,
 ): boolean {
   return (
     config?.auth?.managedKeys?.enabled === true &&
-    hasEntitledRemoteAuthSessionSync(env)
+    hasEntitledRemoteAuthSessionSync(context)
   );
 }
 
 export function hasHostedManagedAccess(
   config: AgenCConfig | undefined,
-  env: EnvSnapshot = process.env,
+  context: RemoteAuthSessionReadContext,
 ): boolean {
   return (
     config?.auth?.managedKeys?.enabled === true &&
-    hasRemoteAuthSessionSync(env)
+    hasRemoteAuthSessionSync(context)
   );
 }
 
 export function hostedManagedSubscriptionTier(
-  env: EnvSnapshot = process.env,
+  context: RemoteAuthSessionReadContext,
 ): AuthSubscriptionTier | undefined {
-  return remoteAuthSessionSubscriptionTierSync(env);
+  return remoteAuthSessionSubscriptionTierSync(context);
 }
 
 export function subscriptionManagedDefaultModel(
@@ -132,6 +143,19 @@ export function subscriptionManagedDefaultModelForTier(
   return visibleSubscriptionManagedModelsForTier(provider, tier)[0];
 }
 
+export function resolveSubscriptionManagedModelRequest(params: {
+  readonly provider: ProviderSlug | string;
+  readonly explicitModel?: string;
+  readonly managedAccess: boolean;
+  readonly providerApiKey?: string;
+  readonly tier: AuthSubscriptionTier | undefined;
+}): string | undefined {
+  if (params.explicitModel !== undefined) return params.explicitModel;
+  if (!params.managedAccess) return undefined;
+  if (params.providerApiKey?.trim()) return undefined;
+  return subscriptionManagedDefaultModelForTier(params.provider, params.tier);
+}
+
 export function isSubscriptionManagedModel(
   provider: ProviderSlug | string,
   model: string,
@@ -145,7 +169,8 @@ export function isFreeSubscriptionManagedModel(
   model: string,
 ): boolean {
   const normalizedModel = normalizeModelId(model);
-  const normalized = normalizeProviderSlug(provider) ?? provider.trim().toLowerCase();
+  const normalized = subscriptionProviderIdentity(provider);
+  if (normalized === undefined) return false;
   return (FREE_SUBSCRIPTION_MODELS[normalized] ?? []).includes(normalizedModel);
 }
 

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
+import { ConfigStore } from "../../config/store.js";
 import {
   formatProjectTrustSources,
   summarizeProjectTrustSources,
@@ -31,46 +32,65 @@ describe("project trust source summaries", () => {
 
   test("summarizes project/local risky settings without exposing values", async () => {
     writeFileSync(
-      join(repo, ".agenc", "settings.json"),
-      JSON.stringify({
-        hooks: { preToolUse: [{ command: "echo secret-token" }] },
-        mcp_servers: {
-          docs: {
-            command: "node server.js",
-            env: { API_TOKEN: "secret-token", PATH: "/bin" },
-          },
-        },
-        permissions: {
-          allow: ["Bash(*)"],
-          defaultMode: "bypassPermissions",
-        },
-        shell_environment_policy: {
-          set: { SECRET_KEY: "secret-token" },
-        },
-      }),
+      join(repo, ".agenc", "config.toml"),
+      [
+        "config_version = 2",
+        "[permissions]",
+        'allow = ["system.bash(*)"]',
+        'defaultMode = "bypassPermissions"',
+        "[shell_environment_policy.set]",
+        'SECRET_KEY = "secret-token"',
+        'PATH = "/bin"',
+        "",
+      ].join("\n"),
     );
     writeFileSync(
-      join(repo, ".agenc", "settings.local.json"),
-      JSON.stringify({ permissions: { allow: ["Edit"] } }),
+      join(repo, ".agenc", "config.local.toml"),
+      'config_version = 2\n[permissions]\nallow = ["Edit"]\n',
     );
 
+    const configStore = new ConfigStore({
+      home,
+      cwd: repo,
+      projectRoot: repo,
+      projectTrusted: true,
+      managedConfigPath: join(home, "missing-managed.toml"),
+      managedDropInDir: join(home, "missing-managed.d"),
+      env: { ...process.env, AGENC_HOME: home },
+    });
+    await configStore.reload();
+
+    expect(configStore.sources("project")[0]?.config.permissions?.allow).toBeUndefined();
+    expect(
+      configStore.sources("project")[0]?.config.permissions?.defaultMode,
+    ).toBeUndefined();
+    expect(configStore.sources("local")[0]?.config.permissions?.allow).toBeUndefined();
+    expect(
+      configStore.ignored().map(({ scope, key }) => `${scope}:${key}`),
+    ).toEqual([
+      "project:permissions.allow",
+      "project:permissions.defaultMode",
+      "project:shell_environment_policy.set",
+      "local:permissions.allow",
+    ]);
+
     const lines = formatProjectTrustSources(
-      await summarizeProjectTrustSources({ home, cwd: repo }),
+      await summarizeProjectTrustSources({ cwd: repo, configStore }),
     );
 
     expect(lines).toEqual([
-      "Project settings (non-authoritative; path trust does not activate grants): ignored capability hook declarations: preToolUse",
-      "Project settings (non-authoritative; path trust does not activate grants): MCP declarations requiring separate digest approval: docs",
-      "Project settings (non-authoritative; path trust does not activate grants): non-authoritative MCP env keys: API_TOKEN",
-      "Project settings (non-authoritative; path trust does not activate grants): ignored capability allow rules: Bash",
-      "Project settings (non-authoritative; path trust does not activate grants): ignored permission default: bypassPermissions",
-      "Project settings (non-authoritative; path trust does not activate grants): ignored shell environment grants: SECRET_KEY",
-      "Local settings (non-authoritative; path trust does not activate grants): ignored capability allow rules: Edit",
+      "Project config (non-authoritative; path trust does not activate grants): ignored capability allow rule declarations",
+      "Project config (non-authoritative; path trust does not activate grants): ignored permission default declaration",
+      "Project config (non-authoritative; path trust does not activate grants): ignored shell environment grants",
+      "Local config (non-authoritative; path trust does not activate grants): ignored capability allow rule declarations",
     ]);
     expect(lines.every(line => line.includes("path trust does not activate grants"))).toBe(
       true,
     );
     expect(lines.join("\n")).not.toContain("secret-token");
     expect(lines.join("\n")).not.toContain("node server.js");
+    expect(lines.join("\n")).not.toContain("system.bash(*)");
+    expect(lines.join("\n")).not.toContain("bypassPermissions");
+    expect(lines.join("\n")).not.toContain("Edit");
   });
 });

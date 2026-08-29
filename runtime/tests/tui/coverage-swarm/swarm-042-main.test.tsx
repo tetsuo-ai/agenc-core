@@ -105,7 +105,6 @@ describe("TUI main swarm coverage", () => {
     await expect(
       bootTUI({
         session: {} as never,
-        configStore: {} as never,
         stdin: stdin as never,
         stdout: stdout as never,
         stderr: stderr as never,
@@ -135,7 +134,6 @@ describe("TUI main swarm coverage", () => {
     await expect(
       bootTUI({
         session: {} as never,
-        configStore: {} as never,
         stdin: stdin as never,
         stdout: stdout as never,
         stderr: createWriteStream() as never,
@@ -158,7 +156,6 @@ describe("TUI main swarm coverage", () => {
 
     await bootTUI({
       session: {} as never,
-      configStore: {} as never,
       stdin: stdin as never,
       stdout: createWriteStream() as never,
       stderr: createWriteStream() as never,

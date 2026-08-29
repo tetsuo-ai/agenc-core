@@ -1,4 +1,6 @@
 import type { Writable } from "node:stream";
+import type { HomeContext } from "../../config/home.js";
+import type { ProviderEnvironment } from "../../llm/provider-options.js";
 
 import {
   acquireIdpIdToken,
@@ -6,7 +8,7 @@ import {
   clearIdpIdToken,
   getCachedIdpIdToken,
   getIdpClientSecret,
-  getXaaIdpSettings,
+  getXaaIdpConfig,
   issuerKey,
   saveIdpClientSecret,
   saveIdpIdTokenFromJwt,
@@ -21,7 +23,8 @@ export interface McpXaaIo {
 
 export interface McpXaaOptions {
   readonly io: McpXaaIo;
-  readonly env?: NodeJS.ProcessEnv;
+  readonly env: ProviderEnvironment;
+  readonly home: HomeContext;
 }
 
 export async function runMcpXaaCommand(
@@ -43,7 +46,7 @@ export async function runMcpXaaCommand(
       return;
     case "clear":
       assertNoPositionals(rest, "Usage: agenc mcp xaa clear");
-      runXaaClear(options);
+      await runXaaClear(options);
       return;
     default:
       throw new Error(
@@ -119,7 +122,7 @@ function normalizeXaaOptionName(name: string): string {
 
 async function runXaaSetup(
   argv: readonly string[],
-  { env = process.env, io }: McpXaaOptions,
+  { env, io, home }: McpXaaOptions,
 ): Promise<void> {
   const parsed = parseXaaOptions(argv, {
     value: new Set(["issuer", "clientId", "callbackPort"]),
@@ -145,14 +148,14 @@ async function runXaaSetup(
     );
   }
 
-  const old = getXaaIdpSettings();
+  const old = getXaaIdpConfig();
   const oldIssuer = old?.issuer;
-  const oldClientId = old?.clientId;
-  const { error } = updateSettingsForSource("userSettings", {
-    xaaIdp: {
+  const oldClientId = old?.client_id;
+  const { error } = await updateSettingsForSource("userSettings", {
+    xaa_idp: {
       issuer,
-      clientId,
-      callbackPort,
+      client_id: clientId,
+      ...(callbackPort !== undefined ? { callback_port: callbackPort } : {}),
     },
   });
   if (error) {
@@ -161,20 +164,20 @@ async function runXaaSetup(
 
   if (oldIssuer) {
     if (issuerKey(oldIssuer) !== issuerKey(issuer)) {
-      clearIdpIdToken(oldIssuer);
-      clearIdpClientSecret(oldIssuer);
+      clearIdpIdToken(oldIssuer, home);
+      clearIdpClientSecret(oldIssuer, home);
     } else if (oldClientId !== clientId) {
-      clearIdpIdToken(oldIssuer);
-      clearIdpClientSecret(oldIssuer);
+      clearIdpIdToken(oldIssuer, home);
+      clearIdpClientSecret(oldIssuer, home);
     }
   }
 
   if (secret) {
-    const { success, warning } = saveIdpClientSecret(issuer, secret);
+    const { success, warning } = saveIdpClientSecret(issuer, secret, home);
     if (!success) {
       throw new Error(
-        `Error: settings written but keychain save failed${warning ? ` - ${warning}` : ""}. ` +
-          "Re-run with --client-secret once keychain is available.",
+        `Error: settings written but native secure storage save failed${warning ? ` - ${warning}` : ""}. ` +
+          "Re-run with --client-secret once native secure storage is available.",
       );
     }
   }
@@ -184,21 +187,21 @@ async function runXaaSetup(
 
 async function runXaaLogin(
   argv: readonly string[],
-  { io }: McpXaaOptions,
+  { env, io, home }: McpXaaOptions,
 ): Promise<void> {
   const parsed = parseXaaOptions(argv, {
     value: new Set(["idToken"]),
     boolean: new Set(["force"]),
   });
   assertNoPositionals(parsed.positionals, "Usage: agenc mcp xaa login");
-  const idp = getXaaIdpSettings();
+  const idp = getXaaIdpConfig();
   if (!idp) {
     throw new Error("Error: no XAA IdP connection. Run 'agenc mcp xaa setup' first.");
   }
 
   const idToken = parsed.options.idToken;
   if (idToken) {
-    const expiresAt = saveIdpIdTokenFromJwt(idp.issuer, idToken);
+    const expiresAt = saveIdpIdTokenFromJwt(idp.issuer, idToken, home);
     io.stdout.write(
       `id_token cached for ${idp.issuer} (expires ${new Date(expiresAt).toISOString()})\n`,
     );
@@ -206,10 +209,10 @@ async function runXaaLogin(
   }
 
   if (parsed.flags.has("force")) {
-    clearIdpIdToken(idp.issuer);
+    clearIdpIdToken(idp.issuer, home);
   }
 
-  if (getCachedIdpIdToken(idp.issuer) !== undefined) {
+  if (getCachedIdpIdToken(idp.issuer, home) !== undefined) {
     io.stdout.write(
       `Already logged in to ${idp.issuer} (cached id_token still valid). Use --force to re-login.\n`,
     );
@@ -219,10 +222,12 @@ async function runXaaLogin(
   io.stdout.write(`Opening browser for IdP login at ${idp.issuer}\n`);
   try {
     await acquireIdpIdToken({
+      home,
+      environment: env,
       idpIssuer: idp.issuer,
-      idpClientId: idp.clientId,
-      idpClientSecret: getIdpClientSecret(idp.issuer),
-      callbackPort: idp.callbackPort,
+      idpClientId: idp.client_id,
+      idpClientSecret: getIdpClientSecret(idp.issuer, home),
+      callbackPort: idp.callback_port,
       onAuthorizationUrl: url => {
         io.stdout.write(`If the browser did not open, visit:\n  ${url}\n`);
       },
@@ -235,38 +240,38 @@ async function runXaaLogin(
   }
 }
 
-function runXaaShow({ io }: McpXaaOptions): void {
-  const idp = getXaaIdpSettings();
+function runXaaShow({ io, home }: McpXaaOptions): void {
+  const idp = getXaaIdpConfig();
   if (!idp) {
     io.stdout.write("No XAA IdP connection configured.\n");
     return;
   }
-  const hasSecret = getIdpClientSecret(idp.issuer) !== undefined;
-  const hasIdToken = getCachedIdpIdToken(idp.issuer) !== undefined;
+  const hasSecret = getIdpClientSecret(idp.issuer, home) !== undefined;
+  const hasIdToken = getCachedIdpIdToken(idp.issuer, home) !== undefined;
   io.stdout.write(`Issuer:        ${idp.issuer}\n`);
-  io.stdout.write(`Client ID:     ${idp.clientId}\n`);
-  if (idp.callbackPort !== undefined) {
-    io.stdout.write(`Callback port: ${idp.callbackPort}\n`);
+  io.stdout.write(`Client ID:     ${idp.client_id}\n`);
+  if (idp.callback_port !== undefined) {
+    io.stdout.write(`Callback port: ${idp.callback_port}\n`);
   }
   io.stdout.write(
-    `Client secret: ${hasSecret ? "(stored in keychain)" : "(not set - PKCE-only)"}\n`,
+    `Client secret: ${hasSecret ? "(stored in native secure storage)" : "(not set - PKCE-only)"}\n`,
   );
   io.stdout.write(
     `Logged in:     ${hasIdToken ? "yes (id_token cached)" : "no - run 'agenc mcp xaa login'"}\n`,
   );
 }
 
-function runXaaClear({ io }: McpXaaOptions): void {
-  const idp = getXaaIdpSettings();
-  const { error } = updateSettingsForSource("userSettings", {
-    xaaIdp: undefined,
+async function runXaaClear({ io, home }: McpXaaOptions): Promise<void> {
+  const idp = getXaaIdpConfig();
+  const { error } = await updateSettingsForSource("userSettings", {
+    xaa_idp: undefined,
   });
   if (error) {
     throw new Error(`Error writing settings: ${error.message}`);
   }
   if (idp) {
-    clearIdpIdToken(idp.issuer);
-    clearIdpClientSecret(idp.issuer);
+    clearIdpIdToken(idp.issuer, home);
+    clearIdpClientSecret(idp.issuer, home);
   }
   io.stdout.write("XAA IdP connection cleared\n");
 }

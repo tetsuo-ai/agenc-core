@@ -5,10 +5,6 @@ import { describe, expect, it, test, vi } from 'vitest'
 vi.mock('bun:bundle', () => ({
   feature: () => false,
 }))
-// Keep fullscreen bash bucketing out of the way.
-vi.mock('../../../src/utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => false,
-}))
 // Isolate the collapser from the real REPL-primitive fallback registry so the
 // pure-behavior cases below depend only on the `tools` we pass in.
 vi.mock('../../../src/tools/REPLTool/primitiveTools.js', () => ({
@@ -91,7 +87,11 @@ function isToolResult(m: any): boolean {
 describe('collapseReadSearchGroups - lone read/search preview (FIX 2)', () => {
   it('does NOT collapse a single Read — emits the call + result verbatim', () => {
     const id = uid()
-    const out = collapseReadSearchGroups([readUse(id, '/repo/PLAN.md'), result(id, 'x')], tools)
+    const out = collapseReadSearchGroups(
+      [readUse(id, '/repo/PLAN.md'), result(id, 'x')],
+      tools,
+      false,
+    )
     expect(out.some(isCollapsedGroup)).toBe(false)
     // Original tool-use + tool-result survive so the normal pair renderer (which
     // shows "Read N lines") runs instead of the count summary.
@@ -102,7 +102,11 @@ describe('collapseReadSearchGroups - lone read/search preview (FIX 2)', () => {
 
   it('does NOT collapse a single Grep — emits the call + result verbatim', () => {
     const id = uid()
-    const out = collapseReadSearchGroups([grepUse(id, 'IO_NUMBER'), result(id, 'x')], tools)
+    const out = collapseReadSearchGroups(
+      [grepUse(id, 'IO_NUMBER'), result(id, 'x')],
+      tools,
+      false,
+    )
     expect(out.some(isCollapsedGroup)).toBe(false)
     expect(out.filter(isToolUse)).toHaveLength(1)
     expect(out.filter(isToolResult)).toHaveLength(1)
@@ -114,6 +118,7 @@ describe('collapseReadSearchGroups - lone read/search preview (FIX 2)', () => {
     const out = collapseReadSearchGroups(
       [readUse(a, '/repo/a.md'), result(a, 'x'), readUse(b, '/repo/b.md'), result(b, 'y')],
       tools,
+      false,
     )
     // The multi-call run keeps the tidy collapsed summary.
     expect(out.some(isCollapsedGroup)).toBe(true)
@@ -126,6 +131,7 @@ describe('collapseReadSearchGroups - lone read/search preview (FIX 2)', () => {
     const out = collapseReadSearchGroups(
       [readUse(a, '/repo/a.md'), result(a, 'x'), grepUse(b, 'foo'), result(b, 'y')],
       tools,
+      false,
     )
     expect(out.some(isCollapsedGroup)).toBe(true)
   })

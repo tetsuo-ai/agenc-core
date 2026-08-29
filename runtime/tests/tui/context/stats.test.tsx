@@ -14,10 +14,10 @@ import {
   useStats,
   useTimer,
 } from './stats.tsx'
-import { saveCurrentProjectConfig } from '../../utils/config.js'
+import { saveCurrentProjectRuntimeState } from '../../utils/config.js'
 
 vi.mock('../../utils/config.js', () => ({
-  saveCurrentProjectConfig: vi.fn(),
+  saveCurrentProjectRuntimeState: vi.fn(),
 }))
 vi.mock('../../utils/debug.js', () => ({
   logForDebugging: () => {},
@@ -105,7 +105,7 @@ function MetricsPublisher({
 
 afterEach(() => {
   vi.restoreAllMocks()
-  vi.mocked(saveCurrentProjectConfig).mockClear()
+  vi.mocked(saveCurrentProjectRuntimeState).mockClear()
 })
 
 describe('createStatsStore', () => {
@@ -180,8 +180,8 @@ describe('StatsProvider', () => {
       expect(exitListener).toBeDefined()
       exitListener?.(0)
 
-      expect(saveCurrentProjectConfig).toHaveBeenCalledWith(expect.any(Function))
-      const update = vi.mocked(saveCurrentProjectConfig).mock.calls[0]![0] as (
+      expect(saveCurrentProjectRuntimeState).toHaveBeenCalledWith(expect.any(Function))
+      const update = vi.mocked(saveCurrentProjectRuntimeState).mock.calls[0]![0] as (
         current: Record<string, unknown>,
       ) => Record<string, unknown>
       expect(update({ keep: true })).toEqual({

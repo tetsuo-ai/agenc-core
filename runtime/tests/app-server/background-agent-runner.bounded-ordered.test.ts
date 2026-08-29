@@ -8,8 +8,14 @@ import {
 import type { AgentStatus } from "../agents/status.js";
 import {
   createEmptyToolPermissionContext,
-  type ToolPermissionContext,
 } from "../permissions/types.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
+import {
+  sandboxExecutionBrokerAuthorityFromSessionAuthority,
+  sessionConfigurationFromAgenCConfig,
+  sessionExecutionAuthorityFromAgenCConfig,
+} from "../session/configuration.js";
 
 // Mirrors the harness in background-agent-runner.contract.test.ts; trimmed to
 // the surface these regression tests exercise (status pushes + attach).
@@ -62,19 +68,56 @@ function makeStubConversationThreadManager(opts: {
 }
 
 function makeTopLevelRunner(opts: { readonly conversationId: string }) {
-  const permissionModeRegistry = {
-    current: () => createEmptyToolPermissionContext(),
-    update: vi.fn(async (_context: ToolPermissionContext) => {}),
-  };
+  const permissionModeRegistry = new PermissionModeRegistry(
+    createEmptyToolPermissionContext(),
+  );
   const stub = makeStubConversationThreadManager({
     threadId: opts.conversationId,
   });
+  const configuredExecutionAuthority = sessionExecutionAuthorityFromAgenCConfig({
+    config: {},
+    workspaceRoot: process.cwd(),
+    projectTrust: "trusted",
+  });
+  const sandboxExecutionBroker = new SandboxExecutionBroker({
+    cwd: process.cwd(),
+    ...sandboxExecutionBrokerAuthorityFromSessionAuthority(
+      configuredExecutionAuthority,
+      process.cwd(),
+    ),
+  });
+  const sessionState = {
+    sessionConfiguration: sessionConfigurationFromAgenCConfig({
+      config: {},
+      workspaceRoot: process.cwd(),
+      model: "grok-4.5",
+      provider: "grok",
+      projectTrust: "trusted",
+    }),
+  };
+  let nextEventSequence = 0;
   const session = {
     conversationId: opts.conversationId,
+    abortController: new AbortController(),
     permissionModeRegistry,
+    get sessionConfiguration() {
+      return sessionState.sessionConfiguration;
+    },
     subscribeToEvents: () => () => {},
     emitPhaseEvent: () => {},
-    services: { conversationThreadManager: stub },
+    prepareEmit: vi.fn((candidate: Record<string, unknown>) => {
+      const event = { ...candidate, seq: ++nextEventSequence };
+      return {
+        event,
+        publish: () => event,
+      };
+    }),
+    state: {
+      with: async (update: (state: typeof sessionState) => void) => {
+        update(sessionState);
+      },
+    },
+    services: { conversationThreadManager: stub, sandboxExecutionBroker },
   };
   const control = {
     shutdown: vi.fn(async () => {}),
@@ -85,8 +128,17 @@ function makeTopLevelRunner(opts: { readonly conversationId: string }) {
   const rolloutStore = {
     rolloutPath: `/tmp/${opts.conversationId}.jsonl`,
     readAll: () => [],
+    recordRunRuntimeSettingsEvent: vi.fn(() => {}),
+    syncCanonicalTail: vi.fn(() => {}),
   };
   const bootstrap = vi.fn(async () => ({
+    workspaceRoot: process.cwd(),
+    configuredExecutionAuthority,
+    prepareConfiguredExecutionAuthority: () => ({
+      authority: configuredExecutionAuthority,
+      commit: () => {},
+      rollback: () => {},
+    }),
     session,
     rolloutStore,
     registry: { tools: [], toLLMTools: () => [], dispatch: vi.fn() },

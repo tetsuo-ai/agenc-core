@@ -273,8 +273,7 @@ function commandFromArgs(args: Record<string, unknown>): readonly string[] {
 function isShellToolName(toolName: string): boolean {
   return (
     toolName === "exec_command" ||
-    toolName === "system.bash" ||
-    toolName === "Bash"
+    toolName === "system.bash"
   );
 }
 

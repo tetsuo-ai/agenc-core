@@ -18,7 +18,10 @@ type CapturedSelectProps = {
 }
 
 const harness = vi.hoisted(() => ({
-  appState: { fileHistory: { entries: [] } },
+  appState: {
+    fileHistory: { entries: [] },
+    settings: { fileCheckpointingEnabled: true },
+  },
   canRestore: true,
   columns: 80,
   diffStats: {
@@ -27,7 +30,6 @@ const harness = vi.hoisted(() => ({
     insertions: 2,
   },
   exitPending: false,
-  fileHistoryEnabled: true,
   keybindings: {} as Record<string, () => unknown>,
   logError: vi.fn(),
   selectProps: null as CapturedSelectProps | null,
@@ -40,7 +42,7 @@ const harness = vi.hoisted(() => ({
       insertions: 2,
     }
     harness.exitPending = false
-    harness.fileHistoryEnabled = true
+    harness.appState.settings.fileCheckpointingEnabled = true
     harness.keybindings = {}
     harness.logError.mockClear()
     harness.selectProps = null
@@ -54,7 +56,9 @@ vi.mock('../state/AppState.js', () => ({
 
 vi.mock('../../utils/fileHistory.js', () => ({
   fileHistoryCanRestore: () => harness.canRestore,
-  fileHistoryEnabled: () => harness.fileHistoryEnabled,
+  fileHistoryEnabled: () => {
+    throw new Error('MessageSelector must read file history settings from AppState')
+  },
   fileHistoryGetDiffStats: vi.fn(async () => harness.diffStats),
 }))
 
@@ -331,7 +335,7 @@ describe('MessageSelector coverage-swarm row 012', () => {
   })
 
   test('shows direct conversation restore failures when file history is disabled', async () => {
-    harness.fileHistoryEnabled = false
+    harness.appState.settings.fileCheckpointingEnabled = false
     const selected = userMessage('user-1', 'restore this conversation')
     const onClose = vi.fn()
     const onPreRestore = vi.fn()
@@ -502,7 +506,7 @@ describe('MessageSelector coverage-swarm row 012', () => {
   })
 
   test('renders command message variants and empty preselected prompts', async () => {
-    harness.fileHistoryEnabled = false
+    harness.appState.settings.fileCheckpointingEnabled = false
     const slashCommand = userMessage(
       'user-1',
       '<command-message>deploy</command-message><command-args>prod</command-args>',

@@ -3,13 +3,14 @@ import { constants as fsConstants } from 'fs'
 import { access, writeFile } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
-import { type ReleaseChannel, saveGlobalConfig } from './config.js'
+import { type ReleaseChannel, updateRuntimeState } from './config.js'
 import { getAPIProvider } from './model/providers.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { env } from './env.js'
-import { getAgenCConfigHomeDir } from './envUtils.js'
+import { getAgenCHomeDir } from './envUtils.js'
 import { AgenCError, getErrnoCode, isENOENT } from './errors.js'
 import { execFileNoThrowWithCwd } from './execFileNoThrow.js'
+import { findExecutableOnCapturedPath } from './findExecutable.js'
 import { getFsImplementation } from './fsOperations.js'
 import { gracefulShutdownSync } from './gracefulShutdown.js'
 import { logError } from './log.js'
@@ -163,7 +164,7 @@ const LOCK_TIMEOUT_MS = 5 * 60 * 1000 // 5 minute timeout for locks
  * This is a function to ensure it's evaluated at runtime after test setup
  */
 export function getLockFilePath(): string {
-  return join(getAgenCConfigHomeDir(), '.update.lock')
+  return join(getAgenCHomeDir(), '.update.lock')
 }
 
 /**
@@ -226,7 +227,7 @@ async function acquireLock(): Promise<boolean> {
         // fs.mkdir from getFsImplementation() is always recursive:true and
         // swallows EEXIST internally, so a dir-creation race cannot reach the
         // catch below — only writeFile's EEXIST (true lock contention) can.
-        await fs.mkdir(getAgenCConfigHomeDir())
+        await fs.mkdir(getAgenCHomeDir())
         await writeFile(lockPath, `${process.pid}`, {
           encoding: 'utf8',
           flag: 'wx',
@@ -264,19 +265,33 @@ async function releaseLock(): Promise<void> {
   }
 }
 
-async function getInstallationPrefix(): Promise<string | null> {
+export type GlobalInstallPermissionOptions = {
+  readonly environment?: NodeJS.ProcessEnv
+  readonly cwd?: string
+}
+
+async function getInstallationPrefix(
+  options: GlobalInstallPermissionOptions = {},
+): Promise<string | null> {
   // Run from home directory to avoid reading project-level .npmrc/.bunfig.toml
   const isBun = env.isRunningWithBun()
+  const cwd = options.cwd ?? homedir()
+  const command = isBun ? 'bun' : 'npm'
+  const executable = options.environment === undefined
+    ? command
+    : await findExecutableOnCapturedPath(command, options.environment, cwd)
+  if (executable === null) return null
   let prefixResult = null
   if (isBun) {
-    prefixResult = await execFileNoThrowWithCwd('bun', ['pm', 'bin', '-g'], {
-      cwd: homedir(),
+    prefixResult = await execFileNoThrowWithCwd(executable, ['pm', 'bin', '-g'], {
+      cwd,
+      env: options.environment,
     })
   } else {
     prefixResult = await execFileNoThrowWithCwd(
-      'npm',
+      executable,
       ['-g', 'config', 'get', 'prefix'],
-      { cwd: homedir() },
+      { cwd, env: options.environment },
     )
   }
   if (prefixResult.code !== 0) {
@@ -286,12 +301,14 @@ async function getInstallationPrefix(): Promise<string | null> {
   return prefixResult.stdout.trim()
 }
 
-export async function checkGlobalInstallPermissions(): Promise<{
+export async function checkGlobalInstallPermissions(
+  options: GlobalInstallPermissionOptions = {},
+): Promise<{
   hasPermissions: boolean
   npmPrefix: string | null
 }> {
   try {
-    const prefix = await getInstallationPrefix()
+    const prefix = await getInstallationPrefix(options)
     if (!prefix) {
       return { hasPermissions: false, npmPrefix: null }
     }
@@ -507,7 +524,7 @@ To fix this issue:
     }
 
     // Set installMethod to 'global' to track npm global installations
-    saveGlobalConfig(current => ({
+    updateRuntimeState(current => ({
       ...current,
       installMethod: 'global',
     }))

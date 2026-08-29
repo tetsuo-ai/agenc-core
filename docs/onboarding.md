@@ -4,7 +4,7 @@
 the multi-act setup path. Superseded implementation notes remain available in
 Git history and are not product truth.
 
-Related: [quickstart](quickstart.md) · [install](install.md) ·
+Related: [INDEX](INDEX.md) · [quickstart](quickstart.md) · [install](install.md) ·
 [gateway](gateway.md) · [managed OpenRouter](managed-openrouter.md) ·
 [remote control](remote-control.md) · [VPS](deploy/vps.md).
 
@@ -32,7 +32,7 @@ gates — re-enter anytime with `agenc onboard <act>`.
 4. **Progressive, resumable.** Per-act completion is tracked locally; no
    phone-home telemetry.
 5. **One writer per file.** Onboarding writes the same paths the runtime
-   reads (`config.toml`, `gateway/config.json`, `gateway/env`, persona files,
+   reads (`config.toml`, the native secure storage, persona files,
    `HEARTBEAT.md`).
 
 ## Commands
@@ -54,7 +54,7 @@ Launched by `agenc onboard` (or first interactive start). Step order is fixed
 in `runtime/src/onboarding/Onboarding.tsx` (`FIRST_RUN_STEP_ORDER`):
 
 1. **preflight** — environment / install sanity
-2. **theme** — dark / light / system
+2. **theme** — `auto` / `dark` / `light` plus daltonized/ansi palettes (no `system` value)
 3. **provider** — built-in providers, local runtimes, managed OpenRouter when
    logged in
 4. **model access** — choose directly in the wizard:
@@ -108,7 +108,7 @@ agenc onboard channel
 
 Pick a surface:
 
-| Surface | Secrets (in `gateway/env`, mode 0600) | Notes |
+| Surface | Secrets (native secure storage) | Notes |
 |---|---|---|
 | **Telegram** | `AGENC_TELEGRAM_BOT_TOKEN` | Recommended 2-minute path; @BotFather |
 | **Discord** | `AGENC_DISCORD_BOT_TOKEN` | Enable **MESSAGE CONTENT** intent |
@@ -214,9 +214,8 @@ Requires a remote auth session; default daemon `ws://127.0.0.1:7766`.
 
 | Path | Purpose |
 |---|---|
-| `$AGENC_HOME/config.toml` | provider, budget, heartbeat, … |
-| `$AGENC_HOME/gateway/config.json` | channel policies, bindings, hooks |
-| `$AGENC_HOME/gateway/env` | bot tokens (0600) |
+| `$AGENC_HOME/config.toml` | provider, budget, heartbeat, channel policies, bindings, hooks, … |
+| Native secure storage (scoped by `AGENC_HOME`) | bot and gateway bearer tokens |
 | `$AGENC_HOME/gateway/pairing.json` | paired peers |
 | Workspace `SOUL.md` / `USER.md` / `IDENTITY.md` / `BOOTSTRAP.md` | persona |
 | Workspace `HEARTBEAT.md` | proactive tick instructions |

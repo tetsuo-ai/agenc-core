@@ -3,7 +3,7 @@ import {
   applyEdits,
   modify,
   parse as parseJsonc,
-} from 'jsonc-parser'
+} from 'jsonc-parser/lib/esm/main.js'
 import { stripBOM } from './jsonRead.js'
 import { logError } from './log.js'
 import { memoizeWithLRU } from './memoize.js'
@@ -15,17 +15,15 @@ type CachedParse = { ok: true; value: unknown } | { ok: false }
 // 1. memoizeWithLRU requires NonNullable<unknown>, but JSON.parse can return
 //    null (e.g. JSON.parse("null")).
 // 2. Invalid JSON must also be cached — otherwise repeated calls with the same
-//    bad string re-parse and re-log every time (behavioral regression vs the
-//    old lodash memoize which wrapped the entire try/catch).
-// Bounded to 50 entries to prevent unbounded memory growth — previously this
-// used lodash memoize which cached every unique JSON string forever (settings,
-// .mcp.json, notebooks, tool results), causing a significant memory leak.
-// Note: shouldLogError is intentionally excluded from the cache key (matching
-// lodash memoize default resolver = first arg only).
+//    bad string re-parse and re-log every time.
+// Bounded to 50 entries to prevent unbounded memory growth: caching every
+// unique JSON string (configuration, notebooks, tool results) leaks memory.
+// Note: shouldLogError is intentionally excluded from the cache key; the first
+// argument remains the cache identity.
 // Skip caching above this size — the LRU stores the full string as the key,
 // so a 200KB config file would pin ~10MB in #keyList across 50 slots. Large
-// inputs like ~/.agenc.json also change between reads (numStartups bumps on
-// every CC startup), so the cache never hits anyway.
+// frequently rewritten state inputs also change between reads, so the cache
+// never hits anyway.
 const PARSE_CACHE_MAX_KEY_BYTES = 8 * 1024
 
 function parseJSONUncached(json: string, shouldLogError: boolean): CachedParse {
@@ -59,7 +57,7 @@ export const safeParseJSON = Object.assign(
 
 /**
  * Safely parse JSON with comments (jsonc).
- * This is useful for VS Code configuration files like keybindings.json
+ * This is useful for JSON configuration files with comments.
  * which support comments and other jsonc features.
  */
 export function safeParseJSONC(json: string | null | undefined): unknown {

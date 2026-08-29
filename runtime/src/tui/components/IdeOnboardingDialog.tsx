@@ -3,9 +3,9 @@ import { envDynamic } from '../../utils/envDynamic.js';
 import { Box, Text } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import {
-  getGlobalConfig,
-  saveGlobalConfig,
-  type GlobalConfig,
+  getRuntimeState,
+  updateRuntimeState,
+  type GlobalRuntimeState,
 } from '../../utils/config.js';
 import { env } from '../../utils/env.js';
 import {
@@ -104,7 +104,7 @@ export function IdeOnboardingDialog({
 }
 
 export function hasIdeOnboardingDialogBeenShown(): boolean {
-  const config = getGlobalConfig();
+  const config = getRuntimeState();
   const terminal = getIdeOnboardingTerminalKey();
   return config.hasIdeOnboardingBeenShown?.[terminal] === true;
 }
@@ -112,7 +112,7 @@ export function hasIdeOnboardingDialogBeenShown(): boolean {
 function markDialogAsShown(): void {
   const terminal = getIdeOnboardingTerminalKey();
 
-  saveGlobalConfig((current: GlobalConfig) => {
+  updateRuntimeState((current: GlobalRuntimeState) => {
     if (current.hasIdeOnboardingBeenShown?.[terminal]) {
       return current;
     }
