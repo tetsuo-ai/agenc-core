@@ -41,6 +41,9 @@ describe("macOS Keychain native-helper contract", () => {
     );
     expect(source).not.toContain("SecKeychainFindGenericPassword(");
     expect(source).toContain("SecItemUpdate(query, values)");
+    expect(source).toContain(
+      "if (result != HELPER_OK) {\n    return result;\n  }\n  result = HELPER_ERROR;",
+    );
     expect(source).toContain("kSecPreferencesDomainUser");
     expect(source).toContain("SecKeychainCopyDomainDefault(");
     expect(source).toContain("if (status == errSecNoDefaultKeychain)");

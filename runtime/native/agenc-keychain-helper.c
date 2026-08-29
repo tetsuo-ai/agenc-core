@@ -826,6 +826,7 @@ static int write_item(CFDictionaryRef identity_query) {
   if (result != HELPER_OK) {
     return result;
   }
+  result = HELPER_ERROR;
 
   secret_data =
       CFDataCreateWithBytesNoCopy(kCFAllocatorDefault, secret.data,
