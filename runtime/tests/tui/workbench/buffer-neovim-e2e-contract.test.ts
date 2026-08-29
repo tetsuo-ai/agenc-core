@@ -6,8 +6,6 @@ import {
   INITIAL_STATE,
   parseMultipleKeypresses,
 } from "../../../src/tui/ink/parse-keypress.js";
-import { FOCUS_IN } from "../../../src/tui/ink/termio/csi.js";
-import { EFE } from "../../../src/tui/ink/termio/dec.js";
 import { TuiSession } from "../../../scripts/check-tui-e2e/harness.mjs";
 import {
   runEmbeddedNeovimCommand,
@@ -33,43 +31,6 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     await expect(
       renderedSession.waitForPrompt({ idleWindow: 0, timeout: 50 }),
     ).resolves.toBeUndefined();
-  });
-
-  it("wakes a blank ConPTY with terminal metadata instead of user input", () => {
-    const session = new TuiSession({ cols: 140, rows: 40 });
-    session.buffer =
-      `\x1b[?9001h${EFE}\x1b[?25l\x1b[2J\x1b[m\x1b[H` +
-      "\x1b]0;C:\\hostedtoolcache\\windows\\node\\26.5.0\\x64\\node.exe\x07" +
-      "\x1b[?25h";
-    const writes: string[] = [];
-    session.term = {
-      write(value: string) {
-        writes.push(value);
-      },
-    };
-
-    expect(session.latestFrame).toBe("");
-    expect(session.wakeBlankPtyWithTerminalEvent()).toBe(true);
-    expect(writes).toEqual([FOCUS_IN]);
-
-    session.buffer += "Describe a task…";
-    expect(session.wakeBlankPtyWithTerminalEvent()).toBe(false);
-    expect(writes).toHaveLength(1);
-  });
-
-  it("does not wake a blank PTY before AgenC installs its input parser", () => {
-    const session = new TuiSession();
-    const writes: string[] = [];
-    session.buffer = "\x1b[?9001h\x1b[?25l";
-    session.term = {
-      write(value: string) {
-        writes.push(value);
-      },
-    };
-
-    expect(session.latestFrame).toBe("");
-    expect(session.wakeBlankPtyWithTerminalEvent()).toBe(false);
-    expect(writes).toEqual([]);
   });
 
   it("reports an early TUI exit with its latest rendered frame", async () => {

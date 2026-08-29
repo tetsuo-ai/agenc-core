@@ -181,9 +181,6 @@ const XTVERSION_REPLY = "\x1bP>|xterm 370\x1b\\";
 const DA1_REPLY = "\x1b[?65;6;9;15;18;21;22;28c";
 const XTVERSION_QUERY = "\x1b[>0q";
 const DA1_QUERY = "\x1b[c";
-const TERMINAL_FOCUS_REPORTING_ENABLED = "\x1b[?1004h";
-const TERMINAL_FOCUS_IN = "\x1b[I";
-
 // Crash patterns that make a scenario fail regardless of explicit assertions.
 // Anything that looks like a Node.js uncaught exception or unresolved
 // dynamic import is a hard fail.
@@ -784,25 +781,8 @@ export class TuiSession {
     });
     await sleep(firstPaintMs);
     this.throwIfAborted();
-    this.wakeBlankPtyWithTerminalEvent();
     await sleep(postReplyMs);
     this.throwIfAborted();
-  }
-
-  wakeBlankPtyWithTerminalEvent() {
-    if (
-      this.term === null ||
-      this.exited ||
-      !this.buffer.includes(TERMINAL_FOCUS_REPORTING_ENABLED) ||
-      this.latestFrame.trim().length > 0
-    ) {
-      return false;
-    }
-    // ConPTY can expose only its console bootstrap until its input path is
-    // active. Report the terminal's already-enabled focus state: AgenC
-    // consumes this as terminal metadata, not as a keypress or prompt text.
-    this.term.write(TERMINAL_FOCUS_IN);
-    return true;
   }
 
   /**
