@@ -83,3 +83,17 @@ export function runWithCurrentRuntimeSession<T>(
 ): T {
   return scopedRuntimeSession.run(session, fn);
 }
+
+/**
+ * Bind `session` to the CURRENT async execution context and its
+ * descendants. Bootstrap needs this shape: the session is created in
+ * the middle of a long async flow whose tail keeps resolving the
+ * ambient session, and in a multi-session daemon the module-level
+ * fallback is (correctly) refused once a second session is live. A
+ * `run()` wrapper would mean restructuring the whole tail; `enterWith`
+ * scopes the continuation in place. Callers outside this async chain
+ * are unaffected.
+ */
+export function enterCurrentRuntimeSessionScope(session: Session): void {
+  scopedRuntimeSession.enterWith(session);
+}
