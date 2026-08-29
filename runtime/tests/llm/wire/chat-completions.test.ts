@@ -418,11 +418,11 @@ describe("buildChatCompletionsRequest", () => {
       messages: [{ role: "user", content: "hello" }],
       tools: [],
       options: {
-        serviceTier: "fast",
+        serviceTier: "priority",
       },
     });
 
-    expect(request.service_tier).toBe("fast");
+    expect(request.service_tier).toBe("priority");
   });
 
   test("encodes a named toolChoice with the same wire name as tools", () => {
@@ -459,7 +459,7 @@ describe("buildChatCompletionsRequest", () => {
 
   test("falls back to DeepSeek reasoning_content when content is absent", () => {
     const response = parseChatCompletionsResponse(
-      "deepseek-reasoner",
+      "deepseek-v4-pro",
       {
         id: "chatcmpl_deepseek",
         choices: [
@@ -474,7 +474,7 @@ describe("buildChatCompletionsRequest", () => {
         ],
       },
       {
-        model: "deepseek-reasoner",
+        model: "deepseek-v4-pro",
         messages: [{ role: "user", content: "hello" }],
         tools: [],
       },

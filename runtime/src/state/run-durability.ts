@@ -234,7 +234,10 @@ interface RuntimeSettingsRow {
   readonly permission_mode: RunRuntimeSettingsSnapshot["permissionMode"];
   readonly pre_plan_mode: RunRuntimeSettingsSnapshot["prePlanMode"];
   readonly auto_mode_active: number;
+  readonly auto_mode_available: number;
+  readonly bypass_permissions_mode_available: number;
   readonly bypass_permissions_workspace: string | null;
+  readonly bypass_permissions_consent_workspace: string | null;
   readonly model: string;
   readonly provider: string;
   readonly profile: string | null;
@@ -335,8 +338,10 @@ const RUNTIME_SETTINGS_COLUMNS = `
   run_id, epoch, settings_event_id, settings_sequence,
   previous_settings_event_id, rollback_of_settings_event_id, reason,
   changed_at, permission_mode, pre_plan_mode, auto_mode_active,
-  bypass_permissions_workspace, model, provider, profile, reasoning_effort,
-  model_verbosity, service_tier, hooks_disabled`;
+  auto_mode_available, bypass_permissions_mode_available,
+  bypass_permissions_workspace, bypass_permissions_consent_workspace,
+  model, provider, profile, reasoning_effort, model_verbosity, service_tier,
+  hooks_disabled`;
 
 /**
  * Durable run lifecycle/effect state plus bindings into the canonical rollout
@@ -849,10 +854,11 @@ export class StateRunDurabilityRepository {
              run_id, epoch, settings_event_id, settings_sequence,
              previous_settings_event_id, rollback_of_settings_event_id,
              reason, changed_at, permission_mode, pre_plan_mode,
-             auto_mode_active, bypass_permissions_workspace, model, provider,
-             profile, reasoning_effort, model_verbosity, service_tier,
-             hooks_disabled
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             auto_mode_active, auto_mode_available,
+             bypass_permissions_mode_available, bypass_permissions_workspace,
+             bypass_permissions_consent_workspace, model, provider, profile,
+             reasoning_effort, model_verbosity, service_tier, hooks_disabled
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           required(params.runId, "runId"),
@@ -872,7 +878,10 @@ export class StateRunDurabilityRepository {
           params.settings.permissionMode,
           params.settings.prePlanMode,
           params.settings.autoModeActive ? 1 : 0,
+          params.settings.autoModeAvailable ? 1 : 0,
+          params.settings.bypassPermissionsModeAvailable ? 1 : 0,
           params.settings.bypassPermissionsWorkspace,
+          params.settings.bypassPermissionsConsentWorkspace,
           required(params.settings.model, "model"),
           required(params.settings.provider, "provider"),
           params.settings.profile,
@@ -2243,7 +2252,12 @@ function runtimeSettingsFromRow(
     permissionMode: row.permission_mode,
     prePlanMode: row.pre_plan_mode,
     autoModeActive: row.auto_mode_active === 1,
+    autoModeAvailable: row.auto_mode_available === 1,
+    bypassPermissionsModeAvailable:
+      row.bypass_permissions_mode_available === 1,
     bypassPermissionsWorkspace: row.bypass_permissions_workspace,
+    bypassPermissionsConsentWorkspace:
+      row.bypass_permissions_consent_workspace,
     model: row.model,
     provider: row.provider,
     profile: row.profile,
@@ -2262,7 +2276,12 @@ function runtimeSettingsEqual(
     left.permissionMode === right.permissionMode &&
     left.prePlanMode === right.prePlanMode &&
     left.autoModeActive === right.autoModeActive &&
+    left.autoModeAvailable === right.autoModeAvailable &&
+    left.bypassPermissionsModeAvailable ===
+      right.bypassPermissionsModeAvailable &&
     left.bypassPermissionsWorkspace === right.bypassPermissionsWorkspace &&
+    left.bypassPermissionsConsentWorkspace ===
+      right.bypassPermissionsConsentWorkspace &&
     left.model === right.model &&
     left.provider === right.provider &&
     left.profile === right.profile &&

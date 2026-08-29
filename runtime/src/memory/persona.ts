@@ -110,12 +110,10 @@ export function capPersonaContent(
 }
 
 /**
- * Build the `persona` SYSTEM-PROMPT section from the workspace persona
- * files. This is the LIVE injection path: the system-prompt builder
- * (constants/prompts.ts getSystemPrompt) memoizes it per session, so the
- * persona is unconditionally in context for every turn — identity must not
- * depend on the model choosing to Read a file. Returns null when no persona
- * file exists (zero prompt overhead).
+ * Build the persona instruction section from the workspace persona files.
+ * The live instruction envelope injects it on every turn, so identity does
+ * not depend on the model choosing to read a file. Returns null when no
+ * persona file exists.
  */
 export async function loadPersonaPromptSection(
   workspaceDir: string,

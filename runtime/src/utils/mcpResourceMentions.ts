@@ -6,7 +6,7 @@ import { isMemoryMention } from '../memory/index.js'
 //    file mentions containing a colon.
 // 2. `"` in the character classes prevents consuming quotes mid-match if the
 //    lookahead is later changed.
-const MCP_RESOURCE_MENTION_RE = /(^|\s)@(?!")([^\s"]+:[^\s"]+)\b/g
+const MCP_RESOURCE_MENTION_RE = /(^|\s)@(?!")([^\s"]+:[^\s"]+)/g
 
 export interface McpResourceMention {
   readonly serverName: string
@@ -38,11 +38,21 @@ export function extractMcpResourceMentions(content: string | null): string[] {
 
 export function parseMcpResourceMention(
   mention: string,
+  serverNames: readonly string[],
 ): McpResourceMention | null {
-  const [serverName, ...uriParts] = mention.split(':')
-  const uri = uriParts.join(':')
-  if (serverName === undefined || serverName.length === 0 || uri.length === 0) {
-    return null
+  let serverName: string | undefined
+  for (const candidate of serverNames) {
+    if (
+      candidate.length > 0 &&
+      mention.startsWith(`${candidate}:`) &&
+      (serverName === undefined || candidate.length > serverName.length)
+    ) {
+      serverName = candidate
+    }
   }
+  if (serverName === undefined) return null
+
+  const uri = mention.slice(serverName.length + 1)
+  if (uri.length === 0) return null
   return { serverName, uri }
 }

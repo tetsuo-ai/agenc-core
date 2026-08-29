@@ -19,8 +19,8 @@ vi.mock('bun:bundle', () => ({
   feature: () => false,
 }))
 
-vi.mock('../../../utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => true,
+vi.mock('../../context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => true,
 }))
 
 vi.mock('../../hooks/useSettings.js', () => ({

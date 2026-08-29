@@ -16,7 +16,7 @@ describe("tokenizeCliOptionRegion", () => {
         "--permission-mode",
         "plan",
         "explain",
-        "--yolo",
+        "--dangerously-bypass-approvals-and-sandbox",
       ]),
     ).toEqual({
       optionArgs: [
@@ -26,7 +26,7 @@ describe("tokenizeCliOptionRegion", () => {
         "--permission-mode",
         "plan",
       ],
-      promptArgs: ["explain", "--yolo"],
+      promptArgs: ["explain", "--dangerously-bypass-approvals-and-sandbox"],
       endedBy: "positional",
     });
   });
@@ -49,18 +49,18 @@ describe("tokenizeCliOptionRegion", () => {
 
   it("keeps unknown option-looking tokens before the first positional", () => {
     expect(
-      tokenizeCliOptionRegion(["--future-flag", "its-value", "--yolo"]),
+      tokenizeCliOptionRegion(["--future-flag", "its-value", "--dangerously-bypass-approvals-and-sandbox"]),
     ).toEqual({
       optionArgs: ["--future-flag"],
-      promptArgs: ["its-value", "--yolo"],
+      promptArgs: ["its-value", "--dangerously-bypass-approvals-and-sandbox"],
       endedBy: "positional",
     });
   });
 
   it("treats a lone dash as positional prompt text", () => {
-    expect(tokenizeCliOptionRegion(["-", "--yolo"])).toEqual({
+    expect(tokenizeCliOptionRegion(["-", "--dangerously-bypass-approvals-and-sandbox"])).toEqual({
       optionArgs: [],
-      promptArgs: ["-", "--yolo"],
+      promptArgs: ["-", "--dangerously-bypass-approvals-and-sandbox"],
       endedBy: "positional",
     });
   });
@@ -70,16 +70,16 @@ describe("generated CLI option insertion", () => {
   it("inserts before positional prompt text", () => {
     expect(
       insertCliOptionsBeforePrompt(
-        ["daemon", "run"],
+        ["daemon", "status"],
         ["--permission-mode", "plan"],
       ),
-    ).toEqual(["--permission-mode", "plan", "daemon", "run"]);
+    ).toEqual(["--permission-mode", "plan", "daemon", "status"]);
   });
 
   it("inserts before and preserves an explicit delimiter", () => {
     expect(
       insertProcessCliOptionsBeforePrompt(
-        ["node", "agenc", "--", "--yolo"],
+        ["node", "agenc", "--", "--dangerously-bypass-approvals-and-sandbox"],
         ["--permission-mode", "plan"],
       ),
     ).toEqual([
@@ -88,7 +88,7 @@ describe("generated CLI option insertion", () => {
       "--permission-mode",
       "plan",
       "--",
-      "--yolo",
+      "--dangerously-bypass-approvals-and-sandbox",
     ]);
   });
 });

@@ -5,29 +5,17 @@
  * switch marker) and I-57 (history compatibility check using the live
  * provider capability registry).
  *
- * Why provider + model are staged together on `pendingProviderSwitch`:
- * the run-turn loop consumes both atomically at top-of-loop per I-13
- * so a provider-only swap keeps whatever model was previously selected
- * (and vice-versa for `/model`). The `/config profile <name>` path
- * populates the optional `profile` slot for the same reason.
+ * Provider and model are always staged as one canonical pair. Provider-only
+ * requests resolve through the configured provider/default model authority
+ * before that pair reaches the session.
  *
  * @module
  */
 
 import type { Session } from "../session/session.js";
-import { resolveProviderSettings } from "../config/resolve-provider.js";
-import {
-  hasEntitledRemoteAuthSessionSync,
-  hasRemoteAuthSessionSync,
-  remoteAuthSessionSubscriptionTierSync,
-} from "../auth/session-state.js";
-import {
-  configuredModelForProvider,
-  defaultModelForProvider,
-} from "../config/resolve-model.js";
-import { normalizeProviderName } from "../llm/provider.js";
-import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
+import type { ProviderSlug } from "../config/provider-model-authority.js";
 import { checkModelHistoryCompat, type HistoryCompatResult } from "./model.js";
+import type { ProviderModelSelectionOutcome } from "../contracts/provider-model-selection.js";
 import { readCommandConfig } from "./config-context.js";
 import {
   safeExecute,
@@ -41,12 +29,14 @@ import {
   readProviderMenuSnapshot,
 } from "./provider-menu.js";
 import {
-  isFreeSubscriptionManagedModel,
-  isSubscriptionManagedModel,
-  providerHasLiveSubscriptionRoute,
-  subscriptionManagedDefaultModelForTier,
-  visibleSubscriptionManagedModelsForTier,
-} from "./subscription-managed-models.js";
+  formatSessionSelectionError,
+  readSessionSelection,
+  resolveSessionProviderModelSelection,
+} from "../session/provider-model-selection.js";
+import {
+  createProviderCommandAccessOverlay,
+  formatProviderCommandRejection,
+} from "./provider-command-access.js";
 
 /**
  * Re-export so callers that only pull in `provider.ts` can still reach
@@ -68,83 +58,106 @@ export async function applyProviderSwitch(
       readonly provider: string;
       readonly model: string;
     }) => Promise<void> | void;
+    readonly stage?: (selection: {
+      readonly provider: string;
+      readonly model: string;
+    }) => Promise<void> | void;
   } = {},
-): Promise<string> {
-  const normalizedProvider = normalizeProviderName(targetProvider);
-  if (normalizedProvider === null) {
-    return `Provider switch to "${targetProvider}" blocked: unknown provider`;
+): Promise<ProviderModelSelectionOutcome> {
+  const current = readSessionSelection(session);
+  let selection;
+  try {
+    selection = resolveSessionProviderModelSelection(
+      session,
+      {
+        model_provider: targetProvider,
+        ...(targetModel === undefined ? {} : { model: targetModel }),
+      },
+      { includePending: true },
+    );
+  } catch (error) {
+    const message = formatSessionSelectionError(error);
+    return {
+      applied: false,
+      provider: current.provider,
+      model: current.model,
+      summary: `Provider switch to "${targetProvider}" blocked: ${message}`,
+    };
   }
 
-  const peekState = (
-    session as unknown as {
-      state?: { unsafePeek?: () => unknown };
-    }
-  ).state?.unsafePeek;
-  const rawState =
-    typeof peekState === "function"
-      ? (peekState.call((session as unknown as { state?: unknown }).state) as {
-          sessionConfiguration?: {
-            provider?: { slug?: string };
-            collaborationMode?: { model?: string };
-          };
-        })
-      : null;
-  const directConfig = (
-    session as unknown as {
-      sessionConfiguration?: {
-        provider?: { slug?: string };
-        collaborationMode?: { model?: string };
-      };
-    }
-  ).sessionConfiguration;
-  const sessionConfig = rawState?.sessionConfiguration ?? directConfig;
-  const currentProvider = sessionConfig?.provider?.slug ?? "unknown";
-  const currentModel = sessionConfig?.collaborationMode?.model ?? "unknown";
-  const config = session.services.configStore?.current();
-  const resolvedModel =
-    targetModel?.trim() ||
-    (config
-      ? configuredModelForProvider(config, normalizedProvider)
-      : undefined) ||
-    defaultModelForProvider(normalizedProvider);
-
+  const currentProvider = current.provider;
+  const currentModel = current.model;
+  if (
+    selection.provider === currentProvider &&
+    selection.model === currentModel
+  ) {
+    return {
+      applied: false,
+      provider: currentProvider,
+      model: currentModel,
+      summary: `Provider unchanged: ${currentProvider}/${currentModel}.`,
+    };
+  }
   const compat = checkModelHistoryCompat(
     session,
-    resolvedModel,
-    normalizedProvider,
+    selection.model,
+    selection.provider,
   );
   if (!compat.compatible) {
-    return `Provider switch to "${targetProvider}" blocked: ${
-      compat.reason ?? "history incompatible with target provider"
-    }`;
+    return {
+      applied: false,
+      provider: current.provider,
+      model: current.model,
+      summary: `Provider switch to "${targetProvider}" blocked: ${
+        compat.reason ?? "history incompatible with target provider"
+      }`,
+    };
   }
 
   const sessionShim = session as unknown as {
+    applyProviderModelSelection?: (spec: {
+      provider: string;
+      model: string;
+    }) => Promise<ProviderModelSelectionOutcome>;
     setPendingProviderSwitch?: (spec: {
       provider: string;
       model: string;
     }) => void;
     abortTerminal?: (reason: string) => void;
   };
-  if (typeof sessionShim.setPendingProviderSwitch !== "function") {
-    return (
-      "Provider switching from the TUI is not yet supported when running " +
-      "against the daemon. Set `model_provider` in config.toml or use " +
-      "`agenc config set model_provider <name>`."
-    );
+
+  if (typeof sessionShim.applyProviderModelSelection === "function") {
+    return sessionShim.applyProviderModelSelection({
+      provider: selection.provider,
+      model: selection.model,
+    });
   }
 
-  await options.beforeStage?.({
-    provider: normalizedProvider,
-    model: resolvedModel,
-  });
+  if (typeof sessionShim.setPendingProviderSwitch !== "function") {
+    return {
+      applied: false,
+      provider: current.provider,
+      model: current.model,
+      summary:
+        "Provider switching is not supported by this session. Set " +
+        "`model_provider` in config.toml or use `agenc config set " +
+        "model_provider <name>`.",
+    };
+  }
 
-  // Use the typed mutator so the I-13 + I-57 staging site has a single
-  // well-typed entry point.
-  sessionShim.setPendingProviderSwitch({
-    provider: normalizedProvider,
-    model: resolvedModel,
-  });
+  const stagedSelection = {
+    provider: selection.provider,
+    model: selection.model,
+  };
+  if (options.stage !== undefined) {
+    await options.stage(stagedSelection);
+  } else {
+    await options.beforeStage?.(stagedSelection);
+
+    // Use the typed mutator so the I-13 + I-57 staging site has a single
+    // well-typed entry point.
+    sessionShim.setPendingProviderSwitch(stagedSelection);
+  }
 
   const activeTurnPeek = (
     session as unknown as {
@@ -162,169 +175,66 @@ export async function applyProviderSwitch(
     if (typeof sessionShim.abortTerminal === "function") {
       sessionShim.abortTerminal("provider_switched");
     }
-    return (
-      `Provider switch staged: ${currentProvider} → ${normalizedProvider}; ` +
-      `model ${currentModel} → ${resolvedModel}. ` +
-      `Current turn aborted; the switch takes effect on the next turn.`
-    );
+    return {
+      applied: true,
+      provider: selection.provider,
+      model: selection.model,
+      summary:
+        `Provider switch staged: ${currentProvider} → ${selection.provider}; ` +
+        `model ${currentModel} → ${selection.model}. ` +
+        "Current turn aborted; the switch takes effect on the next turn.",
+    };
   }
 
-  return (
-    `Provider switched to "${normalizedProvider}" (was "${currentProvider}"); ` +
-    `model "${resolvedModel}" selected.`
-  );
+  return {
+    applied: true,
+    provider: selection.provider,
+    model: selection.model,
+    summary:
+      `Provider switched to "${selection.provider}" (was "${currentProvider}"); ` +
+      `model "${selection.model}" selected.`,
+  };
 }
 
-function providerSwitchApplied(summary: string): boolean {
-  return (
-    summary.startsWith("Provider switched ") ||
-    summary.startsWith("Provider switch staged:")
-  );
-}
-
-function resolveCommandModelForProvider(
-  session: Session,
+function resolveProviderCommandSelection(
+  ctx: SlashCommandContext,
   targetProvider: string,
   targetModel?: string,
-): string | undefined {
-  const normalizedProvider = normalizeProviderName(targetProvider);
-  if (normalizedProvider === null) return undefined;
-  const config = session.services.configStore?.current();
-  return (
-    targetModel?.trim() ||
-    (config
-      ? configuredModelForProvider(config, normalizedProvider)
-      : undefined) ||
-    defaultModelForProvider(normalizedProvider)
-  );
-}
-
-function managedDefaultForCommand(
-  ctx: SlashCommandContext,
-  targetProvider: string,
-  targetModel: string | undefined,
-): string | undefined {
-  if (targetModel !== undefined) return targetModel;
-  const normalizedProvider = normalizeProviderName(targetProvider);
-  if (normalizedProvider === null) return undefined;
-  const config = readCommandConfig(ctx);
-  if (config?.auth?.managedKeys?.enabled !== true) return undefined;
-  const settings = resolveProviderSettings(
-    normalizedProvider,
-    config,
-    process.env,
-  );
-  if (!providerHasLiveSubscriptionRoute(normalizedProvider)) return undefined;
-  if (settings?.apiKey !== undefined && settings.apiKey.trim().length > 0) {
-    return undefined;
-  }
-  return subscriptionManagedDefaultModelForTier(
-    normalizedProvider,
-    remoteAuthSessionSubscriptionTierSync(process.env),
-  );
-}
-
-function subscriptionManagedModelError(
-  ctx: SlashCommandContext,
-  targetProvider: string,
-  targetModel: string | undefined,
-): string | undefined {
-  if (targetModel === undefined) return undefined;
-  const normalizedProvider = normalizeProviderName(targetProvider);
-  if (normalizedProvider === null) return undefined;
-  const config = readCommandConfig(ctx);
-  if (config?.auth?.managedKeys?.enabled !== true) return undefined;
-  const settings = resolveProviderSettings(
-    normalizedProvider,
-    config,
-    process.env,
-  );
-  if (settings?.apiKey !== undefined && settings.apiKey.trim().length > 0) {
-    return undefined;
-  }
-  if (!providerHasLiveSubscriptionRoute(normalizedProvider)) return undefined;
-  if (isSubscriptionManagedModel(normalizedProvider, targetModel))
-    return undefined;
-  const liveModels = visibleSubscriptionManagedModelsForTier(
-    normalizedProvider,
-    remoteAuthSessionSubscriptionTierSync(process.env),
-  )
-    .map((model) => `/model ${normalizedProvider}:${model}`)
-    .join(" or ");
-  return (
-    `Model "${targetModel}" is not enabled for subscription-managed ` +
-    `${normalizedProvider}. Use ${liveModels}.`
-  );
-}
-
-function isLocalProviderEndpoint(baseURL: string | undefined): boolean {
-  if (baseURL === undefined) return false;
+):
+  | {
+      readonly ok: true;
+      readonly provider: ProviderSlug;
+      readonly model: string;
+    }
+  | { readonly ok: false; readonly error: string } {
   try {
-    const hostname = new URL(baseURL).hostname.toLowerCase();
-    return (
-      hostname === "localhost" ||
-      hostname === "127.0.0.1" ||
-      hostname === "::1" ||
-      hostname.endsWith(".local")
+    const config = readCommandConfig(ctx);
+    const selection = resolveSessionProviderModelSelection(
+      ctx.session,
+      {
+        model_provider: targetProvider,
+        ...(targetModel === undefined ? {} : { model: targetModel }),
+      },
+      {
+        includePending: true,
+        ...(config === undefined ? {} : { fallbackConfig: config }),
+      },
     );
-  } catch {
-    return false;
+    return {
+      ok: true,
+      provider: selection.provider,
+      model: selection.model,
+    };
+  } catch (error) {
+    const message = formatSessionSelectionError(error);
+    return {
+      ok: false,
+      error: `Provider switch to "${targetProvider}" blocked: ${message}`,
+    };
   }
 }
 
-function providerSwitchAuthError(
-  ctx: SlashCommandContext,
-  targetProvider: string,
-  targetModel: string | undefined,
-): string | undefined {
-  const normalizedProvider = normalizeProviderName(targetProvider);
-  if (normalizedProvider === null) return undefined;
-  const config = readCommandConfig(ctx);
-  if (config?.auth?.managedKeys?.enabled !== true) return undefined;
-  const info = resolveBuiltInProviderInfo(normalizedProvider);
-  if (info?.apiKeyEnvVar === undefined) return undefined;
-  const settings = resolveProviderSettings(
-    normalizedProvider,
-    config,
-    process.env,
-  );
-  if (isLocalProviderEndpoint(settings?.baseURL ?? info.baseURL))
-    return undefined;
-  const apiKey = settings?.apiKey;
-  if (apiKey !== undefined && apiKey.trim().length > 0) return undefined;
-  if (
-    providerHasLiveSubscriptionRoute(normalizedProvider) &&
-    hasEntitledRemoteAuthSessionSync(process.env)
-  ) {
-    return undefined;
-  }
-  if (
-    providerHasLiveSubscriptionRoute(normalizedProvider) &&
-    hasRemoteAuthSessionSync(process.env) &&
-    targetModel !== undefined &&
-    isFreeSubscriptionManagedModel(normalizedProvider, targetModel)
-  ) {
-    return undefined;
-  }
-  if (providerHasLiveSubscriptionRoute(normalizedProvider)) {
-    return (
-      `Provider switch to "${normalizedProvider}" blocked: sign in with AgenC ` +
-      `using /login for free hosted models, upgrade for paid hosted models, ` +
-      `or set ${info.apiKeyEnvVar} for BYOK.`
-    );
-  }
-  return (
-    `Provider switch to "${normalizedProvider}" blocked: ` +
-    `hosted subscription access is available through OpenRouter. ` +
-    `Run /provider openrouter, or set ${info.apiKeyEnvVar} for BYOK.`
-  );
-}
-
-function updateProviderChrome(
-  ctx: SlashCommandContext,
-  model: string | undefined,
-): void {
-  if (model === undefined) return;
+function updateProviderChrome(ctx: SlashCommandContext, model: string): void {
   if (typeof ctx.appState?.setAppState === "function") {
     ctx.appState.setAppState((prev: unknown): unknown => {
       if (typeof prev !== "object" || prev === null) return prev;
@@ -352,35 +262,48 @@ export const providerCommand: SlashCommand = {
         const snapshot = readProviderMenuSnapshot(ctx);
         if (
           openProviderMenu(ctx, snapshot, async (provider, model) => {
-            const authError = providerSwitchAuthError(ctx, provider, model);
-            if (authError !== undefined) {
-              return {
-                message: authError,
-                shouldClose: false,
-              };
-            }
-            const modelError = subscriptionManagedModelError(
+            const selection = resolveProviderCommandSelection(
               ctx,
               provider,
               model,
             );
-            if (modelError !== undefined) {
+            if (!selection.ok) {
               return {
-                message: modelError,
+                message: selection.error,
                 shouldClose: false,
               };
             }
-            const summary = await applyProviderSwitch(
-              ctx.session,
-              provider,
-              model,
+            const access = createProviderCommandAccessOverlay(ctx).inspect({
+              provider: selection.provider,
+              model: selection.model,
+            });
+            const rejection = formatProviderCommandRejection(
+              access,
+              "provider",
             );
-            if (providerSwitchApplied(summary)) {
-              updateProviderChrome(ctx, model);
+            if (rejection !== undefined) {
+              return {
+                message: rejection,
+                shouldClose: false,
+              };
+            }
+            if (access.effect === "unchanged") {
+              return {
+                message: `Provider unchanged: ${selection.provider}/${selection.model}.`,
+                shouldClose: true,
+              };
+            }
+            const outcome = await applyProviderSwitch(
+              ctx.session,
+              selection.provider,
+              selection.model,
+            );
+            if (outcome.applied) {
+              updateProviderChrome(ctx, outcome.model);
             }
             return {
-              message: summary,
-              shouldClose: providerSwitchApplied(summary),
+              message: outcome.summary,
+              shouldClose: outcome.applied,
             };
           })
         ) {
@@ -391,38 +314,56 @@ export const providerCommand: SlashCommand = {
       const [targetProvider = "", ...modelParts] = trimmed.split(/\s+/);
       const targetModel =
         modelParts.length > 0 ? modelParts.join(" ").trim() : undefined;
-      const effectiveTargetModel =
-        managedDefaultForCommand(ctx, targetProvider, targetModel) ??
-        targetModel;
-      const authError = providerSwitchAuthError(
+      let selection = resolveProviderCommandSelection(
         ctx,
         targetProvider,
-        effectiveTargetModel,
+        targetModel,
       );
-      if (authError !== undefined) {
-        return { kind: "text", text: authError };
+      if (!selection.ok) {
+        return { kind: "text", text: selection.error };
       }
-      const modelError = subscriptionManagedModelError(
-        ctx,
-        targetProvider,
-        effectiveTargetModel,
-      );
-      if (modelError !== undefined) {
-        return { kind: "text", text: modelError };
+      const accessOverlay = createProviderCommandAccessOverlay(ctx);
+      let access = accessOverlay.inspect({
+        provider: selection.provider,
+        model: selection.model,
+      });
+      if (
+        targetModel === undefined &&
+        access.effect !== "unchanged" &&
+        access.directCredential?.status === "missing" &&
+        access.managed.defaultModel !== undefined
+      ) {
+        selection = resolveProviderCommandSelection(
+          ctx,
+          targetProvider,
+          access.managed.defaultModel,
+        );
+        if (!selection.ok) {
+          return { kind: "text", text: selection.error };
+        }
+        access = accessOverlay.inspect({
+          provider: selection.provider,
+          model: selection.model,
+        });
       }
-      const resolvedModel = resolveCommandModelForProvider(
+      const rejection = formatProviderCommandRejection(access, "provider");
+      if (rejection !== undefined) {
+        return { kind: "text", text: rejection };
+      }
+      if (access.effect === "unchanged") {
+        return {
+          kind: "text",
+          text: `Provider unchanged: ${selection.provider}/${selection.model}.`,
+        };
+      }
+      const outcome = await applyProviderSwitch(
         ctx.session,
-        targetProvider,
-        effectiveTargetModel,
+        selection.provider,
+        selection.model,
       );
-      const summary = await applyProviderSwitch(
-        ctx.session,
-        targetProvider,
-        effectiveTargetModel,
-      );
-      if (resolvedModel !== undefined && providerSwitchApplied(summary)) {
-        updateProviderChrome(ctx, resolvedModel);
+      if (outcome.applied) {
+        updateProviderChrome(ctx, outcome.model);
       }
-      return { kind: "text", text: summary };
+      return { kind: "text", text: outcome.summary };
     }),
 };

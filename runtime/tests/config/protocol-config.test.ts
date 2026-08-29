@@ -40,12 +40,28 @@ describe("[protocol] config block", () => {
     expect(Object.isFrozen(out)).toBe(true);
   });
 
-  it("accepts the null adapter and an empty block", () => {
-    expect(validateProtocolConfig({ adapter: "null" })).toEqual({
-      adapter: "null",
+  it("accepts an explicit disabled block", () => {
+    expect(validateProtocolConfig({ enabled: false })).toEqual({
+      enabled: false,
     });
-    expect(validateProtocolConfig({})).toEqual({});
     expect(validateProtocolConfig(undefined)).toBeUndefined();
+  });
+
+  it("rejects no-op protocol combinations", () => {
+    expect(() => validateProtocolConfig({})).toThrow(
+      "Invalid protocol.enabled: is required",
+    );
+    expect(() => validateProtocolConfig({ enabled: true })).toThrow(
+      'must be "marketplace-cli"',
+    );
+    expect(() => validateProtocolConfig({
+      enabled: false,
+      adapter: "marketplace-cli",
+    })).toThrow("must be absent");
+    expect(() => validateProtocolConfig({
+      enabled: false,
+      cli_path: "/unused",
+    })).toThrow("must be absent");
   });
 
   it("rejects unknown fields (deny-by-default)", () => {
@@ -61,10 +77,14 @@ describe("[protocol] config block", () => {
     expect(() => validateProtocolConfig({ enabled: "yes" })).toThrow(
       "Invalid protocol.enabled: expected boolean",
     );
-    expect(() => validateProtocolConfig({ adapter: "web3js" })).toThrow(
-      'Invalid protocol.adapter: expected "null" or "marketplace-cli"',
+    expect(() => validateProtocolConfig({ enabled: true, adapter: "web3js" })).toThrow(
+      'Invalid protocol.adapter: expected "marketplace-cli"',
     );
-    expect(() => validateProtocolConfig({ cli_path: 42 })).toThrow(
+    expect(() => validateProtocolConfig({
+      enabled: true,
+      adapter: "marketplace-cli",
+      cli_path: 42,
+    })).toThrow(
       "Invalid protocol.cli_path: expected string",
     );
     expect(() => validateProtocolConfig("marketplace-cli")).toThrow(
@@ -82,7 +102,7 @@ describe("[protocol] config block", () => {
     });
     expect(() =>
       validateAgenCConfigBlocks({
-        protocol: { adapter: "solana-in-process" },
+        protocol: { enabled: true, adapter: "solana-in-process" },
       } as never),
     ).toThrow(InvalidProtocolConfigError);
   });

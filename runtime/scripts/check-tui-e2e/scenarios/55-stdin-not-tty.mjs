@@ -23,7 +23,7 @@ export const meta = {
 };
 
 export default async function (session) {
-  const result = await session.runAgenc(["--yolo"], {
+  const result = await session.runAgenc(["--dangerously-bypass-approvals-and-sandbox"], {
     cwd: session.cwd,
     input: "reply with the single word PIPED",
     timeoutMs: TIMEOUT_MS,

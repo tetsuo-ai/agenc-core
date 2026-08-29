@@ -1,10 +1,6 @@
-import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { expect, test } from 'bun:test'
 
-import { saveGlobalConfig } from '../../../src/utils/config.ts'
-import {
-  setActiveConfigModel,
-  getActiveConfigModel,
-} from '../../../src/bootstrap/state.ts'
+import { BUILT_IN_PROVIDER_DEFAULT_MODELS } from '../../../src/llm/registry/provider-info.ts'
 import {
   getDefaultHaikuModel,
   getDefaultMainLoopModel,
@@ -14,95 +10,74 @@ import {
   getPublicModelDisplayName,
   getSmallFastModel,
 } from '../../../src/utils/model/model.ts'
-import { BUILT_IN_PROVIDER_DEFAULT_MODELS } from '../../../src/llm/registry/provider-info.ts'
+import {
+  getSelectedProviderEnvironment,
+  getSelectedProviderModel,
+  runWithStartupProviderSelection,
+} from '../../../src/utils/model/providers.ts'
 
-const SAVED_ENV = {
-  XAI_API_KEY: process.env.XAI_API_KEY,
-  OPENAI_MODEL: process.env.OPENAI_MODEL,
-  AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,
-  OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
+function withSelection<T>(
+  provider: string,
+  model: string,
+  operation: () => T,
+  environment: Readonly<Record<string, string | undefined>> = {},
+): T {
+  return runWithStartupProviderSelection(
+    { provider, model, environment },
+    operation,
+  )
 }
 
-function clearEnv(): void {
-  delete process.env.XAI_API_KEY
-  delete process.env.OPENAI_MODEL
-  delete process.env.AGENC_USE_OPENAI
-  delete process.env.OPENAI_BASE_URL
-}
-
-beforeEach(() => {
-  clearEnv()
-  setActiveConfigModel(undefined)
-  saveGlobalConfig(current => ({ ...current, model: undefined }))
-})
-
-afterEach(() => {
-  setActiveConfigModel(undefined)
-  for (const key of Object.keys(SAVED_ENV) as Array<keyof typeof SAVED_ENV>) {
-    if (SAVED_ENV[key] === undefined) delete process.env[key]
-    else process.env[key] = SAVED_ENV[key] as string
-  }
-  saveGlobalConfig(current => ({ ...current, model: undefined }))
-})
-
-test('getDefaultMainLoopModel reflects config.model for the active xai provider', () => {
-  // Regression: `agenc config set model grok-build-0.1` (no OPENAI_MODEL env).
-  // The xai branch hardcoded grok-4.3; it must now read the published config
-  // model instead.
-  process.env.XAI_API_KEY = 'xai-test'
-  setActiveConfigModel({ provider: 'grok', model: 'grok-build-0.1' })
-  expect(getActiveConfigModel()).toEqual({
-    provider: 'grok',
-    model: 'grok-build-0.1',
+test('model helpers consume the immutable canonical startup selection', () => {
+  withSelection('grok', 'grok-build-0.1', () => {
+    expect(getSelectedProviderModel()).toBe('grok-build-0.1')
+    expect(getDefaultMainLoopModelSetting()).toBe('grok-build-0.1')
+    expect(getDefaultMainLoopModel()).toBe('grok-build-0.1')
   })
-
-  expect(getDefaultMainLoopModelSetting()).toBe('grok-build-0.1')
-  expect(getDefaultMainLoopModel()).toBe('grok-build-0.1')
 })
 
-test('xAI helper fallbacks stay aligned with the grok provider default', () => {
-  process.env.XAI_API_KEY = 'xai-test'
-  setActiveConfigModel(undefined)
-
+test('xAI helper projections stay aligned with the canonical provider default', () => {
   const providerDefault = BUILT_IN_PROVIDER_DEFAULT_MODELS.grok
   expect(providerDefault).toBe('grok-4.6')
-  expect({
-    main: getDefaultMainLoopModel(),
-    setting: getDefaultMainLoopModelSetting(),
-    smallFast: getSmallFastModel(),
-    opus: getDefaultOpusModel(),
-    sonnet: getDefaultSonnetModel(),
-    haiku: getDefaultHaikuModel(),
-  }).toEqual({
-    main: providerDefault,
-    setting: providerDefault,
-    smallFast: providerDefault,
-    opus: providerDefault,
-    sonnet: providerDefault,
-    haiku: providerDefault,
+  withSelection('grok', providerDefault, () => {
+    expect({
+      main: getDefaultMainLoopModel(),
+      setting: getDefaultMainLoopModelSetting(),
+      smallFast: getSmallFastModel(),
+      opus: getDefaultOpusModel(),
+      sonnet: getDefaultSonnetModel(),
+      haiku: getDefaultHaikuModel(),
+    }).toEqual({
+      main: providerDefault,
+      setting: providerDefault,
+      smallFast: providerDefault,
+      opus: providerDefault,
+      sonnet: providerDefault,
+      haiku: providerDefault,
+    })
+    expect(getPublicModelDisplayName(providerDefault)).toBe('Grok 4.6')
   })
-  expect(getPublicModelDisplayName(providerDefault)).toBe('Grok 4.6')
 })
 
-test('grok-4.3 keeps working when it is the configured model', () => {
-  process.env.XAI_API_KEY = 'xai-test'
-  setActiveConfigModel({ provider: 'grok', model: 'grok-4.3' })
-
-  expect(getDefaultMainLoopModel()).toBe('grok-4.3')
-})
-
-test('OPENAI_MODEL env wins over the published config model (provider profile precedence)', () => {
-  process.env.XAI_API_KEY = 'xai-test'
-  process.env.OPENAI_MODEL = 'grok-from-env'
-  setActiveConfigModel({ provider: 'grok', model: 'grok-build-0.1' })
-
-  expect(getDefaultMainLoopModel()).toBe('grok-from-env')
-})
-
-test('config model for a different provider does not leak into xai default', () => {
-  process.env.XAI_API_KEY = 'xai-test'
-  // Published selection is for openai, but the active provider is xai.
-  setActiveConfigModel({ provider: 'openai', model: 'gpt-5' })
-
-  expect(getDefaultMainLoopModel()).toBe(BUILT_IN_PROVIDER_DEFAULT_MODELS.grok)
+test('post-capture ambient env mutation cannot redirect model or environment authority', async () => {
+  const original = process.env.OPENAI_BASE_URL
+  try {
+    await withSelection(
+      'grok',
+      'grok-canonical',
+      async () => {
+        process.env.OPENAI_BASE_URL = 'https://ambient.invalid/v1'
+        await Promise.resolve()
+        expect(getSelectedProviderModel()).toBe('grok-canonical')
+        expect(getDefaultMainLoopModel()).toBe('grok-canonical')
+        expect(getSelectedProviderEnvironment().OPENAI_BASE_URL).toBe(
+          'https://captured.example/v1',
+        )
+      },
+      { OPENAI_BASE_URL: 'https://captured.example/v1' },
+    )
+  } finally {
+    if (original === undefined) delete process.env.OPENAI_BASE_URL
+    else process.env.OPENAI_BASE_URL = original
+  }
 })

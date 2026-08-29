@@ -12,7 +12,7 @@
  *       from modelsManager.listModels()/getModelInfo()).
  *   (b) spawn_agent validation surface: membership in listModels() +
  *       supportedReasoningLevels from getModelInfo().
- *   (c) the /model picker (getModelOptions when the provider is xai).
+ *   (c) the provider-neutral /model catalog.
  *   (d) the grok adapter context-window resolver (resolveContextWindowProfile)
  *       AND the TUI resolver (getContextWindowForModel).
  */
@@ -20,34 +20,33 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { defaultConfig } from "../../../src/config/schema.js";
+import { buildProviderModelCatalog } from "../../../src/config/provider-model-authority.js";
 import { StaticModelsManager } from "../../../src/llm/models-manager.js";
 import {
   deriveFlatCatalog,
   listRegisteredModelCatalogEntries,
   resolveModelCatalogMetadata,
 } from "../../../src/llm/registry/model-catalog.js";
-import { BUILT_IN_PROVIDER_MODEL_CATALOG } from "../../../src/llm/registry/provider-info.js";
+import {
+  BUILT_IN_PROVIDER_DEFAULT_MODELS,
+  BUILT_IN_PROVIDER_MODEL_CATALOG,
+  providerLocalModelIdFromCatalog,
+  type BuiltInProviderSlug,
+} from "../../../src/llm/registry/provider-info.js";
 import { resolveContextWindowProfile } from "../../../src/llm/_deps/context-window.js";
 import { getContextWindowForModel } from "../../../src/utils/context.js";
-import { getModelOptions } from "../../../src/utils/model/modelOptions.js";
 import {
   resetModelStringsForTestingOnly,
   setInitialMainLoopModel,
-  setMainLoopModelOverride,
 } from "../../../src/bootstrap/state.js";
-import { resetSettingsCache } from "../../../src/utils/settings/settingsCache.js";
 
 const NEW_MODEL = "grok-build-0.1";
 const GROK_45 = "grok-4.5";
 const ONE_MILLION = 1_000_000;
 
 const TOUCHED_ENV_KEYS = [
-  "AGENC_CONFIG_DIR",
   "AGENC_HOME",
-  "AGENC_USE_OPENAI",
-  "AGENC_USE_GEMINI",
-  "AGENC_USE_GITHUB",
-  "AGENC_USE_MISTRAL",
+  "AGENC_PROVIDER",
   "AGENC_MAX_CONTEXT_TOKENS",
   "USER_TYPE",
   "XAI_API_KEY",
@@ -60,11 +59,10 @@ beforeEach(() => {
     ORIGINAL_ENV[key] = process.env[key];
     delete process.env[key];
   }
+  process.env.AGENC_PROVIDER = "grok";
   process.env.XAI_API_KEY = "xai-test-key";
   setInitialMainLoopModel(null);
-  setMainLoopModelOverride(undefined);
   resetModelStringsForTestingOnly();
-  resetSettingsCache();
 });
 
 afterEach(() => {
@@ -77,9 +75,7 @@ afterEach(() => {
     }
   }
   setInitialMainLoopModel(null);
-  setMainLoopModelOverride(undefined);
   resetModelStringsForTestingOnly();
-  resetSettingsCache();
 });
 
 describe("model SoT: one catalog entry surfaces everywhere", () => {
@@ -131,8 +127,8 @@ describe("model SoT: one catalog entry surfaces everywhere", () => {
     expect(info.supportedReasoningLevels).toEqual([]);
   });
 
-  it("(c) shows grok-build-0.1 in the /model picker for xai", () => {
-    const options = getModelOptions(false).map((option) => option.value);
+  it("(c) shows grok-build-0.1 in the provider-neutral /model catalog", () => {
+    const options = buildProviderModelCatalog(defaultConfig()).grok ?? [];
     expect(options).toContain(NEW_MODEL);
   });
 
@@ -143,6 +139,102 @@ describe("model SoT: one catalog entry surfaces everywhere", () => {
     });
     expect(adapter?.contextWindowTokens).toBe(ONE_MILLION);
     expect(getContextWindowForModel(NEW_MODEL)).toBe(ONE_MILLION);
+  });
+});
+
+describe("retired models remain historical metadata, not live choices", () => {
+  it("uses only reachable provider defaults and catalog rows", () => {
+    expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.deepseek).toBe("deepseek-v4-flash");
+    expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.mistral).toBe("mistral-medium-latest");
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.deepseek).toEqual([
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+    ]);
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.groq).not.toContain(
+      "mixtral-8x7b-32768",
+    );
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.mistral).toEqual([
+      "mistral-medium-latest",
+    ]);
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.minimax).toContain("MiniMax-M3");
+  });
+
+  it("does not offer retired Opus 4.1 or ABAB rows in model menus", () => {
+    const catalog = buildProviderModelCatalog(defaultConfig());
+    expect(catalog.anthropic).not.toContain("claude-opus-4-1");
+    const minimaxValues = catalog.minimax ?? [];
+    expect(minimaxValues).toContain("MiniMax-M3");
+    expect(minimaxValues.some((value) => value.startsWith("abab"))).toBe(false);
+  });
+});
+
+describe("canonical provider catalogs preserve supported selection rows", () => {
+  it("contains no duplicate raw or provider-local rows", () => {
+    for (const [provider, models] of Object.entries(
+      BUILT_IN_PROVIDER_MODEL_CATALOG,
+    )) {
+      expect(new Set(models), `${provider}: raw IDs`).toHaveLength(
+        models.length,
+      );
+      const localModels = models.map((model) =>
+        providerLocalModelIdFromCatalog(
+          provider as BuiltInProviderSlug,
+          model,
+        ),
+      );
+      expect(new Set(localModels), `${provider}: local IDs`).toHaveLength(
+        localModels.length,
+      );
+    }
+  });
+
+  it("keeps the complete unique NVIDIA NIM selection surface", () => {
+    const models = BUILT_IN_PROVIDER_MODEL_CATALOG["nvidia-nim"];
+    expect(models).toHaveLength(110);
+    expect(new Set(models)).toHaveLength(110);
+    expect(models).toEqual(
+      expect.arrayContaining([
+        "nvidia/cosmos-reason2-8b",
+        "meta/codellama-70b",
+        "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+        "nvidia/llama3-chatqa-1.5-70b",
+        "meta/llama-4-maverick-17b-128e-instruct",
+        "google/gemma-4-31b-it",
+        "mistralai/mistral-large-3-675b-instruct-2512",
+        "mistralai/devstral-2-123b-instruct-2512",
+        "mistralai/magistral-small-2506",
+        "mistralai/mathstral-7b-v0.1",
+        "microsoft/phi-4-multimodal-instruct",
+        "microsoft/phi-3-mini-4k-instruct",
+        "qwen/qwen3.5-397b-a17b",
+        "deepseek-ai/deepseek-v3.2",
+        "ibm/granite-3.3-8b-instruct",
+        "databricks/dbrx-instruct",
+        "z-ai/glm5",
+        "minimaxai/minimax-m2.5",
+        "moonshotai/kimi-k2-instruct-0905",
+      ]),
+    );
+    expect(buildProviderModelCatalog(defaultConfig())["nvidia-nim"]).toEqual(
+      models,
+    );
+  });
+
+  it("keeps every supported MiniMax generation in one catalog", () => {
+    const models = BUILT_IN_PROVIDER_MODEL_CATALOG.minimax;
+    expect(models).toEqual([
+      "MiniMax-M3",
+      "MiniMax-M2.7",
+      "MiniMax-M2",
+      "MiniMax-M2.1",
+      "MiniMax-M2.5",
+      "MiniMax-Text-01",
+      "MiniMax-Text-01-Preview",
+      "MiniMax-Vision-01",
+      "MiniMax-Vision-01-Fast",
+    ]);
+    expect(new Set(models)).toHaveLength(models.length);
+    expect(buildProviderModelCatalog(defaultConfig()).minimax).toEqual(models);
   });
 });
 

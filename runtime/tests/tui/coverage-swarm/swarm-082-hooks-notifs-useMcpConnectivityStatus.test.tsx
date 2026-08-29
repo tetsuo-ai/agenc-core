@@ -5,7 +5,6 @@ import type { MCPServerConnection } from '../../../src/services/mcp/types.js'
 
 const harness = vi.hoisted(() => ({
   addNotification: vi.fn(),
-  agencAiConnected: false,
   logError: vi.fn(),
   remoteMode: false,
 }))
@@ -32,10 +31,6 @@ vi.mock('../../../src/tui/context/notifications.js', () => ({
 
 vi.mock('../../../src/bootstrap/state.js', () => ({
   getIsRemoteMode: () => harness.remoteMode,
-}))
-
-vi.mock('../../../src/services/mcp/agencai.js', () => ({
-  hasAgenCAiMcpEverConnected: () => harness.agencAiConnected,
 }))
 
 vi.mock('../../../src/tui/ink.js', async () => {
@@ -112,7 +107,6 @@ function runHook(mcpClients?: readonly MCPServerConnection[]): void {
 describe('useMcpConnectivityStatus swarm coverage 082', () => {
   beforeEach(() => {
     harness.addNotification.mockReset()
-    harness.agencAiConnected = false
     harness.logError.mockReset()
     harness.remoteMode = false
   })
@@ -167,11 +161,7 @@ describe('useMcpConnectivityStatus swarm coverage 082', () => {
     expect(harness.logError).not.toHaveBeenCalled()
   })
 
-  test('adds agenc.tech connector notifications only after a connector has connected before', () => {
-    runHook([failedClient('remote-files', 'agencai-proxy')])
-    expect(harness.addNotification).not.toHaveBeenCalled()
-
-    harness.agencAiConnected = true
+  test('adds agenc.tech connector notifications for current actionable states', () => {
     runHook([
       failedClient('remote-files', 'agencai-proxy'),
       needsAuthClient('remote-calendar', 'agencai-proxy'),

@@ -6,12 +6,24 @@ import {
 } from '@ant/agenc-for-chrome-mcp'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { format } from 'util'
-import { getAgenCAIOAuthTokens } from '../auth.js'
-import { enableConfigs, getGlobalConfig, saveGlobalConfig } from '../config.js'
+import { getAgenCAIOAuthTokens, getOauthAccountInfo } from '../auth.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { sideQuery } from '../sideQuery.js'
+import {
+  readNativeSecureStorage,
+  updateNativeSecureStorage,
+} from '../secureStorage/native.js'
+import {
+  captureSecureStorageIngress,
+  resolveSecureStorageHome,
+} from '../secureStorage/home.js'
 import { getAllSocketPaths, getSecureSocketPath } from './common.js'
+import {
+  snapshotProviderEnvironment,
+  type ProviderEnvironment,
+} from '../../llm/provider-options.js'
+import type { HomeContext } from '../../config/home.js'
 
 const EXTENSION_DOWNLOAD_URL = 'https://agenc.tech/chrome'
 const BUG_REPORT_URL =
@@ -32,31 +44,33 @@ function isPermissionMode(raw: string): raw is PermissionMode {
  * Bridge is used when the feature flag is enabled; ant users always get
  * bridge. API key / 3P users fall back to native messaging.
  */
-function getChromeBridgeUrl(): string | undefined {
-  const bridgeEnabled = process.env.USER_TYPE === 'ant'
+function getChromeBridgeUrl(
+  environment: ProviderEnvironment,
+): string | undefined {
+  const bridgeEnabled = environment.USER_TYPE === 'ant'
 
   if (!bridgeEnabled) {
     return undefined
   }
 
   if (
-    isEnvTruthy(process.env.USE_LOCAL_OAUTH) ||
-    isEnvTruthy(process.env.LOCAL_BRIDGE)
+    isEnvTruthy(environment.USE_LOCAL_OAUTH) ||
+    isEnvTruthy(environment.LOCAL_BRIDGE)
   ) {
     return 'ws://localhost:8765'
   }
 
-  if (isEnvTruthy(process.env.USE_STAGING_OAUTH)) {
+  if (isEnvTruthy(environment.USE_STAGING_OAUTH)) {
     return 'wss://bridge-staging.agenc.tech'
   }
 
   return 'wss://bridge.agenc.tech'
 }
 
-function isLocalBridge(): boolean {
+function isLocalBridge(environment: ProviderEnvironment): boolean {
   return (
-    isEnvTruthy(process.env.USE_LOCAL_OAUTH) ||
-    isEnvTruthy(process.env.LOCAL_BRIDGE)
+    isEnvTruthy(environment.USE_LOCAL_OAUTH) ||
+    isEnvTruthy(environment.LOCAL_BRIDGE)
   )
 }
 
@@ -65,14 +79,20 @@ function isLocalBridge(): boolean {
  * and the in-process path in the MCP client.
  */
 export function createChromeContext(
+  providerEnvironment: ProviderEnvironment,
   env?: Record<string, string>,
+  explicitHome?: HomeContext,
 ): AgenCForChromeContext {
+  const environment: ProviderEnvironment = Object.freeze({
+    ...providerEnvironment,
+    ...(env ?? {}),
+  })
+  const home = explicitHome ?? resolveSecureStorageHome(environment)
   const logger = new DebugLogger()
-  const chromeBridgeUrl = getChromeBridgeUrl()
+  const chromeBridgeUrl = getChromeBridgeUrl(environment)
   logger.info(`Bridge URL: ${chromeBridgeUrl ?? 'none (using native socket)'}`)
   const rawPermissionMode =
-    env?.AGENC_CHROME_PERMISSION_MODE ??
-    process.env.AGENC_CHROME_PERMISSION_MODE
+    environment.AGENC_CHROME_PERMISSION_MODE
   let initialPermissionMode: PermissionMode | undefined
   if (rawPermissionMode) {
     if (isPermissionMode(rawPermissionMode)) {
@@ -98,36 +118,34 @@ export function createChromeContext(
       return `Browser extension is not connected. Please ensure the AgenC browser extension is installed and running (${EXTENSION_DOWNLOAD_URL}), and that you are logged into AgenC with the same account as AgenC. If this is your first time connecting to Chrome, you may need to restart Chrome for the installation to take effect. If you continue to experience issues, please report a bug: ${BUG_REPORT_URL}`
     },
     onExtensionPaired: (deviceId: string, name: string) => {
-      saveGlobalConfig(config => {
+      updateNativeSecureStorage(home, current => {
         if (
-          config.chromeExtension?.pairedDeviceId === deviceId &&
-          config.chromeExtension?.pairedDeviceName === name
-        ) {
-          return config
-        }
+          current.chromePairingIdentity?.pairedDeviceId === deviceId &&
+          current.chromePairingIdentity?.pairedDeviceName === name
+        ) return { ...current }
         return {
-          ...config,
-          chromeExtension: {
+          ...current,
+          chromePairingIdentity: {
             pairedDeviceId: deviceId,
             pairedDeviceName: name,
           },
         }
-      })
+      }, 'Native secure storage is unavailable; the Chrome pairing was not saved.')
       logger.info(`Paired with "${name}" (${deviceId.slice(0, 8)})`)
     },
     getPersistedDeviceId: () => {
-      return getGlobalConfig().chromeExtension?.pairedDeviceId
+      return readNativeSecureStorage(home).chromePairingIdentity?.pairedDeviceId
     },
     ...(chromeBridgeUrl && {
       bridgeConfig: {
         url: chromeBridgeUrl,
         getUserId: async () => {
-          return getGlobalConfig().oauthAccount?.accountUuid
+          return getOauthAccountInfo(home)?.accountUuid
         },
         getOAuthToken: async () => {
-          return getAgenCAIOAuthTokens()?.accessToken ?? ''
+          return getAgenCAIOAuthTokens(home, environment)?.accessToken ?? ''
         },
-        ...(isLocalBridge() && { devUserId: 'dev_user_local' }),
+        ...(isLocalBridge(environment) && { devUserId: 'dev_user_local' }),
       },
     }),
     ...(initialPermissionMode && { initialPermissionMode }),
@@ -149,7 +167,7 @@ export function createChromeContext(
     // version — 0.3.0 sees an unknown field (allowed in spread), 0.4.0 sees a
     // structurally-matching one. Once 0.4.0 is published, this can switch to
     // the package's exported types and the dep can be bumped.
-    ...(process.env.USER_TYPE === 'ant' && {
+    ...(environment.USER_TYPE === 'ant' && {
       callAnthropicMessages: async (req: {
         model: string
         max_tokens: number
@@ -199,8 +217,12 @@ export function createChromeContext(
 }
 
 export async function runAgenCInChromeMcpServer(): Promise<void> {
-  enableConfigs()
-  const context = createChromeContext()
+  const ingress = captureSecureStorageIngress(process.env)
+  const context = createChromeContext(
+    snapshotProviderEnvironment(ingress.environment),
+    undefined,
+    ingress.home,
+  )
 
   const server = createAgenCForChromeMcpServer(context)
   const transport = new StdioServerTransport()

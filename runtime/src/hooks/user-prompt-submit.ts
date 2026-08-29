@@ -10,6 +10,10 @@
 import type { PermissionMode } from "../permissions/types.js";
 import { isRecord } from "../utils/record.js";
 import { nonEmptyString as stringValue } from "../utils/stringUtils.js";
+import {
+  isHookExecutionSuppressed,
+  type HookRuntimeAuthority,
+} from "./runtime-policy.js";
 
 export interface UserPromptSubmitBlockingError {
   readonly blockingError: string;
@@ -85,6 +89,13 @@ export async function* executeUserPromptSubmitHooks(
   _requestPrompt?: unknown,
   onError?: (err: unknown, idx: number) => void,
 ): AsyncGenerator<UserPromptSubmitHookResult> {
+  if (
+    isHookExecutionSuppressed(
+      readUserPromptSubmitRuntimeAuthority(toolUseContext),
+    )
+  ) {
+    return;
+  }
   const hooks = readUserPromptSubmitHooks(toolUseContext);
   if (hooks.length === 0) return;
   yield* runUserPromptSubmitHooks(hooks, {
@@ -94,6 +105,30 @@ export async function* executeUserPromptSubmitHooks(
     ...readSessionContext(toolUseContext),
     ...readAbortSignal(toolUseContext),
   }, onError);
+}
+
+function readUserPromptSubmitRuntimeAuthority(
+  toolUseContext: unknown,
+): HookRuntimeAuthority | undefined {
+  if (!isRecord(toolUseContext)) return undefined;
+  const appState = readAppState(toolUseContext);
+  const candidates = [
+    toolUseContext["runtimeOptions"],
+    readNested(toolUseContext, ["session", "services", "runtimeOptions"]),
+    readNested(toolUseContext, ["services", "runtimeOptions"]),
+    readNested(isRecord(appState) ? appState : undefined, [
+      "session",
+      "services",
+      "runtimeOptions",
+    ]),
+  ];
+  for (const candidate of candidates) {
+    if (!isRecord(candidate) || typeof candidate["simpleMode"] !== "boolean") {
+      continue;
+    }
+    return { simpleMode: candidate["simpleMode"] };
+  }
+  return undefined;
 }
 
 function readUserPromptSubmitHooks(

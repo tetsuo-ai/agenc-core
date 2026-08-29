@@ -1,9 +1,9 @@
-import { execa } from 'execa'
 import { logForDebugging } from 'src/utils/debug.js'
 import { memoizeWithLRU } from '../memoize.js'
 import { getCachedPowerShellPath } from '../shell/powershellDetection.js'
 import type { SandboxExecutionBrokerLike } from '../../sandbox/execution-broker.js'
 import { scrubEnvForChildProcess } from '../../unified-exec/scrub-env.js'
+import { runSupervisedProcess } from '../supervisedProcess.js'
 import { jsonParse } from '../slowOperations.js'
 
 // ---------------------------------------------------------------------------
@@ -1185,62 +1185,62 @@ async function parsePowerShellCommandImpl(
     encodedScript,
   ]
   const processEnv = scrubEnvForChildProcess(process.env)
-  const spawnCommand = sandbox === undefined
-    ? {
+  // Spawn pwsh with one retry on timeout. On loaded CI runners (Windows
+  // especially), pwsh spawn + .NET JIT + ParseInput occasionally exceeds 5s
+  // even after CAN_SPAWN_PARSE_SCRIPT() warms the JIT. A timeout has no exit
+  // code, which the old path reported as the misleading
+  // "pwsh exited with code 1:" with empty stderr. A single retry absorbs
+  // transient load spikes; a double timeout is reported as PwshTimeout.
+  const parseTimeoutMs = getParseTimeoutMs()
+  const executeParser = async (
+    preparedCommand: {
+      readonly program: string
+      readonly args: readonly string[]
+      readonly cwd: string
+      readonly env: Readonly<Record<string, string>>
+      readonly argv0?: string
+    },
+    lifecycleSignal?: AbortSignal,
+  ) => {
+    let stdout = ''
+    let stderr = ''
+    let code: number | null = null
+    let timedOut = false
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await runSupervisedProcess(preparedCommand, {
+        timeoutMs: parseTimeoutMs,
+        maxOutputBytes: 4 * 1024 * 1024,
+        ...(lifecycleSignal !== undefined ? { signal: lifecycleSignal } : {}),
+      })
+      stdout = result.stdout.toString('utf8')
+      stderr = result.stderr.toString('utf8')
+      timedOut = result.stopReason === 'timeout'
+      code = result.stopReason === undefined ? (result.exitCode ?? 1) : 1
+      if (!timedOut || lifecycleSignal?.aborted === true) break
+      logForDebugging(
+        `PowerShell parser: pwsh timed out after ${parseTimeoutMs}ms (attempt ${attempt + 1})`,
+      )
+    }
+    return { stdout, stderr, code, timedOut }
+  }
+  const parsed = sandbox === undefined
+    ? await executeParser({
         program: pwshPath,
         args,
         cwd: process.cwd(),
         env: processEnv,
-        argv0: undefined,
-      }
-    : sandbox.broker.prepareSpawn('powershell_parser', {
-        program: pwshPath,
-        args,
-        cwd: sandbox.cwd,
-        env: processEnv,
       })
-
-  // Spawn pwsh with one retry on timeout. On loaded CI runners (Windows
-  // especially), pwsh spawn + .NET JIT + ParseInput occasionally exceeds 5s
-  // even after CAN_SPAWN_PARSE_SCRIPT() warms the JIT. execa kills the process
-  // but exitCode is undefined, which the old code reported as the misleading
-  // "pwsh exited with code 1:" with empty stderr. A single retry absorbs
-  // transient load spikes; a double timeout is reported as PwshTimeout.
-  const parseTimeoutMs = getParseTimeoutMs()
-  let stdout = ''
-  let stderr = ''
-  let code: number | null = null
-  let timedOut = false
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const result = await execa(spawnCommand.program, [...spawnCommand.args], {
-        timeout: parseTimeoutMs,
-        reject: false,
-        cwd: spawnCommand.cwd,
-        env: spawnCommand.env,
-        ...(spawnCommand.argv0 !== undefined
-          ? { argv0: spawnCommand.argv0 }
-          : {}),
-      })
-      stdout = result.stdout
-      stderr = result.stderr
-      timedOut = result.timedOut
-      code = result.failed ? (result.exitCode ?? 1) : 0
-    } catch (e: unknown) {
-      logForDebugging(
-        `PowerShell parser: failed to spawn pwsh: ${e instanceof Error ? e.message : e}`,
-      )
-      return makeInvalidResult(
-        command,
-        `Failed to spawn PowerShell: ${e instanceof Error ? e.message : e}`,
-        'PwshSpawnError',
-      )
-    }
-    if (!timedOut) break
-    logForDebugging(
-      `PowerShell parser: pwsh timed out after ${parseTimeoutMs}ms (attempt ${attempt + 1})`,
-    )
-  }
+    : await sandbox.broker
+        .prepareSpawn('powershell_parser', {
+          program: pwshPath,
+          args,
+          cwd: sandbox.cwd,
+          env: processEnv,
+        })
+        .run((preparedCommand, lifecycleSignal) =>
+          executeParser(preparedCommand, lifecycleSignal)
+        )
+  const { stdout, stderr, code, timedOut } = parsed
 
   if (timedOut) {
     return makeInvalidResult(

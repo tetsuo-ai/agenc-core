@@ -716,6 +716,7 @@ jobs:
     env:
       AGENC_NEOVIM_RUNNER: ${{ matrix.runner }}
       AGENC_NEOVIM_SLUG: ${{ matrix.slug }}
+      TUI_E2E_DEBUG: ${{ matrix.slug == 'win-x64' && '1' || '0' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -1211,6 +1212,7 @@ jobs:
             tests/fnd/portable-repository-path.test.ts \
             tests/fnd/process-repository-helpers.native.test.ts \
             tests/tools/runtimes/runtime.darwin.test.ts \
+            tests/utils/secureStorage/macOsKeychainHelper.darwin.test.ts \
             --config vitest.native.config.ts \
             --allowOnly=false \
             --reporter=verbose \
@@ -1231,14 +1233,15 @@ jobs:
             "tests/fnd/portable-repository-path.test.ts",
             "tests/fnd/process-repository-helpers.native.test.ts",
             "tests/tools/runtimes/runtime.darwin.test.ts",
+            "tests/utils/secureStorage/macOsKeychainHelper.darwin.test.ts",
           ];
           const exactCounts = {
-            numTotalTestSuites: 11,
-            numPassedTestSuites: 11,
+            numTotalTestSuites: 12,
+            numPassedTestSuites: 12,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 85,
-            numPassedTests: 85,
+            numTotalTests: 94,
+            numPassedTests: 94,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1265,7 +1268,7 @@ jobs:
               `macOS-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("macOS FND/native capability lane passed 85 tests in 7 files with zero skipped");
+          console.log("macOS FND/native capability lane passed 94 tests in 8 files with zero skipped");
           NODE
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
 
@@ -1273,6 +1276,8 @@ jobs:
     name: windows-native
     runs-on: windows-2025-vs2026
     timeout-minutes: 30
+    env:
+      TUI_E2E_DEBUG: "1"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -1465,8 +1470,8 @@ jobs:
             numPassedTestSuites: 18,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 93,
-            numPassedTests: 93,
+            numTotalTests: 101,
+            numPassedTests: 101,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1489,7 +1494,7 @@ jobs:
               `Windows-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("Windows FND/native capability lane passed 93 tests in 11 files with zero skipped");
+          console.log("Windows FND/native capability lane passed 101 tests in 11 files with zero skipped");
           '@ | node --input-type=module - $results
           if ($LASTEXITCODE -ne 0) { throw "Windows native result contract failed" }
           if (-not [string]::IsNullOrWhiteSpace(

@@ -1,21 +1,34 @@
 /**
- * Ports the donor app-server protocol's JSON-RPC envelope and method-registry
- * shape onto AgenC's daemon control surface.
+ * AgenC daemon JSON-RPC envelope, method registry, and public wire types.
  *
- * Why this lives here:
- *   - AgenC uses dot-separated daemon methods as the stable public protocol,
- *     while the donor app-server protocol uses a broader slash-separated API.
- *
- * Cross-cuts deliberately NOT carried:
- *   - account, plugin, marketplace, app, filesystem, and desktop endpoints
- *     from the donor app-server surface are outside AgenC's daemon protocol.
+ * Public methods use dotted names (`session.create`). Slash names appear only
+ * on the realtime thread surface. Account, plugin, marketplace, app,
+ * filesystem-browser, and desktop endpoints are not part of this protocol.
  */
 
+import type { RunRuntimeSettingsSnapshot } from "../../contracts/run-contracts.js";
+import type { ProviderModelSelectionOutcome } from "../../contracts/provider-model-selection.js";
+
+/** JSON-RPC version required on daemon requests, responses, and notifications. */
 export const JSON_RPC_VERSION = "2.0" as const;
-// 1.2 adds an identity-bearing transcript projection and turn-scoped
-// cancellation. Clients that depend on those race-free semantics must not
-// negotiate with an older daemon that cannot provide them.
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.2.0" as const;
+/**
+ * Current daemon protocol version.
+ * 1.2 adds identity-bearing transcript.v2 and turn-scoped cancellation.
+ * 1.3 adds the passive MCP status projection and its live-only invalidation.
+ * 1.4 makes the owning agent runtime authority part of agent.attach.
+ * 1.5 adds the effective hook-suppression projection.
+ * 1.6 makes the live canonical run-settings snapshot part of agent.attach.
+ * 1.7 adds inactive permission capabilities to that required snapshot and an
+ * authenticated internal session permission-rule mutation authority.
+ * 1.8 requires the exact plugin storage root in owning agent runtime authority
+ * and binds successful model and config mutation responses to the exact
+ * canonical runtime-settings event that clients must apply.
+ * 1.9 adds admitted shell execution on the daemon-owned live session for
+ * internal clients.
+ * Clients that need any of these additive surfaces must not negotiate an older
+ * daemon.
+ */
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.9.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -32,6 +45,11 @@ export const AGENC_DAEMON_METHOD_CAPABILITIES_KEY = "daemon.methods" as const;
 export const AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY =
   "portal.mobile.status.push.v1" as const;
 
+/** Wire limits for the internal admitted session-shell request and result. */
+export const MAX_SESSION_SHELL_IDENTIFIER_UTF8_BYTES = 1_024;
+export const MAX_SESSION_SHELL_COMMAND_UTF8_BYTES = 65_536;
+export const MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES = 100_000;
+
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonArray = readonly JsonValue[];
 export type JsonValue = JsonPrimitive | JsonArray | JsonObject;
@@ -44,7 +62,6 @@ export type RequestId = string | number;
 export const AGENC_DAEMON_METHODS = [
   "initialize",
   "request.cancel",
-  "audio.transcribe",
   "agent.create",
   "agent.list",
   "agent.attach",
@@ -70,6 +87,7 @@ export const AGENC_DAEMON_METHODS = [
   "session.transcript.v2",
   "session.cancelTurn",
   "session.resolveToolCall",
+  "session.mcp.status",
   "session.mcp.addServer",
   "message.send",
   "message.stream",
@@ -125,8 +143,10 @@ export const AGENC_DAEMON_INTERNAL_METHODS = [
   "session.rewindConversationToMessage",
   "session.previewFileRewind",
   "session.rewindFilesToMessage",
+  "session.shell.execute",
   "session.setModel",
   "session.setPermissionMode",
+  "session.permissions.mutateRule",
   "session.hooks.status",
   "session.hooks.setDisabled",
   "session.applyConfig",
@@ -156,6 +176,7 @@ export const AGENC_DAEMON_NOTIFICATION_METHODS = [
   "event.permission_request",
   "event.user_input_request",
   "event.mcp_elicitation_request",
+  "event.mcp_status_changed",
   "event.agent_status",
   "event.session_event",
   "event.event_gap",
@@ -244,13 +265,6 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description: "Cancel an in-flight daemon request on the same connection.",
   },
-  "audio.transcribe": {
-    method: "audio.transcribe",
-    direction: "client-to-server",
-    params: "required",
-    result: "object",
-    description: "Transcribe one bounded audio attachment before a model turn.",
-  },
   "agent.create": {
     method: "agent.create",
     direction: "client-to-server",
@@ -324,8 +338,8 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description:
-      "Tree-scoped cancel: the run plus its queued and running descendants " +
-      "(frozen Wave-B contract). Durable cascade first, live interrupt second.",
+      "Tree-scoped cancel: the run plus its queued and running descendants. " +
+      "Durable cascade first, live interrupt second.",
   },
   "run.start": {
     method: "run.start",
@@ -408,7 +422,7 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description:
-      "Read live counters (turn count, token usage, cache stats) for a daemon-owned session so the TUI's /status, /usage, /cache-stats can surface real numbers.",
+      "Read live turn and token-usage counters for a daemon-owned session.",
   },
   "session.transcript": {
     method: "session.transcript",
@@ -442,13 +456,21 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     description:
       "Operator review of unknown-outcome tool effects (M4 gate): mark them resolved so the side-effecting mutation gate lifts. TUI /resolve uses this so the session does not have to be closed for the CLI path.",
   },
+  "session.mcp.status": {
+    method: "session.mcp.status",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Read the daemon-owned session's passive, revisioned MCP status projection without exposing clients or connection authority.",
+  },
   "session.mcp.addServer": {
     method: "session.mcp.addServer",
     direction: "client-to-server",
     params: "required",
     result: "object",
     description:
-      "Add an MCP server to the daemon-owned runtime session so ToolSearch and model tool calls can use it immediately.",
+      "Add an MCP server to the daemon-owned runtime session so system.searchTools and model tool calls can use it immediately.",
   },
   "message.send": {
     method: "message.send",
@@ -820,6 +842,14 @@ export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
     description:
       "TUI-internal request to restore edited files on disk to their state before a selected prompt.",
   },
+  "session.shell.execute": {
+    method: "session.shell.execute",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to run one admitted shell command on the daemon-owned session.",
+  },
   "session.setModel": {
     method: "session.setModel",
     direction: "client-to-server",
@@ -835,6 +865,14 @@ export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
     result: "object",
     description:
       "TUI-internal request to switch the permission mode on the daemon-owned session registry.",
+  },
+  "session.permissions.mutateRule": {
+    method: "session.permissions.mutateRule",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to mutate the daemon-owned session permission-rule bucket.",
   },
   "session.hooks.status": {
     method: "session.hooks.status",
@@ -926,6 +964,13 @@ export const AGENC_DAEMON_NOTIFICATION_SPECS = defineNotificationSpecs({
     params: "required",
     description:
       "Ask an attached client to resolve a pending MCP elicitation request.",
+  },
+  "event.mcp_status_changed": {
+    method: "event.mcp_status_changed",
+    direction: "server-to-client",
+    params: "required",
+    description:
+      "Invalidate attached clients' passive MCP status projection after an authoritative committed change.",
   },
   "event.agent_status": {
     method: "event.agent_status",
@@ -1021,6 +1066,22 @@ export function isAgenCDaemonNotificationMethod(
   );
 }
 
+export interface AgentRuntimeOptionsParams extends JsonObject {
+  readonly simpleMode: boolean;
+  /** Omission by an older client is normalized to false. */
+  readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
+  readonly stdinDataMode: boolean;
+  readonly remoteMode: boolean;
+  readonly remoteMemoryRoot?: string;
+  readonly coworkMemoryPathOverride?: string;
+  readonly coworkMemoryExtraGuidelines?: string;
+  readonly posixShellPath?: string;
+  readonly commandWrapperArgv?: readonly string[];
+  readonly sessionTempRoot?: string;
+  readonly pluginStorageRoot: string;
+  readonly allowUntrustedHooks: boolean;
+}
+
 export interface AgentCreateParams extends JsonObject {
   readonly objective?: string;
   /**
@@ -1041,6 +1102,8 @@ export interface AgentCreateParams extends JsonObject {
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  /** Absolute explicit config layer selected by the invoking client. */
+  readonly configPath?: string;
   readonly instructions?: string;
   readonly initialContent?: MessageContent;
   /**
@@ -1072,10 +1135,10 @@ export interface AgentCreateParams extends JsonObject {
   /**
    * Session-wide permission mode override for the spawned agent. When
    * set, the daemon-side bootstrap honors this in place of the project-
-   * trust default. Used by `agenc --yolo`, which sends
+   * trust default. Used by `agenc --dangerously-bypass-approvals-and-sandbox`, which sends
    * `permissionMode: "bypassPermissions"` so the spawned agent's session
    * approvalPolicy resolves to `"never"` regardless of project trust.
-   * Without this, --yolo only affected the local CLI bootstrap and was
+   * Without this, --dangerously-bypass-approvals-and-sandbox only affected the local CLI bootstrap and was
    * dropped on the wire to the daemon.
    */
   readonly permissionMode?:
@@ -1085,6 +1148,8 @@ export interface AgentCreateParams extends JsonObject {
     | "bypassPermissions"
     | "dontAsk"
     | "auto";
+  /** Immutable operator policy resolved by the creating client. */
+  readonly runtimeOptions: AgentRuntimeOptionsParams;
   /**
    * Per-invocation environment overrides for the spawned agent. Used by
    * the TUI to propagate `OPENAI_BASE_URL` (and similar provider-config
@@ -1095,7 +1160,9 @@ export interface AgentCreateParams extends JsonObject {
    *
    * Only string values are forwarded. Keys collected from a curated
    * allow-list (provider URLs, API keys, proxy settings) to avoid
-   * leaking unrelated env into agent processes.
+   * leaking unrelated env into agent processes. Empty strings are explicit
+   * clear markers so an unset client value cannot inherit stale daemon-start
+   * provider/config state.
    */
   readonly envOverrides?: { readonly [key: string]: string };
 }
@@ -1167,20 +1234,6 @@ export interface InitializeParams extends JsonObject {
 export interface RequestCancelParams extends JsonObject {
   readonly requestId: RequestId;
   readonly reason?: string;
-}
-
-export interface AudioTranscribeInput extends JsonObject {
-  /** Strict RFC 4648 base64. Data URLs and whitespace are rejected. */
-  readonly data: string;
-  readonly mimeType: string;
-  /** Basename only. Paths never cross this daemon boundary. */
-  readonly fileName: string;
-}
-
-export interface AudioTranscribeParams extends JsonObject {
-  readonly audio: AudioTranscribeInput;
-  /** Local is always attempted first; cloud upload requires this opt-in. */
-  readonly preferredProvider?: "openai" | "gemini" | "local";
 }
 
 export interface DaemonShutdownParams extends JsonObject {
@@ -1378,9 +1431,13 @@ export interface SessionCancelTurnParams extends JsonObject {
   readonly expectedTurnId?: string;
 }
 
+export interface SessionMcpStatusParams extends JsonObject {
+  readonly sessionId: string;
+}
+
 export interface SessionMcpServerConfig extends JsonObject {
   readonly name: string;
-  readonly transport?: "stdio" | "sse" | "http" | "websocket" | "ws";
+  readonly transport?: "stdio" | "sse" | "http" | "websocket";
   readonly command?: string;
   readonly args?: readonly string[];
   readonly endpoint?: string;
@@ -1426,6 +1483,12 @@ export interface SessionRewindConversationToMessageParams extends JsonObject {
 export interface SessionFileRewindParams extends JsonObject {
   readonly sessionId: string;
   readonly messageOrdinal: number;
+}
+
+export interface SessionShellExecuteParams extends JsonObject {
+  readonly sessionId: string;
+  readonly commandId: string;
+  readonly command: string;
 }
 
 export interface SessionSetModelParams extends JsonObject {
@@ -1619,6 +1682,23 @@ export type WorkspaceEditorPredictionFeedbackSessionParams = Pick<
 export interface SessionSetPermissionModeParams extends JsonObject {
   readonly sessionId: string;
   readonly mode: string;
+}
+
+export type SessionPermissionRuleMutationOperation = "add" | "remove";
+export type SessionPermissionRuleBehavior = "allow" | "deny" | "ask";
+
+export interface SessionPermissionRuleMutationParams extends JsonObject {
+  readonly sessionId: string;
+  readonly operation: SessionPermissionRuleMutationOperation;
+  readonly behavior: SessionPermissionRuleBehavior;
+  /** Canonical `serializeRuleValue` output, reparsed by the daemon. */
+  readonly rule: string;
+}
+
+export interface SessionPermissionRuleBuckets extends JsonObject {
+  readonly allow: readonly string[];
+  readonly deny: readonly string[];
+  readonly ask: readonly string[];
 }
 
 export interface SessionHooksStatusParams extends JsonObject {
@@ -1955,6 +2035,7 @@ export interface EventUserInputRequestParams extends AgenCEventBaseParams {
   readonly callId: string;
   readonly turnId: string;
   readonly questions: readonly JsonObject[];
+  readonly clientAction?: JsonObject;
 }
 
 export interface EventMcpElicitationRequestParams extends AgenCEventBaseParams {
@@ -1962,6 +2043,12 @@ export interface EventMcpElicitationRequestParams extends AgenCEventBaseParams {
   readonly serverName: string;
   readonly turnId: string;
   readonly request: JsonObject;
+}
+
+/** Non-journal control-plane invalidation for the passive MCP projection. */
+export interface EventMcpStatusChangedParams extends JsonObject {
+  readonly sessionId: string;
+  readonly revision: number;
 }
 
 export interface EventAgentStatusParams extends AgenCEventBaseParams {
@@ -2048,6 +2135,7 @@ export interface AgenCDaemonNotificationParamsByMethod {
   readonly "event.permission_request": EventPermissionRequestParams;
   readonly "event.user_input_request": EventUserInputRequestParams;
   readonly "event.mcp_elicitation_request": EventMcpElicitationRequestParams;
+  readonly "event.mcp_status_changed": EventMcpStatusChangedParams;
   readonly "event.agent_status": EventAgentStatusParams;
   readonly "event.session_event": EventSessionEventParams;
   readonly "event.event_gap": EventGapParams;
@@ -2085,6 +2173,10 @@ export type AgenCDaemonNotification =
   | AgenCDaemonNotificationWithParams<
       "event.mcp_elicitation_request",
       EventMcpElicitationRequestParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "event.mcp_status_changed",
+      EventMcpStatusChangedParams
     >
   | AgenCDaemonNotificationWithParams<
       "event.agent_status",
@@ -2160,7 +2252,6 @@ export interface AgenCDaemonRequestWithoutParams<
 export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"initialize", InitializeParams>
   | AgenCDaemonRequestWithParams<"request.cancel", RequestCancelParams>
-  | AgenCDaemonRequestWithParams<"audio.transcribe", AudioTranscribeParams>
   | AgenCDaemonRequestWithParams<"agent.create", AgentCreateParams>
   | AgenCDaemonRequestWithParams<"agent.list", AgentListParams>
   | AgenCDaemonRequestWithParams<"agent.attach", AgentAttachParams>
@@ -2194,6 +2285,10 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<
       "session.resolveToolCall",
       SessionResolveToolCallParams
+    >
+  | AgenCDaemonRequestWithParams<
+      "session.mcp.status",
+      SessionMcpStatusParams
     >
   | AgenCDaemonRequestWithParams<
       "session.mcp.addServer",
@@ -2274,8 +2369,6 @@ export interface SessionSummary extends JsonObject {
   readonly agentId: string;
   readonly status: SessionStatus;
   readonly createdAt: string;
-  /** Latest durable activity or lifecycle transition known to the daemon. */
-  readonly lastActiveAt: string;
   readonly cwd?: string;
   /** Immutable role-discovery authority; execution cwd may be a worktree. */
   readonly roleWorkspace?: {
@@ -2300,8 +2393,18 @@ export interface AgentAttachResult extends JsonObject {
   readonly agentId: string;
   readonly attachmentId: string;
   readonly sessionIds: readonly string[];
+  /** Immutable operator authority owned by the attached daemon session. */
+  readonly runtimeOptions: AgentRuntimeOptionsParams;
+  /** Live daemon-owned session settings; static session metadata is not authority. */
+  readonly runtimeSettings: RunRuntimeSettingsSnapshot & JsonObject;
+  /** Canonical settings event hydrated by this response. */
+  readonly runtimeSettingsEventId: string;
   readonly runtimeSessionId?: string;
-  readonly sessions?: readonly SessionSummary[];
+  readonly sessions: readonly AgentAttachSessionSummary[];
+}
+
+export interface AgentAttachSessionSummary extends SessionSummary {
+  readonly cwd: string;
 }
 
 export interface AgentStopResult extends JsonObject {
@@ -2828,12 +2931,6 @@ export interface RequestCancelResult extends JsonObject {
   readonly reason?: string;
 }
 
-export interface AudioTranscribeResult extends JsonObject {
-  readonly text: string;
-  readonly model: string;
-  readonly provider: "openai" | "gemini" | "local";
-}
-
 export interface SessionCreateResult extends SessionSummary {}
 
 export interface SessionListResult extends JsonObject {
@@ -2880,13 +2977,7 @@ export interface SessionResolveToolCallResult extends JsonObject {
   readonly remaining: number;
 }
 
-/**
- * Counters from the daemon-owned in-process session. The TUI bridge
- * cannot read these directly because it only holds a thin client-side
- * `AgenCBridgeSession`; the daemon ships the values over the wire
- * via `session.snapshot` so commands like `/status`, `/usage`, and
- * `/cache-stats` can surface meaningful numbers instead of zeros.
- */
+/** Counters from the daemon-owned in-process session. */
 export interface SessionSnapshotResult extends JsonObject {
   readonly sessionId: string;
   /** Number of completed turns recorded in the session's history. */
@@ -2896,37 +2987,6 @@ export interface SessionSnapshotResult extends JsonObject {
     readonly outputTokens: number;
     readonly totalTokens: number;
     readonly costUsd: number;
-  };
-  /** Cumulative cache metrics across API calls this session. */
-  readonly cacheStats: {
-    readonly requestCount: number;
-    readonly cacheReadInputTokens: number;
-    readonly cacheCreationInputTokens: number;
-    readonly cacheTotalInputTokens: number;
-    readonly hitRate: number | null;
-  };
-  /**
-   * What actually occupies the context window, by source. A client can
-   * only estimate the conversation; the tool schemas, MCP catalog and
-   * memory files are the daemon's own and were invisible from outside,
-   * which is why a UI showing them had to make numbers up.
-   */
-  readonly contextBreakdown?: {
-    /** The model's real window, so shares are against the truth. */
-    readonly windowTokens: number;
-    readonly messageTokens: number;
-    readonly systemPromptTokens: number;
-    /** Always-loaded built-in tool schemas. */
-    readonly systemToolTokens: number;
-    readonly systemToolCount: number;
-    /** Tool schemas served by MCP servers. */
-    readonly mcpToolTokens: number;
-    readonly mcpToolCount: number;
-    /** Schemas the model can search for but that are not resident. */
-    readonly deferredToolTokens: number;
-    readonly deferredToolCount: number;
-    readonly memoryFileTokens: number;
-    readonly memoryFileCount: number;
   };
 }
 
@@ -2985,6 +3045,36 @@ export interface SessionCancelTurnResult extends JsonObject {
   readonly reason?: string;
   readonly activeTurnId?: string;
   readonly stale?: boolean;
+}
+
+export interface SessionMcpStatusServer extends JsonObject {
+  readonly name: string;
+  readonly transport: "stdio" | "sse" | "http" | "websocket";
+  readonly enabled: boolean;
+  readonly required: boolean;
+  readonly state:
+    | "connected"
+    | "pending"
+    | "failed"
+    | "disabled"
+    | "needs-auth"
+    | "disconnected";
+  /** Sanitized executable basename or URL origin; never connection authority. */
+  readonly displayTarget?: string;
+  readonly toolCount: number;
+}
+
+export interface SessionMcpStatusTool extends JsonObject {
+  readonly serverName: string;
+  readonly name: string;
+}
+
+/** Passive, serializable projection of the daemon-owned MCP runtime. */
+export interface SessionMcpStatusResult extends JsonObject {
+  readonly sessionId: string;
+  readonly revision: number;
+  readonly servers: readonly SessionMcpStatusServer[];
+  readonly tools: readonly SessionMcpStatusTool[];
 }
 
 export interface SessionMcpAddServerResult extends JsonObject {
@@ -3268,12 +3358,23 @@ export interface SessionRewindFilesToMessageResult extends JsonObject {
   readonly displayText?: string;
 }
 
-export interface SessionSetModelResult extends JsonObject {
+export interface SessionShellExecuteResult extends JsonObject {
+  readonly commandId: string;
+  readonly content: string;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly exitCode: number | null;
+  readonly timedOut: boolean;
+  readonly truncated: boolean;
+  readonly isError: boolean;
+}
+
+export interface SessionSetModelResult
+  extends JsonObject,
+    ProviderModelSelectionOutcome {
   readonly sessionId: string;
-  /** `true` when the switch was applied or staged on the live session. */
-  readonly applied: boolean;
-  /** Human-readable summary of the switch outcome, surfaced to the user. */
-  readonly summary: string;
+  /** Canonical settings cursor proving the returned pair. */
+  readonly runtimeSettingsEventId: string;
 }
 
 export interface SessionSetPermissionModeResult extends JsonObject {
@@ -3281,6 +3382,16 @@ export interface SessionSetPermissionModeResult extends JsonObject {
   readonly applied: boolean;
   readonly previousMode: string;
   readonly mode: string;
+}
+
+export interface SessionPermissionRuleMutationResult extends JsonObject {
+  readonly sessionId: string;
+  readonly applied: boolean;
+  readonly operation: SessionPermissionRuleMutationOperation;
+  readonly behavior: SessionPermissionRuleBehavior;
+  readonly rule: string;
+  /** Complete canonical daemon-owned session buckets after the mutation. */
+  readonly sessionRules: SessionPermissionRuleBuckets;
 }
 
 /**
@@ -3294,6 +3405,12 @@ export interface SessionHooksStatusResult extends JsonObject {
   readonly available: boolean;
   readonly sourcePath: string;
   readonly disabled: boolean;
+  /** Present on protocol >=1.5; immutable owner suppression from `--bare`. */
+  readonly hardSuppressed?: boolean;
+  /** Present on protocol >=1.5; `disabled || hardSuppressed`. */
+  readonly effectiveDisabled?: boolean;
+  /** Present on protocol >=1.5; why execution is currently suppressed. */
+  readonly suppressionReason?: "bare_mode" | "session_disabled" | null;
   readonly issues: readonly SessionHookValidationIssueShape[];
   readonly hooks: readonly SessionHookConfigShape[];
   readonly diagnostics: readonly SessionHookRunDiagnosticShape[];
@@ -3303,12 +3420,22 @@ export interface SessionHooksSetDisabledResult extends JsonObject {
   readonly sessionId: string;
   readonly applied: boolean;
   readonly disabled: boolean;
+  /** Present on protocol >=1.5; immutable owner suppression from `--bare`. */
+  readonly hardSuppressed?: boolean;
+  /** Present on protocol >=1.5; `disabled || hardSuppressed`. */
+  readonly effectiveDisabled?: boolean;
+  /** Present on protocol >=1.5; why execution is currently suppressed. */
+  readonly suppressionReason?: "bare_mode" | "session_disabled" | null;
 }
 
 export interface SessionApplyConfigResult extends JsonObject {
   readonly sessionId: string;
   /** `true` when any config change was applied to the live session. */
   readonly applied: boolean;
+  /** Exact pair and cursor when the live runtime settings changed. */
+  readonly provider?: string;
+  readonly model?: string;
+  readonly runtimeSettingsEventId?: string;
   /** Human-readable summary of what was re-applied, surfaced to the user. */
   readonly summary: string;
 }
@@ -3499,7 +3626,6 @@ export interface AuthLogoutResult extends JsonObject {
 export interface AgenCDaemonResultByMethod {
   readonly initialize: InitializeResult;
   readonly "request.cancel": RequestCancelResult;
-  readonly "audio.transcribe": AudioTranscribeResult;
   readonly "agent.create": AgentCreateResult;
   readonly "agent.list": AgentListResult;
   readonly "agent.attach": AgentAttachResult;
@@ -3525,6 +3651,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.transcript.v2": SessionTranscriptV2Result;
   readonly "session.cancelTurn": SessionCancelTurnResult;
   readonly "session.resolveToolCall": SessionResolveToolCallResult;
+  readonly "session.mcp.status": SessionMcpStatusResult;
   readonly "session.mcp.addServer": SessionMcpAddServerResult;
   readonly "message.send": MessageSendResult;
   readonly "message.stream": MessageStreamResult;
@@ -3578,8 +3705,10 @@ export interface AgenCDaemonInternalResultByMethod {
   readonly "session.rewindConversationToMessage": SessionRewindConversationToMessageResult;
   readonly "session.previewFileRewind": SessionPreviewFileRewindResult;
   readonly "session.rewindFilesToMessage": SessionRewindFilesToMessageResult;
+  readonly "session.shell.execute": SessionShellExecuteResult;
   readonly "session.setModel": SessionSetModelResult;
   readonly "session.setPermissionMode": SessionSetPermissionModeResult;
+  readonly "session.permissions.mutateRule": SessionPermissionRuleMutationResult;
   readonly "session.hooks.status": SessionHooksStatusResult;
   readonly "session.hooks.setDisabled": SessionHooksSetDisabledResult;
   readonly "session.applyConfig": SessionApplyConfigResult;

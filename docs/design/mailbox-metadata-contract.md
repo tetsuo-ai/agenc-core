@@ -1,8 +1,8 @@
 # Bounded mailbox metadata construction
 
-Status: E3a foundation contract. The decoder, builder, authenticated handle,
-serializer, and accessors are implemented. Mailbox caller cutover is deliberately
-deferred to E3b.
+Status: E3a foundation is implemented. E3b caller cutover is also implemented
+(`Mailbox.send` admits only authenticated handles). This page is the
+decoder/builder contract. Caller rules: [mailbox-metadata-cutover.md](mailbox-metadata-cutover.md).
 
 ## Boundary
 
@@ -12,9 +12,10 @@ deferred to E3b.
 that value. A TypeScript assertion, copied property, symbol, prototype, getter,
 or proxy cannot manufacture the runtime brand.
 
-E3a does not change `Mailbox.send`, its public `SendResult`, or any caller. Until
-E3b lands, existing raw-object ingress remains unchanged and does not implicitly
-receive the protections described here.
+`SendResult` is still `"sent" | "dropped"`. `Mailbox.send` now requires a
+branded `ValidatedMailboxMetadata` handle when metadata is present. Unbranded
+values return `"dropped"`. Metadata may be omitted. Untrusted bytes go through
+`Mailbox.sendEncoded`.
 
 ## Fixed limits
 

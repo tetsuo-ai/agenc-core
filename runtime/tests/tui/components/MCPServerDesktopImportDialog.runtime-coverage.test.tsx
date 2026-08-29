@@ -4,6 +4,7 @@ import stripAnsi from "strip-ansi";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { McpServerConfig, ScopedMcpServerConfig } from "../../services/mcp/types.js";
+import type { CanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
 import { createRoot } from "../ink/root.js";
 
 const configMock = vi.hoisted(() => {
@@ -17,6 +18,10 @@ const configMock = vi.hoisted(() => {
     getAllMcpConfigs: vi.fn(async () => ({ servers: state.existingServers })),
   };
 });
+
+const AUTHORITY = {} as CanonicalSettingsAuthority;
+const MCP_ENVIRONMENT = Object.freeze({ MCP_TEMPLATE_TOKEN: "captured-token" });
+const PLUGIN_STORAGE_ROOT = "/captured/plugin-storage";
 
 const dialogMock = vi.hoisted(() => ({
   props: undefined as
@@ -202,6 +207,9 @@ async function renderImportDialog({
 
   root.render(
     <MCPServerDesktopImportDialog
+      authority={AUTHORITY}
+      environment={MCP_ENVIRONMENT}
+      pluginStorageRoot={PLUGIN_STORAGE_ROOT}
       servers={servers}
       scope={scope}
       onDone={onDone}
@@ -216,6 +224,9 @@ async function renderImportDialog({
     rerender: () => {
       root.render(
         <MCPServerDesktopImportDialog
+          authority={AUTHORITY}
+          environment={MCP_ENVIRONMENT}
+          pluginStorageRoot={PLUGIN_STORAGE_ROOT}
           servers={servers}
           scope={scope}
           onDone={onDone}
@@ -300,12 +311,14 @@ describe("MCPServerDesktopImportDialog", () => {
         "alpha_2",
         alphaServer,
         "project",
+        AUTHORITY,
       );
       expect(configMock.addMcpConfig).toHaveBeenNthCalledWith(
         2,
         "beta",
         betaServer,
         "project",
+        AUTHORITY,
       );
       expect(processMock.writeToStdout).toHaveBeenCalledWith(
         "\nSuccessfully imported 2 MCP servers to project config.\n",
@@ -330,6 +343,7 @@ describe("MCPServerDesktopImportDialog", () => {
         "alpha",
         alphaServer,
         "user",
+        AUTHORITY,
       );
       expect(processMock.writeToStdout).toHaveBeenCalledWith(
         "\nSuccessfully imported 1 MCP server to user config.\n",

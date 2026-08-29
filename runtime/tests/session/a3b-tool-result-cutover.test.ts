@@ -292,9 +292,9 @@ describe("A3b raw checkpoint validation", () => {
   });
 });
 
-describe("A3b shared tool-result validator cutover", () => {
-  it("pairs durable parallel tool results by id when they finish in reverse order", () => {
-    const sessionId = "ordered-live-reversal-session";
+describe("A3b shared ID-paired validator cutover", () => {
+  it("accepts durable parallel tool results in completion order", () => {
+    const sessionId = "parallel-live-reversal-session";
     const store = openRollout({
       sessionId,
       meta: {
@@ -316,7 +316,7 @@ describe("A3b shared tool-result validator cutover", () => {
         ],
       },
     });
-    const reversedResult: ResponseItem = {
+    const secondResult: ResponseItem = {
       role: "tool",
       content: "result b",
       toolCallId: "ordered-call-b",
@@ -327,6 +327,7 @@ describe("A3b shared tool-result validator cutover", () => {
         content: "result b",
       }),
     };
+
     const firstResult: ResponseItem = {
       role: "tool",
       content: "result a",
@@ -340,7 +341,7 @@ describe("A3b shared tool-result validator cutover", () => {
     };
 
     expect(() => {
-      store.appendRollout({ type: "response_item", payload: reversedResult });
+      store.appendRollout({ type: "response_item", payload: secondResult });
       store.appendRollout({ type: "response_item", payload: firstResult });
       store.flushDurable();
     }).not.toThrow();
@@ -480,6 +481,7 @@ describe("A3b atomic legacy publication", () => {
       cwd,
       sessionId,
       agencVersion: "0.13.0",
+      sessionTempRoot: tmpdir(),
       resume: true,
       autoStartScheduler: false,
       beforeCheckpointUpgradePublishForTestingOnly: () => {
@@ -579,6 +581,7 @@ describe("A3b atomic legacy publication", () => {
       cwd,
       sessionId,
       agencVersion: "0.13.0",
+      sessionTempRoot: tmpdir(),
       resume: true,
       autoStartScheduler: false,
     });
@@ -660,6 +663,7 @@ function openRollout(params: {
     cwd,
     sessionId: params.sessionId,
     agencVersion: params.meta.agencVersion,
+    sessionTempRoot: tmpdir(),
     autoStartScheduler: false,
     ...(params.resume === true ? { resume: true } : {}),
   });

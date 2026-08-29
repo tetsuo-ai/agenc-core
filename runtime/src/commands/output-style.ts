@@ -15,6 +15,7 @@ import {
   type OutputStyleMenuRow,
   type OutputStyleMenuSnapshot,
 } from "./output-style-menu.js";
+import { requireCommandConfigStore } from "./config-context.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -192,7 +193,7 @@ export async function applyOutputStyleSwitch(
   if (resolved.error !== undefined) return resolved.error;
   const target = resolved.name!;
 
-  const result = updateSettingsForSource("userSettings", {
+  const result = await updateSettingsForSource("userSettings", {
     outputStyle: target,
   });
   if (result.error !== null) {
@@ -268,6 +269,28 @@ function outputStyleNewPrompt(params: {
   ].join("\n");
 }
 
+function buildOutputStyleNewResult(
+  ctx: SlashCommandContext,
+  argsRaw: string,
+): SlashCommandResult {
+  const parsed = parseOutputStyleNewArgs(argsRaw);
+  if (parsed.error !== undefined) {
+    return { kind: "text", text: parsed.error };
+  }
+  const agencHome = requireCommandConfigStore(ctx).homeContext.path;
+  return {
+    kind: "prompt",
+    content: outputStyleNewPrompt({
+      fileName: parsed.fileName!,
+      styleName: parsed.styleName!,
+      targetPath: join(agencHome, "output-styles", `${parsed.fileName!}.md`),
+      ...(parsed.description !== undefined
+        ? { description: parsed.description }
+        : {}),
+    }),
+  };
+}
+
 export const outputStyleCommand: SlashCommand = {
   name: "output-style",
   aliases: ["style"],
@@ -295,25 +318,7 @@ export const outputStyleCommand: SlashCommand = {
       }
       if (target === "new" || target.startsWith("new ")) {
         const args = target === "new" ? "" : target.slice("new".length).trim();
-        const parsed = parseOutputStyleNewArgs(args);
-        if (parsed.error !== undefined) {
-          return { kind: "text", text: parsed.error };
-        }
-        return {
-          kind: "prompt",
-          content: outputStyleNewPrompt({
-            fileName: parsed.fileName!,
-            styleName: parsed.styleName!,
-            targetPath: join(
-              ctx.home,
-              "output-styles",
-              `${parsed.fileName!}.md`,
-            ),
-            ...(parsed.description !== undefined
-              ? { description: parsed.description }
-              : {}),
-          }),
-        };
+        return buildOutputStyleNewResult(ctx, args);
       }
       const message = await applyOutputStyleSwitch(ctx, target);
       return { kind: "text", text: message };
@@ -327,25 +332,5 @@ export const outputStyleNewCommand: SlashCommand = {
   immediate: true,
   userInvocable: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
-    safeExecute(async () => {
-      const parsed = parseOutputStyleNewArgs(ctx.argsRaw);
-      if (parsed.error !== undefined) {
-        return { kind: "text", text: parsed.error };
-      }
-      return {
-        kind: "prompt",
-        content: outputStyleNewPrompt({
-          fileName: parsed.fileName!,
-          styleName: parsed.styleName!,
-          targetPath: join(
-            ctx.home,
-            "output-styles",
-            `${parsed.fileName!}.md`,
-          ),
-          ...(parsed.description !== undefined
-            ? { description: parsed.description }
-            : {}),
-        }),
-      };
-    }),
+    safeExecute(async () => buildOutputStyleNewResult(ctx, ctx.argsRaw)),
 };

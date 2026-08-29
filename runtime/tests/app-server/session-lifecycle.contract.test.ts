@@ -116,27 +116,23 @@ describe("AgenC daemon session lifecycle", () => {
       agentId: "agent_1",
       status: "idle",
       createdAt: "2026-05-01T10:00:00.000Z",
-      lastActiveAt: "2026-05-01T10:00:00.000Z",
       cwd: firstAgentCwd,
       metadata: { origin: "test" },
     });
     await manager.createSession({ agentId: "agent_2", cwd: secondAgentCwd });
     await manager.createSession({ agentId: "agent_1", cwd: thirdAgentCwd });
 
-    // Most-recent-first: a client's first page is the sessions it would
-    // actually resume. Insertion order buried anything created after a
-    // daemon restart behind every restored historical session.
     await expect(
       manager.listSessions({ agentId: "agent_1", limit: 1 }),
     ).resolves.toEqual({
       sessions: [
         {
-          sessionId: "session_3",
+          sessionId: "session_1",
           agentId: "agent_1",
           status: "idle",
-          createdAt: "2026-05-01T10:02:00.000Z",
-          lastActiveAt: "2026-05-01T10:02:00.000Z",
-          cwd: thirdAgentCwd,
+          createdAt: "2026-05-01T10:00:00.000Z",
+          cwd: firstAgentCwd,
+          metadata: { origin: "test" },
         },
       ],
       nextCursor: "1",
@@ -147,7 +143,7 @@ describe("AgenC daemon session lifecycle", () => {
     ).resolves.toMatchObject({
       sessions: [
         {
-          sessionId: "session_1",
+          sessionId: "session_3",
           agentId: "agent_1",
         },
       ],
@@ -193,42 +189,6 @@ describe("AgenC daemon session lifecycle", () => {
     ]);
     expect(second.nextCursor).toBeUndefined();
     expect(calls).toHaveLength(2);
-  });
-
-  it("reports the persisted thread update time as canonical session activity", async () => {
-    const threadStore = {
-      listThreads: () => ({
-        items: [
-          storedThread(
-            "persisted-active",
-            "2026-05-01T10:00:00.000Z",
-            "2026-05-03T14:15:16.000Z",
-          ),
-        ],
-      }),
-      readThread: () =>
-        storedThread(
-          "persisted-active",
-          "2026-05-01T10:00:00.000Z",
-          "2026-05-03T14:15:16.000Z",
-        ),
-    } as Partial<ThreadStore> as ThreadStore;
-    const manager = new AgenCDaemonSessionManager({ threadStore });
-
-    await expect(manager.listSessions()).resolves.toMatchObject({
-      sessions: [
-        {
-          sessionId: "persisted-active",
-          createdAt: "2026-05-01T10:00:00.000Z",
-          lastActiveAt: "2026-05-03T14:15:16.000Z",
-        },
-      ],
-    });
-    await expect(manager.getSession("persisted-active")).resolves.toMatchObject(
-      {
-        lastActiveAt: "2026-05-03T14:15:16.000Z",
-      },
-    );
   });
 
   it("binds persisted cursors to their agent filter", async () => {
@@ -363,7 +323,6 @@ describe("AgenC daemon session lifecycle", () => {
     await expect(manager.getSession("session_1")).resolves.toMatchObject({
       sessionId: "session_1",
       status: "idle",
-      lastActiveAt: "2026-05-01T10:00:00.000Z",
       activeAttachmentIds: ["attachment_2"],
     });
 
@@ -376,75 +335,6 @@ describe("AgenC daemon session lifecycle", () => {
       sessionId: "session_1",
       detached: false,
       remainingAttachmentIds: ["attachment_2"],
-    });
-    await expect(manager.getSession("session_1")).resolves.toMatchObject({
-      lastActiveAt: "2026-05-01T10:00:00.000Z",
-    });
-  });
-
-  it("restores a durable activity timestamp without replacing it with daemon time", async () => {
-    const now = vi.fn(() => "2026-05-09T00:00:00.000Z");
-    const manager = new AgenCDaemonSessionManager({ now });
-
-    await expect(
-      manager.restoreSession({
-        sessionId: "session_recovered",
-        agentId: "agent_recovered",
-        status: "running",
-        createdAt: "2026-05-01T10:00:00.000Z",
-        lastActiveAt: "2026-05-04T12:34:56.000Z",
-      }),
-    ).resolves.toMatchObject({
-      createdAt: "2026-05-01T10:00:00.000Z",
-      lastActiveAt: "2026-05-04T12:34:56.000Z",
-    });
-    expect(now).not.toHaveBeenCalled();
-  });
-
-  it("does not treat attaching to an old session as new activity", async () => {
-    const manager = new AgenCDaemonSessionManager({
-      createAttachmentId: sequence(["attachment_recovered"]),
-      now: sequence(["2026-05-09T00:00:00.000Z"]),
-    });
-    await manager.restoreSession({
-      sessionId: "session_recovered",
-      agentId: "agent_recovered",
-      createdAt: "2026-05-01T10:00:00.000Z",
-      lastActiveAt: "2026-05-04T12:34:56.000Z",
-    });
-
-    await manager.attachSession({ sessionId: "session_recovered" });
-
-    await expect(manager.getSession("session_recovered")).resolves.toMatchObject(
-      {
-        lastActiveAt: "2026-05-04T12:34:56.000Z",
-      },
-    );
-  });
-
-  it("advances live session activity from a durable content timestamp without regressing", async () => {
-    const manager = new AgenCDaemonSessionManager({
-      createSessionId: sequence(["session_active"]),
-      now: sequence(["2026-05-01T10:00:00.000Z"]),
-    });
-    await manager.createSession({ cwd: await workspaces.create() });
-
-    await manager.recordSessionActivity(
-      "session_active",
-      "2026-05-03T14:15:16.000Z",
-    );
-    await manager.recordSessionActivity(
-      "session_active",
-      "2026-05-02T00:00:00.000Z",
-    );
-
-    await expect(manager.listSessions()).resolves.toMatchObject({
-      sessions: [
-        {
-          sessionId: "session_active",
-          lastActiveAt: "2026-05-03T14:15:16.000Z",
-        },
-      ],
     });
   });
 
@@ -480,7 +370,6 @@ describe("AgenC daemon session lifecycle", () => {
       sessionId: "session_1",
       status: "closed",
       closedAt: "2026-05-01T10:00:02.000Z",
-      lastActiveAt: "2026-05-01T10:00:02.000Z",
     });
 
     await expect(
@@ -719,6 +608,7 @@ function openRollout(cwd: string, sessionId: string): RolloutStore {
     cwd,
     sessionId,
     agencVersion: "0.2.0",
+    sessionTempRoot: tmpdir(),
   });
   rollout.open({
     sessionId,
@@ -732,15 +622,11 @@ function openRollout(cwd: string, sessionId: string): RolloutStore {
   return rollout;
 }
 
-function storedThread(
-  threadId: string,
-  createdAt: string,
-  updatedAt = createdAt,
-): StoredThread {
+function storedThread(threadId: string, createdAt: string): StoredThread {
   return {
     threadId,
     createdAt,
-    updatedAt,
+    updatedAt: createdAt,
     modelProvider: "test",
     source: "cli_main",
   };

@@ -29,12 +29,16 @@ import {
   getCwdState,
   getOriginalCwd,
 } from '../../bootstrap/state.js'
+import type {
+  AgenCConfig,
+  SandboxFilesystemConfig,
+  SandboxNetworkConfig,
+} from '../../config/schema.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { expandPath } from '../path.js'
-import { getPlatform, type Platform } from '../platform.js'
+import { getPlatform } from '../platform.js'
 import { settingsChangeDetector } from '../settings/changeDetector.js'
 import { SETTING_SOURCES, type SettingSource } from '../settings/constants.js'
-import { getManagedSettingsDropInDir } from '../settings/managedPath.js'
 import {
   getExecutionAuthoritySettings,
   getSettingsFilePathForSource,
@@ -42,7 +46,6 @@ import {
   getSettingsRootPathForSource,
   updateSettingsForSource,
 } from '../settings/settings.js'
-import type { SettingsJson } from '../settings/types.js'
 
 // ============================================================================
 // Settings Converter
@@ -56,6 +59,18 @@ import { errorMessage } from '../errors.js'
 import { getAgenCTempDir } from '../permissions/filesystem.js'
 import type { PermissionRuleValue } from '../permissions/PermissionRule.js'
 import { ripgrepCommand } from '../ripgrep.js'
+
+function sandboxNetwork(
+  settings: AgenCConfig | null,
+): SandboxNetworkConfig | undefined {
+  return settings?.sandbox?.network
+}
+
+function sandboxFilesystem(
+  settings: AgenCConfig | null,
+): SandboxFilesystemConfig | undefined {
+  return settings?.sandbox?.filesystem
+}
 
 // Local copies to avoid circular dependency
 // (permissions.ts imports SandboxManager, bashPermissions.ts imports permissions.ts)
@@ -150,14 +165,14 @@ export function resolveSandboxFilesystemPath(
  */
 export function shouldAllowManagedSandboxDomainsOnly(): boolean {
   return (
-    getSettingsForSource('policySettings')?.sandbox?.network
+    sandboxNetwork(getSettingsForSource('policySettings'))
       ?.allowManagedDomainsOnly === true
   )
 }
 
 function shouldAllowManagedReadPathsOnly(): boolean {
   return (
-    getSettingsForSource('policySettings')?.sandbox?.filesystem
+    sandboxFilesystem(getSettingsForSource('policySettings'))
       ?.allowManagedReadPathsOnly === true
   )
 }
@@ -169,19 +184,19 @@ function shouldAllowManagedReadPathsOnly(): boolean {
  * @param settings Merged settings (used for sandbox config like network, ripgrep, etc.)
  */
 export function convertToSandboxRuntimeConfig(
-  settings: SettingsJson,
+  settings: AgenCConfig,
 ): SandboxRuntimeConfig {
   const permissions = settings.permissions || {}
+  const networkSettings = sandboxNetwork(settings)
 
-  // Extract network domains from WebFetch rules
+  // Extract network domains from web_fetch rules
   const allowedDomains: string[] = []
   const deniedDomains: string[] = []
 
   // When allowManagedSandboxDomainsOnly is enabled, only use domains from policy settings
   if (shouldAllowManagedSandboxDomainsOnly()) {
     const policySettings = getSettingsForSource('policySettings')
-    for (const domain of policySettings?.sandbox?.network?.allowedDomains ||
-      []) {
+    for (const domain of sandboxNetwork(policySettings)?.allowedDomains ?? []) {
       allowedDomains.push(domain)
     }
     for (const ruleString of policySettings?.permissions?.allow || []) {
@@ -194,7 +209,7 @@ export function convertToSandboxRuntimeConfig(
       }
     }
   } else {
-    for (const domain of settings.sandbox?.network?.allowedDomains || []) {
+    for (const domain of networkSettings?.allowedDomains ?? []) {
       allowedDomains.push(domain)
     }
     for (const ruleString of permissions.allow || []) {
@@ -226,28 +241,23 @@ export function convertToSandboxRuntimeConfig(
   const denyRead: string[] = []
   const allowRead: string[] = []
 
-  // Always deny writes to settings.json files to prevent sandbox escape
-  // This blocks settings in the original working directory (where AgenC started)
+  // Always deny writes to canonical configuration files to prevent sandbox escape.
   const settingsPaths = SETTING_SOURCES.map(source =>
     getSettingsFilePathForSource(source),
   ).filter((p): p is string => p !== undefined)
   denyWrite.push(...settingsPaths)
-  denyWrite.push(getManagedSettingsDropInDir())
 
   // Also block settings files in the current working directory if it differs from original
   // This handles the case where the user has cd'd to a different directory
   const cwd = getCwdState()
   const originalCwd = getOriginalCwd()
   if (cwd !== originalCwd) {
-    denyWrite.push(resolve(cwd, '.agenc', 'settings.json'))
-    denyWrite.push(resolve(cwd, '.agenc', 'settings.local.json'))
+    denyWrite.push(resolve(cwd, '.agenc', 'config.toml'))
+    denyWrite.push(resolve(cwd, '.agenc', 'config.local.toml'))
   }
 
-  // Block writes to .agenc/skills in both original and current working directories.
-  // The sandbox-runtime's getDangerousDirectories() protects .agenc/commands and
-  // .agenc/agents but not .agenc/skills. Skills have the same privilege level
-  // (auto-discovered, auto-loaded, full AgenC capabilities) so they need the
-  // same OS-level sandbox protection.
+  // Block writes to live skill authority in both original and current working
+  // directories. Retired command directories receive no special treatment.
   denyWrite.push(resolve(originalCwd, '.agenc', 'skills'))
   if (cwd !== originalCwd) {
     denyWrite.push(resolve(cwd, '.agenc', 'skills'))
@@ -339,7 +349,7 @@ export function convertToSandboxRuntimeConfig(
     // Extract filesystem paths from sandbox.filesystem settings
     // sandbox.filesystem.* uses standard path semantics (/path = absolute),
     // NOT the permission-rule convention (/path = settings-relative). #30067
-    const fs = sourceSettings?.sandbox?.filesystem
+    const fs = sandboxFilesystem(sourceSettings)
     if (fs) {
       if (authoritative) {
         for (const p of fs.allowWrite || []) {
@@ -365,9 +375,12 @@ export function convertToSandboxRuntimeConfig(
   // Ripgrep config for sandbox. User settings take priority; otherwise pass our rg.
   // In embedded mode (argv0='rg' dispatch), sandbox-runtime spawns with argv0 set.
   const { rgPath, rgArgs, argv0 } = ripgrepCommand()
-  const ripgrepConfig = settings.sandbox?.ripgrep ?? {
-    command: rgPath,
-    args: rgArgs,
+  const configuredRipgrep = settings.sandbox?.ripgrep
+  const ripgrepConfig = {
+    command: configuredRipgrep?.command ?? rgPath,
+    args: configuredRipgrep?.args
+      ? [...configuredRipgrep.args]
+      : rgArgs,
     argv0,
   }
 
@@ -375,11 +388,13 @@ export function convertToSandboxRuntimeConfig(
     network: {
       allowedDomains,
       deniedDomains: [...new Set(deniedDomains)],
-      allowUnixSockets: settings.sandbox?.network?.allowUnixSockets,
-      allowAllUnixSockets: settings.sandbox?.network?.allowAllUnixSockets,
-      allowLocalBinding: settings.sandbox?.network?.allowLocalBinding,
-      httpProxyPort: settings.sandbox?.network?.httpProxyPort,
-      socksProxyPort: settings.sandbox?.network?.socksProxyPort,
+      allowUnixSockets: networkSettings?.allowUnixSockets
+        ? [...networkSettings.allowUnixSockets]
+        : undefined,
+      allowAllUnixSockets: networkSettings?.allowAllUnixSockets,
+      allowLocalBinding: networkSettings?.allowLocalBinding,
+      httpProxyPort: networkSettings?.httpProxyPort,
+      socksProxyPort: networkSettings?.socksProxyPort,
     },
     filesystem: {
       denyRead,
@@ -387,7 +402,14 @@ export function convertToSandboxRuntimeConfig(
       allowWrite,
       denyWrite,
     },
-    ignoreViolations: settings.sandbox?.ignoreViolations,
+    ignoreViolations: settings.sandbox?.ignoreViolations
+      ? Object.fromEntries(
+          Object.entries(settings.sandbox.ignoreViolations).map(([key, values]) => [
+            key,
+            [...values],
+          ]),
+        )
+      : undefined,
     enableWeakerNestedSandbox: settings.sandbox?.enableWeakerNestedSandbox,
     enableWeakerNetworkIsolation:
       settings.sandbox?.enableWeakerNetworkIsolation,
@@ -472,17 +494,12 @@ const checkDependencies = memoize((): SandboxDependencyCheck => {
 })
 
 /**
- * Read sandbox.enabled only from trusted settings sources.
- * projectSettings is intentionally excluded — a malicious repo could
- * otherwise disable the sandbox via .agenc/settings.json.
+ * Read the single resolved canonical sandbox mode. Repository layers are
+ * already restricted by the canonical repository before this point.
  */
 function getSandboxEnabledSetting(): boolean {
   try {
-    return !!(
-      getSettingsForSource('userSettings')?.sandbox?.enabled ||
-      getSettingsForSource('flagSettings')?.sandbox?.enabled ||
-      getSettingsForSource('policySettings')?.sandbox?.enabled
-    )
+    return getExecutionAuthoritySettings().sandbox_mode !== 'danger-full-access'
   } catch (error) {
     logForDebugging(`Failed to get settings for sandbox check: ${error}`)
     return false
@@ -508,41 +525,8 @@ const isSupportedPlatform = memoize((): boolean => {
 })
 
 /**
- * Check if the current platform is in the enabledPlatforms list.
- *
- * This is an undocumented setting that allows restricting sandbox to specific platforms.
- * When enabledPlatforms is not set, all supported platforms are allowed.
- *
- * Added to unblock NVIDIA enterprise rollout: they want to enable autoAllowBashIfSandboxed
- * but only on macOS initially, since Linux/WSL sandbox support is newer. This allows
- * setting enabledPlatforms: ["macos"] to disable sandbox (and auto-allow) on other platforms.
- */
-function isPlatformInEnabledList(): boolean {
-  try {
-    const settings = getExecutionAuthoritySettings()
-    const enabledPlatforms = (
-      settings?.sandbox as { enabledPlatforms?: Platform[] } | undefined
-    )?.enabledPlatforms
-
-    if (enabledPlatforms === undefined) {
-      return true
-    }
-
-    if (enabledPlatforms.length === 0) {
-      return false
-    }
-
-    const currentPlatform = getPlatform()
-    return enabledPlatforms.includes(currentPlatform)
-  } catch (error) {
-    logForDebugging(`Failed to check enabledPlatforms: ${error}`)
-    return true // Default to enabled if we can't read settings
-  }
-}
-
-/**
  * Check if sandboxing is enabled
- * This checks the user's enabled setting, platform support, and enabledPlatforms restriction
+ * This checks the canonical sandbox mode, platform support, and dependencies.
  */
 function isSandboxingEnabled(): boolean {
   if (!isSupportedPlatform()) {
@@ -550,11 +534,6 @@ function isSandboxingEnabled(): boolean {
   }
 
   if (checkDependencies().errors.length > 0) {
-    return false
-  }
-
-  // Check if current platform is in the enabledPlatforms list (undocumented setting)
-  if (!isPlatformInEnabledList()) {
     return false
   }
 
@@ -575,7 +554,7 @@ function getLinuxGlobPatternWarnings(): string[] {
     const settings = getExecutionAuthoritySettings()
 
     // Only return warnings when sandboxing is enabled (check settings directly, not cached value)
-    if (!settings?.sandbox?.enabled) {
+    if (settings.sandbox_mode === 'danger-full-access') {
       return []
     }
 
@@ -622,7 +601,7 @@ function areSandboxSettingsLockedByPolicy(): boolean {
   for (const source of overridingSources) {
     const settings = getSettingsForSource(source)
     if (
-      settings?.sandbox?.enabled !== undefined ||
+      settings?.sandbox_mode !== undefined ||
       settings?.sandbox?.autoAllowBashIfSandboxed !== undefined ||
       settings?.sandbox?.allowUnsandboxedCommands !== undefined
     ) {
@@ -646,17 +625,26 @@ async function setSandboxSettings(options: {
   // Note: Memoized caches auto-invalidate when settings change because they use
   // the settings object as the cache key (new settings object = cache miss)
 
-  updateSettingsForSource('userSettings', {
-    sandbox: {
-      ...existingSettings?.sandbox,
-      ...(options.enabled !== undefined && { enabled: options.enabled }),
+  await updateSettingsForSource('userSettings', {
+    ...(options.enabled !== undefined
+      ? {
+          sandbox_mode: options.enabled
+            ? 'workspace-write' as const
+            : 'danger-full-access' as const,
+        }
+      : {}),
+    ...(options.autoAllowBashIfSandboxed !== undefined ||
+        options.allowUnsandboxedCommands !== undefined
+      ? { sandbox: {
+          ...existingSettings?.sandbox,
       ...(options.autoAllowBashIfSandboxed !== undefined && {
         autoAllowBashIfSandboxed: options.autoAllowBashIfSandboxed,
       }),
       ...(options.allowUnsandboxedCommands !== undefined && {
         allowUnsandboxedCommands: options.allowUnsandboxedCommands,
       }),
-    },
+        } }
+      : {}),
   })
 }
 
@@ -665,7 +653,7 @@ async function setSandboxSettings(options: {
  */
 function getExcludedCommands(): string[] {
   const settings = getExecutionAuthoritySettings()
-  return settings?.sandbox?.excludedCommands ?? []
+  return [...(settings.sandbox?.excludedCommands ?? [])]
 }
 
 /**
@@ -796,13 +784,13 @@ async function reset(): Promise<void> {
  * This is an AgenC CLI-specific function that updates user settings. A
  * repository-local file cannot authorize unsandboxed commands.
  */
-export function addToExcludedCommands(
+export async function addToExcludedCommands(
   command: string,
   permissionUpdates?: Array<{
     type: string
     rules: Array<{ toolName: string; ruleContent?: string }>
   }>,
-): string {
+): Promise<string> {
   const existingSettings = getSettingsForSource('userSettings')
   const existingExcludedCommands =
     existingSettings?.sandbox?.excludedCommands || []
@@ -833,7 +821,7 @@ export function addToExcludedCommands(
 
   // Add to excludedCommands if not already present
   if (!existingExcludedCommands.includes(commandPattern)) {
-    updateSettingsForSource('userSettings', {
+    await updateSettingsForSource('userSettings', {
       sandbox: {
         ...existingSettings?.sandbox,
         excludedCommands: [...existingExcludedCommands, commandPattern],
@@ -851,7 +839,6 @@ export function addToExcludedCommands(
 export interface ISandboxManager {
   initialize(sandboxAskCallback?: SandboxAskCallback): Promise<void>
   isSupportedPlatform(): boolean
-  isPlatformInEnabledList(): boolean
   isSandboxingEnabled(): boolean
   isSandboxEnabledInSettings(): boolean
   checkDependencies(): SandboxDependencyCheck
@@ -898,7 +885,6 @@ export const SandboxManager: ISandboxManager = {
   initialize,
   isSandboxingEnabled,
   isSandboxEnabledInSettings: getSandboxEnabledSetting,
-  isPlatformInEnabledList,
   isAutoAllowBashIfSandboxedEnabled,
   areUnsandboxedCommandsAllowed,
   areSandboxSettingsLockedByPolicy,

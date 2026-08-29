@@ -34,63 +34,6 @@ import {
 } from "./mcp-tool-naming.js";
 import { isAlwaysOnThinkingAnthropicModel } from "../../utils/model/alwaysOnThinking.js";
 
-interface AnthropicModelVersion {
-  readonly major: number;
-  readonly minor: number;
-}
-
-/**
- * Parse public and hosted-provider Claude model spellings without importing the
- * settings-aware model layer into the wire shim. Examples handled here include
- * `claude-sonnet-4.5`, `claude-opus-4-8`, and
- * `us.anthropic.agenc-opus-4-8-v1:0`.
- */
-function parseAnthropicModelVersion(
-  model: string,
-  family: "haiku" | "opus" | "sonnet",
-): AnthropicModelVersion | undefined {
-  const normalized = model
-    .toLowerCase()
-    .replaceAll(".", "-")
-    .replaceAll("_", "-")
-    .replaceAll("anthropic-agenc-", "anthropic-claude-");
-  const marker = `claude-${family}-`;
-  const markerIndex = normalized.indexOf(marker);
-  if (markerIndex === -1) return undefined;
-
-  const version = normalized.slice(markerIndex + marker.length);
-  const match = /^(\d+)(?:-(\d+))?(?:$|[-/:@\[])/.exec(version);
-  if (!match?.[1]) return undefined;
-  return {
-    major: Number.parseInt(match[1], 10),
-    minor: match[2] ? Number.parseInt(match[2], 10) : 0,
-  };
-}
-
-function modelSupportsAdaptiveAnthropicThinking(model: string): boolean {
-  if (isAlwaysOnThinkingAnthropicModel(model)) return true;
-  for (const family of ["haiku", "opus", "sonnet"] as const) {
-    const version = parseAnthropicModelVersion(model, family);
-    if (
-      version &&
-      (version.major >= 5 ||
-        (version.major === 4 && version.minor >= 6))
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function modelSupportsAnthropicEffort(model: string): boolean {
-  if (modelSupportsAdaptiveAnthropicThinking(model)) return true;
-
-  // Opus 4.5 is the one manual-extended-thinking model which also accepts
-  // output_config.effort. Sonnet/Haiku 4.5 use the manual token budget only.
-  const opusVersion = parseAnthropicModelVersion(model, "opus");
-  return opusVersion?.major === 4 && opusVersion.minor === 5;
-}
-
 export interface AnthropicMessagesRequestOptions {
   readonly model: string;
   readonly messages: readonly LLMMessage[];
@@ -394,35 +337,20 @@ export function buildAnthropicMessagesRequest(
       name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
     };
   }
-  const reasoningEffort = input.options?.reasoningEffort;
-  const adaptiveThinking = modelSupportsAdaptiveAnthropicThinking(input.model);
-  const supportsEffort = modelSupportsAnthropicEffort(input.model);
-
-  // Adaptive-thinking families use effort as their depth control. Opus 4.5
-  // also accepts effort, but still requires the manual thinking block below.
-  if (reasoningEffort !== undefined && supportsEffort) {
-    // `minimal` is an upstream-provider rung with no counterpart here;
-    // low is this family's floor. Every other value is accepted as-is.
-    body.output_config = {
-      effort: reasoningEffort === "minimal" ? "low" : reasoningEffort,
-    };
-  }
-
-  // Sonnet/Haiku 4.5 and other pre-adaptive Claude models still use manual
-  // extended thinking. Keep the budget strictly below max_tokens, matching
-  // the provider constraint and the established SDK request path. Opus 4.5
-  // carries both this block and output_config.effort.
-  if (reasoningEffort !== undefined && !adaptiveThinking) {
-    const requestedBudget =
-      reasoningEffort === "high" ||
-        reasoningEffort === "xhigh" ||
-        reasoningEffort === "max"
-        ? 4096
-        : 2048;
-    const maxTokens = input.maxTokens ?? 4096;
+  // Task 28: never attach a `thinking` config for the Fable/Mythos 5
+  // family — thinking is always on and any explicit configuration other
+  // than `{type:"adaptive"}` (incl. `disabled` and `enabled`/budget_tokens)
+  // returns a 400; omitting the param runs adaptive thinking. Depth is the
+  // effort parameter's job on that family. Opus-family (>= 4.6) behavior
+  // below is unchanged.
+  if (thinkingEnabled && !alwaysOnThinking) {
     body.thinking = {
       type: "enabled",
-      budget_tokens: Math.min(maxTokens - 1, requestedBudget),
+      budget_tokens:
+        input.options?.reasoningEffort === "high" ||
+          input.options?.reasoningEffort === "xhigh"
+          ? 4096
+          : 2048,
     };
   }
   if (input.contextManagement) {

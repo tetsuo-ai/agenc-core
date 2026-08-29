@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   AgenCDelegateBackgroundAgentRunner,
@@ -6,14 +6,14 @@ import {
   type AgenCEnsureAgentControlFunction,
 } from "../../src/app-server/background-agent-runner.js";
 import type { AgentStatus } from "../../src/agents/status.js";
+import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
+import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
+import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
 import {
-  createEmptyToolPermissionContext,
-  type ToolPermissionContext,
-} from "../../src/permissions/types.js";
-import {
-  getActiveConfigModel,
-  setActiveConfigModel,
-} from "../../src/bootstrap/state.js";
+  sandboxExecutionBrokerAuthorityFromSessionAuthority,
+  sessionConfigurationFromAgenCConfig,
+  sessionExecutionAuthorityFromAgenCConfig,
+} from "../../src/session/configuration.js";
 
 function makeStubConversationThreadManager(threadId: string) {
   let listeners: ((status: AgentStatus) => void)[] = [];
@@ -73,22 +73,102 @@ function makeRunnerHarness(opts: {
   }) => void;
 }) {
   const conversationId = "parent-session";
-  const permissionModeRegistry = {
-    current: () => createEmptyToolPermissionContext(),
-    update: vi.fn(async (_context: ToolPermissionContext) => {}),
-  };
+  const permissionModeRegistry = new PermissionModeRegistry(
+    createEmptyToolPermissionContext(),
+  );
   const stub = makeStubConversationThreadManager(conversationId);
   const eventLogSubscribers: Array<(event: unknown) => void> = [];
   const phaseSubscribers: Array<(phase: unknown) => void> = [];
+  const baseConfiguration = sessionConfigurationFromAgenCConfig({
+    config: {},
+    workspaceRoot: process.cwd(),
+    model: "base-model",
+    provider: "openai",
+    projectTrust: "trusted",
+  });
   const stateObject = {
-    sessionConfiguration: opts.sessionConfiguration ?? {
-      collaborationMode: { model: "base-model" },
-      provider: { slug: "openai" },
+    sessionConfiguration: {
+      ...baseConfiguration,
+      ...(opts.sessionConfiguration ?? {}),
     },
   };
+  const rolloutItems: unknown[] = [];
+  let lastSeq = 0;
+  const configStore = {
+    projectRoot: process.cwd(),
+    stateRepository: {
+      reload: vi.fn(() => ({})),
+      getNamespace: vi.fn(() => ({})),
+    },
+    authoritySnapshot: () => ({ config: {}, layers: [] }),
+    sources: () => [],
+    ...opts.configStore,
+  };
+  if (typeof configStore.prepareReload !== "function") {
+    Object.assign(configStore, {
+      prepareReload: async () => {
+        const previous = configStore.current() as Record<string, unknown>;
+        const staged =
+          typeof configStore.reload === "function"
+            ? await configStore.reload()
+            : previous;
+        let state: "prepared" | "committed" | "published" | "rolled_back" =
+          "prepared";
+        let settled = false;
+        const authority = {
+          ...configStore,
+          current: () => staged,
+          authoritySnapshot: () => ({ config: staged, layers: [] }),
+          sources: () => [],
+          ignored: () => [],
+          warnings: () => [],
+          provenance: () => undefined,
+        };
+        return {
+          config: staged,
+          authority,
+          get state() {
+            return state;
+          },
+          get settled() {
+            return settled;
+          },
+          commit: () => {
+            state = "committed";
+          },
+          publish: () => {
+            state = "published";
+          },
+          rollback: () => {
+            state = "rolled_back";
+          },
+          settle: () => {
+            settled = true;
+          },
+        };
+      },
+    });
+  }
+  let configuredExecutionAuthority = sessionExecutionAuthorityFromAgenCConfig({
+    config: {},
+    workspaceRoot: process.cwd(),
+    projectTrust: "trusted",
+  });
+  const sandboxExecutionBroker = new SandboxExecutionBroker({
+    cwd: process.cwd(),
+    ...sandboxExecutionBrokerAuthorityFromSessionAuthority(
+      configuredExecutionAuthority,
+      process.cwd(),
+    ),
+  });
   const session = {
+    abortController: new AbortController(),
+    abortTerminal: vi.fn(),
     conversationId,
     permissionModeRegistry,
+    get sessionConfiguration() {
+      return stateObject.sessionConfiguration;
+    },
     eventLog: {
       subscribe: (listener: (event: unknown) => void) => {
         eventLogSubscribers.push(listener);
@@ -105,16 +185,61 @@ function makeRunnerHarness(opts: {
         if (index >= 0) phaseSubscribers.splice(index, 1);
       };
     },
-    emit: vi.fn(),
+    prepareEmit: vi.fn((event: Record<string, unknown>) => {
+      const stamped = { ...event, seq: ++lastSeq };
+      rolloutItems.push({ type: "event_msg", payload: stamped });
+      return { event: stamped, publish: () => stamped };
+    }),
+    publishPreparedEvent: vi.fn((event: unknown) => event),
+    emit: vi.fn((event: Record<string, unknown>) => {
+      const prepared = session.prepareEmit(event);
+      return prepared.publish();
+    }),
     services: {
       conversationThreadManager: stub,
-      configStore: opts.configStore,
+      configStore,
+      sandboxExecutionBroker,
     },
-    setPendingProviderSwitch: (spec: {
+    pendingProviderSwitch: null as {
       provider: string;
       model: string;
       profile?: string;
-    }) => {
+    } | null,
+    prepareProviderSwitch: vi.fn(
+      async (spec: { provider: string; model: string; profile?: string }) => ({
+        pending: Object.freeze({ ...spec }),
+        provider: { expectedRevision: 0 },
+        modelInfo: { slug: spec.model },
+        baseInstructions: "",
+      }),
+    ),
+    stagePreparedProviderSwitch(
+      prepared: {
+        pending: { provider: string; model: string; profile?: string };
+      },
+      expectedPending: {
+        provider: string;
+        model: string;
+        profile?: string;
+      } | null,
+    ) {
+      if (this.pendingProviderSwitch !== expectedPending) {
+        throw new Error(
+          "pending provider selection changed during test preparation",
+        );
+      }
+      this.pendingProviderSwitch = prepared.pending;
+      opts.onStagedSwitch?.(prepared.pending);
+    },
+    setPendingProviderSwitch: (
+      spec: {
+        provider: string;
+        model: string;
+        profile?: string;
+      } | null,
+    ) => {
+      session.pendingProviderSwitch = spec;
+      if (spec === null) return;
       opts.onStagedSwitch?.(spec);
     },
     state: {
@@ -133,9 +258,37 @@ function makeRunnerHarness(opts: {
   };
   const rolloutStore = {
     rolloutPath: `/tmp/${conversationId}.jsonl`,
-    readAll: () => [],
+    readAll: () => [...rolloutItems],
+    recordRunRuntimeSettingsEvent: vi.fn(() => {}),
+    syncCanonicalTail: vi.fn(() => {}),
   };
   const bootstrap = vi.fn(async () => ({
+    workspaceRoot: process.cwd(),
+    configStore,
+    get configuredExecutionAuthority() {
+      return configuredExecutionAuthority;
+    },
+    prepareConfiguredExecutionAuthority: (config: Record<string, unknown>) => {
+      const previous = configuredExecutionAuthority;
+      const authority = sessionExecutionAuthorityFromAgenCConfig({
+        config,
+        workspaceRoot: process.cwd(),
+        projectTrust: "trusted",
+      });
+      let committed = false;
+      return {
+        authority,
+        commit: () => {
+          configuredExecutionAuthority = authority;
+          committed = true;
+        },
+        rollback: () => {
+          if (!committed) return;
+          configuredExecutionAuthority = previous;
+          committed = false;
+        },
+      };
+    },
     session,
     rolloutStore,
     registry: { tools: [], toLLMTools: () => [], dispatch: vi.fn() },
@@ -154,125 +307,6 @@ function makeRunnerHarness(opts: {
 }
 
 describe("daemon config/model state refresh + atomicity", () => {
-  afterEach(() => {
-    // Reset the process-global so cross-test order can't leak a selection.
-    setActiveConfigModel(undefined);
-  });
-
-  // GAP #4: the model-switch path must refresh the process-global
-  // activeConfigModel so the util-layer model helpers stop reading the stale
-  // startup selection for the daemon's life.
-  it("setAgentModel refreshes activeConfigModel on an applied switch", async () => {
-    setActiveConfigModel({ provider: "openai", model: "startup-model" });
-    const { runner } = makeRunnerHarness({
-      configStore: {
-        current: () => ({ model: "base-model", model_provider: "openai" }),
-      },
-    });
-    await runner.startAgent({ objective: "work", cwd: "/workspace" });
-
-    const result = await runner.setAgentModel("parent-session", {
-      sessionId: "session_1",
-      model: "switched-model",
-      provider: "openai",
-    });
-
-    expect(result.applied).toBe(true);
-    // todo-115: daemon no longer writes process-global activeConfigModel
-    expect(getActiveConfigModel()).toEqual({
-      provider: "openai",
-      model: "startup-model",
-    });
-  });
-
-  it("setAgentModel fills the provider from the live session when only a model is supplied", async () => {
-    setActiveConfigModel({ provider: "openai", model: "startup-model" });
-    const { runner } = makeRunnerHarness({
-      configStore: {
-        current: () => ({ model: "base-model", model_provider: "openai" }),
-      },
-      sessionConfiguration: {
-        collaborationMode: { model: "base-model" },
-        provider: { slug: "openai" },
-      },
-    });
-    await runner.startAgent({ objective: "work", cwd: "/workspace" });
-
-    const result = await runner.setAgentModel("parent-session", {
-      sessionId: "session_1",
-      model: "switched-model",
-    });
-
-    expect(result.applied).toBe(true);
-    // Still must not clobber the process-global with the switch (todo-115).
-    expect(getActiveConfigModel()).toEqual({
-      provider: "openai",
-      model: "startup-model",
-    });
-  });
-
-  // Audit finding #10: a provider-only switch is staged for the
-  // NEXT turn, so the live session still reports the pre-switch selection.
-  // Backfilling that model produced mixed pairs like {provider: "grok",
-  // model: "qwen3-coder-next-fp8"} in the process-global, which later daemon
-  // sessions inherited and sent to the wrong API.
-  it("setAgentModel does NOT poison activeConfigModel with the pre-switch model on a provider-only switch", async () => {
-    setActiveConfigModel({ provider: "openai-compatible", model: "qwen-local" });
-    const { runner } = makeRunnerHarness({
-      configStore: {
-        current: () => ({
-          model: "qwen-local",
-          model_provider: "openai-compatible",
-        }),
-      },
-      sessionConfiguration: {
-        collaborationMode: { model: "qwen-local" },
-        provider: { slug: "openai-compatible" },
-      },
-    });
-    await runner.startAgent({ objective: "work", cwd: "/workspace" });
-
-    const result = await runner.setAgentModel("parent-session", {
-      sessionId: "session_1",
-      provider: "grok",
-    });
-
-    expect(result.applied).toBe(true);
-    // The pre-switch qwen model must never be paired with the new provider.
-    expect(getActiveConfigModel()).not.toEqual({
-      provider: "grok",
-      model: "qwen-local",
-    });
-  });
-
-  it("applyAgentConfig refreshes activeConfigModel when a profile stages a switch", async () => {
-    setActiveConfigModel({ provider: "openai", model: "startup-model" });
-    const { runner } = makeRunnerHarness({
-      configStore: {
-        current: () => ({
-          model: "base-model",
-          model_provider: "openai",
-          profiles: {
-            fast: { model: "fast-model", model_provider: "openai" },
-          },
-        }),
-      },
-    });
-    await runner.startAgent({ objective: "work", cwd: "/workspace" });
-
-    const result = await runner.applyAgentConfig("parent-session", {
-      sessionId: "session_1",
-      profile: "fast",
-    });
-
-    expect(result.applied).toBe(true);
-    // Profile switch is session-local; process-global stays at startup (todo-115).
-    expect(getActiveConfigModel()).toEqual({
-      provider: "openai",
-      model: "startup-model",
-    });
-  });
-
   // GAP #12: an unknown profile must be a true no-op — the shared config store
   // must NOT have been reloaded (mutated + subscribers fired) before the
   // unknown-profile error surfaces.
@@ -307,16 +341,17 @@ describe("daemon config/model state refresh + atomicity", () => {
   });
 
   it("applyAgentConfig still reloads + stages for a known profile", async () => {
-    const reload = vi.fn(async () => ({}));
+    const config = {
+      model: "base-model",
+      model_provider: "openai",
+      profiles: {
+        fast: { model: "fast-model", model_provider: "openai" },
+      },
+    };
+    const reload = vi.fn(async () => config);
     const { runner } = makeRunnerHarness({
       configStore: {
-        current: () => ({
-          model: "base-model",
-          model_provider: "openai",
-          profiles: {
-            fast: { model: "fast-model", model_provider: "openai" },
-          },
-        }),
+        current: () => config,
         reload,
       },
     });
@@ -331,5 +366,113 @@ describe("daemon config/model state refresh + atomicity", () => {
     expect(reload).toHaveBeenCalledTimes(1);
     expect(result.applied).toBe(true);
     expect(result.summary).toContain("config reloaded from disk");
+  });
+
+  it("rejects a profile model denied by managed availableModels before staging", async () => {
+    const stagedSwitches: Array<{
+      provider: string;
+      model: string;
+      profile?: string;
+    }> = [];
+    const config = {
+      model: "base-model",
+      model_provider: "openai",
+      availableModels: ["base-model"],
+      profiles: {
+        forbidden: { model: "gpt-5", model_provider: "openai" },
+      },
+    };
+    const { runner } = makeRunnerHarness({
+      configStore: {
+        current: () => config,
+      },
+      onStagedSwitch: (selection) => stagedSwitches.push(selection),
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+
+    await expect(
+      runner.applyAgentConfig("parent-session", {
+        sessionId: "session_1",
+        profile: "forbidden",
+      }),
+    ).rejects.toThrow(/managed availableModels policy/u);
+    expect(stagedSwitches).toEqual([]);
+  });
+
+  it("rejects a reloaded model policy before publishing the prepared config", async () => {
+    const currentConfig = {
+      model: "base-model",
+      model_provider: "openai",
+      availableModels: ["base-model"],
+    };
+    const reloadedConfig = {
+      model: "gpt-5",
+      model_provider: "openai",
+      availableModels: ["base-model"],
+    };
+    const commit = vi.fn();
+    const publish = vi.fn();
+    const rollback = vi.fn();
+    const settle = vi.fn();
+    let reloadState = "prepared";
+    let reloadSettled = false;
+    const prepareReload = vi.fn(async () => ({
+      config: reloadedConfig,
+      authority: {
+        current: () => reloadedConfig,
+        authoritySnapshot: () => ({ config: reloadedConfig, layers: [] }),
+        sources: () => [],
+      },
+      get state() {
+        return reloadState;
+      },
+      get settled() {
+        return reloadSettled;
+      },
+      commit: () => {
+        commit();
+        reloadState = "committed";
+      },
+      publish: () => {
+        publish();
+        reloadState = "published";
+      },
+      rollback: () => {
+        rollback();
+        reloadState = "rolled_back";
+      },
+      settle: () => {
+        settle();
+        reloadSettled = true;
+      },
+    }));
+    const stagedSwitches: Array<{ provider: string; model: string }> = [];
+    const { runner } = makeRunnerHarness({
+      configStore: {
+        current: () => currentConfig,
+        prepareReload,
+      },
+      onStagedSwitch: (selection) => stagedSwitches.push(selection),
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+
+    await expect(
+      runner.applyAgentConfig("parent-session", {
+        sessionId: "session_1",
+        reload: true,
+      }),
+    ).rejects.toThrow(/managed availableModels policy/u);
+
+    expect(prepareReload).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(rollback).toHaveBeenCalledTimes(1);
+    expect(settle).toHaveBeenCalledTimes(1);
+    expect(stagedSwitches).toEqual([]);
+    expect(currentConfig).toEqual({
+      model: "base-model",
+      model_provider: "openai",
+      availableModels: ["base-model"],
+    });
   });
 });

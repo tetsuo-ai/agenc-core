@@ -15,6 +15,8 @@ import {
   positiveInteger,
   positiveNumber,
 } from "./_deps/runtime.js";
+import { getSelectedProviderEnvironment } from "../../utils/model/providers.js";
+import type { ProviderEnvironment } from "../../llm/provider-options.js";
 
 export type AutoCompactTrackingState = {
   readonly compacted?: boolean;
@@ -137,21 +139,46 @@ function isAbortError(context: CompactContext, error: unknown): boolean {
 export function getEffectiveContextWindowSize(
   modelOrContext?: string | CompactContext,
 ): number {
+  return getEffectiveContextWindowSizeForEnvironment(
+    modelOrContext,
+    getSelectedProviderEnvironment(),
+  );
+}
+
+export function getEffectiveContextWindowSizeForEnvironment(
+  modelOrContext: string | CompactContext | undefined,
+  environment: ProviderEnvironment,
+): number {
   const context = typeof modelOrContext === "object" ? modelOrContext : undefined;
   const modelFallback = contextWindowForModel(
     typeof modelOrContext === "string"
       ? modelOrContext
       : context?.options?.mainLoopModel,
   );
-  const envWindow = positiveInteger(process.env.AGENC_AUTO_COMPACT_WINDOW);
+  const envWindow = positiveInteger(environment.AGENC_AUTO_COMPACT_WINDOW);
   return envWindow ?? context?.options?.contextWindowTokens ?? modelFallback;
 }
 
 export function getAutoCompactThreshold(
   modelOrContext?: string | CompactContext,
 ): number {
-  const contextWindow = getEffectiveContextWindowSize(modelOrContext);
-  const percentOverride = positiveNumber(process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE);
+  return getAutoCompactThresholdForEnvironment(
+    modelOrContext,
+    getSelectedProviderEnvironment(),
+  );
+}
+
+export function getAutoCompactThresholdForEnvironment(
+  modelOrContext: string | CompactContext | undefined,
+  environment: ProviderEnvironment,
+): number {
+  const contextWindow = getEffectiveContextWindowSizeForEnvironment(
+    modelOrContext,
+    environment,
+  );
+  const percentOverride = positiveNumber(
+    environment.AGENC_AUTOCOMPACT_PCT_OVERRIDE,
+  );
   const bufferThreshold = contextWindow > AUTOCOMPACT_BUFFER_TOKENS
     ? contextWindow - AUTOCOMPACT_BUFFER_TOKENS
     : Math.floor(contextWindow * 0.8);
@@ -174,6 +201,18 @@ export function getAutoCompactThreshold(
 export function calculateTokenWarningState(
   tokenUsage: number,
   model: string,
+): ReturnType<typeof calculateTokenWarningStateForEnvironment> {
+  return calculateTokenWarningStateForEnvironment(
+    tokenUsage,
+    model,
+    getSelectedProviderEnvironment(),
+  );
+}
+
+export function calculateTokenWarningStateForEnvironment(
+  tokenUsage: number,
+  model: string,
+  environment: ProviderEnvironment,
 ): {
   readonly percentLeft: number;
   readonly isAboveWarningThreshold: boolean;
@@ -182,9 +221,9 @@ export function calculateTokenWarningState(
   readonly isAtBlockingLimit: boolean;
 } {
   const rawContextWindow = contextWindowForModel(model);
-  const threshold = isAutoCompactEnabled()
-    ? getAutoCompactThreshold(model)
-    : getEffectiveContextWindowSize(model);
+  const threshold = isAutoCompactEnabledForEnvironment(environment)
+    ? getAutoCompactThresholdForEnvironment(model, environment)
+    : getEffectiveContextWindowSizeForEnvironment(model, environment);
   const percentLeft = Math.max(
     0,
     Math.round(((rawContextWindow - tokenUsage) / rawContextWindow) * 100),
@@ -192,26 +231,31 @@ export function calculateTokenWarningState(
   const warningThreshold = threshold - WARNING_THRESHOLD_BUFFER_TOKENS;
   const errorThreshold = threshold - ERROR_THRESHOLD_BUFFER_TOKENS;
   const blockingLimitOverride = positiveInteger(
-    process.env.AGENC_COMPACT_BLOCKING_LIMIT_OVERRIDE ??
-      process.env.AGENC_BLOCKING_LIMIT_OVERRIDE,
+    environment.AGENC_COMPACT_BLOCKING_LIMIT_OVERRIDE ??
+      environment.AGENC_BLOCKING_LIMIT_OVERRIDE,
   );
   const blockingLimit = blockingLimitOverride ??
-    (getEffectiveContextWindowSize(model) - MANUAL_COMPACT_BUFFER_TOKENS);
+    (getEffectiveContextWindowSizeForEnvironment(model, environment) - MANUAL_COMPACT_BUFFER_TOKENS);
   return {
     percentLeft,
     isAboveWarningThreshold: tokenUsage >= warningThreshold,
     isAboveErrorThreshold: tokenUsage >= errorThreshold,
     isAboveAutoCompactThreshold:
-      isAutoCompactEnabled() && tokenUsage >= getAutoCompactThreshold(model),
+      isAutoCompactEnabledForEnvironment(environment) &&
+      tokenUsage >= getAutoCompactThresholdForEnvironment(model, environment),
     isAtBlockingLimit: tokenUsage >= blockingLimit,
   };
 }
 
 export function isAutoCompactEnabled(): boolean {
-  return !isTruthyEnv(process.env.DISABLE_COMPACT) &&
-    !isTruthyEnv(process.env.AGENC_DISABLE_COMPACT) &&
-    !isTruthyEnv(process.env.DISABLE_AUTO_COMPACT) &&
-    !isTruthyEnv(process.env.AGENC_DISABLE_AUTO_COMPACT);
+  return isAutoCompactEnabledForEnvironment(getSelectedProviderEnvironment());
+}
+
+export function isAutoCompactEnabledForEnvironment(
+  environment: ProviderEnvironment,
+): boolean {
+  return !isTruthyEnv(environment.AGENC_DISABLE_COMPACT) &&
+    !isTruthyEnv(environment.AGENC_DISABLE_AUTO_COMPACT);
 }
 
 function autoCompactThreshold(context: CompactContext): number {

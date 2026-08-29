@@ -7,13 +7,7 @@ import {
 } from "node:path";
 
 import {
-  SESSION_ID_ARG,
-  SESSION_ID_SIG_ARG,
-  verifySessionId,
-} from "../../agents/_deps/filesystem-args.js";
-import {
   isSessionPlanFile,
-  type PlanFileContext,
 } from "../../planning/plan-files.js";
 import type { Logger } from "../../utils/logger.js";
 import type { RunCommandResult } from "../../utils/process.js";
@@ -31,6 +25,7 @@ import {
   canonicalizePath,
   resolveToolAllowedPaths,
   safePath,
+  verifiedPlanFileContextFromArgs,
 } from "./filesystem.js";
 
 /**
@@ -43,27 +38,10 @@ import {
  *
  * SECURITY: this carve-out grants a WRITE target outside the workspace
  * allowlist, so the session id must come from a TRUSTED source. We verify
- * the HMAC signature ({@link verifySessionId}) the runtime attaches via
+ * the HMAC signature the runtime attaches via
  * `withSignedSessionId`; an unsigned/forged `__agencSessionId` (e.g. a
  * model-supplied value) verifies as absent and yields no carve-out.
  */
-function planFileContextFromArgs(
-  args: Record<string, unknown>,
-): PlanFileContext | null {
-  const verified = verifySessionId(args[SESSION_ID_ARG], args[SESSION_ID_SIG_ARG]);
-  const sessionId =
-    typeof verified === "string" && verified.trim().length > 0 ? verified : null;
-  if (sessionId === null) return null;
-  const ctx: PlanFileContext = { sessionId };
-  if (
-    typeof process.env.AGENC_HOME === "string" &&
-    process.env.AGENC_HOME.length > 0
-  ) {
-    return { ...ctx, agencHome: process.env.AGENC_HOME };
-  }
-  return ctx;
-}
-
 /**
  * True when `targetPath` belongs to the active session's plan-file
  * family AND the request carries enough session context to identify it.
@@ -75,7 +53,7 @@ function isPlanFileWriteAllowed(
   args: Record<string, unknown>,
   targetPath: string,
 ): boolean {
-  const ctx = planFileContextFromArgs(args);
+  const ctx = verifiedPlanFileContextFromArgs(args);
   if (ctx === null) return false;
   return isSessionPlanFile(targetPath, ctx);
 }

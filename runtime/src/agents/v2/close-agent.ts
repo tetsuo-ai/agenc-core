@@ -7,7 +7,6 @@ import {
   getSessionOrError,
   isCurrentAgentContextError,
   json,
-  jsonValidationError,
   localZeroAdmissionEstimate,
   receiverMetadataFor,
   resolveAgentId,
@@ -28,11 +27,7 @@ export function createCloseAgentTool(opts: MultiAgentV2Options): Tool {
     });
     if (strict) return strict;
     const target = stringValue(args.target);
-    if (!target) {
-      return jsonValidationError("agents-v2-close-target-required", {
-        error: "target is required",
-      });
-    }
+    if (!target) return json({ error: "target is required" }, true);
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const { control } = opts.ensureAgentControl(sessionOrError);
@@ -42,14 +37,13 @@ export function createCloseAgentTool(opts: MultiAgentV2Options): Tool {
     try {
       agentId = resolveAgentId(sessionOrError, target, current.agentPath, opts);
     } catch (error) {
-      return jsonValidationError("agents-v2-close-target-resolution", {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      return json(
+        { error: error instanceof Error ? error.message : String(error) },
+        true,
+      );
     }
     if (agentId === sessionOrError.conversationId) {
-      return jsonValidationError("agents-v2-close-root-target", {
-        error: "root is not a spawned agent",
-      });
+      return json({ error: "root is not a spawned agent" }, true);
     }
     const callId = callIdFromArgs(args, "close");
     const receiverMetadata = receiverMetadataFor(sessionOrError, agentId, opts);

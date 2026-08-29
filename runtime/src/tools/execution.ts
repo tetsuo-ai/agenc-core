@@ -1406,7 +1406,6 @@ const WRITE_CAPABLE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "Write",
   "Edit",
   "system.delete",
-  "Bash",
   "write_file",
   "edit_file",
 ]);
@@ -1816,9 +1815,6 @@ export async function runToolUse(
         callId: invocation.callId,
         toolName: toolNameDisplay(invocation.toolName),
         turnId: currentTurnId,
-        ...(tool.requiresUserInteraction?.() === true
-          ? { requiresUserInteraction: true }
-          : {}),
         ...networkPolicyInterfacesFromInvocation(invocation),
         ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
       },

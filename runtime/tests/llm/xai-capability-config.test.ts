@@ -1,22 +1,37 @@
 /**
- * G6: [llm.xai] capability profile → createProvider extra.
+ * G6: [providers.grok] capability profile → createProvider extra.
  * Drives shipped resolveXaiCapabilityExtra / host gate / defaults.
  */
 import { describe, expect, it } from "vitest";
 
 import { defaultConfig, normalizeRawConfig } from "../../src/config/schema.js";
+import { resolveHomeContext } from "../../src/config/home.js";
 import {
-  defaultLlmXaiConfig,
+  defaultGrokCapabilityConfig,
   hasXaiCredentials,
   isDirectXaiInferenceHost,
-  resolveLlmXaiConfig,
+  resolveGrokCapabilityConfig,
+  resolveGrokProviderCredential,
   resolveXaiBearerToken,
-  resolveXaiCapabilityExtra,
+  resolveXaiCapabilityExtra as resolveXaiCapabilityExtraWithEnvironment,
   resolveXaiLiveWebSearchOptions,
+  type ResolveXaiCapabilityExtraInput,
 } from "../../src/llm/xai-capability-config.js";
 import { createProvider } from "../../src/llm/provider.js";
 import { getProviderNativeToolDefinitions } from "../../src/llm/provider-native-search.js";
 import type { LLMTool } from "../../src/llm/types.js";
+
+const NO_OAUTH_HOME = resolveHomeContext(
+  { AGENC_HOME: `/tmp/agenc-xai-capability-${process.pid}` },
+  { platformHome: "/tmp" },
+);
+
+function resolveXaiCapabilityExtra(
+  input: Omit<ResolveXaiCapabilityExtraInput, "env"> &
+    Partial<Pick<ResolveXaiCapabilityExtraInput, "env">>,
+) {
+  return resolveXaiCapabilityExtraWithEnvironment({ env: {}, ...input });
+}
 
 const CLIENT_TOOL: LLMTool = {
   type: "function",
@@ -50,9 +65,9 @@ describe("isDirectXaiInferenceHost", () => {
   });
 });
 
-describe("resolveLlmXaiConfig defaults", () => {
+describe("resolveGrokCapabilityConfig defaults", () => {
   it("defaults full Grok surface on", () => {
-    const d = defaultLlmXaiConfig();
+    const d = defaultGrokCapabilityConfig();
     expect(d.web_search).toBe(true);
     expect(d.x_search).toBe(true);
     expect(d.code_execution).toBe(true);
@@ -61,26 +76,26 @@ describe("resolveLlmXaiConfig defaults", () => {
     expect(d.enable_video_understanding).toBe(true);
   });
 
-  it("defaultConfig seeds [llm.xai] with full surface on", () => {
+  it("defaultConfig seeds [providers.grok] with full surface on", () => {
     const cfg = defaultConfig();
-    expect(cfg.llm?.xai?.web_search).toBe(true);
-    expect(cfg.llm?.xai?.x_search).toBe(true);
-    expect(cfg.llm?.xai?.code_execution).toBe(true);
-    expect(cfg.llm?.xai?.enable_image_search).toBe(true);
+    expect(cfg.providers?.grok?.web_search).toBe(true);
+    expect(cfg.providers?.grok?.x_search).toBe(true);
+    expect(cfg.providers?.grok?.code_execution).toBe(true);
+    expect(cfg.providers?.grok?.enable_image_search).toBe(true);
   });
 
-  it("normalizeRawConfig keeps llm.xai on typed path", () => {
+  it("normalizeRawConfig keeps providers.grok on the typed path", () => {
     const out = normalizeRawConfig({
-      llm: {
-        xai: {
+      providers: {
+        grok: {
           web_search: true,
           x_search: true,
           code_execution: false,
         },
       },
     });
-    expect(out.llm?.xai?.x_search).toBe(true);
-    expect(out._unknown?.llm).toBeUndefined();
+    expect(out.providers?.grok?.x_search).toBe(true);
+    expect(out._unknown?.providers).toBeUndefined();
   });
 });
 
@@ -89,14 +104,14 @@ describe("resolveXaiCapabilityExtra", () => {
     expect(
       resolveXaiCapabilityExtra({
         provider: "openai",
-        llmXai: { web_search: true, x_search: true, code_execution: true },
+        grokCapabilities: { web_search: true, x_search: true, code_execution: true },
       }),
     ).toEqual({});
     expect(
       resolveXaiCapabilityExtra({
         provider: "openrouter",
         baseURL: "https://openrouter.ai/api/v1",
-        llmXai: { web_search: true, x_search: true },
+        grokCapabilities: { web_search: true, x_search: true },
       }),
     ).toEqual({});
   });
@@ -106,7 +121,7 @@ describe("resolveXaiCapabilityExtra", () => {
       resolveXaiCapabilityExtra({
         provider: "grok",
         baseURL: "https://openrouter.ai/api/v1",
-        llmXai: { web_search: true, x_search: true },
+        grokCapabilities: { web_search: true, x_search: true },
       }),
     ).toEqual({});
   });
@@ -115,7 +130,7 @@ describe("resolveXaiCapabilityExtra", () => {
     const extra = resolveXaiCapabilityExtra({
       provider: "grok",
       baseURL: "https://api.x.ai/v1",
-      llmXai: resolveLlmXaiConfig(undefined),
+      grokCapabilities: resolveGrokCapabilityConfig(undefined),
     });
     // LIVE WebSearch/XSearch one-shots own search — no continuous web/x.
     expect(extra.webSearch).toBeUndefined();
@@ -127,7 +142,7 @@ describe("resolveXaiCapabilityExtra", () => {
   it("honors code_execution continuous injection when enabled", () => {
     const extra = resolveXaiCapabilityExtra({
       provider: "grok",
-      llmXai: {
+      grokCapabilities: {
         web_search: true,
         x_search: true,
         code_execution: true,
@@ -141,7 +156,7 @@ describe("resolveXaiCapabilityExtra", () => {
   it("maps collections and remote_mcp when enabled", () => {
     const extra = resolveXaiCapabilityExtra({
       provider: "grok",
-      llmXai: {
+      grokCapabilities: {
         collections: {
           enabled: true,
           vector_store_ids: ["collection_abc"],
@@ -174,37 +189,103 @@ describe("resolveXaiCapabilityExtra", () => {
     });
   });
 
-  it("env AGENC_XAI_CODE_EXECUTION forces continuous code_interpreter", () => {
+  it("resolves remote MCP authorization only through the captured environment", () => {
     const extra = resolveXaiCapabilityExtra({
       provider: "grok",
-      llmXai: { code_execution: false },
-      env: { AGENC_XAI_CODE_EXECUTION: "1" },
+      env: { AGENC_CREDENTIAL_DOCS_MCP: "Bearer captured-secret" },
+      grokCapabilities: {
+        remote_mcp: {
+          enabled: true,
+          servers: [
+            {
+              server_url: "https://example.com/mcp",
+              server_label: "docs",
+              authorization_env: "AGENC_CREDENTIAL_DOCS_MCP",
+            },
+          ],
+        },
+      },
     });
-    expect(extra.codeExecution).toBe(true);
+
+    expect(extra.remoteMcp).toEqual({
+      enabled: true,
+      servers: [
+        {
+          serverUrl: "https://example.com/mcp",
+          serverLabel: "docs",
+          authorization: "Bearer captured-secret",
+        },
+      ],
+    });
   });
+
+  it("rejects a missing or empty remote MCP authorization environment value", () => {
+    const input = {
+      provider: "grok",
+      grokCapabilities: {
+        remote_mcp: {
+          enabled: true,
+          servers: [
+            {
+              server_url: "https://example.com/mcp",
+              server_label: "docs",
+              authorization_env: "AGENC_CREDENTIAL_DOCS_MCP",
+            },
+          ],
+        },
+      },
+    } satisfies Omit<ResolveXaiCapabilityExtraInput, "env">;
+
+    expect(() => resolveXaiCapabilityExtra({ ...input, env: {} })).toThrow(
+      /requires non-empty environment variable AGENC_CREDENTIAL_DOCS_MCP/u,
+    );
+    expect(() =>
+      resolveXaiCapabilityExtra({
+        ...input,
+        env: { AGENC_CREDENTIAL_DOCS_MCP: "   " },
+      }),
+    ).toThrow(/requires non-empty environment variable/u);
+  });
+
 });
 
 describe("hasXaiCredentials / resolveXaiBearerToken (OAuth wins)", () => {
   it("treats BYOK env as credentials when not logged in", () => {
-    expect(hasXaiCredentials({ XAI_API_KEY: "k" })).toBe(true);
+    expect(hasXaiCredentials(NO_OAUTH_HOME, { XAI_API_KEY: "k" })).toBe(true);
     // Without stored OAuth, BYOK is the bearer.
-    expect(resolveXaiBearerToken({ XAI_API_KEY: "byok" })).toBe("byok");
+    expect(resolveXaiBearerToken(NO_OAUTH_HOME, { XAI_API_KEY: "byok" })).toBe("byok");
+  });
+
+  it("uses canonical BYOK ingress and skips sentinel values", () => {
+    expect(
+      resolveGrokProviderCredential(NO_OAUTH_HOME, undefined, {
+        XAI_API_KEY: " undefined ",
+        GROK_API_KEY: " fallback-key ",
+      }),
+    ).toEqual({
+      value: "fallback-key",
+      isOAuth: false,
+    });
   });
 
   it("falls back to session bearer when no OAuth store and no BYOK", () => {
-    expect(resolveXaiBearerToken({}, "session-token")).toBe("session-token");
+    expect(resolveXaiBearerToken(NO_OAUTH_HOME, {}, "session-token")).toBe("session-token");
   });
 
   it("session bearer is used before env BYOK when OAuth store empty", () => {
     // OAuth store empty in unit test; session key still preferred over env
     // only after OAuth check — product path: OAuth store > session > BYOK.
     expect(
-      resolveXaiBearerToken({ XAI_API_KEY: "byok" }, "session-token"),
+      resolveXaiBearerToken(
+        NO_OAUTH_HOME,
+        { XAI_API_KEY: "byok" },
+        "session-token",
+      ),
     ).toBe("session-token");
   });
 });
 
-describe("G5 [llm.xai].enable_image_search product path", () => {
+describe("G5 [providers.grok].enable_image_search product path", () => {
   it("resolveXaiLiveWebSearchOptions surfaces image flags from full defaults", () => {
     // Full-surface defaults: empty/partial config still enables image flags.
     expect(resolveXaiLiveWebSearchOptions(undefined)).toEqual({
@@ -230,7 +311,7 @@ describe("G5 [llm.xai].enable_image_search product path", () => {
   });
 
   it("config flag reaches wire payload via LIVE one-shot options (shipped path)", () => {
-    // Product path: [llm.xai].enable_image_search → resolveXaiLiveWebSearchOptions
+    // Product path: [providers.grok].enable_image_search → resolveXaiLiveWebSearchOptions
     // → webSearchOptions on one-shot provider → getProviderNativeToolDefinitions.
     const liveOpts = resolveXaiLiveWebSearchOptions({
       enable_image_search: true,
@@ -295,7 +376,7 @@ describe("G6 end-to-end: extra drives GrokProvider native tools", () => {
   it("createProvider with resolved extra attaches code_interpreter not search", () => {
     const extra = resolveXaiCapabilityExtra({
       provider: "grok",
-      llmXai: {
+      grokCapabilities: {
         web_search: true,
         x_search: true,
         code_execution: true,
@@ -327,7 +408,7 @@ describe("G6 end-to-end: extra drives GrokProvider native tools", () => {
     const extra = resolveXaiCapabilityExtra({
       provider: "openrouter",
       baseURL: "https://openrouter.ai/api/v1",
-      llmXai: {
+      grokCapabilities: {
         web_search: true,
         x_search: true,
         code_execution: true,
@@ -337,17 +418,17 @@ describe("G6 end-to-end: extra drives GrokProvider native tools", () => {
   });
 });
 
-describe("G2/G7/G8 productize via [llm.xai] flags", () => {
+describe("G2/G7/G8 productize via [providers.grok] flags", () => {
   it("G2: code_execution flag injects code_interpreter only when on", () => {
     const off = resolveXaiCapabilityExtra({
       provider: "grok",
-      llmXai: { code_execution: false },
+      grokCapabilities: { code_execution: false },
     });
     expect(off.codeExecution).toBeUndefined();
 
     const on = resolveXaiCapabilityExtra({
       provider: "grok",
-      llmXai: { code_execution: true },
+      grokCapabilities: { code_execution: true },
     });
     const provider = createProvider("grok", {
       apiKey: "k",
@@ -370,7 +451,7 @@ describe("G2/G7/G8 productize via [llm.xai] flags", () => {
   it("G7: collections config injects file_search with vector_store_ids", () => {
     const extra = resolveXaiCapabilityExtra({
       provider: "grok",
-      llmXai: {
+      grokCapabilities: {
         collections: {
           enabled: true,
           vector_store_ids: ["collection_1"],
@@ -402,7 +483,7 @@ describe("G2/G7/G8 productize via [llm.xai] flags", () => {
   it("G8: remote_mcp injects type mcp server tools", () => {
     const extra = resolveXaiCapabilityExtra({
       provider: "grok",
-      llmXai: {
+      grokCapabilities: {
         remote_mcp: {
           enabled: true,
           servers: [

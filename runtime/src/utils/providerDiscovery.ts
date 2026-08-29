@@ -1,11 +1,15 @@
 import type { OllamaModelDescriptor } from './providerRecommendation.ts'
-import { DEFAULT_OPENAI_BASE_URL } from '../services/api/providerConfig.js'
+import { BUILT_IN_PROVIDER_BASE_URLS } from '../llm/registry/provider-info.js'
 import { asRecord } from './record.js'
 import { nonEmptyString } from './stringUtils.js'
 import { isZaiBaseUrl } from './zaiProvider.js'
+import { getSelectedProviderEnvironment } from './model/providers.js'
+import type { ProviderEnvironment } from '../llm/provider-options.js'
+import { getProxyFetchOptions } from './proxy.js'
 
 export const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434'
 export const DEFAULT_ATOMIC_CHAT_BASE_URL = 'http://127.0.0.1:1337'
+const EMPTY_PROVIDER_ENVIRONMENT: ProviderEnvironment = Object.freeze({})
 
 export type OllamaGenerationReadiness = {
   state: 'ready' | 'unreachable' | 'no_models' | 'generation_failed'
@@ -96,15 +100,17 @@ function normalizeOllamaModels(
 async function fetchOllamaModelsProbe(
   baseUrl?: string,
   timeoutMs = 5000,
+  environment: ProviderEnvironment = getSelectedProviderEnvironment(),
 ): Promise<{
   reachable: boolean
   models: OllamaModelDescriptor[]
 }> {
   const { signal, clear } = withTimeoutSignal(timeoutMs)
   try {
-    const response = await fetch(`${getOllamaApiBaseUrl(baseUrl)}/api/tags`, {
+    const response = await fetch(`${getOllamaApiBaseUrl(baseUrl, environment)}/api/tags`, {
       method: 'GET',
       signal,
+      ...getProxyFetchOptions({ environment }),
     })
 
     if (!response.ok) {
@@ -129,9 +135,19 @@ async function fetchOllamaModelsProbe(
   }
 }
 
-export function getOllamaApiBaseUrl(baseUrl?: string): string {
+export function getOllamaApiBaseUrl(
+  baseUrl?: string,
+  environment?: ProviderEnvironment,
+): string {
+  const requestEnvironment = environment ?? (
+    baseUrl === undefined
+      ? getSelectedProviderEnvironment()
+      : EMPTY_PROVIDER_ENVIRONMENT
+  )
   const parsed = new URL(
-    baseUrl || process.env.OLLAMA_BASE_URL || DEFAULT_OLLAMA_BASE_URL,
+    baseUrl ||
+      requestEnvironment.OLLAMA_BASE_URL ||
+      DEFAULT_OLLAMA_BASE_URL,
   )
   const pathname = trimTrailingSlash(parsed.pathname)
   parsed.pathname = pathname.endsWith('/v1')
@@ -142,13 +158,26 @@ export function getOllamaApiBaseUrl(baseUrl?: string): string {
   return trimTrailingSlash(parsed.toString())
 }
 
-export function getOllamaChatBaseUrl(baseUrl?: string): string {
-  return `${getOllamaApiBaseUrl(baseUrl)}/v1`
+export function getOllamaChatBaseUrl(
+  baseUrl?: string,
+  environment?: ProviderEnvironment,
+): string {
+  return `${getOllamaApiBaseUrl(baseUrl, environment)}/v1`
 }
 
-export function getAtomicChatApiBaseUrl(baseUrl?: string): string {
+export function getAtomicChatApiBaseUrl(
+  baseUrl?: string,
+  environment?: ProviderEnvironment,
+): string {
+  const requestEnvironment = environment ?? (
+    baseUrl === undefined
+      ? getSelectedProviderEnvironment()
+      : EMPTY_PROVIDER_ENVIRONMENT
+  )
   const parsed = new URL(
-    baseUrl || process.env.ATOMIC_CHAT_BASE_URL || DEFAULT_ATOMIC_CHAT_BASE_URL,
+    baseUrl ||
+      requestEnvironment.ATOMIC_CHAT_BASE_URL ||
+      DEFAULT_ATOMIC_CHAT_BASE_URL,
   )
   const pathname = trimTrailingSlash(parsed.pathname)
   parsed.pathname = pathname.endsWith('/v1')
@@ -159,13 +188,26 @@ export function getAtomicChatApiBaseUrl(baseUrl?: string): string {
   return trimTrailingSlash(parsed.toString())
 }
 
-export function getAtomicChatChatBaseUrl(baseUrl?: string): string {
-  return `${getAtomicChatApiBaseUrl(baseUrl)}/v1`
+export function getAtomicChatChatBaseUrl(
+  baseUrl?: string,
+  environment?: ProviderEnvironment,
+): string {
+  return `${getAtomicChatApiBaseUrl(baseUrl, environment)}/v1`
 }
 
-export function getOpenAICompatibleModelsBaseUrl(baseUrl?: string): string {
+export function getOpenAICompatibleModelsBaseUrl(
+  baseUrl?: string,
+  environment?: ProviderEnvironment,
+): string {
+  const requestEnvironment = environment ?? (
+    baseUrl === undefined
+      ? getSelectedProviderEnvironment()
+      : EMPTY_PROVIDER_ENVIRONMENT
+  )
   return (
-    baseUrl || process.env.OPENAI_BASE_URL || DEFAULT_OPENAI_BASE_URL
+    baseUrl ||
+    requestEnvironment.OPENAI_BASE_URL ||
+    BUILT_IN_PROVIDER_BASE_URLS.openai
   ).replace(/\/+$/, '')
 }
 
@@ -253,25 +295,34 @@ export function getLocalOpenAICompatibleProviderLabel(baseUrl?: string): string 
   return 'Local openai-compatible'
 }
 
-export async function hasLocalOllama(baseUrl?: string): Promise<boolean> {
-  const { reachable } = await fetchOllamaModelsProbe(baseUrl, 1200)
+export async function hasLocalOllama(
+  baseUrl?: string,
+  environment: ProviderEnvironment = getSelectedProviderEnvironment(),
+): Promise<boolean> {
+  const { reachable } = await fetchOllamaModelsProbe(baseUrl, 1200, environment)
   return reachable
 }
 
 export async function listOllamaModels(
   baseUrl?: string,
+  environment: ProviderEnvironment = getSelectedProviderEnvironment(),
 ): Promise<OllamaModelDescriptor[]> {
-  const { models } = await fetchOllamaModelsProbe(baseUrl, 5000)
+  const { models } = await fetchOllamaModelsProbe(baseUrl, 5000, environment)
   return models
 }
 
 export async function listOpenAICompatibleModels(options?: {
   baseUrl?: string
   apiKey?: string
+  environment?: ProviderEnvironment
 }): Promise<string[] | null> {
+  const environment = options?.environment ?? getSelectedProviderEnvironment()
   const { signal, clear } = withTimeoutSignal(5000)
   try {
-    const baseUrl = getOpenAICompatibleModelsBaseUrl(options?.baseUrl)
+    const baseUrl = getOpenAICompatibleModelsBaseUrl(
+      options?.baseUrl,
+      environment,
+    )
     const isBankr = baseUrl.toLowerCase().includes('bankr')
     const response = await fetch(
       `${baseUrl}/models`,
@@ -283,6 +334,7 @@ export async function listOpenAICompatibleModels(options?: {
             : { Authorization: `Bearer ${options.apiKey}` }
           : undefined,
         signal,
+        ...getProxyFetchOptions({ environment }),
       },
     )
     if (!response.ok) {
@@ -297,12 +349,16 @@ export async function listOpenAICompatibleModels(options?: {
   }
 }
 
-export async function hasLocalAtomicChat(baseUrl?: string): Promise<boolean> {
+export async function hasLocalAtomicChat(
+  baseUrl?: string,
+  environment: ProviderEnvironment = getSelectedProviderEnvironment(),
+): Promise<boolean> {
   const { signal, clear } = withTimeoutSignal(1200)
   try {
-    const response = await fetch(`${getAtomicChatChatBaseUrl(baseUrl)}/models`, {
+    const response = await fetch(`${getAtomicChatChatBaseUrl(baseUrl, environment)}/models`, {
       method: 'GET',
       signal,
+      ...getProxyFetchOptions({ environment }),
     })
     return response.ok
   } catch {
@@ -314,12 +370,14 @@ export async function hasLocalAtomicChat(baseUrl?: string): Promise<boolean> {
 
 export async function listAtomicChatModels(
   baseUrl?: string,
+  environment: ProviderEnvironment = getSelectedProviderEnvironment(),
 ): Promise<string[]> {
   const { signal, clear } = withTimeoutSignal(5000)
   try {
-    const response = await fetch(`${getAtomicChatChatBaseUrl(baseUrl)}/models`, {
+    const response = await fetch(`${getAtomicChatChatBaseUrl(baseUrl, environment)}/models`, {
       method: 'GET',
       signal,
+      ...getProxyFetchOptions({ environment }),
     })
     if (!response.ok) {
       return []
@@ -340,11 +398,13 @@ export type AtomicChatReadiness =
 
 export async function probeAtomicChatReadiness(options?: {
   baseUrl?: string
+  environment?: ProviderEnvironment
 }): Promise<AtomicChatReadiness> {
-  if (!(await hasLocalAtomicChat(options?.baseUrl))) {
+  const environment = options?.environment ?? getSelectedProviderEnvironment()
+  if (!(await hasLocalAtomicChat(options?.baseUrl, environment))) {
     return { state: 'unreachable' }
   }
-  const models = await listAtomicChatModels(options?.baseUrl)
+  const models = await listAtomicChatModels(options?.baseUrl, environment)
   if (models.length === 0) {
     return { state: 'no_models' }
   }
@@ -355,11 +415,14 @@ export async function probeOllamaGenerationReadiness(options?: {
   baseUrl?: string
   model?: string
   timeoutMs?: number
+  environment?: ProviderEnvironment
 }): Promise<OllamaGenerationReadiness> {
+  const environment = options?.environment ?? getSelectedProviderEnvironment()
   const timeoutMs = options?.timeoutMs ?? 8000
   const { reachable, models } = await fetchOllamaModelsProbe(
     options?.baseUrl,
     timeoutMs,
+    environment,
   )
   if (!reachable) {
     return {
@@ -389,7 +452,7 @@ export async function probeOllamaGenerationReadiness(options?: {
   const { signal, clear } = withTimeoutSignal(timeoutMs)
 
   try {
-    const response = await fetch(`${getOllamaApiBaseUrl(options?.baseUrl)}/api/chat`, {
+    const response = await fetch(`${getOllamaApiBaseUrl(options?.baseUrl, environment)}/api/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -404,6 +467,7 @@ export async function probeOllamaGenerationReadiness(options?: {
           num_predict: 8,
         },
       }),
+      ...getProxyFetchOptions({ environment }),
     })
 
     if (!response.ok) {

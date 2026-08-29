@@ -8,7 +8,6 @@ import type {
   NormalizedUserMessage,
   RenderableMessage,
 } from '../types/message.js'
-import { isFullscreenEnvEnabled } from './fullscreen.js'
 import { extractTag } from './messages.js'
 
 function isCompletedBackgroundBash(
@@ -20,9 +19,8 @@ function isCompletedBackgroundBash(
   if (!content.text.includes(`<${TASK_NOTIFICATION_TAG}`)) return false
   // Only collapse successful completions — failed/killed stay visible individually.
   if (extractTag(content.text, STATUS_TAG) !== 'completed') return false
-  // The prefix constant distinguishes bash-kind LocalShellTask completions from
-  // agent/workflow/monitor notifications. Monitor-kind completions have their
-  // own summary wording and deliberately don't collapse here.
+  // The prefix distinguishes LocalShellTask completions from other task
+  // notifications, which remain individually visible.
   return (
     extractTag(content.text, SUMMARY_TAG)?.startsWith(
       BACKGROUND_BASH_SUMMARY_PREFIX,
@@ -33,16 +31,16 @@ function isCompletedBackgroundBash(
 /**
  * Collapses consecutive completed-background-bash task-notifications into a
  * single synthetic "N background commands completed" notification. Failed/killed
- * tasks and agent/workflow notifications are left alone. Monitor stream
- * events (enqueueStreamEvent) have no <status> tag and never match.
+ * tasks and non-shell notifications are left alone.
  *
  * Pass-through in verbose mode so ctrl+O shows each completion.
  */
 export function collapseBackgroundBashNotifications(
   messages: RenderableMessage[],
   verbose: boolean,
+  fullscreen: boolean,
 ): RenderableMessage[] {
-  if (!isFullscreenEnvEnabled()) return messages
+  if (!fullscreen) return messages
   if (verbose) return messages
 
   const result: RenderableMessage[] = []

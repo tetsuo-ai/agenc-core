@@ -20,6 +20,8 @@ type Props = {
   leaderTokenCount?: number;
   /** Leader's idle status text (when leader is idle, e.g. "✻ Idle for 3s") */
   leaderIdleText?: string;
+  /** Session-resolved fallback verbs for teammates without a pinned verb. */
+  spinnerVerbs: readonly string[];
 };
 
 export function isTeammateHideRowSelected({
@@ -45,6 +47,7 @@ export function TeammateSpinnerTree({
   leaderVerb,
   leaderTokenCount,
   leaderIdleText,
+  spinnerVerbs,
 }: Props): React.ReactElement | null {
   const tasks = useAppState(_temp);
   const viewingAgentTaskId = useAppState(_temp2);
@@ -107,6 +110,7 @@ export function TeammateSpinnerTree({
           isForegrounded={viewingAgentTaskId === teammate.id}
           allIdle={allIdle}
           showPreview={showTeammateMessagePreview}
+          spinnerVerbs={spinnerVerbs}
         />
       ))}
       {isInSelectionMode === true && <HideRow isSelected={isHideSelected} />}

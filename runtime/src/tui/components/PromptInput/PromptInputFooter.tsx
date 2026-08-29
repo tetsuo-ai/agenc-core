@@ -1,12 +1,14 @@
 import * as React from 'react';
 import { memo, type ReactNode, useMemo, useRef } from 'react';
 
+import type { ProviderAuthReadContext } from '../../../utils/auth.js';
 
 import { useIsModalOverlayActive } from '../../context/overlayContext.js';
 import { useSetPromptOverlay } from '../../context/promptOverlayContext.js';
 import type { VerificationStatus } from '../../hooks/useApiKeyVerification.js';
 import type { IDESelection } from '../../hooks/useIdeSelection.js';
 import { useSettings } from '../../hooks/useSettings.js';
+import { useFullscreenMode } from '../../context/fullscreenModeContext.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { Box } from '../../ink.js';
 import type { MCPServerConnection } from '../../../services/mcp/types.js';
@@ -15,13 +17,13 @@ import type { ToolPermissionContext } from '../../../tools/Tool.js';
 import type { Message } from '../../../types/message.js';
 import type { PromptInputMode, VimMode } from '../../../types/textInputTypes.js';
 import type { AutoUpdaterResult } from '../../../utils/autoUpdater.js';
-import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js';
 import { useCoordinatorTaskCount } from '../CoordinatorAgentStatus.js';
 import { StatusLine, statusLineShouldDisplay } from '../../startup/StatusLine.js';
 import { Notifications } from './Notifications.js';
 import { PromptInputFooterLeftSide } from './PromptInputFooterLeftSide.js';
 import { PromptInputFooterSuggestions, type SuggestionItem, type SuggestionType } from './PromptInputFooterSuggestions.js';
 import { PromptInputHelpMenu } from './PromptInputHelpMenu.js';
+import type { GlobalRuntimeState } from '../../../config/runtime-state-repository.js';
 
 type Props = {
   apiKeyStatus: VerificationStatus;
@@ -50,7 +52,7 @@ type Props = {
   teammateFooterIndex?: number;
   ideSelection: IDESelection | undefined;
   mcpClients?: MCPServerConnection[];
-  agencHome?: string;
+  remoteAuthSessionContext: ProviderAuthReadContext;
   isPasting?: boolean;
   isInputWrapped?: boolean;
   // Live transcript accessor (stable identity) + the re-render trigger for
@@ -63,6 +65,10 @@ type Props = {
   setHistoryQuery: (query: string) => void;
   historyFailedMatch: boolean;
   onOpenTasksDialog?: (taskId?: string) => void;
+  runtimeState: Pick<
+    GlobalRuntimeState,
+    'shiftEnterKeyBindingInstalled' | 'hasUsedBackslashReturn'
+  >;
 };
 function PromptInputFooter({
   apiKeyStatus,
@@ -88,7 +94,7 @@ function PromptInputFooter({
   teammateFooterIndex,
   ideSelection,
   mcpClients,
-  agencHome,
+  remoteAuthSessionContext,
   isPasting = false,
   isInputWrapped = false,
   getMessages,
@@ -97,9 +103,11 @@ function PromptInputFooter({
   historyQuery,
   setHistoryQuery,
   historyFailedMatch,
-  onOpenTasksDialog
+  onOpenTasksDialog,
+  runtimeState
 }: Props): ReactNode {
   const settings = useSettings();
+  const isFullscreen = useFullscreenMode();
   const {
     columns,
     rows
@@ -110,7 +118,6 @@ function PromptInputFooter({
   // In fullscreen the bottom slot is flexShrink:0, so every row here is a row
   // stolen from the ScrollBox. Drop the optional StatusLine first. Non-fullscreen
   // has terminal scrollback to absorb overflow, so we never hide StatusLine there.
-  const isFullscreen = isFullscreenEnvEnabled();
   const isShort = isFullscreen && rows < 24;
   const isModalOverlayActive = useIsModalOverlayActive();
   const shouldShowSuggestions = suggestions.length > 0 && !isModalOverlayActive;
@@ -145,16 +152,16 @@ function PromptInputFooter({
       </Box>;
   }
   if (helpOpen) {
-    return <PromptInputHelpMenu dimColor={true} fixedWidth={true} paddingX={2} />;
+    return <PromptInputHelpMenu dimColor={true} fixedWidth={true} paddingX={2} runtimeState={runtimeState} />;
   }
   return <>
       <Box flexDirection={isNarrow ? 'column' : 'row'} justifyContent={isNarrow ? 'flex-start' : 'space-between'} paddingX={2} gap={isNarrow ? 0 : 1} backgroundColor="surfaceBackground" opaque>
         <Box flexDirection="column" flexShrink={isNarrow ? 0 : 1}>
-          {showStatusLine && <StatusLine messagesRef={messagesRef} lastAssistantMessageId={lastAssistantMessageId} vimMode={vimMode} />}
+          {showStatusLine && <StatusLine messagesRef={messagesRef} lastAssistantMessageId={lastAssistantMessageId} providerContext={remoteAuthSessionContext} vimMode={vimMode} />}
           <PromptInputFooterLeftSide exitMessage={exitMessage} vimMode={showStatusLine ? undefined : vimMode} mode={mode} toolPermissionContext={toolPermissionContext} suppressHint={suppressHint} isLoading={isLoading} tasksSelected={pillSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} isPasting={isPasting} isSearching={isSearching} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={onOpenTasksDialog} />
         </Box>
         <Box flexShrink={1} gap={1}>
-          {isFullscreen ? null : <Notifications apiKeyStatus={apiKeyStatus} autoUpdaterResult={autoUpdaterResult} debug={debug} isAutoUpdating={isAutoUpdating} verbose={verbose} getMessages={getMessages} lastAssistantMessageId={lastAssistantMessageId} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} ideSelection={ideSelection} mcpClients={mcpClients} agencHome={agencHome} isInputWrapped={isInputWrapped} isNarrow={isNarrow} />}
+          {isFullscreen ? null : <Notifications apiKeyStatus={apiKeyStatus} autoUpdaterResult={autoUpdaterResult} debug={debug} isAutoUpdating={isAutoUpdating} verbose={verbose} getMessages={getMessages} lastAssistantMessageId={lastAssistantMessageId} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} ideSelection={ideSelection} mcpClients={mcpClients} remoteAuthSessionContext={remoteAuthSessionContext} isInputWrapped={isInputWrapped} isNarrow={isNarrow} />}
         </Box>
       </Box>
     </>;

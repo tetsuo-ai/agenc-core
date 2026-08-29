@@ -13,6 +13,7 @@ export interface ToolResult {
   content: string;
   isError?: boolean;
   metadata?: Record<string, unknown>;
+  codeModeResult?: unknown;
 }
 
 // Permissive Tool shape: only the fields mcp-client actually constructs

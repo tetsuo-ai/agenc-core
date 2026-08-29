@@ -13,7 +13,7 @@ import {
   detectGitOperation,
   type PrAction,
 } from '../tools/shared/gitOperationTracking.js'
-import { TOOL_SEARCH_TOOL_NAME } from '../tools/ToolSearchTool/prompt.js'
+import { SYSTEM_SEARCH_TOOLS_NAME } from '../tools/system/tool-search-name.js'
 import { selectAgenCTuiGlyphs } from '../tui/glyphs.js'
 import type {
   CollapsedReadSearchGroup,
@@ -23,7 +23,6 @@ import type {
   SystemStopHookSummaryMessage,
 } from '../types/message.js'
 import { getDisplayPath } from './file.js'
-import { isFullscreenEnvEnabled } from './fullscreen.js'
 import {
   isAutoManagedMemoryFile,
   isAutoManagedMemoryPattern,
@@ -54,7 +53,7 @@ export type SearchOrReadResult = {
   isMemoryWrite: boolean
   /**
    * True for meta-operations that should be absorbed into a collapse group
-   * without incrementing any count (Snip, ToolSearch). They remain visible
+   * without incrementing any count (Snip, system.searchTools). They remain visible
    * in verbose mode via the groupMessages iteration.
    */
   isAbsorbedSilently: boolean
@@ -150,6 +149,7 @@ export function getToolSearchOrReadInfo(
   toolName: string,
   toolInput: unknown,
   tools: Tools,
+  fullscreen: boolean,
 ): SearchOrReadResult {
   // REPL is absorbed silently — its inner tool calls are emitted as virtual
   // messages (isVirtual: true) via newMessages and flow through this function
@@ -180,12 +180,12 @@ export function getToolSearchOrReadInfo(
     }
   }
 
-  // Meta-operations absorbed silently: Snip (context cleanup) and ToolSearch
+  // Meta-operations absorbed silently: Snip (context cleanup) and system.searchTools
   // (lazy tool schema loading). Neither should break a collapse group or
   // contribute to its count, but both stay visible in verbose mode.
   if (
     (feature('HISTORY_SNIP') && toolName === SNIP_TOOL_NAME) ||
-    (isFullscreenEnvEnabled() && toolName === TOOL_SEARCH_TOOL_NAME)
+    (fullscreen && toolName === SYSTEM_SEARCH_TOOLS_NAME)
   ) {
     return {
       isCollapsible: true,
@@ -229,7 +229,7 @@ export function getToolSearchOrReadInfo(
   return {
     isCollapsible:
       isCollapsible ||
-      (isFullscreenEnvEnabled() ? toolName === BASH_TOOL_NAME : false),
+      (fullscreen ? toolName === BASH_TOOL_NAME : false),
     isSearch: result.isSearch,
     isRead: result.isRead,
     isList,
@@ -237,7 +237,7 @@ export function getToolSearchOrReadInfo(
     isMemoryWrite: false,
     isAbsorbedSilently: false,
     ...(tool.isMcp && { mcpServerName: tool.mcpInfo?.serverName }),
-    isBash: isFullscreenEnvEnabled()
+    isBash: fullscreen
       ? !isCollapsible && toolName === BASH_TOOL_NAME
       : undefined,
   }
@@ -250,6 +250,7 @@ export function getToolSearchOrReadInfo(
 export function getSearchOrReadFromContent(
   content: { type: string; name?: string; input?: unknown } | undefined,
   tools: Tools,
+  fullscreen: boolean,
 ): {
   isSearch: boolean
   isRead: boolean
@@ -261,7 +262,12 @@ export function getSearchOrReadFromContent(
   isBash?: boolean
 } | null {
   if (content?.type === 'tool_use' && content.name) {
-    const info = getToolSearchOrReadInfo(content.name, content.input, tools)
+    const info = getToolSearchOrReadInfo(
+      content.name,
+      content.input,
+      tools,
+      fullscreen,
+    )
     if (info.isCollapsible || info.isREPL) {
       return {
         isSearch: info.isSearch,
@@ -285,8 +291,10 @@ function isToolSearchOrRead(
   toolName: string,
   toolInput: unknown,
   tools: Tools,
+  fullscreen: boolean,
 ): boolean {
-  return getToolSearchOrReadInfo(toolName, toolInput, tools).isCollapsible
+  return getToolSearchOrReadInfo(toolName, toolInput, tools, fullscreen)
+    .isCollapsible
 }
 
 /**
@@ -296,6 +304,7 @@ function isToolSearchOrRead(
 function getCollapsibleToolInfo(
   msg: RenderableMessage,
   tools: Tools,
+  fullscreen: boolean,
 ): {
   name: string
   input: unknown
@@ -310,7 +319,7 @@ function getCollapsibleToolInfo(
 } | null {
   if (msg.type === 'assistant') {
     const content = msg.message.content[0]
-    const info = getSearchOrReadFromContent(content, tools)
+    const info = getSearchOrReadFromContent(content, tools, fullscreen)
     if (info && content?.type === 'tool_use') {
       return { name: content.name, input: content.input, ...info }
     }
@@ -323,6 +332,7 @@ function getCollapsibleToolInfo(
         ? { type: 'tool_use', name: msg.toolName, input: firstContent.input }
         : undefined,
       tools,
+      fullscreen,
     )
     if (info && firstContent?.type === 'tool_use') {
       return { name: msg.toolName, input: firstContent.input, ...info }
@@ -351,12 +361,13 @@ function isTextBreaker(msg: RenderableMessage): boolean {
 function isNonCollapsibleToolUse(
   msg: RenderableMessage,
   tools: Tools,
+  fullscreen: boolean,
 ): boolean {
   if (msg.type === 'assistant') {
     const content = msg.message.content[0]
     if (
       content?.type === 'tool_use' &&
-      !isToolSearchOrRead(content.name, content.input, tools)
+      !isToolSearchOrRead(content.name, content.input, tools, fullscreen)
     ) {
       return true
     }
@@ -365,7 +376,7 @@ function isNonCollapsibleToolUse(
     const firstContent = msg.messages[0]?.message.content[0]
     if (
       firstContent?.type === 'tool_use' &&
-      !isToolSearchOrRead(msg.toolName, firstContent.input, tools)
+      !isToolSearchOrRead(msg.toolName, firstContent.input, tools, fullscreen)
     ) {
       return true
     }
@@ -482,19 +493,20 @@ function shouldSkipMessage(msg: RenderableMessage): boolean {
 function isCollapsibleToolUse(
   msg: RenderableMessage,
   tools: Tools,
+  fullscreen: boolean,
 ): msg is CollapsibleMessage {
   if (msg.type === 'assistant') {
     const content = msg.message.content[0]
     return (
       content?.type === 'tool_use' &&
-      isToolSearchOrRead(content.name, content.input, tools)
+      isToolSearchOrRead(content.name, content.input, tools, fullscreen)
     )
   }
   if (msg.type === 'grouped_tool_use') {
     const firstContent = msg.messages[0]?.message.content[0]
     return (
       firstContent?.type === 'tool_use' &&
-      isToolSearchOrRead(msg.toolName, firstContent.input, tools)
+      isToolSearchOrRead(msg.toolName, firstContent.input, tools, fullscreen)
     )
   }
   return false
@@ -635,7 +647,7 @@ function isLoneReadOrSearchGroup(group: GroupAccumulator): boolean {
  * verbatim when the group is un-collapsed.
  *
  * A "lone" group can still contain silently-absorbed meta-operations (Snip,
- * ToolSearch) and their tool results: those add no counts, so
+ * system.searchTools) and their tool results: those add no counts, so
  * `isLoneReadOrSearchGroup` treats them as invisible and stays true. If we
  * emitted every message of such a group, those absorbed tool-use rows (and
  * their result rows) would leak into the default transcript — exactly what
@@ -647,12 +659,13 @@ function isLoneReadOrSearchGroup(group: GroupAccumulator): boolean {
 function selectLoneGroupVisibleMessages(
   group: GroupAccumulator,
   tools: Tools,
+  fullscreen: boolean,
 ): CollapsibleMessage[] {
   // Collect the tool_use_ids of every silently-absorbed tool-use message so
   // their paired tool_result messages can be dropped alongside them.
   const absorbedToolUseIds = new Set<string>()
   for (const m of group.messages) {
-    const info = getCollapsibleToolInfo(m, tools)
+    const info = getCollapsibleToolInfo(m, tools, fullscreen)
     if (info?.isAbsorbedSilently) {
       for (const id of getToolUseIdsFromMessage(m)) {
         absorbedToolUseIds.add(id)
@@ -662,7 +675,7 @@ function selectLoneGroupVisibleMessages(
   if (absorbedToolUseIds.size === 0) return group.messages
   return group.messages.filter((m) => {
     // Drop the absorbed tool-use rows themselves.
-    const info = getCollapsibleToolInfo(m, tools)
+    const info = getCollapsibleToolInfo(m, tools, fullscreen)
     if (info?.isAbsorbedSilently) return false
     // Drop tool_result rows that belong to an absorbed tool use.
     if (m.type === 'user') {
@@ -788,7 +801,7 @@ type GroupAccumulator = {
   relevantMemories?: { path: string; content: string; mtimeMs: number }[]
 }
 
-function createEmptyGroup(): GroupAccumulator {
+function createEmptyGroup(fullscreen: boolean): GroupAccumulator {
   const group: GroupAccumulator = {
     messages: [],
     searchCount: 0,
@@ -812,7 +825,7 @@ function createEmptyGroup(): GroupAccumulator {
   }
   group.mcpCallCount = 0
   group.mcpServerNames = new Set()
-  if (isFullscreenEnvEnabled()) {
+  if (fullscreen) {
     group.bashCount = 0
     group.bashCommands = new Map()
     group.commits = []
@@ -826,6 +839,7 @@ function createEmptyGroup(): GroupAccumulator {
 
 function createCollapsedGroup(
   group: GroupAccumulator,
+  fullscreen: boolean,
 ): CollapsedReadSearchGroup {
   const firstMsg = group.messages[0]!
   // When file-path-based reads exist, use unique file count (Set.size) only.
@@ -896,7 +910,7 @@ function createCollapsedGroup(
     result.mcpCallCount = group.mcpCallCount
     result.mcpServerNames = [...(group.mcpServerNames ?? [])]
   }
-  if (isFullscreenEnvEnabled()) {
+  if (fullscreen) {
     if ((group.bashCount ?? 0) > 0) {
       result.bashCount = group.bashCount
       result.gitOpBashCount = group.gitOpBashCount
@@ -928,9 +942,10 @@ function createCollapsedGroup(
 export function collapseReadSearchGroups(
   messages: RenderableMessage[],
   tools: Tools,
+  fullscreen: boolean,
 ): RenderableMessage[] {
   const result: RenderableMessage[] = []
-  let currentGroup = createEmptyGroup()
+  let currentGroup = createEmptyGroup(fullscreen)
   let deferredSkippable: RenderableMessage[] = []
 
   // Rollup state for consecutive *failed* retries of the same non-collapsible
@@ -957,27 +972,31 @@ export function collapseReadSearchGroups(
       // This mirrors groupToolUses, which only groups runs of 2+ calls. Only a
       // lone read/search is un-collapsed; mixed/memory/mcp/bash/git groups and
       // multi-call read/search runs still collapse to keep the default view tidy.
-      // Silently-absorbed meta-ops (Snip/ToolSearch) and their results are
+      // Silently absorbed meta-ops (Snip/system.searchTools) and their results are
       // filtered out so they stay hidden instead of leaking into the default
       // transcript when the lone group is un-collapsed.
-      for (const m of selectLoneGroupVisibleMessages(currentGroup, tools)) {
+      for (const m of selectLoneGroupVisibleMessages(
+        currentGroup,
+        tools,
+        fullscreen,
+      )) {
         result.push(m)
       }
     } else {
-      result.push(createCollapsedGroup(currentGroup))
+      result.push(createCollapsedGroup(currentGroup, fullscreen))
     }
     for (const deferred of deferredSkippable) {
       result.push(deferred)
     }
     deferredSkippable = []
-    currentGroup = createEmptyGroup()
+    currentGroup = createEmptyGroup(fullscreen)
     breakRollup()
   }
 
   for (const msg of messages) {
-    if (isCollapsibleToolUse(msg, tools)) {
+    if (isCollapsibleToolUse(msg, tools, fullscreen)) {
       // This is a collapsible tool use - type predicate narrows to CollapsibleMessage
-      const toolInfo = getCollapsibleToolInfo(msg, tools)!
+      const toolInfo = getCollapsibleToolInfo(msg, tools, fullscreen)!
 
       if (toolInfo.isMemoryWrite) {
         // Memory file write/edit — check if it's team memory
@@ -992,7 +1011,7 @@ export function collapseReadSearchGroups(
           currentGroup.memoryWriteCount += count
         }
       } else if (toolInfo.isAbsorbedSilently) {
-        // Snip/ToolSearch absorbed silently — no count, no summary text.
+        // Snip/system.searchTools absorbed silently — no count or summary text.
         // Hidden from the default view but still shown in verbose mode
         // (Ctrl+O) via the groupMessages iteration in CollapsedReadSearchContent.
       } else if (toolInfo.mcpServerName) {
@@ -1005,7 +1024,7 @@ export function collapseReadSearchGroups(
         if (input?.query) {
           currentGroup.latestDisplayHint = `"${input.query}"`
         }
-      } else if (isFullscreenEnvEnabled() && toolInfo.isBash) {
+      } else if (fullscreen && toolInfo.isBash) {
         // Non-search/read Bash command — counted separately so the summary
         // says "Ran N bash commands" instead of breaking the group.
         const count = countToolUses(msg)
@@ -1086,7 +1105,7 @@ export function collapseReadSearchGroups(
     } else if (isCollapsibleToolResult(msg, currentGroup.toolUseIds)) {
       currentGroup.messages.push(msg)
       // Scan bash results for commit SHAs / PR URLs to surface in the summary
-      if (isFullscreenEnvEnabled() && currentGroup.bashCommands?.size) {
+      if (fullscreen && currentGroup.bashCommands?.size) {
         scanBashResultForGitOps(msg, currentGroup)
       }
     } else if (currentGroup.messages.length > 0 && isPreToolHookSummary(msg)) {
@@ -1135,7 +1154,7 @@ export function collapseReadSearchGroups(
       flushGroup()
       breakRollup()
       result.push(msg)
-    } else if (isNonCollapsibleToolUse(msg, tools)) {
+    } else if (isNonCollapsibleToolUse(msg, tools, fullscreen)) {
       // Non-collapsible tool use breaks the read/search group.
       flushGroup()
       const key = nonCollapsibleToolUseKey(msg)

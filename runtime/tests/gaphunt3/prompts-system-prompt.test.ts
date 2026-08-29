@@ -38,6 +38,13 @@ function fakeCtx(cwd: string): TurnContext {
     config: cfg as unknown,
     configSnapshot: cfg as unknown,
     cwd,
+    sandboxPolicy: { value: "workspace_write" },
+    networkSandboxPolicy: {
+      allowlist: [],
+      denylist: [],
+      allowManagedDomainsOnly: false,
+      enabled: false,
+    },
   } as unknown as TurnContext;
 }
 
@@ -51,7 +58,7 @@ function baseOpts(cwd: string): AssembleSystemPromptOpts {
     provider: "xai",
     permissionContext: null,
     // Keep the full (non-SIMPLE) assembly path.
-    envForSimpleMode: {},
+    simpleMode: false,
   };
 }
 

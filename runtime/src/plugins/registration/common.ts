@@ -8,7 +8,6 @@
  */
 
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { load as loadYaml } from "js-yaml";
 
@@ -17,10 +16,32 @@ import {
   isRepositoryControlledPlugin,
   loadPlugins,
   type LoadedPlugin,
+  type PluginLoadIssue,
+  type PluginLoadResult,
   type PluginLoaderOptions,
 } from "../loader.js";
-import { getPluginDataDir } from "../directories.js";
+import type { PluginUserConfigOption } from "../manifest-schema.js";
+import {
+  getPluginDataDir,
+  resolvePluginStorageAuthority,
+} from "../directories.js";
 import { isRecord } from "../manifest-schema.js";
+import { isBareMode } from "../../utils/envUtils.js";
+import {
+  loadPluginOptions,
+  type PluginOptionSchema,
+} from "../../utils/plugins/pluginOptionsStorage.js";
+import {
+  CanonicalAuthorityCache,
+  getCanonicalSettingsAuthority,
+} from "../../utils/settings/canonicalAuthority.js";
+import type {
+  PluginConfigStoredValue,
+} from "../../utils/plugins/pluginConfigAuthority.js";
+
+type PluginRuntimeOptionSchema = Readonly<
+  Record<string, PluginUserConfigOption>
+>;
 
 const MAX_PLUGIN_REGISTRATION_MARKDOWN_FILES = 512;
 const MAX_PLUGIN_REGISTRATION_SCAN_DEPTH = 8;
@@ -28,18 +49,18 @@ const MAX_PLUGIN_REGISTRATION_SCAN_DEPTH = 8;
 export interface PluginRuntimeLoadOptions {
   readonly cwd?: string;
   readonly workspaceRoot?: string;
-  readonly agencHome?: string;
+  readonly pluginStorageRoot: string;
   readonly config?: PluginLoaderOptions["config"];
   readonly extraPluginDirs?: readonly string[];
   readonly env?: NodeJS.ProcessEnv;
+  readonly errors?: PluginLoadIssue[];
   /** Bypass process-local discovery snapshots and re-read plugin sources. */
   readonly fresh?: boolean;
 }
 
 export interface PluginRuntimeIdentityOptions {
   readonly cwd?: string;
-  readonly agencHome?: string;
-  readonly env?: NodeJS.ProcessEnv;
+  readonly pluginStorageRoot: string;
 }
 
 export interface ParsedMarkdownFile {
@@ -50,17 +71,22 @@ export interface ParsedMarkdownFile {
 }
 
 export function toPluginLoaderOptions(
-  options: PluginRuntimeLoadOptions = {},
+  options: PluginRuntimeLoadOptions,
 ): PluginLoaderOptions {
-  const env = options.env ?? process.env;
-  const workspaceRoot = resolve(options.workspaceRoot ?? options.cwd ?? process.cwd());
-  const agencHome = resolve(
-    options.agencHome ??
-      env.AGENC_HOME ??
-      join(homedir(), ".agenc"),
-  );
+  const authority = getCanonicalSettingsAuthority();
+  const workspaceValue =
+    options.workspaceRoot ?? options.cwd ?? authority?.projectRoot;
+  if (workspaceValue === undefined) {
+    throw new Error(
+      "Plugin loading requires an explicit workspace root or session ConfigStore authority",
+    );
+  }
+  const workspaceRoot = resolve(workspaceValue);
+  const pluginStorageRoot = resolvePluginStorageAuthority(
+    options.pluginStorageRoot,
+  ).pluginStorageRoot;
   return {
-    agencHome,
+    pluginStorageRoot,
     workspaceRoot,
     ...(options.config !== undefined ? { config: options.config } : {}),
     ...(options.extraPluginDirs !== undefined ? { extraPluginDirs: options.extraPluginDirs } : {}),
@@ -68,30 +94,39 @@ export function toPluginLoaderOptions(
 }
 
 export async function loadRuntimePlugins(
-  options: PluginRuntimeLoadOptions = {},
+  options: PluginRuntimeLoadOptions,
 ): Promise<readonly LoadedPlugin[]> {
   const loaderOptions = toPluginLoaderOptions(options);
+  const projectResult = (result: PluginLoadResult): readonly LoadedPlugin[] => {
+    options.errors?.push(...result.errors);
+    return result.enabled;
+  };
   if (options.fresh === true || hasExplicitPluginDiscoveryInput(options)) {
     const result = await loadPlugins(loaderOptions);
-    return result.enabled;
+    return projectResult(result);
   }
-  const key = `${loaderOptions.workspaceRoot}\0${loaderOptions.agencHome}`;
-  const cached = runtimePluginLoadCache.get(key);
-  if (cached !== undefined) return cached;
-  const loaded = loadPlugins(loaderOptions)
-    .then((result) => result.enabled)
-    .catch((error: unknown) => {
-      runtimePluginLoadCache.delete(key);
-      throw error;
-    });
-  runtimePluginLoadCache.set(key, loaded);
-  return loaded;
+  const authority = getCanonicalSettingsAuthority();
+  if (authority === null) {
+    const result = await loadPlugins(loaderOptions);
+    return projectResult(result);
+  }
+  const key = `${loaderOptions.workspaceRoot}\0${loaderOptions.pluginStorageRoot}`;
+  const cached = runtimePluginLoadCache.get(key, authority);
+  if (cached !== undefined) return projectResult(await cached);
+  const loaded = loadPlugins(loaderOptions).catch((error: unknown) => {
+    runtimePluginLoadCache.delete(key, authority);
+    throw error;
+  });
+  runtimePluginLoadCache.set(key, loaded, authority);
+  return projectResult(await loaded);
 }
 
-const runtimePluginLoadCache = new Map<string, Promise<readonly LoadedPlugin[]>>();
+const runtimePluginLoadCache = new CanonicalAuthorityCache<Promise<PluginLoadResult>>();
 
 export function clearRuntimePluginLoadCache(): void {
-  runtimePluginLoadCache.clear();
+  const authority = getCanonicalSettingsAuthority();
+  if (authority === null) runtimePluginLoadCache.clear();
+  else runtimePluginLoadCache.clearAuthority(authority);
 }
 
 export function splitFrontmatter(raw: string): {
@@ -241,6 +276,7 @@ export function descriptionFromMarkdown(raw: string): string | undefined {
 }
 
 export {
+  canonicalPluginRuntimeNamespace,
   normalizePluginIdentifierName,
   normalizePluginIdentifierSegment,
   pluginScopedIdentifier,
@@ -249,7 +285,13 @@ export {
 export function pluginSettingValue(
   plugin: LoadedPlugin,
   key: string,
-  options: { readonly exposeSensitive?: boolean } = {},
+  options: {
+    readonly exposeSensitive?: boolean;
+    readonly schemaOwnedValues?: Readonly<
+      Record<string, PluginConfigStoredValue>
+    >;
+    readonly schema?: PluginRuntimeOptionSchema;
+  } = {},
 ): string | undefined {
   if (isRepositoryControlledPlugin(plugin)) return undefined;
   const settings = isRecord(plugin.settings?.options)
@@ -258,14 +300,30 @@ export function pluginSettingValue(
       ? plugin.settings
       : undefined;
   const manifestOption = plugin.manifest.userConfig?.[key];
+  const schemaOption = options.schema?.[key];
+  const sensitive =
+    schemaOption?.sensitive === true ||
+    manifestOption?.sensitive === true;
   const exposeSensitive = options.exposeSensitive === true;
-  if (manifestOption?.sensitive === true && !exposeSensitive) {
+  const schemaOwned = options.schemaOwnedValues ?? (
+    plugin.manifest.userConfig !== undefined &&
+        getCanonicalSettingsAuthority() !== null
+      ? loadPluginOptions(
+          plugin.id,
+          plugin.manifest.userConfig as unknown as PluginOptionSchema,
+        )
+      : undefined
+  );
+  if (sensitive && !exposeSensitive) {
     return `[configured:${key}]`;
   }
+  const schemaOwnedValue = stringifySettingValue(schemaOwned?.[key]);
+  if (schemaOwnedValue !== undefined) return schemaOwnedValue;
+  if (sensitive) return undefined;
   const configured = settings?.[key];
   const configuredValue = stringifySettingValue(configured);
   if (configuredValue !== undefined) return configuredValue;
-  const defaultValue = manifestOption?.default;
+  const defaultValue = schemaOption?.default ?? manifestOption?.default;
   return stringifySettingValue(defaultValue);
 }
 
@@ -295,7 +353,11 @@ function stringifySettingValue(value: unknown): string | undefined {
 export function substitutePluginTemplate(
   value: string,
   plugin: LoadedPlugin,
-  options: { readonly sessionId?: string; readonly exposeSensitive?: boolean } = {},
+  options: {
+    readonly sessionId?: string;
+    readonly exposeSensitive?: boolean;
+    readonly pluginStorageRoot?: string;
+  } = {},
 ): string {
   return resolvePluginTemplate(value, plugin, options).value;
 }
@@ -308,27 +370,35 @@ export interface PluginTemplateResolution {
 function resolvePluginTemplate(
   value: string,
   plugin: LoadedPlugin,
-  options: { readonly sessionId?: string; readonly exposeSensitive?: boolean } = {},
+  options: {
+    readonly sessionId?: string;
+    readonly exposeSensitive?: boolean;
+    readonly schemaOwnedValues?: Readonly<
+      Record<string, PluginConfigStoredValue>
+    >;
+    readonly schema?: PluginRuntimeOptionSchema;
+    readonly pluginStorageRoot?: string;
+  } = {},
 ): PluginTemplateResolution {
   const missingUserConfig: string[] = [];
   let pluginDataDir: string | undefined;
   const dataDir = (): string => {
-    pluginDataDir ??= formatTemplatePath(getPluginDataDir(plugin.source));
+    pluginDataDir ??= formatTemplatePath(
+      getPluginDataDir(plugin.id, options.pluginStorageRoot),
+    );
     return pluginDataDir;
   };
-  // CLAUDE_* forms are accepted as aliases: plugins written for Claude Code
-  // (the ecosystem agenc installs from) template with ${CLAUDE_PLUGIN_ROOT}
-  // et al., and an unconsumed template previously fell through to env-var
-  // expansion and killed the component with "Missing environment variables".
   let out = value
-    .replace(/\$\{(?:AGENC|CLAUDE)_PLUGIN_ROOT\}/g, () =>
+    .replace(/\$\{AGENC_PLUGIN_ROOT\}/g, () =>
       formatTemplatePath(plugin.root),
     )
-    .replace(/\$\{(?:AGENC|CLAUDE)_PLUGIN_DATA\}/g, () => dataDir())
-    .replace(/\$\{(?:AGENC|CLAUDE)_SESSION_ID\}/g, () => options.sessionId ?? "");
+    .replace(/\$\{AGENC_PLUGIN_DATA\}/g, () => dataDir())
+    .replace(/\$\{AGENC_SESSION_ID\}/g, () => options.sessionId ?? "");
   out = out.replace(/\$\{user_config\.([A-Za-z_][\w.-]*)\}/g, (_match, key: string) => {
     const value = pluginSettingValue(plugin, key, {
       exposeSensitive: options.exposeSensitive,
+      schemaOwnedValues: options.schemaOwnedValues,
+      schema: options.schema,
     });
     if (value === undefined) {
       missingUserConfig.push(key);
@@ -350,7 +420,7 @@ export interface EnvTemplateResolution {
 
 function expandEnvTemplate(
   value: string,
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv = {},
 ): EnvTemplateResolution {
   const missingEnv: string[] = [];
   const expanded = value.replace(/\$\{([^}]+)\}/g, (match, rawName: string) => {
@@ -376,11 +446,21 @@ export function resolvePluginServerTemplate(
   options: {
     readonly sessionId?: string;
     readonly env?: NodeJS.ProcessEnv;
+    readonly pluginStorageRoot?: string;
+    readonly schemaOwnedValues?: Readonly<
+      Record<string, PluginConfigStoredValue>
+    >;
+    readonly schema?: PluginRuntimeOptionSchema;
   } = {},
 ): PluginServerTemplateResolution {
   const pluginResult = resolvePluginTemplate(value, plugin, {
     sessionId: options.sessionId,
     exposeSensitive: true,
+    schemaOwnedValues: options.schemaOwnedValues,
+    schema: options.schema,
+    ...(options.pluginStorageRoot !== undefined
+      ? { pluginStorageRoot: options.pluginStorageRoot }
+      : {}),
   });
   const envResult = expandEnvTemplate(pluginResult.value, options.env);
   return {
@@ -391,24 +471,24 @@ export function resolvePluginServerTemplate(
 }
 
 export function runtimeIdentityKey(
-  options: PluginRuntimeIdentityOptions = {},
+  options: PluginRuntimeIdentityOptions,
 ): string {
-  const env = options.env ?? process.env;
-  const cwd = resolve(options.cwd ?? process.cwd());
-  const agencHome = resolve(
-    options.agencHome ??
-      env.AGENC_HOME ??
-      join(homedir(), ".agenc"),
-  );
-  return `${cwd}\0${agencHome}`;
+  const authority = getCanonicalSettingsAuthority();
+  const cwdValue = options.cwd ?? authority?.projectRoot;
+  if (cwdValue === undefined) {
+    throw new Error(
+      "Plugin runtime identity requires an explicit cwd or session ConfigStore authority",
+    );
+  }
+  const cwd = resolve(cwdValue);
+  const pluginStorageRoot = resolvePluginStorageAuthority(
+    options.pluginStorageRoot,
+  ).pluginStorageRoot;
+  return `${cwd}\0${pluginStorageRoot}`;
 }
 
-export function cwdOnlyRuntimeIdentityKey(cwd: string | undefined): string {
-  return resolve(cwd ?? process.cwd());
-}
-
-export function isPluginRuntimeSimpleMode(env: NodeJS.ProcessEnv = process.env): boolean {
-  return parseBoolean(env.AGENC_SIMPLE) || parseBoolean(env.AGENC_BARE);
+export function isPluginRuntimeSimpleMode(): boolean {
+  return isBareMode();
 }
 
 export function hasExplicitPluginDiscoveryInput(
@@ -419,7 +499,6 @@ export function hasExplicitPluginDiscoveryInput(
   if (options.plugins !== undefined) return true;
   if ((options.extraPluginDirs?.length ?? 0) > 0) return true;
   const plugins = options.config?.plugins;
-  if (isRecord(options.config?.enabledPlugins)) return true;
   return isRecord(plugins);
 }
 

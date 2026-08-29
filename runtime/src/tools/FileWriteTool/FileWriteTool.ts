@@ -5,19 +5,11 @@ import { clearDeliveredDiagnosticsForFile } from '../../services/lsp/LSPDiagnost
 import { getLspServerManager } from '../../services/lsp/manager.js'
 import { peekAmbientRuntimeSession } from '../../session/current-session.js'
 import type { SandboxExecutionBrokerLike } from '../../sandbox/execution-broker.js'
-import { notifyVscodeFileUpdated } from '../../services/mcp/vscodeSdkMcp.js'
 import { checkTeamMemSecrets } from '../../memory/index.js'
-import {
-  activateConditionalSkillsForPaths,
-  addSkillDirectories,
-  discoverSkillDirsForPaths,
-} from '../../skills/loadSkillsDir.js'
 import type { ToolUseContext } from '../Tool.js'
 import { buildTool, type ToolDef } from '../Tool.js'
-import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { countLinesChanged, getPatchForDisplay } from '../../utils/diff.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
 import { isENOENT } from '../../utils/errors.js'
 import { getFileModificationTime, writeTextContent } from '../../utils/file.js'
 import {
@@ -26,10 +18,6 @@ import {
 } from '../../utils/fileHistory.js'
 import { readFileSyncWithMetadata } from '../../utils/fileRead.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
-import {
-  fetchSingleFileGitDiff,
-  type ToolUseDiff,
-} from '../../utils/gitDiff.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
 import { expandPath } from '../../utils/path.js'
@@ -243,25 +231,9 @@ export const FileWriteTool = buildTool({
     _,
     parentMessage,
   ) {
-    const { readFileState, updateFileHistoryState, dynamicSkillDirTriggers } =
-      toolUseContext
+    const { readFileState, updateFileHistoryState } = toolUseContext
     const fullFilePath = expandPath(file_path)
     const dir = dirname(fullFilePath)
-
-    // Discover skills from this file's path (fire-and-forget, non-blocking)
-    const cwd = getCwd()
-    const newSkillDirs = await discoverSkillDirsForPaths([fullFilePath], cwd)
-    if (newSkillDirs.length > 0) {
-      // Store discovered dirs for attachment display
-      for (const dir of newSkillDirs) {
-        dynamicSkillDirTriggers?.add(dir)
-      }
-      // Don't await - let skill loading happen in the background
-      addSkillDirectories(newSkillDirs).catch(() => {})
-    }
-
-    // Activate conditional skills whose path patterns match this file
-    activateConditionalSkillsForPaths([fullFilePath], cwd)
 
     await diagnosticTracker.beforeFileEditedCompat(fullFilePath)
 
@@ -345,9 +317,6 @@ export const FileWriteTool = buildTool({
       })
     }
 
-    // Notify VSCode about the file change for diff view
-    notifyVscodeFileUpdated(fullFilePath, oldContent, content)
-
     // Update read timestamp, to invalidate stale writes
     readFileState.set(fullFilePath, {
       content,
@@ -355,19 +324,6 @@ export const FileWriteTool = buildTool({
       offset: undefined,
       limit: undefined,
     })
-
-    let gitDiff: ToolUseDiff | undefined
-    if (
-      isEnvTruthy(process.env.AGENC_REMOTE) &&
-      false
-    ) {
-      const diff = await fetchSingleFileGitDiff(fullFilePath)
-      // `diff` is non-null inside this branch; `?? undefined` only normalizes
-      // the declared `ToolUseDiff | null` to the `ToolUseDiff | undefined`
-      // target type (the enclosing `&& false` guard makes this block dead, so
-      // control-flow narrowing of `diff` is not propagated here).
-      if (diff) gitDiff = diff ?? undefined
-    }
 
     if (oldContent) {
       const patch = getPatchForDisplay({
@@ -388,7 +344,6 @@ export const FileWriteTool = buildTool({
         content,
         structuredPatch: patch,
         originalFile: oldContent,
-        ...(gitDiff && { gitDiff }),
       }
       // Track lines added and removed for file updates, right before yielding result
       countLinesChanged(patch)
@@ -404,7 +359,6 @@ export const FileWriteTool = buildTool({
       content,
       structuredPatch: [],
       originalFile: null,
-      ...(gitDiff && { gitDiff }),
     }
 
     // For creation of new files, count all lines as additions, right before yielding the result

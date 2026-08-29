@@ -34,9 +34,9 @@ import {
 import { randomUUID } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import { cwd as processCwd } from "node:process";
+import { isDeepStrictEqual } from "node:util";
 import { VERSION } from "../index.js";
 import { applyBestEffortPreMainProcessHardening } from "../sandbox/hardening/index.js";
-import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import {
   classifyCLI,
   extractFlagValues,
@@ -57,6 +57,7 @@ import {
   Session,
   type IdleInputAdmission,
   type IdleInputOwnership,
+  type McpSurfaceSnapshot,
 } from "../session/session.js";
 import {
   AUTONOMOUS_SUBMIT_SOURCE,
@@ -65,9 +66,15 @@ import {
   type SessionSubmitOptions,
 } from "../session/autonomous-mode.js";
 import type { TurnContext } from "../session/turn-context.js";
+import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+  validateAgentRuntimeOptions,
+  type AgentRuntimeOptions,
+} from "../session/runtime-options.js";
+import { assertCanonicalEnvironmentIngress } from "../config/environment-ingress.js";
 import { runTurn } from "../session/run-turn.js";
 import { editorInteractionSystemPrompt } from "../session/editor-interaction.js";
-import { seedFileMentionSessionReads } from "../session/file-mention-session-reads.js";
 import type { Terminal } from "../session/turn-state.js";
 import {
   hasSupportedFileIdentity,
@@ -76,32 +83,29 @@ import {
 } from "../session/session-store.js";
 import { runSlashCommand } from "./slash.js";
 import type { SlashCommandAppStateBridge } from "../commands/types.js";
+import type { ProviderModelSelectionOutcome } from "../contracts/provider-model-selection.js";
 import { ConfigStore } from "../config/store.js";
 import {
   resolveAgencHome,
   resolveWorkspace as resolveWorkspaceFromEnv,
 } from "../config/env.js";
+import { resolveHomeContext } from "../config/home.js";
+import { snapshotProviderEnvironment } from "../llm/provider-options.js";
+import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
+import { logForDebugging } from "../utils/debug.js";
 import {
   recentOomSnapshotNotice,
   startHeapWatchdog,
 } from "../services/heapWatchdog/heapWatchdog.js";
 import type { AgenCConfig } from "../config/schema.js";
 import {
-  expandFileMentions,
-  extractMentionAllowedRoots,
-  formatFileMentionRejection,
-  type FileMentionExpansion,
-} from "../prompts/file-mentions.js";
-import {
   assembleSystemPrompt,
   buildAssembleSystemPromptOpts,
   type McpServerInstructionsInput,
 } from "../prompts/system-prompt.js";
 import { getOutputStyleConfig } from "../constants/outputStyles.js";
-import { renderHookAdditionalContextSection } from "../prompts/hook-context-framing.js";
 import { loadSessionMcpServerInstructions } from "../prompts/mcp-server-instructions.js";
 import { clearSystemPromptSections } from "../prompts/sections.js";
-import { enableConfigs } from "../config/init.js";
 import {
   resolveLatestSessionId,
   resolveResumeSessionId,
@@ -111,13 +115,20 @@ import {
   formatAgenCDaemonCliHelpText,
   parseAgenCDaemonCliArgs,
   runAgenCDaemonCli,
+  type AgenCDaemonCliAction,
 } from "../app-server/daemon-cli.js";
 import {
+  AGENC_DAEMON_STARTUP_GUARD_ENV,
+  isAgenCDaemonStartupGuardToken,
+} from "../app-server/daemon-startup-guard.js";
+import {
+  captureRemoteCliRuntimeContext,
   formatAgenCRemoteCliHelpText,
   parseAgenCRemoteCliArgs,
   runAgenCRemoteCli,
 } from "./remote-cli.js";
 import {
+  AgenCDaemonResponseError,
   collectDaemonClientEnvOverrides,
   createConnectedAgenCJsonLineDaemonTuiClient,
   defaultEnsureDaemonReady,
@@ -128,12 +139,14 @@ import {
   runAgenCAgentCli,
 } from "../app-server/agent-cli.js";
 import {
+  applyDaemonTuiRuntimeSettingsAuthority,
   createAgenCDaemonOnlyTuiContext,
   findAgenCDaemonAgentBySessionId,
   listAgenCDaemonAgents,
   resumeAgenCDaemonPromptAgent,
   startAgenCDaemonPromptAgent,
   stopAgenCDaemonPromptAgent,
+  type AgenCDaemonOnlyTuiSession,
 } from "../app-server-client/index.js";
 import {
   emitLocalTuiEvent,
@@ -163,11 +176,6 @@ import {
   parseOpenAiAuthCliArgs,
   runOpenAiAuthCli,
 } from "./openai-auth-cli.js";
-import {
-  formatXaiAuthCliHelpText,
-  parseXaiAuthCliArgs,
-  runXaiAuthCli,
-} from "./xai-auth-cli.js";
 import {
   formatAgenCMcpCliHelpText,
   parseAgenCMcpCliArgs,
@@ -248,30 +256,29 @@ import {
   parseAgenCTrajectoriesCliArgs,
   runAgenCTrajectoriesCli,
 } from "./trajectories-cli.js";
-import {
-  executeUserPromptSubmitHooks,
-  getUserPromptSubmitHookBlockingMessage,
-} from "../hooks/user-prompt-submit.js";
-import {
-  ConfiguredHooksRuntime,
-  type HookInstallTarget,
-} from "../hooks/configured-hooks.js";
+import { prepareUserPromptForTurn } from "../hooks/user-prompt-ingress.js";
 import {
   readStartupCliFlags,
-  resolveStartupSelection,
+  resolveCanonicalStartupSelection,
+  resolvedStartupProfileName,
+  startupConfigLayerOptions,
+  type StartupCliFlags,
 } from "./startup-selection.js";
 import {
   isProjectTrustedSync,
-  resolveProjectTrustRootSync,
   trustProject,
 } from "../permissions/trust/project-trust.js";
 import {
   formatProjectTrustSources,
   summarizeProjectTrustSources,
 } from "../permissions/trust/trust-sources.js";
-import { runStartupConfigMigrations } from "../state/migrations/config-migrations.js";
-import { setSessionTrustAccepted } from "../bootstrap/state.js";
+import {
+  setIsRemoteMode,
+  setSessionTrustAccepted,
+} from "../bootstrap/state.js";
+import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
 import { installGlobalErrorNet } from "../utils/gracefulShutdown.js";
+import { registerProcessOutputErrorHandlers } from "../utils/process.js";
 import { isRecord } from "../utils/record.js";
 import type { AgenCTuiBridgeSession } from "../tui/daemon-session.js";
 
@@ -288,7 +295,10 @@ type AgenCDaemonCliDeps = {
    * `resumeTUIEntry`; injectable so the `/resume` relaunch wiring can be
    * contract-tested without spinning a real daemon attach.
    */
-  readonly resumeTui: (args: ResumeTUIArgs) => Promise<number>;
+  readonly resumeTui: (
+    args: ResumeTUIArgs,
+    startupCliFlags?: StartupCliFlags,
+  ) => Promise<number>;
 };
 
 const DEFAULT_DAEMON_CLI_DEPS: AgenCDaemonCliDeps = {
@@ -299,7 +309,8 @@ const DEFAULT_DAEMON_CLI_DEPS: AgenCDaemonCliDeps = {
   findAgentBySessionId: findAgenCDaemonAgentBySessionId,
   createTuiContext: createAgenCDaemonOnlyTuiContext,
   ensureDaemonReady: defaultEnsureDaemonReady,
-  resumeTui: (args: ResumeTUIArgs) => resumeTUIEntry(args),
+  resumeTui: (args: ResumeTUIArgs, startupCliFlags?: StartupCliFlags) =>
+    resumeTUIEntry(args, startupCliFlags),
 };
 
 let daemonCliDepsForTest: Partial<AgenCDaemonCliDeps> | null = null;
@@ -318,11 +329,7 @@ export function __setDaemonCliDepsForTest(
   daemonCliDepsForTest = deps;
 }
 
-export {
-  PROVIDER_MODEL_CATALOG,
-  resolveModelOrThrow,
-  sessionConfigurationFromAgenCConfig,
-} from "./bootstrap.js";
+export { sessionConfigurationFromAgenCConfig } from "../session/configuration.js";
 
 /**
  * Detect whether one of the boolean short-circuit flags (`--help`, `-h`,
@@ -361,9 +368,7 @@ export function formatCliHelpText(): string {
     "       agenc run <start|status|result|replay|evidence|cancel> [<run-id>] [options]",
     "       agenc init [--force]",
     "       agenc <login|logout|whoami>",
-    "       agenc openai-<login|logout|auth-status|models> [--json]",
-    "       agenc grok-login [device] [--json]",
-    "       agenc grok-logout [--json]",
+    "       agenc <openai-login|openai-logout|openai-auth-status> [--json]",
     "       agenc providers [--json] [--no-local-check]",
     "       agenc config <command> [args]",
     "       agenc plugin <command> [options]",
@@ -373,6 +378,8 @@ export function formatCliHelpText(): string {
     "       agenc trajectories export [--format sft|dpo] [--dir <path>] [--out <file>]",
     "       agenc daemon start [--foreground]",
     "       agenc daemon <stop|status|reload|restart>",
+    "       agenc doctor [--json | --apparmor-profile]",
+    "       agenc remote <on|status|off>",
     "       agenc agent start <objective>",
     "       agenc agent list",
     "       agenc agent attach <id>",
@@ -387,10 +394,10 @@ export function formatCliHelpText(): string {
     "  gateway                                 Inspect/operate the channel gateway (pairing)",
     "  budget                                  Inspect/operate cost-bounded autonomy",
     "  run                                     Start, inspect, replay, export, or cancel a durable run",
-    "  init                                    Create .agenc/config.json and AGENC.md",
+    "  init                                    Create .agenc/config.toml and AGENC.md",
     "  login | logout | whoami                  Manage the configured auth session",
-    "  openai-models                           List models available to the stored OpenAI sign-in",
-    "  grok-login                              Sign in to X / xAI for Grok subscription access",
+    "  openai-login | openai-logout              Manage OpenAI ChatGPT sign-in",
+    "  openai-auth-status                        Inspect OpenAI ChatGPT sign-in",
     "  providers                               Check provider readiness and local health",
     "  config                                  Show, mutate, validate, or edit config.toml",
     "  plugin                                  Manage local plugins and marketplaces",
@@ -398,6 +405,8 @@ export function formatCliHelpText(): string {
     "  state                                   Export or import project state",
     "  trajectories                            Curate exported trajectories into training JSONL",
     "  daemon                                  Manage the local AgenC daemon",
+    "  doctor                                  Diagnose installation and runtime readiness",
+    "  remote                                  Manage phone remote-control pairing",
     "  agent                                   Start, attach, inspect, or stop background agents",
     "  mcp                                     Manage MCP servers or serve read-only AgenC tools over MCP",
     "  help [command]                          Show top-level or command help",
@@ -409,17 +418,17 @@ export function formatCliHelpText(): string {
     "  --output-format <format>                 Print mode output: text, json, or stream-json",
     "  --input-format <format>                  Print mode input: stream-json",
     "  --no-tui                                 Force one-shot CLI mode",
+    "  --bare                                   Run reduced startup and suppress all session hook extensions",
     "  -c, --continue                           Continue the latest project session",
     "  -r, --resume <session-id>                Resume a prior project session in the TUI",
     "  --profile <name>                         Use a named config profile",
+    "  --config <path>                          Load an explicit config.toml layer",
     "  --provider <name>                        Override provider for this session",
     "  --model <id|provider:id>                 Override model for this session",
     "  --permission-mode <mode>                 Override the startup permission mode",
-    "  --autonomous, --proactive                Enable autonomous tick mode",
+    "  --autonomous                             Enable autonomous tick mode",
     "  --dangerously-bypass-approvals-and-sandbox",
     "                                           Bypass approvals and sandbox checks",
-    "  --yolo                                   Alias for approval/sandbox bypass",
-    "  --allow-dangerously-skip-permissions     Skip approval prompts",
     "  --image <file|url|data-url>              Attach a startup image",
     "",
     "Examples:",
@@ -456,19 +465,12 @@ export function formatCliHelpTopicText(topic: string): string | null {
     case "whoami":
       return formatAgenCAuthCliHelpText();
     case "openai-login":
-    case "chatgpt-login":
     case "openai-logout":
-    case "chatgpt-logout":
     case "openai-auth-status":
+    case "chatgpt-login":
+    case "chatgpt-logout":
     case "chatgpt-auth-status":
-    case "openai-models":
-    case "chatgpt-models":
       return formatOpenAiAuthCliHelpText();
-    case "grok-login":
-    case "xai-login":
-    case "grok-logout":
-    case "xai-logout":
-      return formatXaiAuthCliHelpText();
     case "daemon":
       return formatAgenCDaemonCliHelpText();
     case "remote":
@@ -731,39 +733,14 @@ function startupContentFromInputs(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Thrown when an init step observes its AbortSignal. The top-level
- * IIFE recognises this error type + exits with code 130 (SIGINT
- * conventional) after running reverse-cleanup. Mirrors I-51 rule
- * "emit error:'init_aborted'".
+ * Thrown when pre-daemon one-shot setup observes its lifecycle AbortSignal.
+ * The one-shot boundary maps it to the shared signal handler's exit code.
  */
 class InitAbortedError extends Error {
   constructor(message: string) {
     super(`init_aborted: ${message}`);
     this.name = "InitAbortedError";
   }
-}
-
-/**
- * Wire pre-session signal handlers to the init-stage AbortController.
- * Ctrl+C / SIGTERM / SIGHUP during init propagates to every async
- * init step, which in turn throws InitAbortedError; the top-level
- * catcher runs reverse-cleanup before exit.
- */
-export function installInitSignalHandlers(
-  initAbort: AbortController,
-  proc: Pick<NodeJS.Process, "once" | "removeListener"> = process,
-): () => void {
-  const onSigInt = () => initAbort.abort("SIGINT during init");
-  const onSigTerm = () => initAbort.abort("SIGTERM during init");
-  const onSigHup = () => initAbort.abort("SIGHUP during init");
-  proc.once("SIGINT", onSigInt);
-  proc.once("SIGTERM", onSigTerm);
-  proc.once("SIGHUP", onSigHup);
-  return () => {
-    proc.removeListener("SIGINT", onSigInt);
-    proc.removeListener("SIGTERM", onSigTerm);
-    proc.removeListener("SIGHUP", onSigHup);
-  };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -774,18 +751,14 @@ export function validateAgencHome(
   env: NodeJS.ProcessEnv = process.env,
   mkdir: typeof mkdirSync = mkdirSync,
 ): string {
-  const explicit = env.AGENC_HOME;
-  const home =
-    explicit && explicit.length > 0
-      ? explicit
-      : env.HOME && env.HOME.length > 0
-        ? `${env.HOME}/.agenc`
-        : "";
-  if (!home) {
+  if (!(env.AGENC_HOME?.trim() || env.HOME?.trim())) {
     throw new Error(
       "HOME unset and AGENC_HOME unset — set AGENC_HOME to a writable dir",
     );
   }
+  const home = resolveHomeContext(env, {
+    ...(env.HOME?.trim() ? { platformHome: env.HOME.trim() } : {}),
+  }).path;
   try {
     mkdir(home, { recursive: true });
   } catch (error) {
@@ -920,13 +893,10 @@ export async function maybeReloadConfigBetweenTurns(params: {
   const refreshMcp = (
     params.session?.services as
       { mcpManager?: Session["services"]["mcpManager"] } | undefined
-  )?.mcpManager?.refreshFromConfig;
+  )?.mcpManager?.refreshFromAuthority;
   if (params.session && typeof refreshMcp === "function") {
     try {
-      const result = await refreshMcp.call(
-        params.session.services.mcpManager,
-        next,
-      );
+      const result = await refreshMcp.call(params.session.services.mcpManager);
       mcpRefreshSuffix = `; MCP refreshed (${result.configuredServers.length} configured, ${result.requiredServers.length} required)`;
     } catch (error) {
       params.session.emit({
@@ -1189,429 +1159,6 @@ function writeUnavailableCliCwd(): number {
   return 1;
 }
 
-function emitFileMentionWarnings(
-  session: Session,
-  expansion: FileMentionExpansion,
-): void {
-  for (const rejection of expansion.rejected) {
-    session.emit({
-      id: session.nextInternalSubId(),
-      msg: {
-        type: "warning",
-        payload: {
-          cause: "file_mention_attachment_dropped",
-          message: formatFileMentionRejection(rejection),
-          ...{
-            path: rejection.raw,
-            reason: rejection.reason,
-          },
-        },
-      },
-    });
-  }
-}
-
-function writeFileMentionWarnings(
-  stderr: Pick<NodeJS.WriteStream, "write">,
-  expansion: FileMentionExpansion,
-): void {
-  for (const rejection of expansion.rejected) {
-    stderr.write(`agenc: ${formatFileMentionRejection(rejection)}\n`);
-  }
-}
-
-async function expandPromptFileMentions(params: {
-  readonly session: Session;
-  readonly configStore: ConfigStore;
-  readonly input: string;
-}): Promise<{ readonly input: string; readonly displayInput?: string }> {
-  const cwd = params.session.sessionConfiguration.cwd ?? process.cwd();
-  const config = params.configStore.current();
-  const expansion = await expandFileMentions(params.input, {
-    cwd,
-    allowedRoots: extractMentionAllowedRoots(config),
-  });
-  emitFileMentionWarnings(params.session, expansion);
-  if (expansion.attachments.length === 0) {
-    return { input: params.input };
-  }
-  await seedFileMentionSessionReads(
-    params.session.conversationId,
-    expansion.attachments,
-  );
-  return {
-    input: expansion.prompt,
-    displayInput: params.input,
-  };
-}
-
-async function expandOneShotPromptFileMentions(params: {
-  readonly configStore: Pick<ConfigStore, "current">;
-  readonly input: string;
-  readonly cwd: string;
-  readonly stderr: Pick<NodeJS.WriteStream, "write">;
-}): Promise<string> {
-  const config = params.configStore.current();
-  const expansion = await expandFileMentions(params.input, {
-    cwd: params.cwd,
-    allowedRoots: extractMentionAllowedRoots(config),
-  });
-  writeFileMentionWarnings(params.stderr, expansion);
-  return expansion.attachments.length === 0 ? params.input : expansion.prompt;
-}
-
-function userInputDisplayText(
-  input: string | readonly LLMContentPart[],
-): string {
-  if (typeof input === "string") return input;
-  return input
-    .map((part) => {
-      if (part.type === "text") return part.text;
-      return "[image]";
-    })
-    .filter((part) => part.length > 0)
-    .join("\n");
-}
-
-const MAX_USER_PROMPT_SUBMIT_CONTEXT_LENGTH = 10_000;
-
-function truncateUserPromptSubmitContext(context: string): string {
-  if (context.length <= MAX_USER_PROMPT_SUBMIT_CONTEXT_LENGTH) return context;
-  return `${context.substring(0, MAX_USER_PROMPT_SUBMIT_CONTEXT_LENGTH)}… [output truncated - exceeded ${MAX_USER_PROMPT_SUBMIT_CONTEXT_LENGTH} characters]`;
-}
-
-function appendUserPromptSubmitContexts(
-  input: string | readonly LLMContentPart[],
-  contexts: readonly string[],
-): string | readonly LLMContentPart[] {
-  if (contexts.length === 0) return input;
-  const contextText = formatUserPromptSubmitContexts(contexts);
-  if (contextText.length === 0) return input;
-  if (typeof input === "string") {
-    return input.trim().length > 0 ? `${input}\n\n${contextText}` : contextText;
-  }
-  const next = [...input];
-  const last = next[next.length - 1];
-  if (last?.type === "text") {
-    next[next.length - 1] = {
-      ...last,
-      text: `${last.text}\n\n${contextText}`,
-    };
-    return next;
-  }
-  next.push({ type: "text", text: contextText });
-  return next;
-}
-
-function formatUserPromptSubmitContexts(contexts: readonly string[]): string {
-  return (
-    renderHookAdditionalContextSection(
-      contexts.map((context) => ({
-        hookName: "UserPromptSubmit",
-        hookEvent: "UserPromptSubmit",
-        content: truncateUserPromptSubmitContext(context),
-      })),
-    ) ?? ""
-  );
-}
-
-function appendUserPromptSubmitContextsToMessage(
-  message: string,
-  contexts: readonly string[],
-): string {
-  if (contexts.length === 0) return message;
-  const contextText = formatUserPromptSubmitContexts(contexts);
-  return contextText.length === 0 ? message : `${message}\n\n${contextText}`;
-}
-
-function emitUserPromptSubmitHookThrown(
-  session: Session,
-  err: unknown,
-  idx: number,
-): void {
-  session.emit({
-    id: session.nextInternalSubId(),
-    msg: {
-      type: "warning",
-      payload: {
-        cause: "user_prompt_submit_hook_threw",
-        message: `UserPromptSubmit hook ${idx} threw: ${err instanceof Error ? err.message : String(err)}`,
-      },
-    },
-  });
-}
-
-async function collectUserPromptSubmitHookOutcome(params: {
-  readonly session: Session;
-  readonly prompt: string;
-}): Promise<{
-  readonly blocked: boolean;
-  readonly additionalContexts: readonly string[];
-  readonly blockMessage?: string;
-}> {
-  const permissionMode = params.session.permissionModeRegistry.current().mode;
-  const additionalContexts: string[] = [];
-  for await (const hookResult of executeUserPromptSubmitHooks(
-    params.prompt,
-    permissionMode,
-    {
-      session: params.session,
-      services: params.session.services,
-      cwd: params.session.sessionConfiguration.cwd ?? process.cwd(),
-      abortController: params.session.abortController,
-    },
-    undefined,
-    (err, idx) => emitUserPromptSubmitHookThrown(params.session, err, idx),
-  )) {
-    if (hookResult.additionalContexts) {
-      additionalContexts.push(...hookResult.additionalContexts);
-    }
-    if (hookResult.blockingError) {
-      const message = getUserPromptSubmitHookBlockingMessage(
-        hookResult.blockingError,
-      );
-      const messageWithContext = appendUserPromptSubmitContextsToMessage(
-        message,
-        additionalContexts,
-      );
-      params.session.emit({
-        id: params.session.nextInternalSubId(),
-        msg: {
-          type: "error",
-          payload: {
-            cause: "user_prompt_submit_hook_blocked",
-            message: messageWithContext,
-          },
-        },
-      });
-      return {
-        blocked: true,
-        additionalContexts,
-        blockMessage: messageWithContext,
-      };
-    }
-    if (hookResult.preventContinuation) {
-      const message = hookResult.stopReason
-        ? `Operation stopped by hook: ${hookResult.stopReason}`
-        : "Operation stopped by hook";
-      const messageWithContext = appendUserPromptSubmitContextsToMessage(
-        message,
-        additionalContexts,
-      );
-      params.session.emit({
-        id: params.session.nextInternalSubId(),
-        msg: {
-          type: "warning",
-          payload: {
-            cause: "user_prompt_submit_hook_stopped",
-            message: messageWithContext,
-          },
-        },
-      });
-      return {
-        blocked: true,
-        additionalContexts,
-        blockMessage: messageWithContext,
-      };
-    }
-    const attachment = hookResult.message?.attachment;
-    if (
-      attachment?.type === "hook_success" &&
-      typeof attachment.content === "string" &&
-      attachment.content.length > 0
-    ) {
-      additionalContexts.push(attachment.content);
-    }
-  }
-  return {
-    blocked: false,
-    additionalContexts,
-  };
-}
-
-function createOneShotHookTarget(): HookInstallTarget {
-  return {
-    preToolUseHooks: [],
-    postToolUseHooks: [],
-    failureToolUseHooks: [],
-    permissionDecisionHooks: [],
-    userPromptSubmitHooks: [],
-    stopHooks: [],
-    stopFailureHooks: [],
-    clearConfiguredLifecycleHooks: () => {},
-  };
-}
-
-async function prepareOneShotPromptForDaemon(params: {
-  readonly prompt: string;
-  readonly configStore: Pick<ConfigStore, "current">;
-  readonly agencHome: string;
-  readonly cwd: string;
-  readonly env: NodeJS.ProcessEnv;
-  readonly signal: AbortSignal;
-  readonly stderr: Pick<NodeJS.WriteStream, "write">;
-}): Promise<
-  | { readonly blocked: false; readonly prompt: string }
-  | { readonly blocked: true; readonly blockMessage: string }
-> {
-  const target = createOneShotHookTarget();
-  const explicitDanger =
-    readStartupCliFlags(process.argv).allowDangerouslySkipPermissions === true;
-  const configuredSandbox = params.configStore.current().sandbox_mode;
-  const sandboxExecutionBroker = new SandboxExecutionBroker({
-    mode: explicitDanger
-      ? "danger_full_access"
-      : configuredSandbox === "read-only"
-        ? "read_only"
-        : configuredSandbox === "danger-full-access"
-          ? "danger_full_access"
-          : "workspace_write",
-    cwd: params.cwd,
-    env: params.env,
-    allowGpu: params.configStore.current().sandbox?.allow_gpu === true,
-  });
-  const hooksRuntime = new ConfiguredHooksRuntime({
-    cwd: params.cwd,
-    env: params.env,
-    agencHome: params.agencHome,
-    shellPath: params.env.SHELL ?? "/bin/sh",
-    sandboxExecutionBroker,
-    admissionRequired: true,
-  });
-  hooksRuntime.attachTarget(target);
-  hooksRuntime.load(params.configStore.current().hooks);
-
-  const additionalContexts: string[] = [];
-  let hookExecutionFailure: string | undefined;
-  for await (const hookResult of executeUserPromptSubmitHooks(
-    params.prompt,
-    "default",
-    {
-      cwd: params.cwd,
-      services: { hooks: target },
-      abortController: { signal: params.signal },
-    },
-    undefined,
-    (err, idx) => {
-      const message = err instanceof Error ? err.message : String(err);
-      hookExecutionFailure ??= `UserPromptSubmit hook ${idx} could not cross the required execution admission boundary: ${message}`;
-      params.stderr.write(
-        `agenc: UserPromptSubmit hook ${idx} threw: ${message}\n`,
-      );
-    },
-  )) {
-    if (hookResult.additionalContexts) {
-      additionalContexts.push(...hookResult.additionalContexts);
-    }
-    if (hookResult.blockingError) {
-      return {
-        blocked: true,
-        blockMessage: appendUserPromptSubmitContextsToMessage(
-          getUserPromptSubmitHookBlockingMessage(hookResult.blockingError),
-          additionalContexts,
-        ),
-      };
-    }
-    if (hookResult.preventContinuation) {
-      return {
-        blocked: true,
-        blockMessage: appendUserPromptSubmitContextsToMessage(
-          hookResult.stopReason
-            ? `Operation stopped by hook: ${hookResult.stopReason}`
-            : "Operation stopped by hook",
-          additionalContexts,
-        ),
-      };
-    }
-    const attachment = hookResult.message?.attachment;
-    if (
-      attachment?.type === "hook_success" &&
-      typeof attachment.content === "string" &&
-      attachment.content.length > 0
-    ) {
-      additionalContexts.push(attachment.content);
-    }
-  }
-  if (hookExecutionFailure !== undefined) {
-    return {
-      blocked: true,
-      blockMessage: appendUserPromptSubmitContextsToMessage(
-        hookExecutionFailure,
-        additionalContexts,
-      ),
-    };
-  }
-
-  const expandedPrompt = await expandOneShotPromptFileMentions({
-    configStore: params.configStore,
-    input: params.prompt,
-    cwd: params.cwd,
-    stderr: params.stderr,
-  });
-  const promptWithContext = appendUserPromptSubmitContexts(
-    expandedPrompt,
-    additionalContexts,
-  );
-  return {
-    blocked: false,
-    prompt:
-      typeof promptWithContext === "string"
-        ? promptWithContext
-        : userInputDisplayText(promptWithContext),
-  };
-}
-
-async function prepareSubmittedPromptForTurn(params: {
-  readonly session: Session;
-  readonly configStore: ConfigStore;
-  readonly input: string | readonly LLMContentPart[];
-}): Promise<{
-  readonly blocked: boolean;
-  readonly input: string | readonly LLMContentPart[];
-  readonly displayInput?: string;
-  readonly blockMessage?: string;
-}> {
-  const prompt = userInputDisplayText(params.input);
-  const hookOutcome = await collectUserPromptSubmitHookOutcome({
-    session: params.session,
-    prompt,
-  });
-  if (hookOutcome.blocked) {
-    return {
-      blocked: true,
-      input: params.input,
-      ...(hookOutcome.blockMessage !== undefined
-        ? { blockMessage: hookOutcome.blockMessage }
-        : {}),
-    };
-  }
-
-  if (typeof params.input === "string") {
-    const expanded = await expandPromptFileMentions({
-      session: params.session,
-      configStore: params.configStore,
-      input: params.input,
-    });
-    return {
-      blocked: false,
-      input: appendUserPromptSubmitContexts(
-        expanded.input,
-        hookOutcome.additionalContexts,
-      ),
-      displayInput: expanded.displayInput ?? params.input,
-    };
-  }
-
-  return {
-    blocked: false,
-    input: appendUserPromptSubmitContexts(
-      params.input,
-      hookOutcome.additionalContexts,
-    ),
-    displayInput: prompt,
-  };
-}
-
 function installTuiSessionContract(params: {
   readonly session: Session;
   readonly configStore: ConfigStore;
@@ -1677,7 +1224,7 @@ function installTuiSessionContract(params: {
       ): Promise<void> => {
         const preparedPrompt =
           opts.editorInteraction === undefined
-            ? await prepareSubmittedPromptForTurn({
+            ? await prepareUserPromptForTurn({
                 session: params.session,
                 configStore: params.configStore,
                 input: prompt,
@@ -1742,7 +1289,7 @@ function installTuiSessionContract(params: {
         if (!isAutonomousTick) return true;
         if (lastTurnToolNames.has("Sleep")) return true;
         const activeToolNames = [...lastTurnToolNames].filter(
-          (name) => name !== "Brief" && name !== "SendUserMessage",
+          (name) => name !== "SendUserMessage",
         );
         return activeToolNames.length > 0;
       };
@@ -1925,7 +1472,6 @@ type OneShotJsonResult = {
   readonly finalMessage: string;
   readonly deniedPermissionRequestIds: readonly string[];
   readonly tokenUsage?: unknown;
-  readonly cacheStats?: unknown;
   readonly events?: readonly unknown[];
 };
 
@@ -1984,16 +1530,47 @@ function writeOneShotJsonLine(value: unknown): void {
 
 function oneShotSnapshotFields(
   snapshot: unknown,
-): Pick<OneShotJsonResult, "tokenUsage" | "cacheStats"> {
+): Pick<OneShotJsonResult, "tokenUsage"> {
   if (!isJsonRecord(snapshot)) return {};
   return {
     ...(isJsonRecord(snapshot.tokenUsage)
       ? { tokenUsage: snapshot.tokenUsage }
       : {}),
-    ...(isJsonRecord(snapshot.cacheStats)
-      ? { cacheStats: snapshot.cacheStats }
-      : {}),
   };
+}
+
+function oneShotAbortExitCode(signal: AbortSignal): number {
+  const reason = signal.reason;
+  if (
+    isJsonRecord(reason) &&
+    typeof reason.exitCode === "number" &&
+    Number.isInteger(reason.exitCode) &&
+    reason.exitCode >= 0 &&
+    reason.exitCode <= 255
+  ) {
+    return reason.exitCode;
+  }
+  return 130;
+}
+
+function oneShotAbortDescription(signal: AbortSignal): string {
+  const reason = signal.reason;
+  if (
+    isJsonRecord(reason) &&
+    reason.reason === "broken_pipe" &&
+    (reason.stream === "stdout" || reason.stream === "stderr")
+  ) {
+    return `${reason.stream} closed`;
+  }
+  if (isJsonRecord(reason) && typeof reason.signal === "string") {
+    return `${reason.signal} during one-shot`;
+  }
+  return String(reason ?? "aborted");
+}
+
+function oneShotAbortedByBrokenPipe(signal: AbortSignal): boolean {
+  const reason = signal.reason;
+  return isJsonRecord(reason) && reason.reason === "broken_pipe";
 }
 
 /**
@@ -2073,7 +1650,6 @@ function daemonOneShotFinalStatus(
     return { code: 0, ...(message !== undefined ? { message } : {}) };
   }
   if (transcriptEvent.type === "error") {
-    if (transcriptEvent.recoverableToolError === true) return null;
     const message =
       payload !== null && typeof payload.message === "string"
         ? payload.message
@@ -2087,15 +1663,24 @@ async function runDaemonOneShotPrompt(params: {
   readonly deps: AgenCDaemonCliDeps;
   readonly prompt: string;
   readonly env: NodeJS.ProcessEnv;
+  readonly runtimeOptions: AgentRuntimeOptions;
   readonly cwd: string;
   readonly outputFormat?: OneShotOutputFormat;
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  readonly configPath?: string;
   readonly initialContent?: string | readonly MessageContentBlock[];
   readonly permissionMode?: AgentCreateParams["permissionMode"];
+  readonly signal: AbortSignal;
 }): Promise<number> {
+  if (params.signal.aborted) {
+    return oneShotAbortExitCode(params.signal);
+  }
   await params.deps.ensureDaemonReady(params.env)();
+  if (params.signal.aborted) {
+    return oneShotAbortExitCode(params.signal);
+  }
   const daemonClient = await params.deps.createConnectedTuiClient({
     env: params.env,
   });
@@ -2103,6 +1688,7 @@ async function runDaemonOneShotPrompt(params: {
   let unsubscribeEvents: (() => void) | null = null;
   let unsubscribeConnection: (() => void) | null = null;
   let completed = false;
+  let cancelled = false;
   let printedAssistantOutput = false;
   let assistantOutput = "";
   let lastPrintedChar = "";
@@ -2110,14 +1696,22 @@ async function runDaemonOneShotPrompt(params: {
   const collectedEvents: unknown[] = [];
 
   try {
+    if (params.signal.aborted) {
+      cancelled = true;
+      return oneShotAbortExitCode(params.signal);
+    }
     const envOverrides = collectDaemonClientEnvOverrides(params.env);
     const createParams: AgentCreateParams = {
       objective: params.prompt,
       instructions: params.prompt,
       cwd: params.cwd,
+      runtimeOptions: params.runtimeOptions,
       ...(params.model !== undefined ? { model: params.model } : {}),
       ...(params.provider !== undefined ? { provider: params.provider } : {}),
       ...(params.profile !== undefined ? { profile: params.profile } : {}),
+      ...(params.configPath !== undefined
+        ? { configPath: params.configPath }
+        : {}),
       ...(params.initialContent !== undefined
         ? { initialContent: params.initialContent }
         : {}),
@@ -2130,12 +1724,26 @@ async function runDaemonOneShotPrompt(params: {
         mode: "one-shot",
       },
     };
-    const started = await daemonClient.request("agent.create", createParams);
-    startedAgentId = started.agentId;
-    const attachment = await daemonClient.request("agent.attach", {
-      agentId: started.agentId,
-      clientId: `agenc-one-shot-${process.pid}`,
+    const started = await daemonClient.request("agent.create", createParams, {
+      signal: params.signal,
     });
+    startedAgentId = started.agentId;
+    if (params.signal.aborted) {
+      cancelled = true;
+      return oneShotAbortExitCode(params.signal);
+    }
+    const attachment = await daemonClient.request(
+      "agent.attach",
+      {
+        agentId: started.agentId,
+        clientId: `agenc-one-shot-${process.pid}`,
+      },
+      { signal: params.signal },
+    );
+    if (params.signal.aborted) {
+      cancelled = true;
+      return oneShotAbortExitCode(params.signal);
+    }
     const sessionId =
       attachment.sessionIds[0] ??
       started.sessionId ??
@@ -2150,11 +1758,15 @@ async function runDaemonOneShotPrompt(params: {
     const code = await new Promise<number>((resolve, reject) => {
       let settled = false;
       let finalizing = false;
+      let onAbort: (() => void) | null = null;
       const settle = (
         next: { readonly code: number } | { readonly error: Error },
       ) => {
         if (settled) return;
         settled = true;
+        if (onAbort !== null) {
+          params.signal.removeEventListener("abort", onAbort);
+        }
         unsubscribeEvents?.();
         unsubscribeConnection?.();
         if ("error" in next) {
@@ -2163,8 +1775,17 @@ async function runDaemonOneShotPrompt(params: {
           resolve(next.code);
         }
       };
+      onAbort = () => {
+        cancelled = true;
+        settle({ code: oneShotAbortExitCode(params.signal) });
+      };
+      params.signal.addEventListener("abort", onAbort, { once: true });
+      if (params.signal.aborted) {
+        onAbort();
+        return;
+      }
       const snapshotFieldsForStructuredOutput = async (): Promise<
-        Pick<OneShotJsonResult, "tokenUsage" | "cacheStats">
+        Pick<OneShotJsonResult, "tokenUsage">
       > => {
         if (outputFormat === "text") return {};
         try {
@@ -2180,6 +1801,8 @@ async function runDaemonOneShotPrompt(params: {
         readonly finalMessage: string;
       }): Promise<void> => {
         if (outputFormat === "text") return;
+        const snapshotFields = await snapshotFieldsForStructuredOutput();
+        if (settled) return;
         const jsonResult: OneShotJsonResult = {
           type: "result",
           sessionId,
@@ -2187,7 +1810,7 @@ async function runDaemonOneShotPrompt(params: {
           exitCode: result.exitCode,
           finalMessage: result.finalMessage,
           deniedPermissionRequestIds: [...deniedPermissionRequestIds],
-          ...(await snapshotFieldsForStructuredOutput()),
+          ...snapshotFields,
           ...(outputFormat === "json" ? { events: collectedEvents } : {}),
         };
         if (outputFormat === "json") {
@@ -2210,6 +1833,7 @@ async function runDaemonOneShotPrompt(params: {
       unsubscribeEvents = daemonClient.subscribeToSessionEvents(
         sessionId,
         (event) => {
+          if (settled) return;
           if (outputFormat === "json") {
             collectedEvents.push(event);
           } else if (outputFormat === "stream-json") {
@@ -2306,8 +1930,11 @@ async function runDaemonOneShotPrompt(params: {
         },
       );
     });
-    completed = true;
+    completed = !cancelled;
     return code;
+  } catch (error) {
+    if (params.signal.aborted) cancelled = true;
+    throw error;
   } finally {
     const stopEvents = unsubscribeEvents as (() => void) | null;
     const stopConnection = unsubscribeConnection as (() => void) | null;
@@ -2324,7 +1951,11 @@ async function runDaemonOneShotPrompt(params: {
         daemonClient,
         env: params.env,
         agentId: startedAgentId,
-        reason: completed ? "one_shot_complete" : "one_shot_failed",
+        reason: cancelled
+          ? "one_shot_cancelled"
+          : completed
+            ? "one_shot_complete"
+            : "one_shot_failed",
       });
     }
     await daemonClient.close().catch(() => {
@@ -2348,42 +1979,60 @@ async function runDaemonOneShotPrompt(params: {
 export async function oneShotCLI(
   userMessage: string | null = null,
   startupImages: readonly string[] = [],
+  parsedStartupCliFlags?: StartupCliFlags,
 ): Promise<number> {
-  const initAbort = new AbortController();
-  const uninstallInitSignals = installInitSignalHandlers(initAbort);
+  const lifecycleAbort = new AbortController();
+  const shutdownSignal = installAgenCShutdownSignalHandlers((event) => {
+    lifecycleAbort.abort(event);
+  });
+  const outputErrors = registerProcessOutputErrorHandlers(({ stream }) => {
+    lifecycleAbort.abort({
+      reason: "broken_pipe",
+      stream,
+      exitCode: 0,
+    });
+  });
 
   const throwIfAborted = (step: string) => {
-    if (initAbort.signal.aborted) {
+    if (lifecycleAbort.signal.aborted) {
       throw new InitAbortedError(
-        `${step}: ${String(initAbort.signal.reason ?? "aborted")}`,
+        `${step}: ${oneShotAbortDescription(lifecycleAbort.signal)}`,
       );
     }
   };
 
   try {
+    const startupCliFlags =
+      parsedStartupCliFlags ?? readStartupCliFlags(process.argv);
+    const sessionEnv = process.env;
+    const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
+      simpleMode: startupCliFlags.simpleMode === true,
+      dangerouslyBypassApprovalsAndSandbox:
+        startupCliFlags.dangerouslyBypassApprovalsAndSandbox === true,
+    });
     validateAgencHome();
     throwIfAborted("validateAgencHome");
-    const agencHome = resolveAgencHome(process.env);
+    const agencHome = resolveAgencHome(sessionEnv);
     const oneShotArgv = process.argv.slice(2);
-    const startupCliFlags = readStartupCliFlags(process.argv);
     const outputFormat = readOneShotOutputFormat(oneShotArgv);
     readOneShotInputFormat(oneShotArgv);
 
     const resolvedUserMessage =
       userMessage !== null && userMessage.length > 0
         ? userMessage
-        : await resolveUserMessage(initAbort.signal);
+        : await resolveUserMessage(lifecycleAbort.signal);
     throwIfAborted("resolveUserMessage");
 
-    const cliCwd = resolveCliCwdForStartup(process.env);
+    const cliCwd = resolveCliCwdForStartup(sessionEnv);
     if (!cliCwd.ok) {
       process.stderr.write(`agenc: ${cliCwd.message}\n`);
       return 1;
     }
     if (
       !(await requireProjectTrustForTui({
-        env: process.env,
+        env: sessionEnv,
         argv: process.argv,
+        startupCliFlags,
         cwd: cliCwd.cwd,
       }))
     ) {
@@ -2392,59 +2041,50 @@ export async function oneShotCLI(
     throwIfAborted("requireProjectTrustForTui");
 
     const daemonCwd = cliCwd.cwd;
+    const startupLayers = startupConfigLayerOptions({
+      cli: startupCliFlags,
+      cwd: daemonCwd,
+    });
     const configStore = new ConfigStore({
       home: agencHome,
-      env: process.env,
+      env: sessionEnv,
+      cwd: daemonCwd,
+      ...startupLayers,
       onWarn: (message) => process.stderr.write(`${message}\n`),
     });
-    await configStore.reload();
-    const startup = resolveStartupSelection({
-      config: configStore.current(),
-      env: process.env,
-      argv: process.argv,
+    const config = await configStore.reload();
+    const profileName = resolvedStartupProfileName(startupCliFlags, sessionEnv);
+    const startup = resolveCanonicalStartupSelection({
+      config,
+      ...(profileName !== undefined ? { profileName } : {}),
     });
-    const promptPreparation = await prepareOneShotPromptForDaemon({
-      prompt: resolvedUserMessage,
-      configStore,
-      agencHome,
-      cwd: daemonCwd,
-      env: process.env,
-      signal: initAbort.signal,
-      stderr: process.stderr,
-    });
-    throwIfAborted("prepareOneShotPromptForDaemon");
-    if (promptPreparation.blocked) {
-      process.stderr.write(`${promptPreparation.blockMessage}\n`);
-      return 1;
-    }
-    const preparedUserMessage = promptPreparation.prompt;
     const resolvedStartupImages =
       startupImages.length > 0
         ? startupImages
         : extractFlagValues(process.argv.slice(2), "--image");
     const initialContent = startupContentFromInputs(
-      preparedUserMessage,
+      resolvedUserMessage,
       resolvedStartupImages,
       daemonCwd,
-      process.env.HOME,
+      sessionEnv.HOME,
     );
     const daemonPrompt =
-      preparedUserMessage.trim().length > 0
-        ? preparedUserMessage
+      resolvedUserMessage.trim().length > 0
+        ? resolvedUserMessage
         : initialContent !== undefined
           ? "Multimodal AgenC startup"
-          : preparedUserMessage;
-    // Forward --yolo / dangerously-skip flags to the daemon so the
-    // print-mode oneShot agent runs under bypassPermissions, matching
+          : resolvedUserMessage;
+    // Forward the canonical dangerous-bypass selection to the daemon so the
+    // print-mode one-shot agent runs under bypassPermissions, matching
     // the bootTUI path. See GAP-PE-GUARDIAN-YOLO-LEAK.
     // Honor a validated `--permission-mode <value>` in the print path. Without
-    // this, only --yolo/bypass propagated and acceptEdits/plan/default were
+    // this, only bypassPermissions propagated and acceptEdits/plan/default were
     // silently dropped. readStartupCliFlags already validated the flag (throwing
     // on a typo so a less-restrictive session can't boot silently). The daemon's
     // forced --autonomous does NOT override a forwarded acceptEdits/plan:
     // applyUnattendedPermissionPolicyToContext explicitly preserves the user's
     // explicit mode (only default → unattended), so forwarding takes effect
-    // without weakening the unattended/security posture. --yolo still wins:
+    // without weakening the unattended/security posture. Explicit bypass still wins:
     // bypassPermissions takes precedence over any other forwarded mode. Narrow
     // to the daemon-accepted subset (agent.create rejects dontAsk/auto); other
     // user-addressable modes fall back to the unattended default as before.
@@ -2452,7 +2092,8 @@ export async function oneShotCLI(
     return await runDaemonOneShotPrompt({
       deps: daemonCliDeps(),
       prompt: daemonPrompt,
-      env: process.env,
+      env: sessionEnv,
+      runtimeOptions,
       cwd: daemonCwd,
       outputFormat,
       model: startup.model,
@@ -2460,15 +2101,28 @@ export async function oneShotCLI(
       ...(startup.profileName !== undefined
         ? { profile: startup.profileName }
         : {}),
+      ...(startupLayers.flagConfigPath !== undefined
+        ? { configPath: startupLayers.flagConfigPath }
+        : {}),
       ...(initialContent !== undefined ? { initialContent } : {}),
       ...(oneShotPermissionMode !== undefined
         ? { permissionMode: oneShotPermissionMode }
         : {}),
+      signal: lifecycleAbort.signal,
     });
   } catch (error) {
+    if (lifecycleAbort.signal.aborted) {
+      if (
+        error instanceof InitAbortedError &&
+        !oneShotAbortedByBrokenPipe(lifecycleAbort.signal)
+      ) {
+        process.stderr.write(`agenc: ${error.message}\n`);
+      }
+      return oneShotAbortExitCode(lifecycleAbort.signal);
+    }
     if (error instanceof InitAbortedError) {
       process.stderr.write(`agenc: ${error.message}\n`);
-      return 130;
+      return oneShotAbortExitCode(lifecycleAbort.signal);
     }
     if (
       error instanceof SessionLockedError ||
@@ -2480,12 +2134,13 @@ export async function oneShotCLI(
     process.stderr.write(`agenc: ${cliStartupErrorMessage(error)}\n`);
     return 1;
   } finally {
-    uninstallInitSignals();
+    outputErrors.dispose();
+    shutdownSignal.dispose();
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// T12 Wave 5-B — TUI entry adapters
+// TUI entry adapters
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -2496,11 +2151,11 @@ export async function oneShotCLI(
 async function loadBootTUI(): Promise<
   (opts: {
     session: unknown;
-    configStore: unknown;
     model?: string;
     initialPrompt?: string;
     initialComposerText?: string;
     initialUserMessages?: readonly LLMMessage[];
+    stdinMode?: "readable" | "data";
   }) => Promise<{ unmount: () => void; waitUntilExit: () => Promise<void> }>
 > {
   // The path is relative to the *compiled* output layout (both
@@ -2516,11 +2171,11 @@ async function loadBootTUI(): Promise<
   const mod = (await import(specifier)) as {
     readonly bootTUI: (opts: {
       session: unknown;
-      configStore: unknown;
       model?: string;
       initialPrompt?: string;
       initialComposerText?: string;
       initialUserMessages?: readonly LLMMessage[];
+      stdinMode?: "readable" | "data";
     }) => Promise<{
       unmount: () => void;
       waitUntilExit: () => Promise<void>;
@@ -2552,10 +2207,13 @@ async function consumePendingResumeSessionId(): Promise<string | null> {
  * bridge). Runs only after `waitUntilExit()` + teardown, so the prior
  * session is cleanly detached first. Returns the exit code to surface.
  */
-export async function exitOrResumeAfterTui(exitCode: number): Promise<number> {
+export async function exitOrResumeAfterTui(
+  exitCode: number,
+  startupCliFlags?: StartupCliFlags,
+): Promise<number> {
   const resumeId = await consumePendingResumeSessionId();
   if (resumeId === null) return exitCode;
-  return daemonCliDeps().resumeTui({ resumeId });
+  return daemonCliDeps().resumeTui({ resumeId }, startupCliFlags);
 }
 
 async function loadProjectTrustPrompt(): Promise<
@@ -2589,6 +2247,7 @@ async function markLegacySessionTrustAccepted(): Promise<void> {
 export interface ProjectTrustPreflightOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
+  readonly startupCliFlags?: StartupCliFlags;
   readonly cwd?: string;
   readonly stdin?: NodeJS.ReadStream;
   readonly stdout?: NodeJS.WriteStream;
@@ -2619,30 +2278,32 @@ export async function runProjectTrustPreflightForTui(
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const agencHome = resolveAgencHome(env);
-  const configStore = new ConfigStore({ home: agencHome, env });
-  await configStore.reload();
-  const startup = resolveStartupSelection({
-    config: configStore.current(),
-    env,
-    argv: options.argv ?? process.argv,
-  });
-  const startupCliFlags = readStartupCliFlags(options.argv ?? process.argv);
+  const startupCliFlags =
+    options.startupCliFlags ??
+    readStartupCliFlags(options.argv ?? process.argv);
   const rawWorkspace =
     options.useEnvWorkspace === false
       ? (options.cwd ?? process.cwd())
       : (resolveWorkspaceFromEnv(env) ?? options.cwd ?? process.cwd());
-  const projectRoot = resolveProjectTrustRootSync({
-    cwd: rawWorkspace,
-    projectRootMarkers: startup.config.project_root_markers,
-  });
-  const configMigrations = await runStartupConfigMigrations({
+  const configStore = new ConfigStore({
     home: agencHome,
-    cwd: projectRoot,
-    configStore,
+    env,
+    cwd: rawWorkspace,
+    ...startupConfigLayerOptions({
+      cli: startupCliFlags,
+      cwd: rawWorkspace,
+    }),
   });
-  if (configMigrations.wrote) {
-    await configStore.reload();
-  }
+  const config = await configStore.reload();
+  const profileName = resolvedStartupProfileName(startupCliFlags, env);
+  const startup = resolveCanonicalStartupSelection({
+    config,
+    ...(profileName !== undefined ? { profileName } : {}),
+  });
+  // ConfigStore's repository discovery is the sole project-root authority.
+  // Re-running marker discovery after later layers would let configuration
+  // come from one root while trust authorizes another.
+  const projectRoot = configStore.projectRoot;
   if (
     isProjectTrustedSync({
       agencHome,
@@ -2667,7 +2328,6 @@ export async function runProjectTrustPreflightForTui(
   const riskSources = formatProjectTrustSources(
     await summarizeProjectTrustSources({
       cwd: projectRoot,
-      home: agencHome,
       configStore,
     }),
   );
@@ -2677,7 +2337,7 @@ export async function runProjectTrustPreflightForTui(
     workspaceRoot: projectRoot,
     riskSources,
     bypassPermissionsRequested:
-      startupCliFlags.allowDangerouslySkipPermissions === true ||
+      startupCliFlags.dangerouslyBypassApprovalsAndSandbox === true ||
       startupCliFlags.permissionMode === "bypassPermissions",
     stdin,
     stdout,
@@ -2738,6 +2398,7 @@ async function loadCreateDaemonTuiSession(): Promise<
     sessionId: string;
     conversationId?: string;
     clientId: string;
+    runtimeSettingsCursor: { readonly eventId: string; readonly cwd: string };
   }) => Promise<unknown>
 > {
   const mod = (await import("../tui/daemon-session.js")) as {
@@ -2747,6 +2408,10 @@ async function loadCreateDaemonTuiSession(): Promise<
       sessionId: string;
       conversationId?: string;
       clientId: string;
+      runtimeSettingsCursor: {
+        readonly eventId: string;
+        readonly cwd: string;
+      };
     }) => unknown;
   };
   return (opts) => Promise.resolve(mod.createDaemonTuiSession(opts));
@@ -2830,6 +2495,11 @@ type DeferredWorkspaceEditorSessionSurface = Pick<
 >;
 
 type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & {
+  executeShellCommand?: AgenCTuiBridgeSession["executeShellCommand"];
+  readonly services?: {
+    readonly mcpManager?: NonNullable<Session["services"]["mcpManager"]>;
+    readonly [key: string]: unknown;
+  };
   submit?: (message: string, opts?: SessionSubmitOptions) => Promise<void>;
   enqueueIdleInput?: (input: unknown, ownership?: IdleInputOwnership) => number;
   enqueueIdleInputBatch?: (
@@ -2865,6 +2535,10 @@ type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & {
   setPendingProviderSwitch?: (
     pending: { provider: string; model: string; profile?: string } | null,
   ) => void;
+  applyProviderModelSelection?: (selection: {
+    readonly provider: string;
+    readonly model: string;
+  }) => Promise<ProviderModelSelectionOutcome>;
   setDaemonPermissionMode?: (mode: string) => Promise<unknown>;
   getDaemonHooksStatus?: () => Promise<unknown>;
   setDaemonHooksDisabled?: (disabled: boolean) => Promise<unknown>;
@@ -2873,10 +2547,28 @@ type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & {
     reload?: boolean;
   }) => Promise<unknown>;
   getInitialTranscriptEvents?: () => readonly unknown[];
+  listMcpClients?: () => readonly unknown[];
+  listMcpTools?: () => readonly unknown[];
+  mcpSurfaceSnapshot?: () => McpSurfaceSnapshot;
+  refreshMcpSurface?: () => Promise<McpSurfaceSnapshot>;
+  subscribeToMcpSurface?: (
+    cb: (snapshot: McpSurfaceSnapshot) => void,
+  ) => () => void;
   activeTurn?: {
     unsafePeek?: () => { readonly turnId: string } | null;
   } | null;
 };
+
+function requireTuiSessionConfigStore(session: unknown): ConfigStore {
+  if (!isRecord(session) || !isRecord(session.services)) {
+    throw new Error("TUI session is missing its canonical ConfigStore");
+  }
+  const configStore = session.services.configStore;
+  if (!(configStore instanceof ConfigStore)) {
+    throw new Error("TUI session is missing its canonical ConfigStore");
+  }
+  return configStore;
+}
 
 type LocalTuiSlashOutcome =
   | { readonly kind: "handled" }
@@ -2936,21 +2628,23 @@ async function handleLocalTuiSlashCommand(params: {
 
 async function createDeferredDaemonPromptTuiSession(params: {
   readonly baseSession: unknown;
-  readonly configStore: Pick<ConfigStore, "current">;
   readonly deps: AgenCDaemonCliDeps;
   readonly agencHome: string;
   readonly env: NodeJS.ProcessEnv;
+  readonly runtimeOptions: AgentRuntimeOptions;
   readonly cwd: string;
   readonly clientId: string;
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  readonly configPath?: string;
   readonly preparePrompt?: typeof prepareDaemonTuiPrompt;
   readonly permissionMode?: AgentCreateParams["permissionMode"];
 }): Promise<{
   readonly session: unknown;
   readonly close: () => Promise<void>;
 }> {
+  const configStore = requireTuiSessionConfigStore(params.baseSession);
   // Mutable bootstrap config for the not-yet-created daemon session. Pre-first-
   // turn slash commands (`/model`, `/provider`, `/permissions mode`, `/plan`)
   // stage their choice HERE so the FIRST daemon turn (created lazily in
@@ -3023,6 +2717,244 @@ async function createDeferredDaemonPromptTuiSession(params: {
   >();
   const subscribers = new Set<(event: unknown) => void>();
   const liveUnsubscribers = new Map<(event: unknown) => void, () => void>();
+  const mcpSurfaceSubscribers = new Set<
+    (snapshot: McpSurfaceSnapshot) => void
+  >();
+  const liveMcpSurfaceUnsubscribers = new Map<
+    (snapshot: McpSurfaceSnapshot) => void,
+    () => void
+  >();
+  const lastMcpSurfaceSignatures = new Map<
+    (snapshot: McpSurfaceSnapshot) => void,
+    string
+  >();
+  const emptyMcpSurface: McpSurfaceSnapshot = Object.freeze({
+    revision: 0,
+    servers: Object.freeze([]),
+    tools: Object.freeze([]),
+  });
+
+  type DeferredMcpManager = NonNullable<Session["services"]["mcpManager"]>;
+
+  const currentLiveMcpManager = (): DeferredMcpManager | undefined =>
+    liveSession?.services?.mcpManager;
+
+  const noLiveMcpSession = (action: string): Error =>
+    new Error(
+      `Cannot ${action}: no live daemon session. Send a message first.`,
+    );
+
+  const requireLiveMcpManager = (action: string): DeferredMcpManager => {
+    if (liveSession === null) throw noLiveMcpSession(action);
+    const manager = currentLiveMcpManager();
+    if (manager === undefined) {
+      throw new Error(
+        `Cannot ${action}: the live daemon session has no MCP authority.`,
+      );
+    }
+    return manager;
+  };
+
+  const currentMcpSurfaceSnapshot = (): McpSurfaceSnapshot =>
+    liveSession?.mcpSurfaceSnapshot?.() ?? emptyMcpSurface;
+
+  const deliverMcpSurfaceSnapshot = (
+    subscriber: (snapshot: McpSurfaceSnapshot) => void,
+    snapshot: McpSurfaceSnapshot,
+  ): void => {
+    const signature = JSON.stringify([
+      snapshot.revision,
+      snapshot.servers,
+      snapshot.tools,
+    ]);
+    if (lastMcpSurfaceSignatures.get(subscriber) === signature) return;
+    lastMcpSurfaceSignatures.set(subscriber, signature);
+    try {
+      subscriber(snapshot);
+    } catch {
+      // A passive observer cannot interfere with daemon event delivery.
+    }
+  };
+
+  const refreshCurrentMcpSurface = async (): Promise<McpSurfaceSnapshot> => {
+    const live = liveSession;
+    if (live === null) return emptyMcpSurface;
+    const snapshot =
+      (await live.refreshMcpSurface?.()) ??
+      live.mcpSurfaceSnapshot?.() ??
+      emptyMcpSurface;
+    return liveSession === live ? snapshot : currentMcpSurfaceSnapshot();
+  };
+
+  const clearLiveMcpSurfaceSubscriptions = (): void => {
+    for (const unsubscribe of liveMcpSurfaceUnsubscribers.values()) {
+      try {
+        unsubscribe();
+      } catch {
+        // Subscription cleanup is observational and must stay fail-soft.
+      }
+    }
+    liveMcpSurfaceUnsubscribers.clear();
+    lastMcpSurfaceSignatures.clear();
+  };
+
+  const attachLiveMcpSurfaceSubscriber = (
+    live: TuiSessionShape,
+    subscriber: (snapshot: McpSurfaceSnapshot) => void,
+    emitCurrent: boolean,
+  ): void => {
+    try {
+      const unsubscribe = live.subscribeToMcpSurface?.((snapshot) => {
+        if (liveSession !== live || !mcpSurfaceSubscribers.has(subscriber)) {
+          return;
+        }
+        deliverMcpSurfaceSnapshot(subscriber, snapshot);
+      });
+      if (unsubscribe !== undefined) {
+        liveMcpSurfaceUnsubscribers.set(subscriber, unsubscribe);
+      }
+    } catch {
+      // A passive subscription cannot make an otherwise healthy attach fail.
+    }
+    if (!emitCurrent || liveSession !== live) return;
+    deliverMcpSurfaceSnapshot(
+      subscriber,
+      live.mcpSurfaceSnapshot?.() ?? emptyMcpSurface,
+    );
+  };
+
+  const attachLiveMcpSurfaceSubscribers = (live: TuiSessionShape): void => {
+    clearLiveMcpSurfaceSubscriptions();
+    for (const subscriber of mcpSurfaceSubscribers) {
+      attachLiveMcpSurfaceSubscriber(live, subscriber, true);
+    }
+    void (async () => {
+      const refreshed =
+        (await live.refreshMcpSurface?.()) ??
+        live.mcpSurfaceSnapshot?.() ??
+        emptyMcpSurface;
+      if (liveSession !== live) return;
+      for (const subscriber of mcpSurfaceSubscribers) {
+        deliverMcpSurfaceSnapshot(subscriber, refreshed);
+      }
+    })().catch((error: unknown) => {
+      logForDebugging(
+        `Deferred daemon MCP status refresh failed after attach: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { level: "warn" },
+      );
+    });
+  };
+
+  const coldMcpManager: DeferredMcpManager = {
+    effectiveServers: async () => {
+      throw noLiveMcpSession("read MCP server status");
+    },
+    toolPluginProvenance: async () => undefined,
+    refreshFromAuthority: async () => {
+      const manager = requireLiveMcpManager("refresh MCP authority");
+      if (manager.refreshFromAuthority === undefined) {
+        throw new Error(
+          "Cannot refresh MCP authority: the live daemon session does not support it.",
+        );
+      }
+      return manager.refreshFromAuthority();
+    },
+    reconnectServer: async (name) => {
+      const manager = requireLiveMcpManager(`reconnect MCP server "${name}"`);
+      if (manager.reconnectServer === undefined) {
+        throw new Error("MCP reconnect is not supported by this session.");
+      }
+      return manager.reconnectServer(name);
+    },
+    enableServer: async (name) => {
+      const manager = requireLiveMcpManager(`enable MCP server "${name}"`);
+      if (manager.enableServer === undefined) {
+        throw new Error("MCP enable is not supported by this session.");
+      }
+      return manager.enableServer(name);
+    },
+    disableServer: async (name) => {
+      const manager = requireLiveMcpManager(`disable MCP server "${name}"`);
+      if (manager.disableServer === undefined) {
+        throw new Error("MCP disable is not supported by this session.");
+      }
+      return manager.disableServer(name);
+    },
+    addServer: async (config) => {
+      const manager = requireLiveMcpManager(`add MCP server "${config.name}"`);
+      if (manager.addServer === undefined) {
+        throw new Error("MCP add is not supported by this session.");
+      }
+      return manager.addServer(config);
+    },
+    getTools: () => [],
+    getToolsByServer: () => [],
+    getConfiguredServers: () => [],
+    getConnectionState: () => undefined,
+    getConnectedConnection: () => undefined,
+    getResources: async () => [],
+    getResourcesByServer: async () => [],
+    readResource: async () => null,
+    isConnected: () => false,
+    getConnectedServers: () => [],
+    mcpSurfaceSnapshot: currentMcpSurfaceSnapshot,
+    subscribeMcpSurfaceInvalidations: (listener) => {
+      const subscriber = (snapshot: McpSurfaceSnapshot): void =>
+        listener(snapshot.revision);
+      mcpSurfaceSubscribers.add(subscriber);
+      const live = liveSession;
+      if (live !== null) {
+        attachLiveMcpSurfaceSubscriber(live, subscriber, false);
+      }
+      return () => {
+        mcpSurfaceSubscribers.delete(subscriber);
+        lastMcpSurfaceSignatures.delete(subscriber);
+        try {
+          liveMcpSurfaceUnsubscribers.get(subscriber)?.();
+        } catch {
+          // Subscription cleanup is observational and must stay fail-soft.
+        }
+        liveMcpSurfaceUnsubscribers.delete(subscriber);
+      };
+    },
+  };
+  const deferredMcpManager = new Proxy(coldMcpManager, {
+    get: (target, property, receiver) => {
+      // These two seams belong to the outer wrapper because their listeners
+      // must survive live-session replacement. Every other manager member is
+      // resolved dynamically from the current daemon-backed facade, which
+      // prevents this wrapper from mirroring the MCP API as it evolves.
+      if (
+        property === "mcpSurfaceSnapshot" ||
+        property === "subscribeMcpSurfaceInvalidations"
+      ) {
+        return Reflect.get(target, property, receiver);
+      }
+      const manager = currentLiveMcpManager();
+      if (manager !== undefined) {
+        const value = Reflect.get(manager, property, manager);
+        if (value !== undefined) {
+          return typeof value === "function" ? value.bind(manager) : value;
+        }
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const base = params.baseSession as Record<string, unknown>;
+  const daemonSessionBase = { ...base };
+  delete daemonSessionBase.listMcpClients;
+  delete daemonSessionBase.listMcpTools;
+  const baseServices = isRecord(base.services) ? base.services : {};
+  const deferredServices = {
+    ...baseServices,
+    mcpManager: deferredMcpManager,
+  };
+  const liveBridgeBaseSession = {
+    ...base,
+    services: deferredServices,
+  };
 
   const queuedBlocksBytes = (
     blocks: readonly MessageContentBlock[],
@@ -3198,10 +3130,21 @@ async function createDeferredDaemonPromptTuiSession(params: {
   const detachLiveSession = async (): Promise<void> => {
     for (const unsubscribe of liveUnsubscribers.values()) unsubscribe();
     liveUnsubscribers.clear();
+    const hadLiveSession = liveSession !== null;
+    clearLiveMcpSurfaceSubscriptions();
     liveSession = null;
     liveAgentId = null;
     liveSessionAwaitingFirstTurn = false;
     liveSessionStartupDeferred = false;
+    if (hadLiveSession && !deferredSessionClosed) {
+      for (const subscriber of mcpSurfaceSubscribers) {
+        try {
+          subscriber(emptyMcpSurface);
+        } catch {
+          // A passive status observer cannot interfere with detach/recovery.
+        }
+      }
+    }
     const client = daemonClient;
     daemonClient = null;
     await client?.close().catch(() => {
@@ -3241,7 +3184,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
               ? firstMessage
               : await (params.preparePrompt ?? prepareDaemonTuiPrompt)({
                   message: firstMessage,
-                  configStore: params.configStore,
+                  configStore,
                   agencHome: params.agencHome,
                   cwd: params.cwd,
                   env: params.env,
@@ -3278,23 +3221,25 @@ async function createDeferredDaemonPromptTuiSession(params: {
           ? preparedFirstMessage
           : "Multimodal AgenC startup";
       let startedAgentId: string | null = null;
-      // Propagate --yolo from the user's argv into the daemon-spawned
+      // Propagate --dangerously-bypass-approvals-and-sandbox from the user's argv into the daemon-spawned
       // agent's session config so the deferred TUI mirrors the bootTUI
       // path. See GAP-PE-GUARDIAN-YOLO-LEAK.
-      const isYoloDeferred =
-        readStartupCliFlags(process.argv).allowDangerouslySkipPermissions ===
-        true;
+      const isBypassDeferred = params.permissionMode === "bypassPermissions";
       let startupClient: ConnectedDaemonTuiClient | null = null;
       try {
         const started = await params.deps.startPromptAgent({
           prompt,
-          env: envWithBridgeMcpServers(params.baseSession, params.env),
+          env: params.env,
+          runtimeOptions: params.runtimeOptions,
           cwd: params.cwd,
           ...(pendingModel !== undefined ? { model: pendingModel } : {}),
           ...(pendingProvider !== undefined
             ? { provider: pendingProvider }
             : {}),
           ...(pendingProfile !== undefined ? { profile: pendingProfile } : {}),
+          ...(params.configPath !== undefined
+            ? { configPath: params.configPath }
+            : {}),
           ...(deferInitialTurn
             ? { deferInitialTurn: true }
             : {
@@ -3315,9 +3260,9 @@ async function createDeferredDaemonPromptTuiSession(params: {
               }
             : {}),
           // Pre-first-turn `/permissions mode` / `/plan` stage their choice in
-          // `pendingPermissionMode`; an explicit `--yolo` argv still wins so the
+          // `pendingPermissionMode`; an explicit `--dangerously-bypass-approvals-and-sandbox` argv still wins so the
           // bootTUI-parity bypass behavior is preserved.
-          ...(isYoloDeferred
+          ...(isBypassDeferred
             ? { permissionMode: "bypassPermissions" as const }
             : pendingPermissionMode !== undefined
               ? { permissionMode: pendingPermissionMode }
@@ -3352,17 +3297,25 @@ async function createDeferredDaemonPromptTuiSession(params: {
         if (deferredSessionClosed) {
           throw new Error("Deferred TUI session is already closed.");
         }
+        await applyDaemonTuiRuntimeSettingsAuthority(
+          liveBridgeBaseSession as unknown as AgenCDaemonOnlyTuiSession,
+          params.cwd,
+          attachment.runtimeSettings,
+        );
         liveSession = wrapDaemonTuiSessionWithPromptPreparation(
           (await createDaemonTuiSession({
-            baseSession: params.baseSession,
+            baseSession: liveBridgeBaseSession,
             client: startupClient,
             sessionId,
             conversationId:
               attachment.runtimeSessionId ?? attachment.agentId ?? sessionId,
             clientId: params.clientId,
+            runtimeSettingsCursor: {
+              eventId: attachment.runtimeSettingsEventId,
+              cwd: params.cwd,
+            },
           })) as TuiSessionShape,
           {
-            configStore: params.configStore,
             agencHome: params.agencHome,
             cwd: params.cwd,
             env: params.env,
@@ -3402,11 +3355,13 @@ async function createDeferredDaemonPromptTuiSession(params: {
             liveUnsubscribers.set(subscriber, unsubscribe);
           }
         }
+        attachLiveMcpSurfaceSubscribers(liveSession);
         return liveSession;
       } catch (error) {
         inFlightQueuedInputs = null;
         for (const unsubscribe of liveUnsubscribers.values()) unsubscribe();
         liveUnsubscribers.clear();
+        clearLiveMcpSurfaceSubscriptions();
         liveSession = null;
         liveAgentId = null;
         liveSessionAwaitingFirstTurn = false;
@@ -3521,13 +3476,61 @@ async function createDeferredDaemonPromptTuiSession(params: {
     }
   };
 
-  const base = params.baseSession as Record<string, unknown>;
   const originalEmit =
     typeof base.emit === "function"
       ? (base.emit as (event: unknown) => void).bind(base)
       : undefined;
+  const stageDeferredProviderModel = (selection: {
+    readonly provider: string;
+    readonly model: string;
+    readonly profile?: string;
+  }): void => {
+    pendingProvider = selection.provider;
+    pendingModel = selection.model;
+    if (selection.profile !== undefined) pendingProfile = selection.profile;
+    const sessionConfiguration = (
+      base as {
+        sessionConfiguration?: {
+          provider?: { slug?: string };
+          collaborationMode?: { model?: string };
+        };
+      }
+    ).sessionConfiguration;
+    if (sessionConfiguration === undefined) return;
+    sessionConfiguration.provider = {
+      ...(sessionConfiguration.provider ?? {}),
+      slug: selection.provider,
+    };
+    sessionConfiguration.collaborationMode = {
+      ...(sessionConfiguration.collaborationMode ?? {}),
+      model: selection.model,
+    };
+  };
   const session: TuiSessionShape & Record<string, unknown> = {
-    ...base,
+    ...daemonSessionBase,
+    // The deferred TUI never owns an MCP runtime. This stable facade forwards
+    // to the daemon-backed session after attach and exposes only empty passive
+    // state before then; it intentionally replaces any bootstrap manager.
+    services: deferredServices,
+    mcpSurfaceSnapshot: currentMcpSurfaceSnapshot,
+    refreshMcpSurface: refreshCurrentMcpSurface,
+    subscribeToMcpSurface: (cb) => {
+      mcpSurfaceSubscribers.add(cb);
+      const live = liveSession;
+      if (live !== null) {
+        attachLiveMcpSurfaceSubscriber(live, cb, false);
+      }
+      return () => {
+        mcpSurfaceSubscribers.delete(cb);
+        lastMcpSurfaceSignatures.delete(cb);
+        try {
+          liveMcpSurfaceUnsubscribers.get(cb)?.();
+        } catch {
+          // Subscription cleanup is observational and must stay fail-soft.
+        }
+        liveMcpSurfaceUnsubscribers.delete(cb);
+      };
+    },
     // Editor coherence and proposal recovery are workspace-scoped, not
     // conversation-scoped. Keep them on one auxiliary daemon connection so
     // authoritative Neovim fencing works before the first Agent turn and
@@ -3597,6 +3600,22 @@ async function createDeferredDaemonPromptTuiSession(params: {
         "workspace.editor.changes.list",
         editorParams,
       ),
+    // Direct composer shell commands are session-scoped side effects. A cold
+    // TUI provisions one turn-deferred live session, then forwards exactly
+    // once. The command does not consume the first model-turn slot, and an
+    // ambiguous transport failure is never replayed against a new session.
+    executeShellCommand: async (shellParams) => {
+      shellParams.signal?.throwIfAborted();
+      const live =
+        liveSession ?? (await ensureLiveSession("", undefined, true));
+      const execute = live?.executeShellCommand;
+      if (live === null || typeof execute !== "function") {
+        throw new Error(
+          "Shell execution is not supported by this daemon session.",
+        );
+      }
+      return execute.call(live, shellParams);
+    },
     // Prediction routing is conversation-scoped because it borrows the live
     // session's provider/model. The first cold prediction provisions a
     // deferred, turn-free daemon session; no model turn, hook, MCP process,
@@ -3720,8 +3739,8 @@ async function createDeferredDaemonPromptTuiSession(params: {
         await abortAllTasks.call(base, "interrupted");
       }
     },
-    // Same forwarder pattern as clearDaemonSession: /status, /usage,
-    // and /cache-stats all call `session.getDaemonSessionSnapshot()`
+    // Same forwarder pattern as clearDaemonSession: /status and /usage
+    // call `session.getDaemonSessionSnapshot()`
     // via App.tsx's slash dispatcher, which routes through this
     // outer deferred wrapper. Without forwarding to liveSession, the
     // snapshot is undefined and bridge-session counters stay at zero
@@ -3758,46 +3777,38 @@ async function createDeferredDaemonPromptTuiSession(params: {
       }
       return live.partialCompactFromMessage(compactParams);
     },
-    // `/model` and `/provider` stage their switch by calling
-    // setPendingProviderSwitch; forward to liveSession so the daemon's
-    // session.setModel RPC runs the real switch machinery. Pre-first-turn
-    // (no live session yet) persist the choice into the deferred-session
-    // bootstrap config so the FIRST created turn picks it up, and mirror it
-    // into baseSession.sessionConfiguration so `/model`'s readSessionSelection
-    // and the chrome reflect the staged switch instead of silently faking
-    // success.
+    applyProviderModelSelection: async (selection) => {
+      const live = liveSession as TuiSessionShape | null;
+      if (live !== null) {
+        if (typeof live.applyProviderModelSelection !== "function") {
+          throw new Error(
+            "Provider/model switching is not supported by this daemon session.",
+          );
+        }
+        return live.applyProviderModelSelection(selection);
+      }
+      stageDeferredProviderModel(selection);
+      return {
+        applied: true,
+        provider: selection.provider,
+        model: selection.model,
+        summary:
+          `Provider/model selection staged: ${selection.provider}/${selection.model}; ` +
+          "the first conversation will use it.",
+      };
+    },
+    // The synchronous mutator exists only for pre-session bootstrap staging.
+    // Once a live daemon session exists every caller must use the awaited
+    // authority above so rejection and disconnects cannot be hidden.
     setPendingProviderSwitch: (pending) => {
       const live = liveSession as TuiSessionShape | null;
       if (live !== null) {
-        live.setPendingProviderSwitch?.(pending);
-        return;
+        throw new Error(
+          "Live daemon provider/model changes require applyProviderModelSelection().",
+        );
       }
       if (pending === null) return;
-      if (pending.model !== undefined) pendingModel = pending.model;
-      if (pending.provider !== undefined) pendingProvider = pending.provider;
-      if (pending.profile !== undefined) pendingProfile = pending.profile;
-      const sessionConfiguration = (
-        base as {
-          sessionConfiguration?: {
-            provider?: { slug?: string };
-            collaborationMode?: { model?: string };
-          };
-        }
-      ).sessionConfiguration;
-      if (sessionConfiguration !== undefined) {
-        if (pending.provider !== undefined) {
-          sessionConfiguration.provider = {
-            ...(sessionConfiguration.provider ?? {}),
-            slug: pending.provider,
-          };
-        }
-        if (pending.model !== undefined) {
-          sessionConfiguration.collaborationMode = {
-            ...(sessionConfiguration.collaborationMode ?? {}),
-            model: pending.model,
-          };
-        }
-      }
+      stageDeferredProviderModel(pending);
     },
     // `/permissions mode` and `/plan` route their mode change to the
     // daemon's real registry through liveSession.setDaemonPermissionMode.
@@ -3966,7 +3977,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
                 message,
                 session,
                 subscribers,
-                configStore: params.configStore,
+                configStore,
                 agencHome: params.agencHome,
                 cwd: params.cwd,
                 env: params.env,
@@ -4071,7 +4082,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
               message,
               session,
               subscribers,
-              configStore: params.configStore,
+              configStore,
               agencHome: params.agencHome,
               cwd: params.cwd,
               env: params.env,
@@ -4295,6 +4306,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
       await controlClient?.close().catch(() => {
         /* best effort */
       });
+      mcpSurfaceSubscribers.clear();
       idleInputAdmissions.clear();
       liveInputAdmissions.clear();
     },
@@ -4324,50 +4336,16 @@ function isDaemonSessionGoneError(error: unknown): boolean {
   return isRecord(data) && data.code === "AGENT_NOT_FOUND";
 }
 
-function envWithBridgeMcpServers(
-  baseSession: unknown,
-  env: NodeJS.ProcessEnv,
-): NodeJS.ProcessEnv {
-  const manager = (
-    baseSession as {
-      readonly services?: {
-        readonly mcpManager?: {
-          readonly getConfiguredServers?: () => readonly unknown[];
-        };
-      };
-    }
-  ).services?.mcpManager;
-  const configs = manager?.getConfiguredServers?.();
-  if (!Array.isArray(configs) || configs.length === 0) return env;
-  return {
-    ...env,
-    AGENC_MCP_SERVERS: JSON.stringify(configs),
-  };
-}
-
 async function prepareDaemonTuiPrompt(params: {
   readonly message: string;
-  readonly configStore: Pick<ConfigStore, "current">;
+  readonly configStore: Pick<ConfigStore, "current" | "authoritySnapshot">;
   readonly agencHome: string;
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
   readonly stderr: Pick<NodeJS.WriteStream, "write">;
 }): Promise<string | null> {
   if (isLocalSlashCommandInput(params.message)) return null;
-  const outcome = await prepareOneShotPromptForDaemon({
-    prompt: params.message,
-    configStore: params.configStore,
-    agencHome: params.agencHome,
-    cwd: params.cwd,
-    env: params.env,
-    signal: new AbortController().signal,
-    stderr: params.stderr,
-  });
-  if (outcome.blocked) {
-    params.stderr.write(`${outcome.blockMessage}\n`);
-    return null;
-  }
-  return outcome.prompt;
+  return params.message;
 }
 
 function wrapDaemonTuiSessionWithPromptPreparation<
@@ -4380,7 +4358,6 @@ function wrapDaemonTuiSessionWithPromptPreparation<
 >(
   session: Session,
   params: {
-    readonly configStore: Pick<ConfigStore, "current">;
     readonly agencHome: string;
     readonly cwd: string;
     readonly env: NodeJS.ProcessEnv;
@@ -4388,6 +4365,7 @@ function wrapDaemonTuiSessionWithPromptPreparation<
     readonly preparePrompt?: typeof prepareDaemonTuiPrompt;
   },
 ): Session {
+  const configStore = requireTuiSessionConfigStore(session);
   const originalSubmit = session.submit?.bind(session);
   if (originalSubmit === undefined) return session;
   const originalSubscribe = session.subscribeToEvents?.bind(session);
@@ -4402,7 +4380,7 @@ function wrapDaemonTuiSessionWithPromptPreparation<
       // wrapped as untrusted data. Most importantly, their read_only /
       // proposal_only policy begins at daemon admission. Running local slash
       // commands, @ expansion, or UserPromptSubmit hooks here would create a
-      // mutating pre-policy side channel (especially under --yolo), so submit
+      // mutating pre-policy side channel (especially under --dangerously-bypass-approvals-and-sandbox), so submit
       // the exact prompt directly and let the daemon validate the interaction.
       if (opts?.editorInteraction !== undefined) {
         await originalSubmit(message, opts);
@@ -4413,7 +4391,7 @@ function wrapDaemonTuiSessionWithPromptPreparation<
             message,
             session: wrapped as TuiSessionShape & Record<string, unknown>,
             subscribers: localSubscribers,
-            configStore: params.configStore,
+            configStore,
             agencHome: params.agencHome,
             cwd: params.cwd,
             env: params.env,
@@ -4423,6 +4401,7 @@ function wrapDaemonTuiSessionWithPromptPreparation<
       const prepared = await (params.preparePrompt ?? prepareDaemonTuiPrompt)({
         message: nextMessage.content,
         ...params,
+        configStore,
       });
       if (prepared === null) {
         throw new Error(
@@ -4463,8 +4442,19 @@ type BootTUIEntryArgs = BootTUIArgs & { readonly resumeId?: string };
 async function resumeColdDaemonSession(params: {
   readonly deps: AgenCDaemonCliDeps;
   readonly descriptor: ResolvedResumeSession;
+  readonly startupCliFlags: StartupCliFlags;
 }): Promise<AgentSummary> {
-  const startupFlags = readStartupCliFlags(process.argv);
+  const startupFlags = params.startupCliFlags;
+  const sessionEnv = process.env;
+  const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
+    simpleMode: startupFlags.simpleMode === true,
+    dangerouslyBypassApprovalsAndSandbox:
+      startupFlags.dangerouslyBypassApprovalsAndSandbox === true,
+  });
+  const startupLayers = startupConfigLayerOptions({
+    cli: startupFlags,
+    cwd: params.descriptor.cwd,
+  });
   const permissionMode = startupPermissionMode(startupFlags);
   return params.deps.resumePromptAgent({
     sessionId: params.descriptor.sessionId,
@@ -4478,13 +4468,17 @@ async function resumeColdDaemonSession(params: {
       cwdIno: params.descriptor.cwdIno,
     },
     cwd: params.descriptor.cwd,
-    env: process.env,
+    env: sessionEnv,
+    runtimeOptions,
     ...(startupFlags.model !== undefined ? { model: startupFlags.model } : {}),
     ...(startupFlags.provider !== undefined
       ? { provider: startupFlags.provider }
       : {}),
     ...(startupFlags.profile !== undefined
       ? { profile: startupFlags.profile }
+      : {}),
+    ...(startupLayers.flagConfigPath !== undefined
+      ? { configPath: startupLayers.flagConfigPath }
       : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
   });
@@ -4493,250 +4487,277 @@ async function resumeColdDaemonSession(params: {
 function startupPermissionMode(
   flags: ReturnType<typeof readStartupCliFlags>,
 ): AgentCreateParams["permissionMode"] {
-  if (flags.allowDangerouslySkipPermissions === true) {
+  if (flags.dangerouslyBypassApprovalsAndSandbox === true) {
     return "bypassPermissions";
   }
   return flags.permissionMode !== undefined &&
-    USER_ADDRESSABLE_PERMISSION_MODES.includes(flags.permissionMode)
+    (USER_ADDRESSABLE_PERMISSION_MODES as readonly string[]).includes(
+      flags.permissionMode,
+    )
     ? (flags.permissionMode as AgentCreateParams["permissionMode"])
     : undefined;
 }
 
 /** Boot the TUI, preserving argv prompts and any pre-Ink typed draft text. */
-export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
-  const startupCliFlags = readStartupCliFlags(process.argv);
-  const cliCwd = resolveCliCwdForStartup(process.env);
-  if (!cliCwd.ok) {
-    return writeUnavailableCliCwd();
-  }
-  if (
-    args.resumeId === undefined &&
-    !(await requireProjectTrustForTui({
-      env: process.env,
-      argv: process.argv,
-      cwd: cliCwd.cwd,
-    }))
-  ) {
-    return 1;
-  }
-  const consumeEarlyInputRaw = await startTuiEarlyInputCapture();
-  let earlyInputConsumed = false;
-  const consumeEarlyInput = (): string => {
-    if (earlyInputConsumed) return "";
-    earlyInputConsumed = true;
-    return consumeEarlyInputRaw();
-  };
-  try {
-    validateAgencHome();
-    // OOM self-diagnosis: sample heap pressure and auto-capture a snapshot
-    // near the limit; point at a fresh capture from a previous crash.
-    startHeapWatchdog({ agencHome: resolveAgencHome(process.env) });
-    const oomNotice = recentOomSnapshotNotice(resolveAgencHome(process.env));
-    if (oomNotice !== null) {
-      process.stderr.write(`${oomNotice}\n`);
+export async function bootTUIEntry(
+  args: BootTUIEntryArgs,
+  parsedStartupCliFlags?: StartupCliFlags,
+): Promise<number> {
+  const startupCliFlags =
+    parsedStartupCliFlags ?? readStartupCliFlags(process.argv);
+  const sessionEnv = process.env;
+  const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
+    simpleMode: startupCliFlags.simpleMode === true,
+    dangerouslyBypassApprovalsAndSandbox:
+      startupCliFlags.dangerouslyBypassApprovalsAndSandbox === true,
+  });
+  return runWithAgentRuntimeOptions(runtimeOptions, async () => {
+    setIsRemoteMode(runtimeOptions.remoteMode);
+    const cliCwd = resolveCliCwdForStartup(sessionEnv);
+    if (!cliCwd.ok) {
+      return writeUnavailableCliCwd();
     }
-    if (args.resumeId !== undefined) {
-      const resolved = resolveResumeSessionId(cliCwd.cwd, args.resumeId);
-      if (resolved.kind === "ok") {
-        return resumeResolvedTUIEntry(resolved, args.resumeId, {
-          initialComposerText: consumeEarlyInput(),
-          ...(args.startupImages !== undefined
-            ? { startupImages: args.startupImages }
-            : {}),
-        });
-      }
-      if (resolved.kind === "ambiguous") {
-        process.stderr.write(
-          `agenc: ambiguous session id '${resolved.input}' matches: ${resolved.matches.join(", ")}\n`,
-        );
-      } else if (resolved.kind === "search_incomplete") {
-        process.stderr.write(
-          `agenc: session search stopped at its ${resolved.reason.replaceAll("_", " ")} safety limit\n`,
-        );
-      } else {
-        process.stderr.write(`agenc: session not found: ${args.resumeId}\n`);
-      }
-      return 1;
-    }
-    const capturedEarlyInput = consumeEarlyInput();
-    const initialPrompt = args.initialPrompt?.trim();
-    const daemonCwd = cliCwd.cwd;
-    const startupImages = args.startupImages ?? [];
     if (
-      (initialPrompt === undefined || initialPrompt.length === 0) &&
-      startupImages.length === 0
+      args.resumeId === undefined &&
+      !(await requireProjectTrustForTui({
+        env: sessionEnv,
+        argv: process.argv,
+        startupCliFlags,
+        cwd: cliCwd.cwd,
+      }))
     ) {
-      const deps = daemonCliDeps();
-      const idlePermissionMode = startupPermissionMode(startupCliFlags);
-      const {
-        configStore,
-        workspaceRoot,
-        baseSession,
-        model,
-        close: closeTuiContext = async () => undefined,
-      } = await deps.createTuiContext({
-        env: process.env,
-        cwd: daemonCwd,
-        conversationId: `agenc-tui-idle-${process.pid}`,
-        ...(startupCliFlags.provider !== undefined
-          ? { provider: startupCliFlags.provider }
-          : {}),
-        ...(startupCliFlags.model !== undefined
-          ? { model: startupCliFlags.model }
-          : {}),
-        ...(startupCliFlags.profile !== undefined
-          ? { profile: startupCliFlags.profile }
-          : {}),
-        ...(idlePermissionMode !== undefined
-          ? { permissionMode: idlePermissionMode }
-          : {}),
-      });
-      const deferred = await createDeferredDaemonPromptTuiSession({
-        baseSession,
-        configStore: configStore as unknown as Pick<ConfigStore, "current">,
-        deps,
-        agencHome:
-          (configStore as { readonly agencHome?: string }).agencHome ??
-          resolveAgencHome(process.env),
-        env: process.env,
-        cwd: workspaceRoot,
-        clientId: `agenc-tui-${process.pid}`,
-        ...(startupCliFlags.provider !== undefined
-          ? { provider: startupCliFlags.provider }
-          : {}),
-        ...(startupCliFlags.model !== undefined
-          ? { model: startupCliFlags.model }
-          : {}),
-        ...(startupCliFlags.profile !== undefined
-          ? { profile: startupCliFlags.profile }
-          : {}),
-        // Seed the deferred bootstrap permission mode the same way the daemon
-        // createTuiContext above does: an explicit `--yolo` forces bypass,
-        // otherwise honor the startup `--permission-mode` flag. Pre-first-turn
-        // `/permissions mode` / `/plan` then overwrite this staged value.
-        ...(idlePermissionMode !== undefined
-          ? { permissionMode: idlePermissionMode }
-          : {}),
-      });
-      const boot = await loadBootTUI();
-      try {
-        const handle = await boot({
-          session: deferred.session,
-          configStore,
-          model,
-          ...(capturedEarlyInput.length > 0
-            ? { initialComposerText: capturedEarlyInput }
-            : {}),
-        });
-        activeInkUnmount = handle.unmount;
-        await handle.waitUntilExit();
-      } finally {
-        activeInkUnmount = null;
-        await deferred.close();
-        await closeTuiContext();
-      }
-      // Teardown is complete (prior session detached): honor a pending
-      // /resume picker selection by relaunching into that session.
-      return exitOrResumeAfterTui(0);
-    }
-    const objective =
-      initialPrompt !== undefined && initialPrompt.length > 0
-        ? initialPrompt
-        : "Multimodal AgenC startup";
-    const agencHome = resolveAgencHome(process.env);
-    const configStore = new ConfigStore({
-      home: agencHome,
-      env: process.env,
-      onWarn: (message) => process.stderr.write(`${message}\n`),
-    });
-    await configStore.reload();
-    const startup = resolveStartupSelection({
-      config: configStore.current(),
-      env: process.env,
-      argv: process.argv,
-    });
-    const promptPreparation =
-      initialPrompt !== undefined && initialPrompt.length > 0
-        ? await prepareOneShotPromptForDaemon({
-            prompt: objective,
-            configStore,
-            agencHome,
-            cwd: daemonCwd,
-            env: process.env,
-            signal: new AbortController().signal,
-            stderr: process.stderr,
-          })
-        : { blocked: false as const, prompt: objective };
-    if (promptPreparation.blocked) {
-      process.stderr.write(`${promptPreparation.blockMessage}\n`);
       return 1;
     }
-    const preparedObjective = promptPreparation.prompt;
-    const initialContent = startupContentFromInputs(
-      preparedObjective,
-      startupImages,
-      daemonCwd,
-      process.env.HOME,
-    );
-    const deps = daemonCliDeps();
-    // Propagate --yolo (and the deprecated aliases) to the daemon so the
-    // spawned agent's session resolves approvalPolicy correctly. Without
-    // this, --yolo only affected the local CLI bootstrap and dropped on
-    // the wire — see GAP-PE-GUARDIAN-YOLO-LEAK and the daemon-side
-    // forwarding in background-agent-runner.buildBootstrapArgv.
-    const promptPermissionMode = startupPermissionMode(startupCliFlags);
-    const started = await deps.startPromptAgent({
-      prompt: preparedObjective,
-      env: process.env,
-      cwd: daemonCwd,
-      model: startup.model,
-      provider: startup.provider,
-      ...(startup.profileName !== undefined
-        ? { profile: startup.profileName }
-        : {}),
-      ...(initialContent !== undefined ? { initialContent } : {}),
-      ...(promptPermissionMode !== undefined
-        ? { permissionMode: promptPermissionMode }
-        : {}),
-      metadata: { mode: "tui" },
-    });
+    const consumeEarlyInputRaw = await startTuiEarlyInputCapture();
+    let earlyInputConsumed = false;
+    const consumeEarlyInput = (): string => {
+      if (earlyInputConsumed) return "";
+      earlyInputConsumed = true;
+      return consumeEarlyInputRaw();
+    };
     try {
-      const exitCode = await attachAgentTuiEntry({
-        agentId: started.agentId,
-        clientId: `agenc-tui-${process.pid}`,
-        initialComposerText:
-          args.initialPrompt === undefined ? capturedEarlyInput : "",
+      validateAgencHome();
+      const startupAgencHome = resolveAgencHome(sessionEnv);
+      // OOM self-diagnosis: sample heap pressure and auto-capture a snapshot
+      // near the limit; point at a fresh capture from a previous crash.
+      startHeapWatchdog({ agencHome: startupAgencHome });
+      const oomNotice = recentOomSnapshotNotice(startupAgencHome);
+      if (oomNotice !== null) {
+        process.stderr.write(`${oomNotice}\n`);
+      }
+      if (args.resumeId !== undefined) {
+        const resolved = resolveResumeSessionId(
+          cliCwd.cwd,
+          args.resumeId,
+          startupAgencHome,
+        );
+        if (resolved.kind === "ok") {
+          return resumeResolvedTUIEntry(resolved, args.resumeId, {
+            agencHome: startupAgencHome,
+            startupCliFlags,
+            initialComposerText: consumeEarlyInput(),
+            ...(args.startupImages !== undefined
+              ? { startupImages: args.startupImages }
+              : {}),
+          });
+        }
+        if (resolved.kind === "ambiguous") {
+          process.stderr.write(
+            `agenc: ambiguous session id '${resolved.input}' matches: ${resolved.matches.join(", ")}\n`,
+          );
+        } else if (resolved.kind === "search_incomplete") {
+          process.stderr.write(
+            `agenc: session search stopped at its ${resolved.reason.replaceAll("_", " ")} safety limit\n`,
+          );
+        } else {
+          process.stderr.write(`agenc: session not found: ${args.resumeId}\n`);
+        }
+        return 1;
+      }
+      const capturedEarlyInput = consumeEarlyInput();
+      const initialPrompt = args.initialPrompt?.trim();
+      const daemonCwd = cliCwd.cwd;
+      const startupLayers = startupConfigLayerOptions({
+        cli: startupCliFlags,
+        cwd: daemonCwd,
       });
-      if (exitCode !== 0) {
+      const startupImages = args.startupImages ?? [];
+      if (
+        (initialPrompt === undefined || initialPrompt.length === 0) &&
+        startupImages.length === 0
+      ) {
+        const deps = daemonCliDeps();
+        const idlePermissionMode = startupPermissionMode(startupCliFlags);
+        const {
+          workspaceRoot,
+          baseSession,
+          model,
+          close: closeTuiContext = async () => undefined,
+        } = await deps.createTuiContext({
+          env: sessionEnv,
+          runtimeOptions,
+          cwd: daemonCwd,
+          conversationId: `agenc-tui-idle-${process.pid}`,
+          ...(startupCliFlags.provider !== undefined
+            ? { provider: startupCliFlags.provider }
+            : {}),
+          ...(startupCliFlags.model !== undefined
+            ? { model: startupCliFlags.model }
+            : {}),
+          ...(startupCliFlags.profile !== undefined
+            ? { profile: startupCliFlags.profile }
+            : {}),
+          ...(startupLayers.flagConfigPath !== undefined
+            ? { configPath: startupLayers.flagConfigPath }
+            : {}),
+          ...(idlePermissionMode !== undefined
+            ? { permissionMode: idlePermissionMode }
+            : {}),
+        });
+        const configStore = baseSession.services.configStore;
+        const deferred = await createDeferredDaemonPromptTuiSession({
+          baseSession,
+          deps,
+          agencHome: configStore.agencHome,
+          env: sessionEnv,
+          runtimeOptions,
+          cwd: workspaceRoot,
+          clientId: `agenc-tui-${process.pid}`,
+          ...(startupCliFlags.provider !== undefined
+            ? { provider: startupCliFlags.provider }
+            : {}),
+          ...(startupCliFlags.model !== undefined
+            ? { model: startupCliFlags.model }
+            : {}),
+          ...(startupCliFlags.profile !== undefined
+            ? { profile: startupCliFlags.profile }
+            : {}),
+          ...(startupLayers.flagConfigPath !== undefined
+            ? { configPath: startupLayers.flagConfigPath }
+            : {}),
+          // Seed the deferred bootstrap permission mode the same way the daemon
+          // createTuiContext above does: an explicit `--dangerously-bypass-approvals-and-sandbox` forces bypass,
+          // otherwise honor the startup `--permission-mode` flag. Pre-first-turn
+          // `/permissions mode` / `/plan` then overwrite this staged value.
+          ...(idlePermissionMode !== undefined
+            ? { permissionMode: idlePermissionMode }
+            : {}),
+        });
+        const boot = await loadBootTUI();
+        try {
+          const handle = await boot({
+            session: deferred.session,
+            model,
+            stdinMode:
+              runtimeOptions.stdinDataMode === true ? "data" : "readable",
+            ...(capturedEarlyInput.length > 0
+              ? { initialComposerText: capturedEarlyInput }
+              : {}),
+          });
+          activeInkUnmount = handle.unmount;
+          await handle.waitUntilExit();
+        } finally {
+          activeInkUnmount = null;
+          await deferred.close();
+          await closeTuiContext();
+        }
+        // Teardown is complete (prior session detached): honor a pending
+        // /resume picker selection by relaunching into that session.
+        return exitOrResumeAfterTui(0, startupCliFlags);
+      }
+      const objective =
+        initialPrompt !== undefined && initialPrompt.length > 0
+          ? initialPrompt
+          : "Multimodal AgenC startup";
+      const agencHome = resolveAgencHome(sessionEnv);
+      const configStore = new ConfigStore({
+        home: agencHome,
+        env: sessionEnv,
+        cwd: daemonCwd,
+        ...startupLayers,
+        onWarn: (message) => process.stderr.write(`${message}\n`),
+      });
+      const config = await configStore.reload();
+      const profileName = resolvedStartupProfileName(
+        startupCliFlags,
+        sessionEnv,
+      );
+      const startup = resolveCanonicalStartupSelection({
+        config,
+        ...(profileName !== undefined ? { profileName } : {}),
+      });
+      const initialContent = startupContentFromInputs(
+        objective,
+        startupImages,
+        daemonCwd,
+        sessionEnv.HOME,
+      );
+      const deps = daemonCliDeps();
+      // Propagate the canonical dangerous-bypass selection to the daemon so the
+      // spawned agent's session resolves approvalPolicy correctly. Without
+      // this, bypass only affected the local CLI bootstrap and dropped on
+      // the wire — see GAP-PE-GUARDIAN-YOLO-LEAK and the daemon-side
+      // forwarding in background-agent-runner.buildBootstrapArgv.
+      const promptPermissionMode = startupPermissionMode(startupCliFlags);
+      const started = await deps.startPromptAgent({
+        prompt: objective,
+        env: sessionEnv,
+        runtimeOptions,
+        cwd: daemonCwd,
+        model: startup.model,
+        provider: startup.provider,
+        ...(startup.profileName !== undefined
+          ? { profile: startup.profileName }
+          : {}),
+        ...(startupLayers.flagConfigPath !== undefined
+          ? { configPath: startupLayers.flagConfigPath }
+          : {}),
+        ...(initialContent !== undefined ? { initialContent } : {}),
+        ...(promptPermissionMode !== undefined
+          ? { permissionMode: promptPermissionMode }
+          : {}),
+        metadata: { mode: "tui" },
+      });
+      try {
+        const exitCode = await attachAgentTuiEntry({
+          agentId: started.agentId,
+          clientId: `agenc-tui-${process.pid}`,
+          startupCliFlags,
+          runtimeOptions,
+          initialComposerText:
+            args.initialPrompt === undefined ? capturedEarlyInput : "",
+        });
+        if (exitCode !== 0) {
+          await stopDaemonAgentBestEffort({
+            deps,
+            env: process.env,
+            agentId: started.agentId,
+            reason: "tui_startup_failed",
+          });
+        }
+        // Honor a pending /resume picker selection (prior session detached).
+        return exitOrResumeAfterTui(exitCode, startupCliFlags);
+      } catch (error) {
         await stopDaemonAgentBestEffort({
           deps,
-          env: process.env,
+          env: sessionEnv,
           agentId: started.agentId,
           reason: "tui_startup_failed",
         });
+        throw error;
       }
-      // Honor a pending /resume picker selection (prior session detached).
-      return exitOrResumeAfterTui(exitCode);
     } catch (error) {
-      await stopDaemonAgentBestEffort({
-        deps,
-        env: process.env,
-        agentId: started.agentId,
-        reason: "tui_startup_failed",
-      });
+      consumeEarlyInput();
+      if (
+        error instanceof SessionLockedError ||
+        error instanceof SchemaMismatchError
+      ) {
+        process.stderr.write(`agenc: ${error.message}\n`);
+        return 1;
+      }
       throw error;
     }
-  } catch (error) {
-    consumeEarlyInput();
-    if (
-      error instanceof SessionLockedError ||
-      error instanceof SchemaMismatchError
-    ) {
-      process.stderr.write(`agenc: ${error.message}\n`);
-      return 1;
-    }
-    throw error;
-  }
+  });
 }
 
 export interface AttachAgentTuiEntryArgs {
@@ -4745,6 +4766,9 @@ export interface AttachAgentTuiEntryArgs {
   readonly initialComposerText?: string;
   readonly startupImages?: readonly string[];
   readonly env?: NodeJS.ProcessEnv;
+  readonly runtimeOptions?: AgentRuntimeOptions;
+  /** Startup selection parsed once by the owning CLI route. */
+  readonly startupCliFlags?: StartupCliFlags;
   readonly daemonClient?: Awaited<
     ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
   >;
@@ -4755,6 +4779,8 @@ export async function attachAgentTuiEntry(
   args: AttachAgentTuiEntryArgs,
 ): Promise<number> {
   const env = args.env ?? process.env;
+  const startupCliFlags =
+    args.startupCliFlags ?? readStartupCliFlags(process.argv);
   let daemonClient: Awaited<
     ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
   > | null = null;
@@ -4773,6 +4799,7 @@ export async function attachAgentTuiEntry(
       !(await requireProjectTrustForTui({
         env,
         argv: process.argv,
+        startupCliFlags,
         cwd: targetCwd,
         useEnvWorkspace: false,
       }))
@@ -4783,104 +4810,196 @@ export async function attachAgentTuiEntry(
       agentId: args.agentId,
       clientId: args.clientId,
     });
-    const sessionId = attachment.sessionIds[0];
-    if (sessionId === undefined) {
-      throw new Error(`daemon agent has no attached session: ${args.agentId}`);
-    }
-    const runtimeSessionId =
-      attachment.runtimeSessionId ?? attachment.agentId ?? sessionId;
-    const bootstrapCwd = resolveAgenCAgentAttachCwd(attachment, targetCwd);
-    const roleWorkspace = resolveAgenCAgentAttachRoleWorkspace(
-      attachment,
-      targetCwd,
+    const runtimeOptions = validateAgentRuntimeOptions(
+      attachment.runtimeOptions,
     );
+    const expectedRuntimeOptions =
+      args.runtimeOptions === undefined
+        ? undefined
+        : validateAgentRuntimeOptions(args.runtimeOptions);
     if (
-      roleWorkspace.cwd !== targetCwd &&
-      !(await requireProjectTrustForTui({
-        env,
-        argv: process.argv,
-        cwd: roleWorkspace.cwd,
-        useEnvWorkspace: false,
-      }))
+      expectedRuntimeOptions !== undefined &&
+      (!isDeepStrictEqual(
+        {
+          ...expectedRuntimeOptions,
+          dangerouslyBypassApprovalsAndSandbox:
+            runtimeOptions.dangerouslyBypassApprovalsAndSandbox,
+        },
+        runtimeOptions,
+      ) ||
+        (expectedRuntimeOptions.dangerouslyBypassApprovalsAndSandbox &&
+          !runtimeOptions.dangerouslyBypassApprovalsAndSandbox))
     ) {
-      return 1;
+      throw new Error(
+        `daemon agent runtime options disagree with the attaching client: ${args.agentId}`,
+      );
     }
-    const bootstrapEnv = envForAttachBootstrap(env, bootstrapCwd);
-    const isYoloAttach =
-      readStartupCliFlags(process.argv).allowDangerouslySkipPermissions ===
-      true;
-    const {
-      configStore,
-      workspaceRoot,
-      baseSession,
-      model,
-      close: closeTuiContext = async () => undefined,
-    } = await daemonCliDeps().createTuiContext({
-      env: bootstrapEnv,
-      cwd: bootstrapCwd,
-      roleWorkspace,
-      conversationId: runtimeSessionId,
-      ...(isYoloAttach ? { permissionMode: "bypassPermissions" as const } : {}),
-    });
-    const createDaemonTuiSession = await loadCreateDaemonTuiSession();
-    const daemonSession = await createDaemonTuiSession({
-      baseSession,
-      client: daemonClient,
-      sessionId,
-      conversationId: runtimeSessionId,
-      clientId: args.clientId,
-    });
-    const preparedDaemonSession = wrapDaemonTuiSessionWithPromptPreparation(
-      daemonSession as {
-        submit?: (
-          message: string,
-          opts?: { readonly displayUserMessage?: string | null },
-        ) => Promise<void>;
-      },
-      {
-        configStore: configStore as unknown as Pick<ConfigStore, "current">,
-        agencHome:
-          (configStore as { readonly agencHome?: string }).agencHome ??
-          resolveAgencHome(bootstrapEnv),
-        cwd: workspaceRoot,
-        env: bootstrapEnv,
-        stderr: process.stderr,
-      },
-    );
-    const boot = await loadBootTUI();
-    const startupImages = args.startupImages ?? [];
-    const initialUserMessages =
-      startupImages.length > 0
-        ? startupImageMessagesFromInputs(
-            startupImages,
-            workspaceRoot,
-            bootstrapEnv.HOME,
-          )
-        : [];
-    try {
-      const handle = await boot({
-        session: preparedDaemonSession,
-        configStore,
-        model,
-        ...(args.initialComposerText !== undefined &&
-        args.initialComposerText.length > 0
-          ? { initialComposerText: args.initialComposerText }
-          : {}),
-        ...(initialUserMessages.length > 0 ? { initialUserMessages } : {}),
+    return await runWithAgentRuntimeOptions(runtimeOptions, async () => {
+      setIsRemoteMode(runtimeOptions.remoteMode);
+      const sessionId = attachment.sessionIds[0];
+      if (sessionId === undefined) {
+        throw new Error(
+          `daemon agent has no attached session: ${args.agentId}`,
+        );
+      }
+      const runtimeSessionId =
+        attachment.runtimeSessionId ?? attachment.agentId ?? sessionId;
+      const bootstrapCwd = resolveAgenCAgentAttachCwd(attachment);
+      const roleWorkspace = resolveAgenCAgentAttachRoleWorkspace(
+        attachment,
+        targetCwd,
+      );
+      if (
+        roleWorkspace.cwd !== targetCwd &&
+        !(await requireProjectTrustForTui({
+          env,
+          argv: process.argv,
+          startupCliFlags,
+          cwd: roleWorkspace.cwd,
+          useEnvWorkspace: false,
+        }))
+      ) {
+        return 1;
+      }
+      const bootstrapEnv = envForAttachBootstrap(env, bootstrapCwd);
+      const startupLayers = startupConfigLayerOptions({
+        cli: startupCliFlags,
+        cwd: bootstrapCwd,
       });
-      activeInkUnmount = handle.unmount;
-      await handle.waitUntilExit();
-    } finally {
-      activeInkUnmount = null;
-      await closeTuiContext();
-    }
-    // Return a plain exit code here. A pending /resume picker selection is
-    // honored by the outer entrypoints (bootTUIEntry / resumeTUIEntry) once
-    // this function's finally chain has closed the daemon client and
-    // detached the prior session — see exitOrResumeAfterTui at those call
-    // sites. Doing the relaunch here would race the daemonClient.close()
-    // below and re-resume before teardown completes.
-    return 0;
+      const attachedMetadata = attachment.sessions.find(
+        (attachedSession) => attachedSession.sessionId === sessionId,
+      )?.metadata;
+      const metadataString = (key: string): string | undefined => {
+        const value = attachedMetadata?.[key];
+        return typeof value === "string" && value.trim().length > 0
+          ? value.trim()
+          : undefined;
+      };
+      const retainedConfigPath = metadataString("configPath");
+      if (retainedConfigPath !== undefined && !isAbsolute(retainedConfigPath)) {
+        throw new Error("daemon session metadata configPath must be absolute");
+      }
+      const liveSettings = attachment.runtimeSettings;
+      const requestedPermissionMode = startupPermissionMode(startupCliFlags);
+      if (
+        startupCliFlags.provider !== undefined &&
+        startupCliFlags.provider !== liveSettings.provider
+      ) {
+        throw new Error(
+          `attach-time provider ${startupCliFlags.provider} disagrees with live daemon provider ${liveSettings.provider}`,
+        );
+      }
+      if (
+        startupCliFlags.model !== undefined &&
+        startupCliFlags.model !== liveSettings.model
+      ) {
+        throw new Error(
+          `attach-time model ${startupCliFlags.model} disagrees with live daemon model ${liveSettings.model}`,
+        );
+      }
+      if (
+        requestedPermissionMode !== undefined &&
+        requestedPermissionMode !== liveSettings.permissionMode
+      ) {
+        throw new Error(
+          `attach-time permission mode ${requestedPermissionMode} disagrees with live daemon mode ${liveSettings.permissionMode}`,
+        );
+      }
+      if (
+        startupCliFlags.profile !== undefined &&
+        startupCliFlags.profile !== liveSettings.profile
+      ) {
+        throw new Error(
+          `attach-time profile ${startupCliFlags.profile} disagrees with live daemon profile ${liveSettings.profile ?? "(none)"}`,
+        );
+      }
+      const attachProvider = liveSettings.provider;
+      const attachModel = liveSettings.model;
+      const attachProfile = liveSettings.profile ?? undefined;
+      const attachConfigPath =
+        startupLayers.flagConfigPath ?? retainedConfigPath;
+      const {
+        workspaceRoot,
+        baseSession,
+        model,
+        close: closeTuiContext = async () => undefined,
+      } = await daemonCliDeps().createTuiContext({
+        env: bootstrapEnv,
+        runtimeOptions,
+        cwd: bootstrapCwd,
+        roleWorkspace,
+        conversationId: runtimeSessionId,
+        runtimeSettings: liveSettings,
+        ...(attachProvider !== undefined ? { provider: attachProvider } : {}),
+        ...(attachModel !== undefined ? { model: attachModel } : {}),
+        ...(attachProfile !== undefined ? { profile: attachProfile } : {}),
+        ...(attachConfigPath !== undefined
+          ? { configPath: attachConfigPath }
+          : {}),
+      });
+      const configStore = baseSession.services.configStore;
+      const createDaemonTuiSession = await loadCreateDaemonTuiSession();
+      const daemonSession = await createDaemonTuiSession({
+        baseSession,
+        client: daemonClient,
+        sessionId,
+        conversationId: runtimeSessionId,
+        clientId: args.clientId,
+        runtimeSettingsCursor: {
+          eventId: attachment.runtimeSettingsEventId,
+          cwd: bootstrapCwd,
+        },
+      });
+      const preparedDaemonSession = wrapDaemonTuiSessionWithPromptPreparation(
+        daemonSession as {
+          submit?: (
+            message: string,
+            opts?: { readonly displayUserMessage?: string | null },
+          ) => Promise<void>;
+        },
+        {
+          agencHome: configStore.agencHome,
+          cwd: workspaceRoot,
+          env: bootstrapEnv,
+          stderr: process.stderr,
+        },
+      );
+      const boot = await loadBootTUI();
+      const startupImages = args.startupImages ?? [];
+      const initialUserMessages =
+        startupImages.length > 0
+          ? startupImageMessagesFromInputs(
+              startupImages,
+              workspaceRoot,
+              bootstrapEnv.HOME,
+            )
+          : [];
+      try {
+        const handle = await boot({
+          session: preparedDaemonSession,
+          model,
+          stdinMode:
+            runtimeOptions.stdinDataMode === true ? "data" : "readable",
+          ...(args.initialComposerText !== undefined &&
+          args.initialComposerText.length > 0
+            ? { initialComposerText: args.initialComposerText }
+            : {}),
+          ...(initialUserMessages.length > 0 ? { initialUserMessages } : {}),
+        });
+        activeInkUnmount = handle.unmount;
+        await handle.waitUntilExit();
+      } finally {
+        activeInkUnmount = null;
+        await closeTuiContext();
+      }
+      // Return a plain exit code here. A pending /resume picker selection is
+      // honored by the outer entrypoints (bootTUIEntry / resumeTUIEntry) once
+      // this function's finally chain has closed the daemon client and
+      // detached the prior session — see exitOrResumeAfterTui at those call
+      // sites. Doing the relaunch here would race the daemonClient.close()
+      // below and re-resume before teardown completes.
+      return 0;
+    });
   } catch (error) {
     if (
       error instanceof SessionLockedError ||
@@ -4898,16 +5017,27 @@ export async function attachAgentTuiEntry(
 }
 
 /** Resume a daemon-owned session through the TUI. */
-export async function resumeTUIEntry(args: ResumeTUIArgs): Promise<number> {
+export async function resumeTUIEntry(
+  args: ResumeTUIArgs,
+  startupCliFlags: StartupCliFlags = readStartupCliFlags(process.argv),
+): Promise<number> {
   const cliCwd = resolveCliCwdForStartup(process.env);
   if (!cliCwd.ok) {
     return writeUnavailableCliCwd();
   }
   const workspaceRoot = cliCwd.cwd;
-  const resolved = resolveResumeSessionId(workspaceRoot, args.resumeId);
+  const agencHome = resolveAgencHome(process.env);
+  const resolved = resolveResumeSessionId(
+    workspaceRoot,
+    args.resumeId,
+    agencHome,
+  );
   switch (resolved.kind) {
     case "ok":
-      return resumeResolvedTUIEntry(resolved, args.resumeId);
+      return resumeResolvedTUIEntry(resolved, args.resumeId, {
+        agencHome,
+        startupCliFlags,
+      });
     case "ambiguous":
       process.stderr.write(
         `agenc: ambiguous session id '${resolved.input}' matches: ${resolved.matches.join(", ")}\n`,
@@ -4946,8 +5076,13 @@ function sameResumeDescriptor(
 
 function reproveResumeDescriptor(
   expected: ResolvedResumeSession,
+  agencHome: string,
 ): ResolvedResumeSession {
-  const observed = resolveResumeSessionId(expected.cwd, expected.sessionId);
+  const observed = resolveResumeSessionId(
+    expected.cwd,
+    expected.sessionId,
+    agencHome,
+  );
   if (observed.kind !== "ok" || !sameResumeDescriptor(expected, observed)) {
     throw new Error(
       `canonical resume source for ${expected.sessionId} changed during authorization`,
@@ -5046,14 +5181,26 @@ function assertLiveAgentMatchesResumeDescriptor(
   }
 }
 
+function isCanonicalSessionAlreadyActiveError(error: unknown): boolean {
+  return (
+    error instanceof AgenCDaemonResponseError &&
+    isRecord(error.data) &&
+    error.data.code === "CANONICAL_SESSION_ALREADY_ACTIVE"
+  );
+}
+
 async function resumeResolvedTUIEntry(
   descriptor: ResolvedResumeSession,
   displayId: string,
   options: {
+    readonly agencHome: string;
+    readonly startupCliFlags?: StartupCliFlags;
     readonly initialComposerText?: string;
     readonly startupImages?: readonly string[];
-  } = {},
+  },
 ): Promise<number> {
+  const startupCliFlags =
+    options.startupCliFlags ?? readStartupCliFlags(process.argv);
   let cwdProof: ResumeCwdProof;
   try {
     cwdProof = openResumeCwdProof(descriptor.cwd);
@@ -5070,6 +5217,7 @@ async function resumeResolvedTUIEntry(
       !(await requireProjectTrustForTui({
         env: process.env,
         argv: process.argv,
+        startupCliFlags,
         cwd: descriptor.cwd,
         useEnvWorkspace: false,
       }))
@@ -5079,7 +5227,7 @@ async function resumeResolvedTUIEntry(
     let authoritative: ResolvedResumeSession;
     try {
       assertResumeCwdProof(descriptor.cwd, cwdProof);
-      authoritative = reproveResumeDescriptor(descriptor);
+      authoritative = reproveResumeDescriptor(descriptor, options.agencHome);
     } catch (error) {
       process.stderr.write(
         `agenc: unable to resume session '${displayId}': ${
@@ -5110,12 +5258,28 @@ async function resumeResolvedTUIEntry(
           authoritative.sessionId,
         );
         if (live === null) {
-          authoritative = reproveResumeDescriptor(authoritative);
+          authoritative = reproveResumeDescriptor(
+            authoritative,
+            options.agencHome,
+          );
           assertResumeCwdProof(authoritative.cwd, cwdProof);
-          agent = await resumeColdDaemonSession({
-            deps,
-            descriptor: authoritative,
-          });
+          try {
+            agent = await resumeColdDaemonSession({
+              deps,
+              descriptor: authoritative,
+              startupCliFlags,
+            });
+          } catch (resumeError) {
+            if (!isCanonicalSessionAlreadyActiveError(resumeError)) {
+              throw resumeError;
+            }
+            const raced = await deps.findAgentBySessionId(
+              daemonClient,
+              authoritative.sessionId,
+            );
+            if (raced === null) throw resumeError;
+            agent = raced;
+          }
         } else {
           agent = live;
         }
@@ -5134,6 +5298,7 @@ async function resumeResolvedTUIEntry(
         agentId: agent.agentId,
         clientId: `agenc-tui-${process.pid}`,
         daemonClient,
+        startupCliFlags,
         ...(options.initialComposerText !== undefined
           ? { initialComposerText: options.initialComposerText }
           : {}),
@@ -5141,7 +5306,7 @@ async function resumeResolvedTUIEntry(
           ? { startupImages: options.startupImages }
           : {}),
       });
-      return exitOrResumeAfterTui(code);
+      return exitOrResumeAfterTui(code, startupCliFlags);
     } finally {
       if (!transferred) {
         await daemonClient.close().catch(() => {
@@ -5157,13 +5322,15 @@ async function resumeResolvedTUIEntry(
 /** Continue the newest prior session for the current project. */
 export async function continueTUIEntry(
   _args: ContinueTUIArgs,
+  startupCliFlags: StartupCliFlags = readStartupCliFlags(process.argv),
 ): Promise<number> {
   const cliCwd = resolveCliCwdForStartup(process.env);
   if (!cliCwd.ok) {
     return writeUnavailableCliCwd();
   }
   const workspaceRoot = cliCwd.cwd;
-  const resolved = resolveLatestSessionId(workspaceRoot);
+  const agencHome = resolveAgencHome(process.env);
+  const resolved = resolveLatestSessionId(workspaceRoot, agencHome);
   if (resolved.kind === "search_incomplete") {
     process.stderr.write(
       `agenc: session search stopped at its ${resolved.reason.replaceAll("_", " ")} safety limit; retry with an exact session id\n`,
@@ -5174,14 +5341,16 @@ export async function continueTUIEntry(
     process.stderr.write("agenc: no previous session found for this project\n");
     return 1;
   }
-  return resumeResolvedTUIEntry(resolved, resolved.sessionId);
+  return resumeResolvedTUIEntry(resolved, resolved.sessionId, {
+    agencHome,
+    startupCliFlags,
+  });
 }
 
 /**
- * AgenC-style CLI startup gate: config reads must be enabled before any
- * downstream path can touch global settings (auto-compact, theme, provider
- * profiles, etc.). AgenC routes both the one-shot and Ink console through this
- * same entrypoint, so the gate belongs here rather than in individual phases.
+ * Apply process hardening before CLI routing. Configuration and runtime-state
+ * access is owned by each explicit ConfigStore/RuntimeStateRepository; there
+ * is deliberately no process-global "enabled" latch.
  */
 export function initializeCliRuntime(): void {
   // Apply pre-main process hardening before any I/O or subprocess spawn:
@@ -5190,7 +5359,6 @@ export function initializeCliRuntime(): void {
   // PT_DENY_ATTACH on macOS. Best-effort — failures are non-fatal so the
   // CLI still starts on platforms where the native binding is unavailable.
   applyBestEffortPreMainProcessHardening();
-  enableConfigs();
 }
 
 async function loadMcpCliConfig(): Promise<AgenCConfig | undefined> {
@@ -5198,6 +5366,7 @@ async function loadMcpCliConfig(): Promise<AgenCConfig | undefined> {
     const store = new ConfigStore({
       home: resolveAgencHome(process.env),
       env: process.env,
+      cwd: resolveWorkspaceFromEnv(process.env) ?? process.cwd(),
       onWarn: (message) => process.stderr.write(`${message}\n`),
     });
     return await store.reload();
@@ -5235,8 +5404,31 @@ export function shouldLoadMcpCliConfig(argv: readonly string[]): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// main — Wave 5-B routing entrypoint
+// main routing entrypoint
 // ─────────────────────────────────────────────────────────────────────
+
+/**
+ * The operator-facing process owns the advisory startup audit. A detached
+ * daemon re-enters this dispatcher as `start --foreground`, but repeating the
+ * audit there would duplicate config and native secure-storage reads before the child
+ * can publish readiness. Direct foreground launches still run the audit.
+ */
+export function shouldRunDaemonStartupSecurityAudit(
+  action: AgenCDaemonCliAction,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  hasParentIpc = typeof process.send === "function",
+): boolean {
+  if (action !== "start" && action !== "run" && action !== "restart") {
+    return false;
+  }
+  const startupGuardToken = env[AGENC_DAEMON_STARTUP_GUARD_ENV];
+  const isDetachedChild =
+    action === "run" &&
+    env.AGENC_DAEMON_RUN === "1" &&
+    hasParentIpc &&
+    isAgenCDaemonStartupGuardToken(startupGuardToken);
+  return !isDetachedChild;
+}
 
 /**
  * Top-level dispatcher. Branches between the full Ink TUI and the
@@ -5244,6 +5436,14 @@ export function shouldLoadMcpCliConfig(argv: readonly string[]): boolean {
  * for the routing table.
  */
 export async function main(): Promise<number> {
+  try {
+    assertCanonicalEnvironmentIngress(process.env);
+  } catch (error) {
+    process.stderr.write(
+      `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    return 2;
+  }
   initializeCliRuntime();
   const argv = process.argv.slice(2);
   const initCommand = parseAgenCInitCliArgs(argv);
@@ -5254,14 +5454,15 @@ export async function main(): Promise<number> {
   if (daemonCommand !== null) {
     if (
       daemonCommand.kind === "command" &&
-      (daemonCommand.action === "start" ||
-        daemonCommand.action === "run" ||
-        daemonCommand.action === "restart")
+      shouldRunDaemonStartupSecurityAudit(daemonCommand.action, process.env)
     ) {
       // Warn (never block) when starting the daemon with critical audit
       // findings — exposure misconfigurations matter most at startup.
       try {
-        const audit = await buildSecurityAuditReport({ env: process.env });
+        const audit = await buildSecurityAuditReport({
+          env: process.env,
+          inspectNativeCredentials: false,
+        });
         if (audit.criticalCount > 0) {
           process.stderr.write(
             `agenc: WARNING — ${formatSecurityAuditSummaryLine(audit)}\n`,
@@ -5275,7 +5476,10 @@ export async function main(): Promise<number> {
   }
   const remoteCommand = parseAgenCRemoteCliArgs(argv);
   if (remoteCommand !== null) {
-    return runAgenCRemoteCli(remoteCommand);
+    return runAgenCRemoteCli(
+      remoteCommand,
+      captureRemoteCliRuntimeContext(process.env),
+    );
   }
   const agentCommand = parseAgenCAgentCliArgs(argv);
   if (agentCommand !== null) {
@@ -5321,12 +5525,11 @@ export async function main(): Promise<number> {
   // result on stdout, not an Ink screen to scrape.
   const openAiAuthCommand = parseOpenAiAuthCliArgs(argv);
   if (openAiAuthCommand !== null) {
-    return runOpenAiAuthCli(openAiAuthCommand);
-  }
-  // Headless xAI sign-in/logout for Desktop and other non-TUI clients.
-  const xaiAuthCommand = parseXaiAuthCliArgs(argv);
-  if (xaiAuthCommand !== null) {
-    return runXaiAuthCli(xaiAuthCommand);
+    const ingress = captureSecureStorageIngress(process.env);
+    return runOpenAiAuthCli(openAiAuthCommand, {
+      home: ingress.home,
+      environment: snapshotProviderEnvironment(ingress.environment),
+    });
   }
   const authCommand = parseAgenCAuthCliArgs(argv);
   if (authCommand !== null) {
@@ -5411,7 +5614,15 @@ export async function main(): Promise<number> {
   }
   const pluginCommand = parseAgenCPluginCliArgs(argv);
   if (pluginCommand !== null) {
-    return runAgenCPluginCli(pluginCommand);
+    const pluginEnvironment = Object.freeze({ ...process.env });
+    const pluginRuntimeOptions = resolveAgentRuntimeOptions(pluginEnvironment);
+    return runAgenCPluginCli(pluginCommand, {
+      agencHome: resolveAgencHome(pluginEnvironment),
+      env: pluginEnvironment,
+      pluginStorageRoot: pluginRuntimeOptions.pluginStorageRoot,
+      sessionTempRoot: pluginRuntimeOptions.sessionTempRoot,
+      workspaceRoot: process.cwd(),
+    });
   }
   const permissionsCommand = parseAgenCPermissionsCliArgs(argv);
   if (permissionsCommand !== null) {
@@ -5456,6 +5667,10 @@ async function runDefaultAgenCCliRoute(
     isTTY: Boolean(process.stdin.isTTY),
     isStdoutTTY: Boolean(process.stdout.isTTY),
   });
+  const startupCliFlags: StartupCliFlags =
+    routePlan.kind === "errorAndExit"
+      ? Object.freeze({})
+      : readStartupCliFlags(argv);
   const targetResumeRoute =
     routePlan.kind === "resumeTUI" || routePlan.kind === "continueTUI";
   const routeNeedsToolTrust =
@@ -5475,6 +5690,7 @@ async function runDefaultAgenCCliRoute(
       !(await requireProjectTrustForTui({
         env: process.env,
         argv,
+        startupCliFlags,
         cwd: routeCwd.cwd,
       }))
     ) {
@@ -5482,6 +5698,7 @@ async function runDefaultAgenCCliRoute(
     }
   }
   if (
+    routePlan.kind !== "errorAndExit" &&
     !targetResumeRoute &&
     (await resolveAgenCDaemonAutostartEnabled(process.env))
   ) {
@@ -5498,8 +5715,7 @@ async function runDefaultAgenCCliRoute(
         io: { stdout: silentStdout, stderr: process.stderr },
       });
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(`agenc: daemon autostart failed: ${message}\n`);
       if (!process.stdout.isTTY) {
         return 1;
@@ -5514,14 +5730,16 @@ async function runDefaultAgenCCliRoute(
     argv,
     isTTY: Boolean(process.stdin.isTTY),
     isStdoutTTY: Boolean(process.stdout.isTTY),
-    bootTUI: (args: BootTUIArgs) => bootTUIEntry(args),
+    bootTUI: (args: BootTUIArgs) => bootTUIEntry(args, startupCliFlags),
     oneShotCLI: (userMessage: string, startupImages?: readonly string[]) =>
       oneShotCLI(
         userMessage.length > 0 ? userMessage : null,
         startupImages ?? [],
+        startupCliFlags,
       ),
-    resumeTUI: (args: ResumeTUIArgs) => resumeTUIEntry(args),
-    continueTUI: (args: ContinueTUIArgs) => continueTUIEntry(args),
+    resumeTUI: (args: ResumeTUIArgs) => resumeTUIEntry(args, startupCliFlags),
+    continueTUI: (args: ContinueTUIArgs) =>
+      continueTUIEntry(args, startupCliFlags),
   });
 }
 

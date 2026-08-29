@@ -28,6 +28,7 @@ import {
 } from "../../src/llm/registry/model-catalog.js";
 import { readModelMenuSnapshot } from "../../src/commands/model-menu.js";
 import type { SlashCommandContext } from "../../src/commands/types.js";
+import { resolveHomeContext } from "../../src/config/home.js";
 
 function configWithModelNoProvider(model: string): AgenCConfig {
   // Top-level model set, but `model_provider` absent — the exact condition the
@@ -41,6 +42,10 @@ function configWithModelNoProvider(model: string): AgenCConfig {
 
 function ctxWithProvider(provider: string, model: string): SlashCommandContext {
   const config = { ...defaultConfig(), model, model_provider: provider };
+  const configStore = {
+    current: () => config,
+    homeContext: resolveHomeContext({ AGENC_HOME: "/home/test" }),
+  };
   const session = {
     state: {
       unsafePeek: () => ({
@@ -51,14 +56,17 @@ function ctxWithProvider(provider: string, model: string): SlashCommandContext {
         history: [],
       }),
     },
-    services: { configStore: { current: () => config } },
+    services: {
+      configStore,
+      providerService: { environment: () => ({}) },
+    },
   };
   return {
     session,
     argsRaw: "",
     cwd: "/ws",
     home: "/home/test",
-    configStore: { current: () => config },
+    configStore,
   } as unknown as SlashCommandContext;
 }
 

@@ -25,6 +25,7 @@
 
 import type { SearchInput, SearchProvider } from './types.js'
 import type { ProviderOutput } from './types.js'
+import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
 
 import { customProvider } from './custom.js'
 import { duckduckgoProvider } from './duckduckgo.js'
@@ -98,7 +99,7 @@ const PROVIDER_BY_NAME: Record<string, SearchProvider> = {
 const VALID_MODES = new Set<string>(Object.keys(PROVIDER_BY_NAME).concat(['auto', 'native']))
 
 export function getProviderMode(): ProviderMode {
-  const raw = process.env.WEB_SEARCH_PROVIDER ?? 'auto'
+  const raw = getSelectedProviderEnvironment().WEB_SEARCH_PROVIDER ?? 'auto'
   if (VALID_MODES.has(raw)) return raw as ProviderMode
   return 'auto'
 }

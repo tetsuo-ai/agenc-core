@@ -6,7 +6,7 @@
  * rendering instead of only opening the empty-state panel.
  */
 export const meta = {
-  description: "/diff renders diff UI, returns to idle without crash.",
+  description: "/diff renders diff UI and restores slash input after close.",
   dirtyCwd: true,
   timeoutMs: 30_000,
 };
@@ -19,5 +19,13 @@ export default async function (session) {
     timeout: 15_000,
     label: "/diff surface with tracked fixture",
   });
+  session.send("q");
   await session.waitForIdle({ timeout: 15_000 });
+  await session.type("/");
+  await session.waitFor(/SLASH COMMANDS/u, {
+    timeout: 10_000,
+    label: "slash menu after closing /diff",
+  });
+  session.sendEscape();
+  session.send("\x7f");
 }

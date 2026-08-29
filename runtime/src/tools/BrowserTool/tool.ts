@@ -14,7 +14,6 @@
  */
 
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
-import { validationErrorToolResult } from "../results.js";
 import type { FunctionCallOutputContentItem } from "../context.js";
 import type { PermissionResult, PermissionUpdate } from "../../permissions/types.js";
 import type { ToolEvaluatorContext } from "../../permissions/evaluator.js";
@@ -25,8 +24,8 @@ import {
   registerSandboxExecutionLifecycleParticipant,
 } from "../../sandbox/execution-lifecycle.js";
 import { resolveBrowserPolicy } from "../../browser/config.js";
-import { loadConfig } from "../../config/loader.js";
-import { resolveAgencHome } from "../../config/env.js";
+import type { BrowserConfig } from "../../config/schema.js";
+import { getCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
 import {
   missingSandboxExecutionBoundary,
   readSandboxExecutionBroker,
@@ -71,8 +70,10 @@ interface BrowserToolInput extends ToolExecutionInjectedArgs {
 }
 
 export interface CreateBrowserToolOptions {
-  /** Override AGENC_HOME resolution (tests / embedding). */
+  /** Explicit canonical home (tests / embedding). */
   readonly agencHome?: string;
+  /** Already-layered canonical `[browser]` snapshot for this session. */
+  readonly config?: BrowserConfig;
   /** Inject a lifecycle-owned manager (tests). When absent one is created lazily. */
   readonly manager?: BrowserManager;
 }
@@ -85,17 +86,9 @@ function errorResult(message: string): ToolResult {
   return { content: message, isError: true };
 }
 
-function preEffectErrorResult(evidenceRef: string, message: string): ToolResult {
-  return validationErrorToolResult(`tool:browser:${evidenceRef}`, message);
-}
-
 function safeAgencHome(explicit?: string): string | undefined {
   if (explicit !== undefined) return explicit;
-  try {
-    return resolveAgencHome(process.env);
-  } catch {
-    return undefined;
-  }
+  return getCanonicalSettingsAuthority()?.homeContext.path;
 }
 
 function hostOf(url: string): string {
@@ -165,14 +158,7 @@ export function createBrowserTool(
     const initializing = (async () => {
       let created = injectedManager;
       if (created === undefined) {
-        let browserConfig;
-        try {
-          const loaded = await loadConfig();
-          browserConfig = loaded.config.browser;
-        } catch {
-          browserConfig = undefined;
-        }
-        const policy = resolveBrowserPolicy(browserConfig, process.env);
+        const policy = resolveBrowserPolicy(options.config);
         const agencHome = safeAgencHome(options.agencHome);
         created = new BrowserManager({
           ...(agencHome !== undefined ? { agencHome } : {}),
@@ -184,6 +170,7 @@ export function createBrowserTool(
       try {
         registerSandboxExecutionLifecycleParticipant(sandboxExecutionBroker, {
           name: "browser",
+          spawnSurfaces: ["browser"],
           quiesce: () => created.closeAll(),
           resume: async () => {},
           dispose: async () => {
@@ -248,27 +235,14 @@ export function createBrowserTool(
   ): Promise<ToolResult> {
     const action = str(input.action);
     if (action === undefined || !BROWSER_ACTIONS.includes(action as never)) {
-      return preEffectErrorResult(
-        "input-validation",
+      return errorResult(
         `action must be one of: ${BROWSER_ACTIONS.join(", ")}`,
       );
     }
     const requiredError = validateRequired(action, input);
-    if (requiredError !== undefined) {
-      return preEffectErrorResult("input-validation", requiredError);
-    }
+    if (requiredError !== undefined) return errorResult(requiredError);
     if (sandboxExecutionBroker === undefined) {
-      const error = missingSandboxExecutionBoundary("browser");
-      return preEffectErrorResult(
-        "sandbox-boundary-missing",
-        `Browser action failed: ${error.message}`,
-      );
-    }
-    if (isSandboxExecutionBrokerDisposed(sandboxExecutionBroker)) {
-      return preEffectErrorResult(
-        "sandbox-authority-disposed",
-        "Browser action failed: browser sandbox authority has been disposed",
-      );
+      throw missingSandboxExecutionBoundary("browser");
     }
     const mgr = await ensureManager(sandboxExecutionBroker);
 

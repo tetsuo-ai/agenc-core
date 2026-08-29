@@ -3,7 +3,7 @@
  *
  * Programmatic registration surface — the gut runtime wires hooks at
  * boot (or in tests) by calling `register*Hook(...)`. There is no
- * settings.json scanner or plugin loader; that scope belongs upstream.
+ * config snapshot or plugin loader; that scope belongs upstream.
  *
  * Two layers:
  *  - `LifecycleHookRegistry` — instantiable container, used in tests.
@@ -30,28 +30,34 @@ export class LifecycleHookRegistry {
   private sessionEnd: SessionEndHook[] = [];
   private notification: NotificationHook[] = [];
 
-  addPreCompact(hook: PreCompactHook): void {
+  addPreCompact(hook: PreCompactHook): () => void {
     this.preCompact.push(hook);
+    return once(() => this.remove("PreCompact", hook));
   }
 
-  addPostCompact(hook: PostCompactHook): void {
+  addPostCompact(hook: PostCompactHook): () => void {
     this.postCompact.push(hook);
+    return once(() => this.remove("PostCompact", hook));
   }
 
-  addSessionStart(hook: SessionStartHook): void {
+  addSessionStart(hook: SessionStartHook): () => void {
     this.sessionStart.push(hook);
+    return once(() => this.remove("SessionStart", hook));
   }
 
-  addSubagentStop(hook: SubagentStopHook): void {
+  addSubagentStop(hook: SubagentStopHook): () => void {
     this.subagentStop.push(hook);
+    return once(() => this.remove("SubagentStop", hook));
   }
 
-  addSessionEnd(hook: SessionEndHook): void {
+  addSessionEnd(hook: SessionEndHook): () => void {
     this.sessionEnd.push(hook);
+    return once(() => this.remove("SessionEnd", hook));
   }
 
-  addNotification(hook: NotificationHook): void {
+  addNotification(hook: NotificationHook): () => void {
     this.notification.push(hook);
+    return once(() => this.remove("Notification", hook));
   }
 
   getPreCompact(): ReadonlyArray<PreCompactHook> {
@@ -76,6 +82,44 @@ export class LifecycleHookRegistry {
 
   getNotification(): ReadonlyArray<NotificationHook> {
     return this.notification;
+  }
+
+  remove(event: "PreCompact", hook: PreCompactHook): void;
+  remove(event: "PostCompact", hook: PostCompactHook): void;
+  remove(event: "SessionStart", hook: SessionStartHook): void;
+  remove(event: "SubagentStop", hook: SubagentStopHook): void;
+  remove(event: "SessionEnd", hook: SessionEndHook): void;
+  remove(event: "Notification", hook: NotificationHook): void;
+  remove(
+    event: LifecycleHookEvent,
+    hook:
+      | PreCompactHook
+      | PostCompactHook
+      | SessionStartHook
+      | SubagentStopHook
+      | SessionEndHook
+      | NotificationHook,
+  ): void {
+    switch (event) {
+      case "PreCompact":
+        this.preCompact = withoutHook(this.preCompact, hook);
+        return;
+      case "PostCompact":
+        this.postCompact = withoutHook(this.postCompact, hook);
+        return;
+      case "SessionStart":
+        this.sessionStart = withoutHook(this.sessionStart, hook);
+        return;
+      case "SubagentStop":
+        this.subagentStop = withoutHook(this.subagentStop, hook);
+        return;
+      case "SessionEnd":
+        this.sessionEnd = withoutHook(this.sessionEnd, hook);
+        return;
+      case "Notification":
+        this.notification = withoutHook(this.notification, hook);
+        return;
+    }
   }
 
   /** Drop every hook for `event`, or all events when omitted. */
@@ -110,6 +154,21 @@ export class LifecycleHookRegistry {
         return;
     }
   }
+}
+
+function withoutHook<T>(hooks: readonly T[], hook: unknown): T[] {
+  const index = hooks.findIndex((candidate) => candidate === hook);
+  if (index === -1) return [...hooks];
+  return [...hooks.slice(0, index), ...hooks.slice(index + 1)];
+}
+
+function once(action: () => void): () => void {
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    action();
+  };
 }
 
 let defaultRegistry: LifecycleHookRegistry = new LifecycleHookRegistry();

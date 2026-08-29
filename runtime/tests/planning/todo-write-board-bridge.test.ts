@@ -5,27 +5,29 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { createPlanningTools } from '../../src/tools/system/planning.js'
+import { resolveHomeContext } from '../../src/config/home.js'
+import { runWithCurrentRuntimeSession } from '../../src/session/current-session.js'
 
 // The TodoWrite handler must bridge to the file-backed task board that the
 // TUI's TaskListV2 renders via useTasksV2 — otherwise the tool only emits
 // plan events and the live todo list in the chat view stays empty.
 
 const ORIGINAL_TASK_LIST_ID = process.env.AGENC_TASK_LIST_ID
-const ORIGINAL_CONFIG_DIR = process.env.AGENC_CONFIG_DIR
+const ORIGINAL_AGENC_HOME = process.env.AGENC_HOME
 
 let home: string
 
 beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), 'agenc-todo-bridge-'))
-  process.env.AGENC_CONFIG_DIR = home
+  process.env.AGENC_HOME = home
   process.env.AGENC_TASK_LIST_ID = 'bridge-test'
 })
 
 afterEach(async () => {
   if (ORIGINAL_TASK_LIST_ID === undefined) delete process.env.AGENC_TASK_LIST_ID
   else process.env.AGENC_TASK_LIST_ID = ORIGINAL_TASK_LIST_ID
-  if (ORIGINAL_CONFIG_DIR === undefined) delete process.env.AGENC_CONFIG_DIR
-  else process.env.AGENC_CONFIG_DIR = ORIGINAL_CONFIG_DIR
+  if (ORIGINAL_AGENC_HOME === undefined) delete process.env.AGENC_HOME
+  else process.env.AGENC_HOME = ORIGINAL_AGENC_HOME
   await rm(home, { recursive: true, force: true })
 })
 
@@ -33,6 +35,17 @@ function findTodoWrite() {
   const tool = createPlanningTools().find((candidate) => candidate.name === 'TodoWrite')
   if (!tool) throw new Error('TodoWrite tool not registered')
   return tool
+}
+
+function withHomeAuthority<T>(operation: () => T): T {
+  const homeContext = resolveHomeContext(
+    { AGENC_HOME: home, HOME: home },
+    { platformHome: home },
+  )
+  return runWithCurrentRuntimeSession(
+    { services: { configStore: { homeContext } } } as never,
+    operation,
+  )
 }
 
 async function readBoardTask(contentSlug: string) {
@@ -43,12 +56,12 @@ async function readBoardTask(contentSlug: string) {
 describe('TodoWrite → task board bridge', () => {
   it('persists todos to the board with stable content-slug ids and ordering', async () => {
     const tool = findTodoWrite()
-    const result = await tool.execute({
+    const result = await withHomeAuthority(() => tool.execute({
       todos: [
         { content: 'Explore the codebase', status: 'in_progress', activeForm: 'Exploring the codebase' },
         { content: 'Implement the feature', status: 'pending', activeForm: 'Implementing the feature' },
       ],
-    })
+    }))
     expect(result.isError).not.toBe(true)
 
     const first = await readBoardTask('explore-the-codebase')
@@ -64,17 +77,17 @@ describe('TodoWrite → task board bridge', () => {
 
   it('updates status on re-issue and closes tasks dropped from the list', async () => {
     const tool = findTodoWrite()
-    await tool.execute({
+    await withHomeAuthority(() => tool.execute({
       todos: [
         { content: 'Explore the codebase', status: 'in_progress', activeForm: 'Exploring the codebase' },
         { content: 'Implement the feature', status: 'pending', activeForm: 'Implementing the feature' },
       ],
-    })
-    await tool.execute({
+    }))
+    await withHomeAuthority(() => tool.execute({
       todos: [
         { content: 'Explore the codebase', status: 'completed', activeForm: 'Exploring the codebase' },
       ],
-    })
+    }))
 
     const first = await readBoardTask('explore-the-codebase')
     expect(first.status).toBe('completed')
@@ -86,11 +99,11 @@ describe('TodoWrite → task board bridge', () => {
 
   it('still returns the donor success message', async () => {
     const tool = findTodoWrite()
-    const result = await tool.execute({
+    const result = await withHomeAuthority(() => tool.execute({
       todos: [
         { content: 'Ship it', status: 'in_progress', activeForm: 'Shipping it' },
       ],
-    })
+    }))
     const text = JSON.stringify(result)
     expect(text).toContain('Todos have been modified successfully')
   })

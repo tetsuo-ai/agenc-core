@@ -47,17 +47,17 @@ Never reuse tab IDs from a previous/other session. Follow these guidelines:
 
 /**
  * Additional instructions for chrome tools when tool search is enabled.
- * These instruct the model to load chrome tools via ToolSearch before using them.
+ * These instruct the model to load chrome tools via system.searchTools before using them.
  * Only injected when tool search is actually enabled (not just optimistically possible).
  */
-export const CHROME_TOOL_SEARCH_INSTRUCTIONS = `**IMPORTANT: Before using any chrome browser tools, you MUST first load them using ToolSearch.**
+export const CHROME_TOOL_SEARCH_INSTRUCTIONS = `**IMPORTANT: Before using any chrome browser tools, you MUST first load them using system.searchTools.**
 
 Chrome browser tools are MCP tools that require loading before use. Before calling any mcp__agenc-in-chrome__* tool:
-1. Use ToolSearch with \`select:mcp__agenc-in-chrome__<tool_name>\` to load the specific tool
+1. Use system.searchTools with \`select:mcp__agenc-in-chrome__<tool_name>\` to load the specific tool
 2. Then call the tool
 
 For example, to get tab context:
-1. First: ToolSearch with query "select:mcp__agenc-in-chrome__tabs_context_mcp"
+1. First: system.searchTools with query "select:mcp__agenc-in-chrome__tabs_context_mcp"
 2. Then: Call mcp__agenc-in-chrome__tabs_context_mcp`
 
 /**

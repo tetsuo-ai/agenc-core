@@ -163,8 +163,15 @@ export function createAgenCDaemonStartupGuardController(
   };
 }
 
+/** Shared validity contract for the one-shot startup capability token. */
+export function isAgenCDaemonStartupGuardToken(
+  token: unknown,
+): token is string {
+  return typeof token === "string" && token.length >= 32 && token.length <= 1_024;
+}
+
 function assertStartupGuardToken(token: string): void {
-  if (token.length < 32 || token.length > 1_024) {
+  if (!isAgenCDaemonStartupGuardToken(token)) {
     throw new TypeError("daemon startup guard token is invalid");
   }
 }

@@ -32,12 +32,12 @@ import { homedir } from 'os'
 import { basename, delimiter, dirname, join, resolve } from 'path'
 import { getMaxVersion, shouldSkipVersion } from '../autoUpdater.js'
 import { registerCleanup } from '../cleanupRegistry.js'
-import { getGlobalConfig, saveGlobalConfig } from '../config.js'
+import { getRuntimeState, updateRuntimeState } from '../config.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getCurrentInstallationType } from '../doctorDiagnostic.js'
 import { env } from '../env.js'
 import { envDynamic } from '../envDynamic.js'
-import { getAgenCConfigHomeDir, isEnvTruthy } from '../envUtils.js'
+import { getAgenCHomeDir, isEnvTruthy } from '../envUtils.js'
 import { errorMessage, getErrnoCode, isENOENT, toError } from '../errors.js'
 import { execFileNoThrowWithCwd } from '../execFileNoThrow.js'
 import { getShellType } from '../localInstaller.js'
@@ -724,7 +724,7 @@ export async function checkInstall(
     return []
   }
 
-  const config = getGlobalConfig()
+  const config = getRuntimeState()
 
   // Only show warnings if:
   // 1. User is actually running from native installation, OR
@@ -898,22 +898,16 @@ async function installLatestImpl(
     }
   }
 
-  // Installation succeeded (early return above covers failure). Mark as native
-  // and disable compatibility auto-updater to protect symlinks.
-  const config = getGlobalConfig()
+  // Installation succeeded (early return above covers failure). Installation
+  // method is mutable runtime state; the operator's autoUpdates preference
+  // remains solely owned by config.toml.
+  const config = getRuntimeState()
   if (config.installMethod !== 'native') {
-    saveGlobalConfig(current => ({
+    updateRuntimeState(current => ({
       ...current,
       installMethod: 'native',
-      // Disable compatibility auto-updater to prevent npm sessions from deleting native symlinks.
-      // Native installations use NativeAutoUpdater instead, which respects native installation.
-      autoUpdates: false,
-      // Mark this as protection-based, not user preference
-      autoUpdatesProtectedForNative: true,
     }))
-    logForDebugging(
-      'Native installer: Set installMethod to "native" and disabled legacy auto-updater for protection',
-    )
+    logForDebugging('Native installer: set installMethod to "native"')
   }
 
   void cleanupOldVersions()
@@ -1548,10 +1542,7 @@ export async function cleanupNpmInstallations(): Promise<{
     }
   }
 
-  // Preserve compatibility with pre-migration installs under ~/.agenc/local.
-  const localInstallDirs = Array.from(
-    new Set([join(getAgenCConfigHomeDir(), 'local'), join(homedir(), '.agenc', 'local')]),
-  )
+  const localInstallDirs = [join(getAgenCHomeDir(), 'local')]
 
   for (const localInstallDir of localInstallDirs) {
     try {

@@ -10,15 +10,8 @@ import {
 } from "./exec-command.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
 import { createWriteStdinTool as createUnboundWriteStdinTool } from "./write-stdin.js";
-import {
-  UnifiedExecPreSpawnRefusalError,
-  UnifiedExecProcessManager,
-} from "../../unified-exec/process-manager.js";
-import {
-  UnifiedExecError,
-  type ExecCommandToolOutput,
-  type UnifiedExecProcessManagerLike,
-} from "../../unified-exec/types.js";
+import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
+import type { ExecCommandToolOutput, UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
 import { attachToolRuntimeContext } from "../runtimes/context.js";
 
 const createExecCommandTool = (
@@ -88,23 +81,6 @@ function signalKilledExecOutput(partialStdout: string): ExecCommandToolOutput {
   };
 }
 
-function yieldedExecOutput(partialStdout: string): ExecCommandToolOutput {
-  return {
-    output: partialStdout,
-    stdout: partialStdout,
-    stderr: "",
-    exitCode: null,
-    exit_code: null,
-    process_id: 23,
-    session_id: 23,
-    durationMs: 250,
-    wall_time_seconds: 0.25,
-    timedOut: true,
-    truncated: false,
-    original_token_count: 2,
-  };
-}
-
 describe("exec_command tool", () => {
   let root = "";
 
@@ -136,6 +112,11 @@ describe("exec_command tool", () => {
       approvalResolved: true,
       rawArgs: "{}",
       invocation: {
+        session: {
+          services: {
+            runtimeOptions: { sessionTempRoot: root },
+          },
+        },
         payload: { kind: "function", arguments: "{}" },
         turn: {
           subId: "turn-network-proxy",
@@ -159,6 +140,7 @@ describe("exec_command tool", () => {
 
     expect(runtimeSandbox?.networkPolicyDecider).toBe(policyDecider);
     expect(runtimeSandbox?.blockedRequestObserver).toBe(blockedRequestObserver);
+    expect(runtimeSandbox?.sessionTempRoot).toBe(root);
   });
 
   test("blocks shell redirection writes into workspace files", async () => {
@@ -363,11 +345,6 @@ describe("exec_command tool", () => {
       output: "partial output\n",
     });
     expect(result.codeModeResult).not.toHaveProperty("exit_code");
-    expect(result.effectDisposition).toMatchObject({
-      disposition: "confirmed_committed",
-      evidenceKind: "provider_receipt",
-      evidenceRef: "tool:system.exec-command:process-exit",
-    });
   });
 
   test("flags timed-out exec (exitCode null, timedOut true) as isError with timed_out marker", async () => {
@@ -401,345 +378,6 @@ describe("exec_command tool", () => {
       timed_out: true,
       output: "slow output\n",
     });
-    expect(result.effectDisposition).toMatchObject({
-      disposition: "confirmed_committed",
-      evidenceKind: "provider_receipt",
-      evidenceRef: "tool:system.exec-command:process-exit",
-    });
-  });
-
-  test("returns an authoritative committed receipt for a live yielded process", async () => {
-    const manager: UnifiedExecProcessManagerLike = {
-      maxTimeoutMs: 30_000,
-      execCommand: vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
-        async () => yieldedExecOutput("still running\n"),
-      ),
-      writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(async () =>
-        completedExecOutput(""),
-      ),
-      closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(
-        async () => {},
-      ),
-    };
-    const tool = createExecCommandTool({
-      cwd: root,
-      allowedPaths: [root],
-      unifiedExecManager: manager,
-    });
-
-    const result = await tool.execute({
-      cmd: "npm test",
-      workdir: root,
-      yield_time_ms: 250,
-    });
-
-    expect(result.isError).toBeUndefined();
-    expect(result.effectDisposition).toMatchObject({
-      disposition: "confirmed_committed",
-      evidenceKind: "provider_receipt",
-      evidenceRef: "tool:system.exec-command:process-yield",
-    });
-  });
-
-  test("settles a typed process-limit refusal as confirmed no-effect", async () => {
-    const manager: UnifiedExecProcessManagerLike = {
-      maxTimeoutMs: 30_000,
-      execCommand: vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
-        async () => {
-          throw new UnifiedExecError(
-            "process_limit",
-            "too many live unified exec processes (1/1)",
-          );
-        },
-      ),
-      writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(async () =>
-        completedExecOutput(""),
-      ),
-      closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(
-        async () => {},
-      ),
-    };
-    const tool = createExecCommandTool({
-      cwd: root,
-      allowedPaths: [root],
-      unifiedExecManager: manager,
-    });
-
-    const result = await tool.execute({ cmd: "npm test", workdir: root });
-
-    expect(result).toMatchObject({
-      isError: true,
-      effectDisposition: {
-        disposition: "confirmed_no_effect",
-        evidenceKind: "boundary_not_crossed",
-        evidenceRef: "tool:system.exec-command:pre-spawn-error",
-      },
-    });
-  });
-
-  test("settles a branded pre-spawn create-process refusal as confirmed no-effect", async () => {
-    const manager: UnifiedExecProcessManagerLike = {
-      maxTimeoutMs: 30_000,
-      execCommand: vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
-        async () => {
-          throw new UnifiedExecPreSpawnRefusalError(
-            "sandbox transform rejected before spawn",
-          );
-        },
-      ),
-      writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(async () =>
-        completedExecOutput(""),
-      ),
-      closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(
-        async () => {},
-      ),
-    };
-    const tool = createExecCommandTool({
-      cwd: root,
-      allowedPaths: [root],
-      unifiedExecManager: manager,
-    });
-
-    const result = await tool.execute({ cmd: "npm test", workdir: root });
-
-    expect(result).toMatchObject({
-      isError: true,
-      effectDisposition: {
-        disposition: "confirmed_no_effect",
-        evidenceKind: "boundary_not_crossed",
-        evidenceRef: "tool:system.exec-command:pre-spawn-error",
-      },
-    });
-  });
-
-  test("keeps an unbranded create-process failure effect-unknown", async () => {
-    const manager: UnifiedExecProcessManagerLike = {
-      maxTimeoutMs: 30_000,
-      execCommand: vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
-        async () => {
-          throw new UnifiedExecError(
-            "create_process",
-            "child handoff failed after spawn",
-          );
-        },
-      ),
-      writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(async () =>
-        completedExecOutput(""),
-      ),
-      closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(
-        async () => {},
-      ),
-    };
-    const tool = createExecCommandTool({
-      cwd: root,
-      allowedPaths: [root],
-      unifiedExecManager: manager,
-    });
-
-    const result = await tool.execute({ cmd: "npm test", workdir: root });
-
-    expect(result).toMatchObject({ isError: true });
-    expect(result.effectDisposition).toBeUndefined();
-  });
-
-  test("keeps a generic manager rejection before onBegin effect-unknown", async () => {
-    const manager: UnifiedExecProcessManagerLike = {
-      maxTimeoutMs: 30_000,
-      execCommand: vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
-        async () => {
-          // A child could already exist even though onBegin was never emitted.
-          throw new Error("manager failed after spawning");
-        },
-      ),
-      writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(async () =>
-        completedExecOutput(""),
-      ),
-      closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(
-        async () => {},
-      ),
-    };
-    const tool = createExecCommandTool({
-      cwd: root,
-      allowedPaths: [root],
-      unifiedExecManager: manager,
-    });
-
-    const result = await tool.execute({ cmd: "npm test", workdir: root });
-
-    expect(result).toMatchObject({ isError: true });
-    expect(result.effectDisposition).toBeUndefined();
-  });
-
-  test("does not claim no-effect when onBegin telemetry throws after spawn", async () => {
-    const manager: UnifiedExecProcessManagerLike = {
-      maxTimeoutMs: 30_000,
-      execCommand: vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
-        async (request) => {
-          request.observer?.onBegin?.({
-            callId: "call-begin-error",
-            command: request.cmd,
-            cwd: root,
-            processId: 31,
-            tty: false,
-          });
-          return completedExecOutput("unreachable");
-        },
-      ),
-      writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(async () =>
-        completedExecOutput(""),
-      ),
-      closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(
-        async () => {},
-      ),
-    };
-    const tool = createExecCommandTool({
-      cwd: root,
-      allowedPaths: [root],
-      unifiedExecManager: manager,
-      execObserver: {
-        onBegin: () => {
-          throw new Error("begin telemetry failed");
-        },
-      },
-    });
-
-    const result = await tool.execute({ cmd: "npm test", workdir: root });
-
-    expect(result).toMatchObject({ isError: true });
-    expect(result.effectDisposition).toBeUndefined();
-  });
-
-  test("preserves the committed process receipt when onEnd telemetry throws", async () => {
-    const output = failedExecOutput("tests failed\n", 1);
-    const manager: UnifiedExecProcessManagerLike = {
-      maxTimeoutMs: 30_000,
-      execCommand: vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
-        async (request) => {
-          request.observer?.onBegin?.({
-            callId: "call-end-error",
-            command: request.cmd,
-            cwd: root,
-            processId: 41,
-            tty: false,
-          });
-          request.observer?.onEnd?.({
-            callId: "call-end-error",
-            exitCode: output.exitCode,
-            stdout: output.stdout,
-            stderr: output.stderr,
-            durationMs: output.durationMs,
-            processId: 41,
-            sessionId: 41,
-            tty: false,
-          });
-          return output;
-        },
-      ),
-      writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(async () =>
-        completedExecOutput(""),
-      ),
-      closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(
-        async () => {},
-      ),
-    };
-    const tool = createExecCommandTool({
-      cwd: root,
-      allowedPaths: [root],
-      unifiedExecManager: manager,
-      execObserver: {
-        onEnd: () => {
-          throw new Error("end telemetry failed");
-        },
-      },
-    });
-
-    const result = await tool.execute({ cmd: "npm test", workdir: root });
-
-    expect(result).toMatchObject({
-      isError: true,
-      effectDisposition: {
-        disposition: "confirmed_committed",
-        evidenceKind: "provider_receipt",
-        evidenceRef: "tool:system.exec-command:process-exit",
-      },
-    });
-  });
-
-  test("preserves exec_command output and committed receipt when progress telemetry throws", async () => {
-    const manager = new UnifiedExecProcessManager({ cwd: root });
-    const tool = createExecCommandTool({
-      cwd: root,
-      allowedPaths: [root],
-      unifiedExecManager: manager,
-    });
-    const progress = vi.fn(() => {
-      throw new Error("session progress sink unavailable");
-    });
-
-    try {
-      const result = await tool.execute({
-        cmd: "printf tool-progress-survives",
-        workdir: root,
-        __onProgress: progress,
-      });
-
-      expect(progress).toHaveBeenCalled();
-      expect(result.content).toContain("tool-progress-survives");
-      expect(result.effectDisposition).toMatchObject({
-        disposition: "confirmed_committed",
-        evidenceKind: "provider_receipt",
-        evidenceRef: "tool:system.exec-command:process-exit",
-      });
-    } finally {
-      await manager.closeAll("test_cleanup");
-    }
-  });
-
-  test("preserves write_stdin poll output and committed receipt when progress telemetry throws", async () => {
-    const manager = new UnifiedExecProcessManager({ cwd: root });
-    const exec = createExecCommandTool({
-      cwd: root,
-      allowedPaths: [root],
-      unifiedExecManager: manager,
-    });
-    const writeStdin = createWriteStdinTool({
-      cwd: root,
-      allowedPaths: [root],
-      unifiedExecManager: manager,
-    });
-    const progress = vi.fn(() => {
-      throw new Error("session progress sink unavailable");
-    });
-
-    try {
-      const started = await exec.execute({
-        cmd: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
-          "setTimeout(() => process.stdout.write('tool-poll-survives'), 400)",
-        )}`,
-        workdir: root,
-        yield_time_ms: 250,
-      });
-      const sessionId = (started.codeModeResult as { session_id?: number })
-        .session_id;
-      expect(sessionId).toEqual(expect.any(Number));
-
-      const result = await writeStdin.execute({
-        session_id: sessionId,
-        chars: "",
-        yield_time_ms: 5_000,
-        __onProgress: progress,
-      });
-
-      expect(progress).toHaveBeenCalled();
-      expect(result.content).toContain("tool-poll-survives");
-      expect(result.effectDisposition).toMatchObject({
-        disposition: "confirmed_committed",
-        evidenceKind: "provider_receipt",
-        evidenceRef: "tool:system.write-stdin:process-exit",
-      });
-    } finally {
-      await manager.closeAll("test_cleanup");
-    }
   });
 
   test("blocks shell redirection writes sent through write_stdin", async () => {

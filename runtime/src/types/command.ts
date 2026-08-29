@@ -7,7 +7,7 @@ import type { ToolUseContext } from '../tools/Tool.js'
 import type { EffortValue } from '../utils/effort.js'
 import type { IDEExtensionInstallationStatus, IdeType } from '../utils/ide.js'
 import type { SettingSource } from '../utils/settings/constants.js'
-import type { HooksSettings } from '../utils/settings/types.js'
+import type { HooksSettings } from '../schemas/hooks.js'
 import type { ThemeName } from '../utils/theme.js'
 import type { LogOption } from './logs.js'
 import type { Message } from './message.js'
@@ -188,7 +188,6 @@ export type CommandBase = {
   disableModelInvocation?: boolean // Whether to disable this command from being invoked by models
   userInvocable?: boolean // Whether users can invoke this skill by typing $skill-name
   loadedFrom?:
-    | 'commands_DEPRECATED'
     | 'skills'
     | 'plugin'
     | 'managed'

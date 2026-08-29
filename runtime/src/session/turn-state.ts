@@ -76,7 +76,8 @@ export interface Continue {
  * Terminal — why the run-turn generator returned. Mirrors agenc
  * query.ts terminal reasons: 'completed', 'blocking_limit',
  * 'prompt_too_long', 'image_error', 'model_error', 'aborted_streaming',
- * 'stop_hook_prevented', 'aborted_tools', 'hook_stopped', 'max_turns'.
+ * 'stop_hook_prevented', 'aborted_tools', 'hook_stopped', 'max_turns',
+ * 'max_budget_usd'.
  */
 export type TerminalReason =
   | "completed"
@@ -89,6 +90,7 @@ export type TerminalReason =
   | "stop_hook_prevented"
   | "hook_stopped"
   | "max_turns"
+  | "max_budget_usd"
   | "cancelled"
   | "no_progress"; // behavioral backstop (semantic non-termination, goal #3)
 
@@ -360,14 +362,6 @@ export interface TurnState {
    *  continue site, checked before re-entering stream. */
   recoveryReentryCount: number;
 
-  /** How many times this turn has entered the sampling loop. Advanced at
-   *  the single point every re-entry funnels through, so it is the only
-   *  counter guaranteed to move between two provider calls: `turnCount`
-   *  moves solely in commit, and `recoveryReentryCount` solely when the
-   *  ladder reserves. It is what makes an admission step identity unique
-   *  per wire call. */
-  samplingRound: number;
-
   /** Durable routing evidence consumed by the next admitted model attempt. */
   pendingAdmissionFallback: PendingAdmissionFallback | undefined;
 
@@ -508,7 +502,6 @@ export function buildInitialTurnState(
     skipCacheWrite: opts?.initialSkipCacheWrite,
     maxOutputTokensRecoveryCount: 0,
     recoveryReentryCount: 0,
-    samplingRound: 0,
     pendingAdmissionFallback: undefined,
     // Phase 4
     continuationNudgeCount: 0,
@@ -556,9 +549,6 @@ export function buildInitialTurnState(
 export interface TurnCheckpointSlice {
   readonly turnCount: number;
   readonly recoveryReentryCount: number;
-  /** Optional: checkpoints written before sampling rounds were tracked
-   *  resume at round 0, which is the same identity they crashed on. */
-  readonly samplingRound?: number;
   readonly maxOutputTokensRecoveryCount: number;
   readonly continuationNudgeCount: number;
   readonly stopHookBlockingCount: number;
@@ -581,7 +571,6 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
   const slice: {
     turnCount: number;
     recoveryReentryCount: number;
-    samplingRound: number;
     maxOutputTokensRecoveryCount: number;
     continuationNudgeCount: number;
     stopHookBlockingCount: number;
@@ -597,7 +586,6 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
   } = {
     turnCount: state.turnCount,
     recoveryReentryCount: state.recoveryReentryCount,
-    samplingRound: state.samplingRound,
     maxOutputTokensRecoveryCount: state.maxOutputTokensRecoveryCount,
     continuationNudgeCount: state.continuationNudgeCount,
     stopHookBlockingCount: state.stopHookBlockingCount,
@@ -659,9 +647,6 @@ export function restoreFromCheckpoint(
   if (Number.isFinite(slice.turnCount)) state.turnCount = slice.turnCount;
   if (Number.isFinite(slice.recoveryReentryCount)) {
     state.recoveryReentryCount = slice.recoveryReentryCount;
-  }
-  if (Number.isFinite(slice.samplingRound)) {
-    state.samplingRound = slice.samplingRound as number;
   }
   if (Number.isFinite(slice.maxOutputTokensRecoveryCount)) {
     state.maxOutputTokensRecoveryCount = slice.maxOutputTokensRecoveryCount;

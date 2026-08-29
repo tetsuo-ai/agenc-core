@@ -38,7 +38,7 @@ vi.mock('../../utils/debug.js', () => ({
 }))
 
 vi.mock('../../utils/envUtils.js', () => ({
-  getAgenCConfigHomeDir: () => historyFixture.configHome,
+  getAgenCHomeDir: () => historyFixture.configHome,
   isEnvTruthy: () => historyFixture.skipHistory,
 }))
 

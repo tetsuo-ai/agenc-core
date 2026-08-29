@@ -64,16 +64,18 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
           description:
             "The session_id returned by exec_command for the process to terminate.",
         },
-        process_id: {
-          type: "number",
-          description: "Compatibility alias for session_id.",
-        },
       },
-      anyOf: [{ required: ["session_id"] }, { required: ["process_id"] }],
+      required: ["session_id"],
       additionalProperties: false,
     },
     async execute(args: Record<string, unknown>): Promise<ToolResult> {
-      const sessionId = asNumber(args.session_id) ?? asNumber(args.process_id);
+      if (Object.prototype.hasOwnProperty.call(args, "process_id")) {
+        return {
+          content: safeStringify({ error: "unknown field `process_id`" }),
+          isError: true,
+        };
+      }
+      const sessionId = asNumber(args.session_id);
       if (sessionId === undefined) {
         return {
           content: safeStringify({ error: "session_id must be a number" }),

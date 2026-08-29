@@ -1,6 +1,5 @@
-// Heartbeat (TODO task 14). The gates + the budget wire-in are the point:
-// admit -> run -> reconcile; a budget refusal skips the turn and delivers a
-// paused notice; HEARTBEAT_OK suppresses delivery.
+// Heartbeat (TODO task 14). Runtime gates and HEARTBEAT_OK delivery suppression
+// live here; spend admission is owned by the daemon session used in production.
 
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,27 +9,30 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   resolveHeartbeatPolicy,
   parseActiveHours,
-  parseTarget,
+  parseHeartbeatTarget,
 } from "../../src/heartbeat/config.js";
+import { applyEnvOverrides } from "../../src/config/env.js";
+import {
+  defaultConfig,
+  validateAgenCConfigBlocks,
+} from "../../src/config/schema.js";
 import { HeartbeatRunner, heartbeatPrompt } from "../../src/heartbeat/runner.js";
 import { HeartbeatScheduler } from "../../src/heartbeat/scheduler.js";
 import { WorkspaceHeartbeatFileReader } from "../../src/heartbeat/heartbeat-file.js";
 import {
   HEARTBEAT_OK,
-  type HeartbeatBudgetGate,
   type HeartbeatClock,
   type HeartbeatDelivery,
   type HeartbeatFileReader,
   type HeartbeatPolicy,
   type HeartbeatTurnRunner,
-  type HeartbeatUsage,
 } from "../../src/heartbeat/types.js";
 
 // ---- config ---------------------------------------------------------------
 
 describe("resolveHeartbeatPolicy", () => {
   test("disabled by default; 30-min interval; always active", () => {
-    const p = resolveHeartbeatPolicy(undefined, {});
+    const p = resolveHeartbeatPolicy();
     expect(p.enabled).toBe(false);
     expect(p.intervalSeconds).toBe(1800);
     expect(p.activeHours).toBeNull();
@@ -38,31 +40,76 @@ describe("resolveHeartbeatPolicy", () => {
     expect(p.skipWhenBusy).toBe(true);
   });
 
-  test("env overrides config (env > config > default)", () => {
-    const p = resolveHeartbeatPolicy(
-      { enabled: true, interval_seconds: 60, model: "cfg-model" },
-      { AGENC_HEARTBEAT_INTERVAL: "120", AGENC_HEARTBEAT_MODEL: "env-model" },
+  test("canonical environment layering overrides the TOML-shaped interval", () => {
+    const config = applyEnvOverrides(
+      {
+        ...defaultConfig(),
+        heartbeat: { enabled: true, interval_seconds: 60 },
+      },
+      { AGENC_HEARTBEAT_INTERVAL: "120" },
     );
+    const p = resolveHeartbeatPolicy(config.heartbeat);
     expect(p.intervalSeconds).toBe(120);
-    expect(p.model).toBe("env-model");
   });
 
-  test("active hours + channel target parse from env", () => {
-    const p = resolveHeartbeatPolicy(
-      { enabled: true },
+  test("active hours + channel target are layered once from env", () => {
+    const config = applyEnvOverrides(
+      { ...defaultConfig(), heartbeat: { enabled: true } },
       { AGENC_HEARTBEAT_ACTIVE_HOURS: "8-22", AGENC_HEARTBEAT_TARGET: "tg:chat-1" },
     );
+    const p = resolveHeartbeatPolicy(config.heartbeat);
     expect(p.activeHours).toEqual([8, 22]);
     expect(p.target).toEqual({ kind: "channel", channelId: "tg", conversationId: "chat-1" });
+  });
+
+  test("heartbeat target env rejects malformed values and none explicitly clears TOML", () => {
+    for (const target of ["", "bogus", ":thread", "ops:", " : "]) {
+      expect(() => applyEnvOverrides(
+        { ...defaultConfig(), heartbeat: { target_channel: "ops", target_conversation: "old" } },
+        { AGENC_HEARTBEAT_TARGET: target },
+      )).toThrow(/invalid AGENC_HEARTBEAT_TARGET.*nonempty-channel.*nonempty-conversation/u);
+    }
+    const cleared = applyEnvOverrides(
+      { ...defaultConfig(), heartbeat: { target_channel: "ops", target_conversation: "old" } },
+      { AGENC_HEARTBEAT_TARGET: "none" },
+    );
+    expect(cleared.heartbeat).not.toHaveProperty("target_channel");
+    expect(cleared.heartbeat).not.toHaveProperty("target_conversation");
+  });
+
+  test("always active hours remain valid canonical configuration", () => {
+    const config = applyEnvOverrides(
+      { ...defaultConfig(), heartbeat: { enabled: true } },
+      { AGENC_HEARTBEAT_ACTIVE_HOURS: "always" },
+    );
+    expect(config.heartbeat?.active_hours).toEqual([0, 24]);
+    expect(() => validateAgenCConfigBlocks(config)).not.toThrow();
+    expect(resolveHeartbeatPolicy(config.heartbeat).activeHours).toEqual([0, 24]);
+  });
+
+  test("malformed active hours warn and do not replace TOML", () => {
+    const warnings: string[] = [];
+    const config = applyEnvOverrides(
+      {
+        ...defaultConfig(),
+        heartbeat: { enabled: true, active_hours: [9, 17] },
+      },
+      { AGENC_HEARTBEAT_ACTIVE_HOURS: "22-8" },
+      (message) => warnings.push(message),
+    );
+    expect(config.heartbeat?.active_hours).toEqual([9, 17]);
+    expect(warnings).toEqual([
+      expect.stringContaining("invalid AGENC_HEARTBEAT_ACTIVE_HOURS"),
+    ]);
   });
 
   test("parseActiveHours + parseTarget edge cases", () => {
     expect(parseActiveHours("always")).toBeNull();
     expect(parseActiveHours("22-8")).toBeNull(); // start >= end invalid
     expect(parseActiveHours("9-17")).toEqual([9, 17]);
-    expect(parseTarget("none")).toEqual({ kind: "none" });
-    expect(parseTarget("bogus")).toEqual({ kind: "none" }); // no colon
-    expect(parseTarget("a:b")).toEqual({ kind: "channel", channelId: "a", conversationId: "b" });
+    expect(parseHeartbeatTarget("none")).toEqual({ kind: "none" });
+    expect(() => parseHeartbeatTarget("bogus")).toThrow(/invalid heartbeat target/u);
+    expect(parseHeartbeatTarget("a:b")).toEqual({ kind: "channel", channelId: "a", conversationId: "b" });
   });
 });
 
@@ -85,16 +132,13 @@ describe("WorkspaceHeartbeatFileReader", () => {
 
 class FakeRunner implements HeartbeatTurnRunner {
   reply = HEARTBEAT_OK;
-  usage: HeartbeatUsage = { inputTokens: 500, outputTokens: 100 };
-  /** When set, run() throws after recording the prompt (GW-07). */
+  /** When set, run() throws after recording the prompt. */
   throwOnRun: Error | null = null;
   readonly prompts: string[] = [];
-  readonly models: (string | undefined)[] = [];
-  async run(prompt: string, model: string | undefined) {
+  async run(prompt: string) {
     this.prompts.push(prompt);
-    this.models.push(model);
     if (this.throwOnRun !== null) throw this.throwOnRun;
-    return { finalMessage: this.reply, usage: this.usage };
+    return { finalMessage: this.reply };
   }
 }
 
@@ -114,23 +158,6 @@ class FakeFile implements HeartbeatFileReader {
   }
 }
 
-/** A budget gate that refuses after `admitCount` admits. */
-class FakeBudget implements HeartbeatBudgetGate {
-  admits = 0;
-  reconciles: HeartbeatUsage[] = [];
-  refuseAfter = Infinity;
-  admit(_input: unknown) {
-    this.admits += 1;
-    if (this.admits > this.refuseAfter) {
-      return { ok: false as const, message: "daily usd cap reached" };
-    }
-    return { ok: true as const, hold: { id: this.admits } };
-  }
-  reconcile(_hold: unknown, usage: HeartbeatUsage) {
-    this.reconciles.push(usage);
-  }
-}
-
 const NOW = new Date("2026-07-09T10:00:00"); // local 10:00
 const clock: HeartbeatClock = {
   now: () => NOW,
@@ -142,7 +169,6 @@ function policy(over: Partial<HeartbeatPolicy> = {}): HeartbeatPolicy {
   return {
     enabled: true,
     intervalSeconds: 60,
-    agentId: "hb",
     activeHours: null,
     skipWhenBusy: true,
     target: { kind: "channel", channelId: "tg", conversationId: "c1" },
@@ -156,24 +182,21 @@ function makeRunner(
     runner?: FakeRunner;
     delivery?: FakeDelivery;
     file?: FakeFile;
-    budget?: HeartbeatBudgetGate;
     isCronRunning?: () => boolean;
   } = {},
 ) {
   const runner = parts.runner ?? new FakeRunner();
   const delivery = parts.delivery ?? new FakeDelivery();
   const file = parts.file ?? new FakeFile();
-  const budget = parts.budget ?? new FakeBudget();
   const hb = new HeartbeatRunner({
     policy: policy(over),
     clock,
     turnRunner: runner,
     delivery,
     file,
-    budget,
     ...(parts.isCronRunning !== undefined ? { isCronRunning: parts.isCronRunning } : {}),
   });
-  return { hb, runner, delivery, file, budget };
+  return { hb, runner, delivery, file };
 }
 
 describe("HeartbeatRunner gates", () => {
@@ -200,15 +223,13 @@ describe("HeartbeatRunner gates", () => {
   });
 });
 
-describe("HeartbeatRunner turn + budget wire-in", () => {
-  test("HEARTBEAT_OK reply suppresses delivery; budget admits + reconciles", async () => {
-    const { hb, runner, delivery, budget } = makeRunner({});
+describe("HeartbeatRunner turn", () => {
+  test("HEARTBEAT_OK reply suppresses delivery", async () => {
+    const { hb, runner, delivery } = makeRunner({});
     runner.reply = HEARTBEAT_OK;
     const outcome = await hb.tick();
     expect(outcome).toEqual({ kind: "ok_suppressed" });
     expect(delivery.sent).toHaveLength(0);
-    expect(budget.admits).toBe(1);
-    expect(budget.reconciles).toEqual([{ inputTokens: 500, outputTokens: 100 }]);
     // The heartbeat framing wraps HEARTBEAT.md.
     expect(runner.prompts[0]).toContain("do the thing");
     expect(runner.prompts[0]).toContain(HEARTBEAT_OK);
@@ -223,60 +244,23 @@ describe("HeartbeatRunner turn + budget wire-in", () => {
     expect(delivery.sent[0].text).toBe("3 new emails need replies");
   });
 
-  test("BUDGET REFUSAL: the turn does NOT run; a paused notice is delivered", async () => {
-    const budget = new FakeBudget();
-    budget.refuseAfter = 0; // refuse the very first admit
-    const { hb, runner, delivery } = makeRunner({}, { budget });
-    const outcome = await hb.tick();
-    expect(outcome).toMatchObject({ kind: "budget_paused" });
-    expect(runner.prompts).toHaveLength(0); // turn never ran (no silent spend)
-    expect(delivery.sent).toHaveLength(1);
-    expect(delivery.sent[0].text).toContain("heartbeat paused");
-    expect(budget.reconciles).toHaveLength(0); // no admit hold to reconcile
-  });
-
-  test("GW-07: turn throw still reconciles hold once with zeros", async () => {
-    const budget = new FakeBudget();
+  test("turn errors become an error outcome", async () => {
     const runner = new FakeRunner();
     runner.throwOnRun = new Error("turn exploded");
-    const { hb } = makeRunner({}, { budget, runner });
+    const { hb } = makeRunner({}, { runner });
     const outcome = await hb.tick();
     expect(outcome).toMatchObject({ kind: "error", message: expect.stringContaining("turn exploded") });
-    expect(budget.admits).toBe(1);
-    expect(budget.reconciles).toHaveLength(1);
-    expect(budget.reconciles[0]).toEqual({ inputTokens: 0, outputTokens: 0 });
-    expect(runner.prompts).toHaveLength(1); // turn was entered
+    expect(runner.prompts).toHaveLength(1);
   });
 
-  test("GW-07: success still reconciles exactly once with real usage", async () => {
-    const budget = new FakeBudget();
-    const { hb, runner } = makeRunner({}, { budget });
-    runner.reply = HEARTBEAT_OK;
-    await hb.tick();
-    expect(budget.admits).toBe(1);
-    expect(budget.reconciles).toHaveLength(1);
-    expect(budget.reconciles[0]).toEqual({ inputTokens: 500, outputTokens: 100 });
-  });
-
-  test("GW-07: deliver throw after successful turn reconciles real usage", async () => {
-    const budget = new FakeBudget();
+  test("delivery errors become an error outcome after a successful turn", async () => {
     const delivery = new FakeDelivery();
     delivery.throwOnDeliver = new Error("channel down");
     const runner = new FakeRunner();
     runner.reply = "something needs attention";
-    runner.usage = { inputTokens: 42, outputTokens: 7 };
-    const { hb } = makeRunner({}, { budget, runner, delivery });
+    const { hb } = makeRunner({}, { runner, delivery });
     const outcome = await hb.tick();
     expect(outcome).toMatchObject({ kind: "error", message: expect.stringContaining("channel down") });
-    expect(budget.admits).toBe(1);
-    expect(budget.reconciles).toHaveLength(1);
-    expect(budget.reconciles[0]).toEqual({ inputTokens: 42, outputTokens: 7 });
-  });
-
-  test("the utility model flows through to the turn runner", async () => {
-    const { hb, runner } = makeRunner({ model: "grok-4-fast" });
-    await hb.tick();
-    expect(runner.models[0]).toBe("grok-4-fast");
   });
 
   test("target 'none' runs the turn but delivers nothing", async () => {

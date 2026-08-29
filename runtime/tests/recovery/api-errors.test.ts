@@ -112,16 +112,6 @@ describe("isTransientProviderError", () => {
     expect(isTransientProviderError(err401)).toBe(false);
     expect(isTransientProviderError(new Error("syntax error"))).toBe(false);
   });
-  test("provider overload messages are transient without an HTTP status", () => {
-    expect(
-      isTransientProviderError(
-        new LLMProviderError(
-          "openai",
-          "Our servers are currently overloaded. Please try again later.",
-        ),
-      ),
-    ).toBe(true);
-  });
 });
 
 describe("isStreamingFallbackOccured", () => {

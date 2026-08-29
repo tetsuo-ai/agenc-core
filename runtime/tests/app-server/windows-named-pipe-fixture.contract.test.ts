@@ -98,7 +98,16 @@ test("the Windows fixtures register server and daemon cleanup before starting th
 });
 
 function extractTestSource(title: string, nextMarker: string): string {
-  return extractSource(`test(${JSON.stringify(title)}`, nextMarker);
+  const titleMarker = JSON.stringify(title);
+  const titleIndex = source.indexOf(titleMarker);
+  expect(titleIndex).toBeGreaterThanOrEqual(0);
+
+  const testStart = source.lastIndexOf("test(", titleIndex);
+  expect(testStart).toBeGreaterThanOrEqual(0);
+
+  const end = source.indexOf(nextMarker, titleIndex + titleMarker.length);
+  expect(end).toBeGreaterThan(testStart);
+  return source.slice(testStart, end);
 }
 
 function extractSource(startMarker: string, endMarker: string): string {

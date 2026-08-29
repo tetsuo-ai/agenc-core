@@ -1,7 +1,6 @@
 import { getSettingsForSource } from './settings.js'
-import type { CUSTOMIZATION_SURFACES } from './types.js'
-
-export type CustomizationSurface = (typeof CUSTOMIZATION_SURFACES)[number]
+import type { CustomizationSurface } from '../../config/schema.js'
+import type { CanonicalSettingsAuthority } from './canonicalAuthority.js'
 
 /**
  * Check whether a customization surface is locked to plugin-only sources
@@ -18,9 +17,10 @@ export type CustomizationSurface = (typeof CUSTOMIZATION_SURFACES)[number]
  */
 export function isRestrictedToPluginOnly(
   surface: CustomizationSurface,
+  authority?: CanonicalSettingsAuthority,
 ): boolean {
   const policy =
-    getSettingsForSource('policySettings')?.strictPluginOnlyCustomization
+    getSettingsForSource('policySettings', authority)?.strictPluginOnlyCustomization
   if (policy === true) return true
   if (Array.isArray(policy)) return policy.includes(surface)
   return false

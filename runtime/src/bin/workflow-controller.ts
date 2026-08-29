@@ -57,6 +57,8 @@ export function buildWorkflowToolController(
   return {
     getPermissionModeRegistry: () =>
       options.getSession()?.permissionModeRegistry ?? null,
+    getConfigStore: () => options.getSession()?.services.configStore ?? null,
+    getCwd: () => options.getSession()?.sessionConfiguration.cwd,
     getPlanFileContext: planFileContext,
     getPlanFilePath: () => {
       const ctx = planFileContext();
@@ -69,9 +71,6 @@ export function buildWorkflowToolController(
     writePlan: async (content) => {
       const ctx = planFileContext();
       await writePlan(ctx ?? {}, content);
-    },
-    syncPermissionContext: async (nextCtx) => {
-      await options.getSession()?.syncPermissionContextFromRegistry(nextCtx);
     },
     emitWarning: (cause, message) => {
       options.emitWarning?.({ cause, message });

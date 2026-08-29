@@ -20,6 +20,14 @@ describe('isNullRenderingAttachment', () => {
         },
       } as never),
     ).toBe(true)
+    expect(
+      isNullRenderingAttachment({
+        type: 'attachment',
+        attachment: {
+          type: 'mcp_resource',
+        },
+      } as never),
+    ).toBe(true)
   })
 
   test('rejects visible attachments and non-attachment messages', () => {

@@ -468,10 +468,6 @@ export class ConversationThreadManager extends ThreadManager {
     return this.submitTurn(threadId, { type: "append_message", message });
   }
 
-  override async refreshMcpServers(config: unknown): Promise<void> {
-    await this.threadManager.refreshMcpServers(config);
-  }
-
   override async shutdownAllThreadsBounded(
     timeoutMs: number,
   ): ReturnType<ThreadManager["shutdownAllThreadsBounded"]> {
@@ -933,8 +929,6 @@ class ForkedConversationThread implements ManagedThread {
   private statusValue: AgentStatus;
   private readonly listeners = new Set<(status: AgentStatus) => void>();
   private submitQueue: Promise<void> = Promise.resolve();
-  /** Abort scope of the fork turn currently running, if any. */
-  private activeTurnAbort: AbortController | null = null;
 
   constructor(opts: {
     readonly threadId: ThreadId;
@@ -970,16 +964,6 @@ class ForkedConversationThread implements ManagedThread {
   }
 
   async submit(op: ThreadManagerOp): Promise<string> {
-    // An interrupt must not queue behind the very turn it is meant to stop:
-    // the queue is held by that turn, so a queued interrupt only runs once
-    // there is nothing left to interrupt. Cut the running turn's own abort
-    // scope instead — and only that scope. The previous shape reached for
-    // `sourceSessionRef.abortTerminal()`, which cuts through the lock but
-    // aborts the shared parent session's one-shot terminal controller, and
-    // every later turn on that session is then born aborted.
-    if (op.type === "interrupt") {
-      return this.interruptActiveTurn(op.reason);
-    }
     const run = this.submitQueue.then(() =>
       this.turnLock.with(() => this.submitLocked(op)),
     );
@@ -988,18 +972,6 @@ class ForkedConversationThread implements ManagedThread {
       () => undefined,
     );
     return run;
-  }
-
-  private interruptActiveTurn(reason: string | undefined): string {
-    const abortReason = reason ?? "interrupted";
-    this.activeTurnAbort?.abort(abortReason);
-    this.setStatus({
-      status: "interrupted",
-      turnId: this.threadId,
-      endedAtMs: Date.now(),
-      reason: abortReason,
-    });
-    return this.threadId;
   }
 
   async appendMessage(message: string): Promise<string> {
@@ -1046,16 +1018,16 @@ class ForkedConversationThread implements ManagedThread {
         }
         return this.threadId;
       case "interrupt":
-        // Normally intercepted in `submit` before it can queue; kept for
-        // callers that reach submitLocked directly. Same scoped abort.
-        return this.interruptActiveTurn(op.reason);
+        this.sourceSessionRef.abortTerminal("user_interrupt");
+        this.setStatus({
+          status: "interrupted",
+          turnId: this.threadId,
+          endedAtMs: Date.now(),
+          reason: op.reason ?? "interrupted",
+        });
+        return this.threadId;
       case "shutdown":
         await this.shutdown();
-        return this.threadId;
-      case "refresh_mcp_servers":
-        await this.sourceSessionRef.services.mcpManager.refreshFromConfig?.(
-          op.config,
-        );
         return this.threadId;
     }
   }
@@ -1072,46 +1044,24 @@ class ForkedConversationThread implements ManagedThread {
     const originalState = cloneSessionState(
       this.sourceSessionRef.state.unsafePeek(),
     );
-    const turnAbort = new AbortController();
-    this.activeTurnAbort = turnAbort;
     try {
       await this.sourceSessionRef.withRolloutPersistenceSuspended(async () => {
         const ctx = this.sourceSessionRef.newDefaultTurnWithSubId(turnId);
         for await (const event of this.sourceSessionRef.runTurn(input, {
           ctx,
           history: cloneLlmHistory(this.history),
-          signal: turnAbort.signal,
         })) {
           this.sourceSessionRef.emitPhaseEvent(event);
         }
       });
       const forkState = this.sourceSessionRef.state.unsafePeek();
       this.history = cloneResponseHistory(forkState.history as ResponseItem[]);
-      this.setStatus(
-        turnAbort.signal.aborted
-          ? {
-              status: "interrupted",
-              turnId,
-              endedAtMs: Date.now(),
-              reason: String(turnAbort.signal.reason ?? "interrupted"),
-            }
-          : {
-              status: "completed",
-              turnId,
-              endedAtMs: Date.now(),
-            },
-      );
+      this.setStatus({
+        status: "completed",
+        turnId,
+        endedAtMs: Date.now(),
+      });
     } catch (error) {
-      if (turnAbort.signal.aborted) {
-        // The error is the interrupt arriving, not the turn failing.
-        this.setStatus({
-          status: "interrupted",
-          turnId,
-          endedAtMs: Date.now(),
-          reason: String(turnAbort.signal.reason ?? "interrupted"),
-        });
-        throw error;
-      }
       this.setStatus({
         status: "errored",
         turnId,
@@ -1120,9 +1070,6 @@ class ForkedConversationThread implements ManagedThread {
       });
       throw error;
     } finally {
-      if (this.activeTurnAbort === turnAbort) {
-        this.activeTurnAbort = null;
-      }
       await this.sourceSessionRef.state.swap(originalState);
     }
   }

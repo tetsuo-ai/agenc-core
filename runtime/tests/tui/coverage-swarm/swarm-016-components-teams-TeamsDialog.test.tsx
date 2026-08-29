@@ -26,10 +26,6 @@ const inputMock = vi.hoisted(() => ({
   handlers: new Set<(input: string, key: Record<string, boolean>) => void>(),
 }));
 
-const keybindingMock = vi.hoisted(() => ({
-  handlers: new Map<string, () => void>(),
-}));
-
 const backendMock = vi.hoisted(() => ({
   backend: {
     hidePane: vi.fn(async () => true),
@@ -51,19 +47,12 @@ const tasksMock = vi.hoisted(() => ({
 
 const mailboxMock = vi.hoisted(() => ({
   sendShutdownRequestToMailbox: vi.fn(async () => {}),
-  writeToMailbox: vi.fn(async () => {}),
-}));
-
-const logMock = vi.hoisted(() => ({
-  logError: vi.fn(),
 }));
 
 const teamHelpersMock = vi.hoisted(() => ({
   addHiddenPaneId: vi.fn(() => true),
   removeHiddenPaneId: vi.fn(() => true),
   removeMemberFromTeam: vi.fn(() => true),
-  setMemberMode: vi.fn(),
-  setMultipleMemberModes: vi.fn(),
 }));
 
 const execFileNoThrowMock = vi.hoisted(() =>
@@ -125,24 +114,7 @@ vi.mock("../../../src/tui/ink.js", async importOriginal => {
     },
   };
 });
-vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
-  useKeybinding: () => {},
-  useKeybindings: (handlers: Record<string, () => void>) => {
-    for (const [action, handler] of Object.entries(handlers)) {
-      keybindingMock.handlers.set(action, handler);
-    }
-  },
-}));
-vi.mock("../../../src/tui/keybindings/useShortcutDisplay.js", () => ({
-  useShortcutDisplay: () => "shift+tab",
-}));
 vi.mock("../../../src/tui/state/AppState.js", () => ({
-  useAppState: (selector: (state: unknown) => unknown) =>
-    selector({
-      toolPermissionContext: {
-        isBypassPermissionsModeAvailable: true,
-      },
-    }),
   useSetAppState: () => (updater: (prev: typeof appStateMock.state) => typeof appStateMock.state) => {
     appStateMock.state = updater(appStateMock.state);
   },
@@ -164,19 +136,12 @@ vi.mock("../../../src/utils/tasks.js", async importOriginal => {
   };
 });
 vi.mock("../../../src/utils/teammateMailbox.js", () => ({
-  createModeSetRequestMessage: (message: unknown) => message,
   sendShutdownRequestToMailbox: mailboxMock.sendShutdownRequestToMailbox,
-  writeToMailbox: mailboxMock.writeToMailbox,
-}));
-vi.mock("../../../src/utils/log.js", () => ({
-  logError: logMock.logError,
 }));
 vi.mock("../../../src/utils/swarm/teamHelpers.js", () => ({
   addHiddenPaneId: teamHelpersMock.addHiddenPaneId,
   removeHiddenPaneId: teamHelpersMock.removeHiddenPaneId,
   removeMemberFromTeam: teamHelpersMock.removeMemberFromTeam,
-  setMemberMode: teamHelpersMock.setMemberMode,
-  setMultipleMemberModes: teamHelpersMock.setMultipleMemberModes,
 }));
 vi.mock("../../../src/utils/execFileNoThrow.js", () => ({
   execFileNoThrow: execFileNoThrowMock,
@@ -321,7 +286,6 @@ async function createTeamsDialogHarness(): Promise<{
 beforeEach(() => {
   teammateStatusMock.statuses = defaultTeammateStatuses();
   inputMock.handlers.clear();
-  keybindingMock.handlers.clear();
   backendMock.backend.hidePane.mockReset();
   backendMock.backend.hidePane.mockResolvedValue(true);
   backendMock.backend.killPane.mockReset();
@@ -338,19 +302,12 @@ beforeEach(() => {
   });
   mailboxMock.sendShutdownRequestToMailbox.mockReset();
   mailboxMock.sendShutdownRequestToMailbox.mockResolvedValue(undefined);
-  mailboxMock.writeToMailbox.mockReset();
-  mailboxMock.writeToMailbox.mockResolvedValue(undefined);
-  logMock.logError.mockReset();
   teamHelpersMock.addHiddenPaneId.mockReset();
   teamHelpersMock.addHiddenPaneId.mockReturnValue(true);
   teamHelpersMock.removeHiddenPaneId.mockReset();
   teamHelpersMock.removeHiddenPaneId.mockReturnValue(true);
   teamHelpersMock.removeMemberFromTeam.mockReset();
   teamHelpersMock.removeMemberFromTeam.mockReturnValue(true);
-  teamHelpersMock.setMemberMode.mockReset();
-  teamHelpersMock.setMemberMode.mockReturnValue(true);
-  teamHelpersMock.setMultipleMemberModes.mockReset();
-  teamHelpersMock.setMultipleMemberModes.mockReturnValue(true);
   execFileNoThrowMock.mockReset();
   execFileNoThrowMock.mockResolvedValue({ code: 0, stderr: "", error: "" });
   detectionMock.insideTmux = false;
@@ -369,120 +326,6 @@ beforeEach(() => {
 });
 
 describe("TeamsDialog coverage-swarm detail actions", () => {
-  test("cycles a teammate mode from detail view", async () => {
-    const harness = await createTeamsDialogHarness();
-
-    try {
-      await harness.press("\r", { return: true });
-      keybindingMock.handlers.get("confirm:cycleMode")?.();
-      await settle();
-
-      expect(teamHelpersMock.setMemberMode).toHaveBeenCalledWith(
-        "alpha",
-        "Fixer",
-        "plan",
-      );
-      expect(mailboxMock.writeToMailbox).toHaveBeenCalledWith(
-        "Fixer",
-        expect.objectContaining({
-          from: "team-lead",
-          text: JSON.stringify({ mode: "plan", from: "team-lead" }),
-        }),
-        "alpha",
-      );
-      expect(teamHelpersMock.setMultipleMemberModes).not.toHaveBeenCalled();
-    } finally {
-      harness.unmount();
-    }
-  });
-
-  test("logs rejected detail mode mailbox writes without rolling back local mode", async () => {
-    const error = new Error("mailbox lock release failed");
-    mailboxMock.writeToMailbox.mockRejectedValueOnce(error);
-    const harness = await createTeamsDialogHarness();
-
-    try {
-      await harness.press("\r", { return: true });
-      keybindingMock.handlers.get("confirm:cycleMode")?.();
-      await settle();
-
-      expect(teamHelpersMock.setMemberMode).toHaveBeenCalledWith(
-        "alpha",
-        "Fixer",
-        "plan",
-      );
-      expect(mailboxMock.writeToMailbox).toHaveBeenCalledTimes(1);
-      expect(logMock.logError).toHaveBeenCalledWith(error);
-    } finally {
-      harness.unmount();
-    }
-  });
-
-  test("logs rejected bulk mode mailbox writes after the batch local update", async () => {
-    const error = new Error("bulk mailbox offline");
-    mailboxMock.writeToMailbox
-      .mockRejectedValueOnce(error)
-      .mockResolvedValueOnce(undefined);
-    const harness = await createTeamsDialogHarness();
-
-    try {
-      keybindingMock.handlers.get("confirm:cycleMode")?.();
-      await settle();
-
-      expect(teamHelpersMock.setMultipleMemberModes).toHaveBeenCalledWith(
-        "alpha",
-        [
-          { memberName: "Fixer", mode: "default" },
-          { memberName: "Planner", mode: "default" },
-        ],
-      );
-      expect(mailboxMock.writeToMailbox).toHaveBeenCalledTimes(2);
-      expect(logMock.logError).toHaveBeenCalledWith(error);
-    } finally {
-      harness.unmount();
-    }
-  });
-
-  test("surfaces detail mode config exceptions without sending mailbox messages", async () => {
-    const error = new Error("team file locked");
-    teamHelpersMock.setMemberMode.mockImplementationOnce(() => {
-      throw error;
-    });
-    const harness = await createTeamsDialogHarness();
-
-    try {
-      await harness.press("\r", { return: true });
-
-      expect(() => keybindingMock.handlers.get("confirm:cycleMode")?.()).not.toThrow();
-      await settle();
-
-      expect(harness.getText()).toContain(
-        "Cannot change @Fixer mode: team file locked",
-      );
-      expect(mailboxMock.writeToMailbox).not.toHaveBeenCalled();
-      expect(logMock.logError).toHaveBeenCalledWith(error);
-    } finally {
-      harness.unmount();
-    }
-  });
-
-  test("surfaces bulk mode config failures without sending mailbox messages", async () => {
-    teamHelpersMock.setMultipleMemberModes.mockReturnValueOnce(false);
-    const harness = await createTeamsDialogHarness();
-
-    try {
-      keybindingMock.handlers.get("confirm:cycleMode")?.();
-      await settle();
-
-      expect(harness.getText()).toContain(
-        "Cannot change team alpha modes: could not update team config.",
-      );
-      expect(mailboxMock.writeToMailbox).not.toHaveBeenCalled();
-    } finally {
-      harness.unmount();
-    }
-  });
-
   test("shutdown from detail view requests shutdown and returns to list", async () => {
     const harness = await createTeamsDialogHarness();
 

@@ -21,6 +21,8 @@ vi.mock('../tools.js', () => ({}))
 vi.mock('src/tools.js', () => ({}))
 
 import { getProjectRoot, setProjectRoot } from '../bootstrap/state.js'
+import { ConfigStore } from '../config/store.js'
+import { enterCanonicalSettingsAuthority } from '../utils/settings/canonicalAuthority.js'
 import {
   getGlobalMemoryPath,
   getProjectMemoryPath,
@@ -41,8 +43,7 @@ import { getAgentMemoryDir } from '../tools/AgentTool/agentMemory.js'
 
 let tempRoot = ''
 let oldProjectRoot = ''
-let oldConfigDir: string | undefined
-let oldDisableAutoMemory: string | undefined
+let oldAgencHome: string | undefined
 let oldRemoteMemoryDir: string | undefined
 let oldPathOverride: string | undefined
 
@@ -51,27 +52,25 @@ const fakeGitHubPat = `ghp_${'A'.repeat(36)}`
 beforeEach(() => {
   tempRoot = mkdtempSync(join(tmpdir(), 'agenc-memory-privacy-'))
   oldProjectRoot = getProjectRoot()
-  oldConfigDir = process.env.AGENC_CONFIG_DIR
-  oldDisableAutoMemory = process.env.AGENC_DISABLE_AUTO_MEMORY
+  oldAgencHome = process.env.AGENC_HOME
   oldRemoteMemoryDir = process.env.AGENC_REMOTE_MEMORY_DIR
   oldPathOverride = process.env.AGENC_COWORK_MEMORY_PATH_OVERRIDE
-  process.env.AGENC_CONFIG_DIR = join(tempRoot, 'home')
-  process.env.AGENC_DISABLE_AUTO_MEMORY = '0'
+  process.env.AGENC_HOME = join(tempRoot, 'home')
   delete process.env.AGENC_REMOTE_MEMORY_DIR
   delete process.env.AGENC_COWORK_MEMORY_PATH_OVERRIDE
   setProjectRoot(join(tempRoot, 'repo'))
+  enterCanonicalSettingsAuthority(new ConfigStore({
+    home: join(tempRoot, 'home'),
+    env: { ...process.env },
+    cwd: join(tempRoot, 'repo'),
+  }))
   clearPathCaches()
 })
 
 afterEach(() => {
   setProjectRoot(oldProjectRoot)
-  if (oldConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR
-  else process.env.AGENC_CONFIG_DIR = oldConfigDir
-  if (oldDisableAutoMemory === undefined) {
-    delete process.env.AGENC_DISABLE_AUTO_MEMORY
-  } else {
-    process.env.AGENC_DISABLE_AUTO_MEMORY = oldDisableAutoMemory
-  }
+  if (oldAgencHome === undefined) delete process.env.AGENC_HOME
+  else process.env.AGENC_HOME = oldAgencHome
   if (oldRemoteMemoryDir === undefined) delete process.env.AGENC_REMOTE_MEMORY_DIR
   else process.env.AGENC_REMOTE_MEMORY_DIR = oldRemoteMemoryDir
   if (oldPathOverride === undefined) {
@@ -85,7 +84,8 @@ afterEach(() => {
 
 describe('memory privacy', () => {
   it('classifies durable, team, and session memory paths', () => {
-    const configDir = join(tempRoot, 'home')
+    installMemoryAuthority()
+    const agencHome = join(tempRoot, 'home')
     const projectMemoryFile = join(getProjectMemoryPath(), 'notes.md')
     const globalMemoryFile = join(getGlobalMemoryPath(), 'profile.md')
     const teamMemoryFile = join(getProjectMemoryPath(), 'team', 'shared.md')
@@ -118,13 +118,14 @@ describe('memory privacy', () => {
     expect(detectSessionPatternType('*.jsonl')).toBe('session_transcript')
     expect(detectSessionPatternType('logs/*.jsonl')).toBeNull()
     expect(
-      detectSessionFileType(join(`${configDir}-evil`, 'session-memory', 'x.md')),
+      detectSessionFileType(join(`${agencHome}-evil`, 'session-memory', 'x.md')),
     ).toBeNull()
     expect(memoryScopeForPath(join(tempRoot, 'repo', 'AGENC.md'))).toBeNull()
   })
 
   it('detects memory directories and shell commands targeting memory', () => {
-    const configDir = join(tempRoot, 'home')
+    installMemoryAuthority()
+    const agencHome = join(tempRoot, 'home')
     const projectMemoryDir = getProjectMemoryPath().replace(/[/\\]+$/, '')
     const globalMemoryDir = getGlobalMemoryPath().replace(/[/\\]+$/, '')
     const projectMemoryFile = join(getProjectMemoryPath(), 'notes.md')
@@ -139,7 +140,7 @@ describe('memory privacy', () => {
     )
     expect(isAutoManagedMemoryFile(projectMemorySiblingFile)).toBe(false)
     expect(isMemoryDirectory(projectMemorySibling)).toBe(false)
-    expect(isMemoryDirectory(join(`${configDir}-evil`, 'memory'))).toBe(false)
+    expect(isMemoryDirectory(join(`${agencHome}-evil`, 'memory'))).toBe(false)
     expect(
       isShellCommandTargetingMemory(`grep token ${projectMemorySiblingFile}`),
     ).toBe(false)
@@ -149,6 +150,7 @@ describe('memory privacy', () => {
   })
 
   it('scans and redacts high-confidence memory secrets without returning values', () => {
+    installMemoryAuthority()
     const content = `token=${fakeGitHubPat}`
 
     expect(scanForSecrets(content)).toEqual([
@@ -162,6 +164,7 @@ describe('memory privacy', () => {
   })
 
   it('rejects secret-bearing writes only inside team memory', () => {
+    installMemoryAuthority()
     const teamMemoryFile = join(getProjectMemoryPath(), 'team', 'shared.md')
     const projectMemoryFile = join(getProjectMemoryPath(), 'notes.md')
 
@@ -172,6 +175,14 @@ describe('memory privacy', () => {
     )
   })
 })
+
+function installMemoryAuthority(): void {
+  enterCanonicalSettingsAuthority(new ConfigStore({
+    home: join(tempRoot, 'home'),
+    env: { ...process.env, AGENC_HOME: join(tempRoot, 'home') },
+    cwd: join(tempRoot, 'repo'),
+  }))
+}
 
 function clearPathCaches(): void {
   getProjectMemoryPath.cache?.clear?.()

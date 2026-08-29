@@ -29,14 +29,33 @@ import {
   rename,
   realpath,
 } from "node:fs/promises";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  constants as fsConstants,
+  fchmodSync,
+  fstatSync,
+  ftruncateSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { resolve, dirname, basename, join } from "node:path";
-import { tmpdir } from "node:os";
+import { resolveHomeContext } from "../../config/home.js";
+import { getCurrentRuntimeSession } from "../../session/current-session.js";
+import {
+  getSessionTempNamespaceName,
+  resolveSessionTempRoot,
+} from "../../session/runtime-options.js";
+import { getCwd } from "../../utils/cwd.js";
 import { nonEmptyString } from "../../utils/stringUtils.js";
 // Inline lean replacement (gateway/host-workspace.js was deleted).
 function resolveSessionWorkspaceRoot(entry?: string): string {
   if (typeof entry === "string" && entry.length > 0) return entry;
-  return process.env.AGENC_WORKSPACE ?? process.cwd();
+  return getCurrentRuntimeSession()?.sessionConfiguration.cwd ?? getCwd();
 }
 import {
   isSessionPlanFile,
@@ -123,8 +142,8 @@ export const SESSION_ID_ARG = "__agencSessionId";
  *     tree so recent source-of-truth content is available for
  *     inspection without polluting repo files.
  *   - The set lives for the lifetime of the daemon process; explicit
- *     cleanup is handled by `clearSessionReadState(sessionId)` when
- *     a session ends, called from the gateway's session lifecycle
+ *     cleanup is handled by `clearSessionReadState(sessionId, sessionTempRoot)`
+ *     when a session ends, using the root captured by that session
  *
  * This map is intentionally NOT exposed via tool args. Mutation
  * happens via the helpers below; tools never see the underlying Set.
@@ -206,7 +225,7 @@ const LOCAL_FILE_HISTORY_MAX_ENTRIES = 8;
 
 // OOM fix: `sessionReadState` / `workspaceReadState` retain the full file
 // `content` + `rawContent` (KB–MB each) for every unique path read in a
-// session. In a long-lived `agenc --yolo` run touching thousands of files this
+// session. In a long-lived `agenc --dangerously-bypass-approvals-and-sandbox` run touching thousands of files this
 // grew without bound. The read-before-write GATE only needs the tiny presence +
 // view-kind metadata, and the per-turn changed-files producer only needs
 // `rawContent` for recently-read files — so cap the retained large-field bytes
@@ -267,10 +286,9 @@ function boundSessionReadContent(
 
 /**
  * Resolve the workspace root used to key {@link workspaceReadState}. This
- * is the process-global session workspace root (env `AGENC_WORKSPACE`,
- * falling back to `process.cwd()`), which is shared by the canonical tool
- * surface and all subagents running inside the same daemon process — the
- * correct scope for the cross-agent fallback.
+ * is the current session's canonical workspace root. It is shared by the
+ * canonical tool surface and all subagents inside that session, while staying
+ * isolated from other sessions hosted by the same daemon.
  */
 function resolveWorkspaceReadScopeRoot(): string {
   try {
@@ -328,29 +346,132 @@ function getWorkspaceReadSnapshot(
   return snapshot;
 }
 
-function resolveLocalFileHistoryRoot(): string {
-  const configuredRoot = process.env.AGENC_FILESYSTEM_HISTORY_ROOT?.trim();
-  return configuredRoot && configuredRoot.length > 0
-    ? configuredRoot
-    : join(tmpdir(), "agenc", "filesystem-history");
+function resolveLocalFileHistoryRoot(sessionTempRoot: string): string {
+  return join(
+    sessionTempRoot,
+    getSessionTempNamespaceName(),
+    "filesystem-history",
+  );
 }
 
 function hashString(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function resolveLocalHistorySessionDir(sessionId: string): string {
-  return join(resolveLocalFileHistoryRoot(), hashString(sessionId));
+function resolveLocalHistorySessionDir(
+  sessionId: string,
+  sessionTempRoot: string,
+): string {
+  return join(
+    resolveLocalFileHistoryRoot(sessionTempRoot),
+    hashString(sessionId),
+  );
 }
 
 function resolveLocalHistoryFilePath(
   sessionId: string,
   canonicalPath: string,
+  sessionTempRoot: string,
 ): string {
   return join(
-    resolveLocalHistorySessionDir(sessionId),
+    resolveLocalHistorySessionDir(sessionId, sessionTempRoot),
     `${hashString(canonicalPath)}.json`,
   );
+}
+
+function ensurePrivateHistoryDirectory(directory: string): void {
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const stats = lstatSync(directory);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    throw new Error(`local file-history path is not a directory: ${directory}`);
+  }
+  const currentUid = process.getuid?.();
+  if (currentUid !== undefined && stats.uid !== currentUid) {
+    throw new Error(
+      `local file-history path is not owned by this user: ${directory}`,
+    );
+  }
+  chmodSync(directory, 0o700);
+}
+
+const HISTORY_NOFOLLOW_FLAG = fsConstants.O_NOFOLLOW ?? 0;
+
+function validatePrivateHistoryFileDescriptor(
+  fd: number,
+  historyFile: string,
+): void {
+  const stats = fstatSync(fd);
+  if (!stats.isFile() || stats.nlink !== 1) {
+    throw new Error(`local file-history path is not a file: ${historyFile}`);
+  }
+  const currentUid = process.getuid?.();
+  if (currentUid !== undefined && stats.uid !== currentUid) {
+    throw new Error(
+      `local file-history path is not owned by this user: ${historyFile}`,
+    );
+  }
+  fchmodSync(fd, 0o600);
+}
+
+function readPrivateHistoryFile(historyFile: string): string | undefined {
+  let fd: number;
+  try {
+    fd = openSync(
+      historyFile,
+      fsConstants.O_RDONLY | HISTORY_NOFOLLOW_FLAG,
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  try {
+    validatePrivateHistoryFileDescriptor(fd, historyFile);
+    return readFileSync(fd, { encoding: "utf8" });
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function writePrivateHistoryFile(historyFile: string, content: string): void {
+  let fd: number;
+  try {
+    fd = openSync(
+      historyFile,
+      fsConstants.O_WRONLY | HISTORY_NOFOLLOW_FLAG,
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    fd = openSync(
+      historyFile,
+      fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_EXCL |
+        HISTORY_NOFOLLOW_FLAG,
+      0o600,
+    );
+  }
+  try {
+    validatePrivateHistoryFileDescriptor(fd, historyFile);
+    ftruncateSync(fd, 0);
+    writeFileSync(fd, content, { encoding: "utf8" });
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function prepareLocalHistorySessionDir(
+  sessionId: string,
+  sessionTempRoot: string,
+): string {
+  const historyRoot = resolveLocalFileHistoryRoot(sessionTempRoot);
+  const sessionDirectory = resolveLocalHistorySessionDir(
+    sessionId,
+    sessionTempRoot,
+  );
+  ensurePrivateHistoryDirectory(dirname(historyRoot));
+  ensurePrivateHistoryDirectory(historyRoot);
+  ensurePrivateHistoryDirectory(sessionDirectory);
+  return sessionDirectory;
 }
 
 function persistLocalFileHistorySnapshot(
@@ -360,32 +481,42 @@ function persistLocalFileHistorySnapshot(
 ): void {
   if (!sessionId || sessionId.trim().length === 0) return;
   try {
-    const historyFile = resolveLocalHistoryFilePath(sessionId, canonicalPath);
-    mkdirSync(dirname(historyFile), { recursive: true });
+    const sessionTempRoot = resolveSessionTempRoot();
+    prepareLocalHistorySessionDir(sessionId, sessionTempRoot);
+    const historyFile = resolveLocalHistoryFilePath(
+      sessionId,
+      canonicalPath,
+      sessionTempRoot,
+    );
 
     let entries: Array<SessionReadSnapshot & { readonly recordedAt: number }> =
       [];
     try {
-      const raw = readFileSync(historyFile, "utf8");
-      const parsed = JSON.parse(raw) as unknown;
-      if (Array.isArray(parsed)) {
-        entries = parsed.filter(
-          (
-            entry,
-          ): entry is SessionReadSnapshot & { readonly recordedAt: number } => {
-            if (typeof entry !== "object" || entry === null) return false;
-            if (
-              typeof (entry as { recordedAt?: unknown }).recordedAt !== "number"
-            ) {
-              return false;
-            }
-            const content = (entry as { content?: unknown }).content;
-            return typeof content === "string" || content === null;
-          },
-        );
+      const raw = readPrivateHistoryFile(historyFile);
+      if (raw !== undefined) {
+        const parsed = JSON.parse(raw) as unknown;
+        if (Array.isArray(parsed)) {
+          entries = parsed.filter(
+            (
+              entry,
+            ): entry is SessionReadSnapshot & {
+              readonly recordedAt: number;
+            } => {
+              if (typeof entry !== "object" || entry === null) return false;
+              if (
+                typeof (entry as { recordedAt?: unknown }).recordedAt !==
+                "number"
+              ) {
+                return false;
+              }
+              const content = (entry as { content?: unknown }).content;
+              return typeof content === "string" || content === null;
+            },
+          );
+        }
       }
     } catch {
-      // Best effort only. Missing or corrupt local history should not block writes.
+      // Corrupt local history should not block replacing it.
     }
 
     entries.push({
@@ -398,7 +529,10 @@ function persistLocalFileHistorySnapshot(
     if (entries.length > LOCAL_FILE_HISTORY_MAX_ENTRIES) {
       entries = entries.slice(-LOCAL_FILE_HISTORY_MAX_ENTRIES);
     }
-    writeFileSync(historyFile, `${JSON.stringify(entries, null, 2)}\n`, "utf8");
+    writePrivateHistoryFile(
+      historyFile,
+      `${JSON.stringify(entries, null, 2)}\n`,
+    );
   } catch {
     // Best effort only. Local history is an ergonomics aid, not part of the tool contract.
   }
@@ -409,8 +543,15 @@ function loadPersistedSessionReadSnapshot(
   canonicalPath: string,
 ): SessionReadSnapshot | undefined {
   try {
-    const historyFile = resolveLocalHistoryFilePath(sessionId, canonicalPath);
-    const raw = readFileSync(historyFile, "utf8");
+    const sessionTempRoot = resolveSessionTempRoot();
+    prepareLocalHistorySessionDir(sessionId, sessionTempRoot);
+    const historyFile = resolveLocalHistoryFilePath(
+      sessionId,
+      canonicalPath,
+      sessionTempRoot,
+    );
+    const raw = readPrivateHistoryFile(historyFile);
+    if (raw === undefined) return undefined;
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed) || parsed.length === 0) {
       return undefined;
@@ -624,14 +765,17 @@ export function dropSessionReadSnapshot(
 }
 
 /**
- * Clear all recorded reads for a session. Called from the gateway when
- * a session is closed so the map does not grow without bound on
- * long-running daemons.
+ * Clear all recorded reads for a session. Session.shutdown passes the
+ * session's captured temporary root so daemon-global ambient state cannot
+ * redirect cleanup.
  */
-export function clearSessionReadState(sessionId: string): void {
+export function clearSessionReadState(
+  sessionId: string,
+  sessionTempRoot: string,
+): void {
   sessionReadState.delete(sessionId);
   try {
-    rmSync(resolveLocalHistorySessionDir(sessionId), {
+    rmSync(resolveLocalHistorySessionDir(sessionId, sessionTempRoot), {
       recursive: true,
       force: true,
     });
@@ -968,12 +1112,11 @@ function normalizeFilesystemUnicodeIdentity(path: string): string {
 
 /** Validate and resolve a path argument from tool input. */
 /**
- * Build the optional plan-file context from injected tool args. Returns
- * null when the dispatcher didn't plumb `__agencSessionId` (e.g.,
- * headless tests, embedded contexts), in which case the plan-file
- * carve-out below is a no-op.
+ * Build a plan-file context only from the dispatcher's signed session id and
+ * injected canonical home. Missing or forged authority returns `null`, so the
+ * out-of-workspace plan-file carve-out remains disabled.
  */
-function planFileContextFromArgs(
+export function verifiedPlanFileContextFromArgs(
   args: Record<string, unknown> | undefined,
 ): PlanFileContext | null {
   if (!args) return null;
@@ -994,18 +1137,13 @@ function planFileContextFromArgs(
   const ctx: PlanFileContext = { sessionId };
   const injectedAgencHome = args[SESSION_AGENC_HOME_ARG];
   if (
-    typeof injectedAgencHome === "string" &&
-    injectedAgencHome.trim().length > 0
-  ) {
-    return { ...ctx, agencHome: injectedAgencHome };
-  }
-  if (
-    typeof process.env.AGENC_HOME === "string" &&
-    process.env.AGENC_HOME.length > 0
-  ) {
-    return { ...ctx, agencHome: process.env.AGENC_HOME };
-  }
-  return ctx;
+    typeof injectedAgencHome !== "string" ||
+    injectedAgencHome.trim().length === 0
+  ) return null;
+  return {
+    ...ctx,
+    agencHome: resolveHomeContext({ AGENC_HOME: injectedAgencHome }).path,
+  };
 }
 
 export async function safePathAllowingSessionPlanFile(
@@ -1019,7 +1157,7 @@ export async function safePathAllowingSessionPlanFile(
   );
   if (result.safe) return result;
 
-  const planCtx = planFileContextFromArgs(args);
+  const planCtx = verifiedPlanFileContextFromArgs(args);
   if (planCtx !== null && !hasUnsafeShape(targetPath)) {
     try {
       const canonical = await canonicalize(targetPath);
@@ -1054,7 +1192,7 @@ async function validatePath(
   // shape as AgenC's `checkEditableInternalPath`: mode-agnostic,
   // bypasses workspace allowlist, retains all other safety checks
   // (null bytes, traversal, length — those rejected upstream of here).
-  const planCtx = planFileContextFromArgs(args);
+  const planCtx = verifiedPlanFileContextFromArgs(args);
   if (planCtx !== null && !hasUnsafeShape(input)) {
     try {
       const canonical = await canonicalize(input);

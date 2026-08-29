@@ -1,21 +1,20 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import {
-  checkIsAgenCNativeProvider,
-  getAgentModel,
+  checkIsAgenCNativeProvider as checkIsAgenCNativeProviderUnbound,
+  getAgentModel as getAgentModelUnbound,
 } from '../../../src/utils/model/agent.ts'
+import { ConfigStore } from '../../../src/config/store.ts'
+import { defaultConfig } from '../../../src/config/schema.ts'
+import { runWithStartupProviderSelection } from '../../../src/utils/model/providers.ts'
+import { runWithCanonicalSettingsAuthority } from '../../../src/utils/settings/canonicalAuthority.ts'
 
 const providerEnvKeys = [
-  'AGENC_USE_GEMINI',
-  'AGENC_USE_MISTRAL',
-  'AGENC_USE_GITHUB',
-  'AGENC_USE_MINIMAX',
-  'AGENC_USE_OPENAI',
+  'AGENC_PROVIDER',
+  'AGENC_MODEL',
   'ANTHROPIC_BASE_URL',
   'MINIMAX_API_KEY',
-  'NVIDIA_NIM',
   'OPENAI_API_BASE',
   'OPENAI_BASE_URL',
-  'OPENAI_MODEL',
   'XAI_API_KEY',
 ] as const
 
@@ -54,35 +53,74 @@ function useProvider(
 
   switch (provider) {
     case 'agenc':
-      process.env.AGENC_USE_OPENAI = '1'
-      process.env.OPENAI_MODEL = 'agencspark'
+      process.env.AGENC_PROVIDER = 'agenc'
+      process.env.AGENC_MODEL = 'agenc'
       break
     case 'custom-first-party':
+      process.env.AGENC_PROVIDER = 'anthropic'
       process.env.ANTHROPIC_BASE_URL = 'https://proxy.example.com'
       break
     case 'first-party':
+      process.env.AGENC_PROVIDER = 'anthropic'
       break
     case 'gemini':
-      process.env.AGENC_USE_GEMINI = '1'
+      process.env.AGENC_PROVIDER = 'gemini'
       break
     case 'github':
-      process.env.AGENC_USE_GITHUB = '1'
+      process.env.AGENC_PROVIDER = 'github'
       break
     case 'minimax':
-      process.env.MINIMAX_API_KEY = 'minimax-test-key'
+      process.env.AGENC_PROVIDER = 'minimax'
       break
     case 'mistral':
-      process.env.AGENC_USE_MISTRAL = '1'
+      process.env.AGENC_PROVIDER = 'mistral'
       break
     case 'nvidia-nim':
-      process.env.NVIDIA_NIM = '1'
+      process.env.AGENC_PROVIDER = 'nvidia-nim'
       break
     case 'openai':
-      process.env.AGENC_USE_OPENAI = '1'
-      process.env.OPENAI_MODEL = 'gpt-4o-mini'
+      process.env.AGENC_PROVIDER = 'openai'
+      process.env.AGENC_MODEL = 'gpt-4o-mini'
       break
   }
 }
+
+function withSelectedProvider<T>(
+  operation: () => T,
+  availableModels?: readonly string[],
+): T {
+  const provider = process.env.AGENC_PROVIDER
+  if (!provider) throw new Error('test provider must be selected')
+  const model = process.env.AGENC_MODEL ?? 'test-model'
+  const store = new ConfigStore({
+    home: '/tmp/agenc-agent-model-authority',
+    env: {},
+    base: {
+      ...defaultConfig(),
+      ...(availableModels === undefined ? {} : { availableModels }),
+    },
+  })
+  return runWithCanonicalSettingsAuthority(store, () =>
+    runWithStartupProviderSelection(
+      { provider, model, environment: { ...process.env } },
+      operation,
+    )
+  )
+}
+
+const getAgentModel = (...args: Parameters<typeof getAgentModelUnbound>) =>
+  withSelectedProvider(() => getAgentModelUnbound(...args))
+
+const getAgentModelWithPolicy = (
+  args: Parameters<typeof getAgentModelUnbound>,
+  availableModels: readonly string[],
+) => withSelectedProvider(
+  () => getAgentModelUnbound(...args),
+  availableModels,
+)
+
+const checkIsAgenCNativeProvider = () =>
+  withSelectedProvider(checkIsAgenCNativeProviderUnbound)
 
 describe('getAgentModel provider-aware fallback', () => {
   afterEach(() => {
@@ -97,12 +135,28 @@ describe('getAgentModel provider-aware fallback', () => {
         'haiku',
         'claude-sonnet-4-6',
         undefined,
-        'default',
       )
 
       expect(result).toContain('haiku')
       expect(result).not.toBe('claude-sonnet-4-6')
     })
+
+    test.each([
+      ['agent definition', ['best', 'claude-sonnet-4-6', undefined]],
+      ['tool argument', [undefined, 'claude-sonnet-4-6', 'opus']],
+    ] as const)(
+      'rejects a %s model outside managed availableModels',
+      (_source, args) => {
+        useProvider('first-party')
+
+        expect(() =>
+          getAgentModelWithPolicy(
+            args as Parameters<typeof getAgentModelUnbound>,
+            ['sonnet'],
+          )
+        ).toThrow('managed availableModels policy')
+      },
+    )
   })
 
   describe('Non-AgenC-native providers', () => {
@@ -113,7 +167,6 @@ describe('getAgentModel provider-aware fallback', () => {
         'haiku',
         'gpt-4o-mini',
         undefined,
-        'default',
       )
 
       expect(result).toBe('gpt-4o-mini')
@@ -126,7 +179,6 @@ describe('getAgentModel provider-aware fallback', () => {
         'haiku',
         'gemini-2.5-pro',
         undefined,
-        'default',
       )
 
       expect(result).toBe('gemini-2.5-pro')
@@ -139,7 +191,6 @@ describe('getAgentModel provider-aware fallback', () => {
         'haiku',
         'claude-sonnet-4-6',
         undefined,
-        'default',
       )
 
       expect(result).toBe('claude-sonnet-4-6')
@@ -152,7 +203,6 @@ describe('getAgentModel provider-aware fallback', () => {
         'sonnet',
         'gpt-4o-mini',
         undefined,
-        'default',
       )
 
       expect(result).toBe('gpt-4o-mini')
@@ -165,7 +215,6 @@ describe('getAgentModel provider-aware fallback', () => {
         'haiku',
         'mistral-small-latest',
         undefined,
-        'default',
       )
 
       expect(result).toBe('mistral-small-latest')
@@ -178,7 +227,6 @@ describe('getAgentModel provider-aware fallback', () => {
         'haiku',
         'gpt-4o-mini',
         undefined,
-        'default',
       )
 
       expect(result).toBe('gpt-4o-mini')
@@ -191,7 +239,6 @@ describe('getAgentModel provider-aware fallback', () => {
         'haiku',
         'meta/llama-3.1-8b-instruct',
         undefined,
-        'default',
       )
 
       expect(result).toBe('meta/llama-3.1-8b-instruct')
@@ -204,7 +251,6 @@ describe('getAgentModel provider-aware fallback', () => {
         'haiku',
         'MiniMax-M2.5-highspeed',
         undefined,
-        'default',
       )
 
       expect(result).toBe('MiniMax-M2.5-highspeed')
@@ -217,7 +263,6 @@ describe('getAgentModel provider-aware fallback', () => {
         'haiku',
         'gpt-5.5-mini',
         undefined,
-        'default',
       )
 
       expect(result).toBe('gpt-5.5-mini')
@@ -232,11 +277,11 @@ describe('getAgentModel provider-aware fallback', () => {
         'inherit',
         'gpt-4o',
         undefined,
-        'default',
       )
 
       expect(result).toBe('gpt-4o')
     })
+
   })
 
   describe('checkIsAgenCNativeProvider helper', () => {

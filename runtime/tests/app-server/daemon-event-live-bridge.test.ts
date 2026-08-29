@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  daemonEventFromUnboundSessionEvent,
-  notificationFromDaemonEvent,
-} from "../../src/app-server/background-agent-runner.js";
+import { daemonEventFromUnboundSessionEvent } from "../../src/app-server/background-agent-runner.js";
 
 // Live-bridge coverage for session events the PhaseEvent pipeline does not
 // carry. token_count and the tool_input_* streaming family are persisted to
@@ -94,97 +91,30 @@ describe("daemon live bridge for usage and tool-input events", () => {
     });
   });
 
-  it("forwards the warning that explains an answerless turn", () => {
-    // Without this the reason reaches the rollout and no further, and a
-    // live client can only guess why the turn produced nothing.
-    expect(
-      daemonEventFromUnboundSessionEvent({
-        eventId: "journal-warn-1",
-        id: "warn-1",
-        seq: 28,
-        msg: {
-          type: "warning",
-          payload: {
-            cause: "stream_model_failed",
-            message:
-              "lmstudio: AdmissionDeniedError: execution admission deny: context_window_exceeded",
-          },
-        },
-      }),
-    ).toMatchObject({
-      id: "warn-1",
-      eventId: "journal-warn-1",
-      sequence: 28,
-      type: "warning",
-      payload: {
-        cause: "stream_model_failed",
-        message:
-          "lmstudio: AdmissionDeniedError: execution admission deny: context_window_exceeded",
-      },
-    });
-  });
-
-  it("forwards sequenced runtime settings so live clients observe permission mode", () => {
+  it("forwards canonical runtime warnings with their persisted identity", () => {
     const daemonEvent = daemonEventFromUnboundSessionEvent({
-      eventId: "run-runtime-settings:run-1:3:change-1",
-      id: "run-runtime-settings:run-1:3:change-1",
-      seq: 31,
+      eventId: "journal-warning-1",
+      id: "warning-1",
+      seq: 13,
       msg: {
-        type: "run_runtime_settings_changed",
+        type: "warning",
         payload: {
-          runId: "run-1",
-          epoch: 3,
-          permissionMode: "plan",
-          prePlanMode: "bypassPermissions",
-          autoModeActive: false,
-          reason: "permission_mode_changed",
+          cause: "user_prompt_submit_hook_threw",
+          message: "UserPromptSubmit hook 0 threw: hook boom",
         },
       },
     });
 
     expect(daemonEvent).toEqual({
-      id: "run-runtime-settings:run-1:3:change-1",
-      eventId: "run-runtime-settings:run-1:3:change-1",
-      sequence: 31,
-      type: "run_runtime_settings_changed",
+      id: "warning-1",
+      eventId: "journal-warning-1",
+      sequence: 13,
+      type: "warning",
       payload: {
-        runId: "run-1",
-        epoch: 3,
-        permissionMode: "plan",
-        prePlanMode: "bypassPermissions",
-        autoModeActive: false,
-        reason: "permission_mode_changed",
+        cause: "user_prompt_submit_hook_threw",
+        message: "UserPromptSubmit hook 0 threw: hook boom",
       },
     });
-    if (daemonEvent === null) throw new Error("expected bridged daemon event");
-    expect(
-      notificationFromDaemonEvent("session-1", "agent-1", daemonEvent),
-    ).toMatchObject({
-      method: "event.session_event",
-      params: {
-        sessionId: "session-1",
-        agentId: "agent-1",
-        eventId: "run-runtime-settings:run-1:3:change-1",
-        sequence: 31,
-        event: {
-          type: "run_runtime_settings_changed",
-          payload: { permissionMode: "plan" },
-        },
-      },
-    });
-  });
-
-  it("does not synthesize coordinates for runtime settings events", () => {
-    expect(
-      daemonEventFromUnboundSessionEvent({
-        eventId: "run-runtime-settings:unsequenced",
-        id: "run-runtime-settings:unsequenced",
-        msg: {
-          type: "run_runtime_settings_changed",
-          payload: { permissionMode: "plan" },
-        },
-      }),
-    ).toBeNull();
   });
 
   it("still drops malformed tool_input payloads", () => {

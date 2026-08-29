@@ -17,6 +17,7 @@ import {
 } from "./environment.mjs";
 import { buildFixture } from "./fixtures.mjs";
 import { assertOwnedTemporaryRoot } from "./isolation.mjs";
+import { registerBenchmarkModuleCompatibility } from "./module-compatibility.mjs";
 import { registerProductionModuleTracker } from "./module-closure.mjs";
 
 const START_PREFIX = "AGENC_FND_BENCH_START ";
@@ -40,6 +41,7 @@ try {
     process.platform,
     requested.temporaryRoot,
   );
+  registerBenchmarkModuleCompatibility();
   productionModuleTracker = registerProductionModuleTracker({
     productionRoot,
     repositoryRoot,
@@ -140,14 +142,14 @@ async function prepareCase(fixture, temporaryRoot) {
 }
 
 async function prepareCsvCase(fixture, temporaryRoot) {
-  const csvPath = join(temporaryRoot, "input.csv");
-  await writeFile(csvPath, fixture.payload.content, "utf8");
   const [{ runAgentsOnCsv }, { createCsvInputRootCapability }] =
     await Promise.all([
       import("../../src/agents/jobs/job-orchestrator.ts"),
       import("../../src/agents/jobs/csv-reader.ts"),
     ]);
   const inputRootCapability = createCsvInputRootCapability(temporaryRoot);
+  const csvPath = join(inputRootCapability.canonicalRoot, "input.csv");
+  await writeFile(csvPath, fixture.payload.content, "utf8");
   const spawn = {
     async spawn() {
       return { threadFinished: Promise.resolve() };

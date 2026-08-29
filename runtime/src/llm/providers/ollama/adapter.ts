@@ -37,9 +37,10 @@ import { withOllamaHealthSidecar } from "./health.js";
 import { isRecord } from "../../../utils/record.js";
 import { coerceUsage } from "../../wire/shared.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
-
-const DEFAULT_HOST = "http://localhost:11434";
-const DEFAULT_MODEL = "llama3.3";
+import {
+  BUILT_IN_PROVIDER_BASE_URLS,
+  BUILT_IN_PROVIDER_DEFAULT_MODELS,
+} from "../../registry/provider-info.js";
 
 function normalizeTimeoutMs(timeoutMs: number | undefined): number | undefined {
   if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
@@ -472,15 +473,18 @@ export class OllamaProvider implements LLMProvider {
   readonly name = "ollama";
 
   private client: unknown | null = null;
-  private readonly config: OllamaProviderConfig;
+  private readonly config: OllamaProviderConfig & {
+    readonly host: string;
+    readonly model: string;
+  };
   private readonly tools: LLMTool[];
   private readonly compactionConfig: ResolvedLLMCompactionConfig;
 
   constructor(config: OllamaProviderConfig) {
     this.config = {
       ...config,
-      model: config.model ?? DEFAULT_MODEL,
-      host: config.host ?? DEFAULT_HOST,
+      model: config.model ?? BUILT_IN_PROVIDER_DEFAULT_MODELS.ollama,
+      host: config.host ?? BUILT_IN_PROVIDER_BASE_URLS.ollama,
     };
     this.tools = config.tools ?? [];
     this.compactionConfig = resolveLLMCompactionConfig(undefined);
@@ -906,7 +910,7 @@ export class OllamaProvider implements LLMProvider {
       // allowlist constraint and shipped under
       // `fallback_full_catalog_no_matches`.
       console.warn(
-        `[OllamaAdapter] Tool allowlist resolved to ${requestedToolNames.length} names but zero matched the provider catalog of ${providerCatalogToolCount} — ${providerCatalogToolCount === 0 ? "the catalog is EMPTY, so no allowlist could match: the tools never reached the adapter" : "every requested name is absent from it, which is a naming-form mismatch"}. Suppressing all tools for this call. Requested: ${requestedToolNames.join(", ")}. Catalog: ${providerCatalogToolNames.join(", ") || "(none)"}`,
+        `[OllamaAdapter] Tool allowlist resolved to ${requestedToolNames.length} names but zero matched the provider catalog — suppressing all tools for this call (requested: ${requestedToolNames.join(", ")})`,
       );
       return {
         tools: [],
@@ -1012,8 +1016,7 @@ export class OllamaProvider implements LLMProvider {
       model:
         readString(record.model) ||
         options?.model?.trim() ||
-        this.config.model ||
-        DEFAULT_MODEL,
+        this.config.model,
       finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
       ...this.buildUnsupportedDiagnostics(options),
     };

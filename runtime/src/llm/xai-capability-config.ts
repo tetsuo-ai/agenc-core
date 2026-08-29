@@ -1,7 +1,7 @@
 /**
- * Provider-scoped Grok/xAI capability profile (`[llm.xai]` in config.toml).
+ * Provider-scoped Grok capability profile (`[providers.grok]` in config.toml).
  *
- * Pure mapping: AgenCConfig.llm.xai → createProvider() `extra` fields that
+ * Pure mapping: AgenCConfig.providers.grok → createProvider() `extra` fields that
  * GrokProvider already understands. Applied only when the session provider is
  * `grok` and the inference host is direct xAI (not OpenRouter / third-party).
  *
@@ -12,10 +12,13 @@
  * @module
  */
 
-import type { LlmXaiConfig } from "../config/schema.js";
-import { resolveApiKey } from "../config/env.js";
+import type { GrokCapabilityConfig } from "../config/schema.js";
 import { readXaiOauthAccessToken } from "../utils/xaiOauthCredentials.js";
+import type { HomeContext } from "../config/home.js";
+import { normalizeProviderIdentity } from "../provider-identity.js";
 import type { ProviderRuntimeExtra } from "./provider.js";
+import { isDynamicSessionCredentialEnvironmentKey } from "../session/environment.js";
+import { resolveProviderApiKeyEnvironment } from "./registry/provider-ingress.js";
 
 const DIRECT_XAI_HOST_SUFFIXES = [".x.ai", ".grok.com"] as const;
 
@@ -46,9 +49,9 @@ export function isDirectXaiInferenceHost(
 /**
  * Full Grok capability profile. Subscription + BYOK users get the whole
  * surface enabled by default; operators can still turn individual flags off
- * under `[llm.xai]`.
+ * under `[providers.grok]`.
  */
-export function defaultLlmXaiConfig(): Readonly<LlmXaiConfig> {
+export function defaultGrokCapabilityConfig(): Readonly<GrokCapabilityConfig> {
   return Object.freeze({
     web_search: true,
     x_search: true,
@@ -64,12 +67,12 @@ function asBoolean(value: unknown, fallback: boolean): boolean {
 }
 
 /**
- * Merge operator `[llm.xai]` over full-surface defaults.
+ * Merge operator `[providers.grok]` over full-surface defaults.
  */
-export function resolveLlmXaiConfig(
-  raw: LlmXaiConfig | undefined | null,
-): Readonly<LlmXaiConfig> {
-  const defaults = defaultLlmXaiConfig();
+export function resolveGrokCapabilityConfig(
+  raw: GrokCapabilityConfig | undefined | null,
+): Readonly<GrokCapabilityConfig> {
+  const defaults = defaultGrokCapabilityConfig();
   if (!raw || typeof raw !== "object") return defaults;
   return Object.freeze({
     web_search: asBoolean(raw.web_search, defaults.web_search === true),
@@ -100,21 +103,34 @@ export function resolveLlmXaiConfig(
 export interface ResolveXaiCapabilityExtraInput {
   readonly provider: string | undefined | null;
   readonly baseURL?: string | null;
-  readonly llmXai?: LlmXaiConfig | null;
-  /**
-   * Env overrides (optional). When set, force flags on regardless of config.
-   * Keys match AGENC_XAI_* product env (without prefix): X_SEARCH, CODE_EXECUTION.
-   */
-  readonly env?: Readonly<Record<string, string | undefined>>;
+  readonly grokCapabilities?: GrokCapabilityConfig | null;
+  /** Immutable environment captured at the session bootstrap boundary. */
+  readonly env: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>;
 }
 
-function envFlagTrue(
-  env: Readonly<Record<string, string | undefined>> | undefined,
-  key: string,
-): boolean {
-  if (!env) return false;
-  const raw = env[key]?.trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+function resolveRemoteMcpAuthorization(
+  authorizationEnv: string | undefined,
+  env: ResolveXaiCapabilityExtraInput["env"],
+  serverLabel: string,
+): string | undefined {
+  if (authorizationEnv === undefined) return undefined;
+  if (!isDynamicSessionCredentialEnvironmentKey(authorizationEnv)) {
+    throw new Error(
+      `Remote MCP server ${JSON.stringify(serverLabel)} requires an AGENC_CREDENTIAL_* authorization_env name`,
+    );
+  }
+  if (env === undefined) {
+    throw new Error(
+      `Remote MCP server ${JSON.stringify(serverLabel)} requires the captured environment to resolve authorization_env=${JSON.stringify(authorizationEnv)}`,
+    );
+  }
+  const authorization = env[authorizationEnv];
+  if (typeof authorization !== "string" || authorization.trim().length === 0) {
+    throw new Error(
+      `Remote MCP server ${JSON.stringify(serverLabel)} requires non-empty environment variable ${authorizationEnv}`,
+    );
+  }
+  return authorization;
 }
 
 /**
@@ -124,22 +140,22 @@ function envFlagTrue(
 export function resolveXaiCapabilityExtra(
   input: ResolveXaiCapabilityExtraInput,
 ): ProviderRuntimeExtra {
-  const provider = (input.provider ?? "").trim().toLowerCase();
-  if (provider !== "grok" && provider !== "xai") {
+  const provider = normalizeProviderIdentity(
+    input.provider ?? undefined,
+    "xAI capability provider",
+  );
+  if (provider !== "grok") {
     return {};
   }
   if (!isDirectXaiInferenceHost(input.baseURL)) {
     return {};
   }
 
-  const cfg = resolveLlmXaiConfig(input.llmXai);
-  const env = input.env;
+  const cfg = resolveGrokCapabilityConfig(input.grokCapabilities);
 
   // Search enable flags are consumed by LIVE WebSearch/XSearch (Pattern A),
   // not continuous main-loop injection — see resolveXaiLive* helpers.
-  const codeExecution =
-    envFlagTrue(env, "AGENC_XAI_CODE_EXECUTION") ||
-    cfg.code_execution === true;
+  const codeExecution = cfg.code_execution === true;
 
   const collections = cfg.collections;
   const collectionsSearch =
@@ -164,19 +180,24 @@ export function resolveXaiCapabilityExtra(
     remoteMcp.servers.length > 0
       ? {
           enabled: true as const,
-          servers: remoteMcp.servers.map((server) => ({
-            serverUrl: server.server_url,
-            serverLabel: server.server_label,
-            ...(server.server_description !== undefined
-              ? { serverDescription: server.server_description }
-              : {}),
-            ...(server.allowed_tools !== undefined
-              ? { allowedTools: [...server.allowed_tools] }
-              : {}),
-            ...(server.authorization !== undefined
-              ? { authorization: server.authorization }
-              : {}),
-          })),
+          servers: remoteMcp.servers.map((server) => {
+            const authorization = resolveRemoteMcpAuthorization(
+              server.authorization_env,
+              input.env,
+              server.server_label,
+            );
+            return {
+              serverUrl: server.server_url,
+              serverLabel: server.server_label,
+              ...(server.server_description !== undefined
+                ? { serverDescription: server.server_description }
+                : {}),
+              ...(server.allowed_tools !== undefined
+                ? { allowedTools: [...server.allowed_tools] }
+                : {}),
+              ...(authorization !== undefined ? { authorization } : {}),
+            };
+          }),
         }
       : undefined;
 
@@ -196,22 +217,17 @@ export function resolveXaiCapabilityExtra(
 
 /**
  * Options for LIVE WebSearch one-shot native `web_search` (Pattern A).
- * Reads `[llm.xai]` image flags without enabling continuous main-loop search.
+ * Reads `[providers.grok]` image flags without enabling continuous main-loop search.
  */
 export function resolveXaiLiveWebSearchOptions(
-  llmXai: LlmXaiConfig | undefined | null,
-  env?: Readonly<Record<string, string | undefined>>,
+  grokCapabilities: GrokCapabilityConfig | undefined | null,
 ): {
   readonly enableImageSearch?: boolean;
   readonly enableImageUnderstanding?: boolean;
 } | undefined {
-  const cfg = resolveLlmXaiConfig(llmXai);
-  const enableImageSearch =
-    envFlagTrue(env, "AGENC_XAI_ENABLE_IMAGE_SEARCH") ||
-    cfg.enable_image_search === true;
-  const enableImageUnderstanding =
-    envFlagTrue(env, "AGENC_XAI_ENABLE_IMAGE_UNDERSTANDING") ||
-    cfg.enable_image_understanding === true;
+  const cfg = resolveGrokCapabilityConfig(grokCapabilities);
+  const enableImageSearch = cfg.enable_image_search === true;
+  const enableImageUnderstanding = cfg.enable_image_understanding === true;
   if (!enableImageSearch && !enableImageUnderstanding) return undefined;
   return {
     ...(enableImageSearch ? { enableImageSearch: true as const } : {}),
@@ -225,19 +241,14 @@ export function resolveXaiLiveWebSearchOptions(
  * Options for LIVE XSearch one-shot native `x_search` (Pattern A).
  */
 export function resolveXaiLiveXSearchOptions(
-  llmXai: LlmXaiConfig | undefined | null,
-  env?: Readonly<Record<string, string | undefined>>,
+  grokCapabilities: GrokCapabilityConfig | undefined | null,
 ): {
   readonly enableImageUnderstanding?: boolean;
   readonly enableVideoUnderstanding?: boolean;
 } | undefined {
-  const cfg = resolveLlmXaiConfig(llmXai);
-  const enableImageUnderstanding =
-    envFlagTrue(env, "AGENC_XAI_ENABLE_IMAGE_UNDERSTANDING") ||
-    cfg.enable_image_understanding === true;
-  const enableVideoUnderstanding =
-    envFlagTrue(env, "AGENC_XAI_ENABLE_VIDEO_UNDERSTANDING") ||
-    cfg.enable_video_understanding === true;
+  const cfg = resolveGrokCapabilityConfig(grokCapabilities);
+  const enableImageUnderstanding = cfg.enable_image_understanding === true;
+  const enableVideoUnderstanding = cfg.enable_video_understanding === true;
   if (!enableImageUnderstanding && !enableVideoUnderstanding) return undefined;
   return {
     ...(enableImageUnderstanding
@@ -251,25 +262,21 @@ export function resolveXaiLiveXSearchOptions(
 
 /**
  * Whether LIVE WebSearch should prefer native xAI web_search (default on for
- * Grok via [llm.xai].web_search).
+ * Grok via [providers.grok].web_search).
  */
 export function isXaiLiveWebSearchEnabled(
-  llmXai: LlmXaiConfig | undefined | null,
-  env?: Readonly<Record<string, string | undefined>>,
+  grokCapabilities: GrokCapabilityConfig | undefined | null,
 ): boolean {
-  if (envFlagTrue(env, "AGENC_XAI_WEB_SEARCH")) return true;
-  return resolveLlmXaiConfig(llmXai).web_search === true;
+  return resolveGrokCapabilityConfig(grokCapabilities).web_search === true;
 }
 
 /**
- * Whether LIVE XSearch is enabled ([llm.xai].x_search default false).
+ * Whether LIVE XSearch is enabled ([providers.grok].x_search default true).
  */
 export function isXaiLiveXSearchEnabled(
-  llmXai: LlmXaiConfig | undefined | null,
-  env?: Readonly<Record<string, string | undefined>>,
+  grokCapabilities: GrokCapabilityConfig | undefined | null,
 ): boolean {
-  if (envFlagTrue(env, "AGENC_XAI_X_SEARCH")) return true;
-  return resolveLlmXaiConfig(llmXai).x_search === true;
+  return resolveGrokCapabilityConfig(grokCapabilities).x_search === true;
 }
 
 /**
@@ -281,10 +288,11 @@ export function isXaiLiveXSearchEnabled(
  * Cheap path only (no network refresh); actual 401 recovery is on the request.
  */
 export function hasXaiCredentials(
+  home: HomeContext,
   env?: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
 ): boolean {
-  if (readXaiOauthAccessToken() !== undefined) return true;
-  return resolveApiKey(env as NodeJS.ProcessEnv | undefined) !== undefined;
+  if (readXaiOauthAccessToken(home) !== undefined) return true;
+  return resolveProviderApiKeyEnvironment("grok", env ?? {}) !== undefined;
 }
 
 /**
@@ -297,13 +305,14 @@ export function hasXaiCredentials(
  * Precedence:
  * 1. Stored OAuth access token (`/grok-login`)
  * 2. Session/factory bearer (often the same OAuth token after resolve)
- * 3. BYOK env (`XAI_API_KEY` → `GROK_API_KEY` → `AGENC_XAI_API_KEY`)
+ * 3. BYOK env (`XAI_API_KEY` → `GROK_API_KEY`)
  */
 export function resolveXaiBearerToken(
+  home: HomeContext,
   env?: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
   sessionApiKey?: string,
 ): string | undefined {
-  const oauth = readXaiOauthAccessToken();
+  const oauth = readXaiOauthAccessToken(home);
   if (oauth !== undefined) return oauth;
   const session = sessionApiKey?.trim();
   if (session && session.length > 0) {
@@ -312,7 +321,42 @@ export function resolveXaiBearerToken(
     // Still prefer OAuth-first: if no oauth, session then BYOK.
     return session;
   }
-  return resolveApiKey(env as NodeJS.ProcessEnv | undefined);
+  return resolveProviderApiKeyEnvironment("grok", env ?? {})?.value;
+}
+
+export interface ResolvedGrokProviderCredential {
+  readonly value?: string;
+  /** True only when the selected value came from stored xAI OAuth. */
+  readonly isOAuth: boolean;
+}
+
+/** Resolve Grok credentials and the only source distinction consumers need. */
+export function resolveGrokProviderCredential(
+  home: HomeContext,
+  explicitApiKey: string | undefined,
+  env: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>> = {},
+): ResolvedGrokProviderCredential {
+  const oauth = readXaiOauthAccessToken(home);
+  if (oauth !== undefined) {
+    return Object.freeze({
+      value: oauth,
+      isOAuth: true,
+    });
+  }
+  const explicit = explicitApiKey?.trim();
+  if (explicit && explicit.toLowerCase() !== "undefined") {
+    return Object.freeze({
+      value: explicit,
+      isOAuth: false,
+    });
+  }
+  const environment = resolveProviderApiKeyEnvironment("grok", env);
+  return environment === undefined
+    ? Object.freeze({ isOAuth: false })
+    : Object.freeze({
+        value: environment.value,
+        isOAuth: false,
+      });
 }
 
 /**
@@ -320,12 +364,9 @@ export function resolveXaiBearerToken(
  * Used by factory + resolve-provider so one rule owns the product.
  */
 export function resolveGrokProviderApiKey(
+  home: HomeContext,
   explicitApiKey: string | undefined,
   env?: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
 ): string | undefined {
-  const oauth = readXaiOauthAccessToken();
-  if (oauth !== undefined) return oauth;
-  const explicit = explicitApiKey?.trim();
-  if (explicit) return explicit;
-  return resolveApiKey(env as NodeJS.ProcessEnv | undefined);
+  return resolveGrokProviderCredential(home, explicitApiKey, env).value;
 }

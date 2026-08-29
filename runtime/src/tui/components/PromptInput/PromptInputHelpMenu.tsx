@@ -4,9 +4,9 @@ import { Box, Text } from '../../ink.js';
 import { getPlatform } from '../../../utils/platform.js';
 import { isKeybindingCustomizationEnabled } from '../../keybindings/loadUserBindings.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
-import { isFastModeAvailable, isFastModeEnabled } from '../../../utils/fastMode.js';
 import { getNewlineInstructions } from './utils.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
+import type { GlobalRuntimeState } from '../../../config/runtime-state-repository.js';
 
 /**
  * Below this terminal width the 3-column grid (col widths 24 + 35 + auto)
@@ -24,6 +24,10 @@ type Props = {
   fixedWidth?: boolean;
   gap?: number;
   paddingX?: number;
+  runtimeState: Pick<
+    GlobalRuntimeState,
+    'shiftEnterKeyBindingInstalled' | 'hasUsedBackslashReturn'
+  >;
 };
 export function PromptInputHelpMenu(props: Props) {
   const $ = _c(99);
@@ -31,7 +35,8 @@ export function PromptInputHelpMenu(props: Props) {
     dimColor,
     fixedWidth,
     gap,
-    paddingX
+    paddingX,
+    runtimeState
   } = props;
   const {
     columns: terminalColumns
@@ -97,16 +102,6 @@ export function PromptInputHelpMenu(props: Props) {
     t11 = $[11];
   }
   const modelPickerShortcut = t11;
-  const t12 = useShortcutDisplay("chat:fastMode", "Chat", "alt+o");
-  let t13;
-  if ($[12] !== t12) {
-    t13 = formatShortcut(t12);
-    $[12] = t12;
-    $[13] = t13;
-  } else {
-    t13 = $[13];
-  }
-  const fastModeShortcut = t13;
   const t14 = useShortcutDisplay("chat:externalEditor", "Chat", "ctrl+g");
   let t15;
   if ($[14] !== t14) {
@@ -228,21 +223,8 @@ export function PromptInputHelpMenu(props: Props) {
   } else {
     t32 = $[50];
   }
-  let t33;
-  if ($[51] === Symbol.for("react.memo_cache_sentinel")) {
-    t33 = getNewlineInstructions();
-    $[51] = t33;
-  } else {
-    t33 = $[51];
-  }
-  let t34;
-  if ($[52] !== dimColor) {
-    t34 = <Box><Text dimColor={dimColor}>{t33}</Text></Box>;
-    $[52] = dimColor;
-    $[53] = t34;
-  } else {
-    t34 = $[53];
-  }
+  const t33 = getNewlineInstructions(runtimeState);
+  const t34 = <Box><Text dimColor={dimColor}>{t33}</Text></Box>;
   let t35;
   if ($[54] !== t28 || $[55] !== t29 || $[56] !== t30 || $[57] !== t31 || $[58] !== t32 || $[59] !== t34 || $[60] !== terminalShortcutElement) {
     t35 = <Box flexDirection="column" width={t28}>{t29}{t30}{t31}{t32}{terminalShortcutElement}{t34}</Box>;
@@ -292,15 +274,6 @@ export function PromptInputHelpMenu(props: Props) {
   } else {
     t39 = $[72];
   }
-  let t40;
-  if ($[73] !== dimColor || $[74] !== fastModeShortcut) {
-    t40 = isFastModeEnabled() && isFastModeAvailable() && <Box><Text dimColor={dimColor}>{fastModeShortcut} to toggle fast mode</Text></Box>;
-    $[73] = dimColor;
-    $[74] = fastModeShortcut;
-    $[75] = t40;
-  } else {
-    t40 = $[75];
-  }
   let t41;
   if ($[76] !== dimColor || $[77] !== stashShortcut) {
     t41 = <Box><Text dimColor={dimColor}>{stashShortcut} to stash prompt</Text></Box>;
@@ -328,13 +301,12 @@ export function PromptInputHelpMenu(props: Props) {
     t43 = $[83];
   }
   let t44;
-  if ($[84] !== t36 || $[85] !== t37 || $[86] !== t38 || $[87] !== t39 || $[88] !== t40 || $[89] !== t41 || $[90] !== t42 || $[91] !== t43) {
-    t44 = <Box flexDirection="column">{t36}{t37}{t38}{t39}{t40}{t41}{t42}{t43}</Box>;
+  if ($[84] !== t36 || $[85] !== t37 || $[86] !== t38 || $[87] !== t39 || $[89] !== t41 || $[90] !== t42 || $[91] !== t43) {
+    t44 = <Box flexDirection="column">{t36}{t37}{t38}{t39}{t41}{t42}{t43}</Box>;
     $[84] = t36;
     $[85] = t37;
     $[86] = t38;
     $[87] = t39;
-    $[88] = t40;
     $[89] = t41;
     $[90] = t42;
     $[91] = t43;

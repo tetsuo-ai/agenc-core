@@ -10,7 +10,6 @@ import type { Tool } from '../Tool.js'
 import { buildTool, type ToolDef } from '../Tool.js'
 import { count } from '../../utils/array.js'
 import { clearMemoryFileCaches } from '../../memory/index.js'
-import { updateHooksConfigSnapshot } from '../../utils/hooks/hooksConfigSnapshot.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { getPlansDirectory } from '../../utils/plans.js'
 import { setCwd } from '../../utils/Shell.js'
@@ -144,10 +143,6 @@ function restoreSessionToOriginalCwd(
   // identity" contract.
   if (projectRootIsWorktree) {
     setProjectRoot(originalCwd)
-    // setup.ts's --worktree block called updateHooksConfigSnapshot() to re-read
-    // hooks from the worktree. Restore symmetrically. (Mid-session
-    // EnterWorktreeTool never touched the snapshot, so no-op there.)
-    updateHooksConfigSnapshot()
   }
   saveWorktreeState(null)
   clearSystemPromptSections()
@@ -174,7 +169,6 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
   userFacingName() {
     return 'Exiting worktree'
   },
-  shouldDefer: true,
   isDestructive(input) {
     return input.action === 'remove'
   },

@@ -12,19 +12,25 @@ import { Tab, Tabs } from '../design-system/Tabs.js';
 import { Commands } from './Commands.js';
 import { General } from './General.js';
 import { calculateHelpBodyHeight } from './layout.js';
+import type { GlobalRuntimeState } from '../../../config/runtime-state-repository.js';
 type Props = {
   onClose: (result?: string, options?: {
     display?: CommandResultDisplay;
   }) => void;
   commands: Command[];
   query?: string;
+  runtimeState: Pick<
+    GlobalRuntimeState,
+    'shiftEnterKeyBindingInstalled' | 'hasUsedBackslashReturn'
+  >;
 };
 export function HelpV2(t0: Props): React.ReactNode {
   const $ = _c(44);
   const {
     onClose,
     commands,
-    query
+    query,
+    runtimeState
   } = t0;
   const {
     rows,
@@ -70,15 +76,9 @@ export function HelpV2(t0: Props): React.ReactNode {
     t3 = $[5];
   }
   const customCommands = t3;
-  let t4;
-  if ($[8] === Symbol.for("react.memo_cache_sentinel")) {
-    t4 = <Tab key="general" title="general"><General /></Tab>;
-    $[8] = t4;
-  } else {
-    t4 = $[8];
-  }
+  const t4 = <Tab key="general" title="general"><General runtimeState={runtimeState} /></Tab>;
   let tabs;
-  if ($[9] !== builtinCommands || $[10] !== close || $[11] !== columns || $[12] !== customCommands || $[13] !== maxHeight || $[14] !== query) {
+  if ($[8] !== t4 || $[9] !== builtinCommands || $[10] !== close || $[11] !== columns || $[12] !== customCommands || $[13] !== maxHeight || $[14] !== query) {
     tabs = [t4];
     let t5;
     if ($[16] !== builtinCommands || $[17] !== close || $[18] !== columns || $[19] !== maxHeight || $[20] !== query) {
@@ -106,6 +106,7 @@ export function HelpV2(t0: Props): React.ReactNode {
       t6 = $[27];
     }
     tabs.push(t6);
+    $[8] = t4;
     $[9] = builtinCommands;
     $[10] = close;
     $[11] = columns;

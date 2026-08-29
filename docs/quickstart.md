@@ -10,7 +10,7 @@ endpoint, or an AgenC login for managed OpenRouter (including free hosted
 runtime; npm and SDK installs require host Node **>=26.5 <27**. Sixteen built-in
 providers are supported.
 
-Related: [install](install.md) · [onboarding](onboarding.md) ·
+Related: [INDEX](INDEX.md) · [install](install.md) · [onboarding](onboarding.md) ·
 [gateway](gateway.md) · [managed OpenRouter](managed-openrouter.md) ·
 [remote control](remote-control.md) · [VPS](deploy/vps.md).
 
@@ -84,7 +84,7 @@ Resume with `--continue` / `--resume`.
 ```bash
 agenc onboard identity     # SOUL.md / USER.md + one-time naming ritual → IDENTITY.md
 agenc onboard channel      # Telegram / Discord / Slack / WebChat
-                           # live token checks, secrets in gateway/env (0600), pairing walkthrough
+                           # live token checks, secrets in the native secure storage, pairing walkthrough
 agenc gateway install-service   # always-on gateway (systemd/launchd)
 ```
 

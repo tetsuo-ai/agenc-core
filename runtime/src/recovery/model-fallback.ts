@@ -22,8 +22,8 @@
  * @module
  */
 
-import { readProviderIdentity } from "../llm/provider.js";
 import type { Session } from "../session/session.js";
+import { resolveSessionProviderModelSelection } from "../session/provider-model-selection.js";
 import type { TurnState } from "../session/turn-state.js";
 import type { StreamingToolExecutor } from "./_deps/streaming-executor.js";
 import type { FallbackTriggeredError } from "./api-errors.js";
@@ -69,6 +69,12 @@ export interface RunModelFallbackOpts {
  */
 export function runModelFallback(opts: RunModelFallbackOpts): ModelFallbackOutcome {
   const { error, session, state } = opts;
+  const selection = resolveSessionProviderModelSelection(session, {
+    ...(error.toProvider !== undefined
+      ? { model_provider: error.toProvider }
+      : {}),
+    model: error.toModel,
+  });
 
   // Step 1: synthesize terminal tool_results for orphan tool_use
   // blocks BEFORE tombstone clears the batch. Without this, a
@@ -79,7 +85,7 @@ export function runModelFallback(opts: RunModelFallbackOpts): ModelFallbackOutco
   const synthetic = appendTerminalToolResults(
     state,
     "provider_switched",
-    `model_fallback ${error.fromModel} → ${error.toModel}`,
+    `model_fallback ${error.fromModel} → ${selection.model}`,
   );
 
   // Step 2: tombstone orphans + discard+null the executor. tombstone
@@ -109,22 +115,17 @@ export function runModelFallback(opts: RunModelFallbackOpts): ModelFallbackOutco
 
   // Signal the next iteration to use the fallback model. run-turn's I-13
   // path consumes the pending switch before the next stream.
-  session.pendingProviderSwitch = {
-    provider:
-      error.toProvider ??
-      readProviderIdentity(session.services.provider) ??
-      session.services.provider.name,
-    model: error.toModel,
-  };
+  session.setPendingProviderSwitch({
+    provider: selection.provider,
+    model: selection.model,
+  });
   state.pendingAdmissionFallback = {
     fromModel: error.fromModel,
-    toModel: error.toModel,
+    toModel: selection.model,
     ...(error.fromProvider !== undefined
       ? { fromProvider: error.fromProvider }
       : {}),
-    ...(error.toProvider !== undefined
-      ? { toProvider: error.toProvider }
-      : {}),
+    toProvider: selection.provider,
     reason: error.reason ?? "provider_fallback_ladder",
   };
 
@@ -134,13 +135,13 @@ export function runModelFallback(opts: RunModelFallbackOpts): ModelFallbackOutco
     session.eventLog,
     session.nextInternalSubId(),
     "model_fallback_triggered",
-    `falling back from ${error.fromModel} to ${error.toModel} (${tombstones.length} orphan messages tombstoned, ${synthetic.length} orphan tool_results synthesized)`,
+    `falling back from ${error.fromModel} to ${selection.model} (${tombstones.length} orphan messages tombstoned, ${synthetic.length} orphan tool_results synthesized)`,
   );
 
   return {
     kind: "switched",
     fromModel: error.fromModel,
-    toModel: error.toModel,
+    toModel: selection.model,
     tombstones: tombstones.length,
     orphanToolResultsSynthesized: synthetic.length,
   };

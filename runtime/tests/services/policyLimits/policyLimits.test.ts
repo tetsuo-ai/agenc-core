@@ -32,6 +32,7 @@ function remoteBackend(overrides: Partial<AuthBackend> = {}): AuthBackend {
     logout: vi.fn(async () => ({ authenticated: false })),
     whoami: vi.fn(async () => ({ authenticated: true, provider: "remote" })),
     vendKey: vi.fn(async (provider, sessionId) => ({
+      kind: "api-key",
       provider,
       sessionId,
       apiKey: "managed-policy-key",

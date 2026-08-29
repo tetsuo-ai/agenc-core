@@ -20,7 +20,7 @@ run against this agent build, so there is no Trust Recovery Rate to conjoin.
 ## Setup
 
 - Agent under test: AgenC runtime 0.6.1 (overlay tarball), headless
-  `agenc -p`, daemon mode, `--yolo`, 30-minute cap per task.
+  `agenc -p`, daemon mode, `--dangerously-bypass-approvals-and-sandbox`, 30-minute cap per task.
 - Model/provider: `grok-4.5` via `api.x.ai` (OAuth), through the phase-2b
   egress lane: docker `--internal` network, SNI-pinned allowlist CONNECT
   sidecar, blackholed DNS, pre-agent containment probes (fail-closed).

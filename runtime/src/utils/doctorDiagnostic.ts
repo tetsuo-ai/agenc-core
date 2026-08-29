@@ -1,25 +1,40 @@
-import { execa } from 'execa'
-import { readFile, realpath } from 'fs/promises'
+import { realpath } from 'fs/promises'
 import { homedir } from 'os'
-import { delimiter, dirname, join, normalize, posix, resolve, win32 } from 'path'
+import {
+  delimiter,
+  dirname,
+  join,
+  normalize,
+  posix,
+  resolve,
+  win32,
+} from 'path'
 import { checkGlobalInstallPermissions } from './autoUpdater.js'
 import { isInBundledMode } from './bundledMode.js'
 import {
   formatAutoUpdaterDisabledReason,
   getAutoUpdaterDisabledReason,
-  getGlobalConfig,
+  getRuntimeState,
   type InstallMethod,
 } from './config.js'
-import { loadConfig } from '../config/loader.js'
+import {
+  loadCanonicalConfig,
+  type ConfigScope,
+} from '../config/repository.js'
+import type { ConfigStoreAuthority } from '../config/store.js'
+import type { RuntimeStateRepository } from '../config/runtime-state-repository.js'
 import type { TransactionGuardConfig } from '../config/schema.js'
 import {
   resolveTransactionGuardPolicy,
-  type TransactionGuardValueSource,
 } from '../transaction-guard/config.js'
 import { selectPinnedRipgrepPath } from '../tools/system/pinned-ripgrep.js'
 import { getCwd } from './cwd.js'
 import { isEnvTruthy } from './envUtils.js'
-import { execFileNoThrow } from './execFileNoThrow.js'
+import {
+  execFileNoThrow,
+  execFileNoThrowWithCwd,
+} from './execFileNoThrow.js'
+import { findExecutableOnCapturedPath } from './findExecutable.js'
 import { getFsImplementation } from './fsOperations.js'
 import {
   GENERATED_WRAPPER_MAX_BYTES,
@@ -33,15 +48,10 @@ import {
   localInstallationExists,
 } from './localInstaller.js'
 import {
-  detectApk,
-  detectAsdf,
-  detectDeb,
   detectHomebrew,
-  detectMise,
-  detectPacman,
-  detectRpm,
-  detectWinget,
   getPackageManager,
+  getPackageManagerForIngress,
+  type PackageManager,
 } from './nativeInstaller/packageManagers.js'
 import { getPlatform } from './platform.js'
 import {
@@ -55,14 +65,11 @@ import {
   type SandboxExecutionStatus,
 } from '../sandbox/execution-broker.js'
 import { probeLandlock } from '../sandbox/landlock-run.js'
-import { getManagedFilePath } from './settings/managedPath.js'
-import { CUSTOMIZATION_SURFACES } from './settings/types.js'
 import {
   findAgenCAlias,
   findValidAgenCAlias,
   getShellConfigPaths,
 } from './shellConfig.js'
-import { jsonParse } from './slowOperations.js'
 import { which } from './which.js'
 
 function getCliBinaryName(): string {
@@ -108,7 +115,7 @@ export type DiagnosticInfo = {
 export type TransactionGuardDoctorStatus = {
   enabled: boolean
   /** Where the enabled/disabled decision came from. */
-  source: TransactionGuardValueSource
+  source: ConfigScope | 'resolved-config'
   model: string
   endpoint: string
   failMode: 'open' | 'closed'
@@ -131,6 +138,8 @@ function getNormalizedPaths(): [invokedPath: string, execPath: string] {
 
 export type ActiveGeneratedWrapperOptions = {
   readonly invokedPath?: string
+  readonly environment?: NodeJS.ProcessEnv
+  readonly cwd?: string
   /**
    * Explicit command path for deterministic callers/tests. `undefined` looks
    * up `agenc` on PATH; `null` deliberately skips wrapper discovery.
@@ -151,7 +160,13 @@ export async function findActiveGeneratedWrapper(
   let commandPath = options.commandPath
   if (commandPath === undefined) {
     try {
-      commandPath = await which(getCliBinaryName())
+      commandPath = options.environment === undefined
+        ? await which(getCliBinaryName())
+        : await findExecutableOnCapturedPath(
+            getCliBinaryName(),
+            options.environment,
+            options.cwd ?? getCwd() ?? process.cwd(),
+          )
     } catch {
       return null
     }
@@ -201,6 +216,8 @@ export async function findActiveGeneratedWrapper(
 
 export type InstallationDetectionOptions = ActiveGeneratedWrapperOptions & {
   readonly activeGeneratedWrapper?: GeneratedWrapper | null
+  readonly environment?: NodeJS.ProcessEnv
+  readonly packageManager?: PackageManager
 }
 
 export type PrivateNodeRuntimeDetectionOptions = {
@@ -246,7 +263,8 @@ export function isRunningFromPrivateNodeRuntime(
 export async function getCurrentInstallationType(
   options: InstallationDetectionOptions = {},
 ): Promise<InstallationType> {
-  if (process.env.NODE_ENV === 'development') {
+  const environment = options.environment ?? process.env
+  if (environment.NODE_ENV === 'development') {
     return 'development'
   }
 
@@ -255,16 +273,14 @@ export async function getCurrentInstallationType(
   // Check if running in bundled mode first
   if (isInBundledMode()) {
     // Check if this bundled instance was installed by a package manager
-    if (
-      detectHomebrew() ||
-      detectWinget() ||
-      detectMise() ||
-      detectAsdf() ||
-      (await detectPacman()) ||
-      (await detectDeb()) ||
-      (await detectRpm()) ||
-      (await detectApk())
-    ) {
+    const packageManager = options.packageManager ??
+      (options.environment === undefined
+        ? await getPackageManager()
+        : await getPackageManagerForIngress({
+            environment,
+            cwd: options.cwd ?? getCwd() ?? process.cwd(),
+          }))
+    if (packageManager !== 'unknown') {
       return 'package-manager'
     }
     return 'native'
@@ -304,12 +320,16 @@ export async function getCurrentInstallationType(
     return 'npm-global'
   }
 
-  const npmConfigResult = await execa('npm config get prefix', {
-    shell: true,
-    reject: false,
-  })
+  const cwd = options.cwd ?? getCwd() ?? process.cwd()
+  const npmPath = await findExecutableOnCapturedPath('npm', environment, cwd)
+  if (npmPath === null) return 'unknown'
+  const npmConfigResult = await execFileNoThrowWithCwd(
+    npmPath,
+    ['config', 'get', 'prefix'],
+    { env: environment, cwd },
+  )
   const globalPrefix =
-    npmConfigResult.exitCode === 0 ? npmConfigResult.stdout.trim() : null
+    npmConfigResult.code === 0 ? npmConfigResult.stdout.trim() : null
 
   if (globalPrefix && invokedPath.startsWith(globalPrefix)) {
     return 'npm-global'
@@ -323,10 +343,14 @@ export async function getInstallationPath(
   options: {
     readonly installationType?: InstallationType
     readonly activeGeneratedWrapper?: GeneratedWrapper | null
+    readonly environment?: NodeJS.ProcessEnv
+    readonly cwd?: string
   } = {},
 ): Promise<string> {
-  if (process.env.NODE_ENV === 'development') {
-    return getCwd()
+  const environment = options.environment ?? process.env
+  const cwd = options.cwd ?? getCwd() ?? process.cwd()
+  if (environment.NODE_ENV === 'development') {
+    return cwd
   }
 
   const activeGeneratedWrapper = Object.hasOwn(
@@ -337,7 +361,10 @@ export async function getInstallationPath(
     : await findActiveGeneratedWrapper()
   const installationType =
     options.installationType ??
-    (await getCurrentInstallationType({ activeGeneratedWrapper }))
+    (await getCurrentInstallationType({
+      activeGeneratedWrapper,
+      environment,
+    }))
   if (installationType === 'native' && activeGeneratedWrapper !== null) {
     return activeGeneratedWrapper.path
   }
@@ -352,7 +379,11 @@ export async function getInstallationPath(
     }
 
     try {
-      const path = await which(getCliBinaryName())
+      const path = await findExecutableOnCapturedPath(
+        getCliBinaryName(),
+        environment,
+        cwd,
+      )
       if (path) {
         return path
       }
@@ -361,17 +392,22 @@ export async function getInstallationPath(
     }
 
     // If we can't find it, check common locations
-    try {
-      const nativeBinaryPath = join(
-        homedir(),
-        '.local',
-        'bin',
-        getCliBinaryName(),
-      )
-      await getFsImplementation().stat(nativeBinaryPath)
-      return nativeBinaryPath
-    } catch {
-      // Not found
+    const platformHome =
+      getCapturedPlatformHome(environment) ??
+      (options.environment === undefined ? homedir() : undefined)
+    if (platformHome !== undefined) {
+      try {
+        const nativeBinaryPath = join(
+          platformHome,
+          '.local',
+          'bin',
+          getCliBinaryName(),
+        )
+        await getFsImplementation().stat(nativeBinaryPath)
+        return nativeBinaryPath
+      } catch {
+        // Not found
+      }
     }
     return 'native'
   }
@@ -383,6 +419,20 @@ export async function getInstallationPath(
   } catch {
     return 'unknown'
   }
+}
+
+function nonEmptyEnvironmentValue(value: string | undefined): string | undefined {
+  const normalized = value?.trim()
+  return normalized ? normalized : undefined
+}
+
+function getCapturedPlatformHome(
+  environment: NodeJS.ProcessEnv,
+): string | undefined {
+  return (
+    nonEmptyEnvironmentValue(environment.HOME) ??
+    nonEmptyEnvironmentValue(environment.USERPROFILE)
+  )
 }
 
 export function getInvokedBinary(): string {
@@ -414,14 +464,18 @@ export function retainOnlyMultipleInstallations(
   return result.length > 1 ? result : []
 }
 
-async function detectMultipleInstallations(
+export async function detectMultipleInstallations(
   activeGeneratedWrapper: GeneratedWrapper | null,
+  stateRepository: RuntimeStateRepository,
+  environment: NodeJS.ProcessEnv,
+  configHomeDir: string,
+  cwd: string,
 ): Promise<Array<{ type: string; path: string }>> {
   const fs = getFsImplementation()
   const installations: Array<{ type: string; path: string }> = []
 
   // Check for local installation
-  const localPath = await getDetectedLocalInstallDir()
+  const localPath = await getDetectedLocalInstallDir({ configHomeDir })
   if (localPath) {
     installations.push({ type: 'npm-local', path: localPath })
   }
@@ -431,12 +485,17 @@ async function detectMultipleInstallations(
   if (MACRO.PACKAGE_URL && MACRO.PACKAGE_URL !== '@tetsuo-ai/runtime') {
     packagesToCheck.push(MACRO.PACKAGE_URL)
   }
-  const npmResult = await execFileNoThrow('npm', [
-    '-g',
-    'config',
-    'get',
-    'prefix',
-  ])
+  const npmPath = await findExecutableOnCapturedPath('npm', environment, cwd)
+  const npmResult = npmPath === null
+    ? { code: 1, stdout: '', stderr: '' }
+    : await execFileNoThrowWithCwd(
+        npmPath,
+        ['-g', 'config', 'get', 'prefix'],
+        {
+          cwd: getCapturedPlatformHome(environment) ?? cwd,
+          env: environment,
+        },
+      )
   if (npmResult.code === 0 && npmResult.stdout) {
     const npmPrefix = npmResult.stdout.trim()
     const isWindows = getPlatform() === 'windows'
@@ -509,19 +568,22 @@ async function detectMultipleInstallations(
   }
 
   // Check common native installation paths
-  const nativeBinPath = join(homedir(), '.local', 'bin', getCliBinaryName())
-  try {
-    await fs.stat(nativeBinPath)
-    installations.push({ type: 'native', path: nativeBinPath })
-  } catch {
-    // Not found
+  const platformHome = getCapturedPlatformHome(environment)
+  if (platformHome !== undefined) {
+    const nativeBinPath = join(platformHome, '.local', 'bin', getCliBinaryName())
+    try {
+      await fs.stat(nativeBinPath)
+      installations.push({ type: 'native', path: nativeBinPath })
+    } catch {
+      // Not found
+    }
   }
 
   // Also check if config indicates native installation
-  const config = getGlobalConfig()
-  if (config.installMethod === 'native') {
+  const config = getRuntimeState(stateRepository)
+  if (config.installMethod === 'native' && platformHome !== undefined) {
     const nativeDataPath = join(
-      homedir(),
+      platformHome,
       '.local',
       'share',
       getNativeDataDirName(),
@@ -539,68 +601,27 @@ async function detectMultipleInstallations(
   return retainOnlyMultipleInstallations(installations)
 }
 
-async function detectConfigurationIssues(
+export async function detectConfigurationIssues(
   type: InstallationType,
+  stateRepository: RuntimeStateRepository,
+  environment: NodeJS.ProcessEnv,
+  cwd: string,
+  configHomeDir: string,
 ): Promise<Array<{ issue: string; fix: string }>> {
   const warnings: Array<{ issue: string; fix: string }> = []
 
-  // Managed-settings forwards-compat: the schema preprocess silently drops
-  // unknown strictPluginOnlyCustomization surface names so one future enum
-  // value doesn't null out the entire policy file (settings.ts:101). But
-  // admins should KNOW — read the raw file and diff. Runs before the
-  // development-mode early return: this is config correctness, not an
-  // install-path check, and it's useful to see during dev testing.
-  try {
-    const raw = await readFile(
-      join(getManagedFilePath(), 'managed-settings.json'),
-      'utf-8',
-    )
-    const parsed: unknown = jsonParse(raw)
-    const field =
-      parsed && typeof parsed === 'object'
-        ? (parsed as Record<string, unknown>).strictPluginOnlyCustomization
-        : undefined
-    if (field !== undefined && typeof field !== 'boolean') {
-      if (!Array.isArray(field)) {
-        // .catch(undefined) in the schema silently drops this, so the rest
-        // of managed settings survive — but the admin typed something
-        // wrong (an object, a string, etc.).
-        warnings.push({
-          issue: `managed-settings.json: strictPluginOnlyCustomization has an invalid value (expected true or an array, got ${typeof field})`,
-          fix: `The field is silently ignored (schema .catch rescues it). Set it to true, or an array of: ${CUSTOMIZATION_SURFACES.join(', ')}.`,
-        })
-      } else {
-        const unknown = field.filter(
-          x =>
-            typeof x === 'string' &&
-            !(CUSTOMIZATION_SURFACES as readonly string[]).includes(x),
-        )
-        if (unknown.length > 0) {
-          warnings.push({
-            issue: `managed-settings.json: strictPluginOnlyCustomization has ${unknown.length} value(s) this client doesn't recognize: ${unknown.map(String).join(', ')}`,
-            fix: `These are silently ignored (forwards-compat). Known surfaces for this version: ${CUSTOMIZATION_SURFACES.join(', ')}. Either remove them, or this client is older than the managed-settings intended.`,
-          })
-        }
-      }
-    }
-  } catch {
-    // ENOENT (no managed settings) / parse error — not this check's concern.
-    // Parse errors are surfaced by the settings loader itself.
-  }
-
-  const config = getGlobalConfig()
-
+  const config = getRuntimeState(stateRepository)
   // Skip most warnings for development mode
   if (type === 'development') {
     return warnings
   }
 
   // Check if ~/.local/bin is in PATH for native installations
-  if (type === 'native') {
-    const path = process.env.PATH || ''
+  const platformHome = getCapturedPlatformHome(environment)
+  if (type === 'native' && platformHome !== undefined) {
+    const path = environment.PATH ?? environment.Path ?? ''
     const pathDirectories = path.split(delimiter)
-    const homeDir = homedir()
-    const localBinPath = join(homeDir, '.local', 'bin')
+    const localBinPath = join(platformHome, '.local', 'bin')
 
     // On Windows, convert backslashes to forward slashes for consistent path matching
     let normalizedLocalBinPath = localBinPath
@@ -638,11 +659,14 @@ async function detectConfigurationIssues(
         })
       } else {
         // Unix-style PATH instructions
-        const shellType = getShellType()
-        const configPaths = getShellConfigPaths()
+        const shellType = getShellType(environment)
+        const configPaths = getShellConfigPaths({
+          env: environment,
+          homedir: platformHome,
+        })
         const configFile = configPaths[shellType as keyof typeof configPaths]
         const displayPath = configFile
-          ? configFile.replace(homedir(), '~')
+          ? configFile.replace(platformHome, '~')
           : 'your shell config file'
 
         warnings.push({
@@ -656,7 +680,7 @@ async function detectConfigurationIssues(
 
   // Check for configuration mismatches
   // Skip these checks if DISABLE_INSTALLATION_CHECKS is set (e.g., in HFI)
-  if (!isEnvTruthy(process.env.DISABLE_INSTALLATION_CHECKS)) {
+  if (!isEnvTruthy(environment.DISABLE_INSTALLATION_CHECKS)) {
     if (type === 'npm-local' && config.installMethod !== 'local') {
       warnings.push({
         issue: `Running from local installation but config install method is '${config.installMethod}'`,
@@ -677,21 +701,40 @@ async function detectConfigurationIssues(
     }
   }
 
-  if (type === 'npm-global' && (await localInstallationExists())) {
+  if (
+    type === 'npm-global' &&
+    (await localInstallationExists({ configHomeDir }))
+  ) {
     warnings.push({
       issue: 'Local installation exists but not being used',
       fix: `Consider using native installation: ${getCliBinaryName()} install`,
     })
   }
 
-  const existingAlias = await findAgenCAlias()
-  const validAlias = await findValidAgenCAlias()
+  const shellConfigOptions = platformHome === undefined
+    ? null
+    : { env: environment, homedir: platformHome }
+  const existingAlias = shellConfigOptions === null
+    ? null
+    : await findAgenCAlias(shellConfigOptions)
+  const validAlias = shellConfigOptions === null
+    ? null
+    : await findValidAgenCAlias(shellConfigOptions)
 
   // Check if running local installation but it's not in PATH
   if (type === 'npm-local') {
     // Check if agenc is already accessible via PATH
-    const whichResult = await which(getCliBinaryName())
-    const agencInPath = !!whichResult
+    const agencInPath =
+      (await findExecutableOnCapturedPath(
+        getCliBinaryName(),
+        environment,
+        cwd,
+      )) !== null
+    const localAliasTarget = join(
+      configHomeDir,
+      'local',
+      getCliBinaryName(),
+    )
 
     // Only show warning if agenc is NOT in PATH AND no valid alias exists
     if (!agencInPath && !validAlias) {
@@ -699,13 +742,13 @@ async function detectConfigurationIssues(
         // Alias exists but points to invalid target
         warnings.push({
           issue: 'Local installation not accessible',
-          fix: `Alias exists but points to invalid target: ${existingAlias}. Update alias: alias ${getCliBinaryName()}="~/.agenc/local/${getCliBinaryName()}"`,
+          fix: `Alias exists but points to invalid target: ${existingAlias}. Update alias: alias ${getCliBinaryName()}="${localAliasTarget}"`,
         })
       } else {
         // No alias exists and not in PATH
         warnings.push({
           issue: 'Local installation not accessible',
-          fix: `Create alias: alias ${getCliBinaryName()}="~/.agenc/local/${getCliBinaryName()}"`,
+          fix: `Create alias: alias ${getCliBinaryName()}="${localAliasTarget}"`,
         })
       }
     }
@@ -741,7 +784,7 @@ export function detectLinuxGlobPatternWarnings(): Array<{
   return warnings
 }
 
-/** Build the configured-ripgrep warning used by TUI and legacy runtime search. */
+/** Build the configured-ripgrep warning used by the interactive runtime. */
 export function buildRipgrepWarning(
   status: { working: boolean; mode: 'system' | 'builtin' | 'embedded' },
   platform: NodeJS.Platform = process.platform,
@@ -751,7 +794,7 @@ export function buildRipgrepWarning(
   }
   return {
     issue:
-      'configured ripgrep (rg) could not be started — TUI and legacy runtime search require this configured search runtime',
+      'configured ripgrep (rg) could not be started — interactive search requires this configured search runtime',
     fix: getRipgrepInstallHint(platform),
   }
 }
@@ -859,9 +902,8 @@ export async function probeTransactionGuardEndpoint(
 
 /**
  * Resolve the effective transaction-guard status for `agenc doctor`:
- * the `[transaction_guard]` config block merged with env overrides
- * (env > config > defaults), plus an endpoint reachability probe when
- * the guard is enabled.
+ * the already-layered canonical `[transaction_guard]` snapshot, plus an
+ * endpoint reachability probe when the guard is enabled.
  *
  * `opts.config` short-circuits the disk load for tests (`null` = "no
  * config block on disk"); `opts.probe` injects the reachability check.
@@ -869,20 +911,26 @@ export async function probeTransactionGuardEndpoint(
 export async function getTransactionGuardDoctorStatus(opts?: {
   config?: TransactionGuardConfig | null
   env?: NodeJS.ProcessEnv
+  source?: ConfigScope | 'resolved-config'
   probe?: (endpoint: string) => Promise<boolean>
 }): Promise<TransactionGuardDoctorStatus> {
   const env = opts?.env ?? process.env
   let guardConfig: TransactionGuardConfig | undefined =
     opts?.config === null ? undefined : opts?.config
+  let source: ConfigScope | 'resolved-config' =
+    opts?.source ?? 'resolved-config'
   if (guardConfig === undefined && opts?.config === undefined) {
     try {
-      const loaded = await loadConfig({ onWarn: () => {} })
+      const loaded = await loadCanonicalConfig({ env, onWarn: () => {} })
       guardConfig = loaded.config.transaction_guard
+      source =
+        loaded.provenance['transaction_guard.enabled']?.scope ?? 'default'
     } catch {
-      // No resolvable AGENC home / unreadable config — env-only status.
+      // No resolvable AgenC home / unreadable config — report defaults.
+      source = 'default'
     }
   }
-  const { policy, sources } = resolveTransactionGuardPolicy(guardConfig, env)
+  const policy = resolveTransactionGuardPolicy(guardConfig)
   const probe = opts?.probe ?? probeTransactionGuardEndpoint
   let endpointReachable: boolean | null = null
   if (policy.enabled) {
@@ -895,7 +943,7 @@ export async function getTransactionGuardDoctorStatus(opts?: {
   }
   return {
     enabled: policy.enabled,
-    source: sources.enabled,
+    source,
     model: policy.model,
     endpoint: policy.ollamaUrl,
     failMode: policy.failClosed ? 'closed' : 'open',
@@ -925,7 +973,7 @@ export function buildTransactionGuardWarning(
 }
 
 export async function getSandboxDoctorStatus(opts?: {
-  config?: Pick<Awaited<ReturnType<typeof loadConfig>>['config'], 'sandbox_mode' | 'sandbox'> | null
+  config?: Pick<Awaited<ReturnType<typeof loadCanonicalConfig>>['config'], 'sandbox_mode' | 'sandbox'> | null
   env?: NodeJS.ProcessEnv
   cwd?: string
   probe?: ConstructorParameters<typeof SandboxExecutionBroker>[0]['probe']
@@ -934,7 +982,7 @@ export async function getSandboxDoctorStatus(opts?: {
   let config = opts?.config === null ? undefined : opts?.config
   if (config === undefined && opts?.config === undefined) {
     try {
-      config = (await loadConfig({ onWarn: () => {} })).config
+      config = (await loadCanonicalConfig({ onWarn: () => {} })).config
     } catch {
       // Defaults remain fail-closed when config is unreadable.
     }
@@ -992,10 +1040,29 @@ export function buildLandlockFallbackWarning(
   }
 }
 
-export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
-  const activeGeneratedWrapper = await findActiveGeneratedWrapper()
+export async function getDoctorDiagnostic(
+  authority: ConfigStoreAuthority,
+  ingress: {
+    readonly environment: NodeJS.ProcessEnv
+    readonly cwd: string
+  },
+): Promise<DiagnosticInfo> {
+  const operatorConfig = authority.current()
+  const detectedPackageManager = isInBundledMode()
+    ? await getPackageManagerForIngress({
+        environment: ingress.environment,
+        cwd: ingress.cwd,
+      })
+    : undefined
+  const activeGeneratedWrapper = await findActiveGeneratedWrapper({
+    environment: ingress.environment,
+    cwd: ingress.cwd,
+  })
   const installationType = await getCurrentInstallationType({
     activeGeneratedWrapper,
+    environment: ingress.environment,
+    cwd: ingress.cwd,
+    packageManager: detectedPackageManager,
   })
   // The bundler substitutes `MACRO.VERSION` (property access) with a string
   // literal at build time, but never defines the bare `MACRO` identifier — so a
@@ -1006,12 +1073,24 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
   const installationPath = await getInstallationPath({
     installationType,
     activeGeneratedWrapper,
+    environment: ingress.environment,
+    cwd: ingress.cwd,
   })
   const invokedBinary = getInvokedBinary()
   const multipleInstallations = await detectMultipleInstallations(
     activeGeneratedWrapper,
+    authority.stateRepository,
+    ingress.environment,
+    authority.homeContext.path,
+    ingress.cwd,
   )
-  const warnings = await detectConfigurationIssues(installationType)
+  const warnings = await detectConfigurationIssues(
+    installationType,
+    authority.stateRepository,
+    ingress.environment,
+    ingress.cwd,
+    authority.homeContext.path,
+  )
 
   // Add glob pattern warnings for Linux sandboxing
   warnings.push(...detectLinuxGlobPatternWarnings())
@@ -1058,7 +1137,7 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
     }
   }
 
-  const config = getGlobalConfig()
+  const config = getRuntimeState(authority.stateRepository)
 
   // Get config values for display
   const configInstallMethod = config.installMethod || 'not set'
@@ -1066,11 +1145,19 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
   // Check permissions for global installations
   let hasUpdatePermissions: boolean | null = null
   if (installationType === 'npm-global') {
-    const permCheck = await checkGlobalInstallPermissions()
+    const permCheck = await checkGlobalInstallPermissions({
+      environment: ingress.environment,
+      cwd:
+        getCapturedPlatformHome(ingress.environment) ??
+        authority.homeContext.path,
+    })
     hasUpdatePermissions = permCheck.hasPermissions
 
     // Add warning if no permissions
-    if (!hasUpdatePermissions && !getAutoUpdaterDisabledReason()) {
+    if (
+      !hasUpdatePermissions &&
+      !getAutoUpdaterDisabledReason(operatorConfig)
+    ) {
       warnings.push({
         issue: 'Insufficient permissions for auto-updates',
         fix: `Do one of: (1) Re-install node without sudo, or (2) Use \`${getCliBinaryName()} install\` for native installation`,
@@ -1081,9 +1168,18 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
   // Get ripgrep status and configuration. The lazy first-use probe never runs
   // in the doctor path, so actively probe here to report a truthful status (and
   // an actionable warning) on a clean machine with no system rg.
-  const ripgrepStatusRaw = getRipgrepStatus()
+  const capturedRipgrepPath = await findExecutableOnCapturedPath(
+    'rg',
+    ingress.environment,
+    ingress.cwd,
+  )
+  const ripgrepIngress = {
+    environment: ingress.environment,
+    systemExecutablePath: capturedRipgrepPath ?? 'rg',
+  }
+  const ripgrepStatusRaw = getRipgrepStatus(ripgrepIngress)
   const configuredRipgrepWorking =
-    ripgrepStatusRaw.working ?? (await probeRipgrepAvailable())
+    ripgrepStatusRaw.working ?? (await probeRipgrepAvailable(ripgrepIngress))
   const grepPinnedWorking = await probePinnedGrepAvailable()
 
   const ripgrepDiagnostic = buildRipgrepDiagnostic(
@@ -1100,12 +1196,22 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
 
   // Transaction-guard status (config + env merged) with a short-timeout
   // endpoint probe when enabled. Unreachable-but-enabled gets a warning.
-  const transactionGuard = await getTransactionGuardDoctorStatus()
+  const transactionGuard = await getTransactionGuardDoctorStatus({
+    config: operatorConfig.transaction_guard ?? null,
+    env: ingress.environment,
+    source:
+      authority.provenance('transaction_guard.enabled')?.scope ??
+      'default',
+  })
   const transactionGuardWarning = buildTransactionGuardWarning(transactionGuard)
   if (transactionGuardWarning) {
     warnings.push(transactionGuardWarning)
   }
-  const sandbox = await getSandboxDoctorStatus()
+  const sandbox = await getSandboxDoctorStatus({
+    config: operatorConfig,
+    env: ingress.environment,
+    cwd: ingress.cwd,
+  })
   const sandboxWarning = buildSandboxWarning(sandbox)
   if (sandboxWarning) {
     warnings.push(sandboxWarning)
@@ -1118,7 +1224,7 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
   // Get package manager info if running from package manager
   const packageManager =
     installationType === 'package-manager'
-      ? await getPackageManager()
+      ? detectedPackageManager
       : undefined
 
   const diagnostic: DiagnosticInfo = {
@@ -1128,7 +1234,7 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
     invokedBinary,
     configInstallMethod,
     autoUpdates: (() => {
-      const reason = getAutoUpdaterDisabledReason()
+      const reason = getAutoUpdaterDisabledReason(operatorConfig)
       return reason
         ? `disabled (${formatAutoUpdaterDisabledReason(reason)})`
         : 'enabled'

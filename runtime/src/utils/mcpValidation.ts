@@ -9,6 +9,7 @@ import {
   type TokenAccountingResult,
 } from "../llm/token-accounting.js";
 import type { LLMMessage } from "../llm/types.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
 import { compressImageBlock } from "./imageResizer.js";
 
 export const MCP_TOKEN_COUNT_THRESHOLD_FACTOR = 0.5;
@@ -23,8 +24,10 @@ const BASE64_ENCODED_BYTES_PER_SOURCE_BYTE = 4 / 3;
  *      as chars; MCP has its own truncation layer upstream of that)
  *   3. Hardcoded default
  */
-export function getMaxMcpOutputTokens(): number {
-  const envValue = process.env.MAX_MCP_OUTPUT_TOKENS;
+export function getMaxMcpOutputTokens(
+  environment: ProviderEnvironment,
+): number {
+  const envValue = environment.MAX_MCP_OUTPUT_TOKENS;
   if (envValue) {
     const parsed = parseInt(envValue, 10);
     if (Number.isFinite(parsed) && parsed > 0) {
@@ -58,8 +61,11 @@ export function getContentSizeEstimate(content: MCPToolResult): number {
   return accountMcpContent(content)?.inputTokens ?? Number.MAX_SAFE_INTEGER;
 }
 
-function getMaxMcpOutputBytes(suffix: string): number | undefined {
-  const tokenLimit = getMaxMcpOutputTokens();
+function getMaxMcpOutputBytes(
+  suffix: string,
+  environment: ProviderEnvironment,
+): number | undefined {
+  const tokenLimit = getMaxMcpOutputTokens(environment);
   const suffixAccounting = accountMcpContent(suffix);
   if (
     suffixAccounting === undefined ||
@@ -86,8 +92,8 @@ function getMaxMcpOutputBytes(suffix: string): number | undefined {
   return lower;
 }
 
-function getTruncationMessage(): string {
-  return `\n\n[OUTPUT TRUNCATED - exceeded ${getMaxMcpOutputTokens()} token limit]
+function getTruncationMessage(environment: ProviderEnvironment): string {
+  return `\n\n[OUTPUT TRUNCATED - exceeded ${getMaxMcpOutputTokens(environment)} token limit]
 
 The tool output was truncated. If this MCP server provides pagination or filtering tools, use them to retrieve specific portions of the data. If pagination is not available, inform the user that you are working with truncated output and results may be incomplete.`;
 }
@@ -182,6 +188,7 @@ async function truncateContentBlocks(
 
 export async function mcpContentNeedsTruncation(
   content: MCPToolResult,
+  environment: ProviderEnvironment,
 ): Promise<boolean> {
   if (!content) return false;
 
@@ -190,20 +197,21 @@ export async function mcpContentNeedsTruncation(
   const contentSizeEstimate = accounting.inputTokens;
   if (
     contentSizeEstimate <=
-    getMaxMcpOutputTokens() * MCP_TOKEN_COUNT_THRESHOLD_FACTOR
+    getMaxMcpOutputTokens(environment) * MCP_TOKEN_COUNT_THRESHOLD_FACTOR
   ) {
     return false;
   }
-  return contentSizeEstimate > getMaxMcpOutputTokens();
+  return contentSizeEstimate > getMaxMcpOutputTokens(environment);
 }
 
 export async function truncateMcpContent(
   content: MCPToolResult,
+  environment: ProviderEnvironment,
 ): Promise<MCPToolResult> {
   if (!content) return content;
 
-  const truncationMsg = getTruncationMessage();
-  const maxBytes = getMaxMcpOutputBytes(truncationMsg);
+  const truncationMsg = getTruncationMessage(environment);
+  const maxBytes = getMaxMcpOutputBytes(truncationMsg, environment);
   if (maxBytes === undefined) return undefined;
 
   if (typeof content === "string") {
@@ -220,17 +228,18 @@ export async function truncateMcpContent(
 
 export async function truncateMcpContentIfNeeded(
   content: MCPToolResult,
+  environment: ProviderEnvironment,
 ): Promise<MCPToolResult> {
-  if (!(await mcpContentNeedsTruncation(content))) {
+  if (!(await mcpContentNeedsTruncation(content, environment))) {
     return content;
   }
 
-  const truncated = await truncateMcpContent(content);
+  const truncated = await truncateMcpContent(content, environment);
   if (truncated === undefined) return undefined;
   const accounting = accountMcpContent(truncated);
   return accounting !== undefined &&
     accounting.admissible &&
-    accounting.inputTokens <= getMaxMcpOutputTokens()
+    accounting.inputTokens <= getMaxMcpOutputTokens(environment)
     ? truncated
     : undefined;
 }

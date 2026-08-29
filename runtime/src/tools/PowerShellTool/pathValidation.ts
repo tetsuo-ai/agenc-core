@@ -1458,8 +1458,8 @@ function checkPathConstraintsForStatement(
   // CHANGED cwd at runtime, but this validator resolves them against the
   // STALE getCwd() snapshot. Example attack (finding #3):
   //   Set-Location ./.agenc; Set-Content ./settings.json '...'
-  // Validator sees ./settings.json → /project/settings.json (not a config file).
-  // Runtime writes /project/.agenc/settings.json (AgenC's permission config).
+  // Validator sees ./settings.json → /project/settings.json (not protected).
+  // Runtime writes the retired /project/.agenc/settings.json migration input.
   //
   // ALTERNATIVE APPROACH (rejected): simulate cwd through the statement chain
   // — after `Set-Location ./.agenc`, validate subsequent statements with

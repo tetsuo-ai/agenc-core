@@ -12,7 +12,6 @@
 import { feature } from 'bun:bundle'
 import { randomUUID } from 'node:crypto'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
-import { getSystemPrompt } from '../../constants/prompts.js'
 import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
 import {
   processMailboxPermissionResponse,
@@ -76,13 +75,10 @@ import {
   SUBAGENT_REJECT_MESSAGE_WITH_REASON_PREFIX,
 } from '../messages.js'
 import type { ModelAlias } from '../model/aliases.js'
-import {
-  applyPermissionUpdates,
-  persistPermissionUpdates,
-} from '../permissions/PermissionUpdate.js'
+import { applyPermissionUpdates } from '../../permissions/permission-updates.js'
+import { persistPermissionUpdates } from '../permissions/PermissionUpdate.js'
 import type { PermissionUpdate } from '../permissions/PermissionUpdateSchema.js'
 import { hasPermissionsToUseTool } from '../permissions/permissions.js'
-import { emitTaskTerminatedSdk } from '../sdkEventQueue.js'
 import { sleep } from '../sleep.js'
 import { jsonStringify } from '../slowOperations.js'
 import { claimTask, listTasks, type Task, updateTask } from '../tasks.js'
@@ -264,7 +260,7 @@ function createInProcessCanUseTool(
                 onAbortListener,
               )
               reportPermissionWait()
-              persistPermissionUpdates(permissionUpdates)
+              await persistPermissionUpdates(permissionUpdates)
               // Write back permission updates to the leader's shared context
               if (permissionUpdates.length > 0) {
                 const setToolPermissionContext =
@@ -362,7 +358,12 @@ function createInProcessCanUseTool(
           contentBlocks?: ContentBlockParam[],
         ) {
           cleanup()
-          persistPermissionUpdates(permissionUpdates)
+          void persistPermissionUpdates(permissionUpdates).catch(error => {
+            logForDebugging(
+              `Failed to persist teammate permission updates: ${String(error)}`,
+              { level: 'error' },
+            )
+          })
           const finalInput =
             updatedInput && Object.keys(updatedInput).length > 0
               ? updatedInput
@@ -912,10 +913,25 @@ function createTeammateRolloutOwner(params: {
     .replace(/[^A-Za-z0-9_-]/gu, '-')
     .slice(0, TEAMMATE_ROLLOUT_NAME_PREFIX_LENGTH)
   const sessionId = `teammate-${teammateName}-${randomUUID()}`
+  const agencHome = params.parentSession.services.configStore?.homeContext.path
+  if (agencHome === undefined) {
+    throw new Error(
+      'in-process teammate rollout requires canonical ConfigStore home authority',
+    )
+  }
+  const sessionTempRoot =
+    params.parentSession.services.runtimeOptions.sessionTempRoot
+  if (sessionTempRoot === undefined) {
+    throw new Error(
+      'in-process teammate rollout requires captured session temp authority',
+    )
+  }
   const store = new RolloutStore({
     cwd: params.cwd,
     sessionId,
     agencVersion: VERSION,
+    agencHome,
+    sessionTempRoot,
   })
   store.open({
     sessionId,
@@ -1240,15 +1256,15 @@ export async function runInProcessTeammate(
   if (systemPromptMode === 'replace' && systemPrompt) {
     teammateSystemPrompt = systemPrompt
   } else {
-    const fullSystemPromptParts = await getSystemPrompt(
-      toolUseContext.options.tools,
-      toolUseContext.options.mainLoopModel,
-      undefined,
-      toolUseContext.options.mcpClients,
-    )
+    const admittedParentPrompt = toolUseContext.renderedSystemPrompt
+    if (!admittedParentPrompt) {
+      throw new Error(
+        'Cannot start in-process teammate without the admitted parent system-prompt snapshot',
+      )
+    }
 
     const systemPromptParts = [
-      ...fullSystemPromptParts,
+      ...admittedParentPrompt,
       TEAMMATE_SYSTEM_PROMPT_ADDENDUM,
     ]
 
@@ -1382,6 +1398,7 @@ export async function runInProcessTeammate(
             admissionSession: teammateRolloutOwner.admissionSession,
             compactionTransaction: teammateRolloutStore,
             compactionMode: 'automatic',
+            cwd: teammateRolloutStore.store.cwd,
             options: {
               mainLoopModel: model ?? toolUseContext.options.mainLoopModel,
               contextWindowTokens: parentSession.modelInfo.contextWindow,
@@ -1505,7 +1522,6 @@ export async function runInProcessTeammate(
             availableTools: toolUseContext.options.tools,
             allowedTools,
             contentReplacementState: teammateReplacementState,
-            agentName: identity.agentName,
           })) {
             // Check lifecycle abort first (kills whole teammate)
             if (abortController.signal.aborted) {
@@ -1730,19 +1746,14 @@ export async function runInProcessTeammate(
     }
 
     // Mark as completed when exiting the loop
-    let alreadyTerminal = false
-    let toolUseId: string | undefined
     updateTaskState(
       taskId,
       task => {
         // killInProcessTeammate may have already set status:killed +
-        // notified:true + cleared fields. Don't overwrite (would flip
-        // killed → completed and double-emit the SDK bookend).
+        // notified:true + cleared fields. Don't overwrite it.
         if (task.status !== 'running') {
-          alreadyTerminal = true
           return task
         }
-        toolUseId = task.toolUseId
         task.onIdleCallbacks?.forEach(cb => cb())
         task.unregisterCleanup?.()
         return {
@@ -1764,14 +1775,6 @@ export async function runInProcessTeammate(
     void evictTaskOutput(taskId)
     // Eagerly evict task from AppState since it's been consumed
     evictTerminalTask(taskId, setAppState)
-    // notified:true pre-set → no XML notification → print.ts won't emit
-    // the SDK task_notification. Close the task_started bookend directly.
-    if (!alreadyTerminal) {
-      emitTaskTerminatedSdk(taskId, 'completed', {
-        toolUseId,
-        summary: identity.agentId,
-      })
-    }
 
     return { success: true, messages: allMessages }
   } catch (error) {
@@ -1783,16 +1786,12 @@ export async function runInProcessTeammate(
     )
 
     // Mark task as failed and notify any waiters
-    let alreadyTerminal = false
-    let toolUseId: string | undefined
     updateTaskState(
       taskId,
       task => {
         if (task.status !== 'running') {
-          alreadyTerminal = true
           return task
         }
-        toolUseId = task.toolUseId
         task.onIdleCallbacks?.forEach(cb => cb())
         task.unregisterCleanup?.()
         return {
@@ -1816,13 +1815,6 @@ export async function runInProcessTeammate(
     void evictTaskOutput(taskId)
     // Eagerly evict task from AppState since it's been consumed
     evictTerminalTask(taskId, setAppState)
-    // notified:true pre-set → no XML notification → close SDK bookend directly.
-    if (!alreadyTerminal) {
-      emitTaskTerminatedSdk(taskId, 'failed', {
-        toolUseId,
-        summary: identity.agentId,
-      })
-    }
 
     // Send idle notification with failure via file-based mailbox
     await sendIdleNotification(

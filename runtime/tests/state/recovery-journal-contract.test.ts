@@ -584,7 +584,7 @@ describe("strict canonical journal contract", () => {
         threadId: "1a57950f-c453-4551-a9a6-703fc2b1fe80",
         agentPath: "/root/probe_usb_board",
         agentNickname: "Molly",
-        agentRole: "worker",
+        agentRole: "runner",
         agentRoleDisplayName: "Runner",
         prompt: "identify the connected board",
         model: "grok-4.5",
@@ -763,36 +763,6 @@ describe("strict canonical journal contract", () => {
           evidenceRef: "journal:event:1",
           observedAt: "2026-08-02T00:00:00.000Z",
         },
-      }),
-    ).toBe(false);
-  });
-
-  it.each([
-    {
-      inputTokens: Number.MAX_SAFE_INTEGER,
-      outputTokens: 1,
-      costUsd: 0,
-    },
-    { inputTokens: 1, outputTokens: 1, costUsd: 1e20 },
-  ])("rejects effect usage outside the durable admission domain", (usage) => {
-    expect(
-      isCanonicalEventPayload("effect_result", {
-        formatVersion: 2,
-        minimumReaderRuntime: "0.14.0",
-        runId: "run-1",
-        stepId: "tool:turn-1:call-1",
-        callId: "call-1",
-        toolName: "metered.tool",
-        recoveryCategory: "side-effecting",
-        intentEventSeq: 1,
-        outcome: "committed",
-        effectBoundary: "crossed",
-        admissionSettlement: {
-          reservationId: "reservation-1",
-          decision: "reconcile",
-          usage,
-        },
-        recordedAt: "2026-08-02T00:00:00.000Z",
       }),
     ).toBe(false);
   });

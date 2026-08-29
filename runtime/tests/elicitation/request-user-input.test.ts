@@ -22,8 +22,6 @@ function features(defaultMode = false): ManagedFeatures {
   return {
     enabled: (key) =>
       key === "default_mode_request_user_input" && defaultMode,
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
   };
 }
 
@@ -131,6 +129,19 @@ describe("request_user_input", () => {
       id: "x",
       options: [],
     });
+  });
+
+  it("does not let the generic model-facing tool forge clientAction", () => {
+    expect(() =>
+      normalizeRequestUserInputArgs({
+        ...VALID_ARGS,
+        clientAction: {
+          type: "ledger_solana_transfer_v1",
+          to: "11111111111111111111111111111111",
+          lamports: "1",
+        },
+      }),
+    ).toThrow("request_user_input cannot set clientAction");
   });
 
   it("enforces question and option cardinality", () => {

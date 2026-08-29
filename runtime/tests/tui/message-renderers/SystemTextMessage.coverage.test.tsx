@@ -8,8 +8,10 @@ vi.mock('bun:bundle', () => ({
   feature: () => false,
 }))
 
-vi.mock('../../utils/config.js', () => ({
-  getGlobalConfig: () => ({ showTurnDuration: false }),
+vi.mock('../hooks/useSettings.js', () => ({
+  useSettings: () => ({
+    tui: { showTurnDuration: false },
+  }),
 }))
 
 vi.mock('../../utils/browser.js', () => ({

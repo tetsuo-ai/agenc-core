@@ -2,12 +2,14 @@ import { mkdir, mkdtemp, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { createUserMessage, createAssistantMessage } from "../../../src/utils/messages.js";
 import type { ToolUseContext } from "../../../src/tools/Tool.js";
 import { runWithCurrentRuntimeSession } from "../../../src/session/current-session.js";
 import type { Session } from "../../../src/session/session.js";
+import { SessionProviderService } from "../../../src/session/provider-service.js";
+import { createTestConfigStore } from "../../fixtures.js";
 import { createTask, getTaskListId } from "../../../src/utils/tasks.js";
 import { CanonicalFileReadTool } from "../../../src/tools/canonicalToolSurface.js";
 import { applyPermissionRulesToPermissionContext } from "../../../src/permissions/rules.js";
@@ -46,10 +48,9 @@ import {
 } from "../../../src/utils/attachments.js";
 
 const originalDisableAttachments = process.env.AGENC_DISABLE_ATTACHMENTS;
-const originalSimpleMode = process.env.AGENC_SIMPLE;
 const originalEnableTasks = process.env.AGENC_ENABLE_TASKS;
 const originalTaskListId = process.env.AGENC_TASK_LIST_ID;
-const originalConfigDir = process.env.AGENC_CONFIG_DIR;
+const originalAgencHome = process.env.AGENC_HOME;
 const originalUserType = process.env.USER_TYPE;
 
 function toolUse(id: string, name = "Bash") {
@@ -103,7 +104,17 @@ function withUnadmittedTestSession<T>(run: () => T): T {
   return runWithCurrentRuntimeSession(
     {
       conversationId: "attachment-extractors",
-      services: { admissionRequired: false },
+      sessionConfiguration: { cwd: tmpdir() },
+      services: {
+        admissionRequired: false,
+        configStore: createTestConfigStore({ cwd: tmpdir() }),
+        providerService: new SessionProviderService({
+          initialProvider: { name: "stub-provider" } as never,
+          initialProviderName: "grok",
+          initialModel: "test-model",
+          environment: {},
+        }),
+      },
     } as unknown as Session,
     run,
   );
@@ -127,10 +138,9 @@ function restoreOptionalEnv(name: string, value: string | undefined): void {
 
 afterEach(() => {
   restoreOptionalEnv("AGENC_DISABLE_ATTACHMENTS", originalDisableAttachments);
-  restoreOptionalEnv("AGENC_SIMPLE", originalSimpleMode);
   restoreOptionalEnv("AGENC_ENABLE_TASKS", originalEnableTasks);
   restoreOptionalEnv("AGENC_TASK_LIST_ID", originalTaskListId);
-  restoreOptionalEnv("AGENC_CONFIG_DIR", originalConfigDir);
+  restoreOptionalEnv("AGENC_HOME", originalAgencHome);
   restoreOptionalEnv("USER_TYPE", originalUserType);
   setLastEmittedDate(null);
   setHasExitedPlanMode(false);
@@ -397,7 +407,7 @@ describe("attachment mention extractors", () => {
       await withTempWorkspace(".tmp-attachment-task-reminders-", async (workspace) => {
         process.env.AGENC_ENABLE_TASKS = "1";
         process.env.AGENC_TASK_LIST_ID = "attachment-task-reminder";
-        process.env.AGENC_CONFIG_DIR = join(workspace, "home");
+        process.env.AGENC_HOME = join(workspace, "home");
         delete process.env.USER_TYPE;
 
         await createTask(getTaskListId(), {
@@ -461,7 +471,8 @@ describe("attachment mention extractors", () => {
       });
     });
 
-    test("processes agent and MCP resource mentions from user input", async () => {
+    test("processes agent mentions and leaves MCP resources to the session producer", async () => {
+      const rawReadResource = vi.fn();
       const context = attachmentContext(new Map(), createEmptyToolPermissionContext(), {
         agentDefinitions: {
           activeAgents: [
@@ -474,9 +485,7 @@ describe("attachment mention extractors", () => {
             name: "docs",
             type: "connected",
             client: {
-              readResource: async ({ uri }: { uri: string }) => ({
-                contents: [{ uri, text: "resource text" }],
-              }),
+              readResource: rawReadResource,
             },
           },
         ] as never,
@@ -509,15 +518,9 @@ describe("attachment mention extractors", () => {
       expect(attachments).toEqual(
         expect.arrayContaining([
           { type: "agent_mention", agentType: "reviewer" },
-          expect.objectContaining({
-            type: "mcp_resource",
-            server: "docs",
-            uri: "guide",
-            name: "Project guide",
-            description: "Useful docs",
-          }),
         ]),
       );
+      expect(rawReadResource).not.toHaveBeenCalled();
       expect(
         attachments.some(
           attachment =>
@@ -555,6 +558,17 @@ describe("attachment mention extractors", () => {
         ["asana-plugin:project-status/123"],
       ],
       ["an MCP mention inline in prose", "please check @server:res here", ["server:res"]],
+      [
+        "URIs ending in non-word characters",
+        "@docs:https://example.com/ @docs:query? @docs:fragment# @docs:key= @docs:version.",
+        [
+          "docs:https://example.com/",
+          "docs:query?",
+          "docs:fragment#",
+          "docs:key=",
+          "docs:version.",
+        ],
+      ],
     ];
 
     test.each(cases)("%s", (_label, input, expected) => {

@@ -17,7 +17,7 @@ Related: [gateway](gateway.md) · [onboarding](onboarding.md) ·
 | **Relay**       | Cloudflare Worker + per-room Durable Object ([`tetsuo-ai/agenc-relay`](https://github.com/tetsuo-ai/agenc-relay)). Routes frames by ticket room; each pairing is an isolated room keyed by `pairingId`. |
 | **Backend**     | [`tetsuo-ai/agenc-backend`](https://github.com/tetsuo-ai/agenc-backend) (`id.agenc.ag`). Mints every relay ticket (sole holder of `RELAY_TICKET_SECRET`) and runs device-pairing endpoints.             |
 | **iOS app**     | [`tetsuo-ai/agenc-ios`](https://github.com/tetsuo-ai/agenc-ios). Pairs with code/QR, then connects through the relay.                                                                                   |
-| **Android app** | [`tetsuo-ai/agenc-android`](https://github.com/tetsuo-ai/agenc-android). Remote session control and background completion delivery.                                                        |
+| **Android app** | [`tetsuo-ai/agenc-android`](https://github.com/tetsuo-ai/agenc-android). Remote session control, background completion delivery, and optional Ledger Flex approval over BLE.                            |
 
 ## Prerequisites
 
@@ -45,8 +45,8 @@ defaults to `https://id.agenc.ag` (`AGENC_BACKEND_URL`).
 
 ```bash
 agenc remote on        # pair (first run shows code + QR) and keep the host reachable
-agenc remote status    # linked or not
-agenc remote off       # forget this machine's pairing locally
+agenc remote status    # pair.json fields only; does not probe a live bridge
+agenc remote off       # delete pair.json; does not stop a running `on` process
 ```
 
 ## Device pairing flow
@@ -114,7 +114,8 @@ Inside `agenc`:
 - `/remote on` — pairing code + QR on a persistent surface that auto-closes on
   connect; starts the bridge. Reuses an existing pairing if already linked.
 - `/remote status` — whether a phone is linked.
-- `/remote off` — stop the bridge / forget local pairing.
+- `/remote off` — delete `pair.json`. The silent TUI bridge keeps running
+  until the session ends.
 
 The bridge runs **silent** inside the TUI (raw stdout would corrupt Ink) and
 never calls `process.exit` (that would kill the session).
@@ -147,12 +148,17 @@ capabilities in addition to attaching to individual sessions:
 | Capability                     | Delivery semantics                                                                                                            |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
 | `portal.mobile.status.push.v1` | Observer fan-out for global `event.agent_status` frames, including completion while the phone is not attached to that session |
+| `portal.ledger.solana.sign.v1` | Single-consumer typed Ledger action routing to the newest capable phone                                                       |
 
 The daemon registers capability clients during initialize, before any
 `session.attach`. Logical registrations on one physical socket share a delivery
 key, preventing duplicate status notifications. Status replay comes from each
 session's ordinary bounded buffer and contains status frames only; joining chat
 history still requires `session.attach`/`session.transcript`.
+
+Ledger actions use a separate one-consumer replay buffer so two capable phones
+cannot both receive the same signing request. See
+[mobile Ledger transfer](security/mobile-ledger-transfer.md).
 
 ## Background completion and attention delivery
 
@@ -233,13 +239,13 @@ flag keeps the older, narrower equivalent-rule cache semantics.
 ## Compatibility and rollout
 
 Capabilities are opt-in and old clients continue to use attachment-bound
-events. Deploy Core before relying on Android background status:
+events. Deploy Core before relying on Android background status or `@ledger`:
 
-| Combination            | Result                                                                       |
-| ---------------------- | ---------------------------------------------------------------------------- |
-| New Core + old phone   | Existing pairing/chat works; new capabilities are simply absent              |
-| Old Core + new phone   | Pairing/chat works, but no global status push or all-tools session promotion |
-| New Core + new Android | Full background notification, identity, and permission protocol             |
+| Combination            | Result                                                                                             |
+| ---------------------- | -------------------------------------------------------------------------------------------------- |
+| New Core + old phone   | Existing pairing/chat works; new capabilities are simply absent                                    |
+| Old Core + new phone   | Pairing/chat works, but no global status push, typed Ledger action, or all-tools session promotion |
+| New Core + new Android | Full background notification, identity, permission, and Ledger protocol                            |
 
 Provider credentials and model execution remain on the host machine. The phone does not
 receive `XAI_API_KEY` or another provider secret.
@@ -250,4 +256,5 @@ receive `XAI_API_KEY` or another provider secret.
 - Android app + UX — [`tetsuo-ai/agenc-android`](https://github.com/tetsuo-ai/agenc-android)
 - Relay — [`tetsuo-ai/agenc-relay`](https://github.com/tetsuo-ai/agenc-relay)
 - Backend pairing API — [`tetsuo-ai/agenc-backend`](https://github.com/tetsuo-ai/agenc-backend)
+- Mobile Ledger security contract — [security/mobile-ledger-transfer.md](security/mobile-ledger-transfer.md)
 - Provider tool-schema compatibility — [provider-tool-compat.md](provider-tool-compat.md)

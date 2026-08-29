@@ -1,9 +1,7 @@
 import {
   existsSync,
-  mkdirSync,
   mkdtempSync,
   rmSync,
-  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,20 +13,34 @@ import { runHookCommand } from "../../src/hooks/engine/command-runner.js";
 import { AgenCStdioClientTransport } from "../../src/mcp-client/transports/stdio.js";
 import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
 import { attachSandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
+import { registerSandboxExecutionLifecycleParticipant } from "../../src/sandbox/execution-lifecycle.js";
 import {
   clearCurrentRuntimeSession,
   runWithCurrentRuntimeSession,
   setCurrentRuntimeSession,
 } from "../../src/session/current-session.js";
-import { createModelFacingTools } from "../../src/bin/model-facing-tools.js";
+import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
 import { CanonicalBashTool } from "../../src/tools/canonicalToolSurface.js";
-import { MonitorTool } from "../../src/tools/MonitorTool/MonitorTool.js";
 import { createMonitorTool } from "../../src/tools/system/monitor.js";
 
 const roots: string[] = [];
+const testRuntimeOptions = resolveAgentRuntimeOptions({});
+const testUserShell = Object.freeze({
+  path: "/bin/sh",
+  commandWrapperArgv: Object.freeze([]),
+  childEnvironment: Object.freeze({
+    PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+    HOME: tmpdir(),
+  }),
+  deriveExecArgs: (input: string) => ["-c", input],
+});
 const legacyTestSession = {
   conversationId: "sandbox-surface-test-session",
-  services: { admissionRequired: false },
+  services: {
+    admissionRequired: false,
+    runtimeOptions: testRuntimeOptions,
+    userShell: testUserShell,
+  },
 } as never;
 
 function tempRoot(label: string): string {
@@ -85,6 +97,13 @@ describe("fail-closed process surfaces", () => {
   it("blocks MCP stdio before host spawn", async () => {
     const root = tempRoot("agenc-sandbox-mcp-");
     const marker = join(root, "mcp-escaped");
+    const broker = unavailableBroker(root);
+    registerSandboxExecutionLifecycleParticipant(broker, {
+      name: "mcp-manager",
+      spawnSurfaces: ["mcp_stdio"],
+      quiesce: async () => {},
+      resume: async () => {},
+    });
     const transport = new AgenCStdioClientTransport(
       {
         command: process.execPath,
@@ -93,7 +112,7 @@ describe("fail-closed process surfaces", () => {
         env: { ...process.env } as Record<string, string>,
       },
       undefined,
-      unavailableBroker(root),
+      broker,
     );
 
     await expect(transport.start()).rejects.toMatchObject({
@@ -190,7 +209,9 @@ describe("fail-closed process surfaces", () => {
         conversationId: "sandbox-active-turn-session",
         services: {
           admissionRequired: false,
+          runtimeOptions: testRuntimeOptions,
           sandboxExecutionBroker: broker,
+          userShell: testUserShell,
         },
       } as never,
       () => CanonicalBashTool.call(
@@ -234,60 +255,6 @@ describe("fail-closed process surfaces", () => {
     await expect(tool.execute(args)).resolves.toMatchObject({
       isError: true,
       content: expect.stringContaining("sandbox_probe_failed"),
-    });
-    expect(execCommand).not.toHaveBeenCalled();
-    expect(existsSync(marker)).toBe(false);
-  });
-
-  it("blocks legacy Monitor before Shell.exec spawns", async () => {
-    const root = tempRoot("agenc-sandbox-legacy-monitor-");
-    const marker = join(root, "legacy-monitor-escaped");
-
-    await expect(
-      MonitorTool.call(
-        {
-          command: `${process.execPath} -e "require('fs').writeFileSync(${JSON.stringify(marker)}, 'bad')"`,
-          description: "attempt host escape",
-        },
-        {
-          abortController: new AbortController(),
-          setAppState() {},
-          services: { sandboxExecutionBroker: unavailableBroker(root) },
-        } as never,
-        undefined,
-        undefined,
-      ),
-    ).rejects.toMatchObject({
-      code: "sandbox_probe_failed",
-      surface: "background",
-    });
-    expect(existsSync(marker)).toBe(false);
-  });
-
-  it("blocks legacy workflow commands before unified exec", async () => {
-    const root = tempRoot("agenc-sandbox-workflow-");
-    const workflowDir = join(root, ".agenc", "workflows");
-    const marker = join(root, "workflow-escaped");
-    mkdirSync(workflowDir, { recursive: true });
-    writeFileSync(
-      join(workflowDir, "escape.json"),
-      JSON.stringify({
-        command: `${process.execPath} -e "require('fs').writeFileSync(${JSON.stringify(marker)}, 'bad')"`,
-      }),
-    );
-    const execCommand = vi.fn();
-    const workflow = createModelFacingTools({
-      workspaceRoot: root,
-      getSession: () => null,
-      unifiedExecManager: { execCommand } as never,
-    }).find((tool) => tool.name === "WorkflowTool");
-    expect(workflow).toBeDefined();
-    const args: Record<string, unknown> = { name: "escape" };
-    attachSandboxExecutionBroker(args, unavailableBroker(root), "workflow");
-
-    await expect(workflow!.execute(args)).rejects.toMatchObject({
-      code: "sandbox_probe_failed",
-      surface: "workflow",
     });
     expect(execCommand).not.toHaveBeenCalled();
     expect(existsSync(marker)).toBe(false);

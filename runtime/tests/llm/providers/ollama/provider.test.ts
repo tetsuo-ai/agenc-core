@@ -3,6 +3,10 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { OllamaProvider } from "./adapter.js";
 import { withOllamaHealthSidecar } from "./health.js";
 import {
+  BUILT_IN_PROVIDER_BASE_URLS,
+  BUILT_IN_PROVIDER_DEFAULT_MODELS,
+} from "../../registry/provider-info.js";
+import {
   createCsvAgentInvocationEnvelope,
   materializeAgentInvocationMessages,
 } from "../../../../src/contracts/agent-invocation-envelope.js";
@@ -145,7 +149,10 @@ describe("providers/ollama entrypoint", () => {
       { role: "user", content: "review" },
     ]);
 
-    expect(params.model).toBe("llama3.3");
+    expect(params.model).toBe(BUILT_IN_PROVIDER_DEFAULT_MODELS.ollama);
+    expect((provider as any).config.host).toBe(
+      BUILT_IN_PROVIDER_BASE_URLS.ollama,
+    );
   });
 
   test("sends native SDK chat requests with local model options", async () => {

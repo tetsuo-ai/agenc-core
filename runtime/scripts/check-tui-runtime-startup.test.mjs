@@ -22,6 +22,10 @@ import {
   runImportProbe,
 } from "./check-tui-runtime-startup.mjs";
 import {
+  buildMockProviderEnv,
+  MOCK_MODEL,
+} from "./local-openai-compatible-mock.mjs";
+import {
   createTuiGateProject,
   createTuiGateState,
   startTuiGateDaemon,
@@ -108,7 +112,6 @@ test("startup PTYs replace poisoned operator roots with private gate state", () 
   const privateHome = path.join(tmpdir(), "private-startup-state");
   const env = tuiGateEnvironment(privateHome, {
     AGENC_AUTH_BACKEND: "remote",
-    AGENC_CONFIG_DIR: path.join(operatorRoot, "config"),
     AGENC_DAEMON_WEBSOCKET_HOST: "0.0.0.0",
     AGENC_DAEMON_WEBSOCKET_PORT: "7766",
     AGENC_HOME: path.join(operatorRoot, ".agenc"),
@@ -119,14 +122,18 @@ test("startup PTYs replace poisoned operator roots with private gate state", () 
     OPENAI_COMPATIBLE_API_KEY: "operator-compatible-secret",
     OPENAI_COMPATIBLE_BASE_URL: "https://operator.invalid/v1",
     PATH: process.env.PATH ?? "/usr/bin:/bin",
+    ProgramData: path.join(operatorRoot, "ProgramData"),
     TMPDIR: path.join(operatorRoot, "tmp"),
     XDG_CONFIG_HOME: path.join(operatorRoot, "xdg"),
   });
 
   assert.equal(env.HOME, path.resolve(privateHome));
   assert.equal(env.AGENC_HOME, path.join(path.resolve(privateHome), ".agenc"));
-  assert.equal(env.AGENC_CONFIG_DIR, env.AGENC_HOME);
   assert.equal(env.TMPDIR, path.join(path.resolve(privateHome), "tmp"));
+  assert.equal(
+    env.ProgramData,
+    path.join(path.resolve(privateHome), "ProgramData"),
+  );
   assert.equal(env.XDG_CONFIG_HOME, path.join(path.resolve(privateHome), ".config"));
   assert.equal(env.AGENC_AUTH_BACKEND, "local");
   assert.equal(env.AGENC_DAEMON_WEBSOCKET_HOST, "127.0.0.1");
@@ -157,6 +164,18 @@ test("mock provider configuration must be injected explicitly", () => {
   assert.equal(env.OPENAI_COMPATIBLE_API_KEY, "local-test-key");
   assert.equal(env.OPENAI_COMPATIBLE_BASE_URL, "http://127.0.0.1:43210/v1");
   assert.equal(env.AGENC_PROVIDER, "openai-compatible");
+});
+
+test("mock provider configuration uses only the canonical model authority", () => {
+  const env = buildMockProviderEnv("http://127.0.0.1:43210", {
+    OPENAI_COMPATIBLE_MODEL: "retired-model",
+    OPENAI_MODEL: "retired-openai-model",
+    PATH: process.env.PATH,
+  });
+
+  assert.equal(env.AGENC_MODEL, MOCK_MODEL);
+  assert.equal(env.OPENAI_COMPATIBLE_MODEL, undefined);
+  assert.equal(env.OPENAI_MODEL, undefined);
 });
 
 test("private gate state publishes one canonical root through path aliases", async () => {
@@ -274,7 +293,7 @@ test("private gate default config disables predictions before ordinary TUI start
     assert.equal(
       readFileSync(configPath, "utf8"),
       [
-        "configVersion = 1",
+        "config_version = 2",
         "",
         "[buffer.prediction]",
         'enabled = "off"',
@@ -291,7 +310,7 @@ test("private gate default config disables predictions before ordinary TUI start
     assert.equal(
       readFileSync(configPath, "utf8"),
       [
-        "configVersion = 1",
+        "config_version = 2",
         "",
         "[buffer.prediction]",
         'enabled = "off"',

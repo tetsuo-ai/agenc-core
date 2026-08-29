@@ -60,7 +60,7 @@ export interface SdkDaemonClientOptions {
     | "bypassPermissions";
   /**
    * Tools the gateway daemon agent may use without channel approval prompts.
-   * In production Telegram this is intentionally tiny: SendUserMessage/Brief.
+   * In production Telegram this is intentionally tiny: SendUserMessage.
    */
   readonly unattendedAllow?: readonly string[];
   /** Tools the gateway daemon agent must never run unattended. */

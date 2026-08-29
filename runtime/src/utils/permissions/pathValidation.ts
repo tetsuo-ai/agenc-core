@@ -96,8 +96,9 @@ export function expandTilde(path: string): string {
  * validation purposes, so commands like `echo foo > /tmp/agenc/x.txt` don't
  * prompt for permission when /tmp/agenc/ is already in the sandbox allowlist.
  *
- * Respects the deny-within-allow list: paths in denyWithinAllow (like
- * .agenc/settings.json) are still blocked even if their parent is in allowOnly.
+ * Respects the deny-within-allow list: paths in denyWithinAllow (including the
+ * retired .agenc/settings.json migration input) stay blocked even if their
+ * parent is in allowOnly.
  */
 export function isPathInSandboxWriteAllowlist(resolvedPath: string): boolean {
   if (!SandboxManager.isSandboxingEnabled()) {

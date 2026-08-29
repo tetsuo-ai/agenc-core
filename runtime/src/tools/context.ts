@@ -647,7 +647,7 @@ export function toolSearchToolOutput(opts: {
 
 /**
  * Aborted tool output. Preserves the abort message; `toResponseItem`
- * dispatches on the payload variant so ToolSearch/MCP callers get
+ * dispatches on the payload variant so discovery/MCP callers get
  * shape-compatible outputs.
  */
 export function abortedToolOutput(

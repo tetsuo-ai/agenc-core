@@ -233,7 +233,7 @@ function toolNamesForOperation(
   operationType: FileOperationType,
 ): readonly string[] {
   return operationType === "read"
-    ? ["FileRead", "Read"]
+    ? ["FileRead"]
     : ["Edit", "Write"];
 }
 
@@ -670,10 +670,10 @@ export function checkToolPathPermission(
   }
 
   // Mirror the bash short-circuit at permissions/bash.ts:431 ("hadDeny"
-  // guard): in --yolo / bypassPermissions mode the user has explicitly
+  // guard): in --dangerously-bypass-approvals-and-sandbox / bypassPermissions mode the user has explicitly
   // opted out of approval gating, so filesystem-touching tools (Read, Glob,
   // FileRead, ...) must not surface the working-dir prompt. Without this,
-  // `agenc --yolo` was half-bypassing — Bash and Grep auto-approved while
+  // `agenc --dangerously-bypass-approvals-and-sandbox` was half-bypassing — Bash and Grep auto-approved while
   // Read/Glob still prompted, breaking GAP-TEST-* scenarios 11/13/35.
   //
   // SECURITY: this bypass runs AFTER validatePath, so a path-specific

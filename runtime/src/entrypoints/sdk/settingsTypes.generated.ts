@@ -1,1 +1,1 @@
-export type { SettingsJson as Settings } from '../../utils/settings/types.js'
+export type { AgenCConfig as Settings } from '../../config/schema.js'

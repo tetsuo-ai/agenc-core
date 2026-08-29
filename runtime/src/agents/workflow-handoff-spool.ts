@@ -15,12 +15,12 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 import type { AtomicArtifactByteSource } from "../durability/atomic-artifact.js";
 import { estimateUtf8TokenUnits } from "../llm/token-accounting.js";
+import { resolveSessionTempRoot } from "../session/runtime-options.js";
 import { assertWindowsPrivatePathSecurity } from "./workflow-private-path.js";
 
 const SPOOL_DIRECTORY_PREFIX = "agenc-workflow-handoff-";
@@ -98,7 +98,9 @@ export class WorkflowHandoffSpool implements AssistantOutputStreamSink {
     ) {
       throw new TypeError("workflow handoff spool maximum must be positive");
     }
-    const root = mkdtempSync(join(tmpdir(), SPOOL_DIRECTORY_PREFIX));
+    const root = mkdtempSync(
+      join(resolveSessionTempRoot(), SPOOL_DIRECTORY_PREFIX),
+    );
     const path = join(root, SPOOL_FILENAME);
     let fd: number | undefined;
     try {

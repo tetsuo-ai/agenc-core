@@ -368,21 +368,10 @@ interface LLMChatToolRoutingOptions {
   readonly allowedToolNames?: readonly string[];
 }
 
-/**
- * `minimal` is gpt-5's floor and `max` the tier above `xhigh` on the
- * gpt-5.6 family; both are documented values, so the wire carries them
- * and each adapter maps what its own provider does not accept.
- */
-type LLMReasoningEffort =
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "max";
+type LLMReasoningEffort = "low" | "medium" | "high" | "xhigh";
 type LLMReasoningSummary = "auto" | "concise" | "detailed" | "none";
 type LLMModelVerbosity = "low" | "medium" | "high";
-type LLMServiceTier = "fast" | "priority" | "flex";
+type LLMServiceTier = "priority" | "flex";
 
 export type LLMProviderNativeServerToolType =
   | "web_search"
@@ -927,12 +916,6 @@ export interface LLMCodePredictionResponse {
  */
 export interface LLMProvider {
   readonly name: string;
-  /**
-   * Provider-specific hard idle default used only when neither environment nor
-   * runtime config makes an explicit choice. Providers without observable
-   * liveness should leave this unset and remain unbounded.
-   */
-  readonly defaultStreamIdleTimeoutMs?: number;
   /**
    * Optional complete-request preflight counter. Providers expose this only
    * when the native endpoint accepts the same normalized input surface as the

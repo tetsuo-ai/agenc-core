@@ -4,17 +4,13 @@
  * One tick, in order:
  *   1. gates: enabled, active hours, cron-running defer, skip-when-busy
  *   2. HEARTBEAT.md present? (absent → nothing to do)
- *   3. run the heartbeat turn on the utility model; production model/tool
- *      admission happens inside its daemon-owned session
+ *   3. run the heartbeat turn; model/tool admission happens inside its
+ *      daemon-owned session
  *   4. HEARTBEAT_OK reply → suppress delivery; otherwise deliver
- *
- * The optional budget seam remains for isolated runner tests/embedders. The
- * gateway production wire deliberately does not install a surface ledger.
  */
 
 import {
   HEARTBEAT_OK,
-  type HeartbeatBudgetGate,
   type HeartbeatClock,
   type HeartbeatDelivery,
   type HeartbeatFileReader,
@@ -22,7 +18,6 @@ import {
   type HeartbeatTickOutcome,
   type HeartbeatTurnRunner,
 } from "./types.js";
-import { estimateUtf8TokenUnits } from "../llm/token-accounting.js";
 
 export interface HeartbeatRunnerOptions {
   readonly policy: HeartbeatPolicy;
@@ -30,16 +25,10 @@ export interface HeartbeatRunnerOptions {
   readonly turnRunner: HeartbeatTurnRunner;
   readonly delivery: HeartbeatDelivery;
   readonly file: HeartbeatFileReader;
-  /** Optional compatibility/test gate; production admission is daemon-owned. */
-  readonly budget?: HeartbeatBudgetGate;
   /** True while a cron job is executing (defer). Default: never. */
   readonly isCronRunning?: () => boolean;
   readonly log?: (line: string) => void;
-  /** Rough worst-case output cap for the pre-flight debit. */
-  readonly maxOutputTokens?: number;
 }
-
-const DEFAULT_MAX_OUTPUT_TOKENS = 2048;
 
 /** The system framing prepended to HEARTBEAT.md for a heartbeat turn. */
 export function heartbeatPrompt(heartbeatFile: string): string {
@@ -49,11 +38,6 @@ export function heartbeatPrompt(heartbeatFile: string): string {
     `exactly ${HEARTBEAT_OK} and nothing else.\n\n` +
     `<heartbeat_instructions>\n${heartbeatFile}\n</heartbeat_instructions>`
   );
-}
-
-/** Conservative compatibility estimate; final admission owns full accounting. */
-function estimateTokens(text: string): number {
-  return Math.max(1, estimateUtf8TokenUnits(text, 1));
 }
 
 function withinActiveHours(policy: HeartbeatPolicy, now: Date): boolean {
@@ -101,58 +85,15 @@ export class HeartbeatRunner {
   }
 
   async #run(heartbeatFile: string): Promise<HeartbeatTickOutcome> {
-    const { policy } = this.#o;
     const prompt = heartbeatPrompt(heartbeatFile);
-    const model = policy.model ?? "";
-    const maxOutputTokens = this.#o.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
 
-    // Optional compatibility/test pre-flight. Production leaves this absent
-    // because the daemon session owns admission at the real call boundary.
-    let hold: unknown = null;
-    if (this.#o.budget !== undefined) {
-      // Prefer policy model; never admit as "unknown" under USD caps (todo-104).
-      const admitModel = model.length > 0 ? model : "grok-4.6";
-      const admit = this.#o.budget.admit({
-        agentId: policy.agentId,
-        model: admitModel,
-        estInputTokens: estimateTokens(prompt),
-        maxOutputTokens,
-      });
-      if (!admit.ok) {
-        const notice = `⏸ heartbeat paused: ${admit.message}`;
-        await this.#deliver(notice);
-        this.#o.log?.(`heartbeat: ${notice}`);
-        return { kind: "budget_paused", message: admit.message };
-      }
-      hold = admit.hold;
+    const result = await this.#o.turnRunner.run(prompt);
+    const reply = result.finalMessage.trim();
+    if (reply === HEARTBEAT_OK || reply.length === 0) {
+      return { kind: "ok_suppressed" };
     }
-
-    // GW-07: after a successful admit, always reconcile exactly once —
-    // success (real/zero usage) or throw (zeros → full hold refund).
-    // Capture usage immediately after the turn so a later deliver throw
-    // still reconciles real spend, not zeros.
-    let usage = { inputTokens: 0, outputTokens: 0 };
-    try {
-      // 4. Run the turn.
-      const result = await this.#o.turnRunner.run(
-        prompt,
-        model.length > 0 ? model : undefined,
-      );
-      usage = result.usage ?? usage;
-
-      // 5. HEARTBEAT_OK suppression / deliver (post-turn side effects).
-      const reply = result.finalMessage.trim();
-      if (reply === HEARTBEAT_OK || reply.length === 0) {
-        return { kind: "ok_suppressed" };
-      }
-      await this.#deliver(reply);
-      return { kind: "delivered", text: reply };
-    } finally {
-      // 6. Reconcile: only path after admit (never also on success path).
-      if (this.#o.budget !== undefined && hold !== null) {
-        this.#o.budget.reconcile(hold, usage);
-      }
-    }
+    await this.#deliver(reply);
+    return { kind: "delivered", text: reply };
   }
 
   async #deliver(text: string): Promise<void> {

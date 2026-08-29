@@ -16,7 +16,9 @@ import { dirname, join, relative, sep } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createAgentRoleWorkspace } from '../../../src/agents/role.js'
+import { ConfigStore } from '../../../src/config/store.js'
 import { runWithCurrentRuntimeSession } from '../../../src/session/current-session.js'
+import { resolveAgentRuntimeOptions } from '../../../src/session/runtime-options.js'
 import type { Session } from '../../../src/session/session.js'
 import {
   getAgentMemoryDir,
@@ -46,6 +48,7 @@ import type {
   Tool,
   ToolPermissionContext,
 } from '../../../src/tools/Tool.js'
+import { runWithCanonicalSettingsAuthority } from '../../../src/utils/settings/canonicalAuthority.js'
 
 const roots: string[] = []
 const initialCwd = process.cwd()
@@ -84,6 +87,16 @@ function permissionContext(
   } as ToolPermissionContext
 }
 
+function runWithSessionAuthorities<T>(
+  session: Session,
+  configStore: ConfigStore,
+  operation: () => T,
+): T {
+  return runWithCanonicalSettingsAuthority(configStore, () =>
+    runWithCurrentRuntimeSession(session, operation),
+  )
+}
+
 afterEach(() => {
   process.chdir(initialCwd)
   vi.unstubAllEnvs()
@@ -101,8 +114,8 @@ describe('agent memory workspace authority', () => {
     const workspaceA = tempRoot('memory-workspace-a')
     const workspaceB = tempRoot('memory-workspace-b')
     const outside = tempRoot('memory-outside')
-    const memoryA = getAgentMemoryDir('worker', 'project', workspaceA)
-    const memoryB = getAgentMemoryDir('worker', 'project', workspaceB)
+    const memoryA = getAgentMemoryDir('runner', 'project', workspaceA)
+    const memoryB = getAgentMemoryDir('runner', 'project', workspaceB)
     const siblingMemoryA = getAgentMemoryDir(
       'sibling-worker',
       'project',
@@ -127,12 +140,24 @@ describe('agent memory workspace authority', () => {
     symlinkSync(outsideFile, escapedLink)
     process.chdir(workspaceB)
 
+    const configStore = new ConfigStore({
+      home: tempRoot('memory-settings-authority'),
+      cwd: workspaceA,
+      projectRoot: workspaceA,
+      projectTrusted: false,
+      env: {},
+      loader: async () => ({ configVersion: 2 }),
+    })
     const session = {
       roleWorkspace: createAgentRoleWorkspace(workspaceA),
       sessionConfiguration: { cwd: workspaceB },
+      services: {
+        configStore,
+        runtimeOptions: resolveAgentRuntimeOptions({}),
+      },
     } as unknown as Session
-    runWithCurrentRuntimeSession(session, () => {
-      const prompt = loadAgentMemoryPrompt('worker', 'project')
+    runWithSessionAuthorities(session, configStore, () => {
+      const prompt = loadAgentMemoryPrompt('runner', 'project')
       expect(prompt).toContain('workspace-a-memory')
       expect(prompt).not.toContain('workspace-b-memory')
 
@@ -156,9 +181,9 @@ describe('agent memory workspace authority', () => {
         {
           agentId: 'memory-worker-test',
           agentType: 'subagent',
-          subagentName: 'worker',
+          subagentName: 'runner',
           memoryAuthorization: {
-            agentType: 'worker',
+            agentType: 'runner',
             scope: 'project',
           },
         },
@@ -241,7 +266,7 @@ describe('agent memory workspace authority', () => {
 
       unlinkSync(entryA)
       symlinkSync(entryB, entryA)
-      const symlinkedPrompt = loadAgentMemoryPrompt('worker', 'project')
+      const symlinkedPrompt = loadAgentMemoryPrompt('runner', 'project')
       expect(symlinkedPrompt).not.toContain('workspace-b-memory')
       expect(symlinkedPrompt).toContain('currently empty')
 
@@ -251,7 +276,7 @@ describe('agent memory workspace authority', () => {
       rmSync(memoryALink, { recursive: true, force: true })
       symlinkSync(memoryB, memoryALink, 'dir')
       const symlinkedDirectoryPrompt = loadAgentMemoryPrompt(
-        'worker',
+        'runner',
         'project',
       )
       expect(symlinkedDirectoryPrompt).not.toContain('workspace-b-memory')
@@ -336,9 +361,9 @@ describe('agent memory workspace authority', () => {
 
   it('rejects snapshot directory symlinks and ignores snapshot file symlinks', async () => {
     const workspace = tempRoot('snapshot-symlink-workspace')
-    const configDir = tempRoot('snapshot-symlink-config')
+    const agencHome = tempRoot('snapshot-symlink-config')
     const external = tempRoot('snapshot-symlink-external')
-    vi.stubEnv('AGENC_CONFIG_DIR', configDir)
+    vi.stubEnv('AGENC_HOME', agencHome)
     writeFileSync(
       join(external, 'snapshot.json'),
       JSON.stringify({ updatedAt: '2026-07-15T00:00:00.000Z' }),
@@ -387,9 +412,9 @@ describe('agent memory workspace authority', () => {
 
   it('fails closed when the local memory directory is swapped before a snapshot write', async () => {
     const workspace = tempRoot('snapshot-write-race-workspace')
-    const configDir = tempRoot('snapshot-write-race-config')
+    const agencHome = tempRoot('snapshot-write-race-config')
     const external = tempRoot('snapshot-write-race-external')
-    vi.stubEnv('AGENC_CONFIG_DIR', configDir)
+    vi.stubEnv('AGENC_HOME', agencHome)
 
     const agentType = 'snapshot-write-race'
     const snapshotDir = getSnapshotDirForAgent(agentType, workspace)
@@ -432,9 +457,9 @@ describe('agent memory workspace authority', () => {
 
   it('fails closed when the local memory directory is swapped before snapshot deletion', async () => {
     const workspace = tempRoot('snapshot-delete-race-workspace')
-    const configDir = tempRoot('snapshot-delete-race-config')
+    const agencHome = tempRoot('snapshot-delete-race-config')
     const external = tempRoot('snapshot-delete-race-external')
-    vi.stubEnv('AGENC_CONFIG_DIR', configDir)
+    vi.stubEnv('AGENC_HOME', agencHome)
 
     const agentType = 'snapshot-delete-race'
     const snapshotDir = getSnapshotDirForAgent(agentType, workspace)
@@ -479,8 +504,8 @@ describe('agent memory workspace authority', () => {
 
   it('still replaces regular local memory and records the synced snapshot', async () => {
     const workspace = tempRoot('snapshot-replace-workspace')
-    const configDir = tempRoot('snapshot-replace-config')
-    vi.stubEnv('AGENC_CONFIG_DIR', configDir)
+    const agencHome = tempRoot('snapshot-replace-config')
+    vi.stubEnv('AGENC_HOME', agencHome)
 
     const agentType = 'snapshot-replace'
     const snapshotDir = getSnapshotDirForAgent(agentType, workspace)
@@ -521,9 +546,9 @@ describe('agent memory workspace authority', () => {
 
   it('does not replace or delete a multiply-linked memory file', async () => {
     const workspace = tempRoot('snapshot-hardlink-workspace')
-    const configDir = tempRoot('snapshot-hardlink-config')
+    const agencHome = tempRoot('snapshot-hardlink-config')
     const external = tempRoot('snapshot-hardlink-external')
-    vi.stubEnv('AGENC_CONFIG_DIR', configDir)
+    vi.stubEnv('AGENC_HOME', agencHome)
 
     const agentType = 'snapshot-hardlink'
     const snapshotDir = getSnapshotDirForAgent(agentType, workspace)
@@ -551,8 +576,8 @@ describe('agent memory workspace authority', () => {
   it('does not let a project role enable user memory before binding its prompt fingerprint', async () => {
     const workspaceA = tempRoot('snapshot-workspace-a')
     const workspaceB = tempRoot('snapshot-workspace-b')
-    const configDir = tempRoot('snapshot-config')
-    vi.stubEnv('AGENC_CONFIG_DIR', configDir)
+    const agencHome = tempRoot('snapshot-config')
+    vi.stubEnv('AGENC_HOME', agencHome)
     __setPluginAgentsLoaderForTesting(async () => [])
 
     const agentsDir = join(workspaceA, '.agenc', 'agents')
@@ -576,7 +601,18 @@ Snapshot role prompt.
     writeFileSync(join(snapshotDir, 'MEMORY.md'), 'workspace-a-snapshot')
     process.chdir(workspaceB)
 
-    const firstCatalog = await loadFreshAgentDefinitions(workspaceA)
+    const settingsAuthority = new ConfigStore({
+      home: agencHome,
+      cwd: workspaceA,
+      projectRoot: workspaceA,
+      projectTrusted: false,
+      env: {},
+      loader: async () => ({ configVersion: 2 }),
+    })
+    const firstCatalog = await runWithCanonicalSettingsAuthority(
+      settingsAuthority,
+      () => loadFreshAgentDefinitions(workspaceA, join(agencHome, 'plugins')),
+    )
     const first = firstCatalog.activeAgents.find(
       definition => definition.agentType === 'snapshot-worker',
     )
@@ -595,7 +631,10 @@ Snapshot role prompt.
     ).toThrow()
     const fingerprint = requireAgentDefinitionRoleFingerprint(first!)
 
-    const secondCatalog = await loadFreshAgentDefinitions(workspaceA)
+    const secondCatalog = await runWithCanonicalSettingsAuthority(
+      settingsAuthority,
+      () => loadFreshAgentDefinitions(workspaceA, join(agencHome, 'plugins')),
+    )
     const second = secondCatalog.activeAgents.find(
       definition => definition.agentType === 'snapshot-worker',
     )

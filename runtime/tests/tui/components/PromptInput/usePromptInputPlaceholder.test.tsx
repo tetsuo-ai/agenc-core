@@ -6,7 +6,6 @@ import { renderToString } from "../../../utils/staticRender.js";
 import { usePromptInputPlaceholder } from "./usePromptInputPlaceholder.js";
 
 const mocks = vi.hoisted(() => ({
-  config: {} as { queuedCommandUpHintCount?: number },
   exampleCommand: "/example",
   features: {} as Record<string, boolean>,
   proactiveActive: false,
@@ -29,10 +28,6 @@ vi.mock("../../state/AppState.js", () => ({
     selector({
       promptSuggestionEnabled: mocks.promptSuggestionEnabled,
     }),
-}));
-
-vi.mock("../../../utils/config.js", () => ({
-  getGlobalConfig: () => mocks.config,
 }));
 
 vi.mock("../../../utils/exampleCommands.js", () => ({
@@ -74,7 +69,6 @@ async function renderPlaceholder(
 
 describe("usePromptInputPlaceholder", () => {
   beforeEach(() => {
-    mocks.config = {};
     mocks.exampleCommand = "/example";
     mocks.features = {};
     mocks.proactiveActive = false;
@@ -108,14 +102,11 @@ describe("usePromptInputPlaceholder", () => {
     );
   });
 
-  test("falls back to the cold-start hint after the queued-message hint is exhausted", async () => {
-    mocks.config.queuedCommandUpHintCount = 3;
+  test("keeps the queued-message hint available after conversation activity", async () => {
     mocks.queuedCommands = [{ editable: true }];
 
-    // No queue/example hint applies, so the composer shows the stable
-    // cold-start guidance rather than sitting blank at rest.
-    await expect(renderPlaceholder()).resolves.toContain(
-      "Describe a task",
+    await expect(renderPlaceholder({ submitCount: 3 })).resolves.toContain(
+      "Press up to edit queued messages",
     );
   });
 

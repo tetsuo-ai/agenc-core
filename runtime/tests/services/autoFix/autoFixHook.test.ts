@@ -6,6 +6,7 @@ import {
   shouldRunAutoFix,
 } from "./autoFixHook.js";
 import type { AutoFixConfig } from "./autoFixConfig.js";
+import { createHookExecutionAuthority } from "../../hooks/execution-authority.js";
 
 const CONFIG: AutoFixConfig = {
   enabled: true,
@@ -13,6 +14,11 @@ const CONFIG: AutoFixConfig = {
   maxRetries: 1,
   timeout: 30_000,
 };
+
+const TRUSTED_HOOK_AUTHORITY = createHookExecutionAuthority({
+  runtimeOptions: { simpleMode: false, allowUntrustedHooks: false },
+  isWorkspaceTrusted: () => true,
+});
 
 function hookInput(toolName = "Edit"): Parameters<PostToolUseHook>[0] {
   return {
@@ -36,11 +42,6 @@ describe("shouldRunAutoFix", () => {
     expect(shouldRunAutoFix("Edit", CONFIG)).toBe(true);
     expect(shouldRunAutoFix("MultiEdit", CONFIG)).toBe(true);
     expect(shouldRunAutoFix("Write", CONFIG)).toBe(true);
-  });
-
-  test("returns true for donor-compatible file tool aliases", () => {
-    expect(shouldRunAutoFix("file_edit", CONFIG)).toBe(true);
-    expect(shouldRunAutoFix("file_write", CONFIG)).toBe(true);
   });
 
   test("returns false for non-file tools and null config", () => {
@@ -72,6 +73,7 @@ describe("createAutoFixPostToolHook", () => {
     const hook = createAutoFixPostToolHook({
       configSource: () => CONFIG,
       cwd: process.cwd(),
+      executionAuthority: TRUSTED_HOOK_AUTHORITY,
       runCheck: async () => ({
         hasErrors: true,
         lintExitCode: 1,
@@ -91,6 +93,7 @@ describe("createAutoFixPostToolHook", () => {
     const hook = createAutoFixPostToolHook({
       configSource: () => CONFIG,
       cwd: process.cwd(),
+      executionAuthority: TRUSTED_HOOK_AUTHORITY,
       runCheck: async () => ({
         hasErrors: true,
         errorSummary: "Lint errors (exit code 1):\nstill bad",
@@ -110,6 +113,7 @@ describe("createAutoFixPostToolHook", () => {
     const hook = createAutoFixPostToolHook({
       configSource: () => ({ ...CONFIG, maxRetries: 2 }),
       cwd: process.cwd(),
+      executionAuthority: TRUSTED_HOOK_AUTHORITY,
       runCheck: async () =>
         failing
           ? { hasErrors: true, errorSummary: "Lint errors (exit code 1):\nbad" }
@@ -132,6 +136,7 @@ describe("createAutoFixPostToolHook", () => {
     const hook = createAutoFixPostToolHook({
       configSource: () => CONFIG,
       cwd: process.cwd(),
+      executionAuthority: TRUSTED_HOOK_AUTHORITY,
       runCheck: async () => {
         throw new Error("lint runner failed");
       },
@@ -143,5 +148,24 @@ describe("createAutoFixPostToolHook", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBeInstanceOf(Error);
     expect((errors[0] as Error).message).toBe("lint runner failed");
+  });
+
+  test("does not run checks when command effects are denied", async () => {
+    let calls = 0;
+    const hook = createAutoFixPostToolHook({
+      configSource: () => CONFIG,
+      cwd: process.cwd(),
+      executionAuthority: createHookExecutionAuthority({
+        runtimeOptions: { simpleMode: false, allowUntrustedHooks: false },
+        isWorkspaceTrusted: () => false,
+      }),
+      runCheck: async () => {
+        calls += 1;
+        return { hasErrors: false };
+      },
+    });
+
+    await expect(hook(hookInput())).resolves.toEqual({ kind: "continue" });
+    expect(calls).toBe(0);
   });
 });

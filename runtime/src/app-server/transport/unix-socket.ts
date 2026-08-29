@@ -22,6 +22,7 @@ import {
   type Socket,
 } from "node:net";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
+import { resolveHomeContext } from "../../config/home.js";
 import { AgenCStdioTransport, writeJsonLine } from "./stdio.js";
 import {
   loadAgenCNativePeerCredentialBinding,
@@ -56,9 +57,11 @@ export function defaultAgenCDaemonSocketPath(
   platform: NodeJS.Platform = process.platform,
 ): string {
   const daemonHome =
-    platform === "win32"
-      ? win32.join(homeDir, ".agenc")
-      : join(homeDir, ".agenc");
+    platform === process.platform
+      ? resolveHomeContext({}, { platformHome: homeDir, platform }).path
+      : platform === "win32"
+        ? win32.join(homeDir, ".agenc")
+        : join(homeDir, ".agenc");
   return agenCDaemonLocalEndpoint(daemonHome, platform);
 }
 

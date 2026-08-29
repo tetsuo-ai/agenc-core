@@ -34,14 +34,14 @@ sanitized/framed as untrusted content before they reach the model.
 | Cron delivery | `runtime/src/gateway/cron-delivery.ts` | daemon session model/tool boundaries; denial notice |
 | Hooks HTTP | `runtime/src/gateway/hooks.ts` | daemon session model/tool boundaries; HTTP **429** on denial |
 | Interactive TUI / print | `session/` turn loop | model/tool boundaries; windows only with `enforce_interactive` |
-| Background agents | `app-server/background-agent-runner.ts` | unattended policy plus `[agent.budget]` run allocation |
+| Background agents | `app-server/background-agent-runner.ts` | unattended policy; `[agent.budget]` is enforced only by the shared admission kernel |
 
 Defaults: **budget disabled**, **heartbeat disabled**. Enabling either is an
 explicit operator action.
 
 ### Session autonomous tick mode (distinct system)
 
-CLI flags `--autonomous` / `--proactive` enable **session keepalive** ticks
+The CLI flag `--autonomous` enables **session keepalive** ticks
 in the interactive/daemon-TUI path (`runtime/src/session/autonomous-mode.ts`).
 This is **not** the same as unattended admission policy:
 
@@ -69,7 +69,7 @@ daily_usd = 5.0
 monthly_usd = 50.0
 # daily_tokens = 2_000_000
 # monthly_tokens = 20_000_000
-soft_threshold = 0.8          # warn at 80% of a dollar window
+soft_threshold = 0.8          # stored on BudgetPolicy; no warning emitter in runtime/src/budget/
 enforce_interactive = false   # daily/monthly windows target unattended work
 ```
 
@@ -140,10 +140,8 @@ default.
 [heartbeat]
 enabled = true
 interval_seconds = 1800     # default 1800 (30 min)
-# model = "…"               # optional utility model override (cost-reduction; see notes)
 # active_hours = [8, 22]    # [start, end) local 24h; omit = always
 skip_when_busy = true
-agent = "default"           # budget envelope + session label
 # target_channel = "telegram"
 # target_conversation = "12345"
 ```
@@ -152,10 +150,8 @@ agent = "default"           # budget envelope + session label
 | --- | --- |
 | `AGENC_HEARTBEAT` | Enable/disable |
 | `AGENC_HEARTBEAT_INTERVAL` | Seconds between ticks |
-| `AGENC_HEARTBEAT_MODEL` | Utility model string |
 | `AGENC_HEARTBEAT_ACTIVE_HOURS` | `8-22` or `always` |
 | `AGENC_HEARTBEAT_TARGET` | `none` or `<channelId>:<conversationId>` |
-| `AGENC_HEARTBEAT_AGENT` | Agent id for budget + session (default `default`) |
 
 ### Workspace file
 

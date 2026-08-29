@@ -1,35 +1,5 @@
 {
   "name": "zeroday-hunter",
-  "version": "0.1.0",
-  "description": "Exploit-first vulnerability research campaigns with quantitative gates, deterministic proof, independent falsification, and hashed evidence.",
-  "author": {
-    "name": "Tetsuo AI"
-  },
-  "repository": "https://github.com/tetsuo-ai/agenc-core/tree/main/plugins/zeroday-hunter",
-  "license": "MIT",
-  "keywords": [
-    "security",
-    "vulnerability-research",
-    "zero-day",
-    "audit"
-  ],
-  "skills": "./skills",
-  "interface": {
-    "displayName": "Zero-day Hunter",
-    "shortDescription": "Run evidence-backed vulnerability research campaigns.",
-    "longDescription": "Campaign-oriented source-code security research with bounded slices, quantitative gates, deterministic PoC verification, independent falsification, and variant sweeps.",
-    "developerName": "Tetsuo AI",
-    "category": "security",
-    "capabilities": [
-      "skills",
-      "security-audit",
-      "vulnerability-research"
-    ],
-    "websiteUrl": "https://github.com/tetsuo-ai/agenc-core/tree/main/plugins/zeroday-hunter",
-    "defaultPrompt": [
-      "Run an authorized vulnerability research campaign against this repository."
-    ],
-    "brandColor": "#DC2626",
-    "screenshots": []
-  }
+  "description": "Exploit-first 0-day hunting: campaigns with quantitative gates, deterministic proof and hashed evidence.",
+  "skills": "./skills"
 }

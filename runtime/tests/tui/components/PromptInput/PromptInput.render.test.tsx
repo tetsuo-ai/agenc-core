@@ -5,15 +5,15 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { PastedContent } from "../../../utils/config.js";
 import {
   enqueue,
-  resetCommandQueue,
+  resetCommandQueueForTesting,
 } from "../../../utils/messageQueueManager.js";
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../../remoteAuthSessionContext.fixture.js";
 
 const harness = vi.hoisted(() => {
   const appState = {
     coordinatorTaskIndex: -1,
     effortValue: undefined,
     expandedView: "transcript",
-    fastMode: false,
     footerSelection: null as null | "tasks" | "teams",
     isBriefOnly: false,
     mainLoopModel: "gpt-5.4",
@@ -66,7 +66,6 @@ const harness = vi.hoisted(() => {
     onRender: vi.fn(),
     pushToBuffer: vi.fn(),
     removeNotification: vi.fn(),
-    updateSettingsForSource: vi.fn(),
     activeAgent: { type: "leader" } as { type: string; task?: unknown },
     autoModeOptInProps: undefined as undefined | Record<string, unknown>,
     backgroundTasksPanelProps: undefined as undefined | Record<string, unknown>,
@@ -117,20 +116,24 @@ const harness = vi.hoisted(() => {
     isMacosOptionChar: false,
     isSSH: false,
     keybindingRegistrations: [] as Array<Record<string, unknown>>,
-    modelPickerProps: undefined as undefined | Record<string, unknown>,
     nextPermissionMode: "plan",
-    cyclePermissionModeNextMode: null as null | string,
     autoModeGateEnabled: true,
     platform: "linux",
     quickOpenProps: undefined as undefined | Record<string, unknown>,
     runningTeammates: [] as unknown[],
-    saveGlobalConfig: vi.fn(),
+    updateRuntimeState: vi.fn(),
     specialChars: {} as Record<string, string>,
     swarmBanner: null as null | { bgColor: string; text?: string },
     teammateColor: undefined as undefined | string,
     teamsDialogProps: undefined as undefined | Record<string, unknown>,
     terminal: undefined as undefined | string,
     thinkingToggleProps: undefined as undefined | Record<string, unknown>,
+    transitionPermissionMode: vi.fn(
+      (_from: unknown, _to: unknown, context: Record<string, unknown>) => ({
+        ...context,
+        transitioned: true,
+      }),
+    ),
     typeahead: {
       commandArgumentHint: undefined as undefined | string,
       inlineGhostText: undefined as undefined | string,
@@ -147,14 +150,6 @@ const harness = vi.hoisted(() => {
           identity: { agentName: string; color?: string };
           permissionMode: string;
         },
-    fastMode: {
-      available: false,
-      cooldown: false,
-      enabled: false,
-      runtimeState: { status: "available" },
-      supportedByModel: true,
-      unavailableReason: null as string | null,
-    },
     reset: () => {
       harness.addNotification.mockClear();
       harness.clearBuffer.mockClear();
@@ -191,7 +186,6 @@ const harness = vi.hoisted(() => {
       appState.viewingAgentTaskId = null;
       appState.viewSelectionMode = null;
       appState.workbench = undefined;
-      harness.updateSettingsForSource.mockClear();
       harness.activeAgent = { type: "leader" };
       harness.autoModeOptInProps = undefined;
       harness.backgroundTasksPanelProps = undefined;
@@ -225,20 +219,19 @@ const harness = vi.hoisted(() => {
       harness.isMacosOptionChar = false;
       harness.isSSH = false;
       harness.keybindingRegistrations = [];
-      harness.modelPickerProps = undefined;
       harness.nextPermissionMode = "plan";
-      harness.cyclePermissionModeNextMode = null;
       harness.autoModeGateEnabled = true;
       harness.platform = "linux";
       harness.quickOpenProps = undefined;
       harness.runningTeammates = [];
-      harness.saveGlobalConfig.mockClear();
+      harness.updateRuntimeState.mockClear();
       harness.specialChars = {};
       harness.swarmBanner = null;
       harness.teammateColor = undefined;
       harness.teamsDialogProps = undefined;
       harness.terminal = undefined;
       harness.thinkingToggleProps = undefined;
+      harness.transitionPermissionMode.mockClear();
       harness.typeahead = {
         commandArgumentHint: undefined,
         inlineGhostText: undefined,
@@ -249,14 +242,6 @@ const harness = vi.hoisted(() => {
       };
       harness.visibleAgentTasks = [];
       harness.viewedTeammate = undefined;
-      harness.fastMode = {
-        available: false,
-        cooldown: false,
-        enabled: false,
-        runtimeState: { status: "available" },
-        supportedByModel: true,
-        unavailableReason: null,
-      };
     },
     setAppState: vi.fn((updater: unknown) => {
       const next =
@@ -499,8 +484,8 @@ vi.mock("../../../utils/array.js", () => ({
 }));
 
 vi.mock("../../../utils/config.js", () => ({
-  getGlobalConfig: () => harness.getGlobalConfigResult,
-  saveGlobalConfig: harness.saveGlobalConfig,
+  getRuntimeState: () => harness.getGlobalConfigResult,
+  updateRuntimeState: harness.updateRuntimeState,
 }));
 
 vi.mock("../../../utils/cwd.js", () => ({
@@ -539,24 +524,8 @@ vi.mock("../../../utils/errors.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../../../utils/extraUsage.js", () => ({
-  isBilledAsExtraUsage: () => false,
-}));
-
-vi.mock("../../../utils/fastMode.js", () => ({
-  FAST_MODE_MODEL_DISPLAY: "fast-model",
-  clearFastModeCooldown: vi.fn(),
-  getFastModeModel: () => "fast-model",
-  getFastModeRuntimeState: () => harness.fastMode.runtimeState,
-  getFastModeUnavailableReason: () => harness.fastMode.unavailableReason,
-  isFastModeAvailable: () => harness.fastMode.available,
-  isFastModeCooldown: () => harness.fastMode.cooldown,
-  isFastModeEnabled: () => harness.fastMode.enabled,
-  isFastModeSupportedByModel: () => harness.fastMode.supportedByModel,
-}));
-
-vi.mock("../../../utils/fullscreen.js", () => ({
-  isFullscreenEnvEnabled: () => false,
+vi.mock("../../context/fullscreenModeContext.js", () => ({
+  useFullscreenMode: () => false,
 }));
 
 vi.mock("../../../utils/imagePaste.js", () => ({
@@ -592,17 +561,9 @@ vi.mock("../../../utils/permissions/autoModeState.js", () => ({
   setAutoModeActive: vi.fn(),
 }));
 
-vi.mock("../../../utils/permissions/getNextPermissionMode.js", () => ({
-  cyclePermissionMode: (context: unknown) => ({
-    context,
-    nextMode: harness.cyclePermissionModeNextMode ?? harness.nextPermissionMode,
-  }),
+vi.mock("../../../permissions/permission-mode.js", () => ({
   getNextPermissionMode: () => harness.nextPermissionMode,
-}));
-
-vi.mock("../../../utils/permissions/permissionSetup.js", () => ({
-  transitionPermissionMode: (_from: unknown, _to: unknown, context: unknown) =>
-    context,
+  transitionPermissionMode: harness.transitionPermissionMode,
   isAutoModeGateEnabled: () => harness.autoModeGateEnabled,
 }));
 
@@ -620,7 +581,6 @@ vi.mock("../../input/processBashCommand.js", () => ({
 
 vi.mock("../../../utils/settings/settings.js", () => ({
   hasAutoModeOptIn: () => harness.hasAutoModeOptIn,
-  updateSettingsForSource: harness.updateSettingsForSource,
 }));
 
 vi.mock("../../../utils/suggestions/commandSuggestions.js", () => ({
@@ -690,10 +650,6 @@ vi.mock("../EffortIndicator.js", () => ({
   getEffortNotificationText: () => undefined,
 }));
 
-vi.mock("../FastIcon.js", () => ({
-  getFastIconString: () => "FAST",
-}));
-
 vi.mock("../FullscreenLayout.js", () => ({
   calculateFullscreenLayoutBudget: (rows: number) => ({
     bottomMaxHeight: Math.max(1, Math.floor(rows / 2)),
@@ -710,13 +666,6 @@ vi.mock("../GlobalSearchDialog.js", () => ({
 vi.mock("../../history/HistorySearchDialog.js", () => ({
   HistorySearchDialog: (props: Record<string, unknown>) => {
     harness.historySearchProps = props;
-    return null;
-  },
-}));
-
-vi.mock("../ModelPicker.js", () => ({
-  ModelPicker: (props: Record<string, unknown>) => {
-    harness.modelPickerProps = props;
     return null;
   },
 }));
@@ -806,10 +755,6 @@ vi.mock("./useMaybeTruncateInput.js", () => ({
 
 vi.mock("./usePromptInputPlaceholder.js", () => ({
   usePromptInputPlaceholder: () => "Type a prompt",
-}));
-
-vi.mock("./useShowFastIconHint.js", () => ({
-  useShowFastIconHint: () => false,
 }));
 
 vi.mock("./useSwarmBanner.js", () => ({
@@ -926,6 +871,7 @@ function basePromptInputProps(overrides: Record<string, unknown> = {}) {
     onShowMessageSelector: vi.fn(),
     onSubmit: vi.fn(async () => {}),
     pastedContents: {},
+    remoteAuthSessionContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
     setHelpOpen: vi.fn(),
     setIsSearchingHistory: vi.fn(),
     setPastedContents: harness.setPastedContents,
@@ -994,7 +940,7 @@ async function renderPromptInput(overrides: Record<string, unknown> = {}) {
 describe("PromptInput render surface", () => {
   beforeEach(() => {
     harness.reset();
-    resetCommandQueue();
+    resetCommandQueueForTesting();
     vi.mocked(getImageFromClipboard).mockReset();
     vi.mocked(getImageFromClipboard).mockResolvedValue(null);
     vi.mocked(cacheImagePath).mockClear();
@@ -1002,6 +948,17 @@ describe("PromptInput render surface", () => {
     vi.mocked(sendDirectMemberMessage).mockClear();
     vi.mocked(logError).mockClear();
     vi.mocked(editPromptInEditor).mockClear();
+  });
+
+  test("does not register the retired fast-mode keybinding", async () => {
+    const rendered = await renderPromptInput();
+
+    try {
+      await waitForPromptInputProps();
+      expect(harness.keybindings["chat:fastMode"]).toBeUndefined();
+    } finally {
+      await rendered.dispose();
+    }
   });
 
   test("wires base text input props for the idle prompt surface", async () => {
@@ -1148,6 +1105,118 @@ describe("PromptInput render surface", () => {
       expect(onInputChange).toHaveBeenCalledWith(
         expect.stringContaining("[Pasted text"),
       );
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("routes bulk ! input through direct shell before its mode rerender", async () => {
+    const onInputChange = vi.fn();
+    const onModeChange = vi.fn();
+    const onSubmit = vi.fn(async () => {});
+    const onBashSubmit = vi.fn(async () => {});
+    const rendered = await renderPromptInput({
+      input: "",
+      mode: "prompt",
+      onBashSubmit,
+      onInputChange,
+      onModeChange,
+      onSubmit,
+    });
+
+    try {
+      const promptProps = await waitForPromptInputProps();
+      const bulkInput = "!sleep 30";
+
+      (promptProps.onChangeCursorOffset as (offset: number) => void)(
+        bulkInput.length,
+      );
+      (promptProps.onChange as (value: string) => void)(bulkInput);
+
+      expect(onModeChange).toHaveBeenCalledWith("bash");
+      expect(onInputChange).toHaveBeenCalledWith("sleep 30");
+
+      await (promptProps.onSubmit as (value: string) => Promise<void>)(
+        "sleep 30",
+      );
+
+      expect(onBashSubmit).toHaveBeenCalledOnce();
+      expect(onBashSubmit).toHaveBeenCalledWith("sleep 30");
+      expect(onSubmit).not.toHaveBeenCalled();
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("routes pasted ! input through direct shell before its mode rerender", async () => {
+    const onInputChange = vi.fn();
+    const onModeChange = vi.fn();
+    const onSubmit = vi.fn(async () => {});
+    const onBashSubmit = vi.fn(async () => {});
+    const rendered = await renderPromptInput({
+      input: "",
+      mode: "prompt",
+      onBashSubmit,
+      onInputChange,
+      onModeChange,
+      onSubmit,
+    });
+
+    try {
+      const promptProps = await waitForPromptInputProps();
+
+      (promptProps.onPaste as (value: string) => void)("!touch marker");
+
+      expect(onModeChange).toHaveBeenCalledWith("bash");
+      expect(onInputChange).toHaveBeenCalledWith("touch marker");
+
+      await (promptProps.onSubmit as (value: string) => Promise<void>)(
+        "touch marker",
+      );
+
+      expect(onBashSubmit).toHaveBeenCalledOnce();
+      expect(onBashSubmit).toHaveBeenCalledWith("touch marker");
+      expect(onSubmit).not.toHaveBeenCalled();
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("does not let a stale prompt speculation capture same-tick ! input", async () => {
+    harness.appState.promptSuggestion = {
+      acceptedAt: 0,
+      generationRequestId: null,
+      promptId: "stale-shell-suggestion",
+      shownAt: 100,
+      text: "sleep 30",
+    };
+    harness.appState.speculation = {
+      status: "active",
+      taskId: "stale-shell-speculation",
+    };
+    const onInputChange = vi.fn();
+    const onModeChange = vi.fn();
+    const onSubmit = vi.fn(async () => {});
+    const onBashSubmit = vi.fn(async () => {});
+    const rendered = await renderPromptInput({
+      input: "",
+      mode: "prompt",
+      onBashSubmit,
+      onInputChange,
+      onModeChange,
+      onSubmit,
+    });
+
+    try {
+      const promptProps = await waitForPromptInputProps();
+
+      (promptProps.onChange as (value: string) => void)("!sleep 30");
+      await (promptProps.onSubmit as (value: string) => Promise<void>)(
+        "sleep 30",
+      );
+
+      expect(onBashSubmit).toHaveBeenCalledWith("sleep 30");
+      expect(onSubmit).not.toHaveBeenCalled();
     } finally {
       await rendered.dispose();
     }
@@ -1379,13 +1448,13 @@ describe("PromptInput render surface", () => {
         expect.objectContaining({ mode: "default" }),
       );
       expect(harness.appState.toolPermissionContext.mode).toBe("default");
-      expect(harness.saveGlobalConfig).not.toHaveBeenCalled();
+      expect(harness.updateRuntimeState).not.toHaveBeenCalled();
     } finally {
       await rendered.dispose();
     }
   });
 
-  test("picks a permission mode by digit while the mode switcher is open", async () => {
+  test("requests a permission mode by digit without projecting it early", async () => {
     const setToolPermissionContext = vi.fn();
     const rendered = await renderPromptInput({ setToolPermissionContext });
 
@@ -1420,7 +1489,7 @@ describe("PromptInput render surface", () => {
       expect(setToolPermissionContext).toHaveBeenCalledWith(
         expect.objectContaining({ mode: "plan" }),
       );
-      expect(harness.appState.toolPermissionContext.mode).toBe("plan");
+      expect(harness.appState.toolPermissionContext.mode).toBe("default");
     } finally {
       await rendered.dispose();
     }
@@ -2297,7 +2366,7 @@ describe("PromptInput render surface", () => {
         }),
       });
     } finally {
-      resetCommandQueue();
+      resetCommandQueueForTesting();
       await rendered.dispose();
     }
   });
@@ -2621,72 +2690,6 @@ describe("PromptInput render surface", () => {
         1: referencedImage,
         3: textPaste,
       });
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("opens fast mode picker and enables fast mode with model switch when confirmed", async () => {
-    harness.fastMode.enabled = true;
-    harness.fastMode.available = true;
-    harness.fastMode.supportedByModel = false;
-    const setHelpOpen = vi.fn();
-    const rendered = await renderPromptInput({
-      helpOpen: true,
-      setHelpOpen,
-    });
-
-    try {
-      await waitForPromptInputProps();
-      const handlersBeforePicker = harness.inputHandlers.length;
-      harness.keybindings["chat:fastMode"]?.();
-      await waitForInputHandlerCount(handlersBeforePicker + 1);
-      expect(setHelpOpen).toHaveBeenCalledWith(false);
-
-      latestInputHandler()(" ", { tab: false });
-      await sleep(25);
-      latestInputHandler()("", { return: true });
-      await sleep(25);
-
-      expect(harness.updateSettingsForSource).toHaveBeenCalledWith(
-        "userSettings",
-        { fastMode: true },
-      );
-      expect(harness.appState.fastMode).toBe(true);
-      expect(harness.appState.mainLoopModel).toBe("fast-model");
-      expect(harness.appState.mainLoopModelForSession).toBeNull();
-      expect(harness.addNotification).toHaveBeenCalledWith(
-        expect.objectContaining({ key: "fast-mode-toggled" }),
-      );
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("cancels unavailable fast mode by disabling an existing fast-mode session", async () => {
-    harness.appState.fastMode = true;
-    harness.fastMode.enabled = true;
-    harness.fastMode.available = true;
-    harness.fastMode.unavailableReason = "Fast mode unavailable";
-    const rendered = await renderPromptInput();
-
-    try {
-      await waitForPromptInputProps();
-      const handlersBeforePicker = harness.inputHandlers.length;
-      harness.keybindings["chat:fastMode"]?.();
-      await waitForInputHandlerCount(handlersBeforePicker + 1);
-
-      latestInputHandler()("", { escape: true });
-      await sleep(25);
-
-      expect(harness.updateSettingsForSource).toHaveBeenCalledWith(
-        "userSettings",
-        { fastMode: undefined },
-      );
-      expect(harness.appState.fastMode).toBe(false);
-      expect(harness.addNotification).toHaveBeenCalledWith(
-        expect.objectContaining({ key: "fast-mode-toggled" }),
-      );
     } finally {
       await rendered.dispose();
     }
@@ -3140,14 +3143,15 @@ describe("PromptInput render surface", () => {
     }
   });
 
-  test("drives model and thinking picker callbacks from chat keybindings", async () => {
-    harness.fastMode.enabled = true;
-    harness.fastMode.available = true;
-    harness.fastMode.supportedByModel = false;
-    harness.appState.fastMode = true;
+  test("routes model selection to App and keeps thinking local", async () => {
+    const onOpenModelMenu = vi.fn();
+    const onSubmit = vi.fn(async () => {});
     const setHelpOpen = vi.fn();
     const rendered = await renderPromptInput({
       helpOpen: true,
+      input: "preserve this model-menu draft",
+      onOpenModelMenu,
+      onSubmit,
       setHelpOpen,
     });
 
@@ -3157,18 +3161,12 @@ describe("PromptInput render surface", () => {
       harness.keybindings["chat:modelPicker"]?.();
       await sleep(25);
       expect(setHelpOpen).toHaveBeenCalledWith(false);
-      expect(harness.modelPickerProps).toBeDefined();
-
-      (
-        harness.modelPickerProps?.onSelect as (
-          model: string | null,
-          effort: unknown,
-        ) => void
-      )("gpt-slow", undefined);
-      expect(harness.appState.mainLoopModel).toBe("gpt-slow");
-      expect(harness.appState.mainLoopModelForSession).toBeNull();
-      expect(harness.appState.fastMode).toBe(false);
-      expect(harness.addNotification).toHaveBeenCalledWith(
+      expect(onOpenModelMenu).toHaveBeenCalledOnce();
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(harness.history.resetHistory).not.toHaveBeenCalled();
+      expect(rendered.props.input).toBe("preserve this model-menu draft");
+      expect(harness.appState.mainLoopModel).toBe("gpt-5.4");
+      expect(harness.addNotification).not.toHaveBeenCalledWith(
         expect.objectContaining({ key: "model-switched" }),
       );
 
@@ -3672,56 +3670,123 @@ describe("PromptInput render surface", () => {
     }
   });
 
-  test("previews first-time auto mode before applying transition side effects", async () => {
-    vi.useFakeTimers();
-    harness.features.TRANSCRIPT_CLASSIFIER = true;
-    harness.hasAutoModeOptIn = false;
-    harness.nextPermissionMode = "auto";
-    const setHelpOpen = vi.fn();
-    const setToolPermissionContext = vi.fn();
-    const rendered = await renderPromptInput({
-      helpOpen: true,
-      setHelpOpen,
-      setToolPermissionContext,
-    });
-
-    try {
-      await waitForPromptInputProps();
-
-      harness.keybindings["chat:cycleMode"]?.();
-
-      expect(harness.appState.toolPermissionContext.mode).toBe("auto");
-      expect(setToolPermissionContext).toHaveBeenCalledWith(
-        expect.objectContaining({ mode: "auto" }),
+  test.each(["local registry update", "daemon permission RPC"])(
+    "keeps first-time auto preview out of the %s until acceptance",
+    async (authorityPath) => {
+      vi.useFakeTimers();
+      harness.features.TRANSCRIPT_CLASSIFIER = true;
+      harness.hasAutoModeOptIn = false;
+      harness.nextPermissionMode = "auto";
+      const setHelpOpen = vi.fn();
+      const localRegistryUpdate = vi.fn();
+      const daemonPermissionRpc = vi.fn();
+      const updatePermissionAuthority = vi.fn(
+        (context: Record<string, unknown>) => {
+          if (authorityPath === "local registry update") {
+            localRegistryUpdate(context);
+          } else {
+            daemonPermissionRpc(context.mode);
+          }
+        },
       );
-      expect(setHelpOpen).toHaveBeenCalledWith(false);
+      const rendered = await renderPromptInput({
+        helpOpen: true,
+        setHelpOpen,
+        setToolPermissionContext: updatePermissionAuthority,
+      });
 
-      vi.advanceTimersByTime(400);
-    } finally {
-      vi.clearAllTimers();
-      vi.useRealTimers();
-      await rendered.dispose();
-    }
-  });
+      try {
+        await waitForPromptInputProps();
+        harness.transitionPermissionMode.mockClear();
+
+        harness.keybindings["chat:cycleMode"]?.();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(harness.appState.toolPermissionContext.mode).toBe("default");
+        expect(updatePermissionAuthority).not.toHaveBeenCalled();
+        expect(localRegistryUpdate).not.toHaveBeenCalled();
+        expect(daemonPermissionRpc).not.toHaveBeenCalled();
+        expect(harness.transitionPermissionMode).not.toHaveBeenCalled();
+        expect(harness.promptInputFooterProps?.toolPermissionContext).toEqual(
+          expect.objectContaining({ mode: "auto" }),
+        );
+        expect(setHelpOpen).toHaveBeenCalledWith(false);
+
+        const latestContext = {
+          ...harness.appState.toolPermissionContext,
+          alwaysAskRules: { session: ["system.bash(git status)"] },
+          mode: "plan",
+        };
+        harness.appState.toolPermissionContext = latestContext;
+
+        await vi.advanceTimersByTimeAsync(400);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(harness.autoModeOptInProps).toBeDefined();
+        expect(updatePermissionAuthority).not.toHaveBeenCalled();
+        expect(localRegistryUpdate).not.toHaveBeenCalled();
+        expect(daemonPermissionRpc).not.toHaveBeenCalled();
+        expect(harness.transitionPermissionMode).not.toHaveBeenCalled();
+
+        (harness.autoModeOptInProps?.onAccept as () => void)();
+
+        expect(harness.transitionPermissionMode).toHaveBeenCalledTimes(1);
+        expect(harness.transitionPermissionMode).toHaveBeenCalledWith(
+          "plan",
+          "auto",
+          latestContext,
+        );
+        expect(updatePermissionAuthority).toHaveBeenCalledTimes(1);
+        expect(updatePermissionAuthority).toHaveBeenCalledWith(
+          expect.objectContaining({
+            alwaysAskRules: latestContext.alwaysAskRules,
+            mode: "auto",
+            transitioned: true,
+          }),
+        );
+        if (authorityPath === "local registry update") {
+          expect(localRegistryUpdate).toHaveBeenCalledTimes(1);
+          expect(localRegistryUpdate).toHaveBeenCalledWith(
+            expect.objectContaining({ mode: "auto", transitioned: true }),
+          );
+          expect(daemonPermissionRpc).not.toHaveBeenCalled();
+        } else {
+          expect(daemonPermissionRpc).toHaveBeenCalledTimes(1);
+          expect(daemonPermissionRpc).toHaveBeenCalledWith("auto");
+          expect(localRegistryUpdate).not.toHaveBeenCalled();
+        }
+      } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+        await rendered.dispose();
+      }
+    },
+  );
 
   test("clears pending auto-mode opt-in timer on unmount", async () => {
     vi.useFakeTimers();
     harness.features.TRANSCRIPT_CLASSIFIER = true;
     harness.hasAutoModeOptIn = false;
     harness.nextPermissionMode = "auto";
-    const rendered = await renderPromptInput();
+    const updatePermissionAuthority = vi.fn();
+    const rendered = await renderPromptInput({
+      setToolPermissionContext: updatePermissionAuthority,
+    });
 
     try {
       await waitForPromptInputProps();
 
       harness.keybindings["chat:cycleMode"]?.();
       expect(vi.getTimerCount()).toBeGreaterThan(0);
+      expect(updatePermissionAuthority).not.toHaveBeenCalled();
+      expect(harness.transitionPermissionMode).not.toHaveBeenCalled();
 
       rendered.root.unmount();
       rendered.stdin.end();
       rendered.stdout.end();
 
       expect(vi.getTimerCount()).toBe(0);
+      expect(updatePermissionAuthority).not.toHaveBeenCalled();
+      expect(harness.appState.toolPermissionContext.mode).toBe("default");
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
@@ -3772,7 +3837,6 @@ describe("PromptInput render surface", () => {
       );
 
       harness.nextPermissionMode = "default";
-      harness.cyclePermissionModeNextMode = "default";
       harness.keybindings["chat:cycleMode"]?.();
       await sleep(0);
 
@@ -3920,7 +3984,7 @@ describe("PromptInput render surface", () => {
     }
   });
 
-  test("exercises picker cancel callbacks and help/message action keybindings", async () => {
+  test("exercises thinking cancel and help/message action keybindings", async () => {
     const onMessageActionsEnter = vi.fn();
     const setHelpOpen = vi.fn();
     const rendered = await renderPromptInput({
@@ -3937,11 +4001,6 @@ describe("PromptInput render surface", () => {
 
       harness.keybindings["chat:messageActions"]?.();
       expect(onMessageActionsEnter).toHaveBeenCalled();
-
-      harness.keybindings["chat:modelPicker"]?.();
-      await sleep(25);
-      expect(harness.modelPickerProps).toBeDefined();
-      (harness.modelPickerProps?.onCancel as () => void)();
 
       harness.keybindings["chat:thinkingToggle"]?.();
       await sleep(25);

@@ -101,7 +101,12 @@ export function updateProgressFromMessage(
       if (content.name !== SYNTHETIC_OUTPUT_TOOL_NAME) {
         const input = content.input as Record<string, unknown>;
         const classification = tools
-          ? getToolSearchOrReadInfo(content.name, input, tools)
+          ? getToolSearchOrReadInfo(
+              content.name,
+              input,
+              tools,
+              false,
+            )
           : undefined;
         tracker.recentActivities.push({
           toolName: content.name,

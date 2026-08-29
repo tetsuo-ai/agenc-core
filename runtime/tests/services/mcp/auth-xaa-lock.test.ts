@@ -1,15 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { InvalidGrantError } from '@modelcontextprotocol/sdk/server/auth/errors.js'
 import type { SecureStorageData } from '../../utils/secureStorage/index.js'
-import { AgenCAuthProvider, getServerKey } from './auth.js'
+import {
+  AgenCAuthProvider,
+  getServerKey,
+  wrapFetchWithStepUpDetection,
+} from './auth.js'
 import type { McpSSEServerConfig } from './types.js'
 import { performCrossAppAccess } from './xaa.js'
 import * as lockfile from '../../utils/lockfile.js'
+import { resolveHomeContext } from '../../config/home.js'
+
+const TEST_HOME = resolveHomeContext(
+  { AGENC_HOME: '/tmp/agenc-mcp-auth-test' },
+  { platformHome: '/tmp' },
+)
 
 const probes = vi.hoisted(() => {
   const release = vi.fn(async () => {})
+  const releaseNative = vi.fn()
   return {
     release,
+    releaseNative,
     lock: vi.fn(async () => release),
+    lockSync: vi.fn(() => releaseNative),
     storageData: null as SecureStorageData | null,
     update: vi.fn((data: SecureStorageData) => {
       probes.storageData = data
@@ -21,11 +35,12 @@ const probes = vi.hoisted(() => {
     discoverOidc: vi.fn(async () => ({
       token_endpoint: 'https://agenc.tech/idp/token',
     })),
-    getXaaIdpSettings: vi.fn(() => ({
+    getXaaIdpConfig: vi.fn(() => ({
       issuer: 'https://agenc.tech/idp',
-      clientId: 'idp-client',
+      client_id: 'idp-client',
     })),
     clearIdpIdToken: vi.fn(),
+    refreshAuthorization: vi.fn(),
     logMCPDebug: vi.fn(),
     sleep: vi.fn(async () => {}),
   }
@@ -35,27 +50,37 @@ vi.mock('bun:bundle', () => ({
   feature: () => false,
 }))
 
+vi.mock('@modelcontextprotocol/sdk/client/auth.js', async importOriginal => ({
+  ...(await importOriginal<
+    typeof import('@modelcontextprotocol/sdk/client/auth.js')
+  >()),
+  refreshAuthorization: probes.refreshAuthorization,
+}))
+
 vi.mock('../../utils/envUtils.js', async importOriginal => ({
   ...(await importOriginal<typeof import('../../utils/envUtils.js')>()),
-  getAgenCConfigHomeDir: () => '/tmp/agenc-mcp-auth-test',
+  getAgenCHomeDir: () => '/tmp/agenc-mcp-auth-test',
 }))
 
 vi.mock('../../utils/lockfile.js', () => ({
   lock: probes.lock,
+  lockSync: probes.lockSync,
 }))
 
 vi.mock('../../utils/log.js', () => ({
   logMCPDebug: probes.logMCPDebug,
 }))
 
-vi.mock('../../utils/secureStorage/index.js', () => ({
-  getSecureStorage: () => ({
-    name: 'test-secure-storage',
-    read: () => probes.storageData,
-    readAsync: async () => probes.storageData,
-    update: probes.update,
-    delete: () => true,
-  }),
+vi.mock('../../utils/secureStorage/native.js', () => ({
+  readNativeSecureStorage: () => structuredClone(probes.storageData ?? {}),
+  updateNativeSecureStorage: (
+    _home: unknown,
+    update: (current: SecureStorageData) => SecureStorageData,
+  ) => {
+    const next = update(structuredClone(probes.storageData ?? {}))
+    probes.update(next)
+    return { success: true }
+  },
 }))
 
 vi.mock('../../utils/secureStorage/macOsKeychainHelpers.js', () => ({
@@ -72,7 +97,7 @@ vi.mock('./xaaIdpLogin.js', () => ({
   discoverOidc: probes.discoverOidc,
   getCachedIdpIdToken: probes.getCachedIdpIdToken,
   getIdpClientSecret: probes.getIdpClientSecret,
-  getXaaIdpSettings: probes.getXaaIdpSettings,
+  getXaaIdpConfig: probes.getXaaIdpConfig,
   isXaaEnabled: () => true,
 }))
 
@@ -108,12 +133,9 @@ function serverConfig(): McpSSEServerConfig {
 
 function makeProvider(config = serverConfig()): AgenCAuthProvider {
   return new AgenCAuthProvider(
+    TEST_HOME,
     'github',
     config,
-    'http://127.0.0.1:3000/callback',
-    false,
-    undefined,
-    true,
   )
 }
 
@@ -155,19 +177,22 @@ describe('AgenCAuthProvider XAA refresh locking', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     probes.release.mockClear()
+    probes.releaseNative.mockClear()
+    probes.lockSync.mockClear()
     probes.lock.mockReset()
     probes.lock.mockResolvedValue(probes.release)
     probes.storageData = null
     mockPerformCrossAppAccess.mockReset()
     probes.getCachedIdpIdToken.mockReturnValue('id-token')
     probes.getIdpClientSecret.mockReturnValue('idp-secret')
-    probes.getXaaIdpSettings.mockReturnValue({
+    probes.getXaaIdpConfig.mockReturnValue({
       issuer: 'https://agenc.tech/idp',
-      clientId: 'idp-client',
+      client_id: 'idp-client',
     })
     probes.discoverOidc.mockResolvedValue({
       token_endpoint: 'https://agenc.tech/idp/token',
     })
+    probes.refreshAuthorization.mockReset()
   })
 
   it('reuses tokens another process refreshed while waiting for the lock', async () => {
@@ -237,6 +262,7 @@ describe('AgenCAuthProvider XAA refresh locking', () => {
         idpIdToken: 'id-token',
         idpTokenEndpoint: 'https://agenc.tech/idp/token',
       }),
+      {},
       'github',
     )
     expect(result).toEqual(
@@ -274,5 +300,154 @@ describe('AgenCAuthProvider XAA refresh locking', () => {
     expect(probes.update).not.toHaveBeenCalled()
     expect(probes.release).not.toHaveBeenCalled()
     expect(probes.sleep).toHaveBeenCalled()
+  })
+
+  it('refreshes an expiring standard OAuth token and stores the replacement', async () => {
+    const config: McpSSEServerConfig = {
+      type: 'sse',
+      url: 'https://mcp.example.test/sse',
+      oauth: { clientId: 'mcp-client' },
+    }
+    const key = getServerKey('github', config)
+    probes.storageData = clientSecretStorage(key, {
+      [key]: {
+        serverName: 'github',
+        serverUrl: config.url,
+        accessToken: 'expiring-access',
+        refreshToken: 'current-refresh',
+        expiresAt: Date.now() + 60_000,
+        scope: 'read',
+      },
+    })
+    probes.refreshAuthorization.mockResolvedValue({
+      access_token: 'fresh-access',
+      refresh_token: 'fresh-refresh',
+      expires_in: 3600,
+      scope: 'read write',
+      token_type: 'Bearer',
+    })
+    const provider = makeProvider(config)
+    provider.setMetadata({
+      issuer: 'https://auth.example.test',
+      authorization_endpoint: 'https://auth.example.test/authorize',
+      token_endpoint: 'https://auth.example.test/token',
+      response_types_supported: ['code'],
+    })
+
+    await expect(provider.tokens()).resolves.toEqual(
+      expect.objectContaining({
+        access_token: 'fresh-access',
+        refresh_token: 'fresh-refresh',
+      }),
+    )
+
+    expect(probes.refreshAuthorization).toHaveBeenCalledWith(
+      new URL(config.url),
+      expect.objectContaining({
+        clientInformation: {
+          client_id: 'mcp-client',
+          client_secret: 'mcp-secret',
+        },
+        refreshToken: 'current-refresh',
+      }),
+    )
+    expect(probes.storageData?.mcpOAuth?.[key]).toEqual(
+      expect.objectContaining({
+        accessToken: 'fresh-access',
+        refreshToken: 'fresh-refresh',
+        scope: 'read write',
+      }),
+    )
+    expect(probes.release).toHaveBeenCalledOnce()
+  })
+
+  it('clears invalid standard OAuth tokens while preserving client identity', async () => {
+    const config: McpSSEServerConfig = {
+      type: 'sse',
+      url: 'https://mcp.example.test/sse',
+      oauth: { clientId: 'mcp-client' },
+    }
+    const key = getServerKey('github', config)
+    probes.storageData = clientSecretStorage(key, {
+      [key]: {
+        serverName: 'github',
+        serverUrl: config.url,
+        accessToken: 'expired-access',
+        refreshToken: 'revoked-refresh',
+        expiresAt: 0,
+        scope: 'read',
+        clientId: 'stored-client',
+        clientSecret: 'stored-secret',
+      },
+    })
+    probes.refreshAuthorization.mockRejectedValue(
+      new InvalidGrantError('refresh token revoked'),
+    )
+    const provider = makeProvider(config)
+    provider.setMetadata({
+      issuer: 'https://auth.example.test',
+      authorization_endpoint: 'https://auth.example.test/authorize',
+      token_endpoint: 'https://auth.example.test/token',
+      response_types_supported: ['code'],
+    })
+
+    await expect(
+      provider.refreshAuthorization('revoked-refresh'),
+    ).resolves.toBeUndefined()
+
+    expect(probes.storageData?.mcpOAuth?.[key]).toEqual(
+      expect.objectContaining({
+        accessToken: '',
+        expiresAt: 0,
+        clientId: 'stored-client',
+        clientSecret: 'stored-secret',
+      }),
+    )
+    expect(probes.storageData?.mcpOAuth?.[key]?.refreshToken).toBeUndefined()
+    expect(probes.release).toHaveBeenCalledOnce()
+  })
+
+  it('turns insufficient-scope responses into in-memory needs-auth tokens', async () => {
+    const config: McpSSEServerConfig = {
+      type: 'sse',
+      url: 'https://mcp.example.test/sse',
+      oauth: { clientId: 'mcp-client' },
+    }
+    const key = getServerKey('github', config)
+    probes.storageData = clientSecretStorage(key, {
+      [key]: {
+        serverName: 'github',
+        serverUrl: config.url,
+        accessToken: 'current-access',
+        refreshToken: 'current-refresh',
+        expiresAt: Date.now() + 3_600_000,
+        scope: 'read',
+      },
+    })
+    const provider = makeProvider(config)
+    const fetchWithStepUpDetection = wrapFetchWithStepUpDetection(
+      vi.fn(async () =>
+        new Response(null, {
+          status: 403,
+          headers: {
+            'WWW-Authenticate':
+              'Bearer error="insufficient_scope", scope="read write"',
+          },
+        })),
+      provider,
+    )
+
+    await fetchWithStepUpDetection('https://mcp.example.test/sse')
+    await expect(provider.tokens()).resolves.toEqual(
+      expect.objectContaining({
+        access_token: 'current-access',
+        refresh_token: undefined,
+        scope: 'read',
+      }),
+    )
+    expect(probes.refreshAuthorization).not.toHaveBeenCalled()
+    expect(probes.storageData?.mcpOAuth?.[key]?.refreshToken).toBe(
+      'current-refresh',
+    )
   })
 })

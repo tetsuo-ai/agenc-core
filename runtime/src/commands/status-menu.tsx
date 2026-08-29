@@ -90,10 +90,6 @@ function rowFromStatusLine(line: StatusLine): StatusDashboardRow {
 function appStateRows(appState: unknown): StatusDashboardRow[] {
   if (!isRecord(appState)) return [];
   const rows: StatusDashboardRow[] = [];
-  const model = appState.mainLoopModel ?? appState.mainLoopModelForSession;
-  if (model !== undefined && model !== null) {
-    rows.push(row("model", "active model", model, "ok", "Model shown by the live TUI app state."));
-  }
   const mcp = isRecord(appState.mcp) ? appState.mcp : {};
   rows.push(
     row(

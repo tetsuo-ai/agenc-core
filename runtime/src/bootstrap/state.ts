@@ -1,5 +1,3 @@
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-import type { BetaMessageStreamParams } from "@anthropic-ai/sdk/resources/beta/messages/messages.mjs";
 import { realpathSync } from "fs";
 import sumBy from "lodash-es/sumBy.js";
 import { cwd } from "process";
@@ -15,8 +13,7 @@ import { randomUUID } from "../utils/crypto.js";
 import type { ModelSetting } from "src/utils/model/model.js";
 import type { ModelStrings } from "src/utils/model/modelStrings.js";
 import type { SettingSource } from "src/utils/settings/constants.js";
-import { resetSettingsCache } from "../utils/settings/settingsCache.js";
-import type { PluginHookMatcher } from "src/utils/settings/types.js";
+import type { PluginHookMatcher } from "src/schemas/hooks.js";
 import { createSignal } from "../utils/signal.js";
 
 // Union type for registered hooks - can be SDK callbacks or native plugin hooks
@@ -57,14 +54,7 @@ type State = {
   hasUnknownModelCost: boolean;
   cwd: string;
   modelUsage: { [modelName: string]: ModelUsage };
-  mainLoopModelOverride: ModelSetting | undefined;
   initialMainLoopModel: ModelSetting;
-  // The active AgenC TOML config model selection (config.model) and the
-  // provider it was resolved for, seeded once at startup. The env-driven
-  // model.ts helpers (welcome display, WebSearchTool, useMainLoopModel
-  // fallback, …) read this so they reflect `agenc config set model` instead
-  // of the hardcoded provider default. Undefined when no config model is set.
-  activeConfigModel: { provider: string; model: string } | undefined;
   modelStrings: ModelStrings | null;
   isInteractive: boolean;
   kairosActive: boolean;
@@ -73,29 +63,17 @@ type State = {
   // trajectories fail fast rather than conditioning the model on fake
   // tool_results.
   strictToolResultPairing: boolean;
-  sdkAgentProgressSummariesEnabled: boolean;
   userMsgOptIn: boolean;
   clientType: string;
   sessionSource: string | undefined;
   questionPreviewFormat: "markdown" | "html" | undefined;
-  flagSettingsPath: string | undefined;
-  flagSettingsInline: Record<string, unknown> | null;
   allowedSettingSources: SettingSource[];
-  sessionIngressToken: string | null | undefined;
-  oauthTokenFromFd: string | null | undefined;
-  apiKeyFromFd: string | null | undefined;
   sessionId: SessionId;
   // Parent session ID for tracking session lineage (e.g., plan mode -> implementation)
   parentSessionId: SessionId | undefined;
   // Agent color state
   agentColorMap: Map<string, AgentColorName>;
   agentColorIndex: number;
-  // Last API request for bug reports
-  lastAPIRequest: Omit<BetaMessageStreamParams, "messages"> | null;
-  // Messages from the last API request (internal-only; reference, not clone).
-  // Captures the exact post-compaction, AGENC.md-injected message set sent
-  // to the API so /share's serialized_conversation.json reflects reality.
-  lastAPIRequestMessages: BetaMessageStreamParams["messages"] | null;
   // Last auto-mode classifier request(s) for /share transcript
   lastClassifierRequests: unknown[] | null;
   // AGENC.md content cached by context.ts for the auto-mode classifier.
@@ -106,10 +84,6 @@ type State = {
   inlinePlugins: Array<string>;
   // Explicit --chrome / --no-chrome flag value (undefined = not set on CLI)
   chromeFlagOverride: boolean | undefined;
-  // Use cowork_plugins directory instead of plugins (--cowork flag or env var)
-  useCoworkPlugins: boolean;
-  // Session-only bypass permissions mode flag (not persisted)
-  sessionBypassPermissionsMode: boolean;
   // Session-only flag gating the .agenc/scheduled_tasks.json watcher
   // (useScheduledTasks). Set by cronScheduler.start() when the JSON has
   // entries, or by CronCreateTool. Not persisted.
@@ -172,8 +146,6 @@ type State = {
     durationMs: number;
     timestamp: number;
   }>;
-  // SDK-provided betas (e.g., context-1m-2025-08-07)
-  sdkBetas: string[] | undefined;
   // Main thread agent type (from --agent flag or settings)
   mainThreadAgentType: string | undefined;
   // Remote mode (--remote flag)
@@ -198,43 +170,8 @@ type State = {
   hasDevChannels: boolean;
   // Dir containing the session's `.jsonl`; null = derive from originalCwd.
   sessionProjectDir: string | null;
-  // Cached prompt cache 1h TTL allowlist from GrowthBook (session-stable)
-  promptCache1hAllowlist: string[] | null;
-  // Cached 1h TTL user eligibility (session-stable). Latched on first
-  // evaluation so mid-session overage flips don't change the cache_control
-  // TTL, which would bust the server-side prompt cache.
-  promptCache1hEligible: boolean | null;
-  // Sticky-on latch for AFK_MODE_BETA_HEADER. Once auto mode is first
-  // activated, keep sending the header for the rest of the session so
-  // Shift+Tab toggles don't bust the ~50-70K token prompt cache.
-  afkModeHeaderLatched: boolean | null;
-  // Sticky-on latch for FAST_MODE_BETA_HEADER. Once fast mode is first
-  // enabled, keep sending the header so cooldown enter/exit doesn't
-  // double-bust the prompt cache. The `speed` body param stays dynamic.
-  fastModeHeaderLatched: boolean | null;
-  // Sticky-on latch for the cache-editing beta header. Once cached
-  // microcompact is first enabled, keep sending the header so mid-session
-  // GrowthBook/settings toggles don't bust the prompt cache.
-  cacheEditingHeaderLatched: boolean | null;
-  // Sticky-on latch for clearing thinking from prior tool loops. Triggered
-  // when >1h since last API call (confirmed cache miss — no cache-hit
-  // benefit to keeping thinking). Once latched, stays on so the newly-warmed
-  // thinking-cleared cache isn't busted by flipping back to keep:'all'.
-  thinkingClearLatched: boolean | null;
   // Current prompt ID (UUID) correlating a user prompt with subsequent local events.
   promptId: string | null;
-  // Last API requestId for the main conversation chain (not subagents).
-  // Updated after each successful API response for main-session queries.
-  // Read at shutdown to send cache eviction hints to inference.
-  lastMainRequestId: string | undefined;
-  // Timestamp (Date.now()) of the last successful API call completion.
-  // Used to compute timeSinceLastApiCallMs in tengu_api_success for
-  // correlating cache misses with idle time (cache TTL is ~5min).
-  lastApiCompletionTimestamp: number | null;
-  // Set to true after compaction (auto or manual /compact). Consumed by
-  // logAPISuccess to tag the first post-compaction API call so we can
-  // distinguish compaction-induced cache misses from TTL expiry.
-  pendingPostCompaction: boolean;
 };
 
 // ALSO HERE - THINK THRICE BEFORE MODIFYING
@@ -275,23 +212,15 @@ function getInitialState(): State {
     hasUnknownModelCost: false,
     cwd: resolvedCwd,
     modelUsage: {},
-    mainLoopModelOverride: undefined,
     initialMainLoopModel: null,
-    activeConfigModel: undefined,
     modelStrings: null,
     isInteractive: false,
     kairosActive: false,
     strictToolResultPairing: false,
-    sdkAgentProgressSummariesEnabled: false,
     userMsgOptIn: false,
     clientType: "cli",
     sessionSource: undefined,
     questionPreviewFormat: undefined,
-    sessionIngressToken: undefined,
-    oauthTokenFromFd: undefined,
-    apiKeyFromFd: undefined,
-    flagSettingsPath: undefined,
-    flagSettingsInline: null,
     allowedSettingSources: [
       "userSettings",
       "projectSettings",
@@ -304,9 +233,6 @@ function getInitialState(): State {
     // Agent color state
     agentColorMap: new Map(),
     agentColorIndex: 0,
-    // Last API request for bug reports
-    lastAPIRequest: null,
-    lastAPIRequestMessages: null,
     // Last auto-mode classifier request(s) for /share transcript
     lastClassifierRequests: null,
     // In-memory error log for recent errors
@@ -315,10 +241,6 @@ function getInitialState(): State {
     inlinePlugins: [],
     // Explicit --chrome / --no-chrome flag value (undefined = not set on CLI)
     chromeFlagOverride: undefined,
-    // Use cowork_plugins directory instead of plugins
-    useCoworkPlugins: false,
-    // Session-only bypass permissions mode flag (not persisted)
-    sessionBypassPermissionsMode: false,
     // Scheduled tasks disabled until flag or dialog enables them
     scheduledTasksEnabled: false,
     sessionCronTasks: [],
@@ -346,8 +268,6 @@ function getInitialState(): State {
     invokedSkills: new Map(),
     // Track slow operations for dev bar display
     slowOperations: [],
-    // SDK-provided betas
-    sdkBetas: undefined,
     // Main thread agent type
     mainThreadAgentType: undefined,
     // Remote mode
@@ -370,20 +290,8 @@ function getInitialState(): State {
     hasDevChannels: false,
     // Session project dir (null = derive from originalCwd)
     sessionProjectDir: null,
-    // Prompt cache 1h allowlist (null = not yet fetched from GrowthBook)
-    promptCache1hAllowlist: null,
-    // Prompt cache 1h eligibility (null = not yet evaluated)
-    promptCache1hEligible: null,
-    // Beta header latches (null = not yet triggered)
-    afkModeHeaderLatched: null,
-    fastModeHeaderLatched: null,
-    cacheEditingHeaderLatched: null,
-    thinkingClearLatched: null,
     // Current prompt ID
     promptId: null,
-    lastMainRequestId: undefined,
-    lastApiCompletionTimestamp: null,
-    pendingPostCompaction: false,
   };
 
   return state;
@@ -702,36 +610,6 @@ export function hasUnknownModelCost(): boolean {
   return STATE.hasUnknownModelCost;
 }
 
-export function getLastMainRequestId(): string | undefined {
-  return STATE.lastMainRequestId;
-}
-
-export function setLastMainRequestId(requestId: string): void {
-  STATE.lastMainRequestId = requestId;
-}
-
-export function getLastApiCompletionTimestamp(): number | null {
-  return STATE.lastApiCompletionTimestamp;
-}
-
-export function setLastApiCompletionTimestamp(timestamp: number): void {
-  STATE.lastApiCompletionTimestamp = timestamp;
-}
-
-/** Mark that a compaction just occurred. The next API success event will
- *  include isPostCompaction=true, then the flag auto-resets. */
-export function markPostCompaction(): void {
-  STATE.pendingPostCompaction = true;
-}
-
-/** Consume the post-compaction flag. Returns true once after compaction,
- *  then returns false until the next compaction. */
-export function consumePostCompaction(): boolean {
-  const was = STATE.pendingPostCompaction;
-  STATE.pendingPostCompaction = false;
-  return was;
-}
-
 export function getLastInteractionTime(): number {
   return STATE.lastInteractionTime;
 }
@@ -783,51 +661,12 @@ export function getUsageForModel(model: string): ModelUsage | undefined {
   return STATE.modelUsage[model];
 }
 
-/**
- * Gets the model override set from the --model CLI flag or after the user
- * updates their configured model.
- */
-export function getMainLoopModelOverride(): ModelSetting | undefined {
-  return STATE.mainLoopModelOverride;
-}
-
 export function getInitialMainLoopModel(): ModelSetting {
   return STATE.initialMainLoopModel;
 }
 
-export function setMainLoopModelOverride(
-  model: ModelSetting | undefined,
-): void {
-  STATE.mainLoopModelOverride = model;
-}
-
 export function setInitialMainLoopModel(model: ModelSetting): void {
   STATE.initialMainLoopModel = model;
-}
-
-/**
- * Records the AgenC config-resolved model + provider for the active session
- * so the env-driven model.ts helpers can reflect `config.model` instead of a
- * hardcoded provider default. Seeded from the same resolved startup selection
- * that drives the daemon session model (bin/bootstrap.ts).
- */
-export function setActiveConfigModel(
-  selection: { provider: string; model: string } | undefined,
-): void {
-  STATE.activeConfigModel = selection;
-}
-
-export function getActiveConfigModel():
-  { provider: string; model: string } | undefined {
-  return STATE.activeConfigModel;
-}
-
-export function getSdkBetas(): string[] | undefined {
-  return STATE.sdkBetas;
-}
-
-export function setSdkBetas(betas: string[] | undefined): void {
-  STATE.sdkBetas = betas;
 }
 
 export function resetCostState(): void {
@@ -934,14 +773,6 @@ export function setClientType(type: string): void {
   STATE.clientType = type;
 }
 
-export function getSdkAgentProgressSummariesEnabled(): boolean {
-  return STATE.sdkAgentProgressSummariesEnabled;
-}
-
-export function setSdkAgentProgressSummariesEnabled(value: boolean): void {
-  STATE.sdkAgentProgressSummariesEnabled = value;
-}
-
 export function getKairosActive(): boolean {
   return STATE.kairosActive;
 }
@@ -987,72 +818,6 @@ export function setQuestionPreviewFormat(format: "markdown" | "html"): void {
 
 export function getAgentColorMap(): Map<string, AgentColorName> {
   return STATE.agentColorMap;
-}
-
-export function getFlagSettingsPath(): string | undefined {
-  return STATE.flagSettingsPath;
-}
-
-export function setFlagSettingsPath(path: string | undefined): void {
-  STATE.flagSettingsPath = path;
-}
-
-export function getFlagSettingsInline(): Record<string, unknown> | null {
-  return STATE.flagSettingsInline;
-}
-
-export function setFlagSettingsInline(
-  settings: Record<string, unknown> | null,
-): void {
-  STATE.flagSettingsInline = settings;
-}
-
-export function getSessionIngressToken(): string | null | undefined {
-  return STATE.sessionIngressToken;
-}
-
-export function setSessionIngressToken(token: string | null): void {
-  STATE.sessionIngressToken = token;
-}
-
-export function getOauthTokenFromFd(): string | null | undefined {
-  return STATE.oauthTokenFromFd;
-}
-
-export function setOauthTokenFromFd(token: string | null): void {
-  STATE.oauthTokenFromFd = token;
-}
-
-export function getApiKeyFromFd(): string | null | undefined {
-  return STATE.apiKeyFromFd;
-}
-
-export function setApiKeyFromFd(key: string | null): void {
-  STATE.apiKeyFromFd = key;
-}
-
-export function setLastAPIRequest(
-  params: Omit<BetaMessageStreamParams, "messages"> | null,
-): void {
-  STATE.lastAPIRequest = params;
-}
-
-export function getLastAPIRequest(): Omit<
-  BetaMessageStreamParams,
-  "messages"
-> | null {
-  return STATE.lastAPIRequest;
-}
-
-export function setLastAPIRequestMessages(
-  messages: BetaMessageStreamParams["messages"] | null,
-): void {
-  STATE.lastAPIRequestMessages = messages;
-}
-
-export function getLastAPIRequestMessages():
-  BetaMessageStreamParams["messages"] | null {
-  return STATE.lastAPIRequestMessages;
 }
 
 export function setLastClassifierRequests(requests: unknown[] | null): void {
@@ -1101,23 +866,6 @@ export function setChromeFlagOverride(value: boolean | undefined): void {
 
 export function getChromeFlagOverride(): boolean | undefined {
   return STATE.chromeFlagOverride;
-}
-
-export function setUseCoworkPlugins(value: boolean): void {
-  STATE.useCoworkPlugins = value;
-  resetSettingsCache();
-}
-
-export function getUseCoworkPlugins(): boolean {
-  return STATE.useCoworkPlugins;
-}
-
-export function setSessionBypassPermissionsMode(enabled: boolean): void {
-  STATE.sessionBypassPermissionsMode = enabled;
-}
-
-export function getSessionBypassPermissionsMode(): boolean {
-  return STATE.sessionBypassPermissionsMode;
 }
 
 export function setScheduledTasksEnabled(enabled: boolean): void {
@@ -1541,65 +1289,6 @@ export function getHasDevChannels(): boolean {
 
 export function setHasDevChannels(value: boolean): void {
   STATE.hasDevChannels = value;
-}
-
-export function getPromptCache1hAllowlist(): string[] | null {
-  return STATE.promptCache1hAllowlist;
-}
-
-export function setPromptCache1hAllowlist(allowlist: string[] | null): void {
-  STATE.promptCache1hAllowlist = allowlist;
-}
-
-export function getPromptCache1hEligible(): boolean | null {
-  return STATE.promptCache1hEligible;
-}
-
-export function setPromptCache1hEligible(eligible: boolean | null): void {
-  STATE.promptCache1hEligible = eligible;
-}
-
-export function getAfkModeHeaderLatched(): boolean | null {
-  return STATE.afkModeHeaderLatched;
-}
-
-export function setAfkModeHeaderLatched(v: boolean): void {
-  STATE.afkModeHeaderLatched = v;
-}
-
-export function getFastModeHeaderLatched(): boolean | null {
-  return STATE.fastModeHeaderLatched;
-}
-
-export function setFastModeHeaderLatched(v: boolean): void {
-  STATE.fastModeHeaderLatched = v;
-}
-
-export function getCacheEditingHeaderLatched(): boolean | null {
-  return STATE.cacheEditingHeaderLatched;
-}
-
-export function setCacheEditingHeaderLatched(v: boolean): void {
-  STATE.cacheEditingHeaderLatched = v;
-}
-
-export function getThinkingClearLatched(): boolean | null {
-  return STATE.thinkingClearLatched;
-}
-
-export function setThinkingClearLatched(v: boolean): void {
-  STATE.thinkingClearLatched = v;
-}
-
-/**
- * Reset beta header latches to null. Called on /clear and /compact so a
- * fresh conversation gets fresh header evaluation.
- */
-export function clearBetaHeaderLatches(): void {
-  STATE.afkModeHeaderLatched = null;
-  STATE.fastModeHeaderLatched = null;
-  STATE.cacheEditingHeaderLatched = null;
-  STATE.thinkingClearLatched = null;
 }
 
 export function getPromptId(): string | null {

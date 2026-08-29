@@ -51,7 +51,7 @@ describe("LIVE XSearch retry longer timeout", () => {
       sessionProvider: "grok",
       sessionBaseURL: "https://api.x.ai/v1",
       env: {},
-      llmXai: { x_search: true },
+      grokCapabilities: { x_search: true },
     });
     const xsearch = tools.find((t) => t.name === "XSearch")!;
     expect(xsearch).toBeDefined();

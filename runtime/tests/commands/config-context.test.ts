@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { defaultConfig, type AgenCConfig } from "../config/schema.js";
 import {
   agencHomeFromCommandContext,
+  configStoreFromCommandContext,
   configFilePathFromCommandContext,
   getConfigFilePath,
   readCommandConfig,
@@ -54,17 +55,18 @@ describe("readCommandConfig", () => {
     expect(readCommandConfig(contextWithStores({ session }))).toBe(session);
   });
 
-  it("prefers the dispatch context over the session services fallback", () => {
+  it("rejects conflicting dispatch and session config authorities", () => {
     const direct = configWithModel("direct-model");
     const session = configWithModel("session-model");
 
-    expect(readCommandConfig(contextWithStores({ direct, session }))).toBe(
-      direct,
-    );
+    expect(() =>
+      readCommandConfig(contextWithStores({ direct, session })),
+    ).toThrow(/conflicting ConfigStore authorities/);
   });
 
   it("returns undefined when neither config store is reachable", () => {
     expect(readCommandConfig(contextWithStores({}))).toBeUndefined();
+    expect(configStoreFromCommandContext(contextWithStores({}))).toBeNull();
   });
 
   it("ignores array-shaped config store surfaces", () => {
@@ -85,6 +87,7 @@ describe("readCommandConfig", () => {
     };
 
     expect(readCommandConfig(ctx)).toBeUndefined();
+    expect(configStoreFromCommandContext(ctx)).toBeNull();
     expect(directCurrent).not.toHaveBeenCalled();
     expect(sessionCurrent).not.toHaveBeenCalled();
   });

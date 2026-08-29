@@ -1,6 +1,14 @@
+import { afterAll } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { AsyncQueue } from "../src/utils/async-queue.js";
+import { ConfigStore } from "../src/config/store.js";
+import type { AgenCConfig } from "../src/config/schema.js";
 import type { LLMMessage, LLMProvider, LLMResponse } from "../src/llm/types.js";
 import { ProviderHttpClient } from "../src/llm/client.js";
+import { createManagedFeatures } from "../src/llm/registry/features.js";
 import { PermissionModeRegistry } from "../src/permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../src/permissions/types.js";
 import {
@@ -9,6 +17,7 @@ import {
   type SessionOpts,
   type SessionServices,
 } from "../src/session/session.js";
+import { resolveAgentRuntimeOptions } from "../src/session/runtime-options.js";
 import type {
   Config,
   ManagedFeatures,
@@ -18,17 +27,39 @@ import type {
 } from "../src/session/turn-context.js";
 import type { ToolRegistry } from "../src/tool-registry.js";
 
-function mkFeatures(): ManagedFeatures {
-  return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
-  };
+const generatedConfigHomes = new Set<string>();
+
+export function createTestConfigStore(
+  options: {
+    readonly cwd?: string;
+    readonly base?: AgenCConfig;
+  } = {},
+): ConfigStore {
+  const home = mkdtempSync(join(tmpdir(), "agenc-test-config-authority-"));
+  generatedConfigHomes.add(home);
+  return new ConfigStore({
+    home,
+    env: { AGENC_HOME: home },
+    cwd: options.cwd ?? "/tmp",
+    ...(options.base !== undefined ? { base: options.base } : {}),
+  });
 }
 
-function mkConfig(): Config {
+afterAll(() => {
+  for (const home of generatedConfigHomes) {
+    rmSync(home, { recursive: true, force: true });
+  }
+  generatedConfigHomes.clear();
+});
+
+function mkFeatures(): ManagedFeatures {
+  return createManagedFeatures();
+}
+
+function mkConfig(cwd = "/tmp"): Config {
   return {
     model: "test-model",
-    cwd: "/tmp",
+    cwd,
     features: mkFeatures(),
     multiAgentV2: {
       usageHintEnabled: false,
@@ -176,8 +207,11 @@ function mkRegistry(): ToolRegistry {
 }
 
 export function mkSession(opts?: {
+  readonly cwd?: string;
   readonly provider?: LLMProvider;
   readonly registry?: ToolRegistry;
+  readonly services?: Partial<SessionServices>;
+  readonly mcpManagerOwnership?: SessionOpts["mcpManagerOwnership"];
   readonly history?: readonly LLMMessage[];
   readonly totalTokenUsage?: number;
   readonly modelInfo?: Partial<ModelInfo>;
@@ -191,9 +225,13 @@ export function mkSession(opts?: {
   };
 } {
   const events: Event[] = [];
+  const cwd = opts?.cwd ?? "/tmp";
   const state = {
     sessionConfiguration: mkSessionConfiguration({
-      provider: { slug: "stub-provider" } as unknown as SessionConfiguration["provider"],
+      cwd,
+      provider: {
+        slug: "stub-provider",
+      } as unknown as SessionConfiguration["provider"],
       collaborationMode: { model: "test-model" },
     }),
     history: [...(opts?.history ?? [])],
@@ -201,6 +239,10 @@ export function mkSession(opts?: {
   };
   const services: SessionServices = {
     admissionRequired: false,
+    runtimeOptions: resolveAgentRuntimeOptions({}),
+    configStore: createTestConfigStore({
+      cwd: state.sessionConfiguration.cwd,
+    }),
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},
@@ -211,6 +253,7 @@ export function mkSession(opts?: {
       isCancelled: () => false,
     },
     provider: opts?.provider ?? mkProvider(),
+    providerEnvironment: {},
     registry: opts?.registry ?? mkRegistry(),
     hooks: {
       executeStop: async () => ({}),
@@ -218,14 +261,18 @@ export function mkSession(opts?: {
     permissionModeRegistry: new PermissionModeRegistry(
       createEmptyToolPermissionContext(),
     ),
+    ...(opts?.services ?? {}),
   } as unknown as SessionServices;
   const session = new Session({
     conversationId: "conv-test",
     services,
     initialState: state as unknown as SessionOpts["initialState"],
     features: mkFeatures(),
+    ...(opts?.mcpManagerOwnership !== undefined
+      ? { mcpManagerOwnership: opts.mcpManagerOwnership }
+      : {}),
     jsRepl: { id: "repl-test" },
-    config: mkConfig(),
+    config: mkConfig(cwd),
     modelInfo: mkModelInfo(opts?.modelInfo),
     eventQueue: new AsyncQueue<Event>(),
   });

@@ -1,11 +1,7 @@
 import type { ConfigScope } from 'src/services/mcp/types.js'
 import type { ZodError, ZodIssue } from 'zod/v4'
-import { jsonParse } from '../slowOperations.js'
+import type { AgenCConfig } from '../../config/schema.js'
 import { plural } from '../stringUtils.js'
-import { validatePermissionRule } from './permissionValidation.js'
-import { generateSettingsJSONSchema } from './schemaOutput.js'
-import type { SettingsJson } from './types.js'
-import { SettingsSchema } from './types.js'
 import { getValidationTip } from './validationTips.js'
 
 /**
@@ -72,7 +68,7 @@ export type ValidationError = {
 }
 
 export type SettingsWithErrors = {
-  settings: SettingsJson
+  settings: AgenCConfig
   errors: ValidationError[]
 }
 
@@ -177,96 +173,4 @@ export function formatZodError(
       docLink: tip?.docLink,
     }
   })
-}
-
-/**
- * Validates that settings file content conforms to the SettingsSchema.
- * This is used during file edits to ensure the resulting file is valid.
- */
-export function validateSettingsFileContent(content: string):
-  | {
-      isValid: true
-    }
-  | {
-      isValid: false
-      error: string
-      fullSchema: string
-    } {
-  try {
-    // Parse the JSON first
-    const jsonData = jsonParse(content)
-
-    // Validate against SettingsSchema in strict mode
-    const result = SettingsSchema().strict().safeParse(jsonData)
-
-    if (result.success) {
-      return { isValid: true }
-    }
-
-    // Format the validation error in a helpful way
-    const errors = formatZodError(result.error, 'settings')
-    const errorMessage =
-      'Settings validation failed:\n' +
-      errors.map(err => `- ${err.path}: ${err.message}`).join('\n')
-
-    return {
-      isValid: false,
-      error: errorMessage,
-      fullSchema: generateSettingsJSONSchema(),
-    }
-  } catch (parseError) {
-    return {
-      isValid: false,
-      error: `Invalid JSON: ${parseError instanceof Error ? parseError.message : 'Unknown parsing error'}`,
-      fullSchema: generateSettingsJSONSchema(),
-    }
-  }
-}
-
-/**
- * Filters invalid permission rules from raw parsed JSON data before schema validation.
- * This prevents one bad rule from poisoning the entire settings file.
- * Returns warnings for each filtered rule.
- */
-export function filterInvalidPermissionRules(
-  data: unknown,
-  filePath: string,
-): ValidationError[] {
-  if (!data || typeof data !== 'object') return []
-  const obj = data as Record<string, unknown>
-  if (!obj.permissions || typeof obj.permissions !== 'object') return []
-  const perms = obj.permissions as Record<string, unknown>
-
-  const warnings: ValidationError[] = []
-  for (const key of ['allow', 'deny', 'ask']) {
-    const rules = perms[key]
-    if (!Array.isArray(rules)) continue
-
-    perms[key] = rules.filter(rule => {
-      if (typeof rule !== 'string') {
-        warnings.push({
-          file: filePath,
-          path: `permissions.${key}`,
-          message: `Non-string value in ${key} array was removed`,
-          invalidValue: rule,
-        })
-        return false
-      }
-      const result = validatePermissionRule(rule)
-      if (!result.valid) {
-        let message = `Invalid permission rule "${rule}" was skipped`
-        if (result.error) message += `: ${result.error}`
-        if (result.suggestion) message += `. ${result.suggestion}`
-        warnings.push({
-          file: filePath,
-          path: `permissions.${key}`,
-          message,
-          invalidValue: rule,
-        })
-        return false
-      }
-      return true
-    })
-  }
-  return warnings
 }

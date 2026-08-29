@@ -8,17 +8,12 @@ import {
 //
 // Scope: the narrow contract between `extractAtMentionedFiles` and
 // `extractMcpResourceMentions` where both are called on the same input
-// and must not both claim the same token. The motivating bug is that
-// `extractMcpResourceMentions`'s `\b` anchor lets it backtrack over the
-// closing quote of a quoted file mention, producing a ghost match for
-// `@"C:\Users\..."`. These tests pin the boundary so any regression in
-// the MCP regex is caught immediately.
+// and must not both claim the same token. Quoted file tokens and Windows
+// drive-letter paths belong exclusively to the file extractor, while a valid
+// MCP token is preserved through its whitespace-delimited end.
 describe('extractor contract', () => {
   describe('extractMcpResourceMentions must return empty for', () => {
     const cases: Array<[string, string]> = [
-      // Primary bug: the quoted form that PromptInput emits for Windows
-      // paths today. `\b` backtracks past the trailing `"` and produces
-      // a ghost MCP match on current HEAD.
       ['a quoted Windows drive-letter path', '@"C:\\Users\\me\\file.txt"'],
       // Even if the quote layer were stripped, a bare drive letter
       // followed by a path separator is never an MCP resource.
@@ -54,6 +49,17 @@ describe('extractor contract', () => {
         'an MCP mention inline in prose',
         'please check @server:res here',
         ['server:res'],
+      ],
+      [
+        'a URI ending in non-word characters',
+        '@docs:https://example.com/ @docs:query? @docs:fragment# @docs:key= @docs:version.',
+        [
+          'docs:https://example.com/',
+          'docs:query?',
+          'docs:fragment#',
+          'docs:key=',
+          'docs:version.',
+        ],
       ],
     ]
     test.each(cases)('%s', (_label, input, expected) => {

@@ -3,13 +3,19 @@ import { z } from "zod/v4";
 
 import { runAdmittedLegacyToolCall } from "../budget/admitted-legacy-tool-call.js";
 import { getSessionId } from "../bootstrap/state.js";
-import { peekAmbientRuntimeSession } from "../session/current-session.js";
+import {
+  peekAmbientRuntimeSession,
+  requireCurrentRuntimeSession,
+} from "../session/current-session.js";
 import { getCwd } from "../utils/cwd.js";
 import { isRecord } from "../utils/record.js";
 import { createBashTool } from "./system/bash.js";
 import { createFileEditTool } from "./system/file-edit.js";
 import { createFileReadTool } from "./system/file-read.js";
-import { createFileWriteTool } from "./system/file-write.js";
+import {
+  attachFileWriteTouchedPathCallback,
+  createFileWriteTool,
+} from "./system/file-write.js";
 import { createGlobTool } from "./system/glob.js";
 import { createGrepTool } from "./system/grep.js";
 import { withSignedSessionId } from "../agents/_deps/filesystem-args.js";
@@ -62,6 +68,10 @@ interface CanonicalToolOptions {
   readonly userFacingName?: (input: Partial<Record<string, unknown>>) => string;
   readonly summary?: (input: Partial<Record<string, unknown>>) => string | null;
   readonly classifierInput?: (input: Record<string, unknown>) => unknown;
+  readonly configureRuntimeInput?: (
+    input: Record<string, unknown>,
+    context: ToolUseContext,
+  ) => void;
   readonly isSearchOrReadCommand?: (
     input: Record<string, unknown>,
   ) => SearchOrReadClassification;
@@ -320,11 +330,7 @@ function buildBashProgressForwarder(
   const chunks: string[] = [];
   let progressCounter = 0;
   const timeoutMs =
-    typeof input.timeoutMs === "number"
-      ? input.timeoutMs
-      : typeof input.timeout === "number"
-        ? input.timeout
-        : undefined;
+    typeof input.timeoutMs === "number" ? input.timeoutMs : undefined;
 
   return (event) => {
     chunks.push(event.chunk);
@@ -482,6 +488,7 @@ function createCanonicalTool(options: CanonicalToolOptions): Tool {
               ? { __onProgress: progressForwarder }
               : {}),
           };
+          options.configureRuntimeInput?.(executionInput, context);
           if (runtimeContext !== undefined) {
             attachToolRuntimeContext(executionInput, runtimeContext);
           }
@@ -550,6 +557,18 @@ function sandboxBrokerFromToolUseContext(
     : undefined;
 }
 
+async function discoverSkillsForWrittenPath(
+  context: ToolUseContext,
+  absolutePath: string,
+): Promise<void> {
+  const discoveredRoots = await context.skillsManager
+    ?.discoverSkillDirsForPaths?.([absolutePath]);
+  if (!discoveredRoots || discoveredRoots.length === 0) return;
+  for (const root of discoveredRoots) {
+    context.dynamicSkillDirTriggers?.add(root);
+  }
+}
+
 function mapCanonicalInput(
   options: CanonicalToolOptions,
   input: Record<string, unknown>,
@@ -614,7 +633,6 @@ const bashInputSchema = z.strictObject({
   command: z.string(),
   args: z.array(z.string()).optional(),
   cwd: z.string().optional(),
-  timeout: z.number().optional(),
   timeoutMs: z.number().optional(),
 });
 
@@ -628,21 +646,22 @@ const notebookEditInputSchema = z.strictObject({
 
 export const CanonicalBashTool = createCanonicalTool({
   name: "system.bash",
-  aliases: ["Bash"],
   searchHint: "execute shell commands",
   maxResultSizeChars: Infinity,
   inputSchema: bashInputSchema,
-  createRuntimeTool: (root) => createBashTool({ cwd: root }),
+  createRuntimeTool: (root) =>
+    createBashTool({
+      cwd: root,
+      commandExecutionAuthority: () =>
+        requireCurrentRuntimeSession("system.bash command execution").services
+          .userShell,
+    }),
   recoveryCategory: "side-effecting",
   mapInput: (input, root) => ({
     command: input.command,
     ...(Array.isArray(input.args) ? { args: input.args } : {}),
     cwd: typeof input.cwd === "string" ? input.cwd : root,
-    ...(input.timeoutMs !== undefined
-      ? { timeoutMs: input.timeoutMs }
-      : input.timeout !== undefined
-        ? { timeoutMs: input.timeout }
-        : {}),
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
   }),
   userFacingName: () => "system.bash",
   summary: (input) =>
@@ -656,7 +675,6 @@ export const CanonicalBashTool = createCanonicalTool({
 
 export const CanonicalFileReadTool = createCanonicalTool({
   name: "FileRead",
-  aliases: ["Read"],
   searchHint: "read local files",
   maxResultSizeChars: Infinity,
   inputSchema: fileReadInputSchema,
@@ -672,7 +690,6 @@ export const CanonicalFileReadTool = createCanonicalTool({
 
 export const CanonicalFileEditTool = createCanonicalTool({
   name: "Edit",
-  aliases: ["FileEdit"],
   searchHint: "edit local files",
   maxResultSizeChars: 30_000,
   inputSchema: fileEditInputSchema,
@@ -692,7 +709,6 @@ export const CanonicalFileEditTool = createCanonicalTool({
 
 export const CanonicalFileWriteTool = createCanonicalTool({
   name: "Write",
-  aliases: ["FileWrite"],
   searchHint: "write local files",
   maxResultSizeChars: 30_000,
   inputSchema: fileWriteInputSchema,
@@ -707,11 +723,15 @@ export const CanonicalFileWriteTool = createCanonicalTool({
     file_path: input.file_path,
     content: input.content,
   }),
+  configureRuntimeInput: (input, context) => {
+    attachFileWriteTouchedPathCallback(input, (absolutePath) =>
+      discoverSkillsForWrittenPath(context, absolutePath)
+    );
+  },
 });
 
 export const CanonicalGrepTool = createCanonicalTool({
   name: "Grep",
-  aliases: ["system.grep"],
   searchHint: "search file contents",
   maxResultSizeChars: 30_000,
   inputSchema: grepInputSchema,
@@ -726,7 +746,6 @@ export const CanonicalGrepTool = createCanonicalTool({
 
 export const CanonicalGlobTool = createCanonicalTool({
   name: "Glob",
-  aliases: ["system.glob"],
   searchHint: "find files by pattern",
   maxResultSizeChars: 30_000,
   inputSchema: globInputSchema,

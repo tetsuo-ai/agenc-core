@@ -39,7 +39,6 @@ export const CtxInspectTool = buildTool({
   name: 'CtxInspect',
   searchHint: 'inspect context collapse state',
   maxResultSizeChars: 100_000,
-  shouldDefer: true,
   get inputSchema(): InputSchema {
     return inputSchema()
   },

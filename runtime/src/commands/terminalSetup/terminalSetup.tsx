@@ -11,7 +11,7 @@ import { color } from '../../tui/ink.js';
 import { maybeMarkProjectOnboardingComplete } from '../../onboarding/projectOnboardingState.js';
 import { backupTerminalPreferences, checkAndRestoreTerminalBackup, getTerminalPlistPath, markTerminalSetupComplete } from '../../utils/appleTerminalBackup.js';
 import { setupShellCompletion } from '../../utils/completionCache.js';
-import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
+import { getRuntimeState, updateRuntimeState } from '../../utils/config.js';
 import { env } from '../../utils/env.js';
 import { isFsInaccessible } from '../../utils/errors.js';
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js';
@@ -98,7 +98,7 @@ export async function setupTerminal(theme: ThemeName): Promise<string> {
     case null:
       break;
   }
-  saveGlobalConfig(current => {
+  updateRuntimeState(current => {
     if (['vscode', 'cursor', 'windsurf', 'alacritty', 'zed'].includes(env.terminal ?? '')) {
       if (current.shiftEnterKeyBindingInstalled === true) return current;
       return {
@@ -123,15 +123,15 @@ export async function setupTerminal(theme: ThemeName): Promise<string> {
   return result;
 }
 export function isShiftEnterKeyBindingInstalled(): boolean {
-  return getGlobalConfig().shiftEnterKeyBindingInstalled === true;
+  return getRuntimeState().shiftEnterKeyBindingInstalled === true;
 }
 export function hasUsedBackslashReturn(): boolean {
-  return getGlobalConfig().hasUsedBackslashReturn === true;
+  return getRuntimeState().hasUsedBackslashReturn === true;
 }
 export function markBackslashReturnUsed(): void {
-  const config = getGlobalConfig();
+  const config = getRuntimeState();
   if (!config.hasUsedBackslashReturn) {
-    saveGlobalConfig(current => ({
+    updateRuntimeState(current => ({
       ...current,
       hasUsedBackslashReturn: true
     }));

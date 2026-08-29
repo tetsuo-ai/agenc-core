@@ -11,6 +11,7 @@ import {
   buildTool,
   type Tool,
   type ToolDef,
+  type ToolUseContext,
   toolMatchesName,
 } from '../Tool.js'
 import { formatAgentId, generateRequestId } from '../../utils/agentId.js'
@@ -45,14 +46,61 @@ import {
   renderToolUseRejectedMessage,
 } from './UI.js'
 import * as autoModeState from '../../utils/permissions/autoModeState.js'
-import * as permissionSetup from '../../utils/permissions/permissionSetup.js'
+import {
+  isAutoModeGateEnabled,
+  transitionPermissionMode,
+} from '../../permissions/permission-mode.js'
+import { getCwd } from '../../utils/cwd.js'
 
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
   ? autoModeState
   : null
-const permissionSetupModule = feature('TRANSCRIPT_CLASSIFIER')
-  ? permissionSetup
-  : null
+
+const PLAN_EXIT_PERMISSION_CAS_ATTEMPTS = 3
+const PLAN_EXIT_PERMISSION_CAS_TIMEOUT_MS = 250
+
+type AppStateSnapshot = ReturnType<ToolUseContext['getAppState']>
+type PermissionCasOutcome =
+  | { readonly status: 'applied' }
+  | { readonly status: 'mismatch'; readonly appState: AppStateSnapshot }
+  | { readonly status: 'timeout' }
+
+async function compareAndSetPlanPermissionContext(
+  context: Pick<ToolUseContext, 'setAppState'>,
+  expected: AppStateSnapshot,
+  nextPermissionContext: AppStateSnapshot['toolPermissionContext'],
+): Promise<PermissionCasOutcome> {
+  let active = true
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let acknowledge!: (outcome: PermissionCasOutcome) => void
+  const acknowledged = new Promise<PermissionCasOutcome>(resolve => {
+    acknowledge = resolve
+  })
+
+  context.setAppState(prev => {
+    if (!active) return prev
+    if (prev.toolPermissionContext !== expected.toolPermissionContext) {
+      acknowledge({ status: 'mismatch', appState: prev })
+      return prev
+    }
+    acknowledge({ status: 'applied' })
+    return {
+      ...prev,
+      toolPermissionContext: nextPermissionContext,
+    }
+  })
+
+  const timedOut = new Promise<PermissionCasOutcome>(resolve => {
+    timer = setTimeout(
+      () => resolve({ status: 'timeout' }),
+      PLAN_EXIT_PERMISSION_CAS_TIMEOUT_MS,
+    )
+  })
+  const outcome = await Promise.race([acknowledged, timedOut])
+  active = false
+  if (timer !== undefined) clearTimeout(timer)
+  return outcome
+}
 
 /**
  * Schema for prompt-based permission requests.
@@ -60,7 +108,7 @@ const permissionSetupModule = feature('TRANSCRIPT_CLASSIFIER')
  */
 const allowedPromptSchema = lazySchema(() =>
   z.object({
-    tool: z.enum(['Bash']).describe('The tool this prompt applies to'),
+    tool: z.enum(['system.bash']).describe('The tool this prompt applies to'),
     prompt: z
       .string()
       .describe(
@@ -160,7 +208,6 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
   userFacingName() {
     return ''
   },
-  shouldDefer: true,
   isEnabled() {
     // When --channels is active the user is likely on Telegram/Discord, not
     // watching the TUI. The plan-approval dialog would hang. Paired with the
@@ -309,89 +356,112 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
     // Ensure mode is changed when exiting plan mode.
     // This handles cases where permission flow didn't set the mode
     // (e.g., when PermissionRequest hook auto-approves without providing updatedPermissions).
-    const appState = context.getAppState()
-    // Compute gate-off fallback before setAppState so we can notify the user.
-    // Circuit breaker defense: if prePlanMode was an auto-like mode but the
-    // gate is now off (circuit breaker or settings disable), restore to
-    // 'default' instead. Without this, ExitPlanMode would bypass the circuit
-    // breaker by calling setAutoModeActive(true) directly.
-    let gateFallbackNotification: string | null = null
-    if (feature('TRANSCRIPT_CLASSIFIER')) {
-      const prePlanRaw = appState.toolPermissionContext.prePlanMode ?? 'default'
+    let appState = context.getAppState()
+    let appliedRestore:
+      | {
+          readonly restoreMode: AppStateSnapshot['toolPermissionContext']['mode']
+          readonly gateFallbackNotification: string | null
+        }
+      | undefined
+
+    for (
+      let attempt = 0;
+      attempt < PLAN_EXIT_PERMISSION_CAS_ATTEMPTS;
+      attempt += 1
+    ) {
+      if (appState.toolPermissionContext.mode !== 'plan') break
+
+      let restoreMode =
+        appState.toolPermissionContext.prePlanMode ?? 'default'
+      // Circuit breaker defense: if prePlanMode was auto but the gate is now
+      // off, restore default instead of reactivating auto behind the gate.
+      let gateFallbackNotification: string | null = null
       if (
-        prePlanRaw === 'auto' &&
-        !(permissionSetupModule?.isAutoModeGateEnabled() ?? false)
+        feature('TRANSCRIPT_CLASSIFIER') &&
+        restoreMode === 'auto' &&
+        !isAutoModeGateEnabled()
       ) {
-        const reason =
-          permissionSetupModule?.getAutoModeUnavailableReason() ??
-          'circuit-breaker'
+        restoreMode = 'default'
         gateFallbackNotification =
-          permissionSetupModule?.getAutoModeUnavailableNotification(reason) ??
-          'auto mode unavailable'
+          'auto mode is unavailable because the classifier gate is closed'
         logForDebugging(
-          `[auto-mode gate @ ExitPlanModeV2Tool] prePlanMode=${prePlanRaw} ` +
-            `but gate is off (reason=${reason}) — falling back to default on plan exit`,
+          '[auto-mode gate @ ExitPlanModeV2Tool] prePlanMode=auto ' +
+            'but gate is off (reason=classifier-unavailable) — falling back to default on plan exit',
           { level: 'warn' },
         )
       }
+
+      const transitioned = transitionPermissionMode(
+        'plan',
+        restoreMode,
+        appState.toolPermissionContext,
+        { workspacePath: getCwd() },
+      )
+      if ('error' in transitioned) {
+        const message =
+          'Cannot exit plan mode: restoring bypassPermissions requires exact cwd consent. Run /permissions accept-bypass and try again.'
+        context.addNotification?.({
+          key: 'bypass-consent-required-plan-restore',
+          text: message,
+          priority: 'immediate',
+          color: 'warning',
+          timeoutMs: 10000,
+        })
+        throw new Error(message)
+      }
+
+      const outcome = await compareAndSetPlanPermissionContext(
+        context,
+        appState,
+        {
+          ...transitioned,
+          mode: restoreMode,
+        },
+      )
+      if (outcome.status === 'applied') {
+        appliedRestore = { restoreMode, gateFallbackNotification }
+        break
+      }
+      appState =
+        outcome.status === 'mismatch'
+          ? outcome.appState
+          : context.getAppState()
     }
-    if (gateFallbackNotification) {
+
+    if (appliedRestore === undefined) {
+      const message =
+        'Cannot exit plan mode because the permission state changed concurrently. Try ExitPlanMode again.'
+      context.addNotification?.({
+        key: 'plan-exit-permission-state-conflict',
+        text: message,
+        priority: 'immediate',
+        color: 'warning',
+        timeoutMs: 10000,
+      })
+      throw new Error(message)
+    }
+
+    if (appliedRestore.gateFallbackNotification !== null) {
       context.addNotification?.({
         key: 'auto-mode-gate-plan-exit-fallback',
-        text: `plan exit → default · ${gateFallbackNotification}`,
+        text: `plan exit → default · ${appliedRestore.gateFallbackNotification}`,
         priority: 'immediate',
         color: 'warning',
         timeoutMs: 10000,
       })
     }
 
-    context.setAppState(prev => {
-      if (prev.toolPermissionContext.mode !== 'plan') return prev
-      setHasExitedPlanMode(true)
-      setNeedsPlanModeExitAttachment(true)
-      let restoreMode = prev.toolPermissionContext.prePlanMode ?? 'default'
-      if (feature('TRANSCRIPT_CLASSIFIER')) {
-        if (
-          restoreMode === 'auto' &&
-          !(permissionSetupModule?.isAutoModeGateEnabled() ?? false)
-        ) {
-          restoreMode = 'default'
-        }
-        const finalRestoringAuto = restoreMode === 'auto'
-        // Capture pre-restore state — isAutoModeActive() is the authoritative
-        // signal (prePlanMode/strippedDangerousRules are stale after
-        // transitionPlanAutoMode deactivates mid-plan).
-        const autoWasUsedDuringPlan =
-          autoModeStateModule?.isAutoModeActive() ?? false
-        autoModeStateModule?.setAutoModeActive(finalRestoringAuto)
-        if (autoWasUsedDuringPlan && !finalRestoringAuto) {
-          setNeedsAutoModeExitAttachment(true)
-        }
+    setHasExitedPlanMode(true)
+    setNeedsPlanModeExitAttachment(true)
+    if (feature('TRANSCRIPT_CLASSIFIER')) {
+      const finalRestoringAuto = appliedRestore.restoreMode === 'auto'
+      const autoWasUsedDuringPlan =
+        autoModeStateModule?.isAutoModeActive() ?? false
+      autoModeStateModule?.setAutoModeActive(finalRestoringAuto)
+      if (autoWasUsedDuringPlan && !finalRestoringAuto) {
+        setNeedsAutoModeExitAttachment(true)
       }
-      // If restoring to a non-auto mode and permissions were stripped (either
-      // from entering plan from auto, or from shouldPlanUseAutoMode),
-      // restore them. If restoring to auto, keep them stripped.
-      const restoringToAuto = restoreMode === 'auto'
-      let baseContext = prev.toolPermissionContext
-      if (restoringToAuto) {
-        baseContext =
-          permissionSetupModule?.stripDangerousPermissionsForAutoMode(
-            baseContext,
-          ) ?? baseContext
-      } else if (prev.toolPermissionContext.strippedDangerousRules) {
-        baseContext =
-          permissionSetupModule?.restoreDangerousPermissions(baseContext) ??
-          baseContext
-      }
-      return {
-        ...prev,
-        toolPermissionContext: {
-          ...baseContext,
-          mode: restoreMode,
-          prePlanMode: undefined,
-        },
-      }
-    })
+    }
 
     const hasTaskTool =
       isAgentSwarmsEnabled() &&

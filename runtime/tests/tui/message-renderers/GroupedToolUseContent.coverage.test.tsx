@@ -59,6 +59,7 @@ describe('GroupedToolUseContent', () => {
         ]),
         resolvedToolUseIDs: new Set(['tool-complete', 'tool-failed']),
       } as never,
+      fullscreen: true,
       message: {
         messages: [
           { message: { content: [completedToolUse] }, type: 'assistant' },
@@ -120,6 +121,7 @@ describe('GroupedToolUseContent', () => {
         },
       ],
       {
+        fullscreen: true,
         shouldAnimate: true,
         tools,
       },

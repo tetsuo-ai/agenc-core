@@ -9,27 +9,19 @@ import {
   CanonicalGrepTool,
   CanonicalNotebookEditTool,
 } from './tools/canonicalToolSurface.js'
-import { WebFetchTool } from './tools/WebFetchTool/WebFetchTool.js'
 import { TaskStopTool } from './tools/TaskStopTool/TaskStopTool.js'
 import { BriefTool } from './tools/BriefTool/BriefTool.js'
 import { CronCreateTool } from './tools/ScheduleCronTool/CronCreateTool.js'
 import { CronDeleteTool } from './tools/ScheduleCronTool/CronDeleteTool.js'
 import { CronListTool } from './tools/ScheduleCronTool/CronListTool.js'
-import { MonitorTool as RuntimeMonitorTool } from './tools/MonitorTool/MonitorTool.js'
 import * as coordinatorMode from './coordinator/coordinatorMode.js'
 // Dead code elimination: conditional import for internal-only tools.
-// Tools that are not part of this build at all (Sleep, RemoteTrigger,
+// Tools that are not part of this pool (Sleep,
 // SendUserFile, PushNotification, SubscribePR, OverflowTest,
 // TerminalCapture, WebBrowser, Snip, ListPeers, Workflow) used to sit
 // here as hard-null consts spread into getAllBaseTools() — pure dead
 // code that read like a second catalog. Deleted; the LIVE runtime
-// registry (tool-registry.ts + bin/model-facing-tools.ts) is where
-// those capabilities exist today.
-/* eslint-disable @typescript-eslint/no-require-imports */
-const MonitorTool = feature('MONITOR_TOOL')
-  ? RuntimeMonitorTool
-  : null
-/* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
+// registry (tool-registry.ts + bin/model-facing-tools.ts) is authoritative.
 import { TaskOutputTool } from './tools/TaskOutputTool/TaskOutputTool.js'
 import { WebSearchTool } from './tools/WebSearchTool/WebSearchTool.js'
 import { TodoWriteTool } from './tools/TodoWriteTool/TodoWriteTool.js'
@@ -48,9 +40,6 @@ const getSendMessageTool = () =>
     .SendMessageTool as typeof import('./tools/SendMessageTool/SendMessageTool.js').SendMessageTool
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { AskUserQuestionTool } from 'src/tools/ask-user-question/tui-tool.js'
-import { ListMcpResourcesTool } from './tools/ListMcpResourcesTool/ListMcpResourcesTool.js'
-import { ReadMcpResourceTool } from './tools/ReadMcpResourceTool/ReadMcpResourceTool.js'
-import { ToolSearchTool } from './tools/ToolSearchTool/ToolSearchTool.js'
 import { CtxInspectTool as ContextCollapseInspectTool } from './tools/CtxInspectTool/CtxInspectTool.js'
 import { EnterPlanModeTool } from './tools/EnterPlanModeTool/EnterPlanModeTool.js'
 import { EnterWorktreeTool } from './tools/EnterWorktreeTool/EnterWorktreeTool.js'
@@ -60,7 +49,6 @@ import { TaskGetTool } from './tools/TaskGetTool/TaskGetTool.js'
 import { TaskUpdateTool } from './tools/TaskUpdateTool/TaskUpdateTool.js'
 import { TaskListTool } from './tools/TaskListTool/TaskListTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
-import { isToolSearchEnabledOptimistic } from './utils/toolSearch.js'
 import { isTodoV2Enabled } from './utils/tasks.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
 export {
@@ -78,7 +66,7 @@ const coordinatorModeModule = feature('COORDINATOR_MODE')
 import type { ToolPermissionContext } from './tools/Tool.js'
 import { getDenyRuleForTool } from './utils/permissions/permissions.js'
 import { hasEmbeddedSearchTools } from './utils/embeddedTools.js'
-import { isEnvTruthy } from './utils/envUtils.js'
+import { isBareMode } from './utils/envUtils.js'
 import { isPowerShellToolEnabled } from './utils/shell/shellToolUtils.js'
 import { isAgentSwarmsEnabled } from './utils/agentSwarmsEnabled.js'
 import { isWorktreeModeEnabled } from './utils/worktreeModeEnabled.js'
@@ -118,12 +106,8 @@ export function getToolsForDefaultPreset(): string[] {
 }
 
 /**
- * Get the complete exhaustive list of all tools that could be available
- * in the current environment (respecting process.env flags).
- * This is the source of truth for ALL tools.
- */
-/**
- * NOTE: This MUST stay in sync with the system prompt global caching config in order to cache the system prompt across users.
+ * Build the local TUI and worker tool pool for the current environment.
+ * The daemon registry owns the model-facing catalog.
  */
 export function getAllBaseTools(): Tools {
   return [
@@ -138,7 +122,6 @@ export function getAllBaseTools(): Tools {
     CanonicalFileEditTool,
     CanonicalFileWriteTool,
     CanonicalNotebookEditTool,
-    WebFetchTool,
     TodoWriteTool,
     WebSearchTool,
     TaskStopTool,
@@ -157,7 +140,6 @@ export function getAllBaseTools(): Tools {
     ...(isAgentSwarmsEnabled()
       ? [getTeamCreateTool(), getTeamDeleteTool()]
       : []),
-    ...(MonitorTool ? [MonitorTool] : []),
     BriefTool,
     // The two calls are independent at the type level so TS keeps the inner
     // result as `PowerShellTool | null`; the guard guarantees non-null at
@@ -168,11 +150,6 @@ export function getAllBaseTools(): Tools {
     CronCreateTool,
     CronDeleteTool,
     CronListTool,
-    ListMcpResourcesTool,
-    ReadMcpResourceTool,
-    // Include ToolSearchTool when tool search might be enabled (optimistic check)
-    // The actual decision to defer tools happens in the provider request builder.
-    ...(isToolSearchEnabledOptimistic() ? [ToolSearchTool] : []),
   ]
 }
 
@@ -195,8 +172,8 @@ function filterToolsByDenyRules<
 }
 
 const getTools = (permissionContext: ToolPermissionContext): Tools => {
-  // Simple mode: only Bash, Read, and Edit tools
-  if (isEnvTruthy(process.env.AGENC_SIMPLE)) {
+  // Simple mode: only system.bash, FileRead, and Edit tools
+  if (isBareMode()) {
     const simpleTools: Tool[] = [
       CanonicalBashTool,
       CanonicalFileReadTool,
@@ -204,7 +181,7 @@ const getTools = (permissionContext: ToolPermissionContext): Tools => {
     ]
     // When coordinator mode is also active, include task control so the
     // coordinator can stop background work while workers keep the compact
-    // Bash/Read/Edit surface.
+    // system.bash/FileRead/Edit surface.
     if (
       feature('COORDINATOR_MODE') &&
       coordinatorModeModule?.isCoordinatorMode()
@@ -216,8 +193,6 @@ const getTools = (permissionContext: ToolPermissionContext): Tools => {
 
   // Get all base tools and filter out special tools that get added conditionally
   const specialTools = new Set([
-    ListMcpResourcesTool.name,
-    ReadMcpResourceTool.name,
     SYNTHETIC_OUTPUT_TOOL_NAME,
   ])
 

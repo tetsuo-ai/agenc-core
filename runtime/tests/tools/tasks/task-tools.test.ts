@@ -20,15 +20,6 @@ function codeMode<T>(result: ToolResult): T {
   return result.codeModeResult as T;
 }
 
-function expectConfirmedNoEffect(result: ToolResult, evidenceRef: string): void {
-  expect(result.effectDisposition).toMatchObject({
-    disposition: "confirmed_no_effect",
-    evidenceKind: "boundary_not_crossed",
-    evidenceRef,
-  });
-  expect(result.effectDisposition?.evidenceSha256).toMatch(/^[0-9a-f]{64}$/u);
-}
-
 describe("createTaskTools", () => {
   it("exposes the complete Task* family from the task tool module", () => {
     const tools = createTaskTools({
@@ -80,10 +71,6 @@ describe("createTaskTools", () => {
       });
       expect(badCreateMetadata.isError).toBe(true);
       expect(badCreateMetadata.content).toBe("metadata must be an object");
-      expectConfirmedNoEffect(
-        badCreateMetadata,
-        "tool:task-create:input-validation",
-      );
 
       expansions.length = 0;
       const badUpdateMetadata = await map.get("TaskUpdate")!.execute({
@@ -92,27 +79,7 @@ describe("createTaskTools", () => {
       });
       expect(badUpdateMetadata.isError).toBe(true);
       expect(badUpdateMetadata.content).toBe("metadata must be an object");
-      expectConfirmedNoEffect(
-        badUpdateMetadata,
-        "tool:task-update:input-validation",
-      );
       expect(expansions).toEqual([]);
-
-      const missingUpdate = await map.get("TaskUpdate")!.execute({
-        taskId: "9999",
-        status: "completed",
-      });
-      expect(missingUpdate.isError).toBe(true);
-      expectConfirmedNoEffect(missingUpdate, "tool:task-update:not-found");
-
-      const invalidDependency = await map.get("TaskUpdate")!.execute({
-        taskId: task.id,
-        addBlocks: ["9999"],
-      });
-      expect(invalidDependency.isError).toBe(true);
-      // The task-store adapter can report this same error after a raced edge
-      // update has partially committed, so the tool must not guess.
-      expect(invalidDependency.effectDisposition).toBeUndefined();
 
       const updated = await map.get("TaskUpdate")!.execute({
         taskId: task.id,
@@ -215,7 +182,7 @@ describe("createTaskTools", () => {
     });
   });
 
-  it("stops running background tasks through task_id or shell_id aliases", async () => {
+  it("stops running background tasks only through task_id", async () => {
     const lifecycle = new BackgroundTaskLifecycle();
     const abortController = new AbortController();
     let stoppedReason: string | undefined;
@@ -230,15 +197,12 @@ describe("createTaskTools", () => {
     });
     const stop = byName(createBackgroundTaskTools(lifecycle)).get("TaskStop")!;
 
-    const missingId = await stop.execute({});
-    expect(missingId.isError).toBe(true);
-    expectConfirmedNoEffect(missingId, "tool:task-stop:input-validation");
+    const removedAlias = await stop.execute({ shell_id: "bash-1" });
+    expect(removedAlias.isError).toBe(true);
+    expect(removedAlias.content).toContain("unknown field `shell_id`");
+    expect(abortController.signal.aborted).toBe(false);
 
-    const unknown = await stop.execute({ task_id: "missing-task" });
-    expect(unknown.isError).toBe(true);
-    expectConfirmedNoEffect(unknown, "tool:task-stop:not_found");
-
-    const stopped = await stop.execute({ shell_id: "bash-1" });
+    const stopped = await stop.execute({ task_id: "bash-1" });
 
     expect(stopped.content).toBe("Successfully stopped task: bash-1 (npm test)");
     expect(abortController.signal.aborted).toBe(true);
@@ -257,20 +221,5 @@ describe("createTaskTools", () => {
     const again = await stop.execute({ task_id: "bash-1" });
     expect(again.isError).toBe(true);
     expect(again.content).toBe("task bash-1 is not running (status: killed)");
-    expectConfirmedNoEffect(again, "tool:task-stop:not_running");
-
-    lifecycle.register({
-      id: "failing-stop",
-      type: "local_bash",
-      description: "failing stop callback",
-      onStop: () => {
-        throw new Error("callback exploded");
-      },
-    });
-    const failedAfterMutation = await stop.execute({ task_id: "failing-stop" });
-    expect(failedAfterMutation.isError).toBe(true);
-    expect(failedAfterMutation.content).toContain("callback exploded");
-    expect(lifecycle.get("failing-stop")?.status).toBe("killed");
-    expect(failedAfterMutation.effectDisposition).toBeUndefined();
   });
 });

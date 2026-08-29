@@ -61,11 +61,6 @@ export interface AgenCStateAgentRunStatusUpdate {
   readonly metadataPatch?: JsonObject;
 }
 
-export interface AgenCStateAgentRunActivityUpdate {
-  readonly id: string;
-  readonly lastActiveAt: string;
-}
-
 export function upsertAgentRun(
   driver: StateSqliteDriver,
   run: AgenCStateAgentRunRecord,
@@ -173,23 +168,6 @@ export function updateAgentRunStatus(
       update.id,
     );
   return APPLIED;
-}
-
-/** Advances durable run activity without changing lifecycle status. */
-export function advanceAgentRunActivity(
-  driver: StateSqliteDriver,
-  update: AgenCStateAgentRunActivityUpdate,
-): void {
-  driver
-    .prepareState<[string, string, string]>(
-      `UPDATE agent_runs
-       SET last_active_at = CASE
-         WHEN last_active_at < ? THEN ?
-         ELSE last_active_at
-       END
-       WHERE id = ?`,
-    )
-    .run(update.lastActiveAt, update.lastActiveAt, update.id);
 }
 
 function mergedAgentRunMetadataJson(

@@ -1,6 +1,6 @@
 import { sanitizeSystemReminderContent } from '../../prompts/attachments/system-reminder-sanitizer.js'
 
-export const WEB_FETCH_TOOL_NAME = 'WebFetch'
+export const WEB_FETCH_TOOL_NAME = 'web_fetch'
 
 export const DESCRIPTION = `
 - Fetches content from a specified URL and processes it using an AI model
@@ -18,8 +18,8 @@ Usage notes:
   - This tool is read-only and does not modify any files
   - Results may be summarized if the content is very large
   - Includes a self-cleaning 15-minute cache for faster responses when repeatedly accessing the same URL
-  - When a URL redirects to a different host, the tool will inform you and provide the redirect URL in a special format. You should then make a new WebFetch request with the redirect URL to fetch the content.
-  - For GitHub URLs, prefer using the gh CLI via Bash instead (e.g., gh pr view, gh issue view, gh api).
+  - When a URL redirects to a different host, the tool will inform you and provide the redirect URL in a special format. You should then make a new web_fetch request with the redirect URL to fetch the content.
+  - For GitHub URLs, prefer using the gh CLI via system.bash instead (e.g., gh pr view, gh issue view, gh api).
 `
 
 // gaphunt3 #49: An explicit, hard-to-forge boundary marker for the untrusted

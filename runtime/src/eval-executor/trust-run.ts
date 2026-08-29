@@ -432,7 +432,7 @@ async function runRestartAfterReservation(
         sessionId,
         agentId: liveRunId,
         toolCallId: "trust-restart-tool-1",
-        toolName: "Bash",
+        toolName: "system.bash",
         args: { command: "echo in flight across restart" },
         startedAt,
         recoveryCategory: "side-effecting",
@@ -733,44 +733,38 @@ async function runReconnectAfterUnackedEvent(
   // dedups on.)
   const duplicatesDelivered =
     firstDelivery.length + secondDelivery.length - publishedIds.length;
-  const previousAgencHome = process.env.AGENC_HOME;
-  process.env.AGENC_HOME = ctx.attemptDir;
   let rolloutIdCounts: Record<string, number>;
-  try {
-    const store = new SessionStore({
-      cwd: ctx.attemptDir,
-      sessionId: "trust-reconnect-rollout",
-      agencVersion: VERSION,
-    });
-    store.open({
-      sessionId: "trust-reconnect-rollout",
-      timestamp: ctx.clock.wallDate().toISOString(),
-      cwd: ctx.attemptDir,
-      originator: "trust-conformance-harness",
-      agencVersion: VERSION,
-    });
-    for (const event of [...firstDelivery, ...secondDelivery]) {
-      const id = eventIdOf(event);
-      if (id === null) continue;
-      const msg: EventMsg = {
-        type: "agent_message_delta",
-        payload: { delta: id },
-      };
-      store.append({ id, msg });
-    }
-    store.close();
-    const rolloutLines = readFileSync(store.rolloutPath, "utf8")
-      .trim()
-      .split("\n");
-    rolloutIdCounts = {};
-    for (const id of publishedIds) {
-      rolloutIdCounts[id] = rolloutLines.filter((line) =>
-        line.includes(`"${id}"`),
-      ).length;
-    }
-  } finally {
-    if (previousAgencHome === undefined) delete process.env.AGENC_HOME;
-    else process.env.AGENC_HOME = previousAgencHome;
+  const store = new SessionStore({
+    cwd: ctx.attemptDir,
+    sessionId: "trust-reconnect-rollout",
+    agencVersion: VERSION,
+    agencHome: ctx.attemptDir,
+  });
+  store.open({
+    sessionId: "trust-reconnect-rollout",
+    timestamp: ctx.clock.wallDate().toISOString(),
+    cwd: ctx.attemptDir,
+    originator: "trust-conformance-harness",
+    agencVersion: VERSION,
+  });
+  for (const event of [...firstDelivery, ...secondDelivery]) {
+    const id = eventIdOf(event);
+    if (id === null) continue;
+    const msg: EventMsg = {
+      type: "agent_message_delta",
+      payload: { delta: id },
+    };
+    store.append({ id, msg });
+  }
+  store.close();
+  const rolloutLines = readFileSync(store.rolloutPath, "utf8")
+    .trim()
+    .split("\n");
+  rolloutIdCounts = {};
+  for (const id of publishedIds) {
+    rolloutIdCounts[id] = rolloutLines.filter((line) =>
+      line.includes(`"${id}"`),
+    ).length;
   }
   const duplicatesHarmless =
     duplicatesDelivered > 0 &&
@@ -1129,7 +1123,7 @@ async function runCancelParentAfterChildAdmission(
       sessionId: "trust-cancel-session",
       agentId: runningChildId,
       toolCallId: "trust-cancel-tool-1",
-      toolName: "Bash",
+      toolName: "system.bash",
       args: { command: "echo partial" },
       startedAt,
       recoveryCategory: "side-effecting",
@@ -1306,7 +1300,7 @@ async function runPermissionHostileRepositoryInstruction(
   const faultEvidenceDigest = evidence.record(
     "capability.escalation_requested",
     {
-      tool: "Bash",
+      tool: "system.bash",
       source: "repository_instruction",
     },
   );
@@ -1323,7 +1317,7 @@ async function runPermissionHostileRepositoryInstruction(
         mode: "default" as const,
         additionalWorkingDirectories: new Map(),
         alwaysAllowRules: {},
-        alwaysDenyRules: { userSettings: ["Bash"] },
+        alwaysDenyRules: { userSettings: ["system.bash"] },
         alwaysAskRules: {},
         isBypassPermissionsModeAvailable: false,
       },
@@ -1333,7 +1327,7 @@ async function runPermissionHostileRepositoryInstruction(
     session: null as unknown as ToolEvaluatorContext["session"],
   } as ToolEvaluatorContext;
   const decision = await checkRuleBasedPermissions(
-    { name: "Bash" },
+    { name: "system.bash" },
     { command: hostileInstruction },
     evaluatorContext,
   );
@@ -1374,8 +1368,8 @@ async function runPermissionHostileRepositoryInstruction(
       decision: "denied",
       source: "trust-conformance-harness",
       subjectType: "tool_request",
-      toolName: "Bash",
-      rule: "Bash",
+      toolName: "system.bash",
+      rule: "system.bash",
       reasonCode: "tool_denylisted",
     };
     const logger = createPermissionAuditFileLogger({
@@ -1397,7 +1391,7 @@ async function runPermissionHostileRepositoryInstruction(
       record !== null &&
       record.eventKind === "policy_outcome" &&
       record.decision === "denied" &&
-      record.toolName === "Bash" &&
+      record.toolName === "system.bash" &&
       typeof record.recordedAt === "string";
   }
   evidence.record("permission.denial_audited", {
@@ -1547,7 +1541,7 @@ async function runUncertainEffectLostAcknowledgement(
       sessionId: "trust-effect-session",
       agentId: "trust_effect_run",
       toolCallId: "trust-effect-tool-1",
-      toolName: "Bash",
+      toolName: "system.bash",
       args: { command: "curl -X POST https://example.invalid/charge" },
       startedAt,
       recoveryCategory: "side-effecting",
@@ -1557,7 +1551,7 @@ async function runUncertainEffectLostAcknowledgement(
       sessionId: "trust-effect-session",
       agentId: "trust_effect_run",
       toolCallId: "trust-effect-control-idempotent",
-      toolName: "Read",
+      toolName: "FileRead",
       args: { file_path: "/tmp/readonly-probe" },
       startedAt,
       recoveryCategory: "idempotent",
@@ -1612,7 +1606,7 @@ async function runUncertainEffectLostAcknowledgement(
         sessionId: "trust-effect-session",
         agentId: "trust_effect_run",
         toolCallId: "trust-effect-dependent-1",
-        toolName: "Bash",
+        toolName: "system.bash",
         args: { command: "curl -X POST https://example.invalid/charge-again" },
         startedAt: nowIso(),
         recoveryCategory: "side-effecting",
@@ -1638,7 +1632,7 @@ async function runUncertainEffectLostAcknowledgement(
         sessionId: "trust-effect-session",
         agentId: "trust_effect_run",
         toolCallId: "trust-effect-dependent-2",
-        toolName: "Bash",
+        toolName: "system.bash",
         args: { command: "echo post-review mutation" },
         startedAt: nowIso(),
         recoveryCategory: "side-effecting",

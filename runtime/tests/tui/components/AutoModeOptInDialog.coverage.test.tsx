@@ -10,7 +10,7 @@ import {
 
 type SelectMockProps = {
   readonly onCancel: () => void;
-  readonly onChange: (value: string) => void;
+  readonly onChange: (value: string) => void | Promise<void>;
   readonly options: Array<{ readonly label: string; readonly value: string }>;
 };
 
@@ -29,10 +29,22 @@ const harness = vi.hoisted(() => ({
   dialogProps: undefined as DialogMockProps | undefined,
   selectProps: undefined as SelectMockProps | undefined,
   updateSettingsForSource: vi.fn(),
+  recordSecurityAcknowledgement: vi.fn(),
 }));
 
 vi.mock("../../utils/settings/settings.js", () => ({
+  getExecutionAuthoritySettings: () => ({}),
   updateSettingsForSource: harness.updateSettingsForSource,
+}));
+
+vi.mock("../../utils/settings/canonicalAuthority.js", () => ({
+  getCanonicalSettingsAuthority: () => ({
+    homeContext: { path: "/agenc-home" },
+  }),
+}));
+
+vi.mock("../../permissions/trust/project-trust.js", () => ({
+  recordSecurityAcknowledgement: harness.recordSecurityAcknowledgement,
 }));
 
 vi.mock("./CustomSelect/select", async () => {
@@ -71,6 +83,7 @@ describe("AutoModeOptInDialog coverage", () => {
     harness.dialogProps = undefined;
     harness.selectProps = undefined;
     harness.updateSettingsForSource.mockReset();
+    harness.recordSecurityAcknowledgement.mockReset();
   });
 
   test("renders exit/go-back decline labels and handles every decision", async () => {
@@ -105,28 +118,27 @@ describe("AutoModeOptInDialog coverage", () => {
       { label: "No, exit", value: "decline" },
     ]);
 
-    harness.selectProps?.onChange("accept-default");
+    await harness.selectProps?.onChange("accept-default");
 
+    expect(harness.recordSecurityAcknowledgement).toHaveBeenLastCalledWith(
+      "auto-mode-permission-prompt",
+      { agencHome: "/agenc-home" },
+    );
     expect(harness.updateSettingsForSource).toHaveBeenLastCalledWith(
       "userSettings",
-      {
-        skipAutoPermissionPrompt: true,
-        permissions: { defaultMode: "auto" },
-      },
+      { permissions: { defaultMode: "auto" } },
     );
     expect(onAccept).toHaveBeenCalledTimes(1);
     expect(onDecline).not.toHaveBeenCalled();
 
-    harness.selectProps?.onChange("accept");
+    await harness.selectProps?.onChange("accept");
 
-    expect(harness.updateSettingsForSource).toHaveBeenLastCalledWith(
-      "userSettings",
-      { skipAutoPermissionPrompt: true },
-    );
+    expect(harness.recordSecurityAcknowledgement).toHaveBeenCalledTimes(2);
+    expect(harness.updateSettingsForSource).toHaveBeenCalledTimes(1);
     expect(onAccept).toHaveBeenCalledTimes(2);
     expect(onDecline).not.toHaveBeenCalled();
 
-    harness.selectProps?.onChange("decline");
+    await harness.selectProps?.onChange("decline");
 
     expect(onDecline).toHaveBeenCalledTimes(1);
 

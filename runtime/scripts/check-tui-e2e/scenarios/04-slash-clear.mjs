@@ -15,7 +15,7 @@ export const meta = {
   description: "Submit a turn, then /clear; expect idle prompt and no crash.",
   // This is a transcript-reset contract, independent of platform sandbox
   // availability on the gate host.
-  args: ["--yolo"],
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   slimCwd: true,
   timeoutMs: 90_000,
 };

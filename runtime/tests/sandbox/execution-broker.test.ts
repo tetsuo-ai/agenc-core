@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +26,10 @@ import {
   resolveDefaultLinuxSandboxExecutable,
   type SandboxExecutionStatus,
 } from "../../src/sandbox/execution-broker.js";
+import type {
+  FileSystemSandboxEntry,
+  PermissionProfile,
+} from "../../src/sandbox/engine/index.js";
 import { applyRuntimeSandboxToSpawn } from "../../src/tools/system/apply-runtime-sandbox.js";
 import {
   rebaseWorktreeSandboxBrokers,
@@ -56,6 +61,33 @@ afterEach(() => {
 });
 
 describe("SandboxExecutionBroker", () => {
+  it("captures separate session temp roots and preserves them across forks", () => {
+    const workspaceA = tempRoot("agenc-sandbox-broker-temp-a-");
+    const workspaceB = tempRoot("agenc-sandbox-broker-temp-b-");
+    const sessionTempA = join(workspaceA, "session-temp");
+    const sessionTempB = join(workspaceB, "session-temp");
+    const brokerA = new SandboxExecutionBroker({
+      mode: "workspace_write",
+      cwd: workspaceA,
+      sessionTempRoot: sessionTempA,
+      probe: () => readyStatus("workspace_write"),
+    });
+    const brokerB = new SandboxExecutionBroker({
+      mode: "workspace_write",
+      cwd: workspaceB,
+      sessionTempRoot: sessionTempB,
+      probe: () => readyStatus("workspace_write"),
+    });
+
+    expect(brokerA.sessionTempRoot).toBe(sessionTempA);
+    expect(brokerB.sessionTempRoot).toBe(sessionTempB);
+    const fork = brokerA.forkForCwd(join(workspaceA, "child"));
+    expect(fork.sessionTempRoot).toBe(sessionTempA);
+    expect(fork.runtimeSandbox("child_agent")?.sessionTempRoot).toBe(
+      sessionTempA,
+    );
+  });
+
   it("turns Ubuntu's AppArmor bubblewrap denial into the exact profile fix", () => {
     const diagnostic =
       "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted";
@@ -171,18 +203,84 @@ describe("SandboxExecutionBroker", () => {
     expect(transform).not.toHaveBeenCalled();
   });
 
+  it("irreversibly rejects execution after lifecycle authority rollback fails", () => {
+    const root = tempRoot("agenc-sandbox-broker-lifecycle-closed-");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: root,
+    });
+
+    broker.closeAfterLifecycleAuthorityFailure(
+      "runtime authority rollback was incomplete",
+    );
+
+    expect(broker.mode).toBe("read_only");
+    expect(broker.status()).toMatchObject({
+      kind: "unavailable",
+      mode: "read_only",
+      reason: "runtime authority rollback was incomplete",
+    });
+    expect(() => broker.assertReady("startup")).toThrowError(
+      expect.objectContaining({
+        code: "sandbox_required_unavailable",
+        surface: "startup",
+      }),
+    );
+    expect(() => broker.runtimeSandbox("tool")).toThrowError(
+      expect.objectContaining({
+        code: "sandbox_required_unavailable",
+        surface: "tool",
+      }),
+    );
+    expect(() =>
+      broker.prepareSpawn("hook", {
+        program: "must-not-resolve-after-authority-failure",
+        args: [],
+        cwd: root,
+        env: {},
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "sandbox_required_unavailable",
+        surface: "hook",
+      }),
+    );
+    expect(() => broker.forkForCwd(join(root, "child"))).toThrowError(
+      expect.objectContaining({
+        code: "sandbox_required_unavailable",
+        surface: "child_agent",
+      }),
+    );
+    expect(
+      (broker as unknown as { applyModeAfterLifecycleQuiesce?: unknown })
+        .applyModeAfterLifecycleQuiesce,
+    ).toBeUndefined();
+    expect(() =>
+      broker.applyAuthorityAfterLifecycleQuiesce({} as never, {
+        ...broker.executionAuthority(),
+        mode: "danger_full_access",
+      }),
+    ).toThrow(/proven lifecycle quiescence/u);
+
+    broker.closeAfterLifecycleAuthorityFailure("replacement reason");
+    expect(broker.status().reason).toBe(
+      "runtime authority rollback was incomplete",
+    );
+  });
+
   it.each(["danger_full_access", "external_sandbox"] as const)(
     "passes through only the explicit %s mode",
     (mode) => {
       const root = tempRoot("agenc-sandbox-broker-explicit-");
       const broker = new SandboxExecutionBroker({ mode, cwd: root });
-      const command = broker.prepareSpawn("hook", {
+      const prepared = broker.prepareSpawn("hook", {
         program: "/bin/echo",
         args: ["ok"],
         cwd: root,
         env: { PATH: "/usr/bin" },
       });
 
+      const command = prepared.runSync((resolved) => resolved);
       expect(command).toMatchObject({
         program: realpathSync("/bin/echo"),
         args: ["ok"],
@@ -207,13 +305,14 @@ describe("SandboxExecutionBroker", () => {
       probe: () => readyStatus("workspace_write"),
     });
 
-    const command = broker.prepareSpawn("mcp_stdio", {
+    const prepared = broker.prepareSpawn("mcp_stdio", {
       program: "/bin/echo",
       args: ["ok"],
       cwd: root,
       env: {},
     });
 
+    const command = prepared.runSync((resolved) => resolved);
     expect(command).toMatchObject({
       program: "/sandbox/helper",
       args: ["/bin/echo", "ok"],
@@ -422,10 +521,38 @@ describe("SandboxExecutionBroker", () => {
     const root = tempRoot("agenc-sandbox-broker-root-");
     const child = tempRoot("agenc-sandbox-broker-child-");
     const sibling = tempRoot("agenc-sandbox-broker-sibling-");
+    const external = tempRoot("agenc-sandbox-broker-external-");
     const probedCwds: string[] = [];
     const broker = new SandboxExecutionBroker({
       mode: "workspace_write",
       cwd: root,
+      permissionProfile: {
+        fileSystem: {
+          kind: "restricted",
+          entries: [
+            {
+              path: { kind: "path", path: join(root, "config") },
+              access: "write",
+            },
+            {
+              path: { kind: "glob", pattern: join(root, "**", "*.secret") },
+              access: "none",
+            },
+            {
+              path: { kind: "path", path: external },
+              access: "read",
+            },
+            {
+              path: {
+                kind: "special",
+                value: { kind: "project_roots" },
+              },
+              access: "write",
+            },
+          ],
+        },
+        network: "disabled",
+      },
       probe: (options) => {
         probedCwds.push(options.cwd);
         return readyStatus("workspace_write");
@@ -447,6 +574,183 @@ describe("SandboxExecutionBroker", () => {
     expect(fork.forkDepth).toBe(1);
     expect(fork.forkForCwd(root).forkDepth).toBe(2);
     expect(probedCwds).toEqual([root, child, sibling]);
+    expect(
+      broker.executionAuthority().permissionProfile?.fileSystem.entries,
+    ).toEqual([
+      {
+        path: { kind: "path", path: join(child, "config") },
+        access: "write",
+      },
+      {
+        path: { kind: "glob", pattern: join(child, "**", "*.secret") },
+        access: "none",
+      },
+      {
+        path: { kind: "path", path: external },
+        access: "read",
+      },
+      {
+        path: { kind: "special", value: { kind: "project_roots" } },
+        access: "write",
+      },
+    ]);
+    expect(
+      fork.executionAuthority().permissionProfile?.fileSystem.entries,
+    ).toEqual([
+      {
+        path: { kind: "path", path: join(sibling, "config") },
+        access: "write",
+      },
+      {
+        path: { kind: "glob", pattern: join(sibling, "**", "*.secret") },
+        access: "none",
+      },
+      {
+        path: { kind: "path", path: external },
+        access: "read",
+      },
+      {
+        path: { kind: "special", value: { kind: "project_roots" } },
+        access: "write",
+      },
+    ]);
+  });
+
+  it("deeply snapshots permission profiles across construction, get, apply, rebase, and fork", async () => {
+    const root = tempRoot("agenc-sandbox-profile-root-");
+    const rebased = tempRoot("agenc-sandbox-profile-rebased-");
+    const forked = tempRoot("agenc-sandbox-profile-forked-");
+    const specialPathValue = {
+      kind: "project_roots" as const,
+      subpath: "source",
+    };
+    const originalPathValue = {
+      kind: "path" as const,
+      path: join(root, "original"),
+    };
+    const originalEntries: FileSystemSandboxEntry[] = [
+      {
+        path: originalPathValue,
+        access: "write" as const,
+      },
+      {
+        path: { kind: "special", value: specialPathValue },
+        access: "read",
+      },
+    ];
+    const originalProfile: PermissionProfile = {
+      fileSystem: {
+        kind: "restricted",
+        entries: originalEntries,
+        includePlatformDefaults: true,
+      },
+      network: "disabled",
+      enforcement: "managed",
+    };
+    const broker = new SandboxExecutionBroker({
+      mode: "workspace_write",
+      cwd: root,
+      permissionProfile: originalProfile,
+    });
+
+    originalPathValue.path = join(root, "mutated-after-construction");
+    specialPathValue.subpath = "mutated-after-construction";
+    originalEntries.push({
+      path: { kind: "path", path: join(root, "injected") },
+      access: "write",
+    });
+    const constructed = broker.executionAuthority().permissionProfile!;
+    expect(constructed.fileSystem.entries).toEqual([
+      {
+        path: { kind: "path", path: join(root, "original") },
+        access: "write",
+      },
+      {
+        path: {
+          kind: "special",
+          value: { kind: "project_roots", subpath: "source" },
+        },
+        access: "read",
+      },
+    ]);
+    expect(Object.isFrozen(constructed)).toBe(true);
+    expect(Object.isFrozen(constructed.fileSystem)).toBe(true);
+    expect(Object.isFrozen(constructed.fileSystem.entries)).toBe(true);
+    expect(Object.isFrozen(constructed.fileSystem.entries[0])).toBe(true);
+    expect(Object.isFrozen(constructed.fileSystem.entries[0]!.path)).toBe(true);
+    const constructedSpecialPath = constructed.fileSystem.entries[1]!.path;
+    if (constructedSpecialPath.kind !== "special") {
+      throw new Error("expected a special permission path");
+    }
+    expect(Object.isFrozen(constructedSpecialPath.value)).toBe(true);
+    expect(() => {
+      (constructedSpecialPath.value as { subpath?: string }).subpath =
+        "mutated-through-get";
+    }).toThrow(TypeError);
+    expect(() => {
+      (constructed.fileSystem.entries[0]!.path as {
+        path: string;
+      }).path = join(root, "mutated-through-get");
+    }).toThrow(TypeError);
+
+    const appliedEntries = [
+      {
+        path: { kind: "path" as const, path: join(root, "applied") },
+        access: "read" as const,
+      },
+    ];
+    const nextAuthority = {
+      mode: "workspace_write",
+      permissionProfile: {
+        fileSystem: { kind: "restricted", entries: appliedEntries },
+        network: "restricted",
+      },
+      windowsSandboxLevel: "low",
+      allowGpu: true,
+    } as const;
+    expect(() =>
+      broker.applyAuthorityAfterLifecycleQuiesce(
+        {} as never,
+        nextAuthority,
+      ),
+    ).toThrow(/proven lifecycle quiescence/u);
+    expect(
+      (broker as unknown as { rebase?: unknown }).rebase,
+    ).toBeUndefined();
+    const fence = broker.beginLifecycleAuthorityTransition();
+    await broker.waitForLifecycleOneShotDrain(fence);
+    const mutationPermit = broker.proveLifecycleParticipantsQuiesced(fence);
+    broker.applyAuthorityAfterLifecycleQuiesce(
+      mutationPermit,
+      nextAuthority,
+    );
+    appliedEntries[0]!.path.path = join(root, "mutated-after-apply");
+
+    broker.rebaseAfterLifecycleQuiesce(mutationPermit, rebased);
+    broker.endLifecycleAuthorityTransition(fence);
+    const rebasedProfile = broker.executionAuthority().permissionProfile!;
+    expect(rebasedProfile.fileSystem.entries[0]).toEqual({
+      path: { kind: "path", path: join(rebased, "applied") },
+      access: "read",
+    });
+    expect(Object.isFrozen(rebasedProfile)).toBe(true);
+    expect(Object.isFrozen(rebasedProfile.fileSystem.entries[0]!.path)).toBe(
+      true,
+    );
+
+    const fork = broker.forkForCwd(forked);
+    const forkedProfile = fork.executionAuthority().permissionProfile!;
+    expect(forkedProfile.fileSystem.entries[0]).toEqual({
+      path: { kind: "path", path: join(forked, "applied") },
+      access: "read",
+    });
+    expect(Object.isFrozen(forkedProfile)).toBe(true);
+    expect(Object.isFrozen(forkedProfile.fileSystem.entries)).toBe(true);
+    expect(forkedProfile).not.toBe(rebasedProfile);
+    expect(rebasedProfile.fileSystem.entries[0]).toEqual({
+      path: { kind: "path", path: join(rebased, "applied") },
+      access: "read",
+    });
   });
 
   it("runs ExitWorktree inspection with hardened Git authority and finite supervision", async () => {
@@ -574,6 +878,37 @@ describe("SandboxExecutionBroker", () => {
           agencLinuxSandboxExe: workspaceHelper,
         }).reason,
       ).toContain("outside the writable workspace");
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "does not probe the daemon PATH when the session PATH is absent",
+    () => {
+      const root = tempRoot("agenc-sandbox-broker-session-path-");
+      const outside = tempRoot("agenc-sandbox-broker-session-path-helper-");
+      const helper = join(outside, "agenc-linux-sandbox");
+      writeFileSync(helper, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      const daemonBin = tempRoot("agenc-sandbox-broker-daemon-path-");
+      symlinkSync("/bin/true", join(daemonBin, "bwrap"));
+      const previousPath = process.env.PATH;
+      process.env.PATH = daemonBin;
+      try {
+        const status = probeSandboxExecutionStatus({
+          mode: "workspace_write",
+          cwd: root,
+          env: { AGENC_DISABLE_LANDLOCK_FALLBACK: "1" },
+          platform: "linux",
+          agencLinuxSandboxExe: helper,
+        });
+
+        expect(status).toMatchObject({
+          kind: "unavailable",
+          reason: "bubblewrap was not found in a trusted system directory",
+        });
+      } finally {
+        if (previousPath === undefined) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+      }
     },
   );
 

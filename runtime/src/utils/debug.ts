@@ -9,7 +9,7 @@ import {
   setSessionTrustAccepted,
 } from '../bootstrap/state.js'
 import { registerCleanup } from './cleanupRegistry.js'
-import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
+import { getAgenCHomeDir, isEnvTruthy } from './envUtils.js'
 import { writeToStderr } from './process.js'
 
 export type DebugLogLevel = 'verbose' | 'debug' | 'info' | 'warn' | 'error'
@@ -407,7 +407,7 @@ export function getDebugLogPath(): string {
   return (
     getDebugFilePath() ??
     process.env.AGENC_DEBUG_LOGS_DIR ??
-    join(getAgenCConfigHomeDir(), 'debug', `${getSessionId()}.txt`)
+    join(getAgenCHomeDir(), 'debug', `${getSessionId()}.txt`)
   )
 }
 

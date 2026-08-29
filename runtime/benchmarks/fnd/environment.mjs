@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 
 const FIXED_WORKER_ENVIRONMENT = Object.freeze({
@@ -241,7 +242,7 @@ function resolveOwnedTemporaryRoot(ownedTemporaryRoot) {
   ) {
     throw new Error("benchmark workers require an owned temporary root");
   }
-  return resolve(ownedTemporaryRoot);
+  return realpathSync(resolve(ownedTemporaryRoot));
 }
 
 function assertEnvironmentRecord(environment) {

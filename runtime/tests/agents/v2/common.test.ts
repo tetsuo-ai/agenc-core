@@ -20,7 +20,7 @@ function fixture() {
     agentId: CHILD_SESSION_ID,
     agentPath: "/root/child",
     nickname: "Child",
-    role: { name: "worker" },
+    role: { name: "runner" },
   };
   const getLive = vi.fn((id: string) =>
     id === CHILD_SESSION_ID ? child : undefined,
@@ -98,7 +98,7 @@ describe("MultiAgentV2 runtime identity", () => {
       threadId: CHILD_SESSION_ID,
       agentPath: "/root/child",
       agentNickname: "Child",
-      agentRole: "worker",
+      agentRole: "runner",
     });
   });
 

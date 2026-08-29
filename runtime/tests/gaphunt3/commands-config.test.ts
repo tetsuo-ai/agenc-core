@@ -85,7 +85,7 @@ describe("gaphunt3 #15 — /config edit spawns tokenized editor", () => {
   it("passes ('code', ['--wait', path]) — NOT ('code --wait', [path])", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "gh3-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "x"\n');
+      writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4.6"\n');
       const spawner = vi.fn().mockResolvedValue(0);
       const cmd = createConfigCommand({
         env: { EDITOR: "code --wait" } as NodeJS.ProcessEnv,
@@ -99,10 +99,10 @@ describe("gaphunt3 #15 — /config edit spawns tokenized editor", () => {
       // Revert-sensitive: before the fix the executable would be the whole
       // string "code --wait" with args [path]; after the fix it is tokenized.
       expect(spawner.mock.calls[0]![0]).toBe("code");
-      expect(spawner.mock.calls[0]![1]).toEqual([
-        "--wait",
-        join(tmp, "config.toml"),
-      ]);
+      expect(spawner.mock.calls[0]![1][0]).toBe("--wait");
+      expect(spawner.mock.calls[0]![1][1]).toMatch(
+        /\/\.agenc-config-edit-[^/]+\/config\.toml$/u,
+      );
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -111,7 +111,7 @@ describe("gaphunt3 #15 — /config edit spawns tokenized editor", () => {
   it("error message references the tokenized command, not the raw string", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "gh3-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), "");
+      writeFileSync(join(tmp, "config.toml"), "config_version = 2\n");
       const spawner = vi.fn().mockResolvedValue(2);
       const cmd = createConfigCommand({
         env: { EDITOR: "code --wait" } as NodeJS.ProcessEnv,
@@ -131,7 +131,7 @@ describe("gaphunt3 #15 — /config edit spawns tokenized editor", () => {
   it("still works for a bare editor name (single token)", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "gh3-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "x"\n');
+      writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4.6"\n');
       const spawner = vi.fn().mockResolvedValue(0);
       const cmd = createConfigCommand({
         env: { EDITOR: "myedit" } as NodeJS.ProcessEnv,
@@ -142,7 +142,9 @@ describe("gaphunt3 #15 — /config edit spawns tokenized editor", () => {
       );
       if (r.kind !== "text") throw new Error("expected text");
       expect(spawner.mock.calls[0]![0]).toBe("myedit");
-      expect(spawner.mock.calls[0]![1]).toEqual([join(tmp, "config.toml")]);
+      expect(spawner.mock.calls[0]![1][0]).toMatch(
+        /\/\.agenc-config-edit-[^/]+\/config\.toml$/u,
+      );
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

@@ -3,6 +3,10 @@ import { PassThrough } from 'node:stream'
 import { afterEach, expect, mock, test } from 'bun:test'
 import React from 'react'
 import { createRoot, Text } from '../../../src/tui/ink.ts'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../remoteAuthSessionContext.fixture.ts'
+import { defaultConfig } from '../../../src/config/schema.ts'
+
+const TEST_CONFIG = defaultConfig()
 
 type AuthState = {
   anthropicAuthEnabled: boolean
@@ -65,21 +69,21 @@ test('useApiKeyVerification resets stale missing status when the session switche
   const seenStatuses: string[] = []
 
   mock.module('../../../src/utils/auth.js', () => ({
-    getAnthropicApiKeyWithSource: () => ({
+    getAnthropicApiKeyWithSourceForContext: () => ({
       key: authState.key,
       source: authState.source,
     }),
     getApiKeyFromApiKeyHelper: async () => undefined,
-    isAnthropicAuthEnabled: () => authState.anthropicAuthEnabled,
-    isAgenCAISubscriber: () => authState.agencSubscriber,
+    isAnthropicAuthEnabledForContext: () => authState.anthropicAuthEnabled,
+    isAgenCAISubscriberForContext: () => authState.agencSubscriber,
   }))
 
   mock.module('../../../src/bootstrap/state.js', () => ({
     getIsNonInteractiveSession: () => false,
   }))
 
-  mock.module('../../../src/services/api/anthropic.js', () => ({
-    verifyApiKey: async () => true,
+  mock.module('../../../src/onboarding/useApiKeyVerification.js', () => ({
+    verifyApiKey: async () => ({ status: 'valid' }),
   }))
 
   // A live hosted (remote) auth session short-circuits the hook to 'valid'
@@ -97,7 +101,10 @@ test('useApiKeyVerification resets stale missing status when the session switche
   )
 
   function Harness(): React.ReactNode {
-    const { status } = useApiKeyVerification()
+    const { status } = useApiKeyVerification(
+      TEST_REMOTE_AUTH_SESSION_CONTEXT,
+      TEST_CONFIG,
+    )
 
     React.useEffect(() => {
       seenStatuses.push(status)

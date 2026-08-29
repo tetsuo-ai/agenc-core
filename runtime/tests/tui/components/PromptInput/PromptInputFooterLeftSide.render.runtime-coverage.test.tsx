@@ -17,13 +17,14 @@ const footerMock = vi.hoisted(() => ({
     viewingAgentTaskId: undefined as string | undefined,
     viewSelectionMode: "normal",
   },
-  copyOnSelect: true,
   featureFlags: new Set<string>(),
   fullscreen: false,
   globalConfig: {
-    editorMode: "normal",
-    prStatusFooterEnabled: true,
-    tui: { vimMode: false },
+    tui: {
+      copyOnSelect: true,
+      prStatusFooterEnabled: true,
+      vimMode: false,
+    },
   } as Record<string, any>,
   hasSelection: false,
   inProcessEnabled: false,
@@ -57,7 +58,7 @@ vi.mock("../../keybindings/useShortcutDisplay.js", () => ({
 }));
 
 vi.mock("../../../utils/config.js", () => ({
-  getGlobalConfig: () => footerMock.globalConfig,
+  getRuntimeState: () => footerMock.globalConfig,
 }));
 
 vi.mock("../../../utils/permissions/PermissionMode.js", () => ({
@@ -143,8 +144,20 @@ vi.mock("../../hooks/useTasksV2.js", () => ({
   useTasksV2: () => footerMock.tasksV2,
 }));
 
-vi.mock("../../../utils/fullscreen.js", () => ({
-  isFullscreenEnvEnabled: () => footerMock.fullscreen,
+vi.mock("./utils.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("./utils.js")>();
+  return {
+    ...actual,
+    isVimModeEnabled: () => footerMock.globalConfig.tui?.vimMode === true,
+  };
+});
+
+vi.mock("../../hooks/useSettings.js", () => ({
+  useSettings: () => footerMock.globalConfig,
+}));
+
+vi.mock("../../context/fullscreenModeContext.js", () => ({
+  useFullscreenMode: () => footerMock.fullscreen,
 }));
 
 vi.mock("../../ink/terminal.js", () => ({
@@ -251,13 +264,14 @@ beforeEach(() => {
   footerMock.appState.teamContext = undefined;
   footerMock.appState.viewingAgentTaskId = undefined;
   footerMock.appState.viewSelectionMode = "normal";
-  footerMock.copyOnSelect = true;
   footerMock.featureFlags.clear();
   footerMock.fullscreen = false;
   footerMock.globalConfig = {
-    editorMode: "normal",
-    prStatusFooterEnabled: true,
-    tui: { vimMode: false },
+    tui: {
+      copyOnSelect: true,
+      prStatusFooterEnabled: true,
+      vimMode: false,
+    },
   };
   footerMock.hasSelection = false;
   footerMock.inProcessEnabled = false;
@@ -296,7 +310,7 @@ describe("PromptInputFooterLeftSide rendering", () => {
       ),
     ).resolves.toContain("SEARCH needle failed:true");
 
-    footerMock.globalConfig = { editorMode: "vim", tui: { vimMode: true } };
+    footerMock.globalConfig = { tui: { vimMode: true } };
     await expect(
       renderToText(<PromptInputFooterLeftSide {...defaultProps({ vimMode: "NORMAL" })} />),
     ).resolves.toContain("-- NORMAL --");
@@ -408,14 +422,12 @@ describe("PromptInputFooterLeftSide rendering", () => {
 
     footerMock.fullscreen = true;
     footerMock.hasSelection = true;
-    footerMock.copyOnSelect = false;
-    footerMock.globalConfig.copyOnSelect = false;
+    footerMock.globalConfig.tui.copyOnSelect = false;
     await expect(renderToText(<PromptInputFooterLeftSide {...defaultProps({ suppressHint: true })} />)).resolves.toContain(
       "ctrl+c to copy",
     );
 
-    footerMock.copyOnSelect = true;
-    footerMock.globalConfig.copyOnSelect = true;
+    footerMock.globalConfig.tui.copyOnSelect = true;
     footerMock.isXterm = true;
     footerMock.platform = "macos";
     footerMock.selectionState = { lastPressHadAlt: true };

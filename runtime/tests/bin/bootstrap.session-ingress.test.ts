@@ -89,6 +89,90 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
     }
   });
 
+  it("binds Grok ACP to the scrubbed client child environment", async () => {
+    const providerMod = await import("../llm/provider.js");
+    let capturedOptions:
+      | Parameters<typeof providerMod.createProvider>[1]
+      | undefined;
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      (_provider, options) => {
+        capturedOptions = options;
+        return {
+          name: "grok",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        } as never;
+      },
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    const sessionEnvironment: NodeJS.ProcessEnv = {
+      ...process.env,
+      AGENC_HOME: home,
+      AGENC_WORKSPACE: workspace,
+      AGENC_PROVIDER: "grok",
+      AGENC_MODEL: "grok-composer-2.5-fast",
+      AGENC_SUBPROCESS_ENV_NO_SCRUB: "1",
+      HOME: home,
+      LANG: "en_CA.UTF-8",
+      OPENAI_API_KEY: "must-not-reach-child",
+      GITHUB_TOKEN: "must-not-reach-child",
+      WEB_KEY: "must-not-reach-child",
+      AGENC_CLIENT_KEY_PASSPHRASE: "must-not-reach-child",
+      PUBLIC_SENTINEL: "preserved",
+    };
+    delete sessionEnvironment.AGENC_GROK_CLI;
+    delete sessionEnvironment.AGENC_GROK_ACP_PERMISSIONS;
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        conversationId: "grok_acp_environment_authority",
+        env: sessionEnvironment,
+      });
+      shutdown = boot.shutdown;
+
+      const grokAcp = capturedOptions?.extra?.grokAcp as
+        | {
+            binaryPath?: string;
+            allowPermissions?: boolean;
+            path?: string;
+            environment?: NodeJS.ProcessEnv;
+          }
+        | undefined;
+      expect(grokAcp?.binaryPath).toBeUndefined();
+      expect(grokAcp?.allowPermissions).toBeUndefined();
+      expect(grokAcp?.path).toBe(sessionEnvironment.PATH);
+      expect(grokAcp?.environment).toMatchObject({
+        PATH: sessionEnvironment.PATH,
+        HOME: home,
+        LANG: "en_CA.UTF-8",
+        PUBLIC_SENTINEL: "preserved",
+      });
+      expect(grokAcp?.environment?.AGENC_GROK_CLI).toBeUndefined();
+      expect(
+        grokAcp?.environment?.AGENC_GROK_ACP_PERMISSIONS,
+      ).toBeUndefined();
+      expect(grokAcp?.environment?.OPENAI_API_KEY).toBeUndefined();
+      expect(grokAcp?.environment?.GITHUB_TOKEN).toBeUndefined();
+      expect(grokAcp?.environment?.WEB_KEY).toBeUndefined();
+      expect(
+        grokAcp?.environment?.AGENC_CLIENT_KEY_PASSPHRASE,
+      ).toBeUndefined();
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+    }
+  });
+
   it("registers remote ingress plus CCR v2 reader and writer hooks during startup", async () => {
     const providerMod = await import("../llm/provider.js");
     vi.spyOn(providerMod, "createProvider").mockImplementation(
@@ -625,6 +709,7 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
         sessionBaseUrl:
           "https://api.example.test/v1/code/sessions/cse_session_123",
         headers: { Authorization: "Bearer worker-jwt" },
+        environment: Object.freeze({}),
       }),
     ).resolves.toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -643,6 +728,7 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
         sessionBaseUrl:
           "https://api.example.test/v1/code/sessions/cse_session_123",
         headers: { Authorization: "Bearer worker-jwt" },
+        environment: Object.freeze({}),
       }),
     ).resolves.toBeNull();
   });
@@ -669,6 +755,7 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
         sessionBaseUrl:
           "https://api.example.test/v1/code/sessions/cse_session_123",
         headers: { Authorization: "Bearer worker-jwt" },
+        environment: Object.freeze({}),
       }),
     ).resolves.toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(2);

@@ -42,7 +42,7 @@ Environment variables remain overrides on top of the config block
 (precedence: env > config > built-in defaults):
 
 ```bash
-export AGENC_TRANSACTION_GUARD=slm            # "slm" enables; any other value disables
+export AGENC_TRANSACTION_GUARD=slm            # "slm" enables; use "off" to disable
 export AGENC_TRANSACTION_GUARD_MODEL=gemma4:e4b
 export AGENC_TRANSACTION_GUARD_OLLAMA_URL=http://127.0.0.1:11434
 export AGENC_TRANSACTION_GUARD_FAIL_MODE=closed

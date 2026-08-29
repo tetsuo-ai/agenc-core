@@ -648,7 +648,7 @@ export async function orchestrateToolCall<T>(
   const normalizedSandboxPermissions =
     normalizeSandboxPermissionsRequest(resolvedSandboxPermissions);
   // Extract the session-wide permission mode so the arbiter can short-
-  // circuit under --yolo (mode === bypassPermissions). Without this the
+  // circuit under --dangerously-bypass-approvals-and-sandbox (mode === bypassPermissions). Without this the
   // arbiter ran a separate approvalPolicy gate that ignored mode and
   // surfaced "approve every call" overlays even after the user opted
   // out at the mode level. See GAP-PE-GUARDIAN-YOLO-LEAK.
@@ -754,9 +754,6 @@ export async function orchestrateToolCall<T>(
   if (requirement.kind === "needs_approval") {
     const approvalCtx: ApprovalCtx = {
       ...opts.approvalCtx,
-      ...(opts.tool.requiresUserInteraction?.() === true
-        ? { requiresUserInteraction: true }
-        : {}),
       ...(requirement.reason !== undefined
         ? { retryReason: requirement.reason }
         : {}),
@@ -844,9 +841,6 @@ export async function orchestrateToolCall<T>(
     if (!alreadyApproved) {
       const escalationCtx: ApprovalCtx = {
         ...opts.approvalCtx,
-        ...(opts.tool.requiresUserInteraction?.() === true
-          ? { requiresUserInteraction: true }
-          : {}),
         retryReason:
           err.message || "command failed; retry without sandbox?",
       };

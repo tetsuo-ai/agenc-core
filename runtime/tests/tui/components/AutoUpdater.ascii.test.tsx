@@ -18,6 +18,10 @@ vi.mock("../hooks/useUpdateNotification", () => ({
   useUpdateNotification: () => true,
 }));
 
+vi.mock("../hooks/useSettings.js", () => ({
+  useSettings: () => ({ autoUpdatesChannel: "latest" }),
+}));
+
 vi.mock("src/utils/debug.js", () => ({
   logForDebugging: () => {},
 }));
@@ -35,7 +39,7 @@ vi.mock("../../utils/autoUpdater.js", () => ({
 }));
 
 vi.mock("../../utils/config.js", () => ({
-  getGlobalConfig: () => ({}),
+  getRuntimeState: () => ({}),
   isAutoUpdaterDisabled: () => true,
 }));
 

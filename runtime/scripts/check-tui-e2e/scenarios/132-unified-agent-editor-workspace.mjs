@@ -12,7 +12,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export const meta = {
   description:
     "Agent and Editor share one session: Neovim Ask opens a scrollable AI panel, tab state survives, and Agent reads the saved edit.",
-  args: ["--yolo"],
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   timeoutMs: 120_000,
   env: {
     AGENC_TUI_WORKBENCH: "1",
@@ -207,14 +207,20 @@ export default async function (session) {
   // proving both views use the same cwd, daemon session, and tool pipeline.
   session.send("\x1b1");
   await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
-  await session.submit(
-    "Use the Read tool to read README.md, then reply with the single word DONE",
+  const agentReadPrompt =
+    "Use the Read tool to read README.md, then reply with the single word DONE";
+  await session.submit(agentReadPrompt);
+  await waitForTurnCompletedAfter(session, agentReadPrompt, 45_000);
+  await waitForFrameText(
+    session,
+    /tool complete/u,
+    "Agent final reply after Editor save read",
+    15_000,
   );
-  await session.waitForAssistantReply({ timeout: 45_000 });
-  // A tool-call row is itself visible assistant output, so the paint-level
-  // helper can return before the completed tool result reaches the rollout.
-  // Wait for the whole turn to settle before asserting durable evidence.
-  await session.waitForIdle({ idleWindow: 800, timeout: 45_000 });
+  // The durable terminal event is emitted before the foreground runner
+  // releases its active-turn admission slot. Wait for that final UI/lifecycle
+  // cleanup before exercising the next, independent command boundary.
+  await session.waitForIdle({ idleWindow: 800, timeout: 15_000 });
   await session.assertRolloutToolOutput("SHARED_WORKSPACE_ACCEPTED", {
     label: "Agent read of Editor save",
     toolName: "FileRead",
@@ -265,6 +271,61 @@ async function assertPathAbsent(path, label) {
     throw error;
   }
   throw new Error(`${label} unexpectedly exists: ${path}`);
+}
+
+async function waitForTurnCompletedAfter(session, userMessage, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let userSequence;
+  let turnId;
+  while (Date.now() < deadline) {
+    const items = await session.readRolloutItems();
+    if (userSequence === undefined) {
+      const marker = items.find((item) => {
+        const msg = item?.payload?.msg;
+        return (
+          msg?.type === "user_message" &&
+          (msg.payload?.displayText === userMessage ||
+            msg.payload?.message === userMessage) &&
+          Number.isSafeInteger(item?.payload?.seq)
+        );
+      });
+      userSequence = marker?.payload?.seq;
+    }
+    if (turnId === undefined) {
+      const started = items.find((item) => {
+        const msg = item?.payload?.msg;
+        return (
+          userSequence !== undefined &&
+          msg?.type === "turn_started" &&
+          typeof msg.payload?.turnId === "string" &&
+          Number.isSafeInteger(item?.payload?.seq) &&
+          item.payload.seq > userSequence
+        );
+      });
+      turnId = started?.payload?.msg?.payload?.turnId;
+    }
+    if (turnId !== undefined) {
+      const terminal = items.find((item) => {
+        const msg = item?.payload?.msg;
+        return (
+          (msg?.type === "turn_complete" || msg?.type === "turn_aborted") &&
+          msg.payload?.turnId === turnId
+        );
+      });
+      if (terminal?.payload?.msg?.type === "turn_complete") return;
+      if (terminal?.payload?.msg?.type === "turn_aborted") {
+        throw new Error(`Agent turn ${turnId} aborted before completion`);
+      }
+    }
+    await sleep(100);
+  }
+  throw new Error(
+    userSequence === undefined
+      ? `Agent user message was not durably recorded: ${userMessage}`
+      : turnId === undefined
+        ? `Agent turn did not start after user-message sequence ${userSequence}`
+        : `Agent turn ${turnId} did not reach durable turn_complete`,
+  );
 }
 
 function visibleAnchors(session) {

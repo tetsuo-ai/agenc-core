@@ -13,7 +13,6 @@ import {
   readCompactionRolloutPayload,
   type CompactionRolloutType,
 } from "../session/compaction-event-reader.js";
-import { usdToNanos } from "./execution-admission.js";
 
 type KnownRolloutItem = Exclude<RolloutItem, { readonly type: "unknown" }>;
 type KnownRolloutType = KnownRolloutItem["type"];
@@ -158,56 +157,10 @@ const isNonNegativeInteger: Validator<number> = (value): value is number =>
   Number.isSafeInteger(value) && (value as number) >= 0;
 const isPositiveInteger: Validator<number> = (value): value is number =>
   Number.isSafeInteger(value) && (value as number) > 0;
-const isNonNegativeNumber: Validator<number> = (value): value is number =>
-  typeof value === "number" && Number.isFinite(value) && value >= 0;
 const isRecord: Validator<Record<string, unknown>> = isPlainRecord;
 const isUnknown: Validator<unknown> = (_value): _value is unknown => true;
 const isNullableString = nullable(isString);
 const isStringArray = arrayOf(isString);
-
-const isEffectAdmissionUsage: Validator<{
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-  readonly costUsd: number;
-}> = (
-  value,
-): value is {
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-  readonly costUsd: number;
-} => {
-  if (!isPlainRecord(value)) return false;
-  const inputTokens = value.inputTokens;
-  const outputTokens = value.outputTokens;
-  const costUsd = value.costUsd;
-  if (
-    !isNonNegativeInteger(inputTokens) ||
-    !isNonNegativeInteger(outputTokens) ||
-    !Number.isSafeInteger(inputTokens + outputTokens) ||
-    !isNonNegativeNumber(costUsd)
-  ) {
-    return false;
-  }
-  try {
-    usdToNanos(costUsd);
-    return Reflect.ownKeys(value).length === 3;
-  } catch {
-    return false;
-  }
-};
-
-const isEffectAdmissionSettlement = either(
-  objectShape({
-    reservationId: isString,
-    decision: literal("reconcile"),
-    usage: isEffectAdmissionUsage,
-  }),
-  objectShape({
-    reservationId: isString,
-    decision: oneOf("void", "hold_unknown"),
-    reason: isString,
-  }),
-);
 
 type UserMessageContent = EventPayload<"user_message">["message"];
 const isLlmTextPart = objectShape({ type: literal("text"), text: isString });
@@ -398,6 +351,21 @@ const isRequestUserInputQuestion = objectShape(
   { options: arrayOf(isQuestionOption) },
 );
 
+const isClientAction = objectShape(
+  {
+    type: literal("ledger_solana_transfer_v1"),
+    source: literal("agenc-core"),
+    targetCapability: literal("portal.ledger.solana.sign.v1"),
+    network: literal("mainnet-beta"),
+    intentId: isString,
+    responseNonce: isString,
+    to: isString,
+    lamports: isString,
+    expiresAt: isString,
+  },
+  { note: isString },
+);
+
 const isMcpElicitationRequest: Validator<
   EventPayload<"mcp_elicitation_request">["request"]
 > = (value): value is EventPayload<"mcp_elicitation_request">["request"] => {
@@ -448,7 +416,6 @@ const isCheckpointSlice = objectShape(
     stopHookBlockingCount: isNonNegativeInteger,
   },
   {
-    samplingRound: isNonNegativeInteger,
     planToolRequiredRetryCount: isNonNegativeInteger,
     taskBudgetRemaining: isNumber,
     autoCompactTracking: objectShape({
@@ -609,15 +576,12 @@ const isEffectReviewResolution = objectShape(
   },
 );
 const isEffectReviewResolvedPayload = either(
-  objectShape(
-    {
-      runId: isString,
-      stepId: isString,
-      callId: isString,
-      resolution: isEffectReviewResolution,
-    },
-    { admissionSettlement: isEffectAdmissionSettlement },
-  ),
+  objectShape({
+    runId: isString,
+    stepId: isString,
+    callId: isString,
+    resolution: isEffectReviewResolution,
+  }),
   objectShape({
     runId: isString,
     stepId: isString,
@@ -893,12 +857,15 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       reason: isString,
     },
   ),
-  request_user_input: objectShape({
-    requestId: isString,
-    callId: isString,
-    turnId: isString,
-    questions: arrayOf(isRequestUserInputQuestion),
-  }),
+  request_user_input: objectShape(
+    {
+      requestId: isString,
+      callId: isString,
+      turnId: isString,
+      questions: arrayOf(isRequestUserInputQuestion),
+    },
+    { clientAction: isClientAction },
+  ),
   mcp_elicitation_request: objectShape({
     turnId: isString,
     serverName: isString,
@@ -1002,7 +969,6 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       effectBoundary: oneOf("not_crossed", "crossed"),
       noEffectEvidence: isEffectNoEffectProof,
       resultDigest: isString,
-      admissionSettlement: isEffectAdmissionSettlement,
       evidence: isRecord,
     },
   ),
@@ -1099,7 +1065,10 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
     permissionMode: isRunRuntimePermissionMode,
     prePlanMode: nullable(isRunRuntimePermissionMode),
     autoModeActive: isBoolean,
+    autoModeAvailable: isBoolean,
+    bypassPermissionsModeAvailable: isBoolean,
     bypassPermissionsWorkspace: nullable(isString),
+    bypassPermissionsConsentWorkspace: nullable(isString),
     model: isString,
     provider: isString,
     profile: nullable(isString),

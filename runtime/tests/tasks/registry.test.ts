@@ -12,12 +12,12 @@ describe("task registry", () => {
       "local_bash",
       "local_agent",
       "in_process_teammate",
-      "monitor",
       "generic",
     ]);
 
     expect(getTaskByType("local_bash")?.name).toBe("local shell");
     expect(getTaskByType("local_workflow")).toBeUndefined();
+    expect(getTaskByType("monitor")).toBeUndefined();
     expect(getTaskByType("monitor_mcp")).toBeUndefined();
     expect(getTaskByType("dream")).toBeUndefined();
     // Deleted producer-less scaffold — must never come back as a registered kind.

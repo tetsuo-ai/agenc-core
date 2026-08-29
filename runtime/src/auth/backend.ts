@@ -73,16 +73,25 @@ export interface AuthLogoutResult extends AuthJsonObject {
   readonly authenticated: false;
 }
 
-export interface AuthVendedKey extends AuthJsonObject {
+interface AuthVendedCredentialCommon {
   readonly provider: string;
   readonly sessionId: AuthSessionId;
-  readonly apiKey: string;
   readonly baseUrl?: string;
   readonly expiresAt?: string;
-  readonly secretAccessKey?: string;
-  readonly sessionToken?: string;
-  readonly region?: string;
 }
+
+export type AuthVendedCredential =
+  | (AuthVendedCredentialCommon & {
+      readonly kind: "api-key";
+      readonly apiKey: string;
+    })
+  | (AuthVendedCredentialCommon & {
+      readonly kind: "aws-sigv4";
+      readonly accessKeyId: string;
+      readonly secretAccessKey: string;
+      readonly sessionToken?: string;
+      readonly region?: string;
+    });
 
 export interface AuthInferAgencModelParams extends AuthSessionRef {
   readonly requestedModel?: string;
@@ -140,7 +149,7 @@ export interface AuthBackend {
   vendKey(
     provider: AuthProviderSlug | string,
     sessionId: AuthSessionId,
-  ): AuthVendedKey | Promise<AuthVendedKey>;
+  ): AuthVendedCredential | Promise<AuthVendedCredential>;
   inferAgencModel(
     params?: AuthInferAgencModelParams,
   ): AuthInferredAgencModel | Promise<AuthInferredAgencModel>;

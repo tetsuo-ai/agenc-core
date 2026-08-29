@@ -60,6 +60,7 @@ const NATIVE_TEST_FILES = [
   "tests/state/recovery-file.win32.test.ts",
   "tests/tools/runtimes/runtime.darwin.test.ts",
   "tests/utils/execFileNoThrow.win32.test.ts",
+  "tests/utils/secureStorage/macOsKeychainHelper.darwin.test.ts",
   "tests/workspace/bound-helper-transport.win32.test.ts",
 ] as const;
 
@@ -261,7 +262,10 @@ describe("hermetic test discovery", () => {
     );
     expect(bubblewrapSource).toContain("new SandboxExecutionBroker({");
     expect(bubblewrapSource).toContain("const status = broker.status()");
-    expect(bubblewrapSource).toContain('broker.prepareSpawn("tool"');
+    expect(bubblewrapSource).toContain('.prepareSpawn("tool"');
+    expect(
+      bubblewrapSource.match(/\.run\(async \(command\) =>/gu),
+    ).toHaveLength(2);
     expect(bubblewrapSource).toContain("agenc-native-userns (unconfined)");
     expect(bubblewrapSource).toContain(
       "tcpRoundTrip(address.port, baselineToken)",
@@ -500,10 +504,7 @@ describe("hermetic test discovery", () => {
     Object.assign(pollutedEnv, {
       AGENC_BUBBLEWRAP: "/ambient/bwrap",
       AGENC_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-      AGENC_EXTRA_BODY: '{"ambient":true}',
-      AGENC_GIT_BASH_PATH: "/ambient/bash",
       AGENC_OVERRIDE_DATE: "1900-01-01",
-      AGENC_TEST_FIXTURES_ROOT: "/ambient/fixtures",
       AGENC_TMPDIR: "/ambient/tmp",
       CI: "ambient-ci",
       GITHUB_DEVICE_FLOW_CLIENT_ID: "ambient-client",

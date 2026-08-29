@@ -10,6 +10,8 @@ import { strict as assert } from "node:assert";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { waitForFrameText } from "../helpers/workbench-buffer-neovim.mjs";
+
 export const meta = {
   description:
     "agenc onboard forces the setup wizard; completing it reaches a first model turn.",
@@ -29,15 +31,27 @@ export default async function (session) {
   // src/onboarding/Onboarding.tsx submitFirstRunOnboardingInput.)
   await session.waitFor(/Press Enter to continue/, { timeout: 60_000 });
 
-  const setupInputs = [
-    "", // preflight: Enter → theme
-    "1", // theme: dark → provider
-    "openai-compatible", // provider (mock server) → model access
-  ];
-  for (const input of setupInputs) {
-    await session.submit(input);
-    await session.waitForIdle({ timeout: 60_000 });
-  }
+  await session.submit("");
+  await waitForFrameText(
+    session,
+    /Press Enter to keep (?:auto|dark|light)|Tip:.*terminal background/iu,
+    "onboarding theme step",
+    60_000,
+  );
+  await session.submit("1");
+  await waitForFrameText(
+    session,
+    /type a number or provider slug/u,
+    "onboarding provider step",
+    60_000,
+  );
+  await session.submit("openai-compatible");
+  await waitForFrameText(
+    session,
+    /Sign in or create an AgenC account/u,
+    "onboarding model-access step",
+    60_000,
+  );
 
   const accessFrame = session.latestFrame;
   assert.match(
@@ -56,21 +70,36 @@ export default async function (session) {
     "model access must offer a credential-free continuation",
   );
 
-  const remainingWizardInputs = [
-    "", // model access: Enter configures later → connection-test
-    "", // connection-test: Enter runs the mock-server check → security
-    "", // security: Enter keeps defaults → terminal-setup
-    "", // terminal-setup: Enter finishes onboarding
-  ];
-  for (const input of remainingWizardInputs) {
-    await session.submit(input);
-    // Bytes-quiet is the only repaint-agnostic step barrier; a rejected
-    // input stalls the wizard and the post-wizard asserts below fail loudly.
-    await session.waitForIdle({ timeout: 60_000 });
-  }
+  await session.submit("");
+  await waitForFrameText(
+    session,
+    /Press Enter to (?:test openai-compatible|run the connection check)/u,
+    "onboarding connection-check step",
+    60_000,
+  );
+  await session.submit("");
+  await waitForFrameText(
+    session,
+    /Press Enter to keep these security defaults/u,
+    "onboarding security step",
+    60_000,
+  );
+  await session.submit("");
+  await waitForFrameText(
+    session,
+    /Press Enter to finish onboarding/u,
+    "onboarding terminal-setup step",
+    60_000,
+  );
+  await session.submit("");
 
   // Wizard done: the normal composer prompt appears; complete a first turn.
-  await session.waitForPrompt({ timeout: 60_000 });
+  await waitForFrameText(
+    session,
+    /Describe a task|commands\s+@ attach/iu,
+    "post-onboarding composer",
+    60_000,
+  );
   await session.submit("reply with the single word ONBOARDED");
   await session.waitFor(/ONBOARDED/, { timeout: 60_000 });
   await session.waitForIdle({ timeout: 30_000 });

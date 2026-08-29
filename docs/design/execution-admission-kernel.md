@@ -59,9 +59,9 @@ caller:
 
 | Boundary | Covered runtime paths                                                                                                                                                                                                                    | Dispatch evidence |
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| Model    | Main streamed turns, startup-prewarm attempts and fallback, compaction, tool-use summaries, permission classification, MCP sampling, and model-facing WebSearch/XSearch/WebFetch work                                                    | `provider_wire`   |
+| Model    | Main streamed turns, startup-prewarm attempts and fallback, compaction, tool-use summaries, permission classification, MCP sampling, and model-facing WebSearch/XSearch/web_fetch work                                                    | `provider_wire`   |
 | Tool     | Direct and turn-routed tool execution, after permission approval and immediately before `tool.execute`                                                                                                                                   | `tool_effect`     |
-| Spawn    | `AgentControl`, delegate sessions, and legacy agent-hook spawns; child sessions inherit the root allocation and deadline. The dormant pane/team backend is fail-closed because it cannot propagate a parent allocation across processes. | `spawn_commit`    |
+| Spawn    | `AgentControl`, delegate sessions, and agent-hook spawns; child sessions inherit the root allocation and deadline. The dormant pane/team backend is fail-closed because it cannot propagate a parent allocation across processes. | `spawn_commit`    |
 
 TUI, print, socket/SDK, and daemon background-agent entry points share the
 normal runtime bootstrap, which binds a client and sets `admissionRequired`.

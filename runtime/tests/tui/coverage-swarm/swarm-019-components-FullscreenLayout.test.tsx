@@ -30,6 +30,7 @@ import {
   useSetPromptOverlay,
   useSetPromptOverlayDialog,
 } from '../../../src/tui/context/promptOverlayContext.js'
+import { FullscreenModeProvider } from '../../../src/tui/context/fullscreenModeContext.js'
 import {
   deleteInkInstance,
   setInkInstance,
@@ -60,24 +61,6 @@ type TestScrollHandle = ScrollBoxHandle & {
   setScrollHeight: (value: number) => void
   setScrollTop: (value: number) => void
   setViewportHeight: (value: number) => void
-}
-
-function restoreEnv(name: string, previous: string | undefined): void {
-  if (previous === undefined) {
-    delete process.env[name]
-  } else {
-    process.env[name] = previous
-  }
-}
-
-async function withFullscreenEnv<T>(fn: () => Promise<T>): Promise<T> {
-  const previous = process.env.AGENC_NO_FLICKER
-  process.env.AGENC_NO_FLICKER = '1'
-  try {
-    return await fn()
-  } finally {
-    restoreEnv('AGENC_NO_FLICKER', previous)
-  }
 }
 
 function createStreams(viewport: Viewport): {
@@ -116,30 +99,30 @@ async function renderLatestFrame(
   node: React.ReactNode,
   viewport: Viewport = { columns: 100, rows: 14 },
 ): Promise<string> {
-  return withFullscreenEnv(async () => {
-    const { stdin, stdout, getOutput } = createStreams(viewport)
-    const root = await createRoot({
-      patchConsole: false,
-      stdin: stdin as unknown as NodeJS.ReadStream,
-      stdout: stdout as unknown as NodeJS.WriteStream,
-    })
-
-    try {
-      root.render(node)
-      await sleep()
-      // Assert against everything painted, not just the last sync frame:
-      // the bottom chrome's git label probe resolves asynchronously (by
-      // design, so first paint never blocks) and its incremental repaint
-      // then becomes the trailing frame, containing only the git segment
-      // and none of the overlay content painted earlier.
-      return stripAnsi(getOutput())
-    } finally {
-      root.unmount()
-      stdin.end()
-      stdout.end()
-      await sleep()
-    }
+  const { stdin, stdout, getOutput } = createStreams(viewport)
+  const root = await createRoot({
+    patchConsole: false,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: stdout as unknown as NodeJS.WriteStream,
   })
+
+  try {
+    root.render(
+      <FullscreenModeProvider enabled={true}>{node}</FullscreenModeProvider>,
+    )
+    await sleep()
+    // Assert against everything painted, not just the last sync frame:
+    // the bottom chrome's git label probe resolves asynchronously (by
+    // design, so first paint never blocks) and its incremental repaint
+    // then becomes the trailing frame, containing only the git segment
+    // and none of the overlay content painted earlier.
+    return stripAnsi(getOutput())
+  } finally {
+    root.unmount()
+    stdin.end()
+    stdout.end()
+    await sleep()
+  }
 }
 
 function createScrollHandle(): TestScrollHandle {
@@ -286,8 +269,8 @@ describe('FullscreenLayout coverage swarm 019', () => {
 
   test('renders the active task in the top chrome and honest bottom labels', async () => {
     const state = getDefaultAppState()
-    const output = await withFullscreenEnv(() =>
-      renderToString(
+    const output = await renderToString(
+      <FullscreenModeProvider enabled={true}>
         <AppStateProvider
           initialState={{
             ...state,
@@ -306,9 +289,9 @@ describe('FullscreenLayout coverage swarm 019', () => {
             scrollable={<Text>scroll body</Text>}
             bottom={<Text>prompt body</Text>}
           />
-        </AppStateProvider>,
-        { columns: 100, rows: 12 },
-      ),
+        </AppStateProvider>
+      </FullscreenModeProvider>,
+      { columns: 100, rows: 12 },
     )
 
     // Top chrome surfaces the first running/queued task by id; the other
@@ -366,37 +349,37 @@ describe('FullscreenLayout coverage swarm 019', () => {
     })
 
     try {
-      await withFullscreenEnv(async () => {
-        root.render(
+      root.render(
+        <FullscreenModeProvider enabled={true}>
           <FullscreenLayout
             scrollable={<Text>link body</Text>}
             bottom={<Text>prompt body</Text>}
-          />,
-        )
-        await sleep()
+          />
+        </FullscreenModeProvider>,
+      )
+      await sleep()
 
-        expect(fakeInk.onHyperlinkClick).toEqual(expect.any(Function))
+      expect(fakeInk.onHyperlinkClick).toEqual(expect.any(Function))
 
-        fakeInk.onHyperlinkClick?.('file:///tmp/agenc-layout-marker.txt')
-        fakeInk.onHyperlinkClick?.('https://example.test/docs')
-        fakeInk.onHyperlinkClick?.('file://%zz')
-        fakeInk.onHyperlinkClick?.('https://example.test/ok')
-        await sleep()
+      fakeInk.onHyperlinkClick?.('file:///tmp/agenc-layout-marker.txt')
+      fakeInk.onHyperlinkClick?.('https://example.test/docs')
+      fakeInk.onHyperlinkClick?.('file://%zz')
+      fakeInk.onHyperlinkClick?.('https://example.test/ok')
+      await sleep()
 
-        expect(browser.openPath).toHaveBeenCalledTimes(1)
-        expect(browser.openPath).toHaveBeenCalledWith(
-          '/tmp/agenc-layout-marker.txt',
-        )
-        expect(browser.openBrowser).toHaveBeenNthCalledWith(
-          1,
-          'https://example.test/docs',
-        )
-        expect(browser.openBrowser).toHaveBeenNthCalledWith(2, 'https://example.test/ok')
-        expect(browser.logError).toHaveBeenCalledWith(browserFailure)
-        expect(browser.logError.mock.calls.some(([error]) =>
-          error instanceof Error && error.message.includes('Invalid URL')
-        )).toBe(true)
-      })
+      expect(browser.openPath).toHaveBeenCalledTimes(1)
+      expect(browser.openPath).toHaveBeenCalledWith(
+        '/tmp/agenc-layout-marker.txt',
+      )
+      expect(browser.openBrowser).toHaveBeenNthCalledWith(
+        1,
+        'https://example.test/docs',
+      )
+      expect(browser.openBrowser).toHaveBeenNthCalledWith(2, 'https://example.test/ok')
+      expect(browser.logError).toHaveBeenCalledWith(browserFailure)
+      expect(browser.logError.mock.calls.some(([error]) =>
+        error instanceof Error && error.message.includes('Invalid URL')
+      )).toBe(true)
     } finally {
       root.unmount()
       deleteInkInstance(process.stdout)
@@ -415,8 +398,7 @@ describe('FullscreenLayout coverage swarm 019', () => {
     setInkInstance(process.stdout, fakeInk as never)
 
     try {
-      await withFullscreenEnv(async () => {
-        const first = createStreams({ columns: 90, rows: 12 })
+      const first = createStreams({ columns: 90, rows: 12 })
         first.stdout.resume()
         const firstRoot = await createRoot({
           patchConsole: false,
@@ -425,10 +407,12 @@ describe('FullscreenLayout coverage swarm 019', () => {
         })
         try {
           firstRoot.render(
-            <FullscreenLayout
-              scrollable={<Text>link body</Text>}
-              bottom={<Text>prompt body</Text>}
-            />,
+            <FullscreenModeProvider enabled={true}>
+              <FullscreenLayout
+                scrollable={<Text>link body</Text>}
+                bottom={<Text>prompt body</Text>}
+              />
+            </FullscreenModeProvider>,
           )
           await sleep()
 
@@ -456,10 +440,12 @@ describe('FullscreenLayout coverage swarm 019', () => {
         fakeInk.onHyperlinkClick = previousHandler
         try {
           secondRoot.render(
-            <FullscreenLayout
-              scrollable={<Text>link body</Text>}
-              bottom={<Text>prompt body</Text>}
-            />,
+            <FullscreenModeProvider enabled={true}>
+              <FullscreenLayout
+                scrollable={<Text>link body</Text>}
+                bottom={<Text>prompt body</Text>}
+              />
+            </FullscreenModeProvider>,
           )
           await sleep()
 
@@ -472,7 +458,6 @@ describe('FullscreenLayout coverage swarm 019', () => {
           second.stdin.end()
           second.stdout.end()
         }
-      })
     } finally {
       deleteInkInstance(process.stdout)
       await sleep()
@@ -487,8 +472,7 @@ describe('FullscreenLayout coverage swarm 019', () => {
     setInkInstance(process.stdout, fakeInk as never)
 
     try {
-      await withFullscreenEnv(async () => {
-        const first = createStreams({ columns: 90, rows: 12 })
+      const first = createStreams({ columns: 90, rows: 12 })
         const second = createStreams({ columns: 90, rows: 12 })
         first.stdout.resume()
         second.stdout.resume()
@@ -505,20 +489,24 @@ describe('FullscreenLayout coverage swarm 019', () => {
 
         try {
           firstRoot.render(
-            <FullscreenLayout
-              scrollable={<Text>first link body</Text>}
-              bottom={<Text>first prompt body</Text>}
-            />,
+            <FullscreenModeProvider enabled={true}>
+              <FullscreenLayout
+                scrollable={<Text>first link body</Text>}
+                bottom={<Text>first prompt body</Text>}
+              />
+            </FullscreenModeProvider>,
           )
           await sleep()
           const firstHandler = fakeInk.onHyperlinkClick
           expect(firstHandler).toEqual(expect.any(Function))
 
           secondRoot.render(
-            <FullscreenLayout
-              scrollable={<Text>second link body</Text>}
-              bottom={<Text>second prompt body</Text>}
-            />,
+            <FullscreenModeProvider enabled={true}>
+              <FullscreenLayout
+                scrollable={<Text>second link body</Text>}
+                bottom={<Text>second prompt body</Text>}
+              />
+            </FullscreenModeProvider>,
           )
           await sleep()
           const secondHandler = fakeInk.onHyperlinkClick
@@ -542,7 +530,6 @@ describe('FullscreenLayout coverage swarm 019', () => {
           second.stdin.end()
           second.stdout.end()
         }
-      })
     } finally {
       deleteInkInstance(process.stdout)
       await sleep()

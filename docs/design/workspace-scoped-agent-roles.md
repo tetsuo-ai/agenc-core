@@ -77,11 +77,13 @@ confused-deputy risk during resume and restart.
 
 ## Compatibility and failure behavior
 
-Built-in roles and role aliases are unchanged. Existing project Markdown roles
-continue to load from the same locations. The observable compatibility change
-is deliberate: legacy open-child metadata with a named role but no workspace
-provenance is not automatically rebound. The parent session remains usable;
-the operator can explicitly spawn a fresh child in the current workspace.
+Built-in registry IDs and public names are identical: `scanner` is the
+read-only reconnaissance role and `runner` is the execution role. The retired
+`explorer` and `worker` built-in IDs are rejected instead of being rebound as
+aliases. Existing project Markdown roles continue to load from the same
+locations. Open-child metadata with a named role but no workspace provenance
+is also not automatically rebound. The parent session remains usable; the
+operator can explicitly spawn a fresh child in the current workspace.
 
 This is fail-closed because silently reconstructing a missing custom role could
 drop its prompt, allowlist, or denylist. Rollout parsing remains backward
@@ -89,8 +91,8 @@ compatible so old sessions can be inspected even when a named child cannot be
 resumed automatically.
 
 Agent memory and snapshot directories now use hashed, cross-platform path
-components. An unambiguous legacy directory for a safe exact name (for example
-`worker/`) is moved once to its hashed name after symlink and containment
+components. An unambiguous older directory for a safe exact name (for example
+`runner/`) is moved once to its hashed name after symlink and containment
 checks. Lossy legacy names are never auto-adopted. In particular, the former
 remote-local workspace namespace replaced path separators with `-`, so two
 different workspaces could collide. AgenC does not automatically load or move

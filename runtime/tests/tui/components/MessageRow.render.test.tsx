@@ -284,10 +284,22 @@ describe("MessageRow helpers", () => {
     ] as Props["message"][];
 
     expect(
-      hasContentAfterIndex(messages, 0, [] as never, new Set(["stream-1"])),
+      hasContentAfterIndex(
+        messages,
+        0,
+        [] as never,
+        new Set(["stream-1"]),
+        false,
+      ),
     ).toBe(true);
     expect(
-      hasContentAfterIndex(messages.slice(0, -1), 0, [] as never, new Set(["stream-1"])),
+      hasContentAfterIndex(
+        messages.slice(0, -1),
+        0,
+        [] as never,
+        new Set(["stream-1"]),
+        false,
+      ),
     ).toBe(false);
     expect(
       hasContentAfterIndex(
@@ -295,6 +307,7 @@ describe("MessageRow helpers", () => {
         0,
         [] as never,
         new Set(["stream-1"]),
+        false,
       ),
     ).toBe(true);
   });

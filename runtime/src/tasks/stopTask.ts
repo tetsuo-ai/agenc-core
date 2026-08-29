@@ -1,15 +1,8 @@
 /**
- * Ports donor `src/tasks/stopTask.ts` validation and registry dispatch onto
- * AgenC's lifecycle stop delegate.
- *
- * Shape differences from the donor:
- *   - A real stop delegate is required. This helper never marks a task killed
- *     as a substitute for cancelling the backing work.
- *   - Lifecycle-backed callers may stop `pending` tasks because the existing
- *     `BackgroundTaskLifecycle` contract supports it.
- *
- * Cross-cuts deliberately NOT carried:
- *   - Donor SDK event queue emission is not exposed by the live runtime.
+ * Validate a task-stop request and dispatch it through the registered
+ * lifecycle delegate. A real stop delegate is required; this helper never
+ * marks a task killed without cancelling the backing work. Lifecycle-backed
+ * callers may also stop pending tasks when their contract allows it.
  */
 
 import { getTaskByType, TaskRegistryError, type TaskStopDelegate } from "./registry.js";

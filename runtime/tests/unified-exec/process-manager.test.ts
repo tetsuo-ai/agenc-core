@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -13,12 +13,8 @@ import {
   type SandboxManager,
   type SandboxTransformRequest,
 } from "../sandbox/engine/index.js";
-import { type ExecCommandToolOutput, UnifiedExecError } from "./types.js";
-import {
-  UnifiedExecPreSpawnRefusalError,
-  UnifiedExecProcessExitedBeforeWriteError,
-  UnifiedExecProcessManager,
-} from "./process-manager.js";
+import { UnifiedExecError } from "./types.js";
+import { UnifiedExecProcessManager } from "./process-manager.js";
 import {
   beginWorkspaceToolOperation,
   endWorkspaceToolOperation,
@@ -80,22 +76,7 @@ function installFakePty(
       readonly env?: Record<string, string>;
     },
   ) => void,
-): {
-  readonly write: ReturnType<typeof vi.fn>;
-  readonly emitData: (data: string) => void;
-  readonly emitExit: (event: {
-    readonly exitCode: number;
-    readonly signal?: number | string;
-  }) => void;
-} {
-  let dataListener: ((data: string) => void) | null = null;
-  let exitListener:
-    | ((event: {
-        readonly exitCode: number;
-        readonly signal?: number | string;
-      }) => void)
-    | null = null;
-  const write = vi.fn();
+): void {
   (
     manager as unknown as {
       loadPty: () => Promise<{
@@ -124,17 +105,20 @@ function installFakePty(
   ).loadPty = async () => ({
     spawn(file, args, options) {
       onSpawn?.(file, args, options);
+      let exitListener:
+        | ((event: {
+            readonly exitCode: number;
+            readonly signal?: number | string;
+          }) => void)
+        | null = null;
       return {
         pid: 0,
-        write,
+        write: vi.fn(),
         resize: vi.fn(),
         kill: vi.fn(() => {
           exitListener?.({ exitCode: 143, signal: "SIGTERM" });
         }),
-        onData: (listener) => {
-          dataListener = listener;
-          return { dispose: vi.fn() };
-        },
+        onData: () => ({ dispose: vi.fn() }),
         onExit: (listener) => {
           exitListener = listener;
           return { dispose: vi.fn() };
@@ -142,11 +126,6 @@ function installFakePty(
       };
     },
   });
-  return {
-    write,
-    emitData: (data) => dataListener?.(data),
-    emitExit: (event) => exitListener?.(event),
-  };
 }
 
 function markerPids(marker: string): number[] {
@@ -193,6 +172,119 @@ function killMarker(marker: string): void {
 }
 
 describe("UnifiedExecProcessManager", () => {
+  test("forces pipe children onto the manager's captured temp root", async () => {
+    const sessionTempRoot = await mkdtemp(
+      join(tmpdir(), "agenc-unified-exec-temp-"),
+    );
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sessionTempRoot,
+      baseEnv: {
+        ...process.env,
+        AGENC_TMPDIR: "/ambient/agenc",
+        TMPDIR: "/ambient/posix",
+        TEMP: "C:\\ambient\\temp",
+        TMP: "C:\\ambient\\tmp",
+      },
+      env: {
+        AGENC_TMPDIR: "/override/agenc",
+        TMPDIR: "/override/posix",
+        TEMP: "C:\\override\\temp",
+        TMP: "C:\\override\\tmp",
+      },
+    });
+    const script =
+      "process.stdout.write(JSON.stringify({" +
+      "agenc:process.env.AGENC_TMPDIR," +
+      "posix:process.env.TMPDIR," +
+      "temp:process.env.TEMP," +
+      "tmp:process.env.TMP}))";
+    try {
+      const result = await manager.execCommand({
+        cmd: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+        yield_time_ms: 5_000,
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        agenc: sessionTempRoot,
+        posix: sessionTempRoot,
+        temp: sessionTempRoot,
+        tmp: sessionTempRoot,
+      });
+    } finally {
+      await manager.closeAll("test_cleanup");
+    }
+  });
+
+  test("forces PTY children onto the manager's captured temp root", async () => {
+    const sessionTempRoot = join(tmpdir(), "agenc-unified-exec-pty-temp");
+    let spawnedEnvironment: Record<string, string> | undefined;
+    const baseSandboxManager = ptyCompatibleSandboxManager();
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sessionTempRoot,
+      baseEnv: {
+        PATH: process.env.PATH,
+        AGENC_TMPDIR: "/ambient/agenc",
+        TMPDIR: "/ambient/posix",
+        TEMP: "C:\\ambient\\temp",
+        TMP: "C:\\ambient\\tmp",
+      },
+      env: {
+        AGENC_TMPDIR: "/override/agenc",
+        TMPDIR: "/override/posix",
+        TEMP: "C:\\override\\temp",
+        TMP: "C:\\override\\tmp",
+      },
+      sandboxManager: {
+        selectInitial: baseSandboxManager.selectInitial,
+        transform: (request) => {
+          const transformed = baseSandboxManager.transform(request);
+          return {
+            ...transformed,
+            env: {
+              ...transformed.env,
+              AGENC_TMPDIR: "/transform/agenc",
+              TMPDIR: "/transform/posix",
+              TEMP: "C:\\transform\\temp",
+              TMP: "C:\\transform\\tmp",
+            },
+          };
+        },
+      },
+    });
+    installFakePty(manager, (_file, _args, options) => {
+      spawnedEnvironment = options.env;
+    });
+    try {
+      const result = await manager.execCommand({
+        cmd: "exit 0",
+        tty: true,
+        yield_time_ms: 250,
+        runtimeSandbox: {
+          permissionProfile: permissionProfileFromRuntimePermissions(
+            unrestrictedFileSystemPolicy(),
+            "enabled",
+          ),
+          sandboxPolicyCwd: process.cwd(),
+          sessionTempRoot,
+          preference: "require",
+        },
+      });
+
+      expect(result.process_id).toEqual(expect.any(Number));
+      expect(spawnedEnvironment).toMatchObject({
+        AGENC_TMPDIR: sessionTempRoot,
+        TMPDIR: sessionTempRoot,
+        TEMP: sessionTempRoot,
+        TMP: sessionTempRoot,
+      });
+    } finally {
+      await manager.closeAll("test_cleanup");
+    }
+  });
+
   test("keeps Editor acquisition fenced until a yielded process exits", async () => {
     if (process.platform === "win32") return;
     const root = await mkdtemp(join(tmpdir(), "agenc-exec-editor-fence-"));
@@ -315,14 +407,7 @@ describe("UnifiedExecProcessManager", () => {
             tty: true,
           }),
         ),
-      ).rejects.toMatchObject({
-        name: "UnifiedExecPreSpawnRefusalError",
-        code: "create_process",
-        boundary: "pre_spawn",
-        message: expect.stringMatching(
-          /PTY descendants cannot be contained safely/u,
-        ),
-      } satisfies Partial<UnifiedExecPreSpawnRefusalError>);
+      ).rejects.toThrow(/PTY descendants cannot be contained safely/u);
       await lifetime.release();
       await lifetime.settled();
 
@@ -353,516 +438,52 @@ describe("UnifiedExecProcessManager", () => {
     expect(result.process_id).toBeUndefined();
   });
 
-  test("resolves a relative workdir against the manager workspace root", async () => {
-    const root = await mkdtemp(join(tmpdir(), "agenc-exec-relative-cwd-"));
-    const childDirectory = join(root, "flowforge");
-    await mkdir(childDirectory);
-    const manager = new UnifiedExecProcessManager({ cwd: root });
+  test("uses the captured shell and wrapper for default commands", async () => {
+    if (process.platform === "win32") return;
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      shellPath: "/bin/sh",
+      commandWrapperArgv: [
+        "env",
+        "AGENC_WRAPPER_TEST=wrapped-unified-exec",
+        "/bin/sh",
+        "-c",
+      ],
+    });
 
     try {
       const result = await manager.execCommand({
-        cmd: `${JSON.stringify(process.execPath)} -e ${JSON.stringify("process.stdout.write(process.cwd())")}`,
-        workdir: "flowforge",
+        cmd: 'printf "%s" "$AGENC_WRAPPER_TEST"',
         yield_time_ms: 250,
       });
-
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toBe(await realpath(childDirectory));
+      expect(result.stdout).toBe("wrapped-unified-exec");
     } finally {
       await manager.closeAll("test cleanup");
     }
   });
 
-  test("contains an invalid-cwd spawn failure and remains usable", async () => {
-    const root = await mkdtemp(join(tmpdir(), "agenc-exec-invalid-cwd-"));
-    const manager = new UnifiedExecProcessManager({ cwd: root });
+  test("snapshots its base child environment at construction", async () => {
+    if (process.platform === "win32") return;
+    const baseEnv = {
+      ...process.env,
+      AGENC_UNIFIED_EXEC_ENV_TEST: "captured",
+    };
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      baseEnv,
+      shellPath: "/bin/sh",
+    });
+    baseEnv.AGENC_UNIFIED_EXEC_ENV_TEST = "changed";
 
     try {
-      await expect(
-        manager.execCommand({
-          cmd: "printf must-not-run",
-          workdir: "missing-directory",
-          yield_time_ms: 250,
-        }),
-      ).rejects.toMatchObject({
-        name: "UnifiedExecPreSpawnRefusalError",
-        code: "create_process",
-        boundary: "pre_spawn",
-        message: expect.stringMatching(/working directory is unavailable/iu),
-      } satisfies Partial<UnifiedExecPreSpawnRefusalError>);
-
-      const followUp = await manager.execCommand({
-        cmd: "printf manager-still-alive",
+      const result = await manager.execCommand({
+        cmd: 'printf "%s" "$AGENC_UNIFIED_EXEC_ENV_TEST"',
         yield_time_ms: 250,
       });
-      expect(followUp).toMatchObject({
-        exitCode: 0,
-        stdout: "manager-still-alive",
-      });
+      expect(result.stdout).toBe("captured");
     } finally {
       await manager.closeAll("test cleanup");
-    }
-  });
-
-  test("contains a sandbox-transformed invalid cwd and remains usable", async () => {
-    const root = await mkdtemp(
-      join(tmpdir(), "agenc-exec-sandbox-invalid-cwd-"),
-    );
-    const missingSandboxCwd = join(root, "sandbox-missing-directory");
-    const manager = new UnifiedExecProcessManager({
-      cwd: root,
-      sandboxManager: {
-        selectInitial: () => "linux_seccomp",
-        transform: (request): SandboxExecRequest => ({
-          command: [request.command.program, ...request.command.args],
-          cwd: missingSandboxCwd,
-          env: request.command.env,
-          sandbox: request.sandbox,
-          windowsSandboxLevel: request.windowsSandboxLevel,
-          windowsSandboxPrivateDesktop:
-            request.windowsSandboxPrivateDesktop,
-          permissionProfile: request.permissions,
-          fileSystemSandboxPolicy: request.permissions.fileSystem,
-          networkSandboxPolicy: request.permissions.network,
-          arg0: "agenc-invalid-cwd-test",
-        }),
-      },
-    });
-    const permissionProfile = permissionProfileFromRuntimePermissions(
-      unrestrictedFileSystemPolicy(),
-      "disabled",
-    );
-
-    try {
-      await expect(
-        manager.execCommand({
-          cmd: "printf must-not-run",
-          runtimeSandbox: {
-            permissionProfile,
-            sandboxPolicyCwd: root,
-            preference: "require",
-          },
-          yield_time_ms: 250,
-        }),
-      ).rejects.toMatchObject({
-        name: "UnifiedExecPreSpawnRefusalError",
-        code: "create_process",
-        boundary: "pre_spawn",
-        message: expect.stringContaining(missingSandboxCwd),
-      } satisfies Partial<UnifiedExecPreSpawnRefusalError>);
-
-      const followUp = await manager.execCommand({
-        cmd: "printf manager-still-alive-after-sandbox-refusal",
-        yield_time_ms: 250,
-      });
-      expect(followUp).toMatchObject({
-        exitCode: 0,
-        stdout: "manager-still-alive-after-sandbox-refusal",
-      });
-    } finally {
-      await manager.closeAll("test cleanup");
-    }
-  });
-
-  test("settles a post-spawn stdin EPIPE once and remains usable", async () => {
-    const root = await mkdtemp(join(tmpdir(), "agenc-exec-stdin-epipe-"));
-    const manager = new UnifiedExecProcessManager({ cwd: root });
-
-    try {
-      const started = await manager.execCommand({
-        cmd: `${JSON.stringify(process.execPath)} -e ${JSON.stringify("setInterval(() => {}, 1000)")}`,
-        yield_time_ms: 250,
-      });
-      const sessionId = started.process_id!;
-      const entry = (
-        manager as unknown as {
-          readonly processes: ReadonlyMap<
-            number,
-            {
-              readonly stored:
-                | {
-                    readonly kind: "pipe";
-                    readonly process: {
-                      readonly stdin: {
-                        emit(event: "error", error: Error): boolean;
-                      };
-                    };
-                  }
-                | { readonly kind: "pty" };
-            }
-          >;
-        }
-      ).processes.get(sessionId);
-      expect(entry?.stored.kind).toBe("pipe");
-      if (entry?.stored.kind !== "pipe") {
-        throw new Error("expected a pipe-backed process");
-      }
-      const pipeError = Object.assign(new Error("synthetic stdin EPIPE"), {
-        code: "EPIPE",
-      });
-      // Duplicate delivery models stdin + child error racing. Settlement must
-      // stay idempotent and neither event may escape as an uncaught exception.
-      entry.stored.process.stdin.emit("error", pipeError);
-      entry.stored.process.stdin.emit("error", pipeError);
-      await delay(300);
-
-      let observation: ExecCommandToolOutput | undefined;
-      try {
-        observation = await manager.writeStdin({
-          session_id: sessionId,
-          chars: "",
-          yield_time_ms: 250,
-        });
-      } catch (error) {
-        expect(error).toBeInstanceOf(UnifiedExecProcessExitedBeforeWriteError);
-        observation = (error as UnifiedExecProcessExitedBeforeWriteError)
-          .observation;
-      }
-      expect(observation).toMatchObject({
-        exitCode: 1,
-        stderr: expect.stringContaining("synthetic stdin EPIPE"),
-      });
-
-      const followUp = await manager.execCommand({
-        cmd: "printf manager-still-alive-after-epipe",
-        yield_time_ms: 250,
-      });
-      expect(followUp).toMatchObject({
-        exitCode: 0,
-        stdout: "manager-still-alive-after-epipe",
-      });
-    } finally {
-      await manager.closeAll("test cleanup");
-    }
-  });
-
-  test("preserves initial exec output when progress telemetry throws", async () => {
-    const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
-    const progress = vi.fn(() => {
-      throw new Error("session progress sink unavailable");
-    });
-
-    const result = await manager.execCommand({
-      cmd: "printf progress-survives",
-      yield_time_ms: 250,
-      __onProgress: progress,
-    });
-
-    expect(progress).toHaveBeenCalled();
-    expect(result).toMatchObject({
-      stdout: "progress-survives",
-      output: "progress-survives",
-      exitCode: 0,
-      exit_code: 0,
-    });
-  });
-
-  test("brands sandbox transform failures as pre-spawn refusals", async () => {
-    const manager = new UnifiedExecProcessManager({
-      cwd: process.cwd(),
-      sandboxManager: {
-        selectInitial: () => "linux_seccomp",
-        transform: () => {
-          throw new Error("sandbox policy compiler unavailable");
-        },
-      },
-    });
-    const permissionProfile = permissionProfileFromRuntimePermissions(
-      restrictedFileSystemPolicy(),
-      "enabled",
-    );
-
-    await expect(
-      manager.execCommand({
-        cmd: "printf must-not-spawn",
-        runtimeSandbox: {
-          permissionProfile,
-          sandboxPolicyCwd: process.cwd(),
-          preference: "require",
-        },
-      }),
-    ).rejects.toMatchObject({
-      name: "UnifiedExecPreSpawnRefusalError",
-      code: "create_process",
-      boundary: "pre_spawn",
-      message: "sandbox policy compiler unavailable",
-    } satisfies Partial<UnifiedExecPreSpawnRefusalError>);
-  });
-
-  test("preserves an exited session receipt when a later sandbox transform is refused at slot pressure", async () => {
-    const manager = new UnifiedExecProcessManager({
-      cwd: process.cwd(),
-      maxProcesses: 1,
-      sandboxManager: {
-        selectInitial: () => "linux_seccomp",
-        transform: () => {
-          throw new Error("sandbox transform refused before spawn");
-        },
-      },
-    });
-    const pty = installFakePty(manager);
-    const permissionProfile = permissionProfileFromRuntimePermissions(
-      restrictedFileSystemPolicy(),
-      "enabled",
-    );
-
-    try {
-      const started = await manager.execCommand({
-        cmd: "fake-buffered-shell",
-        tty: true,
-        yield_time_ms: 250,
-      });
-      const sessionId = started.process_id!;
-      pty.emitData("BUFFERED_BEFORE_REFUSAL\n");
-      pty.emitExit({ exitCode: 9 });
-
-      await expect(
-        manager.execCommand({
-          cmd: "printf must-not-spawn",
-          runtimeSandbox: {
-            permissionProfile,
-            sandboxPolicyCwd: process.cwd(),
-            preference: "require",
-          },
-        }),
-      ).rejects.toMatchObject({
-        name: "UnifiedExecPreSpawnRefusalError",
-        code: "create_process",
-        boundary: "pre_spawn",
-        message: "sandbox transform refused before spawn",
-      } satisfies Partial<UnifiedExecPreSpawnRefusalError>);
-
-      const polled = await manager.writeStdin({
-        session_id: sessionId,
-        chars: "",
-        yield_time_ms: 250,
-      });
-      expect(polled).toMatchObject({
-        stdout: "BUFFERED_BEFORE_REFUSAL\n",
-        output: "BUFFERED_BEFORE_REFUSAL\n",
-        exitCode: 9,
-        exit_code: 9,
-      });
-    } finally {
-      await manager.closeAll("test_cleanup");
-    }
-  });
-
-  test("preserves an exited owned receipt across repeated replacement PTY spawn failures", async () => {
-    const manager = new UnifiedExecProcessManager({
-      cwd: process.cwd(),
-      maxProcesses: 1,
-    });
-    let spawnAttempts = 0;
-    const pty = installFakePty(manager, () => {
-      spawnAttempts += 1;
-      if (spawnAttempts > 1) {
-        throw new Error("simulated PTY spawn failure");
-      }
-    });
-
-    try {
-      const started = await manager.execCommand({
-        cmd: "fake-buffered-shell",
-        tty: true,
-        yield_time_ms: 250,
-        ownerId: "receipt-owner",
-      });
-      const sessionId = started.process_id!;
-      pty.emitData("BUFFERED_BEFORE_SPAWN_FAILURE\n");
-      pty.emitExit({ exitCode: 17 });
-
-      // A failed replacement never becomes a tracked process, so it must not
-      // consume the only exited receipt or grow the process map.
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        await expect(
-          manager.execCommand({
-            cmd: `fake-replacement-${attempt}`,
-            tty: true,
-            yield_time_ms: 250,
-            ownerId: "replacement-owner",
-          }),
-        ).rejects.toMatchObject({
-          name: "UnifiedExecError",
-          code: "create_process",
-          message: "simulated PTY spawn failure",
-        } satisfies Partial<UnifiedExecError>);
-        expect(
-          (
-            manager as unknown as {
-              readonly processes: ReadonlyMap<number, unknown>;
-            }
-          ).processes.size,
-        ).toBe(1);
-      }
-
-      // Ownership is unchanged while the receipt is retained.
-      await expect(
-        manager.writeStdin({
-          session_id: sessionId,
-          chars: "",
-          ownerId: "replacement-owner",
-        }),
-      ).rejects.toMatchObject({ code: "owner_denied" });
-
-      const polled = await manager.writeStdin({
-        session_id: sessionId,
-        chars: "",
-        yield_time_ms: 250,
-        ownerId: "receipt-owner",
-      });
-      expect(polled).toMatchObject({
-        stdout: "BUFFERED_BEFORE_SPAWN_FAILURE\n",
-        output: "BUFFERED_BEFORE_SPAWN_FAILURE\n",
-        exitCode: 17,
-        exit_code: 17,
-      });
-    } finally {
-      await manager.closeAll("test_cleanup");
-    }
-  });
-
-  test("reclaims an old exited receipt only after a successful replacement is tracked", async () => {
-    const manager = new UnifiedExecProcessManager({
-      cwd: process.cwd(),
-      maxProcesses: 1,
-    });
-    const pty = installFakePty(manager);
-
-    try {
-      const first = await manager.execCommand({
-        cmd: "fake-first-shell",
-        tty: true,
-        yield_time_ms: 250,
-        ownerId: "first-owner",
-      });
-      const firstSessionId = first.process_id!;
-      pty.emitData("OLD_UNPOLLED_OUTPUT\n");
-      pty.emitExit({ exitCode: 0 });
-
-      const replacement = await manager.execCommand({
-        cmd: "fake-replacement-shell",
-        tty: true,
-        yield_time_ms: 250,
-        ownerId: "replacement-owner",
-      });
-      const replacementSessionId = replacement.process_id!;
-      expect(replacementSessionId).not.toBe(firstSessionId);
-      expect(
-        (
-          manager as unknown as {
-            readonly processes: ReadonlyMap<number, unknown>;
-          }
-        ).processes.size,
-      ).toBe(1);
-
-      await expect(
-        manager.writeStdin({
-          session_id: firstSessionId,
-          chars: "",
-          ownerId: "first-owner",
-        }),
-      ).rejects.toMatchObject({ code: "unknown_process" });
-
-      // The replacement retains its owner and consumes the sole live slot.
-      await expect(
-        manager.writeStdin({
-          session_id: replacementSessionId,
-          chars: "",
-          ownerId: "first-owner",
-        }),
-      ).rejects.toMatchObject({ code: "owner_denied" });
-      await expect(
-        manager.execCommand({
-          cmd: "fake-over-cap-shell",
-          tty: true,
-          ownerId: "third-owner",
-        }),
-      ).rejects.toMatchObject({
-        code: "process_limit",
-        message: "too many live unified exec processes (1/1)",
-      });
-    } finally {
-      await manager.closeAll("test_cleanup");
-    }
-  });
-
-  test("reserves live capacity while concurrent replacements are spawning", async () => {
-    const manager = new UnifiedExecProcessManager({
-      cwd: process.cwd(),
-      maxProcesses: 1,
-    });
-    installFakePty(manager);
-
-    try {
-      const launches = await Promise.allSettled([
-        manager.execCommand({
-          cmd: "fake-concurrent-a",
-          tty: true,
-          yield_time_ms: 250,
-          ownerId: "owner-a",
-        }),
-        manager.execCommand({
-          cmd: "fake-concurrent-b",
-          tty: true,
-          yield_time_ms: 250,
-          ownerId: "owner-b",
-        }),
-      ]);
-
-      expect(
-        launches.filter((result) => result.status === "fulfilled"),
-      ).toHaveLength(1);
-      const rejected = launches.find(
-        (result): result is PromiseRejectedResult =>
-          result.status === "rejected",
-      );
-      expect(rejected?.reason).toMatchObject({
-        code: "process_limit",
-        message: "too many live unified exec processes (1/1)",
-      });
-      expect(
-        (
-          manager as unknown as {
-            readonly processes: ReadonlyMap<number, unknown>;
-          }
-        ).processes.size,
-      ).toBe(1);
-    } finally {
-      await manager.closeAll("test_cleanup");
-    }
-  });
-
-  test("still enforces the process limit after pre-spawn validation", async () => {
-    const manager = new UnifiedExecProcessManager({
-      cwd: process.cwd(),
-      maxProcesses: 1,
-    });
-    installFakePty(manager);
-
-    try {
-      const started = await manager.execCommand({
-        cmd: "fake-live-shell",
-        tty: true,
-        yield_time_ms: 250,
-      });
-
-      await expect(
-        manager.execCommand({ cmd: "printf must-not-spawn" }),
-      ).rejects.toMatchObject({
-        name: "UnifiedExecError",
-        code: "process_limit",
-        message: "too many live unified exec processes (1/1)",
-      } satisfies Partial<UnifiedExecError>);
-
-      const polled = await manager.writeStdin({
-        session_id: started.process_id!,
-        chars: "",
-        yield_time_ms: 250,
-      });
-      expect(polled.process_id).toBe(started.process_id);
-    } finally {
-      await manager.closeAll("test_cleanup");
     }
   });
 
@@ -1035,38 +656,6 @@ describe("UnifiedExecProcessManager", () => {
     }
   });
 
-  test("preserves write_stdin poll output when progress telemetry throws", async () => {
-    const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
-    try {
-      const started = await manager.execCommand({
-        cmd: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
-          "setTimeout(() => process.stdout.write('poll-survives'), 400)",
-        )}`,
-        yield_time_ms: 250,
-      });
-      const progress = vi.fn(() => {
-        throw new Error("session progress sink unavailable");
-      });
-
-      const result = await manager.writeStdin({
-        session_id: started.process_id!,
-        chars: "",
-        yield_time_ms: 5_000,
-        __onProgress: progress,
-      });
-
-      expect(progress).toHaveBeenCalled();
-      expect(result).toMatchObject({
-        stdout: "poll-survives",
-        output: "poll-survives",
-        exitCode: 0,
-        exit_code: 0,
-      });
-    } finally {
-      await manager.closeAll("test_cleanup");
-    }
-  });
-
   test("persists PTY shell state across write_stdin calls", async () => {
     const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
     try {
@@ -1096,60 +685,6 @@ describe("UnifiedExecProcessManager", () => {
       await manager.closeAll("test_cleanup");
     }
   }, 10_000);
-
-  test("returns a typed final receipt when input targets an exited buffered PTY", async () => {
-    const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
-    const pty = installFakePty(manager);
-    try {
-      const started = await manager.execCommand({
-        cmd: "fake-interactive-shell",
-        tty: true,
-        yield_time_ms: 250,
-      });
-      const sessionId = started.process_id!;
-      expect(sessionId).toEqual(expect.any(Number));
-
-      pty.emitData("FINAL_BUFFERED_OUTPUT\n");
-      pty.emitExit({ exitCode: 7 });
-
-      let observed: unknown;
-      try {
-        await manager.writeStdin({
-          session_id: sessionId,
-          chars: "late input\n",
-          yield_time_ms: 250,
-        });
-      } catch (error) {
-        observed = error;
-      }
-
-      expect(observed).toBeInstanceOf(
-        UnifiedExecProcessExitedBeforeWriteError,
-      );
-      expect(observed).toMatchObject({
-        code: "unknown_process",
-        sessionId,
-        observation: {
-          stdout: "FINAL_BUFFERED_OUTPUT\n",
-          output: "FINAL_BUFFERED_OUTPUT\n",
-          exitCode: 7,
-          exit_code: 7,
-        },
-      });
-      expect(pty.write).not.toHaveBeenCalled();
-
-      // The typed receipt is emitted exactly once. After cleanup, the same id
-      // is a plain absent-id lookup with no additional process-state effect.
-      await expect(
-        manager.writeStdin({ session_id: sessionId, chars: "" }),
-      ).rejects.toMatchObject({
-        name: "UnifiedExecError",
-        code: "unknown_process",
-      });
-    } finally {
-      await manager.closeAll("test_cleanup");
-    }
-  });
 
   test.skipIf(process.platform === "win32")(
     "aborting a yielded PTY poll terminates the foreground child process",
@@ -1285,6 +820,7 @@ describe("UnifiedExecProcessManager", () => {
     const runtimeSandbox = {
       permissionProfile,
       sandboxPolicyCwd: process.cwd(),
+      sessionTempRoot: tmpdir(),
       preference: "require" as const,
     };
     const manager = new UnifiedExecProcessManager({
@@ -1309,6 +845,19 @@ describe("UnifiedExecProcessManager", () => {
           runtimeSandbox: {
             ...runtimeSandbox,
             preference: "auto",
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: "write_stdin",
+      } satisfies Partial<UnifiedExecError>);
+      await expect(
+        manager.writeStdin({
+          session_id: sessionId,
+          chars: "",
+          yield_time_ms: 250,
+          runtimeSandbox: {
+            ...runtimeSandbox,
+            sessionTempRoot: join(tmpdir(), "different-session"),
           },
         }),
       ).rejects.toMatchObject({
@@ -1499,6 +1048,129 @@ describe("UnifiedExecProcessManager", () => {
       code: "unknown_process",
     } satisfies Partial<UnifiedExecError>);
   }, 10_000);
+
+  test("rejects a precomputed sandbox command if quiesce starts while PTY loading is deferred", async () => {
+    const permissionProfile = permissionProfileFromRuntimePermissions(
+      restrictedFileSystemPolicy(),
+      "enabled",
+    );
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sandboxManager: ptyCompatibleSandboxManager(),
+    });
+    let announceLoad!: () => void;
+    const loadEntered = new Promise<void>((resolvePromise) => {
+      announceLoad = resolvePromise;
+    });
+    let releaseLoad!: () => void;
+    const loadGate = new Promise<void>((resolvePromise) => {
+      releaseLoad = resolvePromise;
+    });
+    const spawn = vi.fn();
+    (
+      manager as unknown as {
+        loadPty: () => Promise<{
+          spawn: typeof spawn;
+        }>;
+      }
+    ).loadPty = async () => {
+      announceLoad();
+      await loadGate;
+      return { spawn };
+    };
+
+    const execution = manager.execCommand({
+      cmd: "bash -i",
+      tty: true,
+      yield_time_ms: 250,
+      runtimeSandbox: {
+        permissionProfile,
+        sandboxPolicyCwd: process.cwd(),
+        preference: "require",
+      },
+    });
+    void execution.catch(() => undefined);
+    await loadEntered;
+
+    const token = manager.beginSandboxAuthorityQuiesce();
+    await manager.finishSandboxAuthorityQuiesce(token);
+    releaseLoad();
+
+    await expect(execution).rejects.toThrow(
+      /quiesced while sandbox runtime authority changes/u,
+    );
+    expect(spawn).not.toHaveBeenCalled();
+    manager.resumeSandboxAuthorityAfterQuiesce(token);
+  });
+
+  test("retains an uncooperative process and permanently closes admission when strict quiesce cannot prove exit", async () => {
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sandboxAuthorityQuiesceTimeoutMs: 20,
+    });
+    let exitListener:
+      | ((event: { readonly exitCode: number; readonly signal?: string }) => void)
+      | undefined;
+    (
+      manager as unknown as {
+        loadPty: () => Promise<{
+          spawn: () => {
+            readonly pid: number;
+            write(data: string): void;
+            resize(columns: number, rows: number): void;
+            kill(signal?: string): void;
+            onData(listener: (data: string) => void): { dispose(): void };
+            onExit(
+              listener: (event: {
+                readonly exitCode: number;
+                readonly signal?: string;
+              }) => void,
+            ): { dispose(): void };
+          };
+        }>;
+      }
+    ).loadPty = async () => ({
+      spawn: () => ({
+        pid: 0,
+        write: vi.fn(),
+        resize: vi.fn(),
+        kill: vi.fn(),
+        onData: () => ({ dispose: vi.fn() }),
+        onExit: (listener) => {
+          exitListener = listener;
+          return { dispose: vi.fn() };
+        },
+      }),
+    });
+
+    const started = await manager.execCommand({
+      cmd: "bash -i",
+      tty: true,
+      yield_time_ms: 250,
+    });
+    expect(started.process_id).toEqual(expect.any(Number));
+    const token = manager.beginSandboxAuthorityQuiesce();
+
+    await expect(
+      manager.finishSandboxAuthorityQuiesce(token),
+    ).rejects.toThrow(/could not prove process-tree cleanup/u);
+    expect(
+      (
+        manager as unknown as {
+          processes: Map<number, unknown>;
+        }
+      ).processes.size,
+    ).toBe(1);
+    await expect(
+      manager.execCommand({ cmd: "printf should-not-run" }),
+    ).rejects.toThrow(/permanently closed/u);
+    expect(() =>
+      manager.resumeSandboxAuthorityAfterQuiesce(token),
+    ).toThrow();
+
+    exitListener?.({ exitCode: 137, signal: "SIGKILL" });
+    await manager.closeAll("test_cleanup");
+  });
 });
 
 describe("background-shell trio (task 8)", () => {

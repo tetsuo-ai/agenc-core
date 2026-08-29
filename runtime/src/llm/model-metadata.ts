@@ -1,13 +1,14 @@
 import {
-  normalizeProviderSlug,
   readProviderConfig,
-  type AgenCConfig,
-} from "./_deps/config.js";
+} from "../config/resolve-provider.js";
+import type { AgenCConfig } from "../config/schema.js";
 import { resolveModelCatalogMetadata } from "./registry/model-catalog.js";
+import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
 import {
-  BUILT_IN_PROVIDER_API_KEY_ENVS,
-  BUILT_IN_PROVIDER_BASE_URLS,
-} from "./registry/provider-info.js";
+  resolveProviderApiKeyEnvironment,
+  resolveProviderBaseURLEnvironment,
+} from "./registry/provider-ingress.js";
+import { resolveBuiltInProviderInfo } from "./registry/provider-info.js";
 import {
   boundedOutputTokens,
   CAPPED_DEFAULT_MAX_OUTPUT_TOKENS,
@@ -211,27 +212,12 @@ export class ModelMetadataResolver {
   private async resolveLiveEndpointMetadata(
     params: LookupParams,
   ): Promise<ModelMetadataValues | undefined> {
-    const provider = normalizeProvider(params.provider);
+    const provider = normalizeMetadataProviderIdentity(params.provider);
     if (!LIVE_METADATA_PROVIDERS.has(provider)) return undefined;
     if (!shouldQueryLiveEndpoint(params, this.env)) return undefined;
     const baseUrl = providerBaseUrl(params.config, provider, this.env);
     if (!baseUrl) return undefined;
-    const headers = authHeaders(params.config, provider, this.env);
-    // LM Studio's native listing is the only place the loaded context length
-    // exists; its OpenAI-compatible surface reports a generic ceiling, so a
-    // model loaded at 8k claimed 128k and the gauge read a full window as
-    // barely touched.
-    if (provider === "lmstudio") {
-      const nativeUrl = lmStudioNativeModelsUrl(baseUrl);
-      const native =
-        nativeUrl === undefined
-          ? undefined
-          : metadataFromLmStudioNativeModels(
-              await this.fetchJson(nativeUrl, { headers }),
-              params.model,
-            );
-      if (native !== undefined) return native;
-    }
+    const headers = authHeaders(provider, this.env);
     // Ollama serves no context length over its OpenAI-compatible surface, so
     // the native endpoint is the only place the real number exists.
     if (provider !== "ollama") {
@@ -268,7 +254,7 @@ export class ModelMetadataResolver {
   private async resolveOpenRouterMetadata(
     params: LookupParams,
   ): Promise<ModelMetadataValues | undefined> {
-    if (normalizeProvider(params.provider) !== "openrouter") return undefined;
+    if (normalizeMetadataProviderIdentity(params.provider) !== "openrouter") return undefined;
     const response = await this.fetchJson(OPENROUTER_MODELS_URL);
     return metadataFromOpenAiModelsResponse(response, params.model);
   }
@@ -360,7 +346,7 @@ function shouldPreferDynamicMetadata(
   params: LookupParams,
   env: Readonly<Record<string, string | undefined>>,
 ): boolean {
-  const provider = normalizeProvider(params.provider);
+  const provider = normalizeMetadataProviderIdentity(params.provider);
   return provider === "openrouter" || shouldQueryLiveEndpoint(params, env);
 }
 
@@ -368,7 +354,7 @@ function shouldQueryLiveEndpoint(
   params: LookupParams,
   env: Readonly<Record<string, string | undefined>>,
 ): boolean {
-  const provider = normalizeProvider(params.provider);
+  const provider = normalizeMetadataProviderIdentity(params.provider);
   const providerConfig = readProviderConfig(params.config, provider);
   return (
     provider === "lmstudio" ||
@@ -384,7 +370,7 @@ function shouldPreferLiveEndpointOverExplicit(
   env: Readonly<Record<string, string | undefined>>,
 ): boolean {
   return (
-    normalizeProvider(params.provider) === "openai-compatible" &&
+    normalizeMetadataProviderIdentity(params.provider) === "openai-compatible" &&
     shouldQueryLiveEndpoint(params, env)
   );
 }
@@ -429,7 +415,8 @@ function mergeLiveEndpointMetadata(
 function readExplicitConfigMetadata(
   params: LookupParams,
 ): ModelMetadataValues {
-  const providerConfig = readProviderConfig(params.config, params.provider) as
+  const provider = normalizeMetadataProviderIdentity(params.provider);
+  const providerConfig = readProviderConfig(params.config, provider) as
     | Record<string, unknown>
     | undefined;
   const explicitContextWindow = readPositiveInteger(
@@ -438,7 +425,7 @@ function readExplicitConfigMetadata(
     "contextWindowTokens",
   );
   const catalogMaxContextWindow = resolveModelCatalogMetadata({
-    provider: params.provider,
+    provider,
     model: params.model,
   })?.maxContextWindow;
   const contextWindow =
@@ -489,7 +476,7 @@ function inferBuiltInMetadata(
   provider: string,
   model: string,
 ): ModelMetadataValues | undefined {
-  const normalizedProvider = normalizeProvider(provider);
+  const normalizedProvider = normalizeMetadataProviderIdentity(provider);
   const normalizedModel = model.trim().toLowerCase();
   const catalog = resolveModelCatalogMetadata({
     provider: normalizedProvider,
@@ -541,49 +528,6 @@ function metadataFromOpenAiModelsResponse(
   const modelObject = asRecord(match);
   if (!modelObject) return undefined;
   return metadataFromGenericRecord(modelObject);
-}
-
-/**
- * LM Studio's OpenAI-shaped `/v1/models` answers with ids and nothing else,
- * so a local model used to fall through to the public catalogues and inherit
- * whatever window the upstream weights advertise — 128k for a qwen3.8-27b the
- * user actually loaded at 8192. The prompt then filled the real window and
- * every turn died on the far side of a limit nothing had reported.
- *
- * The native listing carries the truth. `loaded_context_length` is the one
- * that binds: it is what the server will accept right now, and it is absent
- * until the model is loaded, in which case its ceiling is the best estimate
- * available.
- */
-function metadataFromLmStudioNativeModels(
-  response: unknown,
-  model: string,
-): ModelMetadataValues | undefined {
-  const data = asRecord(response)?.data;
-  if (!Array.isArray(data)) return undefined;
-  const match = data.find((entry) => modelObjectMatches(entry, model));
-  const modelObject = asRecord(match);
-  if (!modelObject) return undefined;
-  const maxContextWindow = readPositiveInteger(
-    modelObject,
-    "max_context_length",
-  );
-  const loaded = readPositiveInteger(modelObject, "loaded_context_length");
-  const contextWindow = loaded ?? maxContextWindow;
-  if (contextWindow === undefined) return undefined;
-  return {
-    contextWindow,
-    ...(maxContextWindow !== undefined ? { maxContextWindow } : {}),
-  };
-}
-
-/** `http://host:1234/v1` → `http://host:1234/api/v0/models`. */
-function lmStudioNativeModelsUrl(baseUrl: string): string | undefined {
-  try {
-    return new URL("/api/v0/models", baseUrl).toString();
-  } catch {
-    return undefined;
-  }
 }
 
 function metadataFromModelsDev(
@@ -791,7 +735,7 @@ function modelIdMatches(candidate: string, model: string): boolean {
 }
 
 function providerAliases(provider: string): readonly string[] {
-  const normalized = normalizeProvider(provider);
+  const normalized = normalizeMetadataProviderIdentity(provider);
   switch (normalized) {
     case "grok":
       return ["grok", "xai", "x-ai"];
@@ -804,8 +748,8 @@ function providerAliases(provider: string): readonly string[] {
   }
 }
 
-function normalizeProvider(provider: string): string {
-  return normalizeProviderSlug(provider) ?? provider.trim().toLowerCase();
+function normalizeMetadataProviderIdentity(provider: string): string {
+  return normalizeProviderMetadataIdentity(provider) ?? "";
 }
 
 function normalizeId(value: string): string {
@@ -861,16 +805,10 @@ function modelsUrlFromBaseUrl(baseUrl: string): string {
 }
 
 function authHeaders(
-  config: AgenCConfig,
   provider: string,
   env: Readonly<Record<string, string | undefined>>,
 ): Readonly<Record<string, string>> | undefined {
-  const providerConfig = readProviderConfig(config, provider);
-  const configuredApiKeyEnv = providerConfig?.api_key_env?.trim();
-  const apiKey =
-    configuredApiKeyEnv
-      ? env[configuredApiKeyEnv]?.trim()
-      : envApiKey(provider, env);
+  const apiKey = envApiKey(provider, env);
   return apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
 }
 
@@ -878,57 +816,18 @@ function envBaseUrl(
   provider: string,
   env: Readonly<Record<string, string | undefined>>,
 ): string | undefined {
-  switch (provider) {
-    case "openai":
-      return nonEmpty(env.OPENAI_BASE_URL);
-    case "lmstudio":
-      return nonEmpty(env.LMSTUDIO_BASE_URL) ?? nonEmpty(env.OPENAI_BASE_URL);
-    // The provider factory already resolves OLLAMA_BASE_URL; without this the
-    // metadata lookup silently probed localhost while the session talked to a
-    // different host.
-    case "ollama":
-      return nonEmpty(env.OLLAMA_BASE_URL);
-    case "openai-compatible":
-      return (
-        nonEmpty(env.OPENAI_COMPATIBLE_BASE_URL) ??
-        nonEmpty(env.OPENAI_BASE_URL)
-      );
-    case "openrouter":
-      return nonEmpty(env.OPENROUTER_BASE_URL);
-    case "groq":
-      return nonEmpty(env.GROQ_BASE_URL);
-    case "deepseek":
-      return nonEmpty(env.DEEPSEEK_BASE_URL);
-    default:
-      return undefined;
-  }
+  return resolveProviderBaseURLEnvironment(provider, env)?.value;
 }
 
 function envApiKey(
   provider: string,
   env: Readonly<Record<string, string | undefined>>,
 ): string | undefined {
-  const primaryEnv = defaultProviderApiKeyEnv(provider);
-  const primary = primaryEnv ? nonEmpty(env[primaryEnv]) : undefined;
-  if (primary) return primary;
-  return provider === "lmstudio" || provider === "openai-compatible"
-    ? nonEmpty(env.OPENAI_API_KEY)
-    : undefined;
+  return resolveProviderApiKeyEnvironment(provider, env)?.value;
 }
 
 function defaultProviderBaseUrl(provider: string): string | undefined {
-  const slug = normalizeProviderSlug(provider);
-  return slug === undefined ? undefined : BUILT_IN_PROVIDER_BASE_URLS[slug];
-}
-
-function defaultProviderApiKeyEnv(provider: string): string | undefined {
-  const slug = normalizeProviderSlug(provider);
-  return slug === undefined ? undefined : BUILT_IN_PROVIDER_API_KEY_ENVS[slug];
-}
-
-function nonEmpty(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
+  return resolveBuiltInProviderInfo(provider)?.baseURL;
 }
 
 function readPositiveInteger(
@@ -969,28 +868,7 @@ function resolveEffectiveOutputTokens(params: {
   readonly onWarn?: (msg: string) => void;
 }): EffectiveOutputTokens {
   const metadata = params.metadata;
-  // Output is reserved out of the same window the prompt occupies, and
-  // admission denies the call outright when the two do not both fit. The
-  // 32k default was written for models with room to spare; against a local
-  // model served at 32k it leaves nothing for the prompt and every turn is
-  // refused with `context_window_exceeded`.
-  //
-  // A quarter of the window, not a half: an agent turn is mostly input.
-  // A measured first turn against qwen3.8-27b counted 17,658 tokens of
-  // system prompt and tool schemas alone, so half the window still did not
-  // fit. Cloud windows are far wider than the 32k default, so this only
-  // ever binds on genuinely small ones.
-  const windowBound =
-    metadata.contextWindow !== undefined && metadata.contextWindow > 0
-      ? Math.max(1_024, Math.floor(metadata.contextWindow / 4))
-      : undefined;
-  //
-  // Only the default is bounded. The upper limit governs escalation, which
-  // is a deliberate act against a turn already known to need the room; the
-  // default is what every ordinary turn reserves.
-  const rawDefault = metadata.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
-  const metadataDefault =
-    windowBound === undefined ? rawDefault : Math.min(rawDefault, windowBound);
+  const metadataDefault = metadata.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
   const metadataUpper =
     metadata.maxOutputTokensUpperLimit ??
     metadata.maxOutputTokens ??

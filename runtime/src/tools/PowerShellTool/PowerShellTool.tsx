@@ -40,7 +40,6 @@ import { lazySchema } from "../../utils/lazySchema.js";
 import { logError } from "../../utils/log.js";
 import type { PermissionResult } from "../../utils/permissions/PermissionResult.js";
 import { getPlatform } from "../../utils/platform.js";
-import { maybeRecordPluginHint } from "../../utils/plugins/hintRecommendation.js";
 import { exec } from "../../utils/Shell.js";
 import type { ExecResult } from "../../utils/ShellCommand.js";
 import { SandboxManager } from "../../utils/sandbox/sandbox-runtime.js";
@@ -275,8 +274,8 @@ function detectBlockedSleepPattern(command: string): string | null {
 
 /**
  * On Windows native, sandbox is unavailable (bwrap/sandbox-exec are
- * POSIX-only). If enterprise policy has sandbox.enabled AND forbids
- * unsandboxed commands, PowerShell cannot comply — refuse execution
+ * POSIX-only). If enterprise policy selects a sandboxed `sandbox_mode` and
+ * forbids unsandboxed commands, PowerShell cannot comply — refuse execution
  * rather than silently bypass the policy. On Linux/macOS/WSL2, pwsh
  * runs as a native binary under the sandbox same as bash, so this
  * gate does not apply.
@@ -498,7 +497,6 @@ export const PowerShellTool = buildTool({
       };
     }
     if (
-      feature("MONITOR_TOOL") &&
       !isBackgroundTasksDisabled &&
       !input.run_in_background
     ) {
@@ -506,7 +504,7 @@ export const PowerShellTool = buildTool({
       if (sleepPattern !== null) {
         return {
           result: false,
-          message: `Blocked: ${sleepPattern}. Run blocking commands in the background with run_in_background: true — you'll get a completion notification when done. For streaming events (watching logs, polling APIs), use the Monitor tool. If you genuinely need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.`,
+          message: `Blocked: ${sleepPattern}. Run blocking commands in the background with run_in_background: true — you'll get a completion notification when done. For streaming events (watching logs, polling APIs), inspect the background task output. If you genuinely need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.`,
           errorCode: 10,
         };
       }
@@ -722,9 +720,6 @@ export const PowerShellTool = buildTool({
               result.stdout || "",
               input.command,
             );
-            if (isMainThread && bgExtracted.hints.length > 0) {
-              for (const hint of bgExtracted.hints) maybeRecordPluginHint(hint);
-            }
             return {
               data: {
                 stdout: bgExtracted.stripped,
@@ -760,17 +755,9 @@ export const PowerShellTool = buildTool({
 
           let stdout = stripEmptyLines(stdoutAccumulator.toString());
 
-          // AgenC hints protocol: CLIs/SDKs gated on AGENCCODE=1 emit a
-          // `<agenc-code-hint />` tag to stderr (merged into stdout here). Scan,
-          // record for useAgenCCodeHintRecommendation to surface, then strip
-          // so the model never sees the tag — a zero-token side channel.
-          // Stripping runs unconditionally (subagent output must stay clean too);
-          // only the dialog recording is main-thread-only.
+          // Strip the AgenC hint protocol record so the model never sees it.
           const extracted = extractAgenCCodeHints(stdout, input.command);
           stdout = extracted.stripped;
-          if (isMainThread && extracted.hints.length > 0) {
-            for (const hint of extracted.hints) maybeRecordPluginHint(hint);
-          }
 
           // preSpawnError means exec() succeeded but the inner shell failed before
           // the command ran (e.g. CWD deleted). createFailedCommand sets code=1,
@@ -1021,8 +1008,7 @@ async function* runPowerShellCommand({
   function startBackgrounding(backgroundFn?: (shellId: string) => void): void {
     // If a foreground task is already registered (via registerForeground in the
     // progress loop), background it in-place instead of re-spawning. Re-spawning
-    // would overwrite tasks[taskId], emit a duplicate task_started SDK event,
-    // and leak the first cleanup callback.
+    // would overwrite tasks[taskId] and leak the first cleanup callback.
     if (foregroundTaskId) {
       if (
         !backgroundExistingForegroundTask(

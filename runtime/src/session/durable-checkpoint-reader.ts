@@ -50,7 +50,6 @@ const CHECKPOINT_SLICE_KEYS = Object.freeze([
   "pendingBudgetDecision",
   "planToolRequiredRetryCount",
   "recoveryReentryCount",
-  "samplingRound",
   "stopHookBlockingCount",
   "taskBudgetRemaining",
   "transition",
@@ -660,7 +659,6 @@ function parseCheckpointSlice(value: unknown): TurnCheckpointSliceLine {
   const result: {
     turnCount: number;
     recoveryReentryCount: number;
-    samplingRound?: number;
     maxOutputTokensRecoveryCount: number;
     continuationNudgeCount: number;
     stopHookBlockingCount: number;
@@ -688,12 +686,6 @@ function parseCheckpointSlice(value: unknown): TurnCheckpointSliceLine {
       "resumableState.stopHookBlockingCount",
     ),
   };
-  if (value.samplingRound !== undefined) {
-    result.samplingRound = nonNegativeInteger(
-      value.samplingRound,
-      "resumableState.samplingRound",
-    );
-  }
   if (value.planToolRequiredRetryCount !== undefined) {
     result.planToolRequiredRetryCount = nonNegativeInteger(
       value.planToolRequiredRetryCount,

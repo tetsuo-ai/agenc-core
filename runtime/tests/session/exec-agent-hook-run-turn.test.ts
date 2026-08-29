@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { mkdtempSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,7 @@ import {
   createAgentRoleWorkspace,
   type AgentRoleWorkspace,
 } from "../agents/role.js";
+import { ConfigStore } from "../config/store.js";
 import type {
   LLMContentPart,
   LLMMessage,
@@ -26,10 +28,11 @@ import {
   setCurrentRuntimeSession,
 } from "../session/current-session.js";
 import { Session, type SessionServices } from "../session/session.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { runTurnCompat } from "../session/turn-compat.js";
 import { startBackgroundSession } from "../tasks/LocalMainSessionTask.js";
-import { enqueue, resetCommandQueue } from "../utils/messageQueueManager.js";
+import { enqueue, resetCommandQueueForTesting } from "../utils/messageQueueManager.js";
 import { execAgentHook } from "../utils/hooks/execAgentHook.js";
 import type { Tool, ToolUseContext } from "../tools/Tool.js";
 import type { Message } from "../types/message.js";
@@ -56,7 +59,7 @@ afterEach(async () => {
     await testCleanup.pop()?.();
   }
   clearCurrentRuntimeSession();
-  resetCommandQueue();
+  resetCommandQueueForTesting();
 });
 
 describe("execAgentHook run-turn integration", () => {
@@ -1820,6 +1823,7 @@ async function mountTestParentRollout(parent: Session): Promise<void> {
       cwd: parent.sessionConfiguration.cwd,
       sessionId: parent.conversationId,
       agencVersion: "test",
+      sessionTempRoot: tmpdir(),
     });
     store.open({
       sessionId: parent.conversationId,
@@ -1857,9 +1861,20 @@ function createParentSession(
   const permissionModeRegistry = new PermissionModeRegistry(
     createEmptyToolPermissionContext({ mode: "dontAsk" }),
   );
+  const agencHome = mkdtempSync(
+    join(tmpdir(), "agenc-hook-session-authority-"),
+  );
+  testCleanup.push(() => rm(agencHome, { recursive: true, force: true }));
+  const configStore = new ConfigStore({
+    home: agencHome,
+    env: { AGENC_HOME: agencHome },
+    cwd,
+  });
   const services = {
     admissionRequired: false,
+    runtimeOptions: resolveAgentRuntimeOptions({}),
     provider,
+    configStore,
     registry: {
       tools: [],
       toLLMTools: () => [],
@@ -1879,7 +1894,12 @@ function createParentSession(
     },
     unifiedExecManager: {},
     rollout: undefined,
-    userShell: { path: "/bin/sh", deriveExecArgs: () => [] },
+    userShell: {
+      path: "/bin/sh",
+      commandWrapperArgv: [],
+      childEnvironment: {},
+      deriveExecArgs: () => [],
+    },
     agentIdentityManager: {},
     shellSnapshotTx: {},
     showRawAgentReasoning: false,
@@ -1945,18 +1965,12 @@ function createParentSession(
       } as never,
       history: [],
     },
-    features: {
-      appsEnabledForAuth: () => false,
-      useLegacyLandlock: () => false,
-    },
+    features: {},
     jsRepl: { id: "test" },
     config: {
       model: "test-model",
       cwd,
-      features: {
-        appsEnabledForAuth: () => false,
-        useLegacyLandlock: () => false,
-      },
+      features: {},
       multiAgentV2: {
         usageHintEnabled: false,
         usageHintText: "",

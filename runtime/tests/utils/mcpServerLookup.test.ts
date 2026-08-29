@@ -22,14 +22,14 @@ function mcpClient(
       type,
       capabilities: options.resources === false ? {} : { resources: {} },
       client: { request: async () => ({}) },
-      config: { type: 'sdk' },
+      config: { type: 'stdio', command: 'lookup-test-server' },
       cleanup: async () => {},
     } as unknown as MCPServerConnection
   }
   return {
     name,
     type,
-    config: { type: 'sdk' },
+    config: { type: 'stdio', command: 'lookup-test-server' },
   } as unknown as MCPServerConnection
 }
 

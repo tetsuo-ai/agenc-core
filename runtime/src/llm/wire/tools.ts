@@ -87,13 +87,11 @@ export function sanitizeToolSchemaForGrammar(value: unknown): unknown {
   if (typeof value !== "object" || value === null) return value;
   const source = value as Record<string, unknown>;
   const out: Record<string, unknown> = {};
+  let typeUnion: readonly unknown[] | undefined;
   for (const [key, entry] of Object.entries(source)) {
     if (!GRAMMAR_SAFE_SCHEMA_KEYS.has(key)) continue;
     if (key === "type" && Array.isArray(entry)) {
-      // Nullable type unions ("['string','null']") predate the grammar
-      // converter; collapse to the first concrete member.
-      const concrete = entry.find((item) => item !== "null");
-      out[key] = concrete ?? "string";
+      typeUnion = entry;
       continue;
     }
     if (key === "properties" && typeof entry === "object" && entry !== null) {
@@ -120,6 +118,35 @@ export function sanitizeToolSchemaForGrammar(value: unknown): unknown {
       continue;
     }
     out[key] = entry;
+  }
+
+  if (typeUnion !== undefined) {
+    const types = Array.from(
+      new Set(
+        typeUnion.filter((item): item is string => typeof item === "string"),
+      ),
+    );
+    const concreteTypes = types.filter((type) => type !== "null");
+
+    if (concreteTypes.length === 1) {
+      // llama.cpp's converter does not reliably compile nullable `type`
+      // arrays. A single concrete type plus null can safely use the concrete
+      // grammar because execution still validates the original schema.
+      out.type = concreteTypes[0];
+    } else if (
+      concreteTypes.length > 1 &&
+      out.anyOf === undefined &&
+      out.oneOf === undefined
+    ) {
+      // Never collapse a real union to its first member. Express each
+      // concrete alternative with grammar-safe keywords; retain null as a
+      // const branch when the source allowed it.
+      out.anyOf = types.map((type) =>
+        type === "null" ? { const: null } : { type },
+      );
+    } else if (concreteTypes.length === 0 && types.includes("null")) {
+      out.const = null;
+    }
   }
   return out;
 }

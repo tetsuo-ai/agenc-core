@@ -10,13 +10,12 @@ import {
   embeddedSearchToolsBinaryPath,
   hasEmbeddedSearchTools,
 } from '../embeddedTools.js'
-import { getAgenCConfigHomeDir } from '../envUtils.js'
+import { getAgenCHomeDir } from '../envUtils.js'
 import { pathExists } from '../file.js'
 import { getFsImplementation } from '../fsOperations.js'
 import { logError } from '../log.js'
 import { getPlatform } from '../platform.js'
 import { ripgrepCommand } from '../ripgrep.js'
-import { subprocessEnv } from '../subprocessEnv.js'
 import { quote } from './shellQuote.js'
 
 const LITERAL_BACKSLASH = '\\'
@@ -265,19 +264,22 @@ function getUserSnapshotContent(configFile: string): string {
  * Generates AgenC specific snapshot content
  * This content is always included regardless of user configuration
  */
-async function getAgenCCodeSnapshotContent(): Promise<string> {
+async function getAgenCCodeSnapshotContent(
+  binShell: string,
+  childEnvironment: Readonly<NodeJS.ProcessEnv>,
+): Promise<string> {
   // Get the appropriate PATH based on platform
-  let pathValue = process.env.PATH
+  let pathValue = childEnvironment.PATH
   if (getPlatform() === 'windows') {
     // On Windows with git-bash, read the Cygwin PATH
-    const cygwinResult = await execa('echo $PATH', {
-      shell: true,
+    const cygwinResult = await execa(binShell, ['-c', 'printf %s "$PATH"'], {
+      env: { ...childEnvironment, SHELL: binShell },
       reject: false,
     })
     if (cygwinResult.exitCode === 0 && cygwinResult.stdout) {
       pathValue = cygwinResult.stdout.trim()
     }
-    // Fall back to process.env.PATH if we can't get Cygwin PATH
+    // Fall back to the captured PATH if the shell probe fails.
   }
 
   const rgIntegration = createRipgrepShellIntegration()
@@ -345,6 +347,7 @@ async function getSnapshotScript(
   shellPath: string,
   snapshotFilePath: string,
   configFileExists: boolean,
+  childEnvironment: Readonly<NodeJS.ProcessEnv>,
 ): Promise<string> {
   const configFile = getConfigFile(shellPath)
   const isZsh = configFile.endsWith('.zshrc')
@@ -356,7 +359,10 @@ async function getSnapshotScript(
       ? // we need to manually force alias expansion in bash - normally `getUserSnapshotContent` takes care of this
         'echo "shopt -s expand_aliases" >> "$SNAPSHOT_FILE"'
       : ''
-  const agencCodeContent = await getAgenCCodeSnapshotContent()
+  const agencCodeContent = await getAgenCCodeSnapshotContent(
+    shellPath,
+    childEnvironment,
+  )
 
   const script = `SNAPSHOT_FILE=${quote([snapshotFilePath])}
       ${configFileExists ? `source "${configFile}" < /dev/null` : '# No user config file to source'}
@@ -411,6 +417,7 @@ async function getSnapshotScript(
  */
 export const createAndSaveSnapshot = async (
   binShell: string,
+  childEnvironment: Readonly<NodeJS.ProcessEnv>,
 ): Promise<string | undefined> => {
   const shellType = binShell.includes('zsh')
     ? 'zsh'
@@ -435,7 +442,7 @@ export const createAndSaveSnapshot = async (
       // Create unique snapshot path with timestamp and random ID
       const timestamp = Date.now()
       const randomId = Math.random().toString(36).substring(2, 8)
-      const snapshotsDir = join(getAgenCConfigHomeDir(), 'shell-snapshots')
+      const snapshotsDir = join(getAgenCHomeDir(), 'shell-snapshots')
       logForDebugging(`Snapshots directory: ${snapshotsDir}`)
       const shellSnapshotPath = join(
         snapshotsDir,
@@ -449,6 +456,7 @@ export const createAndSaveSnapshot = async (
         binShell,
         shellSnapshotPath,
         configFileExists,
+        childEnvironment,
       )
       logForDebugging(`Creating snapshot at: ${shellSnapshotPath}`)
       logForDebugging(`Execution timeout: ${SNAPSHOT_CREATION_TIMEOUT}ms`)
@@ -457,9 +465,9 @@ export const createAndSaveSnapshot = async (
         ['-c', '-l', snapshotScript],
         {
           env: {
-            ...((process.env.AGENC_DONT_INHERIT_ENV
+            ...((childEnvironment.AGENC_DONT_INHERIT_ENV
               ? {}
-              : subprocessEnv()) as typeof process.env),
+              : childEnvironment) as NodeJS.ProcessEnv),
             SHELL: binShell,
             GIT_EDITOR: 'true',
             AGENCCODE: '1',
@@ -484,7 +492,7 @@ export const createAndSaveSnapshot = async (
             logForDebugging(`  - Config file: ${getConfigFile(binShell)}`)
             logForDebugging(`  - Config file exists: ${configFileExists}`)
             logForDebugging(`  - Working directory: ${getCwd()}`)
-            logForDebugging(`  - AgenC home: ${getAgenCConfigHomeDir()}`)
+            logForDebugging(`  - AgenC home: ${getAgenCHomeDir()}`)
             logForDebugging(`Full snapshot script:\n${snapshotScript}`)
             if (stdout) {
               logForDebugging(

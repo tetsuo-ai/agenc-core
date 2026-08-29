@@ -1,5 +1,45 @@
-import { isEnvTruthy } from './envUtils.js'
+import { isEnvTruthy } from './envBoolean.js'
 import { isSecretEnvKey } from './secretEnv.js'
+import { assertNoObsoleteConfigEnvironment } from '../config/env.js'
+import { isAbsolute, normalize } from 'node:path'
+
+const CHILD_TEMP_AUTHORITY_KEYS = new Set([
+  'AGENC_TMPDIR',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+])
+
+/** True when an environment key can select a child process's temp root. */
+export function isChildTempAuthorityKey(key: string): boolean {
+  return CHILD_TEMP_AUTHORITY_KEYS.has(key.toUpperCase())
+}
+
+/**
+ * Install one captured temp-root authority at the final child-spawn boundary.
+ * Ambient and caller-supplied aliases are removed case-insensitively first so
+ * platform-specific environment handling cannot select a second root.
+ */
+export function withChildTempAuthority(
+  environment: Readonly<Record<string, string | undefined>>,
+  sessionTempRoot: string,
+): Record<string, string> {
+  const trimmedRoot = sessionTempRoot.trim()
+  if (trimmedRoot.length === 0 || !isAbsolute(trimmedRoot)) {
+    throw new Error('child process temp root must be a non-empty absolute path')
+  }
+  const root = normalize(trimmedRoot)
+  const childEnvironment: Record<string, string> = {}
+  for (const [key, value] of Object.entries(environment)) {
+    if (value === undefined || isChildTempAuthorityKey(key)) continue
+    childEnvironment[key] = value
+  }
+  childEnvironment.AGENC_TMPDIR = root
+  childEnvironment.TMPDIR = root
+  childEnvironment.TEMP = root
+  childEnvironment.TMP = root
+  return childEnvironment
+}
 
 /**
  * Env vars stripped from EVERY subprocess environment by default.
@@ -9,12 +49,13 @@ import { isSecretEnvKey } from './secretEnv.js'
  * model-run command (e.g. `printenv`, or shell expansion like
  * `${ANTHROPIC_API_KEY}`) cannot exfiltrate provider keys or CI credentials.
  *
- * Provider/API calls happen IN-PROCESS — the parent agenc process re-reads
- * these per-request (lazy credential reads), so children never need them.
+ * Provider calls run in-process through each session's prepared provider
+ * binding. Spawned children receive a scrubbed child environment and do not
+ * need provider credential variables.
  *
- * Derived as the union of the curated base list above and SECRET_ENV_KEYS (the
- * single source of provider-secret env names assigned to process.env by
- * provider profiles), so a newly-added provider key is scrubbed automatically.
+ * SUBPROCESS_SECRET_ENV is the canonical denylist from secretEnv.ts. It combines
+ * curated CI, cloud, and OAuth names with provider credential ingress names
+ * derived from the built-in provider registry.
  *
  * This is the DEFAULT behavior (no flag required). Set
  * AGENC_SUBPROCESS_ENV_NO_SCRUB to a truthy value to opt out (e.g. for a trusted
@@ -22,48 +63,24 @@ import { isSecretEnvKey } from './secretEnv.js'
  */
 export { SUBPROCESS_SECRET_ENV } from './secretEnv.js'
 
-// Registered by init.ts after the upstreamproxy module is dynamically imported
-// in CCR sessions. Stays undefined in non-CCR startups so we never pull in the
-// upstreamproxy module graph (upstreamproxy.ts + relay.ts) via a static import.
-let _getUpstreamProxyEnv: (() => Record<string, string>) | undefined
-
-/**
- * Called from init.ts to wire up the proxy env function after the upstreamproxy
- * module has been lazily loaded. Must be called before any subprocess is spawned.
- */
-export function registerUpstreamProxyEnvFn(
-  fn: () => Record<string, string>,
-): void {
-  _getUpstreamProxyEnv = fn
-}
-
 /**
  * Returns a copy of `baseEnv` (defaults to process.env) with sensitive secrets
  * stripped, for use when spawning subprocesses (Bash tool, shell snapshot, MCP
  * stdio servers, LSP servers, shell hooks).
  *
  * Scrubbing is the DEFAULT. Set AGENC_SUBPROCESS_ENV_NO_SCRUB to opt out.
- * The legacy AGENC_SUBPROCESS_ENV_SCRUB flag is no longer required (scrubbing
- * is now unconditional) and is retained only so an explicit truthy setting
- * cannot be downgraded by the opt-out.
  */
 export function subprocessEnv(
   baseEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-  // CCR upstreamproxy: inject HTTPS_PROXY + CA bundle vars so curl/gh/python
-  // in agent subprocesses route through the local relay. Returns {} when the
-  // proxy is disabled or not registered (non-CCR), so this is a no-op outside
-  // CCR containers.
-  const proxyEnv = _getUpstreamProxyEnv?.() ?? {}
-  const env = { ...baseEnv, ...proxyEnv }
+  if (baseEnv.AGENC_SUBPROCESS_ENV_SCRUB !== undefined) {
+    assertNoObsoleteConfigEnvironment(baseEnv)
+  }
+  const env = { ...baseEnv }
 
   // Deliberate opt-out for trusted setups that genuinely need an inherited
-  // token. The legacy explicit-scrub flag always wins over the opt-out so the
-  // CI hardening path can never be downgraded back to inheriting secrets.
-  if (
-    isEnvTruthy(env.AGENC_SUBPROCESS_ENV_NO_SCRUB) &&
-    !isEnvTruthy(env.AGENC_SUBPROCESS_ENV_SCRUB)
-  ) {
+  // token.
+  if (isEnvTruthy(env.AGENC_SUBPROCESS_ENV_NO_SCRUB)) {
     return env
   }
 

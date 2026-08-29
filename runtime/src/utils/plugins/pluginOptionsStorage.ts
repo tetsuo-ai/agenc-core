@@ -4,21 +4,22 @@
  * Plugins declare user-configurable options in `manifest.userConfig` — a record
  * of field schemas matching `McpbUserConfigurationOption`. At enable time the
  * user is prompted for values. Storage splits by `sensitive`:
- *   - `sensitive: true`  → secureStorage (keychain on macOS, .credentials.json elsewhere)
- *   - everything else    → settings.json `pluginConfigs[pluginId].options`
+ *   - `sensitive: true`  → native secure storage
+ *   - everything else    → config.toml `pluginConfigs[pluginId].options`
  *
  * `loadPluginOptions` reads and merges both. The substitution helpers are also
  * here (moved from mcpPluginIntegration.ts) so hooks/LSP/skills don't all
  * import from MCP-specific code.
  */
 
-import memoize from 'lodash-es/memoize.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from '../log.js'
-import { getSecureStorage } from '../secureStorage/index.js'
 import {
-  getExecutionAuthoritySettings,
+  readNativeSecureStorage,
+  updateNativeSecureStorage,
+} from '../secureStorage/native.js'
+import {
   getSettingsForSource,
   updateSettingsForSource,
 } from '../settings/settings.js'
@@ -27,72 +28,68 @@ import {
   type UserConfigValues,
   validateUserConfig,
 } from './mcpbHandler.js'
-import { getPluginDataDir } from './pluginDirectories.js'
+import {
+  assertPluginConfigKeysDeclared,
+  requirePluginConfigAuthority,
+  resolveSchemaOwnedPluginConfig,
+  rollbackPluginSecretBucket,
+  withPluginSecretBucket,
+} from './pluginConfigAuthority.js'
 
 export type PluginOptionValues = UserConfigValues
 export type PluginOptionSchema = UserConfigSchema
 
 /**
- * Canonical storage key for a plugin's options in both `settings.pluginConfigs`
- * and `secureStorage.pluginSecrets`. Today this is `plugin.source` — always
- * `"${name}@${marketplace}"` (pluginLoader.ts:1400). `plugin.repository` is
- * a backward-compat alias that's set to the same string (1401); don't use it
- * for storage. UI code that manually constructs `` `${name}@${marketplace}` ``
- * produces the same key by convention — see PluginOptionsFlow, ManagePlugins.
- *
- * Exists so there's exactly one place to change if the key format ever drifts.
+ * Canonical storage key for a plugin's options, secrets, and persistent data.
+ * The loader assigns this ID once. Filesystem source and install paths are
+ * provenance only and never identify durable plugin state.
  */
 export function getPluginStorageId(plugin: LoadedPlugin): string {
-  return plugin.source
+  return plugin.id
 }
 
 /**
- * Load saved option values for a plugin, merging non-sensitive (from settings)
- * with sensitive (from secureStorage). SecureStorage wins on key collision.
+ * Load saved option values according to the manifest schema. Non-sensitive
+ * fields come only from config.toml and sensitive fields only from the native
+ * secure storage. Plaintext sensitive fields are rejected.
  *
- * Memoized per-pluginId because hooks can fire per-tool-call and each call
- * would otherwise do a settings read + keychain spawn. Cache cleared via
- * `clearPluginOptionsCache` when settings change or plugins reload.
+ * Each read uses the request-owned config authority and native secure storage so one
+ * daemon session can never reuse another session's option snapshot.
  */
-export const loadPluginOptions = memoize(
-  (pluginId: string): PluginOptionValues => {
-    const settings = getExecutionAuthoritySettings()
-    const nonSensitive =
-      settings.pluginConfigs?.[pluginId]?.options ?? ({} as PluginOptionValues)
+export function loadPluginOptions(
+  pluginId: string,
+  schema: PluginOptionSchema,
+): PluginOptionValues {
+  const authority = requirePluginConfigAuthority()
+  const configuredOptions = authority.current().pluginConfigs?.[pluginId]?.options
 
-    // NOTE: storage.read() spawns `security find-generic-password` on macOS
-    // (~50-100ms, synchronous). Mitigated by the memoize above (per-pluginId,
-    // session-lifetime) + keychain's own 30s TTL cache — so one blocking spawn
-    // per session per plugin-with-options. session plugin refresh clears the memoize
-    // and the next hook/MCP-load after that eats a fresh spawn.
-    const storage = getSecureStorage()
-    const sensitive =
-      storage.read()?.pluginSecrets?.[pluginId] ??
-      ({} as Record<string, string>)
-
-    // secureStorage wins on collision — schema determines destination so
-    // collision shouldn't happen, but if a user hand-edits settings.json we
-    // trust the more secure source.
-    return { ...nonSensitive, ...sensitive }
-  },
-)
-
-export function clearPluginOptionsCache(): void {
-  loadPluginOptions.cache?.clear?.()
+  const sensitive = readNativeSecureStorage(authority.homeContext)
+    .pluginSecrets?.[pluginId]
+  const resolved = resolveSchemaOwnedPluginConfig(
+    `pluginConfigs.${JSON.stringify(pluginId)}.options`,
+    schema,
+    configuredOptions,
+    sensitive,
+  ) as PluginOptionValues
+  return resolved
 }
 
 /**
- * Save option values, splitting by `schema[key].sensitive`. Non-sensitive go
- * to userSettings; sensitive go to secureStorage. Writes are skipped if nothing
- * in that category is present.
- *
- * Clears the load cache on success so the next `loadPluginOptions` sees fresh.
+ * Save option values, splitting by `schema[key].sensitive`. Non-sensitive
+ * values go to config.toml; sensitive values go to native secure storage.
+ * Writes are skipped when that category has no values.
  */
-export function savePluginOptions(
+export async function savePluginOptions(
   pluginId: string,
   values: PluginOptionValues,
   schema: PluginOptionSchema,
-): void {
+): Promise<void> {
+  const authority = requirePluginConfigAuthority()
+  assertPluginConfigKeysDeclared(
+    `Plugin options for ${JSON.stringify(pluginId)}`,
+    schema,
+    values,
+  )
   const nonSensitive: PluginOptionValues = {}
   const sensitive: Record<string, string> = {}
 
@@ -110,122 +107,121 @@ export function savePluginOptions(
   const sensitiveKeysInThisSave = new Set(Object.keys(sensitive))
   const nonSensitiveKeysInThisSave = new Set(Object.keys(nonSensitive))
 
-  // secureStorage FIRST — if keychain fails, throw before touching
-  // settings.json so old plaintext (if any) stays as fallback.
-  const storage = getSecureStorage()
-  const existingInSecureStorage =
-    storage.read()?.pluginSecrets?.[pluginId] ?? undefined
-  const secureScrubbed = existingInSecureStorage
-    ? Object.fromEntries(
-        Object.entries(existingInSecureStorage).filter(
-          ([k]) => !nonSensitiveKeysInThisSave.has(k),
-        ),
-      )
-    : undefined
-  const needSecureScrub =
-    secureScrubbed &&
-    existingInSecureStorage &&
-    Object.keys(secureScrubbed).length !==
-      Object.keys(existingInSecureStorage).length
-  if (Object.keys(sensitive).length > 0 || needSecureScrub) {
-    const existing = storage.read() ?? {}
-    if (!existing.pluginSecrets) {
-      existing.pluginSecrets = {}
-    }
-    existing.pluginSecrets[pluginId] = {
-      ...secureScrubbed,
-      ...sensitive,
-    }
-    const result = storage.update(existing)
-    if (!result.success) {
-      const err = new Error(
-        `Failed to save sensitive plugin options for ${pluginId} to secure storage`,
-      )
-      logError(err)
-      throw err
-    }
-    if (result.warning) {
-      logForDebugging(`Plugin secrets save warning: ${result.warning}`, {
-        level: 'warn',
-      })
-    }
-  }
+  // Write native secure storage first. If that write fails, throw before
+  // touching config.toml. Any old plaintext remains rejected until
+  // reconfiguration can complete safely; it never becomes a runtime fallback.
+  const secureTransaction =
+    Object.keys(sensitive).length > 0 || nonSensitiveKeysInThisSave.size > 0
+      ? updateNativeSecureStorage(
+          authority.homeContext,
+          current => {
+            const existing = current.pluginSecrets?.[pluginId]
+            const secureScrubbed = existing
+              ? Object.fromEntries(
+                  Object.entries(existing).filter(
+                    ([key]) => !nonSensitiveKeysInThisSave.has(key),
+                  ),
+                )
+              : undefined
+            return withPluginSecretBucket(current, pluginId, {
+              ...secureScrubbed,
+              ...sensitive,
+            })
+          },
+          `Failed to save sensitive plugin options for ${pluginId} to secure storage`,
+        )
+      : null
 
-  // settings.json AFTER secureStorage — scrub sensitive keys via explicit
-  // undefined (mergeWith deletion pattern).
+  // Write config.toml after native secure storage. Scrub sensitive keys via
+  // explicit undefined (mergeWith deletion pattern).
   //
-  const settings = getSettingsForSource('userSettings') ?? {}
-  const existingInSettings = settings.pluginConfigs?.[pluginId]?.options ?? {}
-  const keysToScrubFromSettings = Object.keys(existingInSettings).filter(k =>
-    sensitiveKeysInThisSave.has(k),
-  )
-  if (
-    Object.keys(nonSensitive).length > 0 ||
-    keysToScrubFromSettings.length > 0
-  ) {
-    const scrubbed = Object.fromEntries(
-      keysToScrubFromSettings.map(k => [k, undefined]),
-    ) as Record<string, undefined>
-    const existingPluginConfig = settings.pluginConfigs?.[pluginId] ?? {}
-    const result = updateSettingsForSource('userSettings', {
-      pluginConfigs: {
-        [pluginId]: {
-          ...existingPluginConfig,
-          options: {
-            ...nonSensitive,
-            ...scrubbed,
-          } as PluginOptionValues,
+  try {
+    const settings = getSettingsForSource('userSettings', authority) ?? {}
+    const existingInSettings = settings.pluginConfigs?.[pluginId]?.options ?? {}
+    const keysToScrubFromSettings = Object.keys(existingInSettings).filter(k =>
+      sensitiveKeysInThisSave.has(k),
+    )
+    if (
+      Object.keys(nonSensitive).length > 0 ||
+      keysToScrubFromSettings.length > 0
+    ) {
+      const scrubbed = Object.fromEntries(
+        keysToScrubFromSettings.map(k => [k, undefined]),
+      ) as Record<string, undefined>
+      const existingPluginConfig = settings.pluginConfigs?.[pluginId] ?? {}
+      const result = await updateSettingsForSource(
+        'userSettings',
+        {
+          pluginConfigs: {
+            [pluginId]: {
+              ...existingPluginConfig,
+              options: {
+                ...nonSensitive,
+                ...scrubbed,
+              } as PluginOptionValues,
+            },
+          },
         },
-      },
-    })
-    if (result.error) {
-      logError(result.error)
-      throw new Error(
-        `Failed to save plugin options for ${pluginId}: ${result.error.message}`,
+        authority,
       )
+      if (result.error) {
+        throw new Error(
+          `Failed to save plugin options for ${pluginId}: ${result.error.message}`,
+          { cause: result.error },
+        )
+      }
     }
+  } catch (error) {
+    rollbackPluginSecretBucket(
+      authority.homeContext,
+      pluginId,
+      secureTransaction,
+      `Failed to roll back sensitive plugin options for ${pluginId}`,
+    )
+    const errorObj = error instanceof Error ? error : new Error(String(error))
+    logError(errorObj)
+    throw errorObj
   }
 
-  clearPluginOptionsCache()
 }
 
 /**
- * Delete all stored option values for a plugin — both the non-sensitive
+ * Delete all stored option values for a plugin: both the non-sensitive
  * `settings.pluginConfigs[pluginId]` entry and the sensitive
- * `secureStorage.pluginSecrets[pluginId]` entry.
+ * `pluginSecrets[pluginId]` entry in native secure storage.
  *
  * Call this when the LAST installation of a plugin is uninstalled (i.e.,
  * alongside `markPluginVersionOrphaned`). Don't call on every uninstall —
  * a plugin can be installed in multiple scopes and the user's config should
  * survive removing it from one scope while it remains in another.
  *
- * Best-effort: keychain write failure is logged but doesn't throw, since
- * the uninstall itself succeeded and we don't want to surface a confusing
+ * Best-effort: a native secure storage write failure is logged but doesn't
+ * throw. The uninstall itself succeeded, so we don't want to surface a confusing
  * "uninstall failed" message for a cleanup side-effect.
  */
-export function deletePluginOptions(pluginId: string): void {
-  // Settings side — also wipes the compatibility mcpServers sub-key (same story:
-  // orphaned on uninstall, never cleaned up before this PR).
+export async function deletePluginOptions(pluginId: string): Promise<void> {
+  const authority = requirePluginConfigAuthority()
+  // Config side—also wipes the plugin-scoped mcpServers sub-key so uninstall
+  // cannot leave an orphaned override.
   //
-  // Use `undefined` (not `delete`) because `updateSettingsForSource` merges
-  // via `mergeWith` — absent keys are ignored, only `undefined` triggers
-  // removal. Cast is deliberate (AGENC.md's 10% case): adding z.undefined()
-  // to the schema instead (like enabledPlugins:466 does) leaks
+  // Use `undefined` (not `delete`) because the canonical patch API treats an
+  // explicit undefined leaf as removal. The cast avoids adding z.undefined()
+  // to the public schema, which would leak
   // `| {[k: string]: unknown}` into the public SDK type, which subsumes the
   // real object arm and kills excess-property checks for SDK consumers. The
-  // mergeWith-deletion contract is internal plumbing — it shouldn't shape
-  // the Zod schema. enabledPlugins gets away with it only because its other
-  // arms (string[] | boolean) are non-objects that stay distinct.
-  const settings = getSettingsForSource('userSettings') ?? {}
+  // deletion contract is internal plumbing and must not shape the SDK type.
+  const settings = getSettingsForSource('userSettings', authority) ?? {}
   type PluginConfigs = NonNullable<typeof settings.pluginConfigs>
   if (settings.pluginConfigs?.[pluginId]) {
     // Partial<Record<K,V>> = Record<K, V | undefined> — gives us the widening
     // for the undefined value, and Partial-of-X overlaps with X so the cast
-    // is a narrowing TS accepts (same approach as marketplaceManager.ts:1795).
+    // is a narrowing TypeScript accepts after the key-presence check above.
     const pluginConfigs: Partial<PluginConfigs> = { [pluginId]: undefined }
-    const { error } = updateSettingsForSource('userSettings', {
-      pluginConfigs: pluginConfigs as PluginConfigs,
-    })
+    const { error } = await updateSettingsForSource(
+      'userSettings',
+      { pluginConfigs: pluginConfigs as PluginConfigs },
+      authority,
+    )
     if (error) {
       logForDebugging(
         `deletePluginOptions: failed to clear settings.pluginConfigs[${pluginId}]: ${error.message}`,
@@ -239,33 +235,31 @@ export function deletePluginOptions(pluginId: string): void {
   // saveMcpServerUserConfig's sensitive split). `/` prefix match is safe:
   // plugin IDs are `name@marketplace`, never contain `/`, so
   // startsWith(`${id}/`) can't false-positive on a different plugin.
-  const storage = getSecureStorage()
-  const existing = storage.read()
-  if (existing?.pluginSecrets) {
-    const prefix = `${pluginId}/`
-    const survivingEntries = Object.entries(existing.pluginSecrets).filter(
-      ([k]) => k !== pluginId && !k.startsWith(prefix),
-    )
-    if (
-      survivingEntries.length !== Object.keys(existing.pluginSecrets).length
-    ) {
-      const result = storage.update({
-        ...existing,
-        pluginSecrets:
-          survivingEntries.length > 0
-            ? Object.fromEntries(survivingEntries)
-            : undefined,
-      })
-      if (!result.success) {
-        logForDebugging(
-          `deletePluginOptions: failed to clear pluginSecrets for ${pluginId} from keychain`,
-          { level: 'warn' },
+  try {
+    updateNativeSecureStorage(
+      authority.homeContext,
+      current => {
+        const prefix = `${pluginId}/`
+        const survivingEntries = Object.entries(current.pluginSecrets ?? {}).filter(
+          ([key]) => key !== pluginId && !key.startsWith(prefix),
         )
-      }
-    }
+        const next = { ...current }
+        if (survivingEntries.length === 0) {
+          delete next.pluginSecrets
+        } else {
+          next.pluginSecrets = Object.fromEntries(survivingEntries)
+        }
+        return next
+      },
+      `Failed to clear plugin secrets for ${pluginId} from secure storage`,
+    )
+  } catch (error) {
+    logForDebugging(
+      `deletePluginOptions: failed to clear pluginSecrets for ${pluginId} from native secure storage: ${error instanceof Error ? error.message : String(error)}`,
+      { level: 'warn' },
+    )
   }
 
-  clearPluginOptionsCache()
 }
 
 /**
@@ -283,7 +277,7 @@ export function getUnconfiguredOptions(
     return {}
   }
 
-  const saved = loadPluginOptions(getPluginStorageId(plugin))
+  const saved = loadPluginOptions(getPluginStorageId(plugin), manifestSchema)
   const validation = validateUserConfig(saved, manifestSchema)
   if (validation.valid) {
     return {}
@@ -303,40 +297,6 @@ export function getUnconfiguredOptions(
     }
   }
   return unconfigured
-}
-
-/**
- * Substitute ${AGENC_PLUGIN_ROOT} and ${AGENC_PLUGIN_DATA} with their paths.
- * On Windows, normalizes backslashes to forward slashes so shell commands
- * don't interpret them as escape characters.
- *
- * ${AGENC_PLUGIN_ROOT} — version-scoped install dir (recreated on update)
- * ${AGENC_PLUGIN_DATA} — persistent state dir (survives updates)
- *
- * Both patterns use the function-replacement form of .replace(): ROOT so
- * `$`-patterns in NTFS paths ($$, $', $`, $&) aren't interpreted; DATA so
- * getPluginDataDir (which lazily mkdirs) only runs when actually present.
- *
- * Used in MCP/LSP server command/args/env, hook commands, skill/agent content.
- */
-export function substitutePluginVariables(
-  value: string,
-  plugin: { path: string; source?: string },
-): string {
-  const normalize = (p: string) =>
-    process.platform === 'win32' ? p.replace(/\\/g, '/') : p
-  let out = value.replace(/\$\{AGENC_PLUGIN_ROOT\}/g, () =>
-    normalize(plugin.path),
-  )
-  // source can be absent (e.g. hooks where pluginRoot is a skill root without
-  // a plugin context). In that case ${AGENC_PLUGIN_DATA} is left literal.
-  if (plugin.source) {
-    const source = plugin.source
-    out = out.replace(/\$\{AGENC_PLUGIN_DATA\}/g, () =>
-      normalize(getPluginDataDir(source)),
-    )
-  }
-  return out
 }
 
 /**

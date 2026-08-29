@@ -181,7 +181,7 @@ describe("ActiveWorkSurface", () => {
 
     expect(changes.at(-1)?.workbench).toMatchObject({
       activeSurfaceMode: "transcript",
-      focusedPane: "surface",
+      focusedPane: "composer",
     });
   });
 

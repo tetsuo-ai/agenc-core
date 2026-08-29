@@ -23,11 +23,6 @@ vi.mock("../../../src/tui/keybindings/loadUserBindings.js", () => ({
   isKeybindingCustomizationEnabled: () => false,
 }));
 
-vi.mock("../../../src/utils/fastMode.js", () => ({
-  isFastModeAvailable: () => false,
-  isFastModeEnabled: () => false,
-}));
-
 vi.mock("../../../src/utils/platform.js", () => ({
   getPlatform: () => harness.platform,
 }));
@@ -40,7 +35,7 @@ beforeEach(() => {
 
 async function renderHelpMenu(): Promise<string> {
   return renderToString(
-    <PromptInputHelpMenu dimColor fixedWidth gap={2} paddingX={1} />,
+    <PromptInputHelpMenu dimColor fixedWidth gap={2} paddingX={1} runtimeState={{}} />,
     { columns: 140, rows: 30 },
   );
 }

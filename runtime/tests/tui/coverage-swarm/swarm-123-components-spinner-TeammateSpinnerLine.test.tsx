@@ -12,6 +12,7 @@ import { renderToString } from '../../../src/utils/staticRender.js'
 
 const NOW = new Date('2026-05-20T12:00:00.000Z').getTime()
 const originalGlyphMode = process.env.AGENC_TUI_GLYPHS
+const TEST_SPINNER_VERBS = ['Coordinating'] as const
 
 vi.mock('bun:bundle', () => ({
   feature: () => false,
@@ -19,10 +20,6 @@ vi.mock('bun:bundle', () => ({
 
 vi.mock('lodash-es/sample.js', () => ({
   default: <T,>(items: readonly T[]) => items[0],
-}))
-
-vi.mock('../../../src/constants/spinnerVerbs.js', () => ({
-  getSpinnerVerbs: () => ['Coordinating'],
 }))
 
 vi.mock('../../../src/constants/turnCompletionVerbs.js', () => ({
@@ -77,7 +74,12 @@ async function renderLine(
   columns = 120,
 ): Promise<string> {
   return renderToString(
-    <TeammateSpinnerLine teammate={task} isLast={false} {...props} />,
+    <TeammateSpinnerLine
+      teammate={task}
+      isLast={false}
+      spinnerVerbs={TEST_SPINNER_VERBS}
+      {...props}
+    />,
     columns,
   )
 }

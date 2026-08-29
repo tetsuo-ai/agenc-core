@@ -82,11 +82,6 @@ export type McpHttpServerConfig = {
   headers?: Record<string, string>
 }
 
-export type McpSdkServerConfig = {
-  type: "sdk"
-  name: string
-}
-
 export type McpServerConfigForProcessTransport = ({
   type?: "stdio"
   command: string
@@ -100,90 +95,7 @@ export type McpServerConfigForProcessTransport = ({
   type: "http"
   url: string
   headers?: Record<string, string>
-}) | ({
-  type: "sdk"
-  name: string
 })
-
-export type McpAgenCAIProxyServerConfig = {
-  type: "agencai-proxy"
-  url: string
-  id: string
-}
-
-export type McpServerStatusConfig = (({
-  type?: "stdio"
-  command: string
-  args?: string[]
-  env?: Record<string, string>
-}) | ({
-  type: "sse"
-  url: string
-  headers?: Record<string, string>
-}) | ({
-  type: "http"
-  url: string
-  headers?: Record<string, string>
-}) | ({
-  type: "sdk"
-  name: string
-})) | ({
-  type: "agencai-proxy"
-  url: string
-  id: string
-})
-
-/** Status information for an MCP server connection. */
-export type McpServerStatus = {
-  name: string
-  status: "connected" | "failed" | "needs-auth" | "pending" | "disabled"
-  serverInfo?: {
-    name: string
-    version: string
-  }
-  error?: string
-  config?: (({
-    type?: "stdio"
-    command: string
-    args?: string[]
-    env?: Record<string, string>
-  }) | ({
-    type: "sse"
-    url: string
-    headers?: Record<string, string>
-  }) | ({
-    type: "http"
-    url: string
-    headers?: Record<string, string>
-  }) | ({
-    type: "sdk"
-    name: string
-  })) | ({
-    type: "agencai-proxy"
-    url: string
-    id: string
-  })
-  scope?: string
-  tools?: {
-    name: string
-    description?: string
-    annotations?: {
-      readOnly?: boolean
-      destructive?: boolean
-      openWorld?: boolean
-    }
-  }[]
-  capabilities?: {
-    experimental?: Record<string, unknown>
-  }
-}
-
-/** Result of a setMcpServers operation. */
-export type McpSetServersResult = {
-  added: string[]
-  removed: string[]
-  errors: Record<string, string>
-}
 
 export type PermissionUpdateDestination = "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
 
@@ -249,7 +161,7 @@ export type PermissionResult = ({
   decisionClassification?: "user_temporary" | "user_permanent" | "user_reject"
 })
 
-/** Permission mode for controlling how tool executions are handled. 'default' - Standard behavior, prompts for dangerous operations. 'acceptEdits' - Auto-accept file edit operations. 'bypassPermissions' - Bypass all permission checks (requires allowDangerouslySkipPermissions). 'plan' - Planning mode, no actual tool execution. 'dontAsk' - Don't prompt for permissions, deny if not pre-approved. */
+/** Permission mode for controlling how tool executions are handled. 'default' - Standard behavior, prompts for dangerous operations. 'acceptEdits' - Auto-accept file edit operations. 'bypassPermissions' - Skips prompts down to the deny floor after exact-workspace consent. 'plan' - Planning mode, no actual tool execution. 'dontAsk' - Don't prompt for permissions, deny if not pre-approved. */
 export type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk"
 
 export type HookEvent = "PreToolUse" | "PostToolUse" | "PostToolUseFailure" | "Notification" | "UserPromptSubmit" | "SessionStart" | "SessionEnd" | "Stop" | "StopFailure" | "SubagentStart" | "SubagentStop" | "PreCompact" | "PostCompact" | "PermissionRequest" | "PermissionDenied" | "Setup" | "TeammateIdle" | "TaskCreated" | "TaskCompleted" | "Elicitation" | "ElicitationResult" | "ConfigChange" | "WorktreeCreate" | "WorktreeRemove" | "InstructionsLoaded" | "CwdChanged" | "FileChanged"
@@ -1256,7 +1168,6 @@ export type ModelInfo = {
   supportsEffort?: boolean
   supportedEffortLevels?: "low" | "medium" | "high" | "max"[]
   supportsAdaptiveThinking?: boolean
-  supportsFastMode?: boolean
   supportsAutoMode?: boolean
 }
 
@@ -1283,9 +1194,6 @@ export type AgentMcpServerSpec = string | (Record<string, ({
   type: "http"
   url: string
   headers?: Record<string, string>
-}) | ({
-  type: "sdk"
-  name: string
 })>)
 
 /** Definition for a custom subagent that can be invoked via the Agent tool. */
@@ -1308,9 +1216,6 @@ export type AgentDefinition = {
     type: "http"
     url: string
     headers?: Record<string, string>
-  }) | ({
-    type: "sdk"
-    name: string
   })>)[]
   criticalSystemReminder_EXPERIMENTAL?: string
   skills?: string[]
@@ -1322,7 +1227,7 @@ export type AgentDefinition = {
   permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk"
 }
 
-/** Source for loading filesystem-based settings. 'user' - Global user settings (~/.agenc/settings.json). 'project' - Project settings (.agenc/settings.json). 'local' - Local settings (.agenc/settings.local.json). */
+/** Canonical configuration scope. 'user' - $AGENC_HOME/config.toml. 'project' - .agenc/config.toml. 'local' - .agenc/config.local.toml. */
 export type SettingSource = "user" | "project" | "local"
 
 /** Configuration for loading a plugin. */
@@ -1458,7 +1363,6 @@ export type SDKResultSuccess = {
     tool_input: Record<string, unknown>
   }[]
   structured_output?: unknown
-  fast_mode_state?: "off" | "cooldown" | "on"
   uuid: string
   session_id: string
 }
@@ -1489,7 +1393,6 @@ export type SDKResultError = {
     tool_input: Record<string, unknown>
   }[]
   errors: string[]
-  fast_mode_state?: "off" | "cooldown" | "on"
   uuid: string
   session_id: string
 }
@@ -1521,7 +1424,6 @@ export type SDKResultMessage = ({
     tool_input: Record<string, unknown>
   }[]
   structured_output?: unknown
-  fast_mode_state?: "off" | "cooldown" | "on"
   uuid: string
   session_id: string
 }) | ({
@@ -1550,7 +1452,6 @@ export type SDKResultMessage = ({
     tool_input: Record<string, unknown>
   }[]
   errors: string[]
-  fast_mode_state?: "off" | "cooldown" | "on"
   uuid: string
   session_id: string
 })
@@ -1578,7 +1479,6 @@ export type SDKSystemMessage = {
     path: string
     source?: string
   }[]
-  fast_mode_state?: "off" | "cooldown" | "on"
   uuid: string
   session_id: string
 }
@@ -1880,7 +1780,6 @@ export type SDKMessage = ({
     tool_input: Record<string, unknown>
   }[]
   structured_output?: unknown
-  fast_mode_state?: "off" | "cooldown" | "on"
   uuid: string
   session_id: string
 }) | ({
@@ -1909,7 +1808,6 @@ export type SDKMessage = ({
     tool_input: Record<string, unknown>
   }[]
   errors: string[]
-  fast_mode_state?: "off" | "cooldown" | "on"
   uuid: string
   session_id: string
 })) | ({
@@ -1935,7 +1833,6 @@ export type SDKMessage = ({
     path: string
     source?: string
   }[]
-  fast_mode_state?: "off" | "cooldown" | "on"
   uuid: string
   session_id: string
 }) | ({
@@ -2132,9 +2029,6 @@ export type SDKMessage = ({
   uuid: string
   session_id: string
 })
-
-/** Fast mode state: off, in cooldown after rate limit, or actively enabled. */
-export type FastModeState = "off" | "cooldown" | "on"
 
 export type ExitReason = "clear" | "resume" | "logout" | "prompt_input_exit" | "other" | "bypass_permissions_disabled"
 

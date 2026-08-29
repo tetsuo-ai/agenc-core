@@ -43,7 +43,6 @@ import {
   MAX_APPLY_PATCH_FILE_BYTES,
 } from "./limits.js";
 import {
-  ApplyPatchPreEffectError,
   ApplyPatchRuntimeError,
   type AffectedPaths,
   type AppliedPatch,
@@ -749,18 +748,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function asPreEffectError(
-  stage: "payload" | "planning",
-  error: unknown,
-): ApplyPatchPreEffectError {
-  if (error instanceof ApplyPatchPreEffectError) return error;
-  return new ApplyPatchPreEffectError(stage, errorMessage(error));
-}
-
-interface ApplyPatchExecutionState {
-  phase: "planning" | "admission";
-}
-
 /**
  * Apply a parsed patch atomically. Historically this looped over hunks doing
  * per-hunk disk I/O, so a failure on hunk N (bad context, allowlist, or the
@@ -781,7 +768,6 @@ async function applyHunksToFiles(
   hunks: readonly ApplyPatchHunk[],
   opts: ApplyPatchRuntimeOptions,
   control: SeekSequenceControl,
-  executionState: ApplyPatchExecutionState,
 ): Promise<{
   readonly affected: AffectedPaths;
   readonly mutationMetadata: readonly MutationMetadataEntry[];
@@ -988,10 +974,6 @@ async function applyHunksToFiles(
   }
 
   assertApplyPatchActive(control, "transaction admission");
-  // Everything above is read-only planning. Set this before the first
-  // workspace reservation/admission attempt because coordinator calls can
-  // write durable proposal/block records even when no file syscall follows.
-  executionState.phase = "admission";
 
   // PHASE 2 — reserve every path through the workspace coherence boundary
   // before touching disk. A dirty live editor buffer becomes a shadow
@@ -1392,22 +1374,11 @@ async function applyParsedPatch(
   opts: ApplyPatchRuntimeOptions,
   control: SeekSequenceControl,
 ): Promise<ApplyPatchResult> {
-  const executionState: ApplyPatchExecutionState = { phase: "planning" };
-  let applied: Awaited<ReturnType<typeof applyHunksToFiles>>;
-  try {
-    applied = await applyHunksToFiles(
-      parsed.hunks,
-      opts,
-      control,
-      executionState,
-    );
-  } catch (error) {
-    if (executionState.phase === "planning") {
-      throw asPreEffectError("planning", error);
-    }
-    throw error;
-  }
-  const { affected, mutationMetadata } = applied;
+  const { affected, mutationMetadata } = await applyHunksToFiles(
+    parsed.hunks,
+    opts,
+    control,
+  );
   return {
     affected,
     summary: printSummary(affected),
@@ -1422,14 +1393,8 @@ export async function applyPatchText(
   patch: string,
   opts: ApplyPatchRuntimeOptions,
 ): Promise<ApplyPatchResult> {
-  let control: SeekSequenceControl;
-  let parsed: ApplyPatchArgs;
-  try {
-    control = createRuntimeControl(opts);
-    assertApplyPatchActive(control, "payload parsing");
-    parsed = parsePatch(patch, "lenient", control);
-  } catch (error) {
-    throw asPreEffectError("payload", error);
-  }
+  const control = createRuntimeControl(opts);
+  assertApplyPatchActive(control, "payload parsing");
+  const parsed = parsePatch(patch, "lenient", control);
   return applyParsedPatch(parsed, opts, control);
 }

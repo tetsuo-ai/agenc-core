@@ -79,6 +79,7 @@ function openStore(cwd: string, runId: string, resume = false): RolloutStore {
     cwd,
     sessionId: runId,
     agencVersion: "0.6.2",
+    sessionTempRoot: tmpdir(),
     autoStartScheduler: false,
     ...(resume ? { resume: true } : {}),
   });

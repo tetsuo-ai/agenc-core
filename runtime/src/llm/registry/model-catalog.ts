@@ -14,6 +14,7 @@ import {
   type ModelMessages,
 } from "../../context/personality-spec-instructions.js";
 import type { ReasoningEffort, ReasoningSummary } from "../../session/turn-context.js";
+import { normalizeProviderIdentity } from "../../provider-identity.js";
 
 export type ModelInputModality = "text" | "image" | "audio";
 export type ModelWebSearchToolType = "none" | "text" | "text_and_image";
@@ -123,9 +124,8 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       provider: "openai",
       model: "gpt-5",
       displayName: "GPT-5",
-      // 272,000 max input inside a 400,000 window (128,000 of it output).
       contextWindow: 272_000,
-      maxContextWindow: 400_000,
+      maxContextWindow: 272_000,
       inputModalities: TEXT_IMAGE_MODALITIES,
       supportsToolUse: true,
       supportsParallelToolCalls: true,
@@ -142,91 +142,12 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       priority: -1,
       visibility: "list",
     },
-    /*
-     * The 5.6 family had no entry, so every one of them fell through
-     * findLongestPrefix onto "gpt-5" and inherited its 272,000 input bound —
-     * a quarter of the room they actually have. A session with three photos
-     * attached was refused at 258,400 with 922,000 available.
-     *
-     * 1,050,000 window less the 128,000 they may spend on output. OpenAI
-     * publishes that subtraction for Sol directly (922,000 max input), and
-     * the same arithmetic reproduces gpt-5's documented 272,000 out of its
-     * 400,000 window, so it is the rule and not a coincidence.
-     */
-    {
-      provider: "openai",
-      model: "gpt-5.6-sol",
-      displayName: "GPT-5.6 Sol",
-      contextWindow: 922_000,
-      maxContextWindow: 1_050_000,
-      inputModalities: TEXT_IMAGE_MODALITIES,
-      supportsToolUse: true,
-      supportsParallelToolCalls: true,
-      supportsStructuredOutput: true,
-      supportsSearchTool: true,
-      supportsVerbosity: true,
-      modelMessages: OPENAI_PERSONALITY_MESSAGES,
-      webSearchToolType: "text_and_image",
-      supportsReasoningSummaries: true,
-      defaultReasoningSummary: "none",
-      supportedReasoningLevels: OPENAI_REASONING_LEVELS,
-      defaultReasoningLevel: "medium",
-      additionalSpeedTiers: FAST_SPEED_TIER,
-      priority: 3,
-      visibility: "list",
-    },
-    {
-      provider: "openai",
-      model: "gpt-5.6-terra",
-      displayName: "GPT-5.6 Terra",
-      contextWindow: 922_000,
-      maxContextWindow: 1_050_000,
-      inputModalities: TEXT_IMAGE_MODALITIES,
-      supportsToolUse: true,
-      supportsParallelToolCalls: true,
-      supportsStructuredOutput: true,
-      supportsSearchTool: true,
-      supportsVerbosity: true,
-      modelMessages: OPENAI_PERSONALITY_MESSAGES,
-      webSearchToolType: "text_and_image",
-      supportsReasoningSummaries: true,
-      defaultReasoningSummary: "none",
-      supportedReasoningLevels: OPENAI_REASONING_LEVELS,
-      defaultReasoningLevel: "medium",
-      additionalSpeedTiers: FAST_SPEED_TIER,
-      priority: 2,
-      visibility: "list",
-    },
-    {
-      provider: "openai",
-      model: "gpt-5.6-luna",
-      displayName: "GPT-5.6 Luna",
-      contextWindow: 922_000,
-      maxContextWindow: 1_050_000,
-      inputModalities: TEXT_IMAGE_MODALITIES,
-      supportsToolUse: true,
-      supportsParallelToolCalls: true,
-      supportsStructuredOutput: true,
-      supportsSearchTool: true,
-      supportsVerbosity: true,
-      modelMessages: OPENAI_PERSONALITY_MESSAGES,
-      webSearchToolType: "text_and_image",
-      supportsReasoningSummaries: true,
-      defaultReasoningSummary: "none",
-      supportedReasoningLevels: OPENAI_REASONING_LEVELS,
-      defaultReasoningLevel: "medium",
-      additionalSpeedTiers: FAST_SPEED_TIER,
-      priority: 1,
-      visibility: "list",
-    },
     {
       provider: "openai",
       model: "gpt-5.5",
       displayName: "GPT-5.5",
-      // 1,050,000 window less the 128,000 it may spend on output. 272,000 is
-      // where OpenAI doubles the input price, not where the model stops.
-      contextWindow: 922_000,
-      maxContextWindow: 1_050_000,
+      contextWindow: 272_000,
+      maxContextWindow: 272_000,
       inputModalities: TEXT_IMAGE_MODALITIES,
       supportsToolUse: true,
       supportsParallelToolCalls: true,
@@ -247,8 +168,8 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       provider: "openai",
       model: "gpt-5.4",
       displayName: "gpt-5.4",
-      contextWindow: 922_000,
-      maxContextWindow: 1_050_000,
+      contextWindow: 272_000,
+      maxContextWindow: 1_000_000,
       inputModalities: TEXT_IMAGE_MODALITIES,
       supportsToolUse: true,
       supportsParallelToolCalls: true,
@@ -551,11 +472,11 @@ export function resolveRegisteredModelCatalogEntry(input: {
   readonly provider: string | undefined;
   readonly model: string | undefined;
 }): RegisteredModelCatalogEntry | undefined {
-  const provider = normalizeProvider(input.provider);
+  const provider = modelCatalogProviderIdentity(input.provider);
   const model = input.model?.trim() ?? "";
   if (provider.length === 0 || model.length === 0) return undefined;
   const candidates = REGISTERED_MODEL_CATALOG.filter(
-    (entry) => normalizeProvider(entry.provider) === provider,
+    (entry) => modelCatalogProviderIdentity(entry.provider) === provider,
   );
   return (
     findExactModel(model, candidates) ??
@@ -595,8 +516,8 @@ export function resolveModelCatalogMetadata(input: {
  * default-model resolution still work). They are NOT user-selectable: each
  * picker is responsible for excluding "hide" models from its offered options
  * (see `providerRows` in commands/model-menu.tsx and the visibility filters in
- * models-manager.ts / utils/model/modelOptions.ts). Order within a provider
- * follows ascending `priority`.
+ * models-manager.ts and the provider-neutral command catalog). Order within
+ * a provider follows ascending `priority`.
  *
  * This makes REGISTERED_MODEL_CATALOG the single source of truth: adding one
  * entry here surfaces the model in every flat-catalog consumer.
@@ -605,7 +526,7 @@ export function deriveFlatCatalog(): Readonly<Record<string, readonly string[]>>
   const byProvider = new Map<string, RegisteredModelCatalogEntry[]>();
   for (const entry of REGISTERED_MODEL_CATALOG) {
     if (entry.visibility === "none") continue;
-    const key = normalizeProvider(entry.provider);
+    const key = modelCatalogProviderIdentity(entry.provider);
     const list = byProvider.get(key);
     if (list) {
       list.push(entry);
@@ -678,9 +599,8 @@ function findLongestPrefix(
     .sort((left, right) => right.model.length - left.model.length)[0];
 }
 
-function normalizeProvider(provider: string | undefined): string {
-  const normalized = normalizeId(provider ?? "");
-  return normalized === "xai" ? "grok" : normalized;
+function modelCatalogProviderIdentity(provider: string | undefined): string {
+  return normalizeProviderIdentity(provider, "model catalog") ?? "";
 }
 
 function normalizeId(value: string): string {

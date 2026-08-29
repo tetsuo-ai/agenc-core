@@ -11,7 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
@@ -30,6 +30,10 @@ import {
 } from "../../../src/workspace/mutation-coordinator.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
 import { attachToolRuntimeContext } from "../../../src/tools/runtimes/context.js";
+import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from "../../../src/session/runtime-options.js";
 
 const createGrepTool = (...args: Parameters<typeof createUnboundGrepTool>) =>
   bindExplicitDangerBoundary(createUnboundGrepTool(...args));
@@ -144,7 +148,6 @@ describe("Grep tool", () => {
         "-B",
         "-A",
         "-C",
-        "context",
         "-n",
         "-i",
         "type",
@@ -153,6 +156,7 @@ describe("Grep tool", () => {
         "multiline",
       ]),
     );
+    expect(schema.properties).not.toHaveProperty("context");
   });
 
   test("returns matching content lines for a basic pattern", async () => {
@@ -1011,6 +1015,34 @@ describe("Grep tool", () => {
     expect("error" in result ? result.error : "").toContain(
       "file/directory prefix collision",
     );
+  });
+
+  test("isolates path-oracle artifacts across concurrent session temp roots", async () => {
+    const rootA = await mkdtemp(join(root, "path-oracle-a-"));
+    const rootB = await mkdtemp(join(root, "path-oracle-b-"));
+    const run = (sessionRoot: string) =>
+      runWithAgentRuntimeOptions(
+        resolveAgentRuntimeOptions({}, { sessionTempRoot: sessionRoot }),
+        async () => {
+          await Promise.resolve();
+          let temporaryRoot = "";
+          const result = await __INTERNAL.pinnedSnapshotPathEligibility({
+            relativePaths: ["inside.ts"],
+            globs: ["*.ts"],
+            onTemporaryRoot(path) {
+              temporaryRoot = path;
+            },
+          });
+          return { result, temporaryRoot };
+        },
+      );
+
+    const [a, b] = await Promise.all([run(rootA), run(rootB)]);
+
+    expect("error" in a.result ? a.result.error : undefined).toBeUndefined();
+    expect("error" in b.result ? b.result.error : undefined).toBeUndefined();
+    expect(a.temporaryRoot.startsWith(`${rootA}${sep}`)).toBe(true);
+    expect(b.temporaryRoot.startsWith(`${rootB}${sep}`)).toBe(true);
   });
 
   test("maps a renamed path-oracle placeholder only by object identity", async () => {
@@ -2168,25 +2200,9 @@ describe("Grep tool", () => {
     expect(c.content).toContain("after-2");
   });
 
-  test("context aliases -C for surrounding content lines", async () => {
-    await writeFile(
-      join(root, "ctx-alias.txt"),
-      ["before", "TARGET", "after"].join("\n"),
-      "utf8",
-    );
+  test("does not publish the removed context input alias", () => {
     const tool = createGrepTool({ allowedPaths: [root] });
-
-    const result = await tool.execute({
-      pattern: "TARGET",
-      path: root,
-      output_mode: "content",
-      context: 1,
-    });
-
-    expect(result.isError).toBeUndefined();
-    expect(result.content).toContain("before");
-    expect(result.content).toContain("TARGET");
-    expect(result.content).toContain("after");
+    expect(tool.inputSchema.properties).not.toHaveProperty("context");
   });
 
   test("multiline mode matches across line boundaries", async () => {

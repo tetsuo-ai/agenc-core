@@ -101,21 +101,3 @@ export class ApplyPatchRuntimeError extends Error {
     this.name = "ApplyPatchRuntimeError";
   }
 }
-
-/**
- * A failure raised while apply_patch is still in its read-only planning phase.
- *
- * Keep this distinct from {@link ApplyPatchRuntimeError}: the same runtime can
- * also fail after workspace admission or after a filesystem syscall may have
- * started. Only this subtype is safe for the tool adapter to settle as
- * `confirmed_no_effect`.
- */
-export class ApplyPatchPreEffectError extends ApplyPatchRuntimeError {
-  readonly stage: "payload" | "planning";
-
-  constructor(stage: "payload" | "planning", message: string) {
-    super(message);
-    this.name = "ApplyPatchPreEffectError";
-    this.stage = stage;
-  }
-}

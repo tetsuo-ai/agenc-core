@@ -16,14 +16,13 @@ import { describe, expect, it } from "vitest";
 import {
   HERMETIC_AGENC_STATE_ENV_VARS,
   HERMETIC_LIVE_TEST_OPT_IN_ENV_VARS,
-  HERMETIC_MANAGED_SETTINGS_ENV_VAR,
   HERMETIC_MARKER_ENV_VAR,
   HERMETIC_PROVIDER_CREDENTIAL_ENV_VARS,
   HERMETIC_RUNTIME_AUTH_ENV_VARS,
   HERMETIC_STRIPPED_ENV_VARS,
   sanitizeHermeticEnv,
 } from "./helpers/hermetic-env.mjs";
-import { BUILT_IN_PROVIDER_API_KEY_ENVS } from "../src/llm/registry/provider-info.js";
+import { BUILT_IN_PROVIDER_DEFINITIONS } from "../src/llm/registry/provider-info.js";
 import { SUBPROCESS_SECRET_ENV } from "../src/utils/subprocessEnv.js";
 import { AGENC_PROXY_SOCKET_DIR_PREFIX } from "../src/sandbox/linux-launcher/config.js";
 
@@ -77,9 +76,19 @@ describe("suite-level hermetic env (vitest.setup.ts)", () => {
   it("covers canonical provider and subprocess secret registries", () => {
     const stripped = new Set<string>(HERMETIC_STRIPPED_ENV_VARS);
     const canonical = [
-      ...Object.values(BUILT_IN_PROVIDER_API_KEY_ENVS),
+      ...Object.values(BUILT_IN_PROVIDER_DEFINITIONS).flatMap(
+        (definition) => definition.credentials.kind === "none"
+          ? []
+          : definition.credentials.kind === "api-key"
+            ? definition.credentials.apiKey.envVars
+            : [
+                ...definition.credentials.accessKeyId.envVars,
+                ...definition.credentials.secretAccessKey.envVars,
+                ...definition.credentials.sessionToken.envVars,
+              ],
+      ),
       ...SUBPROCESS_SECRET_ENV,
-    ].filter((name): name is string => typeof name === "string");
+    ];
     expect(canonical.filter((name) => !stripped.has(name))).toEqual([]);
   });
 
@@ -110,17 +119,11 @@ describe("suite-level hermetic env (vitest.setup.ts)", () => {
     const agencHome = process.env.AGENC_HOME;
     expect(agencHome).toBeTruthy();
     expect(agencHome).toBe(process.env.AGENC_TEST_HERMETIC_HOME);
-    expect(process.env.AGENC_CONFIG_DIR).toBe(agencHome);
+    expect(process.env.AGENC_CONFIG_DIR).toBeUndefined();
     expect(process.env.HOME).toBe(agencHome);
     expect(process.env.USERPROFILE).toBe(agencHome);
     expect(process.env.AGENC_MANAGED_HOME).toBe(
       join(agencHome as string, "managed-home"),
-    );
-    expect(process.env.AGENC_MANAGED_SETTINGS).toBe(
-      join(agencHome as string, "managed-settings.json"),
-    );
-    expect(process.env[HERMETIC_MANAGED_SETTINGS_ENV_VAR]).toBe(
-      join(agencHome as string, "managed-policy"),
     );
     for (const name of [
       "APPDATA",
@@ -178,10 +181,7 @@ describe("suite-level hermetic env (vitest.setup.ts)", () => {
     for (const name of [
       "AGENC_BUBBLEWRAP",
       "AGENC_DISABLE_NONESSENTIAL_TRAFFIC",
-      "AGENC_EXTRA_BODY",
-      "AGENC_GIT_BASH_PATH",
       "AGENC_OVERRIDE_DATE",
-      "AGENC_TEST_FIXTURES_ROOT",
       "AGENC_TMPDIR",
       "CI",
       "GITHUB_DEVICE_FLOW_CLIENT_ID",

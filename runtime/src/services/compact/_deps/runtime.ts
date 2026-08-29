@@ -15,6 +15,7 @@ import {
   type TokenAccountingResult,
 } from "../../../llm/token-accounting.js";
 import { readProviderFactoryOptions } from "../../../llm/provider.js";
+import { readGeminiRuntimeOptions } from "../../../llm/providers/gemini/runtime-options.js";
 import type { LLMMessage } from "../../../llm/types.js";
 import { fromRuntimeMessageContent } from "../../../llm/content-conversion.js";
 import {
@@ -70,8 +71,8 @@ export function estimateMessagesTokens(
       ? providerExtra.systemPrompt
       : undefined;
   const configuredCachedContent =
-    provider === "gemini" && typeof providerExtra.cachedContent === "string"
-      ? providerExtra.cachedContent
+    provider === "gemini"
+      ? readGeminiRuntimeOptions(providerExtra)?.cachedContent
       : undefined;
   const systemPrompt =
     context?.options?.systemPrompt ?? configuredSystemPrompt;

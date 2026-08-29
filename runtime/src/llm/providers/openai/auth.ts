@@ -16,12 +16,12 @@ import {
 } from "../../oauth/refresh-loop.js";
 import type { ProviderAuthHeaderContext } from "../../client-session.js";
 import { LLMProviderError } from "../../errors.js";
+import { providerApiKeyEnvironmentLabel } from "../../registry/provider-info.js";
 import type { OpenAIProviderConfig } from "./types.js";
 
 export class OpenAIAuthSession {
   private readonly config: OpenAIProviderConfig;
   private oauthState: OAuthRefreshState | null;
-  private subscriptionAccountId: string | null;
   private oauthExhaustedMessage: string | null = null;
   private readonly providerName: string;
   private readonly apiKeyEnvLabel: string;
@@ -29,11 +29,10 @@ export class OpenAIAuthSession {
   constructor(config: OpenAIProviderConfig) {
     this.config = config;
     this.providerName = config.providerName ?? "openai";
-    this.apiKeyEnvLabel = config.apiKeyEnvLabel ?? "OPENAI_API_KEY";
-    this.subscriptionAccountId =
-      Object.entries(config.defaultHeaders ?? {}).find(
-        ([name]) => name.toLowerCase() === "chatgpt-account-id",
-      )?.[1]?.trim() || null;
+    this.apiKeyEnvLabel =
+      config.apiKeyEnvLabel ??
+      providerApiKeyEnvironmentLabel(this.providerName) ??
+      "API key";
     this.oauthState =
       config.authMode === "oauth" && config.oauth
         ? {
@@ -42,17 +41,6 @@ export class OpenAIAuthSession {
           consecutiveAuthFailures: 0,
         }
         : null;
-  }
-
-  updateSubscriptionAuth(auth: {
-    readonly accessToken: string;
-    readonly accountId: string;
-  }): void {
-    (this.config as { apiKey?: string }).apiKey = auth.accessToken;
-    this.subscriptionAccountId = auth.accountId;
-    if (this.oauthState !== null) {
-      this.oauthState = { ...this.oauthState, accessToken: auth.accessToken };
-    }
   }
 
   async withAuthorizedOperation<T>(
@@ -111,19 +99,6 @@ export class OpenAIAuthSession {
         const token = this.config.apiKey?.trim();
         return token ? this.headersForBearerToken(token) : {};
       }
-      case "google_api_key": {
-        const apiKey = assertNonEmptyApiKey(
-          this.providerName,
-          this.config.apiKey,
-          this.apiKeyEnvLabel,
-        );
-        return {
-          "x-goog-api-key": apiKey,
-          ...(this.config.project
-            ? { "x-goog-user-project": this.config.project }
-            : {}),
-        };
-      }
       case "bearer":
       default: {
         const apiKey = assertNonEmptyApiKey(
@@ -139,9 +114,6 @@ export class OpenAIAuthSession {
   private headersForBearerToken(token: string): Record<string, string> {
     return {
       ...buildBearerAuthHeaders({ apiKey: token }),
-      ...(this.subscriptionAccountId
-        ? { "ChatGPT-Account-ID": this.subscriptionAccountId }
-        : {}),
       ...(this.config.organization
         ? { "openai-organization": this.config.organization }
         : {}),

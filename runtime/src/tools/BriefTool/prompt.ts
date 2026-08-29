@@ -1,5 +1,4 @@
 export const BRIEF_TOOL_NAME = 'SendUserMessage'
-export const LEGACY_BRIEF_TOOL_NAME = 'Brief'
 
 export const DESCRIPTION = 'Send a message to the user'
 

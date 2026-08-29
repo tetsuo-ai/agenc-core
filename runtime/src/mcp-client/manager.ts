@@ -11,24 +11,32 @@ import type {
   MCPElicitationHandlers,
   MCPReconnectResult,
   MCPServerConfig,
-  MCPServerMutationResult,
   MCPToolBridge,
 } from "./types.js";
 import type {
   ConnectedMCPServer,
   ScopedMcpServerConfig,
 } from "../services/mcp/types.js";
-import type { Tool } from "./_deps/tools-types.js";
+import type { Tool, ToolResult } from "./_deps/tools-types.js";
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
 import { createMCPConnection } from "./connection.js";
-import { createToolBridge } from "./tools.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
+import {
+  EMPTY_MCP_REQUEST_ENVIRONMENT,
+  snapshotMcpRequestEnvironment,
+} from "./environment.js";
+import {
+  createToolBridge,
+  withoutMcpExecutionOnlyArgs,
+} from "./tools.js";
 import {
   ResilientMCPBridge,
   toToolCatalogPolicyConfig,
 } from "./resilient-client.js";
 import type {
   MCPCallObserver,
+  MCPProgressCallback,
   MCPToolBridgePermissionOptions,
 } from "./tools.js";
 import {
@@ -47,6 +55,7 @@ import type { McpSamplingHandlers } from "../services/mcp/hostCapabilities.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import { registerSandboxExecutionLifecycleParticipant } from "../sandbox/execution-lifecycle.js";
 import { MCPTransportCleanupError } from "./transports/connect-with-cleanup.js";
+import { assertValidMcpServerName } from "./server-name.js";
 
 /** I-50: cancellable MCP startup wait; 30s default. */
 const MCP_STARTUP_TIMEOUT_MS = 30_000;
@@ -63,6 +72,62 @@ export interface MCPManagerStartOpts {
   /** I-20: require THESE named servers to come up. Overrides
    *  `requireOneReady` when both set. */
   readonly requiredServers?: ReadonlyArray<string>;
+  /**
+   * Internal config-publication handshake. `refreshServers()` invokes this at
+   * most once, only after the previous connections are strictly stopped and
+   * the replacement config is installed in the sandbox-resume deferred slot.
+   * Ordinary startup callers must leave it unset.
+   */
+  readonly onSandboxRefreshDeferred?: () => void;
+}
+
+/**
+ * Execution context propagated from an already-admitted internal caller.
+ * `MCPManager.callTool` does not acquire session effect admission itself.
+ */
+export interface MCPManagerToolCallOptions {
+  /** Cancel the physical MCP request; the call settles with the transport. */
+  readonly signal?: AbortSignal;
+  /** Trusted runtime call identity used by observers, persistence, and request metadata. */
+  readonly callId?: string;
+  /** Receives only the canonical bridge's bounded, sanitized progress events. */
+  readonly onProgress?: MCPProgressCallback;
+}
+
+type MCPExecutionArgumentName =
+  | "__abortSignal"
+  | "__callId"
+  | "__onProgress";
+
+function defineMcpExecutionArgument(
+  args: Record<string, unknown>,
+  name: MCPExecutionArgumentName,
+  value: unknown,
+): void {
+  if (value === undefined) return;
+  Object.defineProperty(args, name, {
+    value,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+}
+
+function withoutStartSignal(
+  opts: MCPManagerStartOpts,
+): Omit<
+  MCPManagerStartOpts,
+  "signal" | "onSandboxRefreshDeferred"
+> {
+  return {
+    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+    ...(opts.requireOneReady !== undefined
+      ? { requireOneReady: opts.requireOneReady }
+      : {}),
+    ...(opts.requiredServers !== undefined
+      ? { requiredServers: [...opts.requiredServers] }
+      : {}),
+  };
 }
 
 interface StartupGate {
@@ -105,6 +170,15 @@ interface RetainedServerCleanup {
   retryTask?: Promise<void>;
 }
 
+interface DeferredMcpRefresh {
+  readonly promise: Promise<void>;
+  readonly opts: MCPManagerStartOpts;
+  readonly resolve: () => void;
+  readonly reject: (error: unknown) => void;
+  readonly removeAbortListener: () => void;
+  cancelled: boolean;
+}
+
 class MCPConnectionCleanupError extends AggregateError {
   readonly originalError: unknown;
 
@@ -119,45 +193,176 @@ export type MCPConnectionState =
   | { readonly type: "connected" | "pending" | "disabled" | "needs-auth" }
   | { readonly type: "failed"; readonly error?: string };
 
-function toScopedMcpServerConfig(
+function requireMcpConfigValue(
+  serverName: string,
+  label: "remote endpoint" | "stdio command",
+  value: string | undefined,
+): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`MCP server "${serverName}" is missing its ${label}`);
+  }
+  return value;
+}
+
+function immutableMcpServerConfig(config: MCPServerConfig): MCPServerConfig {
+  assertValidMcpServerName(config.name);
+  const tools =
+    config.tools === undefined
+      ? undefined
+      : Object.freeze(
+          Object.fromEntries(
+            Object.entries(config.tools).map(([name, policy]) => [
+              name,
+              Object.freeze({ ...policy }),
+            ]),
+          ),
+        );
+  return Object.freeze({
+    ...config,
+    ...(config.args !== undefined
+      ? { args: Object.freeze([...config.args]) }
+      : {}),
+    ...(config.headers !== undefined
+      ? { headers: Object.freeze({ ...config.headers }) }
+      : {}),
+    ...(config.env !== undefined
+      ? { env: Object.freeze({ ...config.env }) }
+      : {}),
+    ...(config.env_vars !== undefined
+      ? { env_vars: Object.freeze([...config.env_vars]) }
+      : {}),
+    ...(config.enabled_tools !== undefined
+      ? { enabled_tools: Object.freeze([...config.enabled_tools]) }
+      : {}),
+    ...(config.disabled_tools !== undefined
+      ? { disabled_tools: Object.freeze([...config.disabled_tools]) }
+      : {}),
+    ...(tools !== undefined ? { tools } : {}),
+    ...(config.supplyChain !== undefined
+      ? { supplyChain: Object.freeze({ ...config.supplyChain }) }
+      : {}),
+    ...(config.pluginSandbox !== undefined
+      ? { pluginSandbox: Object.freeze({ ...config.pluginSandbox }) }
+      : {}),
+    ...(config.origin !== undefined
+      ? {
+          origin: Object.freeze({
+            ...config.origin,
+            ...(config.origin.pluginServer !== undefined
+              ? {
+                  pluginServer: Object.freeze({
+                    ...config.origin.pluginServer,
+                  }),
+                }
+              : {}),
+          }),
+        }
+      : {}),
+  });
+}
+
+export function toScopedMcpServerConfig(
   config: MCPServerConfig,
 ): ScopedMcpServerConfig {
-  const scope = "dynamic" as const;
+  const authoritySource = config.origin?.scope;
+  const scope =
+    authoritySource === "managed"
+      ? "managed" as const
+      : authoritySource === "user" ||
+          authoritySource === "project" ||
+          authoritySource === "local"
+        ? authoritySource
+        : "dynamic" as const;
+  const provenance = {
+    scope,
+    ...(authoritySource !== undefined && authoritySource !== "session"
+      ? { authoritySource }
+      : {}),
+    ...(config.origin?.pluginSource !== undefined
+      ? { pluginSource: config.origin.pluginSource }
+      : {}),
+    ...(config.origin?.pluginServer !== undefined
+      ? { pluginServer: config.origin.pluginServer }
+      : {}),
+  };
+  const policy = {
+    ...(config.enabled !== undefined ? { enabled: config.enabled } : {}),
+    ...(config.required !== undefined ? { required: config.required } : {}),
+    ...(config.timeout !== undefined ? { timeout: config.timeout } : {}),
+    ...(config.default_tools_approval_mode !== undefined
+      ? { default_tools_approval_mode: config.default_tools_approval_mode }
+      : {}),
+    ...(config.enabled_tools !== undefined
+      ? { enabled_tools: [...config.enabled_tools] }
+      : {}),
+    ...(config.disabled_tools !== undefined
+      ? { disabled_tools: [...config.disabled_tools] }
+      : {}),
+    ...(config.tools !== undefined ? { tools: config.tools } : {}),
+    ...(config.pinnedCatalogSha256 !== undefined
+      ? { pinnedCatalogSha256: config.pinnedCatalogSha256 }
+      : {}),
+    ...(config.supplyChain !== undefined
+      ? { supplyChain: { ...config.supplyChain } }
+      : {}),
+  };
   const transport = config.transport ?? "stdio";
 
   if (transport === "sse") {
     return {
       type: "sse",
-      url: config.endpoint ?? "",
+      url: requireMcpConfigValue(
+        config.name,
+        "remote endpoint",
+        config.endpoint,
+      ),
       ...(config.headers !== undefined ? { headers: config.headers } : {}),
-      scope,
+      ...policy,
+      ...provenance,
     };
   }
 
   if (transport === "http") {
     return {
       type: "http",
-      url: config.endpoint ?? "",
+      url: requireMcpConfigValue(
+        config.name,
+        "remote endpoint",
+        config.endpoint,
+      ),
       ...(config.headers !== undefined ? { headers: config.headers } : {}),
-      scope,
+      ...policy,
+      ...provenance,
     };
   }
 
-  if (transport === "websocket" || transport === "ws") {
+  if (transport === "websocket") {
     return {
       type: "ws",
-      url: config.endpoint ?? "",
+      url: requireMcpConfigValue(
+        config.name,
+        "remote endpoint",
+        config.endpoint,
+      ),
       ...(config.headers !== undefined ? { headers: config.headers } : {}),
-      scope,
+      ...policy,
+      ...provenance,
     };
   }
 
   return {
     type: "stdio",
-    command: config.command ?? config.name,
-    args: config.args ?? [],
+    command: requireMcpConfigValue(
+      config.name,
+      "stdio command",
+      config.command,
+    ),
+    args: [...(config.args ?? [])],
     ...(config.env !== undefined ? { env: config.env } : {}),
-    scope,
+    ...(config.env_vars !== undefined ? { env_vars: [...config.env_vars] } : {}),
+    ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
+    ...policy,
+    ...provenance,
   };
 }
 
@@ -222,8 +427,9 @@ function readClientInstructions(client: unknown): string | undefined {
  * ```
  */
 export class MCPManager {
-  private configs: MCPServerConfig[];
+  private configs: readonly MCPServerConfig[];
   private readonly logger: Logger;
+  private readonly environment: ProviderEnvironment;
   private readonly bridges: Map<string, MCPToolBridge> = new Map();
   private readonly resourceBridges: Map<string, MCPResourceBridge> = new Map();
   private readonly promptBridges: Map<string, MCPPromptBridge> = new Map();
@@ -251,8 +457,11 @@ export class MCPManager {
   private samplingHandlers: McpSamplingHandlers | undefined;
   private sandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
   private unregisterSandboxLifecycle: (() => void) | undefined;
+  private sandboxQuiesced = false;
   private running = false;
   private restartAfterSandboxTransition = false;
+  private lifecycleTail: Promise<void> = Promise.resolve();
+  private deferredRefresh: DeferredMcpRefresh | undefined;
   private lastStartOpts: Omit<MCPManagerStartOpts, "signal"> = {};
   private lifecycleGeneration = 0;
   private readonly startupGates = new Set<StartupGate>();
@@ -262,12 +471,106 @@ export class MCPManager {
   private readonly reconnectOperations = new Set<ManagedReconnectOperation>();
   private readonly reconnectTails = new Map<string, Promise<void>>();
   private readonly retainedCleanup = new Map<string, RetainedServerCleanup>();
+  private readonly surfaceChangeListeners = new Set<() => void>();
   private shutdownTask: Promise<ReadonlyArray<unknown>> | undefined;
 
-  constructor(configs: MCPServerConfig[], logger: Logger = silentLogger) {
-    this.configs = configs;
+  constructor(
+    configs: ReadonlyArray<MCPServerConfig>,
+    logger: Logger = silentLogger,
+    environment: ProviderEnvironment = EMPTY_MCP_REQUEST_ENVIRONMENT,
+  ) {
+    this.configs = Object.freeze(configs.map(immutableMcpServerConfig));
     this.logger = logger;
+    this.environment = snapshotMcpRequestEnvironment(environment);
     this.resetConnectionStates();
+  }
+
+  private enqueueLifecycle<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.lifecycleTail.then(operation);
+    this.lifecycleTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private deferRefreshUntilSandboxResume(
+    opts: MCPManagerStartOpts,
+  ): DeferredMcpRefresh {
+    this.rejectDeferredRefresh(
+      new Error("MCP refresh was superseded before sandbox resume"),
+    );
+    const deferredOpts: MCPManagerStartOpts = {
+      ...withoutStartSignal(opts),
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    };
+    let resolveRefresh: (() => void) | undefined;
+    let rejectRefresh: ((error: unknown) => void) | undefined;
+    const promise = new Promise<void>((resolve, reject) => {
+      resolveRefresh = resolve;
+      rejectRefresh = reject;
+    });
+    // A signal can reject before refreshServers reaches its final await. Keep
+    // that short window from becoming an unhandled rejection.
+    void promise.catch(() => undefined);
+    let record: DeferredMcpRefresh;
+    const onAbort = (): void => {
+      if (this.deferredRefresh !== record) return;
+      record.cancelled = true;
+      this.deferredRefresh = undefined;
+      this.restartAfterSandboxTransition = false;
+      record.removeAbortListener();
+      record.reject(
+        new Error(
+          `MCP refresh cancelled before sandbox resume (${deferredOpts.signal?.reason ?? "unspecified"})`,
+        ),
+      );
+    };
+    record = {
+      promise,
+      opts: deferredOpts,
+      resolve: () => resolveRefresh?.(),
+      reject: (error) => rejectRefresh?.(error),
+      removeAbortListener: () =>
+        deferredOpts.signal?.removeEventListener("abort", onAbort),
+      cancelled: false,
+    };
+    this.deferredRefresh = record;
+    if (deferredOpts.signal?.aborted === true) {
+      onAbort();
+    } else {
+      deferredOpts.signal?.addEventListener("abort", onAbort, { once: true });
+    }
+    return record;
+  }
+
+  private resolveDeferredRefresh(record: DeferredMcpRefresh): void {
+    if (this.deferredRefresh !== record) return;
+    this.deferredRefresh = undefined;
+    record.removeAbortListener();
+    record.resolve();
+  }
+
+  private rejectDeferredRefresh(error: unknown): void {
+    const record = this.deferredRefresh;
+    if (record === undefined) return;
+    this.deferredRefresh = undefined;
+    record.cancelled = true;
+    record.removeAbortListener();
+    record.reject(error);
+  }
+
+  private isSandboxExecutionAuthorityClosed(): boolean {
+    return (
+      this.sandboxExecutionBroker?.isClosedAfterLifecycleAuthorityFailure?.() ===
+      true
+    );
+  }
+
+  private sandboxExecutionAuthorityClosedError(action: string): Error {
+    return new Error(
+      `MCP ${action} is blocked because sandbox execution authority is permanently closed`,
+    );
   }
 
   /**
@@ -300,40 +603,118 @@ export class MCPManager {
     if (this.sandboxExecutionBroker === broker) return;
     this.unregisterSandboxLifecycle?.();
     this.unregisterSandboxLifecycle = undefined;
+    this.sandboxQuiesced = false;
+    this.restartAfterSandboxTransition = false;
     this.sandboxExecutionBroker = broker;
     if (broker !== undefined) {
       this.unregisterSandboxLifecycle =
         registerSandboxExecutionLifecycleParticipant(broker, {
           name: "mcp-manager",
+          spawnSurfaces: ["mcp_stdio"],
           quiesce: async () => {
-            this.restartAfterSandboxTransition = this.running;
-            if (
-              this.running ||
-              this.bridges.size > 0 ||
-              this.connectionAttempts.size > 0 ||
-              this.reconnectOperations.size > 0 ||
-              this.retainedCleanup.size > 0 ||
-              this.shutdownTask !== undefined
-            ) {
+            this.sandboxQuiesced = true;
+            this.restartAfterSandboxTransition ||= this.running;
+            // Revoke connection authority synchronously. The queued strict
+            // stop then proves every owner is gone after any earlier refresh
+            // transaction has yielded.
+            void this.beginShutdown();
+            await this.enqueueLifecycle(async () => {
               await this.stopInternal(true);
-            }
+            });
           },
           resume: async () => {
-            if (!this.restartAfterSandboxTransition) return;
+            await this.enqueueLifecycle(async () => {
+              if (!this.sandboxQuiesced) return;
+              this.sandboxQuiesced = false;
+              if (!this.restartAfterSandboxTransition) return;
+              this.restartAfterSandboxTransition = false;
+              const deferred = this.deferredRefresh;
+              try {
+                await this.start(deferred?.opts ?? this.lastStartOpts);
+                if (deferred !== undefined) {
+                  if (deferred.cancelled) {
+                    await this.stopInternal(true);
+                    return;
+                  }
+                  this.resolveDeferredRefresh(deferred);
+                }
+              } catch (error) {
+                if (deferred?.cancelled === true) return;
+                if (deferred !== undefined) {
+                  this.rejectDeferredRefresh(error);
+                }
+                throw error;
+              }
+            });
+          },
+          dispose: async () => {
+            this.sandboxQuiesced = true;
             this.restartAfterSandboxTransition = false;
-            await this.start(this.lastStartOpts);
+            this.rejectDeferredRefresh(
+              new Error("MCP refresh cancelled by sandbox disposal"),
+            );
+            void this.beginShutdown();
+            await this.enqueueLifecycle(async () => {
+              await this.stopInternal(true);
+            });
           },
         });
     }
   }
 
+  /**
+   * Subscribe to invalidations of the manager's published MCP surface.
+   *
+   * The callback is synchronous so fail-closed revocation is observable before
+   * transport cleanup yields. It carries no revision or snapshot: callers own
+   * projection, equality, and coalescing at their boundary.
+   */
+  subscribeSurfaceChanges(listener: () => void): () => void {
+    this.surfaceChangeListeners.add(listener);
+    let subscribed = true;
+    return () => {
+      if (!subscribed) return;
+      subscribed = false;
+      this.surfaceChangeListeners.delete(listener);
+    };
+  }
+
+  private commitSurfaceMutation(mutation: () => void): void {
+    mutation();
+    this.notifySurfaceChanged();
+  }
+
+  private notifySurfaceChanged(): void {
+    for (const listener of Array.from(this.surfaceChangeListeners)) {
+      try {
+        listener();
+      } catch (error) {
+        // Surface observers are downstream projections. A broken observer must
+        // never interrupt connection publication or fail-closed revocation.
+        try {
+          this.logger.warn?.("MCP surface change listener failed:", error);
+        } catch {
+          // Logging is best-effort on this isolation path.
+        }
+      }
+    }
+  }
+
   getConnectionState(name: string): MCPConnectionState | undefined {
     const config = this.getServerConfig(name);
+    if (config !== undefined && this.isSandboxExecutionAuthorityClosed()) {
+      return {
+        type: "failed",
+        error: this.sandboxExecutionAuthorityClosedError(
+          `server ${JSON.stringify(name)}`,
+        ).message,
+      };
+    }
     if (config?.enabled === false) return { type: "disabled" };
     if (this.bridges.has(name)) return { type: "connected" };
     const state = this.connectionStates.get(name);
     if (state?.type === "failed") return state;
-    if (this.retainedCleanup.has(name)) {
+    if (config !== undefined && this.retainedCleanup.has(name)) {
       return {
         type: "failed",
         error: `MCP server "${name}" cleanup remains unproven`,
@@ -343,12 +724,14 @@ export class MCPManager {
   }
 
   private resetConnectionStates(): void {
-    this.connectionStates.clear();
-    for (const config of this.configs) {
-      this.connectionStates.set(config.name, {
-        type: config.enabled === false ? "disabled" : "pending",
-      });
-    }
+    this.commitSurfaceMutation(() => {
+      this.connectionStates.clear();
+      for (const config of this.configs) {
+        this.connectionStates.set(config.name, {
+          type: config.enabled === false ? "disabled" : "pending",
+        });
+      }
+    });
   }
 
   /**
@@ -363,6 +746,14 @@ export class MCPManager {
    * waits for that cleanup before rebasing sandbox authority.
    */
   async start(opts: MCPManagerStartOpts = {}): Promise<void> {
+    if (this.isSandboxExecutionAuthorityClosed()) {
+      throw this.sandboxExecutionAuthorityClosedError("manager startup");
+    }
+    if (this.sandboxQuiesced) {
+      throw new Error(
+        "MCP manager cannot start while sandbox execution is quiesced",
+      );
+    }
     if (
       this.running ||
       this.shutdownTask !== undefined ||
@@ -375,15 +766,7 @@ export class MCPManager {
         "MCP manager cannot start while another connection lifecycle is active; stop it before starting again",
       );
     }
-    this.lastStartOpts = {
-      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
-      ...(opts.requireOneReady !== undefined
-        ? { requireOneReady: opts.requireOneReady }
-        : {}),
-      ...(opts.requiredServers !== undefined
-        ? { requiredServers: [...opts.requiredServers] }
-        : {}),
-    };
+    this.lastStartOpts = withoutStartSignal(opts);
     const signal = opts.signal;
     if (signal?.aborted) {
       throw new Error(
@@ -428,24 +811,26 @@ export class MCPManager {
 
     let successCount = 0;
     const failures: Array<{ name: string; reason: unknown }> = [];
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i];
-      const cfg = enabledConfigs[i];
-      if (result.status === "fulfilled") {
-        successCount++;
-        this.connectionStates.set(cfg.name, { type: "connected" });
-      } else {
-        this.connectionStates.set(cfg.name, {
-          type: "failed",
-          error: errMessage(result.reason),
-        });
-        failures.push({ name: cfg.name, reason: result.reason });
-        this.logger.error(
-          `Failed to connect to MCP server "${cfg.name}":`,
-          result.reason,
-        );
+    this.commitSurfaceMutation(() => {
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
+        const cfg = enabledConfigs[i];
+        if (result.status === "fulfilled") {
+          successCount++;
+          this.connectionStates.set(cfg.name, { type: "connected" });
+        } else {
+          this.connectionStates.set(cfg.name, {
+            type: "failed",
+            error: errMessage(result.reason),
+          });
+          failures.push({ name: cfg.name, reason: result.reason });
+          this.logger.error(
+            `Failed to connect to MCP server "${cfg.name}":`,
+            result.reason,
+          );
+        }
       }
-    }
+    });
 
     const totalTools = this.getTools().length;
     this.logger.info(
@@ -480,7 +865,50 @@ export class MCPManager {
    * Disconnect from all MCP servers and clean up resources.
    */
   async stop(): Promise<void> {
-    await this.stopInternal(false);
+    this.restartAfterSandboxTransition = false;
+    this.rejectDeferredRefresh(new Error("MCP refresh cancelled by shutdown"));
+    void this.beginShutdown();
+    await this.enqueueLifecycle(async () => {
+      await this.stopInternal(false);
+    });
+  }
+
+  /** Stop and reject unless cleanup of every connection owner is proven. */
+  async stopStrict(): Promise<void> {
+    this.restartAfterSandboxTransition = false;
+    this.rejectDeferredRefresh(new Error("MCP refresh cancelled by shutdown"));
+    void this.beginShutdown();
+    await this.enqueueLifecycle(async () => {
+      await this.stopInternal(true);
+    });
+  }
+
+  /**
+   * Strictly revoke every connection owner and remove every configured server
+   * without entering the startup/deferred-refresh path. This is the terminal
+   * fail-closed primitive: callers must not use `refreshServers([])` while the
+   * sandbox is quiesced because that operation intentionally waits for resume.
+   */
+  async clearServersStrict(): Promise<void> {
+    this.restartAfterSandboxTransition = false;
+    this.rejectDeferredRefresh(new Error("MCP refresh cancelled by shutdown"));
+    void this.beginShutdown();
+    // Authority revocation is synchronous and independent of transport
+    // cleanup. Even if an owner cannot yet prove disposal, callers must never
+    // rediscover the old configured names, connections, or tools.
+    this.configs = Object.freeze([]);
+    this.resetConnectionStates();
+    await this.enqueueLifecycle(async () => {
+      try {
+        await this.stopInternal(true);
+      } finally {
+        // A lifecycle operation already in the queue may have written its
+        // candidate configs after the synchronous revocation above. Reassert
+        // the terminal projection at the serialized commit boundary.
+        this.configs = Object.freeze([]);
+        this.resetConnectionStates();
+      }
+    });
   }
 
   private async stopInternal(strict: boolean): Promise<void> {
@@ -556,6 +984,11 @@ export class MCPManager {
       for (const error of errors) {
         this.logger.warn?.("Error disconnecting MCP server:", error);
       }
+      if (errors.length > 0) {
+        // Cleanup retention changes getConnectionState() from pending to the
+        // fail-closed state after the synchronous unpublication above.
+        this.notifySurfaceChanged();
+      }
       this.logger.info("All MCP servers disconnected");
       return errors;
     });
@@ -576,15 +1009,52 @@ export class MCPManager {
     configs: ReadonlyArray<MCPServerConfig>,
     opts: MCPManagerStartOpts = {},
   ): Promise<void> {
-    await this.stop();
-    this.configs = [...configs];
-    await this.start(opts);
+    if (this.isSandboxExecutionAuthorityClosed()) {
+      throw this.sandboxExecutionAuthorityClosedError("server refresh");
+    }
+    const nextConfigs = Object.freeze(configs.map(immutableMcpServerConfig));
+    let deferred: DeferredMcpRefresh | undefined;
+    let deferralNotified = false;
+    const notifyDeferral = (): void => {
+      if (deferralNotified) return;
+      deferralNotified = true;
+      opts.onSandboxRefreshDeferred?.();
+    };
+    await this.enqueueLifecycle(async () => {
+      this.rejectDeferredRefresh(
+        new Error("MCP refresh was superseded by a newer configuration"),
+      );
+      await this.stopInternal(true);
+      this.configs = nextConfigs;
+      this.resetConnectionStates();
+      if (this.sandboxQuiesced) {
+        this.restartAfterSandboxTransition = true;
+        this.lastStartOpts = withoutStartSignal(opts);
+        deferred = this.deferRefreshUntilSandboxResume(opts);
+        if (!deferred.cancelled) notifyDeferral();
+        return;
+      }
+      await this.start(opts);
+      if (this.sandboxQuiesced) {
+        this.restartAfterSandboxTransition = true;
+        deferred = this.deferRefreshUntilSandboxResume(opts);
+        if (!deferred.cancelled) notifyDeferral();
+        return;
+      }
+      if (opts.signal?.aborted === true) {
+        throw new Error(
+          `MCP refresh cancelled during startup (${opts.signal.reason ?? "unspecified"})`,
+        );
+      }
+    });
+    await deferred?.promise;
   }
 
   /**
    * Get all tools from all connected MCP servers.
    */
   getTools(): Tool[] {
+    if (this.isSandboxExecutionAuthorityClosed()) return [];
     const tools: Tool[] = [];
     for (const bridge of this.bridges.values()) {
       tools.push(...bridge.tools);
@@ -596,17 +1066,80 @@ export class MCPManager {
    * Get tools from a specific MCP server.
    */
   getToolsByServer(name: string): Tool[] {
+    if (this.isSandboxExecutionAuthorityClosed()) return [];
     return this.bridges.get(name)?.tools ?? [];
+  }
+
+  /**
+   * Execute one raw MCP tool through the connected server's canonical bridge.
+   *
+   * This is the manager-owned RPC surface for internal callers that already
+   * know the server and raw MCP tool name. It deliberately delegates to the
+   * same resilient, permission-checked, output-normalizing Tool proxy exposed
+   * to the runtime registry; callers never receive or retain an SDK client.
+   * Production callers must already be inside the canonical admitted boundary
+   * and propagate that boundary's call id and signal through `options`.
+   * Expected MCP failures resolve with `isError`; aborts and unexpected bridge
+   * failures may reject.
+   */
+  async callTool(
+    serverName: string,
+    toolName: string,
+    args: Readonly<Record<string, unknown>>,
+    options: MCPManagerToolCallOptions = {},
+  ): Promise<ToolResult> {
+    options.signal?.throwIfAborted();
+    if (this.isSandboxExecutionAuthorityClosed()) {
+      return {
+        content: this.sandboxExecutionAuthorityClosedError("tool execution")
+          .message,
+        isError: true,
+      };
+    }
+    const bridge = this.bridges.get(serverName);
+    if (bridge === undefined) {
+      return {
+        content: `MCP server ${JSON.stringify(serverName)} is not connected`,
+        isError: true,
+      };
+    }
+
+    const namespacedName = `mcp.${serverName}.${toolName}`;
+    const tool = bridge.tools.find(
+      (candidate) => candidate.name === namespacedName,
+    );
+    if (tool === undefined) {
+      return {
+        content: `MCP tool ${JSON.stringify(toolName)} is not available on server ${JSON.stringify(serverName)}`,
+        isError: true,
+      };
+    }
+
+    const executionArgs = withoutMcpExecutionOnlyArgs(args);
+    defineMcpExecutionArgument(
+      executionArgs,
+      "__abortSignal",
+      options.signal,
+    );
+    defineMcpExecutionArgument(executionArgs, "__callId", options.callId);
+    defineMcpExecutionArgument(
+      executionArgs,
+      "__onProgress",
+      options.onProgress,
+    );
+    return tool.execute(executionArgs);
   }
 
   /**
    * Get the names of all connected servers.
    */
   getConnectedServers(): string[] {
+    if (this.isSandboxExecutionAuthorityClosed()) return [];
     return Array.from(this.bridges.keys());
   }
 
   getConnectedConnection(name: string): ConnectedMCPServer | undefined {
+    if (this.isSandboxExecutionAuthorityClosed()) return undefined;
     return this.connectedConnections.get(name);
   }
 
@@ -618,11 +1151,12 @@ export class MCPManager {
    * deltas across turns.
    */
   getServerInstructions(name: string): string | undefined {
+    if (this.isSandboxExecutionAuthorityClosed()) return undefined;
     return this.serverInstructions.get(name);
   }
 
   getConfiguredServers(): readonly MCPServerConfig[] {
-    return [...this.configs];
+    return this.configs;
   }
 
   getServerConfig(name: string): MCPServerConfig | undefined {
@@ -630,6 +1164,7 @@ export class MCPManager {
   }
 
   isConnected(name: string): boolean {
+    if (this.isSandboxExecutionAuthorityClosed()) return false;
     return this.bridges.has(name);
   }
 
@@ -643,6 +1178,7 @@ export class MCPManager {
    * lookup instead of prefix-matching the stringified name.
    */
   getServerForTool(namespacedName: string): string | undefined {
+    if (this.isSandboxExecutionAuthorityClosed()) return undefined;
     for (const [serverName, bridge] of this.bridges) {
       for (const tool of bridge.tools) {
         if (tool.name === namespacedName) return serverName;
@@ -662,6 +1198,7 @@ export class MCPManager {
   resolveMcpToolInfo(
     toolName: string,
   ): { readonly serverName: string; readonly toolName: string } | undefined {
+    if (this.isSandboxExecutionAuthorityClosed()) return undefined;
     if (toolName.startsWith("mcp.")) {
       const server = this.getServerForTool(toolName);
       if (!server) return undefined;
@@ -680,6 +1217,22 @@ export class MCPManager {
   }
 
   async reconnectServer(name: string): Promise<MCPReconnectResult> {
+    if (this.isSandboxExecutionAuthorityClosed()) {
+      return reconnectFailure(
+        name,
+        this.sandboxExecutionAuthorityClosedError(
+          `server ${JSON.stringify(name)} reconnect`,
+        ),
+      );
+    }
+    if (this.sandboxQuiesced) {
+      return reconnectFailure(
+        name,
+        new Error(
+          `MCP server "${name}" cannot reconnect while sandbox execution is quiesced`,
+        ),
+      );
+    }
     const config = this.getServerConfig(name);
     if (!config) {
       return {
@@ -690,7 +1243,9 @@ export class MCPManager {
       };
     }
     if (config.enabled === false) {
-      this.connectionStates.set(name, { type: "disabled" });
+      this.commitSurfaceMutation(() => {
+        this.connectionStates.set(name, { type: "disabled" });
+      });
       return {
         serverName: name,
         success: false,
@@ -731,9 +1286,11 @@ export class MCPManager {
 
     return promise.catch((error: unknown) => {
       if (this.isReconnectLifecycleCurrent(lifecycleGeneration, running)) {
-        this.connectionStates.set(config.name, {
-          type: "failed",
-          error: errMessage(error),
+        this.commitSurfaceMutation(() => {
+          this.connectionStates.set(config.name, {
+            type: "failed",
+            error: errMessage(error),
+          });
         });
       }
       return reconnectFailure(config.name, error);
@@ -773,7 +1330,9 @@ export class MCPManager {
           new Error(`MCP server "${config.name}" reconnect cancelled by shutdown`),
         );
       }
-      this.connectionStates.set(config.name, { type: "connected" });
+      this.commitSurfaceMutation(() => {
+        this.connectionStates.set(config.name, { type: "connected" });
+      });
       return {
         serverName: config.name,
         success: true,
@@ -781,9 +1340,11 @@ export class MCPManager {
       };
     } catch (error) {
       if (this.isReconnectLifecycleCurrent(lifecycleGeneration, running)) {
-        this.connectionStates.set(config.name, {
-          type: "failed",
-          error: errMessage(error),
+        this.commitSurfaceMutation(() => {
+          this.connectionStates.set(config.name, {
+            type: "failed",
+            error: errMessage(error),
+          });
         });
       }
       return reconnectFailure(config.name, error);
@@ -801,83 +1362,6 @@ export class MCPManager {
     );
   }
 
-  async enableServer(name: string): Promise<MCPServerMutationResult> {
-    const config = this.getServerConfig(name);
-    if (!config) {
-      return {
-        serverName: name,
-        success: false,
-        toolCount: 0,
-        error: `MCP server "${name}" is not configured.`,
-      };
-    }
-    config.enabled = true;
-    if (this.bridges.has(name)) {
-      return {
-        serverName: name,
-        success: true,
-        toolCount: this.getToolsByServer(name).length,
-      };
-    }
-    return this.reconnectServer(name);
-  }
-
-  async disableServer(name: string): Promise<MCPServerMutationResult> {
-    const config = this.getServerConfig(name);
-    if (!config) {
-      return {
-        serverName: name,
-        success: false,
-        toolCount: 0,
-        error: `MCP server "${name}" is not configured.`,
-      };
-    }
-    config.enabled = false;
-    await this.disconnectServer(name, "after disable");
-    this.connectionStates.set(name, { type: "disabled" });
-    return {
-      serverName: name,
-      success: true,
-      toolCount: 0,
-    };
-  }
-
-  async addServer(config: MCPServerConfig): Promise<MCPServerMutationResult> {
-    if (!isValidMcpServerName(config.name)) {
-      return {
-        serverName: config.name,
-        success: false,
-        toolCount: 0,
-        error: `Invalid MCP server name "${config.name}". Names can only contain letters, numbers, hyphens, and underscores.`,
-      };
-    }
-    if (this.getServerConfig(config.name)) {
-      return {
-        serverName: config.name,
-        success: false,
-        toolCount: 0,
-        error: `MCP server "${config.name}" is already configured.`,
-      };
-    }
-    const nextConfig: MCPServerConfig = {
-      ...config,
-      ...(config.args !== undefined ? { args: [...config.args] } : {}),
-      ...(config.headers !== undefined
-        ? { headers: { ...config.headers } }
-        : {}),
-      ...(config.env !== undefined ? { env: { ...config.env } } : {}),
-    };
-    const previousConfigs = this.configs;
-    this.configs = [...previousConfigs, nextConfig];
-    const result = await this.reconnectServer(nextConfig.name);
-    if (!result.success) {
-      await this.disconnectServer(nextConfig.name, "after failed add");
-      this.configs = previousConfigs;
-      this.connectionStates.delete(nextConfig.name);
-    }
-    return result;
-  }
-
   // ─────────────────────────────────────────────────────────────────
   // T9-D: MCP resource + prompt surface
   // ─────────────────────────────────────────────────────────────────
@@ -892,6 +1376,7 @@ export class MCPManager {
     signal?: AbortSignal,
   ): Promise<ReadonlyArray<MCPResourceDescriptor>> {
     signal?.throwIfAborted();
+    if (this.isSandboxExecutionAuthorityClosed()) return [];
     const bridges = Array.from(this.resourceBridges.values());
     if (bridges.length === 0) return [];
     const results = await Promise.allSettled(
@@ -916,6 +1401,7 @@ export class MCPManager {
     signal?: AbortSignal,
   ): Promise<ReadonlyArray<MCPResourceDescriptor>> {
     signal?.throwIfAborted();
+    if (this.isSandboxExecutionAuthorityClosed()) return [];
     const bridge = this.resourceBridges.get(name);
     if (!bridge) return [];
     return signal === undefined
@@ -932,6 +1418,7 @@ export class MCPManager {
     signal?: AbortSignal,
   ): Promise<MCPResourceContent | null> {
     signal?.throwIfAborted();
+    if (this.isSandboxExecutionAuthorityClosed()) return null;
     const parsed = parseNamespacedName(namespacedName);
     if (!parsed) return null;
     const bridge = this.resourceBridges.get(parsed.serverName);
@@ -945,6 +1432,7 @@ export class MCPManager {
    * List prompts exposed by every connected server (flattened).
    */
   async listPrompts(): Promise<ReadonlyArray<MCPPromptDescriptor>> {
+    if (this.isSandboxExecutionAuthorityClosed()) return [];
     const bridges = Array.from(this.promptBridges.values());
     if (bridges.length === 0) return [];
     const results = await Promise.allSettled(
@@ -965,6 +1453,7 @@ export class MCPManager {
   async listPromptsByServer(
     name: string,
   ): Promise<ReadonlyArray<MCPPromptDescriptor>> {
+    if (this.isSandboxExecutionAuthorityClosed()) return [];
     const bridge = this.promptBridges.get(name);
     if (!bridge) return [];
     return bridge.listPrompts();
@@ -979,6 +1468,7 @@ export class MCPManager {
     args?: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<MCPPromptRendered | null> {
+    if (this.isSandboxExecutionAuthorityClosed()) return null;
     const parsed = parseNamespacedName(namespacedName);
     if (!parsed) return null;
     const bridge = this.promptBridges.get(parsed.serverName);
@@ -1112,6 +1602,7 @@ export class MCPManager {
         this.elicitationHandlers,
         this.samplingHandlers,
         this.sandboxExecutionBroker,
+        this.environment,
       );
     } catch (error) {
       if (isMCPTransportCleanupFailure(error)) {
@@ -1138,6 +1629,7 @@ export class MCPManager {
           listToolsTimeoutMs: config.timeout,
           callToolTimeoutMs: config.timeout,
           serverConfig: toToolCatalogPolicyConfig(config),
+          environment: this.environment,
           ...(this.callObserver !== undefined
             ? { callObserver: this.callObserver }
             : {}),
@@ -1174,6 +1666,7 @@ export class MCPManager {
         ...(this.sandboxExecutionBroker !== undefined
           ? { sandboxExecutionBroker: this.sandboxExecutionBroker }
           : {}),
+        environment: this.environment,
         onCleanupFailure: (error) => {
           this.failClosedAutomaticReconnect(config.name, bridge, error);
         },
@@ -1196,6 +1689,11 @@ export class MCPManager {
             undefined,
             companionIsCurrent,
           );
+          if (reconnectIsCurrent()) {
+            // The resilient tool bridge and its optional companions now expose
+            // one coherent replacement surface.
+            this.notifySurfaceChanged();
+          }
         },
       });
       // Publish before the optional companion bridges are constructed so
@@ -1391,31 +1889,45 @@ export class MCPManager {
     error: unknown,
   ): void {
     if (bridge === undefined) {
-      this.retainUnownedCleanupFailure(serverName, error);
+      this.commitSurfaceMutation(() => {
+        this.retainUnownedCleanupFailure(serverName, error);
+      });
       return;
     }
-    this.retainCleanupFailures(serverName, [
-      {
-        owner: cleanupOwner(serverName, bridge, () => invokeDisposal(bridge)),
-        error,
-      },
-    ]);
-    if (this.bridges.get(serverName) !== bridge) return;
+    if (this.bridges.get(serverName) !== bridge) {
+      this.commitSurfaceMutation(() => {
+        this.retainCleanupFailures(serverName, [
+          {
+            owner: cleanupOwner(serverName, bridge, () => invokeDisposal(bridge)),
+            error,
+          },
+        ]);
+      });
+      return;
+    }
 
     // This callback executes inside the reconnect task. Retain the outer
     // owner and unpublish synchronously, but never await bridge.dispose()
     // here: it waits that same reconnect task and would self-deadlock.
-    this.invalidateServerAuthority(serverName);
-    this.bridges.delete(serverName);
     const resourceBridge = this.resourceBridges.get(serverName);
     const promptBridge = this.promptBridges.get(serverName);
-    this.resourceBridges.delete(serverName);
-    this.promptBridges.delete(serverName);
-    this.connectedConnections.delete(serverName);
-    this.serverInstructions.delete(serverName);
-    this.connectionStates.set(serverName, {
-      type: "failed",
-      error: `MCP server "${serverName}" cleanup remains unproven`,
+    this.commitSurfaceMutation(() => {
+      this.retainCleanupFailures(serverName, [
+        {
+          owner: cleanupOwner(serverName, bridge, () => invokeDisposal(bridge)),
+          error,
+        },
+      ]);
+      this.invalidateServerAuthority(serverName);
+      this.bridges.delete(serverName);
+      this.resourceBridges.delete(serverName);
+      this.promptBridges.delete(serverName);
+      this.connectedConnections.delete(serverName);
+      this.serverInstructions.delete(serverName);
+      this.connectionStates.set(serverName, {
+        type: "failed",
+        error: `MCP server "${serverName}" cleanup remains unproven`,
+      });
     });
     const companionDisposals = [resourceBridge, promptBridge].flatMap(
       (companion) =>
@@ -1491,6 +2003,7 @@ export class MCPManager {
       ) {
         if (this.retainedCleanup.get(serverName) === retained) {
           this.retainedCleanup.delete(serverName);
+          this.notifySurfaceChanged();
         }
         return;
       }
@@ -1526,11 +2039,16 @@ export class MCPManager {
     const existing = this.bridges.get(name);
     const existingResource = this.resourceBridges.get(name);
     const existingPrompt = this.promptBridges.get(name);
-    this.connectedConnections.delete(name);
-    this.bridges.delete(name);
-    this.resourceBridges.delete(name);
-    this.promptBridges.delete(name);
-    this.serverInstructions.delete(name);
+    this.commitSurfaceMutation(() => {
+      this.connectedConnections.delete(name);
+      this.bridges.delete(name);
+      this.resourceBridges.delete(name);
+      this.promptBridges.delete(name);
+      this.serverInstructions.delete(name);
+      if (this.connectionStates.get(name)?.type === "connected") {
+        this.connectionStates.set(name, { type: "pending" });
+      }
+    });
 
     const owners: ServerCleanupOwner[] = [
       ...(existing !== undefined
@@ -1581,6 +2099,9 @@ export class MCPManager {
         );
       }
     }
+    if (cleanupErrors.length > 0) {
+      this.notifySurfaceChanged();
+    }
     if (strictCleanup && cleanupErrors.length > 0) {
       throw new MCPConnectionCleanupError(name, reason, cleanupErrors);
     }
@@ -1611,10 +2132,6 @@ function reconnectFailure(
     toolCount: 0,
     error: errMessage(error),
   };
-}
-
-function isValidMcpServerName(name: string): boolean {
-  return /^[a-zA-Z0-9_-]+$/.test(name);
 }
 
 /**

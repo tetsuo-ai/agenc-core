@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { normalizeGrokModelId } from "../../src/llm/_deps/context-window.js";
 import { isGrokMultiAgentModel } from "../../src/llm/provider-native-search.js";
 import { GrokProvider } from "../../src/llm/providers/grok/adapter.js";
 import {
@@ -40,6 +41,13 @@ describe("isGrokMultiAgentModel", () => {
     expect(isGrokMultiAgentModel("grok-4.20-0309-reasoning")).toBe(false);
     expect(isGrokMultiAgentModel(undefined)).toBe(false);
     expect(isGrokMultiAgentModel("")).toBe(false);
+  });
+
+  it("does not rewrite retired model IDs", () => {
+    expect(normalizeGrokModelId(" grok-4 ")).toBe("grok-4");
+    expect(
+      normalizeGrokModelId("grok-4.20-multi-agent-beta-0309"),
+    ).toBe("grok-4.20-multi-agent-beta-0309");
   });
 });
 

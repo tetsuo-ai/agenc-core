@@ -16,6 +16,14 @@ const footerState = vi.hoisted(() => ({
     viewingAgentTaskId: undefined as string | undefined,
     viewSelectionMode: "normal",
   },
+  fullscreen: false,
+  settings: {
+    tui: {
+      copyOnSelect: true,
+      prStatusFooterEnabled: true,
+      vimMode: false,
+    },
+  },
 }));
 
 vi.mock("bun:bundle", () => ({
@@ -31,11 +39,9 @@ vi.mock("../../../src/tui/keybindings/useShortcutDisplay.js", () => ({
 }));
 
 vi.mock("../../../src/utils/config.js", () => ({
-  getGlobalConfig: () => ({
+  getRuntimeState: () => ({
     copyOnSelect: true,
-    editorMode: "normal",
     prStatusFooterEnabled: true,
-    tui: { vimMode: false },
   }),
 }));
 
@@ -145,8 +151,12 @@ vi.mock("../../../src/tui/hooks/useTasksV2.js", () => ({
   useTasksV2: () => undefined,
 }));
 
-vi.mock("../../../src/utils/fullscreen.js", () => ({
-  isFullscreenEnvEnabled: () => false,
+vi.mock("../../../src/tui/hooks/useSettings.js", () => ({
+  useSettings: () => footerState.settings,
+}));
+
+vi.mock("../../../src/tui/context/fullscreenModeContext.js", () => ({
+  useFullscreenMode: () => footerState.fullscreen,
 }));
 
 vi.mock("../../../src/tui/ink/terminal.js", async importOriginal => {

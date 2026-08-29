@@ -3,7 +3,7 @@
  * standard authorization_code + PKCE flow, then caches it by IdP issuer.
  *
  * This is the "one browser pop" in the XAA value prop: one IdP login → N silent
- * MCP server auths. The id_token is cached in the keychain and reused until expiry.
+ * MCP server auths. Native secure storage holds the id_token until it expires.
  */
 import {
   exchangeAuthorization,
@@ -19,32 +19,29 @@ import { createServer, type Server } from 'http'
 import { parse } from 'url'
 import xss from 'xss'
 import { openBrowser } from '../../utils/browser.js'
+import type { HomeContext } from '../../config/home.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { toError } from '../../utils/errors.js'
 import { logMCPDebug } from '../../utils/log.js'
 import { getPlatform } from '../../utils/platform.js'
-import { getSecureStorage } from '../../utils/secureStorage/index.js'
+import {
+  readNativeSecureStorage,
+  updateNativeSecureStorage,
+} from '../../utils/secureStorage/native.js'
 import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
+import type { XaaIdpConfig } from '../../config/schema.js'
 import { jsonParse } from '../../utils/slowOperations.js'
+import { getProxyFetchOptions } from '../../utils/proxy.js'
 import { buildRedirectUri, findAvailablePort } from './oauthPort.js'
 
-export function isXaaEnabled(): boolean {
-  return isEnvTruthy(process.env.AGENC_ENABLE_XAA)
+export function isXaaEnabled(environment: ProviderEnvironment): boolean {
+  return isEnvTruthy(environment.AGENC_ENABLE_XAA)
 }
 
-export type XaaIdpSettings = {
-  issuer: string
-  clientId: string
-  callbackPort?: number
-}
-
-/**
- * Typed accessor for settings.xaaIdp. The field is env-gated in SettingsSchema
- * so it doesn't surface in SDK types/docs — which means the inferred settings
- * type doesn't have it at compile time. This is the one cast.
- */
-export function getXaaIdpSettings(): XaaIdpSettings | undefined {
-  return (getExecutionAuthoritySettings() as { xaaIdp?: XaaIdpSettings }).xaaIdp
+/** Read the sole, typed XAA connection definition from canonical TOML. */
+export function getXaaIdpConfig(): XaaIdpConfig | undefined {
+  return getExecutionAuthoritySettings().xaa_idp
 }
 
 const IDP_LOGIN_TIMEOUT_MS = 5 * 60 * 1000
@@ -52,6 +49,10 @@ const IDP_REQUEST_TIMEOUT_MS = 30000
 const ID_TOKEN_EXPIRY_BUFFER_S = 60
 
 export type IdpLoginOptions = {
+  /** Captured AgenC home that owns this credential operation. */
+  home: HomeContext
+  /** Immutable environment captured at the owning CLI/session ingress. */
+  environment: ProviderEnvironment
   idpIssuer: string
   idpClientId: string
   /**
@@ -78,7 +79,8 @@ export type IdpLoginOptions = {
  * Normalize an IdP issuer URL for use as a cache key: strip trailing slashes,
  * lowercase host. Issuers from config and from OIDC discovery may differ
  * cosmetically but should hit the same cache slot. Exported so the setup
- * command can compare issuers using the same normalization as keychain ops.
+ * command can compare issuers using the same normalization as secure-storage
+ * operations.
  */
 export function issuerKey(issuer: string): string {
   try {
@@ -95,9 +97,11 @@ export function issuerKey(issuer: string): string {
  * Read a cached id_token for the given IdP issuer from secure storage.
  * Returns undefined if missing or within ID_TOKEN_EXPIRY_BUFFER_S of expiring.
  */
-export function getCachedIdpIdToken(idpIssuer: string): string | undefined {
-  const storage = getSecureStorage()
-  const data = storage.read()
+export function getCachedIdpIdToken(
+  idpIssuer: string,
+  home: HomeContext,
+): string | undefined {
+  const data = readNativeSecureStorage(home)
   const entry = data?.mcpXaaIdp?.[issuerKey(idpIssuer)]
   if (!entry) return undefined
   const remainingMs = entry.expiresAt - Date.now()
@@ -109,16 +113,19 @@ function saveIdpIdToken(
   idpIssuer: string,
   idToken: string,
   expiresAt: number,
+  home: HomeContext,
 ): void {
-  const storage = getSecureStorage()
-  const existing = storage.read() || {}
-  storage.update({
-    ...existing,
-    mcpXaaIdp: {
-      ...existing.mcpXaaIdp,
-      [issuerKey(idpIssuer)]: { idToken, expiresAt },
-    },
-  })
+  updateNativeSecureStorage(
+    home,
+    current => ({
+      ...current,
+      mcpXaaIdp: {
+        ...current.mcpXaaIdp,
+        [issuerKey(idpIssuer)]: { idToken, expiresAt },
+      },
+    }),
+    'Failed to save the XAA IdP token to secure storage',
+  )
 }
 
 /**
@@ -132,50 +139,75 @@ function saveIdpIdToken(
 export function saveIdpIdTokenFromJwt(
   idpIssuer: string,
   idToken: string,
+  home: HomeContext,
 ): number {
   const expFromJwt = jwtExp(idToken)
   const expiresAt = expFromJwt ? expFromJwt * 1000 : Date.now() + 3600 * 1000
-  saveIdpIdToken(idpIssuer, idToken, expiresAt)
+  saveIdpIdToken(idpIssuer, idToken, expiresAt, home)
   return expiresAt
 }
 
-export function clearIdpIdToken(idpIssuer: string): void {
-  const storage = getSecureStorage()
-  const existing = storage.read()
+export function clearIdpIdToken(
+  idpIssuer: string,
+  home: HomeContext,
+): void {
   const key = issuerKey(idpIssuer)
-  if (!existing?.mcpXaaIdp?.[key]) return
-  delete existing.mcpXaaIdp[key]
-  storage.update(existing)
+  updateNativeSecureStorage(
+    home,
+    current => {
+      if (!current.mcpXaaIdp?.[key]) return { ...current }
+      const mcpXaaIdp = { ...current.mcpXaaIdp }
+      delete mcpXaaIdp[key]
+      const next = { ...current }
+      if (Object.keys(mcpXaaIdp).length === 0) delete next.mcpXaaIdp
+      else next.mcpXaaIdp = mcpXaaIdp
+      return next
+    },
+    'Failed to clear the XAA IdP token from secure storage',
+  )
 }
 
 /**
  * Save an IdP client secret to secure storage, keyed by IdP issuer.
  * Separate from MCP server AS secrets — different trust domain.
- * Returns the storage update result so callers can surface keychain
- * failures (locked keychain, `security` nonzero exit) instead of
+ * Returns the storage update result so callers can surface native secure storage
+ * failures, including a locked macOS Keychain, instead of
  * silently dropping the secret and failing later with invalid_client.
  */
 export function saveIdpClientSecret(
   idpIssuer: string,
   clientSecret: string,
+  home: HomeContext,
 ): { success: boolean; warning?: string } {
-  const storage = getSecureStorage()
-  const existing = storage.read() || {}
-  return storage.update({
-    ...existing,
-    mcpXaaIdpConfig: {
-      ...existing.mcpXaaIdpConfig,
-      [issuerKey(idpIssuer)]: { clientSecret },
-    },
-  })
+  try {
+    updateNativeSecureStorage(
+      home,
+      current => ({
+        ...current,
+        mcpXaaIdpConfig: {
+          ...current.mcpXaaIdpConfig,
+          [issuerKey(idpIssuer)]: { clientSecret },
+        },
+      }),
+      'Failed to save the XAA IdP client secret to secure storage',
+    )
+    return { success: true }
+  } catch (error) {
+    return {
+      success: false,
+      warning: error instanceof Error ? error.message : String(error),
+    }
+  }
 }
 
 /**
  * Read the IdP client secret for the given issuer from secure storage.
  */
-export function getIdpClientSecret(idpIssuer: string): string | undefined {
-  const storage = getSecureStorage()
-  const data = storage.read()
+export function getIdpClientSecret(
+  idpIssuer: string,
+  home: HomeContext,
+): string | undefined {
+  const data = readNativeSecureStorage(home)
   return data?.mcpXaaIdpConfig?.[issuerKey(idpIssuer)]?.clientSecret
 }
 
@@ -183,13 +215,27 @@ export function getIdpClientSecret(idpIssuer: string): string | undefined {
  * Remove the IdP client secret for the given issuer from secure storage.
  * Used by `agenc mcp xaa clear`.
  */
-export function clearIdpClientSecret(idpIssuer: string): void {
-  const storage = getSecureStorage()
-  const existing = storage.read()
+export function clearIdpClientSecret(
+  idpIssuer: string,
+  home: HomeContext,
+): void {
   const key = issuerKey(idpIssuer)
-  if (!existing?.mcpXaaIdpConfig?.[key]) return
-  delete existing.mcpXaaIdpConfig[key]
-  storage.update(existing)
+  updateNativeSecureStorage(
+    home,
+    current => {
+      if (!current.mcpXaaIdpConfig?.[key]) return { ...current }
+      const mcpXaaIdpConfig = { ...current.mcpXaaIdpConfig }
+      delete mcpXaaIdpConfig[key]
+      const next = { ...current }
+      if (Object.keys(mcpXaaIdpConfig).length === 0) {
+        delete next.mcpXaaIdpConfig
+      } else {
+        next.mcpXaaIdpConfig = mcpXaaIdpConfig
+      }
+      return next
+    },
+    'Failed to clear the XAA IdP client secret from secure storage',
+  )
 }
 
 // OIDC Discovery §4.1 says `{issuer}/.well-known/openid-configuration` — path
@@ -200,6 +246,7 @@ export function clearIdpClientSecret(idpIssuer: string): void {
 // the fix. Exported because auth.ts needs the same discovery.
 export async function discoverOidc(
   idpIssuer: string,
+  environment: ProviderEnvironment,
 ): Promise<OpenIdProviderDiscoveryMetadata> {
   const base = idpIssuer.endsWith('/') ? idpIssuer : idpIssuer + '/'
   const url = new URL('.well-known/openid-configuration', base)
@@ -207,6 +254,7 @@ export async function discoverOidc(
   const res = await fetch(url, {
     headers: { Accept: 'application/json' },
     signal: AbortSignal.timeout(IDP_REQUEST_TIMEOUT_MS),
+    ...getProxyFetchOptions({ environment }),
   })
   if (!res.ok) {
     throw new Error(
@@ -401,8 +449,9 @@ export async function acquireIdpIdToken(
   opts: IdpLoginOptions,
 ): Promise<string> {
   const { idpIssuer, idpClientId } = opts
+  const environment = Object.freeze({ ...opts.environment })
 
-  const cached = getCachedIdpIdToken(idpIssuer)
+  const cached = getCachedIdpIdToken(idpIssuer, opts.home)
   if (cached) {
     logMCPDebug('xaa', `Using cached id_token for ${idpIssuer}`)
     return cached
@@ -410,7 +459,7 @@ export async function acquireIdpIdToken(
 
   logMCPDebug('xaa', `No cached id_token for ${idpIssuer}; starting OIDC login`)
 
-  const metadata = await discoverOidc(idpIssuer)
+  const metadata = await discoverOidc(idpIssuer, environment)
   const port = opts.callbackPort ?? (await findAvailablePort())
   const redirectUri = buildRedirectUri(port)
   const state = randomBytes(32).toString('base64url')
@@ -460,6 +509,7 @@ export async function acquireIdpIdToken(
       fetch(url, {
         ...init,
         signal: AbortSignal.timeout(IDP_REQUEST_TIMEOUT_MS),
+        ...getProxyFetchOptions({ environment }),
       }),
   })
   if (!tokens.id_token) {
@@ -475,7 +525,7 @@ export async function acquireIdpIdToken(
   const expiresAt = expFromJwt
     ? expFromJwt * 1000
     : Date.now() + (tokens.expires_in ?? 3600) * 1000
-  saveIdpIdToken(idpIssuer, tokens.id_token, expiresAt)
+  saveIdpIdToken(idpIssuer, tokens.id_token, expiresAt, opts.home)
   logMCPDebug(
     'xaa',
     `Cached id_token for ${idpIssuer} (expires ${new Date(expiresAt).toISOString()})`,

@@ -39,8 +39,8 @@ vi.mock('../history/history.js', () => ({
   addToHistory: hookHarness.addToHistory,
 }))
 
-vi.mock('../../utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => hookHarness.fullscreen,
+vi.mock('../context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => hookHarness.fullscreen,
 }))
 
 vi.mock('../../utils/modifiers.js', () => ({

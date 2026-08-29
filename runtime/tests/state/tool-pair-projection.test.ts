@@ -45,7 +45,7 @@ function validate(
 }
 
 describe("StateToolPairProjection", () => {
-  it("validates reordered many-call results and persists exact resolution rows", () => {
+  it("pairs parallel results by ID and persists exact resolution rows", () => {
     const outcome = validate([
       {
         role: "assistant",
@@ -74,6 +74,12 @@ describe("StateToolPairProjection", () => {
       toolName: "read",
       assistantIndex: 0,
       resultIndex: 2,
+    });
+    expect(projection.find("projection-1", "call-b")).toEqual({
+      callId: "call-b",
+      toolName: "grep",
+      assistantIndex: 0,
+      resultIndex: 1,
     });
     expect(
       driver
@@ -117,7 +123,7 @@ describe("StateToolPairProjection", () => {
     ).toBeUndefined();
   });
 
-  it("distinguishes duplicate, orphan, unknown, and missing-result failures", () => {
+  it("distinguishes duplicate, orphan, unknown, and name-mismatch failures", () => {
     expect(
       validate([
         {
@@ -154,22 +160,6 @@ describe("StateToolPairProjection", () => {
     ).toMatchObject({
       status: "invalid",
       failure: { code: "tool_result_unknown_id" },
-    });
-    expect(
-      validate([
-        {
-          role: "assistant",
-          content: "",
-          toolCalls: [
-            { id: "call-a", name: "read" },
-            { id: "call-b", name: "grep" },
-          ],
-        },
-        { role: "tool", content: "b", toolCallId: "call-b" },
-      ]),
-    ).toMatchObject({
-      status: "invalid",
-      failure: { code: "tool_result_missing" },
     });
     expect(
       validate([

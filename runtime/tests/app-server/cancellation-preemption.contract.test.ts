@@ -13,6 +13,9 @@ import {
 import type { AgenCFuzzyFileSearch } from "./fuzzy-file-search.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+
+const TEST_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
 
 function createDeferred<T = void>(): {
   readonly promise: Promise<T>;
@@ -315,7 +318,11 @@ describe("AgenC daemon cancellation and preemption", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({ cwd: process.cwd(), objective: "run a tool" });
+    await agents.createAgent({
+      cwd: process.cwd(),
+      objective: "run a tool",
+      runtimeOptions: TEST_RUNTIME_OPTIONS,
+    });
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: agents,
     });
@@ -376,7 +383,11 @@ describe("AgenC daemon cancellation and preemption", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({ cwd: process.cwd(), objective: "run a tool" });
+    await agents.createAgent({
+      cwd: process.cwd(),
+      objective: "run a tool",
+      runtimeOptions: TEST_RUNTIME_OPTIONS,
+    });
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: agents,
     });
@@ -440,7 +451,11 @@ describe("AgenC daemon cancellation and preemption", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({ cwd: process.cwd(), objective: "wait for cancel" });
+    await agents.createAgent({
+      cwd: process.cwd(),
+      objective: "wait for cancel",
+      runtimeOptions: TEST_RUNTIME_OPTIONS,
+    });
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: agents,
     });

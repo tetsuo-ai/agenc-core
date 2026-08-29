@@ -115,10 +115,7 @@ describe("embedded Neovim BUFFER docs and config", () => {
     expect(text).toMatch(/\|\s*`Alt\+Q`\s*\|\s*Hide BUFFER/u);
     expect(text).toMatch(/\|\s*`Alt\+Z`\s*\|\s*Maximize or restore/u);
     expect(text).toMatch(
-      /\|\s*`Ctrl\+R`\s*\|\s*Redo the last Neovim change natively/u,
-    );
-    expect(text).toMatch(
-      /\|\s*`Alt\+R`\s*\|\s*Move the current file to the review rail/u,
+      /\|\s*`Ctrl\+R`\s*\|\s*File review rail \(workbench \/ inline BUFFER\)\. Neovim uses `Alt\+R`/u,
     );
     expect(text).toMatch(
       /\|\s*`Alt\+L`\s*\|\s*Focus the open Editor AI\/proposal panel/u,

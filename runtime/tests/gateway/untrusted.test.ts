@@ -89,7 +89,7 @@ describe("frameChannelMessage", () => {
     expect(framed).toContain("/provider");
     expect(framed).toContain("Private Telegram DMs are owner-only");
     expect(framed).toContain("Core is separate from Marketplace Kit");
-    expect(framed).not.toContain("Ledger DMK over BLE");
+    expect(framed).toContain("Ledger DMK over BLE");
     expect(framed).toContain("shortcuts like /image, /meme, /voice, and /song");
     expect(framed).toContain("Avg. Time Held for top 10/top 25/top 50 holders");
     expect(framed).toContain("HJsZ53Zb27b8QMRbQpuDngE44AdwCGxvEZr61Zmxw1xK");

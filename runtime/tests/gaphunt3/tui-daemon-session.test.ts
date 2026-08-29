@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  createDaemonTuiSession,
   type AgenCDaemonTuiClient,
   type AgenCTuiBridgeSession,
 } from "src/tui/daemon-session.js";
+import { createDaemonTuiSessionFixture as createDaemonTuiSession } from "../helpers/daemon-tui-session.js";
 import type {
   AgenCDaemonMethod,
   AgenCDaemonResultByMethod,

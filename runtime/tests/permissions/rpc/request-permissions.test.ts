@@ -1,6 +1,10 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from "../../../src/session/runtime-options.js";
+import {
   RequestPermissionsRpc,
   intersectRequestPermissionProfiles,
   normalizeRequestPermissionsArgs,
@@ -669,21 +673,26 @@ describe("request-permissions RPC profiles", () => {
       });
 
       const tmpdirChild = path.join(tmpdir, "child.txt");
+      const runtimeOptions = resolveAgentRuntimeOptions({}, {
+        sessionTempRoot: tmpdir,
+      });
       expect(
-        normalizeRequestPermissionsResponse(
-          {
-            fileSystem: {
-              entries: [
-                {
-                  path: { type: "special", value: { kind: "tmpdir" } },
-                  access: "read",
-                },
-              ],
+        runWithAgentRuntimeOptions(runtimeOptions, () =>
+          normalizeRequestPermissionsResponse(
+            {
+              fileSystem: {
+                entries: [
+                  {
+                    path: { type: "special", value: { kind: "tmpdir" } },
+                    access: "read",
+                  },
+                ],
+              },
             },
-          },
-          { permissions: { fileSystem: { read: [tmpdirChild] } } },
-          { cwd },
-        ).permissions,
+            { permissions: { fileSystem: { read: [tmpdirChild] } } },
+            { cwd },
+          ).permissions,
+        ),
       ).toEqual({
         fileSystem: {
           entries: [

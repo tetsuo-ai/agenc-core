@@ -1,9 +1,8 @@
 /**
  * Permission-mode finite state machine (I-3 primitive).
  *
- * Ports upstream `PermissionMode.ts`, `getNextPermissionMode.ts`, and the
- * transition helpers from `permissionSetup.ts` / `bootstrap/state.ts` into a
- * self-contained module with no global state. All session state that
+ * Owns mode cycling and transition behavior in a self-contained module with
+ * no global state. All session state that
  * AgenC stashes in `bootstrap/state.ts` lives on `ToolPermissionContext`
  * instead (`autoModeActive`, `prePlanMode`, `strippedDangerousRules`).
  * Plan-mode exit-reminder bookkeeping lives separately on
@@ -11,7 +10,7 @@
  *
  * Exports:
  *   - Mode constants + predicates
- *   - `getNextPermissionMode` / `cyclePermissionMode`
+ *   - `getNextPermissionMode`
  *   - `transitionPermissionMode` + `prepareContextForPlanMode`
  *   - `stripDangerousPermissionsForAutoMode` / `restoreDangerousPermissions`
  *   - `isDangerousBashPermission`
@@ -22,6 +21,7 @@
 
 import { AsyncLock } from "./_deps/async-lock.js";
 import {
+  immutableToolPermissionContext,
   type PermissionMode,
   type PermissionRuleSource,
   type ToolPermissionContext,
@@ -35,6 +35,13 @@ import {
   CROSS_PLATFORM_CODE_EXEC,
   DANGEROUS_BASH_PATTERNS,
 } from "./dangerous-patterns.js";
+import { parseRuleString } from "./rules.js";
+import {
+  ALL_PERMISSION_MODES,
+  CYCLABLE_PERMISSION_MODES,
+} from "../types/permissions.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
+import { canonicalizeBypassPermissionsCwd } from "./bypass-consent-state.js";
 
 // ---------------------------------------------------------------------------
 // Mode constants + predicates
@@ -47,29 +54,14 @@ import {
  * external-visible when the live classifier gate is enabled.
  */
 export const EXTERNAL_PERMISSION_MODES: readonly PermissionMode[] =
-  Object.freeze([
-    "default",
-    "acceptEdits",
-    "plan",
-    "bypassPermissions",
-    "auto",
-  ] as const);
+  CYCLABLE_PERMISSION_MODES;
 
 /**
  * Full internal superset including modes not exposed in the Shift+Tab cycle.
  * Used by validation / serialisation paths.
  */
 export const INTERNAL_PERMISSION_MODES: readonly PermissionMode[] =
-  Object.freeze([
-    "default",
-    "acceptEdits",
-    "plan",
-    "bypassPermissions",
-    "dontAsk",
-    "auto",
-    "unattended",
-    "bubble",
-  ] as const);
+  ALL_PERMISSION_MODES;
 
 /**
  * Type guard — true when `mode` is one of the Shift+Tab-visible external
@@ -85,8 +77,10 @@ export function isExternalPermissionMode(mode: PermissionMode): boolean {
 // Auto-mode gate
 // ---------------------------------------------------------------------------
 
-export function isAutoModeGateEnabled(): boolean {
-  return isClassifierAutoModeGateEnabled();
+export function isAutoModeGateEnabled(
+  environment?: ProviderEnvironment,
+): boolean {
+  return isClassifierAutoModeGateEnabled(environment);
 }
 
 /**
@@ -157,26 +151,6 @@ export function getNextPermissionMode(
   }
 }
 
-/**
- * Computes the next mode and the post-transition context in one step. This
- * is the primary entrypoint for Shift+Tab handlers.
- *
- * The underlying `transitionPermissionMode` is called without the bypass
- * consent gate engaged. Shift+Tab callers are responsible for routing a
- * first-time `bypassPermissions` activation through the same consent flow
- * that `/permissions mode bypassPermissions` uses (see
- * `transitionPermissionMode`'s `opts.requireBypassConsent`).
- */
-export function cyclePermissionMode(
-  fromMode: PermissionMode,
-  ctx: ToolPermissionContext,
-): { nextMode: PermissionMode; context: ToolPermissionContext } {
-  const nextMode = getNextPermissionMode(fromMode, ctx);
-  // Compatibility 3-arg invocation — the bypass-consent gate is opt-in via opts.
-  const context = transitionPermissionMode(fromMode, nextMode, ctx);
-  return { nextMode, context };
-}
-
 // ---------------------------------------------------------------------------
 // Transitions
 // ---------------------------------------------------------------------------
@@ -184,27 +158,14 @@ export function cyclePermissionMode(
 /**
  * Setting to drive whether plan mode should run with auto-mode semantics
  * active (classifier evaluates during plan). AgenC gates this behind
- * `getUseAutoModeDuringPlan()` + `hasAutoModeOptIn()`. For T11 Wave 1 we
+ * the canonical auto-mode acknowledgement. For T11 Wave 1 we
  * default to false; Wave-2 YOLO wiring can override this via
  * `prepareContextForPlanMode`'s `shouldUseAutoInPlan` option.
  */
 let planAutoModeResolver: (() => boolean) | null = null;
 
-function envBoolean(value: string | undefined): boolean {
-  if (value === undefined) return false;
-  const normalized = value.trim().toLowerCase();
-  return (
-    normalized === "1" ||
-    normalized === "true" ||
-    normalized === "yes" ||
-    normalized === "on"
-  );
-}
-
 export function shouldPlanUseAutoMode(): boolean {
-  const setting = planAutoModeResolver
-    ? planAutoModeResolver()
-    : envBoolean(process.env.AGENC_USE_AUTO_MODE_DURING_PLAN);
+  const setting = planAutoModeResolver?.() ?? false;
   return setting && isAutoModeGateEnabled();
 }
 
@@ -219,40 +180,25 @@ export function __setPlanAutoModeResolverForTesting(
 }
 
 /**
- * Options controlling a bypass-consent gate around transitions TO
- * `bypassPermissions`. Passing this object opts the caller into the gate;
- * callers that omit `opts` keep the compatibility unconditional behavior.
+ * Workspace identity used when entering `bypassPermissions`.
  */
 export interface TransitionPermissionModeOptions {
-  /**
-   * When true (the default when `opts` is supplied), refuse a transition
-   * to `bypassPermissions` unless the session-scoped
-   * `bypassPermissionsAcceptedIn` list already contains `workspacePath`.
-   * Setting this to `false` explicitly bypasses the gate — used by
-   * `/permissions accept-bypass` after the user consents and by internal
-   * paths (e.g. plan-mode restore) that have already established
-   * consent earlier in the session.
-   */
-  readonly requireBypassConsent?: boolean;
-  /**
-   * The workspace directory being activated. Must be supplied whenever
-   * `requireBypassConsent` is engaged; if absent, the gate refuses the
-   * transition defensively.
-   */
-  readonly workspacePath?: string;
+  readonly workspacePath: string;
 }
 
 /**
  * Refusal variant returned by {@link transitionPermissionMode} when the
  * bypass-consent gate blocks a transition to `bypassPermissions`. The
  * caller is expected to route the user through `/permissions accept-bypass`
- * (or the equivalent confirmation flow) and retry with
- * `requireBypassConsent: false` once consent is granted.
+ * (or the equivalent confirmation flow), bind the resulting exact canonical
+ * workspace consent into the session context, and retry.
  */
 export interface BypassConsentRequiredError {
   readonly error: "bypass_consent_required";
   readonly workspacePath?: string;
 }
+
+type NonBypassPermissionMode = Exclude<PermissionMode, "bypassPermissions">;
 
 function isBypassConsentAccepted(
   ctx: ToolPermissionContext,
@@ -271,38 +217,26 @@ function isBypassConsentAccepted(
  * attaching `mode` to the returned context (this matches AgenC's
  * invariant that `transitionPermissionMode` never sets the mode itself).
  *
- * Throws if entering auto mode while the gate is disabled, mirroring
- * AgenC's hard error at permissionSetup.ts:629 — this is what makes the
+ * Throws if entering auto mode while the gate is disabled. This makes the
  * Shift+Tab handler's dual-check defensive (see `canCycleToAuto`).
  *
  * Bypass-consent gate:
- *   When `opts` is supplied and `opts.requireBypassConsent !== false`, a
- *   transition to `bypassPermissions` is refused unless the current
+ *   Every transition to `bypassPermissions` is refused unless the current
  *   `ctx.bypassPermissionsAcceptedIn` session list already contains
- *   `opts.workspacePath`. The refusal surfaces as a
+ *   the exact canonical `opts.workspacePath`. The refusal surfaces as a
  *   {@link BypassConsentRequiredError} return value rather than a thrown
  *   error so the caller can render a consent prompt without exception
- *   handling. After consent is granted (via `/permissions accept-bypass`
- *   or equivalent), callers should either re-invoke with
- *   `requireBypassConsent: false` or pre-populate
- *   `bypassPermissionsAcceptedIn` on `ctx`. On a successful gated
+ *   handling. After consent is granted, callers pre-populate
+ *   `bypassPermissionsAcceptedIn` on `ctx`. On a successful
  *   transition the returned context has `workspacePath` appended to
  *   `bypassPermissionsAcceptedIn` (deduped) so subsequent transitions in
  *   the same session pass without re-asking.
- *
- *   Callers that omit `opts` keep the compatibility behavior: transitions to
- *   `bypassPermissions` are unconditional (e.g. `cyclePermissionMode`,
- *   internal plan-mode restore).
- *
  * @throws Error when `toMode === "auto"` but `isAutoModeGateEnabled()` is
  *   false.
  */
-// Overloads: compatibility 3-arg callers always receive a plain context (the
-// bypass-consent gate is opt-in via `opts`). Passing `opts` widens the
-// return type so the caller handles the refusal branch.
 export function transitionPermissionMode(
   fromMode: PermissionMode,
-  toMode: PermissionMode,
+  toMode: NonBypassPermissionMode,
   ctx: ToolPermissionContext,
 ): ToolPermissionContext;
 export function transitionPermissionMode(
@@ -317,27 +251,59 @@ export function transitionPermissionMode(
   ctx: ToolPermissionContext,
   opts?: TransitionPermissionModeOptions,
 ): ToolPermissionContext | BypassConsentRequiredError {
-  // SDK `set_permission_mode` can re-send the same mode. Short-circuit so
-  // same-mode calls never hit the enter/leave branches below.
-  if (fromMode === toMode) return ctx;
-
-  // Bypass-consent gate. Only engaged when the caller explicitly opts in
-  // by supplying `opts`. Existing callers (Shift+Tab cycle, plan-mode
-  // restore) keep the compatibility unconditional behavior until they migrate
-  // to the new API.
+  ctx = immutableToolPermissionContext(ctx);
+  // The bypass gate runs before the same-mode short-circuit so an inconsistent
+  // context cannot use an idempotent mode request to preserve unbound bypass.
   let bypassConsentAlreadyPresent = false;
-  if (toMode === "bypassPermissions" && opts !== undefined) {
-    const requireConsent = opts.requireBypassConsent !== false;
-    if (requireConsent) {
-      const workspacePath = opts.workspacePath;
-      if (!workspacePath || !isBypassConsentAccepted(ctx, workspacePath)) {
-        return {
-          error: "bypass_consent_required",
-          ...(workspacePath ? { workspacePath } : {}),
-        };
-      }
-      bypassConsentAlreadyPresent = true;
+  let canonicalWorkspacePath: string | undefined;
+  if (toMode === "bypassPermissions") {
+    if (ctx.isBypassPermissionsModeAvailable !== true) {
+      return {
+        error: "bypass_consent_required",
+        ...(opts?.workspacePath ? { workspacePath: opts.workspacePath } : {}),
+      };
     }
+    const workspacePath = opts?.workspacePath;
+    try {
+      canonicalWorkspacePath = workspacePath
+        ? canonicalizeBypassPermissionsCwd(workspacePath)
+        : undefined;
+    } catch {
+      canonicalWorkspacePath = undefined;
+    }
+    if (
+      canonicalWorkspacePath === undefined ||
+      !isBypassConsentAccepted(ctx, canonicalWorkspacePath)
+    ) {
+      return {
+        error: "bypass_consent_required",
+        ...(workspacePath ? { workspacePath } : {}),
+      };
+    }
+    bypassConsentAlreadyPresent = true;
+  }
+
+  // Auto authority is the intersection of canonical configuration and the
+  // live classifier gate. Validate before the same-mode short-circuit so a
+  // stale auto context cannot preserve authority after policy disables it.
+  if (toMode === "auto") {
+    if (ctx.isAutoModeAvailable !== true) {
+      throw new Error(
+        "Cannot transition to auto mode: disabled by canonical configuration",
+      );
+    }
+    if (!isAutoModeGateEnabled()) {
+      throw new Error(
+        "Cannot transition to auto mode: gate is not enabled (isAutoModeGateEnabled() === false)",
+      );
+    }
+  }
+
+  // SDK `set_permission_mode` can re-send the same mode. Plan mode still has
+  // live auto-classifier authority to reconcile when canonical policy changes;
+  // other same-mode requests can skip the enter/leave branches below.
+  if (fromMode === toMode) {
+    return toMode === "plan" ? transitionPlanAutoMode(ctx) : ctx;
   }
 
   let next = ctx;
@@ -357,11 +323,6 @@ export function transitionPermissionMode(
   // Auto-mode enter: verify the gate is live, flip the active flag, and
   // strip any dangerous allow rules that would pre-empt the classifier.
   if (toMode === "auto" && fromMode !== "auto") {
-    if (!isAutoModeGateEnabled()) {
-      throw new Error(
-        "Cannot transition to auto mode: gate is not enabled (isAutoModeGateEnabled() === false)",
-      );
-    }
     next = {
       ...stripDangerousPermissionsForAutoMode(next),
       autoModeActive: true,
@@ -369,7 +330,15 @@ export function transitionPermissionMode(
   }
 
   // Auto-mode leave: clear the active flag and restore any stashed rules.
-  if (fromMode === "auto" && toMode !== "auto") {
+  // Entering plan with plan-auto enabled is not an authority exit: the
+  // classifier remains active and its dangerous-rule stash must stay hidden.
+  const retainsAutoSemanticsInPlan =
+    toMode === "plan" && next.autoModeActive === true;
+  if (
+    fromMode === "auto" &&
+    toMode !== "auto" &&
+    !retainsAutoSemanticsInPlan
+  ) {
     next = {
       ...restoreDangerousPermissions(next),
       autoModeActive: false,
@@ -398,22 +367,22 @@ export function transitionPermissionMode(
   // Bypass-mode entry under a gated transition: pin the workspace onto
   // the session-scoped accepted-in list so later transitions in the same
   // session pass the gate without another prompt. The list is deduped;
-  // the caller owns persistence to the config store.
+  // the permission runtime-state namespace owns durable persistence.
   if (
     toMode === "bypassPermissions" &&
     bypassConsentAlreadyPresent &&
-    opts?.workspacePath
+    canonicalWorkspacePath
   ) {
     const existing = next.bypassPermissionsAcceptedIn ?? [];
-    if (!existing.includes(opts.workspacePath)) {
+    if (!existing.includes(canonicalWorkspacePath)) {
       next = {
         ...next,
-        bypassPermissionsAcceptedIn: [...existing, opts.workspacePath],
+        bypassPermissionsAcceptedIn: [...existing, canonicalWorkspacePath],
       };
     }
   }
 
-  return next;
+  return immutableToolPermissionContext(next);
 }
 
 /**
@@ -429,22 +398,27 @@ export function prepareContextForPlanMode(
   ctx: ToolPermissionContext,
   opts: { shouldUseAutoInPlan: boolean } = { shouldUseAutoInPlan: false },
 ): ToolPermissionContext {
+  ctx = immutableToolPermissionContext(ctx);
   if (ctx.mode === "plan") return ctx;
   const prePlanMode = ctx.mode;
 
-  if (opts.shouldUseAutoInPlan && ctx.mode !== "bypassPermissions") {
+  if (
+    opts.shouldUseAutoInPlan &&
+    ctx.mode !== "bypassPermissions" &&
+    canCycleToAuto(ctx)
+  ) {
     const autoPrepared =
       ctx.autoModeActive === true
         ? ctx
         : stripDangerousPermissionsForAutoMode(ctx);
-    return {
+    return immutableToolPermissionContext({
       ...autoPrepared,
       autoModeActive: true,
       prePlanMode,
-    };
+    });
   }
 
-  return { ...ctx, prePlanMode };
+  return immutableToolPermissionContext({ ...ctx, prePlanMode });
 }
 
 // ---------------------------------------------------------------------------
@@ -458,22 +432,24 @@ export function prepareContextForPlanMode(
  */
 const DANGEROUS_TOOLS: readonly string[] = Object.freeze([
   "spawn_agent",
+  "Agent",
 ] as const);
 
 /**
  * Returns true if a Bash permission rule is dangerous for auto mode.
  *
- *   - `Bash` with no content (tool-level allow)
- *   - `Bash(*)`
- *   - `Bash(<pattern>)`, `Bash(<pattern>:*)`, `Bash(<pattern>*)`,
- *     `Bash(<pattern> *)`, `Bash(<pattern> -*)` for any pattern in
+ *   - `system.bash`/`exec_command` with no content (tool-level allow)
+ *   - `system.bash(*)`
+ *   - `system.bash(<pattern>)`, `system.bash(<pattern>:*)`,
+ *     `system.bash(<pattern>*)`, `system.bash(<pattern> *)`, or
+ *     `system.bash(<pattern> -*)` for any pattern in
  *     `DANGEROUS_BASH_PATTERNS`
  */
 export function isDangerousBashPermission(
   toolName: string,
   ruleContent: string | undefined,
 ): boolean {
-  if (toolName !== "Bash") return false;
+  if (toolName !== "system.bash" && toolName !== "exec_command") return false;
   if (ruleContent === undefined || ruleContent === "") return true;
   const content = ruleContent.trim().toLowerCase();
   if (content === "*") return true;
@@ -492,7 +468,7 @@ export function isDangerousBashPermission(
  * Similar detector for PowerShell allow rules. Uses the upstream
  * cross-platform code-exec list plus PowerShell-specific escape hatches.
  */
-function isDangerousPowerShellPermission(
+export function isDangerousPowerShellPermission(
   toolName: string,
   ruleContent: string | undefined,
 ): boolean {
@@ -561,27 +537,6 @@ function isDangerousPermission(
 }
 
 /**
- * Parses a raw allow-rule string into `{ toolName, ruleContent }`. Mirrors
- * AgenC's `permissionRuleValueFromString` for the subset of rule
- * shapes we need to introspect here. Format: `ToolName` or
- * `ToolName(content)`. Any unmatched closing paren yields an undefined
- * content (treated as "no content" = tool-level allow).
- */
-function parseRuleString(raw: string): {
-  toolName: string;
-  ruleContent: string | undefined;
-} {
-  const openIdx = raw.indexOf("(");
-  if (openIdx === -1) return { toolName: raw, ruleContent: undefined };
-  const closeIdx = raw.lastIndexOf(")");
-  if (closeIdx <= openIdx) return { toolName: raw, ruleContent: undefined };
-  return {
-    toolName: raw.slice(0, openIdx),
-    ruleContent: raw.slice(openIdx + 1, closeIdx),
-  };
-}
-
-/**
  * Removes dangerous allow rules from the context and stashes them on
  * `strippedDangerousRules` so `restoreDangerousPermissions` can replay them
  * when leaving auto mode.
@@ -593,6 +548,7 @@ function parseRuleString(raw: string): {
 export function stripDangerousPermissionsForAutoMode(
   ctx: ToolPermissionContext,
 ): ToolPermissionContext {
+  ctx = immutableToolPermissionContext(ctx);
   // Build mutable shapes internally, then assign into the readonly shape at
   // the return boundary. ToolPermissionRulesBySource is readonly-of-readonly
   // so incremental assignment during construction is not expressible.
@@ -614,7 +570,9 @@ export function stripDangerousPermissionsForAutoMode(
     const keep: string[] = [];
     const strip: string[] = [];
     for (const raw of rules) {
-      const { toolName, ruleContent } = parseRuleString(raw);
+      const parsed = parseRuleString(raw);
+      const toolName = parsed?.toolName ?? raw;
+      const ruleContent = parsed?.ruleContent;
       if (isDangerousPermission(toolName, ruleContent)) {
         strip.push(raw);
         changed = true;
@@ -630,17 +588,17 @@ export function stripDangerousPermissionsForAutoMode(
   if (!changed) {
     // Preserve ref equality of alwaysAllowRules, but always guarantee stash is
     // defined so restore is symmetrical.
-    return {
+    return immutableToolPermissionContext({
       ...ctx,
       strippedDangerousRules: ctx.strippedDangerousRules ?? {},
-    };
+    });
   }
 
-  return {
+  return immutableToolPermissionContext({
     ...ctx,
     alwaysAllowRules: remaining as ToolPermissionRulesBySource,
     strippedDangerousRules: stash as ToolPermissionRulesBySource,
-  };
+  });
 }
 
 /**
@@ -651,11 +609,15 @@ export function stripDangerousPermissionsForAutoMode(
 export function restoreDangerousPermissions(
   ctx: ToolPermissionContext,
 ): ToolPermissionContext {
+  ctx = immutableToolPermissionContext(ctx);
   const stash = ctx.strippedDangerousRules;
   if (!stash) return ctx;
   const hasAny = Object.values(stash).some((v) => v && v.length > 0);
   if (!hasAny) {
-    return { ...ctx, strippedDangerousRules: undefined };
+    return immutableToolPermissionContext({
+      ...ctx,
+      strippedDangerousRules: undefined,
+    });
   }
 
   type MutableRulesBySource = { [K in PermissionRuleSource]?: string[] };
@@ -671,11 +633,112 @@ export function restoreDangerousPermissions(
     merged[source] = [...existing, ...stashed];
   }
 
-  return {
+  return immutableToolPermissionContext({
     ...ctx,
     alwaysAllowRules: merged as ToolPermissionRulesBySource,
     strippedDangerousRules: undefined,
-  };
+  });
+}
+
+/**
+ * Remove whole-shell allow rules without stashing them. This preserves the
+ * stricter operator profile that never treats `Bash(*)` or `PowerShell(*)` as
+ * a durable approval, while keeping parsing and bucket mutation under the
+ * canonical permission authority.
+ */
+export function removeOverlyBroadShellAllowRules(
+  ctx: ToolPermissionContext,
+): ToolPermissionContext {
+  ctx = immutableToolPermissionContext(ctx);
+  type MutableRulesBySource = { [K in PermissionRuleSource]?: string[] };
+  const next: MutableRulesBySource = {};
+  let changed = false;
+
+  for (const source of Object.keys(
+    ctx.alwaysAllowRules,
+  ) as PermissionRuleSource[]) {
+    const rules = ctx.alwaysAllowRules[source] ?? [];
+    const filtered = rules.filter((raw) => {
+      const parsed = parseRuleString(raw);
+      const overlyBroad =
+        parsed !== null &&
+        (parsed.toolName === "system.bash" ||
+          parsed.toolName === "exec_command" ||
+          parsed.toolName === "PowerShell") &&
+        parsed.ruleContent === undefined;
+      changed ||= overlyBroad;
+      return !overlyBroad;
+    });
+    next[source] = filtered;
+  }
+
+  return changed
+    ? immutableToolPermissionContext({
+        ...ctx,
+        alwaysAllowRules: next as ToolPermissionRulesBySource,
+      })
+    : ctx;
+}
+
+/** Disable bypass mode in a context, falling back to the default mode. */
+export function createDisabledBypassPermissionsContext(
+  ctx: ToolPermissionContext,
+): ToolPermissionContext {
+  return immutableToolPermissionContext({
+    ...ctx,
+    mode: ctx.mode === "bypassPermissions" ? "default" : ctx.mode,
+    prePlanMode:
+      ctx.prePlanMode === "bypassPermissions" ? "default" : ctx.prePlanMode,
+    isBypassPermissionsModeAvailable: false,
+    bypassPermissionsModeDisabledByPolicy: true,
+    bypassPermissionsAcceptedIn: [],
+  });
+}
+
+/** Disable auto mode and restore any allow rules stashed by its classifier. */
+export function createDisabledAutoModeContext(
+  ctx: ToolPermissionContext,
+): ToolPermissionContext {
+  const restored =
+    ctx.autoModeActive === true || ctx.strippedDangerousRules !== undefined
+      ? restoreDangerousPermissions(ctx)
+      : ctx;
+  return immutableToolPermissionContext({
+    ...restored,
+    mode: restored.mode === "auto" ? "default" : restored.mode,
+    prePlanMode:
+      restored.prePlanMode === "auto" ? "default" : restored.prePlanMode,
+    autoModeActive: false,
+    isAutoModeAvailable: false,
+  });
+}
+
+/**
+ * Reconcile auto semantics after a live settings reload while already in plan
+ * mode. The context field is authoritative; no process-global classifier mode
+ * flag participates in the decision.
+ */
+export function transitionPlanAutoMode(
+  ctx: ToolPermissionContext,
+  useAutoInPlan: boolean = shouldPlanUseAutoMode(),
+): ToolPermissionContext {
+  ctx = immutableToolPermissionContext(ctx);
+  if (ctx.mode !== "plan" || ctx.prePlanMode === "bypassPermissions") {
+    return ctx;
+  }
+
+  if (useAutoInPlan && canCycleToAuto(ctx)) {
+    return immutableToolPermissionContext({
+      ...stripDangerousPermissionsForAutoMode(ctx),
+      autoModeActive: true,
+    });
+  }
+
+  if (ctx.autoModeActive !== true) return ctx;
+  return immutableToolPermissionContext({
+    ...restoreDangerousPermissions(ctx),
+    autoModeActive: false,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -692,17 +755,101 @@ export type ModeChangeSubscriber = (
   oldMode: PermissionMode,
 ) => void;
 
+export type PermissionContextChangeSubscriber = (
+  next: ToolPermissionContext,
+  current: ToolPermissionContext,
+) => void;
+
 /**
  * Optional durability barrier invoked under the registry lock immediately
  * before a new context becomes visible. Daemon-owned sessions use this to
  * fsync a complete canonical settings snapshot. Throwing leaves `current()`
  * unchanged, including for same-mode context transitions.
  */
+export type PermissionContextAfterCommitHook = () => Promise<void> | void;
+
+/**
+ * Prepared side effects that follow one permission-context publication.
+ * `rollback` must reverse both a partially-started commit and a completed
+ * commit. `settle` releases serialization resources only after the enclosing
+ * publication coordinator has either completed or rolled back.
+ */
+export interface PermissionContextPreparedUpdate {
+  readonly commit: PermissionContextAfterCommitHook;
+  readonly rollback?: PermissionContextAfterCommitHook;
+  readonly settle?: PermissionContextAfterCommitHook;
+}
+
 export type PermissionContextBeforeUpdateHook = (
   next: ToolPermissionContext,
   current: ToolPermissionContext,
   metadata: unknown,
+) =>
+  | PermissionContextAfterCommitHook
+  | PermissionContextPreparedUpdate
+  | Promise<
+      | PermissionContextAfterCommitHook
+      | PermissionContextPreparedUpdate
+      | void
+    >
+  | void;
+
+export interface PermissionContextPublication {
+  /** Make the new registry context and its prepared side effects visible. */
+  commit(): Promise<void>;
+  /** Restore the previous context and reverse prepared side effects. */
+  rollback(): Promise<void>;
+}
+
+/**
+ * Sole owner-level transaction boundary around registry publication. The
+ * daemon uses this to quiesce process owners and commit its sandbox/session
+ * authority in the same serialized operation as the registry context.
+ */
+export type PermissionContextPublicationCoordinator = (
+  next: ToolPermissionContext,
+  current: ToolPermissionContext,
+  metadata: unknown,
+  publication: PermissionContextPublication,
 ) => Promise<void> | void;
+
+export interface PermissionContextTransaction<T> {
+  /** Null keeps the current context and skips durability/publication. */
+  readonly next: ToolPermissionContext | null;
+  readonly metadata?: unknown;
+  /** Command-owned durable work committed and rolled back with publication. */
+  readonly preparedUpdate?: PermissionContextPreparedUpdate;
+  /** Evaluated under the registry lock after any publication has completed. */
+  readonly result: () => T;
+}
+
+export interface PendingPermissionAuthorityPublication {
+  /**
+   * Publish the captured external authority generation against the registry
+   * context observed under its mutation lock.
+   */
+  publish<T>(
+    transaction: (
+      current: ToolPermissionContext,
+    ) =>
+      | PermissionContextTransaction<T>
+      | Promise<PermissionContextTransaction<T>>,
+  ): Promise<T>;
+}
+
+interface AppliedPermissionContextTransaction<T> {
+  readonly mutation: PermissionContextTransaction<T>;
+  readonly notify?: () => void;
+}
+
+export class PermissionAuthorityUnavailableError extends Error {
+  constructor() {
+    super(
+      "permission authority is unavailable while canonical configuration publication is pending",
+    );
+    this.name = "PermissionAuthorityUnavailableError";
+  }
+}
 
 /**
  * Registry owning the current `ToolPermissionContext` and the set of
@@ -713,16 +860,24 @@ export type PermissionContextBeforeUpdateHook = (
  * Evaluator integration:
  *   `registry.current().bypassPermissionsAcceptedIn` exposes the session's
  *   accepted-in list for consultation alongside
- *   `config.bypassPermissionsModeAcceptedIn`.
+ *   the canonical user-state acceptance list.
  */
 export class PermissionModeRegistry {
   private ctx: ToolPermissionContext;
   private readonly subscribers = new Set<ModeChangeSubscriber>();
+  private readonly contextSubscribers =
+    new Set<PermissionContextChangeSubscriber>();
   private readonly lock = new AsyncLock<void>(undefined);
   private beforeUpdateHook: PermissionContextBeforeUpdateHook | undefined;
+  private publicationCoordinator:
+    | PermissionContextPublicationCoordinator
+    | undefined;
+  private externalAuthorityGeneration = 0;
+  private publishedExternalAuthorityGeneration = 0;
+  private pendingExternalAuthorityGeneration: number | undefined;
 
   constructor(initial: ToolPermissionContext) {
-    this.ctx = initial;
+    this.ctx = immutableToolPermissionContext(initial, { forceClone: true });
   }
 
   /**
@@ -731,6 +886,9 @@ export class PermissionModeRegistry {
    * consistent snapshot even mid-mutation.
    */
   current(): ToolPermissionContext {
+    if (this.pendingExternalAuthorityGeneration !== undefined) {
+      throw new PermissionAuthorityUnavailableError();
+    }
     return this.ctx;
   }
 
@@ -740,7 +898,55 @@ export class PermissionModeRegistry {
    * session-scoped allowlist read off of the current context.
    */
   get bypassPermissionsAcceptedIn(): readonly string[] {
-    return this.ctx.bypassPermissionsAcceptedIn ?? [];
+    return this.current().bypassPermissionsAcceptedIn ?? [];
+  }
+
+  /**
+   * Fence lock-free readers synchronously before an external authority (for
+   * example, one already-published ConfigStore generation) starts its async
+   * registry transaction. Only the newest successfully published generation
+   * re-opens reads, so a failure cannot leave older authority enforceable.
+   */
+  beginExternalAuthorityPublication(): PendingPermissionAuthorityPublication {
+    const generation = ++this.externalAuthorityGeneration;
+    this.pendingExternalAuthorityGeneration = generation;
+    let used = false;
+    return Object.freeze({
+      publish: async <T>(
+        transaction: (
+          current: ToolPermissionContext,
+        ) =>
+          | PermissionContextTransaction<T>
+          | Promise<PermissionContextTransaction<T>>,
+      ): Promise<T> => {
+        if (used) {
+          throw new Error(
+            "pending permission authority publication was already used",
+          );
+        }
+        used = true;
+        return this.lock.with(async () => {
+          if (generation <= this.publishedExternalAuthorityGeneration) {
+            throw new Error(
+              "pending permission authority publication was superseded",
+            );
+          }
+          this.assertPublicationAuthorityAvailable(generation);
+          const applied = await this.applyTransactionLocked(
+            transaction,
+            generation,
+          );
+          this.publishedExternalAuthorityGeneration = generation;
+          if (this.pendingExternalAuthorityGeneration === generation) {
+            this.pendingExternalAuthorityGeneration = undefined;
+          }
+          if (this.pendingExternalAuthorityGeneration === undefined) {
+            applied.notify?.();
+          }
+          return applied.mutation.result();
+        });
+      },
+    });
   }
 
   /**
@@ -752,10 +958,272 @@ export class PermissionModeRegistry {
     newCtx: ToolPermissionContext,
     metadata?: unknown,
   ): Promise<void> {
+    this.assertPublicationAuthorityAvailable();
+    // Capture caller-owned mutable input before yielding to the registry lock.
+    // A queued update must not observe mutations made while it is waiting.
+    const candidate = immutableToolPermissionContext(newCtx, {
+      forceClone: true,
+    });
     await this.lock.with(async () => {
-      const oldMode = this.ctx.mode;
-      await this.beforeUpdateHook?.(newCtx, this.ctx, metadata);
-      this.ctx = newCtx;
+      this.assertPublicationAuthorityAvailable();
+      const notify = await this.publishLocked(candidate, metadata);
+      if (this.pendingExternalAuthorityGeneration === undefined) notify();
+    });
+  }
+
+  /**
+   * Derive and publish a context from the value observed under the registry
+   * lock. This keeps no-op decisions, durability, publication, and the typed
+   * result in one serialized transaction.
+   */
+  async transact<T>(
+    transaction: (
+      current: ToolPermissionContext,
+    ) =>
+      | PermissionContextTransaction<T>
+      | Promise<PermissionContextTransaction<T>>,
+  ): Promise<T> {
+    this.assertPublicationAuthorityAvailable();
+    return this.lock.with(async () => {
+      this.assertPublicationAuthorityAvailable();
+      const applied = await this.applyTransactionLocked(transaction);
+      if (this.pendingExternalAuthorityGeneration === undefined) {
+        applied.notify?.();
+      }
+      return applied.mutation.result();
+    });
+  }
+
+  private assertPublicationAuthorityAvailable(
+    externalAuthorityGeneration?: number,
+  ): void {
+    if (externalAuthorityGeneration !== undefined) {
+      if (
+        this.pendingExternalAuthorityGeneration !==
+        externalAuthorityGeneration
+      ) {
+        throw new Error(
+          "pending permission authority publication was superseded",
+        );
+      }
+      return;
+    }
+    if (
+      this.pendingExternalAuthorityGeneration !== undefined
+    ) {
+      throw new PermissionAuthorityUnavailableError();
+    }
+  }
+
+  private async applyTransactionLocked<T>(
+    transaction: (
+      current: ToolPermissionContext,
+    ) =>
+      | PermissionContextTransaction<T>
+      | Promise<PermissionContextTransaction<T>>,
+    externalAuthorityGeneration?: number,
+  ): Promise<AppliedPermissionContextTransaction<T>> {
+    const proposed = transaction(this.ctx);
+    const mutation =
+      typeof (proposed as PromiseLike<PermissionContextTransaction<T>>).then ===
+      "function"
+        ? await proposed
+        : (proposed as PermissionContextTransaction<T>);
+    if (mutation.next === null) {
+      this.assertPublicationAuthorityAvailable(externalAuthorityGeneration);
+      return { mutation };
+    }
+    const candidate = immutableToolPermissionContext(mutation.next, {
+      forceClone: true,
+    });
+    const notify = await this.publishLocked(
+      candidate,
+      mutation.metadata,
+      externalAuthorityGeneration,
+      mutation.preparedUpdate,
+    );
+    return { mutation, notify };
+  }
+
+  private async publishLocked(
+    newCtx: ToolPermissionContext,
+    metadata?: unknown,
+    externalAuthorityGeneration?: number,
+    transactionPreparedUpdate?: PermissionContextPreparedUpdate,
+  ): Promise<() => void> {
+    this.assertPublicationAuthorityAvailable(externalAuthorityGeneration);
+    const current = this.ctx;
+    const oldMode = current.mode;
+    const preparedResult = await this.beforeUpdateHook?.(
+      newCtx,
+      current,
+      metadata,
+    );
+    const ownerPreparedUpdate =
+      typeof preparedResult === "function"
+        ? { commit: preparedResult }
+        : preparedResult;
+    const preparedUpdates = [
+      ownerPreparedUpdate,
+      transactionPreparedUpdate,
+    ].filter(
+      (entry): entry is PermissionContextPreparedUpdate => entry !== undefined,
+    );
+    const publicationState: {
+      value:
+        | "prepared"
+        | "committing"
+        | "committed"
+        | "rolling_back"
+        | "rolled_back"
+        | "rollback_failed";
+    } = { value: "prepared" };
+    let rollbackFailure: unknown;
+
+    const publication: PermissionContextPublication = {
+      commit: async () => {
+        if (publicationState.value !== "prepared") {
+          throw new Error(
+            `permission context publication cannot commit from ${publicationState.value}`,
+          );
+        }
+        publicationState.value = "committing";
+        try {
+          this.assertPublicationAuthorityAvailable(externalAuthorityGeneration);
+          for (const preparedUpdate of preparedUpdates) {
+            await preparedUpdate.commit();
+          }
+          this.assertPublicationAuthorityAvailable(externalAuthorityGeneration);
+          // `current()` is intentionally lock-free. Publish only after the
+          // prepared durability barrier has proved its commit so no reader can
+          // observe authority that a failed fsync would immediately revoke.
+          this.ctx = newCtx;
+          publicationState.value = "committed";
+        } catch (error) {
+          const rollbackErrors: unknown[] = [];
+          try {
+            await publication.rollback();
+          } catch (rollbackError) {
+            rollbackErrors.push(rollbackError);
+          }
+          if (rollbackErrors.length > 0) {
+            throw new AggregateError(
+              [error, ...rollbackErrors],
+              "permission context commit failed; rollback incomplete",
+              { cause: error },
+            );
+          }
+          throw error;
+        }
+      },
+      rollback: async () => {
+        if (
+          publicationState.value === "rolled_back"
+        ) {
+          return;
+        }
+        if (publicationState.value === "rollback_failed") {
+          throw rollbackFailure;
+        }
+        if (publicationState.value === "rolling_back") {
+          throw new Error("permission context rollback is already in progress");
+        }
+        publicationState.value = "rolling_back";
+        this.ctx = current;
+        const rollbackErrors: unknown[] = [];
+        for (const preparedUpdate of [...preparedUpdates].reverse()) {
+          try {
+            await preparedUpdate.rollback?.();
+          } catch (error) {
+            rollbackErrors.push(error);
+          }
+        }
+        if (rollbackErrors.length === 0) {
+          publicationState.value = "rolled_back";
+          return;
+        }
+        rollbackFailure = rollbackErrors.length === 1
+          ? rollbackErrors[0]
+          : new AggregateError(
+              rollbackErrors,
+              "permission context prepared updates failed to roll back",
+            );
+        publicationState.value = "rollback_failed";
+        throw rollbackFailure;
+      },
+    };
+
+    let publicationError: unknown;
+    try {
+      if (this.publicationCoordinator === undefined) {
+        await publication.commit();
+      } else {
+        await this.publicationCoordinator(
+          newCtx,
+          current,
+          metadata,
+          publication,
+        );
+      }
+      if (publicationState.value !== "committed") {
+        throw new Error(
+          "permission context publication coordinator returned without committing",
+        );
+      }
+    } catch (error) {
+      publicationError = error;
+      if (
+        publicationState.value !== "rolled_back" &&
+        publicationState.value !== "rolling_back"
+      ) {
+        try {
+          await publication.rollback();
+        } catch (rollbackError) {
+          publicationError = new AggregateError(
+            [error, rollbackError],
+            "permission context publication failed; rollback incomplete",
+            { cause: error },
+          );
+        }
+      }
+    }
+
+    const settleErrors: unknown[] = [];
+    for (const preparedUpdate of [...preparedUpdates].reverse()) {
+      try {
+        await preparedUpdate.settle?.();
+      } catch (error) {
+        settleErrors.push(error);
+      }
+    }
+    if (settleErrors.length > 0) {
+      const settleError = settleErrors.length === 1
+        ? settleErrors[0]
+        : new AggregateError(
+            settleErrors,
+            "permission context prepared updates failed to settle",
+          );
+      publicationError =
+        publicationError === undefined
+          ? settleError
+          : new AggregateError(
+              [publicationError, settleError],
+              "permission context publication settlement failed",
+              { cause: publicationError },
+            );
+    }
+    if (publicationError !== undefined) throw publicationError;
+
+    return () => {
+      const contextFanout = Array.from(this.contextSubscribers);
+      for (const cb of contextFanout) {
+        try {
+          cb(newCtx, current);
+        } catch {
+          // Context observers cannot affect committed authority or each other.
+        }
+      }
+
       const newMode = newCtx.mode;
       if (newMode === oldMode) return;
       // Copy subscribers before iterating so a subscriber that calls
@@ -768,7 +1236,7 @@ export class PermissionModeRegistry {
           // Subscribers are isolated from each other; swallow and continue.
         }
       }
-    });
+    };
   }
 
   /** Install the sole session-owner durability barrier. */
@@ -784,6 +1252,23 @@ export class PermissionModeRegistry {
     };
   }
 
+  /** Install the sole session-owner publication transaction coordinator. */
+  installPublicationCoordinator(
+    coordinator: PermissionContextPublicationCoordinator,
+  ): () => void {
+    if (this.publicationCoordinator !== undefined) {
+      throw new Error(
+        "permission context publication coordinator already installed",
+      );
+    }
+    this.publicationCoordinator = coordinator;
+    return () => {
+      if (this.publicationCoordinator === coordinator) {
+        this.publicationCoordinator = undefined;
+      }
+    };
+  }
+
   /**
    * Subscribe to mode-change notifications. Returns an unsubscribe thunk
    * that is safe to call from inside a subscriber callback (the registry
@@ -793,6 +1278,14 @@ export class PermissionModeRegistry {
     this.subscribers.add(cb);
     return () => {
       this.subscribers.delete(cb);
+    };
+  }
+
+  /** Subscribe to every committed context replacement, including same-mode rules. */
+  subscribeToContextChange(cb: PermissionContextChangeSubscriber): () => void {
+    this.contextSubscribers.add(cb);
+    return () => {
+      this.contextSubscribers.delete(cb);
     };
   }
 }

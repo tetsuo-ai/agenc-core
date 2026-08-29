@@ -1,8 +1,8 @@
-import { execFileSync, spawn } from "child_process";
+import { spawn } from "child_process";
 import { constants as fsConstants, readFileSync, unlinkSync } from "fs";
 import { type FileHandle, mkdir, open, stat } from "fs/promises";
 import memoize from "lodash-es/memoize.js";
-import { isAbsolute, resolve } from "path";
+import { isAbsolute, join, resolve } from "path";
 import { join as posixJoin } from "path/posix";
 import {
   getOriginalCwd,
@@ -23,13 +23,10 @@ import {
 } from "./ShellCommand.js";
 import { getTaskOutputDir } from "./task/diskOutput.js";
 import { TaskOutput } from "./task/TaskOutput.js";
-import { which } from "./which.js";
 
 export type { ExecResult } from "./ShellCommand.js";
 
-import { accessSync } from "fs";
-import { onCwdChangedForHooks } from "./hooks/fileChangedWatcher.js";
-import { getAgenCTempDirName } from "./permissions/filesystem.js";
+import { onCwdChangedForHooks } from "./hooks/cwdChangedHooks.js";
 import { getPlatform } from "./platform.js";
 import { SandboxManager } from "./sandbox/sandbox-runtime.js";
 import { invalidateSessionEnvCache } from "./sessionEnvironment.js";
@@ -37,13 +34,20 @@ import { createBashShellProvider } from "./shell/bashProvider.js";
 import { getCachedPowerShellPath } from "./shell/powershellDetection.js";
 import { createPowerShellProvider } from "./shell/powershellProvider.js";
 import type { ShellProvider, ShellType } from "./shell/shellProvider.js";
+import {
+  isExecutableShellPath,
+  isSupportedPosixShellPath,
+  supportedPosixShellKind,
+} from "./shell/posixShellPath.js";
 import { subprocessEnv } from "./subprocessEnv.js";
 import { posixPathToWindowsPath } from "./windowsPaths.js";
 import type {
   SandboxExecutionBrokerLike,
+  SandboxPreparedSpawn,
   SandboxSpawnCommand,
   SandboxExecutionSurface,
 } from "../sandbox/execution-broker.js";
+import { SandboxExecutionLeaseCleanupError } from "../sandbox/execution-broker.js";
 import {
   hasCurrentWorkspaceOperationLifetime,
   retainCurrentWorkspaceOperation,
@@ -52,100 +56,97 @@ import {
   spawnContainedProcess,
   terminateProcessTreeAndWait,
 } from "./supervisedProcess.js";
+import {
+  peekAmbientRuntimeSession,
+  requireCurrentRuntimeSession,
+} from "../session/current-session.js";
+import {
+  getSessionTempNamespaceName,
+  resolveSessionTempRoot,
+  type AgentRuntimeOptions,
+} from "../session/runtime-options.js";
 
 export type ShellConfig = {
   provider: ShellProvider;
 };
 
-function isExecutable(shellPath: string): boolean {
-  try {
-    accessSync(shellPath, fsConstants.X_OK);
-    return true;
-  } catch (_err) {
-    // Fallback for Nix and other environments where X_OK check might fail
-    try {
-      // Try to execute the shell with --version, which should exit quickly
-      // Use execFileSync to avoid shell injection vulnerabilities
-      execFileSync(shellPath, ["--version"], {
-        timeout: 1000,
-        stdio: "ignore",
-      });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-}
-
 /**
  * Determines the best available shell to use.
  */
-export async function findSuitableShell(): Promise<string> {
-  // Check for explicit shell override first
-  const shellOverride = process.env.AGENC_SHELL;
+export async function findSuitableShell(
+  runtimeOptions?: AgentRuntimeOptions,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<string> {
+  const ambientSession = peekAmbientRuntimeSession();
+  const childEnvironment = subprocessEnv(environment);
+  const resolvedOptions =
+    runtimeOptions ?? ambientSession?.services?.runtimeOptions;
+  // Check the immutable per-session override first.
+  const shellOverride = resolvedOptions?.posixShellPath;
   if (shellOverride) {
-    // Validate it's a supported shell type
-    const isSupported =
-      shellOverride.includes("bash") || shellOverride.includes("zsh");
-    if (isSupported && isExecutable(shellOverride)) {
-      logForDebugging(`Using shell override: ${shellOverride}`);
-      return shellOverride;
-    } else {
-      // Note, if we ever want to add support for new shells here we'll need to update or Bash tool parsing to account for this
-      logForDebugging(
-        `AGENC_SHELL="${shellOverride}" is not a valid bash/zsh path, falling back to detection`,
+    if (!isSupportedPosixShellPath(shellOverride)) {
+      throw new Error(
+        `Configured shell ${JSON.stringify(shellOverride)} must name a bash or zsh executable`,
       );
     }
+    if (!isExecutableShellPath(shellOverride, childEnvironment)) {
+      throw new Error(
+        `Configured shell ${JSON.stringify(shellOverride)} is not executable`,
+      );
+    }
+    logForDebugging(`Using shell override: ${shellOverride}`);
+    return shellOverride;
   }
 
   // Check user's preferred shell from environment
-  const env_shell = process.env.SHELL;
+  const env_shell =
+    runtimeOptions === undefined
+      ? ambientSession?.services.userShell.path ?? environment.SHELL
+      : environment.SHELL;
   // Only consider SHELL if it's bash or zsh
-  const isEnvShellSupported =
-    env_shell && (env_shell.includes("bash") || env_shell.includes("zsh"));
-  const preferBash = env_shell?.includes("bash");
+  const envShellKind = env_shell === undefined
+    ? undefined
+    : supportedPosixShellKind(env_shell);
+  const preferBash = envShellKind === "bash";
 
-  // Try to locate shells using which (uses Bun.which when available)
-  const [zshPath, bashPath] = await Promise.all([which("zsh"), which("bash")]);
-
-  // Populate shell paths from which results and fallback locations
-  const shellPaths = [
-    "/bin",
-    "/usr/bin",
-    "/usr/local/bin",
-    "/opt/homebrew/bin",
-  ];
+  const platformIsWindows = getPlatform() === "windows";
+  // Automatic discovery is restricted to fixed platform locations. Client
+  // PATH is not executable authority; use AGENC_SHELL for non-standard paths.
+  const shellPaths = platformIsWindows
+    ? [
+        "C:\\Program Files\\Git\\bin",
+        "C:\\Program Files (x86)\\Git\\bin",
+      ]
+    : ["/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"];
 
   // Order shells based on user preference
   const shellOrder = preferBash ? ["bash", "zsh"] : ["zsh", "bash"];
-  const supportedShells = shellOrder.flatMap((shell) =>
-    shellPaths.map((path) => `${path}/${shell}`),
-  );
-
-  // Add discovered paths to the beginning of our search list
-  // Put the user's preferred shell type first
-  if (preferBash) {
-    if (bashPath) supportedShells.unshift(bashPath);
-    if (zshPath) supportedShells.push(zshPath);
-  } else {
-    if (zshPath) supportedShells.unshift(zshPath);
-    if (bashPath) supportedShells.push(bashPath);
-  }
+  const executableName = (shell: string): string =>
+    platformIsWindows ? `${shell}.exe` : shell;
+  const supportedShells = [
+    ...shellOrder.flatMap((shell) =>
+      shellPaths.map((path) => join(path, executableName(shell))),
+    ),
+  ];
 
   // Always prioritize SHELL env variable if it's a supported shell type
-  if (isEnvShellSupported && isExecutable(env_shell)) {
+  if (
+    env_shell !== undefined &&
+    envShellKind !== undefined &&
+    isExecutableShellPath(env_shell, childEnvironment)
+  ) {
     supportedShells.unshift(env_shell);
   }
 
   const shellPath = supportedShells.find(
-    (shell) => shell && isExecutable(shell),
+    (shell) => shell && isExecutableShellPath(shell, childEnvironment),
   );
 
   // If no valid shell found, throw a helpful error
   if (!shellPath) {
     const errorMsg =
       "No suitable shell found. AgenC CLI requires a Posix shell environment. " +
-      "Please ensure you have a valid shell installed and the SHELL environment variable set.";
+      "Install bash or zsh, or set AGENC_SHELL to its absolute executable path.";
     logError(new Error(errorMsg));
     throw new Error(errorMsg);
   }
@@ -153,14 +154,31 @@ export async function findSuitableShell(): Promise<string> {
   return shellPath;
 }
 
-async function getShellConfigImpl(): Promise<ShellConfig> {
-  const binShell = await findSuitableShell();
-  const provider = await createBashShellProvider(binShell);
+async function getShellConfigImpl(
+  userShell: ReturnType<
+    typeof requireCurrentRuntimeSession
+  >["services"]["userShell"],
+): Promise<ShellConfig> {
+  const binShell = userShell.path;
+  const provider = await createBashShellProvider(binShell, {
+    commandWrapperArgv: userShell.commandWrapperArgv,
+    childEnvironment: userShell.childEnvironment,
+  });
   return { provider };
 }
 
-// Memoize the entire shell config so it only happens once per session
-export const getShellConfig = memoize(getShellConfigImpl);
+const shellConfigs = new WeakMap<object, Promise<ShellConfig>>();
+
+/** Cache by immutable session shell policy, never by daemon-global state. */
+export function getShellConfig(): Promise<ShellConfig> {
+  const session = requireCurrentRuntimeSession("shell command execution");
+  let pending = shellConfigs.get(session);
+  if (pending === undefined) {
+    pending = getShellConfigImpl(session.services.userShell);
+    shellConfigs.set(session, pending);
+  }
+  return pending;
+}
 
 export const getPsProvider = memoize(async (): Promise<ShellProvider> => {
   const psPath = await getCachedPowerShellPath();
@@ -203,6 +221,8 @@ export async function exec(
   shellType: ShellType,
   options?: ExecOptions,
 ): Promise<ShellCommand> {
+  const session = requireCurrentRuntimeSession("shell command execution");
+  const commandAuthority = session.services.userShell;
   const {
     timeout,
     onProgress,
@@ -225,21 +245,20 @@ export async function exec(
     .padStart(4, "0");
 
   // Sandbox temp directory - use per-user directory name to prevent multi-user permission conflicts
-  const sandboxTmpDir = posixJoin(
-    process.env.AGENC_TMPDIR || "/tmp",
-    getAgenCTempDirName(),
-  );
+  const tempRoot = resolveSessionTempRoot();
+  const sandboxTmpDir = posixJoin(tempRoot, getSessionTempNamespaceName());
 
-  const { commandString: builtCommand, cwdFilePath } =
-    await provider.buildExecCommand(command, {
-      id,
-      sandboxTmpDir:
-        shouldUseSandbox && sandboxExecutionBroker === undefined
-          ? sandboxTmpDir
-          : undefined,
-      useSandbox:
-        sandboxExecutionBroker === undefined && (shouldUseSandbox ?? false),
-    });
+  const preparedCommand = await provider.prepareExecCommand(command, {
+    id,
+    tempRoot,
+    sandboxTmpDir:
+      shouldUseSandbox && sandboxExecutionBroker === undefined
+        ? sandboxTmpDir
+        : undefined,
+    useSandbox:
+      sandboxExecutionBroker === undefined && (shouldUseSandbox ?? false),
+  });
+  const { commandString: builtCommand, cwdFilePath } = preparedCommand;
 
   let commandString = builtCommand;
 
@@ -287,7 +306,7 @@ export async function exec(
   // Sandboxed PowerShell: wrapWithSandbox hardcodes `<binShell> -c '<cmd>'` —
   // using pwsh there would lose -NoProfile -NonInteractive (profile load
   // inside sandbox → delays, stray output, may hang on prompts). Instead:
-  //   • powershellProvider.buildExecCommand (useSandbox) pre-wraps as
+  //   • powershellProvider.prepareExecCommand (useSandbox) pre-wraps as
   //     `pwsh -NoProfile -NonInteractive -EncodedCommand <base64>` — base64
   //     survives the runtime's shellquote.quote() layer
   //   • pass /bin/sh as the sandbox's inner shell to exec that invocation
@@ -318,15 +337,15 @@ export async function exec(
   const spawnBinary = isSandboxedPowerShell ? "/bin/sh" : binShell;
   const shellArgs = isSandboxedPowerShell
     ? ["-c", commandString]
-    : provider.getSpawnArgs(commandString);
-  const envOverrides = await provider.getEnvironmentOverrides(command);
+    : preparedCommand.spawnArgs(commandString);
+  const envOverrides = preparedCommand.environmentOverrides;
   const spawnEnv = {
-    ...subprocessEnv(),
+    ...commandAuthority.childEnvironment,
     ...(shellType === "bash" ? { SHELL: binShell } : {}),
     GIT_EDITOR: "true",
     AGENCCODE: "1",
     ...envOverrides,
-    ...(process.env.USER_TYPE === "ant"
+    ...(commandAuthority.childEnvironment.USER_TYPE === "ant"
       ? { AGENC_SESSION_ID: getSessionId() }
       : {}),
   };
@@ -340,18 +359,18 @@ export async function exec(
       ),
     ),
   };
-  const spawnCommand: SandboxSpawnCommand = sandboxExecutionBroker
-    ? sandboxExecutionBroker.prepareSpawn(
+  const preparedSpawn: SandboxPreparedSpawn | undefined =
+    sandboxExecutionBroker?.prepareSpawn(
         sandboxExecutionSurface ?? "tool",
         unsandboxedSpawnCommand,
-      )
-    : unsandboxedSpawnCommand;
+      );
 
   // When onStdout is provided, use pipe mode: stdout flows through
   // StreamWrapper → TaskOutput in-memory buffer instead of a file fd.
   // This lets callers receive real-time stdout callbacks.
   const containWorkspaceDescendants = hasCurrentWorkspaceOperationLifetime();
-  const usePipeMode = !!onStdout || containWorkspaceDescendants;
+  const usePipeMode =
+    !!onStdout || containWorkspaceDescendants || preparedSpawn !== undefined;
   const taskId = generateTaskId("local_bash");
   const taskOutput = new TaskOutput(taskId, onProgress ?? null, !usePipeMode);
   await mkdir(getTaskOutputDir(), { recursive: true });
@@ -383,60 +402,96 @@ export async function exec(
   }
 
   try {
-    const childProcess = containWorkspaceDescendants
-      ? spawnContainedProcess(spawnCommand.program, spawnCommand.args, {
-          env: spawnCommand.env,
-          cwd: spawnCommand.cwd,
-          ...(spawnCommand.argv0 !== undefined
-            ? { argv0: spawnCommand.argv0 }
-            : {}),
-        })
-      : spawn(spawnCommand.program, [...spawnCommand.args], {
-          env: spawnCommand.env,
-          cwd: spawnCommand.cwd,
-          stdio: usePipeMode
-            ? ["pipe", "pipe", "pipe"]
-            : ["pipe", outputHandle?.fd, outputHandle?.fd],
-          // Don't pass the signal - we'll handle termination ourselves with tree-kill
-          detached: provider.detached,
-          // Prevent visible console window on Windows (no-op on other platforms)
-          windowsHide: true,
-          ...(spawnCommand.argv0 !== undefined
-            ? { argv0: spawnCommand.argv0 }
-            : {}),
-        });
-    if (containWorkspaceDescendants && childProcess.stdin) {
-      childProcess.stdin.end();
-    }
-
-    const shellCommand = wrapSpawn(
-      childProcess,
-      abortSignal,
-      commandTimeout,
-      taskOutput,
-      shouldAutoBackground,
-    );
-    const releaseWorkspaceOperation = retainCurrentWorkspaceOperation();
-    const settleWorkspaceOperation = async (): Promise<void> => {
-      if (containWorkspaceDescendants) {
-        try {
-          await terminateProcessTreeAndWait(childProcess, {
-            label: `Shell command ${command}`,
+    const startShell = (
+      spawnCommand: SandboxSpawnCommand,
+      lifecycleSignal?: AbortSignal,
+    ) => {
+      const containProcessTree =
+        preparedSpawn !== undefined || containWorkspaceDescendants;
+      const childProcess = containProcessTree
+        ? spawnContainedProcess(spawnCommand.program, spawnCommand.args, {
+            env: spawnCommand.env,
+            cwd: spawnCommand.cwd,
+            ...(spawnCommand.argv0 !== undefined
+              ? { argv0: spawnCommand.argv0 }
+              : {}),
+          })
+        : spawn(spawnCommand.program, [...spawnCommand.args], {
+            env: spawnCommand.env,
+            cwd: spawnCommand.cwd,
+            stdio: usePipeMode
+              ? ["pipe", "pipe", "pipe"]
+              : ["pipe", outputHandle?.fd, outputHandle?.fd],
+            detached: provider.detached,
+            windowsHide: true,
+            ...(spawnCommand.argv0 !== undefined
+              ? { argv0: spawnCommand.argv0 }
+              : {}),
           });
-        } catch (error) {
-          // Keep the retained workspace reference fail-closed. Releasing it
-          // after an unverifiable tree cleanup could let Editor acquire
-          // while a delayed descendant is still able to write.
-          logError(error);
-          return;
-        }
+      if (containProcessTree && childProcess.stdin) {
+        childProcess.stdin.end();
       }
-      releaseWorkspaceOperation();
+      const effectiveAbortSignal = lifecycleSignal === undefined
+        ? abortSignal
+        : AbortSignal.any([abortSignal, lifecycleSignal]);
+      const shellCommand = wrapSpawn(
+        childProcess,
+        effectiveAbortSignal,
+        commandTimeout,
+        taskOutput,
+        shouldAutoBackground,
+      );
+      const releaseWorkspaceOperation = retainCurrentWorkspaceOperation();
+      const completion = shellCommand.result.then(
+        async () => {
+          if (containProcessTree) {
+            try {
+              await terminateProcessTreeAndWait(childProcess, {
+                label: `Shell command ${command}`,
+              });
+            } catch (error) {
+              logError(error);
+              throw new SandboxExecutionLeaseCleanupError(
+                `Shell command process-tree cleanup failed: ${errorMessage(error)}`,
+                { cause: error },
+              );
+            }
+          }
+          releaseWorkspaceOperation();
+        },
+        async (error) => {
+          if (containProcessTree) {
+            try {
+              await terminateProcessTreeAndWait(childProcess, {
+                label: `Shell command ${command}`,
+              });
+            } catch (cleanupError) {
+              logError(cleanupError);
+              throw new SandboxExecutionLeaseCleanupError(
+                `Shell command process-tree cleanup failed: ${errorMessage(cleanupError)}`,
+                { cause: cleanupError },
+              );
+            }
+          }
+          releaseWorkspaceOperation();
+          throw error;
+        },
+      );
+      return { childProcess, shellCommand, completion };
     };
-    void shellCommand.result.then(
-      settleWorkspaceOperation,
-      settleWorkspaceOperation,
-    );
+    const started = preparedSpawn === undefined
+      ? startShell(unsandboxedSpawnCommand)
+      : preparedSpawn.start((spawnCommand, lifecycleSignal) => {
+          const startedShell = startShell(spawnCommand, lifecycleSignal);
+          return {
+            value: startedShell,
+            completion: startedShell.completion,
+          };
+        });
+    const { childProcess, shellCommand } = started;
+    // The raw path is used only when no canonical broker exists. Retain its
+    // existing workspace-operation cleanup tracking explicitly.
+    if (preparedSpawn === undefined) void started.completion.catch(() => {});
 
     // Close our copy of the fd — the child has its own dup.
     // Must happen after wrapSpawn attaches 'error' listener, since the await

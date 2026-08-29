@@ -1,10 +1,22 @@
 import { randomUUID } from "node:crypto";
 
 import type { LLMProvider } from "../llm/types.js";
-import { readProviderFactoryOptions } from "../llm/provider.js";
+import {
+  isFactoryProvider,
+  readProviderFactoryOptions,
+} from "../llm/provider.js";
 import type { ReviewDecision } from "../permissions/review-decision.js";
 import { createPermissionAuditFileLogger } from "../permissions/permission-audit-log.js";
-import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import {
+  PermissionModeRegistry,
+  removeOverlyBroadShellAllowRules,
+  type PendingPermissionAuthorityPublication,
+} from "../permissions/permission-mode.js";
+import {
+  applyPermissionRulesSnapshot,
+  readPermissionRulesSnapshot,
+  type PermissionRulesSnapshot,
+} from "../permissions/settings.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
 import { NetworkApprovalService as RuntimeNetworkApprovalService } from "../permissions/network-approval.js";
 import {
@@ -26,7 +38,6 @@ import type {
   AuthManager,
   SessionConfiguration,
 } from "../session/turn-context.js";
-import type { AgenCConfig } from "../config/schema.js";
 import type {
   ExecPolicyManager,
   Hooks,
@@ -70,7 +81,9 @@ import type {
   SubagentStopHook,
 } from "../llm/hooks/types.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
+import { createHookExecutionAuthority } from "../hooks/execution-authority.js";
 import { createAutoFixPostToolHook } from "../services/autoFix/autoFixHook.js";
+import { isProjectTrustedSync } from "../permissions/trust/project-trust.js";
 import { parseLspServersConfig } from "../services/lsp/config.js";
 import {
   getInitializationStatus as getLspInitializationStatus,
@@ -98,6 +111,18 @@ import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { isRecord } from "../utils/record.js";
 import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import { bindExecutionAdmissionJournal } from "../session/execution-admission-journal.js";
+import {
+  type AgentRuntimeOptions,
+  type CommandExecutionAuthority,
+} from "../session/runtime-options.js";
+import {
+  SessionProviderService,
+  type ReadSavedProviderApiKey,
+  type ResolveProviderPreparationRequest,
+} from "../session/provider-service.js";
+import { snapshotProviderEnvironment } from "../llm/provider-options.js";
+import { logForDebugging } from "../utils/debug.js";
+import { errorMessage } from "../utils/errors.js";
 
 export { bindExecutionAdmissionJournal } from "../session/execution-admission-journal.js";
 
@@ -111,7 +136,6 @@ interface BootstrapShellSnapshot {
 export interface BootstrapSessionServicesOptions {
   readonly provider: LLMProvider;
   readonly providerName: string;
-  readonly apiKey?: string;
   readonly authBackend?: AuthBackend;
   readonly authSubscriptionTier?: AuthSubscriptionTier;
   readonly registry: ToolRegistry;
@@ -128,7 +152,11 @@ export interface BootstrapSessionServicesOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly conversationId: string;
   readonly model: string;
+  readonly readSavedApiKey?: ReadSavedProviderApiKey;
+  readonly resolveProviderPreparationRequest?: ResolveProviderPreparationRequest;
   readonly sessionConfiguration: SessionConfiguration;
+  readonly runtimeOptions: AgentRuntimeOptions;
+  readonly commandExecutionAuthority: CommandExecutionAuthority;
   readonly codeModeService?: CodeModeService;
   readonly executionAdmission?: ExecutionAdmissionClient;
   readonly admissionRequired?: boolean;
@@ -336,7 +364,9 @@ class BootstrapAgentIdentityManager {
   }
 }
 
-export function createHooksService(): Hooks & {
+export function createHooksService(
+  runtimeOptions?: AgentRuntimeOptions,
+): Hooks & {
   readonly stopHooks: StopHookHandler[];
   readonly stopFailureHooks: StopHookHandler[];
   readonly preToolUseHooks: PreToolUseHook[];
@@ -345,12 +375,12 @@ export function createHooksService(): Hooks & {
   readonly permissionDecisionHooks: PermissionDecisionHook[];
   readonly userPromptSubmitHooks: UserPromptSubmitHook[];
   readonly lifecycleHooks: LifecycleHookRegistry;
-  addPreCompactHook(hook: PreCompactHook): void;
-  addPostCompactHook(hook: PostCompactHook): void;
-  addSessionStartHook(hook: SessionStartHook): void;
-  addSubagentStopHook(hook: SubagentStopHook): void;
-  addSessionEndHook(hook: SessionEndHook): void;
-  addNotificationHook(hook: NotificationHook): void;
+  addPreCompactHook(hook: PreCompactHook): () => void;
+  addPostCompactHook(hook: PostCompactHook): () => void;
+  addSessionStartHook(hook: SessionStartHook): () => void;
+  addSubagentStopHook(hook: SubagentStopHook): () => void;
+  addSessionEndHook(hook: SessionEndHook): () => void;
+  addNotificationHook(hook: NotificationHook): () => void;
   clearConfiguredLifecycleHooks(): void;
   processSessionStart(
     ...args: Parameters<typeof dispatchSessionStart>
@@ -378,55 +408,28 @@ export function createHooksService(): Hooks & {
     permissionDecisionHooks,
     userPromptSubmitHooks,
     lifecycleHooks,
-    addPreCompactHook: (hook) => {
-      lifecycleHooks.addPreCompact(hook);
-    },
-    addPostCompactHook: (hook) => {
-      lifecycleHooks.addPostCompact(hook);
-    },
-    addSessionStartHook: (hook) => {
-      lifecycleHooks.addSessionStart(hook);
-    },
-    addSubagentStopHook: (hook) => {
-      lifecycleHooks.addSubagentStop(hook);
-    },
-    addSessionEndHook: (hook) => {
-      lifecycleHooks.addSessionEnd(hook);
-    },
-    addNotificationHook: (hook) => {
-      lifecycleHooks.addNotification(hook);
-    },
+    addPreCompactHook: (hook) => lifecycleHooks.addPreCompact(hook),
+    addPostCompactHook: (hook) => lifecycleHooks.addPostCompact(hook),
+    addSessionStartHook: (hook) => lifecycleHooks.addSessionStart(hook),
+    addSubagentStopHook: (hook) => lifecycleHooks.addSubagentStop(hook),
+    addSessionEndHook: (hook) => lifecycleHooks.addSessionEnd(hook),
+    addNotificationHook: (hook) => lifecycleHooks.addNotification(hook),
     clearConfiguredLifecycleHooks: () => {
       lifecycleHooks.clear();
     },
     startupWarnings: () => [],
-    executePreCompact: async (...args: unknown[]) => {
-      const first = recordOrEmpty(args[0]);
-      return dispatchPreCompact(
-        {
-          hook_event_name: "PreCompact",
-          trigger: compactTrigger(first.trigger),
-          custom_instructions:
-            stringOrNull(first.customInstructions) ??
-            stringOrNull(first.custom_instructions),
-        },
-        { signal: abortSignalOrUndefined(args[1]), registry: lifecycleHooks },
-      );
-    },
-    executePostCompact: async (...args: unknown[]) => {
-      const first = recordOrEmpty(args[0]);
-      return dispatchPostCompact(
-        {
-          hook_event_name: "PostCompact",
-          trigger: compactTrigger(first.trigger),
-          compact_summary:
-            stringOrNull(first.compactSummary) ??
-            stringOrNull(first.compact_summary) ??
-            "",
-        },
-        { signal: abortSignalOrUndefined(args[1]), registry: lifecycleHooks },
-      );
-    },
+    executePreCompact: async (input, signal) =>
+      dispatchPreCompact(input, {
+        signal,
+        registry: lifecycleHooks,
+        ...(runtimeOptions !== undefined ? { runtimeOptions } : {}),
+      }),
+    executePostCompact: async (input, signal) =>
+      dispatchPostCompact(input, {
+        signal,
+        registry: lifecycleHooks,
+        ...(runtimeOptions !== undefined ? { runtimeOptions } : {}),
+      }),
     executeStop: async (...args: unknown[]) => {
       if (args.length >= 3 && isRecord(args[2])) {
         return evaluateStopHooks(
@@ -448,17 +451,21 @@ export function createHooksService(): Hooks & {
       }
     },
     processSessionStart: (input, opts) =>
-      dispatchSessionStart(input, { ...opts, registry: lifecycleHooks }),
+      dispatchSessionStart(input, {
+        ...opts,
+        registry: lifecycleHooks,
+        ...(runtimeOptions !== undefined ? { runtimeOptions } : {}),
+      }),
   };
 }
 
 export function loadBootstrapHooks(opts: {
-  readonly hooksRuntime: Pick<ConfiguredHooksRuntime, "load">;
+  readonly hooksRuntime: Pick<ConfiguredHooksRuntime, "loadConfigAuthority">;
   readonly hooksService: { readonly postToolUseHooks: PostToolUseHook[] };
-  readonly config: Pick<AgenCConfig, "hooks">;
+  readonly authoritySnapshot: ReturnType<ConfigStore["authoritySnapshot"]>;
   readonly autoFixPostToolHook: PostToolUseHook;
 }): void {
-  opts.hooksRuntime.load(opts.config.hooks);
+  opts.hooksRuntime.loadConfigAuthority(opts.authoritySnapshot);
   if (!opts.hooksService.postToolUseHooks.includes(opts.autoFixPostToolHook)) {
     opts.hooksService.postToolUseHooks.push(opts.autoFixPostToolHook);
   }
@@ -547,10 +554,11 @@ export async function shutdownBootstrapLspServers(
 function createShellSnapshotTx(
   workspaceRoot: string,
   env: NodeJS.ProcessEnv,
+  shellPath: string,
 ): SessionServices["shellSnapshotTx"] {
   return new BehaviorSubject<unknown | null>({
     cwd: workspaceRoot,
-    shell: env.SHELL?.trim() || null,
+    shell: shellPath,
     path: env.PATH?.trim() || null,
     capturedAtUnixMs: Date.now(),
   } satisfies BootstrapShellSnapshot);
@@ -559,7 +567,6 @@ function createShellSnapshotTx(
 function createAuthManager(opts: {
   readonly provider: LLMProvider;
   readonly providerName: string;
-  readonly apiKey?: string;
 }): AuthManager {
   const providerOptions = readProviderFactoryOptions(opts.provider);
   const authMode = readRecord(providerOptions.extra)?.authMode;
@@ -573,7 +580,6 @@ function createAuthManager(opts: {
   if (
     providerName === "ollama" ||
     ((providerName === "lmstudio" || providerName === "openai-compatible") &&
-      !opts.apiKey &&
       !providerOptions.apiKey)
   ) {
     return { mode: "local_no_auth" };
@@ -640,8 +646,10 @@ function resolveToolLatencyConfig(
 export function buildBootstrapSessionServices(
   opts: BootstrapSessionServicesOptions,
 ): BootstrapSessionServicesHandle {
+  const commandExecutionAuthority = opts.commandExecutionAuthority;
   const skillsServices = createLocalSkillsServices({
     agencHome: opts.agencHome,
+    pluginStorageRoot: opts.runtimeOptions.pluginStorageRoot,
     workspaceRoot: opts.workspaceRoot,
     config: opts.configStore.current(),
     env: {
@@ -655,7 +663,7 @@ export function buildBootstrapSessionServices(
   );
   const modelClient = new BootstrapModelClient(opts.provider);
   const providerOptions = readProviderFactoryOptions(opts.provider);
-  const policyApiKey = opts.apiKey ?? providerOptions.apiKey;
+  const policyApiKey = providerOptions.apiKey;
   const policyLimits = configurePolicyLimitsService({
     agencHome: opts.agencHome,
     providerName: opts.providerName,
@@ -690,13 +698,25 @@ export function buildBootstrapSessionServices(
   const mcpConnectionManager = new BootstrapMcpConnectionManager(
     opts.mcpManager,
   );
-  const hooksService = createHooksService();
+  const hooksService = createHooksService(opts.runtimeOptions);
+  const hookExecutionAuthority = createHookExecutionAuthority({
+    runtimeOptions: opts.runtimeOptions,
+    isWorkspaceTrusted: () =>
+      isProjectTrustedSync({
+        projectRoot: opts.configStore.projectRoot,
+        agencHome: opts.agencHome,
+        env: opts.env,
+      }),
+  });
   initMagicDocs();
   const hooksRuntime = new ConfiguredHooksRuntime({
     cwd: opts.workspaceRoot,
-    env: opts.env,
+    env: commandExecutionAuthority.childEnvironment,
     agencHome: opts.agencHome,
-    shellPath: opts.env.SHELL ?? "/bin/sh",
+    runtimeOptions: opts.runtimeOptions,
+    shellPath: commandExecutionAuthority.path,
+    commandWrapperArgv: commandExecutionAuthority.commandWrapperArgv,
+    executionAuthority: hookExecutionAuthority,
     sandboxExecutionBroker: opts.sandboxExecutionBroker,
     ...(opts.executionAdmission !== undefined
       ? { executionAdmission: opts.executionAdmission }
@@ -706,18 +726,22 @@ export function buildBootstrapSessionServices(
   const autoFixPostToolHook = createAutoFixPostToolHook({
     configSource: () => opts.configStore.current().autoFix,
     cwd: opts.workspaceRoot,
+    env: opts.env,
+    executionAuthority: hookExecutionAuthority,
     sandboxExecutionBroker: opts.sandboxExecutionBroker,
+    shellPath: commandExecutionAuthority.path,
+    commandWrapperArgv: commandExecutionAuthority.commandWrapperArgv,
   });
   hooksRuntime.attachTarget(hooksService);
-  const loadHooks = (cfg: ReturnType<ConfigStore["current"]>): void => {
+  const loadHooks = (): void => {
     loadBootstrapHooks({
       hooksRuntime,
       hooksService,
-      config: cfg,
+      authoritySnapshot: opts.configStore.authoritySnapshot(),
       autoFixPostToolHook,
     });
   };
-  loadHooks(opts.configStore.current());
+  loadHooks();
   loadBootstrapLspServersInBackground(opts.configStore.current(), {
     workspaceRoot: opts.workspaceRoot,
     sandboxExecutionBroker: opts.sandboxExecutionBroker,
@@ -729,16 +753,97 @@ export function buildBootstrapSessionServices(
         sandboxExecutionBroker: opts.sandboxExecutionBroker,
       }),
   };
-  const unsubscribeHooksConfig = opts.configStore.subscribe((cfg) => {
-    loadHooks(cfg);
-    loadBootstrapLspServersInBackground(cfg, {
-      workspaceRoot: opts.workspaceRoot,
-      sandboxExecutionBroker: opts.sandboxExecutionBroker,
+  let permissionReloadDisposed = false;
+  let permissionReloadTail: Promise<void> = Promise.resolve();
+  const queuePermissionReload = (
+    authorityPublication: PendingPermissionAuthorityPublication,
+    snapshot: PermissionRulesSnapshot,
+  ): void => {
+    const publication = permissionReloadTail.then(async () => {
+      if (permissionReloadDisposed) return;
+      await authorityPublication.publish((current) => {
+        let next = applyPermissionRulesSnapshot(current, snapshot);
+        if (
+          opts.env.USER_TYPE === "ant" &&
+          opts.env.AGENC_ENTRYPOINT !== "local-agent"
+        ) {
+          next = removeOverlyBroadShellAllowRules(next);
+        }
+        return {
+          next,
+          result: () => undefined,
+        };
+      });
     });
-  });
+    permissionReloadTail = publication.catch((error) => {
+      logForDebugging(
+        `Failed to publish reloaded permission policy: ${errorMessage(error)}`,
+        { level: "error" },
+      );
+    });
+  };
+  const unsubscribeHooksConfig = opts.configStore.subscribe(
+    (cfg, publication) => {
+      if (
+        publication?.permissionAuthority !==
+        "coordinated_by_permission_mode_registry"
+      ) {
+        const authorityPublication =
+          opts.permissionModeRegistry.beginExternalAuthorityPublication();
+        try {
+          queuePermissionReload(
+            authorityPublication,
+            readPermissionRulesSnapshot(opts.configStore),
+          );
+        } catch (error) {
+          // The synchronous registry fence deliberately remains closed. Logging
+          // the capture failure must never restore the older permission context.
+          logForDebugging(
+            `Failed to capture reloaded permission policy: ${errorMessage(error)}`,
+            { level: "error" },
+          );
+        }
+      }
+      loadHooks();
+      loadBootstrapLspServersInBackground(cfg, {
+        workspaceRoot: opts.workspaceRoot,
+        sandboxExecutionBroker: opts.sandboxExecutionBroker,
+      });
+    }
+  );
   let unsubscribeExecutionAdmission: (() => void) | undefined;
+  const providerEnvironment = snapshotProviderEnvironment(opts.env);
+  const providerIsFactoryBound = isFactoryProvider(opts.provider);
+  const providerService = new SessionProviderService({
+    initialProvider: opts.provider,
+    ...(!providerIsFactoryBound
+      ? {
+          initialProviderName: opts.providerName,
+          initialModel: opts.model,
+        }
+      : {}),
+    environment: providerEnvironment,
+    ...(opts.readSavedApiKey !== undefined
+      ? { readSavedApiKey: opts.readSavedApiKey }
+      : {}),
+    ...(opts.authBackend !== undefined
+      ? { authBackend: opts.authBackend }
+      : {}),
+    sessionId: opts.conversationId,
+    ...(opts.authSubscriptionTier !== undefined
+      ? { subscriptionTier: opts.authSubscriptionTier }
+      : {}),
+    ...(opts.resolveProviderPreparationRequest !== undefined
+      ? {
+          resolvePreparationRequest:
+            opts.resolveProviderPreparationRequest,
+        }
+      : {}),
+  });
 
   const services: SessionServices = {
+    runtimeOptions: opts.runtimeOptions,
+    hookExecutionAuthority,
     mcpConnectionManager,
     mcpStartupCancellationToken: createMcpStartupCancellationToken(),
     unifiedExecManager: opts.unifiedExecManager,
@@ -747,20 +852,23 @@ export function buildBootstrapSessionServices(
     hooksRuntime,
     rollout: rolloutRecorder,
     rolloutTrace,
-    userShell: {
-      path: opts.env.SHELL ?? "/bin/sh",
+    userShell: Object.freeze({
+      ...commandExecutionAuthority,
       deriveExecArgs: (input: string) => ["-c", input],
-    },
+    }),
     agentIdentityManager: new BootstrapAgentIdentityManager(
       opts.conversationId,
     ),
-    shellSnapshotTx: createShellSnapshotTx(opts.workspaceRoot, opts.env),
+    shellSnapshotTx: createShellSnapshotTx(
+      opts.workspaceRoot,
+      opts.env,
+      commandExecutionAuthority.path,
+    ),
     showRawAgentReasoning: false,
     execPolicy,
     authManager: createAuthManager({
       provider: opts.provider,
       providerName: opts.providerName,
-      ...(opts.apiKey !== undefined ? { apiKey: opts.apiKey } : {}),
     }),
     ...(opts.authBackend !== undefined
       ? { authBackend: opts.authBackend }
@@ -804,17 +912,26 @@ export function buildBootstrapSessionServices(
         opts.networkApproval.clearSessionHosts();
       },
       requestNetworkApproval: (request: unknown) =>
-        requestBootstrapNetworkApproval(opts.networkApproval, request),
+        requestBootstrapNetworkApproval(
+          opts.networkApproval,
+          request,
+          opts.runtimeOptions,
+        ),
       requestDeferredApproval: (request: unknown) =>
         opts.networkApproval.requestDeferredApproval(
-          request as Parameters<
-            typeof opts.networkApproval.requestDeferredApproval
-          >[0],
+          {
+            ...(request as Parameters<
+              typeof opts.networkApproval.requestDeferredApproval
+            >[0]),
+            runtimeOptions: opts.runtimeOptions,
+          },
         ),
     },
     threadStore: threadNameStore,
     modelClient,
     codeModeService,
+    providerService,
+    providerEnvironment,
     provider: opts.provider,
     registry: opts.registry,
     ...(opts.executionAdmission !== undefined
@@ -881,7 +998,9 @@ export function buildBootstrapSessionServices(
     shutdown: async () => {
       unsubscribeExecutionAdmission?.();
       unsubscribeExecutionAdmission = undefined;
+      permissionReloadDisposed = true;
       unsubscribeHooksConfig();
+      await permissionReloadTail;
       await skillsServices.skillsWatcher.stop?.();
       await shutdownBootstrapLspServers(opts.sandboxExecutionBroker);
       hooksService.clearConfiguredLifecycleHooks();
@@ -894,36 +1013,29 @@ export function buildBootstrapSessionServices(
   };
 }
 
-function compactTrigger(value: unknown): "manual" | "auto" {
-  return value === "auto" ? "auto" : "manual";
-}
-
-function stringOrNull(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
 function abortSignalOrUndefined(value: unknown): AbortSignal | undefined {
   return value instanceof AbortSignal ? value : undefined;
-}
-
-function recordOrEmpty(value: unknown): Record<string, unknown> {
-  return isRecord(value) ? value : {};
 }
 
 function requestBootstrapNetworkApproval(
   service: RuntimeNetworkApprovalService,
   request: unknown,
+  runtimeOptions: AgentRuntimeOptions,
 ): Promise<unknown> {
   if (isManagedNetworkApprovalRequest(request)) {
     return requestManagedNetworkApprovalForSandbox({
       ...request,
       service,
+      runtimeOptions,
     });
   }
   return service.requestNetworkApproval(
-    request as Parameters<
-      RuntimeNetworkApprovalService["requestNetworkApproval"]
-    >[0],
+    {
+      ...(request as Parameters<
+        RuntimeNetworkApprovalService["requestNetworkApproval"]
+      >[0]),
+      runtimeOptions,
+    },
   );
 }
 

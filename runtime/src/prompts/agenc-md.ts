@@ -6,8 +6,7 @@
  * path-boundary check for AgenC instruction files.
  *
  * Tier sources:
- *   1. **Managed** — system override. `$AGENC_MANAGED_INSTRUCTIONS` if set,
- *      else `/etc/agenc/AGENC.md`.
+ *   1. **Managed** — the path captured by the session ConfigStore.
  *   2. **User** — per-user global. `~/.agenc/AGENC.md`.
  *   3. **Project** — the ancestor-walk result from
  *      {@link loadProjectInstructions}.
@@ -25,8 +24,12 @@
  * @module
  */
 import { lstat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { resolveHomeContext } from "../config/home.js";
+import { getAgenCHomeDir } from "../utils/envUtils.js";
+import {
+  resolveManagedInstructionRulesPath,
+} from "../utils/settings/managedPath.js";
 
 import { normalizeExternalText } from "./_deps/file-read.js";
 import {
@@ -47,7 +50,6 @@ import {
   type ProjectInstructionsConfig,
 } from "./project-instructions.js";
 import {
-  DEFAULT_MANAGED_RULES_DIR,
   discoverInstructionRulesDetailed,
   formatRulesBlock,
   projectRulesDir,
@@ -78,9 +80,6 @@ function boundedIntegerOption(
 const USER_INSTRUCTION_FILENAME = "AGENC.md";
 /** Filename convention for per-checkout local instructions. */
 const LOCAL_INSTRUCTION_FILENAME = "AGENC.local.md";
-/** Default system-wide managed instructions path. */
-const DEFAULT_MANAGED_INSTRUCTION_PATH = "/etc/agenc/AGENC.md";
-
 export type InstructionTier = "managed" | "user" | "project" | "local";
 
 /**
@@ -108,24 +107,34 @@ export interface TieredInstructions {
 export interface LoadTieredInstructionsOptions extends ProjectInstructionsConfig {
   /** Current working directory for project/local tier discovery. */
   readonly cwd: string;
-  /** Override `HOME` for testing. Defaults to `os.homedir()`. */
+  /** Override platform home for tests; runtime defaults to session authority. */
   readonly homeDir?: string;
-  /** Resolved AgenC config home (AGENC_CONFIG_DIR/AGENC_HOME), if relocated. */
+  /** Resolved AgenC home (AGENC_HOME), if relocated. */
   readonly configHomeDir?: string;
   /** Explicit source policy. Omitted means all four tiers. */
   readonly enabledTiers?: readonly InstructionTier[];
   /**
-   * Override the managed instructions path for testing. Defaults to
-   * `$AGENC_MANAGED_INSTRUCTIONS` env var or
-   * {@link DEFAULT_MANAGED_INSTRUCTION_PATH}.
+   * Managed instruction path captured by the session ConfigStore.
    */
-  readonly managedPath?: string;
+  readonly managedPath: string;
   /** Max `@include` nesting depth. Default 10. */
   readonly includeMaxDepth?: number;
   /** Max total `@include` expansion bytes. Default 5 MiB. */
   readonly includeMaxBytes?: number;
   /** Trusted operator channel for exact external includes. Disabled by default. */
   readonly externalApprovals?: ExternalInstructionApprovalStore;
+}
+
+function instructionConfigHome(
+  opts: Pick<LoadTieredInstructionsOptions, "configHomeDir" | "homeDir">,
+): string {
+  if (opts.configHomeDir !== undefined) {
+    return resolveHomeContext({ AGENC_HOME: opts.configHomeDir }).path;
+  }
+  if (opts.homeDir !== undefined) {
+    return resolveHomeContext({}, { platformHome: opts.homeDir }).path;
+  }
+  return getAgenCHomeDir();
 }
 
 /** Metadata about a rejected/skipped `@include` target. */
@@ -677,12 +686,8 @@ function tieredInstructionsCacheKey(opts: LoadTieredInstructionsOptions): string
   // managedPath + homeDir resolution mirrors the body of
   // loadTieredInstructions so a key generated here always matches the
   // key the live call site would compute.
-  const managedPath =
-    opts.managedPath ??
-    process.env.AGENC_MANAGED_INSTRUCTIONS ??
-    DEFAULT_MANAGED_INSTRUCTION_PATH;
-  const home = opts.homeDir ?? homedir();
-  const configHome = opts.configHomeDir ?? join(home, ".agenc");
+  const managedPath = opts.managedPath;
+  const configHome = instructionConfigHome(opts);
   // includeMaxDepth/Bytes also affect output, but most callers use the
   // defaults; key them too so a caller bumping the budget never gets a
   // stale shorter-budget result.
@@ -701,7 +706,7 @@ function tieredInstructionsCacheKey(opts: LoadTieredInstructionsOptions): string
   return [
     opts.cwd,
     managedPath,
-    home,
+    opts.homeDir ?? "",
     configHome,
     JSON.stringify(opts.enabledTiers ?? ["managed", "user", "project", "local"]),
     includeMaxDepth,
@@ -833,12 +838,9 @@ function canonicalTierPaths(opts: LoadTieredInstructionsOptions): string[] {
   );
   if (enabled.size === 0) return [];
 
-  const home = opts.homeDir ?? homedir();
-  const managedPath =
-    opts.managedPath ??
-    process.env.AGENC_MANAGED_INSTRUCTIONS ??
-    DEFAULT_MANAGED_INSTRUCTION_PATH;
-  const agencHome = opts.configHomeDir ?? join(home, ".agenc");
+  const managedPath = opts.managedPath;
+  const managedRulesPath = resolveManagedInstructionRulesPath(managedPath);
+  const agencHome = instructionConfigHome(opts);
   const userPrimary = join(agencHome, USER_INSTRUCTION_FILENAME);
   const ancestorCandidates =
     enabled.has("project") || enabled.has("local")
@@ -849,7 +851,7 @@ function canonicalTierPaths(opts: LoadTieredInstructionsOptions): string[] {
         )
       : [];
   return [
-    ...(enabled.has("managed") ? [managedPath, DEFAULT_MANAGED_RULES_DIR] : []),
+    ...(enabled.has("managed") ? [managedPath, managedRulesPath] : []),
     ...(enabled.has("user") ? [userPrimary, join(agencHome, "rules")] : []),
     ...ancestorCandidates,
   ];
@@ -905,7 +907,6 @@ async function loadTieredInstructionsUncached(
     DEFAULT_INCLUDE_MAX_BYTES,
     DEFAULT_INCLUDE_MAX_BYTES,
   );
-  const home = opts.homeDir ?? homedir();
   const enabled = new Set<InstructionTier>(
     opts.enabledTiers ?? ["managed", "user", "project", "local"],
   );
@@ -920,10 +921,8 @@ async function loadTieredInstructionsUncached(
     bytesRead: 0,
     overflowed: false,
   };
-  const managedPath =
-    opts.managedPath ??
-    process.env.AGENC_MANAGED_INSTRUCTIONS ??
-    DEFAULT_MANAGED_INSTRUCTION_PATH;
+  const managedPath = opts.managedPath;
+  const managedRulesPath = resolveManagedInstructionRulesPath(managedPath);
 
   // Managed tier — boundary is the managed file's directory.
   const managedBase = enabled.has("managed") ? await loadTier(
@@ -941,9 +940,9 @@ async function loadTieredInstructionsUncached(
   const managedDependencies = [...(managedBase?.dependencies ?? [])];
   const managedRuleContent = enabled.has("managed") ? await appendUnconditionalRules(
     managedBase?.content ?? "",
-    DEFAULT_MANAGED_RULES_DIR,
+    managedRulesPath,
     "Managed",
-    pathDir(DEFAULT_MANAGED_RULES_DIR),
+    pathDir(managedRulesPath),
     managedDependencies,
     cacheEvidence,
     ruleLedger,
@@ -953,8 +952,8 @@ async function loadTieredInstructionsUncached(
       managedBase === null
         ? {
             tier: "managed",
-            path: DEFAULT_MANAGED_RULES_DIR,
-            scopePath: resolve(pathDir(DEFAULT_MANAGED_RULES_DIR)),
+            path: managedRulesPath,
+            scopePath: resolve(pathDir(managedRulesPath)),
             content: managedRuleContent,
             rawContent: managedRuleContent,
             dropped: [],
@@ -968,7 +967,7 @@ async function loadTieredInstructionsUncached(
   }
 
   // User tier — boundary is `~/.agenc`.
-  const agencHome = opts.configHomeDir ?? join(home, ".agenc");
+  const agencHome = instructionConfigHome(opts);
   const userPrimary = join(agencHome, USER_INSTRUCTION_FILENAME);
   let user: TierEntry | null = null;
   if (enabled.has("user") && await pathExists(userPrimary)) {

@@ -25,6 +25,8 @@ import { dirname, join, resolve } from "node:path";
 
 import { resolveAgencHome } from "../../config/env.js";
 import { findProjectRootSync } from "../../session/session-store.js";
+import { getCurrentRuntimeSession } from "../../session/current-session.js";
+import { getCwd } from "../../utils/cwd.js";
 import type { ProjectTrust } from "../approval-policy.js";
 import { isTrustRecord } from "./records.js";
 
@@ -33,10 +35,22 @@ export interface TrustedProjectEntry {
   readonly trustedAt: string;
 }
 
+export interface ProjectMcpServerChoices {
+  readonly path: string;
+  readonly approvedServerDigests?: Readonly<Record<string, string>>;
+  readonly rejectedServers?: readonly string[];
+}
+
 export interface TrustedProjectsFile {
   readonly version: 1;
   readonly trustedProjects: readonly TrustedProjectEntry[];
+  readonly projectMcpServerChoices?: readonly ProjectMcpServerChoices[];
+  readonly securityAcknowledgements?: Readonly<Record<SecurityAcknowledgement, string>>;
 }
+
+export type ProjectMcpServerApprovalStatus = "approved" | "rejected" | "pending";
+
+export type SecurityAcknowledgement = "auto-mode-permission-prompt";
 
 export interface ProjectTrustPathOptions {
   readonly agencHome?: string;
@@ -130,7 +144,64 @@ function parseTrustedProjects(raw: string): TrustedProjectsFile {
         trustedAt: entry.trustedAt,
       });
     }
-    return { version: 1, trustedProjects };
+    const rawAcknowledgements = isTrustRecord(parsed.securityAcknowledgements)
+      ? parsed.securityAcknowledgements
+      : null;
+    const autoModeAcknowledgedAt = rawAcknowledgements?.["auto-mode-permission-prompt"];
+    const rawMcpChoices = Array.isArray(parsed.projectMcpServerChoices)
+      ? parsed.projectMcpServerChoices
+      : [];
+    const projectMcpServerChoices: ProjectMcpServerChoices[] = [];
+    for (const entry of rawMcpChoices) {
+      if (!isTrustRecord(entry) || typeof entry.path !== "string" || entry.path.length === 0) {
+        continue;
+      }
+      const rawDigests = isTrustRecord(entry.approvedServerDigests)
+        ? entry.approvedServerDigests
+        : {};
+      const approvedServerDigests = Object.fromEntries(
+        Object.entries(rawDigests)
+          .filter(
+            (candidate): candidate is [string, string] =>
+              candidate[0].length > 0 &&
+              typeof candidate[1] === "string" &&
+              /^[0-9a-f]{64}$/iu.test(candidate[1]),
+          )
+          .map(([name, digest]) => [name, digest.toLowerCase()])
+          .sort(([left], [right]) => left.localeCompare(right)),
+      );
+      const rejectedServers = Array.isArray(entry.rejectedServers)
+        ? [...new Set(
+            entry.rejectedServers.filter(
+              (name): name is string => typeof name === "string" && name.length > 0,
+            ),
+          )].sort()
+        : [];
+      if (Object.keys(approvedServerDigests).length === 0 && rejectedServers.length === 0) {
+        continue;
+      }
+      projectMcpServerChoices.push({
+        path: canonicalizePathSync(entry.path),
+        ...(Object.keys(approvedServerDigests).length > 0
+          ? { approvedServerDigests }
+          : {}),
+        ...(rejectedServers.length > 0 ? { rejectedServers } : {}),
+      });
+    }
+    return {
+      version: 1,
+      trustedProjects,
+      ...(projectMcpServerChoices.length > 0
+        ? { projectMcpServerChoices }
+        : {}),
+      ...(typeof autoModeAcknowledgedAt === "string" && autoModeAcknowledgedAt.length > 0
+        ? {
+            securityAcknowledgements: {
+              "auto-mode-permission-prompt": autoModeAcknowledgedAt,
+            },
+          }
+        : {}),
+    };
   } catch {
     return { version: 1, trustedProjects: [] };
   }
@@ -204,6 +275,134 @@ export function resolveProjectTrustStateSync(
   return isProjectTrustedSync(options) ? "trusted" : "untrusted";
 }
 
+function projectMcpChoicesForRoot(
+  file: TrustedProjectsFile,
+  projectRoot: string,
+): ProjectMcpServerChoices | undefined {
+  const canonicalRoot = canonicalizePathSync(projectRoot);
+  return file.projectMcpServerChoices?.find(
+    (entry) => canonicalizePathSync(entry.path) === canonicalRoot,
+  );
+}
+
+export function getProjectMcpServerApprovalStatusSync(
+  serverName: string,
+  digest: string | undefined,
+  options: ProjectTrustLookupOptions = {},
+): ProjectMcpServerApprovalStatus {
+  const projectRoot = resolveLookupRootSync(options);
+  const choices = projectMcpChoicesForRoot(
+    readTrustedProjectsSync(options),
+    projectRoot,
+  );
+  if (choices?.rejectedServers?.includes(serverName)) return "rejected";
+  if (
+    digest !== undefined &&
+    choices?.approvedServerDigests?.[serverName] === digest.toLowerCase()
+  ) {
+    return "approved";
+  }
+  return "pending";
+}
+
+function withProjectMcpServerChoices(
+  file: TrustedProjectsFile,
+  projectRoot: string,
+  update: (
+    current: ProjectMcpServerChoices | undefined,
+  ) => ProjectMcpServerChoices | undefined,
+): TrustedProjectsFile {
+  const canonicalRoot = canonicalizePathSync(projectRoot);
+  const byPath = new Map<string, ProjectMcpServerChoices>();
+  for (const entry of file.projectMcpServerChoices ?? []) {
+    const path = canonicalizePathSync(entry.path);
+    byPath.set(path, { ...entry, path });
+  }
+  const next = update(byPath.get(canonicalRoot));
+  if (next === undefined) {
+    byPath.delete(canonicalRoot);
+  } else {
+    byPath.set(canonicalRoot, { ...next, path: canonicalRoot });
+  }
+  const projectMcpServerChoices = [...byPath.values()].sort((left, right) =>
+    left.path.localeCompare(right.path),
+  );
+  return {
+    ...file,
+    ...(projectMcpServerChoices.length > 0
+      ? { projectMcpServerChoices }
+      : { projectMcpServerChoices: undefined }),
+  };
+}
+
+function updateProjectMcpServerChoicesSync(
+  options: ProjectTrustLookupOptions,
+  update: (
+    current: ProjectMcpServerChoices | undefined,
+    projectRoot: string,
+  ) => ProjectMcpServerChoices | undefined,
+): void {
+  const projectRoot = resolveLookupRootSync(options);
+  const path = trustedProjectsPath(options);
+  withTrustedProjectsLockSync(path, () => {
+    const current = readTrustedProjectsSync(options);
+    writeTrustedProjectsFileSync(
+      path,
+      withProjectMcpServerChoices(current, projectRoot, (choices) =>
+        update(choices, projectRoot),
+      ),
+    );
+  });
+}
+
+export function approveProjectMcpServerSync(
+  serverName: string,
+  digest: string,
+  options: ProjectTrustLookupOptions = {},
+): void {
+  if (serverName.length === 0 || !/^[0-9a-f]{64}$/iu.test(digest)) {
+    throw new Error("Project MCP approval requires a server name and SHA-256 digest");
+  }
+  updateProjectMcpServerChoicesSync(options, (current, projectRoot) => ({
+    path: projectRoot,
+    approvedServerDigests: {
+      ...(current?.approvedServerDigests ?? {}),
+      [serverName]: digest.toLowerCase(),
+    },
+    ...(current?.rejectedServers !== undefined
+      ? { rejectedServers: current.rejectedServers.filter((name) => name !== serverName) }
+      : {}),
+  }));
+}
+
+export function rejectProjectMcpServerSync(
+  serverName: string,
+  options: ProjectTrustLookupOptions = {},
+): void {
+  if (serverName.length === 0) {
+    throw new Error("Project MCP rejection requires a server name");
+  }
+  updateProjectMcpServerChoicesSync(options, (current, projectRoot) => {
+    const approvedServerDigests = { ...(current?.approvedServerDigests ?? {}) };
+    delete approvedServerDigests[serverName];
+    return {
+      path: projectRoot,
+      ...(Object.keys(approvedServerDigests).length > 0
+        ? { approvedServerDigests }
+        : {}),
+      rejectedServers: [
+        ...new Set([...(current?.rejectedServers ?? []), serverName]),
+      ].sort(),
+    };
+  });
+}
+
+export function resetProjectMcpServerChoicesSync(
+  options: ProjectTrustLookupOptions = {},
+): void {
+  updateProjectMcpServerChoicesSync(options, () => undefined);
+}
+
 function mergeTrustedProject(
   file: TrustedProjectsFile,
   projectRoot: string,
@@ -218,6 +417,7 @@ function mergeTrustedProject(
   }
   next.set(projectRoot, { path: projectRoot, trustedAt });
   return {
+    ...file,
     version: 1,
     trustedProjects: [...next.values()].sort((a, b) => a.path.localeCompare(b.path)),
   };
@@ -506,15 +706,43 @@ export function trustProjectSync(
   return { projectRoot, persisted: true };
 }
 
+export function hasSecurityAcknowledgementSync(
+  acknowledgement: SecurityAcknowledgement,
+  options: ProjectTrustPathOptions = {},
+): boolean {
+  return typeof readTrustedProjectsSync(options).securityAcknowledgements?.[
+    acknowledgement
+  ] === "string";
+}
+
+export async function recordSecurityAcknowledgement(
+  acknowledgement: SecurityAcknowledgement,
+  options: ProjectTrustPathOptions & { readonly now?: () => Date } = {},
+): Promise<void> {
+  const path = trustedProjectsPath(options);
+  await withTrustedProjectsLock(path, async () => {
+    const current = await readTrustedProjects(options);
+    await writeTrustedProjectsFile(path, {
+      ...current,
+      securityAcknowledgements: {
+        ...(current.securityAcknowledgements ?? {}),
+        [acknowledgement]: (options.now ?? (() => new Date()))().toISOString(),
+      },
+    });
+  });
+}
+
 export function checkHasProjectTrustAcceptedSync(
   options: ProjectTrustLookupOptions = {},
 ): boolean {
+  const sessionCwd =
+    options.projectRoot === undefined && options.cwd === undefined
+      ? getCurrentRuntimeSession()?.sessionConfiguration.cwd ?? getCwd()
+      : options.cwd;
   return isProjectTrustedSync({
     ...options,
     env: options.env ?? process.env,
-    cwd: options.projectRoot !== undefined
-      ? options.cwd
-      : options.cwd ?? process.env.AGENC_WORKSPACE ?? process.cwd(),
+    cwd: sessionCwd,
   });
 }
 

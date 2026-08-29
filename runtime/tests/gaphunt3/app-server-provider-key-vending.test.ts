@@ -28,6 +28,7 @@ describe("gaphunt3 #48 daemon vended-key per-session eviction", () => {
       calls += 1;
       // No expiresAt -> parseExpiresAtMs returns null -> never expires.
       return {
+        kind: "api-key",
         provider: String(provider),
         sessionId,
         apiKey: `managed-key-${calls}`,
@@ -49,7 +50,10 @@ describe("gaphunt3 #48 daemon vended-key per-session eviction", () => {
     // so vendKey would NOT have been re-invoked.
     const revended = await wrapped.vendKey("grok", "session-a");
     expect(revended).not.toBe(first);
-    expect(revended.apiKey).toBe("managed-key-2");
+    expect(revended).toMatchObject({
+      kind: "api-key",
+      apiKey: "managed-key-2",
+    });
     expect(backend.vendKey).toHaveBeenCalledTimes(2);
   });
 
@@ -58,6 +62,7 @@ describe("gaphunt3 #48 daemon vended-key per-session eviction", () => {
     const backend = makeAuthBackend((provider, sessionId) => {
       calls += 1;
       return {
+        kind: "api-key",
         provider: String(provider),
         sessionId,
         apiKey: `managed-key-${calls}`,

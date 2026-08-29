@@ -98,7 +98,10 @@ function runResult(result: {
   })();
 }
 
-function makeRealDelegateHarness(label: string) {
+function makeRealDelegateHarness(
+  label: string,
+  configureRoles?: (workspace: ReturnType<typeof createAgentRoleWorkspace>) => void,
+) {
   const cwd = mkdtempSync(join(tmpdir(), `agenc-delegate-${label}-`));
   const priorAgencHome = process.env.AGENC_HOME;
   process.env.AGENC_HOME = cwd;
@@ -107,6 +110,7 @@ function makeRealDelegateHarness(label: string) {
     cwd,
     sessionId: parentConversationId,
     agencVersion: "0.6.0",
+    sessionTempRoot: tmpdir(),
     autoStartScheduler: false,
   });
   rolloutStore.open({
@@ -119,6 +123,7 @@ function makeRealDelegateHarness(label: string) {
     modelProvider: "test-provider",
   });
   const roleWorkspace = createAgentRoleWorkspace(cwd);
+  configureRoles?.(roleWorkspace);
   const parent = {
     ...makeParentSession(),
     conversationId: parentConversationId,
@@ -694,13 +699,17 @@ describe("delegate lifecycle recovery", () => {
     expect(resumeManager.recordSuccess).toHaveBeenCalledWith("thread-2");
   });
 
-  it("preserves a live edge when a restrictive role changed before restart preflight", async () => {
-    const harness = makeRealDelegateHarness("changed-role-restart");
+  it("restarts from the immutable session catalog when an ambient role changes", async () => {
+    const harness = makeRealDelegateHarness(
+      "changed-role-restart",
+      (workspace) => {
+        registerAgentRole(workspace, {
+          name: "scanner",
+          config: { disallowlist: ["Edit", "Write"] },
+        });
+      },
+    );
     try {
-      registerAgentRole(harness.control.roleWorkspace, {
-        name: "scanner",
-        config: { disallowlist: ["Edit", "Write"] },
-      });
       const spawnSpy = vi.spyOn(harness.control, "spawn");
       const shutdownSpy = vi.spyOn(harness.control, "shutdown");
       const resumeFromRolloutSpy = vi.spyOn(
@@ -727,6 +736,14 @@ describe("delegate lifecycle recovery", () => {
           error: new Error("hard fail"),
         });
       });
+      mockRunAgent.mockImplementationOnce((params) =>
+        runResult({
+          threadId: params.live.agentId,
+          durationMs: 12,
+          outcome: "completed",
+          finalMessage: "done from the captured catalog",
+        }),
+      );
 
       const outcome = await delegate({
         parent: harness.parent as never,
@@ -744,30 +761,37 @@ describe("delegate lifecycle recovery", () => {
       if (outcome.kind !== "sync_completed") {
         throw new Error("expected sync_completed");
       }
-      expect(outcome.result.outcome).toBe("errored");
-      expect(spawnSpy).toHaveBeenCalledTimes(1);
-      expect(shutdownSpy).not.toHaveBeenCalled();
-      expect(resumeFromRolloutSpy).not.toHaveBeenCalled();
-      expect(harness.control.getLive(outcome.thread.threadId)).toBe(
-        outcome.thread.live,
+      expect(outcome.result.outcome).toBe("completed");
+      expect(outcome.result.finalMessage).toBe(
+        "done from the captured catalog",
       );
-      expect(harness.registry.activeCount).toBe(1);
-      expect(
-        harness.rolloutStore.getThreadSpawnEdge(outcome.thread.threadId)
-          ?.status,
-      ).toBe("open");
+      expect(outcome.thread.live.role.config.disallowlist).toEqual([
+        "Edit",
+        "Write",
+      ]);
+      expect(spawnSpy).toHaveBeenCalledTimes(2);
+      expect(shutdownSpy).toHaveBeenCalledWith(
+        expect.any(String),
+        "delegate_restart",
+      );
+      expect(resumeFromRolloutSpy).not.toHaveBeenCalled();
+      expect(harness.registry.activeCount).toBe(0);
     } finally {
       harness.cleanup();
     }
   });
 
-  it("preserves a live edge when an alias-named role was removed before resume preflight", async () => {
-    const harness = makeRealDelegateHarness("removed-role-resume");
+  it("resumes from the immutable session catalog when an ambient role is removed", async () => {
+    const harness = makeRealDelegateHarness(
+      "removed-role-resume",
+      (workspace) => {
+        registerAgentRole(workspace, {
+          name: "scanner",
+          config: { disallowlist: ["Edit", "Write"] },
+        });
+      },
+    );
     try {
-      registerAgentRole(harness.control.roleWorkspace, {
-        name: "scanner",
-        config: { disallowlist: ["Edit", "Write"] },
-      });
       const spawnSpy = vi.spyOn(harness.control, "spawn");
       const shutdownSpy = vi.spyOn(harness.control, "shutdown");
       const resumeFromRolloutSpy = vi.spyOn(
@@ -792,6 +816,14 @@ describe("delegate lifecycle recovery", () => {
           error: new Error("transient"),
         });
       });
+      mockRunAgent.mockImplementationOnce((params) =>
+        runResult({
+          threadId: params.live.agentId,
+          durationMs: 12,
+          outcome: "completed",
+          finalMessage: "done from the captured catalog",
+        }),
+      );
 
       const outcome = await delegate({
         parent: harness.parent as never,
@@ -809,18 +841,21 @@ describe("delegate lifecycle recovery", () => {
       if (outcome.kind !== "sync_completed") {
         throw new Error("expected sync_completed");
       }
-      expect(outcome.result.outcome).toBe("errored");
-      expect(spawnSpy).toHaveBeenCalledTimes(1);
-      expect(shutdownSpy).not.toHaveBeenCalled();
-      expect(resumeFromRolloutSpy).not.toHaveBeenCalled();
-      expect(harness.control.getLive(outcome.thread.threadId)).toBe(
-        outcome.thread.live,
+      expect(outcome.result.outcome).toBe("completed");
+      expect(outcome.result.finalMessage).toBe(
+        "done from the captured catalog",
       );
-      expect(harness.registry.activeCount).toBe(1);
-      expect(
-        harness.rolloutStore.getThreadSpawnEdge(outcome.thread.threadId)
-          ?.status,
-      ).toBe("open");
+      expect(outcome.thread.live.role.config.disallowlist).toEqual([
+        "Edit",
+        "Write",
+      ]);
+      expect(spawnSpy).toHaveBeenCalledTimes(1);
+      expect(shutdownSpy).toHaveBeenCalledWith(
+        expect.any(String),
+        "delegate_resume",
+      );
+      expect(resumeFromRolloutSpy).toHaveBeenCalledOnce();
+      expect(harness.registry.activeCount).toBe(0);
     } finally {
       harness.cleanup();
     }

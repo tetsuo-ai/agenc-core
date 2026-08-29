@@ -52,6 +52,7 @@ function authBackend(
       provider: kind,
     }),
     vendKey: overrides.vendKey ?? ((provider, sessionId) => ({
+      kind: "api-key",
       provider,
       sessionId,
       apiKey: "managed-key",
@@ -131,17 +132,22 @@ describe("providers CLI", () => {
     });
     expect(entries.get("grok")).toMatchObject({
       usable: true,
-      keyStatus: "present",
-      keyEnvVar: "XAI_API_KEY",
+      credentialStatus: "present",
+      credentialProvenance: {
+        kind: "environment",
+        fields: [{ role: "apiKey", envVar: "XAI_API_KEY" }],
+      },
     });
     expect(entries.get("anthropic")).toMatchObject({
       usable: false,
-      keyStatus: "missing",
-      keyEnvVar: "ANTHROPIC_API_KEY",
+      credentialStatus: "missing",
     });
+    expect(entries.get("anthropic")).not.toHaveProperty(
+      "credentialProvenance",
+    );
     expect(entries.get("ollama")).toMatchObject({
       usable: true,
-      keyStatus: "not-required",
+      credentialStatus: "not-required",
       localStatus: "up",
       localStatusCode: 200,
     });
@@ -152,7 +158,7 @@ describe("providers CLI", () => {
     });
     expect(entries.get("openai-compatible")).toMatchObject({
       usable: true,
-      keyStatus: "present",
+      credentialStatus: "present",
       localStatus: "up",
     });
   });
@@ -189,13 +195,13 @@ describe("providers CLI", () => {
 
     expect(entries.get("lmstudio")).toMatchObject({
       usable: true,
-      keyStatus: "present",
+      credentialStatus: "present",
       localStatus: "up",
       localStatusCode: 200,
     });
     expect(entries.get("openai-compatible")).toMatchObject({
       usable: true,
-      keyStatus: "present",
+      credentialStatus: "present",
       localStatus: "up",
       localStatusCode: 200,
     });
@@ -213,7 +219,12 @@ describe("providers CLI", () => {
       authBackend: authBackend("remote", "pro", {
         vendKey: (provider, sessionId) => {
           calls.push(`vendKey:${provider}:${sessionId}`);
-          return { provider, sessionId, apiKey: `managed-${provider}` };
+          return {
+            kind: "api-key" as const,
+            provider,
+            sessionId,
+            apiKey: `managed-${provider}`,
+          };
         },
       }),
       checkLocal: false,
@@ -227,17 +238,17 @@ describe("providers CLI", () => {
     // vended and fall back to BYOK-missing.
     expect(entries.get("openrouter")).toMatchObject({
       usable: true,
-      keyStatus: "managed",
+      credentialStatus: "managed",
       subscriptionTier: "pro",
     });
     expect(entries.get("grok")).toMatchObject({
       usable: false,
-      keyStatus: "missing",
+      credentialStatus: "missing",
       subscriptionTier: "pro",
     });
     expect(entries.get("agenc")).toMatchObject({
       usable: true,
-      keyStatus: "not-required",
+      credentialStatus: "not-required",
       subscriptionTier: "pro",
     });
     // Exactly two vends happen: the managed OpenRouter provider row, and the
@@ -254,7 +265,7 @@ describe("providers CLI", () => {
       authBackend: authBackend("remote", "pro", {
         vendKey: (provider, sessionId) => {
           if (provider === "openrouter") throw new Error("openrouter denied");
-          return { provider, sessionId, apiKey: "managed-key" };
+          return { kind: "api-key" as const, provider, sessionId, apiKey: "managed-key" };
         },
       }),
       checkLocal: false,
@@ -265,7 +276,7 @@ describe("providers CLI", () => {
 
     expect(entries.get("openrouter")).toMatchObject({
       usable: false,
-      keyStatus: "unavailable",
+      credentialStatus: "unavailable",
     });
     expect(entries.get("openrouter")?.detail).toContain("openrouter denied");
   });
@@ -276,6 +287,7 @@ describe("providers CLI", () => {
     const mismatchReport = await collectProviderAvailability({
       authBackend: authBackend("remote", "team", {
         vendKey: (_provider, sessionId) => ({
+          kind: "api-key",
           provider: "grok",
           sessionId,
           apiKey: "managed-key",
@@ -289,7 +301,7 @@ describe("providers CLI", () => {
 
     expect(mismatchEntries.get("openrouter")).toMatchObject({
       usable: false,
-      keyStatus: "unavailable",
+      credentialStatus: "unavailable",
     });
     expect(mismatchEntries.get("openrouter")?.detail).toContain(
       "provider mismatch",
@@ -297,7 +309,12 @@ describe("providers CLI", () => {
 
     const emptyKeyReport = await collectProviderAvailability({
       authBackend: authBackend("remote", "team", {
-        vendKey: (provider, sessionId) => ({ provider, sessionId, apiKey: " " }),
+        vendKey: (provider, sessionId) => ({
+          kind: "api-key",
+          provider,
+          sessionId,
+          apiKey: " ",
+        }),
       }),
       checkLocal: false,
       config: defaultConfig(),
@@ -307,7 +324,7 @@ describe("providers CLI", () => {
 
     expect(emptyKeyEntries.get("openrouter")).toMatchObject({
       usable: false,
-      keyStatus: "unavailable",
+      credentialStatus: "unavailable",
     });
     expect(emptyKeyEntries.get("openrouter")?.detail).toContain("empty key");
   });
@@ -327,7 +344,7 @@ describe("providers CLI", () => {
 
     expect(entries.get("agenc")).toMatchObject({
       usable: false,
-      keyStatus: "not-required",
+      credentialStatus: "not-required",
       subscriptionTier: "team",
     });
     expect(entries.get("agenc")?.detail).toContain("routing denied");
@@ -344,7 +361,7 @@ describe("providers CLI", () => {
         vendKey: (provider: AuthProviderSlug | string, sessionId: AuthSessionId) => {
           calls.push(`vendKey:${provider}:${sessionId}`);
           if (provider === "openai") throw new Error("openai denied");
-          return { provider, sessionId, apiKey: "managed-key" };
+          return { kind: "api-key" as const, provider, sessionId, apiKey: "managed-key" };
         },
       }),
       checkLocal: false,
@@ -355,7 +372,7 @@ describe("providers CLI", () => {
 
     expect(entries.get("agenc")).toMatchObject({
       usable: false,
-      keyStatus: "not-required",
+      credentialStatus: "not-required",
       subscriptionTier: "team",
     });
     expect(entries.get("agenc")?.detail).toContain("openai denied");
@@ -370,7 +387,7 @@ describe("providers CLI", () => {
         {
           authBackend: authBackend("remote", "team"),
           config: defaultConfig(),
-          env: {},
+          env: { XAI_API_KEY: "xai-key" },
           io,
         },
       ),
@@ -378,10 +395,23 @@ describe("providers CLI", () => {
 
     const parsed = JSON.parse(io.stdoutText()) as {
       readonly subscriptionTier: string;
-      readonly entries: readonly { readonly provider: string }[];
+      readonly entries: readonly {
+        readonly provider: string;
+        readonly credentialStatus: string;
+        readonly credentialProvenance?: unknown;
+      }[];
     };
     expect(parsed.subscriptionTier).toBe("team");
-    expect(parsed.entries.some((entry) => entry.provider === "grok")).toBe(true);
+    const grok = parsed.entries.find((entry) => entry.provider === "grok");
+    expect(grok).toMatchObject({
+      credentialStatus: "present",
+      credentialProvenance: {
+        kind: "environment",
+        fields: [{ role: "apiKey", envVar: "XAI_API_KEY" }],
+      },
+    });
+    expect(grok).not.toHaveProperty("keyStatus");
+    expect(grok).not.toHaveProperty("credentialSource");
     expect(io.stderrText()).toBe("");
   });
 });

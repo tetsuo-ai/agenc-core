@@ -3,10 +3,9 @@ import React, { useContext } from 'react';
 import { ERROR_MESSAGE_USER_ABORT } from 'src/services/compact/compact.js';
 import { isRateLimitErrorMessage } from '../../services/rateLimitMessages.js';
 import { Box, Text } from '../ink.js';
-import { API_ERROR_MESSAGE_PREFIX, API_TIMEOUT_ERROR_MESSAGE, CREDIT_BALANCE_TOO_LOW_ERROR_MESSAGE, CUSTOM_OFF_SWITCH_MESSAGE, INVALID_API_KEY_ERROR_MESSAGE, INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL, ORG_DISABLED_ERROR_MESSAGE_ENV_KEY, ORG_DISABLED_ERROR_MESSAGE_ENV_KEY_WITH_OAUTH, PROMPT_TOO_LONG_ERROR_MESSAGE, startsWithApiErrorPrefix, TOKEN_REVOKED_ERROR_MESSAGE } from '../../services/api/errors';
+import { API_ERROR_MESSAGE_PREFIX, API_TIMEOUT_ERROR_MESSAGE, CREDIT_BALANCE_TOO_LOW_ERROR_MESSAGE, INVALID_API_KEY_ERROR_MESSAGE, INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL, PROMPT_TOO_LONG_ERROR_MESSAGE, startsWithApiErrorPrefix, TOKEN_REVOKED_ERROR_MESSAGE } from '../../errors/api.js';
 import { isEmptyMessageText, NO_RESPONSE_REQUESTED } from '../../utils/messages';
-import { getUpgradeMessage } from '../../utils/model/contextWindowUpgradeCheck';
-import { getDefaultMainLoopModel, renderModelName } from '../../utils/model/model';
+import { getUpgradeMessage } from '../../llm/context-window-upgrade.js';
 import type { AgenCTextBlockParam } from '../../types/message.js';
 import { isMacOsKeychainLocked } from '../../utils/secureStorage/macOsKeychainStorage';
 import { CtrlOToExpand } from '../components/CtrlOToExpand';
@@ -129,19 +128,6 @@ export function AssistantTextMessage(t0) {
         }
         return t2;
       }
-    case ORG_DISABLED_ERROR_MESSAGE_ENV_KEY:
-    case ORG_DISABLED_ERROR_MESSAGE_ENV_KEY_WITH_OAUTH:
-      {
-        let t2;
-        if ($[8] !== text) {
-          t2 = <MessageResponse><Text color="error">{text}</Text></MessageResponse>;
-          $[8] = text;
-          $[9] = t2;
-        } else {
-          t2 = $[9];
-        }
-        return t2;
-      }
     case TOKEN_REVOKED_ERROR_MESSAGE:
       {
         let t2;
@@ -157,30 +143,12 @@ export function AssistantTextMessage(t0) {
       {
         let t2;
         if ($[11] === Symbol.for("react.memo_cache_sentinel")) {
-          t2 = <MessageResponse height={1}><Text color="error">{API_TIMEOUT_ERROR_MESSAGE}{process.env.API_TIMEOUT_MS && <>{" "}(API_TIMEOUT_MS={process.env.API_TIMEOUT_MS}ms, try increasing it)</>}</Text></MessageResponse>;
+          t2 = <MessageResponse height={1}><Text color="error">{API_TIMEOUT_ERROR_MESSAGE}</Text></MessageResponse>;
           $[11] = t2;
         } else {
           t2 = $[11];
         }
         return t2;
-      }
-    case CUSTOM_OFF_SWITCH_MESSAGE:
-      {
-        let t2;
-        if ($[12] === Symbol.for("react.memo_cache_sentinel")) {
-          t2 = <Text color="error">We are experiencing high demand for the selected model.</Text>;
-          $[12] = t2;
-        } else {
-          t2 = $[12];
-        }
-        let t3;
-        if ($[13] === Symbol.for("react.memo_cache_sentinel")) {
-          t3 = <MessageResponse><Box flexDirection="column" gap={1}>{t2}<Text>To continue immediately, use /model to switch to{" "}{renderModelName(getDefaultMainLoopModel())}.</Text></Box></MessageResponse>;
-          $[13] = t3;
-        } else {
-          t3 = $[13];
-        }
-        return t3;
       }
     case ERROR_MESSAGE_USER_ABORT:
       {

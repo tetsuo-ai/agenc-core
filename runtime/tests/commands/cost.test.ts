@@ -77,7 +77,7 @@ const AGENT_APP_STATE = {
       id: "agent-1",
       type: "local_agent",
       status: "running",
-      agentType: "worker",
+      agentType: "runner",
       model: "claude-opus-4-7",
       description: "build the parser",
       agentId: "agent-1",
@@ -129,10 +129,10 @@ describe("/cost", () => {
     const report = buildCostReport(
       contextWith({ sidecar: fakeCostSidecar(), appState: AGENT_APP_STATE }),
     );
-    // Only the spawned worker agent is listed; main-session is the orchestrator.
+    // Only the spawned runner agent is listed; main-session is the orchestrator.
     expect(report.agents).toHaveLength(1);
     const agent = report.agents[0]!;
-    expect(agent.label).toBe("build the parser · worker");
+    expect(agent.label).toBe("build the parser · runner");
     expect(agent.status).toBe("running");
     expect(agent.tokenCount).toBe(40_000);
     // Estimated cost is derived from real tokens + model — NOT a fabricated
@@ -141,7 +141,7 @@ describe("/cost", () => {
     expect(agent.estimatedCostUsd!).toBeGreaterThan(0);
 
     const out = formatCostReport(report);
-    expect(out).toContain("running build the parser · worker:");
+    expect(out).toContain("running build the parser · runner:");
     expect(out).toContain("40.0K tokens");
     expect(out).toContain("est.");
   });
@@ -156,7 +156,7 @@ describe("/cost", () => {
               id: "a2",
               type: "local_agent",
               status: "running",
-              agentType: "worker",
+              agentType: "runner",
               model: "claude-opus-4-7",
               description: "warming up",
               agentId: "a2",
@@ -167,7 +167,7 @@ describe("/cost", () => {
       }),
     );
     expect(report.agents[0]!.estimatedCostUsd).toBeUndefined();
-    expect(formatCostReport(report)).toMatch(/warming up · worker: — · —/);
+    expect(formatCostReport(report)).toMatch(/warming up · runner: — · —/);
   });
 
   it("degrades gracefully when no cost sidecar AND no agents", () => {
@@ -184,7 +184,7 @@ describe("/cost", () => {
     // token counts. The session line must answer "how much is this costing"
     // with an explicit estimate, not a useless "—".
     const report = buildCostReport(contextWith({ appState: AGENT_APP_STATE }));
-    // worker agent has 40K tokens (opus) -> a positive estimate; main-session skipped.
+    // Runner agent has 40K tokens (opus) -> a positive estimate; main-session skipped.
     expect(report.agents).toHaveLength(1);
     const agentEstimate = report.agents[0]!.estimatedCostUsd;
     expect(agentEstimate).toBeGreaterThan(0);
@@ -218,6 +218,6 @@ describe("/cost", () => {
     );
     const out = text(result);
     expect(out).toContain("Session cost: $1.23");
-    expect(out).toContain("build the parser · worker");
+    expect(out).toContain("build the parser · runner");
   });
 });

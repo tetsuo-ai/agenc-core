@@ -13,6 +13,7 @@ import {
   type ProviderFactoryOptions,
   type ProviderRuntimeExtra,
 } from "../llm/provider.js";
+import { readGeminiRuntimeOptions } from "../llm/providers/gemini/runtime-options.js";
 import { getProviderNativeToolDefinitions } from "../llm/provider-native-search.js";
 import {
   createTokenAccountingConfigurationRevision,
@@ -50,13 +51,6 @@ export interface AdmittedModelCallOptions {
   };
   /** Called only after an acquired step has durable fallback evidence. */
   readonly onFallbackRecorded?: () => void;
-  /**
-   * This call exists to shrink the conversation. Refusing it for exceeding
-   * the context window is circular — it is the one request that can end the
-   * condition — and leaves the run with no way forward, so the window check
-   * does not apply to it. Every other admission gate still does.
-   */
-  readonly reducesContext?: boolean;
   readonly invoke: (options: LLMChatOptions) => Promise<LLMResponse>;
 }
 
@@ -85,8 +79,8 @@ function accountingOptionsForProvider(
   const configuredTemperature =
     typeof extra.temperature === "number" ? extra.temperature : undefined;
   const configuredCachedContent =
-    provider.name === "gemini" && typeof extra.cachedContent === "string"
-      ? extra.cachedContent
+    provider.name === "gemini"
+      ? readGeminiRuntimeOptions(extra)?.cachedContent
       : undefined;
   return {
     ...options,
@@ -310,25 +304,6 @@ function cancellationAfterDispatch(signal: AbortSignal): Error | undefined {
  * A provider failure after the dispatch marker is conservative: usage becomes
  * `held_unknown`; generic catch/finally code must never refund it as zero.
  */
-/**
- * Whether a provider-reported model id names the model we asked for.
- *
- * Local servers answer with their own canonical id: ask LM Studio for
- * `unsloth/qwen3.8-27b` and it replies `qwen3.8-27b`. Compared as raw
- * strings that reads as the provider silently switching models, which
- * books a fallback against a step that already exists and kills the turn
- * with AdmissionStepConflictError — the user sees an empty answer.
- * Vendor prefix and case are not identity.
- */
-function isSameModelIdentity(reported: string, requested: string): boolean {
-  const normalize = (value: string): string =>
-    value.trim().toLowerCase().split("/").pop() ?? value.trim().toLowerCase();
-  if (reported.trim().toLowerCase() === requested.trim().toLowerCase()) {
-    return true;
-  }
-  return normalize(reported) === normalize(requested);
-}
-
 export async function runAdmittedModelCall(
   params: AdmittedModelCallOptions,
 ): Promise<LLMResponse> {
@@ -488,16 +463,8 @@ export async function runAdmittedModelCall(
     });
     if (!accountingResult.admissible) {
       accountingFailureReason = "token_accounting_uncertain";
-    } else if (
-      accountingResult.totalTokens > contextWindowTokens &&
-      params.reducesContext !== true
-    ) {
-      // Say by how much and from where. "context_window_exceeded" on its own
-      // sends people looking at their prompt when the reserved output is
-      // usually what does not fit.
-      accountingFailureReason =
-        `context_window_exceeded (input ${accountingResult.inputTokens} + ` +
-        `reserved output ${maxOutputTokens} > window ${contextWindowTokens})`;
+    } else if (accountingResult.totalTokens > contextWindowTokens) {
+      accountingFailureReason = "context_window_exceeded";
     }
   } catch (error) {
     if (params.signal?.aborted === true) {
@@ -687,10 +654,7 @@ export async function runAdmittedModelCall(
       if (lateCancellation !== undefined) throw lateCancellation;
       return response;
     }
-    if (
-      response.model !== "" &&
-      !isSameModelIdentity(response.model, effectiveModel)
-    ) {
+    if (response.model !== "" && response.model !== effectiveModel) {
       client.recordFallback({
         stepId: params.stepId,
         fromModel: effectiveModel,

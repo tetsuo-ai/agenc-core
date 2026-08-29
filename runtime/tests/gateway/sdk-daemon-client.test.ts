@@ -130,19 +130,19 @@ describe("createSdkDaemonClient (daemon agent provisioning)", () => {
     const sdk = fakeSdk();
     const client = await createSdkDaemonClient({
       sdk: sdk.module,
-      unattendedAllow: ["SendUserMessage", "Brief"],
-      unattendedDeny: ["Bash"],
+      unattendedAllow: ["SendUserMessage"],
+      unattendedDeny: ["system.bash"],
     });
 
     await client.createSession({ label: "telegram|agent|group" });
 
     expect(sdk.spawnCalls[0]).toMatchObject({
-      unattendedAllow: ["SendUserMessage", "Brief"],
-      unattendedDeny: ["Bash"],
+      unattendedAllow: ["SendUserMessage"],
+      unattendedDeny: ["system.bash"],
     });
     expect(sdk.spawnCalls[0].metadata).toMatchObject({
-      unattendedAllow: "SendUserMessage,Brief",
-      unattendedDeny: "Bash",
+      unattendedAllow: "SendUserMessage",
+      unattendedDeny: "system.bash",
     });
   });
 

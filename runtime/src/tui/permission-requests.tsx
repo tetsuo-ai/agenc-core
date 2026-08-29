@@ -472,7 +472,7 @@ function toolLabel(toolUseConfirm: ProjectedToolUseConfirm): string {
 
 /** Live shell/command tool names whose approval input IS a runnable command. */
 const SHELL_COMMAND_TOOL_NAMES: ReadonlySet<string> = new Set([
-  "Bash",
+  "system.bash",
   "exec_command",
   "Run",
 ]);

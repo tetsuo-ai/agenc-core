@@ -1,14 +1,10 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { describe, expect, test } from "vitest";
 
-import {
-  APPLY_PATCH_LARK_GRAMMAR,
-  APPLY_PATCH_TOOL_NAME,
-  createApplyPatchTool,
-} from "./tool.js";
+import { APPLY_PATCH_LARK_GRAMMAR, APPLY_PATCH_TOOL_NAME, createApplyPatchTool } from "./tool.js";
 import { createEmptyToolPermissionContext } from "../../permissions/types.js";
 
 async function tempRoot(): Promise<string> {
@@ -17,9 +13,7 @@ async function tempRoot(): Promise<string> {
 
 describe("apply_patch tool", () => {
   test("exports the donor Lark grammar", () => {
-    expect(APPLY_PATCH_LARK_GRAMMAR).toContain(
-      "start: begin_patch hunk+ end_patch",
-    );
+    expect(APPLY_PATCH_LARK_GRAMMAR).toContain("start: begin_patch hunk+ end_patch");
     expect(APPLY_PATCH_LARK_GRAMMAR).toContain(
       'change_line: ("+" | "-" | " ") /(.*)/ LF',
     );
@@ -43,56 +37,6 @@ describe("apply_patch tool", () => {
     await expect(readFile(join(root, "hello.txt"), "utf8")).resolves.toBe(
       "hello\n",
     );
-  });
-
-  test("settles argument and parser refusals as confirmed no-effect", async () => {
-    const root = await tempRoot();
-    const tool = createApplyPatchTool({ cwd: root, allowedPaths: [root] });
-
-    const missing = await tool.execute({});
-    const malformed = await tool.execute({ input: "not a patch" });
-
-    for (const result of [missing, malformed]) {
-      expect(result.isError).toBe(true);
-      expect(result.effectDisposition).toMatchObject({
-        disposition: "confirmed_no_effect",
-        evidenceKind: "boundary_not_crossed",
-      });
-      expect(result.effectDisposition?.evidenceSha256).toMatch(
-        /^[0-9a-f]{64}$/u,
-      );
-    }
-    expect(missing.effectDisposition?.evidenceRef).toBe(
-      "tool:apply_patch:input-validation",
-    );
-    expect(malformed.effectDisposition?.evidenceRef).toBe(
-      "tool:apply_patch:pre-effect:payload",
-    );
-  });
-
-  test("settles in-memory planning failures as confirmed no-effect", async () => {
-    const root = await tempRoot();
-    const target = join(root, "hello.txt");
-    await writeFile(target, "hello\n", "utf8");
-    const tool = createApplyPatchTool({ cwd: root, allowedPaths: [root] });
-
-    const result = await tool.execute({
-      input: `*** Begin Patch
-*** Update File: hello.txt
-@@
--missing
-+changed
-*** End Patch`,
-    });
-
-    expect(result.isError).toBe(true);
-    expect(result.content).toContain("Failed to find expected lines");
-    expect(result.effectDisposition).toMatchObject({
-      disposition: "confirmed_no_effect",
-      evidenceKind: "boundary_not_crossed",
-      evidenceRef: "tool:apply_patch:pre-effect:planning",
-    });
-    await expect(readFile(target, "utf8")).resolves.toBe("hello\n");
   });
 
   test("denies (fail-closed) on an unparseable patch in checkPermissions", () => {

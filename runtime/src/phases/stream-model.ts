@@ -10,10 +10,10 @@
  * Mirrors agenc `query.ts:561-1082`.
  *
  * Invariants wired here:
- *   I-11 (stream idle watchdog) — installStreamWatchdog wraps the stream;
- *        `kick()` fires on every semantic/liveness chunk. Explicit env/config
- *        wins (including `0` opt-out); otherwise a provider may declare a hard
- *        default. Providers without a default remain unbounded.
+ *   I-11 (stream idle watchdog, operator opt-in) — installStreamWatchdog
+ *        wraps the stream; `kick()` fires on every chunk. An explicitly
+ *        configured idle expiry aborts the underlying fetch via the scoped
+ *        AbortController; unconfigured streams are unbounded.
  *   I-22 (token budget mid-stream) — per-chunk
  *        `budgetTracker.addEmitted(..., "estimate") + sampleMidStream`
  *        keeps a coarse estimate during streaming, but the actual
@@ -45,7 +45,6 @@ import {
   installStreamWatchdog,
   resolveSessionStreamIdleTimeoutMs,
   STREAM_IDLE_ABORT_REASON,
-  StreamIdleError,
 } from "../llm/stream-watchdog.js";
 import {
   CitationStreamParser,
@@ -69,7 +68,7 @@ type WireReasoningEffort = NonNullable<LLMChatOptions["reasoningEffort"]>;
 /**
  * Sessions created without an explicit reasoning effort — every
  * daemon-spawned interactive session today — must still honor the
- * persisted `effortLevel` from user settings. Without this fallback the
+ * persisted `reasoning_effort` from canonical config. Without this fallback the
  * provider default applies and grok-4.5 burns ~16k hidden reasoning
  * tokens per trivial reply at xAI's HIGH default (measured: ~2m30s for
  * a 150-word answer, matching the user's "grok is fucking slow").
@@ -230,7 +229,6 @@ function buildProviderOptions(
     reasoningSummary: ctx.reasoningSummary,
     modelVerbosity: ctx.modelVerbosity,
     serviceTier:
-      ctx.serviceTier === "fast" ||
       ctx.serviceTier === "priority" ||
       ctx.serviceTier === "flex"
         ? ctx.serviceTier
@@ -781,13 +779,7 @@ function estimateChunkTokens(chunk: LLMStreamChunk): number {
       chars += (tc.arguments?.length ?? 0) + (tc.name?.length ?? 0);
     }
   }
-  chars += chunk.toolInputDelta?.partialJson.length ?? 0;
-  chars += chunk.thinkingDelta?.delta.length ?? 0;
-  chars += chunk.reasoningSummaryDelta?.delta.length ?? 0;
-  // Content-free transport/SSE heartbeats refresh liveness only. Charging a
-  // phantom token per heartbeat can trip the mid-stream budget gate during a
-  // healthy long tool/reasoning stream.
-  return chars > 0 ? Math.ceil(chars / 4) : 0;
+  return Math.max(1, Math.ceil(chars / 4));
 }
 
 /**
@@ -861,15 +853,11 @@ export async function streamModel(
     signal.addEventListener("abort", onExternalAbort, { once: true });
   }
 
-  // I-11 watchdog wiring is installed before the stream begins. Explicit
-  // env/config values win (including a zero opt-out); otherwise only a
-  // provider with an observable liveness contract may supply a hard default.
-  // Provider suggestions may raise a positive explicit value but never create
-  // a deadline by themselves.
-  // Provider defaults are used only when neither env nor config makes an
-  // explicit choice. In particular, OpenAI Responses has observable liveness
-  // events and can safely bound true wire silence; providers without that
-  // contract remain unbounded.
+  // I-11 watchdog wiring is installed before the stream begins, but is a
+  // no-op unless the operator explicitly configures a positive idle timeout.
+  // Provider suggestions may raise an explicit value; they never invent one.
+  // A healthy provider can remain completely silent while reasoning or
+  // generating a large tool payload, so silence alone must not end a turn.
   const configuredWatchdogMs = (() => {
     const services = session.services as {
       configStore?: { current?: () => { stream_watchdog_timeout_ms?: number } };
@@ -877,8 +865,8 @@ export async function streamModel(
     try {
       const value =
         services.configStore?.current?.()?.stream_watchdog_timeout_ms;
-      return typeof value === "number" && Number.isFinite(value) && value >= 0
-        ? Math.trunc(value)
+      return typeof value === "number" && Number.isFinite(value) && value > 0
+        ? value
         : undefined;
     } catch {
       return undefined;
@@ -889,12 +877,6 @@ export async function streamModel(
     timeoutMs: resolveSessionStreamIdleTimeoutMs({
       ...(configuredWatchdogMs !== undefined
         ? { configuredMs: configuredWatchdogMs }
-        : {}),
-      ...(session.services.provider.defaultStreamIdleTimeoutMs !== undefined
-        ? {
-            providerDefaultMs:
-              session.services.provider.defaultStreamIdleTimeoutMs,
-          }
         : {}),
       ...(session.services.provider.suggestedStreamIdleTimeoutMs !== undefined
         ? {
@@ -1083,7 +1065,7 @@ export async function streamModel(
       provider: session.services.provider,
       messages,
       options,
-      stepId: `model:${ctx.subId}:${state.turnCount}:${state.samplingRound}:${attempt}`,
+      stepId: `model:${ctx.subId}:${state.turnCount}:${state.recoveryReentryCount}:${attempt}`,
       sessionId: session.conversationId,
       model,
       providerName,
@@ -1152,7 +1134,7 @@ export async function streamModel(
     } else {
       if (scoped.signal.aborted && watchdog.firedAt !== null) {
         throw new StreamModelError(
-          new StreamIdleError(watchdog.timeoutMs),
+          new Error(`stream_idle: no data for ${watchdog.timeoutMs}ms`),
         );
       }
       throw new StreamModelError(error);

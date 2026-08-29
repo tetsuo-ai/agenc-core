@@ -2,6 +2,7 @@ import { PassThrough } from 'node:stream'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../../remoteAuthSessionContext.fixture.js'
 
 const harness = vi.hoisted(() => ({
   activity: {
@@ -138,11 +139,11 @@ vi.mock('../../../tasks/InProcessTeammateTask/InProcessTeammateTask.js', () => (
 }))
 
 vi.mock('../../../utils/effort.js', () => ({
-  getEffortSuffix: () => ' - effort',
+  getEffortSuffixForContext: () => ' - effort',
 }))
 
-vi.mock('../../../utils/model/model.js', () => ({
-  getMainLoopModel: () => 'grok-4.3',
+vi.mock('../../hooks/useMainLoopModel.js', () => ({
+  useMainLoopModel: () => 'grok-4.3',
 }))
 
 vi.mock('../../state/selectors.js', () => ({
@@ -256,6 +257,7 @@ function spinnerProps(overrides: Partial<React.ComponentProps<typeof SpinnerWith
     responseLengthRef: { current: 4000 },
     totalPausedMsRef: { current: 0 },
     verbose: false,
+    providerAuthContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
     ...overrides,
   }
 }

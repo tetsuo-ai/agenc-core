@@ -17,9 +17,9 @@
  * the conversation, including tool calls with their full id/name/
  * arguments shape and the assembled message order.
  */
-import { mkdir, mkdtemp, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { homedir, tmpdir } from "node:os";
+import { realpathSync } from "node:fs";
+import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -27,16 +27,25 @@ import {
   buildMockProviderEnv,
   startMockModelServer,
 } from "../local-openai-compatible-mock.mjs";
+import {
+  createTuiGateProject,
+  createTuiGateState,
+  installTuiGateSignalHandlers,
+  startTuiGateDaemon,
+  teardownTuiGateState,
+  writeTuiGateTrust,
+} from "../tui-gate-state.mjs";
 
-const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
+const SCRIPT_DIR = path.dirname(SCRIPT_PATH);
 const RUNTIME_DIR = path.resolve(SCRIPT_DIR, "..", "..");
 const BIN_AGENC = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
-let pipelineHome = homedir();
-let agencHome = path.join(pipelineHome, ".agenc");
-let projectsDir = path.join(agencHome, "projects");
-let trustFile = path.join(agencHome, "trusted-projects.json");
-let pipelineCwd = process.cwd();
-let runnerEnv = process.env;
+let projectsDir;
+let pipelineCwd;
+let runnerEnv;
+const activeOneShots = new Set();
+const ONE_SHOT_TERM_GRACE_MS = 5_000;
+const ONE_SHOT_KILL_GRACE_MS = 2_000;
 
 const COLORS = {
   reset: "\x1b[0m",
@@ -50,98 +59,177 @@ const color = (c, s) => (process.stdout.isTTY ? `${COLORS[c]}${s}${COLORS.reset}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function configurePipelineHome(home) {
-  pipelineHome = home;
-  agencHome = path.join(home, ".agenc");
-  projectsDir = path.join(agencHome, "projects");
-  trustFile = path.join(agencHome, "trusted-projects.json");
-}
-
-function buildRunnerEnv(baseUrl) {
-  return buildMockProviderEnv(baseUrl, {
-    ...process.env,
-    HOME: pipelineHome,
-    AGENC_HOME: agencHome,
+export function createPipelineGateLifecycle() {
+  let closing = false;
+  return Object.freeze({
+    beginCleanup() {
+      closing = true;
+    },
+    assertOpen() {
+      if (closing) throw new Error("LLM pipeline gate is shutting down");
+    },
+    get closing() {
+      return closing;
+    },
   });
 }
 
-async function ensureProjectTrusted(projectPath) {
-  await mkdir(path.dirname(trustFile), { recursive: true });
-  let trust = { version: 1, trustedProjects: [] };
+let gateLifecycle = createPipelineGateLifecycle();
+
+function configurePipelineHome(canonicalAgencHome) {
+  projectsDir = path.join(canonicalAgencHome, "projects");
+}
+
+function observeOneShot(child, label) {
+  const record = {
+    child,
+    label,
+    stdout: "",
+    stderr: "",
+    closed: null,
+    closePromise: null,
+  };
+  record.closePromise = new Promise((resolve) => {
+    const settle = (outcome) => {
+      if (record.closed !== null) return;
+      record.closed = outcome;
+      resolve(outcome);
+    };
+    child.once("close", (code, signal) => settle({ code, signal }));
+    child.once("error", (error) => settle({ code: null, signal: null, error }));
+  });
+  child.stdout?.on("data", (chunk) => {
+    record.stdout += chunk.toString();
+  });
+  child.stderr?.on("data", (chunk) => {
+    record.stderr += chunk.toString();
+  });
+  activeOneShots.add(record);
+  record.closePromise.then(() => activeOneShots.delete(record));
+  return record;
+}
+
+async function waitForOneShotClose(record, timeoutMs) {
+  if (record.closed !== null) return true;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(record.closed !== null), timeoutMs);
+    record.closePromise.then(() => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
+async function terminateOneShot(
+  record,
+  {
+    termGraceMs = ONE_SHOT_TERM_GRACE_MS,
+    killGraceMs = ONE_SHOT_KILL_GRACE_MS,
+  } = {},
+) {
+  if (record.closed !== null) return;
   try {
-    const raw = await readFile(trustFile, "utf8");
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && Array.isArray(parsed.trustedProjects)) {
-      trust = parsed;
-      if (!Number.isFinite(trust.version)) trust.version = 1;
-    }
+    record.child.kill("SIGTERM");
   } catch {
-    // Missing or corrupt trust file: rebuild the minimum valid shape.
+    // The retained ChildProcess close observation remains authoritative.
   }
-  const candidates = new Set([path.resolve(projectPath)]);
+  if (await waitForOneShotClose(record, termGraceMs)) return;
   try {
-    candidates.add(await realpath(projectPath));
+    record.child.kill("SIGKILL");
   } catch {
-    // The resolved path is best-effort only.
+    // The bounded close wait below still proves whether the process stopped.
   }
-  const existing = new Set(
-    (trust.trustedProjects ?? []).map((entry) => entry?.path).filter(Boolean),
+  if (await waitForOneShotClose(record, killGraceMs)) return;
+  throw new Error(
+    `${record.label} survived SIGKILL (pid ${record.child.pid ?? "unknown"})`,
   );
-  let mutated = false;
-  for (const candidate of candidates) {
-    if (!existing.has(candidate)) {
-      trust.trustedProjects.push({
-        path: candidate,
-        trustedAt: new Date().toISOString(),
-      });
-      mutated = true;
-    }
-  }
-  if (mutated) {
-    await writeFile(trustFile, JSON.stringify(trust, null, 2), "utf8");
+}
+
+export async function terminateActiveOneShots(options = {}) {
+  const results = await Promise.allSettled(
+    [...activeOneShots].map((record) => terminateOneShot(record, options)),
+  );
+  const failures = results
+    .filter((result) => result.status === "rejected")
+    .map((result) => result.reason);
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "LLM pipeline one-shot cleanup failed");
   }
 }
 
-async function preparePipelineWorkspace() {
-  const cwd = await mkdtemp(path.join(tmpdir(), "agenc-llm-pipeline-"));
-  await writeFile(path.join(cwd, "README.md"), "llm pipeline cwd\n", "utf8");
-  // Pin project-root discovery to this isolated workspace. A developer's
-  // machine may contain a marker such as /tmp/package.json; without a local
-  // marker the trust preflight resolves that ancestor while this harness only
-  // trusts `cwd`, causing every non-interactive scenario to fail before the
-  // pipeline is exercised.
-  await writeFile(
-    path.join(cwd, "package.json"),
-    '{"name":"agenc-llm-pipeline-fixture","private":true}\n',
-    "utf8",
-  );
-  await ensureProjectTrusted(cwd);
-  return cwd;
+export function activeOneShotCount() {
+  return activeOneShots.size;
+}
+
+export async function runOwnedOneShotProcess({
+  executable,
+  args = [],
+  cwd,
+  env,
+  timeoutMs,
+  termGraceMs = ONE_SHOT_TERM_GRACE_MS,
+  killGraceMs = ONE_SHOT_KILL_GRACE_MS,
+  label = "LLM pipeline one-shot",
+  lifecycle,
+}) {
+  lifecycle?.assertOpen();
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("one-shot timeout must be a positive integer");
+  }
+  const child = spawn(executable, args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    env,
+    cwd,
+  });
+  const record = observeOneShot(child, label);
+  const timeoutMarker = Symbol("one-shot-timeout");
+  let timeout;
+  const timeoutPromise = new Promise((resolve) => {
+    timeout = setTimeout(() => resolve(timeoutMarker), timeoutMs);
+  });
+  try {
+    const outcome = await Promise.race([record.closePromise, timeoutPromise]);
+    if (outcome === timeoutMarker) {
+      const timeoutError = new Error(`${label} exceeded ${timeoutMs}ms`);
+      try {
+        await terminateOneShot(record, { termGraceMs, killGraceMs });
+      } catch (terminationError) {
+        throw new AggregateError(
+          [timeoutError, terminationError],
+          `${label} timed out and could not be stopped`,
+        );
+      }
+      throw timeoutError;
+    }
+    if (outcome.error !== undefined) throw outcome.error;
+    return {
+      stdout: record.stdout,
+      stderr: record.stderr,
+      exitCode: outcome.code,
+      signal: outcome.signal,
+    };
+  } finally {
+    clearTimeout(timeout);
+    if (record.closed !== null) activeOneShots.delete(record);
+  }
 }
 
 /**
  * Run agenc -p with a prompt and capture stdout. Returns { stdout, stderr, exitCode }.
  */
 async function runOneShot(prompt, { yolo = false, timeoutMs = 120_000 } = {}) {
-  return new Promise((resolve, reject) => {
-    const args = [BIN_AGENC];
-    if (yolo) args.push("--yolo");
-    args.push("-p", prompt);
-    const child = spawn(process.execPath, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: runnerEnv,
-      cwd: pipelineCwd,
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (d) => (stdout += d.toString()));
-    child.stderr.on("data", (d) => (stderr += d.toString()));
-    child.on("close", (exitCode) => resolve({ stdout, stderr, exitCode }));
-    child.on("error", reject);
-    setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error(`one-shot exceeded ${timeoutMs}ms`));
-    }, timeoutMs).unref();
+  gateLifecycle.assertOpen();
+  const args = [BIN_AGENC];
+  if (yolo) args.push("--dangerously-bypass-approvals-and-sandbox");
+  args.push("-p", prompt);
+  return runOwnedOneShotProcess({
+    executable: process.execPath,
+    args,
+    cwd: pipelineCwd,
+    env: runnerEnv,
+    timeoutMs,
+    label: "agenc -p",
+    lifecycle: gateLifecycle,
   });
 }
 
@@ -194,24 +282,50 @@ async function readMostRecentRollout({ sinceMs = 30_000 } = {}) {
   return { path: newest, items: lines.map((l) => JSON.parse(l)) };
 }
 
-async function stopPipelineDaemon() {
-  await new Promise((resolve) => {
-    const child = spawn(process.execPath, [BIN_AGENC, "daemon", "stop"], {
-      stdio: "ignore",
-      env: runnerEnv,
-      cwd: pipelineCwd,
-    });
-    const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
-      resolve();
-    }, 10_000);
-    const done = () => {
-      clearTimeout(timeout);
-      resolve();
-    };
-    child.on("close", done);
-    child.on("error", done);
+async function cleanupPipelineGate(gateState, mockServer) {
+  const failures = [];
+  try {
+    await terminateActiveOneShots();
+  } catch (error) {
+    failures.push(error);
+  }
+  if (gateState !== undefined) {
+    try {
+      await teardownTuiGateState(gateState, BIN_AGENC);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (mockServer !== undefined) {
+    try {
+      await mockServer.close();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "LLM pipeline gate cleanup failed");
+  }
+}
+
+export function createPipelineGateState(baseUrl, baseEnv = process.env) {
+  return createTuiGateState({
+    baseEnv,
+    injectedEnv: buildMockProviderEnv(baseUrl, {}),
+    prefix: "agenc-llm-pipeline-gate-",
   });
+}
+
+export function resolvePipelineGateOutcome(code, runError, cleanupError) {
+  if (runError !== null && cleanupError !== null) {
+    throw new AggregateError(
+      [runError, cleanupError],
+      "LLM pipeline gate and cleanup both failed",
+    );
+  }
+  if (runError !== null) throw runError;
+  if (cleanupError !== null) throw cleanupError;
+  return code;
 }
 
 /* -------------------------------------------------------------------- */
@@ -284,7 +398,7 @@ scenarios.push({
 
 scenarios.push({
   name: "03-yolo-sets-approvalPolicy-never",
-  description: "agenc --yolo -p produces turn_context with approvalPolicy='never'.",
+  description: "agenc --dangerously-bypass-approvals-and-sandbox -p produces turn_context with approvalPolicy='never'.",
   async run() {
     const result = await runOneShot("reply with the single word YES", {
       yolo: true,
@@ -298,13 +412,13 @@ scenarios.push({
     const policy = tc.payload?.approvalPolicy;
     if (policy !== "never") {
       throw new Error(
-        `--yolo expected approvalPolicy='never', got '${policy}'. The yolo propagation chain (route.ts → daemon protocol → background-agent-runner.buildBootstrapArgv → bootstrap → sessionConfiguration) is broken.`,
+        `--dangerously-bypass-approvals-and-sandbox expected approvalPolicy='never', got '${policy}'. The yolo propagation chain (route.ts → daemon protocol → background-agent-runner.buildBootstrapArgv → bootstrap → sessionConfiguration) is broken.`,
       );
     }
     const sandbox = tc.payload?.sandboxPolicy;
     if (sandbox !== "danger_full_access") {
       throw new Error(
-        `--yolo expected sandboxPolicy='danger_full_access', got '${sandbox}'`,
+        `--dangerously-bypass-approvals-and-sandbox expected sandboxPolicy='danger_full_access', got '${sandbox}'`,
       );
     }
   },
@@ -443,38 +557,32 @@ scenarios.push({
 /* Runner                                                                */
 /* -------------------------------------------------------------------- */
 
-async function main() {
-  const mockServer = await startMockModelServer();
-  const isolatedHome = await mkdtemp(path.join(tmpdir(), "agenc-llm-pipeline-home-"));
-  configurePipelineHome(isolatedHome);
-  runnerEnv = buildRunnerEnv(mockServer.baseUrl);
-  pipelineCwd = await preparePipelineWorkspace();
+async function runPipelineScenarios(mockServer) {
   console.log(color("bold", `agenc LLM pipeline gate (${scenarios.length} scenarios)`));
+  console.log(color("dim", "  state: private HOME/AGENC_HOME + owned workspace"));
   console.log(color("dim", `  cwd: ${pipelineCwd}`));
   console.log(color("dim", `  model: openai-compatible:${MOCK_MODEL} (${mockServer.baseUrl})`));
   console.log("");
   let passed = 0;
   const failed = [];
-  try {
-    for (const sc of scenarios) {
-      process.stdout.write(`  ${color("dim", "→")} ${sc.name} … `);
-      const startedAt = Date.now();
-      try {
-        await sc.run();
-        const dur = Date.now() - startedAt;
-        passed += 1;
-        console.log(`${color("green", "PASS")} ${color("dim", `(${dur}ms)`)}`);
-      } catch (error) {
-        const dur = Date.now() - startedAt;
-        console.log(`${color("red", "FAIL")} ${color("dim", `(${dur}ms)`)}`);
-        console.log(`      ${color("red", "✗")} ${error.message}`);
-        failed.push({ name: sc.name, error });
-      }
+  for (const sc of scenarios) {
+    gateLifecycle.assertOpen();
+    process.stdout.write(`  ${color("dim", "→")} ${sc.name} … `);
+    const startedAt = Date.now();
+    try {
+      await sc.run();
+      const dur = Date.now() - startedAt;
+      passed += 1;
+      console.log(`${color("green", "PASS")} ${color("dim", `(${dur}ms)`)}`);
+    } catch (error) {
+      if (gateLifecycle.closing) throw error;
+      const dur = Date.now() - startedAt;
+      console.log(`${color("red", "FAIL")} ${color("dim", `(${dur}ms)`)}`);
+      console.log(`      ${color("red", "✗")} ${error.message}`);
+      failed.push({ name: sc.name, error });
     }
-  } finally {
-    await stopPipelineDaemon();
-    await mockServer.close();
   }
+
   console.log("");
   if (failed.length === 0) {
     console.log(color("green", `✓ ${passed}/${scenarios.length} passed`));
@@ -487,6 +595,59 @@ async function main() {
   return 1;
 }
 
+async function main() {
+  gateLifecycle = createPipelineGateLifecycle();
+  let gateState;
+  let gateStatePromise;
+  let mockServer;
+  let removeSignalHandlers = () => {};
+  let cleanupPromise;
+  const cleanup = () => {
+    gateLifecycle.beginCleanup();
+    cleanupPromise ??= (async () => {
+      let state = gateState;
+      if (state === undefined && gateStatePromise !== undefined) {
+        try {
+          state = await gateStatePromise;
+          gateState = state;
+        } catch {
+          // State creation failed before publishing an owned root.
+        }
+      }
+      await cleanupPipelineGate(state, mockServer);
+    })();
+    return cleanupPromise;
+  };
+
+  let code = 2;
+  let runError = null;
+  try {
+    mockServer = await startMockModelServer();
+    gateStatePromise = createPipelineGateState(mockServer.baseUrl);
+    removeSignalHandlers = installTuiGateSignalHandlers(cleanup);
+    gateState = await gateStatePromise;
+    configurePipelineHome(gateState.agencHome);
+    runnerEnv = gateState.env;
+    pipelineCwd = createTuiGateProject(gateState);
+    await writeTuiGateTrust(runnerEnv, [pipelineCwd]);
+    await startTuiGateDaemon(gateState, BIN_AGENC);
+    code = await runPipelineScenarios(mockServer);
+  } catch (error) {
+    runError = error;
+  }
+
+  let cleanupError = null;
+  try {
+    await cleanup();
+  } catch (error) {
+    cleanupError = error;
+  } finally {
+    removeSignalHandlers();
+  }
+
+  return resolvePipelineGateOutcome(code, runError, cleanupError);
+}
+
 function assertOneShotSucceeded(result) {
   if (result.exitCode === 0) return;
   const stderr = result.stderr.trim();
@@ -496,9 +657,22 @@ function assertOneShotSucceeded(result) {
   );
 }
 
-main()
-  .then((code) => process.exit(code))
-  .catch((error) => {
-    console.error(color("red", `runner crashed: ${error?.stack ?? error}`));
-    process.exit(2);
-  });
+function isEntrypoint() {
+  if (process.argv[1] === undefined) return false;
+  try {
+    return realpathSync(process.argv[1]) === SCRIPT_PATH;
+  } catch {
+    return false;
+  }
+}
+
+if (isEntrypoint()) {
+  main()
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((error) => {
+      console.error(color("red", `runner crashed: ${error?.stack ?? error}`));
+      process.exitCode = 2;
+    });
+}

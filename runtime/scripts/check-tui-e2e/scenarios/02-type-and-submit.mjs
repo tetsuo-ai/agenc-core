@@ -15,7 +15,7 @@ export const meta = {
   // The scenario verifies TUI/daemon/model wiring. Platform sandbox
   // fail-closed behavior has dedicated coverage and may be unavailable in
   // the outer container running this local gate.
-  args: ["--yolo"],
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   slimCwd: true,
   timeoutMs: 60_000,
 };

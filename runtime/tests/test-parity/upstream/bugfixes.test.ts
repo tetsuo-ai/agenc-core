@@ -2,10 +2,8 @@
  * Tests for Bug Fixes applied to agenc.
  *
  * Covers:
- * 1. Gemini `store: false` rejection fix
- * 2. Long-running model streams have no implicit idle timeout
- * 3. Agent loop continuation nudge
- * 4. Web search result count improvements
+ * 1. Agent loop continuation nudge
+ * 2. Web search result count improvements
  */
 
 import { describe, test, expect } from 'bun:test'
@@ -15,52 +13,7 @@ const SRC = resolve(import.meta.dir, '..', '..', '..', 'src')
 const file = (relative: string) => Bun.file(resolve(SRC, relative))
 
 // ---------------------------------------------------------------------------
-// Fix 1: Gemini `store: false` rejection
-// ---------------------------------------------------------------------------
-describe('Gemini store field fix', () => {
-  test('isGeminiMode is imported and used in openaiShim', async () => {
-    const content = await file('services/api/openaiShim.ts').text()
-
-    // Verify the fix: store deletion should check for Gemini mode
-    expect(content).toContain('isGeminiMode()')
-    expect(content).toContain("mistral and gemini don't recognize body.store")
-    // Ensure the delete body.store is guarded for both Mistral and Gemini
-    expect(content).toMatch(/isMistral\s*\|\|\s*isGeminiMode\(\)/)
-  })
-
-  test('store: false is still set by default (OpenAi needs it)', async () => {
-    const content = await file('services/api/openaiShim.ts').text()
-
-    // The body should still have store: false by default
-    expect(content).toMatch(/store:\s*false/)
-    // But it should be deleted for non-OpenAi providers
-    expect(content).toMatch(/delete body\.store/)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Fix 2: Long-running model streams remain unbounded by default
-// ---------------------------------------------------------------------------
-describe('Session timeout fix', () => {
-  test('openaiShim does not impose an SSE idle timeout', async () => {
-    const content = await file('services/api/openaiShim.ts').text()
-
-    expect(content).not.toContain('STREAM_IDLE_TIMEOUT_MS')
-    expect(content).not.toContain('readWithTimeout')
-    expect(content).toContain('await reader.read()')
-  })
-
-  test('openAiCodeTransform does not impose an SSE idle timeout', async () => {
-    const content = await file('services/api/openAiCodeTransform.ts').text()
-
-    expect(content).not.toContain('STREAM_IDLE_TIMEOUT_MS')
-    expect(content).not.toContain('readWithTimeout')
-    expect(content).toContain('await reader.read()')
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Fix 3: Agent loop continuation nudge
+// Fix 1: Agent loop continuation nudge
 // ---------------------------------------------------------------------------
 describe('Agent loop continuation nudge', () => {
   test('continuation-nudge phase has continuation signal detection', async () => {
@@ -92,7 +45,7 @@ describe('Agent loop continuation nudge', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Fix 4: Web search result count improvements
+// Fix 2: Web search result count improvements
 // ---------------------------------------------------------------------------
 describe('Web search result count improvements', () => {
   test('Bing provider requests at least 15 results', async () => {
@@ -209,30 +162,7 @@ describe('MCP tool timeout fix', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Cross-cutting: verify no regressions
-// ---------------------------------------------------------------------------
-describe('Regression checks', () => {
-  test('store field is still set for OpenAi (not deleted unconditionally)', async () => {
-    const content = await file('services/api/openaiShim.ts').text()
-
-    // store: false should exist in body construction
-    expect(content).toMatch(/store:\s*false/)
-    // But delete body.store should be conditional (guarded by if)
-    const deleteLines = content.split('\n').filter(l => l.includes('delete body.store'))
-    expect(deleteLines.length).toBeGreaterThan(0)
-    // Verify the delete is inside a conditional block by checking surrounding context
-    for (const line of deleteLines) {
-      const trimmed = line.trim()
-      // Should be either inside an if block (indented delete) or a comment
-      expect(
-        trimmed.startsWith('delete') && !trimmed.includes('// unconditional'),
-      ).toBe(true)
-    }
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Fix 6: SendMessageTool race condition guard
+// Fix 4: SendMessageTool race condition guard
 // ---------------------------------------------------------------------------
 describe('SendMessageTool race condition fix', () => {
   test('SendMessageTool has double-check for concurrent resume', async () => {
@@ -265,14 +195,6 @@ describe('AgentTool cleanup fix', () => {
 // Fix 8: Context overflow 500 error handling
 // ---------------------------------------------------------------------------
 describe('Context overflow 500 fix', () => {
-  test('errors.ts has handler for context overflow 500 errors', async () => {
-    const content = await file('services/api/errors.ts').text()
-
-    expect(content).toContain('500 errors caused by context overflow')
-    expect(content).toContain('too many tokens')
-    expect(content).toContain('The conversation has grown too large')
-  })
-
   test('run-turn has mid-turn auto-compact safety net for oversized context', async () => {
     const content = await file('session/run-turn.ts').text()
 

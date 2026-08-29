@@ -1,6 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { PluginComponentKind, PluginManifestInterface } from "../manifest-schema.js";
 import type { ValidationResult } from "../validation.js";
 import {
   disableAllPluginsOp,
@@ -11,18 +10,12 @@ import {
   uninstallPluginOp,
   updatePluginOp,
   validatePluginPath,
-  type InstallPluginInput,
-  type InstallPluginResult,
   type PluginCliIo,
   type PluginScope,
 } from "./pluginOperations.js";
 import {
   addMarketplaceOp,
-  findInstallableMarketplacePlugin,
-  loadMarketplace,
   readMarketplaceIndex,
-  type MarketplacePluginPolicy,
-  type MarketplacePluginSource,
   type MarketplaceOperationOptions,
   removeMarketplaceOp,
   upgradeMarketplaceOp,
@@ -38,8 +31,6 @@ export type AgenCPluginCliCommand =
   | { readonly kind: "disable"; readonly pluginId: string }
   | { readonly kind: "disable-all" }
   | { readonly kind: "marketplace-list"; readonly json: boolean }
-  | { readonly kind: "marketplace-catalog"; readonly json: boolean; readonly product?: string }
-  | { readonly kind: "marketplace-install"; readonly pluginId: string; readonly scope: PluginScope; readonly force: boolean; readonly json: boolean; readonly product?: string }
   | { readonly kind: "marketplace-add"; readonly source: string; readonly name?: string; readonly ref?: string; readonly sparse?: string; readonly force: boolean }
   | { readonly kind: "marketplace-remove"; readonly name: string }
   | { readonly kind: "marketplace-upgrade"; readonly name?: string }
@@ -47,43 +38,12 @@ export type AgenCPluginCliCommand =
   | { readonly kind: "error"; readonly message: string };
 
 export interface AgenCPluginCliOptions extends MarketplaceOperationOptions {
+  readonly agencHome?: string;
+  readonly pluginStorageRoot: string;
+  readonly sessionTempRoot: string;
+  readonly workspaceRoot: string;
+  readonly env: NodeJS.ProcessEnv;
   readonly io?: PluginCliIo;
-  /** Trusted publisher keyring used by the runtime's Ed25519 verifier. */
-  readonly publishersPath?: string;
-  /** Test/embedding seam; production always uses installPluginOp. */
-  readonly installPlugin?: (input: InstallPluginInput) => Promise<InstallPluginResult>;
-}
-
-export const AGENC_PLUGIN_MARKETPLACE_CATALOG_SCHEMA_VERSION = 1 as const;
-
-export interface AgenCPluginMarketplaceCatalogPlugin {
-  readonly id: string;
-  readonly name: string;
-  readonly marketplace: string;
-  readonly source: MarketplacePluginSource;
-  readonly policy: MarketplacePluginPolicy;
-  readonly version?: string;
-  readonly description?: string;
-  readonly components: readonly PluginComponentKind[];
-  readonly interface?: PluginManifestInterface;
-}
-
-export interface AgenCPluginMarketplaceCatalog {
-  readonly schemaVersion: typeof AGENC_PLUGIN_MARKETPLACE_CATALOG_SCHEMA_VERSION;
-  readonly kind: "agenc.plugin.marketplace.catalog";
-  readonly product?: string;
-  readonly marketplaces: readonly {
-    readonly name: string;
-    readonly displayName?: string;
-    readonly sourceType: string;
-    readonly source: string;
-    readonly plugins: readonly AgenCPluginMarketplaceCatalogPlugin[];
-  }[];
-  readonly errors: readonly {
-    readonly marketplace: string;
-    readonly path: string;
-    readonly message: string;
-  }[];
 }
 
 export function formatAgenCPluginCliHelpText(): string {
@@ -94,22 +54,19 @@ export function formatAgenCPluginCliHelpText(): string {
     "  list [--json]                                  List installed plugins",
     "  validate <path> [--marketplace] [--json]       Validate a plugin or marketplace manifest",
     "  install <path> [--scope <user|project|local>]  Install a local plugin directory",
-    "  uninstall <name> [--scope <user|project|local>] Remove an installed plugin",
-    "  update <name> [--source <path>]                 Refresh an installed plugin from its source",
-    "  enable <name> [--path <path>]                  Enable a plugin in user config",
-    "  disable <name>                                 Disable a plugin in user config",
+    "  uninstall <id> [--scope <user|project|local>]  Remove an installed plugin",
+    "  update <id> [--source <path>]                  Refresh an installed plugin from its source",
+    "  enable <id> [--path <path>]                    Enable a plugin in user config",
+    "  disable <id>                                   Disable a plugin in user config",
     "  disable-all                                    Disable every currently enabled plugin",
     "  marketplace list [--json]                      List configured marketplaces",
-    "  marketplace catalog [--product <id>] [--json]  List installable plugins with canonical IDs",
-    "  marketplace install <plugin@marketplace>       Install a catalog plugin",
-    "                       [--product <id>] [--json]",
     "  marketplace add <path|git|url|github> [--name <name>]",
     "                                                   Add local, git, URL, or GitHub marketplace",
     "  marketplace remove <name>                      Remove a marketplace",
     "  marketplace upgrade [name]                     Refresh git or local marketplaces",
     "",
     "Install options:",
-    "  --name <name>     Override the installed plugin or marketplace name",
+    "  --name <name>     Set the installed plugin ID or marketplace name",
     "  --force           Replace an existing install",
     "  --keep-data       Keep plugin data during uninstall",
     "",
@@ -122,8 +79,6 @@ export function formatAgenCPluginCliHelpText(): string {
     "  agenc plugin install ./my-plugin --scope project",
     "  agenc plugin enable my-plugin",
     "  agenc plugin marketplace add ./marketplace --name team",
-    "  agenc plugin marketplace catalog --json",
-    "  agenc plugin marketplace install toolbox@team --json",
   ].join("\n");
 }
 
@@ -161,20 +116,12 @@ export function parseAgenCPluginCliArgs(
 
 /**
  * Names the plugin components a non-user-scope (repository-controlled)
- * install will silently strip: hooks and MCP servers. Checks both the
- * conventional component files and the manifest declarations.
+ * install will silently strip: hooks and MCP servers declared by the
+ * canonical manifest.
  */
 async function detectProvenanceStrippedComponents(
   pluginRoot: string,
 ): Promise<string[]> {
-  const exists = async (path: string): Promise<boolean> => {
-    try {
-      await stat(path);
-      return true;
-    } catch {
-      return false;
-    }
-  };
   let manifest: Record<string, unknown> = {};
   try {
     const parsed: unknown = JSON.parse(
@@ -184,19 +131,13 @@ async function detectProvenanceStrippedComponents(
       manifest = parsed as Record<string, unknown>;
     }
   } catch {
-    // No readable manifest: fall back to the conventional file checks.
+    // No readable canonical manifest means there is nothing to report here.
   }
   const stripped: string[] = [];
-  if (
-    (await exists(join(pluginRoot, "hooks", "hooks.json"))) ||
-    manifest.hooks !== undefined
-  ) {
+  if (manifest.hooks !== undefined) {
     stripped.push("hooks");
   }
-  if (
-    (await exists(join(pluginRoot, ".mcp.json"))) ||
-    manifest.mcpServers !== undefined
-  ) {
+  if (manifest.mcpServers !== undefined) {
     stripped.push("MCP servers");
   }
   return stripped;
@@ -204,7 +145,7 @@ async function detectProvenanceStrippedComponents(
 
 export async function runAgenCPluginCli(
   command: AgenCPluginCliCommand,
-  options: AgenCPluginCliOptions = {},
+  options: AgenCPluginCliOptions,
 ): Promise<number> {
   const io = options.io ?? { stdout: process.stdout, stderr: process.stderr };
   try {
@@ -226,6 +167,7 @@ export async function runAgenCPluginCli(
       case "validate": {
         const result = await validatePluginPath(command.path, {
           marketplace: command.marketplace,
+          workspaceRoot: options.workspaceRoot,
         });
         io.stdout.write(command.json
           ? `${JSON.stringify(result, null, 2)}\n`
@@ -241,7 +183,7 @@ export async function runAgenCPluginCli(
           force: command.force,
         });
         io.stdout.write(
-          `Installed plugin ${result.plugin.name} to ${result.scope} scope: ${result.destination}\n`,
+          `Installed plugin ${result.plugin.id} to ${result.scope} scope: ${result.destination}\n`,
         );
         // Workspace-resident plugin content is repository-controlled, which
         // strips hooks and MCP servers at load time (plugins/loader.ts). Say
@@ -281,7 +223,7 @@ export async function runAgenCPluginCli(
           ...(command.source !== undefined ? { source: command.source } : {}),
         });
         io.stdout.write(
-          `Updated plugin ${result.plugin.name} from ${result.source}: ${result.destination}\n`,
+          `Updated plugin ${result.plugin.id} from ${result.source}: ${result.destination}\n`,
         );
         return 0;
       }
@@ -326,90 +268,6 @@ export async function runAgenCPluginCli(
         }
         return 0;
       }
-      case "marketplace-catalog": {
-        const catalog = await buildMarketplaceCatalog(options, command.product);
-        if (command.json) {
-          io.stdout.write(`${JSON.stringify(catalog, null, 2)}\n`);
-        } else if (catalog.marketplaces.length === 0) {
-          io.stdout.write("No AgenC plugin marketplace catalog entries available.\n");
-        } else {
-          const lines = ["AgenC plugin marketplace catalog:"];
-          for (const marketplace of catalog.marketplaces) {
-            lines.push(`\n${marketplace.displayName ?? marketplace.name}:`);
-            for (const plugin of marketplace.plugins) {
-              lines.push(`- ${plugin.id} (${plugin.policy.installation})`);
-            }
-          }
-          for (const error of catalog.errors) {
-            lines.push(`! ${error.marketplace}: ${error.message}`);
-          }
-          io.stdout.write(`${lines.join("\n")}\n`);
-        }
-        return catalog.errors.length > 0 && catalog.marketplaces.length === 0 ? 1 : 0;
-      }
-      case "marketplace-install": {
-        const { pluginName, marketplaceName } = parseCanonicalMarketplacePluginId(
-          command.pluginId,
-        );
-        const index = await readMarketplaceIndex(options);
-        const record = Object.values(index.marketplaces).find(
-          (entry) => entry.name.toLowerCase() === marketplaceName.toLowerCase(),
-        );
-        if (record === undefined) {
-          throw new Error(`marketplace is not configured: ${marketplaceName}`);
-        }
-        const resolved = await findInstallableMarketplacePlugin(
-          record.manifestPath,
-          pluginName,
-          command.product,
-          record.name,
-        );
-        const source = resolved.source.type === "local"
-          ? resolved.source.path
-          : resolved.source.url;
-        const install = options.installPlugin ?? installPluginOp;
-        const result = await install({
-          ...options,
-          source,
-          scope: command.scope,
-          name: resolved.pluginName,
-          pluginId: resolved.pluginId,
-          force: command.force,
-          ...(record.sourceType !== "local" ? { requireSignature: true } : {}),
-          ...(resolved.source.type === "git" && resolved.source.path !== undefined
-            ? { gitSubdir: resolved.source.path }
-            : {}),
-          ...(resolved.source.type === "git" && resolved.source.ref !== undefined
-            ? { gitRef: resolved.source.ref }
-            : {}),
-          ...(resolved.source.type === "git" && resolved.source.sha !== undefined
-            ? { gitSha: resolved.source.sha }
-            : {}),
-          ...(options.runProcess !== undefined
-            ? { runResolutionProcess: options.runProcess }
-            : {}),
-        });
-        if (command.json) {
-          io.stdout.write(`${JSON.stringify({
-            schemaVersion: 1,
-            kind: "agenc.plugin.marketplace.install",
-            pluginId: resolved.pluginId,
-            marketplace: resolved.marketplaceName,
-            ...(command.product !== undefined ? { product: command.product } : {}),
-            source: resolved.source,
-            plugin: result.plugin,
-            destination: result.destination,
-            scope: result.scope,
-            resolutionKind: result.resolutionKind,
-            signatureVerified: result.signatureVerified,
-          }, null, 2)}\n`);
-        } else {
-          io.stdout.write(
-            `Installed plugin ${resolved.pluginId} to ${result.scope} scope: ${result.destination}\n`,
-          );
-        }
-        return 0;
-      }
       case "marketplace-add": {
         const result = await addMarketplaceOp({
           ...options,
@@ -429,7 +287,7 @@ export async function runAgenCPluginCli(
           ...options,
           name: command.name,
         });
-        io.stdout.write(`Removed marketplace ${result.marketplace.name}\n`);
+        io.stdout.write(`Removed marketplace ${result.marketplaceName}\n`);
         return 0;
       }
       case "marketplace-upgrade": {
@@ -445,101 +303,9 @@ export async function runAgenCPluginCli(
       }
     }
   } catch (error) {
-    if (
-      (command.kind === "marketplace-catalog" || command.kind === "marketplace-install") &&
-      command.json
-    ) {
-      io.stdout.write(`${JSON.stringify({
-        schemaVersion: AGENC_PLUGIN_MARKETPLACE_CATALOG_SCHEMA_VERSION,
-        kind: command.kind === "marketplace-catalog"
-          ? "agenc.plugin.marketplace.catalog.error"
-          : "agenc.plugin.marketplace.install.error",
-        ok: false,
-        error: {
-          message: error instanceof Error ? error.message : String(error),
-        },
-      }, null, 2)}\n`);
-      return 1;
-    }
     io.stderr.write(`agenc: ${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
-}
-
-async function buildMarketplaceCatalog(
-  options: MarketplaceOperationOptions,
-  product?: string,
-): Promise<AgenCPluginMarketplaceCatalog> {
-  const index = await readMarketplaceIndex(options);
-  const marketplaces: AgenCPluginMarketplaceCatalog["marketplaces"][number][] = [];
-  const errors: AgenCPluginMarketplaceCatalog["errors"][number][] = [];
-  for (const record of Object.values(index.marketplaces).sort((left, right) =>
-    left.name.localeCompare(right.name))) {
-    try {
-      const marketplace = await loadMarketplace(record.manifestPath, record.name);
-      marketplaces.push({
-        name: marketplace.name,
-        ...(marketplace.interface?.displayName !== undefined
-          ? { displayName: marketplace.interface.displayName }
-          : {}),
-        sourceType: record.sourceType,
-        source: record.source,
-        plugins: marketplace.plugins
-          .filter((plugin) =>
-            plugin.policy.installation !== "NOT_AVAILABLE" &&
-            marketplacePluginSupportsProduct(plugin.policy, product))
-          .map((plugin) => ({
-            id: `${plugin.name}@${marketplace.name}`,
-            name: plugin.name,
-            marketplace: marketplace.name,
-            source: plugin.source,
-            policy: plugin.policy,
-            ...(plugin.version !== undefined ? { version: plugin.version } : {}),
-            ...(plugin.description !== undefined ? { description: plugin.description } : {}),
-            components: plugin.components,
-            ...(plugin.interface !== undefined ? { interface: plugin.interface } : {}),
-          })),
-      });
-    } catch (error) {
-      errors.push({
-        marketplace: record.name,
-        path: record.manifestPath,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-  return {
-    schemaVersion: AGENC_PLUGIN_MARKETPLACE_CATALOG_SCHEMA_VERSION,
-    kind: "agenc.plugin.marketplace.catalog",
-    ...(product !== undefined ? { product } : {}),
-    marketplaces,
-    errors,
-  };
-}
-
-function marketplacePluginSupportsProduct(
-  policy: MarketplacePluginPolicy,
-  product: string | undefined,
-): boolean {
-  if (policy.products === undefined) return true;
-  return policy.products.length > 0 &&
-    product !== undefined &&
-    policy.products.includes(product);
-}
-
-function parseCanonicalMarketplacePluginId(pluginId: string): {
-  readonly pluginName: string;
-  readonly marketplaceName: string;
-} {
-  const separator = pluginId.lastIndexOf("@");
-  const pluginName = separator > 0 ? pluginId.slice(0, separator) : "";
-  const marketplaceName = separator > 0 ? pluginId.slice(separator + 1) : "";
-  if (pluginName.length === 0 || marketplaceName.length === 0) {
-    throw new Error(
-      "marketplace plugin id must use the canonical name@marketplace form",
-    );
-  }
-  return { pluginName, marketplaceName };
 }
 
 function parseList(args: readonly string[]): AgenCPluginCliCommand {
@@ -746,10 +512,6 @@ function parseMarketplace(args: readonly string[]): AgenCPluginCliCommand {
   switch (action) {
     case "list":
       return parseMarketplaceList(args.slice(1));
-    case "catalog":
-      return parseMarketplaceCatalog(args.slice(1));
-    case "install":
-      return parseMarketplaceInstall(args.slice(1));
     case "add":
       return parseMarketplaceAdd(args.slice(1));
     case "remove":
@@ -772,110 +534,6 @@ function parseMarketplaceList(args: readonly string[]): AgenCPluginCliCommand {
     return { kind: "error", message: `plugin marketplace list does not accept argument '${arg}'` };
   }
   return { kind: "marketplace-list", json };
-}
-
-function parseMarketplaceCatalog(args: readonly string[]): AgenCPluginCliCommand {
-  let json = false;
-  let product: string | undefined;
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index]!;
-    if (arg === "--json") {
-      json = true;
-      continue;
-    }
-    if (arg === "--help" || arg === "-h") {
-      return { kind: "help", text: formatAgenCPluginCliHelpText() };
-    }
-    const parsed = parseValueOption(args, index, arg, ["--product"]);
-    if (parsed !== null) {
-      index = parsed.nextIndex;
-      if (parsed.value.length === 0) {
-        return { kind: "error", message: "--product requires a value" };
-      }
-      product = parsed.value;
-      continue;
-    }
-    return {
-      kind: "error",
-      message: `plugin marketplace catalog does not accept argument '${arg}'`,
-    };
-  }
-  return {
-    kind: "marketplace-catalog",
-    json,
-    ...(product !== undefined ? { product } : {}),
-  };
-}
-
-function parseMarketplaceInstall(args: readonly string[]): AgenCPluginCliCommand {
-  let scope: PluginScope = "user";
-  let force = false;
-  let json = false;
-  let product: string | undefined;
-  const positional: string[] = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index]!;
-    if (arg === "--help" || arg === "-h") {
-      return { kind: "help", text: formatAgenCPluginCliHelpText() };
-    }
-    if (arg === "--force") {
-      force = true;
-      continue;
-    }
-    if (arg === "--json") {
-      json = true;
-      continue;
-    }
-    const parsed = parseValueOption(args, index, arg, ["--scope", "--product"]);
-    if (parsed !== null) {
-      index = parsed.nextIndex;
-      if (parsed.value.length === 0) {
-        return { kind: "error", message: `${parsed.name} requires a value` };
-      }
-      if (parsed.name === "--scope") {
-        const parsedScope = parseScope(parsed.value);
-        if (parsedScope === null) {
-          return {
-            kind: "error",
-            message: "--scope must be user, project, or local",
-          };
-        }
-        scope = parsedScope;
-      } else {
-        product = parsed.value;
-      }
-      continue;
-    }
-    if (arg.startsWith("-")) {
-      return {
-        kind: "error",
-        message: `unknown marketplace install option: ${arg}`,
-      };
-    }
-    positional.push(arg);
-  }
-  if (positional.length !== 1) {
-    return {
-      kind: "error",
-      message: "plugin marketplace install requires exactly one name@marketplace id",
-    };
-  }
-  try {
-    parseCanonicalMarketplacePluginId(positional[0]!);
-  } catch (error) {
-    return {
-      kind: "error",
-      message: error instanceof Error ? error.message : String(error),
-    };
-  }
-  return {
-    kind: "marketplace-install",
-    pluginId: positional[0]!,
-    scope,
-    force,
-    json,
-    ...(product !== undefined ? { product } : {}),
-  };
 }
 
 function parseMarketplaceAdd(args: readonly string[]): AgenCPluginCliCommand {

@@ -17,15 +17,23 @@ import type {
   AuthSessionId,
   AuthSessionRef,
   AuthSubscriptionTier,
-  AuthVendedKey,
+  AuthVendedCredential,
   AuthWhoamiParams,
   AuthWhoamiResult,
 } from "../backend.js";
-import {
-  resolveAgencHome,
-  type EnvSnapshot,
-} from "../../config/env.js";
+import type { EnvSnapshot } from "../../config/env.js";
+import type { HomeContext } from "../../config/home.js";
 import * as lockfile from "../../utils/lockfile.js";
+import type { NativeSecureStorageTransaction } from "../../utils/secureStorage/native.js";
+import { captureSecureStorageIngress } from "../../utils/secureStorage/home.js";
+import {
+  clearRemoteBearerCredential,
+  readRemoteBearerCredential,
+  rollbackRemoteBearerCredential,
+  storeRemoteBearerCredential,
+  type RemoteBearerCredential,
+} from "../native-credentials.js";
+import { getProxyFetchOptions } from "../../utils/proxy.js";
 
 const DEFAULT_REMOTE_AUTH_KEY_VENDING_URL =
   "https://id.agenc.ag/v1/auth/llm-credential" as const;
@@ -67,11 +75,15 @@ const REMOTE_AUTH_STATE_LOCK_OPTIONS = {
 interface RemoteAuthDiskState {
   readonly version: typeof REMOTE_AUTH_STATE_VERSION;
   readonly provider: "remote";
-  readonly token: string;
   readonly createdAt: string;
   readonly identity?: AuthIdentity;
   readonly subscriptionTier?: AuthSubscriptionTier;
   readonly expiresAt?: string;
+}
+
+interface RemotePersistedAuthSession {
+  readonly state: RemoteAuthDiskState;
+  readonly credential: RemoteBearerCredential;
 }
 
 export interface RemoteAuthVendKeyRequest {
@@ -81,7 +93,7 @@ export interface RemoteAuthVendKeyRequest {
 
 export type RemoteAuthKeyVendor = (
   request: RemoteAuthVendKeyRequest,
-) => AuthVendedKey | Promise<AuthVendedKey>;
+) => AuthVendedCredential | Promise<AuthVendedCredential>;
 
 export type RemoteAuthModelInferer = (
   request: AuthInferAgencModelParams,
@@ -160,7 +172,7 @@ export interface RemoteAuthBackendOptions {
 }
 
 interface CachedRemoteAuthKey {
-  readonly promise: Promise<AuthVendedKey>;
+  readonly promise: Promise<AuthVendedCredential>;
   readonly expiresAtMs: number;
 }
 
@@ -168,6 +180,7 @@ export class RemoteAuthBackend implements AuthBackend {
   readonly kind = "remote";
 
   readonly #authFilePath: string;
+  readonly #home: HomeContext;
   readonly #accountSnapshotResolver: RemoteAuthAccountSnapshotResolver;
   readonly #keyVendor: RemoteAuthKeyVendor;
   readonly #loginFlow: RemoteAuthLoginFlow;
@@ -178,26 +191,42 @@ export class RemoteAuthBackend implements AuthBackend {
   readonly #keyCacheTtlMs: number;
   readonly #now: () => Date;
   readonly #nowMs: () => number;
+  readonly #explicitToken: string | undefined;
   readonly #vendedKeys = new Map<string, CachedRemoteAuthKey>();
 
   constructor(options: RemoteAuthBackendOptions = {}) {
-    this.#authFilePath = remoteAuthFilePath(options);
+    const ingress = captureSecureStorageIngress(
+      options.env ?? process.env,
+      options.agencHome,
+    );
+    const scopedOptions: RemoteAuthBackendOptions = Object.freeze({
+      ...options,
+      agencHome: ingress.home.path,
+      env: ingress.environment,
+    });
+    this.#home = ingress.home;
+    this.#authFilePath = remoteAuthFilePath(scopedOptions, this.#home);
     this.#accountSnapshotResolver =
-      options.accountSnapshotResolver ??
-      createHttpRemoteAuthAccountSnapshotResolver(options);
-    this.#keyVendor = options.keyVendor ?? createHttpRemoteAuthKeyVendor(options);
-    this.#loginFlow = options.loginFlow ?? createHttpRemoteAuthLoginFlow(options);
+      scopedOptions.accountSnapshotResolver ??
+      createHttpRemoteAuthAccountSnapshotResolver(scopedOptions);
+    this.#keyVendor = scopedOptions.keyVendor ??
+      createHttpRemoteAuthKeyVendor(scopedOptions, this.#home);
+    this.#loginFlow = scopedOptions.loginFlow ??
+      createHttpRemoteAuthLoginFlow(scopedOptions);
     this.#modelInferer =
-      options.modelInferer ?? createHttpRemoteAuthModelInferer(options);
+      scopedOptions.modelInferer ??
+      createHttpRemoteAuthModelInferer(scopedOptions, this.#home);
     this.#subscriptionTierResolver =
-      options.subscriptionTierResolver ??
-      createHttpRemoteAuthSubscriptionTierResolver(options);
+      scopedOptions.subscriptionTierResolver ??
+      createHttpRemoteAuthSubscriptionTierResolver(scopedOptions, this.#home);
     this.#llmUsageResolver =
-      options.llmUsageResolver ?? createHttpRemoteAuthLlmUsageResolver(options);
-    this.#managedKeysEnabled = options.managedKeysEnabled === true;
-    this.#keyCacheTtlMs = positiveTtlMs(options.keyCacheTtlMs);
-    this.#now = options.now ?? (() => new Date());
-    this.#nowMs = options.nowMs ?? (() => Date.now());
+      scopedOptions.llmUsageResolver ??
+      createHttpRemoteAuthLlmUsageResolver(scopedOptions, this.#home);
+    this.#managedKeysEnabled = scopedOptions.managedKeysEnabled === true;
+    this.#keyCacheTtlMs = positiveTtlMs(scopedOptions.keyCacheTtlMs);
+    this.#now = scopedOptions.now ?? (() => new Date());
+    this.#nowMs = scopedOptions.nowMs ?? (() => Date.now());
+    this.#explicitToken = explicitRemoteAuthToken(scopedOptions);
   }
 
   authFile(): string {
@@ -208,18 +237,30 @@ export class RemoteAuthBackend implements AuthBackend {
     const result = normalizeRemoteAuthLoginResult(
       await this.#loginFlow(params),
     );
+    const createdAt = this.#now().toISOString();
     await withRemoteAuthStateLock(this.#authFilePath, async () => {
-      await writeRemoteAuthState(this.#authFilePath, {
-        version: REMOTE_AUTH_STATE_VERSION,
-        provider: "remote",
-        token: result.token,
-        createdAt: this.#now().toISOString(),
-        ...(result.identity !== undefined ? { identity: result.identity } : {}),
-        ...(result.subscriptionTier !== undefined
-          ? { subscriptionTier: result.subscriptionTier }
-          : {}),
-        ...(result.expiresAt !== undefined ? { expiresAt: result.expiresAt } : {}),
+      const credentialTransaction = storeRemoteBearerCredential(this.#home, {
+        bearerToken: result.token,
+        createdAt,
       });
+      try {
+        await writeRemoteAuthState(this.#authFilePath, {
+          version: REMOTE_AUTH_STATE_VERSION,
+          provider: "remote",
+          createdAt,
+          ...(result.identity !== undefined ? { identity: result.identity } : {}),
+          ...(result.subscriptionTier !== undefined
+            ? { subscriptionTier: result.subscriptionTier }
+            : {}),
+          ...(result.expiresAt !== undefined ? { expiresAt: result.expiresAt } : {}),
+        });
+      } catch (error) {
+        rollbackRemoteCredentialAfterStateFailure(
+          credentialTransaction,
+          error,
+          this.#home,
+        );
+      }
       this.#vendedKeys.clear();
     });
     return {
@@ -233,23 +274,34 @@ export class RemoteAuthBackend implements AuthBackend {
 
   async logout(_params: AuthLogoutParams = {}): Promise<AuthLogoutResult> {
     await withRemoteAuthStateLock(this.#authFilePath, async () => {
-      await rm(this.#authFilePath, { force: true });
+      await clearRemoteAuthState(this.#authFilePath, this.#home);
       this.#vendedKeys.clear();
     });
     return { authenticated: false };
   }
 
   async whoami(params: AuthWhoamiParams = {}): Promise<AuthWhoamiResult> {
+    const request =
+      params.sessionId === undefined ? {} : { sessionId: params.sessionId };
+    if (this.#explicitToken !== undefined) {
+      const snapshot = normalizeRemoteAuthAccountSnapshot(
+        await this.#accountSnapshotResolver(request, this.#explicitToken),
+      );
+      return snapshot.authenticated
+        ? remoteAuthWhoamiResult(snapshot)
+        : { authenticated: false, provider: "remote" };
+    }
+
     for (
       let attempt = 0;
       attempt < REMOTE_AUTH_STATE_VERIFY_MAX_ATTEMPTS;
       attempt += 1
     ) {
-      const state = await withRemoteAuthStateLock(
+      const session = await withRemoteAuthStateLock(
         this.#authFilePath,
-        () => readRemoteAuthState(this.#authFilePath),
+        () => readPersistedRemoteAuthSession(this.#authFilePath, this.#home),
       );
-      if (state === null) {
+      if (session === null) {
         return { authenticated: false, provider: "remote" };
       }
 
@@ -258,23 +310,30 @@ export class RemoteAuthBackend implements AuthBackend {
       // cross-process state lock so a concurrent login/logout always wins.
       const snapshot = normalizeRemoteAuthAccountSnapshot(
         await this.#accountSnapshotResolver(
-          params.sessionId === undefined ? {} : { sessionId: params.sessionId },
-          state.token,
+          request,
+          session.credential.bearerToken,
         ),
       );
       const committed = await withRemoteAuthStateLock(
         this.#authFilePath,
         async (): Promise<"authenticated" | "retry" | "signed-out"> => {
-          const current = await readRemoteAuthState(this.#authFilePath);
+          const current = await readPersistedRemoteAuthSession(
+            this.#authFilePath,
+            this.#home,
+          );
           if (current === null) return "signed-out";
-          if (!sameRemoteAuthSession(current, state)) return "retry";
+          if (!sameRemoteAuthSession(current, session)) return "retry";
           if (!snapshot.authenticated) {
-            await rm(this.#authFilePath, { force: true });
+            await clearRemoteAuthState(
+              this.#authFilePath,
+              this.#home,
+              current.credential,
+            );
             this.#vendedKeys.clear();
             return "signed-out";
           }
           await writeRemoteAuthState(this.#authFilePath, {
-            ...current,
+            ...current.state,
             identity: snapshot.identity,
             subscriptionTier: snapshot.subscriptionTier,
           });
@@ -300,7 +359,7 @@ export class RemoteAuthBackend implements AuthBackend {
   vendKey(
     provider: AuthProviderSlug | string,
     sessionId: AuthSessionId,
-  ): Promise<AuthVendedKey> {
+  ): Promise<AuthVendedCredential> {
     if (!this.#managedKeysEnabled) {
       return Promise.reject(
         new Error(
@@ -377,14 +436,8 @@ export class RemoteAuthBackend implements AuthBackend {
   async #requestVendedKey(
     provider: AuthProviderSlug | string,
     sessionId: AuthSessionId,
-  ): Promise<AuthVendedKey> {
+  ): Promise<AuthVendedCredential> {
     const vended = await this.#keyVendor({ provider, sessionId });
-    const apiKey = vended.apiKey.trim();
-    if (apiKey.length === 0) {
-      throw new Error(
-        `RemoteAuthBackend returned an empty managed key for provider "${provider}" in session "${sessionId}"`,
-      );
-    }
     if (vended.provider !== provider) {
       throw new Error(
         `RemoteAuthBackend key vending response provider mismatch for "${provider}"`,
@@ -395,10 +448,50 @@ export class RemoteAuthBackend implements AuthBackend {
         `RemoteAuthBackend key vending response session mismatch for "${sessionId}"`,
       );
     }
-    return {
-      ...vended,
-      apiKey,
-    };
+    if (provider === "amazon-bedrock" && vended.kind !== "aws-sigv4") {
+      throw new Error(
+        `RemoteAuthBackend returned api-key credentials for provider "${provider}"; expected aws-sigv4`,
+      );
+    }
+    if (provider !== "amazon-bedrock" && vended.kind !== "api-key") {
+      throw new Error(
+        `RemoteAuthBackend returned aws-sigv4 credentials for provider "${provider}"; expected api-key`,
+      );
+    }
+    if (vended.kind === "api-key") {
+      const apiKey = vended.apiKey.trim();
+      if (apiKey.length === 0) {
+        throw new Error(
+          `RemoteAuthBackend returned an empty managed API key for provider "${provider}" in session "${sessionId}"`,
+        );
+      }
+      return {
+        ...vended,
+        apiKey,
+      };
+    }
+    if (vended.kind === "aws-sigv4") {
+      const accessKeyId = vended.accessKeyId.trim();
+      const secretAccessKey = vended.secretAccessKey.trim();
+      if (accessKeyId.length === 0) {
+        throw new Error(
+          `RemoteAuthBackend returned an empty AWS access key ID for provider "${provider}" in session "${sessionId}"`,
+        );
+      }
+      if (secretAccessKey.length === 0) {
+        throw new Error(
+          `RemoteAuthBackend returned an empty AWS secret access key for provider "${provider}" in session "${sessionId}"`,
+        );
+      }
+      return {
+        ...vended,
+        accessKeyId,
+        secretAccessKey,
+      };
+    }
+    throw new Error(
+      `RemoteAuthBackend returned an unsupported managed credential kind for provider "${provider}" in session "${sessionId}"`,
+    );
   }
 
   async #requestInferredModel(
@@ -411,28 +504,36 @@ export class RemoteAuthBackend implements AuthBackend {
   async #requestSubscriptionTier(
     params: AuthSessionRef,
   ): Promise<AuthSubscriptionTier> {
+    if (this.#explicitToken !== undefined) {
+      return normalizeRequiredSubscriptionTier(
+        await this.#subscriptionTierResolver(params),
+      );
+    }
     for (
       let attempt = 0;
       attempt < REMOTE_AUTH_STATE_VERIFY_MAX_ATTEMPTS;
       attempt += 1
     ) {
-      const state = await withRemoteAuthStateLock(
+      const session = await withRemoteAuthStateLock(
         this.#authFilePath,
-        () => readRemoteAuthState(this.#authFilePath),
+        () => readPersistedRemoteAuthSession(this.#authFilePath, this.#home),
       );
       const normalized = normalizeRequiredSubscriptionTier(
         await this.#subscriptionTierResolver(params),
       );
-      if (state === null) return normalized;
+      if (session === null) return normalized;
       const committed = await withRemoteAuthStateLock(
         this.#authFilePath,
         async (): Promise<boolean> => {
-          const current = await readRemoteAuthState(this.#authFilePath);
+          const current = await readPersistedRemoteAuthSession(
+            this.#authFilePath,
+            this.#home,
+          );
           if (current === null) return true;
-          if (!sameRemoteAuthSession(current, state)) return false;
-          if (current.subscriptionTier !== normalized) {
+          if (!sameRemoteAuthSession(current, session)) return false;
+          if (current.state.subscriptionTier !== normalized) {
             await writeRemoteAuthState(this.#authFilePath, {
-              ...current,
+              ...current.state,
               subscriptionTier: normalized,
             });
           }
@@ -451,22 +552,28 @@ export class RemoteAuthBackend implements AuthBackend {
   }
 }
 
-function remoteAuthFilePath(options: RemoteAuthBackendOptions): string {
-  const agencHome =
-    options.agencHome ?? resolveAgencHome(options.env ?? process.env);
-  return options.authFilePath ?? join(agencHome, REMOTE_AUTH_STATE_FILENAME);
+function remoteAuthFilePath(
+  options: RemoteAuthBackendOptions,
+  home: HomeContext,
+): string {
+  return options.authFilePath ?? join(home.path, REMOTE_AUTH_STATE_FILENAME);
 }
 
 async function resolveRemoteAuthToken(
   options: RemoteAuthBackendOptions,
+  home: HomeContext,
 ): Promise<string | undefined> {
-  const persisted = (await readRemoteAuthState(remoteAuthFilePath(options)))
-    ?.token;
-  if (persisted !== undefined) return persisted;
+  const explicit = explicitRemoteAuthToken(options);
+  if (explicit !== undefined) return explicit;
+  return readRemoteBearerCredential(home)?.bearerToken;
+}
+
+function explicitRemoteAuthToken(
+  options: RemoteAuthBackendOptions,
+): string | undefined {
   const env = options.env ?? process.env;
-  const explicit = trimNonEmpty(options.token) ??
+  return trimNonEmpty(options.token) ??
     trimNonEmpty(env[REMOTE_AUTH_TOKEN_ENV]);
-  return explicit;
 }
 
 function createHttpRemoteAuthAccountSnapshotResolver(
@@ -488,7 +595,7 @@ function createHttpRemoteAuthAccountSnapshotResolver(
       method: "POST",
       headers: remoteAuthJsonHeaders(token),
       body: JSON.stringify(compactRemoteAuthSubscriptionTierRequest(request)),
-    }, "account snapshot lookup");
+    }, "account snapshot lookup", env, options.fetchImpl === undefined);
     if (response.status === 401 || response.status === 403) {
       return { authenticated: false };
     }
@@ -505,6 +612,7 @@ function createHttpRemoteAuthAccountSnapshotResolver(
 
 function createHttpRemoteAuthKeyVendor(
   options: RemoteAuthBackendOptions,
+  home: HomeContext,
 ): RemoteAuthKeyVendor {
   const env = options.env ?? process.env;
   const endpoint =
@@ -518,12 +626,12 @@ function createHttpRemoteAuthKeyVendor(
     }
     const response = await remoteAuthFetch(fetchImpl, endpoint, {
       method: "POST",
-      headers: remoteAuthJsonHeaders(await resolveRemoteAuthToken(options)),
+      headers: remoteAuthJsonHeaders(await resolveRemoteAuthToken(options, home)),
       body: JSON.stringify({
         provider: request.provider,
         sessionId: request.sessionId,
       }),
-    }, "key vending");
+    }, "key vending", env, options.fetchImpl === undefined);
     if (!response.ok) {
       throw new Error(
         `RemoteAuthBackend key vending failed with HTTP ${response.status}`,
@@ -558,7 +666,7 @@ function createHttpRemoteAuthLoginFlow(
       method: "POST",
       headers: remoteAuthJsonHeaders(undefined),
       body: JSON.stringify(compactRemoteAuthLoginRequest(request)),
-    }, "login start");
+    }, "login start", env, options.fetchImpl === undefined);
     if (!startResponse.ok) {
       throw new Error(
         `RemoteAuthBackend login start failed with HTTP ${startResponse.status}`,
@@ -587,7 +695,7 @@ function createHttpRemoteAuthLoginFlow(
             deviceCode: started.deviceCode,
             sessionId: request.sessionId,
           }),
-        }, "login poll");
+        }, "login poll", env, options.fetchImpl === undefined);
       } catch {
         await sleep(intervalMs);
         continue;
@@ -651,6 +759,7 @@ async function notifyRemoteAuthDeviceCode(
 
 function createHttpRemoteAuthModelInferer(
   options: RemoteAuthBackendOptions,
+  home: HomeContext,
 ): RemoteAuthModelInferer {
   const env = options.env ?? process.env;
   const endpoint =
@@ -664,9 +773,9 @@ function createHttpRemoteAuthModelInferer(
     }
     const response = await remoteAuthFetch(fetchImpl, endpoint, {
       method: "POST",
-      headers: remoteAuthJsonHeaders(await resolveRemoteAuthToken(options)),
+      headers: remoteAuthJsonHeaders(await resolveRemoteAuthToken(options, home)),
       body: JSON.stringify(compactRemoteAuthModelRequest(request)),
-    }, "hosted model routing");
+    }, "hosted model routing", env, options.fetchImpl === undefined);
     if (!response.ok) {
       throw new Error(
         `RemoteAuthBackend hosted model routing failed with HTTP ${response.status}`,
@@ -680,6 +789,7 @@ function createHttpRemoteAuthModelInferer(
 
 function createHttpRemoteAuthSubscriptionTierResolver(
   options: RemoteAuthBackendOptions,
+  home: HomeContext,
 ): RemoteAuthSubscriptionTierResolver {
   const env = options.env ?? process.env;
   const endpoint =
@@ -693,13 +803,13 @@ function createHttpRemoteAuthSubscriptionTierResolver(
         "RemoteAuthBackend requires fetch for remote subscription tier lookup",
       );
     }
-    const token = await resolveRemoteAuthToken(options);
+    const token = await resolveRemoteAuthToken(options, home);
     if (token === undefined) return "free";
     const response = await remoteAuthFetch(fetchImpl, endpoint, {
       method: "POST",
       headers: remoteAuthJsonHeaders(token),
       body: JSON.stringify(compactRemoteAuthSubscriptionTierRequest(request)),
-    }, "subscription tier lookup");
+    }, "subscription tier lookup", env, options.fetchImpl === undefined);
     if (response.status === 401 || response.status === 403) return "free";
     if (!response.ok) {
       throw new Error(
@@ -714,6 +824,7 @@ function createHttpRemoteAuthSubscriptionTierResolver(
 
 function createHttpRemoteAuthLlmUsageResolver(
   options: RemoteAuthBackendOptions,
+  home: HomeContext,
 ): RemoteAuthLlmUsageResolver {
   const env = options.env ?? process.env;
   const endpoint =
@@ -725,7 +836,7 @@ function createHttpRemoteAuthLlmUsageResolver(
     if (fetchImpl === undefined) {
       throw new Error("RemoteAuthBackend requires fetch for remote LLM usage");
     }
-    const token = await resolveRemoteAuthToken(options);
+    const token = await resolveRemoteAuthToken(options, home);
     if (token === undefined) {
       return freeLlmUsage();
     }
@@ -733,7 +844,7 @@ function createHttpRemoteAuthLlmUsageResolver(
       method: "POST",
       headers: remoteAuthJsonHeaders(token),
       body: JSON.stringify(compactRemoteAuthSubscriptionTierRequest(request)),
-    }, "LLM usage lookup");
+    }, "LLM usage lookup", env, options.fetchImpl === undefined);
     if (response.status === 401 || response.status === 403) return freeLlmUsage();
     if (!response.ok) {
       throw new Error(
@@ -760,9 +871,14 @@ async function remoteAuthFetch(
   input: string,
   init: RequestInit,
   operation: string,
+  environment: EnvSnapshot,
+  configureTransport: boolean,
 ): Promise<Response> {
   try {
-    return await fetchImpl(input, init);
+    return await fetchImpl(input, {
+      ...init,
+      ...(configureTransport ? getProxyFetchOptions({ environment }) : {}),
+    });
   } catch (error) {
     throw new Error(
       `RemoteAuthBackend ${operation} network request failed: ${formatRemoteAuthNetworkError(error)}`,
@@ -819,7 +935,7 @@ function compactRemoteAuthSubscriptionTierRequest(
 function parseRemoteAuthVendKeyResponse(
   value: unknown,
   request: RemoteAuthVendKeyRequest,
-): AuthVendedKey {
+): AuthVendedCredential {
   if (!value || typeof value !== "object") {
     throw new Error("RemoteAuthBackend key vending returned a non-object response");
   }
@@ -834,28 +950,47 @@ function parseRemoteAuthVendKeyResponse(
       `RemoteAuthBackend key vending response session mismatch for "${request.sessionId}"`,
     );
   }
-  const apiKey = readTrimmedString(record.apiKey ?? record.litellmKey);
-  if (apiKey === undefined) {
-    throw new Error("RemoteAuthBackend key vending response missing apiKey");
-  }
   const baseUrl = readTrimmedString(record.baseUrl ?? record.baseURL);
-  return {
+  const common = {
     provider: request.provider,
     sessionId: request.sessionId,
-    apiKey,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     ...(typeof record.expiresAt === "string" && record.expiresAt.length > 0
       ? { expiresAt: record.expiresAt }
       : {}),
-    ...(readTrimmedString(record.secretAccessKey) !== undefined
-      ? { secretAccessKey: readTrimmedString(record.secretAccessKey) }
-      : {}),
-    ...(readTrimmedString(record.sessionToken) !== undefined
-      ? { sessionToken: readTrimmedString(record.sessionToken) }
-      : {}),
-    ...(readTrimmedString(record.region) !== undefined
-      ? { region: readTrimmedString(record.region) }
-      : {}),
+  };
+  if (request.provider === "amazon-bedrock") {
+    const accessKeyId = readTrimmedString(record.accessKeyId);
+    if (accessKeyId === undefined) {
+      throw new Error(
+        "RemoteAuthBackend key vending response missing accessKeyId",
+      );
+    }
+    const secretAccessKey = readTrimmedString(record.secretAccessKey);
+    if (secretAccessKey === undefined) {
+      throw new Error(
+        "RemoteAuthBackend key vending response missing secretAccessKey",
+      );
+    }
+    const sessionToken = readTrimmedString(record.sessionToken);
+    const region = readTrimmedString(record.region);
+    return {
+      ...common,
+      kind: "aws-sigv4",
+      accessKeyId,
+      secretAccessKey,
+      ...(sessionToken !== undefined ? { sessionToken } : {}),
+      ...(region !== undefined ? { region } : {}),
+    };
+  }
+  const apiKey = readTrimmedString(record.apiKey ?? record.litellmKey);
+  if (apiKey === undefined) {
+    throw new Error("RemoteAuthBackend key vending response missing apiKey");
+  }
+  return {
+    ...common,
+    kind: "api-key",
+    apiKey,
   };
 }
 
@@ -1302,7 +1437,7 @@ function positiveTtlMs(value: number | undefined): number {
 }
 
 function cacheExpiresAtMs(
-  key: AuthVendedKey,
+  key: AuthVendedCredential,
   nowMs: number,
   ttlMs: number,
 ): number {
@@ -1327,14 +1462,28 @@ function isRemoteAuthDiskState(value: unknown): value is RemoteAuthDiskState {
   return (
     state.version === REMOTE_AUTH_STATE_VERSION &&
     state.provider === "remote" &&
-    typeof state.token === "string" &&
-    state.token.trim().length > 0 &&
     typeof state.createdAt === "string" &&
     (state.identity === undefined || isAuthIdentity(state.identity)) &&
     (state.subscriptionTier === undefined ||
       normalizeSubscriptionTier(state.subscriptionTier) !== undefined) &&
     (state.expiresAt === undefined || typeof state.expiresAt === "string")
   );
+}
+
+async function readPersistedRemoteAuthSession(
+  path: string,
+  home: HomeContext,
+): Promise<RemotePersistedAuthSession | null> {
+  const state = await readRemoteAuthState(path);
+  const credential = readRemoteBearerCredential(home);
+  if (
+    state === null ||
+    credential === undefined ||
+    credential.createdAt !== state.createdAt
+  ) {
+    return null;
+  }
+  return { state, credential };
 }
 
 async function readRemoteAuthState(
@@ -1351,10 +1500,14 @@ async function readRemoteAuthState(
 }
 
 function sameRemoteAuthSession(
-  left: RemoteAuthDiskState,
-  right: RemoteAuthDiskState,
+  left: RemotePersistedAuthSession,
+  right: RemotePersistedAuthSession,
 ): boolean {
-  return left.token === right.token && left.createdAt === right.createdAt;
+  return (
+    left.state.createdAt === right.state.createdAt &&
+    left.credential.bearerToken === right.credential.bearerToken &&
+    left.credential.createdAt === right.credential.createdAt
+  );
 }
 
 async function withRemoteAuthStateLock<T>(
@@ -1389,4 +1542,40 @@ async function writeRemoteAuthState(
   } finally {
     await rm(tmp, { force: true });
   }
+}
+
+async function clearRemoteAuthState(
+  path: string,
+  home: HomeContext,
+  expectedCredential?: RemoteBearerCredential,
+): Promise<void> {
+  const credentialTransaction = clearRemoteBearerCredential(
+    home,
+    expectedCredential,
+  );
+  try {
+    await rm(path, { force: true });
+  } catch (error) {
+    rollbackRemoteCredentialAfterStateFailure(
+      credentialTransaction,
+      error,
+      home,
+    );
+  }
+}
+
+function rollbackRemoteCredentialAfterStateFailure(
+  transaction: NativeSecureStorageTransaction | null,
+  stateError: unknown,
+  home: HomeContext,
+): never {
+  try {
+    rollbackRemoteBearerCredential(home, transaction);
+  } catch (rollbackError) {
+    throw new AggregateError(
+      [stateError, rollbackError],
+      "Remote authentication state write failed and its credential rollback did not complete",
+    );
+  }
+  throw stateError;
 }

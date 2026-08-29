@@ -13,7 +13,6 @@ export function buildMockProviderEnv(baseUrl, baseEnv = process.env) {
     ...baseEnv,
     AGENC_PROVIDER: "openai-compatible",
     AGENC_MODEL: MOCK_MODEL,
-    OPENAI_COMPATIBLE_MODEL: MOCK_MODEL,
     OPENAI_COMPATIBLE_BASE_URL: `${baseUrl}/v1`,
     OPENAI_COMPATIBLE_API_KEY: "local-pipeline-key",
     API_TIMEOUT_MS: "600000",
@@ -26,6 +25,7 @@ export function buildMockProviderEnv(baseUrl, baseEnv = process.env) {
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
     "OPENAI_MODEL",
+    "OPENAI_COMPATIBLE_MODEL",
   ]) {
     delete env[key];
   }

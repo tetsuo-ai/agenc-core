@@ -120,6 +120,7 @@ export function createCompactionTransactionHarness(
     cwd,
     sessionId,
     agencVersion: "0.13.0",
+    sessionTempRoot: tmpdir(),
     autoStartScheduler: false,
   });
   store.open({

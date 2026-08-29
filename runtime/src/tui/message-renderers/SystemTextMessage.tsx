@@ -20,7 +20,6 @@ import type { SystemMessage, SystemStopHookSummaryMessage, SystemBridgeStatusMes
 import { SystemAPIErrorMessage } from '../components/SystemAPIErrorMessage.js';
 import { formatDuration, formatNumber, formatSecondsShort } from '../../utils/format.js';
 import { HOOK_TIMING_DISPLAY_THRESHOLD_MS } from '../../tools/hooks.js';
-import { getGlobalConfig } from '../../utils/config.js';
 import Link from '../ink/components/Link.js';
 import ThemedText from '../components/design-system/ThemedText';
 import { CtrlOToExpand } from '../components/CtrlOToExpand';
@@ -30,6 +29,7 @@ import { getPillLabel } from '../../tasks/pillLabel';
 import { useSelectedMessageBg } from '../components/messageActions';
 import { AGENT_MESSAGE_THEME_COLOR } from '../message-theme.js';
 import { ProtocolEvent } from '../components/v2/primitives.js';
+import { useSettings } from '../hooks/useSettings.js';
 import { useWorkbenchTranscriptLayout } from '../workbench/transcriptLayoutContext.js';
 type Props = {
   message: SystemMessage;
@@ -411,6 +411,7 @@ function TurnDurationMessage({
   addMargin: boolean;
 }): React.ReactNode {
   const bg = useSelectedMessageBg();
+  const settings = useSettings();
   const [verb] = useState(_temp4);
   const store = useAppStateStore();
   const [backgroundTaskSummary] = useState(() => {
@@ -418,7 +419,7 @@ function TurnDurationMessage({
     const running = (Object.values(tasks ?? {}) as TaskState[]).filter(isBackgroundTask);
     return running.length > 0 ? getPillLabel(running) : null;
   });
-  const showTurnDuration = getGlobalConfig().showTurnDuration ?? true;
+  const showTurnDuration = settings.tui?.showTurnDuration ?? true;
   const duration = formatDuration(message.durationMs);
   const hasBudget = message.budgetLimit !== undefined;
   let budgetSuffix = "";

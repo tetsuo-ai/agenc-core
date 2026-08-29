@@ -10,25 +10,26 @@ import {
   effortLevelToSymbol,
   getEffortNotificationText,
 } from "./EffortIndicator.js";
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../remoteAuthSessionContext.fixture.js";
 
 vi.mock("../../utils/effort.js", () => ({
-  getDisplayedEffortLevel: (_model: string, effortValue: string | undefined) =>
+  getDisplayedEffortLevelForContext: (_model: string, effortValue: string | undefined) =>
     effortValue ?? "medium",
-  modelSupportsEffort: (model: string) => model !== "basic-model",
+  modelSupportsEffortForContext: (model: string) => model !== "basic-model",
 }));
 
 describe("EffortIndicator", () => {
   test("builds effort notification text for supported models", () => {
-    expect(getEffortNotificationText("low", "reasoning-model")).toBe(
+    expect(getEffortNotificationText("low", "reasoning-model", TEST_REMOTE_AUTH_SESSION_CONTEXT)).toBe(
       `${EFFORT_LOW} low · /effort`,
     );
-    expect(getEffortNotificationText(undefined, "reasoning-model")).toBe(
+    expect(getEffortNotificationText(undefined, "reasoning-model", TEST_REMOTE_AUTH_SESSION_CONTEXT)).toBe(
       `${EFFORT_MEDIUM} medium · /effort`,
     );
   });
 
   test("omits effort notification text for unsupported models", () => {
-    expect(getEffortNotificationText("high", "basic-model")).toBeUndefined();
+    expect(getEffortNotificationText("high", "basic-model", TEST_REMOTE_AUTH_SESSION_CONTEXT)).toBeUndefined();
   });
 
   test("maps every effort level to a symbol", () => {

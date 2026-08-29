@@ -3,16 +3,16 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   buildTransactionGuardDocket,
   buildToolTransactionGuardInput,
+  createTransactionGuardContext,
   createTransactionGuardContextFromPolicy,
-  createTransactionGuardContextFromEnv,
   evaluateToolInvocationTransactionGuard,
   formatTransactionGuardDenialMessage,
   formatTransactionGuardEventMessage,
-  loadTransactionGuardPolicyFromEnv,
   normalizeTransactionGuardInput,
   OllamaCourtGuard,
   parseTransactionGuardVerdict,
   resetDefaultTransactionGuardContextForTests,
+  resolveTransactionGuardPolicy,
   transactionGuardAuditMetadata,
   TransactionGuardError,
   TRANSACTION_GUARD_DENIED,
@@ -421,20 +421,20 @@ describe("transaction guard config and docket", () => {
   afterEach(() => resetDefaultTransactionGuardContextForTests());
 
   test("defaults to Gemma 4 E4B and disabled enforcement", () => {
-    const loaded = loadTransactionGuardPolicyFromEnv({});
+    const loaded = resolveTransactionGuardPolicy();
     expect(loaded.enabled).toBe(false);
     expect(loaded.model).toBe("gemma4:e4b");
     expect(loaded.provider).toBe("ollama");
     expect(loaded.failClosed).toBe(true);
   });
 
-  test("loads enabled policy values and falls back on invalid positive integers", () => {
-    const loaded = loadTransactionGuardPolicyFromEnv({
-      AGENC_TRANSACTION_GUARD: "slm",
-      AGENC_TRANSACTION_GUARD_OLLAMA_URL: "http://ollama.test",
-      AGENC_TRANSACTION_GUARD_MODEL: "local-judge",
-      AGENC_TRANSACTION_GUARD_TIMEOUT_MS: "-1",
-      AGENC_TRANSACTION_GUARD_MAX_DOCKET_BYTES: "not-a-number",
+  test("projects resolved values and falls back on invalid positive integers", () => {
+    const loaded = resolveTransactionGuardPolicy({
+      enabled: true,
+      endpoint: "http://ollama.test",
+      model: "local-judge",
+      timeout_ms: -1,
+      max_docket_bytes: Number.NaN,
     });
 
     expect(loaded).toMatchObject({
@@ -446,32 +446,22 @@ describe("transaction guard config and docket", () => {
     });
   });
 
-  test("creates context only when AGENC_TRANSACTION_GUARD=slm", () => {
+  test("creates context only when the resolved policy is enabled", () => {
     expect(createTransactionGuardContextFromPolicy({ ...policy, enabled: false })).toBeNull();
     expect(createTransactionGuardContextFromPolicy(policy)).not.toBeNull();
   });
 
-  test("caches and resets the default environment context", () => {
+  test("caches contexts by resolved config snapshot and resets the cache", () => {
     resetDefaultTransactionGuardContextForTests();
-    const previous = process.env.AGENC_TRANSACTION_GUARD;
-    try {
-      process.env.AGENC_TRANSACTION_GUARD = "slm";
-      const first = createTransactionGuardContextFromEnv();
-      delete process.env.AGENC_TRANSACTION_GUARD;
-      const second = createTransactionGuardContextFromEnv();
-      expect(first).not.toBeNull();
-      expect(second).toBe(first);
+    const config = Object.freeze({ enabled: true });
+    const first = createTransactionGuardContext(config);
+    const second = createTransactionGuardContext(config);
+    expect(first).not.toBeNull();
+    expect(second).toBe(first);
 
-      resetDefaultTransactionGuardContextForTests();
-      expect(createTransactionGuardContextFromEnv()).toBeNull();
-    } finally {
-      if (previous === undefined) {
-        delete process.env.AGENC_TRANSACTION_GUARD;
-      } else {
-        process.env.AGENC_TRANSACTION_GUARD = previous;
-      }
-      resetDefaultTransactionGuardContextForTests();
-    }
+    resetDefaultTransactionGuardContextForTests();
+    expect(createTransactionGuardContext(config)).not.toBe(first);
+    expect(createTransactionGuardContext(undefined)).toBeNull();
   });
 
   test("normalizes docket input without leaking sensitive keyed values", () => {

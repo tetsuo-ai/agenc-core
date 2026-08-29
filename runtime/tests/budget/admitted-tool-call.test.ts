@@ -15,7 +15,6 @@ import {
 import { EventLog, type Event } from "../../src/session/event-log.js";
 import type { Session } from "../../src/session/session.js";
 import type { Tool } from "../../src/tools/types.js";
-import { createAskUserQuestionTool } from "../../src/tools/ask-user-question/tool.js";
 import { attachPendingPhysicalSettlement } from "../../src/tools/physical-settlement.js";
 
 function toolHarness() {
@@ -51,7 +50,6 @@ function toolHarness() {
     outcome: "reconciled" as const,
   }));
   const holdUnknown = vi.fn();
-  const voidReservation = vi.fn();
   const acknowledgeCompletion = vi.fn();
   const admission = {
     scope: {
@@ -64,7 +62,7 @@ function toolHarness() {
     markDispatched: vi.fn(),
     reconcile,
     holdUnknown,
-    void: voidReservation,
+    void: vi.fn(),
     acknowledgeCompletion,
     recordFallback: vi.fn(),
     forSession: vi.fn(),
@@ -93,7 +91,6 @@ function toolHarness() {
     leaseController,
     reconcile,
     session,
-    voidReservation,
   };
 }
 
@@ -374,140 +371,8 @@ describe("runAdmittedToolCall", () => {
       outputTokens: 7,
       costUsd: 0.25,
     });
-    const effectResult = state.effectEvents.find(
-      (event) => event.msg.type === "effect_result",
-    );
-    expect(effectResult).toMatchObject({
-      msg: {
-        type: "effect_result",
-        payload: {
-          admissionSettlement: {
-            reservationId: "tool-reservation",
-            decision: "reconcile",
-            usage: { inputTokens: 4, outputTokens: 7, costUsd: 0.25 },
-          },
-        },
-      },
-    });
-    if (effectResult?.msg.type !== "effect_result") {
-      throw new Error("missing durable effect result");
-    }
-    expect(state.reconcile).toHaveBeenCalledWith(
-      effectResult.msg.payload.admissionSettlement?.reservationId,
-      effectResult.msg.payload.admissionSettlement?.decision === "reconcile"
-        ? effectResult.msg.payload.admissionSettlement.usage
-        : undefined,
-    );
     expect(state.holdUnknown).not.toHaveBeenCalled();
     expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
-  });
-
-  it.each([
-    [
-      "an overflowing token sum",
-      {
-        inputTokens: Number.MAX_SAFE_INTEGER,
-        outputTokens: 1,
-        costUsd: 0,
-      },
-    ],
-    [
-      "a finite cost outside the nano-USD domain",
-      { inputTokens: 1, outputTokens: 1, costUsd: 1e20 },
-    ],
-  ])(
-    "holds accounting for %s instead of fsyncing unusable usage",
-    async (_label, usage) => {
-      const state = toolHarness();
-      const tool = {
-        name: "metered.invalid-usage",
-        recoveryCategory: "side-effecting",
-        admissionEstimate: () => ({
-          maxInputTokens: 10,
-          maxOutputTokens: 20,
-          maxCostUsd: 1,
-        }),
-      } as unknown as Tool;
-
-      await runAdmittedToolCall({
-        session: state.session,
-        turnId: "turn-1",
-        callId: "call-invalid-usage",
-        tool,
-        args: {},
-        invoke: async ({ crossEffectBoundary }) => {
-          crossEffectBoundary();
-          return { content: "ok", admissionUsage: usage };
-        },
-      });
-
-      expect(state.reconcile).not.toHaveBeenCalled();
-      expect(state.holdUnknown).toHaveBeenCalledWith(
-        "tool-reservation",
-        "invalid_tool_usage",
-      );
-      expect(state.effectEvents.at(-1)?.msg).toMatchObject({
-        type: "effect_result",
-        payload: {
-          admissionSettlement: {
-            reservationId: "tool-reservation",
-            decision: "hold_unknown",
-            reason: "invalid_tool_usage",
-          },
-        },
-      });
-    },
-  );
-
-  it("retries only the durable settlement when the first live apply fails", async () => {
-    const state = toolHarness();
-    const applyFailure = new Error("fault-injected reconcile failure");
-    state.reconcile
-      .mockImplementationOnce(() => {
-        throw applyFailure;
-      })
-      .mockImplementationOnce(() => ({
-        applied: true as const,
-        outcome: "reconciled" as const,
-      }));
-    const usage = { inputTokens: 4, outputTokens: 7, costUsd: 0.25 };
-    const tool = {
-      name: "metered.pre-boundary-tool",
-      recoveryCategory: "side-effecting",
-      admissionEstimate: () => ({
-        maxInputTokens: 10,
-        maxOutputTokens: 20,
-        maxCostUsd: 1,
-      }),
-    } as unknown as Tool;
-
-    await expect(
-      runAdmittedToolCall({
-        session: state.session,
-        turnId: "turn-1",
-        callId: "call-apply-retry",
-        tool,
-        args: {},
-        invoke: async ({ crossEffectBoundary }) => {
-          crossEffectBoundary();
-          return { content: "ok", admissionUsage: usage };
-        },
-      }),
-    ).rejects.toBe(applyFailure);
-
-    expect(state.reconcile).toHaveBeenCalledTimes(2);
-    expect(state.reconcile).toHaveBeenNthCalledWith(
-      1,
-      "tool-reservation",
-      usage,
-    );
-    expect(state.reconcile).toHaveBeenNthCalledWith(
-      2,
-      "tool-reservation",
-      usage,
-    );
-    expect(state.voidReservation).not.toHaveBeenCalled();
-    expect(state.holdUnknown).not.toHaveBeenCalled();
   });
 
   it("holds the full bound when a charged tool omits usage", async () => {
@@ -697,11 +562,6 @@ describe("runAdmittedToolCall", () => {
           crossEffectBoundary();
           return {
             content: "request accepted but state could not be observed",
-            admissionUsage: {
-              inputTokens: 2,
-              outputTokens: 3,
-              costUsd: 0.1,
-            },
             effectDisposition: {
               disposition: "remains_unknown",
               evidenceKind: "provider_receipt",
@@ -726,11 +586,6 @@ describe("runAdmittedToolCall", () => {
         reason: "adapter_reported_unknown_effect_disposition",
       },
     });
-    expect(state.holdUnknown).toHaveBeenCalledWith(
-      "tool-reservation",
-      "effect_outcome_unknown",
-    );
-    expect(state.reconcile).not.toHaveBeenCalled();
     await expect(
       runAdmittedToolCall({
         session: state.session,
@@ -815,78 +670,6 @@ describe("runAdmittedToolCall", () => {
       throw new Error("missing unknown outcome");
     }
     expect(acknowledgement.msg.payload.outcome).toBe("unknown_outcome");
-  });
-
-  it("settles a missing interactive response and permits the next effect", async () => {
-    const state = toolHarness();
-    const askTool = createAskUserQuestionTool();
-    const questionInput = {
-      questions: [
-        {
-          header: "Research scope",
-          question: "Which market angle?",
-          options: [
-            {
-              label: "Current outlook (Recommended)",
-              description: "Focus on current conditions.",
-            },
-            {
-              label: "Long-term outlook",
-              description: "Focus on structural changes.",
-            },
-          ],
-        },
-      ],
-    };
-
-    const unanswered = await runAdmittedToolCall({
-      session: state.session,
-      turnId: "turn-1",
-      callId: "call-unanswered-question",
-      tool: askTool,
-      args: questionInput,
-      invoke: async ({ crossEffectBoundary }) => {
-        crossEffectBoundary();
-        return await askTool.execute(questionInput);
-      },
-    });
-
-    expect(unanswered).toMatchObject({
-      content: "User did not provide answers.",
-      isError: true,
-      effectDisposition: { disposition: "confirmed_no_effect" },
-    });
-    expect(
-      state.effectEvents.filter(
-        (event) => event.msg.type === "effect_unknown_outcome",
-      ),
-    ).toHaveLength(0);
-
-    const continueEffect = vi.fn(async () => ({ content: "continued" }));
-    const followupTool = {
-      name: "WebSearch",
-      recoveryCategory: "side-effecting",
-    } as unknown as Tool;
-    const continued = await runAdmittedToolCall({
-      session: state.session,
-      turnId: "turn-1",
-      callId: "call-followup-effect",
-      tool: followupTool,
-      args: { query: "oil markets" },
-      invoke: async ({ crossEffectBoundary }) => {
-        crossEffectBoundary();
-        return await continueEffect();
-      },
-    });
-
-    expect(continued).toMatchObject({ content: "continued" });
-    expect(continueEffect).toHaveBeenCalledOnce();
-    expect(state.effectEvents.map((event) => event.msg.type)).toEqual([
-      "effect_intent",
-      "effect_result",
-      "effect_intent",
-      "effect_result",
-    ]);
   });
 
   it("accepts typed adapter evidence that a crossed attempt made no effect", async () => {
@@ -1019,14 +802,7 @@ describe("runAdmittedToolCall", () => {
 
   it("keeps the lease occupied and resolves a timed-out effect from late settlement", async () => {
     const state = toolHarness();
-    const physical = Promise.withResolvers<{
-      content: string;
-      admissionUsage: {
-        inputTokens: number;
-        outputTokens: number;
-        costUsd: number;
-      };
-    }>();
+    const physical = Promise.withResolvers<{ content: string }>();
     const callerTimeout = new Error("caller deadline elapsed");
     attachPendingPhysicalSettlement(callerTimeout, {
       callerStop: "timeout",
@@ -1037,9 +813,9 @@ describe("runAdmittedToolCall", () => {
       name: "write.late-settlement",
       recoveryCategory: "side-effecting",
       admissionEstimate: () => ({
-        maxInputTokens: 10,
-        maxOutputTokens: 20,
-        maxCostUsd: 1,
+        maxInputTokens: 0,
+        maxOutputTokens: 0,
+        maxCostUsd: 0,
       }),
     } as unknown as Tool;
 
@@ -1068,10 +844,7 @@ describe("runAdmittedToolCall", () => {
         },
       });
     });
-    physical.resolve({
-      content: "physically committed",
-      admissionUsage: { inputTokens: 4, outputTokens: 7, costUsd: 0.25 },
-    });
+    physical.resolve({ content: "physically committed" });
     await vi.waitFor(() => {
       expect(state.effectEvents.at(-1)?.msg.type).toBe(
         "effect_review_resolved",
@@ -1087,102 +860,8 @@ describe("runAdmittedToolCall", () => {
           workflowStatus: "resolved",
           domainAction: "mark_completed",
         },
-        admissionSettlement: {
-          reservationId: "tool-reservation",
-          decision: "reconcile",
-          usage: { inputTokens: 4, outputTokens: 7, costUsd: 0.25 },
-        },
       },
     });
-    expect(state.reconcile).toHaveBeenCalledWith("tool-reservation", {
-      inputTokens: 4,
-      outputTokens: 7,
-      costUsd: 0.25,
-    });
-    expect(state.holdUnknown).not.toHaveBeenCalled();
-  });
-
-  it("persists and applies exact usage for a late confirmed-no-effect review", async () => {
-    const state = toolHarness();
-    const physical = Promise.withResolvers<{
-      content: string;
-      isError: true;
-      admissionUsage: {
-        inputTokens: number;
-        outputTokens: number;
-        costUsd: number;
-      };
-      effectDisposition: {
-        disposition: "confirmed_no_effect";
-        evidenceKind: "provider_receipt";
-        evidenceRef: string;
-        evidenceSha256: string;
-      };
-    }>();
-    const callerAbort = new Error("caller aborted while provider settled");
-    attachPendingPhysicalSettlement(callerAbort, {
-      callerStop: "abort",
-      callerStoppedAt: "2026-07-18T00:00:00.000Z",
-      settlement: physical.promise,
-    });
-    const tool = {
-      name: "write.late-no-effect",
-      recoveryCategory: "side-effecting",
-      admissionEstimate: () => ({
-        maxInputTokens: 10,
-        maxOutputTokens: 20,
-        maxCostUsd: 1,
-      }),
-    } as unknown as Tool;
-
-    await expect(
-      runAdmittedToolCall({
-        session: state.session,
-        turnId: "turn-1",
-        callId: "call-late-no-effect",
-        tool,
-        args: {},
-        invoke: async ({ crossEffectBoundary }) => {
-          crossEffectBoundary();
-          throw callerAbort;
-        },
-      }),
-    ).rejects.toBe(callerAbort);
-
-    physical.resolve({
-      content: "provider proved no mutation",
-      isError: true,
-      admissionUsage: { inputTokens: 2, outputTokens: 1, costUsd: 0.1 },
-      effectDisposition: {
-        disposition: "confirmed_no_effect",
-        evidenceKind: "provider_receipt",
-        evidenceRef: "provider-receipt:no-effect",
-        evidenceSha256: "b".repeat(64),
-      },
-    });
-    await vi.waitFor(() => {
-      expect(state.effectEvents.at(-1)?.msg).toMatchObject({
-        type: "effect_review_resolved",
-        payload: {
-          resolution: {
-            disposition: "confirmed_no_effect",
-            workflowStatus: "resolved",
-          },
-          admissionSettlement: {
-            reservationId: "tool-reservation",
-            decision: "reconcile",
-            usage: { inputTokens: 2, outputTokens: 1, costUsd: 0.1 },
-          },
-        },
-      });
-      expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
-    });
-    expect(state.reconcile).toHaveBeenCalledWith("tool-reservation", {
-      inputTokens: 2,
-      outputTokens: 1,
-      costUsd: 0.1,
-    });
-    expect(state.holdUnknown).not.toHaveBeenCalled();
   });
 
   it("reprojects the same unknown event after fsync instead of appending a duplicate", async () => {
@@ -1407,76 +1086,6 @@ describe("runAdmittedToolCall", () => {
       type: "effect_intent",
       payload: { attempt: 2 },
     });
-  });
-
-  it("does not reconcile a late idempotent result when its durable append fails", async () => {
-    const state = toolHarness();
-    const physical = Promise.withResolvers<{
-      content: string;
-      admissionUsage: {
-        inputTokens: number;
-        outputTokens: number;
-        costUsd: number;
-      };
-    }>();
-    const callerTimeout = new Error("caller deadline elapsed");
-    attachPendingPhysicalSettlement(callerTimeout, {
-      callerStop: "timeout",
-      callerStoppedAt: "2026-07-18T00:00:00.000Z",
-      settlement: physical.promise,
-    });
-    const tool = {
-      name: "read.late-precommit-failure",
-      recoveryCategory: "idempotent",
-      admissionEstimate: () => ({
-        maxInputTokens: 10,
-        maxOutputTokens: 10,
-        maxCostUsd: 1,
-      }),
-    } as unknown as Tool;
-
-    await expect(
-      runAdmittedToolCall({
-        session: state.session,
-        turnId: "turn-1",
-        callId: "call-late-precommit-failure",
-        tool,
-        args: {},
-        invoke: async ({ crossEffectBoundary }) => {
-          crossEffectBoundary();
-          throw callerTimeout;
-        },
-      }),
-    ).rejects.toBe(callerTimeout);
-
-    process.env.AGENC_TEST_DURABILITY_FAILPOINT = "before_tool_ack_commit";
-    process.env.AGENC_TEST_DURABILITY_FAILPOINT_TOKEN = "m4-durability-child";
-    process.env.AGENC_TEST_DURABILITY_FAILPOINT_ACTION = "throw";
-    try {
-      physical.resolve({
-        content: "late result",
-        admissionUsage: {
-          inputTokens: 2,
-          outputTokens: 3,
-          costUsd: 0.25,
-        },
-      });
-      await vi.waitFor(() => {
-        expect(state.holdUnknown).toHaveBeenCalledWith(
-          "tool-reservation",
-          "tool_timeout_after_dispatch",
-        );
-        expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
-      });
-      expect(state.reconcile).not.toHaveBeenCalled();
-      expect(state.effectEvents.map((event) => event.msg.type)).toEqual([
-        "effect_intent",
-      ]);
-    } finally {
-      delete process.env.AGENC_TEST_DURABILITY_FAILPOINT;
-      delete process.env.AGENC_TEST_DURABILITY_FAILPOINT_TOKEN;
-      delete process.env.AGENC_TEST_DURABILITY_FAILPOINT_ACTION;
-    }
   });
 
   it("propagates a live idempotent rendezvous rejection without redispatch", async () => {

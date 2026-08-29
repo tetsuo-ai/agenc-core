@@ -16,6 +16,7 @@ import { toError } from "../../utils/errors.js";
 import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
 import { clearLSPDiagnosticScope } from "./LSPDiagnosticRegistry.js";
 import { registerSandboxExecutionLifecycleParticipant } from "../../sandbox/execution-lifecycle.js";
+import { isBareMode } from "../../utils/envUtils.js";
 
 type InitializationState = "not-started" | "pending" | "success" | "failed";
 
@@ -67,8 +68,7 @@ function isEnvTruthy(value: string | undefined): boolean {
 
 function lspDisabledByEnv(): boolean {
   return (
-    isEnvTruthy(process.env.AGENC_SIMPLE) ||
-    isEnvTruthy(process.env.AGENC_BARE) ||
+    isBareMode() ||
     isEnvTruthy(process.env.AGENC_DISABLE_LSP)
   );
 }
@@ -289,6 +289,7 @@ function ensureLspLifecycleRegistration(
     scope,
     {
       name: "lsp",
+      spawnSurfaces: ["lsp"],
       quiesce: async () => {
         resumeOptions = state.lastManagerOptions;
         await quiesceLspManagerState(state, scope);

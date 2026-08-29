@@ -60,6 +60,8 @@ import type {
   StreamProgressCallback,
 } from "../llm/types.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { AsyncQueue } from "../utils/async-queue.js";
 import { bootstrapLocalRuntimeSession } from "../bin/bootstrap.js";
 import {
@@ -77,6 +79,8 @@ import type {
 } from "../session/turn-context.js";
 import { TurnTimingState } from "../session/turn-context.js";
 import type { ToolRegistry } from "../tool-registry.js";
+import { createTestConfigStore } from "../fixtures.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 
 const LOCAL_FRIENDLY_TEMPLATE =
   "You optimize for team morale and being a supportive teammate as much as code quality.";
@@ -105,8 +109,6 @@ async function tempDir(prefix: string): Promise<string> {
 
 function mkFeatures(): ManagedFeatures {
   return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
   };
 }
 
@@ -306,7 +308,12 @@ function mkSession(provider: LLMProvider): {
     totalTokenUsage: 0,
   };
   const services: SessionServices = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     admissionRequired: false,
+    configStore: createTestConfigStore({ cwd: "/tmp" }),
+    runtimeOptions: resolveAgentRuntimeOptions({}),
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},

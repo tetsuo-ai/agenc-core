@@ -23,7 +23,7 @@ import {
   messageTextContent,
   normalizeFinishReason,
   normalizeToolCallsStrict,
-  parseOpenAIResponsesToolChoice,
+  parseOpenAIToolChoice,
   prepareMessagesForWire,
   readAudioPayload,
   readDocumentPayload,
@@ -300,7 +300,7 @@ export function buildOpenAIResponsesRequest(
   const tools = toOpenAIResponsesTools(input.tools);
   if (tools.length > 0) body.tools = tools;
   if (input.options?.toolChoice !== undefined) {
-    body.tool_choice = parseOpenAIResponsesToolChoice(input.options.toolChoice);
+    body.tool_choice = parseOpenAIToolChoice(input.options.toolChoice);
   }
   if (input.options?.parallelToolCalls !== undefined) {
     body.parallel_tool_calls = input.options.parallelToolCalls;

@@ -15,6 +15,12 @@ import {
   isAutoModeGateEnabled,
 } from "./classifier.js";
 import { createEmptyToolPermissionContext } from "./types.js";
+import { createProvider } from "../../src/llm/provider.js";
+import {
+  runWithCurrentRuntimeSession,
+} from "../../src/session/current-session.js";
+import { SessionProviderService } from "../../src/session/provider-service.js";
+import type { Session } from "../../src/session/session.js";
 
 const AUTO_MODE_ENV_KEYS = [
   "XAI_API_KEY",
@@ -51,15 +57,44 @@ function withAutoModeEnv<T>(
   }
 }
 
+function classifierSession(
+  environment: Readonly<Record<string, string | undefined>>,
+): Session {
+  const providerService = new SessionProviderService({
+    initialProvider: createProvider("openai-compatible", {
+      model: "classifier-test",
+      baseURL: "http://127.0.0.1:18000/v1",
+    }),
+    environment,
+  });
+  return { providerService } as unknown as Session;
+}
+
 describe("isAutoModeAllowlistedTool", () => {
   it("returns true for known safe tools", () => {
-    for (const name of ["FileRead", "Grep", "Glob", "TodoWrite", "Sleep"]) {
+    for (const name of [
+      "FileRead",
+      "Grep",
+      "Glob",
+      "TodoWrite",
+      "Sleep",
+      "ListMcpResourcesTool",
+      "ReadMcpResourceTool",
+    ]) {
       expect(isAutoModeAllowlistedTool(name)).toBe(true);
     }
   });
 
   it("returns false for tools not in the allowlist", () => {
-    for (const name of ["Bash", "Edit", "Write", "Agent", "resume_agent"]) {
+    for (const name of [
+      "system.bash",
+      "Edit",
+      "Write",
+      "Agent",
+      "resume_agent",
+      "ListMcpResources",
+      "ReadMcpResource",
+    ]) {
       expect(isAutoModeAllowlistedTool(name)).toBe(false);
     }
   });
@@ -123,7 +158,7 @@ describe("classifyYoloAction", () => {
   it("allows sandbox-safe Bash commands", async () => {
     const result = await classifyYoloAction({
       messages: [],
-      action: { toolName: "Bash", input: { command: "ls src" } },
+      action: { toolName: "system.bash", input: { command: "ls src" } },
       tools: [],
       permissionContext: createEmptyToolPermissionContext(),
     });
@@ -161,7 +196,7 @@ describe("classifyYoloAction", () => {
   it("blocks dangerous Bash commands", async () => {
     const result = await classifyYoloAction({
       messages: [],
-      action: { toolName: "Bash", input: { command: "sudo rm -rf /" } },
+      action: { toolName: "system.bash", input: { command: "sudo rm -rf /" } },
       tools: [],
       permissionContext: createEmptyToolPermissionContext(),
     });
@@ -185,33 +220,33 @@ describe("classifyYoloAction", () => {
       },
     );
     try {
-      await withAutoModeEnv({ XAI_API_KEY: "test-key" }, async () => {
-        const result = await classifyYoloAction({
-          messages: [
-            { role: "user", content: "Update the changelog" },
-            {
-              role: "assistant",
-              content: "",
-              toolCalls: [
-                {
-                  id: "call_1",
-                  name: "FileRead",
-                  arguments: "{\"path\":\"CHANGELOG.md\"}",
-                },
-              ],
-            },
-          ],
-          action: { toolName: "Edit", input: { path: "CHANGELOG.md" } },
-          tools: [],
-          permissionContext: createEmptyToolPermissionContext(),
-        });
-        expect(result.shouldBlock).toBe(false);
-        expect(result.reason).toBe("remote_fast_allow");
-        expect(result.stage).toBe("fast");
-        expect(result.model).toBe("grok-4-fast");
-        expect(result.stage1Model).toBe("grok-4-fast");
-        expect(result.stage1Usage).toEqual({ inputTokens: 12, outputTokens: 4 });
+      const session = classifierSession({ XAI_API_KEY: "test-key" });
+      const result = await classifyYoloAction({
+        session,
+        messages: [
+          { role: "user", content: "Update the changelog" },
+          {
+            role: "assistant",
+            content: "",
+            toolCalls: [
+              {
+                id: "call_1",
+                name: "FileRead",
+                arguments: "{\"path\":\"CHANGELOG.md\"}",
+              },
+            ],
+          },
+        ],
+        action: { toolName: "Edit", input: { path: "CHANGELOG.md" } },
+        tools: [],
+        permissionContext: createEmptyToolPermissionContext(),
       });
+      expect(result.shouldBlock).toBe(false);
+      expect(result.reason).toBe("remote_fast_allow");
+      expect(result.stage).toBe("fast");
+      expect(result.model).toBe("grok-4-fast");
+      expect(result.stage1Model).toBe("grok-4-fast");
+      expect(result.stage1Usage).toEqual({ inputTokens: 12, outputTokens: 4 });
       expect(calls).toHaveLength(1);
       expect(calls[0]?.stage).toBe("fast");
       expect(calls[0]?.userPrompt).toContain("USER Update the changelog");
@@ -219,6 +254,73 @@ describe("classifyYoloAction", () => {
       expect(calls[0]?.userPrompt).toContain("Edit(");
     } finally {
       restoreRunner();
+    }
+  });
+
+  it("isolates concurrent session credentials from post-bootstrap process env mutation", async () => {
+    const previous = process.env.XAI_API_KEY;
+    const sessionWithKey = classifierSession({
+      XAI_API_KEY: "session-a-key",
+    });
+    const sessionWithoutKey = classifierSession({});
+    const calls: Array<{ readonly prompt: string; readonly apiKey: string }> = [];
+    const restoreRunner = __setRemoteClassifierStageRunnerForTesting(
+      async (request, config) => {
+        calls.push({ prompt: request.userPrompt, apiKey: config.apiKey });
+        await Promise.resolve();
+        return {
+          shouldBlock: false,
+          reason: "remote_fast_allow",
+          usage: null,
+          model: request.model,
+        };
+      },
+    );
+
+    // Both session snapshots already exist. This daemon-global mutation must
+    // neither activate the keyless session nor replace session A's authority.
+    process.env.XAI_API_KEY = "daemon-key-after-bootstrap";
+    try {
+      const [withKey, withoutKey] = await Promise.all([
+        runWithCurrentRuntimeSession(sessionWithKey, async () => {
+          await Promise.resolve();
+          expect(isAutoModeGateEnabled()).toBe(true);
+          return classifyYoloAction({
+            messages: [],
+            action: { toolName: "SessionAEdit", input: {} },
+            tools: [],
+            permissionContext: createEmptyToolPermissionContext(),
+          });
+        }),
+        runWithCurrentRuntimeSession(sessionWithoutKey, async () => {
+          await Promise.resolve();
+          expect(isAutoModeGateEnabled()).toBe(false);
+          return classifyYoloAction({
+            messages: [],
+            action: { toolName: "SessionBEdit", input: {} },
+            tools: [],
+            permissionContext: createEmptyToolPermissionContext(),
+          });
+        }),
+      ]);
+
+      expect(withKey).toMatchObject({
+        shouldBlock: false,
+        reason: "remote_fast_allow",
+      });
+      expect(withoutKey).toMatchObject({
+        shouldBlock: true,
+        unavailable: true,
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toEqual({
+        prompt: expect.stringContaining("SessionAEdit("),
+        apiKey: "session-a-key",
+      });
+    } finally {
+      restoreRunner();
+      if (previous === undefined) delete process.env.XAI_API_KEY;
+      else process.env.XAI_API_KEY = previous;
     }
   });
 
@@ -245,23 +347,31 @@ describe("classifyYoloAction", () => {
       },
     );
     try {
-      await withAutoModeEnv({ GROK_API_KEY: "test-key" }, async () => {
-        const result = await classifyYoloAction({
-          messages: [{ role: "user", content: "Refactor just the permission classifier." }],
-          action: { toolName: "Edit", input: { path: "runtime/src/permissions/classifier.ts" } },
-          tools: [],
-          permissionContext: createEmptyToolPermissionContext(),
-        });
-        expect(result.shouldBlock).toBe(false);
-        expect(result.reason).toBe("thinking_stage_allow");
-        expect(result.thinking).toContain("explicitly asked");
-        expect(result.stage).toBe("thinking");
-        expect(result.model).toBe("grok-4");
-        expect(result.stage1Model).toBe("grok-4-fast");
-        expect(result.stage2Model).toBe("grok-4");
-        expect(result.stage1Usage).toEqual({ inputTokens: 8, outputTokens: 2 });
-        expect(result.stage2Usage).toEqual({ inputTokens: 20, outputTokens: 6 });
+      const session = classifierSession({ GROK_API_KEY: "test-key" });
+      const result = await classifyYoloAction({
+        session,
+        messages: [
+          {
+            role: "user",
+            content: "Refactor just the permission classifier.",
+          },
+        ],
+        action: {
+          toolName: "Edit",
+          input: { path: "runtime/src/permissions/classifier.ts" },
+        },
+        tools: [],
+        permissionContext: createEmptyToolPermissionContext(),
       });
+      expect(result.shouldBlock).toBe(false);
+      expect(result.reason).toBe("thinking_stage_allow");
+      expect(result.thinking).toContain("explicitly asked");
+      expect(result.stage).toBe("thinking");
+      expect(result.model).toBe("grok-4");
+      expect(result.stage1Model).toBe("grok-4-fast");
+      expect(result.stage2Model).toBe("grok-4");
+      expect(result.stage1Usage).toEqual({ inputTokens: 8, outputTokens: 2 });
+      expect(result.stage2Usage).toEqual({ inputTokens: 20, outputTokens: 6 });
       expect(calls).toEqual(["fast", "thinking"]);
     } finally {
       restoreRunner();
@@ -300,7 +410,7 @@ describe("classifyYoloAction", () => {
     ac.abort();
     const result = await classifyYoloAction({
       messages: [],
-      action: { toolName: "Bash", input: {} },
+      action: { toolName: "system.bash", input: {} },
       tools: [],
       permissionContext: createEmptyToolPermissionContext(),
       signal: ac.signal,
@@ -322,10 +432,8 @@ describe("isAutoModeGateEnabled", () => {
     });
   });
 
-  it("turns on when an xAI key is configured", () => {
-    withAutoModeEnv({ XAI_API_KEY: "test-key" }, () => {
-      expect(isAutoModeGateEnabled()).toBe(true);
-    });
+  it("turns on from an explicit immutable bootstrap environment", () => {
+    expect(isAutoModeGateEnabled({ XAI_API_KEY: "test-key" })).toBe(true);
   });
 
   it("is overridable via the testing resolver", () => {
@@ -343,10 +451,10 @@ describe("isAutoModeGateEnabled", () => {
 
 describe("formatActionForClassifier", () => {
   it("produces deterministic text for the same input", () => {
-    const a = formatActionForClassifier("Bash", { command: "ls" });
-    const b = formatActionForClassifier("Bash", { command: "ls" });
+    const a = formatActionForClassifier("system.bash", { command: "ls" });
+    const b = formatActionForClassifier("system.bash", { command: "ls" });
     expect(a).toBe(b);
-    expect(a).toContain("Bash(");
+    expect(a).toContain("system.bash(");
     expect(a).toContain('"command":"ls"');
   });
 

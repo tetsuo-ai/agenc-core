@@ -56,6 +56,7 @@ describe("auth backend selection", () => {
     const backend = createAuthBackend(config, {
       remote: {
         keyVendor: ({ provider, sessionId }) => ({
+          kind: "api-key",
           provider,
           sessionId,
           apiKey: "managed-key",
@@ -65,6 +66,7 @@ describe("auth backend selection", () => {
 
     expect(backend).toBeInstanceOf(RemoteAuthBackend);
     await expect(backend.vendKey("grok", "session-1")).resolves.toEqual({
+      kind: "api-key",
       provider: "grok",
       sessionId: "session-1",
       apiKey: "managed-key",
@@ -82,6 +84,7 @@ describe("auth backend selection", () => {
       auth: { backend: "remote", managedKeys: { enabled: false } },
     });
     const keyVendor = vi.fn(() => ({
+      kind: "api-key" as const,
       provider: "grok",
       sessionId: "session-1",
       apiKey: "managed-key",
@@ -105,6 +108,7 @@ describe("auth backend selection", () => {
       auth: { backend: "remote" },
     });
     const keyVendor = vi.fn(({ provider, sessionId }) => ({
+      kind: "api-key" as const,
       provider,
       sessionId,
       apiKey: "managed-key",
@@ -120,6 +124,7 @@ describe("auth backend selection", () => {
     });
 
     await expect(backend.vendKey("grok", "session-1")).resolves.toEqual({
+      kind: "api-key",
       provider: "grok",
       sessionId: "session-1",
       apiKey: "managed-key",
@@ -132,6 +137,7 @@ describe("auth backend selection", () => {
       auth: { backend: "remote", managedKeys: { enabled: false } },
     });
     const keyVendor = vi.fn(({ provider, sessionId }) => ({
+      kind: "api-key" as const,
       provider,
       sessionId,
       apiKey: "managed-key",

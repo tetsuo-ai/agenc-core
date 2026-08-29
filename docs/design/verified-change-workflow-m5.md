@@ -107,7 +107,7 @@ terminates `failed/verification_failed`.
 
 The frozen spec's `permissionMode` and unattended allow/deny lists govern the
 run's daemon session, applied when the session is bootstrapped for the run —
-the exact background-agent mechanism (`--yolo`/`--permission-mode` bootstrap
+the exact background-agent mechanism (`--dangerously-bypass-approvals-and-sandbox`/`--permission-mode` bootstrap
 argv plus the unattended permission-policy install on the session's
 permission-mode registry). Resumed runs re-resolve the same policy from the
 durable intake spec, so a restarted daemon never silently downgrades a run to

@@ -43,6 +43,8 @@ vi.mock("axios", () => {
 });
 
 import { AsyncQueue } from "../utils/async-queue.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {
   Session,
   type Event,
@@ -65,6 +67,8 @@ import type {
 } from "../llm/types.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import type { Tool } from "../tools/types.js";
+import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
+import { createTestConfigStore } from "../fixtures.js";
 
 const LARGE_TOOL_OUTPUT_BYTES = 80_000; // > 64KB, well over the clear threshold.
 const KEEP_RECENT = 5; // mirrors microcompact's keep-recent window.
@@ -72,12 +76,8 @@ const CLEARED_MARKER = "[Old tool result content cleared]";
 const UNTRUSTED_TOOL_RESULT_BOUNDARY =
   "===== AGENC UNTRUSTED TOOL RESULT DATA =====";
 
-let restoreEnv: (() => void) | undefined;
-
 afterEach(() => {
   vi.restoreAllMocks();
-  restoreEnv?.();
-  restoreEnv = undefined;
 });
 
 // Isolate the IN-MEMORY retention bound under test from auto-compaction:
@@ -86,15 +86,6 @@ afterEach(() => {
 // large context window and auto-compact disabled, history accumulates across
 // turns exactly as it does in the real leak, and only the new in-memory
 // retention bound keeps it from growing ~linearly.
-function disableAutoCompact(): void {
-  const prev = process.env.DISABLE_AUTO_COMPACT;
-  process.env.DISABLE_AUTO_COMPACT = "1";
-  restoreEnv = () => {
-    if (prev === undefined) delete process.env.DISABLE_AUTO_COMPACT;
-    else process.env.DISABLE_AUTO_COMPACT = prev;
-  };
-}
-
 function mkCtx(): TurnContext {
   return {
     subId: "turn-mem",
@@ -143,7 +134,7 @@ function mkCtx(): TurnContext {
 
 /**
  * Provider that, per `runTurn` invocation, issues exactly one compactable
- * (Bash) tool call on its first stream, then stops with final text on the
+ * FileRead call on its first stream, then stops with final text on the
  * second stream. The tool-call id encodes the turn number so each turn adds a
  * distinct large tool result to history.
  */
@@ -171,8 +162,8 @@ function mkPerTurnToolProvider(): LLMProvider {
           ...base,
           toolCalls: [
             {
-              id: `bash_call_turn_${turnIndex}`,
-              name: "Bash",
+              id: `read_call_turn_${turnIndex}`,
+              name: "FileRead",
               arguments: "{}",
             },
           ],
@@ -187,19 +178,19 @@ function mkPerTurnToolProvider(): LLMProvider {
 }
 
 /**
- * Bash tool registry returning a large, turn-tagged output so each turn's
+ * Canonical file-reader registry returning a large, turn-tagged output so each turn's
  * result is distinguishable and well over the clear threshold.
  */
-function mkLargeBashRegistry(): ToolRegistry {
+function mkLargeFileReadRegistry(): ToolRegistry {
   let dispatchCount = 0;
   const tool: Tool = {
-    name: "Bash",
-    description: "large output bash",
+    name: "FileRead",
+    description: "large file output",
     inputSchema: { type: "object", additionalProperties: false },
     requiresApproval: false,
     execute: async () => {
       dispatchCount += 1;
-      const tag = `BASHOUT_${dispatchCount}_`;
+      const tag = `READOUT_${dispatchCount}_`;
       const body = "x".repeat(LARGE_TOOL_OUTPUT_BYTES);
       return { content: `${tag}${body}`, isError: false };
     },
@@ -209,7 +200,7 @@ function mkLargeBashRegistry(): ToolRegistry {
     toLLMTools: () => [],
     dispatch: async () => {
       dispatchCount += 1;
-      const tag = `BASHOUT_${dispatchCount}_`;
+      const tag = `READOUT_${dispatchCount}_`;
       const body = "x".repeat(LARGE_TOOL_OUTPUT_BYTES);
       return { content: `${tag}${body}`, isError: false };
     },
@@ -217,10 +208,7 @@ function mkLargeBashRegistry(): ToolRegistry {
 }
 
 function mkFeatures(): ManagedFeatures {
-  return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
-  } as unknown as ManagedFeatures;
+  return {} as unknown as ManagedFeatures;
 }
 
 function mkConfig(): Config {
@@ -300,7 +288,15 @@ function mkSession(opts: {
     totalTokenUsage: 0,
   };
   const services: SessionServices = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     admissionRequired: false,
+    runtimeOptions: resolveAgentRuntimeOptions({}),
+    configStore: createTestConfigStore({
+      cwd: state.sessionConfiguration.cwd,
+    }),
+    providerEnvironment: { AGENC_DISABLE_AUTO_COMPACT: "1" },
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},
@@ -383,8 +379,9 @@ function messageText(message: LLMMessage): string {
 
 function rolloutText(item: unknown): string {
   if (!item || typeof item !== "object") return "";
-  const payload = (item as { readonly payload?: { readonly content?: unknown } })
-    .payload;
+  const payload = (
+    item as { readonly payload?: { readonly content?: unknown } }
+  ).payload;
   const content = payload?.content;
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -402,9 +399,8 @@ describe("runTurn — session-history-memory in-memory retention bound", () => {
     "in-memory tool-result bytes stay bounded across many large-output turns " +
       "while recent results stay full and the rollout keeps full content",
     async () => {
-      disableAutoCompact();
       const provider = mkPerTurnToolProvider();
-      const registry = mkLargeBashRegistry();
+      const registry = mkLargeFileReadRegistry();
       const { session, getHistory, appendRollout } = mkSession({
         provider,
         registry,
@@ -455,13 +451,15 @@ describe("runTurn — session-history-memory in-memory retention bound", () => {
       expect(fullToolResults.length).toBeGreaterThan(0);
       expect(fullToolResults.length).toBeLessThanOrEqual(KEEP_RECENT);
       // The latest turn's output must be present full.
-      const latestTag = `BASHOUT_${MANY_TURNS}_`;
+      const latestTag = `READOUT_${MANY_TURNS}_`;
       const latestResult = fullToolResults.find(
-        (message) => message.toolCallId === `bash_call_turn_${MANY_TURNS}`,
+        (message) => message.toolCallId === `read_call_turn_${MANY_TURNS}`,
       );
       expect(latestResult).toBeDefined();
       const latestResultText = messageText(latestResult!);
-      expect(latestResultText).toContain("untrusted workspace data from Bash");
+      expect(latestResultText).toContain(
+        "untrusted workspace data from FileRead",
+      );
       expect(latestResultText).toContain(latestTag);
       expect(
         latestResultText.split(UNTRUSTED_TOOL_RESULT_BOUNDARY),
@@ -481,7 +479,7 @@ describe("runTurn — session-history-memory in-memory retention bound", () => {
       const rolloutBlob = appendRollout.mock.calls
         .map(([item]) => rolloutText(item))
         .join("\n");
-      expect(rolloutBlob).toContain("BASHOUT_1_");
+      expect(rolloutBlob).toContain("READOUT_1_");
       // ...and the full body (not a marker) — verify a long run of the body.
       expect(rolloutBlob).toContain("x".repeat(LARGE_TOOL_OUTPUT_BYTES));
       // The marker must NEVER leak into the durable rollout.

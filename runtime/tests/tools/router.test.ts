@@ -11,18 +11,11 @@ import {
 } from "./router.js";
 import type { RouterResponseItem } from "./router.js";
 import type { ToolInvocation, ToolName } from "./context.js";
-import type { ApprovalCtx } from "./orchestrator.js";
 import type { Tool } from "./types.js";
 import { EventLog } from "../session/event-log.js";
-import { ApprovalStore } from "../permissions/approval-cache.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import type { GuardianApprovalReviewOptions } from "../permissions/guardian/reviewer.js";
 import { buildGuardianApprovalRequest } from "../permissions/guardian/approval-request.js";
-import { createEmptyToolPermissionContext } from "../permissions/types.js";
-import {
-  clearAskUserQuestionResponsesForTest,
-  createAskUserQuestionTool,
-  recordAskUserQuestionResponse,
-} from "./ask-user-question/tool.js";
 import {
   sha256,
   workspaceMutationCoordinators,
@@ -30,9 +23,9 @@ import {
 
 const coherenceTemporaryPaths: string[] = [];
 const originalAgencHome = process.env.AGENC_HOME;
+const TEST_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
 
 afterEach(async () => {
-  clearAskUserQuestionResponsesForTest();
   if (originalAgencHome === undefined) delete process.env.AGENC_HOME;
   else process.env.AGENC_HOME = originalAgencHome;
   workspaceMutationCoordinators.clearForTests();
@@ -107,7 +100,7 @@ const jsReplTool: Tool = {
 function makeInvocation(toolName: ToolName, callId = "c0"): ToolInvocation {
   return {
     session: {
-      services: { admissionRequired: false },
+      services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
     } as ToolInvocation["session"],
     turn: {} as ToolInvocation["turn"],
     tracker: {
@@ -148,7 +141,7 @@ describe("ToolRouter", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
           cwd: workspaceRoot,
         } as never,
         turn: { subId: "turn-editor-external", cwd: workspaceRoot } as never,
@@ -202,7 +195,7 @@ describe("ToolRouter", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
           cwd: workspaceRoot,
         } as never,
         turn: { subId: "turn-editor-write", cwd: workspaceRoot } as never,
@@ -227,6 +220,106 @@ describe("ToolRouter", () => {
     expect(postHook).not.toHaveBeenCalled();
   });
 
+  test("@ledger turn fails closed for every non-read-only model tool except the Ledger handoff", async () => {
+    const readExecute = vi.fn(async () => ({ content: "read-ok" }));
+    const writeExecute = vi.fn(async () => ({ content: "write-ok" }));
+    const unclassifiedExecute = vi.fn(async () => ({ content: "unknown-ok" }));
+    const ledgerExecute = vi.fn(async () => ({ content: "ledger-ok" }));
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "safe.read",
+          description: "",
+          inputSchema: {},
+          isReadOnly: true,
+          recoveryCategory: "idempotent",
+          metadata: { mutating: false },
+          execute: readExecute,
+        },
+        supportsParallelToolCalls: true,
+      },
+      {
+        tool: {
+          name: "danger.write",
+          description: "",
+          inputSchema: {},
+          isReadOnly: false,
+          recoveryCategory: "side-effecting",
+          metadata: { mutating: true },
+          execute: writeExecute,
+        },
+        supportsParallelToolCalls: false,
+      },
+      {
+        tool: {
+          name: "unclassified.tool",
+          description: "",
+          inputSchema: {},
+          metadata: { mutating: false },
+          execute: unclassifiedExecute,
+        },
+        supportsParallelToolCalls: false,
+      },
+      {
+        tool: {
+          name: "request_ledger_transfer",
+          description: "",
+          inputSchema: {},
+          isReadOnly: false,
+          recoveryCategory: "interactive",
+          metadata: { mutating: true },
+          execute: ledgerExecute,
+        },
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const session = {
+      eventLog: new EventLog(),
+      services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
+      currentRootHumanTurn: () => ({
+        turnId: "turn-ledger",
+        text: "@LEDGER send exactly 1 lamport",
+      }),
+    } as never;
+    const opts = {
+      session,
+      turn: { subId: "turn-ledger" } as never,
+      tracker: {
+        appendFileDiff: () => {},
+        snapshot: () => [],
+        clear: () => {},
+      },
+      approvalPolicy: "never" as const,
+      sandboxMode: "danger_full_access" as const,
+    };
+
+    const read = await router.dispatchModelToolCall(
+      { id: "read", name: "safe.read", arguments: "{}" },
+      opts,
+    );
+    const write = await router.dispatchModelToolCall(
+      { id: "write", name: "danger.write", arguments: "{}" },
+      opts,
+    );
+    const unclassified = await router.dispatchModelToolCall(
+      { id: "unknown", name: "unclassified.tool", arguments: "{}" },
+      opts,
+    );
+    const ledger = await router.dispatchModelToolCall(
+      { id: "ledger", name: "request_ledger_transfer", arguments: "{}" },
+      opts,
+    );
+
+    expect(read).toMatchObject({ content: "read-ok" });
+    expect(write).toMatchObject({ isError: true });
+    expect(write.content).toContain("request_ledger_transfer");
+    expect(unclassified).toMatchObject({ isError: true });
+    expect(ledger).toMatchObject({ content: "ledger-ok" });
+    expect(readExecute).toHaveBeenCalledOnce();
+    expect(writeExecute).not.toHaveBeenCalled();
+    expect(unclassifiedExecute).not.toHaveBeenCalled();
+    expect(ledgerExecute).toHaveBeenCalledOnce();
+  });
 
   test("findSpec matches by full name", () => {
     const router = new ToolRouter([
@@ -237,7 +330,7 @@ describe("ToolRouter", () => {
     expect(router.findSpec("unknown")).toBeUndefined();
   });
 
-  test("dispatchModelToolCall routes legacy Read calls to FileRead", async () => {
+  test("dispatchModelToolCall rejects removed Read alias", async () => {
     const execute = vi.fn(async (args: Record<string, unknown>) => ({
       content: `read ${String(args.file_path)}`,
     }));
@@ -257,7 +350,7 @@ describe("ToolRouter", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: { subId: "turn-read-alias" } as never,
         tracker: {
@@ -270,11 +363,11 @@ describe("ToolRouter", () => {
       },
     );
 
-    expect(result.isError).toBeFalsy();
-    expect(result.content).toBe("read main.c");
-    expect(execute).toHaveBeenCalledWith(
-      expect.objectContaining({ file_path: "main.c" }),
-    );
+    expect(result).toEqual({
+      content: JSON.stringify({ error: "unknown tool: Read" }),
+      isError: true,
+    });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   test("dispatchModelToolCall strips model-supplied __agenc* keys before tool.execute", async () => {
@@ -306,7 +399,7 @@ describe("ToolRouter", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: { subId: "turn-injection" } as never,
         tracker: {
@@ -736,7 +829,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       ...makeInvocation({ name: "Write" }, "direct-approval"),
       session: {
         eventLog: new EventLog(),
-        services: { admissionRequired: false },
+        services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
       } as never,
       turn: {
         subId: "turn-direct-approval",
@@ -867,7 +960,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       ...makeInvocation({ name: "Write" }, "direct-ask"),
       session: {
         eventLog: new EventLog(),
-        services: { admissionRequired: false },
+        services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
       } as never,
       turn: {
         subId: "turn-direct-ask",
@@ -923,7 +1016,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: { subId: "turn-approval-1" } as never,
         tracker: {
@@ -951,120 +1044,6 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
         turnId: "turn-approval-1",
       }),
     );
-  });
-
-  test("AskUserQuestion collects its answer even when the session bypasses permissions", async () => {
-    const questionInput = {
-      questions: [
-        {
-          header: "Research scope",
-          question: "Which oil-market research angle should I prioritize?",
-          options: [
-            {
-              label: "Current market outlook (Recommended)",
-              description: "Focus on the next 6-12 months.",
-            },
-            {
-              label: "Long-term industry outlook",
-              description: "Focus on structural fundamentals.",
-            },
-          ],
-        },
-      ],
-    };
-    const router = new ToolRouter([
-      {
-        tool: createAskUserQuestionTool(),
-        supportsParallelToolCalls: false,
-      },
-    ]);
-    const resolver = {
-      request: vi.fn(async (ctx: ApprovalCtx) => {
-        recordAskUserQuestionResponse(ctx.callId, {
-          ...questionInput,
-          answers: {
-            "Which oil-market research angle should I prioritize?":
-              "Current market outlook (Recommended)",
-          },
-        });
-        return { kind: "approved" as const };
-      }),
-    };
-    const guardian = {
-      reviewApprovalRequest: vi.fn(async () => ({
-        decision: { kind: "approved" as const },
-        reviewId: "auto-review-must-not-answer",
-        countedDenial: false,
-      })),
-    };
-    const permissionAllow = vi.fn(async () => ({ kind: "allow" as const }));
-    const canUseTool = vi.fn(async () => ({
-      behavior: "ask" as const,
-      message: "Answer questions?",
-      decisionReason: {
-        type: "permissionPromptTool" as const,
-        permissionPromptToolName: "AskUserQuestion",
-        toolResult: null,
-      },
-    }));
-    const permissionContext = {
-      getAppState: () => ({
-        toolPermissionContext: createEmptyToolPermissionContext({
-          mode: "bypassPermissions",
-        }),
-      }),
-    } as never;
-
-    const result = await router.dispatchModelToolCall(
-      {
-        id: "call-ask-bypass",
-        name: "AskUserQuestion",
-        arguments: JSON.stringify(questionInput),
-      },
-      {
-        session: {
-          eventLog: new EventLog(),
-          services: {
-            admissionRequired: false,
-            toolApprovals: new ApprovalStore<unknown>(),
-          },
-          permissionModeRegistry: {
-            current: () => ({ mode: "bypassPermissions" }),
-          },
-        } as never,
-        turn: {
-          subId: "turn-ask-bypass",
-          approvalPolicy: { value: "never" },
-          sandboxPolicy: { value: "danger_full_access" },
-        } as never,
-        tracker: {
-          appendFileDiff: () => {},
-          snapshot: () => [],
-          clear: () => {},
-        },
-        approvalPolicy: "never",
-        sandboxMode: "danger_full_access",
-        approvalResolver: resolver,
-        guardianApprovalReviewer: guardian,
-        permissionDecisionHooks: [permissionAllow],
-        canUseTool,
-        permissionContext,
-      },
-    );
-
-    expect(canUseTool).toHaveBeenCalled();
-    expect(permissionAllow).toHaveBeenCalledOnce();
-    expect(guardian.reviewApprovalRequest).not.toHaveBeenCalled();
-    expect(resolver.request).toHaveBeenCalledOnce();
-    expect(resolver.request).toHaveBeenCalledWith(
-      expect.objectContaining({
-        callId: "call-ask-bypass",
-        requiresUserInteraction: true,
-      }),
-    );
-    expect(result.isError).toBeFalsy();
-    expect(result.content).toContain("User has answered your questions");
-    expect(result.content).toContain("Current market outlook (Recommended)");
   });
 
   test("dispatchModelToolCall routes evaluator ask through guardian without pre-hooks", async () => {
@@ -1101,7 +1080,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: {
           subId: "turn-evaluator-ask",
@@ -1169,7 +1148,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: {
           subId: "turn-guardian-denied",
@@ -1254,7 +1233,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: {
           subId: "turn-guardian-network-interfaces",
@@ -1341,7 +1320,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: {
           subId: "turn-hook-ask",
@@ -1406,7 +1385,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: {
           subId: "turn-model-bigint-rewrite",
@@ -1461,7 +1440,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
         session: {
           conversationId: "session_router",
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: { subId: "turn-denied" } as never,
         tracker: {
@@ -1530,7 +1509,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
         session: {
           conversationId: "session_router",
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: { subId: "turn-auto-approved" } as never,
         tracker: {
@@ -1589,7 +1568,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
         session: {
           conversationId: "session_router",
           eventLog: new EventLog(),
-          services: { admissionRequired: false },
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
         } as never,
         turn: { subId: "turn-forbidden" } as never,
         tracker: {

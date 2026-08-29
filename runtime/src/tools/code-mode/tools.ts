@@ -1,6 +1,5 @@
 import type { FunctionCallOutputContentItem } from "../context.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
-import { validationErrorToolResult } from "../results.js";
 import {
   buildExecToolDescription,
   buildWaitToolDescription,
@@ -116,7 +115,7 @@ export function codeModeRuntimeResponseToToolResult(
     text: `[code_mode ${footerLines.join(" ")}]`,
   });
 
-  const result: ToolResult = {
+  return {
     content,
     // Key on truthiness to match status (line 72) and the "Script error"
     // section gating — an empty errorText ("" from `throw new Error('')`) must
@@ -130,31 +129,6 @@ export function codeModeRuntimeResponseToToolResult(
       durationMs: response.durationMs,
     },
   };
-  if (
-    result.isError === true &&
-    response.type === "result" &&
-    response.effectBoundaryCrossed === false
-  ) {
-    return {
-      ...result,
-      effectDisposition: validationErrorToolResult(
-        `tool:code-mode:${response.cellId}:pre-effect-runtime`,
-        content,
-      ).effectDisposition,
-    };
-  }
-  return result;
-}
-
-function preEffectErrorResult(
-  toolName: typeof CODE_MODE_EXEC_TOOL_NAME | typeof CODE_MODE_WAIT_TOOL_NAME,
-  stage: string,
-  error: unknown,
-): ToolResult {
-  return validationErrorToolResult(
-    `tool:code-mode:${toolName}:${stage}`,
-    error instanceof Error ? error.message : String(error),
-  );
 }
 
 function readStringArg(
@@ -188,33 +162,25 @@ function callId(args: Record<string, unknown>): string {
 
 async function executeCodeMode(
   service: CodeModeService,
-  getEnabledTools: () => readonly Tool[],
+  enabledTools: readonly Tool[],
   stringArgumentFields: Readonly<Record<string, string>> | undefined,
   args: Record<string, unknown>,
 ): Promise<ToolResult> {
-  let request: Parameters<CodeModeService["execute"]>[0];
-  try {
-    const source = readStringArg(args, ["code", "source", "input"]);
-    const parsed = parseExecSource(source);
-    request = {
-      cellId: service.allocateCellId(),
-      toolCallId: callId(args),
-      enabledTools: codeModeToolDefinitionsFromTools(getEnabledTools(), {
-        stringArgumentFields,
-      }),
-      source: parsed.code,
-      storedValues: await service.storedValues(),
-      yieldTimeMs: parsed.yieldTimeMs ?? DEFAULT_EXEC_YIELD_TIME_MS,
-      maxOutputTokens: parsed.maxOutputTokens,
-    };
-  } catch (error) {
-    return preEffectErrorResult(CODE_MODE_EXEC_TOOL_NAME, "validation", error);
-  }
-  // Do not catch service execution errors here. Once execute() is invoked a
-  // worker may already have dispatched a nested mutation before rejecting.
-  const response = await service.execute(request);
+  const source = readStringArg(args, ["code", "source", "input"]);
+  const parsed = parseExecSource(source);
+  const response = await service.execute({
+    cellId: service.allocateCellId(),
+    toolCallId: callId(args),
+    enabledTools: codeModeToolDefinitionsFromTools(enabledTools, {
+      stringArgumentFields,
+    }),
+    source: parsed.code,
+    storedValues: await service.storedValues(),
+    yieldTimeMs: parsed.yieldTimeMs ?? DEFAULT_EXEC_YIELD_TIME_MS,
+    maxOutputTokens: parsed.maxOutputTokens,
+  });
   return codeModeRuntimeResponseToToolResult(response, {
-    maxOutputTokens: request.maxOutputTokens,
+    maxOutputTokens: parsed.maxOutputTokens,
   });
 }
 
@@ -222,28 +188,21 @@ async function waitCodeMode(
   service: CodeModeService,
   args: Record<string, unknown>,
 ): Promise<ToolResult> {
-  let request: Parameters<CodeModeService["wait"]>[0];
-  try {
-    const cellId = readStringArg(args, ["cell_id", "cellId"]);
-    const maxOutputTokens =
-      readOptionalInteger(args, "max_tokens") ??
-      readOptionalInteger(args, "maxOutputTokens");
-    request = {
-      cellId,
-      yieldTimeMs:
-        readOptionalInteger(args, "yield_time_ms") ??
-        readOptionalInteger(args, "yieldTimeMs") ??
-        DEFAULT_WAIT_YIELD_TIME_MS,
-      maxOutputTokens,
-      terminate: args["terminate"] === true,
-    };
-  } catch (error) {
-    return preEffectErrorResult(CODE_MODE_WAIT_TOOL_NAME, "validation", error);
-  }
-  // As with exec, a live cell may cross a nested tool boundary during wait.
-  const response = await service.wait(request);
+  const cellId = readStringArg(args, ["cell_id", "cellId"]);
+  const maxOutputTokens =
+    readOptionalInteger(args, "max_tokens") ??
+    readOptionalInteger(args, "maxOutputTokens");
+  const response = await service.wait({
+    cellId,
+    yieldTimeMs:
+      readOptionalInteger(args, "yield_time_ms") ??
+      readOptionalInteger(args, "yieldTimeMs") ??
+      DEFAULT_WAIT_YIELD_TIME_MS,
+    maxOutputTokens,
+    terminate: args["terminate"] === true,
+  });
   return codeModeRuntimeResponseToToolResult(response, {
-    maxOutputTokens: request.maxOutputTokens,
+    maxOutputTokens,
   });
 }
 
@@ -265,7 +224,7 @@ export function createCodeModeTools(
         code: {
           type: "string",
           description:
-            'Raw JavaScript source. May start with // @exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}.',
+            "Raw JavaScript source. May start with // @exec: {\"yield_time_ms\": 10000, \"max_output_tokens\": 1000}.",
         },
       },
       required: ["code"],
@@ -282,7 +241,7 @@ export function createCodeModeTools(
     execute: (args) =>
       executeCodeMode(
         opts.service,
-        opts.getEnabledTools,
+        opts.getEnabledTools(),
         opts.stringArgumentFields,
         args,
       ),

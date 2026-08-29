@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { AsyncQueue } from "../utils/async-queue.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {
   ensureAgentTaskRegistered,
   lastTokenInfoFromRollout,
@@ -28,8 +30,6 @@ import type { LLMProvider } from "../llm/types.js";
 
 function mkFeatures(): ManagedFeatures {
   return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
   };
 }
 
@@ -115,6 +115,9 @@ function buildSession(
   overrides: { services?: Partial<SessionServices> } = {},
 ): Session {
   const services = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},

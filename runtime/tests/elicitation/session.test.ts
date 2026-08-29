@@ -20,10 +20,6 @@ vi.mock("../agents/role-definitions.js", () => ({
   listAgentRoleDefinitions: () => [],
 }));
 
-vi.mock("../tui/model-switch.js", () => ({
-  buildPendingProviderSwitch: () => null,
-}));
-
 vi.mock("../llm/pasted-content.js", () => ({
   pastedContentsToLLMMessage: () => null,
 }));
@@ -98,6 +94,8 @@ vi.mock("../tui/tool-rendering.js", () => ({
 }));
 
 import { AsyncQueue } from "../utils/async-queue.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {
   Session,
   type Event,
@@ -120,8 +118,6 @@ import { installElicitationResolvers } from "../tui/components/App.js";
 
 function mkFeatures(): ManagedFeatures {
   return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
   };
 }
 
@@ -205,6 +201,9 @@ function mkProvider(): LLMProvider {
 
 function buildSession(): Session {
   const services = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},

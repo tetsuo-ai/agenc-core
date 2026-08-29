@@ -56,7 +56,7 @@ let tempRoot = "";
 let repo = "";
 let oldProjectRoot = "";
 let oldOriginalCwd = "";
-let oldConfigDir: string | undefined;
+let oldAgencHome: string | undefined;
 
 beforeAll(async () => {
   agencmd = await import("./agencmd.js");
@@ -67,8 +67,8 @@ beforeEach(() => {
   tempRoot = mkdtempSync(join(tmpdir(), "agenc-persona-"));
   oldProjectRoot = getProjectRoot();
   oldOriginalCwd = getOriginalCwd();
-  oldConfigDir = process.env.AGENC_CONFIG_DIR;
-  process.env.AGENC_CONFIG_DIR = join(tempRoot, "home");
+  oldAgencHome = process.env.AGENC_HOME;
+  process.env.AGENC_HOME = join(tempRoot, "home");
   repo = join(tempRoot, "repo");
   mkdirSync(repo, { recursive: true });
   setProjectRoot(repo);
@@ -79,8 +79,8 @@ beforeEach(() => {
 afterEach(() => {
   setProjectRoot(oldProjectRoot);
   setOriginalCwd(oldOriginalCwd);
-  if (oldConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR;
-  else process.env.AGENC_CONFIG_DIR = oldConfigDir;
+  if (oldAgencHome === undefined) delete process.env.AGENC_HOME;
+  else process.env.AGENC_HOME = oldAgencHome;
   agencmd.clearMemoryFileCaches();
   rmSync(tempRoot, { recursive: true, force: true });
 });
@@ -274,7 +274,7 @@ describe("persona live-wiring contract", () => {
       "utf8",
     );
     const basePromptSource = readFileSync(
-      resolve(process.cwd(), "src/constants/prompts.ts"),
+      resolve(process.cwd(), "src/prompts/system-prompt.ts"),
       "utf8",
     );
     expect(liveSource).toContain("getPersonaMemoryFiles");

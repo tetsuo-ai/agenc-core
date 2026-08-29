@@ -11,23 +11,115 @@ import {
   classifyPluginSource,
   findPluginReverseDependents,
   pluginSignaturePayloadBytes,
-  pluginSourceCacheRoot,
+  pluginDependencyIdentityFromSource,
+  pluginSourceCacheRoot as pluginSourceCacheRootWithAuthority,
   qualifyPluginDependency,
   redactPluginSource,
-  resolvePluginSource,
+  resolvePluginSource as resolvePluginSourceWithAuthority,
   resolvePluginDependencyClosure,
   verifyResolvedPluginSignature,
   verifyPluginDependencyState,
   type PluginProcessRunner,
 } from "./resolution.js";
 import {
-  installPluginOp,
-  listInstalledPlugins,
-  updatePluginOp,
+  installPluginOp as installPluginOpWithAuthority,
+  updatePluginOp as updatePluginOpWithAuthority,
 } from "./cli/pluginOperations.js";
-import { loadPlugins, type LoadedPlugin } from "./loader.js";
+import {
+  loadPlugins as loadPluginsWithAuthority,
+  type LoadedPlugin,
+} from "./loader.js";
 
 const execFileAsync = promisify(execFile);
+
+type ResolverOptions = Parameters<typeof resolvePluginSourceWithAuthority>[1];
+type ResolverTestOptions = Omit<
+  ResolverOptions,
+  "pluginStorageRoot" | "sessionTempRoot"
+> & Partial<Pick<ResolverOptions, "pluginStorageRoot" | "sessionTempRoot">>;
+
+async function resolvePluginSource(
+  source: string,
+  options: ResolverTestOptions,
+) {
+  const pluginStorageRoot = options.pluginStorageRoot ??
+    join(options.agencHome, "plugins");
+  const sessionTempRoot = options.sessionTempRoot ??
+    join(options.agencHome, "tmp");
+  await mkdir(pluginStorageRoot, { recursive: true });
+  await mkdir(sessionTempRoot, { recursive: true });
+  return resolvePluginSourceWithAuthority(source, {
+    ...options,
+    pluginStorageRoot,
+    sessionTempRoot,
+  });
+}
+
+function pluginSourceCacheRoot(agencHome: string, source: string): string {
+  return pluginSourceCacheRootWithAuthority(join(agencHome, "plugins"), source);
+}
+
+type InstallInput = Parameters<typeof installPluginOpWithAuthority>[0];
+type InstallTestInput = Omit<
+  InstallInput,
+  "pluginStorageRoot" | "sessionTempRoot"
+> & Partial<Pick<InstallInput, "pluginStorageRoot" | "sessionTempRoot">>;
+
+async function installPluginOp(input: InstallTestInput) {
+  if (input.agencHome === undefined) {
+    throw new Error("test install input requires agencHome");
+  }
+  const pluginStorageRoot = input.pluginStorageRoot ??
+    join(input.agencHome, "plugins");
+  const sessionTempRoot = input.sessionTempRoot ??
+    join(input.agencHome, "tmp");
+  await mkdir(pluginStorageRoot, { recursive: true });
+  await mkdir(sessionTempRoot, { recursive: true });
+  return installPluginOpWithAuthority({
+    ...input,
+    env: input.env ?? {},
+    pluginStorageRoot,
+    sessionTempRoot,
+  });
+}
+
+type UpdateInput = Parameters<typeof updatePluginOpWithAuthority>[0];
+type UpdateTestInput = Omit<
+  UpdateInput,
+  "pluginStorageRoot" | "sessionTempRoot"
+> & Partial<Pick<UpdateInput, "pluginStorageRoot" | "sessionTempRoot">>;
+
+async function updatePluginOp(input: UpdateTestInput) {
+  if (input.agencHome === undefined) {
+    throw new Error("test update input requires agencHome");
+  }
+  const pluginStorageRoot = input.pluginStorageRoot ??
+    join(input.agencHome, "plugins");
+  const sessionTempRoot = input.sessionTempRoot ??
+    join(input.agencHome, "tmp");
+  await mkdir(pluginStorageRoot, { recursive: true });
+  await mkdir(sessionTempRoot, { recursive: true });
+  return updatePluginOpWithAuthority({
+    ...input,
+    env: input.env ?? {},
+    pluginStorageRoot,
+    sessionTempRoot,
+  });
+}
+
+type LoaderOptions = Parameters<typeof loadPluginsWithAuthority>[0];
+type LoaderTestOptions = Omit<LoaderOptions, "pluginStorageRoot"> & {
+  readonly agencHome: string;
+  readonly pluginStorageRoot?: string;
+};
+
+function loadPlugins(options: LoaderTestOptions) {
+  const { agencHome, ...loaderOptions } = options;
+  return loadPluginsWithAuthority({
+    ...loaderOptions,
+    pluginStorageRoot: options.pluginStorageRoot ?? join(agencHome, "plugins"),
+  });
+}
 
 describe("plugin source resolution", () => {
   test("resolves npm packages before using git, tarball, or bundle handlers", async () => {
@@ -69,6 +161,51 @@ describe("plugin source resolution", () => {
       expect(calls[0]).toMatch(/^npm pack --json --pack-destination .+ -- @tetsuo-ai\/demo-plugin$/u);
       expect(calls.some((call) => call.startsWith("tar -xzf"))).toBe(true);
       await expect(access(join(resolved.pluginRoot, ".agenc-plugin", "plugin.json"))).resolves.toBeUndefined();
+      await resolved.cleanup();
+    });
+  });
+
+  test("uses only the captured plugin-storage and session-temp roots", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const pluginStorageRoot = join(root, "operator-plugin-root");
+      const sessionTempRoot = join(root, "session-temp-root");
+      await mkdir(pluginStorageRoot, { recursive: true });
+      await mkdir(sessionTempRoot, { recursive: true });
+      let observedPackRoot = "";
+      const runProcess: PluginProcessRunner = async (command, args) => {
+        if (command === "npm") {
+          observedPackRoot = String(args[args.indexOf("--pack-destination") + 1]);
+          await writeFile(join(observedPackRoot, "isolated-1.0.0.tgz"), "fixture");
+          return {
+            stdout: JSON.stringify([{ filename: "isolated-1.0.0.tgz" }]),
+            stderr: "",
+          };
+        }
+        if (command === "tar") {
+          if (args[0] === "-tzf") return { stdout: safeTarListing("package"), stderr: "" };
+          if (args[0] === "-tvzf") return { stdout: safeTarVerboseListing("package"), stderr: "" };
+          const extractRoot = String(args[args.indexOf("-C") + 1]);
+          await writePlugin(join(extractRoot, "package"), "isolated");
+          return { stdout: "", stderr: "" };
+        }
+        throw new Error(`unexpected process: ${command}`);
+      };
+
+      const resolved = await resolvePluginSourceWithAuthority("isolated@1.0.0", {
+        agencHome,
+        pluginStorageRoot,
+        sessionTempRoot,
+        workspaceRoot: root,
+        runProcess,
+        requireSignature: false,
+      });
+
+      expect(resolved.cacheRoot).toBe(
+        pluginSourceCacheRootWithAuthority(pluginStorageRoot, "isolated@1.0.0"),
+      );
+      expect(observedPackRoot.startsWith(`${sessionTempRoot}/`)).toBe(true);
+      await expect(access(join(agencHome, "plugins"))).rejects.toThrow();
       await resolved.cleanup();
     });
   });
@@ -191,96 +328,6 @@ describe("plugin source resolution", () => {
     });
   });
 
-  test("marketplace installs and updates retain canonical identity and pinned git subdirectory", async () => {
-    await withTempDir(async (root) => {
-      const agencHome = join(root, "home");
-      const source = "https://github.com/tetsuo-ai/agenc-core.git";
-      const sha = "b".repeat(40);
-      const calls: Array<{
-        readonly args: readonly string[];
-        readonly cwd?: string;
-      }> = [];
-      const runProcess: PluginProcessRunner = async (command, args, options) => {
-        expect(command).toBe("git");
-        calls.push({ args: [...args], ...(options?.cwd ? { cwd: options.cwd } : {}) });
-        if (args[0] === "clone") {
-          const target = String(args.at(-1));
-          await writePlugin(join(target, "plugins", "iot-builder"), "iot-builder");
-        }
-        if (args[0] === "rev-parse") {
-          return { stdout: `${sha}\n`, stderr: "" };
-        }
-        return { stdout: "", stderr: "" };
-      };
-
-      const installed = await installPluginOp({
-        source,
-        pluginId: "iot-builder@agenc-first-party",
-        name: "iot-builder",
-        gitSubdir: "plugins/iot-builder",
-        gitRef: "stable",
-        gitSha: sha,
-        scope: "user",
-        agencHome,
-        workspaceRoot: root,
-        runResolutionProcess: runProcess,
-        requireSignature: false,
-      });
-      expect(installed.plugin).toMatchObject({
-        id: "iot-builder@agenc-first-party",
-        operationId: "plugin:user:iot-builder@agenc-first-party",
-        scope: "user",
-        name: "iot-builder",
-      });
-      const metadata = JSON.parse(await readFile(
-        join(installed.destination, ".agenc-plugin", "agenc-install.json"),
-        "utf8",
-      )) as Record<string, unknown>;
-      expect(metadata).toMatchObject({
-        id: "iot-builder@agenc-first-party",
-        operationId: "plugin:user:iot-builder@agenc-first-party",
-        scope: "user",
-        source,
-        gitSubdir: "plugins/iot-builder",
-        gitRef: "stable",
-        gitSha: sha,
-      });
-      expect(calls.some((call) =>
-        call.args[0] === "sparse-checkout" &&
-        call.args.includes("plugins/iot-builder") &&
-        call.cwd !== undefined)).toBe(true);
-      expect(calls.some((call) =>
-        call.args[0] === "checkout" && call.args.includes(sha))).toBe(true);
-
-      const listed = await listInstalledPlugins({ agencHome, workspaceRoot: root });
-      expect(listed.plugins).toEqual([
-        expect.objectContaining({
-          id: "iot-builder@agenc-first-party",
-          operationId: "plugin:user:iot-builder@agenc-first-party",
-          scope: "user",
-        }),
-      ]);
-
-      calls.length = 0;
-      const updated = await updatePluginOp({
-        pluginId: "iot-builder@agenc-first-party",
-        scope: "user",
-        agencHome,
-        workspaceRoot: root,
-        runResolutionProcess: runProcess,
-        requireSignature: false,
-      });
-      expect(updated.plugin.id).toBe("iot-builder@agenc-first-party");
-      expect(calls.some((call) =>
-        call.args[0] === "sparse-checkout" &&
-        call.args.includes("plugins/iot-builder"))).toBe(true);
-      expect(calls.some((call) =>
-        call.args[0] === "fetch" && call.args.includes("stable"))).toBe(true);
-      expect(calls.some((call) =>
-        call.args[0] === "fetch" && call.args.includes(sha))).toBe(true);
-    });
-  });
-
   test("loader uses installed remote dependency identities from install metadata", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
@@ -376,6 +423,16 @@ describe("plugin source resolution", () => {
           workspaceRoot: root,
         }),
       ).rejects.toThrow(/reserved for AgenC internal storage/u);
+      for (const name of ["data", "marketplaces"]) {
+        await expect(
+          installPluginOp({
+            source: sourceRoot,
+            name,
+            agencHome,
+            workspaceRoot: root,
+          }),
+        ).rejects.toThrow(/reserved for AgenC internal storage/u);
+      }
       await expect(
         installPluginOp({
           source: sourceRoot,
@@ -654,6 +711,7 @@ describe("plugin source resolution", () => {
       await expect(access(join(installed.destination, ".agenc-plugin", "agenc-install.json"))).resolves.toBeUndefined();
       await expect(
         verifyResolvedPluginSignature(installed.destination, {
+          agencHome,
           publishersPath,
           requireSignature: true,
         }),
@@ -1166,8 +1224,8 @@ describe("plugin source resolution", () => {
     }));
     const duplicateNameState = verifyPluginDependencyState([
       loadedPlugin("app", "local-app", true, ["lib"]),
-      loadedPlugin("lib", "local-lib-a", true),
-      loadedPlugin("lib", "local-lib-b", true),
+      loadedPlugin("lib", "lib@one", true),
+      loadedPlugin("lib", "lib@two", true),
     ]);
     expect([...duplicateNameState.demoted]).toEqual(["local-app"]);
     expect(duplicateNameState.errors).toContainEqual(expect.objectContaining({
@@ -1200,7 +1258,7 @@ describe("plugin source resolution", () => {
     expect(findPluginReverseDependents("app@main", [
       loadedPlugin("app", "app@main", true),
       loadedPlugin("addon", "addon@main", true, ["app"]),
-    ])).toEqual(["addon"]);
+    ])).toEqual(["addon@main"]);
   });
 
   test("loader demotes configured plugins whose dependencies are disabled", async () => {
@@ -1230,7 +1288,7 @@ describe("plugin source resolution", () => {
       expect(result.errors).toContainEqual(expect.objectContaining({
         type: "dependency",
         source: "app@main",
-        plugin: "app",
+        plugin: "app@main",
       }));
     });
   });
@@ -1283,7 +1341,7 @@ describe("plugin source resolution", () => {
       expect(result.errors).toContainEqual(expect.objectContaining({
         type: "dependency",
         source: "app@main",
-        plugin: "app",
+        plugin: "app@main",
         message: "Plugin dependency lib@other is cross-marketplace",
       }));
     });
@@ -1427,6 +1485,7 @@ describe("plugin source resolution", () => {
 
       await expect(
         verifyResolvedPluginSignature(pluginRoot, {
+          agencHome: root,
           publishersPath,
           requireSignature: true,
         }),
@@ -1438,6 +1497,7 @@ describe("plugin source resolution", () => {
       });
       await expect(
         verifyResolvedPluginSignature(pluginRoot, {
+          agencHome: root,
           publishersPath,
           requireSignature: true,
           maxExtractedFiles: 0,
@@ -1448,6 +1508,7 @@ describe("plugin source resolution", () => {
       await writeJson(emptyPublishersPath, { publishers: {} });
       await expect(
         verifyResolvedPluginSignature(pluginRoot, {
+          agencHome: root,
           publishersPath: emptyPublishersPath,
           requireSignature: true,
         }),
@@ -1457,6 +1518,7 @@ describe("plugin source resolution", () => {
       await writeFile(extraPath, "# Extra\n");
       await expect(
         verifyResolvedPluginSignature(pluginRoot, {
+          agencHome: root,
           publishersPath,
           requireSignature: true,
         }),
@@ -1466,6 +1528,7 @@ describe("plugin source resolution", () => {
       await writeFile(join(pluginRoot, "commands", "hello.md"), "# Tampered\n");
       await expect(
         verifyResolvedPluginSignature(pluginRoot, {
+          agencHome: root,
           publishersPath,
           requireSignature: true,
         }),
@@ -1499,6 +1562,7 @@ function loadedPlugin(
   version?: string,
 ): LoadedPlugin {
   return {
+    id: pluginDependencyIdentityFromSource(source) ?? name,
     name,
     ...(version !== undefined ? { version } : {}),
     root: "",

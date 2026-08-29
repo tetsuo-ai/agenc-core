@@ -8,13 +8,15 @@ type Props = {
   lookups: ReturnType<typeof buildMessageLookups>;
   inProgressToolUseIDs: Set<string>;
   shouldAnimate: boolean;
+  fullscreen: boolean;
 };
 export function GroupedToolUseContent({
   message,
   tools,
   lookups,
   inProgressToolUseIDs,
-  shouldAnimate
+  shouldAnimate,
+  fullscreen,
 }: Props): React.ReactNode {
   const tool = findToolByName(tools, message.toolName);
   if (!tool?.renderGroupedToolUse) {
@@ -51,6 +53,7 @@ export function GroupedToolUseContent({
   const anyInProgress = toolUsesData.some(d => d.isInProgress);
   return tool.renderGroupedToolUse(toolUsesData, {
     shouldAnimate: shouldAnimate && anyInProgress,
-    tools
+    tools,
+    fullscreen,
   });
 }

@@ -14,10 +14,10 @@ import { redactSecrets } from "../../secrets/index.js";
 import { runHookCommand } from "./command-runner.js";
 import { flattenHooks } from "./discovery.js";
 import { AdmissionDeniedError } from "../../budget/admission-client.js";
+import { isHookExecutionSuppressed } from "../runtime-policy.js";
 import type {
   CommandRunResult,
   HookCommandRunDiagnostic,
-  HookDispatchResult,
   HookEngineOptions,
   HookRunDiagnostic,
   IndividualHookConfig,
@@ -43,6 +43,16 @@ export class HookEngine {
 
   isDisabled(): boolean {
     return this.disabled;
+  }
+
+  /** Immutable owner policy; unlike `isDisabled`, callers cannot toggle it. */
+  isHardSuppressed(): boolean {
+    return isHookExecutionSuppressed(this.opts.runtimeOptions);
+  }
+
+  /** Effective execution state across mutable and immutable policy. */
+  isExecutionSuppressed(): boolean {
+    return this.disabled || this.isHardSuppressed();
   }
 
   listHooks(): readonly IndividualHookConfig[] {
@@ -85,21 +95,6 @@ export class HookEngine {
       });
   }
 
-  async dispatch(
-    event: HookEventName,
-    matcherInputs: readonly string[],
-    input: Record<string, unknown>,
-    signal?: AbortSignal,
-  ): Promise<readonly HookDispatchResult[]> {
-    const handlers = this.selectHandlersForMatcherInputs(event, matcherInputs);
-    return Promise.all(
-      handlers.map(async (hook) => ({
-        hook,
-        run: await this.runCommandHook(hook, input, signal, inputCwd(input)),
-      })),
-    );
-  }
-
   async runCommandHook(
     hook: IndividualHookConfig,
     input: Record<string, unknown>,
@@ -107,7 +102,7 @@ export class HookEngine {
     cwd?: string,
   ): Promise<HookCommandRunDiagnostic> {
     const startedAtUnixMs = Date.now();
-    if (this.disabled) {
+    if (this.isExecutionSuppressed()) {
       return this.recordDiagnostic(
         hook,
         {
@@ -115,6 +110,9 @@ export class HookEngine {
           stdout: "",
           stderr: "",
           durationMs: 0,
+          error: this.isHardSuppressed()
+            ? "skipped: hooks are suppressed by immutable --bare mode"
+            : "skipped: hooks are disabled for this session",
         },
         startedAtUnixMs,
       );
@@ -125,6 +123,9 @@ export class HookEngine {
         cwd: cwd ?? this.opts.cwd,
         env: this.opts.env,
         shellPath: this.opts.shellPath,
+        ...(this.opts.commandWrapperArgv !== undefined
+          ? { commandWrapperArgv: this.opts.commandWrapperArgv }
+          : {}),
         stdin: `${JSON.stringify(input)}\n`,
         timeoutMs: hook.command.timeout_ms ?? DEFAULT_HOOK_TIMEOUT_MS,
         signal: effectSignal,
@@ -239,11 +240,6 @@ export class HookEngine {
       ...(result.error !== undefined ? { rawError: result.error } : {}),
     };
   }
-}
-
-function inputCwd(input: Record<string, unknown>): string | undefined {
-  const cwd = input.cwd;
-  return typeof cwd === "string" && cwd.trim().length > 0 ? cwd : undefined;
 }
 
 export function matchesPattern(matchQuery: string, matcher?: string): boolean {

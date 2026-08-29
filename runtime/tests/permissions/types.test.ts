@@ -142,16 +142,111 @@ describe("deepFreeze", () => {
     expect(deepFreeze(null)).toBe(null);
   });
 
-  test("is idempotent on already-frozen values", () => {
+  test("does not trust caller-frozen values as immutable snapshots", () => {
     const v = Object.freeze({ a: 1 });
-    expect(deepFreeze(v)).toBe(v);
+    const snapshot = deepFreeze(v);
+    expect(snapshot).not.toBe(v);
+    expect(snapshot).toEqual(v);
   });
 
-  test("freezes Map entries' values (but not the Map itself)", () => {
+  test("clones Maps behind a facade that rejects every mutation path", () => {
     const inner = { a: 1 };
     const m = new Map<string, typeof inner>([["k", inner]]);
-    deepFreeze(m);
-    expect(Object.isFrozen(inner)).toBe(true);
+    const snapshot = deepFreeze<ReadonlyMap<string, typeof inner>>(m);
+    const exposed = snapshot as unknown as Map<string, typeof inner>;
+
+    expect(snapshot).not.toBe(m);
+    expect(snapshot.get("k")).not.toBe(inner);
+    expect(Object.isFrozen(snapshot.get("k"))).toBe(true);
+    expect(exposed.set).toBeUndefined();
+    expect(exposed.delete).toBeUndefined();
+    expect(exposed.clear).toBeUndefined();
+    expect(snapshot.valueOf()).toBe(snapshot);
+    snapshot.forEach((_value, _key, callbackMap) => {
+      expect(callbackMap).toBe(snapshot);
+    });
+    expect(() => Map.prototype.set.call(snapshot, "x", { a: 2 })).toThrow(
+      TypeError,
+    );
+    expect(() => Map.prototype.delete.call(snapshot, "k")).toThrow(TypeError);
+    expect(() => Map.prototype.clear.call(snapshot)).toThrow(TypeError);
+
+    inner.a = 9;
+    m.set("x", { a: 2 });
+    expect(snapshot.get("k")).toEqual({ a: 1 });
+    expect(snapshot.has("x")).toBe(false);
+  });
+
+  test("does not dispatch facade reads through mutable Map prototypes", () => {
+    const snapshot = deepFreeze<ReadonlyMap<string, { a: number }>>(
+      new Map([["k", { a: 1 }]]),
+    );
+    const methods = [
+      "get",
+      "has",
+      "entries",
+      "keys",
+      "values",
+      "forEach",
+      Symbol.iterator,
+    ] as const;
+    const descriptors = methods.map((method) => [
+      method,
+      Object.getOwnPropertyDescriptor(Map.prototype, method),
+    ] as const);
+    let observed:
+      | {
+          readonly direct: { a: number } | undefined;
+          readonly present: boolean;
+          readonly entries: Array<[string, { a: number }]>;
+          readonly keys: string[];
+          readonly values: Array<{ a: number }>;
+          readonly iterated: Array<[string, { a: number }]>;
+          readonly callbackMap: ReadonlyMap<string, { a: number }> | undefined;
+        }
+      | undefined;
+    try {
+      for (const method of methods) {
+        Object.defineProperty(Map.prototype, method, {
+          configurable: true,
+          value: () => {
+            throw new Error(`permission facade dispatched through Map.prototype.${String(method)}`);
+          },
+        });
+      }
+      let callbackMap: ReadonlyMap<string, { a: number }> | undefined;
+      snapshot.forEach((_value, _key, map) => {
+        callbackMap = map;
+      });
+      observed = {
+        direct: snapshot.get("k"),
+        present: snapshot.has("k"),
+        entries: [...snapshot.entries()],
+        keys: [...snapshot.keys()],
+        values: [...snapshot.values()],
+        iterated: [...snapshot],
+        callbackMap,
+      };
+    } finally {
+      for (const [method, descriptor] of descriptors) {
+        if (descriptor === undefined) delete Map.prototype[method];
+        else Object.defineProperty(Map.prototype, method, descriptor);
+      }
+    }
+
+    expect(snapshot instanceof Map).toBe(false);
+    expect(observed).toEqual({
+      direct: { a: 1 },
+      present: true,
+      entries: [["k", { a: 1 }]],
+      keys: ["k"],
+      values: [{ a: 1 }],
+      iterated: [["k", { a: 1 }]],
+      callbackMap: snapshot,
+    });
+    expect(() => Map.prototype.set.call(snapshot, "x", { a: 2 })).toThrow(
+      TypeError,
+    );
   });
 });
 
@@ -189,6 +284,52 @@ describe("createEmptyToolPermissionContext", () => {
     expect(() => {
       (ctx as unknown as { mode: string }).mode = "plan";
     }).toThrow(TypeError);
+  });
+
+  test("clones and freezes every nested authority value", () => {
+    const directory = { path: "/workspace/extra", source: "session" as const };
+    const directories = new Map([[directory.path, directory]]);
+    const allowRules = ["Read(src/**)"];
+    const accepted = ["/workspace"];
+    const unattendedAllow = ["Read"];
+    const unattendedDeny = ["system.bash"];
+    const ctx = createEmptyToolPermissionContext({
+      additionalWorkingDirectories: directories,
+      alwaysAllowRules: { session: allowRules },
+      alwaysDenyRules: { policySettings: ["Write(**)"] },
+      alwaysAskRules: { userSettings: ["WebFetch(*)"] },
+      strippedDangerousRules: { session: ["system.bash(*)"] },
+      bypassPermissionsAcceptedIn: accepted,
+      unattendedPolicy: {
+        allowlist: unattendedAllow,
+        denylist: unattendedDeny,
+      },
+    });
+
+    directory.path = "/mutated";
+    directories.clear();
+    allowRules.push("Write(**)");
+    accepted.push("/later");
+    unattendedAllow.push("Write");
+    unattendedDeny.length = 0;
+
+    expect(ctx.additionalWorkingDirectories.get("/workspace/extra")).toEqual({
+      path: "/workspace/extra",
+      source: "session",
+    });
+    expect(ctx.alwaysAllowRules.session).toEqual(["Read(src/**)"]);
+    expect(ctx.bypassPermissionsAcceptedIn).toEqual(["/workspace"]);
+    expect(ctx.unattendedPolicy).toEqual({
+      allowlist: ["Read"],
+      denylist: ["system.bash"],
+    });
+    expect(Object.isFrozen(ctx.alwaysAllowRules)).toBe(true);
+    expect(Object.isFrozen(ctx.alwaysAllowRules.session)).toBe(true);
+    expect(Object.isFrozen(ctx.strippedDangerousRules?.session)).toBe(true);
+    expect(Object.isFrozen(ctx.bypassPermissionsAcceptedIn)).toBe(true);
+    expect(Object.isFrozen(ctx.unattendedPolicy)).toBe(true);
+    expect(Object.isFrozen(ctx.unattendedPolicy?.allowlist)).toBe(true);
+    expect(Object.isFrozen(ctx.unattendedPolicy?.denylist)).toBe(true);
   });
 });
 

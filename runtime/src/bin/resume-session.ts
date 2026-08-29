@@ -20,7 +20,6 @@ import {
 
 import {
   DEFAULT_SESSION_ROOT_MARKERS,
-  findProjectRootSync,
   getAgencHomeDir,
   getProjectDir,
   hasSupportedFileIdentity,
@@ -481,21 +480,25 @@ function candidatesUnderProjectDir(
   return candidates;
 }
 
-function legacyProjectDirFor(cwd: string): string {
-  const root = findProjectRootSync(cwd, DEFAULT_SESSION_ROOT_MARKERS);
-  const slugInput = root ? root.rootDir : cwd;
-  return join(getAgencHomeDir(), "projects", sanitizePath(slugInput));
+function legacyProjectDirFor(cwd: string, agencHome: string): string {
+  return join(getAgencHomeDir(agencHome), "projects", sanitizePath(cwd));
 }
 
-function localProjectDirs(cwd: string): readonly string[] {
-  return [...new Set([getProjectDir(cwd), legacyProjectDirFor(cwd)])];
+function localProjectDirs(cwd: string, agencHome: string): readonly string[] {
+  return [
+    ...new Set([
+      getProjectDir(cwd, DEFAULT_SESSION_ROOT_MARKERS, agencHome),
+      legacyProjectDirFor(cwd, agencHome),
+    ]),
+  ];
 }
 
 function projectCandidatesCrossSlug(
   cwd: string,
+  agencHome: string,
   budget: SearchBudget,
 ): readonly ResumeCandidate[] {
-  const candidates = localProjectDirs(cwd).flatMap((projectDir) =>
+  const candidates = localProjectDirs(cwd, agencHome).flatMap((projectDir) =>
     candidatesUnderProjectDir(projectDir, budget),
   );
   const byPath = new Map<string, ResumeCandidate>();
@@ -513,9 +516,10 @@ function projectCandidatesCrossSlug(
 function exactLocalCandidates(
   cwd: string,
   id: string,
+  agencHome: string,
   budget: SearchBudget,
 ): readonly ResumeCandidate[] {
-  const matches = localProjectDirs(cwd)
+  const matches = localProjectDirs(cwd, agencHome)
     .flatMap((projectDir) => {
       const candidate = candidateUnderProjectDir(projectDir, id, budget);
       return candidate === null ? [] : [candidate];
@@ -560,11 +564,13 @@ function globalCandidates(
   return candidates;
 }
 
-function budget(): SearchBudget {
+function budget(agencHome: string): SearchBudget {
   let projectsRoot: string | undefined;
   let incompleteReason: SearchBudget["incompleteReason"];
   try {
-    projectsRoot = realpathSync(resolve(getAgencHomeDir(), "projects"));
+    projectsRoot = realpathSync(
+      resolve(getAgencHomeDir(agencHome), "projects"),
+    );
   } catch (error) {
     projectsRoot = undefined;
     if (!isMissingPathError(error)) incompleteReason = "source_unavailable";
@@ -621,9 +627,12 @@ function resolveMatches(
   return { kind: "not_found", input };
 }
 
-export function resolveLatestSessionId(cwd: string): ResumeSessionResolution {
-  const search = budget();
-  const latest = projectCandidatesCrossSlug(cwd, search)[0];
+export function resolveLatestSessionId(
+  cwd: string,
+  agencHome: string,
+): ResumeSessionResolution {
+  const search = budget(agencHome);
+  const latest = projectCandidatesCrossSlug(cwd, agencHome, search)[0];
   const stopped = incomplete("--continue", search);
   if (stopped !== undefined) return stopped;
   if (latest === undefined) return { kind: "none" };
@@ -636,21 +645,24 @@ export function resolveLatestSessionId(cwd: string): ResumeSessionResolution {
 export function resolveResumeSessionId(
   cwd: string,
   input: string,
+  agencHome: string,
 ): ResumeSessionResolution {
   const trimmed = input.trim();
   if (!isSafeSessionIdSegment(trimmed)) {
     return { kind: "not_found", input };
   }
-  const exactSearch = budget();
-  const exact = exactLocalCandidates(cwd, trimmed, exactSearch);
+  const exactSearch = budget(agencHome);
+  const exact = exactLocalCandidates(cwd, trimmed, agencHome, exactSearch);
   const exactStopped = incomplete(trimmed, exactSearch);
   if (exactStopped !== undefined) return exactStopped;
   if (exact.length > 0) return resolveMatches(trimmed, exact, exactSearch);
 
-  const prefixSearch = budget();
-  const prefixMatches = projectCandidatesCrossSlug(cwd, prefixSearch).filter(
-    (candidate) => candidate.sessionId.startsWith(trimmed),
-  );
+  const prefixSearch = budget(agencHome);
+  const prefixMatches = projectCandidatesCrossSlug(
+    cwd,
+    agencHome,
+    prefixSearch,
+  ).filter((candidate) => candidate.sessionId.startsWith(trimmed));
   const prefixStopped = incomplete(trimmed, prefixSearch);
   if (prefixStopped !== undefined) return prefixStopped;
   if (prefixMatches.length > 0) {
@@ -658,7 +670,7 @@ export function resolveResumeSessionId(
   }
 
   if (isLikelyConvId(trimmed)) {
-    const globalSearch = budget();
+    const globalSearch = budget(agencHome);
     const matches = globalCandidates(trimmed, globalSearch);
     const globalStopped = incomplete(trimmed, globalSearch);
     if (globalStopped !== undefined) return globalStopped;

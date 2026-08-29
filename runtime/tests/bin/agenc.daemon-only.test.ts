@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -73,6 +73,7 @@ async function withMain(args: readonly string[]): Promise<{
   process.env.AGENC_WORKSPACE = tmpCwd;
   process.env.HOME = tmpHome;
   process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+  await mkdir(join(tmpCwd, ".git"));
   trustProjectSync({
     agencHome: tmpHome,
     projectRoot: tmpCwd,
@@ -116,5 +117,20 @@ describe("agenc daemon startup requirement", () => {
     expect(result.stderr).toContain(
       "agenc: daemon autostart failed: socket unavailable",
     );
+  });
+
+  it("rejects a retired startup flag before daemon autostart", async () => {
+    daemonMocks.resolveAgenCDaemonAutostartEnabled.mockResolvedValue(true);
+    daemonMocks.ensureAgenCDaemonAutostart.mockResolvedValue(undefined);
+
+    const result = await withMain(["--yolo"]);
+
+    expect(result).toEqual({
+      code: 2,
+      stderr: expect.stringContaining(
+        "unknown option '--yolo'. Use '--dangerously-bypass-approvals-and-sandbox' instead.",
+      ),
+    });
+    expect(daemonMocks.ensureAgenCDaemonAutostart).not.toHaveBeenCalled();
   });
 });

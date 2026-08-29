@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle'
 import { randomBytes } from 'crypto'
 import { execa } from 'execa'
 import { basename, extname, isAbsolute, join } from 'path'
+import { resolveSessionTempRoot } from '../session/runtime-options.js'
 import {
   IMAGE_MAX_HEIGHT,
   IMAGE_MAX_WIDTH,
@@ -56,10 +57,8 @@ function getClipboardCommands() {
   const platform = process.platform as SupportedPlatform
 
   // Platform-specific short-lived file paths
-  // Use AGENC_TMPDIR if set, otherwise fall back to platform defaults
-  const baseTmpDir =
-    process.env.AGENC_TMPDIR ||
-    (platform === 'win32' ? process.env.TEMP || 'C:\\Temp' : '/tmp')
+  // Use the immutable session temp root captured at the trusted ingress.
+  const baseTmpDir = resolveSessionTempRoot()
   const screenshotFilename = 'agenc_cli_latest_screenshot.png'
   const tempPaths: Record<SupportedPlatform, string> = {
     darwin: join(baseTmpDir, screenshotFilename),

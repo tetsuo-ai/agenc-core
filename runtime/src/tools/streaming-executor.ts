@@ -66,7 +66,6 @@ import {
   type LiveToolDispatchOptions,
   type ToolRouter,
 } from "./router.js";
-import { canonicalModelToolName } from "./model-tool-aliases.js";
 import { resolveTimeoutMs } from "./execution.js";
 import type { ToolUseBlock } from "../session/turn-state.js";
 import type { Tool } from "./types.js";
@@ -902,14 +901,7 @@ export class StreamingToolExecutor {
   private readonly concurrencyClassOverrides = new Map<string, ConcurrencyClass>();
 
   private resolveModelToolName(toolName: string): string {
-    if (
-      this.concurrencyClassOverrides.has(toolName) ||
-      this.registry.tools.some((t) => t.name === toolName) ||
-      this.liveToolDispatch?.router.findSpec(toolName) !== undefined
-    ) {
-      return toolName;
-    }
-    return canonicalModelToolName(toolName);
+    return toolName;
   }
 
   private isKnownToolCall(toolCall: LLMToolCall): boolean {

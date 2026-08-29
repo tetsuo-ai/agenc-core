@@ -1,7 +1,7 @@
 /**
  * Permission overlay accept scenario.
  *
- * Default mode (no --yolo). Submits a prompt that triggers Bash, accepts the
+ * Default mode (no --dangerously-bypass-approvals-and-sandbox). Submits a prompt that triggers Bash, accepts the
  * approval, then verifies the command actually ran by checking the rollout's
  * completed Bash stdout marker. This keeps the scenario scoped to tool
  * approval rather than sandbox file-write policy or assistant echo behavior.

@@ -1,8 +1,4 @@
 /**
- * Ports OC `src/utils/plugins/mcpPluginIntegration.ts` and CX
- * `core-plugins/src/manager.rs` plugin MCP spawn-path behavior onto
- * AgenC's plugin registration model.
- *
  * Why this lives here:
  *   - Plugin MCP stdio servers are the only plugin surface that spawns
  *     child processes. Keeping cwd containment, reserved env injection,
@@ -20,8 +16,8 @@ import path from "node:path";
 
 import type {
   McpServerConfig,
-  PluginMcpSandboxMetadata,
 } from "../config/schema.js";
+import type { PluginMcpSandboxMetadata } from "../mcp-client/types.js";
 import { getPluginDataDir } from "./directories.js";
 import { pluginScopedServerIdentifier } from "./identifier-normalization.js";
 import type { LoadedPlugin } from "./loader.js";
@@ -47,7 +43,11 @@ export interface PluginMcpSandboxIssue {
 }
 
 export type PluginMcpSandboxResult =
-  | { readonly server: McpServerConfig }
+  | {
+      readonly server: McpServerConfig & {
+        readonly pluginSandbox?: PluginMcpSandboxMetadata;
+      };
+    }
   | { readonly issue: PluginMcpSandboxIssue };
 
 interface RealpathResult {
@@ -148,7 +148,6 @@ function isPluginMcpRemoteTransport(
   return server.transport === "http" ||
     server.transport === "sse" ||
     server.transport === "websocket" ||
-    server.transport === "ws" ||
     (
       server.transport === undefined &&
       server.command === undefined &&
@@ -185,8 +184,7 @@ function transportConfigIssue(
   if (
     (server.transport === "http" ||
       server.transport === "sse" ||
-      server.transport === "websocket" ||
-      server.transport === "ws") &&
+      server.transport === "websocket") &&
     server.endpoint === undefined
   ) {
     return {
@@ -198,28 +196,28 @@ function transportConfigIssue(
 }
 
 function pluginMcpSandboxEnvironment(
-  plugin: Pick<LoadedPlugin, "name" | "root" | "source">,
+  plugin: Pick<LoadedPlugin, "id" | "name" | "root">,
   serverName: string,
-  dataDir = getPluginDataDir(plugin.source),
+  dataDir = getPluginDataDir(plugin.id),
 ): Readonly<Record<(typeof RESERVED_PLUGIN_MCP_SANDBOX_ENV_KEYS)[number], string>> {
   return {
     AGENC_PLUGIN_ROOT: plugin.root,
     AGENC_PLUGIN_DATA: dataDir,
-    AGENC_PLUGIN_NAME: plugin.name,
+    AGENC_PLUGIN_NAME: plugin.id,
     AGENC_PLUGIN_MCP_SERVER: serverName,
     AGENC_PLUGIN_SANDBOX: PLUGIN_MCP_SANDBOX_MODE,
   };
 }
 
 function createPluginMcpSandboxMetadata(
-  plugin: Pick<LoadedPlugin, "name" | "root" | "source">,
+  plugin: Pick<LoadedPlugin, "id" | "name" | "root">,
   serverName: string,
   scopedServerName: string,
-  dataDir = getPluginDataDir(plugin.source),
+  dataDir = getPluginDataDir(plugin.id),
 ): PluginMcpSandboxMetadata {
   return {
     mode: PLUGIN_MCP_SANDBOX_MODE,
-    pluginName: plugin.name,
+    pluginName: plugin.id,
     pluginRoot: plugin.root,
     pluginDataDir: dataDir,
     serverName,
@@ -228,7 +226,7 @@ function createPluginMcpSandboxMetadata(
 }
 
 export function resolvePluginMcpSandboxedServer(
-  plugin: Pick<LoadedPlugin, "name" | "root" | "source">,
+  plugin: Pick<LoadedPlugin, "id" | "name" | "root">,
   serverName: string,
   server: McpServerConfig,
   options: {
@@ -243,9 +241,9 @@ export function resolvePluginMcpSandboxedServer(
     return { server: { ...server } };
   }
 
-  const dataDir = options.dataDir ?? getPluginDataDir(plugin.source);
+  const dataDir = options.dataDir ?? getPluginDataDir(plugin.id);
   const scopedServerName = options.scopedServerName ??
-    pluginScopedServerIdentifier(plugin.name, serverName);
+    pluginScopedServerIdentifier(plugin.id, serverName);
   const cwd = path.resolve(server.cwd ?? plugin.root);
   if (!pathInsideOrEqual(plugin.root, cwd)) {
     return {

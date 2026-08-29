@@ -29,6 +29,7 @@ vi.mock("axios", () => {
   };
 });
 import { createAgentRoleWorkspace } from "../agents/role.js";
+import { mkSession as mkRuntimeSession } from "../fixtures.js";
 import { MAX_RECOVERY_REENTRIES } from "../recovery/fallback-ladder.js";
 import { EventLog, type Event } from "./event-log.js";
 import {
@@ -74,19 +75,12 @@ function mkSession(): { session: Session; events: Event[] } {
 }
 
 function mkCtx(collabModel = "plan"): TurnContext {
-  // The historical legacy gate consulted `collaborationMode.model === "plan"`
-  // to flip plan mode. After the gate consolidation, plan mode is gated
-  // exclusively on `sessionConfiguration.permissionContext.mode`. Preserve
-  // the test ergonomic of `mkCtx("plan")` ⇒ plan-mode-active by routing
-  // the literal "plan" through the authoritative path.
   const planModeActive = collabModel === "plan";
   return {
     subId: "turn-plan-1",
     collaborationMode: { model: collabModel },
     modelInfo: { slug: "test" },
-    ...(planModeActive
-      ? { sessionConfiguration: { permissionContext: { mode: "plan" } } }
-      : {}),
+    permissionMode: planModeActive ? "plan" : "default",
   } as unknown as TurnContext;
 }
 
@@ -95,30 +89,27 @@ function mkCtx(collabModel = "plan"): TurnContext {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("isPlanMode", () => {
-  test("returns true when sessionConfiguration.permissionContext.mode === 'plan'", () => {
+  test("returns true when the turn permission snapshot is plan", () => {
     const ctx = {
       subId: "t",
       collaborationMode: { model: "chat" },
-      sessionConfiguration: {
-        permissionContext: { mode: "plan" },
-      },
+      permissionMode: "plan",
     } as unknown as TurnContext;
     expect(isPlanMode(ctx)).toBe(true);
   });
 
-  test("returns false when permissionContext.mode is anything else (or absent)", () => {
+  test("returns false when the turn permission snapshot is not plan", () => {
     const noCtx = {
       subId: "t",
       collaborationMode: { model: "chat" },
+      permissionMode: "default",
     } as unknown as TurnContext;
     expect(isPlanMode(noCtx)).toBe(false);
 
     const defaultCtx = {
       subId: "t",
       collaborationMode: { model: "chat" },
-      sessionConfiguration: {
-        permissionContext: { mode: "default" },
-      },
+      permissionMode: "default",
     } as unknown as TurnContext;
     expect(isPlanMode(defaultCtx)).toBe(false);
 
@@ -127,6 +118,7 @@ describe("isPlanMode", () => {
     const legacy = {
       subId: "t",
       collaborationMode: { model: "plan" },
+      permissionMode: "default",
     } as unknown as TurnContext;
     expect(isPlanMode(legacy)).toBe(false);
   });
@@ -167,9 +159,7 @@ describe("emitStreamedAssistantTextDelta", () => {
     const state = createPlanModeStreamState("turn-1");
     emitStreamedAssistantTextDelta(session, ctx, state, "item-1", {
       visibleText: "unused",
-      planSegments: [
-        { kind: "normal", delta: "Considering…" },
-      ],
+      planSegments: [{ kind: "normal", delta: "Considering…" }],
     });
     const deltas = events.filter((e) => e.msg.type === "agent_message_delta");
     expect(deltas.length).toBe(1);
@@ -335,7 +325,12 @@ describe("maybeCompletePlanItemFromMessage", () => {
 
     const completed = maybeCompletePlanItemFromMessage(session, ctx, state, {
       role: "user",
-      content: [{ type: "output_text", text: "<proposed_plan>\nnope\n</proposed_plan>" }],
+      content: [
+        {
+          type: "output_text",
+          text: "<proposed_plan>\nnope\n</proposed_plan>",
+        },
+      ],
     });
 
     expect(completed).toBe(false);
@@ -505,126 +500,7 @@ describe("runSamplingRequest — reconnectWithBackoff wiring", () => {
         attempts: 1,
       } as never);
 
-    const { runTurn } = await import("./run-turn.js");
-
-    const { session, events: _events } = mkSession();
-    // Wire minimal session surface needed by runTurn's outer loop.
-    (session as unknown as {
-      services: unknown;
-      state: { unsafePeek: () => unknown };
-      abortController: AbortController;
-      pendingProviderSwitch: null;
-      budgetTracker: null;
-    }).services = {
-      provider: {
-        name: "stub",
-        chat: async () => ({
-          content: "",
-          toolCalls: [],
-          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-          model: "test",
-          finishReason: "stop",
-        }),
-        chatStream: async () => ({
-          content: "",
-          toolCalls: [],
-          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-          model: "test",
-          finishReason: "stop",
-        }),
-        healthCheck: async () => true,
-      },
-      registry: { tools: [], toLLMTools: () => [] },
-      hooks: { executeStop: async () => ({}) },
-    };
-    (session as unknown as { state: unknown }).state = {
-      unsafePeek: () => ({ totalTokenUsage: 0 }),
-      with: async (fn: (value: { totalTokenUsage: number; history?: unknown[] }) => void) =>
-        fn({ totalTokenUsage: 0, history: [] }),
-    };
-    (session as unknown as { abortController: AbortController }).abortController =
-      new AbortController();
-    (session as unknown as { pendingProviderSwitch: null }).pendingProviderSwitch =
-      null;
-    (session as unknown as { budgetTracker: null }).budgetTracker = null;
-    (
-      session as unknown as {
-        permissionModeRegistry: {
-          current: () => {
-            mode: "default";
-            additionalWorkingDirectories: ReadonlyMap<string, never>;
-            alwaysAllowRules: Record<string, never>;
-            alwaysDenyRules: Record<string, never>;
-            alwaysAskRules: Record<string, never>;
-            isBypassPermissionsModeAvailable: false;
-          };
-        };
-      }
-    ).permissionModeRegistry = {
-      current: () => ({
-        mode: "default",
-        additionalWorkingDirectories: new Map(),
-        alwaysAllowRules: {},
-        alwaysDenyRules: {},
-        alwaysAskRules: {},
-        isBypassPermissionsModeAvailable: false,
-      }),
-    };
-    (
-      session as unknown as {
-        hasPendingInput: () => boolean;
-      }
-    ).hasPendingInput = () => false;
-    (
-      session as unknown as {
-        currentRootHumanTurn: () => null;
-      }
-    ).currentRootHumanTurn = () => null;
-    (
-      session as unknown as {
-        bindProviderConversation: () => void;
-      }
-    ).bindProviderConversation = () => {};
-    // T5 task-dispatch port: runTurnKernel now calls spawnTask at entry
-    // and onTaskFinished at exit. Stub these on the test's minimal
-    // session shim so the generator can drain without errors.
-    (
-      session as unknown as {
-        spawnTask: (opts: {
-          subId: string;
-          kind: string;
-          startedAtMs?: number;
-        }) => Promise<{
-          subId: string;
-          kind: string;
-          abortController: AbortController;
-          done: Promise<void>;
-          resolveDone: () => void;
-          startedAtMs: number;
-        }>;
-      }
-    ).spawnTask = async (opts) => {
-      let resolveDone!: () => void;
-      const done = new Promise<void>((r) => {
-        resolveDone = r;
-      });
-      return {
-        subId: opts.subId,
-        kind: opts.kind,
-        abortController: new AbortController(),
-        done,
-        resolveDone,
-        startedAtMs: opts.startedAtMs ?? Date.now(),
-      };
-    };
-    (
-      session as unknown as { onTaskFinished: () => Promise<void> }
-    ).onTaskFinished = async () => {};
-    (
-      session as unknown as {
-        setProjectMemoryWarnings: (warnings: readonly string[]) => void;
-      }
-    ).setProjectMemoryWarnings = () => {};
+    const { session } = mkRuntimeSession();
 
     const ctx = {
       subId: "turn-1",
@@ -666,7 +542,7 @@ describe("runSamplingRequest — reconnectWithBackoff wiring", () => {
     } as unknown as TurnContext;
 
     // Drain.
-    const gen = runTurn(session, ctx, "hello");
+    const gen = session.runTurn("hello", { ctx });
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     for await (const _ of gen) {
       // drain
@@ -688,7 +564,8 @@ describe("runSamplingRequest — reconnectWithBackoff wiring", () => {
     // Exercise the classifier fn directly by grabbing it through a
     // spy; we don't need a full runTurn drive here.
     const { isRetryableStreamError } = await import("./run-turn.js");
-    const { isTransientProviderError } = await import("../recovery/api-errors.js");
+    const { isTransientProviderError } =
+      await import("../recovery/api-errors.js");
 
     // Typed path (covers the agenc runtime 5xx branch that was previously a
     // brittle substring match).

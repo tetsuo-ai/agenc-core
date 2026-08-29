@@ -1,12 +1,10 @@
-import { tmpdir } from 'os'
 import { join } from 'path'
 import { join as posixJoin } from 'path/posix'
-import { getSessionEnvVars } from '../sessionEnvVars.js'
-import type { ShellProvider } from './shellProvider.js'
+import type { PreparedShellCommand, ShellProvider } from './shellProvider.js'
 
 /**
- * PowerShell invocation flags + command. Shared by the provider's getSpawnArgs
- * and the hook spawn path in hooks.ts so the flag set stays in one place.
+ * PowerShell invocation flags + command. Shared by prepared command plans and
+ * the hook spawn path in hooks.ts so the flag set stays in one place.
  */
 export function buildPowerShellArgs(cmd: string): string[] {
   return ['-NoProfile', '-NonInteractive', '-Command', cmd]
@@ -25,24 +23,20 @@ function encodePowerShellCommand(psCommand: string): string {
 }
 
 export function createPowerShellProvider(shellPath: string): ShellProvider {
-  let currentSandboxTmpDir: string | undefined
-
   return {
     type: 'powershell' as ShellProvider['type'],
     shellPath,
     detached: false,
 
-    async buildExecCommand(
+    async prepareExecCommand(
       command: string,
       opts: {
         id: number | string
         sandboxTmpDir?: string
+        tempRoot: string
         useSandbox: boolean
       },
-    ): Promise<{ commandString: string; cwdFilePath: string }> {
-      // Stash sandboxTmpDir for getEnvironmentOverrides (mirrors bashProvider)
-      currentSandboxTmpDir = opts.useSandbox ? opts.sandboxTmpDir : undefined
-
+    ): Promise<PreparedShellCommand> {
       // When sandboxed, tmpdir() is not writable — the sandbox only allows
       // writes to sandboxTmpDir. Put the cwd tracking file there so the
       // inner pwsh can actually write it. Only applies on Linux/macOS/WSL2;
@@ -50,7 +44,7 @@ export function createPowerShellProvider(shellPath: string): ShellProvider {
       const cwdFilePath =
         opts.useSandbox && opts.sandboxTmpDir
           ? posixJoin(opts.sandboxTmpDir, `agenc-pwd-ps-${opts.id}`)
-          : join(tmpdir(), `agenc-pwd-ps-${opts.id}`)
+          : join(opts.tempRoot, `agenc-pwd-ps-${opts.id}`)
       const escapedCwdFilePath = cwdFilePath.replace(/'/g, "''")
       // Exit-code capture: prefer $LASTEXITCODE when a native exe ran.
       // On PS 5.1, a native command that writes to stderr while the stream
@@ -70,8 +64,8 @@ export function createPowerShellProvider(shellPath: string): ShellProvider {
       // the sandbox path, build a command that itself invokes pwsh with the
       // full flag set. Shell.ts passes /bin/sh as the sandbox binShell,
       // producing: bwrap ... sh -c 'pwsh -NoProfile ... -EncodedCommand ...'.
-      // The non-sandbox path returns the bare PS command; getSpawnArgs() adds
-      // the flags via buildPowerShellArgs().
+      // The non-sandbox path returns the bare PS command; the prepared spawn
+      // argv adds the flags via buildPowerShellArgs().
       //
       // -EncodedCommand (base64 UTF-16LE), not -Command: the sandbox runtime
       // applies its OWN shellquote.quote() on top of whatever we build. Any
@@ -93,31 +87,18 @@ export function createPowerShellProvider(shellPath: string): ShellProvider {
           ].join(' ')
         : psCommand
 
-      return { commandString, cwdFilePath }
-    },
-
-    getSpawnArgs(commandString: string): string[] {
-      return buildPowerShellArgs(commandString)
-    },
-
-    async getEnvironmentOverrides(): Promise<Record<string, string>> {
       const env: Record<string, string> = {}
-      // Apply session env vars set via /env (child processes only, not
-      // the REPL). Without this, `/env PATH=...` affects Bash tool
-      // commands but not PowerShell — so PyCharm users with a stripped
-      // PATH can't self-rescue.
-      // Ordering: session vars FIRST so the sandbox TMPDIR below can't be
-      // overridden by `/env TMPDIR=...`. bashProvider.ts has these in the
-      // opposite order (pre-existing), but sandbox isolation should win.
-      for (const [key, value] of getSessionEnvVars()) {
-        env[key] = value
-      }
-      if (currentSandboxTmpDir) {
+      if (opts.useSandbox && opts.sandboxTmpDir) {
         // PowerShell on Linux/macOS honors TMPDIR for [System.IO.Path]::GetTempPath()
-        env.TMPDIR = currentSandboxTmpDir
-        env.AGENC_TMPDIR = currentSandboxTmpDir
+        env.TMPDIR = opts.sandboxTmpDir
+        env.AGENC_TMPDIR = opts.sandboxTmpDir
       }
-      return env
+      return Object.freeze({
+        commandString,
+        cwdFilePath,
+        spawnArgs: buildPowerShellArgs,
+        environmentOverrides: Object.freeze(env),
+      })
     },
   }
 }

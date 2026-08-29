@@ -26,7 +26,6 @@ export {
   type AgentProgressActivity,
   type AgentProgress as TaskStateAgentProgress,
   type BackgroundTaskState,
-  type BashTaskKind,
   type InProcessTeammateTaskState,
   type LifecycleOnlyTaskType,
   type LocalAgentTaskState,
@@ -63,7 +62,7 @@ import { BackgroundTaskLifecycle } from "./lifecycle.js";
 export const backgroundTaskLifecycle = new BackgroundTaskLifecycle();
 
 export {
-  liveAgentCounts,
+  observeAgentThreadTask,
   registerAgentThreadTask,
   type AgentThreadTaskHandle,
   type RegisterAgentThreadTaskOptions,

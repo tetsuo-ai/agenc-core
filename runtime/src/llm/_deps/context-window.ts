@@ -4,7 +4,7 @@
  * the AgenC port; this lean stub re-exposes only the surface that
  * the LLM subsystem actually consumes:
  *   - GatewayLLMConfig type (minimal field set)
- *   - normalizeGrokModel (compatibility alias rewrite)
+ *   - normalizeGrokModelId (whitespace normalization only)
  *   - resolveContextWindowProfile (heuristic-only path)
  *
  * The rebuilt gateway tranche will replace this with the canonical
@@ -38,17 +38,6 @@ const DEFAULT_GROK_CONTEXT_WINDOW_TOKENS = 1_000_000;
 const DEFAULT_OLLAMA_CONTEXT_WINDOW_TOKENS = 4_096;
 const DEFAULT_OLLAMA_MODEL = "llama3";
 
-const LEGACY_GROK_MODEL_ALIASES: Record<string, string> = {
-  "grok-4": "grok-4.3",
-  "grok-4-fast-reasoning": "grok-4.3",
-  "grok-4-fast-non-reasoning": "grok-4.3",
-  "grok-4-1-fast-reasoning": "grok-4.3",
-  "grok-4-1-fast-non-reasoning": "grok-4.3",
-  "grok-4.20-beta-0309-reasoning": "grok-4.20-0309-reasoning",
-  "grok-4.20-beta-0309-non-reasoning": "grok-4.20-0309-non-reasoning",
-  "grok-4.20-multi-agent-beta-0309": "grok-4.20-multi-agent-0309",
-};
-
 // Fallback context windows for grok models NOT yet migrated to
 // REGISTERED_MODEL_CATALOG. Models covered by the registry (grok-4.3,
 // grok-4.20-*) are resolved from there first in inferGrokContextWindowTokens,
@@ -66,19 +55,18 @@ const GROK_CONTEXT_WINDOW_BY_PREFIX: ReadonlyArray<{
   { prefix: "grok-3", contextWindowTokens: 131_072 },
 ];
 
-export function normalizeGrokModel(
+export function normalizeGrokModelId(
   model: string | undefined,
 ): string | undefined {
   if (!model) return undefined;
-  const trimmed = model.trim();
-  return LEGACY_GROK_MODEL_ALIASES[trimmed] ?? trimmed;
+  return model.trim();
 }
 
 function inferGrokContextWindowTokens(model: string | undefined): number {
-  const normalized = normalizeGrokModel(model);
+  const normalized = normalizeGrokModelId(model);
   if (!normalized) return DEFAULT_GROK_CONTEXT_WINDOW_TOKENS;
   // Registry is the single source of truth: prefer the catalog context window
-  // when the (alias-normalized) model is registered. This keeps grok-4.3 at
+  // when the normalized model is registered. This keeps grok-4.3 at
   // 1M consistently with the TUI resolver and removes the 2M/1M mismatch.
   const catalogContextWindow = resolveModelCatalogMetadata({
     provider: "grok",
@@ -116,7 +104,7 @@ export async function resolveContextWindowProfile(
   if (!llmConfig) return undefined;
   const explicit = parseContextTokenValue(llmConfig.contextWindowTokens);
   if (llmConfig.provider === "grok") {
-    const model = normalizeGrokModel(llmConfig.model);
+    const model = normalizeGrokModelId(llmConfig.model);
     if (explicit !== undefined) {
       return {
         provider: "grok",

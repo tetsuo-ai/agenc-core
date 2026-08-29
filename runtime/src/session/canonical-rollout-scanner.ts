@@ -9,7 +9,6 @@ import {
   rmSync,
 } from "node:fs";
 import type { BigIntStats } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
@@ -74,40 +73,69 @@ class DiskCompactionPayloadRegistry {
   readonly #count: BetterSqlite3.Statement<[string, string]>;
   #closed = false;
 
-  constructor() {
-    this.#directory = mkdtempSync(join(tmpdir(), "agenc-c2-payloads-"));
-    this.#database = new Database(join(this.#directory, "payloads.sqlite"));
-    this.#database.pragma("journal_mode = OFF");
-    this.#database.pragma("synchronous = OFF");
-    this.#database.pragma(
-      `cache_size = -${COMPACTION_PAYLOAD_REGISTRY_CACHE_KIB}`,
-    );
-    this.#database.exec(
-      `CREATE TABLE payload_chunks (
-         attempt_id TEXT NOT NULL,
-         payload_kind TEXT NOT NULL,
-         chunk_index INTEGER NOT NULL,
-         payload_json TEXT NOT NULL,
-         PRIMARY KEY (attempt_id, payload_kind, chunk_index)
-       ) WITHOUT ROWID;
-       BEGIN`,
-    );
-    this.#insert = this.#database.prepare(
-      `INSERT INTO payload_chunks
-         (attempt_id, payload_kind, chunk_index, payload_json)
-       VALUES (?, ?, ?, ?)`,
-    );
-    this.#select = this.#database.prepare(
-      `SELECT payload_json
-         FROM payload_chunks
-        WHERE attempt_id = ? AND payload_kind = ?
-        ORDER BY chunk_index`,
-    );
-    this.#count = this.#database.prepare(
-      `SELECT COUNT(*) AS chunk_count
-         FROM payload_chunks
-        WHERE attempt_id = ? AND payload_kind = ?`,
-    );
+  constructor(temporaryRoot: string) {
+    const directory = mkdtempSync(join(temporaryRoot, "agenc-c2-payloads-"));
+    let database: BetterSqlite3.Database | undefined;
+    try {
+      database = new Database(join(directory, "payloads.sqlite"));
+      database.pragma("journal_mode = OFF");
+      database.pragma("synchronous = OFF");
+      database.pragma(
+        `cache_size = -${COMPACTION_PAYLOAD_REGISTRY_CACHE_KIB}`,
+      );
+      database.exec(
+        `CREATE TABLE payload_chunks (
+           attempt_id TEXT NOT NULL,
+           payload_kind TEXT NOT NULL,
+           chunk_index INTEGER NOT NULL,
+           payload_json TEXT NOT NULL,
+           PRIMARY KEY (attempt_id, payload_kind, chunk_index)
+         ) WITHOUT ROWID;
+         BEGIN`,
+      );
+      const insert = database.prepare<[string, string, number, string]>(
+        `INSERT INTO payload_chunks
+           (attempt_id, payload_kind, chunk_index, payload_json)
+         VALUES (?, ?, ?, ?)`,
+      );
+      const select = database.prepare<[string, string]>(
+        `SELECT payload_json
+           FROM payload_chunks
+          WHERE attempt_id = ? AND payload_kind = ?
+          ORDER BY chunk_index`,
+      );
+      const count = database.prepare<[string, string]>(
+        `SELECT COUNT(*) AS chunk_count
+           FROM payload_chunks
+          WHERE attempt_id = ? AND payload_kind = ?`,
+      );
+      this.#directory = directory;
+      this.#database = database;
+      this.#insert = insert;
+      this.#select = select;
+      this.#count = count;
+    } catch (initializationError) {
+      const cleanupFailures: unknown[] = [];
+      if (database !== undefined) {
+        try {
+          database.close();
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
+      }
+      try {
+        rmSync(directory, { recursive: true, force: true });
+      } catch (error) {
+        cleanupFailures.push(error);
+      }
+      if (cleanupFailures.length > 0) {
+        throw new AggregateError(
+          [initializationError, ...cleanupFailures],
+          "compaction payload registry initialization cleanup failed",
+        );
+      }
+      throw initializationError;
+    }
   }
 
   add(chunk: CompactionPayloadChunkV1): void {
@@ -245,6 +273,8 @@ export interface CanonicalRolloutScanOptions extends Pick<
   StrictCanonicalJournalOptions,
   "expectedRunId" | "expectedEpoch" | "terminalPolicy"
 > {
+  /** Captured owner for every disk-backed registry created by this scan. */
+  readonly sessionTempRoot: string;
   readonly nowMilliseconds?: () => number;
   readonly maximumScanMilliseconds: number;
   readonly additionalSourceLines?: readonly number[];
@@ -303,14 +333,22 @@ export function scanCanonicalRollout(
     let postCommitBookkeeping:
       "await_context" | "await_meta" | "complete" | undefined;
     checkOperationalBudget();
-    const identityRegistry = new DiskCanonicalIdentityRegistry();
-    const payloadRegistry = new DiskCompactionPayloadRegistry();
+    let identityRegistry: DiskCanonicalIdentityRegistry | undefined;
+    let payloadRegistry: DiskCompactionPayloadRegistry | undefined;
     let first: StrictCanonicalJournal;
     try {
+      identityRegistry = new DiskCanonicalIdentityRegistry(
+        options.sessionTempRoot,
+      );
+      payloadRegistry = new DiskCompactionPayloadRegistry(
+        options.sessionTempRoot,
+      );
+      const activeIdentityRegistry = identityRegistry;
+      const activePayloadRegistry = payloadRegistry;
       first = scanPass(fd, snapshot.size, {
         ...strictOptions(options, checkOperationalBudget),
         retainRecords: false,
-        identityRegistry,
+        identityRegistry: activeIdentityRegistry,
         onRecord: (physicalRecord) => {
           let record = physicalRecord;
           let item = record.item;
@@ -363,7 +401,7 @@ export function scanCanonicalRollout(
             if (activeAdmissionAttempt !== undefined) {
               observeAdmission(record, activeAdmissionAttempt);
             }
-            payloadRegistry.add(item.payload);
+            activePayloadRegistry.add(item.payload);
             if (
               item.payload.payload_kind === "source_history" &&
               capturedPayloadAttemptIds.has(item.payload.attempt_id)
@@ -385,7 +423,7 @@ export function scanCanonicalRollout(
             if (
               pending !== undefined &&
               pendingIntent !== undefined &&
-              payloadRegistry.hasComplete(
+              activePayloadRegistry.hasComplete(
                 pendingIntent.source.active_history_refs_manifest,
               ) &&
               pending.intent === undefined
@@ -393,7 +431,7 @@ export function scanCanonicalRollout(
               const hydrated = hydratePersistedIntentRecord(
                 pending.intentRecord!,
                 pendingIntent,
-                payloadRegistry,
+                activePayloadRegistry,
               );
               pending.intent = hydrated.intent;
               pending.records.push(hydrated.record);
@@ -405,9 +443,14 @@ export function scanCanonicalRollout(
               pending !== undefined &&
               pendingIntent !== undefined &&
               item.payload.payload_kind === "source_history" &&
-              payloadRegistry.hasComplete(pendingIntent.source_history_manifest)
+              activePayloadRegistry.hasComplete(
+                pendingIntent.source_history_manifest,
+              )
             ) {
-              validatePersistedSourceHistory(pendingIntent, payloadRegistry);
+              validatePersistedSourceHistory(
+                pendingIntent,
+                activePayloadRegistry,
+              );
               pending.sourceHistoryValidated = true;
             }
             return;
@@ -462,7 +505,7 @@ export function scanCanonicalRollout(
               record,
               persistedCommit,
               attempt.intent,
-              payloadRegistry,
+              activePayloadRegistry,
             );
             item = record.item;
             if (
@@ -478,14 +521,14 @@ export function scanCanonicalRollout(
           const persistedRollback = persistedRollbackPayload(item);
           if (persistedRollback !== undefined) {
             if (
-              payloadRegistry.hasComplete(
+              activePayloadRegistry.hasComplete(
                 persistedRollback.source_history_manifest,
               )
             ) {
               record = hydratePersistedRollbackRecord(
                 record,
                 persistedRollback,
-                payloadRegistry,
+                activePayloadRegistry,
               );
               item = record.item;
             }
@@ -614,9 +657,9 @@ export function scanCanonicalRollout(
       });
     } finally {
       try {
-        identityRegistry.close();
+        identityRegistry?.close();
       } finally {
-        payloadRegistry.close();
+        payloadRegistry?.close();
       }
     }
 

@@ -44,6 +44,10 @@
 import { randomUUID } from "node:crypto";
 
 import { AsyncLock } from "./_deps/async-lock.js";
+import {
+  isHookExecutionSuppressed,
+  type HookRuntimeAuthority,
+} from "../hooks/runtime-policy.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Re-declared enum ports (kept local to avoid an import cycle with
@@ -278,6 +282,7 @@ export interface RequestNetworkApprovalOptions {
   readonly mode?: NetworkApprovalMode;
   readonly resolver?: NetworkApprovalResolver;
   readonly hooks?: ReadonlyArray<NetworkApprovalHook>;
+  readonly runtimeOptions?: HookRuntimeAuthority;
   readonly persistAmendment?: PersistNetworkPolicyAmendment;
   readonly onAmendmentPersistError?: (err: unknown) => void;
   readonly signal?: AbortSignal;
@@ -675,13 +680,17 @@ export class NetworkApprovalService {
       target: formatNetworkTarget(key),
     };
 
-    // (a) Hooks — highest precedence. First non-null wins.
-    for (const hook of opts.hooks ?? []) {
-      if (opts.signal?.aborted) throw makeAbortError(opts.signal);
-      const result = await hook(ctx);
-      if (result === null || result === undefined) continue;
-      if ("allow" in result && result.allow === true) return "allow_once";
-      if ("deny" in result) throw new DeniedByPolicy(result.deny);
+    // (a) Hooks — highest precedence unless immutable owner authority
+    // suppresses every extension point. The human/default-deny resolver below
+    // remains active in bare mode.
+    if (!isHookExecutionSuppressed(opts.runtimeOptions)) {
+      for (const hook of opts.hooks ?? []) {
+        if (opts.signal?.aborted) throw makeAbortError(opts.signal);
+        const result = await hook(ctx);
+        if (result === null || result === undefined) continue;
+        if ("allow" in result && result.allow === true) return "allow_once";
+        if ("deny" in result) throw new DeniedByPolicy(result.deny);
+      }
     }
 
     // (b) Resolver — default-deny when absent.

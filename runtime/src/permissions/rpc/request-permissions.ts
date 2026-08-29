@@ -16,6 +16,7 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { asRecord } from "../../utils/record.js";
+import { resolveSessionTempRoot } from "../../session/runtime-options.js";
 
 export type PermissionGrantScope = "turn" | "session";
 
@@ -554,9 +555,7 @@ function resolvePermissionPath(
           : path.resolve(cwd, subpath);
       }
       case "tmpdir": {
-        const tmpdir = process.env["TMPDIR"];
-        if (!tmpdir) return null;
-        return path.isAbsolute(tmpdir) ? path.normalize(tmpdir) : null;
+        return path.normalize(resolveSessionTempRoot());
       }
       case "slash_tmp": {
         if (process.platform === "win32" || !existsSync("/tmp")) return null;

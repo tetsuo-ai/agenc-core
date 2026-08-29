@@ -6,24 +6,29 @@ import { useNotifications } from '../../context/notifications.js';
 import { getIsRemoteMode } from '../../../bootstrap/state';
 import { Text } from '../../ink.js';
 import type { MCPServerConnection } from '../../../services/mcp/types';
-import { hasAgenCAiMcpEverConnected } from '../../../services/mcp/agencai.js';
+import type { McpSurfaceServer } from '../../../session/session.js';
 type Props = {
-  mcpClients?: MCPServerConnection[];
+  mcpClients?: readonly MCPServerConnection[];
+  /** Credential-free daemon status; these entries never contain live SDK clients. */
+  mcpServers?: readonly McpSurfaceServer[];
 };
-const EMPTY_MCP_CLIENTS: MCPServerConnection[] = [];
-export function useMcpConnectivityStatus(t0) {
-  const $ = _c(4);
+const EMPTY_MCP_CLIENTS: readonly MCPServerConnection[] = [];
+const EMPTY_MCP_SERVERS: readonly McpSurfaceServer[] = [];
+export function useMcpConnectivityStatus(t0: Props) {
+  const $ = _c(6);
   const {
-    mcpClients: t1
+    mcpClients: t1,
+    mcpServers: t2,
   } = t0;
   const mcpClients = t1 === undefined ? EMPTY_MCP_CLIENTS : t1;
+  const mcpServers = t2 === undefined ? EMPTY_MCP_SERVERS : t2;
   const {
     addNotification
   } = useNotifications();
-  let t2;
   let t3;
-  if ($[0] !== addNotification || $[1] !== mcpClients) {
-    t2 = () => {
+  let t4;
+  if ($[0] !== addNotification || $[1] !== mcpClients || $[2] !== mcpServers) {
+    t3 = () => {
       try {
         if (getIsRemoteMode()) {
           return;
@@ -32,13 +37,30 @@ export function useMcpConnectivityStatus(t0) {
         const failedAgenCAiClients = mcpClients.filter(_temp2);
         const needsAuthLocalServers = mcpClients.filter(_temp3);
         const needsAuthAgenCAiServers = mcpClients.filter(_temp4);
-        if (failedLocalClients.length === 0 && failedAgenCAiClients.length === 0 && needsAuthLocalServers.length === 0 && needsAuthAgenCAiServers.length === 0) {
+        const liveServerNames = new Set(mcpClients.map((client) => client.name));
+        const failedPassiveServers = mcpServers.filter(
+          (server) =>
+            !liveServerNames.has(server.name) &&
+            server.enabled &&
+            server.state === "failed",
+        );
+        const needsAuthPassiveServers = mcpServers.filter(
+          (server) =>
+            !liveServerNames.has(server.name) &&
+            server.enabled &&
+            server.state === "needs-auth",
+        );
+        const failedLocalCount =
+          failedLocalClients.length + failedPassiveServers.length;
+        const needsAuthLocalCount =
+          needsAuthLocalServers.length + needsAuthPassiveServers.length;
+        if (failedLocalCount === 0 && failedAgenCAiClients.length === 0 && needsAuthLocalCount === 0 && needsAuthAgenCAiServers.length === 0) {
           return;
         }
-        if (failedLocalClients.length > 0) {
+        if (failedLocalCount > 0) {
           addNotification({
             key: "mcp-failed",
-            jsx: <><Text color="error">{failedLocalClients.length} MCP{" "}{failedLocalClients.length === 1 ? "server" : "servers"} failed</Text><Text dimColor={true}> · /mcp</Text></>,
+            jsx: <><Text color="error">{failedLocalCount} MCP{" "}{failedLocalCount === 1 ? "server" : "servers"} failed</Text><Text dimColor={true}> · /mcp</Text></>,
             priority: "medium"
           });
         }
@@ -49,10 +71,10 @@ export function useMcpConnectivityStatus(t0) {
             priority: "medium"
           });
         }
-        if (needsAuthLocalServers.length > 0) {
+        if (needsAuthLocalCount > 0) {
           addNotification({
             key: "mcp-needs-auth",
-            jsx: <><Text color="warning">{needsAuthLocalServers.length} MCP{" "}{needsAuthLocalServers.length === 1 ? "server needs" : "servers need"}{" "}auth</Text><Text dimColor={true}> · /mcp</Text></>,
+            jsx: <><Text color="warning">{needsAuthLocalCount} MCP{" "}{needsAuthLocalCount === 1 ? "server needs" : "servers need"}{" "}auth</Text><Text dimColor={true}> · /mcp</Text></>,
             priority: "medium"
           });
         }
@@ -67,25 +89,26 @@ export function useMcpConnectivityStatus(t0) {
         logError(error);
       }
     };
-    t3 = [addNotification, mcpClients];
+    t4 = [addNotification, mcpClients, mcpServers];
     $[0] = addNotification;
     $[1] = mcpClients;
-    $[2] = t2;
+    $[2] = mcpServers;
     $[3] = t3;
+    $[4] = t4;
   } else {
-    t2 = $[2];
     t3 = $[3];
+    t4 = $[4];
   }
-  useEffect(t2, t3);
+  useEffect(t3, t4);
 }
 function _temp4(client_2) {
-  return client_2.type === "needs-auth" && client_2.config.type === "agencai-proxy" && hasAgenCAiMcpEverConnected(client_2.name);
+  return client_2.type === "needs-auth" && client_2.config.type === "agencai-proxy";
 }
 function _temp3(client_1) {
   return client_1.type === "needs-auth" && client_1.config.type !== "agencai-proxy";
 }
 function _temp2(client_0) {
-  return client_0.type === "failed" && client_0.config.type === "agencai-proxy" && hasAgenCAiMcpEverConnected(client_0.name);
+  return client_0.type === "failed" && client_0.config.type === "agencai-proxy";
 }
 function _temp(client) {
   return client.type === "failed" && client.config.type !== "sse-ide" && client.config.type !== "ws-ide" && client.config.type !== "agencai-proxy";

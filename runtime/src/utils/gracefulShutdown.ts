@@ -1,12 +1,9 @@
 import chalk from "chalk";
 import { writeSync } from "fs";
 import memoize from "lodash-es/memoize.js";
-import { onExit } from "signal-exit";
 import type { ExitReason } from "src/entrypoints/sdk/coreTypes.generated.js";
-import { tokenizeCliOptionRegion } from "../bin/cli-option-region.js";
 import {
   getIsInteractive,
-  getIsScrollDraining,
   getSessionId,
   isSessionPersistenceDisabled,
 } from "../bootstrap/state.js";
@@ -37,7 +34,6 @@ import { isEnvTruthy } from "./envUtils.js";
 import { toError } from "./errors.js";
 import { logError } from "./log.js";
 import { getCurrentSessionTitle, sessionIdExists } from "./sessionStorage.js";
-import { profileReport } from "./startupProfiler.js";
 
 /**
  * Clean up terminal modes synchronously before process exit.
@@ -285,8 +281,8 @@ function persistCrashLocally(error: unknown): void {
  *
  * Intentionally NON-exiting: a long-lived daemon / TUI should survive a stray
  * async error. The TUI render loop self-heals per frame (see ink.tsx onRender),
- * and orderly signal shutdown is owned separately (installSignalHandlers /
- * setupGracefulShutdown).
+ * and orderly signal shutdown is owned separately by entrypoint lifecycle
+ * handlers.
  *
  * `proc` is injectable for tests so they can assert registration + handler
  * behavior against a fake emitter without touching the real process (which
@@ -322,78 +318,6 @@ export const installGlobalErrorNet = memoize(
   },
 );
 
-/**
- * Set up global signal handlers for graceful shutdown
- */
-export const setupGracefulShutdown = memoize(() => {
-  // Work around a Bun bug where process.removeListener(sig, fn) resets the
-  // kernel sigaction for that signal even when other JS listeners remain —
-  // the signal then falls back to its default action (terminate) and our
-  // process.on('SIGTERM') handler never runs.
-  //
-  // Trigger: any short-lived signal-exit v4 subscriber (e.g. execa per child
-  // process, or an Ink instance that unmounts). When its unsubscribe runs and
-  // it was the last v4 subscriber, v4.unload() calls removeListener on every
-  // signal in its list (SIGTERM, SIGINT, SIGHUP, …), tripping the Bun bug and
-  // nuking our handlers at the kernel level.
-  //
-  // Fix: pin signal-exit v4 loaded by registering a no-op onExit callback that
-  // is never unsubscribed. This keeps v4's internal emitter count > 0 so
-  // unload() never runs and removeListener is never called. Harmless under
-  // Node.js — the pin also ensures signal-exit's process.exit hook stays
-  // active for Ink cleanup.
-  onExit(() => {});
-
-  process.on("SIGINT", () => {
-    // In print mode, print.ts registers its own SIGINT handler that aborts
-    // the in-flight query and calls gracefulShutdown(0); skip here to
-    // avoid racing with it. Only check print mode — other non-interactive
-    // sessions (--sdk-url, --init-only, non-TTY) don't register their own
-    // SIGINT handler and need gracefulShutdown to run.
-    const { optionArgs } = tokenizeCliOptionRegion(process.argv.slice(2));
-    if (optionArgs.includes("-p") || optionArgs.includes("--print")) {
-      return;
-    }
-    logForDiagnosticsNoPII("info", "shutdown_signal", { signal: "SIGINT" });
-    void gracefulShutdown(0);
-  });
-  process.on("SIGTERM", () => {
-    logForDiagnosticsNoPII("info", "shutdown_signal", { signal: "SIGTERM" });
-    void gracefulShutdown(143); // Exit code 143 (128 + 15) for SIGTERM
-  });
-  if (process.platform !== "win32") {
-    process.on("SIGHUP", () => {
-      logForDiagnosticsNoPII("info", "shutdown_signal", { signal: "SIGHUP" });
-      void gracefulShutdown(129); // Exit code 129 (128 + 1) for SIGHUP
-    });
-
-    // Detect orphaned process when terminal closes without delivering SIGHUP.
-    // macOS revokes TTY file descriptors instead of signaling, leaving the
-    // process alive but unable to read/write. Periodically check stdin validity.
-    if (process.stdin.isTTY) {
-      orphanCheckInterval = setInterval(() => {
-        // Skip during scroll drain — even a cheap check consumes an event
-        // loop tick that scroll frames need. 30s interval → missing one is fine.
-        if (getIsScrollDraining()) return;
-        // process.stdout.writable becomes false when the TTY is revoked
-        if (!process.stdout.writable || !process.stdin.readable) {
-          clearInterval(orphanCheckInterval);
-          logForDiagnosticsNoPII("info", "shutdown_signal", {
-            signal: "orphan_detected",
-          });
-          void gracefulShutdown(129);
-        }
-      }, 30_000); // Check every 30 seconds
-      orphanCheckInterval.unref(); // Don't keep process alive just for this check
-    }
-  }
-
-  // Uncaught-exception + unhandled-rejection logging lives in the shared,
-  // memoized installGlobalErrorNet so the standalone entrypoint wiring and this
-  // bundled setup register the same handlers exactly once.
-  installGlobalErrorNet();
-});
-
 export function gracefulShutdownSync(
   exitCode = 0,
   reason: ExitReason = "other",
@@ -421,7 +345,6 @@ export function gracefulShutdownSync(
 
 let shutdownInProgress = false;
 let failsafeTimer: ReturnType<typeof setTimeout> | undefined;
-let orphanCheckInterval: ReturnType<typeof setInterval> | undefined;
 let pendingShutdown: Promise<void> | undefined;
 
 /** Check if graceful shutdown is in progress */
@@ -550,13 +473,6 @@ export async function gracefulShutdown(
     } catch {
       // Ignore SessionEnd hook exceptions (including AbortError on timeout)
     }
-  }
-
-  // Log startup perf during shutdown.
-  try {
-    profileReport();
-  } catch {
-    // Ignore profiling errors during shutdown
   }
 
   if (options?.finalMessage) {

@@ -2,6 +2,11 @@ import { PassThrough } from 'node:stream'
 import type { ReactNode } from 'react'
 import React from 'react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import {
+  TEST_REMOTE_AUTH_SESSION_CONTEXT,
+  TEST_RUNTIME_STATE_REPOSITORY,
+  TEST_SETTINGS_AUTHORITY,
+} from '../remoteAuthSessionContext.fixture.js'
 
 const harness = vi.hoisted(() => ({
   rows: [] as Array<{
@@ -63,6 +68,12 @@ vi.mock('../../../src/tui/hooks/useTerminalSize.js', () => ({
   useTerminalSize: () => ({ columns: 48, rows: 24 }),
 }))
 
+vi.mock('../../../src/tui/hooks/useSettings.js', () => ({
+  useSettings: () => ({
+    tui: { terminalProgressBarEnabled: true },
+  }),
+}))
+
 vi.mock('../../../src/tui/keybindings/useShortcutDisplay.js', () => ({
   useShortcutDisplay: () => 'Ctrl+E',
 }))
@@ -78,11 +89,11 @@ vi.mock('../../../src/tui/ink/useTerminalNotification.js', async () => {
 })
 
 vi.mock('../../../src/utils/config.js', () => ({
-  getGlobalConfig: () => ({ terminalProgressBarEnabled: true }),
+  getRuntimeState: () => ({ terminalProgressBarEnabled: true }),
 }))
 
-vi.mock('../../../src/utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => false,
+vi.mock('../../../src/tui/context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => false,
 }))
 
 vi.mock('../../../src/tui/startup/StatusNotices.js', () => ({
@@ -280,6 +291,9 @@ const baseProps = {
   isLoading: false,
   isMessageSelectorVisible: false,
   messages: [],
+  providerAuthContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
+  stateRepository: TEST_RUNTIME_STATE_REPOSITORY,
+  settingsAuthority: TEST_SETTINGS_AUTHORITY,
   screen: 'main' as const,
   streamingToolUses: [],
   toolJSX: null,
@@ -380,6 +394,27 @@ describe('Messages coverage swarm row 005', () => {
       // the answer instead of duplicating the still-open thinking block.
       expect(harness.thinkingMessages).not.toContain('still thinking')
       expect(harness.progress).toHaveBeenCalledWith('completed')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('renders ordinary Write results under the session settings authority', async () => {
+    const rendered = await render(
+      <Messages
+        {...baseProps}
+        messages={[
+          assistantToolUse('write-use-row', 'tool-write', 'Write'),
+          userToolResult('write-result-row', 'tool-write', { path: 'hello.js' }),
+        ]}
+      />,
+    )
+
+    try {
+      expect(harness.rows.map(row => row.uuid)).toEqual([
+        'write-use-row',
+        'write-result-row',
+      ])
     } finally {
       await rendered.dispose()
     }

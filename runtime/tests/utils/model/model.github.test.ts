@@ -1,55 +1,53 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 
-import { saveGlobalConfig } from '../../../src/utils/config.ts'
+import { ConfigStore } from '../../../src/config/store.ts'
 import { getDefaultMainLoopModelSetting, getUserSpecifiedModelSetting } from '../../../src/utils/model/model.ts'
+import { runWithStartupProviderSelection } from '../../../src/utils/model/providers.ts'
+import { runWithCanonicalSettingsAuthority } from '../../../src/utils/settings/canonicalAuthority.ts'
 
 const env = {
-  AGENC_USE_GITHUB: process.env.AGENC_USE_GITHUB,
-  AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,
-  AGENC_USE_GEMINI: process.env.AGENC_USE_GEMINI,
-  AGENC_USE_BEDROCK: process.env.AGENC_USE_BEDROCK,
-  AGENC_USE_VERTEX: process.env.AGENC_USE_VERTEX,
-  AGENC_USE_FOUNDRY: process.env.AGENC_USE_FOUNDRY,
+  AGENC_PROVIDER: process.env.AGENC_PROVIDER,
   OPENAI_MODEL: process.env.OPENAI_MODEL,
 }
 
 beforeEach(() => {
-  process.env.AGENC_USE_GITHUB = '1'
-  delete process.env.AGENC_USE_OPENAI
-  delete process.env.AGENC_USE_GEMINI
-  delete process.env.AGENC_USE_BEDROCK
-  delete process.env.AGENC_USE_VERTEX
-  delete process.env.AGENC_USE_FOUNDRY
+  process.env.AGENC_PROVIDER = 'github'
   delete process.env.OPENAI_MODEL
-  saveGlobalConfig(current => ({
-    ...current,
-    model: ({ bad: true } as unknown) as string,
-  }))
 })
 
 afterEach(() => {
-  process.env.AGENC_USE_GITHUB = env.AGENC_USE_GITHUB
-  process.env.AGENC_USE_OPENAI = env.AGENC_USE_OPENAI
-  process.env.AGENC_USE_GEMINI = env.AGENC_USE_GEMINI
-  process.env.AGENC_USE_BEDROCK = env.AGENC_USE_BEDROCK
-  process.env.AGENC_USE_VERTEX = env.AGENC_USE_VERTEX
-  process.env.AGENC_USE_FOUNDRY = env.AGENC_USE_FOUNDRY
+  process.env.AGENC_PROVIDER = env.AGENC_PROVIDER
   process.env.OPENAI_MODEL = env.OPENAI_MODEL
-  saveGlobalConfig(current => ({
-    ...current,
-    model: undefined,
-  }))
 })
 
-test('github default model setting ignores non-string saved model', () => {
-  const model = getDefaultMainLoopModelSetting()
+function withGitHubAuthority<T>(fn: () => T): T {
+  const store = new ConfigStore({
+    home: '/tmp/agenc-model-github',
+    env: {},
+    base: {},
+  })
+  return runWithCanonicalSettingsAuthority(store, fn)
+}
+
+test('github default model setting uses a string when config has no model', () => {
+  const model = withGitHubAuthority(() =>
+    runWithStartupProviderSelection(
+      { provider: 'github', model: 'github:copilot', environment: { ...process.env } },
+      getDefaultMainLoopModelSetting,
+    ),
+  )
   expect(typeof model).toBe('string')
   expect(model).not.toBe('[object Object]')
   expect(model.length).toBeGreaterThan(0)
 })
 
-test('user specified model ignores non-string saved model', () => {
-  const model = getUserSpecifiedModelSetting()
+test('user specified model is absent when canonical config has no model', () => {
+  const model = withGitHubAuthority(() =>
+    runWithStartupProviderSelection(
+      { provider: 'github', model: 'github:copilot', environment: { ...process.env } },
+      getUserSpecifiedModelSetting,
+    ),
+  )
   if (model !== undefined && model !== null) {
     expect(typeof model).toBe('string')
     expect(model).not.toBe('[object Object]')

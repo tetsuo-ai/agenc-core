@@ -7,9 +7,10 @@ import {
 import {
   type AvailableEffortLevel,
   type EffortValue,
-  getDisplayedEffortLevel,
-  modelSupportsEffort,
+  getDisplayedEffortLevelForContext,
+  modelSupportsEffortForContext,
 } from '../../utils/effort.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { ProviderAuthReadContext } from '../../utils/auth.js'
 
 /**
  * Build the text for the effort-changed notification, e.g. "◐ medium · /effort".
@@ -18,9 +19,10 @@ import {
 export function getEffortNotificationText(
   effortValue: EffortValue | undefined,
   model: string,
+  context: ProviderAuthReadContext,
 ): string | undefined {
-  if (!modelSupportsEffort(model)) return undefined
-  const level = getDisplayedEffortLevel(model, effortValue)
+  if (!modelSupportsEffortForContext(model, context)) return undefined
+  const level = getDisplayedEffortLevelForContext(model, effortValue, context)
   return `${effortLevelToSymbol(level)} ${level} · /effort`
 }
 

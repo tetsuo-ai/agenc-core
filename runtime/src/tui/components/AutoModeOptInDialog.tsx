@@ -1,6 +1,8 @@
 import React from 'react';
 import { Box, Link, Text } from '../ink.js';
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
+import { getCanonicalSettingsAuthority } from '../../utils/settings/canonicalAuthority.js';
+import { recordSecurityAcknowledgement } from '../../permissions/trust/project-trust.js';
 import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';
 
@@ -14,6 +16,16 @@ type Props = {
 };
 
 type AutoModeDecision = 'accept' | 'accept-default' | 'decline';
+
+async function recordAutoModeConsent(): Promise<void> {
+  const authority = getCanonicalSettingsAuthority();
+  if (!authority) {
+    throw new Error('Canonical ConfigStore context is required to record auto-mode consent');
+  }
+  await recordSecurityAcknowledgement('auto-mode-permission-prompt', {
+    agencHome: authority.homeContext.path,
+  });
+}
 
 const ACCEPT_DEFAULT_OPTION = {
   label: 'Yes, and make it my default mode',
@@ -35,17 +47,15 @@ export function AutoModeOptInDialog({
   }, [onDecline]);
 
   const handleChange = React.useCallback(
-    (value: AutoModeDecision) => {
+    async (value: AutoModeDecision) => {
       switch (value) {
         case 'accept':
-          updateSettingsForSource('userSettings', {
-            skipAutoPermissionPrompt: true,
-          });
+          await recordAutoModeConsent();
           onAccept();
           return;
         case 'accept-default':
-          updateSettingsForSource('userSettings', {
-            skipAutoPermissionPrompt: true,
+          await recordAutoModeConsent();
+          await updateSettingsForSource('userSettings', {
             permissions: {
               defaultMode: 'auto',
             },

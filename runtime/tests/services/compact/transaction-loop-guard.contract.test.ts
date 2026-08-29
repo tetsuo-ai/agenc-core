@@ -387,6 +387,7 @@ function openStore(
     cwd: fixture.cwd,
     sessionId: fixture.sessionId,
     agencVersion: "0.13.0",
+    sessionTempRoot: tmpdir(),
     autoStartScheduler: false,
     resume,
   });

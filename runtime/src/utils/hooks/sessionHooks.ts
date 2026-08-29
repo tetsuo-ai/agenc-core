@@ -3,7 +3,7 @@ import type { AppState } from '../../tui/state/AppState.js'
 import type { Message } from 'src/types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import type { AggregatedHookResult } from '../hooks.js'
-import type { HookCommand } from '../settings/types.js'
+import type { HookCommand } from '../../schemas/hooks.js'
 import { isHookEqual } from './hooksSettings.js'
 
 type OnHookSuccess = (
@@ -19,7 +19,7 @@ export type FunctionHookCallback = (
 
 /**
  * Function hook type with callback embedded.
- * Session-scoped only, cannot be persisted to settings.json.
+ * Session-scoped only, cannot be persisted to config.toml.
  */
 export type FunctionHook = {
   type: 'function'

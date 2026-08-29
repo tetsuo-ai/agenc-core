@@ -2,6 +2,10 @@ import { readFile } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 
 import type { Command } from "../../commands.js";
+import {
+  CanonicalAuthorityCache,
+  getCanonicalSettingsAuthority,
+} from "../../utils/settings/canonicalAuthority.js";
 import { frameRepositorySkillGuidance } from "../../skills/repository-skill-boundary.js";
 import {
   isRepositoryControlledPlugin,
@@ -11,16 +15,15 @@ import {
 import type { PluginCommandMetadata } from "../manifest-schema.js";
 import { isRecord } from "../manifest-schema.js";
 import {
+  canonicalPluginRuntimeNamespace,
   collectMarkdownFiles,
   coerceString,
-  cwdOnlyRuntimeIdentityKey,
   descriptionFromMarkdown,
   hasExplicitPluginDiscoveryInput,
   isPluginRuntimeSimpleMode,
   loadRuntimePlugins,
   markdownStem,
   normalizePluginIdentifierName,
-  normalizePluginIdentifierSegment,
   parseBoolean,
   pathIsDirectory,
   pluginScopedIdentifier,
@@ -47,38 +50,35 @@ interface PluginMarkdownCommand {
   readonly isSkillMode: boolean;
 }
 
-const activePluginCommandsByCwd = new Map<string, readonly Command[]>();
-const activePluginSkillsByCwd = new Map<string, readonly Command[]>();
+const activePluginCommandsByCwd = new CanonicalAuthorityCache<readonly Command[]>();
+const activePluginSkillsByCwd = new CanonicalAuthorityCache<readonly Command[]>();
 
 interface ActivePluginSnapshotOptions {
   readonly cwd: string;
-  readonly agencHome?: string;
-  readonly env?: NodeJS.ProcessEnv;
+  readonly pluginStorageRoot: string;
 }
 
 function setActiveSnapshot<T>(
-  snapshots: Map<string, readonly T[]>,
+  snapshots: CanonicalAuthorityCache<readonly T[]>,
   options: ActivePluginSnapshotOptions,
   values: readonly T[],
 ): void {
   const copy = [...values];
   snapshots.set(runtimeIdentityKey(options), copy);
-  snapshots.set(cwdOnlyRuntimeIdentityKey(options.cwd), copy);
 }
 
 function getActiveSnapshot<T>(
-  snapshots: Map<string, readonly T[]>,
+  snapshots: CanonicalAuthorityCache<readonly T[]>,
   options: PluginCommandRegistrationOptions,
 ): readonly T[] | undefined {
-  const exact = snapshots.get(runtimeIdentityKey(options));
-  return exact ?? snapshots.get(cwdOnlyRuntimeIdentityKey(options.cwd));
+  return snapshots.get(runtimeIdentityKey(options));
 }
 
 function shouldSkipImplicitPluginDiscovery(
   options: PluginCommandRegistrationOptions,
 ): boolean {
   return !hasExplicitPluginDiscoveryInput(options) &&
-    isPluginRuntimeSimpleMode(options.env);
+    isPluginRuntimeSimpleMode();
 }
 
 export function setActivePluginCommandSnapshot(
@@ -137,7 +137,7 @@ function namespaceFromCommandPath(filePath: string, baseDir: string): readonly s
 
 function commandDisplayName(
   commandName: string,
-  pluginName: string,
+  pluginId: string,
   frontmatter: Record<string, unknown>,
 ): string {
   const displayName = coerceString(frontmatter.name);
@@ -146,7 +146,7 @@ function commandDisplayName(
     displayName.split(":"),
     "command",
   );
-  const pluginPrefix = `${normalizePluginIdentifierSegment(pluginName, "plugin")}:`;
+  const pluginPrefix = `${canonicalPluginRuntimeNamespace(pluginId)}:`;
   return normalizedDisplayName.startsWith(pluginPrefix)
     ? normalizedDisplayName
     : commandName;
@@ -169,9 +169,14 @@ function metadataFrontmatter(
 function normalizedToolList(
   plugin: LoadedPlugin,
   value: unknown,
+  pluginStorageRoot: string | undefined,
 ): readonly string[] | undefined {
   const tools = splitToolList(value)
-    .map((tool) => substitutePluginTemplate(tool, plugin))
+    .map((tool) =>
+      substitutePluginTemplate(tool, plugin, {
+        ...(pluginStorageRoot !== undefined ? { pluginStorageRoot } : {}),
+      })
+    )
     .filter((tool) => tool.length > 0);
   return tools.length > 0 ? tools : undefined;
 }
@@ -205,20 +210,24 @@ function maybeShell(value: unknown): "bash" | "powershell" | undefined {
 }
 
 function namespacedAliases(
-  pluginName: string,
+  pluginId: string,
+  manifestName: string,
   aliases: readonly string[],
 ): string[] | undefined {
-  const normalizedPluginName = normalizePluginIdentifierSegment(
-    pluginName,
-    "plugin",
-  );
+  const normalizedPluginName = canonicalPluginRuntimeNamespace(pluginId);
   const prefix = `${normalizedPluginName}:`;
   const out = aliases
-    .map((alias) =>
-      alias.includes(":")
-        ? normalizePluginIdentifierName(alias.split(":"), "command")
-        : pluginCommandName(pluginName, [alias])
-    )
+    .map((alias) => {
+      if (!alias.includes(":")) return pluginCommandName(pluginId, [alias]);
+      const [head, ...tail] = alias.split(":");
+      return head === pluginId || head === manifestName ||
+          head === normalizedPluginName
+        ? normalizePluginIdentifierName(
+            [normalizedPluginName, ...tail],
+            "command",
+          )
+        : normalizePluginIdentifierName([head ?? "", ...tail], "command");
+    })
     .filter((alias) => alias.startsWith(prefix));
   return out.length > 0 ? [...new Set(out)] : undefined;
 }
@@ -233,8 +242,8 @@ function createPluginCommand(
   const commandName =
     entry.declaredName ??
     (isSkillFile(file.filePath)
-      ? skillNameFromFile(file, plugin.name)
-      : commandNameFromFile(file, plugin.name));
+      ? skillNameFromFile(file, plugin.id)
+      : commandNameFromFile(file, plugin.id));
   const description =
     coerceString(frontmatter.description) ??
     descriptionFromMarkdown(file.markdown) ??
@@ -244,9 +253,13 @@ function createPluginCommand(
     frontmatter.allowedTools ??
     metadata?.allowedTools;
   const argNames = splitList(frontmatter.arguments ?? frontmatter.argNames);
-  const baseAliases = namespacedAliases(plugin.name, splitList(frontmatter.aliases));
+  const baseAliases = namespacedAliases(
+    plugin.id,
+    plugin.name,
+    splitList(frontmatter.aliases),
+  );
   const commandBaseName = commandName.split(":").pop();
-  const aliases = commandBaseName === plugin.name &&
+  const aliases = commandBaseName === canonicalPluginRuntimeNamespace(plugin.id) &&
       baseAliases?.includes(commandBaseName) !== true
     ? [...(baseAliases ?? []), commandBaseName]
     : baseAliases;
@@ -269,7 +282,7 @@ function createPluginCommand(
     argNames: argNames.length > 0 ? argNames : undefined,
     allowedTools: repositoryControlled
       ? undefined
-      : normalizedToolList(plugin, rawAllowedTools),
+      : normalizedToolList(plugin, rawAllowedTools, options.pluginStorageRoot),
     whenToUse: coerceString(frontmatter.when_to_use ?? frontmatter.whenToUse),
     version: coerceString(frontmatter.version),
     model: repositoryControlled || model === "inherit" ? undefined : model,
@@ -286,7 +299,7 @@ function createPluginCommand(
     },
     progressMessage,
     shell: repositoryControlled ? undefined : maybeShell(frontmatter.shell),
-    userFacingName: () => commandDisplayName(commandName, plugin.name, frontmatter),
+    userFacingName: () => commandDisplayName(commandName, plugin.id, frontmatter),
     getPromptForCommand: async (args, context) => {
       let content = isSkillMode || isSkillFile(file.filePath)
         ? `Base directory for this skill: ${skillBaseDir}\n\n${file.markdown}`
@@ -294,6 +307,9 @@ function createPluginCommand(
       content = substituteArguments(content, args, argNames);
       content = substitutePluginTemplate(content, plugin, {
         sessionId: sessionIdFromContext(context, options.sessionId),
+        ...(options.pluginStorageRoot !== undefined
+          ? { pluginStorageRoot: options.pluginStorageRoot }
+          : {}),
       });
       if (isSkillMode || isSkillFile(file.filePath)) {
         content = content.replace(/\$\{AGENC_SKILL_DIR\}/g, skillBaseDir);
@@ -316,13 +332,13 @@ async function readCommandPath(
     return [{
       plugin,
       file: {
-        filePath: `<inline:${plugin.name}:${command.name}>`,
+        filePath: `<inline:${plugin.id}:${command.name}>`,
         baseDir: plugin.root,
         frontmatter: parsed.frontmatter,
         markdown: parsed.markdown,
       },
       metadata: command.metadata,
-      declaredName: pluginCommandName(plugin.name, [command.name]),
+      declaredName: pluginCommandName(plugin.id, [command.name]),
       isSkillMode: false,
     }];
   }
@@ -340,10 +356,10 @@ async function readCommandPath(
     ? plugin.commandsPath
     : dirname(command.path);
   const declaredName = command.manifestName !== undefined
-    ? pluginCommandName(plugin.name, [command.manifestName])
+    ? pluginCommandName(plugin.id, [command.manifestName])
     : command.name === markdownStem(command.path)
     ? undefined
-    : pluginCommandName(plugin.name, [command.name]);
+    : pluginCommandName(plugin.id, [command.name]);
   return [
     await readFileAsCommand(
       plugin,
@@ -473,7 +489,7 @@ async function resolvePlugins(
 }
 
 export async function loadPluginCommands(
-  options: PluginCommandRegistrationOptions = {},
+  options: PluginCommandRegistrationOptions,
 ): Promise<readonly Command[]> {
   if (shouldSkipImplicitPluginDiscovery(options)) return [];
   if (!hasExplicitPluginDiscoveryInput(options)) {
@@ -490,7 +506,7 @@ export async function loadPluginCommands(
 }
 
 export async function loadPluginSkills(
-  options: PluginCommandRegistrationOptions = {},
+  options: PluginCommandRegistrationOptions,
 ): Promise<readonly Command[]> {
   if (shouldSkipImplicitPluginDiscovery(options)) return [];
   if (!hasExplicitPluginDiscoveryInput(options)) {
@@ -507,18 +523,22 @@ export async function loadPluginSkills(
 }
 
 export function clearPluginCommandCache(): void {
-  activePluginCommandsByCwd.clear();
+  const authority = getCanonicalSettingsAuthority();
+  if (authority === null) activePluginCommandsByCwd.clear();
+  else activePluginCommandsByCwd.clearAuthority(authority);
 }
 
 export function clearPluginSkillsCache(): void {
-  activePluginSkillsByCwd.clear();
+  const authority = getCanonicalSettingsAuthority();
+  if (authority === null) activePluginSkillsByCwd.clear();
+  else activePluginSkillsByCwd.clearAuthority(authority);
 }
 
 export function registerPluginCommandProvider(
   registerCommandProvider: (
     provider: (cwd: string) => Promise<readonly Command[]> | readonly Command[],
   ) => () => void,
-  options: PluginCommandRegistrationOptions = {},
+  options: PluginCommandRegistrationOptions,
 ): () => void {
   return registerCommandProvider((cwd) => loadPluginCommands({ ...options, cwd }));
 }
@@ -534,6 +554,7 @@ async function readTextIfPresent(path: string): Promise<string | null> {
 export async function loadPluginSkillDirectory(
   plugin: LoadedPlugin,
   directory: string,
+  pluginStorageRoot: string,
 ): Promise<readonly Command[]> {
   const directSkill = join(directory, "SKILL.md");
   const loadedPaths = new Set<string>();
@@ -551,12 +572,12 @@ export async function loadPluginSkillDirectory(
         },
         isSkillMode: true,
       },
-      {},
+      { pluginStorageRoot },
     );
     return command ? [command] : [];
   }
   const entries = await loadSkillEntriesFromPath(plugin, directory, loadedPaths);
   return entries
-    .map((entry) => createPluginCommand(entry, {}))
+    .map((entry) => createPluginCommand(entry, { pluginStorageRoot }))
     .filter((command): command is Command => command !== null);
 }

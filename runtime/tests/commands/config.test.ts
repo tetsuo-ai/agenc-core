@@ -83,15 +83,9 @@ describe("config — getConfigPath", () => {
 
   it("walks nested paths", () => {
     const store = makeStore({
-      toolBudget: {
-        max_calls_per_turn: 42,
-        max_bytes_per_call: 1024,
-        max_bytes_per_turn: 2048,
-      },
+      tui: { ...defaultConfig().tui, theme: "light" },
     });
-    expect(getConfigPath(store.current(), "toolBudget.max_calls_per_turn")).toBe(
-      "42",
-    );
+    expect(getConfigPath(store.current(), "tui.theme")).toBe("light");
   });
 
   it("returns 'not set' for missing keys", () => {
@@ -166,8 +160,8 @@ describe("configCommand — execute show/default", () => {
     );
   });
 
-  it("keeps /settings as an alias for the config surface", () => {
-    expect(configCommand.aliases).toContain("settings");
+  it("does not retain the retired /settings command alias", () => {
+    expect(configCommand.aliases).toBeUndefined();
   });
 
   it("'show' is an explicit alias", async () => {
@@ -208,9 +202,10 @@ describe("config menu snapshot", () => {
     expect(snapshot.configPath).toBe("/home/test/.agenc/config.toml");
     expect(
       snapshot.rows.some(
-        row => row.key === "model" && row.value === "grok-4-fast",
+        row => row.key === "session model" && row.value === "grok-4-fast",
       ),
     ).toBe(true);
+    expect(snapshot.rows.filter(row => row.key.includes("model"))).toHaveLength(1);
     expect(
       snapshot.rows.some(
         row => row.key === "mcp server" && row.detail.includes("local"),
@@ -221,6 +216,48 @@ describe("config menu snapshot", () => {
         row => row.key === "profiles" && row.detail.includes("dev"),
       ),
     ).toBe(true);
+  });
+
+  it("separates a pending session selection from configured startup settings", () => {
+    const store = makeStore({
+      model: "grok-4.5",
+      model_provider: "grok",
+    });
+    const session = stubSession() as unknown as {
+      sessionConfiguration: {
+        provider: { slug: string };
+        collaborationMode: { model: string };
+      };
+    };
+    session.sessionConfiguration = {
+      provider: { slug: "grok" },
+      collaborationMode: { model: "grok-4.5" },
+    };
+    (session as unknown as StubSession).setPendingProviderSwitch({
+      provider: "grok",
+      model: "grok-4.6",
+    });
+
+    const snapshot = readConfigMenuSnapshot(stubCtx({
+      configStore: store,
+      session: session as unknown as Session,
+    }));
+    const modelRows = snapshot.rows.filter(row => row.key.includes("model"));
+
+    expect(modelRows).toEqual([
+      expect.objectContaining({
+        key: "session model",
+        value: "grok-4.6",
+        status: "active",
+        detail: expect.stringContaining("grok"),
+      }),
+      expect.objectContaining({
+        key: "configured model",
+        value: "grok-4.5",
+        status: "configured",
+        detail: expect.stringContaining("grok"),
+      }),
+    ]);
   });
 });
 
@@ -294,7 +331,7 @@ describe("configCommand — reload", () => {
   it("calls ConfigStore.reload and reports the new model", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
       const r = await configCommand.execute(
         stubCtx({ configStore: store, argsRaw: "reload", home: tmp }),
@@ -311,15 +348,15 @@ describe("configCommand — reload", () => {
   it("refreshes MCP after reload when the session service is wired", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
-      const refreshFromConfig = vi.fn().mockResolvedValue({
+      const refreshFromAuthority = vi.fn().mockResolvedValue({
         configuredServers: ["github"],
         requiredServers: ["github"],
       });
       const session = stubSession();
       (session as unknown as StubSession).services = {
-        mcpManager: { refreshFromConfig },
+        mcpManager: { refreshFromAuthority },
       };
 
       const r = await configCommand.execute(
@@ -327,9 +364,7 @@ describe("configCommand — reload", () => {
       );
 
       if (r.kind !== "text") throw new Error(`expected text, got ${r.kind}`);
-      expect(refreshFromConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ model: "grok-4-reloaded" }),
-      );
+      expect(refreshFromAuthority).toHaveBeenCalledWith();
       expect(r.text).toContain("MCP refreshed (1 configured, 1 required)");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
@@ -339,15 +374,15 @@ describe("configCommand — reload", () => {
   it("ignores array-shaped MCP manager services after reload", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
-      const refreshFromConfig = vi.fn().mockResolvedValue({
+      const refreshFromAuthority = vi.fn().mockResolvedValue({
         configuredServers: ["github"],
         requiredServers: ["github"],
       });
       const session = stubSession();
       (session as unknown as StubSession).services = {
-        mcpManager: Object.assign(["spoof"], { refreshFromConfig }),
+        mcpManager: Object.assign(["spoof"], { refreshFromAuthority }),
       };
 
       const r = await configCommand.execute(
@@ -355,7 +390,7 @@ describe("configCommand — reload", () => {
       );
 
       if (r.kind !== "text") throw new Error(`expected text, got ${r.kind}`);
-      expect(refreshFromConfig).not.toHaveBeenCalled();
+      expect(refreshFromAuthority).not.toHaveBeenCalled();
       expect(r.text).toContain("Config reloaded");
       expect(r.text).not.toContain("MCP refreshed");
     } finally {
@@ -366,7 +401,7 @@ describe("configCommand — reload", () => {
   it("re-applies the reloaded config to the daemon and folds in its summary", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
       const applyDaemonConfig = vi.fn(async () => ({
         applied: true,
@@ -395,7 +430,7 @@ describe("configCommand — reload", () => {
   it("does NOT call the daemon forwarder on reload for the in-process path", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
       const applyDaemonConfig = vi.fn();
       // In-process session: no applyDaemonConfig forwarder.
@@ -414,7 +449,7 @@ describe("configCommand — reload", () => {
   it("returns an error when the daemon reload apply fails", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
       const applyDaemonConfig = vi.fn(async () => {
         throw new Error("socket closed");
@@ -441,14 +476,14 @@ describe("configCommand — reload", () => {
   it("reports MCP refresh failure after config reload", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
-      const refreshFromConfig = vi
+      const refreshFromAuthority = vi
         .fn()
         .mockRejectedValue(new Error("required server missing"));
       const session = stubSession();
       (session as unknown as StubSession).services = {
-        mcpManager: { refreshFromConfig },
+        mcpManager: { refreshFromAuthority },
       };
 
       const r = await configCommand.execute(
@@ -465,12 +500,13 @@ describe("configCommand — reload", () => {
     }
   });
 
-  it("surfaces config validation warnings from reload", async () => {
+  it("rejects invalid canonical config during reload", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
       writeFileSync(
         join(tmp, "config.toml"),
-        `
+        `config_version = 2
+
 [auth.managedKeys]
 enabled = "yes"
         `,
@@ -479,9 +515,8 @@ enabled = "yes"
       const r = await configCommand.execute(
         stubCtx({ configStore: store, argsRaw: "reload", home: tmp }),
       );
-      if (r.kind !== "text") throw new Error(`expected text, got ${r.kind}`);
-      expect(r.text).toContain("warnings (1)");
-      expect(r.text).toContain("Invalid auth.managedKeys.enabled");
+      if (r.kind !== "error") throw new Error(`expected error, got ${r.kind}`);
+      expect(r.message).toContain("Invalid auth.managedKeys.enabled");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -525,7 +560,7 @@ describe("configCommand — profile", () => {
   it("'profile <name>' stages pendingProviderSwitch with profile", async () => {
     const store = makeStore({
       profiles: {
-        dev: { model: "grok-dev", model_provider: "xai" },
+        dev: { model: "grok-dev", model_provider: "grok" },
       },
     });
     const session = stubSession();
@@ -543,7 +578,70 @@ describe("configCommand — profile", () => {
     }).pendingProviderSwitch;
     expect(staged.profile).toBe("dev");
     expect(staged.model).toBe("grok-dev");
-    expect(staged.provider).toBe("xai");
+    expect(staged.provider).toBe("grok");
+  });
+
+  it("resolves a provider-only profile without mixing the prior model", async () => {
+    const store = makeStore({
+      profiles: {
+        remote: { model_provider: "openai" },
+      },
+    });
+    const session = stubSession();
+    session.setPendingProviderSwitch({
+      provider: "grok",
+      model: "grok-4.3",
+    });
+
+    const result = await configCommand.execute(
+      stubCtx({
+        configStore: store,
+        argsRaw: "profile remote",
+        session,
+      }),
+    );
+
+    expect(result.kind).toBe("text");
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown })
+        .pendingProviderSwitch,
+    ).toEqual({
+      provider: "openai",
+      model: "gpt-5",
+      profile: "remote",
+    });
+  });
+
+  it("stages the same config-based pair that profile consumption will apply", async () => {
+    const store = makeStore({
+      model_provider: "openai",
+      model: "gpt-5-mini",
+      profiles: {
+        strict: { reasoning_effort: "low" },
+      },
+    });
+    const session = stubSession();
+    session.setPendingProviderSwitch({
+      provider: "grok",
+      model: "grok-4.3",
+    });
+
+    await configCommand.execute(
+      stubCtx({
+        configStore: store,
+        argsRaw: "profile strict",
+        session,
+      }),
+    );
+
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown })
+        .pendingProviderSwitch,
+    ).toEqual({
+      provider: "openai",
+      model: "gpt-5-mini",
+      profile: "strict",
+    });
   });
 
   it("'profile unknown' returns an error", async () => {
@@ -570,6 +668,7 @@ describe("configCommand — profile", () => {
       summary: "profile dev applied: model base->grok-dev",
     }));
     const session = Object.assign(stubSession(), { applyDaemonConfig });
+    const stage = vi.spyOn(session, "setPendingProviderSwitch");
     const r = await configCommand.execute(
       stubCtx({
         configStore: store,
@@ -578,13 +677,10 @@ describe("configCommand — profile", () => {
       }),
     );
     if (r.kind !== "text") throw new Error("expected text");
-    // Daemon summary is surfaced verbatim, and the staging still happened.
+    // The daemon transaction is the only mutation path.
     expect(r.text).toBe("profile dev applied: model base->grok-dev");
     expect(applyDaemonConfig).toHaveBeenCalledWith({ profile: "dev" });
-    expect(
-      (session as unknown as { pendingProviderSwitch: { profile?: string } })
-        .pendingProviderSwitch?.profile,
-    ).toBe("dev");
+    expect(stage).not.toHaveBeenCalled();
   });
 
   it("does NOT call the daemon forwarder on the in-process path", async () => {
@@ -615,7 +711,7 @@ describe("configCommand — profile", () => {
     );
     expect(r.kind).toBe("error");
     if (r.kind !== "error") throw new Error("expected error");
-    expect(r.message).toContain("daemon apply failed");
+    expect(r.message).toContain("Profile apply failed");
   });
 });
 
@@ -639,7 +735,10 @@ describe("configCommand — edit", () => {
   it("spawns the editor when config.toml exists and returns success", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "x"\n');
+      writeFileSync(
+        join(tmp, "config.toml"),
+        'config_version = 2\nmodel = "grok-4.6"\n',
+      );
       const spawner = vi.fn().mockResolvedValue(0);
       const cmd = createConfigCommand({
         env: { EDITOR: "myedit" } as NodeJS.ProcessEnv,
@@ -652,14 +751,17 @@ describe("configCommand — edit", () => {
       if (r.kind !== "text") throw new Error("expected text");
       expect(spawner).toHaveBeenCalledTimes(1);
       expect(spawner.mock.calls[0]![0]).toBe("myedit");
-      expect(spawner.mock.calls[0]![1]).toEqual([join(tmp, "config.toml")]);
+      expect(spawner.mock.calls[0]![1]).toHaveLength(1);
+      expect(spawner.mock.calls[0]![1][0]).toMatch(
+        /\/\.agenc-config-edit-[^/]+\/config\.toml$/u,
+      );
       expect(r.text).toMatch(/reload to apply/);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
 
-  it("edit on missing config.toml returns a hint without spawning", async () => {
+  it("edit on missing config.toml uses a private canonical snapshot", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
       const spawner = vi.fn().mockResolvedValue(0);
@@ -672,8 +774,11 @@ describe("configCommand — edit", () => {
         stubCtx({ configStore: store, argsRaw: "edit", agencHome: tmp }),
       );
       if (r.kind !== "text") throw new Error("expected text");
-      expect(spawner).not.toHaveBeenCalled();
-      expect(r.text).toMatch(/does not exist/);
+      expect(spawner).toHaveBeenCalledOnce();
+      expect(spawner.mock.calls[0]![1][0]).toMatch(
+        /\/\.agenc-config-edit-[^/]+\/config\.toml$/u,
+      );
+      expect(r.text).toMatch(/reload to apply/);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -682,7 +787,7 @@ describe("configCommand — edit", () => {
   it("edit reports an error when the editor exits non-zero", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), "");
+      writeFileSync(join(tmp, "config.toml"), "config_version = 2\n");
       const spawner = vi.fn().mockResolvedValue(2);
       const cmd = createConfigCommand({
         env: { EDITOR: "broken" } as NodeJS.ProcessEnv,

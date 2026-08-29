@@ -15,7 +15,6 @@ import { AgenCTuiApp } from "./components/App.js";
 import type {
   AgenCBridgeSession,
   AgenCTuiProps,
-  ConfigStoreLike,
 } from "./session-types.js";
 import type { Event } from "../session/event-log.js";
 import { FpsTracker } from "../utils/fpsTracker.js";
@@ -41,10 +40,10 @@ export interface StdinLossSession extends AgenCBridgeSession {
 
 export interface BootTUIOptions {
   readonly session: StdinLossSession;
-  readonly configStore: ConfigStoreLike;
   readonly stdin?: NodeJS.ReadStream;
   readonly stdout?: NodeJS.WriteStream;
   readonly stderr?: NodeJS.WriteStream;
+  readonly stdinMode?: "readable" | "data";
   readonly model?: AgenCTuiProps["model"];
   readonly initialPrompt?: string;
   readonly initialUserMessages?: AgenCTuiProps["initialUserMessages"];
@@ -221,7 +220,6 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
     instance = await renderInk(
       <AgenCTuiApp
         session={options.session}
-        configStore={options.configStore}
         registerTuiTeardown={(teardown) => teardownBarrier.register(teardown)}
         shouldPreserveEditorRecoveryOnTeardown={() => firedStdinLoss}
         isInteractive={stdin.isTTY === true}
@@ -237,6 +235,7 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
         stderr,
         patchConsole: true,
         exitOnCtrlC: false,
+        stdinMode: options.stdinMode,
         onFrame: (event) => {
           fpsTracker.record(event.durationMs);
           if (event.durationMs >= RENDER_BACKPRESSURE_THRESHOLD_MS) {

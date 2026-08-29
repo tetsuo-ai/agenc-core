@@ -7,8 +7,8 @@
  *
  * Files are loaded in the following order:
  *
- * 1. Managed memory (eg. /etc/agenc-code/AGENC.md) - Global instructions for all users
- * 2. User memory (~/.agenc/AGENC.md) - Private global instructions for all projects
+ * 1. Managed memory (for example, /etc/agenc/AGENC.md on Linux) - Global instructions for all users
+ * 2. User memory ($AGENC_HOME/AGENC.md) - Private global instructions for all projects
  * 3. Project memory (AGENC.md, with AGENTS.md fallback, plus .agenc/AGENC.md and .agenc/rules/*.md in project roots) - Instructions checked into the codebase
  * 4. Local memory (AGENC.local.md in project roots) - Private project-specific instructions
  *
@@ -63,7 +63,6 @@ import {
 } from './paths.js'
 import * as teamMemPathsModule from '../memdir/teamMemPaths.js'
 import {
-  getCurrentProjectConfig,
   getManagedAgenCRulesDir,
   getMemoryPath,
   getUserAgenCRulesDir,
@@ -94,7 +93,7 @@ import {
   isProjectInstructionFileName,
 } from '../utils/projectInstructions.js'
 import { isSettingSourceEnabled } from '../utils/settings/constants.js'
-import { getExecutionAuthoritySettings } from '../utils/settings/settings.js'
+import { getSettingsForSource } from '../utils/settings/settings.js'
 import { readInstructionFileSnapshot } from '../prompts/secure-instruction-file.js'
 import { discoverInstructionRules } from '../prompts/rules/discovery.js'
 
@@ -576,7 +575,7 @@ function isAgenCMdExcluded(filePath: string, type: MemoryType): boolean {
     return false
   }
 
-  const patterns = getExecutionAuthoritySettings().agencMdExcludes
+  const patterns = getSettingsForSource('policySettings')?.agencMdExcludes
   if (!patterns || patterns.length === 0) {
     return false
   }
@@ -605,7 +604,7 @@ function isAgenCMdExcluded(filePath: string, type: MemoryType): boolean {
  * existing directory prefix via realpathSync and adds the resolved version.
  * Glob patterns (containing *) have their static prefix resolved.
  */
-function resolveExcludePatterns(patterns: string[]): string[] {
+function resolveExcludePatterns(patterns: readonly string[]): string[] {
   const fs = getFsImplementation()
   const expanded: string[] = patterns.map(p => p.replaceAll('\\', '/'))
 
@@ -1501,11 +1500,6 @@ export function hasExternalAgenCMdIncludes(files: MemoryFileInfo[]): boolean {
 }
 
 export async function shouldShowAgenCMdExternalIncludesWarning(): Promise<boolean> {
-  const config = getCurrentProjectConfig()
-  if (config.hasAgenCMdExternalIncludesWarningShown) {
-    return false
-  }
-
   return hasExternalAgenCMdIncludes(await getMemoryFiles(false))
 }
 

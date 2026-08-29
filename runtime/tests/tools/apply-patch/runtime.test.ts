@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, test } from "vitest";
 
+import { ConfigStore } from "../../config/store.js";
+import { enterCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
 import { applyPatchText, unifiedDiffFromChunks } from "./runtime.js";
 import { parsePatch } from "./parser.js";
 import {
@@ -328,7 +330,7 @@ describe("apply-patch read-before-write gate", () => {
   const SESSION_ID = "apply-patch-gate-test-session";
 
   afterEach(() => {
-    clearSessionReadState(SESSION_ID);
+    clearSessionReadState(SESSION_ID, tmpdir());
   });
 
   const updatePatch = (file: string, from: string, to: string): string =>
@@ -902,8 +904,15 @@ describe("apply-patch atomicity", () => {
   test("marks an unrestored path unknown, reconciles every token, and reports the partial rollback truthfully", async () => {
     const root = await tempRoot();
     const agencHome = await tempRoot();
-    const originalAgencHome = process.env.AGENC_HOME;
-    process.env.AGENC_HOME = agencHome;
+    enterCanonicalSettingsAuthority(
+      new ConfigStore({
+        home: agencHome,
+        env: {},
+        cwd: root,
+        projectRoot: root,
+        projectTrusted: false,
+      }),
+    );
     const firstPath = join(root, "first.txt");
     const ghostPath = join(root, "ghost.txt");
     const before = "first\n";
@@ -1011,8 +1020,6 @@ describe("apply-patch atomicity", () => {
       ).not.toThrow();
     } finally {
       workspaceMutationCoordinators.clearForTests();
-      if (originalAgencHome === undefined) delete process.env.AGENC_HOME;
-      else process.env.AGENC_HOME = originalAgencHome;
     }
   });
 

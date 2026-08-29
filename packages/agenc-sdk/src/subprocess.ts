@@ -6,13 +6,13 @@
  * adapts its line-delimited output onto the same event-iterable interface
  * as {@link AgencSession.prompt}.
  *
- * stream-json contract (mirrors `runtime/src/bin/agenc.ts`):
+ * stream-json contract (mirrors `runtime/src/bin/agenc-main.ts`):
  *   - stdin: one JSON object per line; `{"type":"prompt","prompt":"..."}`
  *     (also accepts `input_text` / user `message` records).
  *   - stdout: `{"type":"event","sessionId","agentId","event":<daemon
  *     notification>}` lines while the turn runs, then one final
  *     `{"type":"result","exitCode","finalMessage","deniedPermissionRequestIds",
- *     "tokenUsage"?,"cacheStats"?}` line.
+ *     "tokenUsage"?}` line.
  *
  * Limitations (inherent to `agenc -p`): the run is one-shot and
  * non-interactive — the CLI auto-DENIES permission requests, so permission
@@ -75,11 +75,14 @@ export interface AgencSubprocessOptions {
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  readonly configPath?: string;
   readonly permissionMode?:
     | "default"
     | "plan"
     | "acceptEdits"
     | "bypassPermissions";
+  /** Disable both approval prompts and the OS sandbox for this subprocess. */
+  readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
   /** Extra argv appended verbatim after the built-in flags. */
   readonly extraArgs?: readonly string[];
   readonly signal?: AbortSignal;
@@ -117,8 +120,14 @@ export function promptViaSubprocess(
     ...(options.model !== undefined ? ["--model", options.model] : []),
     ...(options.provider !== undefined ? ["--provider", options.provider] : []),
     ...(options.profile !== undefined ? ["--profile", options.profile] : []),
+    ...(options.configPath !== undefined
+      ? ["--config", options.configPath]
+      : []),
     ...(options.permissionMode !== undefined
       ? ["--permission-mode", options.permissionMode]
+      : []),
+    ...(options.dangerouslyBypassApprovalsAndSandbox === true
+      ? ["--dangerously-bypass-approvals-and-sandbox"]
       : []),
     ...(options.extraArgs ?? []),
   ];
@@ -247,9 +256,6 @@ export function promptViaSubprocess(
           typeof line.finalMessage === "string" ? line.finalMessage : "",
         deniedPermissionRequestIds: denied,
         ...(isJsonObject(line.tokenUsage) ? { usage: line.tokenUsage } : {}),
-        ...(isJsonObject(line.cacheStats)
-          ? { cacheStats: line.cacheStats }
-          : {}),
       });
       return;
     }

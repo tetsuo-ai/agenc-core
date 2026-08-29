@@ -52,7 +52,7 @@ function hasProgressMessage(data: Progress): data is AgentToolProgress {
  * For tool_result messages, uses the provided `toolUseByID` map to find the
  * corresponding tool_use block instead of relying on `normalizedMessages`.
  */
-function getSearchOrReadInfo(progressMessage: ProgressMessage<Progress>, tools: Tools, toolUseByID: Map<string, ToolUseBlockParam>): {
+function getSearchOrReadInfo(progressMessage: ProgressMessage<Progress>, tools: Tools, toolUseByID: Map<string, ToolUseBlockParam>, fullscreen: boolean): {
   isSearch: boolean;
   isRead: boolean;
   isREPL: boolean;
@@ -64,7 +64,7 @@ function getSearchOrReadInfo(progressMessage: ProgressMessage<Progress>, tools: 
 
   // Check tool_use (assistant message)
   if (message.type === 'assistant') {
-    return getSearchOrReadFromContent(message.message.content[0], tools);
+    return getSearchOrReadFromContent(message.message.content[0], tools, fullscreen);
   }
 
   // Check tool_result (user message) - find corresponding tool use from the map
@@ -73,7 +73,7 @@ function getSearchOrReadInfo(progressMessage: ProgressMessage<Progress>, tools: 
     if (content?.type === 'tool_result') {
       const toolUse = toolUseByID.get(content.tool_use_id);
       if (toolUse) {
-        return getSearchOrReadFromContent(toolUse, tools);
+        return getSearchOrReadFromContent(toolUse, tools, fullscreen);
       }
     }
   }
@@ -97,7 +97,7 @@ type ProcessedMessage = {
  * For ants only - returns original messages for non-ants.
  * @param isAgentRunning - If true, the last group is always marked as active (in progress)
  */
-function processProgressMessages(messages: ProgressMessage<Progress>[], tools: Tools, isAgentRunning: boolean): ProcessedMessage[] {
+function processProgressMessages(messages: ProgressMessage<Progress>[], tools: Tools, isAgentRunning: boolean, fullscreen: boolean): ProcessedMessage[] {
   // Only process for ants. The build channel ("external") is inlined here as a
   // literal; the cast keeps the (always-true, for external builds) comparison
   // semantics while satisfying the type checker. See notedBugs.
@@ -140,7 +140,7 @@ function processProgressMessages(messages: ProgressMessage<Progress>[], tools: T
         }
       }
     }
-    const info = getSearchOrReadInfo(msg, tools, toolUseByID);
+    const info = getSearchOrReadInfo(msg, tools, toolUseByID, fullscreen);
     if (info && (info.isSearch || info.isRead || info.isREPL)) {
       // This is a search/read/REPL operation - add to current group
       if (!currentGroup) {
@@ -434,7 +434,8 @@ export function renderToolUseProgressMessage(progressMessages: ProgressMessage<P
   verbose,
   terminalSize,
   inProgressToolCallCount,
-  isTranscriptMode = false
+  isTranscriptMode = false,
+  fullscreen,
 }: {
   tools: Tools;
   verbose: boolean;
@@ -444,6 +445,7 @@ export function renderToolUseProgressMessage(progressMessages: ProgressMessage<P
   };
   inProgressToolCallCount?: number;
   isTranscriptMode?: boolean;
+  fullscreen: boolean;
 }): React.ReactNode {
   if (!progressMessages.length) {
     return <MessageResponse height={1}>
@@ -491,7 +493,7 @@ export function renderToolUseProgressMessage(progressMessages: ProgressMessage<P
 
   // Process messages to group consecutive search/read operations into summaries (ants only)
   // isAgentRunning=true since this is the progress view while the agent is still running
-  const processedMessages = processProgressMessages(progressMessages, tools, true);
+  const processedMessages = processProgressMessages(progressMessages, tools, true, fullscreen);
 
   // For display, take the last few processed messages
   const displayedMessages = isTranscriptMode ? processedMessages : processedMessages.slice(-MAX_PROGRESS_MESSAGES_TO_SHOW);
@@ -563,7 +565,8 @@ export function renderToolUseRejectedMessage(_input: {
   progressMessagesForMessage,
   tools,
   verbose,
-  isTranscriptMode
+  isTranscriptMode,
+  fullscreen,
 }: {
   columns: number;
   messages: Message[];
@@ -573,6 +576,7 @@ export function renderToolUseRejectedMessage(_input: {
   tools: Tools;
   verbose: boolean;
   isTranscriptMode?: boolean;
+  fullscreen: boolean;
 }): React.ReactNode {
   // Get agentId from progress messages if available (agent was running before rejection)
   const firstData = progressMessagesForMessage[0]?.data;
@@ -586,7 +590,8 @@ export function renderToolUseRejectedMessage(_input: {
       {renderToolUseProgressMessage(progressMessagesForMessage, {
       tools,
       verbose,
-      isTranscriptMode
+      isTranscriptMode,
+      fullscreen,
     })}
       <FallbackToolUseRejectedMessage />
     </>;
@@ -595,18 +600,21 @@ export function renderToolUseErrorMessage(result: ToolResultBlockParam['content'
   progressMessagesForMessage,
   tools,
   verbose,
-  isTranscriptMode
+  isTranscriptMode,
+  fullscreen,
 }: {
   progressMessagesForMessage: ProgressMessage<Progress>[];
   tools: Tools;
   verbose: boolean;
   isTranscriptMode?: boolean;
+  fullscreen: boolean;
 }): React.ReactNode {
   return <>
       {renderToolUseProgressMessage(progressMessagesForMessage, {
       tools,
       verbose,
-      isTranscriptMode
+      isTranscriptMode,
+      fullscreen,
     })}
       <FallbackToolUseErrorMessage result={result} verbose={verbose} />
     </>;
@@ -646,10 +654,12 @@ export function renderGroupedAgentToolUse(toolUses: Array<{
 }>, options: {
   shouldAnimate: boolean;
   tools: Tools;
+  fullscreen: boolean;
 }): React.ReactNode | null {
   const {
     shouldAnimate,
-    tools
+    tools,
+    fullscreen,
   } = options;
 
   // Calculate stats for each agent
@@ -661,7 +671,7 @@ export function renderGroupedAgentToolUse(toolUses: Array<{
     result
   }) => {
     const stats = calculateAgentStats(progressMessages);
-    const lastToolInfo = extractLastToolInfo(progressMessages, tools);
+    const lastToolInfo = extractLastToolInfo(progressMessages, tools, fullscreen);
     const parsedInput = inputSchema().safeParse(param.input);
 
     // teammate_spawned is not part of the exported Output type (cast through unknown
@@ -752,8 +762,8 @@ export function userFacingName(input: Partial<{
   team_name: string;
 }> | undefined): string {
   if (input?.subagent_type && canonicalAgentRoleName(input.subagent_type) !== getDefaultAgentRole().name) {
-    // Display "worker" agents as "Agent" for cleaner UI
-    if (input.subagent_type === 'worker') {
+    // Display the default execution role as "Agent" for cleaner UI.
+    if (input.subagent_type === 'runner') {
       return 'Agent';
     }
     return input.subagent_type;
@@ -772,7 +782,7 @@ export function userFacingNameBackgroundColor(input: Partial<{
   // Get the color for this agent
   return getAgentColor(input.subagent_type) as keyof Theme | undefined;
 }
-function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[], tools: Tools): string | null {
+function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[], tools: Tools, fullscreen: boolean): string | null {
   // Build tool_use lookup from all progress messages (needed for reverse iteration)
   const toolUseByID = new Map<string, ToolUseBlockParam>();
   for (const pm of progressMessages) {
@@ -796,7 +806,7 @@ function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[], tool
     if (!hasProgressMessage(msg.data)) {
       continue;
     }
-    const info = getSearchOrReadInfo(msg, tools, toolUseByID);
+    const info = getSearchOrReadInfo(msg, tools, toolUseByID, fullscreen);
     if (info && (info.isSearch || info.isRead)) {
       // Only count tool_result messages to avoid double counting
       if (msg.data.message.type === 'user') {
@@ -852,5 +862,5 @@ function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[], tool
   return null;
 }
 function isCustomSubagentType(subagentType: string | undefined): subagentType is string {
-  return !!subagentType && canonicalAgentRoleName(subagentType) !== getDefaultAgentRole().name && subagentType !== 'worker';
+  return !!subagentType && canonicalAgentRoleName(subagentType) !== getDefaultAgentRole().name && subagentType !== 'runner';
 }

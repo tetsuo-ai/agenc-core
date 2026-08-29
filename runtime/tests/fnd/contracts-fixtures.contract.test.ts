@@ -59,7 +59,7 @@ const EXPECTED_CRITICAL_PATH_ADRS = Object.freeze([
   {
     id: "CP-0003",
     file: "0003-versioned-durable-checkpoints.md",
-    status: "Accepted target; implementation pending",
+    status: "Shipped (checkpoint v2, tool-result body digest, ordered pairing). Remaining mixed: tool-pair overflow is not a v18 deferred reason_code; compaction packing validates at rollout write, not every packing step",
   },
   {
     id: "CP-0004",
@@ -624,7 +624,10 @@ describe("foundation fixture contract", () => {
       "critical-path README",
     ).toString("utf8");
     expect(criticalPathReadme).toContain(
-      "Status: accepted target architecture; implementation is pending.",
+      "Status: mixed. CP-0001 through CP-0007 are in the 0.17.0 runtime.",
+    );
+    expect(criticalPathReadme).toContain(
+      "CP-0008 | [Preserve trusted instructions and untrusted data end to end]",
     );
     expect(criticalPathReadme).toContain(AUDITED_SHA);
     for (const decision of EXPECTED_CRITICAL_PATH_ADRS) {
@@ -661,7 +664,7 @@ describe("foundation fixture contract", () => {
         .length - 1,
     ).toBe(1);
     expect(docsIndex).toContain(
-      "Accepted target decisions for critical-path remediation; implementation is pending",
+      "Critical-path ADRs. Several are shipped (see that README's per-ID status). Remaining target: CP-0008 flattening cutover",
     );
   });
 

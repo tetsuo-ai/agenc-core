@@ -7,6 +7,9 @@ import {
   clearExitPlanModeApprovalsForTest,
   consumeExitPlanModeApproval,
 } from "../../src/planning/exit-plan-approval.js";
+import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
+
+const TEST_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
@@ -55,7 +58,11 @@ describe("approveTool does not leak exit-plan approvals on the non-pending throw
 
   it("removes the recorded approval when the decision is no longer pending", async () => {
     const { agents } = createAgentsWithNonPendingDecision();
-    await agents.createAgent({ cwd: process.cwd(), objective: "wait for plan approval" });
+    await agents.createAgent({
+      cwd: process.cwd(),
+      objective: "wait for plan approval",
+      runtimeOptions: TEST_RUNTIME_OPTIONS,
+    });
 
     await expect(
       agents.approveTool({
@@ -79,7 +86,11 @@ describe("approveTool does not leak exit-plan approvals on the non-pending throw
 
   it("does not leak across many distinct non-pending requestIds", async () => {
     const { agents } = createAgentsWithNonPendingDecision();
-    await agents.createAgent({ cwd: process.cwd(), objective: "wait for plan approval" });
+    await agents.createAgent({
+      cwd: process.cwd(),
+      objective: "wait for plan approval",
+      runtimeOptions: TEST_RUNTIME_OPTIONS,
+    });
 
     const ids = ["call_a", "call_b", "call_c", "call_d", "call_e"];
     for (const requestId of ids) {

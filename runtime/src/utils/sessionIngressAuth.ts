@@ -1,38 +1,32 @@
 import {
-  getSessionIngressToken,
-  setSessionIngressToken,
-} from '../bootstrap/state.js'
-import {
-  CCR_SESSION_INGRESS_TOKEN_PATH,
-  maybePersistTokenForSubprocesses,
-  readTokenFromWellKnownFile,
-} from './authFileDescriptor.js'
+  readRemoteRuntimeCredential,
+  storeRemoteRuntimeCredential,
+} from './secureStorage/remoteRuntimeCredentials.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from './errors.js'
 import { getFsImplementation } from './fsOperations.js'
+import type { HomeContext } from '../config/home.js'
+import { secureStorageIdentityKey } from './secureStorage/home.js'
+
+type SessionIngressEnvironment = Readonly<Record<string, string | undefined>>
+const descriptorTokenCache = new Map<string, string>()
 
 /**
- * Read token via file descriptor, falling back to well-known file.
- * Uses global state to cache the result since file descriptors can only be read once.
+ * Read token via file descriptor, falling back to native secure storage.
+ * Successful one-shot descriptor reads are isolated by home and descriptor.
  */
-function getTokenFromFileDescriptor(): string | null {
-  // Check if we've already attempted to read the token
-  const cachedToken = getSessionIngressToken()
-  if (cachedToken !== undefined) {
-    return cachedToken
+function getTokenFromFileDescriptor(
+  home: HomeContext,
+  environment: SessionIngressEnvironment,
+): string | null {
+  const fdEnv = environment.AGENC_WEBSOCKET_AUTH_FILE_DESCRIPTOR?.trim()
+  if (!fdEnv) {
+    return readRemoteRuntimeCredential(home, 'sessionIngressToken')
   }
 
-  const fdEnv = process.env.AGENC_WEBSOCKET_AUTH_FILE_DESCRIPTOR
-  if (!fdEnv) {
-    // No FD env var — either we're not in CCR, or we're a subprocess whose
-    // parent stripped the (useless) FD env var. Try the well-known file.
-    const path =
-      process.env.AGENC_SESSION_INGRESS_TOKEN_FILE ??
-      CCR_SESSION_INGRESS_TOKEN_PATH
-    const fromFile = readTokenFromWellKnownFile(path, 'session ingress token')
-    setSessionIngressToken(fromFile)
-    return fromFile
-  }
+  const cacheKey = `${secureStorageIdentityKey(home)}\0${fdEnv}`
+  const cachedToken = descriptorTokenCache.get(cacheKey)
+  if (cachedToken !== undefined) return cachedToken
 
   const fd = parseInt(fdEnv, 10)
   if (Number.isNaN(fd)) {
@@ -40,7 +34,6 @@ function getTokenFromFileDescriptor(): string | null {
       `AGENC_WEBSOCKET_AUTH_FILE_DESCRIPTOR must be a valid file descriptor number, got: ${fdEnv}`,
       { level: 'error' },
     )
-    setSessionIngressToken(null)
     return null
   }
 
@@ -58,30 +51,25 @@ function getTokenFromFileDescriptor(): string | null {
       logForDebugging('File descriptor contained empty token', {
         level: 'error',
       })
-      setSessionIngressToken(null)
       return null
     }
     logForDebugging(`Successfully read token from file descriptor ${fd}`)
-    setSessionIngressToken(token)
-    maybePersistTokenForSubprocesses(
-      CCR_SESSION_INGRESS_TOKEN_PATH,
-      token,
-      'session ingress token',
-    )
+    descriptorTokenCache.set(cacheKey, token)
+    try {
+      storeRemoteRuntimeCredential(home, 'sessionIngressToken', token)
+    } catch (error) {
+      logForDebugging(
+        `Failed to persist session ingress token in native secure storage: ${errorMessage(error)}`,
+        { level: 'error' },
+      )
+    }
     return token
   } catch (error) {
     logForDebugging(
       `Failed to read token from file descriptor ${fd}: ${errorMessage(error)}`,
       { level: 'error' },
     )
-    // FD env var was set but read failed — typically a subprocess that
-    // inherited the env var but not the FD (ENXIO). Try the well-known file.
-    const path =
-      process.env.AGENC_SESSION_INGRESS_TOKEN_FILE ??
-      CCR_SESSION_INGRESS_TOKEN_PATH
-    const fromFile = readTokenFromWellKnownFile(path, 'session ingress token')
-    setSessionIngressToken(fromFile)
-    return fromFile
+    return readRemoteRuntimeCredential(home, 'sessionIngressToken')
   }
 }
 
@@ -92,21 +80,23 @@ function getTokenFromFileDescriptor(): string | null {
  *  1. Environment variable (AGENC_SESSION_ACCESS_TOKEN) — set at spawn time,
  *     updated in-process via updateSessionIngressAuthToken or
  *     update_environment_variables stdin message from the parent bridge process.
- *  2. File descriptor (compatibility path) — AGENC_WEBSOCKET_AUTH_FILE_DESCRIPTOR,
- *     read once and cached.
- *  3. Well-known file — AGENC_SESSION_INGRESS_TOKEN_FILE env var path, or
- *     $HOME/.agenc/remote/.session_ingress_token. Covers subprocesses
- *     that can't inherit the FD.
+ *  2. File descriptor — AGENC_WEBSOCKET_AUTH_FILE_DESCRIPTOR, read once and
+ *     cached.
+ *  3. The home-scoped native secure storage credential. This covers subprocesses that
+ *     cannot inherit the descriptor without creating a plaintext fallback.
  */
-export function getSessionIngressAuthToken(): string | null {
+export function getSessionIngressAuthToken(
+  home: HomeContext,
+  environment: SessionIngressEnvironment,
+): string | null {
   // 1. Check environment variable
-  const envToken = process.env.AGENC_SESSION_ACCESS_TOKEN
+  const envToken = environment.AGENC_SESSION_ACCESS_TOKEN
   if (envToken) {
     return envToken
   }
 
-  // 2. Check file descriptor (compatibility path), with file fallback
-  return getTokenFromFileDescriptor()
+  // 2. Check file descriptor, then the native secure storage fallback.
+  return getTokenFromFileDescriptor(home, environment)
 }
 
 /**
@@ -114,14 +104,17 @@ export function getSessionIngressAuthToken(): string | null {
  * Session keys (sk-ant-sid) use Cookie auth + X-Organization-Uuid;
  * JWTs use Bearer auth.
  */
-export function getSessionIngressAuthHeaders(): Record<string, string> {
-  const token = getSessionIngressAuthToken()
+export function getSessionIngressAuthHeaders(
+  home: HomeContext,
+  environment: SessionIngressEnvironment,
+): Record<string, string> {
+  const token = getSessionIngressAuthToken(home, environment)
   if (!token) return {}
   if (token.startsWith('sk-ant-sid')) {
     const headers: Record<string, string> = {
       Cookie: `sessionKey=${token}`,
     }
-    const orgUuid = process.env.AGENC_ORGANIZATION_UUID
+    const orgUuid = environment.AGENC_ORGANIZATION_UUID
     if (orgUuid) {
       headers['X-Organization-Uuid'] = orgUuid
     }
@@ -131,10 +124,12 @@ export function getSessionIngressAuthHeaders(): Record<string, string> {
 }
 
 /**
- * Update the session ingress auth token in-process by setting the env var.
- * Used by the REPL bridge to inject a fresh token after reconnection
- * without restarting the process.
+ * Update the home-scoped native continuity credential. Provider/session
+ * environment snapshots remain immutable after ingress.
  */
-export function updateSessionIngressAuthToken(token: string): void {
-  process.env.AGENC_SESSION_ACCESS_TOKEN = token
+export function updateSessionIngressAuthToken(
+  home: HomeContext,
+  token: string,
+): void {
+  storeRemoteRuntimeCredential(home, 'sessionIngressToken', token)
 }

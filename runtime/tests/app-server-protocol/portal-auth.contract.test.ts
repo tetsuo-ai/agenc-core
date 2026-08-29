@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -6,6 +6,8 @@ import { AgenCDaemonAgentManager } from "../app-server/agent-lifecycle.js";
 import { AgenCDaemonJsonRpcDispatcher } from "../app-server/daemon-dispatcher.js";
 import { JSON_RPC_VERSION } from "../app-server/protocol/index.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
+import { readNativeSecureStorage } from "../utils/secureStorage/native.js";
+import { resolveSecureStorageHome } from "../utils/secureStorage/home.js";
 import {
   createAgenCPortalDaemonInitializeRequest,
   AGENC_PORTAL_AUTH_METHODS,
@@ -15,8 +17,11 @@ import {
 describe("AgenC portal AuthBackend contract", () => {
   it("routes portal auth actions through the daemon AuthBackend token store", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-portal-auth-"));
+    const environment = { AGENC_HOME: agencHome, HOME: agencHome };
+    const nativeHome = resolveSecureStorageHome(environment, agencHome);
     const backend = new LocalAuthBackend({
       agencHome,
+      env: environment,
       randomUUID: () => "portal-auth-token",
       now: () => new Date("2026-05-06T00:00:00.000Z"),
     });
@@ -54,9 +59,10 @@ describe("AgenC portal AuthBackend contract", () => {
       },
     });
     expect(JSON.stringify(loginResponse)).not.toContain("portal-auth-token");
-    await expect(
-      readAuthToken(join(agencHome, "auth.json")),
-    ).resolves.toBe("portal-auth-token");
+    expect(readNativeSecureStorage(nativeHome).localAuth?.login).toEqual({
+      token: "portal-auth-token",
+      createdAt: "2026-05-06T00:00:00.000Z",
+    });
 
     const whoamiResponse = await connection.dispatch({
       jsonrpc: JSON_RPC_VERSION,
@@ -89,6 +95,7 @@ describe("AgenC portal AuthBackend contract", () => {
     ).resolves.toMatchObject({
       result: { authenticated: false },
     });
+    expect(readNativeSecureStorage(nativeHome).localAuth?.login).toBeUndefined();
     await expect(
       connection.dispatch({
         jsonrpc: JSON_RPC_VERSION,
@@ -108,11 +115,3 @@ describe("AgenC portal AuthBackend contract", () => {
     expect(AGENC_PORTAL_METHODS).not.toContain("permission.list");
   });
 });
-
-async function readAuthToken(path: string): Promise<string> {
-  const parsed = JSON.parse(await readFile(path, "utf8")) as { token?: unknown };
-  if (typeof parsed.token !== "string") {
-    throw new Error("auth token was not persisted");
-  }
-  return parsed.token;
-}

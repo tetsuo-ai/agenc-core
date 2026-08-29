@@ -1,14 +1,6 @@
-/**
- * Ports source-reference `src/services/PromptSuggestion/promptSuggestion.ts` onto
- * AgenC's live prompt-suggestion service.
- *
- * Shape differences:
- *   - Uses AgenC env naming and a local rate-limit view instead of importing
- *     source-reference API limit modules.
- */
+/** Generates prompt suggestions and writes them to the live app state. */
 
 import type { Message } from '../../types/message.js'
-import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
 import {
   type CacheSafeParams,
   type PromptSuggestionAppState,
@@ -18,16 +10,12 @@ import {
   count,
   createCacheSafeParams,
   createUserMessage,
-  getFeatureValue_CACHED_MAY_BE_STALE,
-  getInitialPromptSuggestionSettings,
   getLastAssistantMessage,
-  isAgentSwarmsEnabled,
   logForDebugging,
   logError,
   runForkedAgent,
   toError,
 } from './runtime.js'
-import { getPromptSuggestionLimits } from './limits.js'
 import { isSpeculationEnabled, startSpeculation } from './speculation.js'
 
 let currentAbortController: AbortController | null = null
@@ -41,22 +29,9 @@ export function getPromptVariant(): PromptVariant {
 export function shouldEnablePromptSuggestion(
   settings?: PromptSuggestionSettings | null,
 ): boolean {
-  // Env var overrides everything (for testing)
-  const envOverride = process.env.AGENC_ENABLE_PROMPT_SUGGESTION
-  if (isEnvDefinedFalsy(envOverride)) {
-    return false
-  }
-  if (isEnvTruthy(envOverride)) {
-    return true
-  }
-
-  // Keep default in sync with Config.tsx (settings toggle visibility)
-  const promptSuggestionFeatureEnabled =
-    settings?.promptSuggestionFeatureEnabled ??
-    getFeatureValue_CACHED_MAY_BE_STALE('tengu_chomp_inflection', false)
-  if (!promptSuggestionFeatureEnabled) {
-    return false
-  }
+  // This typed preference is the sole enablement authority. Keep the
+  // default disabled so an absent preference preserves existing behavior.
+  if (settings?.promptSuggestionEnabled !== true) return false
 
   // Disable in non-interactive mode (print mode, piped input, SDK)
   if (settings?.isNonInteractiveSession) {
@@ -64,16 +39,11 @@ export function shouldEnablePromptSuggestion(
   }
 
   // Disable for swarm teammates (only leader should show suggestions)
-  const agentSwarmsEnabled =
-    settings?.agentSwarmsEnabled ?? isAgentSwarmsEnabled()
-  if (agentSwarmsEnabled && settings?.isTeammateSession) {
+  if (settings.agentSwarmsEnabled && settings.isTeammateSession) {
     return false
   }
 
-  return (
-    getInitialPromptSuggestionSettings(settings).promptSuggestionEnabled !==
-    false
-  )
+  return true
 }
 
 export function abortPromptSuggestion(): void {
@@ -95,11 +65,6 @@ export function getSuggestionSuppressReason(
     return 'pending_permission'
   if (appState.elicitation.queue.length > 0) return 'elicitation_active'
   if (appState.toolPermissionContext.mode === 'plan') return 'plan_mode'
-  if (
-    process.env.USER_TYPE === 'external' &&
-    getPromptSuggestionLimits().status !== 'allowed'
-  )
-    return 'rate_limit'
   return null
 }
 

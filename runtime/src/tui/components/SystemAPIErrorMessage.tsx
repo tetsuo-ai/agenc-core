@@ -54,9 +54,6 @@ export function SystemAPIErrorMessage({
         <Text dimColor={true}>
           Retrying in {retryInSeconds} {secondsLabel}... (attempt{" "}
           {retryAttempt}/{maxRetries})
-          {process.env.API_TIMEOUT_MS
-            ? ` - API_TIMEOUT_MS=${process.env.API_TIMEOUT_MS}ms, try increasing it`
-            : ""}
         </Text>
       </Box>
     </MessageResponse>

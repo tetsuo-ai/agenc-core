@@ -1,118 +1,42 @@
-import { mkdirSync, writeFileSync } from 'fs'
-import {
-  getApiKeyFromFd,
-  getOauthTokenFromFd,
-  setApiKeyFromFd,
-  setOauthTokenFromFd,
-} from '../bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isEnvTruthy } from './envUtils.js'
-import { errorMessage, isENOENT } from './errors.js'
+import { errorMessage } from './errors.js'
 import { getFsImplementation } from './fsOperations.js'
+import {
+  readRemoteRuntimeCredential,
+  storeRemoteRuntimeCredential,
+  type RemoteRuntimeCredentialName,
+} from './secureStorage/remoteRuntimeCredentials.js'
+import type { HomeContext } from '../config/home.js'
+import { secureStorageIdentityKey } from './secureStorage/home.js'
 
-// Defaults to $HOME/.agenc/remote; AGENC_REMOTE_TOKEN_DIR may override with an absolute path.
-const CCR_TOKEN_DIR = (() => {
-  const override = absolutePathOrNull(process.env.AGENC_REMOTE_TOKEN_DIR)
-  if (override !== null) return override
-  const home = absolutePathOrNull(process.env.HOME)
-  return home === null ? null : `${home}/.agenc/remote`
-})()
-export const CCR_OAUTH_TOKEN_PATH = CCR_TOKEN_DIR === null ? null : `${CCR_TOKEN_DIR}/.oauth_token`
-export const CCR_API_KEY_PATH = CCR_TOKEN_DIR === null ? null : `${CCR_TOKEN_DIR}/.api_key`
-export const CCR_SESSION_INGRESS_TOKEN_PATH = CCR_TOKEN_DIR === null ? null : `${CCR_TOKEN_DIR}/.session_ingress_token`
+type DescriptorEnvironment = Readonly<Record<string, string | undefined>>
 
-function absolutePathOrNull(path: string | undefined): string | null {
-  const value = path?.trim()
-  return value && (value.startsWith('/') || /^[a-zA-Z]:[\\/]/u.test(value)) ? value : null
-}
+// Descriptors may be one-shot streams. Cache only successful reads and bind
+// them to both the native secure storage home and descriptor identity; native secure storage
+// reads remain live so another session/process update is immediately visible.
+const descriptorCredentialCache = new Map<string, string>()
 
-/**
- * Best-effort write of the token to a well-known location for subprocess
- * access. CCR-gated: outside remote sessions there's no token dir and no reason to
- * put a token on disk that the FD was meant to keep off disk.
- */
-export function maybePersistTokenForSubprocesses(
-  path: string | null,
-  token: string,
-  tokenName: string,
-): void {
-  if (!isEnvTruthy(process.env.AGENC_REMOTE) || path === null || CCR_TOKEN_DIR === null) {
-    return
-  }
-  try {
-    // eslint-disable-next-line custom-rules/no-sync-fs -- one-shot startup write in CCR, caller is sync
-    mkdirSync(CCR_TOKEN_DIR, { recursive: true, mode: 0o700 })
-    // eslint-disable-next-line custom-rules/no-sync-fs -- one-shot startup write in CCR, caller is sync
-    writeFileSync(path, token, { encoding: 'utf8', mode: 0o600 })
-    logForDebugging(`Persisted ${tokenName} to ${path} for subprocess access`)
-  } catch (error) {
-    logForDebugging(
-      `Failed to persist ${tokenName} to disk (non-fatal): ${errorMessage(error)}`,
-      { level: 'error' },
-    )
-  }
-}
-
-/**
- * Fallback read from a well-known file. The path only exists in CCR (env-manager
- * creates the directory), so file-not-found is the expected outcome everywhere
- * else — treated as "no fallback", not an error.
- */
-export function readTokenFromWellKnownFile(
-  path: string | null,
-  tokenName: string,
-): string | null {
-  if (path === null) return null
-  try {
-    const fsOps = getFsImplementation()
-    // eslint-disable-next-line custom-rules/no-sync-fs -- fallback read for CCR subprocess path, one-shot at startup, caller is sync
-    const token = fsOps.readFileSync(path, { encoding: 'utf8' }).trim()
-    if (!token) {
-      return null
-    }
-    logForDebugging(`Read ${tokenName} from well-known file ${path}`)
-    return token
-  } catch (error) {
-    // ENOENT is the expected outcome outside CCR — stay silent. Anything
-    // else (EACCES from perm misconfig, etc.) is worth surfacing in the
-    // debug log so subprocess auth failures aren't mysterious.
-    if (!isENOENT(error)) {
-      logForDebugging(
-        `Failed to read ${tokenName} from ${path}: ${errorMessage(error)}`,
-        { level: 'debug' },
-      )
-    }
-    return null
-  }
-}
-
-// Shared FD-or-well-known-file credential reader. Cached in global state.
 function getCredentialFromFd({
+  home,
+  environment,
   envVar,
-  wellKnownPath,
+  storageName,
   label,
-  getCached,
-  setCached,
 }: {
+  home: HomeContext
+  environment: DescriptorEnvironment
   envVar: string
-  wellKnownPath: string | null
+  storageName: RemoteRuntimeCredentialName
   label: string
-  getCached: () => string | null | undefined
-  setCached: (value: string | null) => void
 }): string | null {
-  const cached = getCached()
-  if (cached !== undefined) {
-    return cached
+  const fdEnv = environment[envVar]?.trim()
+  if (!fdEnv) {
+    return readRemoteRuntimeCredential(home, storageName)
   }
 
-  const fdEnv = process.env[envVar]
-  if (!fdEnv) {
-    // No FD env var — either we're not in CCR, or we're a subprocess whose
-    // parent stripped the (useless) FD env var. Try the well-known file.
-    const fromFile = readTokenFromWellKnownFile(wellKnownPath, label)
-    setCached(fromFile)
-    return fromFile
-  }
+  const cacheKey = `${secureStorageIdentityKey(home)}\0${storageName}\0${fdEnv}`
+  const cached = descriptorCredentialCache.get(cacheKey)
+  if (cached !== undefined) return cached
 
   const fd = parseInt(fdEnv, 10)
   if (Number.isNaN(fd)) {
@@ -120,7 +44,6 @@ function getCredentialFromFd({
       `${envVar} must be a valid file descriptor number, got: ${fdEnv}`,
       { level: 'error' },
     )
-    setCached(null)
     return null
   }
 
@@ -138,52 +61,61 @@ function getCredentialFromFd({
       logForDebugging(`File descriptor contained empty ${label}`, {
         level: 'error',
       })
-      setCached(null)
       return null
     }
     logForDebugging(`Successfully read ${label} from file descriptor ${fd}`)
-    setCached(token)
-    maybePersistTokenForSubprocesses(wellKnownPath, token, label)
+    descriptorCredentialCache.set(cacheKey, token)
+    try {
+      storeRemoteRuntimeCredential(home, storageName, token)
+    } catch (error) {
+      logForDebugging(
+        `Failed to persist ${label} in native secure storage: ${errorMessage(error)}`,
+        { level: 'error' },
+      )
+    }
     return token
   } catch (error) {
     logForDebugging(
       `Failed to read ${label} from file descriptor ${fd}: ${errorMessage(error)}`,
       { level: 'error' },
     )
-    // FD env var was set but read failed — typically a subprocess that
-    // inherited the env var but not the FD (ENXIO). Try the well-known file.
-    const fromFile = readTokenFromWellKnownFile(wellKnownPath, label)
-    setCached(fromFile)
-    return fromFile
+    // A subprocess may inherit the descriptor number without inheriting the
+    // descriptor itself. The native secure storage is the only persisted fallback.
+    const persisted = readRemoteRuntimeCredential(home, storageName)
+    return persisted
   }
 }
 
 /**
- * Get the CCR-injected OAuth token. See getCredentialFromFd for FD-vs-disk
- * rationale. Env var: AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR.
- * Well-known file: $HOME/.agenc/remote/.oauth_token.
+ * Get the CCR-injected OAuth token. The descriptor is the explicit transient
+ * source; the home-scoped native secure storage is the only persisted source.
  */
-export function getOAuthTokenFromFileDescriptor(): string | null {
+export function getOAuthTokenFromFileDescriptor(
+  home: HomeContext,
+  environment: DescriptorEnvironment,
+): string | null {
   return getCredentialFromFd({
+    home,
+    environment,
     envVar: 'AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR',
-    wellKnownPath: CCR_OAUTH_TOKEN_PATH,
+    storageName: 'oauthToken',
     label: 'OAuth token',
-    getCached: getOauthTokenFromFd,
-    setCached: setOauthTokenFromFd,
   })
 }
 
 /**
- * Get the CCR-injected API key. See getCredentialFromFd for FD-vs-disk
- * rationale. Env var: AGENC_API_KEY_FILE_DESCRIPTOR.
- * Well-known file: $HOME/.agenc/remote/.api_key.
+ * Get the CCR-injected API key. The descriptor is the explicit transient
+ * source; the home-scoped native secure storage is the only persisted source.
  */
-export function getApiKeyFromFileDescriptor(): string | null {
+export function getApiKeyFromFileDescriptor(
+  home: HomeContext,
+  environment: DescriptorEnvironment,
+): string | null {
   return getCredentialFromFd({
+    home,
+    environment,
     envVar: 'AGENC_API_KEY_FILE_DESCRIPTOR',
-    wellKnownPath: CCR_API_KEY_PATH,
+    storageName: 'apiKey',
     label: 'API key',
-    getCached: getApiKeyFromFd,
-    setCached: setApiKeyFromFd,
   })
 }

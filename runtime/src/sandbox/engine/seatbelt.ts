@@ -90,6 +90,7 @@ export interface CreateSeatbeltCommandArgsParams {
   readonly fileSystemSandboxPolicy: FileSystemSandboxPolicy;
   readonly networkSandboxPolicy: NetworkSandboxPolicy;
   readonly sandboxPolicyCwd: string;
+  readonly sessionTempRoot: string;
   readonly enforceManagedNetwork: boolean;
   readonly network?: NetworkProxyConfig;
   readonly extraAllowUnixSockets?: readonly string[];
@@ -149,6 +150,7 @@ export function createSeatbeltCommandArgs(
     fileSystemSandboxPolicy,
     networkSandboxPolicy,
     sandboxPolicyCwd,
+    sessionTempRoot,
     enforceManagedNetwork,
     network,
     extraAllowUnixSockets = [],
@@ -158,17 +160,20 @@ export function createSeatbeltCommandArgs(
   const unreadableRoots = getUnreadableRootsWithCwd(
     fileSystemSandboxPolicy,
     sandboxPolicyCwd,
+    sessionTempRoot,
   );
   const [fileWritePolicy, fileWriteDirParams] =
     buildFileWritePolicyAndParams(
       fileSystemSandboxPolicy,
       sandboxPolicyCwd,
       unreadableRoots,
+      sessionTempRoot,
     );
   const [fileReadPolicy, fileReadDirParams] = buildFileReadPolicyAndParams(
     fileSystemSandboxPolicy,
     sandboxPolicyCwd,
     unreadableRoots,
+    sessionTempRoot,
   );
 
   const proxy = proxyPolicyInputs(network, extraAllowUnixSockets);
@@ -226,6 +231,7 @@ function buildFileWritePolicyAndParams(
   policy: FileSystemSandboxPolicy,
   cwd: string,
   unreadableRoots: readonly string[],
+  sessionTempRoot: string,
 ): readonly [string, readonly (readonly [string, string])[]] {
   if (hasFullDiskWriteAccess(policy)) {
     if (unreadableRoots.length === 0) {
@@ -240,13 +246,14 @@ function buildFileWritePolicyAndParams(
     ]);
   }
 
-  const roots = getWritableRootsWithCwd(policy, cwd).map((root) => ({
+  const roots = getWritableRootsWithCwd(policy, cwd, sessionTempRoot).map((root) => ({
     root: root.root,
     excludedSubpaths: root.readOnlySubpaths,
     protectedMetadataNames: protectedMetadataNamesForWritableRoot(
       policy,
       root,
       cwd,
+      sessionTempRoot,
     ),
   }));
   return buildSeatbeltAccessPolicy("file-write*", "WRITABLE_ROOT", roots);
@@ -256,6 +263,7 @@ function buildFileReadPolicyAndParams(
   policy: FileSystemSandboxPolicy,
   cwd: string,
   unreadableRoots: readonly string[],
+  sessionTempRoot: string,
 ): readonly [string, readonly (readonly [string, string])[]] {
   if (hasFullDiskReadAccess(policy)) {
     if (unreadableRoots.length === 0) {
@@ -275,7 +283,7 @@ function buildFileReadPolicyAndParams(
     return [`; allow read-only file operations\n${accessPolicy}`, params];
   }
 
-  const roots = getReadableRootsWithCwd(policy, cwd).map((root) => ({
+  const roots = getReadableRootsWithCwd(policy, cwd, sessionTempRoot).map((root) => ({
     root,
     excludedSubpaths: unreadableRoots.filter((candidate) =>
       pathStartsWith(candidate, root),
@@ -552,12 +560,15 @@ function protectedMetadataNamesForWritableRoot(
   policy: FileSystemSandboxPolicy,
   writableRoot: WritableRoot,
   cwd: string,
+  sessionTempRoot: string,
 ): string[] {
   const names = new Set(writableRoot.protectedMetadataNames ?? []);
   for (const name of PROTECTED_METADATA_PATH_NAMES) {
     if (names.has(name)) continue;
     const candidate = path.join(writableRoot.root, name);
-    if (!canWritePathWithCwd(policy, candidate, cwd)) names.add(name);
+    if (!canWritePathWithCwd(policy, candidate, cwd, sessionTempRoot)) {
+      names.add(name);
+    }
   }
   return [...names];
 }

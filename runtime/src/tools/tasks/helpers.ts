@@ -12,7 +12,6 @@
  */
 
 import type { Tool, ToolResult } from "../types.js";
-import { validationErrorToolResult } from "../results.js";
 import { SESSION_ID_ARG } from "../system/filesystem.js";
 import { sharedServer } from "../concurrency.js";
 
@@ -55,25 +54,6 @@ export function taskTextResult(
     content,
     ...(isError ? { isError: true } : {}),
     ...(codeModeResult !== undefined ? { codeModeResult } : {}),
-  };
-}
-
-/**
- * Attach authoritative no-effect evidence to a task-tool refusal that was
- * produced before the tool called any mutating task-store/lifecycle adapter.
- *
- * Keep this wrapper deliberately explicit at each call site. A generic task
- * failure (for example a store write or a lifecycle stop callback throwing)
- * may have crossed the effect boundary and must remain unknown.
- */
-export function asTaskPreEffectRefusal(
-  result: ToolResult,
-  evidenceRef: string,
-): ToolResult {
-  const evidence = validationErrorToolResult(evidenceRef, result.content);
-  return {
-    ...result,
-    effectDisposition: evidence.effectDisposition,
   };
 }
 

@@ -156,11 +156,14 @@ function truncate(s: string, max: number): string {
 /** Read resumable sessions through the project thread store. */
 export function listResumableSessions(
   cwd: string,
-  opts: { maxFiles?: number; limit?: number } = {},
+  opts: { maxFiles?: number; limit?: number; agencHome?: string } = {},
 ): RolloutEntry[] {
   const limit = opts.limit ?? DEFAULT_LIST_LIMIT;
   const maxFiles = opts.maxFiles ?? MAX_SCAN_FILES;
-  const store = new FileThreadStore({ cwd });
+  const store = new FileThreadStore({
+    cwd,
+    ...(opts.agencHome !== undefined ? { agencHome: opts.agencHome } : {}),
+  });
   const entries: RolloutEntry[] = [];
   let cursor: string | undefined;
   let scanned = 0;
@@ -256,9 +259,10 @@ export function parseResumeArgs(argsRaw: string): {
 export async function runResume(
   cwd: string,
   argsRaw: string,
+  agencHome?: string,
 ): Promise<SlashCommandResult> {
   const parsed = parseResumeArgs(argsRaw);
-  const all = listResumableSessions(cwd);
+  const all = listResumableSessions(cwd, { agencHome });
 
   if (parsed.sessionId) {
     const match = all.find((e) => e.sessionId === parsed.sessionId);
@@ -280,7 +284,7 @@ async function runResumeCommand(
   ctx: SlashCommandContext,
 ): Promise<SlashCommandResult> {
   const parsed = parseResumeArgs(ctx.argsRaw);
-  const all = listResumableSessions(ctx.cwd);
+  const all = listResumableSessions(ctx.cwd, { agencHome: ctx.agencHome });
 
   if (!parsed.sessionId && !parsed.last && openResumeMenu(ctx, all)) {
     return { kind: "skip" };

@@ -14,14 +14,14 @@
  */
 
 import { resolveAgencHome } from "../config/env.js";
+import { loadCanonicalConfig } from "../config/repository.js";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { loadGatewayConfig, resolveGatewayConfigPath } from "../gateway/config.js";
+import { gatewayConfigFromCanonical } from "../gateway/config.js";
 import { PairingStore } from "../gateway/pairing.js";
 import { startGateway } from "../gateway/run.js";
-import { mergeGatewayEnv } from "../gateway/env-file.js";
 import type { GatewayConfig } from "../gateway/types.js";
 
 export type AgenCGatewayCliCommand =
@@ -57,7 +57,7 @@ export function formatAgenCGatewayCliHelpText(): string {
     "  agenc gateway run [--stdio] [--webchat] [--heartbeat] [--hooks]",
     "  agenc gateway install-service         Install + start the always-on",
     "                                        gateway user service (systemd or",
-    "                                        launchd; reads gateway/env)",
+    "                                        launchd; credentials use the native secure storage)",
     "                                        Start the gateway. --stdio enables",
     "                                        the local dev channel; --webchat a",
     "                                        loopback token-gated browser UI;",
@@ -75,7 +75,7 @@ export function formatAgenCGatewayCliHelpText(): string {
     "  agenc gateway pairing revoke <channel> <peerId>",
     "                                        Remove a paired sender",
     "",
-    "Config: <AGENC_HOME>/gateway/config.json (fail-closed defaults when absent)",
+    "Config: [gateway] in <AGENC_HOME>/config.toml (fail-closed defaults when absent)",
     "Options:",
     "  -h, --help  Show this help text",
   ].join("\n");
@@ -194,7 +194,7 @@ function buildStatus(
     ...config.bindings.map((b) => b.channelId),
   ]);
   return {
-    configPath: resolveGatewayConfigPath(agencHome),
+    configPath: join(agencHome, "config.toml"),
     defaultAgent: config.defaultAgent,
     channels: [...channelIds].sort().map((channelId) => {
       const policy = config.channels[channelId];
@@ -239,9 +239,9 @@ export async function runAgenCGatewayCli(
     try {
       handle = await start({
         agencHome,
-        // Channel tokens from the 0600 gateway/env file, under the real env
-        // (an explicitly exported variable always wins).
-        env: mergeGatewayEnv(agencHome, env),
+        // Explicit environment credentials override the home-bound native
+        // secure storage; startGateway performs the one credential merge.
+        env,
         stdio: command.stdio,
         webchat: command.webchat,
         heartbeat: command.heartbeat,
@@ -267,7 +267,17 @@ export async function runAgenCGatewayCli(
     return 0;
   }
 
-  const config = loadGatewayConfig({ agencHome, onWarn: (m) => stderr(m) });
+  let config: GatewayConfig;
+  try {
+    config = gatewayConfigFromCanonical((await loadCanonicalConfig({
+      home: agencHome,
+      env,
+      onWarn: (message) => stderr(message),
+    })).config);
+  } catch (error) {
+    stderr(`agenc: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
   const store = new PairingStore({ agencHome });
 
   switch (command.kind) {
@@ -360,8 +370,8 @@ export async function runAgenCGatewayCli(
 
 /**
  * Install the gateway as a per-user service so channels/heartbeat/cron/hooks
- * survive reboots. systemd (Linux) or launchd (macOS); both read the 0600
- * `gateway/env` secrets file, keeping tokens out of unit files and shells.
+ * survive reboots. Both systemd (Linux) and launchd (macOS) let the gateway
+ * process read its home-bound native secure storage namespace.
  * User-scoped only — no sudo, no system daemons.
  */
 export async function installGatewayService(options: {
@@ -379,7 +389,6 @@ export async function installGatewayService(options: {
   const home = options.home ?? homedir();
   const nodeBin = options.execPath ?? process.execPath;
   const entry = options.entryPath ?? process.argv[1];
-  const envFile = join(options.agencHome, "gateway", "env");
   const run =
     options.runCommand ??
     ((cmd: string, args: readonly string[]): boolean =>
@@ -400,7 +409,6 @@ export async function installGatewayService(options: {
         "[Service]",
         "Type=simple",
         `ExecStart=${nodeBin} ${entry} gateway run`,
-        `EnvironmentFile=-${envFile}`,
         "Restart=on-failure",
         "RestartSec=5",
         "",
@@ -458,9 +466,6 @@ export async function installGatewayService(options: {
       ].join("\n"),
     );
     options.stdout(`Wrote ${plistPath}`);
-    options.stdout(
-      "(launchd does not read env files — gateway run loads gateway/env itself.)",
-    );
     const loaded = run("launchctl", ["load", "-w", plistPath]);
     if (loaded) {
       options.stdout("Gateway service loaded.");

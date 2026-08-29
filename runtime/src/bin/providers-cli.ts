@@ -8,8 +8,8 @@
 import { createAuthBackend } from "../auth/selection.js";
 import type { AuthBackend } from "../auth/backend.js";
 import type { RemoteAuthBackendOptions } from "../auth/backends/remote.js";
-import { loadConfig } from "../config/loader.js";
-import { resolveAgencHome } from "../config/env.js";
+import { loadCanonicalConfig } from "../config/repository.js";
+import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 import {
   collectProviderAvailability,
   formatProviderAvailabilityReport,
@@ -43,7 +43,7 @@ export function formatAgenCProvidersCliHelpText(): string {
   return [
     "Usage: agenc providers [--json] [--no-local-check]",
     "",
-    "Shows provider readiness: BYOK key status, local server health, and AgenC subscription tier.",
+    "Shows provider readiness: credential status, local server health, and AgenC subscription tier.",
     "",
     "Options:",
     "  --json             Print machine-readable JSON",
@@ -97,11 +97,20 @@ export async function runAgenCProvidersCli(
       return 1;
     case "providers":
       try {
-        const authBackend =
-          options.authBackend ??
-          await resolveAgenCProvidersCliBackend(options, io);
-        const report = await collectProviderAvailability({
+        const ingress = captureSecureStorageIngress(
+          options.env ?? process.env,
+          options.agencHome,
+        );
+        const scopedOptions: AgenCProvidersCliOptions = Object.freeze({
           ...options,
+          agencHome: ingress.home.path,
+          env: ingress.environment,
+        });
+        const authBackend =
+          scopedOptions.authBackend ??
+          await resolveAgenCProvidersCliBackend(scopedOptions, io);
+        const report = await collectProviderAvailability({
+          ...scopedOptions,
           authBackend,
           checkLocal: command.checkLocal,
         });
@@ -125,15 +134,18 @@ async function resolveAgenCProvidersCliBackend(
   io: AgenCProvidersCliIo,
 ): Promise<AuthBackend | undefined> {
   if (options.authBackend !== undefined) return options.authBackend;
-  const env = options.env ?? process.env;
-  const agencHome = options.agencHome ?? resolveAgencHome(env);
-  const loadedConfig = await loadConfig({
-    home: agencHome,
+  const ingress = captureSecureStorageIngress(
+    options.env ?? process.env,
+    options.agencHome,
+  );
+  const loadedConfig = await loadCanonicalConfig({
+    home: ingress.home,
+    env: ingress.environment,
     onWarn: (message) => io.stderr.write(`${message}\n`),
   });
   return createAuthBackend(loadedConfig.config, {
-    agencHome,
-    env,
+    agencHome: ingress.home.path,
+    env: ingress.environment,
     ...(options.remote !== undefined ? { remote: options.remote } : {}),
   });
 }

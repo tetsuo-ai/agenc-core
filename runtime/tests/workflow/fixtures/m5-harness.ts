@@ -412,6 +412,8 @@ export function buildM5Harness(options: M5HarnessOptions): M5Harness {
       primaryCwd: options.repoPath,
       kernel,
       warn,
+      env: {},
+      argv: ["node", "agenc"],
       stateDatabasePaths: () => [
         resolveStateDatabasePaths({
           cwd: options.repoPath,

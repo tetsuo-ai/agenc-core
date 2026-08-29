@@ -1,4 +1,13 @@
-import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  symlink,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
@@ -32,7 +41,13 @@ vi.mock("../../../src/utils/supervisedProcess.js", async (importOriginal) => {
 });
 
 import type { Logger } from "../../_deps/logger.js";
-import { SandboxExecutionBroker } from "../../sandbox/execution-broker.js";
+import {
+  SandboxExecutionBroker,
+  type SandboxPreparedSpawn,
+  type SandboxSpawnCommand,
+} from "../../sandbox/execution-broker.js";
+import { canWritePathWithCwd } from "../../sandbox/engine/index.js";
+import { registerSandboxExecutionLifecycleParticipant } from "../../sandbox/execution-lifecycle.js";
 import {
   AGENC_MCP_STDIO_MAX_FRAME_BYTES,
   AgenCStdioClientTransport,
@@ -46,6 +61,17 @@ const explicitDangerBroker = new SandboxExecutionBroker({
   mode: "danger_full_access",
   cwd: process.cwd(),
 });
+
+function registerMcpParticipant(broker: SandboxExecutionBroker): void {
+  registerSandboxExecutionLifecycleParticipant(broker, {
+    name: "mcp-manager",
+    spawnSurfaces: ["mcp_stdio"],
+    quiesce: async () => {},
+    resume: async () => {},
+  });
+}
+
+registerMcpParticipant(explicitDangerBroker);
 
 afterEach(async () => {
   terminationSeam.failuresRemaining = 0;
@@ -77,6 +103,39 @@ describe("createStdioMCPEnvironment", () => {
     expect(env.SECRET_TOKEN).toBeUndefined();
     expect(env.SHELL_FUNC).toBeUndefined();
   });
+
+  it("does not reintroduce a secret merely because env_vars requests it", () => {
+    const env = createStdioMCPEnvironment(
+      undefined,
+      ["CUSTOM_PASSWORD"],
+      { CUSTOM_PASSWORD: "must-not-cross-the-child-boundary" },
+    );
+
+    expect(env.CUSTOM_PASSWORD).toBeUndefined();
+  });
+
+  it("does not accept ambient or server-declared temporary-directory authority", () => {
+    const env = createStdioMCPEnvironment(
+      {
+        AGENC_TMPDIR: "/declared/agenc",
+        TMPDIR: "/declared/posix",
+        TEMP: "C:\\declared\\temp",
+        TMP: "C:\\declared\\tmp",
+      },
+      ["AGENC_TMPDIR", "TMPDIR", "TEMP", "TMP"],
+      {
+        AGENC_TMPDIR: "/ambient/agenc",
+        TMPDIR: "/ambient/posix",
+        TEMP: "C:\\ambient\\temp",
+        TMP: "C:\\ambient\\tmp",
+      },
+    );
+
+    expect(env).not.toHaveProperty("AGENC_TMPDIR");
+    expect(env).not.toHaveProperty("TMPDIR");
+    expect(env).not.toHaveProperty("TEMP");
+    expect(env).not.toHaveProperty("TMP");
+  });
 });
 
 describe("AgenCStdioClientTransport", () => {
@@ -88,6 +147,7 @@ describe("AgenCStdioClientTransport", () => {
       mode: "danger_full_access",
       cwd: dir,
     });
+    registerMcpParticipant(broker);
     const transport = new AgenCStdioClientTransport(
       {
         command: process.execPath,
@@ -115,6 +175,50 @@ describe("AgenCStdioClientTransport", () => {
     }
   });
 
+  it("forces the child to use the sandbox broker temp authority", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-mcp-stdio-temp-"));
+    tempDirs.add(dir);
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: process.cwd(),
+      sessionTempRoot: dir,
+    });
+    registerMcpParticipant(broker);
+    const transport = new AgenCStdioClientTransport(
+      {
+        command: process.execPath,
+        args: [
+          "-e",
+          "process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'server/temp',params:{agenc:process.env.AGENC_TMPDIR,posix:process.env.TMPDIR,win:process.env.TEMP,tmp:process.env.TMP}})+'\\n'); setTimeout(() => {}, 1000);",
+        ],
+        env: {
+          AGENC_TMPDIR: "/ambient/agenc",
+          TMPDIR: "/ambient/posix",
+          TEMP: "C:\\ambient\\temp",
+          TMP: "C:\\ambient\\tmp",
+        },
+      },
+      undefined,
+      broker,
+    );
+    const message = new Promise((resolve) => {
+      transport.onmessage = resolve;
+    });
+
+    try {
+      await transport.start();
+      await expect(message).resolves.toMatchObject({
+        method: "server/temp",
+        params:
+          process.platform === "win32"
+            ? { agenc: dir, win: dir, tmp: dir }
+            : { agenc: dir, posix: dir },
+      });
+    } finally {
+      await transport.close();
+    }
+  });
+
   it("resolves a configured relative cwd from the sandbox broker authority", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agenc-mcp-stdio-relative-cwd-"));
     tempDirs.add(dir);
@@ -125,6 +229,7 @@ describe("AgenCStdioClientTransport", () => {
       mode: "danger_full_access",
       cwd: dir,
     });
+    registerMcpParticipant(broker);
     const transport = new AgenCStdioClientTransport(
       {
         command: process.execPath,
@@ -551,12 +656,15 @@ describe("stdio connect failure diagnostics", () => {
     const dir = await mkdtemp(join(tmpdir(), "agenc-mcp-stdio-plugin-"));
     tempDirs.add(dir);
     const dataDir = join(dir, "plugin-data");
+    const brokerTempRoot = join(dir, "broker-tmp");
     await mkdir(dataDir);
+    if (process.platform !== "win32") await chmod(dataDir, 0o777);
     const recorded: unknown[] = [];
     const recordingBroker = {
       mode: "workspace_write" as const,
       required: true,
       cwd: dir,
+      sessionTempRoot: brokerTempRoot,
       rebase: () => {},
       forkForCwd: () => recordingBroker,
       status: () => ({
@@ -572,22 +680,31 @@ describe("stdio connect failure diagnostics", () => {
       runtimeSandbox: () => undefined,
       prepareSpawn: (
         _surface: string,
-        command: Record<string, unknown>,
-      ): Record<string, unknown> => {
+        command: SandboxSpawnCommand,
+      ): SandboxPreparedSpawn => {
         recorded.push(command);
-        return command;
+        const signal = new AbortController().signal;
+        return {
+          run: operation => operation(command, signal),
+          start: operation => operation(command, signal).value,
+          runSync: operation => operation(command),
+          spawnLifecycleParticipant: (_participantName, operation) =>
+            operation(command),
+        };
       },
     };
     const transport = new AgenCStdioClientTransport(
       {
         command: process.execPath,
         args: ["-e", "setTimeout(() => {}, 1000);"],
-        // No inherited TMPDIR: the transport must point the server at the
-        // data-dir tmp (an inherited TMPDIR would win and stays writable
-        // through the profile's tmpdir grant).
-        env: createStdioMCPEnvironment(undefined, undefined, {
-          PATH: process.env.PATH,
-        }),
+        // Declared temp variables cannot override the plugin-private root.
+        env: {
+          PATH: process.env.PATH ?? "",
+          AGENC_TMPDIR: "/ambient/agenc",
+          TMPDIR: "/ambient/posix",
+          TEMP: "C:\\ambient\\temp",
+          TMP: "C:\\ambient\\tmp",
+        },
         pluginSandbox: {
           mode: "stdio-child-process",
           pluginName: "sample",
@@ -611,19 +728,211 @@ describe("stdio connect failure diagnostics", () => {
     const command = recorded[0] as {
       env: Record<string, string>;
       permissionProfileOverride?: {
-        fileSystem: { entries: ReadonlyArray<{ path: unknown }> };
+        fileSystem: {
+          kind: "restricted";
+          entries: ReadonlyArray<{
+            path: unknown;
+            access: "read" | "write" | "none";
+          }>;
+        };
       };
     };
-    // TMPDIR points into the data dir and the dir exists.
-    expect(command.env.TMPDIR).toBe(join(dataDir, "tmp"));
-    expect(existsSyncFor(join(dataDir, "tmp"))).toBe(true);
-    // The override confines writes to the plugin data dir.
+    const pluginTempRoot = join(dataDir, "tmp");
+    expect(command.env).toMatchObject({
+      AGENC_TMPDIR: pluginTempRoot,
+      TMPDIR: pluginTempRoot,
+      TEMP: pluginTempRoot,
+      TMP: pluginTempRoot,
+    });
+    expect(existsSyncFor(pluginTempRoot)).toBe(true);
+    if (process.platform !== "win32") {
+      expect((await stat(dataDir)).mode & 0o777).toBe(0o700);
+      expect((await stat(pluginTempRoot)).mode & 0o777).toBe(0o700);
+    }
+    const fileSystem = command.permissionProfileOverride?.fileSystem;
+    expect(fileSystem).toBeDefined();
+    expect(
+      canWritePathWithCwd(fileSystem!, dataDir, dir, brokerTempRoot),
+    ).toBe(true);
+    expect(
+      canWritePathWithCwd(
+        fileSystem!,
+        join(pluginTempRoot, "nested", "output.json"),
+        dir,
+        brokerTempRoot,
+      ),
+    ).toBe(true);
+    expect(
+      canWritePathWithCwd(fileSystem!, brokerTempRoot, dir, brokerTempRoot),
+    ).toBe(false);
+    expect(
+      canWritePathWithCwd(
+        fileSystem!,
+        join(brokerTempRoot, "another-session"),
+        dir,
+        brokerTempRoot,
+      ),
+    ).toBe(false);
+    expect(canWritePathWithCwd(fileSystem!, dir, dir, brokerTempRoot)).toBe(
+      false,
+    );
     const entryPaths = JSON.stringify(
-      command.permissionProfileOverride?.fileSystem.entries ?? [],
+      fileSystem?.entries ?? [],
     );
     expect(entryPaths).toContain(dataDir);
+    expect(entryPaths).not.toContain('"tmpdir"');
     expect(entryPaths).not.toContain('"project_roots"');
   });
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a symlinked plugin data authority before spawning",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "agenc-mcp-stdio-data-link-"));
+      tempDirs.add(dir);
+      const dataDir = join(dir, "plugin-data");
+      const outside = join(dir, "outside");
+      await mkdir(outside);
+      await symlink(outside, dataDir, "dir");
+      const broker = new SandboxExecutionBroker({
+        mode: "danger_full_access",
+        cwd: dir,
+        sessionTempRoot: dir,
+      });
+      const transport = new AgenCStdioClientTransport(
+        {
+          command: process.execPath,
+          args: ["-e", "setTimeout(() => {}, 1000);"],
+          pluginSandbox: {
+            mode: "stdio-child-process",
+            pluginName: "sample",
+            pluginRoot: dir,
+            pluginDataDir: dataDir,
+            serverName: "goal",
+            scopedServerName: "plugin:sample:goal",
+          },
+        },
+        undefined,
+        broker,
+      );
+
+      await expect(transport.start()).rejects.toThrow(
+        "plugin MCP data authority is not a private directory",
+      );
+    },
+  );
+
+  it("rejects a plugin data authority that contains the session temp root", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-mcp-stdio-overlap-"));
+    tempDirs.add(dir);
+    const dataDir = join(dir, "plugin-data");
+    const sessionTempRoot = join(dataDir, "session-temp");
+    await mkdir(sessionTempRoot, { recursive: true });
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: dir,
+      sessionTempRoot,
+    });
+    const transport = new AgenCStdioClientTransport(
+      {
+        command: process.execPath,
+        args: ["-e", "setTimeout(() => {}, 1000);"],
+        pluginSandbox: {
+          mode: "stdio-child-process",
+          pluginName: "sample",
+          pluginRoot: dir,
+          pluginDataDir: dataDir,
+          serverName: "goal",
+          scopedServerName: "plugin:sample:goal",
+        },
+      },
+      undefined,
+      broker,
+    );
+
+    await expect(transport.start()).rejects.toThrow(
+      "plugin MCP data authority must not contain the session temp root",
+    );
+  });
+
+  it.skipIf(typeof process.getuid !== "function")(
+    "rejects plugin data not owned by the current user",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "agenc-mcp-stdio-owner-"));
+      tempDirs.add(dir);
+      const dataDir = join(dir, "plugin-data");
+      await mkdir(dataDir);
+      const getuid = vi
+        .spyOn(process, "getuid")
+        .mockReturnValue((process.getuid() + 1) % 65_536);
+      const broker = new SandboxExecutionBroker({
+        mode: "danger_full_access",
+        cwd: dir,
+        sessionTempRoot: dir,
+      });
+      const transport = new AgenCStdioClientTransport(
+        {
+          command: process.execPath,
+          args: ["-e", "setTimeout(() => {}, 1000);"],
+          pluginSandbox: {
+            mode: "stdio-child-process",
+            pluginName: "sample",
+            pluginRoot: dir,
+            pluginDataDir: dataDir,
+            serverName: "goal",
+            scopedServerName: "plugin:sample:goal",
+          },
+        },
+        undefined,
+        broker,
+      );
+
+      try {
+        await expect(transport.start()).rejects.toThrow(
+          "plugin MCP data authority is not owned by the current user",
+        );
+      } finally {
+        getuid.mockRestore();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a symlinked plugin temp authority before spawning",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "agenc-mcp-stdio-plugin-link-"));
+      tempDirs.add(dir);
+      const dataDir = join(dir, "plugin-data");
+      const outside = join(dir, "outside");
+      await mkdir(dataDir);
+      await mkdir(outside);
+      await symlink(outside, join(dataDir, "tmp"), "dir");
+      const broker = new SandboxExecutionBroker({
+        mode: "danger_full_access",
+        cwd: dir,
+        sessionTempRoot: dir,
+      });
+      const transport = new AgenCStdioClientTransport(
+        {
+          command: process.execPath,
+          args: ["-e", "setTimeout(() => {}, 1000);"],
+          pluginSandbox: {
+            mode: "stdio-child-process",
+            pluginName: "sample",
+            pluginRoot: dir,
+            pluginDataDir: dataDir,
+            serverName: "goal",
+            scopedServerName: "plugin:sample:goal",
+          },
+        },
+        undefined,
+        broker,
+      );
+
+      await expect(transport.start()).rejects.toThrow(
+        "plugin MCP temp authority is not a private directory",
+      );
+    },
+  );
 });
 
 function existsSyncFor(path: string): boolean {

@@ -6,8 +6,7 @@
  *
  *   - `rules.ts`        — parseRuleString, serializeRuleValue,
  *                         applyPermissionUpdate
- *   - `settings.ts`     — addPermissionRulesToSettings, deletePermissionRule,
- *                         recordBypassPermissionsAcceptance
+ *   - `settings.ts`     — addPermissionRulesToConfig, deletePermissionRule
  *   - `mode.ts`         — transitionPermissionMode, PermissionModeRegistry
  *
  * Subcommands:
@@ -27,14 +26,14 @@
  *       `/permissions accept-bypass`.
  *   /permissions accept-bypass      — record explicit consent for the
  *     current workspace to use `bypassPermissions` mode. Updates the
- *     session-level allowlist and persists to the user settings file so
+ *     session-level allowlist and persists to permission-owned runtime state so
  *     subsequent sessions in the same workspace do not re-prompt.
  *
  * Integration notes:
  *   - `session.services.permissionModeRegistry` is the source of truth.
  *   - `applyPermissionUpdate` on the session source is transient; the
  *     `--persist` flag (user/project/local) additionally routes to
- *     `addPermissionRulesToSettings` / `deletePermissionRule`.
+ *     `addPermissionRulesToConfig` / `deletePermissionRule`.
  *
  * @module
  */
@@ -53,13 +52,19 @@ import {
   type ToolPermissionContext,
 } from "../permissions/types.js";
 import { parseRuleString, serializeRuleValue } from "../permissions/rules.js";
-import { applyPermissionUpdate } from "../permissions/rules.js";
+import { mutatePermissionRuleSource } from "../permissions/permission-updates.js";
 import { transitionPermissionMode } from "../permissions/permission-mode.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
-  addPermissionRulesToSettings,
+  authorizeBypassPermissionsConsent,
+  canonicalizeBypassPermissionsCwd,
+  prepareBypassPermissionsConsent,
+  recordBypassPermissionsConsent,
+} from "../permissions/bypass-consent-state.js";
+import {
+  addPermissionRulesToConfig,
   deletePermissionRule,
-  recordBypassPermissionsAcceptance,
+  loadPermissionRulesSnapshot,
   type DiskEnv,
 } from "../permissions/settings.js";
 import {
@@ -72,6 +77,10 @@ import {
   openPermissionsMenu,
   type PermissionsMenuController,
 } from "./permissions-menu.js";
+import {
+  configStoreFromCommandContext,
+  requireCommandConfigStore,
+} from "./config-context.js";
 
 // ---------------------------------------------------------------------------
 // Helpers: locate the permission registry on session.services.
@@ -113,11 +122,35 @@ function daemonPermissionModeFn(
   return typeof fn === "function" ? fn.bind(ctx.session) : null;
 }
 
-function diskEnvForCtx(ctx: SlashCommandContext): DiskEnv {
+type DaemonPermissionRuleOperation = "add" | "remove";
+
+function daemonPermissionRuleMutationFn(
+  ctx: SlashCommandContext,
+):
+  | ((params: {
+      readonly operation: DaemonPermissionRuleOperation;
+      readonly behavior: PermissionBehavior;
+      readonly rule: string;
+    }) => Promise<unknown>)
+  | null {
+  const fn = (ctx.session as unknown as {
+    mutateDaemonPermissionRule?: (params: {
+      readonly operation: DaemonPermissionRuleOperation;
+      readonly behavior: PermissionBehavior;
+      readonly rule: string;
+    }) => Promise<unknown>;
+  }).mutateDaemonPermissionRule;
+  return typeof fn === "function" ? fn.bind(ctx.session) : null;
+}
+
+function diskEnvForCtx(
+  ctx: SlashCommandContext,
+  configStore: NonNullable<SlashCommandContext["configStore"]>,
+): DiskEnv {
   return {
     home: ctx.home,
     cwd: ctx.cwd,
-    configStore: ctx.configStore,
+    configStore,
   };
 }
 
@@ -193,7 +226,7 @@ export function formatRuleList(ctx: ToolPermissionContext): string {
 
 /**
  * Serialize the current context as a JSON object shaped like the
- * `permissions` block in `settings.json`. Every source is flattened into
+ * `permissions` block in canonical config.toml. Every source is flattened into
  * one union; operators can split as needed before pasting into a file.
  */
 export function exportRules(ctx: ToolPermissionContext): string {
@@ -355,7 +388,6 @@ export function parseRuleArgs(
 // ---------------------------------------------------------------------------
 
 async function addRuleFromCommand(
-  currentCtx: ToolPermissionContext,
   argsRaw: string,
   registry: PermissionModeRegistry,
   ctx: SlashCommandContext,
@@ -363,15 +395,35 @@ async function addRuleFromCommand(
   const parsed = parseRuleArgs(argsRaw);
   if (!parsed.ok) return { kind: "error", message: parsed.error };
   const { behavior, ruleValue, persistTo } = parsed.value;
+  const display = serializeRuleValue(ruleValue);
+  const writesPersistedRule =
+    persistTo !== undefined &&
+    !(behavior === "allow" && persistTo !== "userSettings");
+  const persistenceEnv = writesPersistedRule
+    ? diskEnvForCtx(ctx, requireCommandConfigStore(ctx))
+    : undefined;
 
-  // 1) Session (always, so the rule is visible immediately).
-  const nextCtx = applyPermissionUpdate(currentCtx, {
-    type: "addRules",
-    destination: "session",
-    rules: [ruleValue],
-    behavior,
-  });
-  await registry.update(nextCtx);
+  // The daemon registry is the live enforcement authority. A daemon-backed
+  // TUI mutates it first and mirrors only its complete canonical result.
+  const daemonMutate = daemonPermissionRuleMutationFn(ctx);
+  if (daemonMutate !== null) {
+    const requested = { operation: "add", behavior, rule: display } as const;
+    await daemonMutate(requested);
+  } else {
+    await registry.transact((current) => {
+      const mutation = mutatePermissionRuleSource(
+        current,
+        "session",
+        "add",
+        behavior,
+        ruleValue,
+      );
+      return {
+        next: mutation.applied ? mutation.next : null,
+        result: () => undefined,
+      };
+    });
+  }
 
   // 2) Optional persist to disk.
   let persistNote = "";
@@ -380,11 +432,11 @@ async function addRuleFromCommand(
       persistNote =
         " (session only — repository files cannot store permission approvals)";
     } else {
-      const wrote = await addPermissionRulesToSettings({
+      const wrote = await addPermissionRulesToConfig({
         destination: persistTo,
         behavior,
         rules: [ruleValue],
-        env: diskEnvForCtx(ctx),
+        env: persistenceEnv!,
       });
       persistNote = wrote
         ? ` (persisted to ${persistTo})`
@@ -392,7 +444,6 @@ async function addRuleFromCommand(
     }
   }
 
-  const display = serializeRuleValue(ruleValue);
   return {
     kind: "text",
     text: `Added ${behavior.toUpperCase()} ${display}${persistNote}`,
@@ -400,7 +451,6 @@ async function addRuleFromCommand(
 }
 
 async function removeRuleFromCommand(
-  currentCtx: ToolPermissionContext,
   argsRaw: string,
   registry: PermissionModeRegistry,
   ctx: SlashCommandContext,
@@ -408,15 +458,30 @@ async function removeRuleFromCommand(
   const parsed = parseRuleArgs(argsRaw);
   if (!parsed.ok) return { kind: "error", message: parsed.error };
   const { behavior, ruleValue, persistTo } = parsed.value;
+  const display = serializeRuleValue(ruleValue);
+  const persistenceEnv = persistTo
+    ? diskEnvForCtx(ctx, requireCommandConfigStore(ctx))
+    : undefined;
 
-  // Session remove.
-  const nextCtx = applyPermissionUpdate(currentCtx, {
-    type: "removeRules",
-    destination: "session",
-    rules: [ruleValue],
-    behavior,
-  });
-  await registry.update(nextCtx);
+  const daemonMutate = daemonPermissionRuleMutationFn(ctx);
+  if (daemonMutate !== null) {
+    const requested = { operation: "remove", behavior, rule: display } as const;
+    await daemonMutate(requested);
+  } else {
+    await registry.transact((current) => {
+      const mutation = mutatePermissionRuleSource(
+        current,
+        "session",
+        "remove",
+        behavior,
+        ruleValue,
+      );
+      return {
+        next: mutation.applied ? mutation.next : null,
+        result: () => undefined,
+      };
+    });
+  }
 
   let persistNote = "";
   if (persistTo) {
@@ -428,14 +493,13 @@ async function removeRuleFromCommand(
     const removed = await deletePermissionRule({
       destination: persistTo,
       rule,
-      env: diskEnvForCtx(ctx),
+      env: persistenceEnv!,
     });
     persistNote = removed
       ? ` (deleted from ${persistTo})`
       : ` (not found in ${persistTo})`;
   }
 
-  const display = serializeRuleValue(ruleValue);
   return {
     kind: "text",
     text: `Removed ${behavior.toUpperCase()} ${display}${persistNote}`,
@@ -451,9 +515,9 @@ async function handleModeSubcommand(
   registry: PermissionModeRegistry,
   ctx: SlashCommandContext,
 ): Promise<SlashCommandResult> {
-  const current = registry.current();
   const trimmed = modeArg.trim();
   if (trimmed === "") {
+    const current = registry.current();
     const addressable = USER_ADDRESSABLE_PERMISSION_MODES.join(", ");
     return {
       kind: "text",
@@ -473,66 +537,55 @@ async function handleModeSubcommand(
       message: `Permission mode "${trimmed}" is internal-only and cannot be set by /permissions mode.`,
     };
   }
-  if (target === current.mode) {
-    return { kind: "text", text: `Mode already: ${current.mode}` };
-  }
-
-  // Daemon-backed TUI: the local `registry` is a client-side shim the
-  // daemon never reads. Route the mode change to the daemon's REAL
-  // registry (the one the tool evaluator enforces) via the
-  // session.setPermissionMode RPC. Bypass-consent gating is handled
-  // here; the daemon does an unconditional transition.
   const daemonSetMode = daemonPermissionModeFn(ctx);
-  if (daemonSetMode !== null && target !== "bypassPermissions") {
-    try {
-      const result = await daemonSetMode(target);
-      // Keep the client-local registry in sync so subsequent /permissions
-      // reads (which still read the local registry) reflect the change.
-      await registry.update({ ...current, mode: target });
-      return {
-        kind: "text",
-        text: result.applied
-          ? `Mode: ${result.previousMode} → ${result.mode}`
-          : `Mode already: ${result.mode}`,
-      };
-    } catch (err) {
-      return {
-        kind: "error",
-        message: err instanceof Error ? err.message : String(err),
-      };
-    }
-  }
-
-  // bypassPermissions on a daemon-backed TUI: the consent gate is the
-  // client's responsibility, but daemon enforcement must actually switch.
-  // Run the consent gate locally FIRST (preserving BypassConsentRequiredError);
-  // ONLY after it passes, forward to the daemon's real registry via
-  // session.setPermissionMode so daemon-side enforcement flips to bypass.
-  if (daemonSetMode !== null && target === "bypassPermissions") {
-    const gated = transitionPermissionMode(current.mode, target, current, {
-      requireBypassConsent: true,
-      workspacePath: ctx.cwd,
-    });
-    if ("error" in gated) {
-      if (gated.error === "bypass_consent_required") {
-        return {
-          kind: "error",
-          message:
-            "Switching to bypassPermissions requires explicit consent. " +
+  const transitionLocalShim = async (
+    requested: PermissionMode,
+    publish: boolean,
+  ): Promise<{
+    readonly previousMode: PermissionMode;
+    readonly mode: PermissionMode;
+    readonly applied: boolean;
+  }> =>
+    registry.transact((current) => {
+      const transitioned =
+        requested === "bypassPermissions"
+          ? transitionPermissionMode(current.mode, requested, current, {
+              workspacePath: ctx.cwd,
+            })
+          : transitionPermissionMode(current.mode, requested, current);
+      if ("error" in transitioned) {
+        throw new Error(
+          "Switching to bypassPermissions requires explicit consent. " +
             "Run /permissions accept-bypass to confirm this workspace will use bypassPermissions mode.",
-        };
+        );
       }
       return {
-        kind: "error",
-        message: `Transition refused: ${(gated as { error: string }).error}`,
+        next: publish ? { ...transitioned, mode: requested } : null,
+        result: () => ({
+          previousMode: current.mode,
+          mode: requested,
+          applied: current.mode !== requested,
+        }),
       };
-    }
-    // Consent passed — switch the daemon's real registry.
+    });
+
+  if (daemonSetMode !== null) {
     try {
+      // Do not trust the client-side mirror for a same-mode shortcut. The
+      // daemon owns enforcement, so every request reaches it. Bypass is
+      // preflighted locally only to preserve the exact-cwd consent prompt.
+      if (target === "bypassPermissions") {
+        await transitionLocalShim(target, false);
+      }
       const result = await daemonSetMode(target);
-      // Keep the local shim in sync (carry consent + any context changes
-      // from the gated transition), so subsequent /permissions reads match.
-      await registry.update({ ...gated, mode: target });
+      if (
+        !isPermissionMode(result.mode) ||
+        !(USER_ADDRESSABLE_PERMISSION_MODES as readonly PermissionMode[]).includes(
+          result.mode,
+        )
+      ) {
+        throw new Error("daemon returned an invalid permission mode");
+      }
       return {
         kind: "text",
         text: result.applied
@@ -547,35 +600,18 @@ async function handleModeSubcommand(
     }
   }
 
-  let transitioned: ReturnType<typeof transitionPermissionMode>;
+  let localResult: Awaited<ReturnType<typeof transitionLocalShim>>;
   try {
-    transitioned = transitionPermissionMode(current.mode, target, current, {
-      requireBypassConsent: target === "bypassPermissions",
-      workspacePath: ctx.cwd,
-    });
+    localResult = await transitionLocalShim(target, true);
   } catch (err) {
     return {
       kind: "error",
       message: err instanceof Error ? err.message : String(err),
     };
   }
-  if ("error" in transitioned) {
-    if (transitioned.error === "bypass_consent_required") {
-      return {
-        kind: "error",
-        message:
-          "Switching to bypassPermissions requires explicit consent. " +
-          "Run /permissions accept-bypass to confirm this workspace will use bypassPermissions mode.",
-      };
-    }
-    // Forward-compat: future error variants surface as a plain error.
-    return {
-      kind: "error",
-      message: `Transition refused: ${(transitioned as { error: string }).error}`,
-    };
+  if (!localResult.applied) {
+    return { kind: "text", text: `Mode already: ${localResult.mode}` };
   }
-  let nextCtx: ToolPermissionContext = { ...transitioned, mode: target };
-  await registry.update(nextCtx);
 
   // I-8: surface mode change through the event bus so sidecars see it.
   try {
@@ -585,7 +621,7 @@ async function handleModeSubcommand(
         type: "warning",
         payload: {
           cause: "mode_changed",
-          message: `permission mode ${current.mode} → ${target}`,
+          message: `permission mode ${localResult.previousMode} → ${localResult.mode}`,
         },
       },
     } as unknown as Parameters<Session["emit"]>[0]);
@@ -596,7 +632,7 @@ async function handleModeSubcommand(
 
   return {
     kind: "text",
-    text: `Mode: ${current.mode} → ${target}`,
+    text: `Mode: ${localResult.previousMode} → ${localResult.mode}`,
   };
 }
 
@@ -610,45 +646,108 @@ async function handleModeSubcommand(
  *   - The session-scoped `ctx.bypassPermissionsAcceptedIn` list (so the
  *     subsequent `/permissions mode bypassPermissions` invocation in this
  *     session passes the consent gate).
- *   - The persisted user settings file, so future sessions opened against
+ *   - Permission-owned runtime state, so future sessions opened against
  *     the same workspace directory also skip the consent prompt.
  *
- * Persistence is best-effort: if the settings file cannot be written
- * (e.g. managed-permissions-only policy), the session-level list is still
- * updated and the command reports the partial outcome.
+ * Daemon-backed sessions require durable consent before local UI state is
+ * bound. Local-only sessions retain their session-scoped fallback when the
+ * runtime-state authority is unavailable.
  */
 async function handleAcceptBypassSubcommand(
   registry: PermissionModeRegistry,
   ctx: SlashCommandContext,
 ): Promise<SlashCommandResult> {
-  const workspacePath = ctx.cwd;
-  const current = registry.current();
-  const existing = current.bypassPermissionsAcceptedIn ?? [];
-  const alreadyInSession = existing.includes(workspacePath);
-
-  // Session-level update (always — the command is idempotent).
-  if (!alreadyInSession) {
-    const nextCtx: ToolPermissionContext = {
-      ...current,
-      bypassPermissionsAcceptedIn: [...existing, workspacePath],
+  const configStore = configStoreFromCommandContext(ctx);
+  let workspacePath;
+  try {
+    workspacePath = canonicalizeBypassPermissionsCwd(ctx.cwd);
+  } catch (error) {
+    return {
+      kind: "error",
+      message: error instanceof Error ? error.message : String(error),
     };
-    await registry.update(nextCtx);
+  }
+  const daemonBacked = daemonPermissionModeFn(ctx) !== null;
+  const bindConsentToLatestContext = (
+    persistenceStore: NonNullable<SlashCommandContext["configStore"]> | null,
+  ): Promise<boolean> =>
+    registry.transact((latest) => {
+      const alreadyInSession = (
+        latest.bypassPermissionsAcceptedIn ?? []
+      ).includes(workspacePath);
+      const authorized = authorizeBypassPermissionsConsent(
+        latest,
+        workspacePath,
+      );
+      return {
+        next:
+          persistenceStore === null &&
+          alreadyInSession &&
+          latest.isBypassPermissionsModeAvailable
+            ? null
+            : authorized,
+        ...(persistenceStore !== null
+          ? {
+              preparedUpdate: prepareBypassPermissionsConsent(
+                persistenceStore.stateRepository,
+                workspacePath,
+              ),
+            }
+          : {}),
+        result: () => alreadyInSession,
+      };
+    });
+
+  if (configStore !== null) {
+    const snapshot = await loadPermissionRulesSnapshot({
+      configStore,
+      cwd: ctx.cwd,
+    });
+    if (snapshot.bypassPermissionsModeDisabled) {
+      return {
+        kind: "error",
+        message: "Cannot accept bypassPermissions because managed policy disables it",
+      };
+    }
   }
 
-  // Persisted-config update. Best-effort: if persistence fails, we still
+  if (daemonBacked) {
+    if (configStore === null) {
+      return {
+        kind: "error",
+        message:
+          "Cannot accept bypassPermissions for a daemon session without runtime-state persistence",
+      };
+    }
+    const alreadyInSession = await bindConsentToLatestContext(configStore);
+    return {
+      kind: "text",
+      text: `bypassPermissions ${
+        alreadyInSession
+          ? "already accepted in this session"
+          : "accepted for this session"
+      } for ${workspacePath} (persisted to runtime state)`,
+    };
+  }
+
+  const alreadyInSession = await bindConsentToLatestContext(null);
+
+  // Runtime-state update. Best-effort: if persistence fails, we still
   // report success for the session-level update so the operator can
   // proceed with the bypass activation in this session.
   let persistNote = "";
-  try {
-    const wrote = await recordBypassPermissionsAcceptance({
-      workspacePath,
-      env: diskEnvForCtx(ctx),
-    });
-    persistNote = wrote
-      ? " (persisted to user settings)"
-      : " (persist skipped — settings file not writable)";
-  } catch (err) {
-    persistNote = ` (persist failed: ${err instanceof Error ? err.message : String(err)})`;
+  if (configStore === null) {
+    persistNote = " (persist skipped — runtime-state authority unavailable)";
+  } else {
+    try {
+      recordBypassPermissionsConsent(
+        configStore.stateRepository,
+        workspacePath,
+      );
+      persistNote = " (persisted to runtime state)";
+    } catch (err) {
+      persistNote = ` (persist failed: ${err instanceof Error ? err.message : String(err)})`;
+    }
   }
 
   const sessionNote = alreadyInSession
@@ -737,15 +836,10 @@ export const permissionsCommand: SlashCommand = {
           }
           return { kind: "text", text: formatRuleList(registry.current()) };
         case "add":
-          return addRuleFromCommand(registry.current(), rest, registry, ctx);
+          return addRuleFromCommand(rest, registry, ctx);
         case "remove":
         case "rm":
-          return removeRuleFromCommand(
-            registry.current(),
-            rest,
-            registry,
-            ctx,
-          );
+          return removeRuleFromCommand(rest, registry, ctx);
         case "export":
           return { kind: "text", text: exportRules(registry.current()) };
         case "mode":

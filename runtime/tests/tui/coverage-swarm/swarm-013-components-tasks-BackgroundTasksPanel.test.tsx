@@ -113,7 +113,6 @@ function makeShellTask(overrides: Record<string, unknown> = {}) {
     outputOffset: 0,
     notified: false,
     command: 'npm run test:unit',
-    kind: 'bash',
     isBackgrounded: true,
     ...overrides,
   }
@@ -264,7 +263,6 @@ describe('BackgroundTasksPanel swarm row 013', () => {
         shell: makeShellTask({
           id: 'shell-with-result',
           command: 'node scripts/check.js',
-          kind: 'monitor',
           result: { code: 7, interrupted: true },
         }),
       },
@@ -281,7 +279,6 @@ describe('BackgroundTasksPanel swarm row 013', () => {
 
     expect(output).toContain('TASK DETAIL')
     expect(output).toContain('node scripts/check.js')
-    expect(output).toContain('monitor')
     expect(output).toContain('code 7')
     expect(output).toContain('interrupted')
     expect(output).toContain('yes')
@@ -302,7 +299,6 @@ describe('BackgroundTasksPanel swarm row 013', () => {
         shell: makeShellTask({
           id: 'shell-with-result',
           command: 'node scripts/check.js',
-          kind: 'monitor',
         }),
       },
     }

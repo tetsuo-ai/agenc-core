@@ -8,7 +8,10 @@ import { expect, test } from "vitest";
 import { connect as connectSdk } from "../../../packages/agenc-sdk/src/socket.js";
 import { assertWindowsPrivatePathSecurity } from "../../src/agents/workflow-private-path.js";
 import { createAgenCJsonLineDaemonClient } from "../../src/app-server/agent-cli.js";
-import { resolveAgenCDaemonSocketPath } from "../../src/app-server/daemon-cli.js";
+import {
+  readAgenCDaemonSpawnStderrTail,
+  resolveAgenCDaemonSocketPath,
+} from "../../src/app-server/daemon-cli.js";
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   JSON_RPC_VERSION,
@@ -105,92 +108,101 @@ test("the authenticated daemon client round-trips over a private Windows named p
   await expect(canConnectToUnixSocket(socketPath)).resolves.toBe(false);
 });
 
-test("the built Windows CLI completes daemon start, status, SDK, reload, and stop", async () => {
-  await withWindowsPrivateFixtureRoot(
-    "agenc-daemon-lifecycle-",
-    async (root, registerCleanup) => {
-      const agencHome = join(root, ".agenc");
-      const binAgenc = resolve(import.meta.dirname, "../../dist/bin/agenc.js");
-      const env = {
-        ...process.env,
-        HOME: root,
-        USERPROFILE: root,
-        AGENC_HOME: agencHome,
-        AGENC_CONFIG_DIR: agencHome,
-        AGENC_AUTH_BACKEND: "local",
-        AGENC_DAEMON_WEBSOCKET_HOST: "127.0.0.1",
-        AGENC_DAEMON_WEBSOCKET_PORT: "0",
-        AGENC_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-        AGENC_ONBOARDING: "0",
-        NODE_OPTIONS: "",
-      };
-      const socketPath = resolveAgenCDaemonSocketPath(env);
-      let daemonPid: number | null = null;
-
-      registerCleanup(() => {
-        if (daemonPid !== null && isPidAlive(daemonPid)) {
-          process.kill(daemonPid, "SIGKILL");
-        }
-      });
-      registerCleanup(() => {
-        const cleanupStop = runBuiltDaemonCli(
-          binAgenc,
-          ["daemon", "stop"],
-          env,
+test(
+  "the built Windows CLI completes daemon start, status, SDK, reload, and stop",
+  {
+    timeout: 180_000,
+  },
+  async () => {
+    await withWindowsPrivateFixtureRoot(
+      "agenc-daemon-lifecycle-",
+      async (root, registerCleanup) => {
+        const agencHome = join(root, ".agenc");
+        const binAgenc = resolve(
+          import.meta.dirname,
+          "../../dist/bin/agenc.js",
         );
-        if (cleanupStop.error !== undefined) {
-          throw cleanupStop.error;
-        }
-        if (cleanupStop.status !== 0) {
-          throw new Error(
-            `daemon cleanup stop failed with status ${String(cleanupStop.status)}: ${cleanupStop.stderr || cleanupStop.stdout}`,
+        const env = {
+          ...process.env,
+          HOME: root,
+          USERPROFILE: root,
+          AGENC_HOME: agencHome,
+          AGENC_AUTH_BACKEND: "local",
+          AGENC_DAEMON_WEBSOCKET_HOST: "127.0.0.1",
+          AGENC_DAEMON_WEBSOCKET_PORT: "0",
+          AGENC_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+          AGENC_ONBOARDING: "0",
+          TUI_E2E_DEBUG: "1",
+          NODE_OPTIONS: "",
+        };
+        const socketPath = resolveAgenCDaemonSocketPath(env);
+        let daemonPid: number | null = null;
+
+        registerCleanup(() => {
+          if (daemonPid !== null && isPidAlive(daemonPid)) {
+            process.kill(daemonPid, "SIGKILL");
+          }
+        });
+        registerCleanup(() => {
+          const cleanupStop = runBuiltDaemonCli(
+            binAgenc,
+            ["daemon", "stop"],
+            env,
           );
+          if (cleanupStop.error !== undefined) {
+            throw cleanupStop.error;
+          }
+          if (cleanupStop.status !== 0) {
+            throw new Error(
+              `daemon cleanup stop failed with status ${String(cleanupStop.status)}: ${cleanupStop.stderr || cleanupStop.stdout}`,
+            );
+          }
+        });
+
+        const started = runBuiltDaemonCli(binAgenc, ["daemon", "start"], env);
+        expect(started.status, started.stderr || started.stdout).toBe(0);
+        expect(started.stdout).toMatch(/AgenC daemon started \(pid \d+\)/u);
+        daemonPid = await readPrivateDaemonPid(agencHome);
+
+        const status = runBuiltDaemonCli(binAgenc, ["daemon", "status"], env);
+        expect(status.status, status.stderr || status.stdout).toBe(0);
+        expect(status.stdout).toContain(
+          `AgenC daemon running (pid ${daemonPid})`,
+        );
+
+        const sdkClient = await connectSdk({
+          env,
+          autostart: false,
+          readyTimeoutMs: 5_000,
+          requestTimeoutMs: 5_000,
+        });
+        try {
+          await expect(sdkClient.listAgents()).resolves.toEqual({ agents: [] });
+        } finally {
+          await sdkClient.close();
         }
-      });
 
-      const started = runBuiltDaemonCli(binAgenc, ["daemon", "start"], env);
-      expect(started.status, started.stderr || started.stdout).toBe(0);
-      expect(started.stdout).toMatch(/AgenC daemon started \(pid \d+\)/u);
-      daemonPid = await readPrivateDaemonPid(agencHome);
+        const reloaded = runBuiltDaemonCli(binAgenc, ["daemon", "reload"], env);
+        expect(reloaded.status, reloaded.stderr || reloaded.stdout).toBe(0);
+        expect(reloaded.stdout).toContain(
+          `AgenC daemon reloaded configuration (pid ${daemonPid})`,
+        );
 
-      const status = runBuiltDaemonCli(binAgenc, ["daemon", "status"], env);
-      expect(status.status, status.stderr || status.stdout).toBe(0);
-      expect(status.stdout).toContain(
-        `AgenC daemon running (pid ${daemonPid})`,
-      );
+        const stopped = runBuiltDaemonCli(binAgenc, ["daemon", "stop"], env);
+        expect(stopped.status, stopped.stderr || stopped.stdout).toBe(0);
+        expect(stopped.stdout).toContain(
+          `AgenC daemon stopped (pid ${daemonPid})`,
+        );
+        daemonPid = null;
 
-      const sdkClient = await connectSdk({
-        env,
-        autostart: false,
-        readyTimeoutMs: 5_000,
-        requestTimeoutMs: 5_000,
-      });
-      try {
-        await expect(sdkClient.listAgents()).resolves.toEqual({ agents: [] });
-      } finally {
-        await sdkClient.close();
-      }
-
-      const reloaded = runBuiltDaemonCli(binAgenc, ["daemon", "reload"], env);
-      expect(reloaded.status, reloaded.stderr || reloaded.stdout).toBe(0);
-      expect(reloaded.stdout).toContain(
-        `AgenC daemon reloaded configuration (pid ${daemonPid})`,
-      );
-
-      const stopped = runBuiltDaemonCli(binAgenc, ["daemon", "stop"], env);
-      expect(stopped.status, stopped.stderr || stopped.stdout).toBe(0);
-      expect(stopped.stdout).toContain(
-        `AgenC daemon stopped (pid ${daemonPid})`,
-      );
-      daemonPid = null;
-
-      await expect(canConnectToUnixSocket(socketPath)).resolves.toBe(false);
-      await expect(
-        readFile(join(agencHome, "daemon.pid"), "utf8"),
-      ).rejects.toMatchObject({ code: "ENOENT" });
-    },
-  );
-});
+        await expect(canConnectToUnixSocket(socketPath)).resolves.toBe(false);
+        await expect(
+          readFile(join(agencHome, "daemon.pid"), "utf8"),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      },
+    );
+  },
+);
 
 type WindowsFixtureCleanup = () => void | Promise<void>;
 
@@ -259,12 +271,22 @@ function runBuiltDaemonCli(
   args: readonly string[],
   env: NodeJS.ProcessEnv,
 ): ReturnType<typeof spawnSync> {
-  return spawnSync(process.execPath, [binAgenc, ...args], {
+  const result = spawnSync(process.execPath, [binAgenc, ...args], {
     encoding: "utf8",
     env,
     timeout: 60_000,
     windowsHide: true,
   });
+  if (result.error !== undefined) {
+    const daemonSpawnStderr = readAgenCDaemonSpawnStderrTail(env);
+    throw new Error(
+      `built daemon CLI ${args.join(" ")} failed: ${result.error.message}\n` +
+        `stdout: ${result.stdout}\nstderr: ${result.stderr}\n` +
+        `daemon spawn stderr: ${daemonSpawnStderr || "(empty)"}`,
+      { cause: result.error },
+    );
+  }
+  return result;
 }
 
 async function readPrivateDaemonPid(agencHome: string): Promise<number> {

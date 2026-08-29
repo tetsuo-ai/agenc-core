@@ -1,9 +1,9 @@
 /**
  * /keybindings scenario.
  *
- * /keybindings spawns $EDITOR (or /usr/bin/nano if EDITOR is unset) on
- * ~/.agenc/keybindings.json. The runtime hands off to alternate-screen
- * mode before the spawn (runtime/src/commands/keybindings.ts:175-184) so
+ * /keybindings scaffolds `tui.keybindings` through the canonical locked
+ * config mutator, then opens a private config.toml snapshot in $EDITOR. The
+ * runtime hands off to alternate-screen mode before the spawn so
  * the editor process gets a clean terminal. We force EDITOR=/bin/true so
  * the spawned editor exits immediately, which lets us assert the command
  * dispatched, alt-screen handoff worked, and Ink resumed cleanly.

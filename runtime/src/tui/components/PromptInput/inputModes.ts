@@ -50,11 +50,11 @@ export function detectModeEntry(args: {
   prevInputLength: number
   cursorOffset: number
 }): ModeEntryDecision | null {
-  if (args.cursorOffset !== 0) return null
+  const isInsertionIntoEmptyInput = args.prevInputLength === 0
+  if (!isInsertionIntoEmptyInput && args.cursorOffset !== 0) return null
   const mode = getModeFromInput(args.value)
   if (mode === 'prompt') return null
   const isSingleCharInsertion = args.value.length === args.prevInputLength + 1
-  const isMultiCharIntoEmpty = args.prevInputLength === 0
-  if (!isSingleCharInsertion && !isMultiCharIntoEmpty) return null
+  if (!isSingleCharInsertion && !isInsertionIntoEmptyInput) return null
   return { mode, strippedValue: getValueFromInput(args.value) }
 }

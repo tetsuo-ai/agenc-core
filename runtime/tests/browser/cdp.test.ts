@@ -18,7 +18,10 @@ import {
   CdpConnection,
   launchBrowser,
 } from "../../src/browser/cdp.js";
-import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
+import {
+  SandboxExecutionBroker,
+  type SandboxPreparedSpawn,
+} from "../../src/sandbox/execution-broker.js";
 
 async function waitFor(
   predicate: () => boolean,
@@ -141,13 +144,26 @@ exitWhenReady();
         mode: "danger_full_access",
         cwd: dir,
       });
-      vi.spyOn(broker, "prepareSpawn").mockImplementation(
-        (_surface, command) => ({
-          program: process.execPath,
-          args: ["-e", leaderScript],
-          cwd: dir,
-          env: command.env,
-        }),
+      const lifecycleParticipants: string[] = [];
+      const prepareSpawn = vi.spyOn(broker, "prepareSpawn").mockImplementation(
+        (_surface, command) => {
+          const transformed = {
+            program: process.execPath,
+            args: ["-e", leaderScript],
+            cwd: dir,
+            env: command.env,
+          };
+          const signal = new AbortController().signal;
+          return {
+            run: operation => operation(transformed, signal),
+            start: operation => operation(transformed, signal).value,
+            runSync: operation => operation(transformed),
+            spawnLifecycleParticipant: (participantName, operation) => {
+              lifecycleParticipants.push(participantName);
+              return operation(transformed);
+            },
+          } satisfies SandboxPreparedSpawn;
+        },
       );
       let descendant: number | undefined;
       try {
@@ -161,6 +177,15 @@ exitWhenReady();
             sandboxExecutionBroker: broker,
           }),
         ).rejects.toThrow(/did not establish a CDP pipe/);
+        expect(prepareSpawn).toHaveBeenCalledWith(
+          "browser",
+          expect.objectContaining({
+            program: process.execPath,
+            cwd: dir,
+          }),
+          { lifecycleParticipant: "browser" },
+        );
+        expect(lifecycleParticipants).toEqual(["browser"]);
         expect(existsSync(marker)).toBe(true);
         descendant = (
           JSON.parse(readFileSync(marker, "utf8")) as { descendant: number }

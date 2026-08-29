@@ -66,6 +66,7 @@ import {
 } from "./auth-refresh.js";
 import { monotonicMs } from "../../_deps/monotonic.js";
 import { resolveContextWindowProfile } from "../../_deps/context-window.js";
+import { getSelectedProviderEnvironment } from "../../../utils/model/providers.js";
 import {
   buildProviderTraceErrorPayload,
   isContinuationRetrievalFailure,
@@ -131,7 +132,7 @@ const RAW_REASONING_SUMMARY_INDEX_OFFSET = 10_000;
  * the old behavior at the documented speed cost.
  */
 export function xaiResponseStoreDefault(): boolean {
-  const raw = process.env.AGENC_XAI_STORE?.trim().toLowerCase();
+  const raw = getSelectedProviderEnvironment().AGENC_XAI_STORE?.trim().toLowerCase();
   return raw !== "0" && raw !== "false" && raw !== "off";
 }
 
@@ -925,10 +926,11 @@ export class GrokProvider implements LLMProvider {
   private oauthCallbacksInstalled = false;
   private async refreshOAuthBearerIfExpiring(): Promise<void> {
     if (!this.oauthCallbacksInstalled) return;
+    if (this.config.credentialHome === undefined) return;
     try {
       const { readXaiOauthCredentials, xaiOauthTokenIsExpiring } =
         await import("../../../utils/xaiOauthCredentials.js");
-      const blob = readXaiOauthCredentials();
+      const blob = readXaiOauthCredentials(this.config.credentialHome);
       if (blob === undefined || blob.quarantinedAt !== undefined) return;
       if (!xaiOauthTokenIsExpiring(blob)) return;
       await this.authRefreshCallbacks.refreshBearer({
@@ -2420,7 +2422,7 @@ export class GrokProvider implements LLMProvider {
       // clear error to the operator. The previous behavior shipped under
       // `fallback_full_catalog_no_matches` is removed.
       console.warn(
-        `[GrokProvider] Tool allowlist resolved to ${requestedToolNames.length} names but zero matched the provider catalog of ${providerCatalogToolCount} — ${providerCatalogToolCount === 0 ? "the catalog is EMPTY, so no allowlist could match: the tools never reached the adapter" : "every requested name is absent from it, which is a naming-form mismatch"}. Suppressing all tools for this call. Requested: ${requestedToolNames.join(", ")}. Catalog: ${providerCatalogToolNames.join(", ") || "(none)"}`,
+        `[GrokProvider] Tool allowlist resolved to ${requestedToolNames.length} names but zero matched the provider catalog — suppressing all tools for this call (requested: ${requestedToolNames.join(", ")})`,
       );
       return {
         tools: [],

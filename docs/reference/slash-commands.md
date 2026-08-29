@@ -18,6 +18,7 @@ Order matches `buildDefaultRegistry`.
 | Command | Aliases | Purpose |
 | --- | --- | --- |
 | `/help` | | Show help and available commands |
+| `/hello` | | Print a greeting card with the current model and workspace |
 | `/status` | | Show current session and runtime status |
 | `/login` | | Sign in with your AgenC account |
 | `/logout` | | Sign out of your AgenC account |
@@ -26,15 +27,22 @@ Order matches `buildDefaultRegistry`.
 | `/usage` | | Show hosted model usage for your AgenC plan |
 | `/grok-login` | `xai-login` | Sign in with X for Grok subscription access (optional `device` flow) |
 | `/grok-logout` | `xai-logout` | Sign out of the xAI / Grok OAuth session |
+| `/openai-login` | `chatgpt-login` | Sign in with ChatGPT for OpenAI subscription access |
+| `/openai-logout` | `chatgpt-logout` | Sign out of the OpenAI / ChatGPT OAuth session |
 | `/cost` | `stats` | Show session cost, token usage, and per-agent spend |
 | `/model` | | Switch the model (picker or pass a name) |
 | `/provider` | | Switch the LLM provider for subsequent turns |
+| `/effort` | | Show or set reasoning effort for the current model (`low` / `medium` / `high` / `xhigh` when the catalog allows it; `default` restores the model default) |
+| `/resolve` | `resolve-effects` | Resolve a blocked unknown-outcome tool effect through the live daemon (`<call-id> <disposition> <evidence-ref> <evidence-sha256>`) |
+| `/swarm` | | Show or set conservative adaptive routing (`on`, `off`, `status`) |
+| `/ledger` | `wallet` | Ledger wallet CLI: `status`, `install`, `session`, `discover`, `balances`, `operations`, `receive`, `send`, `swap`, `earn`, `ring`, `help` |
 | `/permissions` | `approvals`, `allowed-tools` | Manage permission mode and rules |
 | `/plan` | | Enter plan mode or display the current plan (read-only tools) |
 | `/agents` | | Manage agents — opens a picker |
 | `/tasks` | `jobs`, `bashes` | Show live background tasks and spawned agents |
 | `/todos` | `todo` | Show the session todo lists |
-| `/config` | `settings` | Manage configuration — opens a picker |
+| `/config` | | Manage configuration — opens a picker |
+| `/keybindings` | | Scaffold and edit canonical `tui.keybindings`, then reload config |
 | `/hooks` | | Inspect and test AgenC hook configuration |
 | `/skills` | | Manage project skills and show loaded skill roots |
 | `/mcp` | | Show and manage MCP servers |
@@ -43,14 +51,15 @@ Order matches `buildDefaultRegistry`.
 | `/memory` | | Open AgenC memory editor (TUI; headless points at TUI) |
 | `/resume` | `sessions` | List resumable sessions for this project |
 | `/rewind` | | Restore the code and/or conversation to a previous point |
-| `/init` | | Analyze this repository and write `.agenc/config.json` plus `AGENC.md` |
+| `/init` | | Analyze this repository and write `.agenc/config.toml` plus `AGENC.md` |
 | `/output-style` | `style` | Switch the active output style |
-| `/output-style:new` | | Ask the agent to author a new project output style |
+| `/output-style:new` | | Author a new **user** output style under `$AGENC_HOME/output-styles/` (default `~/.agenc/output-styles/`) |
 | `/clear` | `reset`, `new` | Clear session history and caches |
 | `/compact` | | Compact the current conversation |
+| `/compact-rollback` | | Restore a committed compaction source history (`<attempt-id> [--branch <session-id>]`) |
+| `/compact-retain` | | Extend a compaction rollback-retention deadline (`<attempt-id> --until <ISO-8601>`) |
 | `/context` | `ctx` | Show current context usage |
 | `/coordinator` | `fleet` | Show or toggle coordinator (orchestrator) mode |
-| `/swarm` | | Show or set conservative adaptive routing (`on`, `off`, `status`) |
 | `/diff` | | Show uncommitted changes (`git diff HEAD` + untracked) |
 | `/claim` | | Protocol: claim an open marketplace task (gated by `[protocol]`) |
 | `/delegate` | | Protocol: delegate a task step (owner-gated; often stub) |
@@ -59,12 +68,15 @@ Order matches `buildDefaultRegistry`.
 | `/stake` | | Protocol: inspect or adjust protocol stake (owner-gated) |
 | `/exit` | `quit` | Shut down the session cleanly and exit |
 
-Sources: `runtime/src/commands/*.ts(x)` modules imported by the registry
-(`help`, `status`, `auth`, `xai-auth`, `cost`, `model`, `provider`,
-`permissions`, `plan`, `agent-management`, `tasks`, `todos`, `config`, `hooks`,
-`skills`, `mcp`, `remote`, `plugins`, `memory/slash`, `resume`, `rewind`, `init`,
-`output-style`, `clear`, `session-compact`, `coordinator`, `swarm`, `diff`, `protocol`,
-`exit`). Related how-to: [grok-oauth.md](../grok-oauth.md).
+Sources: `runtime/src/commands/*.ts(x)` modules imported by
+`buildDefaultRegistry` in `registry.ts` (`help`, `hello`, `status`, `auth`,
+`xai-auth`, `openai-auth`, `cost`, `model`, `provider`, `effort`, `resolve`, `swarm`,
+`ledger`, `permissions`, `plan`, `agent-management`, `tasks`, `todos`,
+`config`, `keybindings`, `hooks`, `skills`, `mcp`, `remote`, `plugins`, `memory/slash`,
+`resume`, `rewind`, `init`, `output-style`, `clear`, `session-compact`,
+`compaction-operator`, `coordinator`, `diff`, `protocol`, `exit`). Related:
+[grok-oauth.md](../grok-oauth.md), [cli.md](cli.md) (compaction operator),
+[security/mobile-ledger-transfer.md](../security/mobile-ledger-transfer.md).
 
 ---
 
@@ -94,6 +106,19 @@ admission, or budget controls. Plan mode remains non-mutating. If
 locally. Turning swarm mode off does not disable explicit use of the
 multi-agent tools. Full routing, receipt, and integration semantics:
 [swarm-orchestration.md](../design/swarm-orchestration.md).
+
+## `/permissions`
+
+`/permissions` opens the permission editor. The command also accepts `list`,
+`add`, `remove`, `export`, and `mode` subcommands.
+
+`bypassPermissions` requires separate consent. Run `/permissions accept-bypass`
+to record consent for the exact canonical workspace path and directory
+identity, then run `/permissions mode bypassPermissions`. The
+consent is stored in permission-owned runtime state and is loaded by later
+sessions for that same workspace. It does not apply to another path or to a
+replacement directory at the same path. Managed policy may disable bypass
+mode.
 
 ---
 

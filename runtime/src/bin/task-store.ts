@@ -22,8 +22,8 @@
  */
 
 import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { resolveHomeContext } from "../config/home.js";
 import { lock as acquireLock } from "../utils/lockfile.js";
 import { isRecord } from "../utils/record.js";
 import { createSignal } from "../utils/signal.js";
@@ -117,7 +117,9 @@ function notifyTaskCreated(task: StoredTask): void {
 }
 
 function resolveAgencHome(opts: TaskStoreOptions): string {
-  return opts.agencHome ?? join(homedir(), ".agenc");
+  return resolveHomeContext(
+    opts.agencHome === undefined ? process.env : { AGENC_HOME: opts.agencHome },
+  ).path;
 }
 
 export function tasksDir(opts: TaskStoreOptions): string {

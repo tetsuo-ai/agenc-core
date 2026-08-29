@@ -71,6 +71,7 @@ const STANDARD_DEVICE_GRANTS = [
 export interface LandlockPlanInput {
   readonly fileSystem: FileSystemSandboxPolicy;
   readonly sandboxPolicyCwd: string;
+  readonly sessionTempRoot: string;
   readonly allowNetworkForProxy: boolean;
   readonly inheritedCwd: boolean;
   readonly extraReadOnlyBindRoots?: readonly string[];
@@ -124,7 +125,7 @@ export function planLandlockConfinement(input: LandlockPlanInput): LandlockPlan 
   const cwd = input.sandboxPolicyCwd;
 
   const unreadable = [
-    ...getUnreadableRootsWithCwd(policy, cwd),
+    ...getUnreadableRootsWithCwd(policy, cwd, input.sessionTempRoot),
     // Globs are patterns over host state; whether they match anything NOW
     // says nothing about the confined command's lifetime, so their presence
     // alone refuses (matching bwrap's mask-at-launch would be a race).
@@ -139,7 +140,11 @@ export function planLandlockConfinement(input: LandlockPlanInput): LandlockPlan 
     };
   }
 
-  const writableRoots = getWritableRootsWithCwd(policy, cwd);
+  const writableRoots = getWritableRootsWithCwd(
+    policy,
+    cwd,
+    input.sessionTempRoot,
+  );
   if (input.inheritedCwd && writableRoots.length > 0) {
     return {
       kind: "refused",
@@ -198,7 +203,13 @@ export function planLandlockConfinement(input: LandlockPlanInput): LandlockPlan 
         if (fs.existsSync(root)) readOnly.add(root);
       }
     }
-    for (const root of getReadableRootsWithCwd(policy, cwd)) {
+    for (
+      const root of getReadableRootsWithCwd(
+        policy,
+        cwd,
+        input.sessionTempRoot,
+      )
+    ) {
       if (underNeverGranted(root)) continue;
       if (fs.existsSync(root)) readOnly.add(root);
     }

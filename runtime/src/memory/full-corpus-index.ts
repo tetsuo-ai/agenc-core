@@ -149,6 +149,7 @@ export interface PersistentMemoryIndexOptions {
     readonly maxFilesPerRoot?: number;
   };
   readonly beforeIncrementalReadForTesting?: () => void | Promise<void>;
+  readonly beforeAuditReadForTesting?: () => void | Promise<void>;
 }
 
 interface RootRow {
@@ -311,11 +312,13 @@ export class PersistentMemoryIndex {
   readonly #activeQueryRoots = new Map<string, number>();
   readonly #readerPinHeartbeats = new Set<ReaderPinHeartbeat>();
   readonly #sliceLocks = new Set<string>();
+  readonly #closeController = new AbortController();
   readonly #ftsAvailable: boolean;
   readonly #backgroundRefreshEnabled: boolean;
   readonly #maxDatabaseBytes: number;
   readonly #maxFilesPerRoot: number;
   readonly #beforeIncrementalReadForTesting?: () => void | Promise<void>;
+  readonly #beforeAuditReadForTesting?: () => void | Promise<void>;
   readonly #builderOwner = randomUUID();
   #ownerHeartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   #closed = false;
@@ -355,6 +358,7 @@ export class PersistentMemoryIndex {
       MAX_MEMORY_FILES_PER_ROOT;
     this.#beforeIncrementalReadForTesting =
       options.beforeIncrementalReadForTesting;
+    this.#beforeAuditReadForTesting = options.beforeAuditReadForTesting;
     const { database, ftsAvailable } = openMemoryIndexDatabase(
       this.databasePath,
     );
@@ -370,6 +374,9 @@ export class PersistentMemoryIndex {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#closeController.abort(
+      new DOMException("Memory index closed", "AbortError"),
+    );
     for (const state of this.#openDirectories.values()) {
       void state.directory.close().catch(() => undefined);
     }
@@ -406,10 +413,27 @@ export class PersistentMemoryIndex {
         activeBuilds.delete(buildKey);
       }
     }
-    if (this.#ftsAvailable) {
-      this.#db
-        .prepare("DELETE FROM memory_index_owners WHERE owner_id = ?")
-        .run(this.#builderOwner);
+    if (this.#ftsAvailable && this.#db.open) {
+      try {
+        this.#db
+          .transaction(() => {
+            this.#db
+              .prepare(
+                `UPDATE memory_index_generations
+                    SET builder_owner = NULL,
+                        builder_lease_expires_at_ms = NULL
+                  WHERE builder_owner = ?`,
+              )
+              .run(this.#builderOwner);
+            this.#db
+              .prepare("DELETE FROM memory_index_owners WHERE owner_id = ?")
+              .run(this.#builderOwner);
+          })
+          .immediate();
+      } catch {
+        // Cross-process contention falls back to lease expiry. Closing the
+        // handle is still mandatory even when ownership cleanup cannot commit.
+      }
     }
     if (this.#db.open) this.#db.close();
   }
@@ -456,6 +480,7 @@ export class PersistentMemoryIndex {
   }
 
   async cancelRefresh(generationToken: string): Promise<boolean> {
+    if (this.#closed || !this.#db.open) return false;
     const generation = this.#db
       .prepare<[string], GenerationRow>(
         `SELECT * FROM memory_index_generations
@@ -467,6 +492,7 @@ export class PersistentMemoryIndex {
       .get(generation.root_id)
       ?.abort(new DOMException("Memory refresh cancelled", "AbortError"));
     await this.#closeGenerationDirectories(generation.root_id, generation.id);
+    if (this.#closed || !this.#db.open) return false;
     this.#releaseBuildLease(generation.id);
     this.#failGeneration(
       generation.id,
@@ -483,58 +509,75 @@ export class PersistentMemoryIndex {
   ): Promise<MemoryIndexRefreshResult> {
     throwIfAborted(signal);
     validateRootSpecsBeforeIo(rootSpecs);
-    if (!this.#ftsAvailable) {
-      return {
-        kind: "degraded",
-        roots: rootSpecs.map((spec) => unavailableRootStatus(spec)),
-      };
-    }
-    const roots = await bindRoots(rootSpecs, signal);
-    for (const root of roots) this.#upsertRoot(root);
-    this.#ensureWatchers(roots);
-    const deadline =
-      performance.now() +
-      (options.explicit
-        ? MAX_MEMORY_EXPLICIT_REFRESH_WAIT_MS
-        : MAX_MEMORY_INDEX_BUILD_SLICE_MS);
-    const statuses: MemoryIndexGenerationStatus[] = [];
-    for (const root of roots) {
-      throwIfAborted(signal);
-      let status = await this.#refreshRootSlice(
-        root,
-        signal,
-        options.explicit === true,
-      );
-      while (
-        options.explicit === true &&
-        status.state === "refresh_pending" &&
-        performance.now() < deadline
-      ) {
-        await yieldToEventLoop();
-        status = await this.#refreshRootSlice(root, signal, false);
+    if (this.#closed) return closedRefreshResult(rootSpecs);
+    const refreshSignal = AbortSignal.any([
+      signal,
+      this.#closeController.signal,
+    ]);
+    try {
+      if (!this.#ftsAvailable) {
+        return {
+          kind: "degraded",
+          roots: rootSpecs.map((spec) => unavailableRootStatus(spec)),
+        };
       }
-      statuses.push(status);
-    }
-    if (options.explicit !== true && this.#backgroundRefreshEnabled) {
-      for (let index = 0; index < roots.length; index += 1) {
-        if (statuses[index]?.state === "refresh_pending") {
-          this.#scheduleBackgroundRefresh(roots[index]!);
+      const roots = await bindRoots(rootSpecs, refreshSignal);
+      throwIfAborted(refreshSignal);
+      for (const root of roots) this.#upsertRoot(root);
+      this.#ensureWatchers(roots);
+      const deadline =
+        performance.now() +
+        (options.explicit
+          ? MAX_MEMORY_EXPLICIT_REFRESH_WAIT_MS
+          : MAX_MEMORY_INDEX_BUILD_SLICE_MS);
+      const statuses: MemoryIndexGenerationStatus[] = [];
+      for (const root of roots) {
+        throwIfAborted(refreshSignal);
+        let status = await this.#refreshRootSlice(
+          root,
+          refreshSignal,
+          options.explicit === true,
+        );
+        throwIfAborted(refreshSignal);
+        while (
+          options.explicit === true &&
+          status.state === "refresh_pending" &&
+          performance.now() < deadline
+        ) {
+          await yieldToEventLoop();
+          throwIfAborted(refreshSignal);
+          status = await this.#refreshRootSlice(root, refreshSignal, false);
+          throwIfAborted(refreshSignal);
+        }
+        statuses.push(status);
+      }
+      if (options.explicit !== true && this.#backgroundRefreshEnabled) {
+        for (let index = 0; index < roots.length; index += 1) {
+          if (statuses[index]?.state === "refresh_pending") {
+            this.#scheduleBackgroundRefresh(roots[index]!);
+          }
         }
       }
+      this.cleanupUnusedRoots();
+      if (
+        statuses.every(
+          (status) =>
+            status.state === "complete" && status.watcherHealth === "healthy",
+        )
+      ) {
+        return { kind: "complete", roots: statuses };
+      }
+      if (statuses.some((status) => status.state === "refresh_pending")) {
+        return { kind: "refresh_pending", roots: statuses };
+      }
+      return { kind: "degraded", roots: statuses };
+    } catch (error) {
+      if (signal.aborted) throw abortReason(signal);
+      if (this.#closeController.signal.aborted) {
+        return closedRefreshResult(rootSpecs);
+      }
+      throw error;
     }
-    this.cleanupUnusedRoots();
-    if (
-      statuses.every(
-        (status) =>
-          status.state === "complete" && status.watcherHealth === "healthy",
-      )
-    ) {
-      return { kind: "complete", roots: statuses };
-    }
-    if (statuses.some((status) => status.state === "refresh_pending")) {
-      return { kind: "refresh_pending", roots: statuses };
-    }
-    return { kind: "degraded", roots: statuses };
   }
 
   async query(
@@ -728,8 +771,30 @@ export class PersistentMemoryIndex {
     rootSpec: MemoryIndexRootSpec,
     signal: AbortSignal,
   ): Promise<MemoryIndexGenerationStatus> {
+    throwIfAborted(signal);
     validateRootSpecsBeforeIo([rootSpec]);
+    if (this.#closed) return closedRootStatus(rootSpec);
+    const auditSignal = AbortSignal.any([
+      signal,
+      this.#closeController.signal,
+    ]);
+    try {
+      return await this.#runAuditSlice(rootSpec, auditSignal);
+    } catch (error) {
+      if (signal.aborted) throw abortReason(signal);
+      if (this.#closeController.signal.aborted) {
+        return closedRootStatus(rootSpec);
+      }
+      throw error;
+    }
+  }
+
+  async #runAuditSlice(
+    rootSpec: MemoryIndexRootSpec,
+    signal: AbortSignal,
+  ): Promise<MemoryIndexGenerationStatus> {
     const [root] = await bindRoots([rootSpec], signal);
+    throwIfAborted(signal);
     if (root === undefined) return unavailableRootStatus(rootSpec);
     const current = this.#currentGeneration(root);
     if (current === null) return this.#rootStatus(root);
@@ -771,12 +836,15 @@ export class PersistentMemoryIndex {
         inspected += 1;
         const path = join(root.canonicalRoot, row.relative_path);
         try {
+          await this.#beforeAuditReadForTesting?.();
+          throwIfAborted(signal);
           const indexed = await readIndexedHeader(
             root,
             row.relative_path,
             path,
             signal,
           );
+          throwIfAborted(signal);
           if (indexed === null || indexed.fingerprint !== row.fingerprint) {
             this.recordChange({
               rootPath: root.canonicalRoot,
@@ -831,10 +899,13 @@ export class PersistentMemoryIndex {
         cursor = row.relative_path;
         inspected += 1;
         try {
+          await this.#beforeAuditReadForTesting?.();
+          throwIfAborted(signal);
           const identity = await readDirectoryIdentity(
             join(root.canonicalRoot, row.relative_path),
             signal,
           );
+          throwIfAborted(signal);
           if (
             identity.dev.toString() !== row.dev ||
             identity.ino.toString() !== row.ino ||
@@ -1097,6 +1168,7 @@ export class PersistentMemoryIndex {
           }
         })
         .catch(() => {
+          if (this.#closed || !this.#db.open) return;
           this.#db
             .prepare(
               "UPDATE memory_index_roots SET watcher_health = 'degraded' WHERE root_id = ?",
@@ -1154,6 +1226,7 @@ export class PersistentMemoryIndex {
     signal: AbortSignal,
     forceRebuild: boolean,
   ): Promise<MemoryIndexGenerationStatus> {
+    throwIfAborted(signal);
     const buildKey = `${this.databasePath}:${root.rootId}`;
     this.#upsertRoot(root);
     const staging = this.#stagingGeneration(root.rootId);
@@ -1209,11 +1282,13 @@ export class PersistentMemoryIndex {
         }
         try {
           await this.#beforeIncrementalReadForTesting?.();
+          throwIfAborted(signal);
           const status = await this.#applyIncrementalChanges(
             root,
             current.generation,
             signal,
           );
+          throwIfAborted(signal);
           if (status.state !== "refresh_pending") activeBuilds.delete(buildKey);
           return status;
         } finally {
@@ -1231,6 +1306,7 @@ export class PersistentMemoryIndex {
       }
       try {
         const status = await this.#runBuildSlice(root, generation, signal);
+        throwIfAborted(signal);
         if (status.state !== "refresh_pending") activeBuilds.delete(buildKey);
         return status;
       } finally {
@@ -1242,6 +1318,7 @@ export class PersistentMemoryIndex {
       const generation = this.#stagingGeneration(root.rootId);
       if (generation !== null) {
         await this.#closeGenerationDirectories(root.rootId, generation.id);
+        throwIfAborted(signal);
         this.#failGeneration(generation.id, error);
       }
       return {
@@ -1319,6 +1396,7 @@ export class PersistentMemoryIndex {
           join(root.canonicalRoot, change.relative_path),
           signal,
         );
+        throwIfAborted(signal);
         prepared.push({
           sequence: change.sequence,
           relativePath: change.relative_path,
@@ -1354,6 +1432,7 @@ export class PersistentMemoryIndex {
             signal,
           ),
         );
+        throwIfAborted(signal);
       } catch {
         throwIfAborted(signal);
         incrementalReadFailed = true;
@@ -1370,6 +1449,7 @@ export class PersistentMemoryIndex {
         state: "refresh_pending",
       };
     }
+    throwIfAborted(signal);
     const databaseBytesBefore = databaseBytes(this.#db);
     const applied = this.#db
       .transaction(() => {
@@ -1557,12 +1637,14 @@ export class PersistentMemoryIndex {
           budget,
           signal,
         );
+        throwIfAborted(signal);
         if (!advanced) break;
         continue;
       }
       const file = this.#nextDiscoveredFile(root.rootId, generation.id);
       if (file !== null) {
         await this.#indexDiscoveredFile(root, generation, file, signal);
+        throwIfAborted(signal);
         budget.newEntries += 1;
         budget.operations += 1;
         continue;
@@ -1637,6 +1719,7 @@ export class PersistentMemoryIndex {
       }
       const absolutePath = join(root.canonicalRoot, work.relative_path);
       const before = await readDirectoryIdentity(absolutePath, signal);
+      throwIfAborted(signal);
       if (
         before.dev.toString() !== work.dev ||
         before.ino.toString() !== work.ino
@@ -1645,6 +1728,10 @@ export class PersistentMemoryIndex {
         return true;
       }
       const directory = await opendir(absolutePath);
+      if (signal.aborted) {
+        await directory.close().catch(() => undefined);
+        throw abortReason(signal);
+      }
       openState = { directory, absolutePath, beforeIdentity: before };
       this.#openDirectories.set(key, openState);
       activeMemoryBuildOpenDirectories += 1;
@@ -1666,14 +1753,17 @@ export class PersistentMemoryIndex {
     while (!sliceExhausted(budget)) {
       throwIfAborted(signal);
       const entry = await openState.directory.read();
+      throwIfAborted(signal);
       if (entry === null) {
         await openState.directory.close().catch(() => undefined);
-        this.#openDirectories.delete(key);
-        activeMemoryBuildOpenDirectories -= 1;
+        if (this.#openDirectories.delete(key)) {
+          activeMemoryBuildOpenDirectories -= 1;
+        }
         const after = await readDirectoryIdentity(
           openState.absolutePath,
           signal,
         );
+        throwIfAborted(signal);
         if (!sameDirectoryIdentity(openState.beforeIdentity, after)) {
           this.#requeueDirectory(
             root,
@@ -1707,6 +1797,7 @@ export class PersistentMemoryIndex {
           join(root.canonicalRoot, relativePath),
           signal,
         );
+        throwIfAborted(signal);
         const result = this.#db
           .prepare(
             `INSERT OR IGNORE INTO memory_index_directory_work(
@@ -1758,6 +1849,7 @@ export class PersistentMemoryIndex {
         absolutePath,
         signal,
       );
+      throwIfAborted(signal);
       if (indexed === null) {
         this.#removeStagingPath(
           root.rootId,
@@ -2690,6 +2782,7 @@ export class PersistentMemoryIndex {
   }
 
   #releaseBuildLease(generationId: number): void {
+    if (this.#closed || !this.#db.open) return;
     this.#db
       .prepare(
         `UPDATE memory_index_generations
@@ -3425,6 +3518,24 @@ function unavailableRootStatus(
     watcherHealth: "degraded",
     auditCursor: null,
     reason: "memory root or FTS5 capability is unavailable",
+  };
+}
+
+function closedRefreshResult(
+  rootSpecs: readonly MemoryIndexRootSpec[],
+): MemoryIndexRefreshResult {
+  return {
+    kind: "degraded",
+    roots: rootSpecs.map((spec) => closedRootStatus(spec)),
+  };
+}
+
+function closedRootStatus(
+  spec: MemoryIndexRootSpec,
+): MemoryIndexGenerationStatus {
+  return {
+    ...unavailableRootStatus(spec),
+    reason: "memory index is closed",
   };
 }
 

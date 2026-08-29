@@ -1,21 +1,11 @@
 /**
- * Attachment-to-LLMMessage conversion.
- *
- * Hand-port of the upstream attachment-message helper
- * (`src/utils/attachments.ts:3221`) plus the model-facing attachment
- * normalization in `src/utils/messages.ts::normalizeAttachmentForAPI`.
+ * Canonical session attachment-to-LLMMessage conversion.
  *
  * Each attachment kind renders as one (or zero) `LLMMessage`. Attachments
  * are emitted on the user channel because AgenC's contract is that
  * the model treats them as user-context. System-reminder-style
  * attachments wrap their content in `<system-reminder>` tags inside the
  * user-channel message — matches AgenC's convention.
- *
- * AgenC branding substitutions use AgenC instruction filenames,
- * product names, and model-facing tool names. Unsupported
- * AgenC product surfaces (companion UI, bagel, teammate swarms, IDE/LSP)
- * do not render here until AgenC ships the matching producer/runtime
- * feature.
  *
  * @module
  */
@@ -172,7 +162,7 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
           ? "\n\nMCP tools are now callable as tool functions. If the user asked for one, call the MCP tool directly next. Do not use exec_command, Skill, echo, or shell/script placeholders as notes to yourself."
           : "";
         parts.push(
-          `The following deferred tools are now available via ToolSearch:\n${addedLines.join("\n")}${mcpReminder}`,
+          `The following deferred tools are now available via system.searchTools:\n${addedLines.join("\n")}${mcpReminder}`,
         );
       }
       if (attachment.removedNames.length > 0) {
@@ -180,7 +170,7 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
           sanitizeSystemReminderContent,
         );
         parts.push(
-          `The following deferred tools are no longer available (their MCP server disconnected). Do not search for them -- ToolSearch will return no match:\n${removedNames.join("\n")}`,
+          `The following deferred tools are no longer available (their MCP server disconnected). Do not search for them -- system.searchTools will return no match:\n${removedNames.join("\n")}`,
         );
       }
       if (parts.length === 0) return null;
@@ -443,6 +433,8 @@ function escapeAttribute(value: string): string {
 const UNTRUSTED_MCP_RESOURCE_BOUNDARY =
   "===== AGENC UNTRUSTED MCP RESOURCE CONTENT =====";
 const MCP_RESOURCE_TEXT_MAX_BYTES = 100_000;
+const MCP_RESOURCE_SOURCE_TRUNCATED_MARKER =
+  "...[truncated: MCP resource content exceeded AgenC safety limits]";
 const MCP_RESOURCE_TAG_RE = /<\s*\/?\s*mcp-resource\b[^>]*>/giu;
 
 function neutralizeMcpResourceBoundary(text: string): string {
@@ -513,12 +505,18 @@ function renderMcpResourceBody(
 ): string {
   const contents = attachment.content.contents;
   if (!Array.isArray(contents) || contents.length === 0) {
-    return "(No content)";
+    return attachment.content.truncated === true
+      ? `(No content)\n\n${MCP_RESOURCE_SOURCE_TRUNCATED_MARKER}`
+      : "(No content)";
   }
 
   const blocks: string[] = [];
+  let sourceTruncated = attachment.content.truncated === true;
   for (const item of contents) {
     if (item === null || typeof item !== "object") continue;
+    if ("truncated" in item && item.truncated === true) {
+      sourceTruncated = true;
+    }
     const itemUri =
       "uri" in item && typeof item.uri === "string" ? item.uri : attachment.uri;
     if ("text" in item && typeof item.text === "string") {
@@ -535,6 +533,9 @@ function renderMcpResourceBody(
           : "application/octet-stream";
       blocks.push(`[Binary content omitted: ${mimeType}]`);
     }
+  }
+  if (sourceTruncated) {
+    blocks.push(MCP_RESOURCE_SOURCE_TRUNCATED_MARKER);
   }
 
   const raw = blocks.length > 0 ? blocks.join("\n\n") : "(No displayable content)";

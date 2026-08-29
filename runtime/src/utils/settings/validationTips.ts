@@ -34,24 +34,6 @@ const TIP_MATCHERS: TipMatcher[] = [
   },
   {
     matches: (ctx): boolean =>
-      ctx.path === 'apiKeyHelper' && ctx.code === 'invalid_type',
-    tip: {
-      suggestion:
-        'Provide a shell command that outputs your API key to stdout. The script should output only the API key. Example: "/bin/generate_temp_api_key.sh"',
-    },
-  },
-  {
-    matches: (ctx): boolean =>
-      ctx.path === 'cleanupPeriodDays' &&
-      ctx.code === 'too_small' &&
-      ctx.expected === '0',
-    tip: {
-      suggestion:
-        'Must be 0 or greater. Set a positive number for days to retain transcripts (default is 30). Setting 0 disables session persistence entirely: no transcripts are written and existing transcripts are deleted at startup.',
-    },
-  },
-  {
-    matches: (ctx): boolean =>
       ctx.path.startsWith('env.') && ctx.code === 'invalid_type',
     tip: {
       suggestion:
@@ -78,7 +60,7 @@ const TIP_MATCHERS: TipMatcher[] = [
         // always has been). Users copied the tip's example and got the same validation
         // error again. See matchesPattern() in hooks.ts: matcher is exact-match,
         // pipe-separated ("Edit|Write"), or regex. Empty/"*" matches all.
-        'Hooks use a matcher + hooks array. The matcher is a string: a tool name ("Bash"), pipe-separated list ("Edit|Write"), or empty to match all. Example: {"PostToolUse": [{"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "echo Done"}]}]}',
+        'Hooks use a matcher + hooks array. The matcher is a string: a tool name ("system.bash"), pipe-separated list ("Edit|Write"), or empty to match all. Example: {"PostToolUse": [{"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "echo Done"}]}]}',
     },
   },
   {

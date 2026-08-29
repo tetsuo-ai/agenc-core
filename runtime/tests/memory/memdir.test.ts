@@ -8,6 +8,8 @@ import {
   setOriginalCwd,
   setProjectRoot,
 } from "../bootstrap/state.js";
+import { ConfigStore } from "../config/store.js";
+import { enterCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import {
   getGlobalMemoryEntrypoint,
   getGlobalMemoryPath,
@@ -38,8 +40,7 @@ let agencmd: typeof import("./agencmd.js");
 let tempRoot = "";
 let oldProjectRoot = "";
 let oldOriginalCwd = "";
-let oldConfigDir: string | undefined;
-let oldDisableAutoMemory: string | undefined;
+let oldAgencHome: string | undefined;
 
 beforeAll(async () => {
   memory = await import("./memdir.js");
@@ -50,14 +51,17 @@ beforeEach(() => {
   tempRoot = mkdtempSync(join(tmpdir(), "agenc-memory-prompt-"));
   oldProjectRoot = getProjectRoot();
   oldOriginalCwd = getOriginalCwd();
-  oldConfigDir = process.env.AGENC_CONFIG_DIR;
-  oldDisableAutoMemory = process.env.AGENC_DISABLE_AUTO_MEMORY;
-  process.env.AGENC_CONFIG_DIR = join(tempRoot, "home");
-  process.env.AGENC_DISABLE_AUTO_MEMORY = "0";
+  oldAgencHome = process.env.AGENC_HOME;
+  process.env.AGENC_HOME = join(tempRoot, "home");
   const repo = join(tempRoot, "repo");
   mkdirSync(repo, { recursive: true });
   setProjectRoot(repo);
   setOriginalCwd(repo);
+  enterCanonicalSettingsAuthority(new ConfigStore({
+    home: join(tempRoot, "home"),
+    env: { ...process.env },
+    cwd: repo,
+  }));
   getProjectMemoryPath.cache?.clear?.();
   agencmd.clearMemoryFileCaches();
 });
@@ -65,10 +69,8 @@ beforeEach(() => {
 afterEach(() => {
   setProjectRoot(oldProjectRoot);
   setOriginalCwd(oldOriginalCwd);
-  if (oldConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR;
-  else process.env.AGENC_CONFIG_DIR = oldConfigDir;
-  if (oldDisableAutoMemory === undefined) delete process.env.AGENC_DISABLE_AUTO_MEMORY;
-  else process.env.AGENC_DISABLE_AUTO_MEMORY = oldDisableAutoMemory;
+  if (oldAgencHome === undefined) delete process.env.AGENC_HOME;
+  else process.env.AGENC_HOME = oldAgencHome;
   getProjectMemoryPath.cache?.clear?.();
   agencmd.clearMemoryFileCaches();
   rmSync(tempRoot, { recursive: true, force: true });
@@ -80,6 +82,7 @@ afterAll(() => {
 
 describe("memory prompt", () => {
   it("renders all three D-13 memory layers without a session filesystem path", () => {
+    installMemoryAuthority();
     const prompt = memory.buildMemoryLines("auto memory", getProjectMemoryPath()).join("\n");
     expect(prompt).toContain("Global memory");
     expect(prompt).toContain("Project memory");
@@ -95,6 +98,7 @@ describe("memory prompt", () => {
   });
 
   it("loadMemoryPrompt keeps compatibility while adding D-13 layers", async () => {
+    installMemoryAuthority();
     const prompt = await memory.loadMemoryPrompt();
     expect(prompt).toContain("Global memory");
     expect(prompt).toContain("Project memory");
@@ -104,6 +108,7 @@ describe("memory prompt", () => {
   });
 
   it("directs durable saves to global or project memory by scope", () => {
+    installMemoryAuthority();
     const prompt = memory.buildMemoryLines("auto memory", getProjectMemoryPath()).join("\n");
 
     expect(prompt).toContain(
@@ -117,6 +122,7 @@ describe("memory prompt", () => {
   });
 
   it("loads both global and project durable memory entrypoints", async () => {
+    installMemoryAuthority();
     mkdirSync(getGlobalMemoryPath(), { recursive: true });
     mkdirSync(getProjectMemoryPath(), { recursive: true });
     writeFileSync(
@@ -141,6 +147,7 @@ describe("memory prompt", () => {
   });
 
   it("renders durable memory as untrusted context instead of override instructions", () => {
+    installMemoryAuthority();
     const rendered = agencmd.getAgenCMds([
       {
         path: join(getProjectRoot(), "AGENC.md"),
@@ -179,6 +186,7 @@ describe("memory prompt", () => {
   });
 
   it("falls back to a usable project instruction file when AGENC.md is not regular", async () => {
+    installMemoryAuthority();
     const repo = getProjectRoot();
     mkdirSync(join(repo, "AGENC.md"));
     writeFileSync(join(repo, "AGENTS.md"), "Fallback project instructions");
@@ -193,6 +201,7 @@ describe("memory prompt", () => {
   });
 
   it("truncates entrypoints by bytes and reports the cap", () => {
+    installMemoryAuthority();
     const input = `${"x".repeat(memory.MAX_ENTRYPOINT_BYTES + 100)}\nlast`;
     const truncated = memory.truncateEntrypointContent(input);
     expect(truncated.wasByteTruncated).toBe(true);
@@ -205,6 +214,7 @@ describe("memory prompt", () => {
   // the first session's project memory. The memoize key now includes the
   // effective workspace (project root + original cwd).
   it("does not serve one session's project memory to another session with a different cwd", async () => {
+    installMemoryAuthority();
     const repoA = join(tempRoot, "repoA");
     const repoB = join(tempRoot, "repoB");
     mkdirSync(repoA, { recursive: true });
@@ -234,3 +244,11 @@ describe("memory prompt", () => {
     expect(contentB).not.toContain("ALPHA-WORKSPACE-MARKER");
   });
 });
+
+function installMemoryAuthority(): void {
+  enterCanonicalSettingsAuthority(new ConfigStore({
+    home: join(tempRoot, "home"),
+    env: { ...process.env, AGENC_HOME: join(tempRoot, "home") },
+    cwd: join(tempRoot, "repo"),
+  }));
+}

@@ -1,10 +1,9 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { AuthBackend } from "./backend.js";
 import { bootstrapLocalRuntimeSession } from "../bin/bootstrap.js";
-import { Session } from "../session/session.js";
 
 function localBackendThatCannotVend(calls: string[]): AuthBackend {
   return {
@@ -27,64 +26,28 @@ function localBackendThatCannotVend(calls: string[]): AuthBackend {
 }
 
 describe("BYOK fallback", () => {
-  it("uses configured BYOK api_key_env when local managed-key vending is unavailable", async () => {
-    const agencHome = await mkdtemp(join(tmpdir(), "agenc-byok-fallback-home-"));
-    const workspace = await mkdtemp(join(tmpdir(), "agenc-byok-fallback-ws-"));
-    const calls: string[] = [];
+  it("rejects the retired api_key_env indirection", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-byok-retired-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-byok-retired-ws-"));
     await writeFile(
       join(agencHome, "config.toml"),
-      "[providers.grok]\napi_key_env = \"CUSTOM_GROK_KEY\"\n",
+      "config_version = 2\n\n[providers.grok]\napi_key_env = \"CUSTOM_GROK_KEY\"\n",
     );
 
-    const providerMod = await import("../llm/provider.js");
-    const createProviderSpy = vi
-      .spyOn(providerMod, "createProvider")
-      .mockImplementation(
-        () =>
-          ({
-            name: "stub",
-            chat: async () => ({
-              content: "ok",
-              toolCalls: [],
-              usage: {
-                promptTokens: 1,
-                completionTokens: 1,
-                totalTokens: 2,
-              },
-            }),
-          }) as never,
-      );
-    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
-
-    let shutdown: (() => Promise<void>) | null = null;
     try {
-      const boot = await bootstrapLocalRuntimeSession({
-        authBackend: localBackendThatCannotVend(calls),
-        conversationId: "conv-config-byok",
-        env: {
-          AGENC_HOME: agencHome,
-          AGENC_WORKSPACE: workspace,
-          CUSTOM_GROK_KEY: "configured-byok-key",
-          HOME: agencHome,
-        },
-      });
-      shutdown = boot.shutdown;
-
-      expect(createProviderSpy).toHaveBeenCalledWith(
-        "grok",
-        expect.objectContaining({
-          apiKey: "configured-byok-key",
-          model: "grok-4.6",
+      await expect(
+        bootstrapLocalRuntimeSession({
+          conversationId: "conv-retired-config-byok",
+          env: {
+            AGENC_HOME: agencHome,
+            AGENC_WORKSPACE: workspace,
+            HOME: agencHome,
+          },
         }),
-      );
-      expect(calls).toEqual(["getSubscriptionTier:conv-config-byok"]);
+      ).rejects.toThrow(/providers\.grok\.api_key_env.*unknown field/u);
     } finally {
-      await shutdown?.().catch(() => {
-        /* best effort */
-      });
       await rm(agencHome, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
-      vi.restoreAllMocks();
     }
   });
 
@@ -101,17 +64,13 @@ describe("BYOK fallback", () => {
           env: {
             AGENC_HOME: agencHome,
             AGENC_WORKSPACE: workspace,
-            AGENC_XAI_API_KEY: "",
             GROK_API_KEY: "",
             HOME: agencHome,
             XAI_API_KEY: "",
           },
         }),
       ).rejects.toThrow(
-        // Since e4a54ec1 ("route managed bootstrap through OpenRouter") grok
-        // has no live managed route, so the actionable error explains the
-        // OpenRouter-only managed surface plus both BYOK escape hatches.
-        /grok provider requires an API key.*Subscription-managed access is currently live for OpenRouter only.*XAI_API_KEY.*providers\.grok\.api_key_env/,
+        /grok provider requires credentials.*XAI_API_KEY or GROK_API_KEY/,
       );
       expect(calls).toEqual(["getSubscriptionTier:conv-no-key"]);
     } finally {
@@ -140,7 +99,7 @@ describe("BYOK fallback", () => {
           },
         }),
       ).rejects.toThrow(
-        /openrouter provider requires an API key.*auth\.managedKeys\.enabled.*OPENROUTER_API_KEY.*providers\.openrouter\.api_key_env/,
+        /openrouter provider requires credentials.*OPENROUTER_API_KEY.*auth\.managedKeys\.enabled/,
       );
       expect(calls).toEqual(["getSubscriptionTier:conv-no-key-openrouter"]);
     } finally {

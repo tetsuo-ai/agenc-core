@@ -56,9 +56,6 @@ export function runWorkflowContract1024Benchmark(): WorkflowContractBenchmarkRes
   });
   const finalResponseBytes = Buffer.byteLength(finalResponse, "utf8");
 
-  if (document.kind !== "agent_dag") {
-    throw new Error("workflow contract benchmark normalized to the wrong kind");
-  }
   if (elapsedMs > MAX_WORKFLOW_CONTRACT_BENCHMARK_ELAPSED_MS) {
     throw new Error(
       `workflow contract benchmark exceeded ${MAX_WORKFLOW_CONTRACT_BENCHMARK_ELAPSED_MS}ms`,

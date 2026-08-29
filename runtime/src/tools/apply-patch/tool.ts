@@ -16,15 +16,12 @@ import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import type { PermissionResult } from "../../permissions/types.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
-import {
-  plainTextErrorToolResult as errorResult,
-  validationErrorToolResult,
-} from "../results.js";
+import { plainTextErrorToolResult as errorResult } from "../results.js";
 import { SESSION_ID_ARG } from "../system/filesystem.js";
 import { parsePatch } from "./parser.js";
 import { applyPatchText } from "./runtime.js";
 import { WorkspaceMutationRejectedError } from "../../workspace/mutation-coordinator.js";
-import { ApplyPatchPreEffectError, type ApplyPatchHunk } from "./types.js";
+import type { ApplyPatchHunk } from "./types.js";
 
 export const APPLY_PATCH_TOOL_NAME = "apply_patch";
 
@@ -200,12 +197,7 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as ApplyPatchToolInput;
       const patch = asNonEmptyString(args.input);
-      if (!patch) {
-        return validationErrorToolResult(
-          "tool:apply_patch:input-validation",
-          "input must be a non-empty string",
-        );
-      }
+      if (!patch) return errorResult("input must be a non-empty string");
 
       const cwd = asNonEmptyString(args.cwd) ?? config.cwd;
       const sessionId = asNonEmptyString(args[SESSION_ID_ARG]);
@@ -234,12 +226,6 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
       } catch (error) {
         if (error instanceof WorkspaceMutationRejectedError) {
           return error.toolResult;
-        }
-        if (error instanceof ApplyPatchPreEffectError) {
-          return validationErrorToolResult(
-            `tool:apply_patch:pre-effect:${error.stage}`,
-            error.message,
-          );
         }
         return errorResult(
           error instanceof Error ? error.message : String(error),

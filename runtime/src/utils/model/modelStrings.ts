@@ -9,6 +9,8 @@ import { findFirstMatch, getBedrockInferenceProfiles } from './bedrock.js'
 import {
   ALL_MODEL_CONFIGS,
   CANONICAL_ID_TO_KEY,
+  modelConfigIdForProvider,
+  resolveConfiguredModelOverride,
   type CanonicalModelId,
   type ModelKey,
 } from './configs.js'
@@ -23,20 +25,9 @@ export type ModelStrings = Record<ModelKey, string>
 const MODEL_KEYS = Object.keys(ALL_MODEL_CONFIGS) as ModelKey[]
 
 function getBuiltinModelStrings(provider: string): ModelStrings {
-  // Agenc piggybacks on the openai provider transport for provider tier aliases.
-  // Reuse openai mappings so model string lookups never return undefined.
-  const providerKey = provider === 'agenc' || provider === 'github' ? 'openai' : provider
   const out = {} as ModelStrings
   for (const key of MODEL_KEYS) {
-    const cfg = ALL_MODEL_CONFIGS[key]
-    // Not every ModelConfig defines every provider key (e.g. only opus46 maps
-    // xai/mistral), so the dynamic provider/openai lookups can be undefined at
-    // runtime. Cast only those dynamic lookups as possibly-undefined and end the
-    // chain on the strongly-typed `firstParty`, which ModelConfig guarantees is
-    // defined, so each ModelKey always resolves to a real, non-undefined model
-    // string regardless of provider.
-    const lookup = cfg as Record<string, string | undefined>
-    out[key] = lookup[providerKey] ?? lookup.openai ?? cfg.firstParty
+    out[key] = modelConfigIdForProvider(provider, key)
   }
   return out
 }
@@ -66,7 +57,7 @@ async function getBedrockModelStrings(): Promise<ModelStrings> {
 }
 
 /**
- * Layer user-configured modelOverrides (from settings.json) on top of the
+ * Layer user-configured modelOverrides (from config.toml) on top of the
  * provider-derived model strings. Overrides are keyed by canonical first-party
  * model ID (e.g. "claude-opus-4-6") and map to arbitrary provider-specific
  * strings — typically Bedrock inference profile ARNs.
@@ -99,15 +90,7 @@ export function resolveOverriddenModel(modelId: string): string {
   } catch {
     return modelId
   }
-  if (!overrides) {
-    return modelId
-  }
-  for (const [canonicalId, override] of Object.entries(overrides)) {
-    if (override === modelId) {
-      return canonicalId
-    }
-  }
-  return modelId
+  return resolveConfiguredModelOverride(modelId, overrides)
 }
 
 const updateBedrockModelStrings = sequential(async () => {

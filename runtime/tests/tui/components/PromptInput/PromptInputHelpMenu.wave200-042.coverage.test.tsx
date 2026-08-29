@@ -14,7 +14,6 @@ vi.mock('../../keybindings/useShortcutDisplay.js', () => ({
   useShortcutDisplay: (action: string, _context: string, fallback: string) => {
     const shortcuts: Record<string, string> = {
       'app:toggleTranscript': 'ctrl+shift+o',
-      'chat:fastMode': 'alt+shift+o',
     }
 
     return shortcuts[action] ?? fallback
@@ -23,11 +22,6 @@ vi.mock('../../keybindings/useShortcutDisplay.js', () => ({
 
 vi.mock('../../keybindings/loadUserBindings.js', () => ({
   isKeybindingCustomizationEnabled: () => true,
-}))
-
-vi.mock('../../../utils/fastMode.js', () => ({
-  isFastModeAvailable: () => true,
-  isFastModeEnabled: () => true,
 }))
 
 vi.mock('../../../utils/platform.js', () => ({
@@ -82,7 +76,7 @@ describe('PromptInputHelpMenu optional shortcuts coverage', () => {
       stdout: stdout as unknown as NodeJS.WriteStream,
     })
     const renderNode = () => (
-      <PromptInputHelpMenu dimColor fixedWidth gap={1} paddingX={1} />
+      <PromptInputHelpMenu dimColor fixedWidth gap={1} paddingX={1} runtimeState={{}} />
     )
 
     try {
@@ -93,7 +87,7 @@ describe('PromptInputHelpMenu optional shortcuts coverage', () => {
 
       const text = stripAnsi(output)
       expect(text).toContain('ctrl + shift + o for verbose output')
-      expect(text).toContain('alt + shift + o to toggle fast mode')
+      expect(text).not.toContain('toggle fast mode')
       expect(text).toContain('/keybindings to customize')
     } finally {
       root.unmount()

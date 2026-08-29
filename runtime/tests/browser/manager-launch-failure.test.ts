@@ -29,7 +29,10 @@ vi.mock("../../src/utils/supervisedProcess.js", async (importOriginal) => {
 
 import { BrowserManager } from "../../src/browser/manager.js";
 import type { BrowserPolicy } from "../../src/browser/config.js";
-import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
+import {
+  SandboxExecutionBroker,
+  type SandboxPreparedSpawn,
+} from "../../src/sandbox/execution-broker.js";
 
 function isLivePid(pid: number): boolean {
   if (process.platform === "linux") {
@@ -98,12 +101,22 @@ exitWhenReady();
       });
       const prepareSpawn = vi
         .spyOn(broker, "prepareSpawn")
-        .mockImplementation((_surface, command) => ({
-          program: process.execPath,
-          args: ["-e", leaderScript],
-          cwd: dir,
-          env: command.env,
-        }));
+        .mockImplementation((_surface, command) => {
+          const transformed = {
+            program: process.execPath,
+            args: ["-e", leaderScript],
+            cwd: dir,
+            env: command.env,
+          };
+          const signal = new AbortController().signal;
+          return {
+            run: operation => operation(transformed, signal),
+            start: operation => operation(transformed, signal).value,
+            runSync: operation => operation(transformed),
+            spawnLifecycleParticipant: (_participantName, operation) =>
+              operation(transformed),
+          } satisfies SandboxPreparedSpawn;
+        });
       const policy: BrowserPolicy = {
         headless: true,
         allowPrivateNetwork: false,

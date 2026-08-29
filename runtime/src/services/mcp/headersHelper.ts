@@ -12,6 +12,7 @@ import type {
   ScopedMcpServerConfig,
 } from './types.js'
 import { validateMcpHeaders } from './headerValidation.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
 /**
  * Check if the MCP server config comes from project settings (projectSettings or localSettings)
  * This is important for security checks
@@ -31,6 +32,7 @@ function isMcpServerFromProjectOrLocalSettings(
 async function getMcpHeadersFromHelper(
   serverName: string,
   config: McpSSEServerConfig | McpHTTPServerConfig | McpWebSocketServerConfig,
+  environment: ProviderEnvironment,
 ): Promise<Record<string, string> | null> {
   if (!config.headersHelper) {
     return null
@@ -67,7 +69,7 @@ async function getMcpHeadersFromHelper(
       // Pass server context so one helper script can serve multiple MCP servers
       // (git credential-helper style). See deshaw/anthropic-issues#28.
       env: {
-        ...process.env,
+        ...environment,
         AGENC_MCP_SERVER_NAME: serverName,
         AGENC_MCP_SERVER_URL: config.url,
       },
@@ -132,13 +134,14 @@ async function getMcpHeadersFromHelper(
 export async function getMcpServerHeaders(
   serverName: string,
   config: McpSSEServerConfig | McpHTTPServerConfig | McpWebSocketServerConfig,
+  environment: ProviderEnvironment,
 ): Promise<Record<string, string>> {
   const staticHeaders = validateMcpHeaders(
     config.headers || {},
     `static headers for MCP server '${serverName}'`,
   )
   const dynamicHeaders =
-    (await getMcpHeadersFromHelper(serverName, config)) || {}
+    (await getMcpHeadersFromHelper(serverName, config, environment)) || {}
   // Dynamic headers override static headers if both are present
   return validateMcpHeaders(
     {

@@ -1,9 +1,4 @@
-import {
-  safeStringify,
-  type Tool,
-  type ToolResult,
-} from "../../tools/types.js";
-import { validationErrorToolResult } from "../../tools/results.js";
+import type { Tool, ToolResult } from "../../tools/types.js";
 import type { Session } from "../../session/session.js";
 import type { ModelInfo, ReasoningEffort } from "../../session/turn-context.js";
 import { delegate } from "../delegate.js";
@@ -19,20 +14,17 @@ import {
   assertAgentRoleWorkspaceMatches,
   formatRoleList,
   listAgentRoles,
-  requireAgentRole,
   type AgentRole,
 } from "../role.js";
 import {
-  canonicalAgentRoleName,
   formatAgentRoleLabel,
   formatAgentRolePublicName,
 } from "../role-presentation.js";
 import {
   BackgroundTaskError,
   backgroundTaskLifecycle,
-  liveAgentCounts,
+  observeAgentThreadTask,
   registerAgentThreadTask,
-  type AgentThreadTaskHandle,
   type BackgroundTaskSnapshot,
 } from "../../tasks/index.js";
 import { syncBackgroundTaskSnapshotToAppState } from "../../tasks/app-state-bridge.js";
@@ -68,7 +60,7 @@ const SPAWN_AGENT_DELEGATION_DISCIPLINE = `
 - Do not duplicate work between the main rollout and delegated subtasks.
 - Avoid issuing multiple delegate calls on the same unresolved thread unless the new delegated task is genuinely different and necessary.
 - Narrow the delegated ask to the concrete output you need next.
-- For coding tasks, prefer delegating concrete code-change worker subtasks over read-only explorer analysis when the subagent can make a bounded patch in a clear write scope.
+- For coding tasks, prefer delegating concrete code-change runner subtasks over read-only scanner analysis when the subagent can make a bounded patch in a clear write scope.
 - When delegating coding work, instruct the submodel to edit files directly in its forked workspace and list the file paths it changed in the final answer.
 - For code-edit subtasks, decompose work so each delegated task has a disjoint write set.
 - For parallel code-edit subtasks, use \`isolation: "worktree"\`. Require the worker to commit its changes and report the commit, changed files, and verification it ran. Review and integrate one exact verified \`base_commit..integration_ref\` range at a time; never infer an integration target from a mutable worker branch or treat completion as merge approval. An intended deliverable under an ignored path must be explicitly unignored or force-added and committed.
@@ -122,27 +114,6 @@ function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
   return undefined;
 }
 
-const SPAWN_VALIDATION_EVIDENCE_REF = "tool:agents.spawn-agent:validation";
-
-/**
- * A rejected spawn preflight has not crossed the child/worktree creation
- * boundary. Preserve the strict JSON error contract while attaching the
- * authoritative no-effect evidence required by the admitted-tool gate.
- */
-function spawnValidationError(reason: string): ToolResult {
-  return validationErrorToolResult(
-    SPAWN_VALIDATION_EVIDENCE_REF,
-    safeStringify({ error: reason }),
-  );
-}
-
-function confirmedNoSpawn(result: ToolResult): ToolResult {
-  return validationErrorToolResult(
-    SPAWN_VALIDATION_EVIDENCE_REF,
-    result.content,
-  );
-}
-
 function parseForkTurns(value: unknown): ToolResult | ForkMode | undefined {
   // Default (omitted/empty): clean fork — the child starts fresh with only the
   // task directive, NOT the full parent conversation. This keeps an N-agent
@@ -160,8 +131,9 @@ function parseForkTurns(value: unknown): ToolResult | ForkMode | undefined {
       return { kind: "last_n_turns", n: parsed };
     }
   }
-  return spawnValidationError(
-    "fork_turns must be `none`, `all`, or a positive integer string",
+  return json(
+    { error: "fork_turns must be `none`, `all`, or a positive integer string" },
+    true,
   );
 }
 
@@ -361,98 +333,20 @@ function roleServiceTier(role: AgentRole | undefined): string | undefined {
   return role?.config.serviceTier;
 }
 
-/**
- * Telemetry for a spawn whose lifecycle registration was skipped: the
- * daemon path registers agent threads before spawn_agent can, and the
- * onSnapshot hook that emission rides was silently dropped with the
- * duplicate registration — attached UIs saw the spawn begin and end but
- * never a status or a live tool/token count. This wires the equivalent
- * emission straight to the live handle: an immediate status, a modest
- * counter poll while the agent runs, and the final status on the
- * terminal transition.
- */
-export function attachDetachedSpawnTelemetry(
-  thread: AgentThreadTaskHandle,
-  emitTaskStatus: (snapshot: BackgroundTaskSnapshot) => void,
-): void {
-  const statusOf = (): { status?: string; error?: string } => {
-    const value = thread.live.status.value as unknown;
-    return typeof value === "object" && value !== null
-      ? (value as { status?: string; error?: string })
-      : {};
-  };
-  const terminal = (status: string | undefined): boolean =>
-    status === "completed" ||
-    status === "errored" ||
-    status === "shutdown" ||
-    status === "not_found";
-  /*
-   * The wire status is CollabAgentTaskStatus, a CLOSED union — a raw
-   * agent-status word outside it ("errored", "shutdown") poisons the
-   * canonical journal on replay and excludes the whole workspace from
-   * execution admission (see event-log.ts's history of exactly this).
-   * Map agent words onto the task vocabulary before emitting.
-   */
-  const wireStatus = (status: string | undefined): string => {
-    switch (status) {
-      case "running":
-      case "idle":
-      case "completed":
-        return status;
-      case "errored":
-        return "failed";
-      case "shutdown":
-      case "not_found":
-        return "killed";
-      default:
-        return "pending";
-    }
-  };
-  const emitNow = (): void => {
-    const value = statusOf();
-    const counts = liveAgentCounts(thread);
-    emitTaskStatus({
-      status: wireStatus(value.status) as BackgroundTaskSnapshot["status"],
-      ...(counts !== undefined ? { progress: counts } : {}),
-      ...(value.error !== undefined ? { error: value.error } : {}),
-    } as BackgroundTaskSnapshot);
-  };
-  let lastTools = -1;
-  let lastTokens = -1;
-  const timer = setInterval(() => {
-    if (terminal(statusOf().status)) return;
-    const counts = liveAgentCounts(thread);
-    if (counts === undefined) return;
-    if (counts.toolUseCount === lastTools && counts.tokenCount === lastTokens) {
-      return;
-    }
-    lastTools = counts.toolUseCount;
-    lastTokens = counts.tokenCount;
-    emitNow();
-  }, 1_000);
-  if (typeof timer.unref === "function") timer.unref();
-  let unsubscribe: () => void = () => {};
-  if (typeof thread.live.status.subscribe === "function") {
-    unsubscribe = thread.live.status.subscribe((status) => {
-      emitNow();
-      if (terminal((status as { status?: string } | undefined)?.status)) {
-        clearInterval(timer);
-        unsubscribe();
-      }
-    });
-  }
-  emitNow();
-}
-
-export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
-  const workspaceRoles = listAgentRoles(opts.workspace);
+function buildSpawnAgentSchema(opts: MultiAgentV2Options): Record<string, unknown> {
+  const session = opts.getSession();
+  const workspaceRoles = opts.roleCatalog?.list() ?? (
+    session === null
+      ? listAgentRoles(opts.workspace)
+      : opts.ensureAgentControl(session).control.roleCatalog.list()
+  );
   const roleNames = [...new Set(
     workspaceRoles.flatMap((role) => [
       formatAgentRolePublicName(role.name) ?? role.name,
       role.name,
     ]),
   )].sort();
-  const spawnAgentSchema = {
+  return {
     type: "object",
     properties: {
       message: {
@@ -492,14 +386,14 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     required: ["message", "task_name"],
     additionalProperties: false,
   };
+}
 
+export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
   const execute = async (
     args: Record<string, unknown>,
   ): Promise<ToolResult> => {
     const sessionOrError = getSessionOrError(opts);
-    if (!("conversationId" in sessionOrError)) {
-      return confirmedNoSpawn(sessionOrError);
-    }
+    if (!("conversationId" in sessionOrError)) return sessionOrError;
     const session = sessionOrError;
     const strict = strictArgs(args, {
       allowed: new Set([
@@ -515,7 +409,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       ]),
       required: ["message", "task_name"],
     });
-    if (strict) return confirmedNoSpawn(strict);
+    if (strict) return strict;
     for (const key of [
       "message",
       "task_name",
@@ -527,22 +421,23 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       "isolation",
     ]) {
       if (args[key] !== undefined && typeof args[key] !== "string") {
-        return spawnValidationError(`${key} must be a string`);
+        return json({ error: `${key} must be a string` }, true);
       }
     }
     if (
       args.fork_context !== undefined &&
       typeof args.fork_context !== "boolean"
     ) {
-      return spawnValidationError("fork_context must be a boolean");
+      return json({ error: "fork_context must be a boolean" }, true);
     }
     const prompt = stringValue(args.message);
     if (!prompt || prompt.trim().length === 0) {
-      return spawnValidationError("message is required");
+      return json({ error: "message is required" }, true);
     }
     if (args.fork_context !== undefined) {
-      return spawnValidationError(
-        "fork_context is not supported in MultiAgentV2; use fork_turns instead",
+      return json(
+        { error: "fork_context is not supported in MultiAgentV2; use fork_turns instead" },
+        true,
       );
     }
     try {
@@ -551,28 +446,32 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         opts.workspace.id,
       );
     } catch (error) {
-      return spawnValidationError(
-        error instanceof Error ? error.message : String(error),
+      return json(
+        { error: error instanceof Error ? error.message : String(error) },
+        true,
       );
     }
     const { control, registry } = opts.ensureAgentControl(session);
     try {
       control.assertRoleWorkspace(opts.workspace);
     } catch (error) {
-      return spawnValidationError(
-        error instanceof Error ? error.message : String(error),
+      return json(
+        { error: error instanceof Error ? error.message : String(error) },
+        true,
       );
     }
     const current = currentAgentContext(session, args, opts);
-    if (isCurrentAgentContextError(current)) return confirmedNoSpawn(current);
+    if (isCurrentAgentContextError(current)) return current;
     const rawRole = stringValue(args.agent_type);
-    const role =
-      rawRole !== undefined ? canonicalAgentRoleName(rawRole) : undefined;
+    // The session catalog performs exact-name lookup before public alias
+    // fallback. Canonicalizing here would make an executable plugin/workspace
+    // definition whose exact name is also a built-in alias disappear.
+    const role = rawRole;
     const model = stringValue(args.model);
-    const rawReasoningEffort = stringValue(args.reasoning_effort);
+    const rawReasoningEffort = args.reasoning_effort;
     const reasoningEffort = parseReasoningEffort(rawReasoningEffort);
     if (rawReasoningEffort !== undefined && reasoningEffort === undefined) {
-      return spawnValidationError("invalid reasoning_effort");
+      return json({ error: "invalid reasoning_effort" }, true);
     }
     const rawTaskName = stringValue(args.task_name);
     const taskName = normalizeSpawnTaskName(rawTaskName);
@@ -582,22 +481,30 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       forkMode?.kind === "full_history" &&
       (role !== undefined || model !== undefined || reasoningEffort !== undefined)
     ) {
-      return spawnValidationError(
-        "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.",
+      return json(
+        {
+          error:
+            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.",
+        },
+        true,
       );
     }
     const rawIsolation = stringValue(args.isolation);
     if (
-      rawIsolation !== undefined &&
+      args.isolation !== undefined &&
       rawIsolation !== "none" &&
       rawIsolation !== "worktree"
     ) {
-      return spawnValidationError("isolation must be `none` or `worktree`");
+      return json({ error: "isolation must be `none` or `worktree`" }, true);
     }
     const isolation = rawIsolation === "worktree" ? ("worktree" as const) : undefined;
     if (isolation !== undefined && (!taskName || taskName.length === 0)) {
-      return spawnValidationError(
-        "worktree isolation requires a non-empty task_name (it identifies the agent worktree)",
+      return json(
+        {
+          error:
+            "worktree isolation requires a non-empty task_name (it identifies the agent worktree)",
+        },
+        true,
       );
     }
     const requestedServiceTier = stringValue(args.service_tier);
@@ -642,26 +549,21 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     };
     const failSpawn = (reason: string): ToolResult => {
       emitSpawnFailureEnd(reason);
-      return spawnValidationError(reason);
+      return json({ error: reason }, true);
     };
     let resolvedRole: AgentRole | undefined;
     try {
       if (role !== undefined) {
-        resolvedRole = requireAgentRole(control.roleWorkspace, role);
+        resolvedRole = control.roleCatalog.require(role);
       }
     } catch (error) {
       return failSpawn(error instanceof Error ? error.message : String(error));
     }
-    let overrideError: ToolResult | null;
-    try {
-      overrideError = await validateSpawnModelOverrides({
-        session,
-        ...(model !== undefined ? { model } : {}),
-        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-      });
-    } catch (error) {
-      return failSpawn(error instanceof Error ? error.message : String(error));
-    }
+    const overrideError = await validateSpawnModelOverrides({
+      session,
+      ...(model !== undefined ? { model } : {}),
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+    });
     if (overrideError) {
       const overrideReason =
         typeof overrideError.content === "string"
@@ -679,7 +581,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
             })()
           : "spawn_agent override validation failed";
       emitSpawnFailureEnd(overrideReason);
-      return confirmedNoSpawn(overrideError);
+      return overrideError;
     }
     const roleConfiguredModel = roleModel(resolvedRole);
     const roleConfiguredReasoningEffort = roleReasoningEffort(resolvedRole);
@@ -687,25 +589,17 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const effectiveModel = roleConfiguredModel ?? model;
     const effectiveReasoningEffort =
       roleConfiguredReasoningEffort ?? reasoningEffort;
-    let roleOverrideError: ToolResult | null = null;
-    if (
+    const roleOverrideError =
       roleConfiguredModel !== undefined ||
       roleConfiguredReasoningEffort !== undefined
-    ) {
-      try {
-        roleOverrideError = await validateSpawnModelOverrides({
-          session,
-          ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
-          ...(effectiveReasoningEffort !== undefined
-            ? { reasoningEffort: effectiveReasoningEffort }
-            : {}),
-        });
-      } catch (error) {
-        return failSpawn(
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    }
+        ? await validateSpawnModelOverrides({
+            session,
+            ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
+            ...(effectiveReasoningEffort !== undefined
+              ? { reasoningEffort: effectiveReasoningEffort }
+              : {}),
+          })
+        : null;
     if (roleOverrideError) {
       const overrideReason =
         typeof roleOverrideError.content === "string"
@@ -723,25 +617,18 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
             })()
           : "spawn_agent role override validation failed";
       emitSpawnFailureEnd(overrideReason);
-      return confirmedNoSpawn(roleOverrideError);
+      return roleOverrideError;
     }
-    let serviceTierResult: Awaited<
-      ReturnType<typeof resolveSpawnServiceTier>
-    >;
-    try {
-      serviceTierResult = await resolveSpawnServiceTier({
-        session,
-        ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
-        ...(requestedServiceTier !== undefined
-          ? { requestedServiceTier }
-          : {}),
-        ...(roleConfiguredServiceTier !== undefined
-          ? { roleServiceTier: roleConfiguredServiceTier }
-          : {}),
-      });
-    } catch (error) {
-      return failSpawn(error instanceof Error ? error.message : String(error));
-    }
+    const serviceTierResult = await resolveSpawnServiceTier({
+      session,
+      ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
+      ...(requestedServiceTier !== undefined
+        ? { requestedServiceTier }
+        : {}),
+      ...(roleConfiguredServiceTier !== undefined
+        ? { roleServiceTier: roleConfiguredServiceTier }
+        : {}),
+    });
     if ("content" in serviceTierResult) {
       const overrideReason =
         typeof serviceTierResult.content === "string"
@@ -759,7 +646,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
             })()
           : "spawn_agent service tier validation failed";
       emitSpawnFailureEnd(overrideReason);
-      return confirmedNoSpawn(serviceTierResult);
+      return serviceTierResult;
     }
     if (!taskName) {
       return failSpawn("task_name is required");
@@ -770,8 +657,6 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       return failSpawn(error instanceof Error ? error.message : String(error));
     }
     let thread: AgentThread | undefined;
-    /** Set when the delegate refused before anything was created. */
-    let rejectedBeforeSpawn = false;
     try {
       const childAgentPath = joinAgentPath(current.agentPath, taskName);
       const worktreeSlug =
@@ -809,12 +694,6 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           : {}),
       });
       if (outcome.kind === "rejected") {
-        // Anything but spawn_failed refused before an agent or a worktree
-        // existed, so it has no side effect to account for either. Carry
-        // that across the throw; the catch below cannot tell otherwise, and
-        // a generic error there left the admission layer holding an unknown
-        // effect that then blocked the whole session.
-        rejectedBeforeSpawn = outcome.category !== "spawn_failed";
         throw new Error(outcome.reason);
       }
       thread = outcome.thread;
@@ -840,12 +719,10 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           },
         },
       });
-      return rejectedBeforeSpawn
-        ? spawnValidationError(reason)
-        : json({ error: reason }, true);
+      return json({ error: reason }, true);
     }
     if (thread === undefined) {
-      return spawnValidationError("spawn_agent did not return an agent thread");
+      return json({ error: "spawn_agent did not return an agent thread" }, true);
     }
     const live = thread.live;
     const emitTaskStatus = (snapshot: BackgroundTaskSnapshot): void => {
@@ -883,6 +760,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     try {
       registerAgentThreadTask(backgroundTaskLifecycle, thread, {
         toolUseId: callId,
+        runtimeOptions: session.services.runtimeOptions,
         // Short title (from task_name), not the full prompt — the rail /
         // transcript / `/cost` show this as the agent's label. The full prompt
         // is preserved separately on the task's `prompt` field.
@@ -916,7 +794,11 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
        * and end, then nothing. No status, no live tool/token counts. Wire
        * the same telemetry straight to the live handle instead.
        */
-      attachDetachedSpawnTelemetry(thread, emitTaskStatus);
+      observeAgentThreadTask(
+        backgroundTaskLifecycle,
+        thread,
+        emitTaskStatus,
+      );
     }
     emit(session, {
       type: "collab_agent_spawn_end",
@@ -965,7 +847,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     requiresApproval: true,
     recoveryCategory: "side-effecting",
     admissionEstimate: localZeroAdmissionEstimate,
-    inputSchema: spawnAgentSchema,
+    get inputSchema(): Record<string, unknown> {
+      return buildSpawnAgentSchema(opts);
+    },
     execute,
   };
 }

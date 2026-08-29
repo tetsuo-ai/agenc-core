@@ -1,19 +1,10 @@
-/**
- * Ports donor `src/Task.ts` and `src/tasks/types.ts` task discriminators onto
- * AgenC's live task subsystem.
- *
- * Shape differences from the donor:
- *   - AgenC keeps lifecycle-only `monitor` and `generic` task kinds separate
- *     from AppState task kinds.
- *   - Output paths use the in-process task-output URI shape because the live
- *     runtime does not own the donor disk-output layout.
- */
+/** Canonical task discriminators for AgenC's background-task lifecycle. */
 
 import { randomInt } from "node:crypto";
 
 export type TaskType = "local_bash" | "local_agent" | "in_process_teammate";
 
-export type LifecycleOnlyTaskType = "monitor" | "generic";
+export type LifecycleOnlyTaskType = "generic";
 
 export type AgenCBackgroundTaskType = TaskType | LifecycleOnlyTaskType;
 
@@ -36,8 +27,6 @@ export interface TaskStateBase<T extends TaskType = TaskType> {
   readonly notified: boolean;
 }
 
-export type BashTaskKind = "bash" | "monitor";
-
 export interface LocalShellTaskState extends TaskStateBase<"local_bash"> {
   readonly queueOwner?: {
     readonly kind: "session";
@@ -55,7 +44,6 @@ export interface LocalShellTaskState extends TaskStateBase<"local_bash"> {
   readonly lastReportedTotalLines?: number;
   readonly isBackgrounded?: boolean;
   readonly agentId?: string;
-  readonly kind?: BashTaskKind;
 }
 
 export interface AgentProgressActivity {
@@ -144,7 +132,6 @@ const TASK_ID_PREFIXES: Record<AgenCBackgroundTaskType, string> = {
   local_bash: "b",
   local_agent: "a",
   in_process_teammate: "t",
-  monitor: "m",
   generic: "t",
 };
 
@@ -158,7 +145,6 @@ const APP_STATE_TASK_TYPES = new Set<string>([
 
 const BACKGROUND_TASK_TYPES = new Set<string>([
   ...APP_STATE_TASK_TYPES,
-  "monitor",
   "generic",
 ]);
 

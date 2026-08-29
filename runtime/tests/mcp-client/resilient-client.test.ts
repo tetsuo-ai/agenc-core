@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ResilientMCPBridge } from "./resilient-client.js";
 import type { MCPToolBridgePermissionOptions } from "./tools.js";
 import type { MCPServerConfig, MCPToolBridge } from "./types.js";
+import { EMPTY_MCP_REQUEST_ENVIRONMENT } from "./environment.js";
 
 vi.mock("./connection.js", () => ({
   createMCPConnection: vi.fn(),
@@ -131,6 +132,7 @@ describe("ResilientMCPBridge", () => {
       undefined,
       undefined,
       undefined,
+      EMPTY_MCP_REQUEST_ENVIRONMENT,
     );
     expect(mockCreateToolBridge).toHaveBeenCalledWith(
       "client2",
@@ -186,9 +188,90 @@ describe("ResilientMCPBridge", () => {
       undefined,
       samplingHandlers,
       undefined,
+      EMPTY_MCP_REQUEST_ENVIRONMENT,
     );
 
     await bridge.dispose();
+  });
+
+  it("keeps A/B session transport authority on automatic reconnect", async () => {
+    vi.useFakeTimers();
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const mutableEnvironmentA: Record<string, string | undefined> = {
+      HTTPS_PROXY: "http://session-a.proxy.test:8080",
+      NO_PROXY: "localhost",
+    };
+    const initialA = makeBridge(
+      "session-a",
+      vi.fn().mockResolvedValue({
+        content: "transport closed",
+        isError: true,
+      }),
+    );
+    const initialB = makeBridge(
+      "session-b",
+      vi.fn().mockResolvedValue({
+        content: "transport closed",
+        isError: true,
+      }),
+    );
+    mockCreateMCPConnection
+      .mockResolvedValueOnce("client-a")
+      .mockResolvedValueOnce("client-b");
+    mockCreateToolBridge
+      .mockResolvedValueOnce(makeBridge("session-a"))
+      .mockResolvedValueOnce(makeBridge("session-b"));
+
+    const bridgeA = new ResilientMCPBridge(
+      { name: "session-a", command: "node" },
+      initialA,
+      logger,
+      { environment: mutableEnvironmentA },
+    );
+    const bridgeB = new ResilientMCPBridge(
+      { name: "session-b", command: "node" },
+      initialB,
+      logger,
+      { environment: Object.freeze({}) },
+    );
+
+    delete mutableEnvironmentA.HTTPS_PROXY;
+    mutableEnvironmentA.NO_PROXY = "*";
+    await Promise.all([
+      bridgeA.tools[0]!.execute({}),
+      bridgeB.tools[0]!.execute({}),
+    ]);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    const callA = mockCreateMCPConnection.mock.calls.find(
+      ([config]) => config.name === "session-a",
+    );
+    const callB = mockCreateMCPConnection.mock.calls.find(
+      ([config]) => config.name === "session-b",
+    );
+    expect(callA?.[5]).toEqual({
+      HTTPS_PROXY: "http://session-a.proxy.test:8080",
+      NO_PROXY: "localhost",
+    });
+    expect(Object.isFrozen(callA?.[5])).toBe(true);
+    expect(callB?.[5]).toEqual({});
+    expect(Object.isFrozen(callB?.[5])).toBe(true);
+    expect(callA?.[5]).not.toBe(callB?.[5]);
+    const bridgeCallA = mockCreateToolBridge.mock.calls.find(
+      ([, serverName]) => serverName === "session-a",
+    );
+    const bridgeCallB = mockCreateToolBridge.mock.calls.find(
+      ([, serverName]) => serverName === "session-b",
+    );
+    expect(bridgeCallA?.[3]?.environment).toEqual({
+      HTTPS_PROXY: "http://session-a.proxy.test:8080",
+      NO_PROXY: "localhost",
+    });
+    expect(Object.isFrozen(bridgeCallA?.[3]?.environment)).toBe(true);
+    expect(bridgeCallB?.[3]?.environment).toEqual({});
+    expect(Object.isFrozen(bridgeCallB?.[3]?.environment)).toBe(true);
+
+    await Promise.all([bridgeA.dispose(), bridgeB.dispose()]);
   });
 
   it("re-applies the catalog policy (pin + allow/deny + approval mode) on reconnect (#6)", async () => {

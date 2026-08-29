@@ -28,6 +28,9 @@ import {
   type McpSamplingHandlers,
 } from "../../services/mcp/hostCapabilities.js";
 import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
+import { getProxyFetchOptions } from "../../utils/proxy.js";
+import type { ProviderEnvironment } from "../../llm/provider-options.js";
+import { EMPTY_MCP_REQUEST_ENVIRONMENT } from "../environment.js";
 
 export interface MCPServerSseConfig {
   readonly name: string;
@@ -48,6 +51,7 @@ export async function createSseMCPConnection(
   logger: Logger = silentLogger,
   elicitationHandlers?: MCPElicitationHandlers,
   samplingHandlers?: McpSamplingHandlers,
+  environment: ProviderEnvironment = EMPTY_MCP_REQUEST_ENVIRONMENT,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -56,16 +60,20 @@ export async function createSseMCPConnection(
   );
 
   const timeout = config.timeout ?? 30_000;
+  const proxyOptions = getProxyFetchOptions({ environment });
 
   const url = new URL(config.endpoint);
   const transport = new SSEClientTransport(url, {
-    ...(config.headers !== undefined
-      ? {
-          requestInit: {
-            headers: { ...config.headers },
-          },
-        }
-      : {}),
+    requestInit: {
+      ...proxyOptions,
+      ...(config.headers !== undefined
+        ? { headers: { ...config.headers } }
+        : {}),
+    },
+    eventSourceInit: {
+      fetch: (input: string | URL, init?: RequestInit) =>
+        fetch(input, { ...init, ...proxyOptions }),
+    },
   });
 
   const client = new Client(

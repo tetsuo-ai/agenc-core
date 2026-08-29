@@ -20,7 +20,7 @@ export const meta = {
   // Completion ordering is independent of the platform sandbox. Use the
   // explicit test-only bypass so this local mock-provider scenario remains
   // runnable on hosts where unprivileged namespaces are unavailable.
-  args: ["--yolo"],
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   timeoutMs: 90_000,
   // This scenario exercises daemon/TUI completion ordering, not project
   // context. Keep the writable workspace outside the built runtime so the

@@ -15,7 +15,14 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -57,11 +64,7 @@ import {
   type PermissionMode,
   type ToolPermissionContext,
 } from "../permissions/types.js";
-import type {
-  LLMContentPart,
-  LLMMessage,
-  LLMProvider,
-} from "../llm/types.js";
+import type { LLMContentPart, LLMMessage, LLMProvider } from "../llm/types.js";
 import { ProviderHttpClient } from "../llm/client.js";
 import {
   createProvider,
@@ -69,6 +72,7 @@ import {
   readProviderFactoryOptions,
   readProviderIdentity,
 } from "../llm/provider.js";
+import { createGeminiEndpointPlan } from "../llm/providers/gemini/endpoint-plan.js";
 import type { AuthBackend } from "../auth/backend.js";
 import { clearSession } from "../commands/clear.js";
 import {
@@ -80,6 +84,24 @@ import {
   createProvider as createCompactionProvider,
 } from "../helpers/compaction-transaction-harness.js";
 import { CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
+import {
+  getSessionTempNamespaceName,
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from "./runtime-options.js";
+import { runWithCurrentRuntimeSession } from "./current-session.js";
+import {
+  clearSessionReadState,
+  recordSessionRead,
+} from "../tools/system/filesystem.js";
+import { extractBundledSkillFiles } from "../skills/bundled-extraction-registry.js";
+import { getCurrentBundledSkillExtractionRoot } from "../skills/bundled-root-authority.js";
+import { ConfigStore } from "../config/store.js";
+import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import { SessionProviderService } from "./provider-service.js";
+import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
+import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
+import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "../prompts/system-prompt-boundary.js";
 
 (globalThis as Record<string, unknown>).MACRO ??= {
   VERSION: "test-version",
@@ -96,15 +118,12 @@ import { CompactionReconstructionRequiredError } from "../services/compact/trans
 // ─────────────────────────────────────────────────────────────────────
 
 function mkFeatures(): ManagedFeatures {
-  return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
-  };
+  return {};
 }
 
-function mkConfig(): Config {
+function mkConfig(model = "test-model"): Config {
   return {
-    model: "test-model",
+    model,
     cwd: "/tmp",
     features: mkFeatures(),
     multiAgentV2: {
@@ -125,9 +144,9 @@ function mkConfig(): Config {
   };
 }
 
-function mkModelInfo(): ModelInfo {
+function mkModelInfo(model = "test-model"): ModelInfo {
   return {
-    slug: "test-model",
+    slug: model,
     effectiveContextWindowPercent: 100,
     contextWindow: 131_072,
     supportedReasoningLevels: [],
@@ -137,7 +156,7 @@ function mkModelInfo(): ModelInfo {
   };
 }
 
-function mkSessionConfiguration(): SessionConfiguration {
+function mkSessionConfiguration(model = "test-model"): SessionConfiguration {
   return {
     cwd: "/tmp",
     approvalPolicy: { value: "never" },
@@ -154,7 +173,7 @@ function mkSessionConfiguration(): SessionConfiguration {
       allowManagedDomainsOnly: false,
     },
     windowsSandboxLevel: "none",
-    collaborationMode: { model: "test-model" },
+    collaborationMode: { model },
     dynamicTools: [],
     sessionSource: "cli_main",
   };
@@ -162,7 +181,7 @@ function mkSessionConfiguration(): SessionConfiguration {
 
 function mkProvider(): LLMProvider {
   return {
-    name: "stub-provider",
+    name: "openai-compatible",
     chat: async () => ({
       content: "",
       toolCalls: [],
@@ -207,8 +226,8 @@ function mkProviderWithClient(client: ProviderHttpClient): LLMProvider {
 
 /**
  * Minimal `Session` builder for the W3 integration tests. Mirrors the
- * loose-cast approach in `idle-input.test.ts` so the constructor's
- * permission-registry bootstrap is exercised.
+ * loose-cast approach in `idle-input.test.ts` while supplying the canonical
+ * permission registry required by every live session.
  */
 function buildSession(
   overrides: {
@@ -217,8 +236,26 @@ function buildSession(
     sessionConfiguration?: SessionConfiguration;
     config?: Config;
     modelInfo?: ModelInfo;
+    mcpManagerOwnership?: SessionOpts["mcpManagerOwnership"];
+    readSavedApiKey?: (provider: string) => Promise<string | undefined>;
   } = {},
 ): Session {
+  const initialProvider = overrides.services?.provider ?? mkProvider();
+  const initialProviderModel =
+    readProviderFactoryOptions(initialProvider).model ?? "test-model";
+  const config = overrides.config ?? mkConfig(initialProviderModel);
+  const suppliedConfigStore = overrides.services?.configStore;
+  const configStore =
+    suppliedConfigStore instanceof ConfigStore
+      ? suppliedConfigStore
+      : new ConfigStore({
+          home: join(tmpdir(), "agenc-session-test-home"),
+          cwd: config.cwd,
+          env: {},
+          ...(suppliedConfigStore === undefined
+            ? {}
+            : { base: suppliedConfigStore.current() }),
+        });
   const services = {
     admissionRequired: false,
     mcpConnectionManager: {
@@ -233,31 +270,115 @@ function buildSession(
     agentControl: {
       shutdownAgentTree: vi.fn(),
     },
-    provider: mkProvider(),
+    configStore,
+    runtimeOptions: resolveAgentRuntimeOptions(
+      {},
+      {
+        pluginStorageRoot: join(tmpdir(), "agenc-session-test-plugins"),
+      },
+    ),
+    permissionModeRegistry: new PermissionModeRegistry(
+      ctxWithPermissionMode("default"),
+    ),
+    provider: initialProvider,
+    providerEnvironment: {
+      OPENAI_API_KEY: "test-key",
+      XAI_API_KEY: "test-key",
+    },
     registry: {
       tools: [],
       toLLMTools: () => [],
       dispatch: async () => ({ content: "", isError: false }),
     },
     ...(overrides.services ?? {}),
+    configStore,
   } as unknown as SessionServices;
+  const initialSessionConfiguration =
+    overrides.sessionConfiguration ??
+    mkSessionConfiguration(initialProviderModel);
+  const providerEnvironment = services.providerEnvironment ?? {};
+  const providerService =
+    services.providerService ??
+    new SessionProviderService({
+      initialProvider: services.provider,
+      ...(initialSessionConfiguration.provider?.slug !== undefined
+        ? { initialProviderName: initialSessionConfiguration.provider.slug }
+        : {}),
+      ...(initialSessionConfiguration.collaborationMode.model !== undefined
+        ? { initialModel: initialSessionConfiguration.collaborationMode.model }
+        : {}),
+      environment: providerEnvironment,
+      ...(overrides.readSavedApiKey !== undefined
+        ? { readSavedApiKey: overrides.readSavedApiKey }
+        : {}),
+      ...(services.authBackend !== undefined
+        ? { authBackend: services.authBackend }
+        : {}),
+      sessionId: "conv-test",
+      ...(services.authSubscriptionTier !== undefined
+        ? { subscriptionTier: services.authSubscriptionTier }
+        : {}),
+      resolvePreparationRequest: (selection) => {
+        const currentConfig = configStore.current();
+        const runtimeRequest = resolveProviderRuntimeRequest({
+          provider: selection.provider,
+          model: selection.model,
+          config: currentConfig,
+          environment: providerEnvironment,
+          ...(configStore instanceof ConfigStore
+            ? { credentialHome: configStore.homeContext }
+            : {}),
+          executionAdmissionRequired: services.admissionRequired !== false,
+        });
+        return {
+          requested: runtimeRequest.requested,
+          runtime: {
+            managedKeysEnabled:
+              currentConfig.auth?.managedKeys?.enabled === true,
+            freeManagedCredential:
+              services.authSubscriptionTier === "free" &&
+              isFreeSubscriptionManagedModel(
+                selection.provider,
+                selection.model,
+              ),
+            applyManagedDefaultOutputCap:
+              selection.provider === "openrouter" &&
+              runtimeRequest.settings?.maxOutputTokens === undefined,
+          },
+        };
+      },
+    });
+  const servicesWithProviderAuthority = {
+    ...services,
+    providerService,
+  };
   const opts: SessionOpts = {
     conversationId: "conv-test",
     initialState: {
-      sessionConfiguration:
-        overrides.sessionConfiguration ?? mkSessionConfiguration(),
+      sessionConfiguration: initialSessionConfiguration,
       history: [],
     },
     features: mkFeatures(),
-    services,
+    services: servicesWithProviderAuthority,
+    ...(overrides.mcpManagerOwnership !== undefined
+      ? { mcpManagerOwnership: overrides.mcpManagerOwnership }
+      : {}),
     jsRepl: { id: "repl-test" },
-    config: overrides.config ?? mkConfig(),
-    modelInfo: overrides.modelInfo ?? mkModelInfo(),
+    config,
+    modelInfo: overrides.modelInfo ?? mkModelInfo(initialProviderModel),
     ...(overrides.eventQueue === null
       ? {}
       : { eventQueue: overrides.eventQueue ?? new AsyncQueue<Event>() }),
   };
   return new Session(opts);
+}
+
+function consumePendingProviderSwitch(session: Session) {
+  return runWithCurrentRuntimeSession(session, () =>
+    runWithCanonicalSettingsAuthority(session.services.configStore, () =>
+      session.consumePendingProviderSwitch(),
+    ),
+  );
 }
 
 function ctxWithPermissionMode(mode: PermissionMode): ToolPermissionContext {
@@ -288,17 +409,19 @@ async function withEnv<T>(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// SessionServices.permissionModeRegistry bootstrap
+// SessionServices.permissionModeRegistry authority
 // ─────────────────────────────────────────────────────────────────────
 
-describe("SessionServices.permissionModeRegistry default bootstrap", () => {
-  it("constructs a default registry when services.permissionModeRegistry is omitted", () => {
-    const session = buildSession();
-    // The registry must exist after construction even though the caller
-    // cast the services through `unknown` without supplying one.
-    const registry = session.services.permissionModeRegistry;
-    expect(registry).toBeInstanceOf(PermissionModeRegistry);
-    expect(registry.current().mode).toBe("default");
+describe("SessionServices.permissionModeRegistry authority", () => {
+  it("rejects construction when services.permissionModeRegistry is omitted", () => {
+    expect(() =>
+      buildSession({
+        services: {
+          permissionModeRegistry:
+            undefined as unknown as PermissionModeRegistry,
+        },
+      }),
+    ).toThrow("Session requires services.permissionModeRegistry");
   });
 
   it("populates the default querySource when omitted", () => {
@@ -348,20 +471,20 @@ describe("SessionServices.permissionModeRegistry default bootstrap", () => {
       config: {
         ...mkConfig(),
         agentRoles: [
-          { name: "worker", description: "Implementation work" },
-          { name: "explorer", description: "" },
+          { name: "runner", description: "Implementation work" },
+          { name: "scanner", description: "" },
         ],
       },
     });
 
     expect(session.agentDefinitions.activeAgents).toEqual([
       expect.objectContaining({
-        agentType: "worker",
+        agentType: "runner",
         whenToUse: "Implementation work",
         agentRoleFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
       }),
       expect.objectContaining({
-        agentType: "explorer",
+        agentType: "scanner",
         agentRoleFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
       }),
     ]);
@@ -376,7 +499,7 @@ describe("Session.setPendingProviderSwitch", () => {
   it("assigns a well-typed pending switch record", () => {
     const session = buildSession();
     const pending: PendingProviderSwitch = {
-      provider: "xai",
+      provider: "grok",
       model: "grok-4.3",
     };
     session.setPendingProviderSwitch(pending);
@@ -386,7 +509,7 @@ describe("Session.setPendingProviderSwitch", () => {
   it("clears the slot when passed null", () => {
     const session = buildSession();
     session.setPendingProviderSwitch({
-      provider: "xai",
+      provider: "grok",
       model: "grok-4.3",
     });
     expect(session.pendingProviderSwitch).not.toBeNull();
@@ -397,7 +520,7 @@ describe("Session.setPendingProviderSwitch", () => {
   it("round-trips the optional profile slot (T11 W2 extension)", () => {
     const session = buildSession();
     session.setPendingProviderSwitch({
-      provider: "xai",
+      provider: "grok",
       model: "grok-4.3",
       profile: "coding",
     });
@@ -526,30 +649,6 @@ describe("Session.setPendingWorktreeState", () => {
     expect(session.pendingWorktreeState).toBeNull();
     expect(session.sessionConfiguration.cwd).toBe("/repo");
     expect(session.roleWorkspace.id).toBe("/tmp");
-  });
-});
-
-describe("Session permission-context sync", () => {
-  it("mirrors registry mode changes onto sessionConfiguration.permissionContext", async () => {
-    const registry = new PermissionModeRegistry(
-      createEmptyToolPermissionContext({ mode: "default" }),
-    );
-    const session = buildSession({
-      services: { permissionModeRegistry: registry },
-    });
-
-    expect(session.sessionConfiguration.permissionContext?.mode).toBe(
-      "default",
-    );
-
-    await registry.update(
-      createEmptyToolPermissionContext({
-        mode: "plan",
-        isAutoModeAvailable: true,
-      }),
-    );
-
-    expect(session.sessionConfiguration.permissionContext?.mode).toBe("plan");
   });
 });
 
@@ -723,6 +822,107 @@ describe("Session rollout persistence suspension", () => {
 });
 
 describe("Session.consumePendingProviderSwitch", () => {
+  it("does not commit a prepared switch after a newer selection supersedes it", async () => {
+    const session = buildSession({
+      services: {
+        provider: createProvider("grok", {
+          apiKey: "test-key",
+          model: "grok-4",
+        }),
+      },
+    });
+    const originalPrepare = session.prepareProviderSwitch.bind(session);
+    let releasePreparation!: () => void;
+    const preparationBlocked = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+    let preparationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      preparationStarted = resolve;
+    });
+    vi.spyOn(session, "prepareProviderSwitch").mockImplementation(
+      async (pending, configSnapshot) => {
+        preparationStarted();
+        await preparationBlocked;
+        return originalPrepare(pending, configSnapshot);
+      },
+    );
+    session.setPendingProviderSwitch({ provider: "grok", model: "grok-4.3" });
+
+    const firstConsumption = consumePendingProviderSwitch(session);
+    await started;
+    session.setPendingProviderSwitch({ provider: "grok", model: "grok-4.6" });
+    releasePreparation();
+
+    await expect(firstConsumption).resolves.toEqual({
+      applied: false,
+      reason: "provider switch superseded",
+    });
+    expect(session.providerBinding).toMatchObject({
+      provider: "grok",
+      model: "grok-4",
+    });
+    expect(session.pendingProviderSwitch).toEqual({
+      provider: "grok",
+      model: "grok-4.6",
+    });
+  });
+
+  it.each([
+    {
+      policyName: "deny-all",
+      availableModels: [] as string[],
+    },
+    {
+      policyName: "restricted",
+      availableModels: ["grok-4.6"],
+    },
+  ])(
+    "rejects a pending switch before provider preparation under the $policyName availableModels policy",
+    async ({ availableModels }) => {
+      const session = buildSession({
+        services: {
+          provider: createProvider("grok", {
+            apiKey: "test-key",
+            model: "grok-4",
+          }),
+          configStore: {
+            current: () => ({ availableModels }),
+          },
+        },
+      });
+      const prepareSpy = vi.spyOn(session.providerService, "prepare");
+      session.setPendingProviderSwitch({
+        provider: "grok",
+        model: "grok-4.3",
+        profile: "coding",
+      });
+
+      await expect(consumePendingProviderSwitch(session)).resolves.toEqual({
+        applied: false,
+        reason:
+          "model 'grok-4.3' is not allowed by managed availableModels policy",
+      });
+
+      expect(prepareSpy).not.toHaveBeenCalled();
+      expect(session.providerBinding).toMatchObject({
+        provider: "grok",
+        model: "grok-4",
+      });
+      expect(session.pendingProviderSwitch).toBeNull();
+      expect(session.txEvent.tryRecv()).toMatchObject({
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "provider_switch_rejected",
+            message:
+              "provider switch rejected: model 'grok-4.3' is not allowed by managed availableModels policy",
+          },
+        },
+      });
+    },
+  );
+
   it("resets ProviderHttpClient continuity state on provider/model switches and re-binds the session conversation id", async () => {
     const bindSpy = vi.spyOn(
       ProviderHttpClient.prototype,
@@ -746,7 +946,7 @@ describe("Session.consumePendingProviderSwitch", () => {
       model: "gpt-5-mini",
     });
 
-    await session.consumePendingProviderSwitch();
+    await consumePendingProviderSwitch(session);
 
     expect(resetSpy).toHaveBeenCalled();
     expect(bindSpy).toHaveBeenCalledWith("conv-test");
@@ -762,11 +962,11 @@ describe("Session.consumePendingProviderSwitch", () => {
       },
     });
     session.setPendingProviderSwitch({
-      provider: "xai",
+      provider: "grok",
       model: "grok-4.3",
     });
 
-    const applied = await session.consumePendingProviderSwitch();
+    const applied = await consumePendingProviderSwitch(session);
     const state = session.state.unsafePeek();
 
     expect(applied).toEqual({
@@ -776,6 +976,12 @@ describe("Session.consumePendingProviderSwitch", () => {
     });
     expect(state.sessionConfiguration.provider).toEqual({ slug: "grok" });
     expect(state.sessionConfiguration.collaborationMode.model).toBe("grok-4.3");
+    expect(state.sessionConfiguration.baseInstructions).toContain(
+      SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+    );
+    expect(state.sessionConfiguration.baseInstructions).not.toContain(
+      "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__",
+    );
     expect(session.config.model).toBe("grok-4.3");
     expect(session.modelInfo.slug).toBe("grok-4.3");
     expect(isFactoryProvider(session.services.provider)).toBe(true);
@@ -796,6 +1002,55 @@ describe("Session.consumePendingProviderSwitch", () => {
     }
   });
 
+  it("consumes the exact staged pair when its profile definition changes", async () => {
+    const configStore = new ConfigStore({
+      home: join(tmpdir(), "agenc-session-profile-change-test-home"),
+      cwd: "/tmp",
+      env: {},
+    });
+    vi.spyOn(configStore, "current").mockReturnValue({
+      profiles: {
+        coding: {
+          model_provider: "grok",
+          model: "grok-4",
+        },
+      },
+    });
+    const session = buildSession({
+      services: {
+        provider: createProvider("grok", {
+          apiKey: "test-key",
+          model: "grok-4",
+        }),
+        configStore,
+      },
+    });
+    session.setPendingProviderSwitch({
+      provider: "grok",
+      model: "grok-4.3",
+      profile: "coding",
+    });
+
+    await expect(consumePendingProviderSwitch(session)).resolves.toEqual({
+      applied: true,
+      provider: "grok",
+      model: "grok-4.3",
+    });
+    expect(session.providerBinding).toMatchObject({
+      provider: "grok",
+      model: "grok-4.3",
+    });
+    expect(session.txEvent.tryRecv()).toMatchObject({
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "provider_switched",
+          message: expect.stringContaining("profile coding"),
+        },
+      },
+    });
+  });
+
   it("refuses impossible switches without mutating the live session", async () => {
     await withEnv({ OPENAI_API_KEY: undefined }, async () => {
       const startingProvider = createProvider("grok", {
@@ -805,6 +1060,7 @@ describe("Session.consumePendingProviderSwitch", () => {
       const session = buildSession({
         services: {
           provider: startingProvider,
+          providerEnvironment: {},
         },
       });
       session.setPendingProviderSwitch({
@@ -812,7 +1068,7 @@ describe("Session.consumePendingProviderSwitch", () => {
         model: "gpt-5",
       });
 
-      const applied = await session.consumePendingProviderSwitch();
+      const applied = await consumePendingProviderSwitch(session);
       const state = session.state.unsafePeek();
       const emitted = session.txEvent.tryRecv();
 
@@ -820,10 +1076,10 @@ describe("Session.consumePendingProviderSwitch", () => {
       expect(applied.reason).toMatch(/OPENAI_API_KEY|apiKey/i);
       expect(state.sessionConfiguration.provider).toBeUndefined();
       expect(state.sessionConfiguration.collaborationMode.model).toBe(
-        "test-model",
+        "grok-4",
       );
-      expect(session.config.model).toBe("test-model");
-      expect(session.modelInfo.slug).toBe("test-model");
+      expect(session.config.model).toBe("grok-4");
+      expect(session.modelInfo.slug).toBe("grok-4");
       expect(session.services.provider).toBe(startingProvider);
       expect(session.pendingProviderSwitch).toBeNull();
       expect(emitted).toMatchObject({
@@ -841,7 +1097,6 @@ describe("Session.consumePendingProviderSwitch", () => {
     await withEnv(
       {
         OPENAI_API_KEY: undefined,
-        TARGET_OPENAI_KEY: "openai-target",
       },
       async () => {
         const vendKey = vi.fn(() => {
@@ -865,13 +1120,15 @@ describe("Session.consumePendingProviderSwitch", () => {
               apiKey: "test-key",
               model: "grok-4",
             }),
+            providerEnvironment: {
+              OPENAI_API_KEY: "openai-target",
+            },
             authBackend,
             authSubscriptionTier: "free",
             configStore: {
               current: () => ({
                 providers: {
                   openai: {
-                    api_key_env: "TARGET_OPENAI_KEY",
                     base_url: "http://127.0.0.1:8000/v1",
                     fallback: {
                       targets: [{ provider: "grok", model: "grok-4.3" }],
@@ -888,7 +1145,7 @@ describe("Session.consumePendingProviderSwitch", () => {
           model: "gpt-5",
         });
 
-        const applied = await session.consumePendingProviderSwitch();
+        const applied = await consumePendingProviderSwitch(session);
 
         expect(applied).toEqual({
           applied: true,
@@ -916,6 +1173,76 @@ describe("Session.consumePendingProviderSwitch", () => {
     );
   });
 
+  it("retains a canonical saved Gemini plan across a switch away and back", async () => {
+    const nativeBaseURL = "https://gateway.example/gemini-native";
+    const session = buildSession({
+      services: {
+        provider: createProvider("gemini", {
+          model: "gemini-2.5-pro",
+          extra: {
+            gemini: {
+              credentialPlan: {
+                kind: "api-key",
+                credential: "saved-key",
+                source: "saved-byok",
+              },
+              endpointPlan: createGeminiEndpointPlan({
+                baseURL: nativeBaseURL,
+              }),
+            },
+          },
+        }),
+        providerEnvironment: { GEMINI_BASE_URL: nativeBaseURL },
+        configStore: { current: () => ({}) },
+      },
+      readSavedApiKey: async (provider) =>
+        provider === "gemini" ? "saved-key" : undefined,
+    });
+
+    session.setPendingProviderSwitch({
+      provider: "ollama",
+      model: "llama3.2",
+    });
+    await expect(consumePendingProviderSwitch(session)).resolves.toMatchObject({
+      applied: true,
+      provider: "ollama",
+    });
+
+    session.setPendingProviderSwitch({
+      provider: "gemini",
+      model: "gemini-2.5-flash",
+    });
+    await expect(consumePendingProviderSwitch(session)).resolves.toEqual({
+      applied: true,
+      provider: "gemini",
+      model: "gemini-2.5-flash",
+    });
+    expect(readProviderFactoryOptions(session.services.provider)).toMatchObject(
+      {
+        model: "gemini-2.5-flash",
+        extra: {
+          gemini: {
+            credentialPlan: {
+              kind: "api-key",
+              credential: "saved-key",
+              source: "saved-byok",
+            },
+            endpointPlan: {
+              kind: "custom",
+              nativeBaseURL,
+            },
+          },
+        },
+      },
+    );
+    expect(
+      readProviderFactoryOptions(session.services.provider).apiKey,
+    ).toBeUndefined();
+    expect(
+      readProviderFactoryOptions(session.services.provider).baseURL,
+    ).toBeUndefined();
+  });
+
   it("caps managed OpenRouter switches to the hosted output-token default", async () => {
     await withEnv(
       {
@@ -931,6 +1258,7 @@ describe("Session.consumePendingProviderSwitch", () => {
           vendKey: (provider, sessionId) => {
             calls.push(`vendKey:${provider}:${sessionId}`);
             return {
+              kind: "api-key",
               provider,
               sessionId,
               apiKey: "managed-openrouter-key",
@@ -972,25 +1300,29 @@ describe("Session.consumePendingProviderSwitch", () => {
           model: "openai/gpt-5-nano",
         });
 
-        const applied = await session.consumePendingProviderSwitch();
+        const applied = await consumePendingProviderSwitch(session);
 
         expect(applied).toEqual({
           applied: true,
           provider: "openrouter",
-          model: "openrouter/openai/gpt-5-nano",
+          model: "openai/gpt-5-nano",
         });
-        expect(calls).toEqual(["vendKey:openrouter:conv-test"]);
+        expect(calls).toEqual([]);
         expect(
           readProviderFactoryOptions(session.services.provider),
         ).toMatchObject({
-          apiKey: "managed-openrouter-key",
-          baseURL: "https://llm.agenc.tech",
-          model: "openrouter/openai/gpt-5-nano",
+          model: "openai/gpt-5-nano",
           extra: {
-            managedGateway: true,
+            managedCredential: true,
             maxTokens: 2048,
           },
         });
+        expect(
+          readProviderFactoryOptions(session.services.provider),
+        ).not.toHaveProperty("apiKey");
+        expect(
+          readProviderFactoryOptions(session.services.provider),
+        ).not.toHaveProperty("baseURL");
         expect(session.modelInfo.maxOutputTokens).toBe(2048);
         expect(session.modelInfo.maxOutputTokensUpperLimit).toBe(2048);
         expect(session.modelInfo.maxOutputTokensCappedDefault).toBe(true);
@@ -1013,6 +1345,7 @@ describe("Session.consumePendingProviderSwitch", () => {
           vendKey: (provider, sessionId) => {
             calls.push(`vendKey:${provider}:${sessionId}`);
             return {
+              kind: "api-key",
               provider,
               sessionId,
               apiKey: "managed-openrouter-key",
@@ -1053,24 +1386,26 @@ describe("Session.consumePendingProviderSwitch", () => {
           model: "openai/gpt-5-nano",
         });
 
-        const applied = await session.consumePendingProviderSwitch();
+        const applied = await consumePendingProviderSwitch(session);
 
         expect(applied).toEqual({
           applied: true,
           provider: "openrouter",
           model: "openai/gpt-5-nano",
         });
-        expect(calls).toEqual(["vendKey:openrouter:conv-test"]);
+        expect(calls).toEqual([]);
         expect(
           readProviderFactoryOptions(session.services.provider),
         ).toMatchObject({
-          apiKey: "managed-openrouter-key",
           model: "openai/gpt-5-nano",
           extra: {
             managedCredential: true,
             maxTokens: 2048,
           },
         });
+        expect(
+          readProviderFactoryOptions(session.services.provider),
+        ).not.toHaveProperty("apiKey");
         expect(session.modelInfo.maxOutputTokens).toBe(2048);
         expect(session.modelInfo.maxOutputTokensUpperLimit).toBe(2048);
         expect(session.modelInfo.maxOutputTokensCappedDefault).toBe(true);
@@ -1120,7 +1455,7 @@ describe("Session.consumePendingProviderSwitch", () => {
           model: "gpt-4o-mini",
         });
 
-        const applied = await session.consumePendingProviderSwitch();
+        const applied = await consumePendingProviderSwitch(session);
 
         expect(applied).toEqual({
           applied: true,
@@ -1147,6 +1482,7 @@ describe("Session.consumePendingProviderSwitch", () => {
       },
       async () => {
         const vendKey = vi.fn(() => ({
+          kind: "api-key" as const,
           provider: "openrouter",
           sessionId: "conv-test",
           apiKey: "managed-openrouter-key",
@@ -1184,7 +1520,7 @@ describe("Session.consumePendingProviderSwitch", () => {
           model: "openai/gpt-5-nano",
         });
 
-        const applied = await session.consumePendingProviderSwitch();
+        const applied = await consumePendingProviderSwitch(session);
 
         expect(applied.applied).toBe(false);
         expect(applied.reason).toMatch(/Managed provider keys require/);
@@ -1197,6 +1533,7 @@ describe("Session.consumePendingProviderSwitch", () => {
 
   it("rejects free remote hosted AgenC model routing during provider switches", async () => {
     const vendKey = vi.fn(() => ({
+      kind: "api-key" as const,
       provider: "grok",
       sessionId: "conv-test",
       apiKey: "managed-grok-key",
@@ -1229,7 +1566,7 @@ describe("Session.consumePendingProviderSwitch", () => {
       model: "agenc",
     });
 
-    const applied = await session.consumePendingProviderSwitch();
+    const applied = await consumePendingProviderSwitch(session);
 
     expect(applied.applied).toBe(false);
     expect(applied.reason).toMatch(/Hosted AgenC model routing/);
@@ -1237,7 +1574,7 @@ describe("Session.consumePendingProviderSwitch", () => {
     expect(session.services.provider).toBe(startingProvider);
   });
 
-  it("rebuilds the current provider from the live provider snapshot instead of OPENAI globals", async () => {
+  it("rebuilds the current provider from canonical config instead of live or process-global state", async () => {
     await withEnv(
       {
         OPENAI_API_KEY: undefined,
@@ -1252,6 +1589,10 @@ describe("Session.consumePendingProviderSwitch", () => {
               baseURL: "https://router.example/api/v1",
               model: "openai/gpt-5-mini",
             }),
+            providerEnvironment: {
+              OPENROUTER_API_KEY: "canonical-openrouter-key",
+              OPENROUTER_BASE_URL: "https://canonical-router.example/v1",
+            },
           },
         });
         session.setPendingProviderSwitch({
@@ -1259,7 +1600,7 @@ describe("Session.consumePendingProviderSwitch", () => {
           model: "openai/gpt-5",
         });
 
-        const applied = await session.consumePendingProviderSwitch();
+        const applied = await consumePendingProviderSwitch(session);
 
         expect(applied).toEqual({
           applied: true,
@@ -1272,8 +1613,8 @@ describe("Session.consumePendingProviderSwitch", () => {
         expect(
           readProviderFactoryOptions(session.services.provider),
         ).toMatchObject({
-          apiKey: "or-test",
-          baseURL: "https://router.example/api/v1",
+          apiKey: "canonical-openrouter-key",
+          baseURL: "https://canonical-router.example/v1",
           model: "openai/gpt-5",
         });
       },
@@ -1404,6 +1745,7 @@ describe("Session turn-driver hooks", () => {
           isCancelled: () => cancel.mock.calls.length > 0,
         },
       },
+      mcpManagerOwnership: "owned",
     });
     const startup = vi.fn(async () => {});
     const submit = vi.fn(async () => {});
@@ -1420,6 +1762,65 @@ describe("Session turn-driver hooks", () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
+  it("drains critical session state before waiting on MCP disposal", async () => {
+    let releaseDispose!: () => void;
+    const dispose = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseDispose = resolve;
+        }),
+    );
+    const session = buildSession({
+      services: {
+        mcpManager: { dispose },
+      },
+      mcpManagerOwnership: "owned",
+    });
+
+    const shutdown = session.shutdown();
+    await vi.waitFor(() => expect(session.mailbox.isClosed).toBe(true));
+    expect(dispose).toHaveBeenCalledOnce();
+
+    releaseDispose();
+    await shutdown;
+  });
+
+  it("retries rejected disposal for an owned MCP manager exactly once", async () => {
+    const dispose = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("first strict clear failed"))
+      .mockResolvedValueOnce(undefined);
+    const session = buildSession({
+      services: { mcpManager: { dispose } },
+      mcpManagerOwnership: "owned",
+    });
+
+    await session.shutdown();
+
+    expect(dispose).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cancel or dispose MCP authority borrowed by a child session", async () => {
+    const cancel = vi.fn();
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const session = buildSession({
+      services: {
+        mcpManager: { dispose },
+        mcpStartupCancellationToken: {
+          signal: new AbortController().signal,
+          cancel,
+          isCancelled: () => false,
+        },
+      },
+      mcpManagerOwnership: "borrowed",
+    });
+
+    await session.shutdown();
+
+    expect(cancel).not.toHaveBeenCalled();
+    expect(dispose).not.toHaveBeenCalled();
+  });
+
   it("cancels and drains an in-flight startup activation before shutdown completes", async () => {
     const cancel = vi.fn();
     const session = buildSession({
@@ -1430,6 +1831,7 @@ describe("Session turn-driver hooks", () => {
           isCancelled: () => cancel.mock.calls.length > 0,
         },
       },
+      mcpManagerOwnership: "owned",
     });
     let releaseStartup!: () => void;
     const startupGate = new Promise<void>((resolve) => {
@@ -1714,14 +2116,12 @@ describe("TurnContext.permissionMode (I-30 snapshot)", () => {
 // isPlanMode gate (T11 W3 wiring)
 // ─────────────────────────────────────────────────────────────────────
 
-describe("isPlanMode via sessionConfiguration.permissionContext.mode", () => {
+describe("isPlanMode via the per-turn permission snapshot", () => {
   it("returns true when the permission context is in plan mode", () => {
     const ctx = {
       subId: "t-plan",
       collaborationMode: { model: "test-model" },
-      sessionConfiguration: {
-        permissionContext: { mode: "plan" as const },
-      },
+      permissionMode: "plan" as const,
     } as unknown as TurnContext;
     expect(isPlanMode(ctx)).toBe(true);
   });
@@ -1739,9 +2139,7 @@ describe("isPlanMode via sessionConfiguration.permissionContext.mode", () => {
       const ctx = {
         subId: "t-nonplan",
         collaborationMode: { model: "test-model" },
-        sessionConfiguration: {
-          permissionContext: { mode },
-        },
+        permissionMode: mode,
       } as unknown as TurnContext;
       expect(isPlanMode(ctx)).toBe(false);
     }
@@ -1790,9 +2188,9 @@ describe("Session.partialCompactFromMessage", () => {
       expect(result.event.type).toBe("history_replaced");
       expect(result.event.payload.messages.length).toBeGreaterThan(0);
       expect(
-        harness.store.readAll().some((item) =>
-          item.type === "compaction_committed"
-        ),
+        harness.store
+          .readAll()
+          .some((item) => item.type === "compaction_committed"),
       ).toBe(true);
       const history = session.snapshotHistoryMessages();
       const boundary = history.find(
@@ -1804,7 +2202,9 @@ describe("Session.partialCompactFromMessage", () => {
         expect.stringContaining("agenc_compaction_boundary_v1:"),
       );
       expect(
-        history.some((message) => message.content === sourceHistory[2]?.content),
+        history.some(
+          (message) => message.content === sourceHistory[2]?.content,
+        ),
       ).toBe(false);
     } finally {
       harness.close();
@@ -1832,11 +2232,7 @@ describe("Session.partialCompactFromMessage", () => {
     const sourceHistory: LLMMessage[] = [
       {
         role: "user",
-        content: [
-          { type: "text", text: "keep this" },
-          documentPart,
-          imagePart,
-        ],
+        content: [{ type: "text", text: "keep this" }, documentPart, imagePart],
       },
       {
         role: "user",
@@ -2113,15 +2509,18 @@ describe("Session.rollbackCompaction", () => {
   function rollbackStore() {
     return {
       isDegraded: false,
-      rollbackCompaction: vi.fn(() => ({
-        attempt_id: "attempt-rollback",
-        rollback_mode: "same_session" as const,
-        target_session_id: "conv-test",
-        source_history: [
-          { role: "user" as const, content: "source prompt" },
-          { role: "assistant" as const, content: "source answer" },
-        ],
-      }) as never),
+      rollbackCompaction: vi.fn(
+        () =>
+          ({
+            attempt_id: "attempt-rollback",
+            rollback_mode: "same_session" as const,
+            target_session_id: "conv-test",
+            source_history: [
+              { role: "user" as const, content: "source prompt" },
+              { role: "assistant" as const, content: "source answer" },
+            ],
+          }) as never,
+      ),
       recordProjectionFailure: vi.fn(),
       markCleanupPending: vi.fn(),
       markCleanupComplete: vi.fn(),
@@ -2156,9 +2555,7 @@ describe("Session.rollbackCompaction", () => {
       { role: "user", content: "source prompt" },
       { role: "assistant", content: "source answer" },
     ]);
-    expect(store.markCleanupComplete).toHaveBeenCalledWith(
-      "attempt-rollback",
-    );
+    expect(store.markCleanupComplete).toHaveBeenCalledWith("attempt-rollback");
     expect(store.recordProjectionFailure).not.toHaveBeenCalled();
   });
 
@@ -2184,13 +2581,13 @@ describe("Session.rollbackCompaction", () => {
     expect(store.recordProjectionFailure).not.toHaveBeenCalled();
 
     cleanupFails = false;
-    await expect(session.extendCompactionRollbackRetention({
-      attemptId: "attempt-rollback",
-      extendedUntilMs: Date.now() + 60_000,
-    })).resolves.toMatchObject({ ok: true });
-    expect(store.markCleanupComplete).toHaveBeenCalledWith(
-      "attempt-rollback",
-    );
+    await expect(
+      session.extendCompactionRollbackRetention({
+        attemptId: "attempt-rollback",
+        extendedUntilMs: Date.now() + 60_000,
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(store.markCleanupComplete).toHaveBeenCalledWith("attempt-rollback");
     expect(clearSearchIndexes).toHaveBeenCalledTimes(2);
   });
 
@@ -2201,9 +2598,11 @@ describe("Session.rollbackCompaction", () => {
     const projectionError = new Error("projection failed");
     vi.spyOn(session.state, "with").mockRejectedValueOnce(projectionError);
 
-    await expect(session.rollbackCompaction({
-      attemptId: "attempt-rollback",
-    })).rejects.toBeInstanceOf(CompactionReconstructionRequiredError);
+    await expect(
+      session.rollbackCompaction({
+        attemptId: "attempt-rollback",
+      }),
+    ).rejects.toBeInstanceOf(CompactionReconstructionRequiredError);
     expect(store.recordProjectionFailure).toHaveBeenCalledWith(
       "attempt-rollback",
       projectionError,
@@ -2214,6 +2613,64 @@ describe("Session.rollbackCompaction", () => {
 });
 
 describe("Session.shutdown dispatches SessionEnd hooks", () => {
+  it("releases a shared bundled-skill root after the final owning Session shuts down", async () => {
+    const sessionTempRoot = mkdtempSync(
+      join(tmpdir(), "agenc-session-bundled-skills-"),
+    );
+    const runtimeOptions = resolveAgentRuntimeOptions({}, { sessionTempRoot });
+    const first = buildSession({ services: { runtimeOptions } });
+    const second = buildSession({ services: { runtimeOptions } });
+    const bundledRoot = runWithAgentRuntimeOptions(runtimeOptions, () =>
+      getCurrentBundledSkillExtractionRoot(),
+    );
+
+    try {
+      await extractBundledSkillFiles(bundledRoot, "session-owned", {
+        "reference.txt": "session-owned",
+      });
+      expect(existsSync(bundledRoot)).toBe(true);
+
+      await first.shutdown();
+      expect(existsSync(bundledRoot)).toBe(true);
+
+      await second.shutdown();
+      expect(existsSync(bundledRoot)).toBe(false);
+    } finally {
+      rmSync(sessionTempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("removes file-read history from its captured session temp root", async () => {
+    const sessionTempRoot = mkdtempSync(
+      join(tmpdir(), "agenc-session-shutdown-history-"),
+    );
+    const runtimeOptions = resolveAgentRuntimeOptions({}, { sessionTempRoot });
+    const session = buildSession({ services: { runtimeOptions } });
+    const historySessionDirectory = join(
+      sessionTempRoot,
+      getSessionTempNamespaceName(),
+      "filesystem-history",
+      createHash("sha256").update(session.conversationId).digest("hex"),
+    );
+
+    try {
+      runWithAgentRuntimeOptions(runtimeOptions, () => {
+        recordSessionRead(session.conversationId, "/project/private.ts", {
+          content: "session-confidential-content",
+          viewKind: "full",
+        });
+      });
+      expect(existsSync(historySessionDirectory)).toBe(true);
+
+      await session.shutdown();
+
+      expect(existsSync(historySessionDirectory)).toBe(false);
+    } finally {
+      clearSessionReadState(session.conversationId, sessionTempRoot);
+      rmSync(sessionTempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("fires registered SessionEnd hooks with the session id", async () => {
     const { registerSessionEndHook, resetLifecycleHookRegistry } =
       await import("../llm/hooks/registry.js");
@@ -2249,6 +2706,30 @@ describe("Session.shutdown dispatches SessionEnd hooks", () => {
       await session.shutdown();
 
       expect(sessionStart).not.toHaveBeenCalled();
+      expect(sessionEnd).not.toHaveBeenCalled();
+    } finally {
+      resetLifecycleHookRegistry();
+    }
+  });
+
+  it("passes its captured bare authority to SessionEnd outside turn scope", async () => {
+    const { registerSessionEndHook, resetLifecycleHookRegistry } =
+      await import("../llm/hooks/registry.js");
+    const sessionEnd = vi.fn(async () => ({
+      succeeded: true,
+      output: "must not run",
+    }));
+    resetLifecycleHookRegistry();
+    registerSessionEndHook(sessionEnd);
+    try {
+      const session = buildSession({
+        services: {
+          runtimeOptions: { simpleMode: true } as never,
+        },
+      });
+
+      await session.shutdown();
+
       expect(sessionEnd).not.toHaveBeenCalled();
     } finally {
       resetLifecycleHookRegistry();

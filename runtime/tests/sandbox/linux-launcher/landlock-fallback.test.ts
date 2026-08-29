@@ -57,6 +57,8 @@ async function runFallback(
       workspace,
       "--permission-profile",
       JSON.stringify(profile),
+      "--session-temp-root",
+      workspace,
       "--",
       ...command,
     ],
@@ -71,6 +73,7 @@ async function runFallback(
 describe("planLandlockConfinement refusals", () => {
   const base = {
     sandboxPolicyCwd: "/tmp",
+    sessionTempRoot: "/tmp/agenc-landlock-session-root",
     allowNetworkForProxy: false,
     inheritedCwd: false,
   } as const;

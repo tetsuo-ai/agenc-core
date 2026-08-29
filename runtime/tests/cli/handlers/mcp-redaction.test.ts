@@ -1,4 +1,17 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { resolveHomeContext } from "../../config/home.js";
+import { ConfigStore } from "../../config/store.js";
+
+const TEST_HOME_CONTEXT = resolveHomeContext(
+  { AGENC_HOME: "/tmp/agenc-mcp-cli-redaction-test" },
+  { platformHome: "/tmp" },
+);
+const TEST_AUTHORITY = new ConfigStore({
+  home: TEST_HOME_CONTEXT.path,
+  cwd: "/tmp",
+  projectRoot: "/tmp",
+  env: { AGENC_HOME: TEST_HOME_CONTEXT.path, HOME: "/tmp" },
+});
 
 vi.mock("bun:bundle", () => ({ feature: () => false }));
 
@@ -42,10 +55,6 @@ vi.mock("../../tui/keybindings/KeybindingProviderSetup.js", () => ({
 vi.mock("../../tui/state/AppState.js", () => ({
   AppStateProvider: vi.fn(({ children }) => children),
 }));
-vi.mock("../../utils/config.js", () => ({
-  getCurrentProjectConfig: vi.fn(() => ({})),
-  saveCurrentProjectConfig: vi.fn(),
-}));
 vi.mock("../../utils/errors.js", () => ({ isFsInaccessible: vi.fn(() => false) }));
 vi.mock("../../utils/gracefulShutdown.js", () => ({
   gracefulShutdown: vi.fn(async () => {}),
@@ -84,7 +93,7 @@ describe("MCP CLI redaction", () => {
     await mcpAddJsonHandler(
       "game-helper",
       JSON.stringify({ type: "stdio", command: "node", args: ["server.js"] }),
-      {},
+      { authority: TEST_AUTHORITY },
     );
 
     expect(ensureConfigScope).toHaveBeenCalledWith("user");
@@ -92,6 +101,7 @@ describe("MCP CLI redaction", () => {
       "game-helper",
       { type: "stdio", command: "node", args: ["server.js"] },
       "user",
+      TEST_AUTHORITY,
     );
   });
 
@@ -107,7 +117,7 @@ describe("MCP CLI redaction", () => {
       },
     };
 
-    await mcpGetHandler("docs");
+    await mcpGetHandler(TEST_AUTHORITY, "docs");
 
     const output = lines.join("\n");
     expect(output).toContain("Authorization: <redacted>");
@@ -129,7 +139,7 @@ describe("MCP CLI redaction", () => {
       },
     };
 
-    await mcpGetHandler("github");
+    await mcpGetHandler(TEST_AUTHORITY, "github");
 
     const output = lines.join("\n");
     expect(output).toContain("API_KEY=<redacted>");

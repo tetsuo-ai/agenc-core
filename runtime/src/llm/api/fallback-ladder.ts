@@ -1,18 +1,10 @@
 /**
- * Ports upstream `src/services/api/withRetry.ts` fallback signaling and
- * `src/services/api/providerConfig.ts` fallback-model selection onto
- * AgenC's provider-neutral model/provider fallback ladder.
- *
- * Why this lives here / shape difference from upstream:
- *   - Upstream gates fallback on a product-specific model family and emits
- *     reporting. AgenC keeps the ladder explicit and config-driven so any
- *     provider can declare ordered fallback targets.
- *
- * Cross-cuts deliberately NOT carried:
- *   - Subscriber gates, internal-user reporting, and fast-mode cooldowns.
+ * Provider-neutral model/provider fallback signaling. The ladder is explicit
+ * and config-driven so any provider can declare ordered fallback targets.
  */
 
 import { FallbackTriggeredError } from "../../recovery/api-errors.js";
+import { normalizeProviderIdentity } from "../../provider-identity.js";
 
 export interface ProviderFallbackTarget {
   readonly provider?: string;
@@ -51,12 +43,6 @@ const DEFAULT_FALLBACK_MAX_FAILURES = 3;
 const DEFAULT_FALLBACK_RETRY_BUDGET = 2;
 const DEFAULT_FALLBACK_STATUSES = Object.freeze([529] as const);
 
-function normalizeProviderKey(provider: string | undefined): string | undefined {
-  const normalized = provider?.trim().toLowerCase();
-  if (!normalized) return undefined;
-  return normalized === "xai" ? "grok" : normalized;
-}
-
 export function normalizeFallbackTargets(
   provider: string | undefined,
   model: string,
@@ -64,13 +50,17 @@ export function normalizeFallbackTargets(
 ): readonly ProviderFallbackTarget[] {
   const normalized: ProviderFallbackTarget[] = [];
   const seen = new Set<string>();
-  const sourceProvider = normalizeProviderKey(provider);
+  const sourceProvider = normalizeProviderIdentity(
+    provider,
+    "provider fallback source",
+  );
   const sourceModel = model.trim();
   for (const target of targets ?? []) {
     const targetModel = target.model.trim();
     if (!targetModel) continue;
     const targetProvider =
-      normalizeProviderKey(target.provider) ?? sourceProvider;
+      normalizeProviderIdentity(target.provider, "provider fallback target") ??
+      sourceProvider;
     if (targetModel === sourceModel && targetProvider === sourceProvider) {
       continue;
     }

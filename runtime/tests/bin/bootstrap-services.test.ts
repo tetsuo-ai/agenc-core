@@ -1,4 +1,10 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,16 +22,30 @@ import {
   ConfiguredHooksRuntime,
   type HookInstallTarget,
 } from "../hooks/configured-hooks.js";
+import { createHookExecutionAuthority } from "../hooks/execution-authority.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 import { defaultConfig } from "../config/schema.js";
+import {
+  COORDINATED_CONFIG_STORE_PUBLICATION,
+  ConfigStore,
+  type PreparedConfigStoreReload,
+} from "../config/store.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
-import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import {
+  PermissionAuthorityUnavailableError,
+  PermissionModeRegistry,
+} from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import {
+  applyPermissionRulesSnapshot,
+  readPermissionRulesSnapshot,
+} from "../permissions/settings.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import type { PostToolUseHook } from "../tools/hooks.js";
 import {
   bindExecutionAdmissionJournal,
   buildBootstrapSessionServices,
+  createHooksService,
   loadBootstrapHooks,
   loadBootstrapLspServersInBackground,
   loadBootstrapLspServers,
@@ -35,6 +55,7 @@ import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import type { AdmissionJournalEvent } from "../budget/admission-types.js";
 import type { Event } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
+import { createProvider } from "../llm/provider.js";
 import { normalizeLspServerConfig } from "../services/lsp/config.js";
 import {
   _resetLspManagerForTesting,
@@ -46,6 +67,22 @@ import {
 } from "../services/lsp/manager.js";
 import type { LSPServerInstance } from "../services/lsp/LSPServerInstance.js";
 import { bootstrapSession } from "../session/bootstrap.js";
+
+const TEST_RUNTIME_OPTIONS = Object.freeze({
+  simpleMode: false,
+  allowUntrustedHooks: false,
+});
+const TEST_COMMAND_EXECUTION_AUTHORITY = Object.freeze({
+  path: "/bin/sh",
+  commandWrapperArgv: Object.freeze([]),
+  childEnvironment: Object.freeze({
+    PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+  }),
+});
+const TRUSTED_HOOK_EXECUTION_AUTHORITY = createHookExecutionAuthority({
+  runtimeOptions: TEST_RUNTIME_OPTIONS,
+  isWorkspaceTrusted: () => true,
+});
 
 afterEach(() => {
   policyLimitsMocks.configurePolicyLimitsService.mockReset();
@@ -102,6 +139,7 @@ describe("loadBootstrapHooks", () => {
       agencHome: "/tmp/agenc-bootstrap-hooks-test",
       shellPath: process.env.SHELL ?? "/bin/sh",
       sandboxExecutionBroker: explicitDangerBroker,
+      executionAuthority: TRUSTED_HOOK_EXECUTION_AUTHORITY,
     });
     const target: HookInstallTarget = {
       preToolUseHooks: [],
@@ -133,7 +171,7 @@ describe("loadBootstrapHooks", () => {
     loadBootstrapHooks({
       hooksRuntime: runtime,
       hooksService: target,
-      config,
+      authoritySnapshot: { config, layers: [] },
       autoFixPostToolHook: autoFixHook,
     });
     expect(target.postToolUseHooks).toHaveLength(2);
@@ -142,7 +180,7 @@ describe("loadBootstrapHooks", () => {
     loadBootstrapHooks({
       hooksRuntime: runtime,
       hooksService: target,
-      config,
+      authoritySnapshot: { config, layers: [] },
       autoFixPostToolHook: autoFixHook,
     });
     expect(target.postToolUseHooks).toHaveLength(2);
@@ -153,10 +191,215 @@ describe("loadBootstrapHooks", () => {
     loadBootstrapHooks({
       hooksRuntime: runtime,
       hooksService: target,
-      config: { ...defaultConfig(), hooks: undefined },
+      authoritySnapshot: {
+        config: { ...defaultConfig(), hooks: undefined },
+        layers: [],
+      },
       autoFixPostToolHook: autoFixHook,
     });
     expect(target.postToolUseHooks).toEqual([autoFixHook]);
+  });
+
+  test("preserves the built-in post hook while config and plugin hooks are replaced", () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-bootstrap-hook-authority-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+      sandboxExecutionBroker: explicitDangerBroker,
+      executionAuthority: TRUSTED_HOOK_EXECUTION_AUTHORITY,
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    const autoFixHook: PostToolUseHook = () => ({ kind: "continue" });
+    const initialConfigCommand = "node -e 'process.exit(10)'";
+    const replacementConfigCommand = "node -e 'process.exit(11)'";
+    const initialPluginCommand = "node -e 'process.exit(12)'";
+    const replacementPluginCommand = "node -e 'process.exit(13)'";
+
+    runtime.attachTarget(target);
+    loadBootstrapHooks({
+      hooksRuntime: runtime,
+      hooksService: target,
+      authoritySnapshot: {
+        config: {
+          ...defaultConfig(),
+          hooks: {
+            PostToolUse: [
+              {
+                hooks: [
+                  {
+                    type: "command" as const,
+                    command: initialConfigCommand,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        layers: [],
+      },
+      autoFixPostToolHook: autoFixHook,
+    });
+    runtime.setPluginHooks({
+      PostToolUse: [
+        {
+          hooks: [
+            { type: "command" as const, command: initialPluginCommand },
+          ],
+        },
+      ],
+    });
+
+    loadBootstrapHooks({
+      hooksRuntime: runtime,
+      hooksService: target,
+      authoritySnapshot: {
+        config: {
+          ...defaultConfig(),
+          hooks: {
+            PostToolUse: [
+              {
+                hooks: [
+                  {
+                    type: "command" as const,
+                    command: replacementConfigCommand,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        layers: [],
+      },
+      autoFixPostToolHook: autoFixHook,
+    });
+    runtime.setPluginHooks({
+      PostToolUse: [
+        {
+          hooks: [
+            { type: "command" as const, command: replacementPluginCommand },
+          ],
+        },
+      ],
+    });
+
+    expect(runtime.listHooks().map((hook) => hook.command.command).sort()).toEqual(
+      [replacementConfigCommand, replacementPluginCommand].sort(),
+    );
+    expect(target.postToolUseHooks).toHaveLength(3);
+    expect(
+      target.postToolUseHooks.filter((hook) => hook === autoFixHook),
+    ).toHaveLength(1);
+    expect(target.postToolUseHooks.at(-1)).toBe(autoFixHook);
+  });
+
+  test("preserves programmatic lifecycle hooks while managed hooks are replaced", async () => {
+    const hooksService = createHooksService();
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: {},
+      agencHome: "/tmp/agenc-bootstrap-lifecycle-authority-test",
+      shellPath: "/bin/sh",
+      admissionRequired: false,
+      sandboxExecutionBroker: explicitDangerBroker,
+      executionAuthority: TRUSTED_HOOK_EXECUTION_AUTHORITY,
+    });
+    const fired: string[] = [];
+    const initialConfigCommand = "printf 'configured-initial'";
+    const replacementConfigCommand = "printf 'configured-current'";
+    const initialPluginCommand = "printf 'plugin-initial'";
+    const replacementPluginCommand = "printf 'plugin-current'";
+
+    hooksService.addPreCompactHook(() => {
+      fired.push("programmatic");
+      return {
+        succeeded: true,
+        output: "programmatic",
+        command: "programmatic",
+      };
+    });
+    runtime.attachTarget(hooksService);
+    runtime.loadConfigAuthority({
+      config: {
+        ...defaultConfig(),
+        hooks: {
+          PreCompact: [
+            {
+              hooks: [
+                {
+                  type: "command" as const,
+                  command: initialConfigCommand,
+                },
+              ],
+            },
+          ],
+        },
+      },
+      layers: [],
+    });
+    runtime.setPluginHooks({
+      PreCompact: [
+        {
+          hooks: [
+            { type: "command" as const, command: initialPluginCommand },
+          ],
+        },
+      ],
+    });
+    runtime.loadConfigAuthority({
+      config: {
+        ...defaultConfig(),
+        hooks: {
+          PreCompact: [
+            {
+              hooks: [
+                {
+                  type: "command" as const,
+                  command: replacementConfigCommand,
+                },
+              ],
+            },
+          ],
+        },
+      },
+      layers: [],
+    });
+    runtime.setPluginHooks({
+      PreCompact: [
+        {
+          hooks: [
+            { type: "command" as const, command: replacementPluginCommand },
+          ],
+        },
+      ],
+    });
+
+    const result = (await hooksService.executePreCompact({
+      hook_event_name: "PreCompact",
+      session_id: "configured-hook-refresh-test",
+      transcript_path: "/tmp/agenc-bootstrap-lifecycle-authority-test/transcript.jsonl",
+      cwd: process.cwd(),
+      trigger: "manual",
+      custom_instructions: null,
+    })) as { readonly newCustomInstructions?: string };
+
+    expect(fired).toEqual(["programmatic"]);
+    expect(result.newCustomInstructions?.split("\n\n")).toEqual([
+      "programmatic",
+      "configured-current",
+      "plugin-current",
+    ]);
+    expect(runtime.listHooks().map((hook) => hook.command.command).sort()).toEqual(
+      [replacementConfigCommand, replacementPluginCommand].sort(),
+    );
   });
 });
 
@@ -391,6 +634,7 @@ describe("SessionStart bootstrap hooks", () => {
     mockPolicyLimits();
     const home = mkdtempSync(join(tmpdir(), "agenc-sessionstart-home-"));
     const workspace = mkdtempSync(join(tmpdir(), "agenc-sessionstart-ws-"));
+    mkdirSync(join(workspace, ".git"));
     // SessionStart command hooks now require a trusted workspace (production
     // establishes trust before bootstrap dispatches them); mark it trusted.
     trustProjectSync({ cwd: workspace, agencHome: home });
@@ -445,7 +689,9 @@ describe("SessionStart bootstrap hooks", () => {
       ),
       configStore: {
         current: () => config,
+        authoritySnapshot: () => ({ config, layers: [] }),
         subscribe: () => () => {},
+        projectRoot: workspace,
       } as never,
       toolApprovals: {
         get: () => undefined,
@@ -477,6 +723,8 @@ describe("SessionStart bootstrap hooks", () => {
       conversationId: "session-sessionstart",
       model: "test-model",
       sessionConfiguration: sessionConfiguration as never,
+      runtimeOptions: TEST_RUNTIME_OPTIONS,
+      commandExecutionAuthority: TEST_COMMAND_EXECUTION_AUTHORITY,
       admissionRequired: false,
     });
     const session = await bootstrapSession({
@@ -603,22 +851,11 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
     const workspace = mkdtempSync(join(tmpdir(), "agenc-policy-bootstrap-ws-"));
     try {
       const handle = buildBootstrapSessionServices({
-        provider: {
-          name: "anthropic",
-          chat: async () => ({
-            content: "ok",
-            toolCalls: [],
-            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-          }),
-          chatStream: async () => ({
-            content: "ok",
-            toolCalls: [],
-            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-          }),
-          healthCheck: async () => true,
-        },
+        provider: createProvider("anthropic", {
+          apiKey: "direct-policy-key",
+          model: "claude-opus-4-7",
+        }),
         providerName: "anthropic",
-        apiKey: "direct-policy-key",
         registry: { tools: [] } as never,
         mcpManager: {} as never,
         unifiedExecManager: {} as never,
@@ -628,6 +865,7 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
         ),
         configStore: {
           current: () => defaultConfig(),
+          authoritySnapshot: () => ({ config: defaultConfig(), layers: [] }),
           subscribe: () => () => {},
         } as never,
         toolApprovals: {
@@ -650,6 +888,8 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
         conversationId: "session-policy-bootstrap",
         model: "agenc-opus-4-7",
         sessionConfiguration: {} as never,
+        runtimeOptions: TEST_RUNTIME_OPTIONS,
+        commandExecutionAuthority: TEST_COMMAND_EXECUTION_AUTHORITY,
       });
 
       expect(
@@ -672,6 +912,286 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
 
       expect(stopBackgroundPolling).toHaveBeenCalledTimes(1);
     } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a concurrent mode mutation before applying a reloaded permission generation", async () => {
+    mockPolicyLimits();
+    const home = mkdtempSync(join(tmpdir(), "agenc-permission-reload-home-"));
+    const workspace = mkdtempSync(
+      join(tmpdir(), "agenc-permission-reload-workspace-"),
+    );
+    const configPath = join(home, "config.toml");
+    writeFileSync(configPath, "config_version = 2\n", "utf8");
+    const configStore = new ConfigStore({
+      home,
+      cwd: workspace,
+      projectRoot: workspace,
+      projectTrusted: true,
+      env: { AGENC_HOME: home, HOME: home },
+    });
+    await configStore.reload();
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
+    let releaseModeChange = (): void => {};
+    let removeFailureHook = (): void => {};
+    let handle: ReturnType<typeof buildBootstrapSessionServices> | undefined;
+    try {
+      handle = buildBootstrapSessionServices({
+        provider: {
+          name: "anthropic",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          }),
+          chatStream: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          }),
+          healthCheck: async () => true,
+        },
+        providerName: "anthropic",
+        registry: { tools: [] } as never,
+        mcpManager: {} as never,
+        unifiedExecManager: {} as never,
+        sandboxExecutionBroker: explicitDangerBroker,
+        permissionModeRegistry,
+        configStore,
+        toolApprovals: {
+          get: () => undefined,
+          set: () => {},
+          clear: () => {},
+          withCachedApproval: async (request: {
+            fetchDecision: () => Promise<unknown>;
+          }) => request.fetchDecision(),
+        } as never,
+        networkApproval: {
+          clearSessionHosts: () => {},
+          requestNetworkApproval: async () => ({ kind: "approved" }),
+          requestDeferredApproval: async () => ({ kind: "approved" }),
+        } as never,
+        modelsManager: {} as never,
+        agencHome: home,
+        workspaceRoot: workspace,
+        env: { HOME: home, SHELL: "/bin/sh" },
+        conversationId: "session-permission-reload",
+        model: "test-model",
+        sessionConfiguration: {} as never,
+        runtimeOptions: TEST_RUNTIME_OPTIONS,
+        commandExecutionAuthority: TEST_COMMAND_EXECUTION_AUTHORITY,
+        admissionRequired: false,
+      });
+
+      let markModeChangeStarted!: () => void;
+      const modeChangeStarted = new Promise<void>((resolve) => {
+        markModeChangeStarted = resolve;
+      });
+      const modeChangeGate = new Promise<void>((resolve) => {
+        releaseModeChange = resolve;
+      });
+      const modeChange = permissionModeRegistry.transact(async (current) => {
+        markModeChangeStarted();
+        await modeChangeGate;
+        return {
+          next: { ...current, mode: "plan" },
+          result: () => undefined,
+        };
+      });
+      await modeChangeStarted;
+
+      writeFileSync(
+        configPath,
+        [
+          "config_version = 2",
+          "[permissions]",
+          'deny = ["system.bash(rm:*)"]',
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await configStore.reload();
+      releaseModeChange();
+      await expect(modeChange).rejects.toBeInstanceOf(
+        PermissionAuthorityUnavailableError,
+      );
+
+      await vi.waitFor(() => {
+        expect(permissionModeRegistry.current()).toMatchObject({
+          mode: "default",
+          alwaysDenyRules: {
+            userSettings: ["system.bash(rm:*)"],
+          },
+        });
+      });
+      expect(Object.isFrozen(permissionModeRegistry.current())).toBe(true);
+
+      const failedPublication = Promise.withResolvers<void>();
+      removeFailureHook = permissionModeRegistry.installBeforeUpdateHook(() => {
+        failedPublication.resolve();
+        throw new Error("injected permission reload durability failure");
+      });
+      writeFileSync(
+        configPath,
+        [
+          "config_version = 2",
+          "[permissions]",
+          'deny = ["system.bash(curl:*)"]',
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await configStore.reload();
+      await failedPublication.promise;
+
+      expect(configStore.current().permissions?.deny).toEqual([
+        "system.bash(curl:*)",
+      ]);
+      expect(() => permissionModeRegistry.current()).toThrow(
+        PermissionAuthorityUnavailableError,
+      );
+      expect(() => handle!.execPolicy.current()).toThrow(
+        PermissionAuthorityUnavailableError,
+      );
+
+      removeFailureHook();
+      removeFailureHook = (): void => {};
+      await configStore.reload();
+      await vi.waitFor(() => {
+        expect(permissionModeRegistry.current()).toMatchObject({
+          mode: "default",
+          alwaysDenyRules: {
+            userSettings: ["system.bash(curl:*)"],
+          },
+        });
+      });
+      expect(Object.isFrozen(permissionModeRegistry.current())).toBe(true);
+    } finally {
+      releaseModeChange();
+      removeFailureHook();
+      await handle?.shutdown();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("does not re-enter permission publication for a registry-coordinated config reload", async () => {
+    mockPolicyLimits();
+    const home = mkdtempSync(join(tmpdir(), "agenc-coordinated-reload-home-"));
+    const workspace = mkdtempSync(
+      join(tmpdir(), "agenc-coordinated-reload-workspace-"),
+    );
+    const configPath = join(home, "config.toml");
+    writeFileSync(configPath, "config_version = 2\n", "utf8");
+    const configStore = new ConfigStore({
+      home,
+      cwd: workspace,
+      projectRoot: workspace,
+      projectTrusted: true,
+      env: { AGENC_HOME: home, HOME: home },
+    });
+    await configStore.reload();
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
+    let handle: ReturnType<typeof buildBootstrapSessionServices> | undefined;
+    let removeCoordinator = (): void => {};
+    try {
+      handle = buildBootstrapSessionServices({
+        provider: {
+          name: "anthropic",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          }),
+          chatStream: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          }),
+          healthCheck: async () => true,
+        },
+        providerName: "anthropic",
+        registry: { tools: [] } as never,
+        mcpManager: {} as never,
+        unifiedExecManager: {} as never,
+        sandboxExecutionBroker: explicitDangerBroker,
+        permissionModeRegistry,
+        configStore,
+        toolApprovals: {
+          get: () => undefined,
+          set: () => {},
+          clear: () => {},
+          withCachedApproval: async (request: {
+            fetchDecision: () => Promise<unknown>;
+          }) => request.fetchDecision(),
+        } as never,
+        networkApproval: {
+          clearSessionHosts: () => {},
+          requestNetworkApproval: async () => ({ kind: "approved" }),
+          requestDeferredApproval: async () => ({ kind: "approved" }),
+        } as never,
+        modelsManager: {} as never,
+        agencHome: home,
+        workspaceRoot: workspace,
+        env: { HOME: home, SHELL: "/bin/sh" },
+        conversationId: "session-coordinated-permission-reload",
+        model: "test-model",
+        sessionConfiguration: {} as never,
+        runtimeOptions: TEST_RUNTIME_OPTIONS,
+        commandExecutionAuthority: TEST_COMMAND_EXECUTION_AUTHORITY,
+        admissionRequired: false,
+      });
+
+      const contextPublications = vi.fn();
+      permissionModeRegistry.subscribeToContextChange(contextPublications);
+      removeCoordinator = permissionModeRegistry.installPublicationCoordinator(
+        async (_next, _current, metadata, publication) => {
+          const prepared = (
+            metadata as {
+              readonly preparedConfigReload: PreparedConfigStoreReload;
+            }
+          ).preparedConfigReload;
+          prepared.commit();
+          await publication.commit();
+          prepared.publish(COORDINATED_CONFIG_STORE_PUBLICATION);
+          prepared.settle();
+        },
+      );
+
+      writeFileSync(
+        configPath,
+        [
+          "config_version = 2",
+          "[permissions]",
+          'deny = ["system.bash(curl:*)"]',
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      const preparedConfigReload = await configStore.prepareReload();
+      const permissionSnapshot = readPermissionRulesSnapshot(
+        preparedConfigReload.authority,
+      );
+      await permissionModeRegistry.transact((current) => ({
+        next: applyPermissionRulesSnapshot(current, permissionSnapshot),
+        metadata: { preparedConfigReload },
+        result: () => undefined,
+      }));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(permissionModeRegistry.current().alwaysDenyRules).toMatchObject({
+        userSettings: ["system.bash(curl:*)"],
+      });
+      expect(contextPublications).toHaveBeenCalledOnce();
+    } finally {
+      removeCoordinator();
+      await handle?.shutdown();
       rmSync(home, { recursive: true, force: true });
       rmSync(workspace, { recursive: true, force: true });
     }
@@ -718,7 +1238,6 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
         healthCheck: async () => true,
       },
       providerName: "anthropic",
-      apiKey: "direct-policy-key",
       registry: { tools: [] } as never,
       mcpManager: {} as never,
       unifiedExecManager: {} as never,
@@ -728,6 +1247,7 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
       ),
       configStore: {
         current: () => defaultConfig(),
+        authoritySnapshot: () => ({ config: defaultConfig(), layers: [] }),
         subscribe: () => () => {},
       } as never,
       toolApprovals: {
@@ -750,6 +1270,8 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
       conversationId: "session-lsp-refresh",
       model: "agenc-opus-4-7",
       sessionConfiguration: {} as never,
+      runtimeOptions: TEST_RUNTIME_OPTIONS,
+      commandExecutionAuthority: TEST_COMMAND_EXECUTION_AUTHORITY,
     });
     try {
       await new Promise((resolve) => setTimeout(resolve, 0));

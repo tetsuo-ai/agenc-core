@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { ApprovalStore } from "../approval-cache.js";
 import { APPROVED, APPROVED_FOR_SESSION } from "../review-decision.js";
@@ -13,6 +13,14 @@ import {
   type ApprovalCtx,
 } from "./arbiter.js";
 import type { GuardianApprovalReviewer } from "./reviewer.js";
+import {
+  registerNotificationHook,
+  resetLifecycleHookRegistry,
+} from "../../llm/hooks/registry.js";
+
+afterEach(() => {
+  resetLifecycleHookRegistry();
+});
 
 function invocation(
   opts: {
@@ -162,6 +170,78 @@ describe("guardian arbiter", () => {
     expect(resolver).not.toHaveBeenCalled();
   });
 
+  test("bare skips approval hooks and preserves the human resolver path", async () => {
+    const rawHook = vi.fn(async () => ({ kind: "denied" as const }));
+    const permissionHook = vi.fn(async () => ({
+      kind: "deny" as const,
+      reason: "hook denied",
+    }));
+    const resolver = vi.fn(async () => APPROVED);
+    const inv = invocation({
+      services: { runtimeOptions: { simpleMode: true } },
+    });
+
+    const result = await requestApproval({
+      ctx: approvalCtx(inv),
+      hooks: [rawHook],
+      permissionDecisionHooks: [permissionHook],
+      resolver: { request: resolver },
+    });
+
+    expect(result).toMatchObject({ source: "resolver", decision: APPROVED });
+    expect(rawHook).not.toHaveBeenCalled();
+    expect(permissionHook).not.toHaveBeenCalled();
+    expect(resolver).toHaveBeenCalledOnce();
+  });
+
+  test("bare skips approval hooks and preserves guardian review", async () => {
+    const rawHook = vi.fn(async () => ({ kind: "denied" as const }));
+    const permissionHook = vi.fn(async () => ({ kind: "deny" as const }));
+    const reviewer: GuardianApprovalReviewer = {
+      reviewApprovalRequest: vi.fn(async () => ({
+        decision: APPROVED,
+        reviewId: "review-bare",
+        countedDenial: false,
+      })),
+    };
+    const inv = invocation({
+      services: { runtimeOptions: { simpleMode: true } },
+    });
+
+    const result = await requestApproval({
+      ctx: approvalCtx(inv),
+      hooks: [rawHook],
+      permissionDecisionHooks: [permissionHook],
+      guardianApprovalReviewer: reviewer,
+    });
+
+    expect(result).toMatchObject({ source: "guardian", decision: APPROVED });
+    expect(rawHook).not.toHaveBeenCalled();
+    expect(permissionHook).not.toHaveBeenCalled();
+    expect(reviewer.reviewApprovalRequest).toHaveBeenCalledOnce();
+  });
+
+  test("bare skips approval hooks and preserves default-deny", async () => {
+    const rawHook = vi.fn(async () => ({ kind: "approved" as const }));
+    const permissionHook = vi.fn(async () => ({ kind: "allow" as const }));
+    const inv = invocation({
+      services: { runtimeOptions: { simpleMode: true } },
+    });
+
+    const result = await requestApproval({
+      ctx: approvalCtx(inv),
+      hooks: [rawHook],
+      permissionDecisionHooks: [permissionHook],
+    });
+
+    expect(result).toMatchObject({
+      source: "default_deny",
+      decision: { kind: "denied" },
+    });
+    expect(rawHook).not.toHaveBeenCalled();
+    expect(permissionHook).not.toHaveBeenCalled();
+  });
+
   test("routes configured approval requests through guardian before resolver", async () => {
     const resolver = vi.fn(async () => ({ kind: "denied" as const }));
     const reviewer: GuardianApprovalReviewer = {
@@ -278,64 +358,6 @@ describe("guardian arbiter", () => {
     expect(first.decision).toBe(APPROVED_FOR_SESSION);
     expect(second.decision).toEqual(APPROVED_FOR_SESSION);
     expect(resolver).toHaveBeenCalledTimes(1);
-  });
-
-  test("interactive approval always reaches the answer-bearing resolver", async () => {
-    const store = new ApprovalStore<unknown>();
-    const inv = invocation({ services: { toolApprovals: store } });
-    const rawAllow = vi.fn(async () => APPROVED);
-    const permissionAllow = vi.fn(async () => ({ kind: "allow" as const }));
-    const reviewer: GuardianApprovalReviewer = {
-      reviewApprovalRequest: vi.fn(async () => ({
-        decision: APPROVED,
-        reviewId: "interactive-review",
-        countedDenial: false,
-      })),
-    };
-    const resolver = vi.fn(async () => APPROVED_FOR_SESSION);
-    const ctx = {
-      ...approvalCtx(inv),
-      requiresUserInteraction: true,
-    };
-
-    const first = await requestApproval({
-      ctx,
-      args: { questions: [{ question: "Continue?" }] },
-      hooks: [rawAllow],
-      permissionDecisionHooks: [permissionAllow],
-      guardianApprovalReviewer: reviewer,
-      resolver: { request: resolver },
-    });
-    const second = await requestApproval({
-      ctx,
-      args: { questions: [{ question: "Continue?" }] },
-      hooks: [rawAllow],
-      permissionDecisionHooks: [permissionAllow],
-      guardianApprovalReviewer: reviewer,
-      resolver: { request: resolver },
-    });
-
-    expect(first.source).toBe("resolver");
-    expect(second.source).toBe("resolver");
-    expect(rawAllow).toHaveBeenCalledTimes(2);
-    expect(permissionAllow).toHaveBeenCalledTimes(2);
-    expect(reviewer.reviewApprovalRequest).not.toHaveBeenCalled();
-    expect(resolver).toHaveBeenCalledTimes(2);
-  });
-
-  test("interactive approval still honors an automatic denial", async () => {
-    const resolver = vi.fn(async () => APPROVED);
-    const result = await requestApproval({
-      ctx: { ...approvalCtx(), requiresUserInteraction: true },
-      hooks: [async () => ({ kind: "denied" })],
-      resolver: { request: resolver },
-    });
-
-    expect(result).toMatchObject({
-      source: "hook",
-      decision: { kind: "denied" },
-    });
-    expect(resolver).not.toHaveBeenCalled();
   });
 
   test("approval cache ignores array-shaped session services", async () => {
@@ -552,10 +574,7 @@ describe("guardian arbiter", () => {
     } as never;
 
     const result = await arbitratePermissionMode({
-      tool: {
-        name: "Write",
-        requiresUserInteraction: () => true,
-      } as Tool,
+      tool: { name: "Write" } as Tool,
       args: { path: "/etc/passwd" },
       hookPermissionResult: { behavior: "allow", hookName: "PreToolUse:ok" },
       permissionContext,
@@ -565,76 +584,6 @@ describe("guardian arbiter", () => {
     expect(result.kind).toBe("ask");
     expect(result.source).toBe("permission-evaluator");
     expect(result.reasonCode).toBe("safety_check");
-  });
-
-  test("interactive asks survive bypassPermissions arbitration", async () => {
-    const canUseTool = vi.fn(async () => ({
-      behavior: "ask" as const,
-      message: "answer questions?",
-      decisionReason: {
-        type: "permissionPromptTool" as const,
-        permissionPromptToolName: "AskUserQuestion",
-        toolResult: null,
-      },
-    }));
-    const permissionContext = {
-      getAppState: () => ({
-        toolPermissionContext: createEmptyToolPermissionContext({
-          mode: "bypassPermissions",
-        }),
-      }),
-    } as never;
-    const tool = {
-      name: "AskUserQuestion",
-      requiresUserInteraction: () => true,
-    } as Tool;
-
-    const result = await arbitratePermissionMode({
-      tool,
-      args: { questions: [] },
-      permissionContext,
-      canUseTool: canUseTool as never,
-    });
-
-    expect(result.kind).toBe("ask");
-    expect(result.reasonCode).toBe("evaluator_asked");
-  });
-
-  test("interactive asks survive a PreToolUse allow", async () => {
-    const canUseTool = vi.fn(async () => ({
-      behavior: "ask" as const,
-      message: "answer questions?",
-      decisionReason: {
-        type: "permissionPromptTool" as const,
-        permissionPromptToolName: "AskUserQuestion",
-        toolResult: null,
-      },
-    }));
-    const permissionContext = {
-      getAppState: () => ({
-        toolPermissionContext: createEmptyToolPermissionContext({
-          mode: "bypassPermissions",
-        }),
-      }),
-    } as never;
-    const tool = {
-      name: "AskUserQuestion",
-      requiresUserInteraction: () => true,
-    } as Tool;
-
-    const result = await arbitratePermissionMode({
-      tool,
-      args: { questions: [] },
-      hookPermissionResult: {
-        behavior: "allow",
-        hookName: "PreToolUse:auto-allow",
-      },
-      permissionContext,
-      canUseTool: canUseTool as never,
-    });
-
-    expect(result.kind).toBe("ask");
-    expect(result.reasonCode).toBe("interactive_tool");
   });
 
   test("permission-mode arbitration ignores array-shaped tool permission context", async () => {
@@ -693,36 +642,43 @@ describe("guardian arbiter", () => {
     expect(prompt).toHaveBeenCalledTimes(1);
   });
 
-  test("interactive user approval never replays the session approval cache", async () => {
-    const store = new ApprovalStore<unknown>();
-    const inv = invocation({ services: { toolApprovals: store } });
-    const tool = {
-      name: "AskUserQuestion",
-      requiresUserInteraction: () => true,
-    } as Tool;
+  test("notification dispatch keeps the prompting session's bare authority", async () => {
+    const notificationHook = vi.fn(async () => ({
+      succeeded: true,
+      output: "must not run for bare",
+    }));
+    registerNotificationHook(notificationHook);
+    const tool = { name: "exec_command" } as Tool;
+    let eventSequence = 0;
+    const eventLog = {
+      emit: vi.fn((event: Event) => ({
+        ...event,
+        eventId: `approval-event-${eventSequence + 1}`,
+        seq: ++eventSequence,
+      })),
+    };
     const prompt = vi.fn(async () => ({
       behavior: "allow" as const,
       decisionAtTurnId: "turn-1",
-      reviewDecision: APPROVED_FOR_SESSION,
     }));
+    const run = async (simpleMode: boolean) =>
+      await requestToolUserApproval({
+        request: prompt,
+        tool,
+        args: { command: "pwd" },
+        invocation: invocation({
+          services: { runtimeOptions: { simpleMode } },
+        }),
+        currentTurnId: "turn-1",
+        signal: new AbortController().signal,
+        eventLog: eventLog as never,
+      });
 
-    await requestToolUserApproval({
-      request: prompt,
-      tool,
-      args: { questions: [{ question: "Continue?" }] },
-      invocation: inv,
-      currentTurnId: "turn-1",
-      signal: new AbortController().signal,
-    });
-    await requestToolUserApproval({
-      request: prompt,
-      tool,
-      args: { questions: [{ question: "Continue?" }] },
-      invocation: inv,
-      currentTurnId: "turn-1",
-      signal: new AbortController().signal,
-    });
+    await run(true);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(notificationHook).not.toHaveBeenCalled();
 
-    expect(prompt).toHaveBeenCalledTimes(2);
+    await run(false);
+    await vi.waitFor(() => expect(notificationHook).toHaveBeenCalledOnce());
   });
 });

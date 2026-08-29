@@ -1,12 +1,11 @@
 import { feature } from 'bun:bundle'
 import { constants, statSync } from 'fs'
 import { lstat, open, readdir, realpath, stat } from 'fs/promises'
-import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'path'
 import { getProjectRoot } from '../bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
+import { isEnvTruthy } from './envUtils.js'
 import { isFsInaccessible } from './errors.js'
 import { normalizePathForComparison } from './file.js'
 import type { FrontmatterData } from './frontmatterParser.js'
@@ -19,11 +18,15 @@ import {
   type SettingSource,
 } from './settings/constants.js'
 import { getManagedFilePath } from './settings/managedPath.js'
+import {
+  CanonicalAuthorityCache,
+  getCanonicalSettingsAuthority,
+  type CanonicalSettingsAuthority,
+} from './settings/canonicalAuthority.js'
 import { isRestrictedToPluginOnly } from './settings/pluginOnlyPolicy.js'
 
 // AgenC configuration directory names
 export const AGENC_CONFIG_DIRECTORIES = [
-  'commands',
   'agents',
   'output-styles',
   'skills',
@@ -219,11 +222,11 @@ function resolveStopBoundary(cwd: string): string | null {
  * Traverses from the current directory up to the git root (or home directory if not in a git repo),
  * collecting all .agenc directories along the way.
  *
- * Stopping at git root prevents commands/skills from parent directories outside the repository
- * from leaking into projects. For example, if ~/projects/.agenc/commands/ exists, it won't
+ * Stopping at git root prevents configuration from parent directories outside the repository
+ * from leaking into projects. For example, if ~/projects/.agenc/skills/ exists, it won't
  * appear in ~/projects/my-repo/ if my-repo is a git repository.
  *
- * @param subdir Subdirectory (eg. "commands", "agents")
+ * @param subdir Subdirectory (for example, "skills" or "agents")
  * @param cwd Current working directory to start from
  * @returns Array of directory paths containing .agenc/subdir, from most specific (cwd) to least specific
  */
@@ -293,9 +296,10 @@ export function getProjectDirsUpToHome(
 async function loadMarkdownFilesForSubdirUncached(
   subdir: AgenCConfigDirectory,
   cwd: string,
+  authority: CanonicalSettingsAuthority,
 ): Promise<MarkdownFile[]> {
-    const userDir = join(getAgenCConfigHomeDir(), subdir)
-    const managedDir = join(getManagedFilePath(), '.agenc', subdir)
+    const userDir = join(authority.homeContext.path, subdir)
+    const managedDir = join(getManagedFilePath(authority), '.agenc', subdir)
     const projectDirs = getProjectDirsUpToHome(subdir, cwd)
 
     // For git worktrees where the worktree does NOT have .agenc/<subdir> checked
@@ -410,18 +414,75 @@ async function loadMarkdownFilesForSubdirUncached(
     return deduplicatedFiles
 }
 
-export const loadMarkdownFilesForSubdir = memoize(
-  loadMarkdownFilesForSubdirUncached,
-  // Custom resolver creates cache key from both subdir and cwd parameters
-  (subdir: AgenCConfigDirectory, cwd: string) => `${subdir}:${cwd}`,
-)
+const markdownFilesByAuthority = new CanonicalAuthorityCache<
+  Promise<MarkdownFile[]>
+>()
+
+function requireMarkdownSettingsAuthority(): CanonicalSettingsAuthority {
+  const authority = getCanonicalSettingsAuthority()
+  if (authority === null) {
+    throw new Error(
+      'Markdown discovery requires a session ConfigStore authority',
+    )
+  }
+  return authority
+}
+
+function markdownFilesCacheKey(
+  subdir: AgenCConfigDirectory,
+  cwd: string,
+): string {
+  return `${subdir}\u0000${resolve(cwd)}`
+}
+
+function clearMarkdownFilesForSubdirCache(): void {
+  const authority = getCanonicalSettingsAuthority()
+  if (authority === null) markdownFilesByAuthority.clear()
+  else markdownFilesByAuthority.clearAuthority(authority)
+}
+
+type MarkdownFilesForSubdirLoader = {
+  (
+    subdir: AgenCConfigDirectory,
+    cwd: string,
+  ): Promise<MarkdownFile[]>
+  readonly cache: { readonly clear: () => void }
+}
+
+const loadMarkdownFilesForSubdirCached = (
+  subdir: AgenCConfigDirectory,
+  cwd: string,
+): Promise<MarkdownFile[]> => {
+  const authority = requireMarkdownSettingsAuthority()
+  const key = markdownFilesCacheKey(subdir, cwd)
+  const cached = markdownFilesByAuthority.get(key, authority)
+  if (cached !== undefined) return cached
+
+  const loaded = loadMarkdownFilesForSubdirUncached(subdir, cwd, authority)
+  markdownFilesByAuthority.set(key, loaded, authority)
+  void loaded.catch(() => {
+    if (markdownFilesByAuthority.get(key, authority) === loaded) {
+      markdownFilesByAuthority.delete(key, authority)
+    }
+  })
+  return loaded
+}
+
+export const loadMarkdownFilesForSubdir = Object.assign(
+  loadMarkdownFilesForSubdirCached,
+  { cache: { clear: clearMarkdownFilesForSubdirCache } },
+) as MarkdownFilesForSubdirLoader
 
 /** Read through every discovery layer without consulting the UI catalog cache. */
 export function loadMarkdownFilesForSubdirFresh(
   subdir: AgenCConfigDirectory,
   cwd: string,
 ): Promise<MarkdownFile[]> {
-  return loadMarkdownFilesForSubdirUncached(subdir, cwd)
+  return loadMarkdownFilesForSubdirUncached(
+    subdir,
+    cwd,
+    requireMarkdownSettingsAuthority(),
+  )
 }
 
 /**
@@ -524,7 +585,7 @@ async function findMarkdownFilesNative(
 
 /**
  * Generic function to load markdown files from specified directories
- * @param dir Directory (eg. "~/.agenc/commands")
+ * @param dir Directory (for example, "~/.agenc/skills")
  * @returns Array of parsed markdown files with metadata
  */
 async function loadMarkdownFiles(dir: string): Promise<

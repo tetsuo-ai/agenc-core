@@ -36,6 +36,7 @@ describe("AuthBackend contract", () => {
       vendKey: (provider: string, sessionId: AuthSessionId) => {
         calls.push(`vendKey:${provider}:${sessionId}`);
         return {
+          kind: "api-key",
           provider,
           sessionId,
           apiKey: "managed-key",
@@ -95,6 +96,7 @@ describe("AuthBackend contract", () => {
     await expect(
       asPromise(backend.vendKey("grok", "session-1")),
     ).resolves.toEqual({
+      kind: "api-key",
       provider: "grok",
       sessionId: "session-1",
       apiKey: "managed-key",

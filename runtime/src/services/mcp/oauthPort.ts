@@ -24,22 +24,11 @@ export function buildRedirectUri(
   return `http://localhost:${port}/callback`
 }
 
-function getMcpOAuthCallbackPort(): number | undefined {
-  const port = parseInt(process.env.MCP_OAUTH_CALLBACK_PORT || '', 10)
-  return port > 0 ? port : undefined
-}
-
 /**
  * Finds an available port in the specified range for OAuth redirect
  * Uses random selection for better security
  */
 export async function findAvailablePort(): Promise<number> {
-  // First, try the configured port if specified
-  const configuredPort = getMcpOAuthCallbackPort()
-  if (configuredPort) {
-    return configuredPort
-  }
-
   const { min, max } = REDIRECT_PORT_RANGE
   const range = max - min + 1
   const maxAttempts = Math.min(range, 100) // Don't try forever

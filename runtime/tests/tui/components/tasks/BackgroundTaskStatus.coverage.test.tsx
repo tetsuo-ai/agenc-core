@@ -66,7 +66,7 @@ function localAgentTask(id: string) {
     outputOffset: 0,
     notified: false,
     agentId: id,
-    agentType: 'worker',
+    agentType: 'runner',
     prompt: 'help',
     retrieved: false,
     lastReportedToolCount: 0,

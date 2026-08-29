@@ -1,5 +1,10 @@
 import { getRateLimitTier, getSubscriptionType } from './auth.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
+import { resolveSecureStorageHome } from './secureStorage/home.js'
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 
 export function getPlanModeV2AgentCount(): number {
   // Environment variable override takes precedence
@@ -10,8 +15,8 @@ export function getPlanModeV2AgentCount(): number {
     }
   }
 
-  const subscriptionType = getSubscriptionType()
-  const rateLimitTier = getRateLimitTier()
+  const subscriptionType = getSubscriptionType(credentialHome())
+  const rateLimitTier = getRateLimitTier(credentialHome())
 
   if (
     subscriptionType === 'max' &&

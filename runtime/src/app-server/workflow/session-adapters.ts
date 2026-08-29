@@ -34,10 +34,7 @@ import {
   bootstrapLocalRuntimeSession,
   type LocalRuntimeBootstrap,
 } from "../../bin/bootstrap.js";
-import {
-  insertProcessCliOptionsBeforePrompt,
-  tokenizeCliOptionRegion,
-} from "../../bin/cli-option-region.js";
+import { buildStructuredSessionBootstrapArgv } from "../session-bootstrap-argv.js";
 import { ensureAgentControl } from "../../bin/delegate-tool.js";
 import { delegate } from "../../agents/delegate.js";
 import type { AgentPath } from "../../agents/registry.js";
@@ -91,6 +88,10 @@ import type {
 } from "./verified-change-controller.js";
 import type { RunUsageTotals } from "../../contracts/run-contracts.js";
 import {
+  resolveAgentRuntimeOptions,
+} from "../../session/runtime-options.js";
+import { boundedWorkflowDiagnostic } from "../../workflow/diagnostics.js";
+import {
   inspectWorkflowChildTerminal,
   recordWorkflowChildTerminal,
 } from "./child-terminals.js";
@@ -108,7 +109,10 @@ export class WorkflowSessionSeamError extends Error {
 }
 
 export interface WorkflowSessionSeamsOptions {
-  readonly env?: NodeJS.ProcessEnv;
+  readonly agencHome: string;
+  readonly env: NodeJS.ProcessEnv;
+  /** Executable and entrypoint coordinates; daemon launch flags are ignored. */
+  readonly argv: readonly string[];
   readonly authBackend?: AuthBackend;
   readonly kernel: ExecutionAdmissionKernel;
   /**
@@ -238,25 +242,10 @@ export function workflowChildFailureMessage(
 ): string | null {
   if (result.outcome === "completed") return null;
   const reason =
-    result.error === undefined ? "" : `: ${childErrorText(result.error)}`;
+    result.error === undefined
+      ? ""
+      : `: ${boundedWorkflowDiagnostic(result.error)}`;
   return `workflow ${kind} child ${result.outcome}${reason}`;
-}
-
-/**
- * A child can reject with something that is not an Error — a plain object
- * carrying a code, say. `String()` renders that as `[object Object]`, which
- * is worse than saying nothing, so serialize it instead.
- */
-function childErrorText(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "object" && error !== null) {
-    try {
-      return JSON.stringify(error);
-    } catch {
-      return Object.prototype.toString.call(error);
-    }
-  }
-  return String(error);
 }
 
 /**
@@ -310,62 +299,22 @@ export function workflowChildAdmissionUsage(
 // ---------------------------------------------------------------------------
 
 /**
- * Bootstrap argv for the spec's frozen permission mode — the exact
- * background-agent-runner mechanism (`buildBootstrapArgv`):
- * `bypassPermissions` rides `--yolo` (startup-selection wires the full
- * bypass semantics off that flag); every other mode rides
- * `--permission-mode <mode>`. Duplicate flags already present on the
- * daemon's argv are never doubled.
- */
-export function workflowPermissionModeArgv(
-  permissionMode: WorkflowRunSessionPolicy["permissionMode"],
-  baseArgv: readonly string[] = process.argv,
-): readonly string[] {
-  const optionArgs = tokenizeCliOptionRegion(baseArgv.slice(2)).optionArgs;
-  const generatedOptions: string[] = [];
-  if (
-    permissionMode === "bypassPermissions" &&
-    !optionArgs.includes("--yolo") &&
-    !optionArgs.includes("--dangerously-bypass-approvals-and-sandbox") &&
-    !optionArgs.includes("--allow-dangerously-skip-permissions")
-  ) {
-    generatedOptions.push("--yolo");
-  }
-  if (
-    permissionMode !== "bypassPermissions" &&
-    !optionArgs.includes("--permission-mode")
-  ) {
-    generatedOptions.push("--permission-mode", permissionMode);
-  }
-  return insertProcessCliOptionsBeforePrompt(baseArgv, generatedOptions);
-}
-
-/**
  * The full argv a run's own session is bootstrapped with: its permission
  * mode, and the model and provider the run was started with.
  *
  * A workflow session is bootstrapped like any other agent, so it takes the
  * daemon's default model unless it is told otherwise — the same way the
- * background-agent runner passes `--provider`/`--model`. Without this,
+ * background-agent runner passes `--provider`/`--model`. Only the executable
+ * and entrypoint are inherited from the daemon process; daemon launch flags
+ * are never a child-session configuration authority. Without this,
  * `run start --model` was accepted, frozen into the spec, and then ignored,
  * and every run ran on whatever the daemon happened to default to.
  */
 export function workflowSessionArgv(
   policy: WorkflowRunSessionPolicy,
-  baseArgv: readonly string[] = process.argv,
+  executableArgv: readonly string[],
 ): readonly string[] {
-  const withMode = workflowPermissionModeArgv(policy.permissionMode, baseArgv);
-  const optionArgs = tokenizeCliOptionRegion(withMode.slice(2)).optionArgs;
-  const generatedOptions: string[] = [];
-  if (policy.provider !== undefined && !optionArgs.includes("--provider")) {
-    generatedOptions.push("--provider", policy.provider);
-  }
-  if (policy.model !== undefined && !optionArgs.includes("--model")) {
-    generatedOptions.push("--model", policy.model);
-  }
-  return generatedOptions.length === 0
-    ? withMode
-    : insertProcessCliOptionsBeforePrompt(withMode, generatedOptions);
+  return buildStructuredSessionBootstrapArgv(policy, executableArgv);
 }
 
 /**
@@ -646,6 +595,11 @@ export function createWorkflowSessionSeams(
   options: WorkflowSessionSeamsOptions,
 ): WorkflowSessionSeams {
   const bootstrap = options.bootstrap ?? bootstrapLocalRuntimeSession;
+  const environment = Object.freeze({
+    ...options.env,
+    AGENC_HOME: options.agencHome,
+  });
+  const runtimeOptions = resolveAgentRuntimeOptions(environment);
   const entries = new Map<string, Promise<RunSessionEntry>>();
   const worktreeRunIds = new Map<string, string>();
 
@@ -663,7 +617,8 @@ export function createWorkflowSessionSeams(
       // start, re-resolved from the durable intake spec on resume.
       const resolvedPolicy = policy ?? options.resolveRunPolicy(runId);
       const boot = await bootstrap({
-        ...(options.env !== undefined ? { env: options.env } : {}),
+        env: environment,
+        runtimeOptions,
         ...(options.authBackend !== undefined
           ? { authBackend: options.authBackend }
           : {}),
@@ -673,8 +628,10 @@ export function createWorkflowSessionSeams(
         resumeConversation: repoPath === undefined,
         cwd: resolvedRepoPath,
         ...(resolvedPolicy !== undefined
-          ? { argv: workflowSessionArgv(resolvedPolicy) }
-          : {}),
+          ? { argv: workflowSessionArgv(resolvedPolicy, options.argv) }
+          : {
+              argv: buildStructuredSessionBootstrapArgv({}, options.argv),
+            }),
         executionAdmissionAutonomous: true,
         executionAdmissionKernel: options.kernel,
         executionAdmissionBudgetIdentity: runId,
@@ -804,7 +761,7 @@ export function createWorkflowSessionSeams(
         args: ["-lc", input.script],
         cwd: input.cwd,
         env: Object.fromEntries(
-          Object.entries(options.env ?? process.env).filter(
+          Object.entries(environment).filter(
             (pair): pair is [string, string] => typeof pair[1] === "string",
           ),
         ),

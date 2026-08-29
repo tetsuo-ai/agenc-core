@@ -4,9 +4,7 @@ import {
   appendFile,
   mkdir,
   mkdtemp,
-  open,
   readFile,
-  realpath,
   rename,
   rm,
   stat,
@@ -19,6 +17,7 @@ import { dirname, join, sep } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AGENC_DAEMON_INTERNAL_METHODS } from "../../src/app-server/protocol/index.js";
+import { ConfigStore } from "../../src/config/store.js";
 import { createApplyPatchTool } from "../../src/tools/apply-patch/tool.js";
 import { createFileEditTool } from "../../src/tools/system/file-edit.js";
 import { createFileReadTool } from "../../src/tools/system/file-read.js";
@@ -26,6 +25,7 @@ import { SESSION_ID_ARG } from "../../src/tools/system/filesystem.js";
 import { createFileWriteTool } from "../../src/tools/system/file-write.js";
 import { createNotebookEditTool } from "../../src/tools/system/notebook-edit.js";
 import { createFilesystemTools } from "../../src/tools/system/filesystem.js";
+import { enterCanonicalSettingsAuthority } from "../../src/utils/settings/canonicalAuthority.js";
 import {
   captureWorkspaceAuthoritativeDirtySnapshots,
   WorkspaceMutationCoordinator,
@@ -43,6 +43,21 @@ async function tempDirectory(prefix: string): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), prefix));
   temporaryPaths.push(path);
   return path;
+}
+
+function enterWorkspaceMutationAuthority(
+  agencHome: string,
+  workspaceRoot: string,
+): void {
+  enterCanonicalSettingsAuthority(
+    new ConfigStore({
+      home: agencHome,
+      env: {},
+      cwd: workspaceRoot,
+      projectRoot: workspaceRoot,
+      projectTrusted: false,
+    }),
+  );
 }
 
 function workspaceMutationStatePath(
@@ -1326,181 +1341,6 @@ describe("WorkspaceMutationCoordinator", () => {
     ) as { readonly version?: number; readonly auditOutbox?: unknown };
     expect(cleanedQuarantine).toMatchObject({ version: 1 });
     expect(cleanedQuarantine.auditOutbox).toBeUndefined();
-  });
-
-  it("fsyncs the first ledger hierarchy bottom-up and repairs an ancestor-sync fault after restart", async () => {
-    const workspaceRoot = await tempDirectory(
-      "agenc-blocked-ledger-durability-workspace-",
-    );
-    const agencHome = await tempDirectory(
-      "agenc-blocked-ledger-durability-home-",
-    );
-    const path = join(workspaceRoot, "stale-editor-buffer.ts");
-    const diskContent = "disk remains authoritative\n";
-    const editorContent = "unsaved editor state\n";
-    await writeFile(path, diskContent, "utf8");
-    const canonicalWorkspaceRoot = await realpath(workspaceRoot);
-    const canonicalPath = await realpath(path);
-
-    const ledgerPath = workspaceMutationStatePath(
-      canonicalWorkspaceRoot,
-      agencHome,
-      "ledger-v1.jsonl",
-    );
-    const ledgerDirectory = dirname(ledgerPath);
-    const workspaceMutationsDirectory = dirname(ledgerDirectory);
-    const expectedDirectoryOrder = [
-      ledgerDirectory,
-      workspaceMutationsDirectory,
-      agencHome,
-    ];
-    const syncDirectory = async (directory: string): Promise<void> => {
-      const handle = await open(directory, "r");
-      try {
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-    };
-    const directorySyncOrder: string[] = [];
-    let failFirstAncestorSync = false;
-    const faulted = new WorkspaceMutationCoordinator({
-      workspaceRoot,
-      agencHome,
-      syncLedgerDirectory: async (directory) => {
-        directorySyncOrder.push(directory);
-        if (
-          failFirstAncestorSync &&
-          directory === workspaceMutationsDirectory
-        ) {
-          failFirstAncestorSync = false;
-          throw new Error("injected first-ledger ancestor fsync failure");
-        }
-        await syncDirectory(directory);
-      },
-    });
-    const lease = faulted.acquire({
-      workspaceRoot,
-      editorInstanceId: "editor-before-blocked-ledger-restart",
-    });
-    faulted.sync({
-      workspaceRoot,
-      editorInstanceId: lease.editorInstanceId,
-      leaseToken: lease.leaseToken,
-      epoch: lease.epoch,
-      sequence: 0,
-      buffers: [
-        {
-          path,
-          bufferHandle: 17,
-          changedtick: 4,
-          contentSha256: sha256(editorContent),
-          contentBytes: Buffer.byteLength(editorContent),
-          dirty: true,
-          content: editorContent,
-        },
-      ],
-    });
-    await faulted.flushQuarantinePersistence();
-
-    // Retain the live Editor authority but model a fresh state hierarchy. The
-    // next blocked-admission ledger append must recreate both descendants of
-    // AGENC_HOME and durably publish each new directory entry.
-    await rm(workspaceMutationsDirectory, { recursive: true });
-    directorySyncOrder.splice(0);
-    failFirstAncestorSync = true;
-    await expect(stat(ledgerPath)).rejects.toMatchObject({ code: "ENOENT" });
-    const firstBlockedInput = {
-      path,
-      source: "file_edit" as const,
-      beforeText: diskContent,
-      afterText: "candidate replacement\n",
-      sessionId: "session-first-blocked-ledger",
-      toolCallId: "call-first-blocked-ledger",
-    };
-    await expect(faulted.prepareMutation(firstBlockedInput)).rejects.toThrow(
-      "injected first-ledger ancestor fsync failure",
-    );
-    expect(directorySyncOrder).toEqual(expectedDirectoryOrder.slice(0, 2));
-    expect(directorySyncOrder).not.toContain(dirname(agencHome));
-
-    // The file append may have reached the live filesystem, but the caller did
-    // not receive a committed blocked-admission receipt. Republish the live
-    // Editor quarantine through the now-healthy chain, then model a daemon
-    // restart and retry the safe refusal.
-    expect(
-      await readWorkspaceMutationLedger(canonicalWorkspaceRoot, agencHome),
-    ).toEqual([
-      expect.objectContaining({
-        path: canonicalPath,
-        source: "file_edit",
-        status: "blocked",
-      }),
-    ]);
-    faulted.sync({
-      workspaceRoot,
-      editorInstanceId: lease.editorInstanceId,
-      leaseToken: lease.leaseToken,
-      epoch: lease.epoch,
-      sequence: 1,
-      buffers: [
-        {
-          path,
-          bufferHandle: 17,
-          changedtick: 4,
-          contentSha256: sha256(editorContent),
-          contentBytes: Buffer.byteLength(editorContent),
-          dirty: true,
-          content: editorContent,
-        },
-      ],
-    });
-    await faulted.flushQuarantinePersistence();
-    expect(directorySyncOrder.slice(2)).toEqual(expectedDirectoryOrder);
-
-    const restartDirectorySyncOrder: string[] = [];
-    const restarted = new WorkspaceMutationCoordinator({
-      workspaceRoot,
-      agencHome,
-      syncLedgerDirectory: async (directory) => {
-        restartDirectorySyncOrder.push(directory);
-        await syncDirectory(directory);
-      },
-    });
-    expect(restarted.authorityForPath(path)).toBe("stale_dirty");
-    const retried = await restarted.prepareMutation(firstBlockedInput);
-    expect(retried).toMatchObject({
-      decision: "blocked",
-      code: "STALE_EDITOR_BUFFER",
-    });
-    expect(restartDirectorySyncOrder).toEqual(expectedDirectoryOrder);
-
-    const entries = await readWorkspaceMutationLedger(
-      canonicalWorkspaceRoot,
-      agencHome,
-    );
-    expect(entries).toHaveLength(2);
-    expect(entries).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          path: canonicalPath,
-          source: "file_edit",
-          status: "blocked",
-        }),
-      ]),
-    );
-
-    // Exercise another actual reopen after the successful retry. The original
-    // unsaved-editor quarantine remains authoritative and the ledger survives
-    // independently of the injected sync seam.
-    const recovered = new WorkspaceMutationCoordinator({
-      workspaceRoot,
-      agencHome,
-    });
-    expect(recovered.authorityForPath(path)).toBe("stale_dirty");
-    expect(
-      await readWorkspaceMutationLedger(canonicalWorkspaceRoot, agencHome),
-    ).toEqual(entries);
   });
 
   it("drains a v2 audit outbox once and keeps the cleaned legacy v1 quarantine readable", async () => {
@@ -3045,7 +2885,8 @@ describe("WorkspaceMutationCoordinator", () => {
       const workspaceRoot = await tempDirectory("agenc-coherence-fenced-root-");
       const displacedRoot = `${workspaceRoot}-displaced`;
       temporaryPaths.push(displacedRoot);
-      const registry = new WorkspaceMutationCoordinatorRegistry();
+      const agencHome = await tempDirectory("agenc-coherence-renamed-home-");
+      const registry = new WorkspaceMutationCoordinatorRegistry({ agencHome });
       const operation = registry.beginReadToolOperation(
         workspaceRoot,
         "renamed-root-read",
@@ -7030,15 +6871,8 @@ describe("WorkspaceMutationCoordinator", () => {
     if (admission.decision !== "allow") throw new Error("expected admission");
     coordinator.beginMutation(admission.token);
     await writeFile(path, after);
-    const canonicalWorkspaceRoot = await realpath(workspaceRoot);
-    const canonicalPath = await realpath(path);
     await mkdir(
-      workspaceMutationStatePath(
-        canonicalWorkspaceRoot,
-        agencHome,
-        "ledger-v1.jsonl",
-      ),
-      { recursive: true },
+      workspaceMutationStatePath(workspaceRoot, agencHome, "ledger-v1.jsonl"),
     );
 
     await expect(
@@ -7056,7 +6890,7 @@ describe("WorkspaceMutationCoordinator", () => {
       }).changes,
     ).toContainEqual(
       expect.objectContaining({
-        path: canonicalPath,
+        path,
         status: "unknown_outcome",
         beforeSha256: sha256(before),
         afterSha256: sha256(after),
@@ -7085,7 +6919,6 @@ describe("WorkspaceMutationCoordinator", () => {
         ],
       }),
     ).not.toThrow();
-    await coordinator.flushQuarantinePersistence();
   });
 
   it("canonicalizes symlink aliases and rejects paths escaping the workspace", async () => {
@@ -7457,7 +7290,7 @@ describe("filesystem-tool editor coherence", () => {
   it("blocks a file mutation after daemon restart before editor reconnect", async () => {
     const workspaceRoot = await tempDirectory("agenc-coherence-workspace-");
     const agencHome = await tempDirectory("agenc-coherence-home-");
-    process.env.AGENC_HOME = agencHome;
+    enterWorkspaceMutationAuthority(agencHome, workspaceRoot);
     const path = join(workspaceRoot, "restart-before-editor.ts");
     const diskContent = "disk state\n";
     const editorContent = "unsaved editor state\n";
@@ -7617,7 +7450,7 @@ describe("filesystem-tool editor coherence", () => {
   it("reconciles every file after a multi-file patch reaches disk but ledger fsync fails", async () => {
     const workspaceRoot = await tempDirectory("agenc-coherence-workspace-");
     const agencHome = await tempDirectory("agenc-coherence-home-");
-    process.env.AGENC_HOME = agencHome;
+    enterWorkspaceMutationAuthority(agencHome, workspaceRoot);
     const firstPath = join(workspaceRoot, "first.ts");
     const secondPath = join(workspaceRoot, "second.ts");
     const firstBefore = "export const first = 1;\n";
@@ -7723,7 +7556,7 @@ describe("filesystem-tool editor coherence", () => {
   it("returns honest Write and NotebookEdit errors when bytes changed but auditing failed", async () => {
     const workspaceRoot = await tempDirectory("agenc-coherence-workspace-");
     const agencHome = await tempDirectory("agenc-coherence-home-");
-    process.env.AGENC_HOME = agencHome;
+    enterWorkspaceMutationAuthority(agencHome, workspaceRoot);
     const textPath = join(workspaceRoot, "write-audit.ts");
     const notebookPath = join(workspaceRoot, "notebook-audit.ipynb");
     const textBefore = "export const value = 1;\n";

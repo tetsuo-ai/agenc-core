@@ -135,9 +135,6 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
   name: TASK_OUTPUT_TOOL_NAME,
   searchHint: 'read output/logs from a background task',
   maxResultSizeChars: 100_000,
-  shouldDefer: true,
-  // Backwards-compatible aliases for renamed tools
-  aliases: ['AgentOutputTool', 'BashOutputTool'],
   userFacingName() {
     return 'Task Output';
   },

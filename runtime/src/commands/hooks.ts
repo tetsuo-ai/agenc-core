@@ -1,5 +1,4 @@
-import { HOOK_EVENT_NAMES, normalizeHookEventName } from "../config/schema.js";
-import type { HookEventName } from "../config/schema.js";
+import { HOOK_EVENT_NAMES, type HookEventName } from "../config/schema.js";
 import type {
   ConfiguredHooksRuntime,
   HookRunDiagnostic,
@@ -22,6 +21,7 @@ import {
 } from "./types.js";
 import { HooksRuntimeUnavailableModal, openHooksMenu } from "./hooks-menu.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
+import { isHookExecutionSuppressed } from "../hooks/runtime-policy.js";
 import React from "react";
 
 function findHooksRuntime(ctx: SlashCommandContext): ConfiguredHooksRuntime | null {
@@ -37,6 +37,8 @@ function findHooksRuntime(ctx: SlashCommandContext): ConfiguredHooksRuntime | nu
 interface HooksSnapshot {
   readonly sourcePath: string;
   readonly disabled: boolean;
+  readonly hardSuppressed: boolean;
+  readonly executionSuppressed: boolean;
   readonly issues: readonly HookValidationIssue[];
   readonly hooks: readonly IndividualHookConfig[];
   readonly diagnostics: readonly HookRunDiagnostic[];
@@ -46,6 +48,8 @@ function snapshotFromRuntime(runtime: ConfiguredHooksRuntime): HooksSnapshot {
   return {
     sourcePath: runtime.sourcePath(),
     disabled: runtime.isDisabled(),
+    hardSuppressed: runtime.isHardSuppressed(),
+    executionSuppressed: runtime.isExecutionSuppressed(),
     issues: runtime.issues(),
     hooks: runtime.listHooks(),
     diagnostics: runtime.latestDiagnostics(),
@@ -60,14 +64,23 @@ function snapshotFromRuntime(runtime: ConfiguredHooksRuntime): HooksSnapshot {
  */
 function snapshotFromDaemonStatus(
   status: SessionHooksStatusResult,
+  fallbackHardSuppressed: boolean,
 ): HooksSnapshot {
+  const hardSuppressed = status.hardSuppressed ?? fallbackHardSuppressed;
   return {
     sourcePath: status.sourcePath,
     disabled: status.disabled,
+    hardSuppressed,
+    executionSuppressed:
+      status.effectiveDisabled ?? (status.disabled || hardSuppressed),
     issues: status.issues as readonly HookValidationIssue[],
     hooks: status.hooks as unknown as readonly IndividualHookConfig[],
     diagnostics: status.diagnostics as unknown as readonly HookRunDiagnostic[],
   };
+}
+
+function ownerHooksHardSuppressed(ctx: SlashCommandContext): boolean {
+  return isHookExecutionSuppressed(ctx.session.services?.runtimeOptions);
 }
 
 interface DaemonHooksFns {
@@ -204,7 +217,14 @@ function formatOverview(snapshot: HooksSnapshot): string {
   const lines = [
     "AgenC Hooks",
     `Source: ${snapshot.sourcePath}`,
-    `State: ${snapshot.disabled ? "disabled for this session" : "enabled"}`,
+    `State: ${
+      snapshot.hardSuppressed
+        ? "suppressed by immutable --bare mode"
+        : snapshot.executionSuppressed
+          ? "disabled for this session"
+          : "enabled"
+    }`,
+    `Mutable switch: ${snapshot.disabled ? "disabled" : "enabled"}`,
     `Validation: ${issues.length === 0 ? "ok" : `${issues.length} issue(s)`}`,
     `Configured hooks: ${hooks.length}`,
     "",
@@ -270,7 +290,9 @@ function resolveHook(
   args: readonly string[],
 ): IndividualHookConfig | SlashCommandResult {
   const eventRaw = args[0] ?? "";
-  const event = normalizeHookEventName(eventRaw);
+  const event = (HOOK_EVENT_NAMES as readonly string[]).includes(eventRaw)
+    ? eventRaw as HookEventName
+    : undefined;
   if (!event) {
     return {
       kind: "error",
@@ -316,6 +338,7 @@ function renderValidate(snapshot: HooksSnapshot): string {
 async function handleDaemonHooksCommand(
   daemon: DaemonHooksFns,
   args: readonly string[],
+  hardSuppressed: boolean,
 ): Promise<SlashCommandResult> {
   const subcommand = (args[0] ?? "list").toLowerCase();
   if (subcommand === "test" || subcommand === "run") {
@@ -338,12 +361,20 @@ async function handleDaemonHooksCommand(
       };
     }
     const disabled = subcommand === "disable";
-    await daemon.setDisabled(disabled);
+    const result = await daemon.setDisabled(disabled);
+    const resultHardSuppressed = result.hardSuppressed ?? hardSuppressed;
+    const resultExecutionSuppressed =
+      result.effectiveDisabled ??
+      (result.disabled || resultHardSuppressed);
     return {
       kind: "text",
-      text: disabled
-        ? "AgenC hooks disabled for this session."
-        : "AgenC hooks enabled for this session.",
+      text: resultHardSuppressed
+        ? result.disabled
+          ? "Mutable hook switch disabled; immutable --bare mode also suppresses hook execution."
+          : "Mutable hook switch enabled, but hooks remain suppressed by immutable --bare mode."
+        : resultExecutionSuppressed
+          ? "AgenC hooks disabled for this session."
+          : "AgenC hooks enabled for this session.",
     };
   }
   const status = await daemon.status();
@@ -353,7 +384,7 @@ async function handleDaemonHooksCommand(
       message: "Hooks runtime is not available in this session.",
     };
   }
-  const snapshot = snapshotFromDaemonStatus(status);
+  const snapshot = snapshotFromDaemonStatus(status, hardSuppressed);
   switch (subcommand) {
     case "list":
     case "show-all":
@@ -383,15 +414,19 @@ async function handleDaemonHooksCommand(
 async function handleHooksCommand(
   ctx: SlashCommandContext,
 ): Promise<SlashCommandResult> {
+  const args = ctx.argsRaw.split(/\s+/).filter(Boolean);
+  // A bridge session may also expose a local shadow runtime. The daemon owns
+  // the effective session state, so its hooks bridge always wins when present.
+  const daemon = daemonHooksFns(ctx);
+  if (daemon) {
+    return handleDaemonHooksCommand(
+      daemon,
+      args,
+      ownerHooksHardSuppressed(ctx),
+    );
+  }
   const runtime = findHooksRuntime(ctx);
   if (!runtime) {
-    // Daemon-backed TUI: no local runtime on the bridge session — route to
-    // the daemon's real hooks runtime via the bridge forwarder.
-    const daemon = daemonHooksFns(ctx);
-    if (daemon) {
-      const args = ctx.argsRaw.split(/\s+/).filter(Boolean);
-      return handleDaemonHooksCommand(daemon, args);
-    }
     if (ctx.argsRaw.trim().length === 0 && openHooksUnavailableMenu(ctx)) {
       return { kind: "skip" };
     }
@@ -400,7 +435,6 @@ async function handleHooksCommand(
       message: "Hooks runtime is not available in this session.",
     };
   }
-  const args = ctx.argsRaw.split(/\s+/).filter(Boolean);
   const subcommand = (args[0] ?? "list").toLowerCase();
   const snapshot = snapshotFromRuntime(runtime);
   switch (subcommand) {
@@ -415,10 +449,20 @@ async function handleHooksCommand(
       return { kind: "text", text: renderValidate(snapshot) };
     case "enable":
       runtime.setDisabled(false);
-      return { kind: "text", text: "AgenC hooks enabled for this session." };
+      return {
+        kind: "text",
+        text: runtime.isHardSuppressed()
+          ? "Mutable hook switch enabled, but hooks remain suppressed by immutable --bare mode."
+          : "AgenC hooks enabled for this session.",
+      };
     case "disable":
       runtime.setDisabled(true);
-      return { kind: "text", text: "AgenC hooks disabled for this session." };
+      return {
+        kind: "text",
+        text: runtime.isHardSuppressed()
+          ? "Mutable hook switch disabled; immutable --bare mode also suppresses hook execution."
+          : "AgenC hooks disabled for this session.",
+      };
     case "diagnostics":
     case "diag":
       return { kind: "text", text: formatDiagnosticList(snapshot.diagnostics) };
@@ -438,7 +482,9 @@ async function handleHooksCommand(
       const diag = await runtime.testHook(hook);
       return {
         kind: "text",
-        text: formatDiagnosticList([diag]),
+        text: runtime.isHardSuppressed()
+          ? `Hook test skipped: immutable --bare mode suppresses hook execution.\n${formatDiagnosticList([diag])}`
+          : formatDiagnosticList([diag]),
       };
     }
     default:

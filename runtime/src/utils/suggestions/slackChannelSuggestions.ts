@@ -1,9 +1,11 @@
 import { z } from 'zod'
 import { runAdmittedSessionBoundToolCall } from '../../budget/admitted-legacy-tool-call.js'
+import { peekAmbientRuntimeSession } from '../../session/current-session.js'
 import type { SuggestionItem } from '../../tui/components/PromptInput/PromptInputFooterSuggestions.js'
 import type { MCPServerConnection } from '../../services/mcp/types.js'
 import type { Tool } from '../../tools/types.js'
 import { logForDebugging } from 'src/utils/debug.js'
+import { createCombinedAbortSignal } from '../combinedAbortSignal.js'
 import { lazySchema } from '../lazySchema.js'
 import { createSignal } from '../signal.js'
 import { jsonParse } from '../slowOperations.js'
@@ -63,42 +65,42 @@ async function fetchChannels(
   if (!slackClient || slackClient.type !== 'connected') {
     return []
   }
+  const manager = peekAmbientRuntimeSession()?.services.mcpManager
+  if (manager === undefined || typeof manager.callTool !== 'function') {
+    return []
+  }
+  const callTool = manager.callTool.bind(manager)
 
   try {
     const result = await runAdmittedSessionBoundToolCall({
       tool: SLACK_CHANNEL_SUGGESTION_ADMISSION_TOOL,
       args: { server: slackClient.name, query },
-      invoke: ({ signal }) =>
-        slackClient.client.callTool(
-          {
-            name: SLACK_SEARCH_TOOL,
-            arguments: {
+      invoke: async ({ signal, callId }) => {
+        const combined = createCombinedAbortSignal(signal, {
+          timeoutMs: SLACK_CHANNEL_SUGGESTION_TIMEOUT_MS,
+        })
+        try {
+          const callResult = await callTool(
+            slackClient.name,
+            SLACK_SEARCH_TOOL,
+            {
               query,
               limit: 20,
               channel_types: 'public_channel,private_channel',
             },
-          },
-          undefined,
-          {
-            signal,
-            timeout: SLACK_CHANNEL_SUGGESTION_TIMEOUT_MS,
-            maxTotalTimeout: SLACK_CHANNEL_SUGGESTION_TIMEOUT_MS,
-          },
-        ),
-      toDispatchResult: () => ({
-        content: '',
-      }),
+            { signal: combined.signal, callId },
+          )
+          combined.signal.throwIfAborted()
+          return callResult
+        } finally {
+          combined.cleanup()
+        }
+      },
+      toDispatchResult: result => result,
     })
 
-    const content = result.content
-    if (!Array.isArray(content)) return []
-
-    const rawText = content
-      .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
-      .map(c => c.text)
-      .join('\n')
-
-    return parseChannels(unwrapResults(rawText))
+    if (result.isError) return []
+    return parseChannels(unwrapResults(result.content))
   } catch (error) {
     logForDebugging(`Failed to fetch Slack channels: ${error}`)
     return []

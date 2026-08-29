@@ -20,36 +20,24 @@ import {
   executeCwdChangedHooks,
   executeElicitationHooks,
   executeElicitationResultHooks,
-  executeFileChangedHooks,
   executeFileSuggestionCommand,
   executeInstructionsLoadedHooks,
-  executePermissionDeniedHooks,
   executePermissionRequestHooks,
   executeNotificationHooks,
-  executePostCompactHooks,
-  executePostToolHooks,
-  executePostToolUseFailureHooks,
-  executePreCompactHooks,
-  executePreToolHooks,
   executeSessionEndHooks,
-  executeSessionStartHooks,
-  executeSetupHooks,
   executeStatusLineCommand,
   executeStopHooks,
   executeSubagentStartHooks,
   executeTaskCompletedHooks,
   executeTaskCreatedHooks,
   executeTeammateIdleHooks,
-  executeUserPromptSubmitHooks,
   executeWorktreeCreateHook,
   executeWorktreeRemoveHook,
-  getPreToolHookBlockingMessage,
   getSessionEndHookTimeoutMs,
   getStopHookMessage,
   getTaskCompletedHookMessage,
   getTaskCreatedHookMessage,
   getTeammateIdleHookMessage,
-  getUserPromptSubmitHookBlockingMessage,
   getMatchingHooks,
   hasBlockingResult,
   hasInstructionsLoadedHook,
@@ -59,17 +47,30 @@ import {
 import type { Message } from "../../src/types/message.js";
 import {
   clearCurrentRuntimeSession,
+  getCurrentRuntimeSession,
+  runWithCurrentRuntimeSession,
   setCurrentRuntimeSession,
 } from "../../src/session/current-session.js";
+import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
+import { createHookExecutionAuthority } from "../../src/hooks/execution-authority.js";
+import { SessionProviderService } from "../../src/session/provider-service.js";
+import { ConfigStore } from "../../src/config/store.js";
+import { runWithCanonicalSettingsAuthority } from "../../src/utils/settings/canonicalAuthority.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 import {
-  getCommandQueue,
-  resetCommandQueue,
+  getCommandQueueSnapshot,
+  resetCommandQueueForTesting,
 } from "../../src/utils/messageQueueManager.js";
+import {
+  checkForAsyncHookResponses,
+  clearAllAsyncHooks,
+  getPendingAsyncHooks,
+  registerPendingAsyncHook,
+} from "../../src/utils/hooks/AsyncHookRegistry.js";
+import type { ShellCommand } from "../../src/utils/ShellCommand.js";
 
 const tempDirs: string[] = [];
 const sessionId = "00000000-0000-4000-8000-000000000901";
-const originalConfigDir = process.env.AGENC_CONFIG_DIR;
 const originalAgenCHome = process.env.AGENC_HOME;
 const originalSessionEndTimeout = process.env.AGENC_SESSIONEND_HOOKS_TIMEOUT_MS;
 const originalAllowUntrustedHooks = process.env.AGENC_ALLOW_UNTRUSTED_HOOKS;
@@ -83,30 +84,65 @@ function restoreOptionalEnv(name: string, value: string | undefined): void {
   }
 }
 
-async function configureHookSession(): Promise<{
-  configDir: string;
+function createHookProviderService(): SessionProviderService {
+  return new SessionProviderService({
+    initialProvider: { name: "stub-provider" } as never,
+    initialProviderName: "grok",
+    initialModel: "test-model",
+    environment: {},
+  });
+}
+
+async function configureHookSession(
+  options: {
+    readonly trusted?: boolean;
+    readonly allowUntrustedCommands?: boolean;
+  } = {},
+): Promise<{
+  agencHome: string;
   cwd: string;
 }> {
-  const configDir = await mkdtemp(join(tmpdir(), "agenc-hooks-core-"));
-  tempDirs.push(configDir);
-  process.env.AGENC_CONFIG_DIR = configDir;
-  delete process.env.AGENC_HOME;
+  const agencHome = await mkdtemp(join(tmpdir(), "agenc-hooks-core-"));
+  tempDirs.push(agencHome);
+  process.env.AGENC_HOME = agencHome;
   resetStateForTests();
   clearCurrentRuntimeSession();
+  const cwd = join(agencHome, "workspace");
+  await mkdir(cwd, { recursive: true });
+  const configStore = new ConfigStore({
+    home: agencHome,
+    env: { AGENC_HOME: agencHome },
+    cwd,
+  });
+  const runtimeOptions = resolveAgentRuntimeOptions({}, {
+    allowUntrustedHooks: options.allowUntrustedCommands ?? false,
+  });
   setCurrentRuntimeSession({
     conversationId: sessionId,
+    sessionConfiguration: { cwd },
     services: {
       sandboxExecutionBroker: explicitDangerBroker,
       admissionRequired: false,
+      configStore,
+      providerService: createHookProviderService(),
+      runtimeOptions,
+      userShell: {
+        path: "/bin/sh",
+        commandWrapperArgv: [],
+        childEnvironment: { ...process.env },
+        deriveExecArgs: (input: string) => ["-c", input],
+      },
+      hookExecutionAuthority: createHookExecutionAuthority({
+        runtimeOptions,
+        isWorkspaceTrusted: () => options.trusted ?? true,
+      }),
     },
   } as never);
 
-  const cwd = join(configDir, "workspace");
-  await mkdir(cwd, { recursive: true });
   setOriginalCwd(cwd);
   setCwdState(cwd);
   switchSession(sessionId as never, null);
-  return { configDir, cwd };
+  return { agencHome, cwd };
 }
 
 async function collectAsyncGenerator<T>(
@@ -140,11 +176,63 @@ function acceptInteractiveWorkspaceTrust(): void {
   setSessionTrustAccepted(true);
 }
 
+function bindHookSessionSimpleMode(simpleMode: boolean): void {
+  const session = getCurrentRuntimeSession();
+  if (session === null) throw new Error("Expected a configured hook session");
+  clearCurrentRuntimeSession();
+  const runtimeOptions = resolveAgentRuntimeOptions({}, { simpleMode });
+  setCurrentRuntimeSession({
+    ...session,
+    services: {
+      ...session.services,
+      runtimeOptions,
+      hookExecutionAuthority: createHookExecutionAuthority({
+        runtimeOptions,
+        isWorkspaceTrusted: () => true,
+      }),
+    },
+  } as never);
+}
+
+function completedAsyncHookCommand(stdout: string): ShellCommand {
+  return {
+    background: () => false,
+    result: Promise.resolve({
+      stdout,
+      stderr: "",
+      code: 0,
+      interrupted: false,
+    }),
+    kill: () => undefined,
+    status: "completed",
+    cleanup: () => undefined,
+    taskOutput: {
+      getStdout: async () => stdout,
+      getStderr: () => "",
+    },
+  } as unknown as ShellCommand;
+}
+
+function registerCompletedAsyncHook(
+  processId: string,
+  conversationId: string,
+): void {
+  registerPendingAsyncHook({
+    processId,
+    hookId: `hook-${processId}`,
+    asyncResponse: { async: true },
+    hookName: `hook ${processId}`,
+    hookEvent: "Stop",
+    command: "printf response",
+    shellCommand: completedAsyncHookCommand('{"continue":true}\n'),
+    queueOwner: { kind: "session", conversationId },
+  });
+}
+
 afterEach(async () => {
-  resetCommandQueue();
+  resetCommandQueueForTesting();
   clearCurrentRuntimeSession();
   resetStateForTests();
-  restoreOptionalEnv("AGENC_CONFIG_DIR", originalConfigDir);
   restoreOptionalEnv("AGENC_HOME", originalAgenCHome);
   restoreOptionalEnv(
     "AGENC_SESSIONEND_HOOKS_TIMEOUT_MS",
@@ -195,12 +283,68 @@ test("async rewake completion retains the session that launched the hook", async
   switchSession("00000000-0000-4000-8000-000000000902" as never, null);
 
   await vi.waitFor(() => {
-    expect(getCommandQueue()).toHaveLength(1);
+    expect(getCommandQueueSnapshot()).toHaveLength(1);
   });
-  expect(getCommandQueue()[0]?.queueOwner).toEqual({
+  expect(getCommandQueueSnapshot()[0]?.queueOwner).toEqual({
     kind: "session",
     conversationId: sessionId,
   });
+});
+
+test("async hook registry returns empty in bare mode without consuming pending work", async () => {
+  await configureHookSession();
+  clearAllAsyncHooks();
+  registerCompletedAsyncHook("bare-pending", sessionId);
+  const owner = { kind: "session" as const, conversationId: sessionId };
+
+  try {
+    bindHookSessionSimpleMode(true);
+    expect(getPendingAsyncHooks(owner)).toEqual([]);
+    await expect(checkForAsyncHookResponses(owner)).resolves.toEqual([]);
+
+    bindHookSessionSimpleMode(false);
+    expect(getPendingAsyncHooks(owner).map((hook) => hook.processId)).toEqual([
+      "bare-pending",
+    ]);
+    await expect(checkForAsyncHookResponses(owner)).resolves.toMatchObject([
+      { processId: "bare-pending" },
+    ]);
+  } finally {
+    clearAllAsyncHooks();
+  }
+});
+
+test("async hook registry filters pending hooks and responses by queue owner", async () => {
+  await configureHookSession();
+  bindHookSessionSimpleMode(false);
+  clearAllAsyncHooks();
+  registerCompletedAsyncHook("owner-a", "conversation-a");
+  registerCompletedAsyncHook("owner-b", "conversation-b");
+  const ownerA = {
+    kind: "session" as const,
+    conversationId: "conversation-a",
+  };
+  const ownerB = {
+    kind: "session" as const,
+    conversationId: "conversation-b",
+  };
+
+  try {
+    expect(getPendingAsyncHooks(ownerA).map((hook) => hook.processId)).toEqual([
+      "owner-a",
+    ]);
+    await expect(checkForAsyncHookResponses(ownerA)).resolves.toMatchObject([
+      { processId: "owner-a" },
+    ]);
+    expect(getPendingAsyncHooks(ownerB).map((hook) => hook.processId)).toEqual([
+      "owner-b",
+    ]);
+    await expect(checkForAsyncHookResponses(ownerB)).resolves.toMatchObject([
+      { processId: "owner-b" },
+    ]);
+  } finally {
+    clearAllAsyncHooks();
+  }
 });
 
 test("parses session end hook timeout from the environment", () => {
@@ -217,7 +361,7 @@ test("parses session end hook timeout from the environment", () => {
 });
 
 test("creates base hook input from session, cwd, permission, and agent state", async () => {
-  const { configDir, cwd } = await configureHookSession();
+  const { agencHome, cwd } = await configureHookSession();
   setMainThreadAgentType("planner");
 
   const base = createBaseHookInput("acceptEdits");
@@ -227,7 +371,7 @@ test("creates base hook input from session, cwd, permission, and agent state", a
     permission_mode: "acceptEdits",
     agent_type: "planner",
   });
-  expect(base.transcript_path).toContain(configDir);
+  expect(base.transcript_path).toContain(agencHome);
   expect(base.transcript_path.endsWith(`${sessionId}.jsonl`)).toBe(true);
 
   const other = createBaseHookInput(
@@ -235,13 +379,13 @@ test("creates base hook input from session, cwd, permission, and agent state", a
     "00000000-0000-4000-8000-000000000902",
     {
       agentId: "agent-1",
-      agentType: "worker",
+      agentType: "runner",
     },
   );
   expect(other).toMatchObject({
     session_id: "00000000-0000-4000-8000-000000000902",
     agent_id: "agent-1",
-    agent_type: "worker",
+    agent_type: "runner",
   });
 });
 
@@ -262,9 +406,6 @@ test("formats blocking hook messages and detects blocked outside-repl results", 
     blockingError: "revise the output",
     command: "hook.sh",
   };
-  expect(getPreToolHookBlockingMessage("PreToolUse", blockingError)).toBe(
-    "PreToolUse hook error: revise the output",
-  );
   expect(getStopHookMessage(blockingError)).toBe(
     "Stop hook feedback:\nrevise the output",
   );
@@ -276,9 +417,6 @@ test("formats blocking hook messages and detects blocked outside-repl results", 
   );
   expect(getTaskCompletedHookMessage(blockingError)).toBe(
     "TaskCompleted hook feedback:\nrevise the output",
-  );
-  expect(getUserPromptSubmitHookBlockingMessage(blockingError)).toBe(
-    "UserPromptSubmit operation blocked by hook:\nrevise the output",
   );
 
   expect(
@@ -394,12 +532,12 @@ test("filters HTTP hooks from startup events during matching", async () => {
   ]);
 });
 
-test("executes registered callback hooks through the pre-tool generator", async () => {
+test("executes registered callback hooks through the permission generator", async () => {
   await configureHookSession();
   acceptInteractiveWorkspaceTrust();
   const appState = { sessionHooks: new Map<string, unknown>() };
   registerHookCallbacks({
-    PreToolUse: [
+    PermissionRequest: [
       {
         matcher: "Bash",
         hooks: [
@@ -416,12 +554,13 @@ test("executes registered callback hooks through the pre-tool generator", async 
   } as never);
 
   const results = await collectAsyncGenerator(
-    executePreToolHooks(
+    executePermissionRequestHooks(
       "Bash",
       "tool-1",
       { command: "rm -rf /tmp/nope" },
       toolUseContext(appState),
       "default",
+      [],
       undefined,
       hookCommandTimeoutMs,
     ),
@@ -446,12 +585,12 @@ test("executes registered callback hooks through the pre-tool generator", async 
   ).toBe(true);
 });
 
-test("executes command hooks through the pre-tool generator", async () => {
+test("executes command hooks through the permission generator", async () => {
   await configureHookSession();
   acceptInteractiveWorkspaceTrust();
   const appState = { sessionHooks: new Map<string, unknown>() };
   registerHookCallbacks({
-    PreToolUse: [
+    PermissionRequest: [
       {
         matcher: "Bash",
         hooks: [
@@ -464,11 +603,12 @@ test("executes command hooks through the pre-tool generator", async () => {
                 reason: "approved by command",
                 systemMessage: "command system message",
                 hookSpecificOutput: {
-                  hookEventName: "PreToolUse",
-                  permissionDecision: "ask",
-                  permissionDecisionReason: "ask after command",
-                  updatedInput: { command: "pwd" },
-                  additionalContext: "command context",
+                  hookEventName: "PermissionRequest",
+                  decision: {
+                    behavior: "allow",
+                    updatedInput: { command: "pwd" },
+                    updatedPermissions: [],
+                  },
                 },
               }),
             ),
@@ -479,12 +619,13 @@ test("executes command hooks through the pre-tool generator", async () => {
   } as never);
 
   const results = await collectAsyncGenerator(
-    executePreToolHooks(
+    executePermissionRequestHooks(
       "Bash",
       "tool-command",
       { command: "ls" },
       toolUseContext(appState),
       "default",
+      [],
       undefined,
       hookCommandTimeoutMs,
     ),
@@ -501,22 +642,144 @@ test("executes command hooks through the pre-tool generator", async () => {
     ),
   ).toBe(true);
   expect(
-    results.some((result) =>
-      result.additionalContexts?.includes("command context"),
-    ),
-  ).toBe(true);
-  expect(
     results.some(
       (result) =>
-        result.permissionBehavior === "ask" &&
-        result.hookPermissionDecisionReason === "ask after command" &&
+        result.permissionBehavior === "allow" &&
         result.updatedInput?.command === "pwd",
     ),
   ).toBe(true);
 });
 
-test("legacy command hooks stop on the admitted lease signal", async () => {
-  const { cwd } = await configureHookSession();
+test("untrusted automation runs callbacks and commands but blocks other hook effects", async () => {
+  await configureHookSession({
+    trusted: false,
+    allowUntrustedCommands: true,
+  });
+  const callback = vi.fn(async () => ({}));
+  let httpRequests = 0;
+  const server = createServer((_request, response) => {
+    httpRequests += 1;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{}");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected TCP server address");
+    }
+    registerHookCallbacks({
+      PermissionRequest: [
+        {
+          matcher: "Bash",
+          hooks: [
+            { type: "callback", callback },
+            { type: "command", command: stdoutCommand("command allowed\n") },
+            { type: "http", url: `http://127.0.0.1:${address.port}/hook` },
+            { type: "prompt", prompt: "must not run" },
+            { type: "agent", prompt: "must not run" },
+          ],
+        },
+      ],
+    } as never);
+
+    const results = await collectAsyncGenerator(
+      executePermissionRequestHooks(
+        "Bash",
+        "tool-untrusted-automation",
+        { command: "pwd" },
+        toolUseContext({ sessionHooks: new Map<string, unknown>() }),
+        "default",
+        [],
+        undefined,
+        hookCommandTimeoutMs,
+      ),
+    );
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(
+      results.some((result) =>
+        JSON.stringify(result.message).includes("command allowed"),
+      ),
+    ).toBe(true);
+    expect(
+      results.filter(
+        (result) => result.message?.type === "progress",
+      ),
+    ).toHaveLength(2);
+    expect(httpRequests).toBe(0);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+});
+
+test("concurrent sessions apply their own authority to generic command execution", async () => {
+  await configureHookSession();
+  const baseSession = getCurrentRuntimeSession();
+  if (baseSession === null) throw new Error("Expected a configured hook session");
+  registerHookCallbacks({
+    PermissionRequest: [
+      {
+        matcher: "Bash",
+        hooks: [
+          {
+            type: "command",
+            command: stdoutCommand("session command allowed\n"),
+          },
+        ],
+      },
+    ],
+  } as never);
+
+  const sessionWithAuthority = (allowUntrustedHooks: boolean) => {
+    const runtimeOptions = resolveAgentRuntimeOptions({}, {
+      allowUntrustedHooks,
+    });
+    return {
+      ...baseSession,
+      conversationId: `${sessionId}-${allowUntrustedHooks ? "allowed" : "denied"}`,
+      services: {
+        ...baseSession.services,
+        runtimeOptions,
+        hookExecutionAuthority: createHookExecutionAuthority({
+          runtimeOptions,
+          isWorkspaceTrusted: () => false,
+        }),
+      },
+    } as never;
+  };
+  const execute = () =>
+    collectAsyncGenerator(
+      executePermissionRequestHooks(
+        "Bash",
+        "tool-concurrent-authority",
+        { command: "pwd" },
+        toolUseContext({ sessionHooks: new Map<string, unknown>() }),
+        "default",
+        [],
+        undefined,
+        hookCommandTimeoutMs,
+      ),
+    );
+
+  const [allowed, denied] = await Promise.all([
+    runWithCurrentRuntimeSession(sessionWithAuthority(true), execute),
+    runWithCurrentRuntimeSession(sessionWithAuthority(false), execute),
+  ]);
+
+  expect(
+    allowed.some((result) =>
+      JSON.stringify(result.message).includes("session command allowed"),
+    ),
+  ).toBe(true);
+  expect(denied).toEqual([]);
+});
+
+test("registered command hooks stop on the admitted lease signal", async () => {
+  const { agencHome, cwd } = await configureHookSession();
   acceptInteractiveWorkspaceTrust();
   const leaseAbort = new AbortController();
   const markDispatched = vi.fn();
@@ -535,12 +798,31 @@ test("legacy command hooks stop on the admitted lease signal", async () => {
     request: {},
     signal: leaseAbort.signal,
   }));
+  const runtimeOptions = resolveAgentRuntimeOptions({});
   clearCurrentRuntimeSession();
   setCurrentRuntimeSession({
     conversationId: sessionId,
+    sessionConfiguration: { cwd },
     services: {
       sandboxExecutionBroker: explicitDangerBroker,
       admissionRequired: true,
+      configStore: new ConfigStore({
+        home: agencHome,
+        env: { AGENC_HOME: agencHome },
+        cwd,
+      }),
+      providerService: createHookProviderService(),
+      runtimeOptions,
+      userShell: {
+        path: "/bin/sh",
+        commandWrapperArgv: [],
+        childEnvironment: { ...process.env },
+        deriveExecArgs: (input: string) => ["-c", input],
+      },
+      hookExecutionAuthority: createHookExecutionAuthority({
+        runtimeOptions,
+        isWorkspaceTrusted: () => true,
+      }),
       executionAdmission: {
         scope: {
           runId: "run-legacy",
@@ -562,7 +844,7 @@ test("legacy command hooks stop on the admitted lease signal", async () => {
   } as never);
   const appState = { sessionHooks: new Map<string, unknown>() };
   registerHookCallbacks({
-    PreToolUse: [
+    PermissionRequest: [
       {
         matcher: "Bash",
         hooks: [
@@ -576,12 +858,13 @@ test("legacy command hooks stop on the admitted lease signal", async () => {
   } as never);
 
   const running = collectAsyncGenerator(
-    executePreToolHooks(
+    executePermissionRequestHooks(
       "Bash",
       "tool-cancelled-hook",
       { command: "pwd" },
       toolUseContext(appState),
       "default",
+      [],
       undefined,
       10_000,
     ),
@@ -604,12 +887,12 @@ test("legacy command hooks stop on the admitted lease signal", async () => {
   expect(acknowledgeCompletion).toHaveBeenCalledWith("legacy-hook-reservation");
 });
 
-test("executes blocking command hook output through the pre-tool generator", async () => {
+test("executes blocking command hook output through the permission generator", async () => {
   await configureHookSession();
   acceptInteractiveWorkspaceTrust();
   const appState = { sessionHooks: new Map<string, unknown>() };
   registerHookCallbacks({
-    PreToolUse: [
+    PermissionRequest: [
       {
         matcher: "Bash",
         hooks: [
@@ -628,12 +911,13 @@ test("executes blocking command hook output through the pre-tool generator", asy
   } as never);
 
   const results = await collectAsyncGenerator(
-    executePreToolHooks(
+    executePermissionRequestHooks(
       "Bash",
       "tool-command-block",
       { command: "ls" },
       toolUseContext(appState),
       "default",
+      [],
       undefined,
       hookCommandTimeoutMs,
     ),
@@ -685,25 +969,6 @@ test("executes outside-REPL wrapper hooks with structured outputs", async () => 
         ],
       },
     ],
-    FileChanged: [
-      {
-        matcher: "file.txt",
-        hooks: [
-          {
-            type: "command",
-            command: stdoutCommand(
-              JSON.stringify({
-                systemMessage: "file system message",
-                hookSpecificOutput: {
-                  hookEventName: "FileChanged",
-                  watchPaths: ["/tmp/agenc-file-watch"],
-                },
-              }),
-            ),
-          },
-        ],
-      },
-    ],
     InstructionsLoaded: [
       {
         matcher: "session_start",
@@ -730,20 +995,6 @@ test("executes outside-REPL wrapper hooks with structured outputs", async () => 
             },
           },
         ],
-      },
-    ],
-    PreCompact: [
-      {
-        matcher: "manual",
-        hooks: [
-          { type: "command", command: stdoutCommand("new instructions") },
-        ],
-      },
-    ],
-    PostCompact: [
-      {
-        matcher: "manual",
-        hooks: [{ type: "command", command: stdoutCommand("compact noted") }],
       },
     ],
     SessionEnd: [
@@ -824,13 +1075,6 @@ test("executes outside-REPL wrapper hooks with structured outputs", async () => 
     watchPaths: ["/tmp/agenc-cwd-watch"],
     systemMessages: ["cwd system message"],
   });
-  await expect(
-    executeFileChangedHooks("/tmp/file.txt", "change", hookCommandTimeoutMs),
-  ).resolves.toMatchObject({
-    watchPaths: ["/tmp/agenc-file-watch"],
-    systemMessages: ["file system message"],
-  });
-
   await executeInstructionsLoadedHooks(
     "/tmp/AGENC.md",
     "Project",
@@ -845,25 +1089,6 @@ test("executes outside-REPL wrapper hooks with structured outputs", async () => 
   );
   expect(instructionsCalls).toBe(1);
   expect(notificationCalls).toBe(1);
-
-  await expect(
-    executePreCompactHooks(
-      { trigger: "manual", customInstructions: "old" },
-      undefined,
-      hookCommandTimeoutMs,
-    ),
-  ).resolves.toMatchObject({
-    newCustomInstructions: "new instructions",
-  });
-  await expect(
-    executePostCompactHooks(
-      { trigger: "manual", compactSummary: "summary" },
-      undefined,
-      hookCommandTimeoutMs,
-    ),
-  ).resolves.toMatchObject({
-    userDisplayMessage: expect.stringContaining("compact noted"),
-  });
 
   await executeSessionEndHooks("quit" as never, {
     timeoutMs: hookCommandTimeoutMs,
@@ -966,7 +1191,7 @@ test("executes session-scoped function hooks through stop hooks", async () => {
   ).toBe(true);
 });
 
-test("executes callback hooks across public generator event wrappers", async () => {
+test("executes registered callback hooks across active event wrappers", async () => {
   await configureHookSession();
   acceptInteractiveWorkspaceTrust();
   const appState = { sessionHooks: new Map<string, unknown>() };
@@ -1095,7 +1320,7 @@ test("executes callback hooks across public generator event wrappers", async () 
     ],
     SubagentStart: [
       {
-        matcher: "worker",
+        matcher: "runner",
         hooks: [
           {
             type: "callback",
@@ -1153,69 +1378,6 @@ test("executes callback hooks across public generator event wrappers", async () 
     ],
   } as never);
 
-  const post = await collectAsyncGenerator(
-    executePostToolHooks(
-      "Bash",
-      "tool-post",
-      { command: "pwd" },
-      { stdout: "/tmp" },
-      ctx,
-      "default",
-      undefined,
-      hookCommandTimeoutMs,
-    ),
-  );
-  expect(
-    post.some((result) => result.additionalContexts?.includes("post context")),
-  ).toBe(true);
-  expect(
-    post.some(
-      (result) =>
-        JSON.stringify(result.updatedMCPToolOutput) ===
-        JSON.stringify({ patched: true }),
-    ),
-  ).toBe(true);
-
-  const failure = await collectAsyncGenerator(
-    executePostToolUseFailureHooks(
-      "Bash",
-      "tool-failure",
-      { command: "false" },
-      "failed",
-      ctx,
-      false,
-      "default",
-      undefined,
-      hookCommandTimeoutMs,
-    ),
-  );
-  expect(
-    failure.some(
-      (result) =>
-        result.preventContinuation === true &&
-        result.stopReason === "stop after failure",
-    ),
-  ).toBe(true);
-  expect(
-    failure.some((result) =>
-      result.additionalContexts?.includes("failure context"),
-    ),
-  ).toBe(true);
-
-  const denied = await collectAsyncGenerator(
-    executePermissionDeniedHooks(
-      "Bash",
-      "tool-denied",
-      { command: "false" },
-      "denied",
-      ctx,
-      "default",
-      undefined,
-      hookCommandTimeoutMs,
-    ),
-  );
-  expect(denied.some((result) => result.retry === true)).toBe(true);
-
   const permission = await collectAsyncGenerator(
     executePermissionRequestHooks(
       "Bash",
@@ -1241,52 +1403,10 @@ test("executes callback hooks across public generator event wrappers", async () 
     ),
   ).toBe(true);
 
-  const prompt = await collectAsyncGenerator(
-    executeUserPromptSubmitHooks("hello", "default", ctx),
-  );
-  expect(
-    prompt.some((result) =>
-      result.additionalContexts?.includes("prompt context"),
-    ),
-  ).toBe(true);
-
-  const sessionStart = await collectAsyncGenerator(
-    executeSessionStartHooks(
-      "resume",
-      sessionId,
-      "planner",
-      "test-model",
-      undefined,
-      hookCommandTimeoutMs,
-    ),
-  );
-  expect(
-    sessionStart.some((result) =>
-      result.additionalContexts?.includes("session context"),
-    ),
-  ).toBe(true);
-  expect(
-    sessionStart.some((result) => result.initialUserMessage === "start here"),
-  ).toBe(true);
-  expect(
-    sessionStart.some((result) =>
-      result.watchPaths?.includes("/tmp/watch-session"),
-    ),
-  ).toBe(true);
-
-  const setup = await collectAsyncGenerator(
-    executeSetupHooks("init", undefined, hookCommandTimeoutMs),
-  );
-  expect(
-    setup.some((result) =>
-      result.additionalContexts?.includes("setup context"),
-    ),
-  ).toBe(true);
-
   const subagent = await collectAsyncGenerator(
     executeSubagentStartHooks(
       "agent-1",
-      "worker",
+      "runner",
       undefined,
       hookCommandTimeoutMs,
     ),
@@ -1479,19 +1599,12 @@ test("returns empty results for public no-hook execution paths", async () => {
   await configureHookSession();
 
   await expect(
-    executeConfigChangeHooks("user_settings", "/tmp/settings.json", 1),
+    executeConfigChangeHooks("user_settings", "/tmp/config.toml", 1),
   ).resolves.toEqual([]);
   await expect(
-    executeConfigChangeHooks("policy_settings", "/tmp/policy.json", 1),
+    executeConfigChangeHooks("policy_settings", "/tmp/managed-config.toml", 1),
   ).resolves.toEqual([]);
   await expect(executeCwdChangedHooks("/old", "/new", 1)).resolves.toEqual({
-    results: [],
-    watchPaths: [],
-    systemMessages: [],
-  });
-  await expect(
-    executeFileChangedHooks("/tmp/file.txt", "change", 1),
-  ).resolves.toEqual({
     results: [],
     watchPaths: [],
     systemMessages: [],
@@ -1533,4 +1646,140 @@ test("returns empty results for public no-hook execution paths", async () => {
   await expect(executeWorktreeCreateHook("feature")).rejects.toThrow(
     "WorktreeCreate hook failed: no successful output",
   );
+});
+
+test("simple-mode ownership hard-suppresses callback and command hook surfaces", async () => {
+  await configureHookSession();
+  acceptInteractiveWorkspaceTrust();
+  bindHookSessionSimpleMode(true);
+
+  const permissionCallback = vi.fn(async () => ({
+    decision: "block" as const,
+    reason: "must never run in simple mode",
+  }));
+  const notificationCallback = vi.fn(async () => ({}));
+  const instructionsCallback = vi.fn(async () => ({}));
+  const worktreeCreateCallback = vi.fn(async () => ({
+    hookSpecificOutput: {
+      hookEventName: "WorktreeCreate" as const,
+      worktreePath: "/tmp/should-not-be-created",
+    },
+  }));
+  const worktreeRemoveCallback = vi.fn(async () => ({}));
+  registerHookCallbacks({
+    PermissionRequest: [
+      {
+        matcher: "Bash",
+        hooks: [{ type: "callback", callback: permissionCallback }],
+      },
+    ],
+    Notification: [
+      {
+        matcher: "turn_complete",
+        hooks: [{ type: "callback", callback: notificationCallback }],
+      },
+    ],
+    InstructionsLoaded: [
+      {
+        matcher: "session_start",
+        hooks: [{ type: "callback", callback: instructionsCallback }],
+      },
+    ],
+    WorktreeCreate: [
+      {
+        matcher: "*",
+        hooks: [{ type: "callback", callback: worktreeCreateCallback }],
+      },
+    ],
+    WorktreeRemove: [
+      {
+        matcher: "*",
+        hooks: [{ type: "callback", callback: worktreeRemoveCallback }],
+      },
+    ],
+  } as never);
+
+  const permissionResults = await collectAsyncGenerator(
+    executePermissionRequestHooks(
+      "Bash",
+      "tool-simple-mode",
+      { command: "pwd" },
+      toolUseContext({ sessionHooks: new Map<string, unknown>() }),
+      "default",
+      [],
+      undefined,
+      hookCommandTimeoutMs,
+    ),
+  );
+  await executeNotificationHooks(
+    {
+      message: "done",
+      notificationType: "turn_complete",
+    },
+    hookCommandTimeoutMs,
+  );
+
+  expect(permissionResults).toEqual([]);
+  expect(permissionCallback).not.toHaveBeenCalled();
+  expect(notificationCallback).not.toHaveBeenCalled();
+  expect(hasInstructionsLoadedHook()).toBe(false);
+  expect(instructionsCallback).not.toHaveBeenCalled();
+  expect(hasWorktreeCreateHook()).toBe(false);
+  await expect(executeWorktreeRemoveHook("/tmp/worktree")).resolves.toBe(
+    false,
+  );
+  expect(worktreeCreateCallback).not.toHaveBeenCalled();
+  expect(worktreeRemoveCallback).not.toHaveBeenCalled();
+
+  const session = getCurrentRuntimeSession();
+  if (session === null) throw new Error("Expected a configured hook session");
+  const configStore = session.services.configStore;
+  if (configStore === undefined) {
+    throw new Error("Expected a canonical ConfigStore");
+  }
+  const commandConfig = Object.freeze({
+    statusLine: {
+      type: "command" as const,
+      command: stdoutCommand("status-hook-ran"),
+    },
+    fileSuggestion: {
+      type: "command" as const,
+      command: stdoutCommand("/tmp/first.ts\n/tmp/second.ts"),
+    },
+  });
+  const commandAuthority = {
+    authoritySnapshot: () => ({ config: commandConfig, layers: [] }),
+    current: () => commandConfig,
+    sources: () => [],
+    projectRoot: configStore.projectRoot,
+    homeContext: configStore.homeContext,
+    stateRepository: configStore.stateRepository,
+    reload: async () => commandConfig,
+    subscribe: () => () => undefined,
+  } as never;
+
+  await runWithCanonicalSettingsAuthority(commandAuthority, async () => {
+    await expect(
+      executeStatusLineCommand({} as never, undefined, hookCommandTimeoutMs),
+    ).resolves.toBeUndefined();
+    await expect(
+      executeFileSuggestionCommand(
+        {} as never,
+        undefined,
+        hookCommandTimeoutMs,
+      ),
+    ).resolves.toEqual([]);
+
+    bindHookSessionSimpleMode(false);
+    await expect(
+      executeStatusLineCommand({} as never, undefined, hookCommandTimeoutMs),
+    ).resolves.toBe("status-hook-ran");
+    await expect(
+      executeFileSuggestionCommand(
+        {} as never,
+        undefined,
+        hookCommandTimeoutMs,
+      ),
+    ).resolves.toEqual(["/tmp/first.ts", "/tmp/second.ts"]);
+  });
 });

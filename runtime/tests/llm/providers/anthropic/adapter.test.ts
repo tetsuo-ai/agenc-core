@@ -98,6 +98,38 @@ describe("AnthropicProvider", () => {
     expect(JSON.parse(String(init?.body))).not.toHaveProperty("max_tokens");
   });
 
+  test("uses the prepared bearer token without an x-api-key fallback", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ input_tokens: 1 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const provider = new AnthropicProvider({
+      authToken: "prepared-anthropic-token",
+      model: "claude-sonnet-4.5",
+      fetchImpl,
+    });
+    const request = createTokenAccountingRequest({
+      provider: provider.name,
+      model: "claude-sonnet-4.5",
+      messages: [{ role: "user", content: "hello" }],
+      options: {},
+      reservedOutputTokens: 1,
+    });
+
+    await provider.tokenCountCapability.countTokens(
+      request,
+      new AbortController().signal,
+    );
+
+    const headers = new Headers(fetchImpl.mock.calls[0]?.[1]?.headers);
+    expect(headers.get("authorization")).toBe(
+      "Bearer prepared-anthropic-token",
+    );
+    expect(headers.has("x-api-key")).toBe(false);
+  });
+
   test("advertises an authoritative bounded budget contract", async () => {
     const provider = new AnthropicProvider({
       apiKey: "anthropic-test",
@@ -584,11 +616,18 @@ describe("AnthropicProvider", () => {
           configSnapshot: config,
           cwd,
           modelInfo: { slug: "claude-3-7-sonnet" },
+          sandboxPolicy: { value: "workspace_write" },
+          networkSandboxPolicy: {
+            allowlist: [],
+            denylist: [],
+            allowManagedDomainsOnly: false,
+            enabled: false,
+          },
         } as never,
         projectInstructions: projectInstructions?.content,
         provider: "anthropic",
         enabledToolNames: new Set(["exec_command"]),
-        envForSimpleMode: {},
+        simpleMode: false,
       });
 
       await provider.chat([

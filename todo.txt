@@ -347,7 +347,8 @@ M2 DONE WHEN:
 - The tests exercise the real request/spawn/tool boundary, not only a helper.
 - No surface can bypass required instructions, workspace scoping, or
   sandbox/permission policy implicitly. Explicit operator-selected modes such as
-  `--yolo` remain visible, deliberate, and auditable policy decisions.
+  `--dangerously-bypass-approvals-and-sandbox` remain visible, deliberate,
+  and auditable policy decisions.
 
 
 M3 -- CREATE ONE DAEMON-OWNED EXECUTION ADMISSION KERNEL
@@ -620,9 +621,6 @@ These verified residuals survived the July 2026 audit. They are tracked here
 instead of in a separate audit narrative; each needs a focused design or
 revert-sensitive test before implementation.
 
-[ ] **M-LLM-4 — isolate provider environment per request.**
-    `runtime/src/services/api/openaiShim.ts` must stop mutating process-wide
-    OpenAI/Gemini/Bankr environment variables from a per-query client path.
 [ ] **M-FILE-1 — tear down file-read state with the owning session/workspace.**
     Wire `clearSessionReadState` into a shared session-close hook and define a
     safe eviction/teardown policy for `workspaceReadState`.

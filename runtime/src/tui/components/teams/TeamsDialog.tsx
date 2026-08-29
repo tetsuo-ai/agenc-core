@@ -1,33 +1,29 @@
 import { c as _c } from "react-compiler-runtime";
 import { randomUUID } from 'crypto';
 import * as React from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useInterval } from 'usehooks-ts';
 import { useRegisterOverlay } from '../../context/overlayContext';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw j/k/arrow dialog navigation
 import { Box, Text, useInput } from '../../ink.js';
 import { selectAgenCTuiGlyphs } from '../../glyphs.js';
-import { useKeybindings } from '../../keybindings/useKeybinding.js';
-import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
-import { type AppState, useAppState, useSetAppState } from '../../state/AppState.js';
-import { getEmptyToolPermissionContext } from '../../../tools/Tool';
+import { type AppState, useSetAppState } from '../../state/AppState.js';
 import { AGENT_COLOR_TO_THEME_COLOR } from 'src/tools/AgentTool/agentColorManager.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { errorMessage } from '../../../utils/errors.js';
 import { execFileNoThrow } from '../../../utils/execFileNoThrow.js';
 import { logError } from '../../../utils/log.js';
-import { getNextPermissionMode } from '../../../utils/permissions/getNextPermissionMode.js';
-import { getModeColor, type PermissionMode, permissionModeFromString, permissionModeSymbol } from '../../../utils/permissions/PermissionMode.js';
+import { getModeColor, permissionModeFromString, permissionModeSymbol } from '../../../utils/permissions/PermissionMode.js';
 import { jsonStringify } from '../../../utils/slowOperations.js';
 import { getLeaderPaneId, IT2_COMMAND, isInsideTmuxSync } from '../../../utils/swarm/backends/detection.js';
 import { ensureBackendsRegistered, getBackendByType, getCachedBackend } from '../../../utils/swarm/backends/registry.js';
 import type { PaneBackendType } from '../../../utils/swarm/backends/types.js';
 import { getSwarmSocketName, SWARM_SESSION_NAME, SWARM_VIEW_WINDOW_NAME, TMUX_COMMAND } from '../../../utils/swarm/constants.js';
-import { addHiddenPaneId, removeHiddenPaneId, removeMemberFromTeam, setMemberMode, setMultipleMemberModes } from '../../../utils/swarm/teamHelpers.js';
+import { addHiddenPaneId, removeHiddenPaneId, removeMemberFromTeam } from '../../../utils/swarm/teamHelpers.js';
 import { listTasks, type Task, unassignTeammateTasks } from '../../../utils/tasks.js';
 import { getTeammateStatuses, type TeammateStatus, type TeamSummary } from '../../../utils/teamDiscovery.js';
-import { createModeSetRequestMessage, sendShutdownRequestToMailbox, writeToMailbox } from '../../../utils/teammateMailbox.js';
+import { sendShutdownRequestToMailbox } from '../../../utils/teammateMailbox.js';
 import { Dialog } from '../design-system/Dialog';
 import ThemedText from '../design-system/ThemedText';
 import {
@@ -136,8 +132,6 @@ export function TeamsDialog({
     return teammateStatuses.find(t => t.name === dialogLevel.memberName) ?? null;
   }, [dialogLevel, teammateStatuses]);
 
-  // Get isBypassPermissionsModeAvailable from AppState
-  const isBypassAvailable = useAppState(s => s.toolPermissionContext.isBypassPermissionsModeAvailable);
   const goBackToList = (): void => {
     setDialogLevel({
       type: 'teammateList',
@@ -146,40 +140,6 @@ export function TeamsDialog({
     setSelectedIndex(0);
   };
 
-  // Handler for confirm:cycleMode - cycle teammate permission modes
-  const handleCycleMode = useCallback(() => {
-    setActionNotice(null);
-    if (dialogLevel.type === 'teammateDetail' && currentTeammate) {
-      // Detail view: cycle just this teammate
-      const result = cycleTeammateMode(currentTeammate, dialogLevel.teamName, isBypassAvailable);
-      if (!result.ok) {
-        setActionNotice({
-          kind: 'error',
-          message: result.message
-        });
-        return;
-      }
-      setRefreshKey(k => k + 1);
-    } else if (dialogLevel.type === 'teammateList' && teammateStatuses.length > 0) {
-      // List view: cycle all teammates in tandem
-      const result = cycleAllTeammateModes(teammateStatuses, dialogLevel.teamName, isBypassAvailable);
-      if (!result.ok) {
-        setActionNotice({
-          kind: 'error',
-          message: result.message
-        });
-        return;
-      }
-      setRefreshKey(k => k + 1);
-    }
-  }, [dialogLevel, currentTeammate, teammateStatuses, isBypassAvailable]);
-
-  // Use keybindings for mode cycling
-  useKeybindings({
-    'confirm:cycleMode': handleCycleMode
-  }, {
-    context: 'Confirmation'
-  });
   useInput((input, key) => {
     // Handle left arrow to go back
     if (key.leftArrow) {
@@ -362,8 +322,6 @@ export function TeamsDialog({
       }
       return;
     }
-
-    // Note: Mode cycling (shift+tab) is handled via useKeybindings with confirm:cycleMode action
   });
   function getMaxIndex(): number {
     if (dialogLevel.type === 'teammateList') {
@@ -402,12 +360,10 @@ function TeamDetailView(t0) {
   } = useTerminalSize();
   const subtitle = `${teammates.length} ${teammates.length === 1 ? "teammate" : "teammates"}`;
   const supportsHideShow = getCachedBackend()?.supportsHideShow ?? false;
-  const cycleModeShortcut = useShortcutDisplay("confirm:cycleMode", "Confirmation", "shift+tab");
   const t1 = `Team ${teamName}`;
   const footerText = getTeamListFooterText({
     glyphs,
     supportsHideShow,
-    cycleModeShortcut,
     columns
   });
   const content = <Box flexDirection="column">{teammates.length === 0 ? <Text dimColor={true}>No teammates</Text> : <Box flexDirection="column">{teammates.map((teammate, index) => <TeammateListItem key={teammate.agentId} teammate={teammate} isSelected={index === selectedIndex} />)}</Box>}<ActionNotice notice={actionNotice} /></Box>;
@@ -510,7 +466,6 @@ function TeammateDetailView(t0) {
     columns
   } = useTerminalSize();
   const [promptExpanded, setPromptExpanded] = useState(false);
-  const cycleModeShortcut = useShortcutDisplay("confirm:cycleMode", "Confirmation", "shift+tab");
   const supportsHideShow = getCachedBackend()?.supportsHideShow ?? false;
   const themeColor = teammate.color ? AGENT_COLOR_TO_THEME_COLOR[teammate.color as keyof typeof AGENT_COLOR_TO_THEME_COLOR] : undefined;
   const [tasksState, setTasksState] = useState<TeammateTasksLoadState>({
@@ -564,7 +519,6 @@ function TeammateDetailView(t0) {
   const footerText = getTeammateDetailFooterText({
     glyphs,
     supportsHideShow,
-    cycleModeShortcut,
     columns
   });
   const tasks = <Box flexDirection="column"><Text bold={true}>Tasks</Text>{tasksState.status === 'loading' ? <Text dimColor={true}>Loading tasks...</Text> : tasksState.status === 'error' ? <Text color="error">{tasksState.message}</Text> : tasksState.tasks.length === 0 ? <Text dimColor={true}>No tasks</Text> : tasksState.tasks.map(renderTeammateTaskRow)}</Box>;
@@ -760,97 +714,4 @@ async function showTeammate(teammate: TeammateStatus, teamName: string): Promise
   }
   logForDebugging(`[TeamsDialog] Shown teammate ${teammate.name} (${teammate.tmuxPaneId})`);
   return ok(`Shown @${teammate.name}.`);
-}
-
-/**
- * Send a mode change message to a single teammate
- * Also updates config.json directly so the UI reflects the change immediately
- */
-function sendModeChangeToTeammate(teammateName: string, teamName: string, targetMode: PermissionMode): TeamActionResult {
-  // Update config.json directly so UI shows the change immediately
-  let updatedMode: boolean;
-  try {
-    updatedMode = setMemberMode(teamName, teammateName, targetMode);
-  } catch (error) {
-    logError(error);
-    return fail(`Cannot change @${teammateName} mode: ${errorMessage(error)}`);
-  }
-  if (!updatedMode) {
-    return fail(`Cannot change @${teammateName} mode: could not update team config.`);
-  }
-
-  sendModeChangeMailboxMessage(teammateName, teamName, targetMode);
-  logForDebugging(`[TeamsDialog] Sent mode change to ${teammateName}: ${targetMode}`);
-  return ok();
-}
-
-function sendModeChangeMailboxMessage(teammateName: string, teamName: string, targetMode: PermissionMode): void {
-  const message = createModeSetRequestMessage({
-    mode: targetMode,
-    from: 'team-lead'
-  });
-  void writeToMailbox(teammateName, {
-    from: 'team-lead',
-    text: jsonStringify(message),
-    timestamp: new Date().toISOString()
-  }, teamName).catch(error => {
-    logError(error);
-    logForDebugging(`[TeamsDialog] Failed to send mode change to ${teammateName}: ${errorMessage(error)}`);
-  });
-}
-
-/**
- * Cycle a single teammate's mode
- */
-function cycleTeammateMode(teammate: TeammateStatus, teamName: string, isBypassAvailable: boolean): TeamActionResult {
-  const currentMode = teammate.mode ? permissionModeFromString(teammate.mode) : 'default';
-  const context = {
-    ...getEmptyToolPermissionContext(),
-    mode: currentMode,
-    isBypassPermissionsModeAvailable: isBypassAvailable
-  };
-  const nextMode = getNextPermissionMode(context);
-  return sendModeChangeToTeammate(teammate.name, teamName, nextMode);
-}
-
-/**
- * Cycle all teammates' modes in tandem
- * If modes differ, reset all to default first
- * If same, cycle all to next mode
- * Uses batch update to avoid race conditions
- */
-function cycleAllTeammateModes(teammates: TeammateStatus[], teamName: string, isBypassAvailable: boolean): TeamActionResult {
-  if (teammates.length === 0) return ok();
-  const modes = teammates.map(t => t.mode ? permissionModeFromString(t.mode) : 'default');
-  const allSame = modes.every(m => m === modes[0]);
-
-  // Determine target mode for all teammates
-  const targetMode = !allSame ? 'default' : getNextPermissionMode({
-    ...getEmptyToolPermissionContext(),
-    mode: modes[0] ?? 'default',
-    isBypassPermissionsModeAvailable: isBypassAvailable
-  });
-
-  // Batch update config.json in a single atomic operation
-  const modeUpdates = teammates.map(t => ({
-    memberName: t.name,
-    mode: targetMode
-  }));
-  let updatedModes: boolean;
-  try {
-    updatedModes = setMultipleMemberModes(teamName, modeUpdates);
-  } catch (error) {
-    logError(error);
-    return fail(`Cannot change team ${teamName} modes: ${errorMessage(error)}`);
-  }
-  if (!updatedModes) {
-    return fail(`Cannot change team ${teamName} modes: could not update team config.`);
-  }
-
-  // Send mailbox messages to each teammate
-  for (const teammate of teammates) {
-    sendModeChangeMailboxMessage(teammate.name, teamName, targetMode);
-  }
-  logForDebugging(`[TeamsDialog] Sent mode change to all ${teammates.length} teammates: ${targetMode}`);
-  return ok();
 }

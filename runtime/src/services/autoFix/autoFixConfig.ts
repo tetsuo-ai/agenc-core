@@ -1,18 +1,7 @@
 /**
- * Ports the donor auto-fix configuration loader onto AgenC's config
- * shape.
- *
- * Why this lives here / shape difference from upstream:
- *   - AgenC's live config surface is the typed `AgenCConfig` object,
- *     not the donor settings schema, so validation is implemented as a
- *     small local parser with the same accepted values and defaults.
- *
- * Cross-cuts deliberately NOT carried:
- *   - Zod settings-schema coupling; AgenC's config schema is
- *     hand-validated in `runtime/src/config/schema.ts`.
+ * Parses canonical `[autoFix]` configuration and applies the defaults used by
+ * the post-tool check hook.
  */
-
-import { z } from "zod/v4";
 
 const AUTO_FIX_DEFAULT_MAX_RETRIES = 3;
 const AUTO_FIX_DEFAULT_TIMEOUT_MS = 30_000;
@@ -28,13 +17,14 @@ export interface AutoFixConfig {
   readonly timeout: number;
 }
 
-export const AutoFixConfigSchema = z.object({
-  enabled: z.boolean(),
-  lint: z.string().optional(),
-  test: z.string().optional(),
-  maxRetries: z.number().int().optional(),
-  timeout: z.number().int().optional(),
-});
+/** Strict canonical config.toml input before runtime defaults are applied. */
+export interface AutoFixInputConfig {
+  readonly enabled: boolean;
+  readonly lint?: string;
+  readonly test?: string;
+  readonly maxRetries?: number;
+  readonly timeout?: number;
+}
 
 export interface AutoFixParseFailure {
   readonly success: false;

@@ -64,6 +64,208 @@ async function createSession(
 }
 
 describe("AgenC daemon client multiplexer", () => {
+  it("routes Ledger client actions by initialized capability without session attachment", async () => {
+    const { sessionManager, multiplexer } = createHarness();
+    const phone: JsonObject[] = [];
+    const tui: JsonObject[] = [];
+    await createSession(sessionManager);
+    await multiplexer.registerClient({
+      clientId: "phone",
+      capabilities: { "portal.ledger.solana.sign.v1": true },
+      send: (message) => phone.push(message),
+    });
+    await multiplexer.registerClient({
+      clientId: "tui",
+      send: (message) => tui.push(message),
+    });
+    await multiplexer.attachClientToSession("session_1", "tui");
+    const event = ledgerActionNotification("session_1", "intent-live");
+
+    await expect(
+      multiplexer.broadcastSessionEvent("session_1", event),
+    ).resolves.toEqual({
+      sessionId: "session_1",
+      deliveredClientIds: ["phone"],
+      failed: [],
+    });
+    expect(phone).toEqual([event]);
+    expect(tui).toEqual([]);
+    await expect(multiplexer.attachedClientIds("session_1")).resolves.toEqual([
+      "tui",
+    ]);
+  });
+
+  it("routes a live Ledger action only to the most recently registered capable phone", async () => {
+    const { sessionManager, multiplexer } = createHarness();
+    const olderPhone: JsonObject[] = [];
+    const newerPhone: JsonObject[] = [];
+    await createSession(sessionManager);
+    await multiplexer.registerClient({
+      clientId: "phone-older",
+      capabilities: { "portal.ledger.solana.sign.v1": true },
+      send: (message) => olderPhone.push(message),
+    });
+    await multiplexer.registerClient({
+      clientId: "phone-newer",
+      capabilities: { "portal.ledger.solana.sign.v1": true },
+      send: (message) => newerPhone.push(message),
+    });
+    const event = ledgerActionNotification("session_1", "intent-exclusive");
+
+    await expect(
+      multiplexer.broadcastSessionEvent("session_1", event),
+    ).resolves.toEqual({
+      sessionId: "session_1",
+      deliveredClientIds: ["phone-newer"],
+      failed: [],
+    });
+    expect(olderPhone).toEqual([]);
+    expect(newerPhone).toEqual([event]);
+  });
+
+  it("buffers a failed sole Ledger delivery for the next capable reconnect", async () => {
+    const { sessionManager, multiplexer } = createHarness();
+    const replacementPhone: JsonObject[] = [];
+    await createSession(sessionManager);
+    await multiplexer.registerClient({
+      clientId: "phone-failing",
+      capabilities: { "portal.ledger.solana.sign.v1": true },
+      send: () => {
+        throw new Error("phone socket failed");
+      },
+    });
+    const event = ledgerActionNotification("session_1", "intent-recover");
+
+    await expect(
+      multiplexer.broadcastSessionEvent("session_1", event),
+    ).resolves.toEqual({
+      sessionId: "session_1",
+      deliveredClientIds: [],
+      failed: [{ clientId: "phone-failing", message: "phone socket failed" }],
+    });
+
+    await multiplexer.registerClient({
+      clientId: "phone-reconnected",
+      capabilities: { "portal.ledger.solana.sign.v1": true },
+      send: (message) => replacementPhone.push(message),
+    });
+    expect(replacementPhone).toEqual([event]);
+
+    const laterPhone: JsonObject[] = [];
+    await multiplexer.registerClient({
+      clientId: "phone-later",
+      capabilities: { "portal.ledger.solana.sign.v1": true },
+      send: (message) => laterPhone.push(message),
+    });
+    expect(laterPhone).toEqual([]);
+  });
+
+  it("replays a bounded Ledger action when a capable phone initializes later", async () => {
+    const { sessionManager, multiplexer } = createHarness();
+    const phone: JsonObject[] = [];
+    await createSession(sessionManager);
+    const event = ledgerActionNotification("session_1", "intent-replay");
+
+    await expect(
+      multiplexer.broadcastSessionEvent("session_1", event),
+    ).resolves.toMatchObject({ deliveredClientIds: [] });
+    await multiplexer.registerClient({
+      clientId: "phone",
+      capabilities: { "portal.ledger.solana.sign.v1": true },
+      send: (message) => phone.push(message),
+    });
+
+    expect(phone).toEqual([event]);
+  });
+
+  it("rejects aggregate capability and status replay before registering a half-client", async () => {
+    const sessionManager = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_1"]),
+      createAttachmentId: sequence(["attachment_1"]),
+      now: sequence([
+        "2026-05-01T10:00:00.000Z",
+        "2026-05-01T10:00:01.000Z",
+      ]),
+    });
+    const multiplexer = new AgenCDaemonClientMultiplexer({
+      sessionManager,
+      maxPendingDeliveryCountPerClient: 1,
+    });
+    await createSession(sessionManager);
+    const ledger = ledgerActionNotification("session_1", "intent-aggregate");
+    const status = agentStatusNotification("session_1", "status-aggregate");
+    await multiplexer.broadcastSessionEvent("session_1", ledger);
+    await multiplexer.broadcastSessionEvent("session_1", status);
+
+    await expect(
+      multiplexer.registerClient({
+        clientId: "aggregate-phone",
+        capabilities: {
+          "portal.ledger.solana.sign.v1": true,
+          [AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY]: true,
+        },
+        send: () => {},
+      }),
+    ).rejects.toMatchObject({ code: "EVENT_DELIVERY_LIMIT_EXCEEDED" });
+
+    // The failed aggregate reservation did not register the id or lease/drain
+    // the Ledger buffer. Retrying the same id for one bounded capability works.
+    const replayed: JsonObject[] = [];
+    await expect(
+      multiplexer.registerClient({
+        clientId: "aggregate-phone",
+        capabilities: { "portal.ledger.solana.sign.v1": true },
+        send: (message) => replayed.push(message),
+      }),
+    ).resolves.toEqual({ clientId: "aggregate-phone" });
+    expect(replayed).toEqual([ledger]);
+  });
+
+  it("leases a buffered Ledger replay to only one concurrently initializing phone", async () => {
+    const { sessionManager, multiplexer } = createHarness();
+    const firstPhone: JsonObject[] = [];
+    const secondPhone: JsonObject[] = [];
+    await createSession(sessionManager);
+    const event = ledgerActionNotification("session_1", "intent-replay-lease");
+    await multiplexer.broadcastSessionEvent("session_1", event);
+
+    let releaseFirst!: () => void;
+    const firstMayFinish = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    const firstRegistration = multiplexer.registerClient({
+      clientId: "phone-replay-first",
+      capabilities: { "portal.ledger.solana.sign.v1": true },
+      send: async (message) => {
+        firstPhone.push(message);
+        markFirstStarted();
+        await firstMayFinish;
+      },
+    });
+    await firstStarted;
+
+    await multiplexer.registerClient({
+      clientId: "phone-replay-second",
+      capabilities: { "portal.ledger.solana.sign.v1": true },
+      send: (message) => secondPhone.push(message),
+    });
+    expect(firstPhone).toEqual([event]);
+    expect(secondPhone).toEqual([]);
+
+    releaseFirst();
+    await firstRegistration;
+    const laterPhone: JsonObject[] = [];
+    await multiplexer.registerClient({
+      clientId: "phone-replay-later",
+      capabilities: { "portal.ledger.solana.sign.v1": true },
+      send: (message) => laterPhone.push(message),
+    });
+    expect(laterPhone).toEqual([]);
+  });
 
   it("pushes agent status to an opted-in mobile client without session attachment", async () => {
     const { sessionManager, multiplexer } = createHarness();
@@ -478,6 +680,35 @@ describe("AgenC daemon client multiplexer", () => {
     );
   });
 });
+
+function ledgerActionNotification(
+  sessionId: string,
+  intentId: string,
+): JsonObject {
+  return {
+    jsonrpc: JSON_RPC_VERSION,
+    method: "event.user_input_request",
+    params: {
+      sessionId,
+      eventId: `event-${intentId}`,
+      requestId: `request-${intentId}`,
+      callId: `call-${intentId}`,
+      turnId: "turn-1",
+      questions: [],
+      clientAction: {
+        type: "ledger_solana_transfer_v1",
+        source: "agenc-core",
+        targetCapability: "portal.ledger.solana.sign.v1",
+        network: "mainnet-beta",
+        intentId,
+        responseNonce: `response-nonce-${intentId}`,
+        to: "11111111111111111111111111111111",
+        lamports: "1",
+        expiresAt: "2026-07-10T10:10:00.000Z",
+      },
+    },
+  };
+}
 
 function agentStatusNotification(sessionId: string, eventId: string): JsonObject {
   return {

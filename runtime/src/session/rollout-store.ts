@@ -23,7 +23,15 @@ import {
   readFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  normalize,
+  relative,
+  resolve,
+} from "node:path";
 import {
   AtomicArtifactOperationUnsupportedError,
   type AtomicArtifactObservation,
@@ -66,7 +74,6 @@ import { ThreadSpawnEdgeRepository } from "../state/spawn-edges.js";
 import { StateRunDurabilityRepository } from "../state/run-durability.js";
 import { recordInFlightToolCallUnknownOutcome } from "../state/tool-output-rotation.js";
 import { resolveUnknownOutcomeEffect } from "../state/unknown-outcome-gate.js";
-import { getAgenCConfigHomeDir } from "../utils/envUtils.js";
 import { sanitizePath } from "../utils/path.js";
 import { isRecord } from "../utils/record.js";
 import {
@@ -161,6 +168,8 @@ import {
 } from "./canonical-rollout-scanner.js";
 
 export interface RolloutStoreOpts extends SessionStoreOpts {
+  /** Session-owned temporary root captured at request ingress. */
+  readonly sessionTempRoot: string;
   /** Flush interval in ms. Default 100. */
   readonly flushIntervalMs?: number;
   /** Whether to auto-start the background flush scheduler. Default true. */
@@ -732,6 +741,7 @@ function* responseItemsForToolPairValidation(
 
 export class RolloutStore {
   readonly store: SessionStore;
+  readonly sessionTempRoot: string;
   private readonly scheduler: SessionStoreFlushScheduler;
   private readonly startScheduler: boolean;
   private readonly resumed: boolean;
@@ -763,6 +773,10 @@ export class RolloutStore {
   private openedEpoch: number | undefined;
 
   constructor(opts: RolloutStoreOpts) {
+    if (!isAbsolute(opts.sessionTempRoot)) {
+      throw new TypeError("RolloutStore sessionTempRoot must be absolute");
+    }
+    this.sessionTempRoot = normalize(opts.sessionTempRoot);
     this.store = new SessionStore(opts);
     this.existingRolloutAtConstruction = existsSync(this.store.rolloutPath);
     this.scheduler = new SessionStoreFlushScheduler(
@@ -787,6 +801,7 @@ export class RolloutStore {
     );
     this.stateDriver = openStateDatabases({
       cwd: opts.cwd,
+      agencHome: this.store.agencHome,
       projectRootMarkers: opts.projectRootMarkers,
     });
     this.threadSpawnEdgeRepo = new ThreadSpawnEdgeRepository(this.stateDriver);
@@ -1000,6 +1015,7 @@ export class RolloutStore {
     this.store.upgradeCanonicalSchemaHeader(ROLLOUT_SCHEMA_VERSION);
     this.store.syncCanonicalTail();
     const scan = scanCanonicalRollout(this.rolloutPath, {
+      sessionTempRoot: this.sessionTempRoot,
       expectedRunId: this.sessionId,
       expectedEpoch: this.runEpoch,
       maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
@@ -1219,6 +1235,7 @@ export class RolloutStore {
       source.source_binding,
     );
     const scan = scanCanonicalRollout(this.rolloutPath, {
+      sessionTempRoot: this.sessionTempRoot,
       expectedRunId: source.session_id,
       expectedEpoch: this.runEpoch,
       maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
@@ -1513,6 +1530,7 @@ export class RolloutStore {
   private assertCompactionCommitFresh(intent: CompactionIntentV1): void {
     this.store.syncCanonicalTail();
     const scan = scanCanonicalRollout(this.rolloutPath, {
+      sessionTempRoot: this.sessionTempRoot,
       expectedRunId: intent.source.session_id,
       expectedEpoch: this.runEpoch,
       maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
@@ -1701,6 +1719,7 @@ export class RolloutStore {
     }
     this.store.syncCanonicalTail();
     const scan = scanCanonicalRollout(this.rolloutPath, {
+      sessionTempRoot: this.sessionTempRoot,
       expectedRunId: pin.sessionId,
       expectedEpoch: this.runEpoch,
       maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
@@ -1897,6 +1916,7 @@ export class RolloutStore {
       cwd: this.store.cwd,
       sessionId: rollback.target_session_id,
       agencVersion: this.store.agencVersion,
+      agencHome: this.store.agencHome,
       resume: true,
       projectRootMarkers: this.projectRootMarkers,
     });
@@ -2097,6 +2117,7 @@ export class RolloutStore {
     }
     this.store.syncCanonicalTail();
     const scan = scanCanonicalRollout(this.rolloutPath, {
+      sessionTempRoot: this.sessionTempRoot,
       expectedRunId: pin.sessionId,
       expectedEpoch: this.runEpoch,
       maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
@@ -2290,6 +2311,7 @@ export class RolloutStore {
     }
     this.store.syncCanonicalTail();
     const scan = scanCanonicalRollout(this.rolloutPath, {
+      sessionTempRoot: this.sessionTempRoot,
       expectedRunId: pin.sessionId,
       expectedEpoch: this.runEpoch,
       maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
@@ -2425,6 +2447,7 @@ export class RolloutStore {
     try {
       this.store.syncCanonicalTail();
       const scan = scanCanonicalRollout(this.rolloutPath, {
+        sessionTempRoot: this.sessionTempRoot,
         expectedRunId: pin.sessionId,
         expectedEpoch: this.runEpoch,
         maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
@@ -2447,6 +2470,7 @@ export class RolloutStore {
       this.sessionId,
     );
     const scan = scanCanonicalRollout(this.rolloutPath, {
+      sessionTempRoot: this.sessionTempRoot,
       expectedRunId: this.sessionId,
       ...(this.reopenTerminalRun ? {} : { expectedEpoch: this.runEpoch }),
       maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
@@ -3683,7 +3707,11 @@ export class RolloutStore {
       return true;
     }
 
-    const projectDir = getProjectDir(this.store.cwd, this.projectRootMarkers);
+    const projectDir = getProjectDir(
+      this.store.cwd,
+      this.projectRootMarkers,
+      this.store.agencHome,
+    );
     for (const binding of this.runDurabilityRepo.listJournalBindings(
       runId,
       epoch,
@@ -4293,7 +4321,7 @@ export class RolloutStore {
       const artifactRoot = trustedArtifactRoot(payload.targetPath, [
         resolve(this.store.sessionDir, "tool-results"),
         resolve(
-          getAgenCConfigHomeDir(),
+          this.store.agencHome,
           "projects",
           sanitizePath(this.store.cwd),
           this.sessionId,
@@ -4515,7 +4543,11 @@ function runtimeSettingsSnapshotFromEvent(
     permissionMode: payload.permissionMode,
     prePlanMode: payload.prePlanMode,
     autoModeActive: payload.autoModeActive,
+    autoModeAvailable: payload.autoModeAvailable,
+    bypassPermissionsModeAvailable: payload.bypassPermissionsModeAvailable,
     bypassPermissionsWorkspace: payload.bypassPermissionsWorkspace,
+    bypassPermissionsConsentWorkspace:
+      payload.bypassPermissionsConsentWorkspace,
     model: payload.model,
     provider: payload.provider,
     profile: payload.profile,

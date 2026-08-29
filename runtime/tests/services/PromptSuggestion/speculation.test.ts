@@ -1,7 +1,18 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  clearCurrentRuntimeSession,
+  runWithCurrentRuntimeSession,
+} from "../../../src/session/current-session.js";
+import { resolveAgentRuntimeOptions } from "../../../src/session/runtime-options.js";
+import type { Session } from "../../../src/session/session.js";
+import {
+  flushSessionStorage,
+  resetProjectForTesting,
+  setSessionFileForTesting,
+} from "../../../src/utils/sessionStorage.js";
 
 const runForkedAgentMock = vi.hoisted(() => vi.fn());
 
@@ -22,6 +33,7 @@ vi.mock("./runtime.js", async () => {
 });
 
 import {
+  abortSpeculation,
   acceptSpeculation,
   handleSpeculationAccept,
   isSpeculationEnabled,
@@ -35,21 +47,21 @@ describe("PromptSuggestion speculation", () => {
 
   afterEach(async () => {
     runForkedAgentMock.mockReset();
+    clearCurrentRuntimeSession();
+    resetProjectForTesting();
     process.env.AGENC_CWD = originalCwd;
-    delete process.env.AGENC_SPECULATION_ENABLED;
     delete process.env.USER_TYPE;
+    delete process.env.TEST_ENABLE_SESSION_PERSISTENCE;
     await Promise.all(tempDirs.map(dir => rm(dir, { recursive: true, force: true })));
     tempDirs.length = 0;
   });
 
-  it("honors persisted speculation settings with env override precedence", () => {
+  it("uses only the persisted speculation setting", () => {
     process.env.USER_TYPE = "ant";
 
     expect(isSpeculationEnabled(false)).toBe(false);
     expect(isSpeculationEnabled(true)).toBe(true);
 
-    process.env.AGENC_SPECULATION_ENABLED = "0";
-    expect(isSpeculationEnabled(true)).toBe(false);
   });
 
   it("keeps successful tool uses and strips pending or internal blocks", () => {
@@ -59,7 +71,7 @@ describe("PromptSuggestion speculation", () => {
         message: {
           content: [
             { type: "thinking", text: "hidden" },
-            { type: "tool_use", id: "ok", name: "Read" },
+            { type: "tool_use", id: "ok", name: "FileRead" },
             { type: "tool_use", id: "pending", name: "Write" },
             { type: "text", text: "visible" },
           ],
@@ -80,7 +92,7 @@ describe("PromptSuggestion speculation", () => {
 
     expect(cleaned).toHaveLength(2);
     expect(cleaned[0].message.content).toEqual([
-      { type: "tool_use", id: "ok", name: "Read" },
+      { type: "tool_use", id: "ok", name: "FileRead" },
       { type: "text", text: "visible" },
     ]);
     expect(cleaned[1].message.content).toEqual([
@@ -144,6 +156,7 @@ describe("PromptSuggestion speculation", () => {
         ],
       },
       writtenPathsRef: { current: new Set(["missing.txt"]) },
+      overlayPath: join(cwd, "missing-overlay"),
       boundary: { type: "complete", completedAt: Date.now(), outputTokens: 1 },
       suggestionLength: 9,
       toolUseCount: 0,
@@ -176,42 +189,37 @@ describe("PromptSuggestion speculation", () => {
     tempDirs.push(launchCwd, sessionCwd);
     process.env.AGENC_CWD = launchCwd;
 
-    const id = "cwd-copy";
-    const overlayFile = join(
-      tmpdir(),
-      "agenc",
-      "speculation",
-      String(process.pid),
-      id,
-      "changed.txt",
-    );
-    await mkdir(dirname(overlayFile), { recursive: true });
-    await writeFile(overlayFile, "from overlay");
-
-    let appState = {
-      speculation: { status: "idle" },
-      speculationSessionTimeSavedMs: 0,
-    } as any;
+    const sessionTempRoot = await mkdtemp(join(tmpdir(), "agenc-session-temp-"));
+    tempDirs.push(sessionTempRoot);
+    process.env.USER_TYPE = "ant";
+    runForkedAgentMock.mockResolvedValueOnce({
+      messages: [],
+      totalUsage: { output_tokens: 0 },
+    });
+    let appState = baseSpeculationAppState("acceptEdits") as any;
     const setAppState = (fn: (prev: any) => any) => {
       appState = fn(appState);
     };
 
+    await runInSessionTempRoot(sessionTempRoot, () =>
+      startSpeculation(
+        "edit notes",
+        createSpeculationContext(appState, sessionCwd),
+        setAppState,
+        false,
+        undefined,
+        { cwd: sessionCwd, speculationEnabled: true },
+      ),
+    );
+    expect(appState.speculation.status).toBe("active");
+    const active = appState.speculation;
+    const overlayFile = join(active.overlayPath, "changed.txt");
+    await mkdir(dirname(overlayFile), { recursive: true });
+    await writeFile(overlayFile, "from overlay");
+    active.writtenPathsRef.current.add("changed.txt");
+
     const result = await acceptSpeculation(
-      {
-        status: "active",
-        id,
-        abort: vi.fn(),
-        startTime: Date.now() - 100,
-        messagesRef: { current: [] },
-        writtenPathsRef: { current: new Set(["changed.txt"]) },
-        boundary: { type: "complete", completedAt: Date.now(), outputTokens: 1 },
-        suggestionLength: 9,
-        toolUseCount: 0,
-        isPipelined: false,
-        cwd: sessionCwd,
-        contextRef: { current: {} },
-        pipelinedSuggestion: null,
-      } as any,
+      active,
       setAppState,
       1,
     );
@@ -221,20 +229,22 @@ describe("PromptSuggestion speculation", () => {
       "from overlay",
     );
     await expect(readFile(join(launchCwd, "changed.txt"), "utf8")).rejects.toThrow();
+    await expect(access(active.overlayPath)).rejects.toThrow();
   });
 
   it("enforces speculation tool boundaries through startSpeculation", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agenc-spec-boundary-"));
-    tempDirs.push(cwd);
+    const sessionTempRoot = await mkdtemp(join(tmpdir(), "agenc-spec-temp-"));
+    tempDirs.push(cwd, sessionTempRoot);
     process.env.USER_TYPE = "ant";
 
     const decisions: Array<{ label: string; behavior: string; reason?: string }> = [];
     runForkedAgentMock.mockImplementationOnce(async params => {
       for (const [label, tool, input] of [
-        ["read", { name: "Read" }, { file_path: join(cwd, "notes.txt") }],
+        ["read", { name: "FileRead" }, { file_path: join(cwd, "notes.txt") }],
         ["write", { name: "Write" }, { file_path: join(cwd, "notes.txt") }],
-        ["bash", { name: "Bash" }, { command: "git branch -D stale" }],
-        ["unknown", { name: "WebFetch" }, { url: "urn:agenc:test-webfetch" }],
+        ["bash", { name: "system.bash" }, { command: "git branch -D stale" }],
+        ["unknown", { name: "web_fetch" }, { url: "urn:agenc:test-webfetch" }],
       ] as const) {
         const decision = await params.canUseTool(tool, input);
         decisions.push({
@@ -250,13 +260,15 @@ describe("PromptSuggestion speculation", () => {
       appState = update(appState);
     };
 
-    await startSpeculation(
-      "run tests",
-      createSpeculationContext(appState, cwd),
-      setAppState,
-      false,
-      undefined,
-      { cwd, speculationEnabled: true },
+    await runInSessionTempRoot(sessionTempRoot, () =>
+      startSpeculation(
+        "run tests",
+        createSpeculationContext(appState, cwd),
+        setAppState,
+        false,
+        undefined,
+        { cwd, speculationEnabled: true },
+      ),
     );
 
     expect(decisions).toEqual([
@@ -265,11 +277,15 @@ describe("PromptSuggestion speculation", () => {
       { label: "bash", behavior: "deny", reason: "speculation_bash_boundary" },
       { label: "unknown", behavior: "deny", reason: "speculation_unknown_tool" },
     ]);
+    const overlayPath = (appState.speculation as { overlayPath: string }).overlayPath;
+    abortSpeculationForTest(appState, setAppState);
+    await expect(access(overlayPath)).rejects.toThrow();
   });
 
   it("rewrites speculative writes and later reads through the overlay", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agenc-spec-overlay-"));
-    tempDirs.push(cwd);
+    const sessionTempRoot = await mkdtemp(join(tmpdir(), "agenc-spec-temp-"));
+    tempDirs.push(cwd, sessionTempRoot);
     process.env.USER_TYPE = "ant";
     await writeFile(join(cwd, "notes.txt"), "original");
 
@@ -282,7 +298,7 @@ describe("PromptSuggestion speculation", () => {
       );
       writePath = String(write.updatedInput?.file_path ?? "");
       const read = await params.canUseTool(
-        { name: "Read" },
+        { name: "FileRead" },
         { file_path: join(cwd, "notes.txt") },
       );
       readPath = String(read.updatedInput?.file_path ?? "");
@@ -293,20 +309,145 @@ describe("PromptSuggestion speculation", () => {
       appState = update(appState);
     };
 
-    await startSpeculation(
-      "edit notes",
-      createSpeculationContext(appState, cwd),
-      setAppState,
-      false,
-      undefined,
-      { cwd, speculationEnabled: true },
+    await runInSessionTempRoot(sessionTempRoot, () =>
+      startSpeculation(
+        "edit notes",
+        createSpeculationContext(appState, cwd),
+        setAppState,
+        false,
+        undefined,
+        { cwd, speculationEnabled: true },
+      ),
     );
 
-    expect(writePath).toContain(join("agenc", "speculation", String(process.pid)));
+    expect(relative(sessionTempRoot, writePath)).not.toMatch(/^\.\.(?:[\\/]|$)/u);
     expect(readPath).toBe(writePath);
     await expect(readFile(writePath, "utf8")).resolves.toBe("original");
+    const overlayPath = (appState.speculation as { overlayPath: string }).overlayPath;
+    abortSpeculationForTest(appState, setAppState);
+    await expect(access(overlayPath)).rejects.toThrow();
+  });
+
+  it("isolates concurrent overlays under each captured session root", async () => {
+    const cwdA = await mkdtemp(join(tmpdir(), "agenc-spec-cwd-a-"));
+    const cwdB = await mkdtemp(join(tmpdir(), "agenc-spec-cwd-b-"));
+    const rootA = await mkdtemp(join(tmpdir(), "agenc-spec-root-a-"));
+    const rootB = await mkdtemp(join(tmpdir(), "agenc-spec-root-b-"));
+    tempDirs.push(cwdA, cwdB, rootA, rootB);
+    process.env.USER_TYPE = "ant";
+    runForkedAgentMock.mockResolvedValue({
+      messages: [],
+      totalUsage: { output_tokens: 0 },
+    });
+
+    let stateA = baseSpeculationAppState("acceptEdits") as any;
+    let stateB = baseSpeculationAppState("acceptEdits") as any;
+    const setA = (update: (prev: any) => any) => {
+      stateA = update(stateA);
+    };
+    const setB = (update: (prev: any) => any) => {
+      stateB = update(stateB);
+    };
+
+    await Promise.all([
+      runInSessionTempRoot(rootA, () =>
+        startSpeculation(
+          "session a",
+          createSpeculationContext(stateA, cwdA),
+          setA,
+          false,
+          undefined,
+          { cwd: cwdA, speculationEnabled: true },
+        ),
+      ),
+      runInSessionTempRoot(rootB, () =>
+        startSpeculation(
+          "session b",
+          createSpeculationContext(stateB, cwdB),
+          setB,
+          false,
+          undefined,
+          { cwd: cwdB, speculationEnabled: true },
+        ),
+      ),
+    ]);
+
+    const overlayA = stateA.speculation.overlayPath as string;
+    const overlayB = stateB.speculation.overlayPath as string;
+    expect(relative(rootA, overlayA)).not.toMatch(/^\.\.(?:[\\/]|$)/u);
+    expect(relative(rootB, overlayB)).not.toMatch(/^\.\.(?:[\\/]|$)/u);
+    expect(overlayA).not.toBe(overlayB);
+
+    abortSpeculationForTest(stateA, setA);
+    abortSpeculationForTest(stateB, setB);
+    await expect(access(overlayA)).rejects.toThrow();
+    await expect(access(overlayB)).rejects.toThrow();
+  });
+
+  it("queues accepted telemetry through canonical session storage", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agenc-spec-transcript-cwd-"));
+    const overlayPath = await mkdtemp(join(tmpdir(), "agenc-spec-transcript-overlay-"));
+    const transcriptPath = join(cwd, "session.jsonl");
+    tempDirs.push(cwd, overlayPath);
+    process.env.TEST_ENABLE_SESSION_PERSISTENCE = "1";
+    setSessionFileForTesting(transcriptPath);
+    let appState = baseSpeculationAppState("acceptEdits") as any;
+    const setAppState = (update: (prev: any) => any) => {
+      appState = update(appState);
+    };
+
+    await acceptSpeculation(
+      {
+        status: "active",
+        id: "canonical-transcript",
+        abort: vi.fn(),
+        startTime: Date.now() - 100,
+        messagesRef: { current: [] },
+        writtenPathsRef: { current: new Set() },
+        boundary: { type: "complete", completedAt: Date.now(), outputTokens: 1 },
+        suggestionLength: 9,
+        toolUseCount: 0,
+        isPipelined: false,
+        cwd,
+        overlayPath,
+        contextRef: { current: {} },
+        pipelinedSuggestion: null,
+      } as any,
+      setAppState,
+      0,
+    );
+    await flushSessionStorage();
+
+    const entries = (await readFile(transcriptPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map(line => JSON.parse(line));
+    expect(entries).toEqual([
+      expect.objectContaining({ type: "speculation-accept" }),
+    ]);
   });
 });
+
+function runInSessionTempRoot<T>(
+  sessionTempRoot: string,
+  operation: () => T,
+): T {
+  const session = {
+    conversationId: `prompt-test-${sessionTempRoot}`,
+    services: {
+      runtimeOptions: resolveAgentRuntimeOptions({}, { sessionTempRoot }),
+    },
+  } as unknown as Session;
+  return runWithCurrentRuntimeSession(session, operation);
+}
+
+function abortSpeculationForTest(
+  appState: any,
+  setAppState: (update: (prev: any) => any) => void,
+): void {
+  if (appState.speculation.status !== "active") return;
+  abortSpeculation(setAppState);
+}
 
 function baseSpeculationAppState(mode: string) {
   return {

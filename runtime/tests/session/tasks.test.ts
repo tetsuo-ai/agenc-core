@@ -18,6 +18,8 @@
 import { describe, expect, it } from "vitest";
 
 import { AsyncQueue } from "../utils/async-queue.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {
   Session,
   type Event,
@@ -44,6 +46,7 @@ import {
   type SessionTask,
 } from "./tasks.js";
 import type { LLMProvider } from "../llm/types.js";
+import { resolveAgentRuntimeOptions } from "./runtime-options.js";
 import { ToolRouter } from "../tools/router.js";
 import type { Tool } from "../tools/types.js";
 
@@ -53,8 +56,6 @@ import type { Tool } from "../tools/types.js";
 
 function mkFeatures(): ManagedFeatures {
   return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
   };
 }
 
@@ -138,6 +139,9 @@ function mkProvider(): LLMProvider {
 
 function buildSession(): Session {
   const services = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     admissionRequired: false,
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
@@ -149,6 +153,7 @@ function buildSession(): Session {
       isCancelled: () => false,
     },
     provider: mkProvider(),
+    runtimeOptions: resolveAgentRuntimeOptions({}),
     registry: {
       tools: [],
       toLLMTools: () => [],
@@ -182,7 +187,7 @@ const flush = (): Promise<void> =>
 // ─────────────────────────────────────────────────────────────────────
 
 describe("tasks.ts primitives", () => {
-  it("createActiveTurnState initializes upstream fields to defaults", () => {
+  it("createActiveTurnState initializes all 11 upstream fields to defaults", () => {
     const s = createActiveTurnState();
     expect(s.pendingApprovals.size).toBe(0);
     expect(s.pendingRequestPermissions.size).toBe(0);
@@ -249,14 +254,20 @@ describe("Session.spawnTask registry lifecycle", () => {
   it("binds root human text to the exact active turn and drops it on replacement", async () => {
     const session = buildSession();
     await session.spawnTask({
-      subId: "turn-current",
+      subId: "turn-ledger",
       kind: "regular",
-      rootHumanTurnText: "review the current changes",
+      rootHumanTurnText: "@ledger send 1 lamport",
     });
     expect(session.currentRootHumanTurn()).toEqual({
-      turnId: "turn-current",
-      text: "review the current changes",
+      turnId: "turn-ledger",
+      text: "@ledger send 1 lamport",
     });
+    await expect(
+      session.claimLedgerTransferAuthorization("turn-ledger"),
+    ).resolves.toBe(true);
+    await expect(
+      session.claimLedgerTransferAuthorization("turn-ledger"),
+    ).resolves.toBe(false);
 
     await session.spawnTask({ subId: "turn-next", kind: "regular" });
     expect(session.currentRootHumanTurn()).toBeNull();

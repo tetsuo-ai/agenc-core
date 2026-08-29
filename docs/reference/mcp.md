@@ -17,8 +17,8 @@ Deep client notes: [`runtime/src/mcp-client/README.md`](../../runtime/src/mcp-cl
 | --- | --- | --- |
 | stdio (default) | `stdio` | `command` (+ optional `args`, `cwd`, `env` / `env_vars`) |
 | Streamable HTTP | `http` | `endpoint` |
-| SSE (legacy) | `sse` | `endpoint` |
-| WebSocket | `websocket` or `ws` | `endpoint` |
+| SSE (older MCP transport) | `sse` | `endpoint` |
+| WebSocket | `websocket` | `endpoint` |
 
 Optional bearer / custom headers apply on network transports. Stdio owns env
 allow-listing, process-group cleanup, and PID-tree teardown.
@@ -27,6 +27,13 @@ allow-listing, process-group cleanup, and PID-tree teardown.
 
 Servers are configured under `mcp_servers` in config (typed as
 `McpServerConfig` in `runtime/src/config/schema.ts`):
+
+Server names are stable runtime identifiers: 1–256 ASCII letters, numbers,
+colons, hyphens, or underscores. A period is not allowed because `.` separates
+the server and tool portions of the canonical `mcp.<server>.<tool>` identity.
+Colons are reserved-compatible with plugin-scoped names such as
+`plugin:sample:local`; overlong generated plugin scopes are deterministically
+compacted with a SHA-256 suffix before they reach the runtime manager.
 
 ```toml
 [mcp_servers.docs]
@@ -40,7 +47,6 @@ args = ["-y", "some-mcp-server"]
 # enabled_tools = ["search"]
 # disabled_tools = ["delete"]
 # container = "my-desktop-container"  # optional: stdio via desktop sandbox / docker exec
-# pluginSandbox = true                # optional plugin-scoped sandboxing
 ```
 
 Network example:
@@ -49,12 +55,31 @@ Network example:
 [mcp_servers.remote]
 transport = "http"
 endpoint = "https://mcp.example.com/mcp"
-# headers = { Authorization = "Bearer …" }
+# headers = { Authorization = "Bearer ${AGENC_CREDENTIAL_REMOTE_TOKEN}" }
 ```
 
-Also: daemon method `session.mcp.addServer` (and related enable/disable/reconnect
-paths on the dispatcher) for session-scoped server mutations. The public SDK
-method registry includes `session.mcp.addServer`; see [`../sdk.md`](../sdk.md).
+`${NAME}` and `${NAME:-default}` interpolation is resolved once from the
+creating client's captured environment. It never falls back to the daemon's
+startup environment. Use the reserved `AGENC_CREDENTIAL_*` namespace for MCP
+secrets that must cross a daemon session boundary. A configured
+`headersHelper` receives that same captured environment plus
+`AGENC_MCP_SERVER_NAME` and `AGENC_MCP_SERVER_URL`; reconnects retain the
+original environment and shell-wrapper authority.
+
+Daemon sessions own their outbound MCP manager and all live transports. The
+daemon TUI never creates a client-side manager or mirrors mutations into a
+second connection set. It forwards `session.mcp.addServer` and the internal
+enable, disable, and reconnect methods to the owning daemon session.
+
+`session.mcp.status` returns a revisioned, passive projection for the public
+SDK and TUI. It contains server names, transport/state flags, sanitized display
+targets, tool counts, and tool names. It never contains SDK
+clients, environment variables, headers, arguments, authentication material,
+full remote URLs, raw connection errors, or executable tool schemas.
+`event.mcp_status_changed`
+contains only `sessionId` and `revision`; clients then fetch the complete
+projection. Revisions are monotonic within one live daemon connection and
+clients reset their watermark after reconnecting to a replacement daemon.
 
 AgenC can also expose itself as an MCP server via `[mcp.server]`
 (`enabled`, `transport` = `stdio` | `sse`, optional `host` / `port`). Daemon
@@ -75,7 +100,28 @@ and must resolve to a directory before the endpoint starts. Foreground
   refuses to load if the advertised catalog drifts
 
 Resources (list/read) and prompts (list/render into message pairs) are bridged
-similarly, with a 5 MiB per-resource byte cap.
+through the same session-owned manager. Resource reads preserve multipart
+content in order, cap each block at 1 MiB and each aggregate read at 5 MiB,
+accept at most 256 content blocks, and mark truncation explicitly. Resource
+catalogs accept at most 100 cursor pages and 1,000 descriptors. Resource URIs
+are limited to 8 KiB; display names, descriptions, and MIME metadata are
+sanitized and bounded to 1 KiB, 8 KiB, and 256 bytes respectively. The
+model-facing read helper persists binary blocks in the session's private
+tool-results directory and returns file references; raw base64 is not inserted
+into model context.
+
+User-authored `@server:uri` resource mentions are resolved once at the session
+sampling boundary, and only from the exact authoritative root-human text for
+that turn. Continuation sampling cannot consume the same turn twice. AgenC
+matches the longest connected server-name prefix (so plugin-scoped names
+containing `:` remain valid), then admits the catalog lookup and resource read
+as one bounded, read-only effect through that session's MCP manager. A turn
+resolves at most 10 resource mentions under one shared 1-second deadline and
+retains at most 5 MiB across their encoded content and resource metadata. These
+reads never use `ToolUseContext.mcpClients` or the TUI preprocessing path; the
+passive status projection contains no executable client. Returned resource
+content keeps the canonical size, normalization, truncation, and untrusted-data
+framing rules above.
 
 ### Model-facing MCP tools
 
@@ -84,13 +130,19 @@ registry entries under the namespace **`mcp.<server>.<tool>`**.
 
 Built-in helpers that help the agent work with MCP resources:
 
-- `ListMcpResources` / `ListMcpResourcesTool`
-- `ReadMcpResource` / `ReadMcpResourceTool`
+- `ListMcpResourcesTool`
+- `ReadMcpResourceTool`
 
-(`McpAuthTool` exists as a donor-style OAuth helper in the tools tree; it is
-not the primary LIVE bridge surface.)
-
-Slash: `/mcp` opens the MCP connection menu in the TUI.
+Slash: `/mcp` opens the MCP connection menu in the TUI. `/mcp status` and
+`/mcp list` show server state; `/mcp tools [server]` inspects tools; and
+`/mcp reconnect|enable|disable <server>` applies session-scoped connection
+changes. `/mcp add <server> <command> [args...]` imports a session-scoped stdio
+server without editing `config.toml`. `/mcp new` (alias `/mcp create`) scaffolds
+a dependency-free project-local stdio server and connects it for the session.
+The command and menu do not provide an authentication action; `needs-auth` is
+only a displayed connection state. In daemon mode the menu reads the passive
+status projection and sends mutations back to the daemon; it does not own
+transports or executable MCP clients.
 
 ### CLI
 
@@ -109,7 +161,7 @@ command line). Full flag tables: [cli.md](cli.md).
 ### Sampling & roots
 
 Session-owned managers can route `sampling/createMessage` through the active
-runtime provider. Sessionless compatibility connections return a graceful
+runtime provider. Connections without a runtime session return a graceful
 unavailable result. Host roots are advertised per the MCP connection.
 
 ## Inbound server
@@ -133,8 +185,8 @@ native daemon session/capability and traverse the common permission, sandbox,
 admission, redaction, and audit path.
 
 Prompts and resources are scoped to the same canonical workspace: project
-`.agenc/skills`, `.agenc/commands`, `.agenc/memory`, and `AGENC.md`. User-global
-skills, commands, memory, and instructions are never exposed by inbound serve.
+`.agenc/skills`, `.agenc/memory`, and `AGENC.md`. User-global skills, memory,
+and instructions are never exposed by inbound serve.
 Every candidate is canonicalized, regular-file checked, and rejected if a
 symlink resolves outside the workspace. Resource listing remains metadata-only;
 the server revalidates and reads only the resource selected by `resources/read`.

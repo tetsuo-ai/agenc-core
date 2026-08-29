@@ -10,20 +10,18 @@
  *
  * Cross-cuts deliberately NOT carried:
  *   - Donor React/Ink render components.
- *   - Deprecated donor shell output aliases beyond the `shell_id` input alias.
+ *   - Deprecated donor shell output aliases.
  */
 
 import {
   backgroundTaskLifecycle,
   isTerminalTaskStatus,
   stopTask,
-  StopTaskError,
   type BackgroundTaskLifecycle,
 } from "../../tasks/index.js";
 import type { Tool } from "../types.js";
 import {
   TASK_CONCURRENCY,
-  asTaskPreEffectRefusal,
   numberValue,
   stringValue,
   taskStrictArgs,
@@ -181,29 +179,22 @@ export function createBackgroundTaskTools(
         type: "object",
         properties: {
           task_id: { type: "string" },
-          shell_id: { type: "string" },
         },
+        required: ["task_id"],
         additionalProperties: false,
       },
       execute: async (args) => {
         const strict = taskStrictArgs(args, {
-          allowed: new Set(["task_id", "shell_id"]),
+          allowed: new Set(["task_id"]),
+          required: ["task_id"],
         });
-        if (strict) {
-          return asTaskPreEffectRefusal(
-            strict,
-            "tool:task-stop:input-validation",
-          );
-        }
-        const taskId = stringValue(args.task_id) ?? stringValue(args.shell_id);
+        if (strict) return strict;
+        const taskId = stringValue(args.task_id);
         if (!taskId) {
-          return asTaskPreEffectRefusal(
-            taskTextResult(
-              "Missing required parameter: task_id",
-              { error: "Missing required parameter: task_id" },
-              true,
-            ),
-            "tool:task-stop:input-validation",
+          return taskTextResult(
+            "Missing required parameter: task_id",
+            { error: "Missing required parameter: task_id" },
+            true,
           );
         }
         try {
@@ -225,16 +216,7 @@ export function createBackgroundTaskTools(
         } catch (error) {
           const message =
             error instanceof Error ? error.message : String(error);
-          const result = taskTextResult(message, { error: message }, true);
-          return error instanceof StopTaskError &&
-            (error.code === "not_found" ||
-              error.code === "not_running" ||
-              error.code === "unsupported_type")
-            ? asTaskPreEffectRefusal(
-                result,
-                `tool:task-stop:${error.code}`,
-              )
-            : result;
+          return taskTextResult(message, { error: message }, true);
         }
       },
     },

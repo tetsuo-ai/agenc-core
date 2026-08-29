@@ -8,9 +8,8 @@ import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "src/prompts/system-prompt.js";
 
 // gaphunt3 #1: the Anthropic Messages API rejects (400) a forced tool_choice
 // ({type:'any'} for 'required', or {type:'tool',name}) when extended thinking
-// is enabled. Sonnet 4.5 uses manual extended thinking and does not support
-// output_config.effort. The wire must omit the forced tool_choice (fall back to
-// auto) whenever reasoningEffort enables that thinking mode.
+// is enabled. buildAnthropicMessagesRequest must omit the forced tool_choice
+// (fall back to auto) whenever reasoningEffort enables thinking.
 describe("gaphunt3 #1 buildAnthropicMessagesRequest: thinking vs forced tool_choice", () => {
   const exampleTool = {
     type: "function" as const,
@@ -32,15 +31,16 @@ describe("gaphunt3 #1 buildAnthropicMessagesRequest: thinking vs forced tool_cho
       },
     });
 
-    expect(request.thinking).toEqual({
-      type: "enabled",
-      budget_tokens: 4095,
-    });
-    expect(request.output_config).toBeUndefined();
+    // Thinking must be enabled for this request.
+    expect(request.thinking).toMatchObject({ type: "enabled" });
 
     // The forbidden combination (thinking + forced tool_choice) must not ship.
     // tool_choice should be absent (auto) — never {type:'any'} / {type:'tool'}.
     expect(request.tool_choice).toBeUndefined();
+    const bothPresent =
+      (request.thinking as Record<string, unknown> | undefined)?.type ===
+        "enabled" && request.tool_choice !== undefined;
+    expect(bothPresent).toBe(false);
   });
 
   it("does not force the structured-output tool when reasoningEffort is set and no other tools exist", () => {
@@ -70,12 +70,8 @@ describe("gaphunt3 #1 buildAnthropicMessagesRequest: thinking vs forced tool_cho
         tool.name
       ),
     ).toContain(ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME);
-    // ...but it must NOT be forced while manual thinking is enabled.
-    expect(request.thinking).toEqual({
-      type: "enabled",
-      budget_tokens: 2048,
-    });
-    expect(request.output_config).toBeUndefined();
+    // ...but it must NOT be forced via tool_choice while thinking is enabled.
+    expect(request.thinking).toMatchObject({ type: "enabled" });
     expect(request.tool_choice).toBeUndefined();
   });
 

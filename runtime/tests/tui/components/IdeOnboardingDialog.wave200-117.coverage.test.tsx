@@ -26,7 +26,7 @@ type KeybindingHandlers = Record<string, () => void>;
 const harness = vi.hoisted(() => ({
   config: {} as TestConfig,
   dialogProps: undefined as DialogMockProps | undefined,
-  getGlobalConfig: vi.fn(),
+  getRuntimeState: vi.fn(),
   keybindings: undefined as
     | undefined
     | {
@@ -34,7 +34,7 @@ const harness = vi.hoisted(() => ({
       options: unknown;
     },
   platform: "linux",
-  saveGlobalConfig: vi.fn(),
+  updateRuntimeState: vi.fn(),
   statusDot: "*",
   terminal: "agenc-terminal" as string | null,
   terminalIdeType: "vscode" as string | null,
@@ -42,8 +42,8 @@ const harness = vi.hoisted(() => ({
 }));
 
 vi.mock("../../utils/config.js", () => ({
-  getGlobalConfig: harness.getGlobalConfig,
-  saveGlobalConfig: harness.saveGlobalConfig,
+  getRuntimeState: harness.getRuntimeState,
+  updateRuntimeState: harness.updateRuntimeState,
 }));
 
 vi.mock("../../utils/env.js", async () => {
@@ -135,10 +135,10 @@ describe("IdeOnboardingDialog wave200 coverage", () => {
     harness.terminal = "agenc-terminal";
     harness.terminalIdeType = "vscode";
     harness.titleStaticPrefix = "*";
-    harness.getGlobalConfig.mockReset();
-    harness.getGlobalConfig.mockImplementation(() => harness.config);
-    harness.saveGlobalConfig.mockReset();
-    harness.saveGlobalConfig.mockImplementation(
+    harness.getRuntimeState.mockReset();
+    harness.getRuntimeState.mockImplementation(() => harness.config);
+    harness.updateRuntimeState.mockReset();
+    harness.updateRuntimeState.mockImplementation(
       (updater: (current: TestConfig) => TestConfig) => {
         const next = updater(harness.config);
         if (next !== harness.config) {

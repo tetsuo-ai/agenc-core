@@ -6,13 +6,9 @@ import {
   LLMServerError,
   LLMTimeoutError,
 } from "../../errors.js";
-import { GeminiProvider } from "../gemini/index.js";
 import { LMStudioProvider } from "../lmstudio/index.js";
-import { OpenAIAuthSession } from "./auth.js";
-import {
-  OpenAIProvider,
-  refreshAndSyncOpenAiSubscriptionBearer,
-} from "./adapter.js";
+import { BUILT_IN_PROVIDER_BASE_URLS } from "../../registry/provider-info.js";
+import { OpenAIProvider } from "./adapter.js";
 
 const PROVIDER_TEST_LABEL = "Open" + "AI";
 
@@ -55,148 +51,115 @@ function expectNoRequestMetadataWarning(emitWarning: ReturnType<typeof vi.fn>): 
 }
 
 describe("OpenAIProvider", () => {
-  test("adopts a fresh stored bearer even when no refresh is needed", async () => {
-    const auth = new OpenAIAuthSession({
-      apiKey: "stale-token",
-      model: "gpt-5-codex",
-      defaultHeaders: { "ChatGPT-Account-ID": "old-account" },
-    });
-    const refreshSubscription = vi.fn(async () => false);
-
-    await refreshAndSyncOpenAiSubscriptionBearer({
-      readSubscriptionAuth: () => ({
-        accessToken: "fresh-token",
-        accountId: "new-account",
-      }),
-      refreshSubscription,
-      applySubscriptionAuth: (stored) => auth.updateSubscriptionAuth(stored),
-    });
-
-    expect(refreshSubscription).toHaveBeenCalledOnce();
-    const headers = new Headers(auth.resolveHeaders());
-    expect(headers.get("authorization")).toBe("Bearer fresh-token");
-    expect(headers.get("chatgpt-account-id")).toBe("new-account");
-  });
-
-  test("checks subscription freshness before non-stream chat", async () => {
+  test("uses the registry endpoint for registered provider identities", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response("unavailable", { status: 503 }),
+      new Response(
+        JSON.stringify({
+          id: "chatcmpl_registry_endpoint",
+          model: "deepseek-v4-pro",
+          choices: [
+            {
+              message: { role: "assistant", content: "ok" },
+              finish_reason: "stop",
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
     );
     const provider = new OpenAIProvider({
-      apiKey: "subscription-token",
-      model: "gpt-5-codex",
-      baseURL: "https://chatgpt.com/backend-api/codex",
-      fetchImpl,
-    });
-    const refresh = vi.spyOn(
-      provider as unknown as {
-        refreshSubscriptionBearerIfExpiring: () => Promise<void>;
-      },
-      "refreshSubscriptionBearerIfExpiring",
-    ).mockResolvedValue();
-
-    await expect(
-      provider.chat([{ role: "user", content: "hello" }], {
-        singleWireAttempt: true,
-      }),
-    ).rejects.toBeDefined();
-    expect(refresh).toHaveBeenCalledOnce();
-  });
-
-  test("checks subscription freshness before chat-completions streaming", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response("unavailable", { status: 503 }),
-    );
-    const provider = new OpenAIProvider({
-      apiKey: "subscription-token",
-      model: "gpt-5-codex",
-      baseURL: "https://chatgpt.com/backend-api/codex",
+      apiKey: "deepseek-test",
+      model: "deepseek-v4-pro",
+      providerName: "deepseek",
       useResponsesApi: false,
       fetchImpl,
     });
-    const refresh = vi.spyOn(
-      provider as unknown as {
-        refreshSubscriptionBearerIfExpiring: () => Promise<void>;
-      },
-      "refreshSubscriptionBearerIfExpiring",
-    ).mockResolvedValue();
+
+    await provider.chat([{ role: "user", content: "hello" }]);
+
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
+      `${BUILT_IN_PROVIDER_BASE_URLS.deepseek}/chat/completions`,
+    );
+  });
+
+  test("uses the registry credential label for registered provider identities", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new OpenAIProvider({
+      model: "deepseek-v4-pro",
+      providerName: "deepseek",
+      useResponsesApi: false,
+      fetchImpl,
+    });
 
     await expect(
-      provider.chatStream(
-        [{ role: "user", content: "hello" }],
-        () => {},
-        { singleWireAttempt: true },
+      provider.chat([{ role: "user", content: "hello" }]),
+    ).rejects.toThrow(/DEEPSEEK_API_KEY/u);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("fails closed for an unregistered provider without explicit routing metadata", () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+
+    expect(
+      () =>
+        new OpenAIProvider({
+          apiKey: "custom-test",
+          model: "custom-model",
+          providerName: "custom-provider",
+          fetchImpl,
+        }),
+    ).toThrow(/explicit baseURL because it is not registered/u);
+
+    expect(
+      () =>
+        new OpenAIProvider({
+          apiKey: "custom-test",
+          model: "custom-model",
+          providerName: "custom-provider",
+          baseURL: "https://custom.example/v1",
+          fetchImpl,
+        }),
+    ).toThrow(/explicit apiKeyEnvLabel because it is not registered/u);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("accepts an explicitly routed and labeled custom provider", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "chatcmpl_custom_endpoint",
+          model: "custom-model",
+          choices: [
+            {
+              message: { role: "assistant", content: "ok" },
+              finish_reason: "stop",
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
       ),
-    ).rejects.toBeDefined();
-    expect(refresh).toHaveBeenCalledOnce();
-  });
-
-  test("checks subscription freshness before health checks", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      Response.json({ models: [] }),
     );
     const provider = new OpenAIProvider({
-      apiKey: "subscription-token",
-      model: "gpt-5-codex",
-      baseURL: "https://chatgpt.com/backend-api/codex",
-      fetchImpl,
-    });
-    const refresh = vi.spyOn(
-      provider as unknown as {
-        refreshSubscriptionBearerIfExpiring: () => Promise<void>;
-      },
-      "refreshSubscriptionBearerIfExpiring",
-    ).mockResolvedValue();
-
-    await expect(provider.healthCheck()).resolves.toBe(true);
-    expect(refresh).toHaveBeenCalledOnce();
-  });
-
-  test("health-checks platform models without a ChatGPT client version", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      Response.json({ data: [] }),
-    );
-    const provider = new OpenAIProvider({
-      apiKey: "platform-key",
-      model: "gpt-5",
+      apiKey: "custom-test",
+      apiKeyEnvLabel: "CUSTOM_PROVIDER_API_KEY",
+      model: "custom-model",
+      providerName: "custom-provider",
+      baseURL: "https://custom.example/v1",
+      useResponsesApi: false,
       fetchImpl,
     });
 
-    await expect(provider.healthCheck()).resolves.toBe(true);
+    await provider.chat([{ role: "user", content: "hello" }]);
 
-    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(String(requestUrl)).toBe("https://api.openai.com/v1/models");
-    const headers = new Headers(init?.headers);
-    expect(headers.get("authorization")).toBe("Bearer platform-key");
-    expect(headers.get("chatgpt-account-id")).toBeNull();
-    expect(headers.get("originator")).toBeNull();
-  });
-
-  test("health-checks ChatGPT models with client version and subscription headers", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      Response.json({ models: [] }),
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
+      "https://custom.example/v1/chat/completions",
     );
-    const provider = new OpenAIProvider({
-      apiKey: "subscription-token",
-      model: "gpt-5-codex",
-      baseURL: "https://chatgpt.com/backend-api/codex",
-      defaultHeaders: {
-        "ChatGPT-Account-ID": "account-id",
-        originator: "agenc",
-      },
-      fetchImpl,
-    });
-
-    await expect(provider.healthCheck()).resolves.toBe(true);
-
-    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(String(requestUrl)).toBe(
-      "https://chatgpt.com/backend-api/codex/models?client_version=0.149.0",
-    );
-    const headers = new Headers(init?.headers);
-    expect(headers.get("authorization")).toBe("Bearer subscription-token");
-    expect(headers.get("chatgpt-account-id")).toBe("account-id");
-    expect(headers.get("originator")).toBe("agenc");
   });
 
   test.each([
@@ -265,47 +228,6 @@ describe("OpenAIProvider", () => {
           { singleWireAttempt: true },
         ),
       ).rejects.toBeDefined();
-      expect(fetchImpl).toHaveBeenCalledTimes(1);
-    },
-  );
-
-  test.each([
-    {
-      api: "responses",
-      useResponsesApi: true,
-      frame:
-        'event: response.failed\ndata: {"type":"response.failed","response":{"error":{"type":"overloaded_error","message":"Our servers are currently overloaded. Please try again later."}}}\n\n',
-    },
-    {
-      api: "chat completions",
-      useResponsesApi: false,
-      frame:
-        'data: {"error":{"type":"overloaded_error","message":"Our servers are currently overloaded. Please try again later."}}\n\n',
-    },
-  ])(
-    "maps statusless $api overload stream failures to retryable server errors",
-    async ({ useResponsesApi, frame }) => {
-      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-        sseResponse([frame]),
-      );
-      const provider = new OpenAIProvider({
-        apiKey: "sk-test",
-        model: "gpt-5",
-        useResponsesApi,
-        fetchImpl,
-      });
-
-      await expect(
-        provider.chatStream(
-          [{ role: "user", content: "hello" }],
-          () => {},
-          { singleWireAttempt: true },
-        ),
-      ).rejects.toMatchObject({
-        name: "LLMServerError",
-        providerName: "openai",
-        statusCode: 503,
-      });
       expect(fetchImpl).toHaveBeenCalledTimes(1);
     },
   );
@@ -1604,9 +1526,7 @@ describe("OpenAIProvider", () => {
 
     expect(chunks).toEqual([
       { content: "Hi ", done: false },
-      { content: "", done: false },
       { content: "there", done: false },
-      { content: "", done: false },
       {
         content: "",
         done: true,
@@ -1661,10 +1581,7 @@ describe("OpenAIProvider", () => {
     ).rejects.toThrow(
       `${PROVIDER_TEST_LABEL} chat-completions stream emitted invalid tool_call`,
     );
-    expect(chunks).toEqual([
-      { content: "", done: false },
-      { content: "", done: false },
-    ]);
+    expect(chunks).toEqual([]);
     expectNoRequestMetadataWarning(emitWarning);
   });
 
@@ -1698,8 +1615,6 @@ describe("OpenAIProvider", () => {
     expect(response.toolCalls).toEqual([]);
     expect(chunks).toEqual([
       { content: "Let me write that.", done: false },
-      { content: "", done: false },
-      { content: "", done: false },
       { content: "", done: true },
     ]);
   });
@@ -1810,49 +1725,4 @@ describe("OpenAIProvider", () => {
     expect(headers.get("authorization")).toBeNull();
   });
 
-  test("normalizes Gemini /openai base URLs to native generateContent", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          model: "gemini-2.5-pro",
-          candidates: [
-            {
-              content: {
-                role: "model",
-                parts: [{ text: "ok" }],
-              },
-              finishReason: "STOP",
-            },
-          ],
-          usageMetadata: {
-            promptTokenCount: 4,
-            candidatesTokenCount: 1,
-            totalTokenCount: 5,
-          },
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        },
-      ),
-    );
-    const provider = new GeminiProvider({
-      apiKey: "gemini-test",
-      model: "gemini-2.5-pro",
-      baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
-      fetchImpl,
-    });
-
-    await provider.chat([{ role: "user", content: "hello" }]);
-
-    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(String(requestUrl)).toBe(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent",
-    );
-    const headers = init?.headers as Headers;
-    expect(headers.get("x-goog-api-key")).toBe("gemini-test");
-    expect(headers.get("authorization")).toBeNull();
-    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    expect("store" in requestBody).toBe(false);
-  });
 });

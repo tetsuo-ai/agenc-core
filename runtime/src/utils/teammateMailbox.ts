@@ -1018,55 +1018,6 @@ export function isTeamPermissionUpdate(
 }
 
 /**
- * Mode set request message sent from leader to teammate via mailbox
- * Uses SDK PermissionModeSchema for validated mode values
- */
-export const ModeSetRequestMessageSchema = lazySchema(() =>
-  z.object({
-    type: z.literal('mode_set_request'),
-    mode: PermissionModeSchema(),
-    from: z.string(),
-  }),
-)
-
-export type ModeSetRequestMessage = z.infer<
-  ReturnType<typeof ModeSetRequestMessageSchema>
->
-
-/**
- * Creates a mode set request message to send to a teammate
- */
-export function createModeSetRequestMessage(params: {
-  mode: string
-  from: string
-}): ModeSetRequestMessage {
-  return {
-    type: 'mode_set_request',
-    mode: params.mode as ModeSetRequestMessage['mode'],
-    from: params.from,
-  }
-}
-
-/**
- * Checks if a message text contains a mode set request
- */
-export function isModeSetRequest(
-  messageText: string,
-): ModeSetRequestMessage | null {
-  try {
-    const parsed = ModeSetRequestMessageSchema().safeParse(
-      jsonParse(messageText),
-    )
-    if (parsed.success) {
-      return parsed.data
-    }
-  } catch {
-    // Not JSON or not a valid mode set request
-  }
-  return null
-}
-
-/**
  * Checks if a message text is a structured protocol message that should be
  * routed by useInboxPoller rather than consumed as raw LLM context.
  *
@@ -1090,7 +1041,6 @@ export function isStructuredProtocolMessage(messageText: string): boolean {
       type === 'shutdown_request' ||
       type === 'shutdown_approved' ||
       type === 'team_permission_update' ||
-      type === 'mode_set_request' ||
       type === 'plan_approval_request' ||
       type === 'plan_approval_response'
     )

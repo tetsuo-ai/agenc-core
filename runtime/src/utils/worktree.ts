@@ -2,7 +2,7 @@ import chalk from 'chalk'
 import { spawnSync } from 'child_process'
 import { mkdir, readdir, stat, symlink, utimes } from 'fs/promises'
 import { basename, join } from 'path'
-import { saveCurrentProjectConfig } from './config.js'
+import { saveCurrentProjectRuntimeState } from './config.js'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage, getErrnoCode } from './errors.js'
@@ -96,7 +96,7 @@ export function validateWorktreeSlug(slug: string): void {
 async function symlinkDirectories(
   repoRootPath: string,
   worktreePath: string,
-  dirsToSymlink: string[],
+  dirsToSymlink: readonly string[],
 ): Promise<void> {
   for (const dir of dirsToSymlink) {
     // Validate directory doesn't escape repository boundaries
@@ -674,7 +674,7 @@ export async function createWorktreeForSession(
     if (!gitRoot) {
       throw new Error(
         'Cannot create a worktree: not in a git repository and no WorktreeCreate hooks are configured. ' +
-          'Configure WorktreeCreate/WorktreeRemove hooks in settings.json to use worktree isolation with other VCS systems.',
+          'Configure WorktreeCreate/WorktreeRemove hooks in config.toml to use worktree isolation with other VCS systems.',
       )
     }
 
@@ -724,7 +724,7 @@ export async function createWorktreeForSession(
   }
 
   // Save to project config for persistence
-  saveCurrentProjectConfig(current => ({
+  saveCurrentProjectRuntimeState(current => ({
     ...current,
     activeWorktreeSession: currentWorktreeSession ?? undefined,
   }))
@@ -747,7 +747,7 @@ export async function keepWorktree(): Promise<void> {
     currentWorktreeSession = null
 
     // Update config
-    saveCurrentProjectConfig(current => ({
+    saveCurrentProjectRuntimeState(current => ({
       ...current,
       activeWorktreeSession: undefined,
     }))
@@ -825,7 +825,7 @@ export async function cleanupWorktree(
     currentWorktreeSession = null
 
     // Update config
-    saveCurrentProjectConfig(current => ({
+    saveCurrentProjectRuntimeState(current => ({
       ...current,
       activeWorktreeSession: undefined,
     }))
@@ -905,7 +905,7 @@ export async function createAgentWorktree(
   if (!gitRoot) {
     throw new Error(
       'Cannot create agent worktree: not in a git repository and no WorktreeCreate hooks are configured. ' +
-        'Configure WorktreeCreate/WorktreeRemove hooks in settings.json to use worktree isolation with other VCS systems.',
+        'Configure WorktreeCreate/WorktreeRemove hooks in config.toml to use worktree isolation with other VCS systems.',
     )
   }
 

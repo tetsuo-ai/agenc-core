@@ -7,10 +7,7 @@
  * `agent_message_delta` + `agent_message` events, and proposed-plan
  * content that becomes `plan_delta` + `plan_item_completed` events.
  *
- * T11 Wave 2 (Agent C): `isPlanMode` now consults the real
- * `PermissionMode` via `turnContext.sessionConfiguration?.permissionContext`
- * first, falling back to the compatibility `collaborationMode.model === "plan"`
- * gate so existing callers keep working.
+ * `isPlanMode` reads the permission mode captured on the turn.
  *
  * T12 Wave 4-C: `startPlanItem` / `pushPlanDelta` /
  * `completePlanItemWithText` now emit typed `plan_started` /
@@ -34,9 +31,8 @@
  *   turn.rs:1759 handle_assistant_item_done_in_plan_mode → handleAssistantItemDoneInPlanMode
  *   turn.rs:1445 realtime_text_for_event             → realtimeTextForEvent
  *
- * Plan mode is gated on `sessionConfiguration.permissionContext.mode`,
- * the authoritative source mirrored from `PermissionModeRegistry` by
- * `Session` on every transition.
+ * Plan mode is gated on `TurnContext.permissionMode`. Turn construction
+ * captures that value from `PermissionModeRegistry`.
  *
  * The event surface extends the AgenC EventMsg union with dedicated
  * `plan_started` / `plan_delta` / `plan_item_completed` / `plan_exited`
@@ -144,10 +140,8 @@ export function createPlanModeStreamState(turnId: string): PlanModeStreamState {
 /**
  * Is plan mode currently active for this turn context?
  *
- * Authoritative source: `sessionConfiguration.permissionContext.mode`,
- * mirrored from `PermissionModeRegistry` by `Session` after every
- * mode transition (the `EnterPlanMode` / `ExitPlanMode` tools and the
- * `/plan` slash command both flow through the registry).
+ * Turn construction snapshots `PermissionModeRegistry.current().mode` in
+ * `permissionMode`.
  */
 export function isPlanMode(ctx: TurnContext): boolean {
   // Editor interactions are request-scoped read/proposal operations, not
@@ -158,14 +152,7 @@ export function isPlanMode(ctx: TurnContext): boolean {
   // resumes the exact mode the user selected.
   if (ctx.editorInteraction !== undefined) return false;
 
-  const withPermission = ctx as unknown as {
-    sessionConfiguration?: {
-      permissionContext?: { mode?: string };
-    };
-  };
-  return (
-    withPermission.sessionConfiguration?.permissionContext?.mode === "plan"
-  );
+  return ctx.permissionMode === "plan";
 }
 
 // ─────────────────────────────────────────────────────────────────────

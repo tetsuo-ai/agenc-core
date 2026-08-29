@@ -406,30 +406,25 @@ function buildRunStatus(
   const currentLifecycleEpoch = readCurrentLifecycleEpoch(db, runId);
   const durableTerminal = readCurrentTerminalResult(db, runId);
   const workflow = workflowStatusProjection(db, runId, durableTerminal);
-  const explicitlyReopenedWithoutTerminal =
-    currentLifecycleEpoch !== undefined &&
-    currentLifecycleEpoch.reopenedFromEpoch !== null &&
-    durableTerminal === undefined;
+  const reopenedWithoutTerminal =
+    currentLifecycleEpoch !== undefined && durableTerminal === undefined;
   return {
     runId,
     status:
       durableTerminal?.status ??
-      (explicitlyReopenedWithoutTerminal &&
-        run !== undefined &&
-        isTerminalAgentRunStatus(run.status)
+      (reopenedWithoutTerminal && run !== undefined && isTerminalAgentRunStatus(run.status)
         ? "running"
         : run?.status ?? "admission_only"),
     terminal:
       durableTerminal !== undefined ||
-      (!explicitlyReopenedWithoutTerminal &&
+      (currentLifecycleEpoch === undefined &&
         run !== undefined &&
         isTerminalAgentRunStatus(run.status) &&
         !admission.active),
     statusSource:
       durableTerminal !== undefined
         ? "run_terminal_result"
-        : explicitlyReopenedWithoutTerminal ||
-            (run === undefined && currentLifecycleEpoch !== undefined)
+        : currentLifecycleEpoch !== undefined
           ? "run_lifecycle_epoch"
         : run === undefined
           ? "admission_state"
@@ -983,33 +978,20 @@ function readCurrentTerminalResult(
     .get(runId);
 }
 
-interface CurrentLifecycleEpoch {
-  readonly epoch: number;
-  readonly reopenedFromEpoch: number | null;
-}
-
 function readCurrentLifecycleEpoch(
   db: BetterSqlite3.Database,
   runId: string,
-): CurrentLifecycleEpoch | undefined {
+): number | undefined {
   if (!tableExists(db, "run_lifecycle_epochs")) return undefined;
-  const row = db
-    .prepare<
-      [string],
-      { readonly epoch: number; readonly reopened_from_epoch: number | null }
-    >(
-      `SELECT epoch, reopened_from_epoch
+  return db
+    .prepare<[string], { readonly epoch: number }>(
+      `SELECT epoch
        FROM run_lifecycle_epochs
        WHERE run_id = ?
        ORDER BY epoch DESC
        LIMIT 1`,
     )
-    .get(runId);
-  if (row === undefined) return undefined;
-  return {
-    epoch: row.epoch,
-    reopenedFromEpoch: row.reopened_from_epoch,
-  };
+    .get(runId)?.epoch;
 }
 
 function parseRunUsage(

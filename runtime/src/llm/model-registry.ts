@@ -1,10 +1,13 @@
 import {
   buildProviderModelCatalog,
-  normalizeProviderSlug,
+  resolveProviderModelInput,
+} from "../config/provider-model-authority.js";
+import {
   readProviderConfig,
-  resolveDisambiguatedModelSelection,
-  type AgenCConfig,
-} from "./_deps/config.js";
+  resolveProviderSlug,
+} from "../config/resolve-provider.js";
+import type { AgenCConfig } from "../config/schema.js";
+import { normalizeProviderIdentity } from "../provider-identity.js";
 import {
   resolveProviderCapabilityEntry,
   type ProviderCapabilityRegistryEntry,
@@ -132,8 +135,9 @@ function resolveCostEntry(params: {
   };
 }
 
-function normalizeRegistryProvider(provider: string): string {
-  return normalizeProviderSlug(provider) ?? provider.trim().toLowerCase();
+function normalizeRegistryProviderIdentity(provider: string): string {
+  return resolveProviderSlug(provider) ??
+    normalizeProviderIdentity(provider, "model registry")!;
 }
 
 function normalizeRegistrySelection(params: {
@@ -141,7 +145,7 @@ function normalizeRegistrySelection(params: {
   readonly model: string;
 }): { readonly provider: string; readonly model: string } {
   return {
-    provider: normalizeRegistryProvider(params.provider),
+    provider: normalizeRegistryProviderIdentity(params.provider),
     model: params.model.trim(),
   };
 }
@@ -211,7 +215,9 @@ export class ModelRegistry {
     this.config = options.config;
     this.metadataResolver = new ModelMetadataResolver(options.metadata);
     this.costRegistry = options.costRegistry ?? DEFAULT_MODEL_COSTS;
-    this.catalog = buildProviderModelCatalog(options.config);
+    this.catalog = buildProviderModelCatalog(options.config, {
+      includeConfiguredSelection: true,
+    });
   }
 
   listEntriesSync(): readonly ModelRegistryEntry[] {
@@ -234,26 +240,9 @@ export class ModelRegistry {
       });
     }
 
-    const explicitSeparator = trimmed.indexOf(":");
-    if (explicitSeparator > 0) {
-      const explicitProvider = trimmed.slice(0, explicitSeparator);
-      if (normalizeProviderSlug(explicitProvider) !== undefined) {
-        return normalizeRegistrySelection({
-          provider: explicitProvider,
-          model: trimmed.slice(explicitSeparator + 1),
-        });
-      }
-    }
-
-    try {
-      return normalizeRegistrySelection(resolveDisambiguatedModelSelection({
-        slug: trimmed,
-        config: this.config,
-        catalog: this.catalog,
-      }));
-    } catch {
-      return normalizeRegistrySelection({ provider: fallbackProvider, model: trimmed });
-    }
+    return normalizeRegistrySelection(
+      resolveProviderModelInput(this.config, fallbackProvider, trimmed),
+    );
   }
 
   resolveSync(params: {

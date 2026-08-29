@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -256,6 +256,8 @@ describe("AgenC daemon autostart", () => {
     await writeFile(
       join(agencHome, "config.toml"),
       `
+config_version = 2
+
 [daemon]
 autostart = false
 
@@ -285,6 +287,42 @@ port = 0
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("uses the captured environment without inheriting the launch workspace", async () => {
+    const root = await tempAgencHome();
+    const agencHome = join(root, "home");
+    const projectRoot = join(root, "project");
+    const cwd = join(projectRoot, "nested");
+    await mkdir(agencHome, { recursive: true });
+    await mkdir(cwd, { recursive: true });
+    await writeFile(join(projectRoot, ".git"), "");
+    await writeFile(join(agencHome, "config.toml"), `
+config_version = 2
+
+[daemon]
+autostart = false
+    `);
+    await mkdir(join(projectRoot, ".agenc"), { recursive: true });
+    await writeFile(join(projectRoot, ".agenc", "config.toml"), `
+config_version = 2
+
+[daemon]
+autostart = true
+    `);
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(cwd);
+    vi.stubEnv("AGENC_PROVIDER", "not-a-provider");
+
+    try {
+      await expect(resolveAgenCDaemonAutostartConfig({
+        AGENC_HOME: agencHome,
+        AGENC_PROVIDER: "grok",
+      }, "/home/test")).resolves.toMatchObject({ daemonEnabled: false });
+    } finally {
+      vi.unstubAllEnvs();
+      cwdSpy.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("connects to an already-running daemon without spawning", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
@@ -293,6 +331,7 @@ port = 0
     host.recordDaemon(5300);
     await writeAgenCDaemonPid(pidPath, 5300);
     const connectedPids: number[] = [];
+    const identityPublicationBarrier = vi.fn();
 
     await expect(
       ensureAgenCDaemonAutostart({
@@ -301,6 +340,7 @@ port = 0
         connect: ({ pid }) => {
           connectedPids.push(pid);
         },
+        identityPublicationBarrier,
       }),
     ).resolves.toEqual({
       pid: 5300,
@@ -311,6 +351,10 @@ port = 0
     });
     expect(host.spawnedPids).toEqual([]);
     expect(connectedPids).toEqual([5300]);
+    expect(identityPublicationBarrier).toHaveBeenCalledOnce();
+    await expect(
+      lstat(join(agencHome, "daemon-lifecycle.lock.sqlite")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
 
     await rm(agencHome, { recursive: true, force: true });
   });

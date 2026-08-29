@@ -27,98 +27,6 @@ type StreamChunk = {
 };
 
 describe("OpenAIProvider streaming gaps", () => {
-  test("forwards recognized Responses progress and raw keepalives as content-free liveness", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      sseResponse([
-        ": keep-alive\n\n",
-        'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_live","status":"in_progress"}}\n\n',
-        'event: response.in_progress\ndata: {"type":"response.in_progress","response":{"id":"resp_live","status":"in_progress"}}\n\n',
-        'event: response.function_call_arguments.delta\ndata: {"type":"response.function_call_arguments.delta","delta":"{\\"path\\":","item_id":"fc_1"}\n\n',
-        // Future well-formed events still prove provider liveness.
-        'event: response.future_event\ndata: {"type":"response.future_event"}\n\n',
-        'event: response.reasoning_summary_text.delta\ndata: {"type":"response.reasoning_summary_text.delta","delta":"plan ","summary_index":0}\n\n',
-        'event: response.reasoning_text.delta\ndata: {"type":"response.reasoning_text.delta","delta":"detail","output_index":1}\n\n',
-        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hello"}\n\n',
-        'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_live","status":"completed","model":"gpt-5","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
-      ]),
-    );
-    const provider = new OpenAIProvider({
-      apiKey: "sk-test",
-      model: "gpt-5",
-      fetchImpl,
-    });
-    const chunks: StreamChunk[] = [];
-
-    const response = await provider.chatStream(
-      [{ role: "user", content: "hello" }],
-      (chunk) => chunks.push(chunk),
-    );
-
-    expect(chunks).toEqual([
-      { content: "", done: false },
-      { content: "", done: false },
-      { content: "", done: false },
-      { content: "", done: false },
-      { content: "", done: false },
-      {
-        content: "",
-        done: false,
-        reasoningSummaryDelta: { delta: "plan ", summaryIndex: 0 },
-      },
-      {
-        content: "",
-        done: false,
-        reasoningSummaryDelta: { delta: "detail", summaryIndex: 1 },
-      },
-      { content: "Hello", done: false },
-      { content: "", done: true },
-    ]);
-    expect(response.content).toBe("Hello");
-    expect(response.thinking).toEqual([
-      { text: "plan ", redacted: false, kind: "reasoning_summary" },
-      { text: "detail", redacted: false, kind: "reasoning_summary" },
-    ]);
-  });
-
-  test("keeps identical inner reasoning indexes separate across outputs", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      sseResponse([
-        'event: response.reasoning_summary_text.delta\ndata: {"type":"response.reasoning_summary_text.delta","delta":"first ","output_index":0,"summary_index":0}\n\n',
-        'event: response.reasoning_summary_text.delta\ndata: {"type":"response.reasoning_summary_text.delta","delta":"block","output_index":0,"summary_index":0}\n\n',
-        'event: response.reasoning_summary_text.delta\ndata: {"type":"response.reasoning_summary_text.delta","delta":"second","output_index":1,"summary_index":0}\n\n',
-        'event: response.reasoning_text.delta\ndata: {"type":"response.reasoning_text.delta","delta":"raw","output_index":1,"content_index":0}\n\n',
-        'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_reasoning","status":"completed","model":"gpt-5","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
-      ]),
-    );
-    const provider = new OpenAIProvider({
-      apiKey: "sk-test",
-      model: "gpt-5",
-      fetchImpl,
-    });
-    const chunks: StreamChunk[] = [];
-
-    const response = await provider.chatStream(
-      [{ role: "user", content: "reason" }],
-      (chunk) => chunks.push(chunk),
-    );
-
-    expect(
-      chunks
-        .map((chunk) => chunk.reasoningSummaryDelta)
-        .filter((delta): delta is NonNullable<typeof delta> => delta !== undefined),
-    ).toEqual([
-      { delta: "first ", summaryIndex: 0 },
-      { delta: "block", summaryIndex: 0 },
-      { delta: "second", summaryIndex: 1 },
-      { delta: "raw", summaryIndex: 2 },
-    ]);
-    expect(response.thinking).toEqual([
-      { text: "first block", redacted: false, kind: "reasoning_summary" },
-      { text: "second", redacted: false, kind: "reasoning_summary" },
-      { text: "raw", redacted: false, kind: "reasoning_summary" },
-    ]);
-  });
-
   // GAP (a): the chat-completions streaming loop previously read only
   // `delta.content` and dropped `delta.reasoning_content`, so
   // DeepSeek-reasoner / openai-compat reasoning models lost their
@@ -127,15 +35,15 @@ describe("OpenAIProvider streaming gaps", () => {
   test("captures delta.reasoning_content on the chat-completions streaming path", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       sseResponse([
-        'data: {"id":"chatcmpl_r","model":"deepseek-reasoner","choices":[{"index":0,"delta":{"reasoning_content":"Step 1. "}}]}\n\n',
-        'data: {"id":"chatcmpl_r","model":"deepseek-reasoner","choices":[{"index":0,"delta":{"reasoning_content":"Step 2."}}]}\n\n',
-        'data: {"id":"chatcmpl_r","model":"deepseek-reasoner","choices":[{"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10,"completion_tokens_details":{"reasoning_tokens":6}}}\n\n',
+        'data: {"id":"chatcmpl_r","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"reasoning_content":"Step 1. "}}]}\n\n',
+        'data: {"id":"chatcmpl_r","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"reasoning_content":"Step 2."}}]}\n\n',
+        'data: {"id":"chatcmpl_r","model":"deepseek-v4-pro","choices":[{"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10,"completion_tokens_details":{"reasoning_tokens":6}}}\n\n',
         "data: [DONE]\n\n",
       ]),
     );
     const provider = new OpenAIProvider({
       apiKey: "sk-test",
-      model: "deepseek-reasoner",
+      model: "deepseek-v4-pro",
       useResponsesApi: false,
       fetchImpl,
     });
@@ -159,7 +67,6 @@ describe("OpenAIProvider streaming gaps", () => {
         done: false,
         reasoningSummaryDelta: { delta: "Step 2.", summaryIndex: 0 },
       },
-      { content: "", done: false },
       { content: "", done: true },
     ]);
     expect(response.content).toBe("");
@@ -174,68 +81,18 @@ describe("OpenAIProvider streaming gaps", () => {
     expect(response.usage.reasoningOutputTokens).toBe(6);
   });
 
-  test("forwards tool-argument-only chat-completions chunks as liveness", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      sseResponse([
-        'data: {"id":"chatcmpl_tool","model":"gpt-5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write_file","arguments":"{\\"path\\":"}}]}}]}\n\n',
-        'data: {"id":"chatcmpl_tool","model":"gpt-5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"README.md\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
-        'data: {"id":"chatcmpl_tool","model":"gpt-5","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}\n\n',
-        "data: [DONE]\n\n",
-      ]),
-    );
-    const provider = new OpenAIProvider({
-      apiKey: "sk-test",
-      model: "gpt-5",
-      useResponsesApi: false,
-      fetchImpl,
-    });
-    const chunks: StreamChunk[] = [];
-
-    const response = await provider.chatStream(
-      [{ role: "user", content: "write a file" }],
-      (chunk) => chunks.push(chunk),
-    );
-
-    // Each parsed tool/usage-only event refreshes the semantic watchdog even
-    // though none of it belongs in user-visible assistant content.
-    expect(chunks).toEqual([
-      { content: "", done: false },
-      { content: "", done: false },
-      { content: "", done: false },
-      {
-        content: "",
-        done: true,
-        toolCalls: [
-          {
-            id: "call_1",
-            name: "write_file",
-            arguments: '{"path":"README.md"}',
-          },
-        ],
-      },
-    ]);
-    expect(response.toolCalls).toEqual([
-      {
-        id: "call_1",
-        name: "write_file",
-        arguments: '{"path":"README.md"}',
-      },
-    ]);
-    expect(response.finishReason).toBe("tool_calls");
-  });
-
   test("keeps visible content while still forwarding reasoning deltas", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       sseResponse([
-        'data: {"id":"chatcmpl_m","model":"deepseek-reasoner","choices":[{"index":0,"delta":{"reasoning_content":"thinking..."}}]}\n\n',
-        'data: {"id":"chatcmpl_m","model":"deepseek-reasoner","choices":[{"index":0,"delta":{"content":"Answer."}}]}\n\n',
-        'data: {"id":"chatcmpl_m","model":"deepseek-reasoner","choices":[{"index":0,"finish_reason":"stop"}]}\n\n',
+        'data: {"id":"chatcmpl_m","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"reasoning_content":"thinking..."}}]}\n\n',
+        'data: {"id":"chatcmpl_m","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"Answer."}}]}\n\n',
+        'data: {"id":"chatcmpl_m","model":"deepseek-v4-pro","choices":[{"index":0,"finish_reason":"stop"}]}\n\n',
         "data: [DONE]\n\n",
       ]),
     );
     const provider = new OpenAIProvider({
       apiKey: "sk-test",
-      model: "deepseek-reasoner",
+      model: "deepseek-v4-pro",
       useResponsesApi: false,
       fetchImpl,
     });
@@ -253,7 +110,6 @@ describe("OpenAIProvider streaming gaps", () => {
         reasoningSummaryDelta: { delta: "thinking...", summaryIndex: 0 },
       },
       { content: "Answer.", done: false },
-      { content: "", done: false },
       { content: "", done: true },
     ]);
     // When visible content is present it wins; reasoning_content does not

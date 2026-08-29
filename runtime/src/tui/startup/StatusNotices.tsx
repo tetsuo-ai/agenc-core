@@ -1,14 +1,20 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
+import type { HomeContext } from '../../config/home.js';
+import type { RuntimeStateRepository } from '../../config/runtime-state-repository.js';
+import type { ProviderAuthReadContext } from '../../utils/auth.js';
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js';
-import { getGlobalConfig } from '../../utils/config.js';
+import { getRuntimeState } from '../../utils/config.js';
 import { logError } from '../../utils/log.js';
-import { buildMemoryDiagnostics } from '../../utils/status.js';
+import { buildMemoryDiagnostics } from './memoryDiagnostics.js';
 import { Box } from '../ink.js';
 import ThemedBox from '../components/design-system/ThemedBox.js';
 import ThemedText from '../components/design-system/ThemedText.js';
 import { getActiveNotices, type StatusNoticeContext, type StatusNoticeDefinition, type StatusNoticeType } from './statusNoticeDefinitions.js';
 type Props = {
+  homeContext: HomeContext;
+  providerAuthContext: ProviderAuthReadContext;
+  stateRepository: RuntimeStateRepository;
   agentDefinitions?: AgentDefinitionsResult;
 };
 
@@ -20,7 +26,7 @@ async function loadMemoryDiagnostics(): Promise<void> {
     return memoryDiagnosticsPromise;
   }
   memoryDiagnosticsPromise = buildMemoryDiagnostics().then(diagnostics => {
-    cachedMemoryDiagnostics = diagnostics.map(diagnostic => String(diagnostic));
+    cachedMemoryDiagnostics = diagnostics;
   }).catch(error => {
     logError(error);
     cachedMemoryDiagnostics = [];
@@ -30,15 +36,19 @@ async function loadMemoryDiagnostics(): Promise<void> {
   return memoryDiagnosticsPromise;
 }
 
-function isDaemonAutostartDisabled(): boolean {
-  const value = process.env.AGENC_DAEMON_AUTOSTART?.trim().toLowerCase();
+function isDaemonAutostartDisabled(
+  environment: ProviderAuthReadContext['environment'],
+): boolean {
+  const value = environment.AGENC_DAEMON_AUTOSTART?.trim().toLowerCase();
   return value === '0' || value === 'false' || value === 'off';
 }
 
 // Set by the CLI entrypoint when ensureAgenCDaemonAutostart failed but the
 // interactive TUI boots anyway (agenc-main runDefaultAgenCCliRoute).
-function daemonAutostartFailure(): string | undefined {
-  const value = process.env.AGENC_DAEMON_AUTOSTART_FAILURE?.trim();
+function daemonAutostartFailure(
+  environment: ProviderAuthReadContext['environment'],
+): string | undefined {
+  const value = environment.AGENC_DAEMON_AUTOSTART_FAILURE?.trim();
   return value !== undefined && value.length > 0 ? value : undefined;
 }
 
@@ -109,10 +119,13 @@ function NoticeRow({
  * StatusNotices contains the information displayed to users at startup. We have
  * moved neutral or positive status to the /status surface instead.
  */
-export function StatusNotices(t0: Props = {}) {
+export function StatusNotices(t0: Props) {
   const {
-    agentDefinitions
-  } = t0 === undefined ? {} : t0;
+    agentDefinitions,
+    homeContext,
+    providerAuthContext,
+    stateRepository,
+  } = t0;
   const [memoryDiagnostics, setMemoryDiagnostics] = React.useState(cachedMemoryDiagnostics);
   React.useEffect(() => {
     if (cachedMemoryDiagnostics.length > 0) {
@@ -123,14 +136,16 @@ export function StatusNotices(t0: Props = {}) {
       setMemoryDiagnostics(cachedMemoryDiagnostics);
     });
   }, []);
-  const t2 = getGlobalConfig();
+  const t2 = getRuntimeState(stateRepository);
   const context = {
     config: t2,
+    homeContext,
+    providerAuthContext,
     agentDefinitions,
     memoryDiagnostics,
     daemonStatus: {
-      autostartDisabled: isDaemonAutostartDisabled(),
-      autostartFailure: daemonAutostartFailure()
+      autostartDisabled: isDaemonAutostartDisabled(providerAuthContext.environment),
+      autostartFailure: daemonAutostartFailure(providerAuthContext.environment)
     }
   };
   const activeNotices = getActiveNotices(context);

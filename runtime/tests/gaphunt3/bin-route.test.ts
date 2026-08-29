@@ -1,6 +1,6 @@
 /**
  * gaphunt3 #37 regression: route.ts STARTUP_VALUE_FLAGS must not list value
- * flags that no downstream consumer honors (--fork/--config/--sandbox/
+ * flags that no downstream consumer honors (--fork/--sandbox/
  * --approval-policy). Previously stripRoutingFlags removed each such flag AND
  * its following value before the residue became the prompt, so the user's
  * intent (e.g. the fork target) silently vanished with no behavior change and
@@ -28,7 +28,6 @@ describe("gaphunt3 #37: unconsumed value flags are no longer silently swallowed"
   });
 
   it.each([
-    ["--config", "/tmp/x.json"],
     ["--sandbox", "strict"],
     ["--approval-policy", "untrusted"],
   ])("stripRoutingFlags keeps %s and its value", (flag, value) => {
@@ -60,11 +59,14 @@ describe("gaphunt3 #37: unconsumed value flags are no longer silently swallowed"
     expect(plan.args.initialPrompt).toBe("--sandbox strict do X");
   });
 
-  it("still strips genuinely-consumed value flags (--model, --provider, --resume)", () => {
+  it("still strips genuinely-consumed value flags (--model, --provider, --config, --resume)", () => {
     // Guard against an over-broad fix: flags that DO have consumers must keep
     // being stripped so they don't leak into the prompt text.
     expect(stripRoutingFlags(["--model", "gpt-x", "hello"])).toEqual(["hello"]);
     expect(stripRoutingFlags(["--provider", "openai", "hi"])).toEqual(["hi"]);
+    expect(stripRoutingFlags(["--config", "/tmp/config.toml", "hi"])).toEqual([
+      "hi",
+    ]);
     expect(stripRoutingFlags(["--resume", "id123", "go"])).toEqual(["go"]);
   });
 

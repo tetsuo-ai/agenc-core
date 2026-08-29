@@ -5,7 +5,10 @@ import stripAnsi from 'strip-ansi'
 import { describe, expect, test, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
-  appState: { fileHistory: { entries: [] } },
+  appState: {
+    fileHistory: { entries: [] },
+    settings: { fileCheckpointingEnabled: true },
+  },
 }))
 
 vi.mock('../state/AppState.js', () => ({
@@ -15,7 +18,9 @@ vi.mock('../state/AppState.js', () => ({
 
 vi.mock('../../utils/fileHistory.js', () => ({
   fileHistoryCanRestore: () => false,
-  fileHistoryEnabled: () => true,
+  fileHistoryEnabled: () => {
+    throw new Error('MessageSelector must read file history settings from AppState')
+  },
   fileHistoryGetDiffStats: vi.fn(async () => ({
     deletions: 0,
     filesChanged: [],

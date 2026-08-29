@@ -1,9 +1,7 @@
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from "bun:bundle";
 import { useMemo } from "react";
 import { useCommandQueue } from "../../hooks/useCommandQueue.js";
 import { useAppState } from "../../state/AppState.js";
-import { getGlobalConfig } from "../../../utils/config.js";
 import { getExampleCommandFromCache } from "../../../utils/exampleCommands.js";
 import {
   isQueuedCommandEditable,
@@ -20,7 +18,6 @@ type Props = {
   queueOwner?: QueuedCommandOwner;
 };
 
-const NUM_TIMES_QUEUE_HINT_SHOWN = 3;
 const MAX_TEAMMATE_NAME_LENGTH = 20;
 
 export function usePromptInputPlaceholder({
@@ -59,14 +56,9 @@ export function usePromptInputPlaceholder({
       return `Message @${displayName}…`;
     }
 
-    // Show queue hint if user has not seen it yet.
     // Only count user-editable commands — task-notification and isMeta
     // are hidden from the prompt area (see PromptInputQueuedCommands).
-    if (
-      queuedCommands.some(isQueuedCommandEditable) &&
-      (getGlobalConfig().queuedCommandUpHintCount || 0) <
-        NUM_TIMES_QUEUE_HINT_SHOWN
-    ) {
+    if (queuedCommands.some(isQueuedCommandEditable)) {
       return "Press up to edit queued messages";
     }
 

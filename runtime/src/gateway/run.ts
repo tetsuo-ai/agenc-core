@@ -14,11 +14,10 @@
  * gated. So the only bind surface is loopback + token-authenticated.
  */
 
-import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { loadConfig } from "../config/loader.js";
+import type { HomeContext } from "../config/home.js";
+import { loadCanonicalConfig } from "../config/repository.js";
 import { resolveHeartbeatPolicy } from "../heartbeat/config.js";
 import { startHeartbeat } from "../heartbeat/wire.js";
 import type { HeartbeatScheduler } from "../heartbeat/scheduler.js";
@@ -29,7 +28,11 @@ import {
 } from "./control-plane.js";
 import { ChannelGateway } from "./gateway.js";
 import { HooksServer } from "./hooks.js";
-import { loadGatewayConfig } from "./config.js";
+import { gatewayConfigFromCanonical } from "./config.js";
+import {
+  mergeGatewayCredentialEnvironment,
+  resolveGatewayGeneratedToken,
+} from "./credentials.js";
 import {
   DISCORD_CHANNEL_ID,
   DiscordChannelAdapter,
@@ -64,6 +67,7 @@ import type {
   GatewayConfig,
   GatewayDaemonClient,
 } from "./types.js";
+import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 
 export interface GatewayRunOptions {
   readonly agencHome: string;
@@ -92,7 +96,7 @@ export interface GatewayRunOptions {
   readonly webchatHost?: string;
   readonly webchatPort?: number;
   readonly webchatAllowNonLoopback?: boolean;
-  /** Force the inbound-webhooks endpoint on for this run (else gateway config `hooks`). */
+  /** Force inbound webhooks for this run (else canonical `[gateway.hooks]`). */
   readonly hooks?: boolean;
   readonly hooksHost?: string;
   readonly hooksPort?: number;
@@ -107,45 +111,20 @@ export interface GatewayRunOptions {
 export const GATEWAY_DIRECT_PROVIDER_ADMISSION_DIAGNOSTIC =
   "standalone gateway provider execution is disabled: it has no durable run/step admission, transactional budget reservation, or authoritative usage reconciliation; matching messages route through the daemon agent instead";
 
-/**
- * Resolve a gateway surface token: env override, else a persisted per-home
- * token file (0600) so URLs/callers survive restarts, else generate+persist.
- */
-function resolveGatewayToken(
-  agencHome: string,
-  fromEnv: string | undefined,
-  fileName: string,
-): string {
-  const envToken = fromEnv?.trim();
-  if (envToken !== undefined && envToken.length >= 16) return envToken;
-  const path = join(agencHome, "gateway", fileName);
-  if (existsSync(path)) {
-    const existing = readFileSync(path, "utf8").trim();
-    if (existing.length >= 16) return existing;
-  }
-  const token = randomBytes(24).toString("base64url");
-  mkdirSync(join(agencHome, "gateway"), { recursive: true, mode: 0o700 });
-  writeFileSync(path, token, { mode: 0o600 });
-  return token;
-}
-
 function resolveWebChatToken(
-  agencHome: string,
+  home: HomeContext,
   env: Readonly<Record<string, string | undefined>>,
 ): string {
-  return resolveGatewayToken(agencHome, env.AGENC_WEBCHAT_TOKEN, "webchat-token");
+  return resolveGatewayGeneratedToken(home, "webchat", env.AGENC_WEBCHAT_TOKEN);
 }
 
-/** Persisted at gateway/hooks-token; AGENC_HOOKS_TOKEN overrides. */
+/** Explicit env overrides the home-bound native secure storage token. */
 export function resolveHooksToken(
-  agencHome: string,
+  home: HomeContext,
   env: Readonly<Record<string, string | undefined>>,
 ): string {
-  return resolveGatewayToken(agencHome, env.AGENC_HOOKS_TOKEN, "hooks-token");
+  return resolveGatewayGeneratedToken(home, "hooks", env.AGENC_HOOKS_TOKEN);
 }
-
-/** On-disk hooks token file name (shared with the security audit). */
-export const HOOKS_TOKEN_FILENAME = "hooks-token";
 
 function envFlag(value: string | undefined): boolean {
   return value === "1" || value === "true" || value === "yes" || value === "on";
@@ -161,6 +140,7 @@ const GATEWAY_SECRET_ENV_NAMES = [
   "AGENC_SLACK_BOT_TOKEN",
   "AGENC_SLACK_APP_TOKEN",
   "AGENC_HOOKS_TOKEN",
+  "AGENC_GATEWAY_HOOKS_TOKEN",
 ] as const;
 
 /** Keep gateway transport/data credentials out of an autostarted agent daemon. */
@@ -242,12 +222,24 @@ export interface GatewayRunHandle {
 export async function startGateway(
   options: GatewayRunOptions,
 ): Promise<GatewayRunHandle> {
-  const env = options.env ?? process.env;
+  const ingress = captureSecureStorageIngress(
+    options.env ?? process.env,
+    options.agencHome,
+  );
+  const home = ingress.home;
+  const env = Object.freeze(mergeGatewayCredentialEnvironment(
+    home,
+    ingress.environment,
+  ));
   const log = options.log ?? (() => {});
-  const loaded = loadGatewayConfig({
-    agencHome: options.agencHome,
-    onWarn: log,
-  });
+  const mainConfigLoaded = (
+    await loadCanonicalConfig({
+      home: options.agencHome,
+      env,
+      onWarn: log,
+    })
+  ).config;
+  const loaded = gatewayConfigFromCanonical(mainConfigLoaded);
 
   const adapters: ChannelAdapter[] = [];
   if (options.stdio === true) {
@@ -412,7 +404,7 @@ export async function startGateway(
   let config: GatewayConfig = loaded;
   let webchat: WebChatChannelAdapter | undefined;
   if (options.webchat === true) {
-    const token = resolveWebChatToken(options.agencHome, env);
+    const token = resolveWebChatToken(home, env);
     webchat = new WebChatChannelAdapter({
       token,
       ...(options.webchatHost !== undefined ? { host: options.webchatHost } : {}),
@@ -443,11 +435,7 @@ export async function startGateway(
   // a hooks-only run (the webhook endpoint is a trigger surface).
   const heartbeatRequested =
     options.heartbeat === true ||
-    resolveHeartbeatPolicy(
-      (await loadConfig({ home: options.agencHome, onWarn: log })).config
-        .heartbeat,
-      env,
-    ).enabled;
+    resolveHeartbeatPolicy(mainConfigLoaded.heartbeat).enabled;
   const hooksRequested =
     options.hooks === true || loaded.hooks?.enabled === true;
   if (adapters.length === 0 && !heartbeatRequested && !hooksRequested) {
@@ -473,7 +461,6 @@ export async function startGateway(
         unattendedAllow:
           envOptionalList(env.AGENC_GATEWAY_AGENT_UNATTENDED_ALLOW) ?? [
             "SendUserMessage",
-            "Brief",
           ],
         unattendedDeny:
           envOptionalList(env.AGENC_GATEWAY_AGENT_UNATTENDED_DENY) ?? [],
@@ -523,7 +510,7 @@ export async function startGateway(
   ]) {
     if (started.includes(channelId) && config.channels[channelId] === undefined) {
       log(
-        `gateway: ${channelId} channel has no policy in gateway/config.json — using the pairing default (unknown senders must pair)`,
+        `gateway: ${channelId} channel has no policy in config.toml [gateway.channels] — using the pairing default (unknown senders must pair)`,
       );
     }
   }
@@ -536,9 +523,6 @@ export async function startGateway(
   // gateway sessions and announce to channels / POST to webhooks. Restart
   // re-arms from the persisted .agenc/scheduled_tasks.json.
   let cronDelivery: CronDeliveryHandle | null = null;
-  const mainConfigLoaded = (
-    await loadConfig({ home: options.agencHome, onWarn: log })
-  ).config;
   try {
     cronDelivery = startCronDelivery({
       agencHome: options.agencHome,
@@ -570,7 +554,6 @@ export async function startGateway(
       agencHome: options.agencHome,
       workspaceDir: options.workspaceDir ?? process.cwd(),
       config: heartbeatConfig,
-      env,
       client,
       adapters,
       log,
@@ -594,7 +577,7 @@ export async function startGateway(
     try {
       hooksServer = new HooksServer({
         agencHome: options.agencHome,
-        token: resolveHooksToken(options.agencHome, env),
+        token: resolveHooksToken(home, env),
         client,
         adapters,
         config: mainConfigLoaded,

@@ -67,20 +67,17 @@ import {
   resolveAgentPath,
 } from "./registry.js";
 import {
-  agentRoleFingerprint,
   allocateNickname,
   applyRoleToConfig,
   assertAgentRoleWorkspaceMatches,
   createAgentRoleWorkspace,
-  getAgentRoleByExactName,
   releaseNickname,
-  requireAgentRole,
   normalizeAgentRoleWorkspace,
-  resolveAgentRole,
   type AgentRole,
   type AgentRoleWorkspace,
   type RoleShapedConfig,
 } from "./role.js";
+import { AgentRoleCatalog } from "./role-catalog.js";
 import { canonicalAgentRoleName } from "./role-presentation.js";
 import { AdmissionDeniedError } from "../budget/admission-client.js";
 
@@ -91,7 +88,7 @@ import { AdmissionDeniedError } from "../budget/admission-client.js";
  * different prompt or tool policy.
  */
 function resolveResumedAgentRole(
-  workspace: AgentRoleWorkspace,
+  catalog: AgentRoleCatalog,
   metadata: Pick<
     AgentMetadata,
     "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint"
@@ -99,16 +96,19 @@ function resolveResumedAgentRole(
 ): AgentRole {
   const normalized = normalizeAgentRoleMetadata(metadata);
   const roleName = normalized.agentRole;
-  if (roleName === undefined) return resolveAgentRole(workspace, roleName);
-  assertAgentRoleWorkspaceMatches(workspace, normalized.agentRoleWorkspaceId);
-  const known = getAgentRoleByExactName(workspace, roleName);
+  if (roleName === undefined) return catalog.require(undefined);
+  assertAgentRoleWorkspaceMatches(
+    catalog.workspace,
+    normalized.agentRoleWorkspaceId,
+  );
+  const known = catalog.getExact(roleName);
   if (!known) {
     throw new InvalidAgentMetadataError(
       `cannot resume unknown agent role: ${roleName}`,
     );
   }
   const expectedFingerprint = normalized.agentRoleFingerprint;
-  const actualFingerprint = agentRoleFingerprint(known);
+  const actualFingerprint = catalog.fingerprint(known);
   if (
     expectedFingerprint === undefined ||
     expectedFingerprint !== actualFingerprint
@@ -132,8 +132,7 @@ import type { ThreadManager } from "./thread-manager.js";
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * I-1 default cap. Overrideable via `config.agent_max_depth` or the
- * `AGENC_AGENT_MAX_DEPTH` env var (test/ops escape hatch).
+ * I-1 default cap. Overrideable through canonical `config.agent_max_depth`.
  *
  * Semantics: `spawn` rejects when `childDepth > cap`, so the cap value is the
  * deepest allowed child depth. Cap=1 means root (depth 0) may spawn one
@@ -144,38 +143,23 @@ const DEFAULT_MAX_AGENT_DEPTH = 1;
 const ROOT_FOLLOWUP_RETRY_BASE_MS = 100;
 const ROOT_FOLLOWUP_RETRY_MAX_MS = 5_000;
 
-function asPositiveIntegerDepth(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+function asNonNegativeIntegerDepth(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
     return undefined;
   }
   return value;
 }
 
-function parseDepthOverride(raw: string | undefined): number | undefined {
-  if (!raw) return DEFAULT_MAX_AGENT_DEPTH;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 1) {
-    return undefined;
-  }
-  return parsed;
-}
-
-function resolveDefaultMaxDepth(env: NodeJS.ProcessEnv = process.env): number {
-  return (
-    parseDepthOverride(env.AGENC_AGENT_MAX_DEPTH) ?? DEFAULT_MAX_AGENT_DEPTH
-  );
-}
-
-export const MAX_AGENT_DEPTH: number = resolveDefaultMaxDepth();
+export const MAX_AGENT_DEPTH = DEFAULT_MAX_AGENT_DEPTH;
 
 function resolveSessionMaxDepth(session: Session): number | undefined {
-  const configDepth = asPositiveIntegerDepth(
+  const configDepth = asNonNegativeIntegerDepth(
     (session.config as { agent_max_depth?: unknown } | undefined)
       ?.agent_max_depth,
   );
   if (configDepth !== undefined) return configDepth;
 
-  const originalDepth = asPositiveIntegerDepth(
+  const originalDepth = asNonNegativeIntegerDepth(
     (
       session.sessionConfiguration?.originalConfigDoNotUse as
         { agent_max_depth?: unknown } | undefined
@@ -344,8 +328,6 @@ export interface LiveAgent {
   };
   /** Effective child configuration snapshot once the child session is built. */
   configSnapshot?: Record<string, unknown>;
-  /** Latest MCP refresh payload, kept out of the bounded mailbox protocol. */
-  pendingMcpRefresh?: { readonly config: unknown };
   /** Local rollout path for the live child session once initialized. */
   rolloutPath?: string;
 }
@@ -372,6 +354,8 @@ export interface AgentControlOpts {
   /** Override MAX_AGENT_DEPTH for this session (tests/config). */
   readonly maxDepth?: number;
   readonly threadManager?: ThreadManager;
+  /** Exact immutable catalog captured for this session. */
+  readonly roleCatalog?: AgentRoleCatalog;
 }
 
 export class AgentControl {
@@ -380,6 +364,8 @@ export class AgentControl {
   private readonly maxDepth: number;
   /** Immutable role trust domain; execution cwd may move independently. */
   readonly roleWorkspace: AgentRoleWorkspace;
+  /** Sole executable role authority for schema, spawn, and resume. */
+  readonly roleCatalog: AgentRoleCatalog;
   private readonly live = new Map<ThreadId, LiveAgent>();
   /** Cancellation tokens scoped to parents — I-32. */
   private readonly parentTokens = new Map<AgentPath, AbortController>();
@@ -403,6 +389,14 @@ export class AgentControl {
     this.roleWorkspace = sessionRoleWorkspace
       ? normalizeAgentRoleWorkspace(sessionRoleWorkspace)
       : createAgentRoleWorkspace(opts.session.sessionConfiguration.cwd);
+    this.roleCatalog = opts.roleCatalog ?? new AgentRoleCatalog(
+      this.roleWorkspace,
+      opts.session.agentDefinitions,
+    );
+    assertAgentRoleWorkspaceMatches(
+      this.roleWorkspace,
+      this.roleCatalog.workspace.id,
+    );
     this.maxDepth =
       opts.maxDepth ?? resolveSessionMaxDepth(opts.session) ?? MAX_AGENT_DEPTH;
     this.threadManager = opts.threadManager;
@@ -431,7 +425,7 @@ export class AgentControl {
     if (normalized.agentRole === undefined) {
       throw new InvalidAgentMetadataError("agent role provenance is missing");
     }
-    return resolveResumedAgentRole(this.roleWorkspace, normalized).name;
+    return resolveResumedAgentRole(this.roleCatalog, normalized).name;
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -508,8 +502,8 @@ export class AgentControl {
     }
     const role =
       expectedRoleProvenance !== undefined
-        ? resolveResumedAgentRole(this.roleWorkspace, expectedRoleProvenance)
-        : requireAgentRole(this.roleWorkspace, opts.roleName);
+        ? resolveResumedAgentRole(this.roleCatalog, expectedRoleProvenance)
+        : this.roleCatalog.require(opts.roleName);
     if (
       opts.roleName !== undefined &&
       expectedRoleProvenance !== undefined &&
@@ -521,7 +515,7 @@ export class AgentControl {
     }
     const baseChildConfig = getChildBaseConfig(this.session) ?? {};
     void applyRoleToConfig(role, baseChildConfig);
-    const roleFingerprint = agentRoleFingerprint(role);
+    const roleFingerprint = this.roleCatalog.fingerprint(role);
     if (
       expectedRoleProvenance !== undefined &&
       roleFingerprint !== expectedRoleProvenance.agentRoleFingerprint
@@ -1454,7 +1448,7 @@ export class AgentControl {
       throw new MaxDepthExceededError(depth, this.maxDepth);
     }
 
-    const role = resolveResumedAgentRole(this.roleWorkspace, metadata);
+    const role = resolveResumedAgentRole(this.roleCatalog, metadata);
 
     // Idempotency is exact identity, never merely a matching id or path. A
     // partial match would let resume overwrite one live map while leaving the
@@ -2114,7 +2108,7 @@ export class AgentControl {
     readonly roleName?: string;
     readonly preferredNickname?: string;
   }): { readonly metadata: AgentMetadata; readonly role: AgentRole } {
-    const role = requireAgentRole(this.roleWorkspace, opts.roleName);
+    const role = this.roleCatalog.require(opts.roleName);
     const nickname =
       opts.preferredNickname ?? allocateNickname(role, this.registry);
     const depth = depthOfAgentPath(opts.parentPath) + 1;
@@ -2123,7 +2117,7 @@ export class AgentControl {
       parentPath: opts.parentPath,
       role,
       roleWorkspaceId: this.roleWorkspace.id,
-      roleFingerprint: agentRoleFingerprint(role),
+      roleFingerprint: this.roleCatalog.fingerprint(role),
       nickname,
       depth,
     });

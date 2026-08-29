@@ -1,219 +1,260 @@
-import { execaSync } from 'execa'
-import { logForDebugging } from 'src/utils/debug.js'
-import { execFileNoThrow } from '../execFileNoThrow.js'
-// gaphunt3 #28: read()/delete() no longer build shell command strings;
-// execSyncWithDefaults_DEPRECATED (shell:true) import removed accordingly.
-import { jsonParse, jsonStringify } from '../slowOperations.js'
+import { execa, execaSync } from "execa";
+import { isAbsolute } from "node:path";
+import { jsonStringify } from "../slowOperations.js";
 import {
   CREDENTIALS_SERVICE_SUFFIX,
-  clearKeychainCache,
+  clearKeychainCacheState,
+  getKeychainCacheState,
   getMacOsKeychainStorageServiceName,
-  getUsername,
   KEYCHAIN_CACHE_TTL_MS,
-  keychainCacheState,
-} from './macOsKeychainHelpers.js'
-import type { SecureStorage, SecureStorageData } from './index.js'
+} from "./macOsKeychainHelpers.js";
+import type { HomeContext } from "../../config/home.js";
+import type { SecureStorage, SecureStorageData } from "./index.js";
+import { decodeSecureStorageData } from "./decode.js";
+import {
+  runSecureStorageCommand,
+  type SecureStorageCommandRunner,
+  type SecureStorageCommandResult,
+} from "./subprocess.js";
+import {
+  resolveBundledSecureStorageHelper,
+  SECURE_STORAGE_HELPER_PAYLOAD_LIMIT_BYTES,
+} from "./nativeHelper.js";
 
-// `security -i` reads stdin with a 4096-byte fgets() buffer (BUFSIZ on darwin).
-// A command line longer than this is truncated mid-argument: the first 4096
-// bytes are consumed as one command (unterminated quote → fails), the overflow
-// is interpreted as a second unknown command. Net: non-zero exit with NO data
-// written, but the *previous* keychain entry is left intact — which fallback
-// storage then reads as stale. See #30337.
-// Headroom of 64B below the limit guards against edge-case line-terminator
-// accounting differences.
-const SECURITY_STDIN_LINE_LIMIT = 4096 - 64
+const KEYCHAIN_HELPER_NAME = "agenc-keychain-helper";
+const INJECTED_KEYCHAIN_HELPER_PATH = "/usr/libexec/agenc-keychain-helper";
+const MACOS_SECURITY_PATH = "/usr/bin/security";
 
-export const macOsKeychainStorage = {
-  name: 'keychain',
-  read(): SecureStorageData | null {
-    const prev = keychainCacheState.cache
-    if (Date.now() - prev.cachedAt < KEYCHAIN_CACHE_TTL_MS) {
-      return prev.data
-    }
-
-    try {
-      const storageServiceName = getMacOsKeychainStorageServiceName(
-        CREDENTIALS_SERVICE_SUFFIX,
-      )
-      const username = getUsername()
-      // gaphunt3 #28: pass args via argv with no shell (mirrors update()),
-      // instead of string-interpolating the env-derived username into a
-      // shell command — `security ... -a "${username}"` under shell:true
-      // allowed `USER='"; <cmd>; "'` to break out and execute arbitrary shell.
-      const execResult = execaSync(
-        'security',
-        ['find-generic-password', '-a', username, '-w', '-s', storageServiceName],
-        { stdio: ['ignore', 'pipe', 'pipe'], reject: false },
-      )
-      const result =
-        execResult.exitCode === 0 &&
-        typeof execResult.stdout === 'string' &&
-        execResult.stdout.trim()
-          ? execResult.stdout.trim()
-          : null
-      if (result) {
-        const data = jsonParse(result)
-        keychainCacheState.cache = { data, cachedAt: Date.now() }
-        return data
-      }
-    } catch (_e) {
-      // fall through
-    }
-    // Stale-while-error: if we had a value before and the refresh failed,
-    // keep serving the stale value rather than caching null. Since #23192
-    // clears the upstream memoize on every API request (macOS path), a
-    // single transient `security` spawn failure would otherwise poison the
-    // cache and surface as "Not logged in" across all subsystems until the
-    // next user interaction. clearKeychainCache() sets data=null, so
-    // explicit invalidation (logout, delete) still reads through.
-    if (prev.data !== null) {
-      logForDebugging('[keychain] read failed; serving stale cache', {
-        level: 'warn',
-      })
-      keychainCacheState.cache = { data: prev.data, cachedAt: Date.now() }
-      return prev.data
-    }
-    keychainCacheState.cache = { data: null, cachedAt: Date.now() }
-    return null
-  },
-  async readAsync(): Promise<SecureStorageData | null> {
-    const prev = keychainCacheState.cache
-    if (Date.now() - prev.cachedAt < KEYCHAIN_CACHE_TTL_MS) {
-      return prev.data
-    }
-    if (keychainCacheState.readInFlight) {
-      return keychainCacheState.readInFlight
-    }
-
-    const gen = keychainCacheState.generation
-    const promise = doReadAsync().then(data => {
-      // If the cache was invalidated or updated while we were reading,
-      // our subprocess result is stale — don't overwrite the newer entry.
-      if (gen === keychainCacheState.generation) {
-        // Stale-while-error — mirror read() above.
-        if (data === null && prev.data !== null) {
-          logForDebugging('[keychain] readAsync failed; serving stale cache', {
-            level: 'warn',
-          })
-        }
-        const next = data ?? prev.data
-        keychainCacheState.cache = { data: next, cachedAt: Date.now() }
-        keychainCacheState.readInFlight = null
-        return next
-      }
-      return data
-    })
-    keychainCacheState.readInFlight = promise
-    return promise
-  },
-  update(data: SecureStorageData): { success: boolean; warning?: string } {
-    // Invalidate cache before update
-    clearKeychainCache()
-
-    try {
-      const storageServiceName = getMacOsKeychainStorageServiceName(
-        CREDENTIALS_SERVICE_SUFFIX,
-      )
-      const username = getUsername()
-      const jsonString = jsonStringify(data)
-
-      // Convert to hexadecimal to avoid any escaping issues
-      const hexValue = Buffer.from(jsonString, 'utf-8').toString('hex')
-
-      // Prefer stdin (`security -i`) so process monitors (CrowdStrike et al.)
-      // see only "security -i", not the payload (INC-3028).
-      // When the payload would overflow the stdin line buffer, fall back to
-      // argv. Hex in argv is recoverable by a determined observer but defeats
-      // naive plaintext-grep rules, and the alternative — silent credential
-      // corruption — is strictly worse. ARG_MAX on darwin is 1MB so argv has
-      // effectively no size limit for our purposes.
-      const command = `add-generic-password -U -a "${username}" -s "${storageServiceName}" -X "${hexValue}"\n`
-
-      let result
-      if (command.length <= SECURITY_STDIN_LINE_LIMIT) {
-        result = execaSync('security', ['-i'], {
-          input: command,
-          stdio: ['pipe', 'pipe', 'pipe'],
-          reject: false,
-        })
-      } else {
-        logForDebugging(
-          `Keychain payload (${jsonString.length}B JSON) exceeds security -i stdin limit; using argv`,
-          { level: 'warn' },
-        )
-        result = execaSync(
-          'security',
-          [
-            'add-generic-password',
-            '-U',
-            '-a',
-            username,
-            '-s',
-            storageServiceName,
-            '-X',
-            hexValue,
-          ],
-          { stdio: ['ignore', 'pipe', 'pipe'], reject: false },
-        )
-      }
-
-      if (result.exitCode !== 0) {
-        return { success: false }
-      }
-
-      // Update cache with new data on success
-      keychainCacheState.cache = { data, cachedAt: Date.now() }
-      return { success: true }
-    } catch (_e) {
-      return { success: false }
-    }
-  },
-  delete(): boolean {
-    // Invalidate cache before delete
-    clearKeychainCache()
-
-    try {
-      const storageServiceName = getMacOsKeychainStorageServiceName(
-        CREDENTIALS_SERVICE_SUFFIX,
-      )
-      const username = getUsername()
-      // gaphunt3 #28: argv with no shell (mirrors update()/read()) so an
-      // attacker-influenced USER cannot inject shell metacharacters via the
-      // previous `security ... -a "${username}"` shell-interpolated command.
-      execaSync(
-        'security',
-        ['delete-generic-password', '-a', username, '-s', storageServiceName],
-        { stdio: ['ignore', 'pipe', 'pipe'], reject: false },
-      )
-      return true
-    } catch (_e) {
-      return false
-    }
-  },
-} satisfies SecureStorage
-
-async function doReadAsync(): Promise<SecureStorageData | null> {
-  try {
-    const storageServiceName = getMacOsKeychainStorageServiceName(
-      CREDENTIALS_SERVICE_SUFFIX,
-    )
-    const username = getUsername()
-    const { stdout, code } = await execFileNoThrow(
-      'security',
-      ['find-generic-password', '-a', username, '-w', '-s', storageServiceName],
-      { useCwd: false, preserveOutputOnError: false },
-    )
-    if (code === 0 && stdout) {
-      return jsonParse(stdout.trim())
-    }
-  } catch (_e) {
-    // fall through
-  }
-  return null
+function isKeychainItemNotFound(result: {
+  readonly exitCode?: number;
+  readonly stderr?: string;
+  readonly error?: string;
+}): boolean {
+  return result.exitCode === 2 && !result.stderr?.trim() && !result.error;
 }
 
-let keychainLockedCache: boolean | undefined
+function decodeKeychainReadResult(
+  result: SecureStorageCommandResult,
+): SecureStorageData | null {
+  if (isKeychainItemNotFound(result)) return null;
+  if (result.exitCode !== 0) {
+    throw new Error(
+      result.stderr?.trim() ||
+        `macOS Keychain lookup failed with exit code ${result.exitCode}`,
+    );
+  }
+  if (!result.stdout) {
+    throw new Error("macOS Keychain returned an empty credential record");
+  }
+  return decodeSecureStorageData(result.stdout, "macOS Keychain");
+}
+
+export function createMacOsKeychainStorage(
+  home: HomeContext,
+  runCommand: SecureStorageCommandRunner = runSecureStorageCommand,
+  serviceNameOverride?: string,
+  bypassReadCache = false,
+  accountNameOverride?: string,
+  resolveExecutable?: () => string,
+): SecureStorage {
+  const storageServiceName =
+    serviceNameOverride ??
+    getMacOsKeychainStorageServiceName(home, CREDENTIALS_SERVICE_SUFFIX);
+  const username = accountNameOverride ?? home.secureStorageAccount;
+  const resolveHelper =
+    resolveExecutable ??
+    (runCommand === runSecureStorageCommand
+      ? () => resolveBundledSecureStorageHelper(KEYCHAIN_HELPER_NAME)
+      : () => INJECTED_KEYCHAIN_HELPER_PATH);
+  let keychainHelperExecutable: string | undefined;
+  const getKeychainHelperExecutable = (): string => {
+    keychainHelperExecutable ??= resolveHelper();
+    if (!isAbsolute(keychainHelperExecutable)) {
+      throw new Error(
+        "macOS Keychain helper resolver returned a relative path",
+      );
+    }
+    return keychainHelperExecutable;
+  };
+  const keychainCacheState = getKeychainCacheState(
+    storageServiceName,
+    username,
+  );
+
+  const readFromHelper = (): SecureStorageData | null => {
+    let result: SecureStorageCommandResult;
+    try {
+      result = runCommand(
+        getKeychainHelperExecutable(),
+        ["read", storageServiceName, username],
+        { stdio: ["ignore", "pipe", "pipe"], reject: false },
+      );
+    } catch (error) {
+      throw new Error(
+        `macOS Keychain lookup could not start: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    return decodeKeychainReadResult(result);
+  };
+
+  return {
+    name: "keychain",
+    read(): SecureStorageData | null {
+      const cached = keychainCacheState.cache;
+      if (
+        !bypassReadCache &&
+        Date.now() - cached.cachedAt < KEYCHAIN_CACHE_TTL_MS
+      ) {
+        return cached.data;
+      }
+
+      const data = readFromHelper();
+      keychainCacheState.cache = { data, cachedAt: Date.now() };
+      return data;
+    },
+    readFresh(): SecureStorageData | null {
+      return createMacOsKeychainStorage(
+        home,
+        runCommand,
+        storageServiceName,
+        true,
+        username,
+        getKeychainHelperExecutable,
+      ).read();
+    },
+    async readAsync(): Promise<SecureStorageData | null> {
+      const prev = keychainCacheState.cache;
+      if (
+        !bypassReadCache &&
+        Date.now() - prev.cachedAt < KEYCHAIN_CACHE_TTL_MS
+      ) {
+        return prev.data;
+      }
+      if (!bypassReadCache && keychainCacheState.readInFlight) {
+        return keychainCacheState.readInFlight;
+      }
+
+      const gen = keychainCacheState.generation;
+      const promise = (
+        runCommand === runSecureStorageCommand
+          ? doReadAsync(
+              getKeychainHelperExecutable(),
+              storageServiceName,
+              username,
+            )
+          : Promise.resolve().then(readFromHelper)
+      )
+        .then((data) => {
+          // If the cache was invalidated or updated while we were reading,
+          // our subprocess result is stale — don't overwrite the newer entry.
+          if (gen === keychainCacheState.generation) {
+            keychainCacheState.cache = { data, cachedAt: Date.now() };
+          }
+          return data;
+        })
+        .finally(() => {
+          if (keychainCacheState.readInFlight === promise) {
+            keychainCacheState.readInFlight = null;
+          }
+        });
+      keychainCacheState.readInFlight = promise;
+      return promise;
+    },
+    update(data: SecureStorageData): { success: boolean; warning?: string } {
+      // Invalidate cache before update
+      clearKeychainCacheState(keychainCacheState);
+
+      try {
+        const payload = jsonStringify(data);
+        const payloadBytes = Buffer.byteLength(payload, "utf8");
+        if (payloadBytes >= SECURE_STORAGE_HELPER_PAYLOAD_LIMIT_BYTES) {
+          return {
+            success: false,
+            warning:
+              `macOS Keychain credential payload is ${payloadBytes} bytes; ` +
+              `records at or above ${SECURE_STORAGE_HELPER_PAYLOAD_LIMIT_BYTES} bytes are rejected`,
+          };
+        }
+        const result = runCommand(
+          getKeychainHelperExecutable(),
+          ["write", storageServiceName, username],
+          {
+            input: payload,
+            stdio: ["pipe", "pipe", "pipe"],
+            reject: false,
+          },
+        );
+
+        if (result.exitCode !== 0) {
+          return {
+            success: false,
+            warning:
+              result.stderr?.trim() ||
+              `macOS Keychain write failed with exit code ${result.exitCode}`,
+          };
+        }
+
+        // Update cache with new data on success
+        keychainCacheState.cache = { data, cachedAt: Date.now() };
+        return { success: true };
+      } catch (error) {
+        return {
+          success: false,
+          warning: `macOS Keychain write could not start: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    },
+    delete(): boolean {
+      // Invalidate cache before delete
+      clearKeychainCacheState(keychainCacheState);
+
+      try {
+        const result = runCommand(
+          getKeychainHelperExecutable(),
+          ["delete", storageServiceName, username],
+          { stdio: ["ignore", "pipe", "pipe"], reject: false },
+        );
+        return result.exitCode === 0 || isKeychainItemNotFound(result);
+      } catch (_e) {
+        return false;
+      }
+    },
+  };
+}
+
+async function doReadAsync(
+  executable: string,
+  storageServiceName: string,
+  username: string,
+): Promise<SecureStorageData | null> {
+  let result;
+  try {
+    result = await execa(executable, ["read", storageServiceName, username], {
+      reject: false,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      maxBuffer: SECURE_STORAGE_HELPER_PAYLOAD_LIMIT_BYTES,
+    });
+  } catch (error) {
+    throw new Error(
+      `macOS Keychain lookup could not start: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (isKeychainItemNotFound(result)) return null;
+  if (result.exitCode !== 0) {
+    throw new Error(
+      result.stderr?.trim() ||
+        `macOS Keychain lookup failed with exit code ${result.exitCode}`,
+    );
+  }
+  if (!result.stdout) {
+    throw new Error("macOS Keychain returned an empty credential record");
+  }
+  return decodeSecureStorageData(result.stdout, "macOS Keychain");
+}
+
+let keychainLockedCache: boolean | undefined;
 
 /**
  * Checks if the macOS keychain is locked.
@@ -227,23 +268,23 @@ let keychainLockedCache: boolean | undefined
  * Keychain lock state doesn't change during a CLI session.
  */
 export function isMacOsKeychainLocked(): boolean {
-  if (keychainLockedCache !== undefined) return keychainLockedCache
+  if (keychainLockedCache !== undefined) return keychainLockedCache;
   // Only check on macOS
-  if (process.platform !== 'darwin') {
-    keychainLockedCache = false
-    return false
+  if (process.platform !== "darwin") {
+    keychainLockedCache = false;
+    return false;
   }
 
   try {
-    const result = execaSync('security', ['show-keychain-info'], {
+    const result = execaSync(MACOS_SECURITY_PATH, ["show-keychain-info"], {
       reject: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     // Exit code 36 indicates the keychain is locked
-    keychainLockedCache = result.exitCode === 36
+    keychainLockedCache = result.exitCode === 36;
   } catch {
     // If the command fails for any reason, assume keychain is not locked
-    keychainLockedCache = false
+    keychainLockedCache = false;
   }
-  return keychainLockedCache
+  return keychainLockedCache;
 }

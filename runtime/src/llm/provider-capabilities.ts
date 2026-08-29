@@ -3,6 +3,7 @@ import type {
   LLMStructuredOutputRequest,
 } from "./types.js";
 import { LLMProviderError } from "./errors.js";
+import { normalizeProviderIdentity } from "../provider-identity.js";
 import {
   isStructuredOutputRequested,
   resolveProviderStructuredOutputMode,
@@ -99,8 +100,10 @@ export function assertProviderStructuredOutputCompatibility(input: {
     );
   }
   if (
-    (input.providerName.trim().toLowerCase() === "grok" ||
-      input.providerName.trim().toLowerCase() === "xai") &&
+    normalizeProviderIdentity(
+      input.providerName,
+      "structured-output provider capability",
+    ) === "grok" &&
     input.toolsRequested
   ) {
     assertXaiStructuredOutputToolCompatibility({

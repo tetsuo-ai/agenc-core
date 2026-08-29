@@ -17,12 +17,13 @@
  *
  * This module centralizes the per-provider capability matrix so each
  * adapter doesn't have to spell out its own set of overrides. The
- * matrix keys on `normalizeProviderSlug(this.name)` from the base
+ * matrix keys on the canonical provider identity from the base
  * adapter; subclasses don't need to override anything as long as they
  * pass a recognizable slug.
  */
 
-import { normalizeProviderSlug } from "../capabilities.js";
+import { normalizeProviderIdentity } from "../../provider-identity.js";
+import { BRIEF_TOOL_NAME } from "../../tools/BriefTool/prompt.js";
 import { supportsXaiReasoningEffortParam } from "../structured-output.js";
 
 export interface ChatCompletionsCapabilityHints {
@@ -32,15 +33,6 @@ export interface ChatCompletionsCapabilityHints {
    * `undefined`, current behavior is preserved (caller-controlled).
    */
   readonly acceptsReasoningEffort?: boolean;
-  /**
-   * When set, `reasoning_effort` is forwarded only if the caller's
-   * value is in this set; anything else is stripped so the model runs
-   * at its documented default. Providers that accept the field
-   * per-model publish per-model enums (NVIDIA NIM's hosted schemas
-   * disagree with each other on the allowed values), so a boolean
-   * accept flag alone would forward values the destination rejects.
-   */
-  readonly reasoningEffortAllowedValues?: ReadonlySet<string>;
   /**
    * If `false`, `service_tier` is stripped. The field is recognized
    * only on a single upstream provider; non-matching providers
@@ -119,58 +111,6 @@ function isUpstreamReasoningModel(model: string | undefined): boolean {
 }
 
 /**
- * NVIDIA NIM hosts big-player models whose hosted OpenAPI schemas
- * (docs.api.nvidia.com/nim/reference/<slug>-infer) document a
- * top-level `reasoning_effort` — but each family with its own enum,
- * and no endpoint-wide contract. Families absent here (kimi-k2.x,
- * minimax-m3, plain llama instructs) control thinking through
- * `chat_template_kwargs` or not at all, so the field stays stripped
- * for them. Verified against the hosted schemas 2026-08.
- */
-const NIM_REASONING_EFFORT_FAMILIES: readonly {
-  readonly pattern: RegExp;
-  readonly values: ReadonlySet<string>;
-}[] = [
-  // branding-scan: allow real model-family identifiers in capability matrix
-  {
-    // moonshotai/kimi-k3: enum low|high|max, default max.
-    pattern: /(?:^|\/)kimi-k3(?:$|[-.:])/i,
-    values: new Set(["low", "high", "max"]),
-  },
-  {
-    // deepseek-ai/deepseek-v4-{pro,flash}(+dated snapshots):
-    // enum none|high|max (defaults differ: pro none, flash high).
-    pattern: /(?:^|\/)deepseek-v4-(?:pro|flash)(?:$|[-.:])/i,
-    values: new Set(["none", "high", "max"]),
-  },
-  {
-    // openai/gpt-oss-20b|120b on NIM: enum low|medium|high.
-    pattern: /(?:^|\/)gpt-oss-\d+b(?:$|[-.:])/i,
-    values: new Set(["low", "medium", "high"]),
-  },
-  {
-    // nvidia/nemotron-3-super-*: enum none|low|high.
-    pattern: /(?:^|\/)nemotron-3-super(?:$|[-.:])/i,
-    values: new Set(["none", "low", "high"]),
-  },
-  {
-    // nvidia/nemotron-3-ultra-*: enum none|medium|high.
-    pattern: /(?:^|\/)nemotron-3-ultra(?:$|[-.:])/i,
-    values: new Set(["none", "medium", "high"]),
-  },
-];
-
-function nimReasoningEffortValues(
-  model: string | undefined,
-): ReadonlySet<string> | undefined {
-  if (model === undefined) return undefined;
-  const trimmed = model.trim();
-  return NIM_REASONING_EFFORT_FAMILIES.find((family) =>
-    family.pattern.test(trimmed),
-  )?.values;
-}
-
-/**
  * Tools a small local model can actually drive. The frontier catalog
  * (~20 tools with team/task orchestration) overwhelms 7-32B models —
  * observed as zero tool calls emitted across whole sessions. The
@@ -194,7 +134,7 @@ const LOCAL_PROFILE_TOOL_NAMES = new Set([
   "EnterPlanMode",
   "ExitPlanMode",
   "system.searchTools",
-  "Brief",
+  BRIEF_TOOL_NAME,
   "StructuredOutput",
 ]);
 
@@ -207,7 +147,7 @@ export function usesLocalToolProfile(
   providerName: string | undefined,
 ): boolean {
   return GRAMMAR_CONSTRAINED_TOOL_PROVIDERS.has(
-    normalizeProviderSlug(providerName),
+    normalizeProviderIdentity(providerName, "local tool profile") ?? "",
   );
 }
 
@@ -229,7 +169,7 @@ export function chatCompletionsCapabilityHintsForProvider(
   providerName: string | undefined,
   model: string | undefined,
 ): ChatCompletionsCapabilityHints {
-  const slug = normalizeProviderSlug(providerName);
+  const slug = normalizeProviderIdentity(providerName, "capability gate") ?? "";
 
   // reasoning_effort: documented for the upstream-provider reasoning
   // model family and for documented xAI Grok reasoning variants. Every
@@ -238,14 +178,10 @@ export function chatCompletionsCapabilityHintsForProvider(
   // unrecognized.
   // branding-scan: allow factual reference to real provider in routing comment
   let acceptsReasoningEffort = false;
-  let reasoningEffortAllowedValues: ReadonlySet<string> | undefined;
   if (slug === "openai") {
     acceptsReasoningEffort = isUpstreamReasoningModel(model);
   } else if (slug === "grok") {
     acceptsReasoningEffort = supportsXaiReasoningEffortParam(model);
-  } else if (slug === "nvidia-nim") {
-    reasoningEffortAllowedValues = nimReasoningEffortValues(model);
-    acceptsReasoningEffort = reasoningEffortAllowedValues !== undefined;
   }
 
   // service_tier: recognized by a single upstream provider. Strip
@@ -286,9 +222,6 @@ export function chatCompletionsCapabilityHintsForProvider(
 
   return {
     acceptsReasoningEffort,
-    ...(reasoningEffortAllowedValues !== undefined
-      ? { reasoningEffortAllowedValues }
-      : {}),
     acceptsServiceTier,
     acceptsStreamUsage,
     requiresGrammarSafeToolSchemas,

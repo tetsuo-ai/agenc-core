@@ -3,12 +3,32 @@ import { randomUUID, type UUID } from "node:crypto";
 import type { z } from "zod/v4";
 
 import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
-import type { LLMContentPart, LLMMessage, LLMTool, LLMToolCall } from "../llm/types.js";
-import type { LLMUsage } from "../llm/types.js";
+import type {
+  LLMContentPart,
+  LLMMessage,
+  LLMProvider,
+  LLMTool,
+  LLMToolCall,
+  LLMUsage,
+} from "../llm/types.js";
+import {
+  createProvider,
+  isFactoryProvider,
+  preserveProviderFactoryState,
+  readProviderFactoryOptions,
+  readProviderIdentity,
+} from "../llm/provider.js";
 import { assertAgentRoleWorkspaceMatches } from "../agents/role.js";
 import type { PhaseEvent } from "../phases/events.js";
-import type { StopHookHandler, StopHookOutcome, StopRequest } from "../phases/stop-hooks.js";
-import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import type {
+  StopHookHandler,
+  StopHookOutcome,
+  StopRequest,
+} from "../phases/stop-hooks.js";
+import {
+  PermissionModeRegistry,
+  transitionPermissionMode,
+} from "../permissions/permission-mode.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
 import type { CanUseToolFn } from "../tui/hooks/useCanUseTool.js";
@@ -19,8 +39,10 @@ import {
 } from "../tools/runtimes/context.js";
 import {
   attachSandboxExecutionBroker,
+  missingSandboxExecutionBoundary,
   readSandboxExecutionBroker,
   readSandboxExecutionSurface,
+  type SandboxExecutionBrokerLike,
 } from "../sandbox/execution-broker.js";
 import { frameUntrustedToolHistoryMessages } from "../tools/untrusted-tool-result-framing.js";
 import type { AttachmentMessage, Message } from "../types/message.js";
@@ -40,11 +62,7 @@ import {
   runWithAgentMemoryAuthorization,
   type AgentMemoryAuthorization,
 } from "../utils/agentContext.js";
-import {
-  getAgentName,
-  getTeamName,
-  isTeammate,
-} from "../utils/teammate.js";
+import { getAgentName, getTeamName, isTeammate } from "../utils/teammate.js";
 import { getTaskListId, listTasks } from "../utils/tasks.js";
 import { Session, type SessionServices } from "./session.js";
 
@@ -76,6 +94,7 @@ export interface TurnCompatSession {
   readonly userMessage: string | readonly LLMContentPart[];
   readonly systemPrompt: string;
   readonly foregroundMemoryScope: ForegroundAgentMemoryScope;
+  readonly disposeOwnedProvider: () => Promise<void>;
 }
 
 type ForegroundAgentMemoryScope =
@@ -84,6 +103,118 @@ type ForegroundAgentMemoryScope =
       readonly selected: true;
       readonly authorization: AgentMemoryAuthorization | undefined;
     };
+
+interface TurnCompatProviderLease {
+  readonly provider: LLMProvider;
+  readonly disposeOwnedProvider: () => Promise<void>;
+}
+
+function createOwnedProviderDisposer(
+  provider: LLMProvider | undefined,
+): () => Promise<void> {
+  let disposal: Promise<void> | undefined;
+  return () => {
+    disposal ??= Promise.resolve().then(async () => {
+      await provider?.dispose?.();
+    });
+    return disposal;
+  };
+}
+
+function createStatelessProviderSessionView(
+  provider: LLMProvider,
+): LLMProvider {
+  return {
+    name: provider.name,
+    ...(provider.tokenCountCapability !== undefined
+      ? { tokenCountCapability: provider.tokenCountCapability }
+      : {}),
+    ...(provider.suggestedStreamIdleTimeoutMs !== undefined
+      ? { suggestedStreamIdleTimeoutMs: provider.suggestedStreamIdleTimeoutMs }
+      : {}),
+    chat: (messages, options) => provider.chat(messages, options),
+    chatStream: (messages, onChunk, options) =>
+      provider.chatStream(messages, onChunk, options),
+    healthCheck: () => provider.healthCheck(),
+    ...(provider.predictCode !== undefined
+      ? {
+          predictCode: (request, options) =>
+            provider.predictCode!(request, options),
+        }
+      : {}),
+    ...(provider.getExecutionProfile !== undefined
+      ? {
+          getExecutionProfile: (options) =>
+            provider.getExecutionProfile!(options),
+        }
+      : {}),
+    ...(provider.retrieveStoredResponse !== undefined
+      ? {
+          retrieveStoredResponse: (responseId: string) =>
+            provider.retrieveStoredResponse!(responseId),
+        }
+      : {}),
+    ...(provider.deleteStoredResponse !== undefined
+      ? {
+          deleteStoredResponse: (responseId: string) =>
+            provider.deleteStoredResponse!(responseId),
+        }
+      : {}),
+  };
+}
+
+function createTurnCompatProviderLease(params: {
+  readonly provider: LLMProvider;
+  readonly cwd: string;
+  readonly sandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
+}): TurnCompatProviderLease {
+  const source = params.provider;
+  if (source.forkForSession !== undefined) {
+    if (params.sandboxExecutionBroker === undefined) {
+      throw missingSandboxExecutionBoundary("provider");
+    }
+    const forked = source.forkForSession({
+      cwd: params.cwd,
+      sandboxExecutionBroker: params.sandboxExecutionBroker,
+    });
+    if (forked === source) {
+      throw new Error(
+        `${source.name} provider returned its parent instance from forkForSession`,
+      );
+    }
+    const provider = isFactoryProvider(forked)
+      ? forked
+      : preserveProviderFactoryState(forked, source);
+    return {
+      provider,
+      disposeOwnedProvider: createOwnedProviderDisposer(provider),
+    };
+  }
+
+  const providerName = readProviderIdentity(source);
+  if (providerName !== null) {
+    // Factory state is already the resolved session snapshot. Rebuilding from
+    // it gives the child an independent transport/continuation state without
+    // consulting process environment or credential storage again.
+    const provider = createProvider(
+      providerName,
+      readProviderFactoryOptions(source),
+    );
+    return {
+      provider,
+      disposeOwnedProvider: createOwnedProviderDisposer(provider),
+    };
+  }
+
+  // Structural providers without canonical factory state are expected to be
+  // stateless. A distinct facade keeps Session from discovering and rebinding
+  // a parent-owned HTTP client; stateful adapters must implement
+  // forkForSession so their transport can be independently owned.
+  return {
+    provider: createStatelessProviderSessionView(source),
+    disposeOwnedProvider: createOwnedProviderDisposer(undefined),
+  };
+}
 
 export type TurnCompatRunEvent =
   | { readonly type: "phase"; readonly event: PhaseEvent }
@@ -127,21 +258,35 @@ export async function createTurnCompatSession(
     getCwdOverrideForCurrentContext() ??
     parent.sessionConfiguration.cwd ??
     parent.config.cwd;
+  const livePermissionContext = appState.toolPermissionContext as unknown as
+    ToolPermissionContext;
+  const inheritedPermissionContext = transitionPermissionMode(
+    livePermissionContext.mode,
+    livePermissionContext.mode,
+    livePermissionContext,
+    { workspacePath: effectiveCwd },
+  );
+  if ("error" in inheritedPermissionContext) {
+    throw new Error(
+      "turn compatibility cannot inherit bypassPermissions without exact canonical cwd consent",
+    );
+  }
   const sandboxExecutionBroker =
     parent.services.sandboxExecutionBroker?.forkForCwd(effectiveCwd);
-  const scopedToolUseContext = sandboxExecutionBroker === undefined
-    ? params.toolUseContext
-    : {
-        ...params.toolUseContext,
-        services: {
-          ...(
-            params.toolUseContext as ToolUseContext & {
-              readonly services?: Record<string, unknown>;
-            }
-          ).services,
-          sandboxExecutionBroker,
-        },
-      } as ToolUseContext;
+  const scopedToolUseContext =
+    sandboxExecutionBroker === undefined
+      ? params.toolUseContext
+      : ({
+          ...params.toolUseContext,
+          services: {
+            ...(
+              params.toolUseContext as ToolUseContext & {
+                readonly services?: Record<string, unknown>;
+              }
+            ).services,
+            sandboxExecutionBroker,
+          },
+        } as ToolUseContext);
   const registry = await createToolRegistryFromToolContext({
     tools: scopedToolUseContext.options.tools,
     toolUseContext: scopedToolUseContext,
@@ -155,64 +300,86 @@ export async function createTurnCompatSession(
       model,
     },
   };
-  const session = new Session({
-    conversationId:
-      opts.conversationId ??
-      params.toolUseContext.agentId ??
-      `${parent.conversationId}:turn:${randomUUID()}`,
-    roleWorkspace: parent.roleWorkspace,
-    agentDefinitions: scopedAgentDefinitions,
-    initialState: {
-      sessionConfiguration,
-      history: [],
-    },
-    features: parent.features,
-    services: {
-      ...parent.services,
-      registry,
-      ...(opts.executionAdmission !== undefined
-        ? { executionAdmission: opts.executionAdmission }
-        : {}),
-      ...(sandboxExecutionBroker !== undefined
-        ? { sandboxExecutionBroker }
-        : {}),
-      hooks: {
-        ...parent.services.hooks,
-        preToolUseHooks: [],
-        postToolUseHooks: [],
-        failureToolUseHooks: [],
-        permissionDecisionHooks: [],
-        stopHooks: [
-          ...configuredCompatStopHooks(parent.services.hooks),
-          createCompatSessionStopHook(params),
-        ],
-      },
-      querySource: params.querySource,
-      approvalResolver: {
-        request: async () => ({ kind: "approved" }),
-      },
-      permissionModeRegistry: new PermissionModeRegistry(
-        {
-          ...appState.toolPermissionContext,
-          mode: "bypassPermissions",
-          isBypassPermissionsModeAvailable: true,
-        } as unknown as ToolPermissionContext,
-      ),
-    } as SessionServices,
-    jsRepl: parent.jsRepl,
-    config: {
-      ...parent.config,
-      cwd: effectiveCwd,
-      model,
-    },
-    modelInfo: {
-      ...parent.modelInfo,
-      slug: model,
-      ...(params.maxOutputTokensOverride !== undefined
-        ? { maxOutputTokens: params.maxOutputTokensOverride }
-        : {}),
-    },
+  const selectedProvider = params.toolUseContext.provider ??
+    parent.services.provider;
+  const providerLease = createTurnCompatProviderLease({
+    provider: selectedProvider,
+    cwd: effectiveCwd,
+    sandboxExecutionBroker,
   });
+  let session: Session;
+  try {
+    session = new Session({
+      conversationId:
+        opts.conversationId ??
+        params.toolUseContext.agentId ??
+        `${parent.conversationId}:turn:${randomUUID()}`,
+      roleWorkspace: parent.roleWorkspace,
+      agentDefinitions: scopedAgentDefinitions,
+      initialState: {
+        sessionConfiguration,
+        history: [],
+      },
+      features: parent.features,
+      mcpManagerOwnership: "borrowed",
+      services: {
+        ...parent.services,
+        // The compat child owns its selected model/provider revision. Sharing
+        // the parent's provider service would silently retain the parent model.
+        providerService: undefined,
+        provider: providerLease.provider,
+        registry,
+        ...(opts.executionAdmission !== undefined
+          ? { executionAdmission: opts.executionAdmission }
+          : {}),
+        ...(sandboxExecutionBroker !== undefined
+          ? { sandboxExecutionBroker }
+          : {}),
+        hooks: {
+          ...parent.services.hooks,
+          preToolUseHooks: [],
+          postToolUseHooks: [],
+          failureToolUseHooks: [],
+          permissionDecisionHooks: [],
+          stopHooks: [
+            ...configuredCompatStopHooks(parent.services.hooks),
+            createCompatSessionStopHook(params),
+          ],
+        },
+        querySource: params.querySource,
+        approvalResolver: {
+          request: async () => ({ kind: "approved" }),
+        },
+        permissionModeRegistry: new PermissionModeRegistry(
+          inheritedPermissionContext,
+        ),
+      } as SessionServices,
+      jsRepl: parent.jsRepl,
+      config: {
+        ...parent.config,
+        cwd: effectiveCwd,
+        model,
+      },
+      modelInfo: {
+        ...parent.modelInfo,
+        slug: model,
+        ...(params.maxOutputTokensOverride !== undefined
+          ? { maxOutputTokens: params.maxOutputTokensOverride }
+          : {}),
+      },
+    });
+  } catch (error) {
+    try {
+      await providerLease.disposeOwnedProvider();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "turn compatibility session construction and provider cleanup failed",
+      );
+    }
+    throw error;
+  }
+  session.onBeforeDurableClose(providerLease.disposeOwnedProvider);
   attachToolContextSurface(session, scopedToolUseContext);
   return {
     session,
@@ -220,6 +387,7 @@ export async function createTurnCompatSession(
     userMessage,
     systemPrompt,
     foregroundMemoryScope,
+    disposeOwnedProvider: providerLease.disposeOwnedProvider,
   };
 }
 
@@ -241,8 +409,9 @@ export function assertTurnCompatAgentCatalog(
 function configuredCompatStopHooks(
   hooks: SessionServices["hooks"],
 ): readonly StopHookHandler[] {
-  const configured = (hooks as { readonly stopHooks?: readonly StopHookHandler[] })
-    .stopHooks;
+  const configured = (
+    hooks as { readonly stopHooks?: readonly StopHookHandler[] }
+  ).stopHooks;
   return configured ?? [];
 }
 
@@ -467,28 +636,29 @@ export async function* runTurnCompat(
     if (message) enqueueEvent({ type: "message", message });
   });
 
-  const flushPendingToolAssistant = function* (): Generator<TurnCompatRunEvent> {
-    if (pendingToolCalls.length === 0) return;
-    const toolAssistantText = assistantText;
-    const assistantMessage = createAssistantMessage({
-      content: [
-        ...(toolAssistantText.length > 0
-          ? [{ type: "text" as const, text: toolAssistantText }]
-          : []),
-        ...pendingToolCalls.map((call) => ({
-          type: "tool_use" as const,
-          id: call.id,
-          name: call.name,
-          input: parseToolInput(call.arguments),
-        })),
-      ] as Parameters<typeof createAssistantMessage>[0]["content"],
-    });
-    pendingToolCalls = [];
-    pendingToolAssistantUuid = assistantMessage.uuid as UUID;
-    flushedToolAssistantText = toolAssistantText;
-    assistantText = "";
-    yield { type: "message", message: assistantMessage };
-  };
+  const flushPendingToolAssistant =
+    function* (): Generator<TurnCompatRunEvent> {
+      if (pendingToolCalls.length === 0) return;
+      const toolAssistantText = assistantText;
+      const assistantMessage = createAssistantMessage({
+        content: [
+          ...(toolAssistantText.length > 0
+            ? [{ type: "text" as const, text: toolAssistantText }]
+            : []),
+          ...pendingToolCalls.map((call) => ({
+            type: "tool_use" as const,
+            id: call.id,
+            name: call.name,
+            input: parseToolInput(call.arguments),
+          })),
+        ] as Parameters<typeof createAssistantMessage>[0]["content"],
+      });
+      pendingToolCalls = [];
+      pendingToolAssistantUuid = assistantMessage.uuid as UUID;
+      flushedToolAssistantText = toolAssistantText;
+      assistantText = "";
+      yield { type: "message", message: assistantMessage };
+    };
 
   const runAbortController = new AbortController();
   const forwardAbort = (): void => {
@@ -507,10 +677,7 @@ export async function* runTurnCompat(
   const foregroundMemoryScope = turn.foregroundMemoryScope;
   const runInForegroundMemoryScope = <T>(fn: () => T): T =>
     foregroundMemoryScope.selected
-      ? runWithAgentMemoryAuthorization(
-          foregroundMemoryScope.authorization,
-          fn,
-        )
+      ? runWithAgentMemoryAuthorization(foregroundMemoryScope.authorization, fn)
       : fn();
 
   const iterator = runInForegroundMemoryScope(() =>
@@ -526,11 +693,12 @@ export async function* runTurnCompat(
         ? { skipCacheWrite: params.skipCacheWrite }
         : {}),
       configOverrides:
-        params.maxTurns !== undefined ? { maxTurns: params.maxTurns } : undefined,
+        params.maxTurns !== undefined
+          ? { maxTurns: params.maxTurns }
+          : undefined,
     }),
   );
-  const requestNext = () =>
-    runInForegroundMemoryScope(() => iterator.next());
+  const requestNext = () => runInForegroundMemoryScope(() => iterator.next());
 
   let next = requestNext();
   let completed = false;
@@ -565,7 +733,8 @@ export async function* runTurnCompat(
 
       if (event.type === "tool_result") {
         yield* flushPendingToolAssistant();
-        const metadata = event.result.metadata as StructuredOutputMetadata | undefined;
+        const metadata = event.result.metadata as
+          StructuredOutputMetadata | undefined;
         for (const message of metadata?.compatMessages ?? []) {
           yield { type: "message", message };
         }
@@ -643,6 +812,16 @@ export async function* runTurnCompat(
           next = requestNext();
           continue;
         }
+        if (event.stopReason === "max_budget_usd") {
+          yield {
+            type: "message",
+            message: createAssistantAPIErrorMessage({
+              content: "Agent reached the canonical session cost cap",
+            }),
+          };
+          next = requestNext();
+          continue;
+        }
         if (
           event.content.length > 0 &&
           event.content !== flushedToolAssistantText
@@ -664,11 +843,15 @@ export async function* runTurnCompat(
     if (!completed && !runAbortController.signal.aborted) {
       runAbortController.abort(new Error("turn compatibility stream closed"));
     }
-    await runInForegroundMemoryScope(
-      () => iterator.return?.({ reason: "cancelled" }),
-    );
-    unsubscribe();
-    queueWake = null;
+    try {
+      await runInForegroundMemoryScope(() =>
+        iterator.return?.({ reason: "cancelled" }),
+      );
+    } finally {
+      unsubscribe();
+      queueWake = null;
+      await turn.disposeOwnedProvider();
+    }
   }
 }
 
@@ -680,13 +863,14 @@ export async function* runTurnCompat(
  */
 function resolveForegroundAgentMemoryScope(
   selectedAgentType: string | undefined,
-  activeAgents: ToolUseContext['options']['agentDefinitions']['activeAgents'],
+  activeAgents: ToolUseContext["options"]["agentDefinitions"]["activeAgents"],
 ): ForegroundAgentMemoryScope {
   if (selectedAgentType === undefined) {
     return { selected: false };
   }
-  const selectedAgent = activeAgents
-    .find((agent) => agent.agentType === selectedAgentType);
+  const selectedAgent = activeAgents.find(
+    (agent) => agent.agentType === selectedAgentType,
+  );
   return {
     selected: true,
     ...(selectedAgent?.memory !== undefined
@@ -708,7 +892,9 @@ function parseLegacyProgressMessage(chunk: string): Message | null {
   }
 }
 
-function hasStructuredOutputAttachment(messages: readonly Message[] | undefined): boolean {
+function hasStructuredOutputAttachment(
+  messages: readonly Message[] | undefined,
+): boolean {
   return (messages ?? []).some(
     (message) =>
       message?.type === "attachment" &&
@@ -724,7 +910,10 @@ function isStreamProgressEventType(type: string): boolean {
   );
 }
 
-function withSourceToolAssistantUuid(message: Message, uuid: UUID | undefined): Message {
+function withSourceToolAssistantUuid(
+  message: Message,
+  uuid: UUID | undefined,
+): Message {
   if (uuid === undefined || message?.type !== "user") return message;
   return {
     ...message,
@@ -778,6 +967,7 @@ function attachToolContextSurface(
   Object.assign(session as unknown as Record<string, unknown>, {
     readFileState: toolUseContext.readFileState,
     loadedNestedMemoryPaths: toolUseContext.loadedNestedMemoryPaths,
+    dynamicSkillDirTriggers: toolUseContext.dynamicSkillDirTriggers,
     mcpClients: toolUseContext.options.mcpClients,
     agentDefinitions: toolUseContext.options.agentDefinitions,
     tasks: toolUseContext.getAppState().tasks,
@@ -785,23 +975,20 @@ function attachToolContextSurface(
     setStreamMode: toolUseContext.setStreamMode,
     setResponseLength: toolUseContext.setResponseLength,
     onCompactProgress: toolUseContext.onCompactProgress,
-    setSDKStatus: toolUseContext.setSDKStatus,
     addNotification: toolUseContext.addNotification,
   });
 }
 
-function splitMessagesForTurn(
-  messages: readonly Message[],
-): { readonly history: LLMMessage[]; readonly userMessage: string | readonly LLMContentPart[] } {
+function splitMessagesForTurn(messages: readonly Message[]): {
+  readonly history: LLMMessage[];
+  readonly userMessage: string | readonly LLMContentPart[];
+} {
   const converted = messagesToLlmMessages(messages);
   for (let index = converted.length - 1; index >= 0; index -= 1) {
     const message = converted[index];
     if (message?.role !== "user") continue;
     return {
-      history: [
-        ...converted.slice(0, index),
-        ...converted.slice(index + 1),
-      ],
+      history: [...converted.slice(0, index), ...converted.slice(index + 1)],
       userMessage: message.content,
     };
   }
@@ -908,11 +1095,13 @@ function messageToLlmMessages(message: Message): LLMMessage[] {
         });
       }
     }
-    return [{
-      role: "assistant",
-      content: text.join("\n"),
-      ...(toolCalls.length > 0 ? { toolCalls } : {}),
-    }];
+    return [
+      {
+        role: "assistant",
+        content: text.join("\n"),
+        ...(toolCalls.length > 0 ? { toolCalls } : {}),
+      },
+    ];
   }
   if (message?.type === "system" && typeof message.content === "string") {
     return [{ role: "user", content: message.content }];
@@ -980,12 +1169,14 @@ async function createToolRegistryFromToolContext(opts: {
   );
   return {
     get tools() {
-      return specs.map((spec) => runtimeToolFromOldTool(
-        spec.source,
-        opts.toolUseContext,
-        opts.canUseTool,
-        spec.llmTool,
-      ));
+      return specs.map((spec) =>
+        runtimeToolFromOldTool(
+          spec.source,
+          opts.toolUseContext,
+          opts.canUseTool,
+          spec.llmTool,
+        ),
+      );
     },
     toLLMTools() {
       return specs.map((spec) => spec.llmTool);
@@ -1028,9 +1219,9 @@ async function oldToolToLlmTool(
     function: {
       name: tool.name,
       description,
-      parameters: tool.inputJSONSchema ?? zodToJsonSchema(
-        tool.inputSchema as z.ZodTypeAny,
-      ),
+      parameters:
+        tool.inputJSONSchema ??
+        zodToJsonSchema(tool.inputSchema as z.ZodTypeAny),
     },
   };
 }
@@ -1053,14 +1244,16 @@ function runtimeToolFromOldTool(
       : {}),
     metadata: { mutating: tool.recoveryCategory !== "idempotent" },
     async execute(args) {
-      const callId = typeof args.__callId === "string"
-        ? args.__callId
-        : randomUUID();
+      const callId =
+        typeof args.__callId === "string" ? args.__callId : randomUUID();
       const input = stripInjectedArgs(args);
       copyExecutionBoundary(args, input);
       const injectedProgress =
         typeof args.__onProgress === "function"
-          ? args.__onProgress as (event: { chunk: string; stream?: "status" }) => void
+          ? (args.__onProgress as (event: {
+              chunk: string;
+              stream?: "status";
+            }) => void)
           : undefined;
       const block = {
         type: "tool_use" as const,
@@ -1069,12 +1262,13 @@ function runtimeToolFromOldTool(
         input,
       };
       const parentMessage = createAssistantMessage({
-        content: [block] as unknown as Parameters<typeof createAssistantMessage>[0]["content"],
+        content: [block] as unknown as Parameters<
+          typeof createAssistantMessage
+        >[0]["content"],
       });
       const toolContext = {
         ...toolUseContext,
         toolUseId: callId,
-        hookChainsCanUseTool: canUseTool,
       };
       const permission = await canUseTool(
         tool,
@@ -1084,7 +1278,8 @@ function runtimeToolFromOldTool(
         callId,
       );
       if (permission.behavior !== "allow") {
-        const message = permission.message ?? `Permission to use ${tool.name} was denied.`;
+        const message =
+          permission.message ?? `Permission to use ${tool.name} was denied.`;
         return {
           content: message,
           isError: true,
@@ -1127,7 +1322,12 @@ function runtimeToolFromOldTool(
             );
           },
         );
-        return oldToolResultToDispatchResult(tool, result, callId, toolUseContext);
+        return oldToolResultToDispatchResult(
+          tool,
+          result,
+          callId,
+          toolUseContext,
+        );
       } finally {
         admittedAbort.cleanup();
       }
@@ -1161,7 +1361,8 @@ function legacyToolAbortController(
 }
 
 function emitLegacyProgress(
-  injectedProgress: ((event: { chunk: string; stream?: "status" }) => void) | undefined,
+  injectedProgress:
+    ((event: { chunk: string; stream?: "status" }) => void) | undefined,
   message: Message,
 ): void {
   if (!injectedProgress) return;
@@ -1175,7 +1376,9 @@ function emitLegacyProgress(
   }
 }
 
-function stripInjectedArgs(args: Record<string, unknown>): Record<string, unknown> {
+function stripInjectedArgs(
+  args: Record<string, unknown>,
+): Record<string, unknown> {
   const clean: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(args)) {
     if (key.startsWith("__")) continue;
@@ -1243,13 +1446,15 @@ function oldToolResultToDispatchResult(
   };
 }
 
-function parseToolArguments(raw: string): {
-  readonly ok: true;
-  readonly args: Record<string, unknown>;
-} | {
-  readonly ok: false;
-  readonly error: string;
-} {
+function parseToolArguments(raw: string):
+  | {
+      readonly ok: true;
+      readonly args: Record<string, unknown>;
+    }
+  | {
+      readonly ok: false;
+      readonly error: string;
+    } {
   try {
     const parsed = raw.trim().length === 0 ? {} : JSON.parse(raw);
     if (

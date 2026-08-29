@@ -45,9 +45,11 @@ function sequence(values: readonly string[]): () => string {
 
 interface FakeDaemon {
   readonly client: AgencClient;
+  readonly pluginStorageRoot: string;
   readonly transport: AgenCInProcessDaemonTransport;
   readonly multiplexer: AgenCDaemonClientMultiplexer;
   readonly calls: {
+    created: JsonObject[];
     streamed: JsonObject[];
     approved: JsonObject[];
     denied: JsonObject[];
@@ -86,13 +88,20 @@ async function createFakeDaemon(
   const multiplexer = new AgenCDaemonClientMultiplexer({
     sessionManager,
   });
-  const calls: FakeDaemon["calls"] = { streamed: [], approved: [], denied: [] };
+  const calls: FakeDaemon["calls"] = {
+    created: [],
+    streamed: [],
+    approved: [],
+    denied: [],
+  };
+  const pluginStorageRoot = await workspaces.create();
 
   let daemon!: FakeDaemon;
   const dispatcher = new AgenCDaemonJsonRpcDispatcher({
     agentManager: {
       // todo-133: createSession prefers agent.create + attach for a live agent
       createAgent: async (params: JsonObject) => {
+        calls.created.push(params);
         const agentId = "agent_1";
         const session = await sessionManager.createSession({
           agentId,
@@ -116,23 +125,52 @@ async function createFakeDaemon(
         };
       },
       listAgents: async () => ({ agents: [] }),
-      attachAgent: async (params: JsonObject) => {
+      attachAgent: async (params: JsonObject, registerSessionRoute) => {
         const agentId = String(params.agentId ?? "agent_1");
         const listed = await sessionManager.listSessions();
         const match =
           listed.sessions.find((s) => s.agentId === agentId) ??
           listed.sessions[0];
-        const sessionId = match?.sessionId ?? "session_1";
+        if (match === undefined || match.cwd === undefined) {
+          throw new Error("test daemon agent has no authoritative session cwd");
+        }
+        const sessionId = match.sessionId;
         const attachment = await sessionManager.attachSession({
           sessionId,
           ...(params.clientId !== undefined
             ? { clientId: String(params.clientId) }
             : {}),
         });
+        await registerSessionRoute(sessionId);
         return {
           agentId,
           attachmentId: attachment.attachmentId,
           sessionIds: [sessionId],
+          runtimeOptions: calls.created.at(-1)?.runtimeOptions ?? {
+            simpleMode: false,
+            stdinDataMode: false,
+            remoteMode: false,
+            pluginStorageRoot,
+            allowUntrustedHooks: false,
+          },
+          runtimeSettings: {
+            permissionMode: "default",
+            prePlanMode: null,
+            autoModeActive: false,
+            autoModeAvailable: true,
+            bypassPermissionsModeAvailable: false,
+            bypassPermissionsWorkspace: null,
+            bypassPermissionsConsentWorkspace: null,
+            model: "grok-4.3",
+            provider: "grok",
+            profile: null,
+            reasoningEffort: null,
+            modelVerbosity: null,
+            serviceTier: null,
+            hooksDisabled: false,
+          },
+          runtimeSettingsEventId: "run-runtime-settings:agent_1:0:initial",
+          sessions: [{ ...match, cwd: match.cwd }],
         };
       },
       stopAgent: async () => ({ agentId: "agent_1", stopped: true }),
@@ -207,13 +245,6 @@ async function createFakeDaemon(
           totalTokens: 18,
           costUsd: 0.0042,
         },
-        cacheStats: {
-          requestCount: 1,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
-          cacheTotalInputTokens: 0,
-          hitRate: null,
-        },
       }),
     } as never,
     sessionManager,
@@ -236,6 +267,7 @@ async function createFakeDaemon(
 
   daemon = {
     client,
+    pluginStorageRoot,
     transport,
     multiplexer,
     calls,
@@ -315,17 +347,31 @@ describe("agenc-sdk client over the in-process transport", () => {
     const initialized = await daemon.client.initialize();
     expect(initialized).toMatchObject({
       type: "initialized",
-      protocol: { version: "1.2.0" },
+      protocol: { version: "1.9.0" },
     });
 
     const session = await daemon.client.createSession({
       cwd,
+      pluginStorageRoot: daemon.pluginStorageRoot,
+      dangerouslyBypassApprovalsAndSandbox: true,
       metadata: { source: "sdk-inprocess-test" },
+    });
+    expect(daemon.calls.created.at(-1)?.runtimeOptions).toMatchObject({
+      dangerouslyBypassApprovalsAndSandbox: true,
     });
     expect(session.sessionId).toBe("session_1");
     await expect(
       daemon.multiplexer.attachedClientIds("session_1"),
     ).resolves.toEqual(["agenc-sdk-test-client"]);
+    const reattached = await daemon.client.attachAgent("agent_1");
+    expect(reattached.attach.runtimeOptions).toMatchObject({
+      simpleMode: false,
+      dangerouslyBypassApprovalsAndSandbox: true,
+      stdinDataMode: false,
+      remoteMode: false,
+      pluginStorageRoot: daemon.pluginStorageRoot,
+      allowUntrustedHooks: false,
+    });
 
     const run = session.prompt("hi there");
     const events: AgencPromptEvent[] = [];
@@ -370,7 +416,6 @@ describe("agenc-sdk client over the in-process transport", () => {
     expect(result.deniedPermissionRequestIds).toEqual([]);
     // includeUsage default: usage came from session.snapshot via the fake.
     expect(result.usage).toMatchObject({ totalTokens: 18, costUsd: 0.0042 });
-    expect(result.cacheStats).toMatchObject({ requestCount: 1 });
 
     await daemon.close();
   });
@@ -410,7 +455,9 @@ describe("agenc-sdk client over the in-process transport", () => {
     await daemon.client.initialize();
     // Preserve the public SDK convenience contract: omitting cwd resolves to
     // the caller's existing absolute process.cwd() before session.create.
-    const session = await daemon.client.createSession();
+    const session = await daemon.client.createSession({
+      pluginStorageRoot: daemon.pluginStorageRoot,
+    });
     const result = await session.prompt("run ls").result();
 
     expect(seen).toHaveLength(1);
@@ -459,7 +506,10 @@ describe("agenc-sdk client over the in-process transport", () => {
     });
 
     await daemon.client.initialize();
-    const session = await daemon.client.createSession({ cwd });
+    const session = await daemon.client.createSession({
+      cwd,
+      pluginStorageRoot: daemon.pluginStorageRoot,
+    });
     const result = await session.prompt("run ls").result();
 
     expect(daemon.calls.approved).toHaveLength(0);

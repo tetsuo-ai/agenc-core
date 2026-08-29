@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LocalAuthBackend } from "../auth/backends/local.js";
+import { resolveHomeContext } from "../config/home.js";
 import {
   formatSubscriptionCommandResult,
   formatUsageCommandResult,
@@ -18,19 +19,26 @@ import { buildDefaultRegistry } from "./registry.js";
 import type { SlashCommandContext } from "./types.js";
 
 function localAuthCtx(agencHome: string): SlashCommandContext {
+  const configStore = {
+    current: () => ({
+      auth: {
+        backend: "local",
+      },
+    }),
+    homeContext: resolveHomeContext({ AGENC_HOME: agencHome }),
+  } as SlashCommandContext["configStore"];
   return {
-    session: {} as SlashCommandContext["session"],
+    session: {
+      services: {
+        configStore,
+        providerService: { environment: () => ({}) },
+      },
+    } as SlashCommandContext["session"],
     argsRaw: "",
     cwd: agencHome,
     home: agencHome,
     agencHome,
-    configStore: {
-      current: () => ({
-        auth: {
-          backend: "local",
-        },
-      }),
-    } as SlashCommandContext["configStore"],
+    configStore,
   };
 }
 
@@ -140,7 +148,7 @@ describe("auth slash commands", () => {
         "Billing: https://id.agenc.ag/subscription\n" +
         "Managed models: enabled\n" +
         "Model access: hosted by AgenC\n" +
-        "Available models: 42 managed OpenRouter routes\n" +
+        "Available models: 41 managed OpenRouter routes\n" +
         "Default route: /model openrouter:x-ai/grok-4.5\n" +
         "Choose/switch models with /provider.",
     );

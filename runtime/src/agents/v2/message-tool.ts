@@ -1,12 +1,5 @@
 import type { ToolResult } from "../../tools/types.js";
-import {
-  AgentAssignmentRejectedError,
-  ThreadNotFoundError,
-} from "../control.js";
-import {
-  createMailboxMetadataRecord,
-  MailboxCapacityError,
-} from "../mailbox.js";
+import { createMailboxMetadataRecord } from "../mailbox.js";
 import type { ThreadId } from "../registry.js";
 import {
   callIdFromArgs,
@@ -15,7 +8,6 @@ import {
   getSessionOrError,
   isCurrentAgentContextError,
   json,
-  jsonValidationError,
   receiverMetadataFor,
   resolveAgentId,
   stringValue,
@@ -35,22 +27,21 @@ export async function handleMessageStringTool(
   const target = stringValue(args.target);
   const message = typeof args.message === "string" ? args.message : undefined;
   if (!target || !message) {
-    return jsonValidationError("agents-v2-message-required-args", {
-      error: "target and message are required",
-    });
+    return json({ error: "target and message are required" }, true);
   }
   if (message.trim().length === 0) {
-    return jsonValidationError("agents-v2-message-empty", {
-      error: "Empty message can't be sent to an agent",
-    });
+    return json({ error: "Empty message can't be sent to an agent" }, true);
   }
   if (
     message.length > MAX_INTER_AGENT_MESSAGE_CHARACTERS ||
     Buffer.byteLength(message, "utf8") > MAX_INTER_AGENT_MESSAGE_BYTES
   ) {
-    return jsonValidationError("agents-v2-message-byte-limit", {
-      error: `message exceeds the ${MAX_INTER_AGENT_MESSAGE_BYTES}-byte inter-agent limit`,
-    });
+    return json(
+      {
+        error: `message exceeds the ${MAX_INTER_AGENT_MESSAGE_BYTES}-byte inter-agent limit`,
+      },
+      true,
+    );
   }
   const sessionOrError = getSessionOrError(opts);
   if (!("conversationId" in sessionOrError)) return sessionOrError;
@@ -61,28 +52,23 @@ export async function handleMessageStringTool(
   try {
     agentId = resolveAgentId(sessionOrError, target, current.agentPath, opts);
   } catch (error) {
-    return jsonValidationError("agents-v2-message-target-resolution", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    return json(
+      { error: error instanceof Error ? error.message : String(error) },
+      true,
+    );
   }
   if (agentId === current.threadId) {
-    return jsonValidationError("agents-v2-message-self-target", {
-      error: "an agent cannot message itself",
-    });
+    return json({ error: "an agent cannot message itself" }, true);
   }
   if (mode === "trigger_turn" && agentId === sessionOrError.conversationId) {
-    return jsonValidationError("agents-v2-assign-root-target", {
-      error: "Tasks can't be assigned to the root agent",
-    });
+    return json({ error: "Tasks can't be assigned to the root agent" }, true);
   }
   const callId = callIdFromArgs(args, "message");
   const live = control.getLive(agentId);
   const metadata = control.getAgentMetadata(agentId);
   const receiverAgentPath = metadata?.agentPath ?? live?.agentPath;
   if (!receiverAgentPath) {
-    return jsonValidationError("agents-v2-message-target-metadata", {
-      error: "target agent is missing an agent_path",
-    });
+    return json({ error: "target agent is missing an agent_path" }, true);
   }
   emit(sessionOrError, {
     type: "collab_agent_interaction_begin",
@@ -131,21 +117,6 @@ export async function handleMessageStringTool(
     },
   });
   if (deliveryError !== undefined) {
-    if (
-      deliveryError instanceof ThreadNotFoundError ||
-      deliveryError instanceof MailboxCapacityError ||
-      (mode === "trigger_turn" &&
-        deliveryError instanceof AgentAssignmentRejectedError)
-    ) {
-      return jsonValidationError(
-        mode === "trigger_turn"
-          ? "agents-v2-assign-refused"
-          : "agents-v2-message-not-delivered",
-        {
-          error: deliveryError.message,
-        },
-      );
-    }
     return json(
       {
         error:

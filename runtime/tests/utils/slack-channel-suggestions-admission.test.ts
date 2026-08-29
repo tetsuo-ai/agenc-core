@@ -83,12 +83,16 @@ function admissionHarness(options: {
   return { admission, acquire }
 }
 
-function installSession(admission?: ExecutionAdmissionClient): void {
+function installSession(
+  admission?: ExecutionAdmissionClient,
+  callTool?: ReturnType<typeof vi.fn>,
+): void {
   setCurrentRuntimeSession({
     ...createTestEffectJournal(),
     conversationId: 'session-slack',
     services: {
       ...(admission ? { executionAdmission: admission } : {}),
+      mcpManager: callTool === undefined ? {} : { callTool },
       admissionRequired: true,
     },
   } as unknown as Session)
@@ -99,7 +103,11 @@ function slackConnection(callTool: ReturnType<typeof vi.fn>): MCPServerConnectio
     name: 'workspace-slack',
     type: 'connected',
     capabilities: { tools: {} },
-    config: { type: 'sdk', name: 'workspace-slack', scope: 'dynamic' },
+    config: {
+      type: 'stdio',
+      command: 'workspace-slack-server',
+      scope: 'dynamic',
+    },
     client: { callTool },
     cleanup: async () => {},
   } as unknown as MCPServerConnection
@@ -114,9 +122,10 @@ describe('Slack typeahead MCP admission', () => {
   afterEach(() => {
     clearCurrentRuntimeSession()
     clearSlackChannelCache()
+    vi.useRealTimers()
   })
 
-  it('does not issue the raw RPC until allowed and journals stable settlement identity', async () => {
+  it('does not issue the canonical RPC until allowed and propagates the admitted call identity', async () => {
     const allow = Promise.withResolvers<void>()
     let reservationSequence = 0
     const state = admissionHarness({
@@ -125,15 +134,17 @@ describe('Slack typeahead MCP admission', () => {
         return leaseFor(input, `slack-reservation-${++reservationSequence}`)
       },
     })
-    installSession(state.admission)
-    const callTool = vi.fn(async () => ({
-      content: [{ type: 'text', text: 'Name: #general' }],
+    const managerCallTool = vi.fn(async () => ({
+      content: 'Name: #general',
     }))
-    const clients = [slackConnection(callTool)]
+    const rawCallTool = vi.fn()
+    installSession(state.admission, managerCallTool)
+    const clients = [slackConnection(rawCallTool)]
 
     const first = getSlackChannelSuggestions(clients, 'gen')
     await vi.waitFor(() => expect(state.acquire).toHaveBeenCalledOnce())
-    expect(callTool).not.toHaveBeenCalled()
+    expect(managerCallTool).not.toHaveBeenCalled()
+    expect(rawCallTool).not.toHaveBeenCalled()
 
     allow.resolve()
     await expect(first).resolves.toEqual([
@@ -154,6 +165,22 @@ describe('Slack typeahead MCP admission', () => {
       /^tool:legacy-direct:session-slack:[0-9a-f-]{36}$/,
     )
     expect(acquireInputs[1]?.stepId).not.toBe(acquireInputs[0]?.stepId)
+    const firstCallId = acquireInputs[0]?.stepId.split(':').at(-1)
+    expect(managerCallTool).toHaveBeenNthCalledWith(
+      1,
+      'workspace-slack',
+      'slack_search_channels',
+      {
+        query: 'gen',
+        limit: 20,
+        channel_types: 'public_channel,private_channel',
+      },
+      {
+        signal: expect.any(AbortSignal),
+        callId: firstCallId,
+      },
+    )
+    expect(rawCallTool).not.toHaveBeenCalled()
     expect(state.admission.markDispatched).toHaveBeenNthCalledWith(
       1,
       'slack-reservation-1',
@@ -175,44 +202,75 @@ describe('Slack typeahead MCP admission', () => {
       1,
       'slack-reservation-1',
     )
-    const requestOptions = callTool.mock.calls[0]?.[2]
-    expect(requestOptions).toMatchObject({ timeout: 5000, maxTotalTimeout: 5000 })
-    expect(requestOptions?.signal).toBeInstanceOf(AbortSignal)
   })
 
-  it('fails closed before RPC when the kernel denies admission', async () => {
+  it('fails closed before canonical or raw RPC when the kernel denies admission', async () => {
     const state = admissionHarness({
       acquire: async () => {
         throw new AdmissionDeniedError('budget_exhausted')
       },
     })
-    installSession(state.admission)
-    const callTool = vi.fn()
+    const managerCallTool = vi.fn()
+    const rawCallTool = vi.fn()
+    installSession(state.admission, managerCallTool)
 
     await expect(
-      getSlackChannelSuggestions([slackConnection(callTool)], 'general'),
+      getSlackChannelSuggestions([slackConnection(rawCallTool)], 'general'),
     ).resolves.toEqual([])
-    expect(callTool).not.toHaveBeenCalled()
+    expect(managerCallTool).not.toHaveBeenCalled()
+    expect(rawCallTool).not.toHaveBeenCalled()
     expect(state.admission.markDispatched).not.toHaveBeenCalled()
   })
 
-  it('fails closed before RPC when the required kernel is missing', async () => {
-    installSession()
-    const callTool = vi.fn()
+  it('does not parse channel-looking content from a canonical error result', async () => {
+    vi.useFakeTimers()
+    const state = admissionHarness()
+    const managerCallTool = vi.fn(async () => ({
+      content: 'Name: #must-not-show',
+      isError: true,
+    }))
+    const rawCallTool = vi.fn()
+    installSession(state.admission, managerCallTool)
 
     await expect(
-      getSlackChannelSuggestions([slackConnection(callTool)], 'general'),
+      getSlackChannelSuggestions([slackConnection(rawCallTool)], 'must'),
     ).resolves.toEqual([])
-    expect(callTool).not.toHaveBeenCalled()
+    expect(managerCallTool).toHaveBeenCalledOnce()
+    expect(rawCallTool).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('fails closed before canonical or raw RPC when the required kernel is missing', async () => {
+    const managerCallTool = vi.fn()
+    const rawCallTool = vi.fn()
+    installSession(undefined, managerCallTool)
+
+    await expect(
+      getSlackChannelSuggestions([slackConnection(rawCallTool)], 'general'),
+    ).resolves.toEqual([])
+    expect(managerCallTool).not.toHaveBeenCalled()
+    expect(rawCallTool).not.toHaveBeenCalled()
+  })
+
+  it('does not fall back to the raw client when the canonical manager boundary is unavailable', async () => {
+    const state = admissionHarness()
+    const rawCallTool = vi.fn()
+    installSession(state.admission)
+
+    await expect(
+      getSlackChannelSuggestions([slackConnection(rawCallTool)], 'general'),
+    ).resolves.toEqual([])
+    expect(state.acquire).not.toHaveBeenCalled()
+    expect(rawCallTool).not.toHaveBeenCalled()
   })
 
   it('fails closed before RPC without one unambiguous ambient session', async () => {
-    const callTool = vi.fn()
+    const rawCallTool = vi.fn()
 
     await expect(
-      getSlackChannelSuggestions([slackConnection(callTool)], 'general'),
+      getSlackChannelSuggestions([slackConnection(rawCallTool)], 'general'),
     ).resolves.toEqual([])
-    expect(callTool).not.toHaveBeenCalled()
+    expect(rawCallTool).not.toHaveBeenCalled()
   })
 
   it('forwards lease cancellation and reconciles the idempotent RPC settlement', async () => {
@@ -221,12 +279,12 @@ describe('Slack typeahead MCP admission', () => {
       acquire: async input =>
         leaseFor(input, 'slack-cancelled', leaseController.signal),
     })
-    installSession(state.admission)
     const invoked = Promise.withResolvers<AbortSignal>()
-    const callTool = vi.fn(
+    const managerCallTool = vi.fn(
       async (
-        _input: unknown,
-        _schema: unknown,
+        _serverName: string,
+        _toolName: string,
+        _args: Readonly<Record<string, unknown>>,
         options: { signal: AbortSignal },
       ) => {
         invoked.resolve(options.signal)
@@ -239,9 +297,11 @@ describe('Slack typeahead MCP admission', () => {
         })
       },
     )
+    const rawCallTool = vi.fn()
+    installSession(state.admission, managerCallTool)
 
     const suggestions = getSlackChannelSuggestions(
-      [slackConnection(callTool)],
+      [slackConnection(rawCallTool)],
       'general',
     )
     const rawSignal = await invoked.promise
@@ -264,5 +324,59 @@ describe('Slack typeahead MCP admission', () => {
       { inputTokens: 0, outputTokens: 0, costUsd: 0 },
     )
     expect(state.admission.holdUnknown).not.toHaveBeenCalled()
+    expect(rawCallTool).not.toHaveBeenCalled()
+  })
+
+  it('aborts the canonical call after five seconds and releases the timeout timer', async () => {
+    vi.useFakeTimers()
+    const state = admissionHarness()
+    const invoked = Promise.withResolvers<AbortSignal>()
+    const physical = Promise.withResolvers<{ content: string }>()
+    const managerCallTool = vi.fn(
+      async (
+        _serverName: string,
+        _toolName: string,
+        _args: Readonly<Record<string, unknown>>,
+        options: { signal: AbortSignal },
+      ) => {
+        invoked.resolve(options.signal)
+        return physical.promise
+      },
+    )
+    const rawCallTool = vi.fn()
+    installSession(state.admission, managerCallTool)
+
+    const suggestions = getSlackChannelSuggestions(
+      [slackConnection(rawCallTool)],
+      'general',
+    )
+    let settled = false
+    void suggestions.then(() => {
+      settled = true
+    })
+    const signal = await invoked.promise
+    expect(signal.aborted).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(4999)
+    expect(signal.aborted).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(1)
+
+    expect(signal.aborted).toBe(true)
+    expect(signal.reason).toBeInstanceOf(DOMException)
+    expect((signal.reason as DOMException).name).toBe('AbortError')
+    expect(settled).toBe(false)
+    expect(state.admission.reconcile).not.toHaveBeenCalled()
+    expect(state.admission.acknowledgeCompletion).not.toHaveBeenCalled()
+
+    physical.resolve({ content: 'Name: #late-result' })
+    await expect(suggestions).resolves.toEqual([])
+
+    expect(vi.getTimerCount()).toBe(0)
+    expect(state.admission.reconcile).toHaveBeenCalledWith(
+      expect.any(String),
+      { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+    )
+    expect(rawCallTool).not.toHaveBeenCalled()
   })
 })

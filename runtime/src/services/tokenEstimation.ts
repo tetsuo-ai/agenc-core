@@ -358,7 +358,7 @@ export async function countTokensViaHaikuFallback(
   // completion would be a paid provider wire call without a Session/run
   // identity, so M3 replaces it with a deterministic local estimate. The
   // provider count-tokens endpoint remains the authoritative first choice.
-  const normalizedMessages = stripToolSearchFieldsFromMessages(messages);
+  const normalizedMessages = stripHistoricalToolReferenceFields(messages);
   return estimateTokenAccountingRequest(
     createTokenAccountingRequest({
       provider: "compatibility-local",
@@ -464,7 +464,7 @@ export function hasThinkingBlocks(
   return false;
 }
 
-export function stripToolSearchFieldsFromMessages(
+export function stripHistoricalToolReferenceFields(
   messages: readonly BetaMessageParam[],
 ): BetaMessageParam[] {
   return messages.map((message) => {

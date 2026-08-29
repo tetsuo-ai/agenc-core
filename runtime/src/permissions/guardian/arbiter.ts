@@ -13,6 +13,7 @@
  */
 
 import type { Event, EventLog } from "../../session/event-log.js";
+import { isHookExecutionSuppressed } from "../../hooks/runtime-policy.js";
 import { asRecord } from "../../utils/record.js";
 import { nonEmptyString as stringValue } from "../../utils/stringUtils.js";
 import type { ToolInvocation, ToolPayload } from "../../tools/context.js";
@@ -89,11 +90,10 @@ export interface GuardianClassifyToolOptions {
   readonly granular?: GranularApprovalConfig;
   /**
    * Set when the session-wide permission mode is `bypassPermissions`
-   * (the `--yolo` flag). Short-circuits ordinary approval gates to `skip` —
-   * the user opted out of approval gating and approvalPolicy being
-   * `untrusted` shouldn't override that. Interactive tools still route to
-   * their per-call input prompt. Mirrors the bypass short-circuits in
-   * permissions/bash.ts and the filesystem helpers.
+   * (the `--dangerously-bypass-approvals-and-sandbox` flag). Short-circuits the arbiter to `skip` for every
+   * tool — the user opted out of approval gating and approvalPolicy
+   * being `untrusted` shouldn't override that. Mirrors the bypass
+   * short-circuits in permissions/bash.ts and the filesystem helpers.
    */
   readonly bypassPermissions?: boolean;
 }
@@ -112,20 +112,11 @@ export function classifyToolApproval(
   if (opts.toolDenylist?.has(name)) {
     return { kind: "forbidden", reason: "tool denylisted for this session" };
   }
-  // Interactive tools do not merely ask for permission: the approval prompt
-  // is also how the runtime collects the per-call user response. Neither a
-  // tool allowlist nor bypassPermissions can synthesize that response, so
-  // skipping this prompt executes the tool with no answer and loses the
-  // interaction entirely.
-  if (tool.requiresUserInteraction?.() === true) {
-    return { kind: "needs_approval", reason: "tool requires user interaction" };
-  }
   if (opts.toolAllowlist?.has(name)) {
     return { kind: "skip", bypassSandbox: false };
   }
-  // Permission-mode bypass: under `--yolo` (mode === bypassPermissions)
-  // ordinary approval gates skip, regardless of approvalPolicy. Interactive
-  // calls were handled above because their prompt also carries user input.
+  // Permission-mode bypass: under `--dangerously-bypass-approvals-and-sandbox` (mode === bypassPermissions)
+  // every approval gate should skip, regardless of approvalPolicy.
   // Without this, approvalPolicy="untrusted" surfaces a "approve every
   // call" overlay even though the user opted out at the mode level.
   // See GAP-PE-GUARDIAN-YOLO-LEAK.
@@ -174,6 +165,10 @@ export function classifyToolApproval(
   const sandboxBypass =
     opts.sandboxMode === "danger_full_access" &&
     opts.approvalPolicy === "never";
+
+  if (tool.requiresUserInteraction?.() === true) {
+    return { kind: "needs_approval", reason: "tool requires user interaction" };
+  }
 
   switch (opts.approvalPolicy) {
     case "never":
@@ -249,8 +244,6 @@ export interface ApprovalCtx {
   readonly callId: string;
   readonly toolName: string;
   readonly turnId: string;
-  /** True when the resolver is also the tool's per-call input channel. */
-  readonly requiresUserInteraction?: boolean;
   readonly signal?: AbortSignal;
   readonly guardianReviewId?: string;
   readonly retryReason?: string;
@@ -468,30 +461,35 @@ async function resolveApproval(
   opts: RequestApprovalOpts,
 ): Promise<RequestApprovalResult> {
   const signal = opts.signal ?? opts.ctx.signal;
-  const requiresUserInteraction = opts.ctx.requiresUserInteraction === true;
   if (alreadyAborted(signal)) {
     return { decision: { kind: "abort" }, source: "aborted" };
   }
 
-  for (const hook of opts.hooks ?? []) {
-    let result: ReviewDecision | undefined;
-    try {
-      result = await awaitWithAbort(Promise.resolve(hook(opts.ctx)), signal);
-    } catch (err) {
-      if (alreadyAborted(signal) || isAbortError(err, signal)) {
-        return { decision: { kind: "abort" }, source: "aborted" };
+  const hookExecutionSuppressed = isHookExecutionSuppressed(
+    opts.ctx.invocation.session.services.runtimeOptions,
+  );
+  if (!hookExecutionSuppressed) {
+    for (const hook of opts.hooks ?? []) {
+      let result: ReviewDecision | undefined;
+      try {
+        result = await awaitWithAbort(Promise.resolve(hook(opts.ctx)), signal);
+      } catch (err) {
+        if (alreadyAborted(signal) || isAbortError(err, signal)) {
+          return { decision: { kind: "abort" }, source: "aborted" };
+        }
+        throw err;
       }
-      throw err;
-    }
-    if (
-      result !== undefined &&
-      (!requiresUserInteraction || !reviewDecisionIsAllow(result))
-    ) {
-      return { decision: result, source: "hook" };
+      if (result !== undefined) {
+        return { decision: result, source: "hook" };
+      }
     }
   }
 
-  if (opts.permissionDecisionHooks && opts.permissionDecisionHooks.length > 0) {
+  if (
+    !hookExecutionSuppressed &&
+    opts.permissionDecisionHooks &&
+    opts.permissionDecisionHooks.length > 0
+  ) {
     let decision;
     try {
       decision = await awaitWithAbort(
@@ -511,7 +509,7 @@ async function resolveApproval(
       }
       throw err;
     }
-    if (decision.kind === "allow" && !requiresUserInteraction) {
+    if (decision.kind === "allow") {
       return {
         decision: { kind: "approved" },
         source: hookDispatcherApprovalSource,
@@ -527,7 +525,6 @@ async function resolveApproval(
   }
 
   const shouldUseGuardian =
-    !requiresUserInteraction &&
     opts.guardianApprovalReviewer !== undefined &&
     shouldRouteApprovalToGuardian(opts.ctx);
   if (shouldUseGuardian || opts.resolver) {
@@ -541,7 +538,7 @@ async function resolveApproval(
     // Automatic reviewers may only grant the current call. Session grants and
     // policy amendments require an authoritative human resolver, and a prior
     // automatic decision must never be replayed for a later call.
-    const approvalCache = shouldUseGuardian || requiresUserInteraction
+    const approvalCache = shouldUseGuardian
       ? null
       : resolveApprovalCache(opts.ctx.invocation);
     const approvalKeys =
@@ -880,21 +877,15 @@ export async function arbitratePermissionMode(
           mergedDecision: merged,
         };
       }
-      const interactionRequired =
-        floorDecision.behavior === "ask" &&
-        opts.tool.requiresUserInteraction?.() === true;
-      const safetyCheckRequired =
-        floorDecision.behavior === "ask" &&
-        floorDecision.decisionReason?.type === "safetyCheck";
       if (
         floorDecision.behavior === "ask" &&
-        (safetyCheckRequired || interactionRequired)
+        floorDecision.decisionReason?.type === "safetyCheck"
       ) {
         return {
           kind: "ask",
           args: floorDecision.updatedInput ?? merged.args ?? opts.args,
           source: "permission-evaluator",
-          reasonCode: safetyCheckRequired ? "safety_check" : "interactive_tool",
+          reasonCode: "safety_check",
           message: floorDecision.message,
           decisionReason: floorDecision.decisionReason,
           mergedDecision: merged,
@@ -952,14 +943,14 @@ export async function arbitratePermissionMode(
     };
   }
   if (decision.behavior === "ask") {
-    // bypassPermissions mode override: --yolo opts the user out of approval
+    // bypassPermissions mode override: --dangerously-bypass-approvals-and-sandbox opts the user out of approval
     // gating. The evaluator's per-tool checkPermissions may return "ask"
-    // for non-rule, non-safety/interaction reasons (e.g. working-dir prompts
-    // that didn't reach the mode bypass at evaluator.ts:389 because of the
-    // single-source-of-truth re-invoke at evaluator.ts:479). Honor the session
-    // mode here: if the user explicitly opted into bypass and the ask isn't a
-    // content-specific rule, safetyCheck, or interactive input, convert to
-    // allow with the original updatedInput.
+    // for non-rule, non-safetyCheck reasons (e.g. working-dir prompts that
+    // didn't reach the mode bypass at evaluator.ts:389 because of the
+    // single-source-of-truth re-invoke at evaluator.ts:479). Honor the
+    // session mode here: if the user explicitly opted into bypass and the
+    // ask isn't a content-specific rule or safetyCheck, convert to allow
+    // with the original updatedInput.
     const reasonType = decision.decisionReason?.type;
     const isBypassImmune =
       (reasonType === "rule" &&
@@ -967,8 +958,7 @@ export async function arbitratePermissionMode(
           decision.decisionReason as
             { rule?: { ruleBehavior?: string } } | undefined
         )?.rule?.ruleBehavior === "ask") ||
-      reasonType === "safetyCheck" ||
-      opts.tool.requiresUserInteraction?.() === true;
+      reasonType === "safetyCheck";
     const sessionMode =
       readGuardianToolPermissionContext(permissionContext)?.mode;
     if (sessionMode === "bypassPermissions" && !isBypassImmune) {
@@ -1022,10 +1012,7 @@ export async function requestToolUserApproval(
   }
 
   const requestEvent = emitApprovalPromptEvents(opts);
-  const approvalCache =
-    opts.tool.requiresUserInteraction?.() === true
-      ? null
-      : resolveApprovalCache(opts.invocation);
+  const approvalCache = resolveApprovalCache(opts.invocation);
   const approvalKeys =
     approvalCache !== null
       ? buildApprovalCacheKeys(opts.tool, opts.invocation, opts.args)
@@ -1136,11 +1123,16 @@ function emitApprovalPromptEvents(
     try {
       const { dispatchNotification } =
         await import("../../llm/hooks/dispatcher.js");
-      await dispatchNotification({
-        hook_event_name: "Notification",
-        notification_type: "permission_request",
-        message: `AgenC is waiting for permission to run ${opts.tool.name}`,
-      });
+      await dispatchNotification(
+        {
+          hook_event_name: "Notification",
+          notification_type: "permission_request",
+          message: `AgenC is waiting for permission to run ${opts.tool.name}`,
+        },
+        {
+          runtimeOptions: opts.invocation.session.services.runtimeOptions,
+        },
+      );
     } catch {
       /* notification hooks are best-effort */
     }
@@ -1297,7 +1289,6 @@ function buildApprovalCacheKeys(
   if (
     tool.name === "exec_command" ||
     tool.name === "system.bash" ||
-    tool.name === "Bash" ||
     invocation.payload.kind === "local_shell"
   ) {
     const command = Array.isArray(args.args)

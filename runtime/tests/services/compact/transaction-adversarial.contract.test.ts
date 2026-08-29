@@ -203,6 +203,38 @@ describe("transactional compaction adversarial contracts", () => {
     });
   });
 
+  it("accepts authenticated parallel tool results in completion order through commit", async () => {
+    await withTransactionalStore("semantic-parallel-completion-order", async (store) => {
+      const source = [
+        assistantToolCalls("call-a", "call-b"),
+        toolResultMessage(
+          store.sessionId,
+          "call-b",
+          `result-b ${"b".repeat(6_000)}`,
+        ),
+        toolResultMessage(
+          store.sessionId,
+          "call-a",
+          `result-a ${"a".repeat(6_000)}`,
+        ),
+      ];
+      appendSource(store, source);
+      const sourcePairs = toolPairsInSource(source);
+      const provider = createProvider((payload) => validBody(sourcePairs, payload));
+
+      const result = await runRealTransaction(store, source, provider);
+
+      expect(provider.chat).toHaveBeenCalledOnce();
+      expect(result.transaction?.committed.summary.body.tool_pairs).toEqual(
+        sourcePairs,
+      );
+      expect(compactionLifecycle(store).map((item) => item.type)).toEqual([
+        "compaction_intent",
+        "compaction_committed",
+      ]);
+    });
+  });
+
   for (const testCase of invalidSemanticCases()) {
     it(`rejects ${testCase.name} before intent or provider admission`, async () => {
       await withTransactionalStore(`semantic-invalid-${testCase.name}`, async (store) => {
@@ -299,15 +331,6 @@ function invalidSemanticCases(): readonly InvalidSemanticCase[] {
           { id: "duplicate-call", name: "Write", arguments: "{}" },
         ],
       }],
-    },
-    {
-      name: "reordered-tool-results",
-      error: /tool-result ordering/i,
-      source: (sessionId) => [
-        assistantToolCalls("call-a", "call-b"),
-        toolResultMessage(sessionId, "call-b", "result-b"),
-        toolResultMessage(sessionId, "call-a", "result-a"),
-      ],
     },
     {
       name: "missing-tool-result",
@@ -688,6 +711,7 @@ async function withTransactionalStore(
     cwd,
     sessionId,
     agencVersion: "0.13.0",
+    sessionTempRoot: tmpdir(),
     autoStartScheduler: false,
   });
   try {

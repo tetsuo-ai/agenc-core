@@ -11,28 +11,8 @@ import {
   isAgenCAISubscriber,
 } from './auth.js'
 import { getAgenCCodeUserAgent } from './userAgent.js'
-import { getWorkload } from './workloadContext.js'
-
-// WARNING: We rely on `agenc-cli` in the user agent for log filtering.
-// Please do NOT change this without making sure that logging also gets updated!
-export function getUserAgent(): string {
-  const agentSdkVersion = process.env.AGENC_AGENT_SDK_VERSION
-    ? `, agent-sdk/${process.env.AGENC_AGENT_SDK_VERSION}`
-    : ''
-  // SDK consumers can identify their app/library via AGENC_AGENT_SDK_CLIENT_APP
-  // e.g., "my-app/1.0.0" or "my-library/2.1"
-  const clientApp = process.env.AGENC_AGENT_SDK_CLIENT_APP
-    ? `, client-app/${process.env.AGENC_AGENT_SDK_CLIENT_APP}`
-    : ''
-  // Turn-/process-scoped workload tag for cron-initiated requests. 1P-only
-  // observability — proxies strip HTTP headers; QoS routing uses cc_workload
-  // in the billing-header attribution block instead (see constants/system.ts).
-  // getproviderClient (client.ts:98) calls this per-request inside withRetry,
-  // so the read picks up the same setWorkload() value as getAttributionHeader.
-  const workload = getWorkload()
-  const workloadSuffix = workload ? `, workload/${workload}` : ''
-  return `agenc-cli/${MACRO.VERSION} (${process.env.USER_TYPE}, ${process.env.AGENC_ENTRYPOINT ?? 'cli'}${agentSdkVersion}${clientApp}${workloadSuffix})`
-}
+import type { HomeContext } from '../config/home.js'
+import type { ProviderEnvironment } from '../llm/provider-options.js'
 
 export function getMCPUserAgent(): string {
   const parts: string[] = []
@@ -67,9 +47,12 @@ export type AuthHeaders = {
  * Get authentication headers for API requests
  * Returns either OAuth headers for Max/Pro users or API key headers for regular users
  */
-export function getAuthHeaders(): AuthHeaders {
-  if (isAgenCAISubscriber()) {
-    const oauthTokens = getAgenCAIOAuthTokens()
+export function getAuthHeaders(
+  home: HomeContext,
+  environment: ProviderEnvironment,
+): AuthHeaders {
+  if (isAgenCAISubscriber(home)) {
+    const oauthTokens = getAgenCAIOAuthTokens(home, environment)
     if (!oauthTokens?.accessToken) {
       return {
         headers: {},
@@ -83,8 +66,6 @@ export function getAuthHeaders(): AuthHeaders {
       },
     }
   }
-  // Follow-up: this will fail if the API key is being set to an LLM Gateway key
-  // should we try to query keychain / credentials for a valid provider key?
   const apiKey = getAnthropicApiKey()
   if (!apiKey) {
     return {
@@ -114,6 +95,8 @@ export function getAuthHeaders(): AuthHeaders {
  *   revoked" body (some endpoints signal revocation this way instead of 401).
  */
 export async function withOAuth401Retry<T>(
+  home: HomeContext,
+  environment: ProviderEnvironment,
   request: () => Promise<T>,
   opts?: { also403Revoked?: boolean },
 ): Promise<T> {
@@ -129,9 +112,12 @@ export async function withOAuth401Retry<T>(
         typeof err.response?.data === 'string' &&
         err.response.data.includes('OAuth token has been revoked'))
     if (!isAuthError) throw err
-    const failedAccessToken = getAgenCAIOAuthTokens()?.accessToken
+    const failedAccessToken = getAgenCAIOAuthTokens(
+      home,
+      environment,
+    )?.accessToken
     if (!failedAccessToken) throw err
-    await handleOAuth401Error(failedAccessToken)
+    await handleOAuth401Error(home, failedAccessToken, environment)
     return await request()
   }
 }

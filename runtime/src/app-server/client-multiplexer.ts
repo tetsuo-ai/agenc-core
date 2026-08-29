@@ -56,7 +56,7 @@ export interface AgenCClientMultiplexerOptions {
   /**
    * Per-client pending-delivery caps. Live broadcasts evict a client before an
    * enqueue would exceed either cap. Detached replay reserves the complete
-   * retained batch before queueing it, so concurrent attaches and status
+   * retained batch before queueing it, so concurrent attaches and capability
    * replays cannot hide unbounded closures behind a blocked send. When omitted
    * the caps default to the detached-session buffer caps
    * ({@link maxBufferedBytesPerSession} / {@link maxBufferedEventsPerSession}),
@@ -97,6 +97,12 @@ export interface RegisterAgenCClientOptions {
   /** Physical delivery identity; logical clients on one socket share this key. */
   readonly deliveryKey?: string;
   readonly send: AgenCClientSend;
+  /**
+   * Connection-negotiated filter for ordinary session notifications. This is
+   * evaluated both for live fan-out and detached replay so an older client is
+   * never sent a notification introduced by a newer protocol minor.
+   */
+  readonly acceptsSessionEvent?: (event: JsonObject) => boolean;
   /** Capabilities authenticated/recorded during this connection's initialize. */
   readonly capabilities?: JsonObject;
 }
@@ -116,6 +122,7 @@ interface MutableClient {
   clientId: string;
   deliveryKey: string;
   send: AgenCClientSend;
+  acceptsSessionEvent: (event: JsonObject) => boolean;
   sessionIds: Set<string>;
   deliveryQueue: Promise<void>;
   /**
@@ -138,6 +145,11 @@ interface MutableClient {
   capabilities: Set<string>;
 }
 
+interface BufferedCapabilityEvent {
+  readonly sessionId: string;
+  readonly event: JsonObject;
+}
+
 interface MutableSessionRoute {
   sessionId: string;
   clientAttachmentIds: Map<string, string>;
@@ -147,11 +159,13 @@ interface MutableSessionRoute {
 interface MultiplexerState {
   clients: Map<string, MutableClient>;
   sessions: Map<string, MutableSessionRoute>;
+  capabilityBuffers: Map<string, BufferedCapabilityEvent[]>;
   /**
-   * One registering observer at a time may drain the mobile-status replay
-   * batch, preventing concurrent initialization from duplicating the batch.
+   * One registering client at a time may drain a capability replay buffer. This
+   * prevents two phones initializing concurrently from both receiving the same
+   * one-shot Ledger action before the first replay delivery settles.
    */
-  mobileStatusReplayInFlight: boolean;
+  capabilityReplayInFlight: Set<string>;
 }
 
 interface EnqueuedDelivery {
@@ -170,7 +184,8 @@ export class AgenCDaemonClientMultiplexer {
   readonly #state = new AsyncLock<MultiplexerState>({
     clients: new Map(),
     sessions: new Map(),
-    mobileStatusReplayInFlight: false,
+    capabilityBuffers: new Map(),
+    capabilityReplayInFlight: new Set(),
   });
 
   constructor(options: AgenCClientMultiplexerOptions) {
@@ -207,6 +222,8 @@ export class AgenCDaemonClientMultiplexer {
     const clientId = options.clientId ?? this.#createClientId();
     const {
       registration,
+      replay,
+      replayCounts,
       statusReplay,
       statusReplayEvents,
     } = await this.#state.with((state) => {
@@ -221,6 +238,7 @@ export class AgenCDaemonClientMultiplexer {
         clientId,
         deliveryKey: options.deliveryKey ?? clientId,
         send: options.send,
+        acceptsSessionEvent: options.acceptsSessionEvent ?? (() => true),
         sessionIds: new Set(),
         deliveryQueue: Promise.resolve(),
         pendingDeliveryBytes: 0,
@@ -228,9 +246,24 @@ export class AgenCDaemonClientMultiplexer {
         evicted: false,
         capabilities: advertisedCapabilities(options.capabilities),
       };
+      // Validate every one-shot replay candidate before registering the client
+      // or leasing a capability. A smaller delivery cap than buffer cap must
+      // fail without leaving a registered half-client or a stuck replay lease.
+      for (const capability of client.capabilities) {
+        if (state.capabilityReplayInFlight.has(capability)) continue;
+        for (const item of state.capabilityBuffers.get(capability) ?? []) {
+          assertEventFitsDeliveryLimit(
+            item.event,
+            this.#maxPendingDeliveryBytesPerClient,
+            this.#maxPendingDeliveryCountPerClient,
+          );
+        }
+      }
       if (
         client.capabilities.has(AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY) &&
-        !state.mobileStatusReplayInFlight
+        !state.capabilityReplayInFlight.has(
+          AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
+        )
       ) {
         for (const route of state.sessions.values()) {
           for (const event of route.bufferedEvents.filter(
@@ -244,14 +277,29 @@ export class AgenCDaemonClientMultiplexer {
           }
         }
       }
-      // Replay only status frames from each session's ordinary bounded buffer;
-      // leave transcript/tool events for a later explicit session.attach. One
-      // registering observer leases this replay batch at a time.
+      const replayEvents: JsonObject[] = [];
+      const replayCounts = new Map<string, number>();
+      for (const capability of client.capabilities) {
+        if (state.capabilityReplayInFlight.has(capability)) continue;
+        const buffered = state.capabilityBuffers.get(capability) ?? [];
+        if (buffered.length === 0) continue;
+        replayCounts.set(capability, buffered.length);
+        for (const item of buffered) {
+          replayEvents.push(item.event);
+        }
+      }
+      // Mobile status is a fan-out observer capability, not a Ledger-style
+      // single-consumer client action. Replay only status frames from each
+      // session's ordinary bounded buffer; leave transcript/tool events for a
+      // later explicit session.attach. One registering observer leases this
+      // replay batch at a time so concurrent phones cannot both drain it.
       const statusReplayBatch: JsonObject[] = [];
       const statusReplayEvents = new Map<string, JsonObject[]>();
       if (
         client.capabilities.has(AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY) &&
-        !state.mobileStatusReplayInFlight
+        !state.capabilityReplayInFlight.has(
+          AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
+        )
       ) {
         for (const route of state.sessions.values()) {
           const bufferedStatuses = route.bufferedEvents.filter(
@@ -265,20 +313,32 @@ export class AgenCDaemonClientMultiplexer {
         }
       }
 
-      // Reserve the aggregate before registering the client or leasing the
-      // status replay batch. A failed hard-cap check must leave no half-client,
+      // Reserve the aggregate before registering the client or leasing any
+      // capability buffer. A failed hard-cap check must leave no half-client,
       // replay lease, or queued closure behind.
       assertReplayDeliveriesFitAvailable(
         client,
-        [statusReplayBatch],
+        [replayEvents, statusReplayBatch],
         this.#maxPendingDeliveryBytesPerClient,
         this.#maxPendingDeliveryCountPerClient,
       );
       state.clients.set(clientId, client);
+      for (const capability of replayCounts.keys()) {
+        state.capabilityReplayInFlight.add(capability);
+      }
       if (statusReplayBatch.length > 0) {
-        state.mobileStatusReplayInFlight = true;
+        state.capabilityReplayInFlight.add(
+          AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
+        );
       }
 
+      const replayDelivery = enqueueReplayDelivery(
+        client,
+        replayEvents,
+        this.#maxPendingDeliveryBytesPerClient,
+        this.#maxPendingDeliveryCountPerClient,
+      );
+      const replay = replayDelivery === null ? [] : [replayDelivery];
       const statusReplayDelivery = enqueueReplayDelivery(
         client,
         statusReplayBatch,
@@ -289,15 +349,38 @@ export class AgenCDaemonClientMultiplexer {
         statusReplayDelivery === null ? [] : [statusReplayDelivery];
       return {
         registration: { clientId },
+        replay,
+        replayCounts,
         statusReplay,
         statusReplayEvents,
       };
     });
 
+    if (replay.length > 0) {
+      const replayResult = await settleDeliveries(replay);
+      await this.#state.with((state) => {
+        for (const capability of replayCounts.keys()) {
+          state.capabilityReplayInFlight.delete(capability);
+        }
+        if (replayResult.failed.length === 0) {
+          for (const [capability, count] of replayCounts) {
+            const buffered = state.capabilityBuffers.get(capability);
+            if (buffered === undefined) continue;
+            buffered.splice(0, count);
+            if (buffered.length === 0) {
+              state.capabilityBuffers.delete(capability);
+            }
+          }
+        }
+      });
+    }
+
     if (statusReplay.length > 0) {
       const statusReplayResult = await settleDeliveries(statusReplay);
       await this.#state.with((state) => {
-        state.mobileStatusReplayInFlight = false;
+        state.capabilityReplayInFlight.delete(
+          AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
+        );
         // All-or-nothing removal deliberately favors duplicate replay over
         // loss. Android deduplicates eventIds and turnIds after reconnect.
         if (statusReplayResult.failed.length > 0) return;
@@ -326,7 +409,9 @@ export class AgenCDaemonClientMultiplexer {
       async (state) => {
         const client = requireClient(state, clientId);
         const existingRoute = state.sessions.get(sessionId);
-        const replayedEvents = [...(existingRoute?.bufferedEvents ?? [])];
+        const replayedEvents = (existingRoute?.bufferedEvents ?? []).filter(
+          client.acceptsSessionEvent,
+        );
         assertReplayDeliveriesFitAvailable(
           client,
           [replayedEvents],
@@ -438,6 +523,16 @@ export class AgenCDaemonClientMultiplexer {
           state.clients.get(clientId)?.sessionIds.delete(params.sessionId);
         }
       }
+      for (const [capability, buffered] of state.capabilityBuffers) {
+        const retained = buffered.filter(
+          (item) => item.sessionId !== params.sessionId,
+        );
+        if (retained.length === 0) {
+          state.capabilityBuffers.delete(capability);
+        } else if (retained.length !== buffered.length) {
+          state.capabilityBuffers.set(capability, retained);
+        }
+      }
       return terminated;
     });
   }
@@ -493,6 +588,14 @@ export class AgenCDaemonClientMultiplexer {
     sessionId: string,
     event: JsonObject,
   ): Promise<AgenCSessionBroadcastResult> {
+    const targetCapability = targetCapabilityFromEvent(event);
+    if (targetCapability !== null) {
+      return this.broadcastCapabilityEvent(
+        sessionId,
+        targetCapability,
+        event,
+      );
+    }
     const evictedClientIds: string[] = [];
     const rejectedDeliveries: AgenCSessionBroadcastFailure[] = [];
     const isMobileStatus = isMobileStatusPushEvent(event);
@@ -524,9 +627,22 @@ export class AgenCDaemonClientMultiplexer {
       for (const client of attachedClients) {
         if (!client.evicted) targetsByDeliveryKey.set(client.deliveryKey, client);
       }
-      const activeClients = [...targetsByDeliveryKey.values()];
+      const activeClients = [...targetsByDeliveryKey.values()].filter(
+        (client) => client.acceptsSessionEvent(event),
+      );
 
       if (activeClients.length === 0) {
+        // Status invalidations are ephemeral hints: every compatible client
+        // reads the authoritative snapshot on attach/reconnect. Retaining a
+        // hint for an older or detached client would only pollute transcript
+        // replay (and can never recover state by itself).
+        if (event.method === "event.mcp_status_changed") {
+          return {
+            deliveries: [] as EnqueuedDelivery[],
+            hadLiveTargets: false,
+            bufferedWithoutTarget: false,
+          };
+        }
         // No attached client to deliver to. Only buffer (creating a route on
         // demand) when the session is still live: a terminated/unknown session
         // can never gain a client to drain the buffer, and its buffer-only
@@ -617,6 +733,88 @@ export class AgenCDaemonClientMultiplexer {
       sessionId,
       deliveredClientIds: settled.deliveredClientIds,
       failed: [...settled.failed, ...rejectedDeliveries],
+    };
+  }
+
+  /**
+   * Deliver a client action to initialized clients advertising an exact
+   * capability, independently of transcript/session attachment. A Ledger action
+   * is financial one-shot work, so exactly one deterministic client receives a
+   * live delivery: the most recently registered capable client. With no live
+   * target, or when that sole delivery fails, retain a bounded replay buffer for
+   * the next capable reconnect rather than falling through to another phone.
+   */
+  async broadcastCapabilityEvent(
+    sessionId: string,
+    capability: string,
+    event: JsonObject,
+  ): Promise<AgenCSessionBroadcastResult> {
+    const evictedClientIds: string[] = [];
+    const rejectedDeliveries: AgenCSessionBroadcastFailure[] = [];
+    const { deliveries, bufferAfterDelivery } = await this.#state.with(
+      async (state) => {
+        // Map iteration order is registration order. Retaining the last match
+        // makes selection deterministic and prefers the newest live phone.
+        let target: MutableClient | undefined;
+        for (const client of state.clients.values()) {
+          if (client.capabilities.has(capability) && !client.evicted) {
+            target = client;
+          }
+        }
+        if (target === undefined) {
+          if (!(await this.#isSessionLive(sessionId))) return {
+            deliveries: [] as EnqueuedDelivery[],
+            bufferAfterDelivery: false,
+          };
+          const buffered = state.capabilityBuffers.get(capability) ?? [];
+          bufferCapabilityEvent(
+            buffered,
+            { sessionId, event },
+            this.#maxBufferedEventsPerSession,
+            this.#maxBufferedBytesPerSession,
+          );
+          state.capabilityBuffers.set(capability, buffered);
+          return {
+            deliveries: [] as EnqueuedDelivery[],
+            bufferAfterDelivery: false,
+          };
+        }
+        const delivery = enqueueDelivery(
+          target,
+          event,
+          this.#maxPendingDeliveryBytesPerClient,
+          this.#maxPendingDeliveryCountPerClient,
+          evictedClientIds,
+          rejectedDeliveries,
+        );
+        return {
+          deliveries: delivery === null ? [] : [delivery],
+          // A cap-triggered eviction returns no delivery. Preserve the action
+          // just like an asynchronous socket-send failure below.
+          bufferAfterDelivery: delivery === null,
+        };
+      },
+    );
+    await this.#evictSlowClients(evictedClientIds);
+    const result = await settleDeliveries(deliveries);
+    if (bufferAfterDelivery || result.failed.length > 0) {
+      await this.#state.with(async (state) => {
+        if (!(await this.#isSessionLive(sessionId))) return [];
+        const buffered = state.capabilityBuffers.get(capability) ?? [];
+        bufferCapabilityEvent(
+          buffered,
+          { sessionId, event },
+          this.#maxBufferedEventsPerSession,
+          this.#maxBufferedBytesPerSession,
+        );
+        state.capabilityBuffers.set(capability, buffered);
+        return [];
+      });
+    }
+    return {
+      sessionId,
+      deliveredClientIds: result.deliveredClientIds,
+      failed: [...result.failed, ...rejectedDeliveries],
     };
   }
 
@@ -1070,6 +1268,51 @@ function advertisedCapabilities(capabilities: JsonObject | undefined): Set<strin
 
 function isMobileStatusPushEvent(event: JsonObject): boolean {
   return event.method === "event.agent_status";
+}
+
+function targetCapabilityFromEvent(event: JsonObject): string | null {
+  if (event.method !== "event.user_input_request") return null;
+  const params = event.params;
+  if (params === null || typeof params !== "object" || Array.isArray(params)) {
+    return null;
+  }
+  const clientAction = (params as JsonObject).clientAction;
+  if (
+    clientAction === null ||
+    typeof clientAction !== "object" ||
+    Array.isArray(clientAction)
+  ) {
+    return null;
+  }
+  const targetCapability = (clientAction as JsonObject).targetCapability;
+  return (clientAction as JsonObject).type === "ledger_solana_transfer_v1" &&
+    typeof targetCapability === "string" &&
+    targetCapability.length > 0
+    ? targetCapability
+    : null;
+}
+
+function bufferCapabilityEvent(
+  buffered: BufferedCapabilityEvent[],
+  item: BufferedCapabilityEvent,
+  maxBufferedEvents: number,
+  maxBufferedBytes: number,
+): void {
+  const eventBytes = bufferedEventByteSize(item.event);
+  const total = buffered.reduce(
+    (sum, item) => sum + bufferedEventByteSize(item.event),
+    0,
+  );
+  if (
+    buffered.length + 1 > maxBufferedEvents ||
+    total + eventBytes > maxBufferedBytes
+  ) {
+    throw new AgenCClientMultiplexerError(
+      "EVENT_BUFFER_LIMIT_EXCEEDED",
+      "AgenC capability event buffer limit exceeded; the event was not queued",
+    );
+  }
+  buffered.push(item);
 }
 
 /**

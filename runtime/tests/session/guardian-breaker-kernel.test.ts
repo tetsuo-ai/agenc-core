@@ -40,6 +40,9 @@ vi.mock("axios", () => {
 });
 
 import { AsyncQueue } from "../utils/async-queue.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import { createTestConfigStore } from "../fixtures.js";
 import {
   Session,
   type Event,
@@ -66,6 +69,7 @@ import {
   MAX_TOTAL_GUARDIAN_DENIALS_PER_TURN,
   createGuardianRejectionCircuitBreaker,
 } from "../permissions/guardian/rejection-circuit-breaker.js";
+import { resolveAgentRuntimeOptions } from "./runtime-options.js";
 
 // ---------------------------------------------------------------------------
 // Test harness — mirrors run-turn.test.ts's session builder shape but keeps
@@ -116,10 +120,7 @@ function mkCtx(subId = "turn-abc"): TurnContext {
 }
 
 function mkFeatures(): ManagedFeatures {
-  return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
-  };
+  return {};
 }
 
 function mkConfig(): Config {
@@ -235,7 +236,12 @@ function mkSession(opts: {
     totalTokenUsage: 0,
   };
   const services: SessionServices = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     admissionRequired: false,
+    runtimeOptions: resolveAgentRuntimeOptions({}),
+    configStore: createTestConfigStore(),
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},
@@ -246,6 +252,7 @@ function mkSession(opts: {
       isCancelled: () => false,
     },
     provider: opts.provider ?? mkProvider({ content: "ok" }),
+    providerEnvironment: {},
     registry: mkRegistry(),
     hooks: {
       executeStop: async () => ({}),
@@ -268,9 +275,7 @@ function mkSession(opts: {
   return { session, events, breaker };
 }
 
-async function drain(
-  gen: AsyncGenerator<unknown, unknown>,
-): Promise<unknown> {
+async function drain(gen: AsyncGenerator<unknown, unknown>): Promise<unknown> {
   let terminal: unknown;
   while (true) {
     const next = await gen.next();
@@ -353,7 +358,11 @@ describe("runTurnKernel — guardian circuit breaker wiring", () => {
           // approval). The kernel's next top-of-loop isOpen check must
           // observe the tripped flag and abort before chatStream runs
           // a second time.
-          for (let i = 0; i < MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN; i += 1) {
+          for (
+            let i = 0;
+            i < MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN;
+            i += 1
+          ) {
             breaker.recordDenial("turn-abc");
           }
           // Return a response with a tool call to force the kernel to
@@ -426,7 +435,11 @@ describe("runTurnKernel — guardian circuit breaker wiring", () => {
           finishReason: "stop",
         }),
         chatStream: async (): Promise<LLMResponse> => {
-          for (let i = 0; i < MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN; i += 1) {
+          for (
+            let i = 0;
+            i < MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN;
+            i += 1
+          ) {
             breaker.recordDenial("turn-abc");
           }
           return {
@@ -486,7 +499,11 @@ describe("runTurnKernel — guardian circuit breaker wiring", () => {
           finishReason: "stop",
         }),
         chatStream: async (): Promise<LLMResponse> => {
-          for (let i = 0; i < MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN - 1; i += 1) {
+          for (
+            let i = 0;
+            i < MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN - 1;
+            i += 1
+          ) {
             breaker.recordDenial("turn-abc");
           }
           return {
@@ -521,7 +538,12 @@ describe("runTurnKernel — guardian circuit breaker wiring", () => {
       totalTokenUsage: 0,
     };
     const services: SessionServices = {
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext(),
+      ),
       admissionRequired: false,
+      runtimeOptions: resolveAgentRuntimeOptions({}),
+      configStore: createTestConfigStore(),
       mcpConnectionManager: {
         setApprovalPolicy: () => {},
         setSandboxPolicy: () => {},
@@ -532,6 +554,7 @@ describe("runTurnKernel — guardian circuit breaker wiring", () => {
         isCancelled: () => false,
       },
       provider: mkProvider({ content: "no breaker" }),
+      providerEnvironment: {},
       registry: mkRegistry(),
       hooks: {
         executeStop: async () => ({}),

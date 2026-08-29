@@ -17,6 +17,11 @@ import { normalizeMessagesForAPI } from "../messages.js";
 import { validateToolCall, validateToolCallDetailed } from "../types.js";
 import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
 import { validateAgentInvocationMessageSequence } from "../../contracts/agent-invocation-envelope.js";
+import {
+  SYSTEM_PROMPT_DYNAMIC_BOUNDARY as SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER,
+} from "../../prompts/system-prompt-boundary.js";
+
+export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER };
 
 function readContentPartRecord(part: unknown): Record<string, unknown> | null {
   return part && typeof part === "object" && !Array.isArray(part)
@@ -75,15 +80,6 @@ function toAnthropicImageSource(
     url: imageUrl,
   };
 }
-
-/**
- * The system-prompt static/dynamic boundary marker. Must stay byte-equal
- * to `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` exported by
- * `src/prompts/system-prompt.ts` (the producer of `options.systemPrompt`);
- * a regression test asserts the two never diverge. Single-sourced here so
- * every wire can split without importing the prompt-assembly graph.
- */
-export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER = "<!-- dynamic-boundary -->";
 
 /**
  * Split an assembled system prompt into its cross-turn-stable head and
@@ -600,31 +596,6 @@ export function parseOpenAIToolChoice(
       // encoded entry, not the dotted internal name the provider never saw.
       name: encodeMcpToolNameForWire(toolChoice.name),
     },
-  };
-}
-
-/**
- * The Responses API takes the flat `ToolChoiceFunction` shape, matching its
- * flat `tools[]` entries (toOpenAIResponsesTools). Handed the nested Chat
- * Completions object it reads the outer type as a function selection, finds
- * no sibling `name`, and rejects the whole request with "Missing required
- * parameter: 'tool_choice.name'" — the turn then ends with no answer.
- */
-export function parseOpenAIResponsesToolChoice(
-  toolChoice: LLMToolChoice | undefined,
-): unknown {
-  if (toolChoice === undefined) return undefined;
-  if (
-    toolChoice === "auto" ||
-    toolChoice === "required" ||
-    toolChoice === "none"
-  ) {
-    return toolChoice;
-  }
-  return {
-    type: "function",
-    // Same encoded name the `tools[]` entry carries; see parseOpenAIToolChoice.
-    name: encodeMcpToolNameForWire(toolChoice.name),
   };
 }
 

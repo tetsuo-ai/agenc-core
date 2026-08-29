@@ -1,7 +1,7 @@
 import { feature } from "bun:bundle";
-import chalk from "chalk";
 import * as path from "path";
 import * as React from "react";
+import type { ProviderAuthReadContext } from "../../../utils/auth.js";
 import {
   useCallback,
   useEffect,
@@ -11,6 +11,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useContentWidth } from "../../context/contentWidthContext.js";
+import { useFullscreenMode } from "../../context/fullscreenModeContext.js";
 import { useNotifications } from "../../context/notifications.js";
 import { useCommandQueue } from "../../hooks/useCommandQueue.js";
 import {
@@ -59,7 +60,6 @@ import { useMainLoopModel } from "../../hooks/useMainLoopModel.js";
 import { selectAgenCTuiGlyphs } from "../../glyphs.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 import { useTypeahead } from "../../hooks/useTypeahead.js";
-import type { BorderTextOptions } from "../../ink/render-border.js";
 import { useTerminalFocus } from "../../ink/hooks/use-terminal-focus.js";
 import { stringWidth } from "../../ink/stringWidth.js";
 import { Box, type ClickEvent, type Key, Text, useInput } from "../../ink.js";
@@ -117,32 +117,19 @@ import type { AutoUpdaterResult } from "../../../utils/autoUpdater.js";
 // branding-scan: allow TextCursor is the text-caret utility name.
 import { TextCursor } from "../../../utils/TextCursor.js";
 import {
-  getGlobalConfig,
+  getRuntimeState,
   type PastedContent,
-  saveGlobalConfig,
+  updateRuntimeState,
 } from "../../../utils/config.js";
+import type { RuntimeStateRepository } from "../../../config/runtime-state-repository.js";
+import type { CanonicalSettingsAuthority } from "../../../utils/settings/canonicalAuthority.js";
 import { logForDebugging } from "../../../utils/debug.js";
 import {
   parseDirectMemberMessage,
   sendDirectMemberMessage,
 } from "../../../utils/directMemberMessage.js";
-import type { AvailableEffortLevel } from "../../../utils/effort.js";
 import { env } from "../../../utils/env.js";
 import { errorMessage } from "../../../utils/errors.js";
-import { isBilledAsExtraUsage } from "../../../utils/extraUsage.js";
-import {
-  clearFastModeCooldown,
-  FAST_MODE_MODEL_DISPLAY,
-  getFastModeModel,
-  getFastModeRuntimeState,
-  getFastModeUnavailableReason,
-  isFastModeAvailable,
-  isFastModeCooldown,
-  isFastModeEnabled,
-  isFastModeSupportedByModel,
-} from "../../../utils/fastMode.js";
-import { isFullscreenEnvEnabled } from "../../../utils/fullscreen.js";
-import type { PromptInputHelpers } from "../../../utils/handlePromptSubmit.js";
 import type { VimRoutingState } from "../../input/processTextPrompt.js";
 import { extractDraggedFilePaths } from "../../../utils/dragDropPaths.js";
 import {
@@ -157,24 +144,14 @@ import {
 } from "../../../utils/keyboardShortcuts.js";
 import { logError } from "../../../utils/log.js";
 import {
-  isOpus1mMergeEnabled,
-  modelDisplayString,
-} from "../../../utils/model/model.js";
-import { setAutoModeActive } from "../../../utils/permissions/autoModeState.js";
-import {
   getNextPermissionMode,
-} from "../../../utils/permissions/getNextPermissionMode.js";
-import {
   isAutoModeGateEnabled,
   transitionPermissionMode,
-} from "../../../utils/permissions/permissionSetup.js";
+} from "../../../permissions/permission-mode.js";
 import { getPlatform } from "../../../utils/platform.js";
 import type { PromptInputContext } from "../../input/inputContext.js";
 import { editPromptInEditor } from "../../../utils/promptEditor.js";
-import {
-  hasAutoModeOptIn,
-  updateSettingsForSource,
-} from "../../../utils/settings/settings.js";
+import { hasAutoModeOptIn } from "../../../utils/settings/settings.js";
 import { findSlashCommandPositions } from "../../../utils/suggestions/commandSuggestions.js";
 import {
   findSlackChannelPositions,
@@ -207,11 +184,9 @@ import {
   useCoordinatorTaskCount,
 } from "../CoordinatorAgentStatus.js";
 import { getEffortNotificationText } from "../EffortIndicator.js";
-import { getFastIconString } from "../FastIcon.js";
 import { calculateFullscreenLayoutBudget } from "../FullscreenLayout.js";
 import { GlobalSearchDialog } from "../GlobalSearchDialog.js";
 import { HistorySearchDialog } from "../../history/HistorySearchDialog.js";
-import { ModelPicker } from "../ModelPicker.js";
 import { QuickOpenDialog } from "../QuickOpenDialog.js";
 import { materializeAttachmentMentions } from "../../workbench/commands.js";
 import {
@@ -247,7 +222,6 @@ import { PromptInputQueuedCommands } from "./PromptInputQueuedCommands.js";
 import { PromptInputStashNotice } from "./PromptInputStashNotice.js";
 import { useMaybeTruncateInput } from "./useMaybeTruncateInput.js";
 import { usePromptInputPlaceholder } from "./usePromptInputPlaceholder.js";
-import { useShowFastIconHint } from "./useShowFastIconHint.js";
 import { useSwarmBanner } from "./useSwarmBanner.js";
 import {
   clampPromptTextInputColumns,
@@ -260,14 +234,6 @@ import {
 type PromptSuggestionHookProps = {
   inputValue: string;
   isAssistantResponding: boolean;
-};
-
-type FastModePickerProps = {
-  onDone: (
-    result?: string,
-    options?: { display?: "system" | "user" | "skip" },
-  ) => void;
-  unavailableReason: string | null;
 };
 
 const NATIVE_CSIU_TERMINALS: Record<string, string> = {
@@ -283,103 +249,6 @@ function getNativeCSIuTerminalDisplayName(): string | null {
     return null;
   }
   return NATIVE_CSIU_TERMINALS[env.terminal] ?? null;
-}
-
-function applyFastMode(
-  enable: boolean,
-  setAppState: (updater: (prev: AppState) => AppState) => void,
-): void {
-  clearFastModeCooldown();
-  updateSettingsForSource("userSettings", {
-    fastMode: enable ? true : undefined,
-  });
-  setAppState((prev) => {
-    if (!enable) {
-      return { ...prev, fastMode: false };
-    }
-    const needsModelSwitch = !isFastModeSupportedByModel(prev.mainLoopModel);
-    return {
-      ...prev,
-      ...(needsModelSwitch
-        ? {
-            mainLoopModel: getFastModeModel(),
-            mainLoopModelForSession: null,
-          }
-        : {}),
-      fastMode: true,
-    };
-  });
-}
-
-function FastModePicker({
-  onDone,
-  unavailableReason,
-}: FastModePickerProps): React.ReactNode {
-  const model = useAppState((state) => state.mainLoopModel);
-  const initialFastMode = useAppState((state) => state.fastMode);
-  const setAppState = useSetAppState();
-  const [enabled, setEnabled] = React.useState(initialFastMode ?? false);
-  const isUnavailable = unavailableReason !== null;
-  const runtimeState = getFastModeRuntimeState();
-
-  const confirm = React.useCallback(() => {
-    if (isUnavailable) return;
-    applyFastMode(enabled, setAppState);
-    if (enabled) {
-      const modelUpdated = !isFastModeSupportedByModel(model)
-        ? `; model set to ${FAST_MODE_MODEL_DISPLAY}`
-        : "";
-      onDone(`Fast mode ON${modelUpdated}`);
-    } else {
-      onDone("Fast mode OFF");
-    }
-  }, [enabled, isUnavailable, model, onDone, setAppState]);
-
-  const cancel = React.useCallback(() => {
-    if (isUnavailable && initialFastMode) {
-      applyFastMode(false, setAppState);
-      onDone("Fast mode OFF", { display: "system" });
-      return;
-    }
-    onDone(initialFastMode ? "Kept Fast mode ON" : "Kept Fast mode OFF", {
-      display: "system",
-    });
-  }, [initialFastMode, isUnavailable, onDone, setAppState]);
-
-  useInput((input, key) => {
-    if (key.escape) {
-      cancel();
-      return;
-    }
-    if (key.return) {
-      confirm();
-      return;
-    }
-    if (key.tab || input === " ") {
-      if (!isUnavailable) setEnabled((value) => !value);
-    }
-  });
-
-  return (
-    <Box flexDirection="column" marginLeft={2}>
-      <Box flexDirection="row" gap={2}>
-        <Text bold>Fast mode</Text>
-        <Text color={enabled ? "fastMode" : undefined} bold={enabled}>
-          {enabled ? "ON" : "OFF"}
-        </Text>
-        <Text dimColor>for {FAST_MODE_MODEL_DISPLAY}</Text>
-      </Box>
-      {unavailableReason ? (
-        <Text color="error">{unavailableReason}</Text>
-      ) : runtimeState.status === "cooldown" ? (
-        <Text color="warning">
-          Fast mode is temporarily unavailable; try again later.
-        </Text>
-      ) : (
-        <Text dimColor>Tab toggles, Enter confirms, Esc cancels</Text>
-      )}
-    </Box>
-  );
 }
 
 function isUltrareviewEnabled(): boolean {
@@ -494,13 +363,19 @@ function usePromptSuggestion({
   };
 }
 
+type PromptInputHelpers = {
+  setCursorOffset: (offset: number) => void;
+  clearBuffer: () => void;
+  resetHistory: () => void;
+};
+
 type Props = {
   debug: boolean;
   ideSelection: IDESelection | undefined;
   toolPermissionContext: ToolPermissionContext;
   setToolPermissionContext: (ctx: ToolPermissionContext) => void;
   apiKeyStatus: VerificationStatus;
-  agencHome?: string;
+  remoteAuthSessionContext: ProviderAuthReadContext;
   commands: Command[];
   agents: AgentDefinition[];
   isLoading: boolean;
@@ -620,11 +495,15 @@ type Props = {
    */
   submissionBlockedReason?: string | null;
   onSubmissionBlocked?: (reason: string) => void;
+  /** Opens the App-owned provider-neutral model selection surface. */
+  onOpenModelMenu?: () => Promise<void> | void;
   onboardingInput?: {
     readonly placeholder: string;
     readonly footerHint: string;
     readonly allowEmptySubmit: boolean;
   };
+  runtimeStateRepository: RuntimeStateRepository;
+  settingsAuthority: CanonicalSettingsAuthority;
 };
 
 // Bottom slot has maxHeight="50%"; reserve lines for footer, border, status.
@@ -730,7 +609,7 @@ function PromptInput({
   toolPermissionContext,
   setToolPermissionContext,
   apiKeyStatus,
-  agencHome,
+  remoteAuthSessionContext,
   commands,
   agents,
   isLoading,
@@ -773,9 +652,14 @@ function PromptInput({
   isLocalJSXCommandActive = false,
   submissionBlockedReason = null,
   onSubmissionBlocked,
+  onOpenModelMenu,
   onboardingInput,
+  runtimeStateRepository,
+  settingsAuthority,
 }: Props): React.ReactNode {
+  const isFullscreen = useFullscreenMode();
   const mainLoopModel = useMainLoopModel();
+  const runtimeState = getRuntimeState(runtimeStateRepository);
   // A local-jsx command (e.g., /mcp while agent is running) renders a full-
   // screen dialog on top of PromptInput via the immediate-command path with
   // shouldHidePromptInput: false. Those dialogs don't register in the overlay
@@ -795,6 +679,18 @@ function PromptInput({
     show: false,
   });
   const [cursorOffset, setCursorOffset] = useState<number>(input.length);
+  // Input-mode changes originate in TextInput and can be submitted before
+  // React commits the parent-owned mode prop. Keep that same-tick authority
+  // synchronous so a freshly entered ! command cannot reach the model path.
+  const currentModeRef = useRef(mode);
+  currentModeRef.current = mode;
+  const setCurrentMode = useCallback(
+    (nextMode: PromptInputMode) => {
+      currentModeRef.current = nextMode;
+      onModeChange(nextMode);
+    },
+    [onModeChange],
+  );
   // Ref mirrors cursorOffset for synchronous command handlers that can run
   // before React commits a cursor state update from TextInput.
   const cursorOffsetRef = useRef(cursorOffset);
@@ -937,12 +833,7 @@ function PromptInput({
       ? // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
         useAppState((s) => s.isBriefOnly) && !viewingAgentTaskId
       : false;
-  const mainLoopModel_ = useAppState((s) => s.mainLoopModel);
-  const mainLoopModelForSession = useAppState((s) => s.mainLoopModelForSession);
   const thinkingEnabled = useAppState((s) => s.thinkingEnabled);
-  const isFastMode = useAppState((s) =>
-    isFastModeEnabled() ? s.fastMode : false,
-  );
   const effortValue = useAppState((s) => s.effortValue);
   const viewedTeammate = getViewedTeammateTask(store.getState());
   const viewingAgentName = viewedTeammate?.identity.agentName;
@@ -970,6 +861,7 @@ function PromptInput({
       return {
         ...toolPermissionContext,
         mode: viewedTeammate.permissionMode,
+        isBypassPermissionsModeAvailable: false,
       };
     }
     return toolPermissionContext;
@@ -984,7 +876,7 @@ function PromptInput({
       trackAndSetInput,
       setCurrentCursorOffset,
       cursorOffset,
-      onModeChange,
+      setCurrentMode,
       mode,
       isSearchingHistory,
       setIsSearchingHistory,
@@ -1063,23 +955,29 @@ function PromptInput({
   }, [coordinatorTaskCount, coordinatorTaskIndex, minCoordinatorIndex]);
   const [isPasting, setIsPasting] = useState(false);
   const [isExternalEditorActive, setIsExternalEditorActive] = useState(false);
-  const [showModelPicker, setShowModelPicker] = useState(false);
   const [showQuickOpen, setShowQuickOpen] = useState(false);
   const [showGlobalSearch, setShowGlobalSearch] = useState(false);
   const [showHistoryPicker, setShowHistoryPicker] = useState(false);
-  const [showFastModePicker, setShowFastModePicker] = useState(false);
   const [showThinkingToggle, setShowThinkingToggle] = useState(false);
   const [showModeSwitcher, setShowModeSwitcher] = useState(false);
   const [showAutoModeOptIn, setShowAutoModeOptIn] = useState(false);
+  const [autoModeOptInPreview, setAutoModeOptInPreview] = useState(false);
   const promptModalOverlayActive =
     upstreamModalOverlayActive ||
     showModeSwitcher ||
     showAutoModeOptIn ||
+    autoModeOptInPreview ||
     Boolean(showBashesDialog);
   const promptKeyboardActive =
     composerInputEnabled && !promptModalOverlayActive;
-  const [previousModeBeforeAuto, setPreviousModeBeforeAuto] =
-    useState<PermissionMode | null>(null);
+  const displayedToolPermissionContext = useMemo(
+    (): ToolPermissionContext =>
+      autoModeOptInPreview
+        ? { ...effectiveToolPermissionContext, mode: "auto" }
+        : effectiveToolPermissionContext,
+    [autoModeOptInPreview, effectiveToolPermissionContext],
+  );
+  const autoModeOptInPendingRef = useRef(false);
   const autoModeOptInTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const modeSwitcherTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const modeCycleKeybindingActive =
@@ -1089,10 +987,12 @@ function PromptInput({
     (promptKeyboardActive ||
       showModeSwitcher ||
       showAutoModeOptIn ||
+      autoModeOptInPreview ||
       Boolean(autoModeOptInTimeoutRef.current));
 
   useEffect(
     () => () => {
+      autoModeOptInPendingRef.current = false;
       if (autoModeOptInTimeoutRef.current) {
         clearTimeout(autoModeOptInTimeoutRef.current);
         autoModeOptInTimeoutRef.current = null;
@@ -1531,7 +1431,7 @@ function PromptInput({
     const clearedSubstantialInput = peakLength >= 20 && currentLength <= 5;
     const wasRapidClear = prevLength >= 20 && currentLength <= 5;
     if (clearedSubstantialInput && !wasRapidClear) {
-      const config = getGlobalConfig();
+      const config = getRuntimeState(runtimeStateRepository);
       if (!config.hasUsedStash) {
         addNotification({
           key: "stash-hint",
@@ -1613,7 +1513,7 @@ function PromptInput({
             })
           : null;
       if (modeEntry) {
-        onModeChange(modeEntry.mode);
+        setCurrentMode(modeEntry.mode);
         const cleaned = modeEntry.strippedValue.replaceAll("\t", "    ");
         pushToBuffer(currentInput, currentCursorOffset, currentPastedContents);
         trackAndSetInput(cleaned);
@@ -1640,7 +1540,7 @@ function PromptInput({
     },
     [
       trackAndSetInput,
-      onModeChange,
+      setCurrentMode,
       pushToBuffer,
       dismissStashHint,
       setAppState,
@@ -1663,7 +1563,7 @@ function PromptInput({
       onChange(value, {
         interpretShortcuts: false,
       });
-      onModeChange(historyMode);
+      setCurrentMode(historyMode);
       setPastedContentsAndRef(pastedContents);
     },
     input,
@@ -1718,14 +1618,18 @@ function PromptInput({
     if (onHistoryDown() && footerItems.length > 0) {
       const first = footerItems[0]!;
       selectFooterItem(first);
-      if (first === "tasks" && !getGlobalConfig().hasSeenTasksHint) {
-        saveGlobalConfig((c) =>
+      if (
+        first === "tasks" &&
+        !getRuntimeState(runtimeStateRepository).hasSeenTasksHint
+      ) {
+        updateRuntimeState((c) =>
           c.hasSeenTasksHint
             ? c
             : {
                 ...c,
                 hasSeenTasksHint: true,
               },
+          runtimeStateRepository,
         );
       }
     }
@@ -1758,6 +1662,7 @@ function PromptInput({
   const onSubmit = useCallback(
     async (inputParam: string, isSubmittingSlashCommand = false) => {
       inputParam = inputParam.trimEnd();
+      const submissionMode = currentModeRef.current;
 
       // Don't submit if a footer indicator is being opened. Read fresh from
       // store — footer:openSelected calls selectFooterItem(null) then onSubmit
@@ -1832,6 +1737,7 @@ function PromptInput({
       const inputMatchesSuggestion =
         inputParam.trim() === "" || inputParam === suggestionText;
       if (
+        submissionMode === "prompt" &&
         onboardingInput === undefined &&
         inputMatchesSuggestion &&
         suggestionText &&
@@ -1879,6 +1785,7 @@ function PromptInput({
 
       // Handle @name direct message
       if (
+        submissionMode === "prompt" &&
         state.workbench?.activeWorkspaceView !== "editor" &&
         isAgentSwarmsEnabled()
       ) {
@@ -1976,6 +1883,7 @@ function PromptInput({
           (s) => s.description === "directory",
         );
       if (
+        submissionMode === "prompt" &&
         suggestionsState.suggestions.length > 0 &&
         !isSubmittingSlashCommand &&
         !hasDirectorySuggestions
@@ -1987,7 +1895,11 @@ function PromptInput({
       }
 
       // Log suggestion outcome if one exists
-      if (promptSuggestionState.text && promptSuggestionState.shownAt > 0) {
+      if (
+        submissionMode === "prompt" &&
+        promptSuggestionState.text &&
+        promptSuggestionState.shownAt > 0
+      ) {
         logOutcomeAtSubmission(inputParam);
       }
 
@@ -2010,6 +1922,7 @@ function PromptInput({
       // Route input to viewed agent (in-process teammate or named local_agent).
       const activeAgent = getActiveAgentForInput(store.getState());
       if (
+        submissionMode === "prompt" &&
         state.workbench?.activeWorkspaceView !== "editor" &&
         activeAgent.type !== "leader" &&
         onAgentSubmit
@@ -2040,14 +1953,14 @@ function PromptInput({
       if (
         applyBusyInputSubmissionPolicy({
           isLoading,
-          mode,
+          mode: submissionMode,
           input: inputParam,
           addNotification,
           setInput: trackAndSetInput,
           setCursorOffset: setCurrentCursorOffset,
           clearBuffer,
           resetHistory,
-          onModeChange,
+          onModeChange: setCurrentMode,
           queueOwner,
           queueExecutionCwd,
         })
@@ -2055,14 +1968,10 @@ function PromptInput({
         return;
       }
 
-      // Bash mode (round-2 MD-NEW4): without this branch the `!` composer
-      // banner was a lie — the input was forwarded to the model as plain
-      // text. Run the shell command locally via processBashCommand and
-      // surface stdout/stderr in the transcript via user_message events.
-      // Bash output is synthetic local data; we never call onSubmitProp,
-      // and the old monolithic input processor is bypassed because its prompt-side imports
-      // drag in subsystems we don't need here.
-      if (mode === "bash") {
+      // Bash mode never sends the command to the model. The App callback uses
+      // the daemon-owned session shell bridge and writes durable transcript
+      // events. Standalone callers retain the admitted in-process fallback.
+      if (submissionMode === "bash") {
         const trimmedBash = inputParam.trim();
         if (trimmedBash === "") {
           return;
@@ -2075,7 +1984,7 @@ function PromptInput({
         setCurrentCursorOffset(0);
         clearBuffer();
         resetHistory();
-        onModeChange("prompt");
+        setCurrentMode("prompt");
         let fallbackSubId = 0;
         try {
           if (onBashSubmit !== undefined) {
@@ -2181,7 +2090,7 @@ function PromptInput({
         },
         undefined,
         {
-          mode,
+          mode: submissionMode,
           vimRoutingState: {
             enabled: isVimModeEnabled(),
             mode: vimMode,
@@ -2229,7 +2138,7 @@ function PromptInput({
       getMessages,
       mainLoopModel,
       trackAndSetInput,
-      onModeChange,
+      setCurrentMode,
       isLoading,
       addNotification,
       setCurrentCursorOffset,
@@ -2261,7 +2170,9 @@ function PromptInput({
     suppressSuggestions:
       onboardingInput !== undefined || isSearchingHistory || historyIndex > 0,
     markAccepted,
-    onModeChange,
+    onModeChange: setCurrentMode,
+    runtimeState,
+    settingsAuthority,
   });
 
   // Track if prompt suggestion should be shown (computed later with terminal width).
@@ -2310,7 +2221,7 @@ function PromptInput({
     dimensions?: ImageDimensions,
     sourcePath?: string,
   ) {
-    onModeChange("prompt");
+    setCurrentMode("prompt");
     const pasteId = allocatePasteId();
     const newContent: PastedContent = {
       id: pasteId,
@@ -2391,7 +2302,7 @@ function PromptInput({
     if (currentInput.length === 0) {
       const pastedMode = getModeFromInput(text);
       if (pastedMode !== "prompt") {
-        onModeChange(pastedMode);
+        setCurrentMode(pastedMode);
         text = getValueFromInput(text);
       }
     }
@@ -2471,7 +2382,7 @@ function PromptInput({
       return false;
     }
     trackAndSetInput(result.text);
-    onModeChange("prompt"); // Always prompt mode for queued commands
+    setCurrentMode("prompt"); // Always prompt mode for queued commands
     setCurrentCursorOffset(result.cursorOffset);
 
     // Restore images from queued commands to pastedContents
@@ -2487,7 +2398,7 @@ function PromptInput({
       });
     }
     return true;
-  }, [trackAndSetInput, onModeChange, updatePastedContentsAndRef, queueOwner]);
+  }, [trackAndSetInput, setCurrentMode, updatePastedContentsAndRef, queueOwner]);
 
   // Insert the at-mentioned reference (the file and, optionally, a line range) when
   // we receive an at-mentioned notification the IDE.
@@ -2604,13 +2515,16 @@ function PromptInput({
       setPastedContentsAndRef({});
       pendingSpaceAfterPillRef.current = false;
       // Track usage for /discover and stop showing hint
-      saveGlobalConfig((c) => {
-        if (c.hasUsedStash) return c;
-        return {
-          ...c,
-          hasUsedStash: true,
-        };
-      });
+      updateRuntimeState(
+        (c) => {
+          if (c.hasUsedStash) return c;
+          return {
+            ...c,
+            hasUsedStash: true,
+          };
+        },
+        runtimeStateRepository,
+      );
     }
   }, [
     stashedPrompt,
@@ -2640,21 +2554,14 @@ function PromptInput({
     });
   }, [addNotification, queueOwner]);
 
-  // Handler for chat:modelPicker - toggle model picker
+  // The shortcut and typed /model command share the App-owned command
+  // context, so model selection cannot bypass daemon runtime authority.
   const handleModelPicker = useCallback(() => {
-    setShowModelPicker((prev) => !prev);
+    void onOpenModelMenu?.();
     if (helpOpen) {
       setHelpOpen(false);
     }
-  }, [helpOpen]);
-
-  // Handler for chat:fastMode - toggle fast mode picker
-  const handleFastModePicker = useCallback(() => {
-    setShowFastModePicker((prev) => !prev);
-    if (helpOpen) {
-      setHelpOpen(false);
-    }
-  }, [helpOpen]);
+  }, [helpOpen, onOpenModelMenu, setHelpOpen]);
 
   // Handler for chat:thinkingToggle - toggle thinking mode
   const handleThinkingToggle = useCallback(() => {
@@ -2689,11 +2596,32 @@ function PromptInput({
     setShowModeSwitcher(false);
   }, []);
 
+  const clearAutoModeOptInPreview = useCallback(() => {
+    autoModeOptInPendingRef.current = false;
+    if (autoModeOptInTimeoutRef.current) {
+      clearTimeout(autoModeOptInTimeoutRef.current);
+      autoModeOptInTimeoutRef.current = null;
+    }
+    setShowAutoModeOptIn(false);
+    setAutoModeOptInPreview(false);
+  }, []);
+
   // Applies one specific permission mode. Shared by shift+tab cycling and
   // digit picks in the mode-switcher toast.
   const selectPermissionMode = useCallback((targetMode: PermissionMode) => {
     // When viewing a teammate, set their mode instead of the leader's
     if (isAgentSwarmsEnabled() && viewedTeammate && viewingAgentTaskId) {
+      if (targetMode === "bypassPermissions") {
+        addNotification({
+          key: "teammate-bypass-consent-required",
+          text:
+            "bypassPermissions is unavailable for teammate mode changes because this control cannot collect exact cwd consent.",
+          priority: "immediate",
+          color: "warning",
+          timeoutMs: 8000,
+        });
+        return;
+      }
       const teammateTaskId = viewingAgentTaskId;
       setAppState((prev) => {
         const task = prev.tasks[teammateTaskId];
@@ -2721,7 +2649,7 @@ function PromptInput({
     }
 
     logForDebugging(
-      `[auto-mode] selectPermissionMode: currentMode=${toolPermissionContext.mode} targetMode=${targetMode} isAutoModeAvailable=${toolPermissionContext.isAutoModeAvailable} showAutoModeOptIn=${showAutoModeOptIn} timeoutPending=${!!autoModeOptInTimeoutRef.current}`,
+      `[auto-mode] selectPermissionMode: currentMode=${toolPermissionContext.mode} targetMode=${targetMode} isAutoModeAvailable=${toolPermissionContext.isAutoModeAvailable} previewPending=${autoModeOptInPreview} showAutoModeOptIn=${showAutoModeOptIn} timeoutPending=${!!autoModeOptInTimeoutRef.current}`,
     );
     showModeSwitcherToast();
 
@@ -2735,29 +2663,18 @@ function PromptInput({
       isEnteringAutoModeFirstTime =
         targetMode === "auto" &&
         toolPermissionContext.mode !== "auto" &&
+        !autoModeOptInPendingRef.current &&
         !hasAutoModeOptIn() &&
         !viewingAgentTaskId; // Only show for primary agent, not subagents
     }
     if (feature("TRANSCRIPT_CLASSIFIER")) {
       if (isEnteringAutoModeFirstTime) {
-        // Store previous mode so we can revert if user declines
-        setPreviousModeBeforeAuto(toolPermissionContext.mode);
+        autoModeOptInPendingRef.current = true;
+        setAutoModeOptInPreview(true);
 
-        // Only update the UI mode label — do NOT call transitionPermissionMode
-        // or cyclePermissionMode yet; we haven't confirmed with the user.
-        setAppState((prev) => ({
-          ...prev,
-          toolPermissionContext: {
-            ...prev.toolPermissionContext,
-            mode: "auto",
-          },
-        }));
-        setToolPermissionContext({
-          ...toolPermissionContext,
-          mode: "auto",
-        });
-
-        // Show opt-in dialog after 400ms debounce
+        // Keep the preview local until the warning has been accepted. Calling
+        // setToolPermissionContext here would update the local registry or send
+        // a daemon permission RPC before consent.
         if (autoModeOptInTimeoutRef.current) {
           clearTimeout(autoModeOptInTimeoutRef.current);
         }
@@ -2781,25 +2698,23 @@ function PromptInput({
     // the decision; applying the transition here would bypass the consent.
     if (
       targetMode === "auto" &&
-      (showAutoModeOptIn || autoModeOptInTimeoutRef.current)
+      (autoModeOptInPendingRef.current ||
+        autoModeOptInPreview ||
+        showAutoModeOptIn ||
+        autoModeOptInTimeoutRef.current)
     ) {
       return;
     }
 
-    // Dismiss auto mode opt-in dialog if showing or pending (user is moving away).
-    // Do NOT revert to previousModeBeforeAuto here — cycling or picking means
-    // "select another mode", not "decline". Reverting causes a ping-pong loop:
-    // auto reverts to the prior mode, whose next mode is auto again, forever.
-    // The dialog's own decline button (handleAutoModeOptInDecline) handles revert.
+    // Moving to another mode cancels the preview. The live permission context
+    // has not changed, so there is nothing to revert.
     if (feature("TRANSCRIPT_CLASSIFIER")) {
-      if (showAutoModeOptIn || autoModeOptInTimeoutRef.current) {
-        setShowAutoModeOptIn(false);
-        if (autoModeOptInTimeoutRef.current) {
-          clearTimeout(autoModeOptInTimeoutRef.current);
-          autoModeOptInTimeoutRef.current = null;
-        }
-        setPreviousModeBeforeAuto(null);
-        // Fall through — the transition below applies the picked target.
+      if (
+        autoModeOptInPreview ||
+        showAutoModeOptIn ||
+        autoModeOptInTimeoutRef.current
+      ) {
+        clearAutoModeOptInPreview();
       }
     }
 
@@ -2810,27 +2725,21 @@ function PromptInput({
       toolPermissionContext.mode,
       targetMode,
       toolPermissionContext,
+      { workspacePath: getCwd() },
     );
 
-    // Track when user enters plan mode
-    if (targetMode === "plan") {
-      saveGlobalConfig((current) => ({
-        ...current,
-        lastPlanModeUse: Date.now(),
-      }));
+    if ("error" in preparedContext) {
+      addNotification({
+        key: "bypass-consent-required",
+        text:
+          "bypassPermissions needs explicit consent. Run /permissions accept-bypass first.",
+        priority: "immediate",
+        color: "warning",
+        timeoutMs: 8000,
+      });
+      return;
     }
 
-    // Set the mode via setAppState directly because setToolPermissionContext
-    // intentionally preserves the existing mode (to prevent coordinator mode
-    // corruption from workers). Then call setToolPermissionContext to trigger
-    // recheck of queued permission prompts.
-    setAppState((prev) => ({
-      ...prev,
-      toolPermissionContext: {
-        ...preparedContext,
-        mode: targetMode,
-      },
-    }));
     setToolPermissionContext({
       ...preparedContext,
       mode: targetMode,
@@ -2848,11 +2757,13 @@ function PromptInput({
     teamContext,
     viewingAgentTaskId,
     viewedTeammate,
-    setAppState,
     setToolPermissionContext,
     helpOpen,
     showAutoModeOptIn,
+    autoModeOptInPreview,
     showModeSwitcherToast,
+    clearAutoModeOptInPreview,
+    addNotification,
   ]);
 
   // Handler for chat:cycleMode - cycle through permission modes
@@ -2860,18 +2771,22 @@ function PromptInput({
     // When viewing a teammate, cycle from their mode instead of the leader's
     if (isAgentSwarmsEnabled() && viewedTeammate && viewingAgentTaskId) {
       const teammateContext: ToolPermissionContext = {
-        ...toolPermissionContext,
+        ...displayedToolPermissionContext,
         mode: viewedTeammate.permissionMode,
       };
-      // Pass undefined for teamContext (unused but kept for API compatibility)
-      selectPermissionMode(getNextPermissionMode(teammateContext, undefined));
+      selectPermissionMode(
+        getNextPermissionMode(teammateContext.mode, teammateContext),
+      );
       return;
     }
     selectPermissionMode(
-      getNextPermissionMode(toolPermissionContext, teamContext),
+      getNextPermissionMode(
+        displayedToolPermissionContext.mode,
+        displayedToolPermissionContext,
+      ),
     );
   }, [
-    toolPermissionContext,
+    displayedToolPermissionContext,
     teamContext,
     viewedTeammate,
     viewingAgentTaskId,
@@ -2889,8 +2804,8 @@ function PromptInput({
       }
       if (!/^[1-9]$/u.test(input)) return;
       const modes = visibleUserFacingModes(
-        effectiveToolPermissionContext.isBypassPermissionsModeAvailable,
-        effectiveToolPermissionContext.isAutoModeAvailable,
+        displayedToolPermissionContext.isBypassPermissionsModeAvailable,
+        displayedToolPermissionContext.isAutoModeAvailable,
       );
       const targetMode = modes[Number.parseInt(input, 10) - 1];
       if (targetMode === undefined) return;
@@ -2905,24 +2820,17 @@ function PromptInput({
   // Handler for auto mode opt-in dialog acceptance
   const handleAutoModeOptInAccept = useCallback(() => {
     if (feature("TRANSCRIPT_CLASSIFIER")) {
-      setShowAutoModeOptIn(false);
-      setPreviousModeBeforeAuto(null);
+      if (!autoModeOptInPendingRef.current) return;
+      clearAutoModeOptInPreview();
 
-      // Now that the user accepted, apply the full transition: activate the
-      // auto mode backend (classifier, beta headers) and strip dangerous
-      // permissions (e.g. Bash(*) always-allow rules).
+      // Permission requests can update the context while the warning is open.
+      // Apply the transition to the latest context so those updates survive.
+      const latestContext = store.getState().toolPermissionContext;
       const strippedContext = transitionPermissionMode(
-        previousModeBeforeAuto ?? toolPermissionContext.mode,
+        latestContext.mode,
         "auto",
-        toolPermissionContext,
+        latestContext,
       );
-      setAppState((prev) => ({
-        ...prev,
-        toolPermissionContext: {
-          ...strippedContext,
-          mode: "auto",
-        },
-      }));
       setToolPermissionContext({
         ...strippedContext,
         mode: "auto",
@@ -2936,50 +2844,18 @@ function PromptInput({
   }, [
     helpOpen,
     setHelpOpen,
-    previousModeBeforeAuto,
-    toolPermissionContext,
-    setAppState,
+    clearAutoModeOptInPreview,
+    store,
     setToolPermissionContext,
   ]);
 
   // Handler for auto mode opt-in dialog decline
   const handleAutoModeOptInDecline = useCallback(() => {
     if (feature("TRANSCRIPT_CLASSIFIER")) {
-      logForDebugging(
-        `[auto-mode] handleAutoModeOptInDecline: reverting to ${previousModeBeforeAuto}, setting isAutoModeAvailable=false`,
-      );
-      setShowAutoModeOptIn(false);
-      if (autoModeOptInTimeoutRef.current) {
-        clearTimeout(autoModeOptInTimeoutRef.current);
-        autoModeOptInTimeoutRef.current = null;
-      }
-
-      // Revert to previous mode and remove auto from the carousel
-      // for the rest of this session
-      if (previousModeBeforeAuto) {
-        setAutoModeActive(false);
-        setAppState((prev) => ({
-          ...prev,
-          toolPermissionContext: {
-            ...prev.toolPermissionContext,
-            mode: previousModeBeforeAuto,
-            isAutoModeAvailable: false,
-          },
-        }));
-        setToolPermissionContext({
-          ...toolPermissionContext,
-          mode: previousModeBeforeAuto,
-          isAutoModeAvailable: false,
-        });
-        setPreviousModeBeforeAuto(null);
-      }
+      logForDebugging("[auto-mode] opt-in declined; clearing preview");
+      clearAutoModeOptInPreview();
     }
-  }, [
-    previousModeBeforeAuto,
-    toolPermissionContext,
-    setAppState,
-    setToolPermissionContext,
-  ]);
+  }, [clearAutoModeOptInPreview]);
 
   // Handler for chat:imagePaste - paste image from clipboard
   const handleImagePaste = useCallback(async () => {
@@ -3047,7 +2923,9 @@ function PromptInput({
       "chat:externalEditor": handleExternalEditor,
       "chat:stash": handleStash,
       "chat:dropQueuedInput": handleDropQueuedInput,
-      "chat:modelPicker": handleModelPicker,
+      ...(onOpenModelMenu === undefined
+        ? {}
+        : { "chat:modelPicker": handleModelPicker }),
       "chat:thinkingToggle": handleThinkingToggle,
       "chat:imagePaste": handleImagePaste,
     }),
@@ -3058,6 +2936,7 @@ function PromptInput({
       handleStash,
       handleDropQueuedInput,
       handleModelPicker,
+      onOpenModelMenu,
       handleThinkingToggle,
       handleImagePaste,
     ],
@@ -3079,13 +2958,6 @@ function PromptInput({
   useKeybinding("chat:messageActions", () => onMessageActionsEnter?.(), {
     context: "Chat",
     isActive: promptKeyboardActive && !isSearchingHistory,
-  });
-
-  // Fast mode keybinding is only active when fast mode is enabled and available
-  useKeybinding("chat:fastMode", handleFastModePicker, {
-    context: "Chat",
-    isActive:
-      promptKeyboardActive && isFastModeEnabled() && isFastModeAvailable(),
   });
 
   // Handle help:dismiss keybinding (ESC closes help menu)
@@ -3376,7 +3248,7 @@ function PromptInput({
       currentOffset === 0 &&
       (key.escape || key.backspace || key.delete || (key.ctrl && char === "u"))
     ) {
-      onModeChange("prompt");
+      setCurrentMode("prompt");
       setHelpOpen(false);
     }
 
@@ -3430,21 +3302,20 @@ function PromptInput({
     }
   });
   const swarmBanner = useSwarmBanner();
-  const fastModeCooldown = isFastModeEnabled() ? isFastModeCooldown() : false;
-  const showFastIcon = isFastModeEnabled()
-    ? isFastMode && (isFastModeAvailable() || fastModeCooldown)
-    : false;
-  const showFastIconHint = useShowFastIconHint(showFastIcon ?? false);
 
   // Show the effort notification only when the level CHANGES mid-session,
   // never on startup (UX request: the pinned bottom-right label read as a
   // permanent login/auth chip). The change itself flashes for 12s and then
-  // clears; /effort and the ModelPicker already confirm their own change.
+  // clears; /effort confirms its own change.
   // Suppressed in brief/assistant mode — the value reflects the local
   // client's effort, not the connected agent's.
   const effortNotificationText = briefOwnsGap
     ? undefined
-    : getEffortNotificationText(effortValue, mainLoopModel);
+    : getEffortNotificationText(
+        effortValue,
+        mainLoopModel,
+        remoteAuthSessionContext,
+      );
   const prevEffortNotificationTextRef = useRef(effortNotificationText);
   useEffect(() => {
     const previous = prevEffortNotificationTextRef.current;
@@ -3465,14 +3336,14 @@ function PromptInput({
   const workbenchFrameColumns = useContentWidth();
   const promptGlyphs = selectAgenCTuiGlyphs();
   const workbenchPermissionLabel =
-    effectiveToolPermissionContext.mode === "bypassPermissions"
+    displayedToolPermissionContext.mode === "bypassPermissions"
       ? "YOLO"
       : permissionModeShortTitle(
-          effectiveToolPermissionContext.mode,
+          displayedToolPermissionContext.mode,
         ).toUpperCase();
   const workbenchPromptGlyph =
     viewingAgentName || mode !== "bash"
-      ? effectiveToolPermissionContext.mode === "bypassPermissions"
+      ? displayedToolPermissionContext.mode === "bypassPermissions"
         ? promptGlyphs.promptBypass
         : promptGlyphs.pointer
       : "!";
@@ -3495,7 +3366,7 @@ function PromptInput({
   // wide chars, wrapped lines, and clamps past-end clicks to line end.
   const maxVisibleLines = calculatePromptMaxVisibleLines(
     rows,
-    isFullscreenEnvEnabled(),
+    isFullscreen,
   );
   const handleInputClick = useCallback(
     (e: ClickEvent) => {
@@ -3539,107 +3410,6 @@ function PromptInput({
 
   // Calculate if input has multiple lines
   const isInputWrapped = useMemo(() => input.includes("\n"), [input]);
-
-  // Memoized callbacks for model picker to prevent re-renders when unrelated
-  // state (like notifications) changes. This prevents the inline model picker
-  // from visually "jumping" when notifications arrive.
-  const handleModelSelect = useCallback(
-    (model: string | null, _effort: AvailableEffortLevel | undefined) => {
-      let wasFastModeDisabled = false;
-      setAppState((prev) => {
-        wasFastModeDisabled =
-          isFastModeEnabled() &&
-          !isFastModeSupportedByModel(model) &&
-          !!prev.fastMode;
-        return {
-          ...prev,
-          mainLoopModel: model,
-          mainLoopModelForSession: null,
-          // Turn off fast mode if switching to a model that doesn't support it
-          ...(wasFastModeDisabled && {
-            fastMode: false,
-          }),
-        };
-      });
-      setShowModelPicker(false);
-      const effectiveFastMode = (isFastMode ?? false) && !wasFastModeDisabled;
-      let message = `Model set to ${modelDisplayString(model)}`;
-      if (
-        isBilledAsExtraUsage(model, effectiveFastMode, isOpus1mMergeEnabled())
-      ) {
-        message += " · Billed as extra usage";
-      }
-      if (wasFastModeDisabled) {
-        message += " · Fast mode OFF";
-      }
-      addNotification({
-        key: "model-switched",
-        jsx: <Text>{message}</Text>,
-        priority: "immediate",
-        timeoutMs: 3000,
-      });
-    },
-    [setAppState, addNotification, isFastMode],
-  );
-  const handleModelCancel = useCallback(() => {
-    setShowModelPicker(false);
-  }, []);
-
-  // Memoize the model picker element to prevent unnecessary re-renders
-  // when AppState changes for unrelated reasons (e.g., notifications arriving)
-  const modelPickerElement = useMemo(() => {
-    if (!showModelPicker) return null;
-    return (
-      <Box flexDirection="column" marginTop={1}>
-        <ModelPicker
-          initial={mainLoopModel_}
-          sessionModel={mainLoopModelForSession}
-          onSelect={handleModelSelect}
-          onCancel={handleModelCancel}
-          isStandaloneCommand
-          showFastModeNotice={
-            isFastModeEnabled() &&
-            isFastMode &&
-            isFastModeSupportedByModel(mainLoopModel_) &&
-            isFastModeAvailable()
-          }
-        />
-      </Box>
-    );
-  }, [
-    showModelPicker,
-    mainLoopModel_,
-    mainLoopModelForSession,
-    handleModelSelect,
-    handleModelCancel,
-  ]);
-  const handleFastModeSelect = useCallback(
-    (result?: string) => {
-      setShowFastModePicker(false);
-      if (result) {
-        addNotification({
-          key: "fast-mode-toggled",
-          jsx: <Text>{result}</Text>,
-          priority: "immediate",
-          timeoutMs: 3000,
-        });
-      }
-    },
-    [addNotification],
-  );
-
-  // Memoize the fast mode picker element
-  const fastModePickerElement = useMemo(() => {
-    if (!showFastModePicker) return null;
-    return (
-      <Box flexDirection="column" marginTop={1}>
-        <FastModePicker
-          onDone={handleFastModeSelect}
-          unavailableReason={getFastModeUnavailableReason()}
-        />
-      </Box>
-    );
-  }, [showFastModePicker, handleFastModeSelect]);
 
   // Memoized callbacks for thinking toggle
   const handleThinkingSelect = useCallback(
@@ -3690,14 +3460,14 @@ function PromptInput({
     if (!showModeSwitcher) return null;
     return (
       <ModeSwitcher
-        currentMode={effectiveToolPermissionContext.mode}
+        currentMode={displayedToolPermissionContext.mode}
         bypassAvailable={
-          effectiveToolPermissionContext.isBypassPermissionsModeAvailable
+          displayedToolPermissionContext.isBypassPermissionsModeAvailable
         }
-        autoAvailable={effectiveToolPermissionContext.isAutoModeAvailable}
+        autoAvailable={displayedToolPermissionContext.isAutoModeAvailable}
       />
     );
-  }, [showModeSwitcher, effectiveToolPermissionContext]);
+  }, [showModeSwitcher, displayedToolPermissionContext]);
   const backgroundTasksDialogElement = useMemo(() => {
     if (!showBashesDialog) return null;
     return (
@@ -3736,14 +3506,14 @@ function PromptInput({
       ) : null,
     [showAutoModeOptIn, handleAutoModeOptInAccept, handleAutoModeOptInDecline],
   );
-  const fullscreenPromptDialog = isFullscreenEnvEnabled()
+  const fullscreenPromptDialog = isFullscreen
     ? (backgroundTasksDialogElement ??
       modeSwitcherElement ??
       autoModeOptInDialog)
     : null;
   useSetPromptOverlayDialog(fullscreenPromptDialog);
   useRegisterOverlay("prompt-overlay-dialog", fullscreenPromptDialog !== null);
-  if (showBashesDialog && !isFullscreenEnvEnabled()) {
+  if (showBashesDialog && !isFullscreen) {
     return backgroundTasksDialogElement;
   }
   if (isAgentSwarmsEnabled() && showTeamsDialog) {
@@ -3769,6 +3539,7 @@ function PromptInput({
         <QuickOpenDialog
           onDone={() => setShowQuickOpen(false)}
           onInsert={insertWithSpacing}
+          settingsAuthority={settingsAuthority}
         />
       );
     }
@@ -3788,7 +3559,7 @@ function PromptInput({
         onSelect={(entry) => {
           const entryMode = getModeFromInput(entry.display);
           const value = getValueFromInput(entry.display);
-          onModeChange(entryMode);
+          setCurrentMode(entryMode);
           trackAndSetInput(value);
           setPastedContentsAndRef(entry.pastedContents);
           setCurrentCursorOffset(value.length);
@@ -3799,13 +3570,6 @@ function PromptInput({
     );
   }
 
-  // Show loop mode menu when requested (internal-only, eliminated from external builds)
-  if (modelPickerElement) {
-    return modelPickerElement;
-  }
-  if (fastModePickerElement) {
-    return fastModePickerElement;
-  }
   if (thinkingToggleElement) {
     return thinkingToggleElement;
   }
@@ -3931,7 +3695,7 @@ function PromptInput({
       backgroundColor="surfaceBackground"
       opaque
     >
-      {!isFullscreenEnvEnabled() && (
+      {!isFullscreen && (
         <PromptInputQueuedCommands queueOwner={queueOwner} />
       )}
       {hasSuppressedDialogs && (
@@ -3974,7 +3738,7 @@ function PromptInput({
           <Box flexDirection="row" width="100%">
             <PromptInputModeIndicator
               mode={mode}
-              permissionMode={effectiveToolPermissionContext.mode}
+              permissionMode={displayedToolPermissionContext.mode}
               isLoading={isLoading}
               viewingAgentName={viewingAgentName}
               viewingAgentColor={viewingAgentColor}
@@ -4017,7 +3781,7 @@ function PromptInput({
           ) : null}
           <PromptInputModeIndicator
             mode={mode}
-            permissionMode={effectiveToolPermissionContext.mode}
+            permissionMode={displayedToolPermissionContext.mode}
             isLoading={isLoading}
             viewingAgentName={viewingAgentName}
             viewingAgentColor={viewingAgentColor}
@@ -4028,7 +3792,7 @@ function PromptInput({
         </Box>
       )}
       {onboardingInput === undefined &&
-      !isFullscreenEnvEnabled() &&
+      !isFullscreen &&
       modeSwitcherElement ? (
         <Box flexDirection="column" marginTop={1}>
           {modeSwitcherElement}
@@ -4050,7 +3814,7 @@ function PromptInput({
         !exitMessage.show ? null : (
         <PromptInputFooter
           apiKeyStatus={apiKeyStatus}
-          agencHome={agencHome}
+          remoteAuthSessionContext={remoteAuthSessionContext}
           debug={debug}
           exitMessage={exitMessage}
           vimMode={isVimModeEnabled() ? vimMode : undefined}
@@ -4064,7 +3828,7 @@ function PromptInput({
           selectedSuggestion={selectedSuggestion}
           suggestionType={suggestionType}
           maxColumnWidth={maxColumnWidth}
-          toolPermissionContext={effectiveToolPermissionContext}
+          toolPermissionContext={displayedToolPermissionContext}
           helpOpen={helpOpen}
           suppressHint={false}
           isLoading={isLoading}
@@ -4082,14 +3846,15 @@ function PromptInput({
           setHistoryQuery={setHistoryQuery}
           historyFailedMatch={historyFailedMatch}
           onOpenTasksDialog={
-            isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined
+            isFullscreen ? handleOpenTasksDialog : undefined
           }
+          runtimeState={runtimeState}
         />
       )}
-      {onboardingInput !== undefined || isFullscreenEnvEnabled()
+      {onboardingInput !== undefined || isFullscreen
         ? null
         : autoModeOptInDialog}
-      {onboardingInput === undefined && isFullscreenEnvEnabled() ? (
+      {onboardingInput === undefined && isFullscreen ? (
         // position=absolute takes zero layout height so the spinner
         // doesn't shift when a notification appears/disappears. Yoga
         // anchors absolute children at the parent's content-box origin;
@@ -4121,6 +3886,7 @@ function PromptInput({
         >
           <Notifications
             apiKeyStatus={apiKeyStatus}
+            remoteAuthSessionContext={remoteAuthSessionContext}
             autoUpdaterResult={autoUpdaterResult}
             debug={debug}
             isAutoUpdating={isAutoUpdating}
@@ -4203,23 +3969,6 @@ function extractUserMessageBashOutputTexts(m: unknown): string[] {
   }
   return outputs;
 }
-function buildBorderText(
-  showFastIcon: boolean,
-  showFastIconHint: boolean,
-  fastModeCooldown: boolean,
-): BorderTextOptions | undefined {
-  if (!showFastIcon) return undefined;
-  const fastSeg = showFastIconHint
-    ? `${getFastIconString(true, fastModeCooldown)} ${chalk.dim("/fast")}`
-    : getFastIconString(true, fastModeCooldown);
-  return {
-    content: ` ${fastSeg} `,
-    position: "top",
-    align: "end",
-    offset: 0,
-  };
-}
-
 function WorkbenchAttachmentChips({
   attachments,
   onRemove,

@@ -38,50 +38,27 @@ describe("repository licensing", () => {
 });
 
 describe("runtime manifest dependencies", () => {
-  test("declares optional AWS auth modules imported by aws.ts", () => {
-    const awsSource = readRepoFile("runtime/src/utils/aws.ts");
-    const runtimePkg = JSON.parse(readRepoFile("runtime/package.json")) as {
-      optionalDependencies?: Record<string, string>;
-    };
-    const optionalDependencies = runtimePkg.optionalDependencies ?? {};
-    const awsAuthModules = [
-      "@aws-sdk/client-sts",
-      "@aws-sdk/credential-providers",
-    ];
-
-    for (const moduleName of awsAuthModules) {
-      expect(awsSource).toContain(`'${moduleName}'`);
-      expect(optionalDependencies[moduleName]).toMatch(/^\^3\.\d+\.\d+$/);
-    }
-  });
-
   test("declares optional Google auth module imported by GCP auth helpers", () => {
-    const authSource = readRepoFile("runtime/src/utils/auth.ts");
     const geminiAuthSource = readRepoFile("runtime/src/utils/geminiAuth.ts");
     const runtimePkg = JSON.parse(readRepoFile("runtime/package.json")) as {
       optionalDependencies?: Record<string, string>;
     };
     const optionalDependencies = runtimePkg.optionalDependencies ?? {};
 
-    expect(authSource).toContain("'google-auth-library'");
     expect(geminiAuthSource).toContain("'google-auth-library'");
     expect(optionalDependencies["google-auth-library"]).toMatch(
       /^\^10\.\d+\.\d+$/,
     );
   });
 
-  test("declares ZIP archive module imported by plugin zip utilities", () => {
+  test("declares the ZIP archive module imported by package utilities", () => {
     const zipSource = readRepoFile("runtime/src/utils/dxt/zip.ts");
-    const zipCacheSource = readRepoFile(
-      "runtime/src/utils/plugins/zipCache.ts",
-    );
     const runtimePkg = JSON.parse(readRepoFile("runtime/package.json")) as {
       dependencies?: Record<string, string>;
     };
     const dependencies = runtimePkg.dependencies ?? {};
 
     expect(zipSource).toContain("'fflate'");
-    expect(zipCacheSource).toContain("'fflate'");
     expect(dependencies.fflate).toMatch(/^\^0\.8\.\d+$/);
   });
 
@@ -135,7 +112,9 @@ describe("build-time MACRO.VERSION wiring", () => {
 describe("build-time package identity wiring", () => {
   test("MACRO.PACKAGE_URL points at the public launcher package", () => {
     const buildConfig = readRepoFile("runtime/build.config.ts");
-    expect(buildConfig).toContain("const publicPackageName = '@tetsuo-ai/agenc'");
+    expect(buildConfig).toContain(
+      "const publicPackageName = '@tetsuo-ai/agenc'",
+    );
     expect(buildConfig).toMatch(
       /'MACRO\.PACKAGE_URL':\s*JSON\.stringify\(publicPackageName\)/,
     );
@@ -194,6 +173,21 @@ describe("runtime SDK surface hygiene", () => {
         /(updatedPermissions|permission_suggestions)\?: PermissionUpdate\[\]/g,
       ) ?? [],
     ).toHaveLength(6);
+  });
+
+  test("SDK permission-mode descriptions use the canonical bypass contract", () => {
+    const schemas = readRepoFile("runtime/src/entrypoints/sdk/coreSchemas.ts");
+    const generated = readRepoFile(
+      "runtime/src/entrypoints/sdk/coreTypes.generated.ts",
+    );
+
+    for (const source of [schemas, generated]) {
+      expect(source).toContain(
+        "Skips prompts down to the deny floor after exact-workspace consent",
+      );
+      expect(source).not.toContain("allowDangerouslySkipPermissions");
+      expect(source).not.toContain("Bypass all permission checks");
+    }
   });
 
   test("generated SDK type workflow uses the checked-in validator", () => {

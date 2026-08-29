@@ -6,6 +6,7 @@ import {
 } from "../../../src/tools/system/apply-runtime-sandbox.js";
 import {
   attachSandboxExecutionBroker,
+  type SandboxPreparedSpawn,
   type SandboxExecutionBrokerLike,
 } from "../../../src/sandbox/execution-broker.js";
 import { UnifiedExecError } from "../../../src/unified-exec/types.js";
@@ -34,7 +35,14 @@ function attachedBrokerArgs(
 ): {
   readonly args: Record<string, unknown>;
   readonly broker: SandboxExecutionBrokerLike;
+  readonly preparedSpawn: SandboxPreparedSpawn;
 } {
+  const preparedSpawn = {
+    run: vi.fn(),
+    start: vi.fn(),
+    runSync: vi.fn(),
+    spawnLifecycleParticipant: vi.fn(),
+  } as unknown as SandboxPreparedSpawn;
   const broker: SandboxExecutionBrokerLike = {
     mode: "workspace_write",
     required: true,
@@ -53,11 +61,11 @@ function attachedBrokerArgs(
       platform: process.platform,
     }),
     runtimeSandbox: vi.fn().mockReturnValue(runtimeSandbox),
-    prepareSpawn: vi.fn(),
+    prepareSpawn: vi.fn().mockReturnValue(preparedSpawn),
   };
   const args: Record<string, unknown> = {};
   attachSandboxExecutionBroker(args, broker);
-  return { args, broker };
+  return { args, broker, preparedSpawn };
 }
 
 describe("applyRuntimeSandboxToSpawn (TOOL-03/04) — behavioral", () => {
@@ -134,7 +142,7 @@ describe("applyRuntimeSandboxToSpawn (TOOL-03/04) — behavioral", () => {
       enforceManagedNetwork: true,
       network: { allowAllUnixSockets: true },
     };
-    const { args, broker } = attachedBrokerArgs(runtimeSandbox);
+    const { args, broker, preparedSpawn } = attachedBrokerArgs(runtimeSandbox);
     const transform = vi.fn().mockReturnValue({
       command: ["/sandbox/wrapper", "/bin/echo", "hi"],
       cwd: process.cwd(),
@@ -142,7 +150,7 @@ describe("applyRuntimeSandboxToSpawn (TOOL-03/04) — behavioral", () => {
     });
     const selectInitial = vi.fn().mockReturnValue("linux_seccomp");
 
-    applyReadOnlyRuntimeSandboxToSpawn({
+    const result = applyReadOnlyRuntimeSandboxToSpawn({
       toolArgs: args,
       fallbackCwd: process.cwd(),
       program: "/bin/echo",
@@ -154,46 +162,48 @@ describe("applyRuntimeSandboxToSpawn (TOOL-03/04) — behavioral", () => {
     });
 
     expect(broker.runtimeSandbox).toHaveBeenCalledWith("tool");
-    expect(broker.prepareSpawn).not.toHaveBeenCalled();
-    expect(selectInitial).toHaveBeenCalledWith(expect.objectContaining({
-      networkPolicy: "disabled",
-      hasManagedNetworkRequirements: false,
-      fileSystemPolicy: {
-        kind: "restricted",
-        entries: [
-          {
-            path: { kind: "path", path: "/scope/already-readable" },
-            access: "read",
-          },
-          {
-            path: { kind: "path", path: "/scope/session-writable" },
-            access: "read",
-          },
-          {
-            path: { kind: "path", path: "/scope/denied" },
-            access: "none",
-          },
-          {
-            path: { kind: "glob", pattern: "/scope/**/secret" },
-            access: "none",
-          },
-          {
-            path: { kind: "path", path: "/scope/approved-write" },
-            access: "read",
-          },
-        ],
-        globScanMaxDepth: 7,
-        includePlatformDefaults: false,
+    expect(broker.prepareSpawn).toHaveBeenCalledWith("tool", {
+      program: "/bin/echo",
+      args: ["hi"],
+      cwd: ".",
+      cwdBinding: "inherited_readonly",
+      env: { PATH: "/usr/bin" },
+      argv0: "echo",
+      permissionProfileOverride: {
+        fileSystem: {
+          kind: "restricted",
+          entries: [
+            {
+              path: { kind: "path", path: "/scope/already-readable" },
+              access: "read",
+            },
+            {
+              path: { kind: "path", path: "/scope/session-writable" },
+              access: "read",
+            },
+            {
+              path: { kind: "path", path: "/scope/denied" },
+              access: "none",
+            },
+            {
+              path: { kind: "glob", pattern: "/scope/**/secret" },
+              access: "none",
+            },
+            {
+              path: { kind: "path", path: "/scope/approved-write" },
+              access: "read",
+            },
+          ],
+          globScanMaxDepth: 7,
+          includePlatformDefaults: false,
+        },
+        network: "disabled",
+        enforcement: "managed",
       },
-    }));
-    const request = transform.mock.calls[0]?.[0];
-    expect(request.permissions).toMatchObject({
-      network: "disabled",
-      enforcement: "managed",
     });
-    expect(request.command).not.toHaveProperty("additionalPermissions");
-    expect(request).not.toHaveProperty("network");
-    expect(request.enforceManagedNetwork).toBe(false);
+    expect(result).toBe(preparedSpawn);
+    expect(selectInitial).not.toHaveBeenCalled();
+    expect(transform).not.toHaveBeenCalled();
   });
 
   it("leaves the ordinary spawn path's write and network grants unchanged", () => {
@@ -218,7 +228,7 @@ describe("applyRuntimeSandboxToSpawn (TOOL-03/04) — behavioral", () => {
       enforceManagedNetwork: true,
       network: { allowAllUnixSockets: true },
     };
-    const { args } = attachedBrokerArgs(runtimeSandbox);
+    const { args, broker, preparedSpawn } = attachedBrokerArgs(runtimeSandbox);
     const transform = vi.fn().mockReturnValue({
       command: ["/sandbox/wrapper", "/bin/echo", "hi"],
       cwd: process.cwd(),
@@ -226,7 +236,7 @@ describe("applyRuntimeSandboxToSpawn (TOOL-03/04) — behavioral", () => {
     });
     const selectInitial = vi.fn().mockReturnValue("linux_seccomp");
 
-    applyRuntimeSandboxToSpawn({
+    const result = applyRuntimeSandboxToSpawn({
       toolArgs: args,
       fallbackCwd: process.cwd(),
       program: "/bin/echo",
@@ -236,18 +246,16 @@ describe("applyRuntimeSandboxToSpawn (TOOL-03/04) — behavioral", () => {
       sandboxManager: { selectInitial, transform } as never,
     });
 
-    expect(selectInitial).toHaveBeenCalledWith(expect.objectContaining({
-      networkPolicy: "enabled",
-      hasManagedNetworkRequirements: true,
-      fileSystemPolicy: runtimeSandbox.permissionProfile.fileSystem,
-    }));
-    expect(transform.mock.calls[0]?.[0]).toMatchObject({
-      enforceManagedNetwork: true,
-      network: { allowAllUnixSockets: true },
-      command: {
-        additionalPermissions: runtimeSandbox.additionalPermissions,
-      },
+    expect(broker.prepareSpawn).toHaveBeenCalledWith("tool", {
+      program: "/bin/echo",
+      args: ["hi"],
+      cwd: process.cwd(),
+      env: { PATH: "/usr/bin" },
+      argv0: "echo",
     });
+    expect(result).toBe(preparedSpawn);
+    expect(selectInitial).not.toHaveBeenCalled();
+    expect(transform).not.toHaveBeenCalled();
   });
 
   it("preserves an externally enforced boundary for a pinned read-only child", () => {
@@ -259,7 +267,7 @@ describe("applyRuntimeSandboxToSpawn (TOOL-03/04) — behavioral", () => {
       sandboxPolicyCwd: process.cwd(),
       preference: "best_effort",
     };
-    const { args } = attachedBrokerArgs(runtimeSandbox);
+    const { args, broker, preparedSpawn } = attachedBrokerArgs(runtimeSandbox);
     const transform = vi.fn().mockReturnValue({
       command: ["/bin/rg", "needle"],
       cwd: process.cwd(),
@@ -277,25 +285,17 @@ describe("applyRuntimeSandboxToSpawn (TOOL-03/04) — behavioral", () => {
         env: { PATH: "/usr/bin" },
         sandboxManager: { selectInitial, transform } as never,
       }),
-    ).toEqual({
+    ).toBe(preparedSpawn);
+    expect(broker.prepareSpawn).toHaveBeenCalledWith("tool", {
       program: "/bin/rg",
       args: ["needle"],
       cwd: process.cwd(),
-      env: {},
+      env: { PATH: "/usr/bin" },
       argv0: "rg",
+      permissionProfileOverride: runtimeSandbox.permissionProfile,
     });
-    expect(selectInitial).toHaveBeenCalledWith(
-      expect.objectContaining({
-        fileSystemPolicy: { kind: "external_sandbox", entries: [] },
-        networkPolicy: "enabled",
-      }),
-    );
-    expect(transform).toHaveBeenCalledWith(
-      expect.objectContaining({
-        permissions: runtimeSandbox.permissionProfile,
-        sandbox: "none",
-      }),
-    );
+    expect(selectInitial).not.toHaveBeenCalled();
+    expect(transform).not.toHaveBeenCalled();
   });
 
   it("rewrites program/args via SandboxManager.transform when isolation is applied", () => {

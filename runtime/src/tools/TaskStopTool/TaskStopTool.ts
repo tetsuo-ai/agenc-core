@@ -11,10 +11,7 @@ const inputSchema = lazySchema(() =>
   z.strictObject({
     task_id: z
       .string()
-      .optional()
       .describe('The ID of the background task to stop'),
-    // shell_id is accepted for backward compatibility with the deprecated KillShell tool
-    shell_id: z.string().optional().describe('Deprecated: use task_id instead'),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -39,9 +36,6 @@ export type Output = z.infer<OutputSchema>
 export const TaskStopTool = buildTool({
   name: TASK_STOP_TOOL_NAME,
   searchHint: 'kill a running background task',
-  // KillShell is the deprecated name - kept as alias for backward compatibility
-  // with existing transcripts and SDK users
-  aliases: ['KillShell'],
   maxResultSizeChars: 100_000,
   userFacingName: () => (process.env.USER_TYPE === 'ant' ? '' : 'Stop Task'),
   get inputSchema(): InputSchema {
@@ -50,24 +44,13 @@ export const TaskStopTool = buildTool({
   get outputSchema(): OutputSchema {
     return outputSchema()
   },
-  shouldDefer: true,
   isConcurrencySafe() {
     return true
   },
   toAutoClassifierInput(input) {
-    return input.task_id ?? input.shell_id ?? ''
+    return input.task_id
   },
-  async validateInput({ task_id, shell_id }, { getAppState }) {
-    // Support both task_id and shell_id (deprecated KillShell compat)
-    const id = task_id ?? shell_id
-    if (!id) {
-      return {
-        result: false,
-        message: 'Missing required parameter: task_id',
-        errorCode: 1,
-      }
-    }
-
+  async validateInput({ task_id: id }, { getAppState }) {
     const appState = getAppState()
     const task = appState.tasks?.[id] as TaskStateBase | undefined
 
@@ -104,12 +87,7 @@ export const TaskStopTool = buildTool({
   },
   renderToolUseMessage,
   renderToolResultMessage,
-  async call({ task_id, shell_id }, { getAppState, setAppState }) {
-    // Support both task_id and shell_id (deprecated KillShell compat)
-    const id = task_id ?? shell_id
-    if (!id) {
-      throw new Error('Missing required parameter: task_id')
-    }
+  async call({ task_id: id }, { getAppState, setAppState }) {
     const task = getAppState().tasks?.[id] as TaskState | undefined
     if (!task) {
       throw new Error(`No task found with ID: ${id}`)

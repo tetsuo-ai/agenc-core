@@ -1,17 +1,17 @@
 /**
- * Print mode + --yolo scenario.
+ * Print mode + --dangerously-bypass-approvals-and-sandbox scenario.
  *
- * --yolo + -p should print and exit. Catches yolo-specific print-mode
+ * --dangerously-bypass-approvals-and-sandbox + -p should print and exit. Catches yolo-specific print-mode
  * regressions (permission elision, status-line drift in headless mode).
  */
 export const meta = {
-  description: "agenc --yolo -p prints model reply and exits cleanly.",
+  description: "agenc --dangerously-bypass-approvals-and-sandbox -p prints model reply and exits cleanly.",
   timeoutMs: 90_000,
 };
 
 export default async function (session) {
   const result = await session.runAgenc(
-    ["--yolo", "-p", "say only the word HELLO and nothing else"],
+    ["--dangerously-bypass-approvals-and-sandbox", "-p", "say only the word HELLO and nothing else"],
     { timeoutMs: 80_000 },
   );
   // Strip the noisy config-migration banner so the assertion error

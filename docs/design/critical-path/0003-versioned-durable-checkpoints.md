@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Accepted target; implementation pending |
+| Status | Shipped (checkpoint v2, tool-result body digest, ordered pairing). Remaining mixed: tool-pair overflow is not a v18 deferred reason_code; compaction packing validates at rollout write, not every packing step |
 | Audit snapshot | `d2b228e87ea63bd6a5d93e6f599f36bce88d672b` |
 | Audit date | 2026-07-31 |
 | Owner | Checkpoint digest, ordered tool pairing, and legacy migration (A3); consumed by recovery and compaction |

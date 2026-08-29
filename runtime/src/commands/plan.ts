@@ -209,6 +209,7 @@ export const planCommand: SlashCommand = {
         // the daemon's REAL registry via session.setPermissionMode first; if
         // the RPC fails, do not let the local chrome claim plan mode.
         const daemonSetMode = daemonPermissionModeFn(ctx);
+        let committedPlanContext = currentCtx;
         if (daemonSetMode !== null) {
           try {
             await daemonSetMode("plan");
@@ -218,12 +219,23 @@ export const planCommand: SlashCommand = {
               message: err instanceof Error ? err.message : String(err),
             };
           }
+          committedPlanContext = registry.current();
+          if (committedPlanContext.mode !== "plan") {
+            return {
+              kind: "error",
+              message:
+                "Daemon plan-mode transition did not publish matching canonical runtime settings",
+            };
+          }
+        } else {
+          await registry.update(nextCtx);
+          committedPlanContext = registry.current();
         }
-        await registry.update(nextCtx);
+        const previousMode = committedPlanContext.prePlanMode ?? currentMode;
         emitWarning(
           ctx.session,
           "mode_changed_to_plan",
-          `entered plan mode (stashed prev mode as ${currentMode})`,
+          `entered plan mode (stashed prev mode as ${previousMode})`,
         );
 
         if (argsTrimmed.length > 0 && argsTrimmed !== "open") {
@@ -234,7 +246,7 @@ export const planCommand: SlashCommand = {
         if (
           maybeOpenPlanDashboard(ctx, {
             mode: "plan",
-            previousMode: currentMode,
+            previousMode,
             planText: getPlan(planFileContext(ctx)),
           })
         ) {

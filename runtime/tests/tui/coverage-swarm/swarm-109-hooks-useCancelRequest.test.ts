@@ -27,7 +27,6 @@ const fixture = vi.hoisted(() => ({
   removeNotification: vi.fn(),
   clearCommandQueue: vi.fn(),
   enqueuePendingNotification: vi.fn(),
-  emitTaskTerminatedSdk: vi.fn(),
   exitTeammateView: vi.fn(),
   killAllRunningAgentTasks: vi.fn(),
   markAgentsNotified: vi.fn(),
@@ -112,11 +111,6 @@ vi.mock('src/utils/messageQueueManager.js', () => ({
   enqueuePendingNotification: (...args: unknown[]) =>
     fixture.enqueuePendingNotification(...args),
   hasCommandsInQueue: () => fixture.hasCommandsInQueue,
-}))
-
-vi.mock('src/utils/sdkEventQueue.js', () => ({
-  emitTaskTerminatedSdk: (...args: unknown[]) =>
-    fixture.emitTaskTerminatedSdk(...args),
 }))
 
 function runningAgent(

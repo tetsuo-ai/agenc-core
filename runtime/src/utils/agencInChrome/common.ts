@@ -1,6 +1,6 @@
 import { readdirSync } from 'fs'
 import { stat } from 'fs/promises'
-import { homedir, platform, tmpdir, userInfo } from 'os'
+import { homedir, platform, userInfo } from 'os'
 import { join } from 'path'
 import { normalizeNameForMCP } from '../../services/mcp/normalization.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -486,8 +486,7 @@ export function getSecureSocketPath(): string {
 }
 
 /**
- * Get all socket paths including PID-based sockets in the directory
- * and compatibility fallback paths
+ * Get all PID-based socket paths currently present in the bridge directory.
  */
 export function getAllSocketPaths(): string[] {
   // Windows uses named pipes, not Unix sockets
@@ -509,18 +508,6 @@ export function getAllSocketPaths(): string[] {
     }
   } catch {
     // Directory may not exist yet
-  }
-
-  // Compatibility fallback paths
-  const legacyName = `agenc-mcp-browser-bridge-${getUsername()}`
-  const legacyTmpdir = join(tmpdir(), legacyName)
-  const legacyTmp = `/tmp/${legacyName}`
-
-  if (!paths.includes(legacyTmpdir)) {
-    paths.push(legacyTmpdir)
-  }
-  if (legacyTmpdir !== legacyTmp && !paths.includes(legacyTmp)) {
-    paths.push(legacyTmp)
   }
 
   return paths

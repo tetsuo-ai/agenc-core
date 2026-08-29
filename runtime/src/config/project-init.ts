@@ -1,10 +1,15 @@
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
+import {
+  CANONICAL_CONFIG_VERSION,
+  CANONICAL_CONFIG_VERSION_KEY,
+} from "./repository.js";
+import { serializeConfigToml } from "./serialize.js";
 import type { AgenCConfig } from "./schema.js";
 import { defaultConfig } from "./schema.js";
 
 export const PROJECT_CONFIG_DIR = ".agenc";
-export const PROJECT_CONFIG_FILENAME = "config.json";
+export const PROJECT_CONFIG_FILENAME = "config.toml";
 export const PROJECT_INSTRUCTIONS_FILENAME = "AGENC.md";
 
 const README_CANDIDATES = [
@@ -133,19 +138,19 @@ interface ProjectAnalysis {
 function createDefaultProjectConfig(): Partial<AgenCConfig> {
   const defaults = defaultConfig();
   return {
-    configVersion: defaults.configVersion,
     model_provider: defaults.model_provider,
     model: defaults.model,
-    approval_policy: defaults.approval_policy,
-    sandbox: defaults.sandbox,
-    project_root_markers: defaults.project_root_markers,
   };
 }
 
 function serializeProjectConfig(
   config: Partial<AgenCConfig> = createDefaultProjectConfig(),
 ): string {
-  return `${JSON.stringify(config, null, 2)}\n`;
+  const { configVersion: _ignoredVersion, ...fields } = config;
+  return serializeConfigToml({
+    [CANONICAL_CONFIG_VERSION_KEY]: CANONICAL_CONFIG_VERSION,
+    ...fields,
+  });
 }
 
 export async function initializeAgenCProject(

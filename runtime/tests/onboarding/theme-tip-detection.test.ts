@@ -1,15 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
 // M-ONB-2: the onboarding theme tip asserted "your terminal
-// background looks <x>" from getSystemThemeName(), which defaults to 'dark' when
+// background looks <x>" from getTerminalBackground(), which defaults to 'dark' when
 // unmeasured — so a light-terminal user (no $COLORFGBG) was told dark reads best,
 // the exact inverted advice. The tip now only gives a direction when detected.
 
 const themeState = { name: "dark" as "dark" | "light", detected: false };
 
-vi.mock("../../src/utils/systemTheme.js", () => ({
-  getSystemThemeName: () => themeState.name,
-  isSystemThemeDetected: () => themeState.detected,
+vi.mock("../../src/utils/terminalBackground.js", () => ({
+  getTerminalBackground: () => themeState.name,
+  isTerminalBackgroundDetected: () => themeState.detected,
 }));
 
 const { detailLinesForStep } = await import("../../src/onboarding/Onboarding.js");
@@ -39,6 +39,6 @@ describe("onboarding theme tip", () => {
     themeState.name = "light";
     const tip = themeTip();
     expect(tip).toContain("looks light");
-    expect(tip).toContain('"light" or "system"');
+    expect(tip).toContain('"light" or "auto"');
   });
 });

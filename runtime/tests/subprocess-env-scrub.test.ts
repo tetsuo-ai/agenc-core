@@ -6,11 +6,11 @@ import { SUBPROCESS_SECRET_ENV, subprocessEnv } from 'src/utils/subprocessEnv.js
 import { SECRET_ENV_KEYS } from 'src/utils/providerSecrets.js'
 
 // Security regression: the env handed to every Bash / MCP-stdio / hook /
-// shell-snapshot / LSP child goes through subprocessEnv(). By DEFAULT (with
-// AGENC_SUBPROCESS_ENV_SCRUB unset) the agent's provider keys and CI/cloud
-// credentials must NOT reach those children — provider calls happen in-process,
-// so a model-run or prompt-injected `printenv` must not be able to exfiltrate
-// them. Benign vars (PATH) must still pass through so subprocesses can run.
+// shell-snapshot / LSP child goes through subprocessEnv(). By default the
+// session's provider keys and CI/cloud credentials must not reach those
+// children. Provider calls use the session's prepared provider binding, so a
+// model-run or prompt-injected `printenv` must not be able to exfiltrate them.
+// Benign vars such as PATH must still pass through so subprocesses can run.
 
 const SECRETS: Record<string, string> = {
   ANTHROPIC_API_KEY: 'sk-ant-secret',
@@ -27,11 +27,12 @@ const SECRETS: Record<string, string> = {
   AZURE_CLIENT_CERTIFICATE_PATH: '/tmp/client-certificate.pem',
   ALL_INPUTS: '{"token":"secret"}',
   SSH_SIGNING_KEY: '/tmp/signing-key',
+  WEB_KEY: 'web-secret',
+  AGENC_CLIENT_KEY_PASSPHRASE: 'client-key-secret',
 }
 
 const TOUCHED_KEYS = [
   ...Object.keys(SECRETS),
-  'AGENC_SUBPROCESS_ENV_SCRUB',
   'AGENC_SUBPROCESS_ENV_NO_SCRUB',
   'INPUT_ANTHROPIC_API_KEY',
 ]
@@ -61,10 +62,8 @@ afterEach(() => {
   }
 })
 
-describe('subprocessEnv default-scrub (no AGENC_SUBPROCESS_ENV_SCRUB)', () => {
+describe('subprocessEnv default scrub', () => {
   it('strips provider keys + cloud/CI tokens from the child env by default', () => {
-    expect(process.env.AGENC_SUBPROCESS_ENV_SCRUB).toBeUndefined()
-
     const childEnv = subprocessEnv()
 
     for (const key of Object.keys(SECRETS)) {
@@ -76,7 +75,7 @@ describe('subprocessEnv default-scrub (no AGENC_SUBPROCESS_ENV_SCRUB)', () => {
     expect(childEnv.PATH).toBe(process.env.PATH)
   })
 
-  it('does not mutate the parent process.env (in-process API calls keep keys)', () => {
+  it('does not mutate the parent process.env', () => {
     subprocessEnv()
     expect(process.env.ANTHROPIC_API_KEY).toBe('sk-ant-secret')
     expect(process.env.XAI_API_KEY).toBe('xai-secret')
@@ -107,6 +106,12 @@ describe('subprocessEnv default-scrub (no AGENC_SUBPROCESS_ENV_SCRUB)', () => {
     const childEnv = subprocessEnv()
     // Opt-out restores inheritance for trusted setups that need it.
     expect(childEnv.ANTHROPIC_API_KEY).toBe('sk-ant-secret')
+  })
+
+  it('rejects the removed explicit scrub switch even when falsy', () => {
+    expect(() =>
+      subprocessEnv({ AGENC_SUBPROCESS_ENV_SCRUB: '0' }),
+    ).toThrow(/obsolete configuration environment variable.*AGENC_SUBPROCESS_ENV_SCRUB/u)
   })
 
   // NOT name-enumerated: iterate the ACTUAL denylist so a new entry is
@@ -141,10 +146,9 @@ describe('subprocessEnv default-scrub (no AGENC_SUBPROCESS_ENV_SCRUB)', () => {
     }
   })
 
-  // STRUCTURAL guard (the one that catches the original gap): every provider
-  // secret env name the codebase assigns to process.env — the single source
-  // SECRET_ENV_KEYS — MUST be in the subprocess denylist. If a new provider key
-  // is added to SECRET_ENV_KEYS but not scrubbed, this fails.
+  // Structural guard: every registry-derived provider credential ingress name
+  // in SECRET_ENV_KEYS must be in the subprocess denylist. If a new provider
+  // key is added to SECRET_ENV_KEYS but not scrubbed, this fails.
   it('SUBPROCESS_SECRET_ENV is a superset of providerSecrets.SECRET_ENV_KEYS', () => {
     const denylist = new Set<string>(SUBPROCESS_SECRET_ENV)
     const missing = SECRET_ENV_KEYS.filter((key) => !denylist.has(key))

@@ -20,6 +20,7 @@ import { exitCommand } from "./exit.js";
 import { clearCommand } from "./clear.js";
 import { permissionsCommand } from "./permissions.js";
 import { configCommand } from "./config.js";
+import { keybindingsCommand } from "./keybindings.js";
 import hooksCommand from "./hooks.js";
 import { planCommand } from "./plan.js";
 import { modelCommand } from "./model.js";
@@ -52,6 +53,7 @@ import { openaiAuthCommands } from './openai-auth.js'
 import { effortCommand } from "./effort.js";
 import { resolveCommand } from "./resolve.js";
 import { swarmCommand } from "./swarm.js";
+import { ledgerCommand } from "./ledger.js";
 
 /**
  * Concrete in-memory implementation of `CommandRegistry`.
@@ -149,7 +151,7 @@ function commandSupportsSurface(
  *
  * Presentation order matches the runtime stabilization minimal surface:
  * /help, /hello, /status, auth commands, /cost, /model, /provider, /permissions,
- * /plan, /agents, /tasks, /todos, /config, /hooks, /skills, /mcp, /plugins,
+ * /plan, /agents, /tasks, /todos, /config, /keybindings, /hooks, /skills, /mcp, /plugins,
  * /memory, /resume, /init, /output-style, /clear, /compact, /context, /diff,
  * protocol commands, /exit.
  */
@@ -169,12 +171,14 @@ export function buildDefaultRegistry(
     effortCommand,
     resolveCommand,
     swarmCommand,
+    ledgerCommand,
     permissionsCommand,
     planCommand,
     agentsCommand,
     tasksCommand,
     todosCommand,
     configCommand,
+    keybindingsCommand,
     hooksCommand,
     skillsCommand,
     mcpCommand,

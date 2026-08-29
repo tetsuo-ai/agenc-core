@@ -24,8 +24,8 @@ vi.mock('../../utils/collapseReadSearch.js', () => ({
     message.toolUseIDs ?? [],
 }))
 
-vi.mock('../../utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => true,
+vi.mock('../context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => true,
 }))
 
 vi.mock('../components/CtrlOToExpand.js', () => ({

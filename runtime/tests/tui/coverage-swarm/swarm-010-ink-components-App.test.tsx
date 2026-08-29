@@ -457,13 +457,12 @@ describe("Ink App coverage swarm row 010", () => {
   });
 
   test("uses data-mode stdin when opted in and cancels raw-start probes on disable", async () => {
-    vi.stubEnv("AGENC_USE_DATA_STDIN", "1");
-
     const stdin = ttyStream();
     const stdout = ttyStream();
     const app = createApp({
       stdin,
       stdout,
+      stdinMode: "data",
     });
 
     app.handleSetRawMode(true);

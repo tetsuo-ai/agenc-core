@@ -52,8 +52,8 @@ vi.mock('../../ink.js', async importOriginal => {
   }
 })
 
-vi.mock('../../../utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => harness.fullscreen,
+vi.mock('../../context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => harness.fullscreen,
 }))
 
 vi.mock('../../../utils/sliceAnsi.js', () => ({

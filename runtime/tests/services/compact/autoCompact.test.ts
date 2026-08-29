@@ -8,6 +8,7 @@ import {
 } from "./autoCompact.js";
 import type { RuntimeMessage } from "./types.js";
 import { createCompactionTransactionHarness } from "../../helpers/compaction-transaction-harness.js";
+import { runWithStartupProviderSelection } from "../../utils/model/providers.js";
 
 describe("auto compact", () => {
   const savedEnv = { ...process.env };
@@ -22,13 +23,14 @@ describe("auto compact", () => {
 
   test("uses context-window data and percentage overrides for thresholds", () => {
     process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = "50";
-
-    expect(getEffectiveContextWindowSize({
-      options: { contextWindowTokens: 1_000 },
-    })).toBe(1_000);
-    expect(getAutoCompactThreshold({
-      options: { contextWindowTokens: 1_000 },
-    })).toBe(500);
+    runWithCapturedEnvironment(() => {
+      expect(getEffectiveContextWindowSize({
+        options: { contextWindowTokens: 1_000 },
+      })).toBe(1_000);
+      expect(getAutoCompactThreshold({
+        options: { contextWindowTokens: 1_000 },
+      })).toBe(500);
+    });
   });
 
   test("unknown models fall back to the 128k openai-compat window, not the legacy 32k haiku-era default", () => {
@@ -88,7 +90,10 @@ describe("auto compact", () => {
     const harness = createCompactionTransactionHarness(messages, {
       compactionMode: "automatic",
     });
-    const result = await autoCompactIfNeeded(messages, harness.context);
+    installNoopCompactionHooks(harness.session);
+    const result = await runWithCapturedEnvironment(() =>
+      autoCompactIfNeeded(messages, harness.context)
+    );
 
     expect(result.wasCompacted).toBe(true);
     expect(result.compactionResult?.transaction).toBeDefined();
@@ -100,6 +105,7 @@ describe("auto compact", () => {
     const harness = createCompactionTransactionHarness(messages, {
       compactionMode: "automatic",
     });
+    installNoopCompactionHooks(harness.session);
 
     await expect(autoCompactIfNeeded(messages, harness.context)).resolves.toEqual({
       wasCompacted: false,
@@ -122,6 +128,60 @@ describe("auto compact", () => {
     harness.close();
   });
 
+  test("runs no lifecycle hooks below threshold and one pair for forced auto compaction", async () => {
+    const messages = [
+      message("x".repeat(10_000)),
+      message("recent request"),
+    ];
+    const harness = createCompactionTransactionHarness(messages, {
+      compactionMode: "automatic",
+    });
+    const context = { ...harness.context, cwd: harness.store.store.cwd };
+    const executePreCompact = vi.fn(async () => ({}));
+    const executePostCompact = vi.fn(async () => ({}));
+    const services = harness.session.services as unknown as {
+      hooks?: {
+        executePreCompact: typeof executePreCompact;
+        executePostCompact: typeof executePostCompact;
+      };
+    };
+    services.hooks = { executePreCompact, executePostCompact };
+
+    await expect(autoCompactIfNeeded(messages, context)).resolves.toEqual({
+      wasCompacted: false,
+      consecutiveFailures: 0,
+    });
+    expect(executePreCompact).not.toHaveBeenCalled();
+    expect(executePostCompact).not.toHaveBeenCalled();
+
+    const forced = await autoCompactIfNeeded(
+      messages,
+      context,
+      undefined,
+      undefined,
+      undefined,
+      0,
+      { force: true },
+    );
+    expect(forced.wasCompacted).toBe(true);
+    expect(executePreCompact).toHaveBeenCalledOnce();
+    expect(executePreCompact.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        hook_event_name: "PreCompact",
+        trigger: "auto",
+        custom_instructions: "",
+      }),
+    );
+    expect(executePostCompact).toHaveBeenCalledOnce();
+    expect(executePostCompact.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        hook_event_name: "PostCompact",
+        trigger: "auto",
+      }),
+    );
+    harness.close();
+  });
+
   test("does not let session memory bypass the canonical transaction", async () => {
     process.env.AGENC_ENABLE_SESSION_MEMORY_COMPACT = "1";
     const cleanup = {
@@ -135,15 +195,18 @@ describe("auto compact", () => {
       compactionMode: "automatic",
     });
     process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = "1";
-    const result = await autoCompactIfNeeded(messages, {
-      ...harness.context,
-      deps: {
+    installNoopCompactionHooks(harness.session);
+    const result = await runWithCapturedEnvironment(() =>
+      autoCompactIfNeeded(messages, {
+        ...harness.context,
+        deps: {
           cleanup,
           sessionMemory: {
             getContent: async () => "remembered decisions",
           },
-      },
-    });
+        },
+      })
+    );
 
     expect(result.wasCompacted).toBe(true);
     expect(result.compactionResult?.transaction).toBeDefined();
@@ -162,14 +225,38 @@ describe("auto compact", () => {
 
   test("respects AgenC disable switches", async () => {
     process.env.AGENC_DISABLE_AUTO_COMPACT = "1";
-
-    expect(isAutoCompactEnabled()).toBe(false);
-    await expect(autoCompactIfNeeded(
-      [message("x".repeat(10_000))],
-      { options: { contextWindowTokens: 100 } },
-    )).resolves.toEqual({ wasCompacted: false });
+    await runWithCapturedEnvironment(async () => {
+      expect(isAutoCompactEnabled()).toBe(false);
+      await expect(autoCompactIfNeeded(
+        [message("x".repeat(10_000))],
+        { options: { contextWindowTokens: 100 } },
+      )).resolves.toEqual({ wasCompacted: false });
+    });
   });
 });
+
+function installNoopCompactionHooks(
+  session: ReturnType<typeof createCompactionTransactionHarness>["session"],
+): void {
+  const services = session.services as unknown as {
+    hooks?: {
+      executePreCompact(): Promise<Record<string, never>>;
+      executePostCompact(): Promise<Record<string, never>>;
+    };
+  };
+  services.hooks = {
+    executePreCompact: async () => ({}),
+    executePostCompact: async () => ({}),
+  };
+}
+
+function runWithCapturedEnvironment<T>(operation: () => T): T {
+  return runWithStartupProviderSelection({
+    provider: "grok",
+    model: "grok-4.6",
+    environment: { ...process.env },
+  }, operation);
+}
 
 function message(content: string): RuntimeMessage {
   return {

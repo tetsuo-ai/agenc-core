@@ -15,8 +15,22 @@
 
 import { VERSION } from "../../version.js";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, statSync } from "node:fs";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import {
+  delimiter,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import {
   deserializeMessage,
   serializeMessage,
@@ -27,7 +41,7 @@ import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import type { Logger } from "../_deps/logger.js";
 import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
-import type { PluginMcpSandboxMetadata } from "../../config/schema.js";
+import type { PluginMcpSandboxMetadata } from "../types.js";
 import { pluginMcpPermissionProfile } from "../../tools/runtimes/sandboxing.js";
 import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
 import {
@@ -40,7 +54,14 @@ import {
   type SandboxExecutionBrokerLike,
 } from "../../sandbox/execution-broker.js";
 import { terminateProcessTreeAndWait } from "../../utils/supervisedProcess.js";
+import {
+  isChildTempAuthorityKey,
+  subprocessEnv,
+  withChildTempAuthority,
+} from "../../utils/subprocessEnv.js";
 import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
+import type { ProviderEnvironment } from "../../llm/provider-options.js";
+import { EMPTY_MCP_REQUEST_ENVIRONMENT } from "../environment.js";
 
 const PROCESS_GROUP_TERM_GRACE_MS = 2_000;
 /**
@@ -69,7 +90,6 @@ const STDERR_BUFFER_MAX_BYTES = 1024 * 1024;
  */
 const RECENT_STDERR_MAX_LINES = 8;
 const RECENT_STDERR_LINE_MAX_CHARS = 400;
-
 export const DEFAULT_STDIO_ENV_VARS: readonly string[] =
   process.platform === "win32"
     ? [
@@ -82,7 +102,6 @@ export const DEFAULT_STDIO_ENV_VARS: readonly string[] =
         "PROCESSOR_ARCHITECTURE",
         "SYSTEMDRIVE",
         "SYSTEMROOT",
-        "TEMP",
         "USERNAME",
         "USERPROFILE",
         "PROGRAMFILES",
@@ -97,7 +116,6 @@ export const DEFAULT_STDIO_ENV_VARS: readonly string[] =
         "LANG",
         "LC_ALL",
         "TERM",
-        "TMPDIR",
         "TZ",
       ];
 
@@ -122,21 +140,23 @@ export interface StdioTransportServerParameters {
   readonly pluginSandbox?: PluginMcpSandboxMetadata;
 }
 
-type NodeProcessEnv = Readonly<Record<string, string | undefined>>;
+type NodeProcessEnv = ProviderEnvironment;
 
 export function createStdioMCPEnvironment(
   extraEnv: Readonly<Record<string, string>> | undefined,
   envVars: readonly string[] | undefined,
-  parentEnv: NodeProcessEnv = process.env,
+  parentEnv: NodeProcessEnv = EMPTY_MCP_REQUEST_ENVIRONMENT,
 ): Record<string, string> {
   const env: Record<string, string> = {};
+  const sanitizedParent = subprocessEnv({ ...parentEnv });
   const names = new Set<string>(DEFAULT_STDIO_ENV_VARS);
   for (const name of envVars ?? []) {
     if (name.trim().length > 0) names.add(name);
   }
 
   for (const name of names) {
-    const value = parentEnv[name];
+    if (isChildTempAuthorityKey(name)) continue;
+    const value = sanitizedParent[name];
     if (value === undefined || value.startsWith("()")) continue;
     env[name] = value;
   }
@@ -144,7 +164,70 @@ export function createStdioMCPEnvironment(
   if (extraEnv !== undefined) {
     Object.assign(env, extraEnv);
   }
+  for (const name of Object.keys(env)) {
+    if (isChildTempAuthorityKey(name)) delete env[name];
+  }
   return env;
+}
+
+function pathContainsOrEquals(root: string, candidate: string): boolean {
+  const relativeCandidate = relative(root, candidate);
+  return relativeCandidate.length === 0 ||
+    (
+      relativeCandidate !== ".." &&
+      !relativeCandidate.startsWith(`..${sep}`) &&
+      !isAbsolute(relativeCandidate)
+    );
+}
+
+function preparePluginMcpTempAuthority(
+  pluginDataDir: string,
+  sessionTempRoot: string,
+): {
+  readonly dataRoot: string;
+  readonly tempRoot: string;
+} {
+  if (!isAbsolute(pluginDataDir)) {
+    throw new Error("plugin MCP data authority must be an absolute path");
+  }
+  mkdirSync(pluginDataDir, { recursive: true, mode: 0o700 });
+  const dataStat = lstatSync(pluginDataDir);
+  if (!dataStat.isDirectory() || dataStat.isSymbolicLink()) {
+    throw new Error("plugin MCP data authority is not a private directory");
+  }
+  const currentUid = process.getuid?.();
+  if (currentUid !== undefined && dataStat.uid !== currentUid) {
+    throw new Error("plugin MCP data authority is not owned by the current user");
+  }
+  const dataRoot = realpathSync.native(pluginDataDir);
+  if (pathContainsOrEquals(dataRoot, resolve(sessionTempRoot))) {
+    throw new Error(
+      "plugin MCP data authority must not contain the session temp root",
+    );
+  }
+  chmodSync(dataRoot, 0o700);
+  if (process.platform !== "win32" && (lstatSync(dataRoot).mode & 0o777) !== 0o700) {
+    throw new Error("plugin MCP data authority permissions are not private");
+  }
+  const declaredTempRoot = join(pluginDataDir, "tmp");
+  mkdirSync(declaredTempRoot, { recursive: true, mode: 0o700 });
+  const tempStat = lstatSync(declaredTempRoot);
+  if (!tempStat.isDirectory() || tempStat.isSymbolicLink()) {
+    throw new Error("plugin MCP temp authority is not a private directory");
+  }
+  const tempRoot = realpathSync.native(declaredTempRoot);
+  if (currentUid !== undefined && tempStat.uid !== currentUid) {
+    throw new Error("plugin MCP temp authority is not owned by the current user");
+  }
+  chmodSync(tempRoot, 0o700);
+  if (process.platform !== "win32" && (lstatSync(tempRoot).mode & 0o777) !== 0o700) {
+    throw new Error("plugin MCP temp authority permissions are not private");
+  }
+  const relativeTempRoot = relative(dataRoot, tempRoot);
+  if (!pathContainsOrEquals(dataRoot, tempRoot) || relativeTempRoot.length === 0) {
+    throw new Error("plugin MCP temp authority escapes its data directory");
+  }
+  return { dataRoot, tempRoot };
 }
 
 function resolveStdioProgram(
@@ -159,9 +242,8 @@ function resolveStdioProgram(
     return command;
   }
 
-  const pathValue = env.PATH ?? process.env.PATH ?? "";
-  const pathExtValue =
-    env.PATHEXT ?? process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD";
+  const pathValue = env.PATH ?? "";
+  const pathExtValue = env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD";
   const extensions = pathExtValue
     .split(";")
     .map((entry) => entry.trim())
@@ -227,44 +309,50 @@ export class AgenCStdioClientTransport implements Transport {
     if (broker === undefined) {
       throw missingSandboxExecutionBoundary("mcp_stdio");
     }
-    const env = { ...(this.server.env ?? {}) };
     const cwd =
       this.server.cwd === undefined
         ? broker.cwd
         : isAbsolute(this.server.cwd)
           ? this.server.cwd
           : resolve(broker.cwd, this.server.cwd);
-    const command = resolveStdioProgram(this.server.command, env, cwd);
     // Plugin-declared servers run under their intended tight profile: write
     // access confined to the plugin data dir instead of the project root.
     // Stricter under bubblewrap, and Landlock-expressible so plugin servers
-    // keep working on hosts where bubblewrap is unusable. TMPDIR points at
-    // a data-dir tmp because the profile deliberately has no writable /tmp
-    // and the `tmpdir` special silently vanishes when TMPDIR is unset.
+    // keep working on hosts where bubblewrap is unusable. The child temp
+    // variables always come from the broker's captured authority; plugin
+    // servers narrow that authority further to their private data directory.
     let permissionProfileOverride:
       | ReturnType<typeof pluginMcpPermissionProfile>
       | undefined;
+    let childTempRoot = broker.sessionTempRoot;
     if (this.server.pluginSandbox?.mode === "stdio-child-process") {
-      const pluginTmpDir = join(this.server.pluginSandbox.pluginDataDir, "tmp");
-      try {
-        mkdirSync(pluginTmpDir, { recursive: true });
-      } catch {
-        // Non-fatal: the server just falls back to the host tmpdir grant.
-      }
-      env.TMPDIR ??= pluginTmpDir;
-      permissionProfileOverride = pluginMcpPermissionProfile(
-        this.server.pluginSandbox,
+      const pluginAuthority = preparePluginMcpTempAuthority(
+        this.server.pluginSandbox.pluginDataDir,
+        broker.sessionTempRoot,
       );
+      childTempRoot = pluginAuthority.tempRoot;
+      permissionProfileOverride = pluginMcpPermissionProfile({
+        pluginDataDir: pluginAuthority.dataRoot,
+      });
     }
-    const spawnCommand = broker.prepareSpawn("mcp_stdio", {
-      program: command,
-      args: this.server.args ?? [],
-      cwd,
-      env,
-      ...(permissionProfileOverride !== undefined
-        ? { permissionProfileOverride }
-        : {}),
-    });
+    const env = withChildTempAuthority(
+      this.server.env ?? {},
+      childTempRoot,
+    );
+    const command = resolveStdioProgram(this.server.command, env, cwd);
+    const preparedSpawn = broker.prepareSpawn(
+      "mcp_stdio",
+      {
+        program: command,
+        args: this.server.args ?? [],
+        cwd,
+        env,
+        ...(permissionProfileOverride !== undefined
+          ? { permissionProfileOverride }
+          : {}),
+      },
+      { lifecycleParticipant: "mcp-manager" },
+    );
 
     this.resetStdoutFrame();
     this.stderrBuffer = Buffer.alloc(0);
@@ -272,17 +360,24 @@ export class AgenCStdioClientTransport implements Transport {
     this.closedNotified = false;
 
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(spawnCommand.program, [...spawnCommand.args], {
-        cwd: spawnCommand.cwd,
-        env: spawnCommand.env,
-        stdio: ["pipe", "pipe", "pipe"],
-        shell: false,
-        detached: process.platform !== "win32",
-        windowsHide: process.platform === "win32",
-        ...(spawnCommand.argv0 !== undefined
-          ? { argv0: spawnCommand.argv0 }
-          : {}),
-      });
+      const child = preparedSpawn.spawnLifecycleParticipant(
+        "mcp-manager",
+        (spawnCommand) =>
+          spawn(spawnCommand.program, [...spawnCommand.args], {
+            cwd: spawnCommand.cwd,
+            env: withChildTempAuthority(
+              spawnCommand.env,
+              childTempRoot,
+            ),
+            stdio: ["pipe", "pipe", "pipe"],
+            shell: false,
+            detached: process.platform !== "win32",
+            windowsHide: process.platform === "win32",
+            ...(spawnCommand.argv0 !== undefined
+              ? { argv0: spawnCommand.argv0 }
+              : {}),
+          }),
+      );
 
       this.child = child;
 
@@ -528,8 +623,13 @@ function createStdioMCPTransport(
   config: MCPServerStdioConfig,
   logger: Logger = silentLogger,
   sandboxExecutionBroker?: SandboxExecutionBrokerLike,
+  parentEnvironment: NodeProcessEnv = EMPTY_MCP_REQUEST_ENVIRONMENT,
 ): AgenCStdioClientTransport {
-  const env = createStdioMCPEnvironment(config.env, config.env_vars);
+  const env = createStdioMCPEnvironment(
+    config.env,
+    config.env_vars,
+    parentEnvironment,
+  );
   return new AgenCStdioClientTransport(
     {
       command: config.command,
@@ -551,6 +651,7 @@ export async function createStdioMCPConnection(
   elicitationHandlers?: MCPElicitationHandlers,
   samplingHandlers?: McpSamplingHandlers,
   sandboxExecutionBroker?: SandboxExecutionBrokerLike,
+  parentEnvironment: NodeProcessEnv = EMPTY_MCP_REQUEST_ENVIRONMENT,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -559,6 +660,7 @@ export async function createStdioMCPConnection(
     config,
     logger,
     sandboxExecutionBroker,
+    parentEnvironment,
   );
   const client = new Client(
     { name: "agenc-runtime", version: VERSION },

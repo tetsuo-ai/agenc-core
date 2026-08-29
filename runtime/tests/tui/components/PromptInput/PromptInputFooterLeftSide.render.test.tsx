@@ -17,9 +17,11 @@ const harness = vi.hoisted(() => ({
   },
   columns: 100,
   config: {
-    copyOnSelect: true as boolean | undefined,
-    editorMode: "normal",
-    prStatusFooterEnabled: true as boolean | undefined,
+    tui: {
+      copyOnSelect: true as boolean | undefined,
+      prStatusFooterEnabled: true as boolean | undefined,
+      vimMode: false,
+    },
   },
   features: new Set<string>(),
   fullscreen: false,
@@ -51,9 +53,11 @@ const harness = vi.hoisted(() => ({
     };
     harness.columns = 100;
     harness.config = {
-      copyOnSelect: true,
-      editorMode: "normal",
-      prStatusFooterEnabled: true,
+      tui: {
+        copyOnSelect: true,
+        prStatusFooterEnabled: true,
+        vimMode: false,
+      },
     };
     harness.features = new Set();
     harness.fullscreen = false;
@@ -199,8 +203,20 @@ vi.mock("../../hooks/useTasksV2.js", () => ({
   useTasksV2: () => harness.tasksV2,
 }));
 
-vi.mock("../../../utils/fullscreen.js", () => ({
-  isFullscreenEnvEnabled: () => harness.fullscreen,
+vi.mock("./utils.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("./utils.js")>();
+  return {
+    ...actual,
+    isVimModeEnabled: () => harness.config.tui.vimMode === true,
+  };
+});
+
+vi.mock("../../hooks/useSettings.js", () => ({
+  useSettings: () => harness.config,
+}));
+
+vi.mock("../../context/fullscreenModeContext.js", () => ({
+  useFullscreenMode: () => harness.fullscreen,
 }));
 
 vi.mock("../../ink/terminal.js", async importOriginal => {
@@ -217,7 +233,7 @@ vi.mock("../../ink/hooks/use-selection.js", () => ({
 }));
 
 vi.mock("../../../utils/config.js", () => ({
-  getGlobalConfig: () => harness.config,
+  getRuntimeState: () => harness.config,
 }));
 
 vi.mock("../../../utils/platform.js", () => ({
@@ -354,7 +370,7 @@ describe("PromptInputFooterLeftSide render paths", () => {
       await search.dispose();
     }
 
-    harness.config.editorMode = "vim";
+    harness.config.tui.vimMode = true;
     const vim = await renderFooter({ vimMode: "NORMAL" });
     try {
       expect(vim.output()).toContain("-- NORMAL --");
@@ -460,7 +476,7 @@ describe("PromptInputFooterLeftSide render paths", () => {
       await selection.dispose();
     }
 
-    harness.config.copyOnSelect = false;
+    harness.config.tui.copyOnSelect = false;
     harness.isXterm = false;
     harness.platform = "linux";
     const copy = await renderFooter({ suppressHint: true });

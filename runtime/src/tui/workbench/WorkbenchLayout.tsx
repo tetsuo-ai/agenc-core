@@ -42,6 +42,7 @@ import { useProjectTree } from "./project-tree/useProjectTree.js";
 import { WorkspaceTabs } from "./WorkspaceTabs.js";
 import { EditorProposalRail } from "./EditorProposalRail.js";
 import type { BufferIntegrationIntent } from "./buffer/providers/types.js";
+import type { ModelDisplayReadContext } from "../../utils/model/model.js";
 
 type Props = {
   readonly transcript: React.ReactNode;
@@ -70,6 +71,7 @@ type Props = {
    * Rendered in the status bar between the model and runtime version.
    */
   readonly contextPctLabel?: string | null;
+  readonly modelDisplayContext?: ModelDisplayReadContext;
   /** Live cumulative spend projected from bridge `token_count` events. */
   readonly sessionCostUsd?: number;
   readonly onEditorInteraction?: (intent: BufferIntegrationIntent) => void;
@@ -91,6 +93,7 @@ export function WorkbenchLayout({
   atWelcome,
   activityMode = null,
   contextPctLabel = null,
+  modelDisplayContext,
   sessionCostUsd = 0,
   onEditorInteraction,
   codePrediction,
@@ -258,6 +261,7 @@ export function WorkbenchLayout({
             activityMode={activityMode}
             columns={frameColumns}
             contextPctLabel={contextPctLabel}
+            modelDisplayContext={modelDisplayContext}
           />
         ) : null}
         <WorkspaceTabs

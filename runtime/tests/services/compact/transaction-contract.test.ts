@@ -14,6 +14,7 @@ import {
 import {
   canonicalizeJson,
   createCompactionSummaryV1,
+  digestWithDomain,
   parseCompactionBodyV1,
   verifyCompactionSummaryDigest,
 } from "../../../src/services/compact/summary-v1.js";
@@ -22,13 +23,14 @@ import {
   MAX_COMPACTION_INTERMEDIATE_TOKENS,
   MAX_COMPACTION_OUTPUT_NODES_TOTAL,
   MAX_COMPACTION_OUTPUT_UTF8_BYTES_TOTAL,
+  MAX_COMPACTION_FOCUS_UTF8_BYTES,
   MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES,
-  MAX_COMPACTION_POST_HOOK_UTF8_BYTES,
   MAX_COMPACTION_PROVIDER_CALLS,
   MAX_COMPACTION_REPLACEMENT_ENVELOPE_UTF8_BYTES,
   MAX_COMPACTION_REPLACEMENT_SUMMARY_UTF8_BYTES,
   MAX_COMPACTION_SCHEMA_WORK_UNITS_PER_OUTPUT,
   MAX_COMPACTION_WALL_MS,
+  COMPACTION_CONFIGURATION_DIGEST_DOMAIN,
   type CompactionTransactionAdapter,
 } from "../../../src/services/compact/transaction-types.js";
 import type {
@@ -53,6 +55,29 @@ const BODY = {
   open_actions: [],
   tool_pairs: [],
 } as const;
+const SESSION_CWD = "/test/compaction-workspace";
+const SESSION_MODEL = "grok-4.5";
+const SESSION_PERMISSION_MODE = "default";
+
+type TestCompactionHooks = {
+  readonly executePreCompact: (
+    input: Readonly<Record<string, unknown>>,
+    options?: unknown,
+  ) => Promise<unknown>;
+  readonly executePostCompact: (
+    input: Readonly<Record<string, unknown>>,
+    options?: unknown,
+  ) => Promise<unknown>;
+};
+
+type TransactionRunOverrides = Pick<
+  CompactContext,
+  "abortController" | "compactionTransaction" | "deps"
+> & {
+  readonly automatic?: boolean;
+  readonly customInstructions?: string;
+  readonly hooks?: TestCompactionHooks;
+};
 
 describe("transactional compaction strict contracts", () => {
   it("never authorizes instructions embedded in transcript context", () => {
@@ -207,6 +232,311 @@ describe("transactional compaction strict contracts", () => {
 });
 
 describe("transactional compaction production path", () => {
+  it.each([
+    { automatic: false, trigger: "manual" as const },
+    { automatic: true, trigger: "auto" as const },
+  ])(
+    "runs $trigger lifecycle hooks around the one durable transaction",
+    async ({ automatic, trigger }) => {
+      await withTransactionalStore(`transaction-hooks-${trigger}`, async (store) => {
+        const timeline: string[] = [];
+        const source = appendSourceMessages(store, 8, 4_000);
+        const explicitInstructions = "retain explicit operator decisions";
+        const hookInstructions = "retain hook-selected constraints";
+        const provider = compactionProvider({}, () => timeline.push("provider"));
+        const adapter = observingTransactionAdapter(store, timeline);
+        let preInput: Readonly<Record<string, unknown>> | undefined;
+        let postInput: Readonly<Record<string, unknown>> | undefined;
+        let postObservedCommitted = false;
+        const hooks: TestCompactionHooks = {
+          executePreCompact: vi.fn(async (input) => {
+            timeline.push("pre");
+            preInput = input;
+            return { newCustomInstructions: hookInstructions };
+          }),
+          executePostCompact: vi.fn(async (input) => {
+            timeline.push("post");
+            postInput = input;
+            postObservedCommitted = store.readAll()
+              .filter(isCompactionLifecycleItem)
+              .at(-1)?.type === "compaction_committed";
+            return {};
+          }),
+        };
+
+        const result = await runRealTransaction(store, source, provider, {
+          automatic,
+          customInstructions: explicitInstructions,
+          hooks,
+          compactionTransaction: adapter,
+        });
+
+        expect(timeline).toEqual(["pre", "intent", "provider", "commit", "post"]);
+        expect(hooks.executePreCompact).toHaveBeenCalledOnce();
+        expect(hooks.executePostCompact).toHaveBeenCalledOnce();
+        expect(preInput).toEqual({
+          hook_event_name: "PreCompact",
+          trigger,
+          custom_instructions: explicitInstructions,
+          session_id: store.sessionId,
+          transcript_path: store.rolloutPath,
+          cwd: SESSION_CWD,
+          permission_mode: SESSION_PERMISSION_MODE,
+        });
+
+        const mergedInstructions = `${explicitInstructions}\n\n${hookInstructions}`;
+        expect(providerCoveragePriority(provider)).toBe(mergedInstructions);
+        expect(result.transaction?.configuration_digest).toBe(
+          digestWithDomain(COMPACTION_CONFIGURATION_DIGEST_DOMAIN, {
+            model: SESSION_MODEL,
+            provider: "grok",
+            context_window_tokens: 64_000,
+            max_output_tokens: 512,
+            direction: "from",
+            requested_focus: mergedInstructions,
+          }),
+        );
+
+        const persistedSummary = result.transaction?.committed.replacement_history
+          .find((message) => message.compactionHistory?.kind === "summary")?.content;
+        expect(typeof persistedSummary).toBe("string");
+        expect(postObservedCommitted).toBe(true);
+        expect(postInput).toEqual({
+          hook_event_name: "PostCompact",
+          trigger,
+          compact_summary: persistedSummary,
+          session_id: store.sessionId,
+          transcript_path: store.rolloutPath,
+          cwd: SESSION_CWD,
+          permission_mode: SESSION_PERMISSION_MODE,
+        });
+      });
+    },
+  );
+
+  it("preserves the exact separator when Pre adds focus to empty auto instructions", async () => {
+    await withTransactionalStore("transaction-hooks-auto-empty-focus", async (store) => {
+      const source = appendSourceMessages(store, 8, 4_000);
+      const provider = compactionProvider();
+      const hookInstructions = "retain hook-selected constraints";
+      const pre = vi.fn(async () => ({
+        newCustomInstructions: hookInstructions,
+      }));
+      const post = vi.fn(async () => ({}));
+
+      const result = await runRealTransaction(store, source, provider, {
+        automatic: true,
+        customInstructions: "",
+        hooks: {
+          executePreCompact: pre,
+          executePostCompact: post,
+        },
+      });
+
+      const mergedInstructions = `\n\n${hookInstructions}`;
+      expect(pre).toHaveBeenCalledOnce();
+      expect(pre.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+        trigger: "auto",
+        custom_instructions: "",
+      }));
+      expect(providerCoveragePriority(provider)).toBe(mergedInstructions);
+      expect(result.transaction?.configuration_digest).toBe(
+        digestWithDomain(COMPACTION_CONFIGURATION_DIGEST_DOMAIN, {
+          model: SESSION_MODEL,
+          provider: "grok",
+          context_window_tokens: 64_000,
+          max_output_tokens: 512,
+          direction: "from",
+          requested_focus: mergedInstructions,
+        }),
+      );
+      expect(post).toHaveBeenCalledOnce();
+    });
+  });
+
+  it.each([
+    {
+      name: "failed hook result",
+      pre: async () => ({ userDisplayMessage: "PreCompact hook failed" }),
+    },
+    {
+      name: "throwing hook service",
+      pre: async () => {
+        throw new Error("injected pre-hook service failure");
+      },
+    },
+  ])("keeps a $name nonfatal and out of provider focus", async ({ name, pre }) => {
+    await withTransactionalStore(`transaction-pre-${name.replaceAll(" ", "-")}`, async (store) => {
+      const source = appendSourceMessages(store, 8, 4_000);
+      const provider = compactionProvider();
+      const post = vi.fn(async () => ({}));
+      const preHook = vi.fn(pre);
+
+      const result = await runRealTransaction(store, source, provider, {
+        customInstructions: "explicit only",
+        hooks: {
+          executePreCompact: preHook,
+          executePostCompact: post,
+        },
+      });
+
+      expect(result.transaction).toBeDefined();
+      expect(preHook).toHaveBeenCalledOnce();
+      expect(post).toHaveBeenCalledOnce();
+      expect(providerCoveragePriority(provider)).toBe("explicit only");
+      expect(store.readAll().filter(isCompactionLifecycleItem).map((item) => item.type))
+        .toEqual(["compaction_intent", "compaction_committed"]);
+    });
+  });
+
+  it("rejects oversized merged hook focus before intent or provider admission", async () => {
+    await withTransactionalStore("transaction-merged-focus-limit", async (store) => {
+      const timeline: string[] = [];
+      const source = appendSourceMessages(store, 8, 4_000);
+      const provider = compactionProvider({}, () => timeline.push("provider"));
+      const post = vi.fn(async () => ({}));
+      const adapter = observingTransactionAdapter(store, timeline);
+      const pre = vi.fn(async () => {
+        timeline.push("pre");
+        return {
+          newCustomInstructions: "x".repeat(MAX_COMPACTION_FOCUS_UTF8_BYTES),
+        };
+      });
+
+      await expect(runRealTransaction(store, source, provider, {
+        customInstructions: "explicit",
+        hooks: {
+          executePreCompact: pre,
+          executePostCompact: post,
+        },
+        compactionTransaction: adapter,
+      })).rejects.toThrow(/coverage priority exceeds/i);
+
+      expect(timeline).toEqual(["pre"]);
+      expect(pre).toHaveBeenCalledOnce();
+      expect(post).not.toHaveBeenCalled();
+      expect(provider.chat).not.toHaveBeenCalled();
+      expect(store.readAll().some((item) => item.type.startsWith("compaction_")))
+        .toBe(false);
+    });
+  });
+
+  it("runs Pre once but never Post when the provider fails", async () => {
+    await withTransactionalStore("transaction-provider-failure-hooks", async (store) => {
+      const source = appendSourceMessages(store, 8, 4_000);
+      const provider = compactionProvider({ finishReason: "length" });
+      const pre = vi.fn(async () => ({}));
+      const post = vi.fn(async () => ({}));
+
+      await expect(runRealTransaction(store, source, provider, {
+        hooks: {
+          executePreCompact: pre,
+          executePostCompact: post,
+        },
+      })).rejects.toThrow(/finish reason was length/i);
+
+      expect(pre).toHaveBeenCalledOnce();
+      expect(post).not.toHaveBeenCalled();
+      expect(store.readAll().filter(isCompactionLifecycleItem)).toMatchObject([
+        { type: "compaction_intent" },
+        { type: "compaction_failed", payload: { reason: "provider_non_stop" } },
+      ]);
+    });
+  });
+
+  it("never runs Post when the durable commit fails", async () => {
+    await withTransactionalStore("transaction-commit-failure-hooks", async (store) => {
+      const source = appendSourceMessages(store, 8, 4_000);
+      const provider = compactionProvider();
+      const pre = vi.fn(async () => ({}));
+      const post = vi.fn(async () => ({}));
+
+      await expect(runRealTransaction(store, source, provider, {
+        hooks: {
+          executePreCompact: pre,
+          executePostCompact: post,
+        },
+        compactionTransaction: failingCommitAdapter(store),
+      })).rejects.toThrow(/durable compaction commit failed/i);
+
+      expect(pre).toHaveBeenCalledOnce();
+      expect(post).not.toHaveBeenCalled();
+      expect(store.readAll().filter(isCompactionLifecycleItem)).toMatchObject([
+        { type: "compaction_intent" },
+        { type: "compaction_failed", payload: { reason: "commit_failed" } },
+      ]);
+    });
+  });
+
+  it("keeps a throwing Post service nonfatal after commit", async () => {
+    await withTransactionalStore("transaction-post-service-failure", async (store) => {
+      const source = appendSourceMessages(store, 8, 4_000);
+      const provider = compactionProvider();
+      const pre = vi.fn(async () => ({}));
+      const post = vi.fn(async () => {
+        throw new Error("injected post-hook service failure");
+      });
+
+      const result = await runRealTransaction(store, source, provider, {
+        hooks: {
+          executePreCompact: pre,
+          executePostCompact: post,
+        },
+      });
+
+      expect(result.transaction).toBeDefined();
+      expect(pre).toHaveBeenCalledOnce();
+      expect(post).toHaveBeenCalledOnce();
+      expect(store.readAll().filter(isCompactionLifecycleItem).map((item) => item.type))
+        .toEqual(["compaction_intent", "compaction_committed"]);
+    });
+  });
+
+  it.each(["PreCompact", "PostCompact"] as const)(
+    "releases the durable lease when an abort-ignoring %s hook is cancelled",
+    async (event) => {
+      await withTransactionalStore(`transaction-${event}-abort-lease`, async (store) => {
+        const source = appendSourceMessages(store, 8, 4_000);
+        const provider = compactionProvider();
+        const abortController = new AbortController();
+        let markHookStarted!: () => void;
+        const hookStarted = new Promise<void>((resolve) => {
+          markHookStarted = resolve;
+        });
+        const neverSettles = async (): Promise<Record<string, never>> => {
+          markHookStarted();
+          return new Promise<Record<string, never>>(() => {});
+        };
+        const hooks: TestCompactionHooks = {
+          executePreCompact:
+            event === "PreCompact" ? vi.fn(neverSettles) : vi.fn(async () => ({})),
+          executePostCompact:
+            event === "PostCompact" ? vi.fn(neverSettles) : vi.fn(async () => ({})),
+        };
+
+        const transaction = runRealTransaction(store, source, provider, {
+          abortController,
+          hooks,
+        });
+        await hookStarted;
+        abortController.abort(new DOMException("test cancellation", "AbortError"));
+
+        if (event === "PreCompact") {
+          await expect(transaction).rejects.toMatchObject({ name: "AbortError" });
+          expect(store.readAll().filter(isCompactionLifecycleItem)).toEqual([]);
+        } else {
+          const result = await transaction;
+          expect(result.transaction).toBeDefined();
+          expect(store.readAll().filter(isCompactionLifecycleItem).map((item) => item.type))
+            .toEqual(["compaction_intent", "compaction_committed"]);
+        }
+
+        const probeLease = await store.acquireCompactionLease(`probe-${event}`);
+        await probeLease.release();
+      });
+    },
+  );
+
   it("runs prepare, intent, admission, provider, validation, shrink, and commit end to end", async () => {
     await withTransactionalStore("transaction-e2e", async (store) => {
       const source = appendSourceMessages(store, 8, 4_000);
@@ -372,7 +702,6 @@ describe("transactional compaction production path", () => {
       const oversizedAttachmentBytes =
         MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES -
         MAX_COMPACTION_REPLACEMENT_SUMMARY_UTF8_BYTES -
-        MAX_COMPACTION_POST_HOOK_UTF8_BYTES -
         MAX_COMPACTION_REPLACEMENT_ENVELOPE_UTF8_BYTES +
         1_024;
       await expect(runRealTransaction(store, source, provider, {
@@ -465,6 +794,7 @@ async function withTransactionalStore(
     cwd,
     sessionId,
     agencVersion: "0.13.0",
+    sessionTempRoot: tmpdir(),
     autoStartScheduler: false,
   });
   try {
@@ -505,8 +835,10 @@ function appendSourceMessages(
 
 function compactionProvider(
   overrides: Partial<LLMResponse> = {},
+  onChat?: () => void,
 ): LLMProvider & { readonly chat: ReturnType<typeof vi.fn> } {
   const chat = vi.fn(async (messages: LLMMessage[]): Promise<LLMResponse> => {
+    onChat?.();
     const payload = JSON.parse(String(messages[0]?.content)) as {
       readonly allowed_source_ref_ids: readonly string[];
     };
@@ -564,11 +896,17 @@ async function runRealTransaction(
   store: RolloutStore,
   source: readonly RuntimeMessage[],
   provider: LLMProvider,
-  contextOverrides: Pick<
-    CompactContext,
-    "abortController" | "compactionTransaction" | "deps"
-  > = {},
+  overrides: TransactionRunOverrides = {},
 ) {
+  const {
+    automatic = false,
+    customInstructions = "retain decisions",
+    hooks = {
+      executePreCompact: async () => ({}),
+      executePostCompact: async () => ({}),
+    },
+    ...contextOverrides
+  } = overrides;
   const admissionCwd = mkdtempSync(join(tmpdir(), "agenc-c2-admission-workspace-"));
   mkdirSync(join(admissionCwd, ".git"));
   const kernel = new ExecutionAdmissionKernel({
@@ -585,17 +923,32 @@ async function runRealTransaction(
     },
   });
   let eventSequence = 0;
+  const permissionModeRegistry = {
+    current: () => ({ mode: SESSION_PERMISSION_MODE }),
+  };
   const admissionSession = {
     conversationId: store.sessionId,
     nextInternalSubId: () => "compaction-e2e-step",
-    modelInfo: { slug: "grok-4.5", contextWindow: 64_000 },
+    modelInfo: { slug: SESSION_MODEL, contextWindow: 64_000 },
+    sessionConfiguration: {
+      cwd: SESSION_CWD,
+      collaborationMode: { model: SESSION_MODEL },
+      permissionContext: { mode: SESSION_PERMISSION_MODE },
+    },
+    permissionModeRegistry,
     rolloutStore: store,
     emit: (event: Omit<Event, "seq">, options?: { readonly durable?: boolean }) => {
       const canonical = { ...event, seq: ++eventSequence } as Event;
       store.append(canonical, options);
       return canonical;
     },
-    services: { provider, executionAdmission, admissionRequired: true },
+    services: {
+      provider,
+      executionAdmission,
+      admissionRequired: true,
+      hooks,
+      permissionModeRegistry,
+    },
   } as unknown as Session;
   const unbind = bindExecutionAdmissionJournal(admissionSession, executionAdmission);
   try {
@@ -612,8 +965,8 @@ async function runRealTransaction(
         },
       },
       {
-        customInstructions: "retain decisions",
-        automatic: false,
+        customInstructions,
+        automatic,
         messagesToKeep: [],
         completeSourceMessages: source,
         messagesToSummarize: source,
@@ -632,6 +985,47 @@ async function runRealTransaction(
     rmSync(admissionCwd, { recursive: true, force: true });
   }
 }
+
+function providerCoveragePriority(
+  provider: LLMProvider & { readonly chat: ReturnType<typeof vi.fn> },
+): string {
+  const messages = provider.chat.mock.calls[0]?.[0] as
+    | readonly LLMMessage[]
+    | undefined;
+  const payload = JSON.parse(String(messages?.[0]?.content)) as {
+    readonly coverage_priority?: unknown;
+  };
+  return typeof payload.coverage_priority === "string"
+    ? payload.coverage_priority
+    : "";
+}
+
+function observingTransactionAdapter(
+  store: RolloutStore,
+  timeline: string[],
+): CompactionTransactionAdapter {
+  return new Proxy(store, {
+    get(target, property, receiver) {
+      if (property === "pinAndRecordIntent") {
+        return (...args: unknown[]) => {
+          const result = Reflect.apply(target.pinAndRecordIntent, target, args);
+          timeline.push("intent");
+          return result;
+        };
+      }
+      if (property === "commit") {
+        return (...args: unknown[]) => {
+          const result = Reflect.apply(target.commit, target, args);
+          timeline.push("commit");
+          return result;
+        };
+      }
+      const value = Reflect.get(target, property, receiver) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 function failingCommitAdapter(
   store: RolloutStore,
 ): CompactionTransactionAdapter {

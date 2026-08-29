@@ -14,7 +14,6 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   createHash,
@@ -24,7 +23,12 @@ import {
 import { redactSecrets } from "../secrets/index.js";
 import { isRecord } from "../utils/record.js";
 import { findPluginManifestPath, loadPluginManifest } from "./manifest.js";
-import { sanitizePluginId } from "./directories.js";
+import { pluginCacheDirPath, sanitizePluginId } from "./directories.js";
+import {
+  buildPluginIdentifier,
+  isCanonicalPluginIdentity,
+  parsePluginIdentifier,
+} from "./identifier.js";
 import type { LoadedPlugin } from "./loader.js";
 
 export type PluginResolutionKind =
@@ -51,16 +55,14 @@ export type PluginProcessRunner = (
 
 export interface PluginResolverOptions {
   readonly agencHome: string;
-  readonly workspaceRoot?: string;
+  readonly pluginStorageRoot: string;
+  readonly sessionTempRoot: string;
+  readonly workspaceRoot: string;
   readonly cache?: boolean;
   readonly refreshCache?: boolean;
   readonly requireSignature?: boolean;
   readonly publishersPath?: string;
   readonly runProcess?: PluginProcessRunner;
-  /** Optional Git subdirectory and pin supplied by a marketplace entry. */
-  readonly gitSubdir?: string;
-  readonly gitRef?: string;
-  readonly gitSha?: string;
   readonly fetchBytes?: (url: string) => Promise<Uint8Array>;
   readonly maxDownloadBytes?: number;
   readonly downloadTimeoutMs?: number;
@@ -69,9 +71,19 @@ export interface PluginResolverOptions {
   readonly maxExtractDepth?: number;
 }
 
+export interface StructuredGitPluginSource {
+  readonly type: "git";
+  readonly url: string;
+  readonly path?: string;
+  readonly ref?: string;
+  readonly sha?: string;
+}
+
+export type PluginInstallSource = string | StructuredGitPluginSource;
+
 export interface ResolvedPluginSource {
   readonly kind: PluginResolutionKind;
-  readonly requestedSource: string;
+  readonly requestedSource: PluginInstallSource;
   readonly pluginRoot: string;
   readonly cacheRoot?: string;
   readonly signature?: PluginSignatureVerification;
@@ -85,11 +97,6 @@ export interface PluginSignatureVerification {
   readonly publisher?: string;
   readonly payloadFileCount?: number;
   readonly reason?: string;
-}
-
-export interface ParsedPluginIdentifier {
-  readonly name: string;
-  readonly marketplace?: string;
 }
 
 export interface PluginDependencyLookupResult {
@@ -143,7 +150,6 @@ const DEFAULT_MAX_EXTRACT_DEPTH = 32;
 const DEFAULT_CACHE_LOCK_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_ARCHIVE_REDIRECTS = 5;
 const PLUGIN_INSTALL_METADATA_RELATIVE_PATH = ".agenc-plugin/agenc-install.json";
-const PLUGIN_DEPENDENCY_IDENTITY_PATTERN = /^[a-z0-9][-a-z0-9._]*(?:@[a-z][a-z0-9._-]*)?$/iu;
 const KNOWN_GIT_HOSTS = new Set([
   "github.com",
   "gitlab.com",
@@ -153,23 +159,26 @@ const KNOWN_GIT_HOSTS = new Set([
 ]);
 
 export async function resolvePluginSource(
-  source: string,
+  source: PluginInstallSource,
   options: PluginResolverOptions,
 ): Promise<ResolvedPluginSource> {
-  const kind = await classifyPluginSource(source, options.workspaceRoot ?? process.cwd());
+  const kind = typeof source === "string"
+    ? await classifyPluginSource(source, options.workspaceRoot)
+    : "git";
   const signatureOptions = {
     ...options,
-    requireSignature: options.requireSignature ?? kind !== "local",
+    requireSignature: options.requireSignature ??
+      (kind !== "local" && !isLocalStructuredGitSource(source)),
   };
-  const safeSource = redactPluginSource(source);
+  const safeSource = redactPluginInstallSource(source);
   let tempRoot: string | undefined;
   try {
-    const cacheRoot = pluginSourceCacheRoot(
-      options.agencHome,
-      pluginResolutionCacheIdentity(source, kind, options),
-    );
+    const cacheRoot = pluginSourceCacheRoot(options.pluginStorageRoot, source);
     const materializeFresh = async (): Promise<ResolvedPluginSource> => {
-      tempRoot = await mkdtemp(join(tmpdir(), "agenc-plugin-resolve-"));
+      await mkdir(options.sessionTempRoot, { recursive: true, mode: 0o700 });
+      tempRoot = await mkdtemp(
+        join(options.sessionTempRoot, "agenc-plugin-resolve-"),
+      );
       const resolvedRoot = await materializePluginSource(source, kind, tempRoot, options);
       const signature = await verifyResolvedPluginSignature(resolvedRoot, signatureOptions);
       const pluginRoot = options.cache === false || kind === "local"
@@ -217,7 +226,7 @@ export async function resolvePluginSource(
 
 export async function classifyPluginSource(
   source: string,
-  workspaceRoot = process.cwd(),
+  workspaceRoot: string,
 ): Promise<PluginResolutionKind> {
   const localPath = resolve(workspaceRoot, source);
   if (await pathIsDirectory(localPath)) return "local";
@@ -225,19 +234,6 @@ export async function classifyPluginSource(
   if (isTarballSource(source)) return "tarball";
   if (isMcpbSource(source) || (source.endsWith(".mcpb") && await pathIsFile(localPath))) return "mcpb";
   return "npm";
-}
-
-function parsePluginIdentifier(plugin: string): ParsedPluginIdentifier {
-  const marker = plugin.indexOf("@", 1);
-  if (marker === -1) return { name: plugin };
-  return {
-    name: plugin.slice(0, marker),
-    marketplace: plugin.slice(marker + 1) || undefined,
-  };
-}
-
-function buildPluginIdentifier(name: string, marketplace?: string): string {
-  return marketplace ? `${name}@${marketplace}` : name;
 }
 
 export function qualifyPluginDependency(dep: string, declaringPluginId: string): string {
@@ -316,6 +312,49 @@ export function redactPluginSource(source: string): string {
 
 export function pluginSourceNeedsRedaction(source: string): boolean {
   return redactPluginSource(source) !== source;
+}
+
+export function redactPluginInstallSource(
+  source: PluginInstallSource,
+): PluginInstallSource {
+  return typeof source === "string"
+    ? redactPluginSource(source)
+    : {
+        ...source,
+        url: redactPluginSource(source.url),
+      };
+}
+
+export function pluginInstallSourceNeedsRedaction(
+  source: PluginInstallSource,
+): boolean {
+  return typeof source === "string"
+    ? pluginSourceNeedsRedaction(source)
+    : redactPluginSource(source.url) !== source.url;
+}
+
+export function parsePluginInstallSource(
+  value: unknown,
+): PluginInstallSource | undefined {
+  if (typeof value === "string") return value;
+  if (!isRecord(value) || value.type !== "git" ||
+    typeof value.url !== "string") {
+    return undefined;
+  }
+  if (
+    (value.path !== undefined && typeof value.path !== "string") ||
+    (value.ref !== undefined && typeof value.ref !== "string") ||
+    (value.sha !== undefined && typeof value.sha !== "string")
+  ) {
+    return undefined;
+  }
+  return {
+    type: "git",
+    url: value.url,
+    ...(value.path !== undefined ? { path: value.path } : {}),
+    ...(value.ref !== undefined ? { ref: value.ref } : {}),
+    ...(value.sha !== undefined ? { sha: value.sha } : {}),
+  };
 }
 
 export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
@@ -418,12 +457,13 @@ export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
     if (!enabled.delete(id)) continue;
     const plugin = pluginById.get(id);
     if (!plugin) continue;
-    const byName = enabledByName.get(plugin.name);
+    const pluginName = parsePluginIdentifier(id).name;
+    const byName = enabledByName.get(pluginName);
     byName?.delete(id);
-    if (byName?.size === 0) enabledByName.delete(plugin.name);
+    if (byName?.size === 0) enabledByName.delete(pluginName);
     errors.push({
       source: plugin.source,
-      plugin: plugin.name,
+      plugin: plugin.id,
       dependency: id,
       reason: "cycle",
     });
@@ -515,12 +555,13 @@ function demotePluginForDependency(options: {
   readonly reason: PluginDependencyIssue["reason"];
 }): void {
   if (!options.enabled.delete(options.pluginId)) return;
-  const byName = options.enabledByName.get(options.plugin.name);
+  const pluginName = parsePluginIdentifier(options.pluginId).name;
+  const byName = options.enabledByName.get(pluginName);
   byName?.delete(options.pluginId);
-  if (byName?.size === 0) options.enabledByName.delete(options.plugin.name);
+  if (byName?.size === 0) options.enabledByName.delete(pluginName);
   options.errors.push({
     source: options.plugin.source,
-    plugin: options.plugin.name,
+    plugin: options.plugin.id,
     dependency: options.dep,
     reason: options.reason,
   });
@@ -536,9 +577,10 @@ function pluginIdsByName(
     if (!include(plugin)) continue;
     const id = idBySource.get(plugin.source);
     if (!id) continue;
-    const ids = out.get(plugin.name) ?? new Set<string>();
+    const pluginName = parsePluginIdentifier(id).name;
+    const ids = out.get(pluginName) ?? new Set<string>();
     ids.add(id);
-    out.set(plugin.name, ids);
+    out.set(pluginName, ids);
   }
   return out;
 }
@@ -657,7 +699,7 @@ function comparePrereleaseVersions(a: readonly string[], b: readonly string[]): 
 }
 
 function pluginDependencyIdentifier(plugin: LoadedPlugin): string {
-  return pluginDependencyIdentityFromSource(plugin.source) ?? plugin.name;
+  return plugin.id;
 }
 
 export function pluginDependencyIdentityFromSource(source: string): string | undefined {
@@ -666,7 +708,7 @@ export function pluginDependencyIdentityFromSource(source: string): string | und
   if (trimmed === "user" || trimmed === "project" || trimmed === "local") return undefined;
   if (isAbsolute(trimmed)) return undefined;
   if (trimmed.startsWith(".") || trimmed.includes("/") || trimmed.includes("\\")) return undefined;
-  return PLUGIN_DEPENDENCY_IDENTITY_PATTERN.test(trimmed) ? trimmed : undefined;
+  return isCanonicalPluginIdentity(trimmed) ? trimmed : undefined;
 }
 
 export function findPluginReverseDependents(
@@ -686,14 +728,14 @@ export function findPluginReverseDependents(
             : qualified === targetName;
         });
     })
-    .map((plugin) => plugin.name);
+    .map((plugin) => plugin.id);
 }
 
 export async function verifyResolvedPluginSignature(
   pluginRoot: string,
   options: Pick<
     PluginResolverOptions,
-    "maxExtractDepth" | "maxExtractedBytes" | "maxExtractedFiles" | "publishersPath" | "requireSignature"
+    "agencHome" | "maxExtractDepth" | "maxExtractedBytes" | "maxExtractedFiles" | "publishersPath" | "requireSignature"
   >,
 ): Promise<PluginSignatureVerification> {
   const signaturePath = join(pluginRoot, ".agenc-plugin", "signature.json");
@@ -714,7 +756,9 @@ export async function verifyResolvedPluginSignature(
     }
     throw error;
   }
-  const publishersPath = options.publishersPath ?? defaultPublishersPath();
+  const publishersPath = options.publishersPath ?? defaultPublishersPath(
+    options.agencHome,
+  );
   const publicKey = await readPublisherPublicKey(publishersPath, signature.publisher);
   const manifestPath = await findPluginManifestPath(pluginRoot);
   if (!manifestPath) throw new Error("cannot verify plugin signature without plugin.json");
@@ -770,24 +814,28 @@ function verifyEd25519Signature(input: {
   );
 }
 
-export function pluginSourceCacheRoot(agencHome: string, source: string): string {
+export function pluginSourceCacheRoot(
+  pluginStorageRoot: string,
+  source: PluginInstallSource,
+): string {
   return join(
-    agencHome,
-    "plugins",
-    "cache",
+    pluginCacheDirPath({ pluginStorageRoot }),
     sanitizePluginId(cacheKeyForSource(source)),
   );
 }
 
 async function materializePluginSource(
-  source: string,
+  source: PluginInstallSource,
   kind: PluginResolutionKind,
   tempRoot: string,
   options: PluginResolverOptions,
 ): Promise<string> {
+  if (typeof source !== "string") {
+    return materializeGitSource(source, tempRoot, options);
+  }
   switch (kind) {
     case "local":
-      return resolve(options.workspaceRoot ?? process.cwd(), source);
+      return resolve(options.workspaceRoot, source);
     case "npm":
       return materializeNpmPackage(source, tempRoot, options);
     case "git":
@@ -820,120 +868,85 @@ async function materializeNpmPackage(
 }
 
 async function materializeGitSource(
-  source: string,
+  source: string | StructuredGitPluginSource,
   tempRoot: string,
   options: PluginResolverOptions,
 ): Promise<string> {
-  assertSafeGitSource(source);
   const target = join(tempRoot, "git");
-  const subdir = normalizePluginGitSubdir(options.gitSubdir);
-  const ref = normalizePluginGitRef(options.gitRef);
-  const sha = normalizePluginGitSha(options.gitSha);
-  if (subdir === undefined && ref === undefined && sha === undefined) {
-    await runProcess(options, "git", ["clone", "--depth", "1", "--", source, target]);
+  if (typeof source === "string") {
+    assertSafeGitSource(source);
+    await runProcess(options, "git", [
+      "clone",
+      "--depth",
+      "1",
+      "--",
+      source,
+      target,
+    ]);
     return target;
   }
 
-  await runProcess(options, "git", [
-    "clone",
-    "--depth",
-    "1",
-    "--filter=blob:none",
-    "--no-checkout",
-    "--",
-    source,
-    target,
-  ]);
-  if (ref !== undefined) {
-    await runProcess(options, "git", ["fetch", "--depth", "1", "origin", ref], {
-      cwd: target,
-    });
+  assertStructuredGitPluginSource(source);
+  const revision = source.ref ?? source.sha;
+  if (revision === undefined) {
+    await runProcess(options, "git", [
+      "clone",
+      "--depth",
+      "1",
+      "--",
+      source.url,
+      target,
+    ]);
+  } else {
+    await runProcess(options, "git", [
+      "clone",
+      "--depth",
+      "1",
+      "--no-checkout",
+      "--",
+      source.url,
+      target,
+    ]);
+    await runProcess(options, "git", [
+      "-C",
+      target,
+      "fetch",
+      "--depth",
+      "1",
+      "origin",
+      revision,
+    ]);
+    await runProcess(options, "git", [
+      "-C",
+      target,
+      "checkout",
+      "--detach",
+      "FETCH_HEAD",
+    ]);
   }
-  if (sha !== undefined) {
-    await runProcess(options, "git", ["fetch", "--depth", "1", "origin", sha], {
-      cwd: target,
-    });
-  }
-  if (subdir !== undefined) {
-    await runProcess(
-      options,
-      "git",
-      ["sparse-checkout", "set", "--cone", "--", subdir],
-      { cwd: target },
-    );
-  }
-  await runProcess(options, "git", ["checkout", "--detach", sha ?? ref ?? "HEAD"], {
-    cwd: target,
-  });
-  if (sha !== undefined) {
-    const observed = (await runProcess(options, "git", ["rev-parse", "HEAD"], {
-      cwd: target,
-    })).stdout.trim().toLowerCase();
-    if (observed !== sha.toLowerCase()) {
-      throw new Error(`plugin Git source resolved ${observed || "no commit"}, expected ${sha}`);
+
+  if (source.sha !== undefined) {
+    const actualSha = (await runProcess(options, "git", [
+      "-C",
+      target,
+      "rev-parse",
+      "HEAD",
+    ])).stdout.trim().toLowerCase();
+    if (actualSha !== source.sha.toLowerCase()) {
+      throw new Error(
+        `plugin Git checkout ${actualSha} does not match declared SHA ${source.sha}`,
+      );
     }
   }
-  return subdir === undefined ? target : join(target, ...subdir.split("/"));
-}
 
-function pluginResolutionCacheIdentity(
-  source: string,
-  kind: PluginResolutionKind,
-  options: PluginResolverOptions,
-): string {
-  if (
-    kind !== "git" ||
-    (options.gitSubdir === undefined &&
-      options.gitRef === undefined &&
-      options.gitSha === undefined)
-  ) {
-    return source;
+  if (source.path === undefined) return target;
+  const pluginRoot = join(target, ...source.path.split("/"));
+  const targetReal = await realpath(target);
+  const pluginRootReal = await realpath(pluginRoot);
+  if (!isPathInside(pluginRootReal, targetReal)) {
+    throw new Error("plugin Git subdirectory resolves outside the repository");
   }
-  return JSON.stringify({
-    source,
-    ...(options.gitSubdir !== undefined ? { path: options.gitSubdir } : {}),
-    ...(options.gitRef !== undefined ? { ref: options.gitRef } : {}),
-    ...(options.gitSha !== undefined ? { sha: options.gitSha } : {}),
-  });
-}
-
-function normalizePluginGitSubdir(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined;
-  const trimmed = value.trim().replace(/^\.\//u, "");
-  const parts = trimmed.split(/[\\/]+/u);
-  if (
-    trimmed.length === 0 ||
-    value.includes("\0") ||
-    isAbsolute(trimmed) ||
-    parts.some((part) => part.length === 0 || part === "." || part === "..")
-  ) {
-    throw new Error("plugin Git subdirectory must stay within the repository root");
-  }
-  return parts.join("/");
-}
-
-function normalizePluginGitRef(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined;
-  const trimmed = value.trim();
-  if (
-    trimmed.length === 0 ||
-    trimmed !== value ||
-    trimmed.startsWith("-") ||
-    trimmed.includes("\0") ||
-    /[\r\n]/u.test(trimmed)
-  ) {
-    throw new Error("plugin Git ref must be a safe non-empty ref");
-  }
-  return trimmed;
-}
-
-function normalizePluginGitSha(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined;
-  const trimmed = value.trim();
-  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/iu.test(trimmed)) {
-    throw new Error("plugin Git sha must be a full 40- or 64-character hexadecimal commit id");
-  }
-  return trimmed;
+  return pluginRootReal;
 }
 
 async function materializeTarballSource(
@@ -971,7 +984,7 @@ async function materializeMcpbBundle(
     await writeFile(bundlePath, await fetchBytes(source, options));
     return bundlePath;
   }
-  const bundlePath = resolve(options.workspaceRoot ?? process.cwd(), source);
+  const bundlePath = resolve(options.workspaceRoot, source);
   await access(bundlePath);
   return bundlePath;
 }
@@ -1273,14 +1286,10 @@ async function runProcess(
   options: PluginResolverOptions,
   command: string,
   args: readonly string[],
-  processOptions: {
-    readonly cwd?: string;
-  } = {},
 ): Promise<PluginProcessResult> {
   const runner = options.runProcess ?? defaultPluginProcessRunner;
   try {
     return await runner(command, args, {
-      ...processOptions,
       timeoutMs: DEFAULT_PROCESS_TIMEOUT_MS,
       maxOutputBytes: DEFAULT_PROCESS_MAX_OUTPUT_BYTES,
     });
@@ -1618,15 +1627,31 @@ async function readPublisherPublicKey(path: string, publisher: string): Promise<
   return publicKey;
 }
 
-function defaultPublishersPath(): string {
-  const home = process.env.HOME ?? process.cwd();
-  return join(home, ".agenc", "plugin-publishers.json");
+function defaultPublishersPath(agencHome: string): string {
+  return join(agencHome, "plugin-publishers.json");
 }
 
-function cacheKeyForSource(source: string): string {
-  const hash = createHash("sha256").update(source).digest("hex").slice(0, 16);
-  const safeSource = redactPluginSource(source);
+function cacheKeyForSource(source: PluginInstallSource): string {
+  const identity = pluginInstallSourceIdentity(source);
+  const hash = createHash("sha256").update(identity).digest("hex").slice(0, 16);
+  const safeSource = typeof source === "string"
+    ? redactPluginSource(source)
+    : [redactPluginSource(source.url), source.path, source.ref, source.sha]
+      .filter((value) => value !== undefined)
+      .join("-");
   return `${safeSource.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 48)}-${hash}`;
+}
+
+function pluginInstallSourceIdentity(source: PluginInstallSource): string {
+  return typeof source === "string"
+    ? source
+    : JSON.stringify({
+        type: "git",
+        url: source.url,
+        ...(source.path !== undefined ? { path: source.path } : {}),
+        ...(source.ref !== undefined ? { ref: source.ref } : {}),
+        ...(source.sha !== undefined ? { sha: source.sha.toLowerCase() } : {}),
+      });
 }
 
 function redactCredentialUrls(input: string): string {
@@ -1672,6 +1697,90 @@ function assertSafeGitSource(source: string): void {
     if (/\s/u.test(url.pathname)) throw new Error("whitespace in path");
   } catch {
     throw new Error(`invalid git plugin source: ${source}`);
+  }
+}
+
+function assertStructuredGitPluginSource(
+  source: StructuredGitPluginSource,
+): void {
+  if (source.url !== source.url.trim() || source.url.length === 0) {
+    throw new Error("plugin Git repository URL must be a non-empty exact value");
+  }
+  assertNotOptionLikeSource(source.url, "git repository");
+  assertStructuredGitUrl(source.url);
+  if (source.path !== undefined) {
+    const segments = source.path.split("/");
+    if (
+      source.path.length === 0 ||
+      isAbsolute(source.path) ||
+      segments.some((segment) =>
+        segment.length === 0 || segment === "." || segment === ".."
+      ) ||
+      segments.join("/") !== source.path
+    ) {
+      throw new Error(
+        "plugin Git subdirectory must be a canonical relative path inside the repository",
+      );
+    }
+  }
+  if (source.ref !== undefined) {
+    if (
+      source.ref.length === 0 ||
+      source.ref !== source.ref.trim() ||
+      source.ref.startsWith("-") ||
+      source.ref.includes("\0") ||
+      /\s/u.test(source.ref) ||
+      ["~", "^", ":", "?", "*", "[", "\\"].some((character) =>
+        source.ref!.includes(character)
+      ) ||
+      source.ref.includes("..") ||
+      source.ref.includes("@{") ||
+      source.ref.endsWith(".") ||
+      source.ref.endsWith(".lock") ||
+      source.ref.endsWith("/")
+    ) {
+      throw new Error("plugin Git ref must be a non-empty exact ref");
+    }
+  }
+  if (
+    source.sha !== undefined &&
+    !/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/u.test(source.sha)
+  ) {
+    throw new Error("plugin Git SHA must be a full hexadecimal commit ID");
+  }
+}
+
+function assertStructuredGitUrl(url: string): void {
+  if (isAbsolute(url)) return;
+  if (/^[a-zA-Z0-9._-]+@[^:\s]+:[^\s]+$/u.test(url)) return;
+  const urlSource = url.startsWith("git+") ? url.slice("git+".length) : url;
+  let parsed: URL;
+  try {
+    parsed = new URL(urlSource);
+  } catch {
+    throw new Error(`invalid structured Git plugin source: ${url}`);
+  }
+  if (["https:", "ssh:", "git:", "file:"].includes(parsed.protocol)) {
+    return;
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  if (
+    parsed.protocol === "http:" &&
+    (hostname === "localhost" || hostname === "127.0.0.1" ||
+      hostname === "::1")
+  ) {
+    return;
+  }
+  throw new Error(`invalid structured Git plugin source: ${url}`);
+}
+
+function isLocalStructuredGitSource(source: PluginInstallSource): boolean {
+  if (typeof source === "string") return false;
+  if (isAbsolute(source.url)) return true;
+  try {
+    return new URL(source.url).protocol === "file:";
+  } catch {
+    return false;
   }
 }
 

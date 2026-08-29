@@ -1,9 +1,10 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import type * as React from 'react';
+import type { HomeContext } from '../../config/home.js';
 import { formatNumber } from '../../utils/format.js';
-import type { getGlobalConfig } from '../../utils/config.js';
-import { getproviderApiKeyWithSource, getApiKeyFromConfigOrMacOSKeychain, getAuthTokenSource, isAgenCAISubscriber } from '../../utils/auth.js';
+import type { getRuntimeState } from '../../utils/config.js';
+import { getAnthropicApiKeyWithSourceForContext, getPrimaryApiKeyFromSecureStorage, getAuthTokenSourceForContext, isAgenCAISubscriberForContext, selectedProviderUsesExternalAuth, type ProviderAuthReadContext } from '../../utils/auth.js';
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js';
 import { getAgentDescriptionsTotalTokens, AGENT_DESCRIPTIONS_THRESHOLD } from '../../utils/statusNoticeHelpers.js';
 import { isSupportedJetBrainsTerminal, toIDEDisplayName, getTerminalIdeType } from '../../utils/ide.js';
@@ -12,7 +13,9 @@ import { isJetBrainsPluginInstalledCachedSync } from '../../utils/jetbrains.js';
 // Types
 export type StatusNoticeType = 'warning' | 'error' | 'success' | 'info';
 export type StatusNoticeContext = {
-  config: ReturnType<typeof getGlobalConfig>;
+  config: ReturnType<typeof getRuntimeState>;
+  homeContext: HomeContext;
+  providerAuthContext: ProviderAuthReadContext;
   agentDefinitions?: AgentDefinitionsResult;
   memoryDiagnostics: string[];
   daemonStatus: {
@@ -24,21 +27,46 @@ export type StatusNoticeContext = {
 export type StatusNoticeDefinition = {
   id: string;
   type: StatusNoticeType;
+  authScope?: 'anthropic';
   isActive: (context: StatusNoticeContext) => boolean;
   render: (context: StatusNoticeContext) => React.ReactNode;
 };
-type AuthTokenSource = ReturnType<typeof getAuthTokenSource>['source'];
-type ApiKeySourceResult = ReturnType<typeof getproviderApiKeyWithSource>;
+type AuthTokenSource = ReturnType<typeof getAuthTokenSourceForContext>['source'];
+type ApiKeySourceResult = ReturnType<typeof getAnthropicApiKeyWithSourceForContext>;
 
 function readApiKeyWithSource(
-  opts?: Parameters<typeof getproviderApiKeyWithSource>[0],
+  context: ProviderAuthReadContext,
 ): ApiKeySourceResult {
   try {
-    return opts === undefined
-      ? getproviderApiKeyWithSource()
-      : getproviderApiKeyWithSource(opts);
+    return getAnthropicApiKeyWithSourceForContext(context);
   } catch {
     return { key: null, source: 'none' };
+  }
+}
+
+function readAuthTokenSource(
+  context: ProviderAuthReadContext,
+): ReturnType<typeof getAuthTokenSourceForContext> {
+  try {
+    return getAuthTokenSourceForContext(context);
+  } catch {
+    return { source: 'none', hasToken: false };
+  }
+}
+
+function readSubscriberStatus(context: ProviderAuthReadContext): boolean {
+  try {
+    return isAgenCAISubscriberForContext(context);
+  } catch {
+    return false;
+  }
+}
+
+function hasManagedApiKey(context: ProviderAuthReadContext): boolean {
+  try {
+    return getPrimaryApiKeyFromSecureStorage(context.home) !== null;
+  } catch {
+    return false;
   }
 }
 
@@ -47,9 +75,9 @@ function getAuthTokenDisplayName(source: AuthTokenSource): string {
     case 'ANTHROPIC_AUTH_TOKEN':
     case 'AGENC_OAUTH_TOKEN':
     case 'AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR':
-    case 'CCR_OAUTH_TOKEN_FILE':
-    case 'apiKeyHelper':
       return source;
+    case 'native-secure-storage':
+      return 'native secure storage';
     case 'none':
       return 'token auth';
     default:
@@ -64,10 +92,8 @@ function getAuthTokenCleanupHint(source: AuthTokenSource): string {
       return `Unset the ${source} environment variable, or run agenc /logout.`;
     case 'AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR':
       return 'Restart without the inherited OAuth token, or run agenc /logout.';
-    case 'CCR_OAUTH_TOKEN_FILE':
-      return 'Remove the managed OAuth token file, or run agenc /logout.';
-    case 'apiKeyHelper':
-      return 'Unset the apiKeyHelper setting.';
+    case 'native-secure-storage':
+      return 'Run agenc /logout to clear persisted authentication.';
     case 'none':
       return 'No token source is active.';
     default:
@@ -87,56 +113,52 @@ const largeMemoryFilesNotice: StatusNoticeDefinition = {
 const agencAccountExternalTokenNotice: StatusNoticeDefinition = {
   id: 'agenc-account-external-token',
   type: 'warning',
-  isActive: () => {
-    const authTokenInfo = getAuthTokenSource();
-    return isAgenCAISubscriber() && (authTokenInfo.source === 'ANTHROPIC_AUTH_TOKEN' || authTokenInfo.source === 'apiKeyHelper');
+  authScope: 'anthropic',
+  isActive: ctx => {
+    const authTokenInfo = readAuthTokenSource(ctx.providerAuthContext);
+    return readSubscriberStatus(ctx.providerAuthContext) && authTokenInfo.source === 'ANTHROPIC_AUTH_TOKEN';
   },
-  render: () => {
-    const authTokenInfo = getAuthTokenSource();
+  render: ctx => {
+    const authTokenInfo = readAuthTokenSource(ctx.providerAuthContext);
     return `Auth conflict: Using ${authTokenInfo.source} instead of AgenC account subscription token. Either unset ${authTokenInfo.source}, or run agenc /logout.`;
   }
 };
 const apiKeyConflictNotice: StatusNoticeDefinition = {
   id: 'api-key-conflict',
   type: 'warning',
-  isActive: () => {
+  authScope: 'anthropic',
+  isActive: ctx => {
     const {
       source: apiKeySource
-    } = readApiKeyWithSource({
-      skipRetrievingKeyFromApiKeyHelper: true
-    });
-    return !!getApiKeyFromConfigOrMacOSKeychain() && (apiKeySource === 'ANTHROPIC_API_KEY' || apiKeySource === 'apiKeyHelper');
+    } = readApiKeyWithSource(ctx.providerAuthContext);
+    return apiKeySource === 'ANTHROPIC_API_KEY' &&
+      hasManagedApiKey(ctx.providerAuthContext);
   },
-  render: () => {
+  render: ctx => {
     const {
       source: apiKeySource
-    } = readApiKeyWithSource({
-      skipRetrievingKeyFromApiKeyHelper: true
-    });
+    } = readApiKeyWithSource(ctx.providerAuthContext);
     return `Auth conflict: Using ${apiKeySource} instead of provider Console key. Either unset ${apiKeySource}, or run agenc /logout.`;
   }
 };
 const bothAuthMethodsNotice: StatusNoticeDefinition = {
   id: 'both-auth-methods',
   type: 'warning',
-  isActive: () => {
+  authScope: 'anthropic',
+  isActive: ctx => {
     const {
       source: apiKeySource
-    } = readApiKeyWithSource({
-      skipRetrievingKeyFromApiKeyHelper: true
-    });
-    const authTokenInfo = getAuthTokenSource();
-    return apiKeySource !== 'none' && authTokenInfo.source !== 'none' && !(apiKeySource === 'apiKeyHelper' && authTokenInfo.source === 'apiKeyHelper');
+    } = readApiKeyWithSource(ctx.providerAuthContext);
+    const authTokenInfo = readAuthTokenSource(ctx.providerAuthContext);
+    return apiKeySource !== 'none' && authTokenInfo.source !== 'none';
   },
-  render: () => {
+  render: ctx => {
     const {
       source: apiKeySource
-    } = readApiKeyWithSource({
-      skipRetrievingKeyFromApiKeyHelper: true
-    });
-    const authTokenInfo = getAuthTokenSource();
+    } = readApiKeyWithSource(ctx.providerAuthContext);
+    const authTokenInfo = readAuthTokenSource(ctx.providerAuthContext);
     const authTokenDisplayName = getAuthTokenDisplayName(authTokenInfo.source);
-    const apiKeyCleanup = apiKeySource === 'ANTHROPIC_API_KEY' ? 'Unset the ANTHROPIC_API_KEY environment variable, or run agenc /logout then decline API key approval before login.' : apiKeySource === 'apiKeyHelper' ? 'Unset the apiKeyHelper setting.' : 'Run agenc /logout.';
+    const apiKeyCleanup = apiKeySource === 'ANTHROPIC_API_KEY' ? 'Unset the ANTHROPIC_API_KEY environment variable, or run agenc /logout then decline API key approval before login.' : 'Run agenc /logout.';
     return `Auth conflict: Both a token (${authTokenDisplayName}) and an API key (${apiKeySource}) are set. This may lead to unexpected behavior. Trying to use ${authTokenDisplayName}? ${apiKeyCleanup} Trying to use ${apiKeySource}? ${getAuthTokenCleanupHint(authTokenInfo.source)}`;
   }
 };
@@ -197,5 +219,12 @@ export const statusNoticeDefinitions: StatusNoticeDefinition[] = [largeMemoryFil
 
 // Helper functions for external use
 export function getActiveNotices(context: StatusNoticeContext): StatusNoticeDefinition[] {
-  return statusNoticeDefinitions.filter(notice => notice.isActive(context));
+  const externalAuth = selectedProviderUsesExternalAuth(
+    context.providerAuthContext.provider,
+  );
+  return statusNoticeDefinitions.filter(
+    notice =>
+      !(externalAuth && notice.authScope === 'anthropic') &&
+      notice.isActive(context),
+  );
 }

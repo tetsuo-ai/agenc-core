@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,12 +10,14 @@ import {
   oneShotCLI,
   type PreparedTurnRuntimeInputs,
 } from "./agenc-main.js";
+import { __installDaemonTurnDriverHooksForTest } from "../app-server/background-agent-runner.js";
 import { defaultConfig } from "../config/schema.js";
 import {
   resolveProjectTrustRootSync,
   trustProjectSync,
 } from "../permissions/trust/project-trust.js";
 import type { PhaseEvent } from "../phases/events.js";
+import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
 import {
   canonicalizePath,
   clearSessionReadState,
@@ -25,7 +27,7 @@ import {
 function fakeSession(cwd: string) {
   let installed:
     | {
-        submit(message: string): Promise<void>;
+        submit(message: string, opts?: unknown): Promise<void>;
         flushEventLog?(): void;
       }
     | null = null;
@@ -62,12 +64,32 @@ function fakeSession(cwd: string) {
       },
     },
     sessionConfiguration: { cwd },
-    submit: async (message: string) => {
+    submit: async (message: string, opts?: unknown) => {
       if (!installed) throw new Error("submit hook missing");
-      await installed.submit(message);
+      await installed.submit(message, opts);
     },
   };
   return { session, events };
+}
+
+function daemonEditorInteraction(
+  interactionId: string,
+): SessionEditorInteraction {
+  return {
+    interactionId,
+    kind: "explain",
+    policy: "read_only",
+    editorInstanceId: "editor-prompt-hook-test",
+    bufferHandle: 12,
+    changedtick: 4,
+    contentSha256: "f".repeat(64),
+    path: "src/prompt-hook.ts",
+    range: {
+      start: { line: 1, column: 0 },
+      end: { line: 2, column: 3 },
+    },
+    selectionMode: "character",
+  };
 }
 
 const EMPTY_TURN_INPUTS: PreparedTurnRuntimeInputs = {
@@ -104,9 +126,10 @@ async function installOneShotHookConfig(
   await writeFile(
     join(agencHome, "config.toml"),
     `
+config_version = 2
 sandbox_mode = "danger-full-access"
 
-[[hooks.userPromptSubmit]]
+[[hooks.UserPromptSubmit]]
 hooks = [{ type = "command", command = ${JSON.stringify(command)} }]
 `,
     "utf8",
@@ -186,7 +209,7 @@ function installOneShotDaemonSpies() {
   };
 }
 
-describe("TUI session UserPromptSubmit hooks", () => {
+describe("UserPromptSubmit prompt ingress", () => {
   it("runs hooks through the installed live submit driver before the turn starts", async () => {
     const { session } = fakeSession("/workspace");
     const inputs: unknown[] = [];
@@ -304,7 +327,7 @@ describe("TUI session UserPromptSubmit hooks", () => {
       getSessionReadSnapshot(session.conversationId, noteCanonicalPath)
         ?.rawContent,
     ).toBe("file mention body\n");
-    clearSessionReadState(session.conversationId);
+    clearSessionReadState(session.conversationId, tmpdir());
   });
 
   it("truncates oversized live submit hook context before the turn", async () => {
@@ -522,7 +545,139 @@ describe("TUI session UserPromptSubmit hooks", () => {
     );
   });
 
-  it("fails closed before local one-shot hooks can bypass daemon admission", async () => {
+  it("runs the owning daemon session hook exactly once and sends its context to the model", async () => {
+    const { session } = fakeSession("/workspace");
+    const hook = vi.fn(() => ({
+      additionalContexts: ["daemon-owned hook context"],
+    }));
+    session.services.hooks.userPromptSubmitHooks.push(hook);
+    const modelInputs: unknown[] = [];
+    const runTurnFn = vi.fn(async function* (
+      _session: unknown,
+      _ctx: unknown,
+      input: unknown,
+    ) {
+      modelInputs.push(input);
+      yield {
+        type: "turn_complete",
+        content: "ok",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        stopReason: "completed",
+      } satisfies PhaseEvent;
+      return { reason: "completed" };
+    });
+    __installDaemonTurnDriverHooksForTest(
+      session as never,
+      { current: () => defaultConfig } as never,
+      runTurnFn as never,
+    );
+
+    await session.submit("daemon prompt");
+
+    expect(hook).toHaveBeenCalledTimes(1);
+    expect(hook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "daemon prompt",
+        permissionMode: "default",
+        cwd: "/workspace",
+        sessionId: "conv-hooks",
+      }),
+    );
+    expect(runTurnFn).toHaveBeenCalledTimes(1);
+    expect(modelInputs).toHaveLength(1);
+    expect(String(modelInputs[0])).toContain("daemon prompt");
+    expect(String(modelInputs[0])).toContain("# Hook Additional Context");
+    expect(String(modelInputs[0])).toContain("daemon-owned hook context");
+  });
+
+  it("blocks daemon turn execution when the owning session hook rejects the prompt", async () => {
+    const { session, events } = fakeSession("/workspace");
+    const hook = vi.fn(() => ({
+      blockingError: { blockingError: "daemon policy denied" },
+    }));
+    session.services.hooks.userPromptSubmitHooks.push(hook);
+    const runTurnFn = vi.fn(async function* () {
+      yield {
+        type: "turn_complete",
+        content: "unexpected",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        stopReason: "completed",
+      } satisfies PhaseEvent;
+      return { reason: "completed" };
+    });
+    __installDaemonTurnDriverHooksForTest(
+      session as never,
+      { current: () => defaultConfig } as never,
+      runTurnFn as never,
+    );
+
+    await expect(session.submit("blocked daemon prompt")).rejects.toThrow(
+      /daemon policy denied/,
+    );
+
+    expect(hook).toHaveBeenCalledTimes(1);
+    expect(runTurnFn).not.toHaveBeenCalled();
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: expect.objectContaining({
+          type: "error",
+          payload: expect.objectContaining({
+            cause: "user_prompt_submit_hook_blocked",
+            message: expect.stringContaining("daemon policy denied"),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("bypasses UserPromptSubmit hooks for daemon editor interactions", async () => {
+    const { session } = fakeSession("/workspace");
+    const hook = vi.fn(() => ({
+      blockingError: { blockingError: "must not run for editor input" },
+    }));
+    session.services.hooks.userPromptSubmitHooks.push(hook);
+    const modelInputs: unknown[] = [];
+    const turnOptions: unknown[] = [];
+    const runTurnFn = vi.fn(async function* (
+      _session: unknown,
+      _ctx: unknown,
+      input: unknown,
+      options: unknown,
+    ) {
+      modelInputs.push(input);
+      turnOptions.push(options);
+      yield {
+        type: "turn_complete",
+        content: "ok",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        stopReason: "completed",
+      } satisfies PhaseEvent;
+      return { reason: "completed" };
+    });
+    __installDaemonTurnDriverHooksForTest(
+      session as never,
+      { current: () => defaultConfig } as never,
+      runTurnFn as never,
+    );
+
+    await session.submit("explain this selection", {
+      editorInteraction: daemonEditorInteraction("editor-hook-bypass"),
+    });
+
+    expect(hook).not.toHaveBeenCalled();
+    expect(runTurnFn).toHaveBeenCalledTimes(1);
+    expect(modelInputs).toEqual(["explain this selection"]);
+    expect(turnOptions).toContainEqual(
+      expect.objectContaining({
+        systemPrompt: expect.stringContaining(
+          "<editor_interaction_policy>",
+        ),
+        systemPromptTrust: "trusted_internal",
+      }),
+    );
+  });
+
+  it("forwards the raw one-shot prompt to daemon-owned hook admission", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-one-shot-hook-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-one-shot-hook-cwd-"));
     const prevEnv = { ...process.env };
@@ -564,14 +719,25 @@ process.stdin.on("end", () => {
     try {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("review @secret.txt");
-      expect(code).toBe(1);
+      expect(code).toBe(0);
       expect(spies.startPromptAgent).not.toHaveBeenCalled();
-      expect(spies.requests).toEqual([]);
+      const createRequest = spies.requests.find(
+        ({ method }) => method === "agent.create",
+      );
+      expect(createRequest).toEqual({
+        method: "agent.create",
+        params: expect.objectContaining({
+          objective: "review @secret.txt",
+          instructions: "review @secret.txt",
+        }),
+      });
+      const forwardedParams = JSON.stringify(createRequest?.params);
+      expect(forwardedParams).not.toContain("<attached_files>");
+      expect(forwardedParams).not.toContain("one-shot file body");
+      expect(forwardedParams).not.toContain("hook prompt=");
       expect(
         stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
-      ).toContain(
-        "could not cross the required execution admission boundary",
-      );
+      ).not.toContain("execution admission boundary");
     } finally {
       spies.restore();
       stdoutSpy.mockRestore();
@@ -582,12 +748,16 @@ process.stdin.on("end", () => {
     }
   });
 
-  it("does not execute a blocking one-shot hook without daemon admission", async () => {
+  it("does not execute a configured one-shot hook before daemon admission", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-one-shot-block-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-one-shot-block-cwd-"));
+    const markerPath = join(tmpHome, "blocking-hook-ran");
     const prevEnv = { ...process.env };
     const stderrSpy = vi
       .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
       .mockImplementation(() => true);
     const spies = installOneShotDaemonSpies();
     await writeFile(join(tmpCwd, "package.json"), "{}\n", "utf8");
@@ -595,6 +765,7 @@ process.stdin.on("end", () => {
       tmpHome,
       "blocking-prompt-hook.cjs",
       `
+require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "ran");
 process.stderr.write("blocked one-shot prompt");
 process.exit(2);
 `,
@@ -609,17 +780,24 @@ process.exit(2);
     try {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("blocked prompt");
-      expect(code).toBe(1);
+      expect(code).toBe(0);
       expect(spies.startPromptAgent).not.toHaveBeenCalled();
-      expect(spies.requests).toEqual([]);
-      expect(
-        stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
-      ).toContain("could not cross the required execution admission boundary");
+      expect(spies.requests).toContainEqual({
+        method: "agent.create",
+        params: expect.objectContaining({
+          objective: "blocked prompt",
+          instructions: "blocked prompt",
+        }),
+      });
+      await expect(readFile(markerPath, "utf8")).rejects.toMatchObject({
+        code: "ENOENT",
+      });
       expect(
         stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
       ).not.toContain("blocked one-shot prompt");
     } finally {
       spies.restore();
+      stdoutSpy.mockRestore();
       stderrSpy.mockRestore();
       restoreEnv(prevEnv);
       await rm(tmpHome, { recursive: true, force: true });

@@ -8,7 +8,7 @@ import type { AutoUpdaterResult } from "../../utils/autoUpdater.js";
 
 const harness = vi.hoisted(() => ({
   getCurrentInstallationType: vi.fn(async () => "unknown"),
-  getGlobalConfig: vi.fn(() => ({ installMethod: "local" })),
+  getRuntimeState: vi.fn(() => ({ installMethod: "local" })),
   getLatestVersion: vi.fn(async () => "9.0.0"),
   getMaxVersion: vi.fn(async () => "2.0.0"),
   installGlobalPackage: vi.fn(async () => "success"),
@@ -44,7 +44,7 @@ vi.mock("../../utils/autoUpdater.js", () => ({
 }));
 
 vi.mock("../../utils/config.js", () => ({
-  getGlobalConfig: harness.getGlobalConfig,
+  getRuntimeState: harness.getRuntimeState,
   isAutoUpdaterDisabled: harness.isAutoUpdaterDisabled,
 }));
 

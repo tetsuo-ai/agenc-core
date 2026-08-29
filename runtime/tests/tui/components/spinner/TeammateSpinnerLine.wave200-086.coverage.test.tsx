@@ -9,6 +9,7 @@ import {
 } from './TeammateSpinnerLine.js'
 
 const NOW = new Date('2026-05-20T12:00:00.000Z').getTime()
+const TEST_SPINNER_VERBS = ['Reviewing'] as const
 
 const terminalSizeMock = vi.hoisted(() => ({
   size: { columns: 120, rows: 24 },
@@ -20,10 +21,6 @@ vi.mock('bun:bundle', () => ({
 
 vi.mock('lodash-es/sample.js', () => ({
   default: <T,>(items: readonly T[]) => items[0],
-}))
-
-vi.mock('../../../constants/spinnerVerbs.js', () => ({
-  getSpinnerVerbs: () => ['Reviewing'],
 }))
 
 vi.mock('../../../constants/turnCompletionVerbs.js', () => ({
@@ -84,6 +81,7 @@ async function renderLine(
     <TeammateSpinnerLine
       teammate={task}
       isLast={false}
+      spinnerVerbs={TEST_SPINNER_VERBS}
       {...props}
     />,
     terminalSizeMock.size.columns,

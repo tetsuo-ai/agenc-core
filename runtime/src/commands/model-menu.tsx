@@ -2,15 +2,18 @@ import React from "react";
 
 import {
   buildProviderModelCatalog,
-  normalizeProviderSlug,
-  resolveProviderSettings,
   type ProviderSlug,
-} from "../config/resolve-provider.js";
+} from "../config/provider-model-authority.js";
+import { resolveProviderSlug } from "../config/resolve-provider.js";
 import {
   configuredModelForProvider,
   defaultModelForProvider,
 } from "../config/resolve-model.js";
 import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
+import {
+  providerLocalModelIdFromCatalog,
+} from "../llm/registry/provider-info.js";
+import { isModelAllowed } from "../utils/model/modelAllowlist.js";
 import type { AgenCConfig } from "../config/schema.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
@@ -18,13 +21,8 @@ import { MenuModal } from "../tui/components/v2/primitives.js";
 import { readCommandConfig } from "./config-context.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
-import {
-  SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
-  hasHostedManagedAccess,
-  hostedManagedSubscriptionTier,
-  providerHasLiveSubscriptionRoute,
-  visibleSubscriptionManagedModelsForTier,
-} from "./subscription-managed-models.js";
+import { readBuiltInSessionSelection } from "../session/provider-model-selection.js";
+import { createProviderCommandAccessOverlay } from "./provider-command-access.js";
 import type { SlashCommandContext } from "./types.js";
 
 type ModelRowStatus =
@@ -36,6 +34,7 @@ type ModelRowStatus =
 
 type ModelMenuRow = {
   readonly model: string;
+  readonly displayModel: string;
   readonly provider: ProviderSlug;
   readonly status: ModelRowStatus;
   readonly detail: string;
@@ -59,52 +58,8 @@ export type ModelMenuSelectionResult = {
   readonly shouldClose: boolean;
 };
 
-type SessionModelSnapshot = {
-  readonly provider?: string;
-  readonly model?: string;
-};
-
-function readSessionSelection(ctx: SlashCommandContext): SessionModelSnapshot {
-  const peekState = (ctx.session as unknown as {
-    state?: { unsafePeek?: () => unknown };
-  }).state?.unsafePeek;
-  const rawState =
-    typeof peekState === "function"
-      ? (peekState.call((ctx.session as unknown as { state?: unknown }).state) as {
-          sessionConfiguration?: {
-            provider?: { slug?: string };
-            collaborationMode?: { model?: string };
-          };
-        })
-      : null;
-  const directConfig = (ctx.session as unknown as {
-    sessionConfiguration?: {
-      provider?: { slug?: string };
-      collaborationMode?: { model?: string };
-    };
-  }).sessionConfiguration;
-  const sessionConfiguration = rawState?.sessionConfiguration ?? directConfig;
-  return {
-    ...(sessionConfiguration?.provider?.slug
-      ? { provider: sessionConfiguration.provider.slug }
-      : {}),
-    ...(sessionConfiguration?.collaborationMode?.model
-      ? { model: sessionConfiguration.collaborationMode.model }
-      : {}),
-  };
-}
-
-function readAppStateModel(ctx: SlashCommandContext): string | undefined {
-  const state = ctx.appState?.getAppState?.();
-  if (typeof state !== "object" || state === null) return undefined;
-  const model = (state as { mainLoopModel?: unknown }).mainLoopModel;
-  return typeof model === "string" && model.trim().length > 0
-    ? model.trim()
-    : undefined;
-}
-
 function rowStatus(params: {
-  readonly model: string;
+  readonly displayModel: string;
   readonly provider: ProviderSlug;
   readonly currentProvider: ProviderSlug;
   readonly currentModel: string;
@@ -113,17 +68,28 @@ function rowStatus(params: {
 }): ModelRowStatus {
   if (
     params.provider === params.currentProvider &&
-    params.model === params.currentModel
+    params.displayModel === providerLocalModelIdFromCatalog(
+      params.provider,
+      params.currentModel,
+    )
   ) {
     return "current";
   }
   if (
     params.configuredModel !== undefined &&
-    params.model === params.configuredModel
+    params.displayModel === providerLocalModelIdFromCatalog(
+      params.provider,
+      params.configuredModel,
+    )
   ) {
     return "configured";
   }
-  if (params.model === params.defaultModel) return "default";
+  if (
+    params.displayModel === providerLocalModelIdFromCatalog(
+      params.provider,
+      params.defaultModel,
+    )
+  ) return "default";
   return "available";
 }
 
@@ -195,17 +161,12 @@ function statusGlyph(status: ModelRowStatus): string {
 function providerOrder(
   catalog: Readonly<Record<string, readonly string[]>>,
   currentProvider: ProviderSlug,
-  preferredProvider?: ProviderSlug,
 ): readonly ProviderSlug[] {
   const ids = Object.keys(catalog)
-    .map(provider => normalizeProviderSlug(provider))
+    .map(provider => resolveProviderSlug(provider))
     .filter((provider): provider is ProviderSlug => provider !== undefined);
   const unique = [...new Set(ids)];
   return unique.sort((left, right) => {
-    if (preferredProvider !== undefined) {
-      if (left === preferredProvider) return -1;
-      if (right === preferredProvider) return 1;
-    }
     if (left === currentProvider) return -1;
     if (right === currentProvider) return 1;
     return left.localeCompare(right);
@@ -232,39 +193,59 @@ function providerRows(params: {
       ? configuredModelForProvider(params.config, params.provider)
       : undefined;
   const defaultModel = defaultModelForProvider(params.provider);
-  const candidates = new Set<string>();
-  if (params.provider === params.currentProvider) candidates.add(params.currentModel);
-  if (configuredModel !== undefined) candidates.add(configuredModel);
-  candidates.add(defaultModel);
+  const candidates = new Map<string, string>();
+  const addCandidate = (model: string, preferCatalogSpelling = false): void => {
+    const displayModel = providerLocalModelIdFromCatalog(
+      params.provider,
+      model,
+    );
+    if (
+      !isModelAllowed(
+        params.provider,
+        displayModel,
+        params.config ?? {},
+      )
+    ) return;
+    if (preferCatalogSpelling || !candidates.has(displayModel)) {
+      candidates.set(displayModel, model);
+    }
+  };
+  if (params.provider === params.currentProvider) addCandidate(params.currentModel);
+  if (configuredModel !== undefined) addCandidate(configuredModel);
+  addCandidate(defaultModel);
   for (const model of params.catalogModels) {
     const trimmed = model.trim();
     if (trimmed.length === 0) continue;
     // `visibility: "hide"` models (e.g. internal review models) stay resolvable
     // via the flat catalog but must not be offered as new picker selections.
-    // The current/configured/default candidates above are added unconditionally,
-    // so a hidden model that is the active selection still renders its row.
+    // Current/configured/default candidates bypass visibility filtering, but
+    // every candidate still passes through managed model policy above.
     if (isHiddenCatalogModel(params.provider, trimmed)) continue;
-    candidates.add(trimmed);
+    addCandidate(trimmed, true);
   }
 
   if (candidates.size === 0) {
     return [{
       provider: params.provider,
       model: "(no models)",
+      displayModel: "(no models)",
       status: "unavailable",
       selectable: false,
       groupLabel: params.provider,
-      detail: rowDetailForRoute(
-        "unavailable",
-        params.provider,
-        params.managedRoute === true,
-      ),
+      detail:
+        params.config?.availableModels === undefined
+          ? rowDetailForRoute(
+              "unavailable",
+              params.provider,
+              params.managedRoute === true,
+            )
+          : "no models allowed by managed policy",
     }];
   }
 
-  return [...candidates].map((model): ModelMenuRow => {
+  return [...candidates].map(([displayModel, model]): ModelMenuRow => {
     const status = rowStatus({
-      model,
+      displayModel,
       provider: params.provider,
       currentProvider: params.currentProvider,
       currentModel: params.currentModel,
@@ -273,6 +254,7 @@ function providerRows(params: {
     });
     return {
       model,
+      displayModel,
       provider: params.provider,
       status,
       selectable: status !== "unavailable",
@@ -288,90 +270,93 @@ function providerRows(params: {
 
 export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapshot {
   const config = readCommandConfig(ctx);
-  const sessionSelection = readSessionSelection(ctx);
-  const provider =
-    normalizeProviderSlug(sessionSelection.provider) ??
-    normalizeProviderSlug(config?.model_provider) ??
-    "grok";
+  const sessionSelection = readBuiltInSessionSelection(ctx.session, {
+    includePending: true,
+    ...(config !== undefined ? { fallbackConfig: config } : {}),
+  });
+  const provider = sessionSelection.provider;
   const defaultModel = defaultModelForProvider(provider);
-  const currentModel =
-    readAppStateModel(ctx) ??
-    sessionSelection.model?.trim() ??
-    config?.model?.trim() ??
-    defaultModel;
+  const currentModel = sessionSelection.model;
   const configuredModel =
     config !== undefined ? configuredModelForProvider(config, provider) : undefined;
   const catalog = buildProviderModelCatalog(config);
-  const managedKeysEnabled = config?.auth?.managedKeys?.enabled === true;
-  const managedSubscriptionAvailable = hasHostedManagedAccess(config, process.env);
-  const managedSubscriptionTier = hostedManagedSubscriptionTier(process.env);
-  const providerApiKey = (catalogProvider: ProviderSlug): string | undefined =>
-    config !== undefined
-      ? resolveProviderSettings(catalogProvider, config, process.env)?.apiKey
-      : undefined;
-  const providerHasByok = (catalogProvider: ProviderSlug): boolean => {
-    const apiKey = providerApiKey(catalogProvider);
-    return apiKey !== undefined && apiKey.trim().length > 0;
-  };
-  const shouldShowProvider = (catalogProvider: ProviderSlug): boolean => {
-    if (catalogProvider === provider) return true;
-    if (!managedKeysEnabled) return true;
-    if (providerHasByok(catalogProvider)) return true;
-    return (
-      managedSubscriptionAvailable &&
-      providerHasLiveSubscriptionRoute(catalogProvider)
+  const accessOverlay = createProviderCommandAccessOverlay(ctx);
+  const accessFor = (catalogProvider: ProviderSlug, model: string) =>
+    accessOverlay.inspect({ provider: catalogProvider, model });
+  const isVisibleSelection = (
+    catalogProvider: ProviderSlug,
+    model: string,
+  ): boolean => {
+    const access = accessFor(catalogProvider, model);
+    if (access.effect === "unchanged") return true;
+    if (access.effect === "blocked" || access.route === "unavailable") {
+      return false;
+    }
+    if (access.route !== "subscription") return true;
+    const localModel = providerLocalModelIdFromCatalog(catalogProvider, model);
+    return access.managed.visibleModels.some(
+      managedModel =>
+        providerLocalModelIdFromCatalog(catalogProvider, managedModel) ===
+        localModel,
     );
   };
-  const modelsForProvider = (catalogProvider: ProviderSlug): readonly string[] => {
-    if (
-      managedSubscriptionAvailable &&
-      providerHasLiveSubscriptionRoute(catalogProvider) &&
-      !providerHasByok(catalogProvider)
-    ) {
-      return visibleSubscriptionManagedModelsForTier(
-        catalogProvider,
-        managedSubscriptionTier,
-      );
-    }
-    return catalog[catalogProvider] ?? [];
-  };
-  const preferredProvider = managedSubscriptionAvailable
-    ? SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER
-    : undefined;
-  const rows = providerOrder(catalog, provider, preferredProvider)
-    .filter(shouldShowProvider)
+  const rows = providerOrder(catalog, provider)
     .flatMap(catalogProvider => {
-      const managedRoute =
-        managedSubscriptionAvailable &&
-        providerHasLiveSubscriptionRoute(catalogProvider) &&
-        !providerHasByok(catalogProvider);
-      return providerRows({
+      const seedModel =
+        catalogProvider === provider
+          ? currentModel
+          : defaultModelForProvider(catalogProvider);
+      const managedModels = accessFor(
+        catalogProvider,
+        seedModel,
+      ).managed.visibleModels;
+      const visibleModels = [
+        ...(catalog[catalogProvider] ?? []),
+        ...managedModels,
+      ].filter((model, index, candidates) =>
+        candidates.indexOf(model) === index &&
+        isVisibleSelection(catalogProvider, model),
+      );
+      const projectedRows = providerRows({
         provider: catalogProvider,
         currentProvider: provider,
         currentModel,
         ...(config !== undefined ? { config } : {}),
-        catalogModels: modelsForProvider(catalogProvider),
-        managedRoute,
+        catalogModels: visibleModels,
+      });
+      if (
+        projectedRows.length === 1 &&
+        projectedRows[0]?.status === "unavailable"
+      ) {
+        return visibleModels.length > 0 || catalogProvider === provider
+          ? projectedRows
+          : [];
+      }
+      return projectedRows.flatMap(row => {
+        if (!isVisibleSelection(row.provider, row.model)) return [];
+        const access = accessFor(row.provider, row.model);
+        const managedRoute =
+          access.route === "subscription" ||
+          access.route === "provider-managed";
+        return [{
+          ...row,
+          selectable: access.effect !== "blocked",
+          detail: rowDetailForRoute(row.status, row.provider, managedRoute),
+        }];
       });
     });
-  const preferredActiveIndex =
-    managedSubscriptionAvailable
-      ? rows.findIndex(
-          row =>
-            row.provider === SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER &&
-            row.selectable,
-        )
-      : -1;
   const currentActiveIndex = rows.findIndex(row => row.status === "current");
+  const firstSelectableIndex = rows.findIndex(row => row.selectable);
   const activeIndex = Math.max(
     0,
-    preferredActiveIndex >= 0 ? preferredActiveIndex : currentActiveIndex,
+    currentActiveIndex >= 0 ? currentActiveIndex : firstSelectableIndex,
   );
   // Count the rows actually offered per provider (hidden models are filtered
   // out in providerRows) so the displayed count matches the selectable list.
   const providerCounts = Object.freeze(
     rows.reduce<Record<string, number>>((counts, row) => {
-      counts[row.provider] = (counts[row.provider] ?? 0) + 1;
+      counts[row.provider] =
+        (counts[row.provider] ?? 0) + (row.selectable ? 1 : 0);
       return counts;
     }, {}),
   );
@@ -380,7 +365,7 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
     currentModel,
     ...(configuredModel !== undefined ? { configuredModel } : {}),
     defaultModel,
-    managedKeysEnabled,
+    managedKeysEnabled: accessOverlay.managedKeysEnabled,
     rows,
     activeIndex,
     providerCounts,
@@ -398,7 +383,7 @@ export function modelMenuFallback(snapshot: ModelMenuSnapshot): string {
   ];
   for (const row of snapshot.rows) {
     lines.push(
-      `  ${row.status === "current" ? "*" : "-"} ${row.provider}:${row.model} (${row.detail})`,
+      `  ${row.status === "current" ? "*" : "-"} ${row.provider}:${row.displayModel} (${row.detail})`,
     );
   }
   lines.push(
@@ -496,7 +481,7 @@ function ModelMenuView({
             {row.provider}
           </ThemedText>,
           <ThemedText key="model" color={active ? "agenc" : "text2"} wrap="truncate-middle">
-            {row.model}
+            {row.displayModel}
           </ThemedText>,
           <ThemedText key="group" color="inactive" wrap="truncate-end">
             {row.groupLabel}
@@ -522,7 +507,7 @@ function ModelMenuView({
             or local routes unless they show hosted subscription detail.
           </ThemedText>
           <ThemedText color="subtle" wrap="wrap">
-            Selected: {selected?.provider ?? snapshot.provider}:{selected?.model ?? snapshot.currentModel}
+            Selected: {selected?.provider ?? snapshot.provider}:{selected?.displayModel ?? snapshot.currentModel}
           </ThemedText>
           {selected ? (
             <>

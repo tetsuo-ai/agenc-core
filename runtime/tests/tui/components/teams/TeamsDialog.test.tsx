@@ -64,7 +64,6 @@ const tasksMock = vi.hoisted(() => ({
 
 const mailboxMock = vi.hoisted(() => ({
   sendShutdownRequestToMailbox: vi.fn(async () => {}),
-  writeToMailbox: vi.fn(async () => {}),
 }));
 
 const logMock = vi.hoisted(() => ({
@@ -75,8 +74,6 @@ const teamHelpersMock = vi.hoisted(() => ({
   addHiddenPaneId: vi.fn(() => true),
   removeHiddenPaneId: vi.fn(() => true),
   removeMemberFromTeam: vi.fn(() => true),
-  setMemberMode: vi.fn(),
-  setMultipleMemberModes: vi.fn(),
 }));
 
 const execFileNoThrowMock = vi.hoisted(() =>
@@ -116,20 +113,7 @@ vi.mock("../../ink.js", async importOriginal => {
     },
   };
 });
-vi.mock("../../keybindings/useKeybinding.js", () => ({
-  useKeybinding: () => {},
-  useKeybindings: () => {},
-}));
-vi.mock("../../keybindings/useShortcutDisplay.js", () => ({
-  useShortcutDisplay: () => "shift+tab",
-}));
 vi.mock("../../state/AppState.js", () => ({
-  useAppState: (selector: (state: unknown) => unknown) =>
-    selector({
-      toolPermissionContext: {
-        isBypassPermissionsModeAvailable: true,
-      },
-    }),
   useSetAppState: () => () => {},
 }));
 vi.mock("../../../utils/teamDiscovery.js", () => ({
@@ -149,9 +133,7 @@ vi.mock("../../../utils/tasks.js", async importOriginal => {
   };
 });
 vi.mock("../../../utils/teammateMailbox.js", () => ({
-  createModeSetRequestMessage: (message: unknown) => message,
   sendShutdownRequestToMailbox: mailboxMock.sendShutdownRequestToMailbox,
-  writeToMailbox: mailboxMock.writeToMailbox,
 }));
 vi.mock("../../../utils/log.js", () => ({
   logError: logMock.logError,
@@ -160,8 +142,6 @@ vi.mock("../../../utils/swarm/teamHelpers.js", () => ({
   addHiddenPaneId: teamHelpersMock.addHiddenPaneId,
   removeHiddenPaneId: teamHelpersMock.removeHiddenPaneId,
   removeMemberFromTeam: teamHelpersMock.removeMemberFromTeam,
-  setMemberMode: teamHelpersMock.setMemberMode,
-  setMultipleMemberModes: teamHelpersMock.setMultipleMemberModes,
 }));
 vi.mock("../../../utils/execFileNoThrow.js", () => ({
   execFileNoThrow: execFileNoThrowMock,
@@ -327,15 +307,10 @@ beforeEach(() => {
     notificationMessage: "tasks unassigned",
   });
   mailboxMock.sendShutdownRequestToMailbox.mockClear();
-  mailboxMock.writeToMailbox.mockClear();
   logMock.logError.mockClear();
   teamHelpersMock.addHiddenPaneId.mockClear();
   teamHelpersMock.removeHiddenPaneId.mockClear();
   teamHelpersMock.removeMemberFromTeam.mockClear();
-  teamHelpersMock.setMemberMode.mockClear();
-  teamHelpersMock.setMemberMode.mockReturnValue(true);
-  teamHelpersMock.setMultipleMemberModes.mockClear();
-  teamHelpersMock.setMultipleMemberModes.mockReturnValue(true);
   execFileNoThrowMock.mockReset();
   execFileNoThrowMock.mockResolvedValue({ code: 0, stderr: "", error: "" });
 });
@@ -396,7 +371,7 @@ describe("TeamsDialog rendering", () => {
     expect(output).toContain("gpt-5.4");
     expect(output).toContain("[hidden]");
     expect(output).toContain("[idle]");
-    expect(output).toContain("shift+tab");
+    expect(output).not.toContain("shift+tab");
   });
 
   test("renders empty team list state", async () => {
@@ -810,13 +785,11 @@ describe("TeamsDialog layout helpers", () => {
     const listFooter = getTeamListFooterText({
       glyphs,
       supportsHideShow: true,
-      cycleModeShortcut: "shift+tab",
       columns: 44,
     });
     const detailFooter = getTeammateDetailFooterText({
       glyphs,
       supportsHideShow: true,
-      cycleModeShortcut: "shift+tab",
       columns: 44,
     });
 

@@ -198,7 +198,7 @@ function hookRows(
     const hooks = grouped.get(event) ?? [];
     const meta = hookEventSummary(event);
     const firstHook = hooks[0];
-    const status: HookRowStatus = runtime.isDisabled()
+    const status: HookRowStatus = runtime.isExecutionSuppressed()
       ? "disabled"
       : hasIssues
         ? "issue"
@@ -239,6 +239,7 @@ function hookEnabledText(
   runtime: ConfiguredHooksRuntime,
   hook: IndividualHookConfig,
 ): string {
+  if (runtime.isHardSuppressed()) return "bare suppressed";
   if (runtime.isDisabled()) return "session off";
   return hook.enabled ? "on" : "off";
 }
@@ -528,7 +529,11 @@ function HooksMenuView({
     }
     setFeedback(`running ${hook.event} #${hook.index}...`);
     const diag = await runtime.testHook(hook);
-    setFeedback(`test ${hook.event} #${hook.index}: ${formatDiagnostic(diag)}`);
+    setFeedback(
+      runtime.isHardSuppressed()
+        ? `test ${hook.event} #${hook.index}: skipped · immutable --bare mode suppresses hook execution`
+        : `test ${hook.event} #${hook.index}: ${formatDiagnostic(diag)}`,
+    );
     refresh();
   }, [refresh, runtime]);
 
@@ -545,7 +550,13 @@ function HooksMenuView({
   const toggleDisabled = React.useCallback(() => {
     const nextDisabled = !runtime.isDisabled();
     runtime.setDisabled(nextDisabled);
-    setFeedback(`Hooks ${nextDisabled ? "disabled" : "enabled"} for this session.`);
+    setFeedback(
+      runtime.isHardSuppressed()
+        ? nextDisabled
+          ? "Mutable hook switch disabled; immutable --bare mode also suppresses execution."
+          : "Mutable hook switch enabled, but immutable --bare mode still suppresses execution."
+        : `Hooks ${nextDisabled ? "disabled" : "enabled"} for this session.`,
+    );
     refresh();
   }, [refresh, runtime]);
 
@@ -788,7 +799,7 @@ function HooksMenuView({
             <ThemedText key="matcher" color="subtle" wrap="truncate-end">
               {hook.matcher ?? "(all)"}
             </ThemedText>,
-            <ThemedText key="enabled" color={hook.enabled && !runtime.isDisabled() ? "success" : "inactive"} wrap="truncate-end">
+            <ThemedText key="enabled" color={hook.enabled && !runtime.isExecutionSuppressed() ? "success" : "inactive"} wrap="truncate-end">
               {realHook ? hookEnabledText(runtime, hook) : "—"}
             </ThemedText>,
             <ThemedText key="command" color="text2" wrap="truncate-middle">
@@ -832,7 +843,7 @@ function HooksMenuView({
     <MenuModal
       title="hooks"
       count={`${runtime.listHooks().length}`}
-      summary={runtime.isDisabled() ? "disabled" : issues.length === 0 ? "validation ok" : `${issues.length} issue(s)`}
+      summary={runtime.isHardSuppressed() ? "suppressed (--bare)" : runtime.isDisabled() ? "disabled" : issues.length === 0 ? "validation ok" : `${issues.length} issue(s)`}
       headerRight="enter event · x toggle · r reload"
       columns={[3, 22, 18, 46, 30]}
       headers={["on", "event", "matcher", "command", "source"]}
@@ -891,7 +902,16 @@ function HooksMenuView({
       footer={[
         { keyName: "up/down", label: "navigate" },
         { keyName: "enter", label: "event" },
-        { keyName: "x", label: runtime.isDisabled() ? "enable" : "disable" },
+        {
+          keyName: "x",
+          label: runtime.isHardSuppressed()
+            ? runtime.isDisabled()
+              ? "enable switch (--bare stays)"
+              : "disable switch (--bare)"
+            : runtime.isDisabled()
+              ? "enable"
+              : "disable",
+        },
         { keyName: "r", label: "reload" },
         { keyName: "q", label: "close" },
       ]}
@@ -939,8 +959,8 @@ export function openHooksMenu(
   return openLocalJsxCommand(ctx, close => {
     const reload = ctx.configStore
       ? async (): Promise<string> => {
-          const config = await ctx.configStore!.reload();
-          runtime.load(config.hooks);
+          await ctx.configStore!.reload();
+          runtime.loadConfigAuthority(ctx.configStore!.authoritySnapshot());
           const issues = runtime.issues();
           return issues.length === 0
             ? "Hooks reloaded from config."

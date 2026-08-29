@@ -14,6 +14,11 @@ import {
   PluginManifestError,
   resolveManifestRelativePath,
 } from "./manifest-schema.js";
+import { inspectPluginPackageAuthority } from "./package-authority.js";
+import {
+  MarketplaceManifestError,
+  parseMarketplaceManifestText,
+} from "./marketplace/catalog.js";
 
 export interface ValidationError {
   readonly path: string;
@@ -34,11 +39,27 @@ export interface ValidationResult {
   readonly fileType: "plugin" | "marketplace" | "skill" | "agent" | "command" | "hooks";
 }
 
+function manifestLookupFailure(
+  pluginRoot: string,
+  error: unknown,
+): ValidationResult {
+  const filePath = join(pluginRoot, PLUGIN_MANIFEST_FILE);
+  return {
+    success: false,
+    errors: [{
+      path: filePath,
+      message: error instanceof Error ? error.message : String(error),
+    }],
+    warnings: [],
+    filePath,
+    fileType: "plugin",
+  };
+}
+
 const MARKETPLACE_ONLY_MANIFEST_FIELDS = new Set([
   "category",
   "source",
   "tags",
-  "strict",
   "id",
 ]);
 const MAX_VALIDATION_MARKDOWN_FILES = 512;
@@ -301,21 +322,19 @@ export async function validateMarketplaceManifest(
   const absolutePath = resolve(filePath);
   const errors: ValidationError[] = [];
   const warnings: ValidationWarning[] = [];
-  let parsed: unknown;
+  let content: string;
   try {
-    parsed = JSON.parse(await readJsonText(absolutePath));
+    content = await readJsonText(absolutePath);
   } catch (error) {
     const code = errno(error);
     return {
       success: false,
       errors: [{
-        path: code ? "file" : "json",
-        message: code
-          ? code === "ENOENT"
-            ? `File not found: ${absolutePath}`
-            : `Failed to read file: ${errorMessage(error)}`
-          : `Invalid JSON syntax: ${errorMessage(error)}`,
-        ...(code ? { code } : {}),
+        path: "file",
+        message: code === "ENOENT"
+          ? `File not found: ${absolutePath}`
+          : `Failed to read file: ${errorMessage(error)}`,
+        ...(code !== undefined ? { code } : {}),
       }],
       warnings,
       filePath: absolutePath,
@@ -323,35 +342,20 @@ export async function validateMarketplaceManifest(
     };
   }
 
-  if (!isRecord(parsed) || !Array.isArray(parsed.plugins)) {
-    errors.push({ path: "plugins", message: "Marketplace must define a plugins array" });
-  } else {
-    const seen = new Set<string>();
-    for (const [index, plugin] of parsed.plugins.entries()) {
-      if (!isRecord(plugin) || typeof plugin.name !== "string") {
-        errors.push({
-          path: `plugins[${index}]`,
-          message: "Marketplace plugin entries require a name",
-        });
-        continue;
-      }
-      if (seen.has(plugin.name)) {
-        errors.push({
-          path: `plugins[${index}].name`,
-          message: `Duplicate plugin name "${plugin.name}"`,
-        });
-      }
-      seen.add(plugin.name);
-      if (typeof plugin.source === "string") {
-        checkPathTraversal(plugin.source, `plugins[${index}].source`, errors);
-      }
+  try {
+    const manifest = parseMarketplaceManifestText(content);
+    if (manifest.metadata === undefined) {
+      warnings.push({
+        path: "metadata",
+        message: "Marketplace metadata is optional but recommended for discovery.",
+      });
     }
-  }
-  if (isRecord(parsed) && !isRecord(parsed.metadata)) {
-    warnings.push({
-      path: "metadata",
-      message: "Marketplace metadata is optional but recommended for discovery.",
-    });
+  } catch (error) {
+    if (error instanceof MarketplaceManifestError) {
+      errors.push(...error.issues);
+    } else {
+      errors.push({ path: "manifest", message: errorMessage(error) });
+    }
   }
   return {
     success: errors.length === 0,
@@ -384,7 +388,29 @@ export async function validateManifest(filePath: string): Promise<ValidationResu
     const marketplacePath = join(absolutePath, PLUGIN_MANIFEST_DIR, "marketplace.json");
     const marketplace = await validateMarketplaceManifest(marketplacePath);
     if (marketplace.errors[0]?.code !== "ENOENT") return marketplace;
-    const manifestPath = await findPluginManifestPath(absolutePath);
+    let manifestPath: string | null;
+    try {
+      manifestPath = await findPluginManifestPath(absolutePath);
+    } catch (error) {
+      return manifestLookupFailure(absolutePath, error);
+    }
+    const parsedManifest = await loadPluginManifest(absolutePath).catch(() => null);
+    const packageIssues = await inspectPluginPackageAuthority(
+      absolutePath,
+      parsedManifest?.manifest ?? {},
+    );
+    if (packageIssues.length > 0) {
+      return {
+        success: false,
+        errors: packageIssues.map((issue) => ({
+          path: issue.path,
+          message: issue.message,
+        })),
+        warnings: [],
+        filePath: absolutePath,
+        fileType: "plugin",
+      };
+    }
     return validatePluginManifest(
       manifestPath ?? join(absolutePath, PLUGIN_MANIFEST_DIR, PLUGIN_MANIFEST_FILE),
     );

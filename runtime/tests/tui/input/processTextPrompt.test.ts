@@ -13,9 +13,8 @@ import { processTextPrompt } from './processTextPrompt.js'
 
 const configMock = vi.hoisted(() => ({
   globalConfig: {
-    editorMode: 'normal',
     tui: { vimMode: true },
-  } as { editorMode?: string; tui?: { vimMode?: boolean } },
+  } as { tui?: { vimMode?: boolean } },
 }))
 
 const mocks = vi.hoisted(() => ({
@@ -38,7 +37,13 @@ vi.mock('../../utils/messages.js', () => ({
 }))
 
 vi.mock('../../utils/config.js', () => ({
-  getGlobalConfig: () => configMock.globalConfig,
+  getRuntimeState: () => configMock.globalConfig,
+}))
+
+vi.mock('../../utils/settings/canonicalAuthority.js', () => ({
+  getCanonicalSettingsAuthority: () => ({
+    current: () => configMock.globalConfig,
+  }),
 }))
 
 vi.mock('bun:bundle', () => ({
@@ -67,8 +72,8 @@ vi.mock('../history/history.js', () => ({
   addToHistory: () => {},
 }))
 
-vi.mock('../../utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => false,
+vi.mock('../context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => false,
 }))
 
 vi.mock('../../utils/env.js', () => ({
@@ -206,7 +211,6 @@ describe('processTextPrompt with vim-aware composer input', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     configMock.globalConfig = {
-      editorMode: 'normal',
       tui: { vimMode: true },
     }
   })

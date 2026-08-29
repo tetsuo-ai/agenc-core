@@ -7,7 +7,7 @@ import { OutputLine } from '../../tui/components/shell/OutputLine.js';
 import { ShellProgressMessage } from '../../tui/components/shell/ShellProgressMessage.js';
 import { ShellTimeDisplay } from '../../tui/components/shell/ShellTimeDisplay.js';
 import { Box, Text } from '../../tui/ink.js';
-import type { Tool } from '../Tool.js';
+import type { Tools } from '../Tool.js';
 import type { ProgressMessage } from '../../types/message.js';
 import type { ThemeName } from '../../utils/theme.js';
 import type { Out, PowerShellToolInput } from './PowerShellTool.js';
@@ -51,7 +51,7 @@ export function renderToolUseProgressMessage(progressMessagesForMessage: Progres
   terminalSize: _terminalSize,
   inProgressToolCallCount: _inProgressToolCallCount
 }: {
-  tools: Tool[];
+  tools: Tools;
   verbose: boolean;
   terminalSize?: {
     columns: number;
@@ -81,7 +81,7 @@ export function renderToolResultMessage(content: Out, progressMessagesForMessage
 }: {
   verbose: boolean;
   theme: ThemeName;
-  tools: Tool[];
+  tools: Tools;
   style?: 'condensed';
 }): React.ReactNode {
   const lastProgress = progressMessagesForMessage.at(-1);
@@ -122,7 +122,7 @@ export function renderToolUseErrorMessage(result: ToolResultBlockParam['content'
 }: {
   verbose: boolean;
   progressMessagesForMessage: ProgressMessage[];
-  tools: Tool[];
+  tools: Tools;
 }): React.ReactNode {
   return <FallbackToolUseErrorMessage result={result} verbose={verbose} />;
 }

@@ -1,5 +1,3 @@
-import { join } from "node:path";
-
 import {
   assertAgentRoleWorkspaceMatches,
   type AgentRoleWorkspace,
@@ -31,9 +29,9 @@ import {
   setActivePluginCommandSnapshot,
   setActivePluginSkillSnapshot,
 } from "./load-plugin-commands.js";
-import { clearPluginHookCache, loadPluginHooks } from "./load-plugin-hooks.js";
-import { clearPluginLspServerCache, loadPluginLspServers } from "./lsp-plugin-integration.js";
-import { clearPluginMcpServerCache, loadPluginMcpServers } from "./mcp-plugin-integration.js";
+import { loadPluginHooks } from "./load-plugin-hooks.js";
+import { loadPluginLspServers } from "./lsp-plugin-integration.js";
+import { loadPluginMcpServers } from "./mcp-plugin-integration.js";
 import {
   clearPluginOutputStyleCache,
   loadPluginOutputStyles,
@@ -70,7 +68,7 @@ function countHooks(hooks: HooksMap | undefined): number {
 }
 
 export async function refreshPluginRegistrations(
-  options: PluginRuntimeLoadOptions = {},
+  options: PluginRuntimeLoadOptions,
 ): Promise<PluginRegistrationSnapshot> {
   const loadResult = await loadPlugins(toPluginLoaderOptions(options));
   const registrationErrors: PluginLoadIssue[] = [];
@@ -246,6 +244,7 @@ function appStateHooksConfig(plugin: LoadedPlugin): HooksMap | undefined {
 function appStatePlugin(plugin: LoadedPlugin): Record<string, unknown> {
   const { settings: _settings, ...manifest } = plugin.manifest;
   return {
+    id: plugin.id,
     name: plugin.name,
     ...(plugin.version !== undefined ? { version: plugin.version } : {}),
     ...(plugin.description !== undefined ? { description: plugin.description } : {}),
@@ -362,13 +361,13 @@ function currentConfig(ctx: SlashCommandContext): AgenCConfig | undefined {
 
 function pluginRuntimeOptionsFromContext(
   ctx: SlashCommandContext,
-): PluginRuntimeLoadOptions {
+): PluginRuntimeLoadOptions & { readonly pluginStorageRoot: string } {
   const config = currentConfig(ctx);
   const workspace = ctx.session.roleWorkspace;
   return {
     cwd: workspace.cwd,
     workspaceRoot: workspace.cwd,
-    agencHome: ctx.agencHome ?? join(ctx.home, ".agenc"),
+    pluginStorageRoot: ctx.session.services.runtimeOptions.pluginStorageRoot,
     ...(config !== undefined ? { config } : {}),
   };
 }
@@ -393,7 +392,7 @@ export async function refreshActivePlugins(
   const snapshot = await refreshPluginRegistrations(options);
   const activeIdentity = {
     cwd: workspace.cwd,
-    ...(options.agencHome !== undefined ? { agencHome: options.agencHome } : {}),
+    pluginStorageRoot: options.pluginStorageRoot,
   };
   setActivePluginCommandSnapshot(activeIdentity, snapshot.commands);
   setActivePluginSkillSnapshot(activeIdentity, snapshot.skills);
@@ -406,29 +405,13 @@ export async function refreshActivePlugins(
   return snapshot;
 }
 
-function mergeHookMaps(
-  base: HooksMap | undefined,
-  pluginHooks: HooksMap | undefined,
-): HooksMap | undefined {
-  if (!base) return pluginHooks;
-  if (!pluginHooks) return base;
-  const out: Record<string, NonNullable<HooksMap[string]>> = {};
-  for (const [event, matchers] of Object.entries(base)) {
-    out[event] = [...matchers];
-  }
-  for (const [event, matchers] of Object.entries(pluginHooks)) {
-    out[event] = [...(out[event] ?? []), ...matchers];
-  }
-  return out;
-}
-
 function registerPluginHooksWithRuntime(
   ctx: SlashCommandContext,
   hooks: HooksMap | undefined,
 ): void {
   const runtime = ctx.session.services.hooksRuntime;
   if (!runtime) return;
-  runtime.load(mergeHookMaps(currentConfig(ctx)?.hooks, hooks));
+  runtime.setPluginHooks(hooks);
 }
 
 export function clearPluginRegistrationCaches(): void {
@@ -436,8 +419,5 @@ export function clearPluginRegistrationCaches(): void {
   clearPluginCommandCache();
   clearPluginSkillsCache();
   clearPluginAgentCache();
-  clearPluginHookCache();
-  clearPluginMcpServerCache();
-  clearPluginLspServerCache();
   clearPluginOutputStyleCache();
 }

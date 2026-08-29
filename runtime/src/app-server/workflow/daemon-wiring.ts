@@ -306,7 +306,9 @@ export function createDaemonWorkflowController(options: {
   readonly primaryCwd: string;
   readonly kernel: ExecutionAdmissionKernel;
   readonly warn: (message: string) => void;
-  readonly env?: NodeJS.ProcessEnv;
+  readonly env: NodeJS.ProcessEnv;
+  /** Executable and entrypoint coordinates for child-session bootstraps. */
+  readonly argv: readonly string[];
   readonly authBackend?: AuthBackend;
   /**
    * Fresh discovery of project state databases owned by this daemon home
@@ -408,7 +410,9 @@ export function createDaemonWorkflowController(options: {
   const seams =
     options.sessionSeams ??
     createWorkflowSessionSeams({
-      ...(options.env !== undefined ? { env: options.env } : {}),
+      agencHome: options.agencHome,
+      env: options.env,
+      argv: options.argv,
       ...(options.authBackend !== undefined
         ? { authBackend: options.authBackend }
         : {}),

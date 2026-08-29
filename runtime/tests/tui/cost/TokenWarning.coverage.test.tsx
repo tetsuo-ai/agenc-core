@@ -5,6 +5,7 @@ import { describe, expect, test, vi } from "vitest";
 
 const harness = vi.hoisted(() => ({
   autoCompactEnabled: false,
+  environment: Object.freeze({ AGENC_HOME: "/test/agenc-home" }),
   percentLeft: 7,
   suppressWarning: false,
   upgradeMessage: "/model sonnet[1m]",
@@ -15,15 +16,15 @@ vi.mock("bun:bundle", () => ({
 }));
 
 vi.mock("../../services/compact/autoCompact.js", () => ({
-  calculateTokenWarningState: () => ({
+  calculateTokenWarningStateForEnvironment: () => ({
     isAboveAutoCompactThreshold: false,
     isAboveErrorThreshold: false,
     isAboveWarningThreshold: true,
     isAtBlockingLimit: false,
     percentLeft: harness.percentLeft,
   }),
-  getEffectiveContextWindowSize: () => 200_000,
-  isAutoCompactEnabled: () => harness.autoCompactEnabled,
+  getEffectiveContextWindowSizeForEnvironment: () => 200_000,
+  isAutoCompactEnabledForEnvironment: () => harness.autoCompactEnabled,
 }));
 
 vi.mock("../../services/compact/compactWarningHook.js", () => ({
@@ -34,7 +35,7 @@ vi.mock("../../services/contextCollapse/index.js", () => ({
   isContextCollapseEnabled: () => false,
 }));
 
-vi.mock("../../utils/model/contextWindowUpgradeCheck.js", () => ({
+vi.mock("../../llm/context-window-upgrade.js", () => ({
   getUpgradeMessage: () => harness.upgradeMessage,
 }));
 
@@ -47,7 +48,11 @@ import { TokenWarning } from "./TokenWarning.js";
 describe("TokenWarning coverage", () => {
   test("renders the manual compact warning with upgrade guidance", async () => {
     const output = await renderToString(
-      <TokenWarning tokenUsage={193_000} model="sonnet" />,
+      <TokenWarning
+        tokenUsage={193_000}
+        model="sonnet"
+        environment={harness.environment}
+      />,
       120,
     );
 
@@ -68,13 +73,25 @@ describe("TokenWarning coverage", () => {
     });
 
     try {
-      root.render(<TokenWarning tokenUsage={193_000} model="sonnet" />);
+      root.render(
+        <TokenWarning
+          tokenUsage={193_000}
+          model="sonnet"
+          environment={harness.environment}
+        />,
+      );
       await sleep();
 
       expect(screenText(stdout)).toContain("Context low (7% remaining)");
 
       harness.autoCompactEnabled = true;
-      root.render(<TokenWarning tokenUsage={193_000} model="sonnet" />);
+      root.render(
+        <TokenWarning
+          tokenUsage={193_000}
+          model="sonnet"
+          environment={harness.environment}
+        />,
+      );
       await sleep();
 
       expect(screenText(stdout)).toContain("7% until auto-compact");

@@ -5,6 +5,8 @@
  */
 
 import type { SearchInput, SearchProvider } from './types.js'
+import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
+import { getProxyFetchOptions } from '../../../utils/proxy.js'
 import {
   applyDomainFilters,
   arrayField,
@@ -18,17 +20,18 @@ export const tavilyProvider: SearchProvider = {
   name: 'tavily',
 
   isConfigured() {
-    return Boolean(process.env.TAVILY_API_KEY)
+    return Boolean(getSelectedProviderEnvironment().TAVILY_API_KEY)
   },
 
   async search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput> {
     const start = performance.now()
+    const environment = getSelectedProviderEnvironment()
 
     const res = await fetch('https://api.tavily.com/search', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.TAVILY_API_KEY}`,
+        Authorization: `Bearer ${environment.TAVILY_API_KEY}`,
       },
       body: JSON.stringify({
         query: input.query,
@@ -36,6 +39,7 @@ export const tavilyProvider: SearchProvider = {
         include_answer: false,
       }),
       signal,
+      ...getProxyFetchOptions({ environment }),
     })
 
     if (!res.ok) {

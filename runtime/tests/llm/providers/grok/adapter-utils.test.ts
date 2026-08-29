@@ -146,9 +146,9 @@ describe("grok adapter utils", () => {
     expect(tools.map((tool) => tool.function.name)).toEqual([
       "exec_command",
       "FileRead",
+      "system.bash",
       "system.searchTools",
       "write_stdin",
-      "system.bash",
     ]);
   });
 

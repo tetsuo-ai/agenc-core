@@ -37,7 +37,6 @@ import {
   encodeMcpToolNameForWire,
 } from "./mcp-tool-naming.js";
 import type { ChatCompletionsCapabilityHints } from "./capability-gating.js";
-import { splitLeadingThinkBlock } from "./think-tags.js";
 
 export interface ChatCompletionsRequestOptions {
   readonly model: string;
@@ -198,15 +197,7 @@ export function buildChatCompletionsRequest(
   // unmigrated callers don't regress.
   if (
     input.options?.reasoningEffort !== undefined &&
-    input.providerCapabilityHints?.acceptsReasoningEffort !== false &&
-    // Providers with per-model effort enums (NVIDIA NIM) reject or
-    // silently ignore out-of-enum values; stripping lets the model run
-    // at its documented default instead of guessing a translation.
-    (input.providerCapabilityHints?.reasoningEffortAllowedValues ===
-      undefined ||
-      input.providerCapabilityHints.reasoningEffortAllowedValues.has(
-        input.options.reasoningEffort,
-      ))
+    input.providerCapabilityHints?.acceptsReasoningEffort !== false
   ) {
     body.reasoning_effort = input.options.reasoningEffort;
   }
@@ -309,7 +300,7 @@ export function parseChatCompletionsResponse(
       "OpenAI chat-completions response emitted invalid tool_call",
     )
     : [];
-  const rawContent =
+  const content =
     typeof message.content === "string"
       ? message.content
       : Array.isArray(message.content)
@@ -317,12 +308,6 @@ export function parseChatCompletionsResponse(
         : typeof message.reasoning_content === "string"
           ? message.reasoning_content
           : "";
-  // Models whose template inlines chain-of-thought in `content`
-  // (MiniMax M3, Qwen3, R1 distills, Kimi K2) would otherwise print
-  // literal think markers in the transcript. A leading block moves to
-  // the thinking channel; `content` stays visible text only.
-  const { text: content, reasoning: inlineThinking } =
-    splitLeadingThinkBlock(rawContent);
   const usageRecord =
     response.usage && typeof response.usage === "object"
       ? (response.usage as Record<string, unknown>)
@@ -357,17 +342,6 @@ export function parseChatCompletionsResponse(
 
   return {
     content,
-    ...(inlineThinking.length > 0
-      ? {
-          thinking: Object.freeze([
-            Object.freeze({
-              text: inlineThinking,
-              redacted: false,
-              kind: "reasoning_summary" as const,
-            }),
-          ]),
-        }
-      : {}),
     toolCalls,
     usage: coerceUsage({
       promptTokens: usageRecord.prompt_tokens,

@@ -1310,7 +1310,7 @@ Do not create a second public memory barrel that drifts from [`runtime/src/memor
 - [`runtime/src/utils/attachments.ts`](runtime/src/utils/attachments.ts)
 - [`runtime/src/mcp/server/start.ts`](runtime/src/mcp/server/start.ts)
 - [`runtime/src/mcp/server/content-providers.ts`](runtime/src/mcp/server/content-providers.ts)
-- [`runtime/src/utils/settings/types.ts`](runtime/src/utils/settings/types.ts)
+- [`runtime/src/config/schema.ts`](runtime/src/config/schema.ts)
 - [`runtime/src/session/attachment-state.ts`](runtime/src/session/attachment-state.ts)
 - [`runtime/src/state/threads.ts`](runtime/src/state/threads.ts)
 - [`runtime/src/thread-store/store.ts`](runtime/src/thread-store/store.ts)

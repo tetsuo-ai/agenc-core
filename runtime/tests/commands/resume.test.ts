@@ -121,7 +121,10 @@ describe("resumeCommand helpers", () => {
       1_800_000_000,
     );
 
-    const results = listResumableSessions(workHome, { limit: 5 });
+    const results = listResumableSessions(workHome, {
+      limit: 5,
+      agencHome: join(workHome, ".agenc"),
+    });
     expect(results.length).toBe(2);
     expect(results[0]!.sessionId).toBe("sess-newer");
     expect(results[1]!.sessionId).toBe("sess-older");
@@ -151,7 +154,7 @@ describe("resumeCommand helpers", () => {
       [{ role: "user", content: "b" }],
       1_800_000_000,
     );
-    const res = await runResume(workHome, "--last");
+    const res = await runResume(workHome, "--last", join(workHome, ".agenc"));
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
       expect(res.text).toMatch(/bbbbbbbb/);

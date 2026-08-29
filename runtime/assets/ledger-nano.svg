@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="160" viewBox="0 0 320 160" fill="none">
+  <title>Ledger Nano awaiting authenticity verification</title>
+  <defs>
+    <linearGradient id="metal" x1="226" y1="27" x2="297" y2="131" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff"/>
+      <stop offset=".28" stop-color="#777"/>
+      <stop offset=".52" stop-color="#e8e8e8"/>
+      <stop offset=".76" stop-color="#555"/>
+      <stop offset="1" stop-color="#fff"/>
+    </linearGradient>
+  </defs>
+
+  <g stroke-linecap="round" stroke-linejoin="round">
+    <!-- Nano body -->
+    <rect x="27" y="43" width="231" height="76" rx="20" fill="#030303" stroke="#fff" stroke-width="4"/>
+    <path d="M39 51h207" stroke="#555" stroke-width="1.5"/>
+    <path d="M39 111h207" stroke="#222" stroke-width="1.5"/>
+
+    <!-- OLED display -->
+    <rect x="51" y="58" width="137" height="46" rx="6" fill="#000" stroke="#a3a3a3" stroke-width="2"/>
+    <g stroke="#fff" stroke-width="2">
+      <path d="M62 71v-5h5m9 0h5v5M62 82v5h5m9 0h5v-5"/>
+    </g>
+    <text x="91" y="79" fill="#fff" font-family="monospace" font-size="11" font-weight="700" letter-spacing="1.8">LEDGER</text>
+    <text x="91" y="93" fill="#888" font-family="monospace" font-size="7" letter-spacing="1.1">UNLOCK DEVICE</text>
+
+    <!-- Physical top buttons -->
+    <rect x="201" y="38" width="15" height="8" rx="4" fill="#111" stroke="#fff" stroke-width="2"/>
+    <rect x="223" y="38" width="15" height="8" rx="4" fill="#111" stroke="#fff" stroke-width="2"/>
+
+    <!-- USB nose -->
+    <path d="M27 62H13v38h14" stroke="#bdbdbd" stroke-width="4"/>
+    <path d="M17 71h10M17 91h10" stroke="#555" stroke-width="2"/>
+
+    <!-- Brushed-metal swivel cover and key-ring hole -->
+    <path d="M228 28h27c24 0 43 19 43 43v20c0 23-19 42-43 42h-27v-15h27c15 0 28-12 28-27V71c0-15-13-28-28-28h-27V28Z" fill="#090909" stroke="url(#metal)" stroke-width="4"/>
+    <path d="M270 47c8 6 13 14 13 24v20c0 9-5 18-13 23" stroke="#777" stroke-width="1.5"/>
+    <circle cx="258" cy="80" r="12" fill="#000" stroke="#e5e5e5" stroke-width="3"/>
+    <circle cx="258" cy="80" r="4" fill="#888"/>
+  </g>
+</svg>

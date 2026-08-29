@@ -5,16 +5,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 
-import { loadConfig } from "../../src/config/loader.js";
+import { loadCanonicalConfig } from "../../src/config/repository.js";
+import { applyEnvOverrides } from "../../src/config/env.js";
 import {
+  defaultConfig,
   InvalidTransactionGuardConfigError,
+  validateAgenCConfigBlocks,
   validateTransactionGuardConfig,
   type TransactionGuardConfig,
 } from "../../src/config/schema.js";
 import {
   createTransactionGuardContext,
-  loadTransactionGuardPolicy,
-  loadTransactionGuardPolicyFromEnv,
   resetDefaultTransactionGuardContextForTests,
   resolveTransactionGuardPolicy,
   TRANSACTION_GUARD_UNAVAILABLE,
@@ -60,8 +61,19 @@ afterEach(() => {
 function writeConfigToml(contents: string): string {
   const dir = mkdtempSync(join(tmpdir(), "agenc-guard-cfg-"));
   tempDirs.push(dir);
-  writeFileSync(join(dir, "config.toml"), contents);
+  writeFileSync(join(dir, "config.toml"), `config_version = 2\n${contents}`);
   return dir;
+}
+
+function loadTestConfig(home: string, onWarn: (message: string) => void = () => {}) {
+  return loadCanonicalConfig({
+    home,
+    env: { AGENC_HOME: home, HOME: home },
+    cwd: home,
+    projectRoot: home,
+    projectTrusted: true,
+    onWarn,
+  });
 }
 
 /** A 127.0.0.1 URL with no listener behind it (grab a port, release it). */
@@ -148,8 +160,7 @@ describe("[transaction_guard] config block", () => {
         "",
       ].join("\n"),
     );
-    const loaded = await loadConfig({ home, onWarn: () => {} });
-    expect(loaded.parseError).toBeUndefined();
+    const loaded = await loadTestConfig(home);
     expect(loaded.config.transaction_guard).toEqual({
       enabled: true,
       model: "guard-model-from-config",
@@ -169,10 +180,9 @@ describe("[transaction_guard] config block", () => {
         "",
       ].join("\n"),
     );
-    const loaded = await loadConfig({ home, onWarn: () => {} });
-    const policy = loadTransactionGuardPolicy(
+    const loaded = await loadTestConfig(home);
+    const policy = resolveTransactionGuardPolicy(
       loaded.config.transaction_guard,
-      {},
     );
     expect(policy.enabled).toBe(true);
     expect(policy.model).toBe("config-model");
@@ -182,93 +192,86 @@ describe("[transaction_guard] config block", () => {
 
     const context = createTransactionGuardContext(
       loaded.config.transaction_guard,
-      {},
     );
     expect(context).not.toBeNull();
     expect(context?.policy.model).toBe("config-model");
     // Env-only resolution with no env vars stays disabled — the config
     // block is what activated the guard.
-    expect(createTransactionGuardContext(undefined, {})).toBeNull();
+    expect(createTransactionGuardContext(undefined)).toBeNull();
   });
 
-  test("env vars override the config block (env > config > defaults)", () => {
+  test("canonical environment layer overrides the config block", () => {
     const config: TransactionGuardConfig = {
       enabled: true,
       model: "config-model",
       endpoint: "http://config.example:1",
       fail_mode: "open",
     };
-    const resolved = resolveTransactionGuardPolicy(config, {
-      AGENC_TRANSACTION_GUARD: "slm",
-      AGENC_TRANSACTION_GUARD_MODEL: "env-model",
-      AGENC_TRANSACTION_GUARD_OLLAMA_URL: "http://env.example:2",
-      AGENC_TRANSACTION_GUARD_FAIL_MODE: "closed",
-    });
-    expect(resolved.policy.enabled).toBe(true);
-    expect(resolved.policy.model).toBe("env-model");
-    expect(resolved.policy.ollamaUrl).toBe("http://env.example:2");
-    expect(resolved.policy.failClosed).toBe(true);
-    expect(resolved.sources).toEqual({
-      enabled: "env",
-      model: "env",
-      endpoint: "env",
-      failMode: "env",
-    });
-  });
-
-  test("a non-slm AGENC_TRANSACTION_GUARD is an env kill switch over config", () => {
-    const config: TransactionGuardConfig = { enabled: true };
-    const resolved = resolveTransactionGuardPolicy(config, {
-      AGENC_TRANSACTION_GUARD: "off",
-    });
-    expect(resolved.policy.enabled).toBe(false);
-    expect(resolved.sources.enabled).toBe("env");
-    // Unset env falls back to the config value.
-    expect(resolveTransactionGuardPolicy(config, {}).policy.enabled).toBe(true);
-    expect(resolveTransactionGuardPolicy(config, {}).sources.enabled).toBe(
-      "config",
-    );
-  });
-
-  test("defaults apply when neither env nor config set a field", () => {
-    const resolved = resolveTransactionGuardPolicy(undefined, {});
-    expect(resolved.policy).toMatchObject({
-      enabled: false,
-      provider: "ollama",
-      model: "gemma4:e4b",
-      ollamaUrl: "http://127.0.0.1:11434",
-      failClosed: true,
-    });
-    expect(resolved.sources).toEqual({
-      enabled: "default",
-      model: "default",
-      endpoint: "default",
-      failMode: "default",
-    });
-  });
-
-  test("loadTransactionGuardPolicyFromEnv keeps its pre-config behavior", () => {
-    expect(loadTransactionGuardPolicyFromEnv({})).toEqual({
-      enabled: false,
-      provider: "ollama",
-      ollamaUrl: "http://127.0.0.1:11434",
-      model: "gemma4:e4b",
-      timeoutMs: 120_000,
-      failClosed: true,
-      maxDocketBytes: 48 * 1024,
-    });
-    expect(
-      loadTransactionGuardPolicyFromEnv({
+    const layered = applyEnvOverrides(
+      { ...defaultConfig(), transaction_guard: config },
+      {
         AGENC_TRANSACTION_GUARD: "slm",
-        AGENC_TRANSACTION_GUARD_MODEL: "local-judge",
-        AGENC_TRANSACTION_GUARD_OLLAMA_URL: "http://ollama.test",
+        AGENC_TRANSACTION_GUARD_MODEL: "env-model",
+        AGENC_TRANSACTION_GUARD_OLLAMA_URL: "http://env.example:2",
+        AGENC_TRANSACTION_GUARD_FAIL_MODE: "closed",
         AGENC_TRANSACTION_GUARD_TIMEOUT_MS: "5000",
-      }),
-    ).toMatchObject({
+        AGENC_TRANSACTION_GUARD_MAX_DOCKET_BYTES: "8192",
+      },
+    );
+    const policy = resolveTransactionGuardPolicy(layered.transaction_guard);
+    expect(policy).toMatchObject({
       enabled: true,
-      model: "local-judge",
-      ollamaUrl: "http://ollama.test",
+      model: "env-model",
+      ollamaUrl: "http://env.example:2",
+      failClosed: true,
       timeoutMs: 5_000,
+      maxDocketBytes: 8_192,
+    });
+  });
+
+  test("canonical environment layer applies a non-slm kill switch", () => {
+    const config: TransactionGuardConfig = { enabled: true };
+    const layered = applyEnvOverrides(
+      { ...defaultConfig(), transaction_guard: config },
+      { AGENC_TRANSACTION_GUARD: "off" },
+    );
+    expect(resolveTransactionGuardPolicy(layered.transaction_guard).enabled)
+      .toBe(false);
+    expect(resolveTransactionGuardPolicy(config).enabled).toBe(true);
+  });
+
+  test("transaction guard mode is case-insensitive", () => {
+    const layered = applyEnvOverrides(
+      defaultConfig(),
+      { AGENC_TRANSACTION_GUARD: "SLM" },
+    );
+    expect(() => validateAgenCConfigBlocks(layered)).not.toThrow();
+    expect(resolveTransactionGuardPolicy(layered.transaction_guard).enabled)
+      .toBe(true);
+  });
+
+  test("invalid transaction guard mode warns and preserves TOML", () => {
+    const warnings: string[] = [];
+    const config: TransactionGuardConfig = { enabled: true };
+    const layered = applyEnvOverrides(
+      { ...defaultConfig(), transaction_guard: config },
+      { AGENC_TRANSACTION_GUARD: "typo" },
+      (message) => warnings.push(message),
+    );
+    expect(resolveTransactionGuardPolicy(layered.transaction_guard).enabled)
+      .toBe(true);
+    expect(warnings).toEqual([
+      expect.stringContaining("invalid AGENC_TRANSACTION_GUARD"),
+    ]);
+  });
+
+  test("defaults apply when the resolved block is absent", () => {
+    expect(resolveTransactionGuardPolicy()).toMatchObject({
+      enabled: false,
+      provider: "ollama",
+      model: "gemma4:e4b",
+      ollamaUrl: "http://127.0.0.1:11434",
+      failClosed: true,
     });
   });
 
@@ -280,12 +283,16 @@ describe("[transaction_guard] config block", () => {
         model: "m",
         endpoint: "http://e",
         fail_mode: "open",
+        timeout_ms: 5_000,
+        max_docket_bytes: 8_192,
       }),
     ).toEqual({
       enabled: true,
       model: "m",
       endpoint: "http://e",
       fail_mode: "open",
+      timeout_ms: 5_000,
+      max_docket_bytes: 8_192,
     });
     expect(() => validateTransactionGuardConfig({ ollama_url: "x" })).toThrow(
       InvalidTransactionGuardConfigError,
@@ -296,19 +303,22 @@ describe("[transaction_guard] config block", () => {
     expect(() => validateTransactionGuardConfig({ enabled: "yes" })).toThrow(
       InvalidTransactionGuardConfigError,
     );
+    expect(() => validateTransactionGuardConfig({ timeout_ms: 0 })).toThrow(
+      InvalidTransactionGuardConfigError,
+    );
     expect(() => validateTransactionGuardConfig("slm")).toThrow(
       InvalidTransactionGuardConfigError,
     );
   });
 
-  test("an invalid [transaction_guard] block is a loader parseError", async () => {
+  test("an invalid [transaction_guard] block fails closed", async () => {
     const home = writeConfigToml(
       ["[transaction_guard]", 'fail_mode = "sideways"', ""].join("\n"),
     );
-    const warnings: string[] = [];
-    const loaded = await loadConfig({ home, onWarn: (m) => warnings.push(m) });
-    expect(loaded.parseError).toContain("transaction_guard.fail_mode");
-    expect(loaded.config.transaction_guard).toBeUndefined();
+    await expect(loadTestConfig(home)).rejects.toMatchObject({
+      code: "invalid-config",
+      message: expect.stringContaining("transaction_guard.fail_mode"),
+    });
   });
 });
 

@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 
 import { createTokenAccountingRequest } from "../../token-accounting.js";
 import type { LLMTool } from "../../types.js";
+import { createGeminiEndpointPlan } from "./endpoint-plan.js";
 import { GeminiProvider } from "./index.js";
 import {
   createCsvAgentInvocationEnvelope,
@@ -60,11 +61,53 @@ const echoTool: LLMTool = {
   },
 };
 
+function apiKeyCredentialPlan(credential = "gemini-test") {
+  return {
+    kind: "api-key" as const,
+    credential,
+    source: "factory" as const,
+  };
+}
+
+function missingCredentialPlan(
+  expected: "api-key" | "access-token" | "adc" | "any" = "any",
+) {
+  return expected === "any"
+    ? ({ kind: "none", mode: "auto", expected: "any" } as const)
+    : ({ kind: "none", mode: expected, expected } as const);
+}
+
+const developerEndpointPlan = createGeminiEndpointPlan();
+const vertexEndpointPlan = createGeminiEndpointPlan({
+  vertex: { project: "project-1", location: "us-central1" },
+});
+
 describe("GeminiProvider", () => {
+  test("reports the exact missing credential selected at ingress", async () => {
+    const canonical = new GeminiProvider({
+      model: "gemini-2.5-pro",
+      credentialPlan: missingCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+    });
+    await expect(
+      canonical.chat([{ role: "user", content: "hello" }]),
+    ).rejects.toThrow(/GEMINI_API_KEY or GOOGLE_API_KEY/u);
+
+    const accessToken = new GeminiProvider({
+      model: "gemini-2.5-pro",
+      credentialPlan: missingCredentialPlan("access-token"),
+      endpointPlan: developerEndpointPlan,
+    });
+    await expect(
+      accessToken.chat([{ role: "user", content: "hello" }]),
+    ).rejects.toThrow(/GEMINI_ACCESS_TOKEN/u);
+  });
+
   test("refuses invocation-looking content without durable authority metadata", async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const provider = new GeminiProvider({
-      apiKey: "gemini-test",
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
       model: "gemini-2.5-pro",
       fetchImpl,
     });
@@ -80,64 +123,6 @@ describe("GeminiProvider", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  test("sends a tool's image as a picture, not as base64 text", async () => {
-    // Left inside the functionResponse JSON the model receives characters,
-    // not an image, and answers about something it never saw.
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse({
-        candidates: [
-          {
-            content: { role: "model", parts: [{ text: "ok" }] },
-            finishReason: "STOP",
-          },
-        ],
-      }),
-    );
-    const provider = new GeminiProvider({
-      apiKey: "gemini-test",
-      model: "gemini-3.5-flash",
-      fetchImpl,
-    });
-
-    await provider.chat([
-      { role: "user", content: "what is in the picture?" },
-      {
-        role: "tool",
-        toolName: "FileRead",
-        toolCallId: "call-1",
-        content: [
-          { type: "text", text: "Read shape.png" },
-          {
-            type: "input_image",
-            image_url: "data:image/png;base64,AAAB",
-          },
-        ],
-      },
-    ]);
-
-    const [, init] = fetchImpl.mock.calls[0] ?? [];
-    const request = JSON.parse(String(init?.body)) as {
-      readonly contents: readonly {
-        readonly parts: readonly Record<string, unknown>[];
-      }[];
-    };
-    const toolTurn = request.contents.find((entry) =>
-      entry.parts.some((part) => part.functionResponse !== undefined),
-    );
-    expect(toolTurn).toBeDefined();
-    const inline = toolTurn?.parts.find((part) => part.inlineData !== undefined);
-    expect(inline?.inlineData).toEqual({
-      mimeType: "image/png",
-      data: "AAAB",
-    });
-    // …and the base64 does not also travel as text inside the response.
-    const response = toolTurn?.parts.find(
-      (part) => part.functionResponse !== undefined,
-    )?.functionResponse;
-    expect(JSON.stringify(response)).not.toContain("AAAB");
-    expect(JSON.stringify(response)).toContain("Read shape.png");
-  });
-
   test("preserves policy, task, and data as separate Gemini authorities", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
@@ -150,7 +135,8 @@ describe("GeminiProvider", () => {
       }),
     );
     const provider = new GeminiProvider({
-      apiKey: "gemini-test",
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
       model: "gemini-2.5-pro",
       fetchImpl,
     });
@@ -180,7 +166,8 @@ describe("GeminiProvider", () => {
       .fn<typeof fetch>()
       .mockResolvedValue(jsonResponse({ totalTokens: 41 }));
     const provider = new GeminiProvider({
-      apiKey: "gemini-test",
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
       model: "gemini-2.5-pro",
       fetchImpl,
     });
@@ -235,11 +222,15 @@ describe("GeminiProvider", () => {
       .fn<typeof fetch>()
       .mockResolvedValue(jsonResponse({ totalTokens: 19 }));
     const provider = new GeminiProvider({
-      accessToken: "vertex-token",
-      project: "project-1",
+      credentialPlan: {
+        kind: "access-token",
+        credential: "vertex-token",
+        projectId: "project-1",
+        quotaProjectId: "billing-project",
+        source: "GEMINI_ACCESS_TOKEN",
+      },
+      endpointPlan: vertexEndpointPlan,
       model: "gemini-2.5-pro",
-      baseURL:
-        "https://us-central1-aiplatform.googleapis.com/v1/projects/project-1/locations/us-central1",
       fetchImpl,
     });
     const request = createTokenAccountingRequest({
@@ -276,7 +267,8 @@ describe("GeminiProvider", () => {
       }),
     );
     const provider = new GeminiProvider({
-      apiKey: "gemini-test",
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
       model: "gemini-2.5-pro",
       fetchImpl,
     });
@@ -298,7 +290,8 @@ describe("GeminiProvider", () => {
       }),
     );
     const provider = new GeminiProvider({
-      apiKey: "gemini-test",
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
       model: "gemini-2.5-pro",
       fetchImpl,
       providerFallback: {
@@ -318,7 +311,7 @@ describe("GeminiProvider", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  test("uses native generateContent with x-goog-api-key auth", async () => {
+  test("uses native generateContent with canonical model and API-key auth", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
         candidates: [
@@ -339,9 +332,9 @@ describe("GeminiProvider", () => {
     );
 
     const provider = new GeminiProvider({
-      apiKey: "gemini-test",
-      model: "gemini-2.5-pro",
-      baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini:models/gemini-2.5-pro",
       fetchImpl,
     });
 
@@ -371,7 +364,7 @@ describe("GeminiProvider", () => {
     expect("store" in requestBody).toBe(false);
   });
 
-  test("uses Gemini credential resolver bearer auth with user project", async () => {
+  test("materializes the selected bearer plan with its quota project", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
         candidates: [
@@ -386,11 +379,14 @@ describe("GeminiProvider", () => {
     const provider = new GeminiProvider({
       model: "gemini-2.5-pro",
       fetchImpl,
-      resolveCredential: async () => ({
+      credentialPlan: {
         kind: "access-token",
         credential: "ya29-token",
         projectId: "project-1",
-      }),
+        quotaProjectId: "billing-project",
+        source: "GEMINI_ACCESS_TOKEN",
+      },
+      endpointPlan: developerEndpointPlan,
     });
 
     const response = await provider.chat([{ role: "user", content: "hello" }]);
@@ -400,7 +396,7 @@ describe("GeminiProvider", () => {
     const headers = init?.headers as Headers;
     expect(headers.get("authorization")).toBe("Bearer ya29-token");
     expect(headers.get("x-goog-api-key")).toBeNull();
-    expect(headers.get("x-goog-user-project")).toBe("project-1");
+    expect(headers.get("x-goog-user-project")).toBe("billing-project");
   });
 
   test("uses Vertex Gemini publisher paths with bearer auth", async () => {
@@ -416,10 +412,14 @@ describe("GeminiProvider", () => {
     );
     const provider = new GeminiProvider({
       model: "gemini-2.5-pro",
-      baseURL:
-        "https://us-central1-aiplatform.googleapis.com/v1/projects/project-1/locations/us-central1",
-      accessToken: "vertex-token",
-      project: "project-1",
+      credentialPlan: {
+        kind: "access-token",
+        credential: "vertex-token",
+        projectId: "project-1",
+        quotaProjectId: "billing-project",
+        source: "GEMINI_ACCESS_TOKEN",
+      },
+      endpointPlan: vertexEndpointPlan,
       fetchImpl,
     });
 
@@ -432,10 +432,10 @@ describe("GeminiProvider", () => {
     );
     const headers = init?.headers as Headers;
     expect(headers.get("authorization")).toBe("Bearer vertex-token");
-    expect(headers.get("x-goog-user-project")).toBe("project-1");
+    expect(headers.get("x-goog-user-project")).toBe("billing-project");
   });
 
-  test("prefers explicit OAuth credentials over API key credentials", async () => {
+  test("does not reinterpret retired OAuth-shaped fields", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
         candidates: [
@@ -447,20 +447,21 @@ describe("GeminiProvider", () => {
       }),
     );
     const provider = new GeminiProvider({
-      apiKey: "gemini-test",
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
       authMode: "oauth",
       oauth: { accessToken: "oauth-token" },
       model: "gemini-2.5-pro",
       fetchImpl,
-    });
+    } as unknown as ConstructorParameters<typeof GeminiProvider>[0]);
 
     const response = await provider.chat([{ role: "user", content: "hello" }]);
 
     expect(response.content).toBe("oauth");
     const [, init] = fetchImpl.mock.calls[0] ?? [];
     const headers = init?.headers as Headers;
-    expect(headers.get("authorization")).toBe("Bearer oauth-token");
-    expect(headers.get("x-goog-api-key")).toBeNull();
+    expect(headers.get("authorization")).toBeNull();
+    expect(headers.get("x-goog-api-key")).toBe("gemini-test");
   });
 
   test("sends tools as Gemini function declarations and parses function calls", async () => {
@@ -491,7 +492,8 @@ describe("GeminiProvider", () => {
     );
 
     const provider = new GeminiProvider({
-      apiKey: "gemini-test",
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
       model: "gemini-2.5-pro",
       fetchImpl,
     });
@@ -514,20 +516,13 @@ describe("GeminiProvider", () => {
     });
     const [, init] = fetchImpl.mock.calls[0] ?? [];
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    // Gemini's function declarations take an OpenAPI subset and reject the
-    // whole request on any key outside it, so `additionalProperties` is
-    // stripped on the way out even though the tool declares it.
     expect(requestBody.tools).toEqual([
       {
         functionDeclarations: [
           {
             name: "system.echo",
             description: "Echo text",
-            parameters: {
-              type: "object",
-              properties: { text: { type: "string" } },
-              required: ["text"],
-            },
+            parameters: echoTool.function.parameters,
           },
         ],
       },
@@ -542,7 +537,8 @@ describe("GeminiProvider", () => {
       ]),
     );
     const provider = new GeminiProvider({
-      apiKey: "gemini-test",
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
       model: "gemini-2.5-pro",
       fetchImpl,
     });
@@ -636,7 +632,8 @@ describe("GeminiProvider", () => {
       }),
     );
     const provider = new GeminiProvider({
-      apiKey: "gemini-test",
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
       model: "gemini-2.5-pro",
       cachedContent: "cachedContents/project-context",
       fetchImpl,
@@ -662,7 +659,8 @@ describe("GeminiProvider", () => {
       }),
     );
     const provider = new GeminiProvider({
-      apiKey: "gemini-test",
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
       model: "gemini-2.5-pro",
       cachedContent: "cachedContents/project-context",
       fetchImpl,
@@ -705,7 +703,8 @@ describe("GeminiProvider", () => {
       }),
     );
     const provider = new GeminiProvider({
-      apiKey: "gemini-test",
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
       model: "gemini-2.5-pro",
       fetchImpl,
     });
@@ -766,7 +765,8 @@ describe("GeminiProvider", () => {
       }),
     );
     const provider = new GeminiProvider({
-      apiKey: "gemini-test",
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
       model: "gemini-2.5-pro",
       fetchImpl,
     });

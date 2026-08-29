@@ -1,11 +1,32 @@
 import React from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { ProviderAuthReadContext } from "../../utils/auth.js";
 import { renderToString } from "../../utils/staticRender.js";
+import {
+  TEST_REMOTE_AUTH_ENVIRONMENT,
+  TEST_REMOTE_AUTH_SESSION_CONTEXT,
+  TEST_RUNTIME_STATE_REPOSITORY,
+} from "../remoteAuthSessionContext.fixture.js";
+
+function providerAuthContextWithEnvironment(
+  overrides: Partial<ProviderAuthReadContext["environment"]>,
+): ProviderAuthReadContext {
+  return Object.freeze({
+    ...TEST_REMOTE_AUTH_SESSION_CONTEXT,
+    environment: Object.freeze({
+      ...TEST_REMOTE_AUTH_ENVIRONMENT,
+      ...overrides,
+    }),
+  });
+}
 
 const mocks = vi.hoisted(() => ({
   apiKeyConfigured: false,
-  apiKeySource: "none" as "ANTHROPIC_API_KEY" | "apiKeyHelper" | "none",
+  apiKeySource: "none" as
+    | "ANTHROPIC_API_KEY"
+    | "/login managed key"
+    | "none",
   authTokenSource: {
     source: "none",
     hasToken: false,
@@ -14,8 +35,8 @@ const mocks = vi.hoisted(() => ({
       | "ANTHROPIC_AUTH_TOKEN"
       | "AGENC_OAUTH_TOKEN"
       | "AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR"
-      | "CCR_OAUTH_TOKEN_FILE"
-      | "apiKeyHelper"
+      | "native-secure-storage"
+      | "agenc-cloud"
       | "none";
     hasToken: boolean;
   },
@@ -25,18 +46,23 @@ const mocks = vi.hoisted(() => ({
   subscriber: false,
 }));
 
-const previousDaemonAutostart = process.env.AGENC_DAEMON_AUTOSTART;
-
 vi.mock("../../utils/auth.js", () => ({
-  getApiKeyFromConfigOrMacOSKeychain: () =>
-    mocks.apiKeyConfigured ? "configured-key" : null,
-  getAuthTokenSource: () => mocks.authTokenSource,
-  getproviderApiKeyWithSource: () => ({ source: mocks.apiKeySource }),
-  isAgenCAISubscriber: () => mocks.subscriber,
+  selectedProviderUsesExternalAuth: (provider: string) =>
+    provider !== "anthropic" && provider !== "agenc",
+  getPrimaryApiKeyFromSecureStorage: () =>
+    mocks.apiKeyConfigured
+      ? { key: "configured-key", source: "/login managed key" }
+      : null,
+  getAuthTokenSourceForContext: () => mocks.authTokenSource,
+  getAnthropicApiKeyWithSourceForContext: () => ({
+    key: null,
+    source: mocks.apiKeySource,
+  }),
+  isAgenCAISubscriberForContext: () => mocks.subscriber,
 }));
 
 vi.mock("../../utils/config.js", () => ({
-  getGlobalConfig: () => ({ autoInstallIdeExtension: true }),
+  getRuntimeState: () => ({ autoInstallIdeExtension: true }),
 }));
 
 vi.mock("../../utils/format.js", () => ({
@@ -53,7 +79,7 @@ vi.mock("../../utils/jetbrains.js", () => ({
   isJetBrainsPluginInstalledCachedSync: () => true,
 }));
 
-vi.mock("../../utils/status.js", () => ({
+vi.mock("./memoryDiagnostics.js", () => ({
   buildMemoryDiagnostics: mocks.buildMemoryDiagnostics,
 }));
 
@@ -71,19 +97,20 @@ describe("StatusNotices coverage", () => {
     mocks.subscriber = false;
   });
 
-  afterEach(() => {
-    if (previousDaemonAutostart === undefined) {
-      delete process.env.AGENC_DAEMON_AUTOSTART;
-    } else {
-      process.env.AGENC_DAEMON_AUTOSTART = previousDaemonAutostart;
-    }
-  });
-
   it("renders daemon startup guidance and then reuses loaded memory diagnostics", async () => {
-    process.env.AGENC_DAEMON_AUTOSTART = "off";
     const { StatusNotices } = await import("./StatusNotices.js");
+    const daemonDisabledAuthContext = providerAuthContextWithEnvironment({
+      AGENC_DAEMON_AUTOSTART: "off",
+    });
 
-    const daemonOutput = await renderToString(<StatusNotices />, 100);
+    const daemonOutput = await renderToString(
+      <StatusNotices
+        homeContext={daemonDisabledAuthContext.home}
+        providerAuthContext={daemonDisabledAuthContext}
+        stateRepository={TEST_RUNTIME_STATE_REPOSITORY}
+      />,
+      100,
+    );
     expect(daemonOutput).toContain("AgenC daemon autostart is disabled");
     expect(daemonOutput).toContain("agenc daemon start");
 
@@ -91,8 +118,17 @@ describe("StatusNotices coverage", () => {
       expect(mocks.buildMemoryDiagnostics).toHaveBeenCalledTimes(1);
     });
 
-    process.env.AGENC_DAEMON_AUTOSTART = "true";
-    const memoryOutput = await renderToString(<StatusNotices />, 100);
+    const daemonEnabledAuthContext = providerAuthContextWithEnvironment({
+      AGENC_DAEMON_AUTOSTART: "true",
+    });
+    const memoryOutput = await renderToString(
+      <StatusNotices
+        homeContext={daemonEnabledAuthContext.home}
+        providerAuthContext={daemonEnabledAuthContext}
+        stateRepository={TEST_RUNTIME_STATE_REPOSITORY}
+      />,
+      100,
+    );
 
     expect(mocks.buildMemoryDiagnostics).toHaveBeenCalledTimes(1);
     expect(memoryOutput).toContain("Large AGENC.md will impact startup");

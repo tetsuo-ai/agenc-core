@@ -6,10 +6,21 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { resolveHomeContext } from "../../../src/config/home.js";
 import { createImagineVideoTool } from "../../../src/tools/system/imagine-video.js";
 import { createModelFacingTools } from "../../../src/bin/model-facing-tools.js";
 import { createProvider } from "../../../src/llm/provider.js";
 import type { Session } from "../../../src/session/session.js";
+
+function testHome(workspaceRoot: string) {
+  return resolveHomeContext(
+    {
+      AGENC_HOME: join(workspaceRoot, ".agenc-test-home"),
+      HOME: workspaceRoot,
+    },
+    { platformHome: workspaceRoot },
+  );
+}
 
 describe("ImagineVideo catalog gate", () => {
   it("is not registered for non-Grok sessions", () => {
@@ -85,6 +96,7 @@ describe("ImagineVideo execute", () => {
 
     const tool = createImagineVideoTool({
       workspaceRoot: root,
+      home: testHome(root),
       getSession: () =>
         ({ services: { provider } }) as unknown as Session,
       env: {},
@@ -158,6 +170,7 @@ describe("ImagineVideo execute", () => {
     }) as unknown as typeof fetch;
     const tool = createImagineVideoTool({
       workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
       getSession: () => ({ services: { provider } }) as unknown as Session,
       env: {},
       fetchImpl,
@@ -180,6 +193,7 @@ describe("ImagineVideo execute", () => {
   it("refuses non-grok sessions", async () => {
     const tool = createImagineVideoTool({
       workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
       getSession: () =>
         ({
           services: { provider: { name: "anthropic" } },

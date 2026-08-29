@@ -6,6 +6,8 @@ import {
   formatAgentListingType,
 } from './agentListingMetadata.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
+import type { HomeContext } from '../../config/home.js'
+import { resolveSecureStorageHome } from '../../utils/secureStorage/home.js'
 
 const SEND_MESSAGE_TOOL_NAME = 'SendMessage'
 
@@ -41,9 +43,11 @@ function hasEmbeddedSearchTools(): boolean {
 async function getSubscriptionTypeSafe(): Promise<string | null> {
   try {
     const auth = (await import('../../utils/auth.js')) as {
-      getSubscriptionType?: () => string | null
+      getSubscriptionType?: (home: HomeContext) => string | null
     }
-    return auth.getSubscriptionType?.() ?? null
+    return auth.getSubscriptionType?.(
+      resolveSecureStorageHome(),
+    ) ?? null
   } catch {
     return null
   }

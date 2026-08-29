@@ -28,9 +28,16 @@ describe("workflowSessionArgv", () => {
   });
 
   it("keeps the permission mode it already carried", () => {
-    expect(
-      workflowSessionArgv({ permissionMode: "bypassPermissions" }, BASE),
-    ).toContain("--yolo");
+    const bypass = workflowSessionArgv(
+      { permissionMode: "bypassPermissions" },
+      BASE,
+    );
+    expect(bypass[bypass.indexOf("--permission-mode") + 1]).toBe(
+      "bypassPermissions",
+    );
+    expect(bypass).not.toContain(
+      "--dangerously-bypass-approvals-and-sandbox",
+    );
     const planning = workflowSessionArgv({ permissionMode: "plan" }, BASE);
     expect(planning[planning.indexOf("--permission-mode") + 1]).toBe("plan");
   });
@@ -41,12 +48,31 @@ describe("workflowSessionArgv", () => {
     );
   });
 
-  it("does not double a flag the daemon's own argv already carries", () => {
+  it("never inherits daemon launch flags over the frozen run policy", () => {
     const argv = workflowSessionArgv(
-      { permissionMode: "default", model: "grok-4.6" },
-      ["node", "agenc", "--model", "already-set"],
+      {
+        permissionMode: "plan",
+        provider: "grok",
+        model: "grok-4.6",
+      },
+      [
+        "node",
+        "agenc",
+        "--provider",
+        "openai",
+        "--model",
+        "daemon-default",
+        "--yolo",
+        "daemon",
+        "run",
+      ],
     );
     expect(argv.filter((entry) => entry === "--model")).toHaveLength(1);
-    expect(argv[argv.indexOf("--model") + 1]).toBe("already-set");
+    expect(argv[argv.indexOf("--model") + 1]).toBe("grok-4.6");
+    expect(argv[argv.indexOf("--provider") + 1]).toBe("grok");
+    expect(argv[argv.indexOf("--permission-mode") + 1]).toBe("plan");
+    expect(argv).not.toContain("--yolo");
+    expect(argv).not.toContain("daemon-default");
+    expect(argv).not.toContain("daemon");
   });
 });

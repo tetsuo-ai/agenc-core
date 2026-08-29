@@ -5,6 +5,8 @@
  */
 
 import type { SearchInput, SearchProvider } from './types.js'
+import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
+import { getProxyFetchOptions } from '../../../utils/proxy.js'
 import {
   applyDomainFilters,
   arrayField,
@@ -18,11 +20,12 @@ export const jinaProvider: SearchProvider = {
   name: 'jina',
 
   isConfigured() {
-    return Boolean(process.env.JINA_API_KEY)
+    return Boolean(getSelectedProviderEnvironment().JINA_API_KEY)
   },
 
   async search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput> {
     const start = performance.now()
+    const environment = getSelectedProviderEnvironment()
 
     const url = new URL('https://s.jina.ai/')
     url.searchParams.set('q', input.query)
@@ -30,10 +33,11 @@ export const jinaProvider: SearchProvider = {
 
     const res = await fetch(url.toString(), {
       headers: {
-        Authorization: `Bearer ${process.env.JINA_API_KEY}`,
+        Authorization: `Bearer ${environment.JINA_API_KEY}`,
         Accept: 'application/json',
       },
       signal,
+      ...getProxyFetchOptions({ environment }),
     })
 
     if (!res.ok) {

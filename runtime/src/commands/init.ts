@@ -31,7 +31,7 @@ function parseInitArgs(argsRaw: string): { readonly force: boolean } | string {
 
 export const initCommand: SlashCommand = {
   name: "init",
-  description: "Analyze this repository and write .agenc/config.json plus AGENC.md",
+  description: "Analyze this repository and write .agenc/config.toml plus AGENC.md",
   immediate: true,
   userInvocable: true,
   supportsNonInteractive: true,

@@ -14,6 +14,11 @@ import {
 import { AppStateProvider, getDefaultAppState } from "../state/AppState.js";
 import { Box, Text } from "../ink.js";
 import { renderToString } from "../../utils/staticRender.js";
+import { FullscreenModeProvider } from "../context/fullscreenModeContext.js";
+
+function fullscreen(node: React.ReactNode): React.ReactNode {
+  return <FullscreenModeProvider enabled={true}>{node}</FullscreenModeProvider>;
+}
 
 describe("FullscreenLayout modal viewport", () => {
   test.each([0, 1, 2, 3])(
@@ -68,10 +73,12 @@ describe("FullscreenLayout modal viewport", () => {
   test("does not render the deprecated static file-tree gutter by default", async () => {
     const output = await renderToString(
       <AppStateProvider initialState={getDefaultAppState()}>
-        <FullscreenLayout
-          scrollable={<Text>ready.</Text>}
-          bottom={<Text>prompt row</Text>}
-        />
+        <FullscreenModeProvider enabled={true}>
+          <FullscreenLayout
+            scrollable={<Text>ready.</Text>}
+            bottom={<Text>prompt row</Text>}
+          />
+        </FullscreenModeProvider>
       </AppStateProvider>,
       { columns: 148, rows: 40 },
     );
@@ -145,10 +152,12 @@ describe("FullscreenLayout modal viewport", () => {
             },
           }}
         >
-          <FullscreenLayout
-            scrollable={<Text>proposal body</Text>}
-            bottom={<Text>prompt row</Text>}
-          />
+          {fullscreen(
+            <FullscreenLayout
+              scrollable={<Text>proposal body</Text>}
+              bottom={<Text>prompt row</Text>}
+            />,
+          )}
         </AppStateProvider>,
         { columns: 120, rows: 30 },
       );
@@ -193,15 +202,17 @@ describe("FullscreenLayout modal viewport", () => {
     const state = getDefaultAppState();
     const output = await renderToString(
       <AppStateProvider initialState={state}>
-        <FullscreenLayout
-          scrollable={
-            <Box flexDirection="column">
-              <Text>ready.</Text>
-              <Text>/help for commands · /claim for protocol tasks</Text>
-            </Box>
-          }
-          bottom={<Text>prompt owns this row</Text>}
-        />
+        {fullscreen(
+          <FullscreenLayout
+            scrollable={
+              <Box flexDirection="column">
+                <Text>ready.</Text>
+                <Text>/help for commands · /claim for protocol tasks</Text>
+              </Box>
+            }
+            bottom={<Text>prompt owns this row</Text>}
+          />,
+        )}
       </AppStateProvider>,
       { columns, rows },
     );

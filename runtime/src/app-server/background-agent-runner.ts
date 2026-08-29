@@ -8,24 +8,23 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync, readdirSync } from "node:fs";
-import { join as joinPath } from "node:path";
 
-import { roughTokenCountEstimation } from "../llm/token-estimation.js";
 import {
   bootstrapLocalRuntimeSession,
   type BootstrapLocalRuntimeSessionOptions,
   type LocalRuntimeBootstrap,
+  type PreparedConfiguredExecutionAuthority,
 } from "../bin/bootstrap.js";
-import {
-  insertProcessCliOptionsBeforePrompt,
-  tokenizeCliOptionRegion,
-} from "../bin/cli-option-region.js";
+import { buildStructuredSessionBootstrapArgv } from "./session-bootstrap-argv.js";
 import { ensureAgentControl } from "../bin/delegate-tool.js";
 import { clearSession } from "../commands/clear.js";
 import type { AgentControl } from "../agents/control.js";
 import { MailboxClosedError } from "../agents/mailbox.js";
 import { runTurn } from "../session/run-turn.js";
+import {
+  prepareUserPromptForTurn,
+  userPromptDisplayText,
+} from "../hooks/user-prompt-ingress.js";
 import {
   ROOT_AGENT_PATH,
   joinAgentPath,
@@ -43,7 +42,6 @@ import {
   type RunAgentResult,
 } from "../agents/run-agent.js";
 import type { AuthBackend } from "../auth/backend.js";
-import type { AgentBudgetConfig } from "../config/schema.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
 import {
@@ -54,14 +52,16 @@ import {
 } from "../permissions/evaluator.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
 import { routerFromRegistry } from "../tools/router.js";
+import { buildLiveToolDispatchOptions } from "../phases/execute-tools.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import {
   classifyUntrustedToolResult,
   frameUntrustedToolResultContent,
 } from "../tools/untrusted-tool-result-framing.js";
-import type { ToolRegistry } from "../tool-registry.js";
+import type { ToolDispatchResult, ToolRegistry } from "../tool-registry.js";
 import { getPlan, getPlanFilePath } from "../utils/plans.js";
 import { stableStringify } from "../utils/stableStringify.js";
+import { logForDebugging } from "../utils/debug.js";
 import { EXIT_PLAN_MODE_TOOL_NAME } from "../tools/ExitPlanModeTool/constants.js";
 import type { AgentId } from "../types/ids.js";
 import {
@@ -69,19 +69,52 @@ import {
   DEFAULT_MODEL_COSTS,
   type ModelUsage,
 } from "../session/cost.js";
+import { runWithCurrentRuntimeSession } from "../session/current-session.js";
+import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import { resolveDefaultShell } from "../utils/shell/resolveDefaultShell.js";
+import { escapeXml } from "../utils/xml.js";
 import {
+  canCycleToAuto,
+  createDisabledAutoModeContext,
   transitionPermissionMode,
+  type PermissionContextPublication,
   type PermissionModeRegistry,
 } from "../permissions/permission-mode.js";
+import {
+  applyPermissionRulesSnapshot,
+  loadPermissionRulesSnapshot,
+} from "../permissions/settings.js";
+import { parseRuleString, serializeRuleValue } from "../permissions/rules.js";
+import {
+  authorizeBypassPermissionsConsent,
+  canonicalizeBypassPermissionsCwd,
+  loadBypassPermissionsConsent,
+} from "../permissions/bypass-consent-state.js";
 import {
   isPermissionMode,
   USER_ADDRESSABLE_PERMISSION_MODES,
   type PermissionMode,
   type ToolPermissionContext,
 } from "../permissions/types.js";
-import { applyModelSwitch, readSessionSelection } from "../commands/model.js";
+import {
+  mutatePermissionRuleSource,
+  PermissionRuleMutationPrecommitError,
+} from "../permissions/permission-updates.js";
+import { applyModelSwitch } from "../commands/model.js";
+import type { ProviderModelSelectionOutcome } from "../contracts/provider-model-selection.js";
+import {
+  readSessionSelection,
+  resolveProviderModelSelection,
+} from "../session/provider-model-selection.js";
 import { applyProviderSwitch } from "../commands/provider.js";
 import { resolveProfile } from "../config/profiles.js";
+import { mergeProviderModelLayer } from "../config/provider-model-authority.js";
+import type { AgenCConfig } from "../config/schema.js";
+import {
+  COORDINATED_CONFIG_STORE_PUBLICATION,
+  type PreparedConfigStoreReload,
+} from "../config/store.js";
+import type { McpRefreshResult } from "../session/mcp-startup.js";
 import { resolveLiveEffectPoison } from "../budget/effect-settlement-supervisor.js";
 import {
   resolveLiveDurableEffectReview,
@@ -89,6 +122,7 @@ import {
   type ResolveDurableEffectReviewResult,
 } from "../state/effect-review.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
+import { mergeDaemonClientEnvironment } from "./client-env-snapshot.js";
 
 import { permissionGrantsFromToolPermissionContext } from "../permissions/permission-grants.js";
 import { applyUnattendedPermissionPolicyToContext } from "../permissions/unattended-policy.js";
@@ -99,7 +133,12 @@ import {
   type ReviewDecision,
 } from "../permissions/review-decision.js";
 import type { AgentStatus as ThreadAgentStatus } from "../agents/status.js";
-import type { McpServerMutationResult, Session } from "../session/session.js";
+import type {
+  McpServerMutationResult,
+  McpSurfaceSnapshot,
+  PreparedSessionProviderSwitch,
+  Session,
+} from "../session/session.js";
 import type { Event } from "../session/event-log.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import { reconstructFromRollout } from "../session/rollout-reconstruction.js";
@@ -136,6 +175,10 @@ import type {
   SessionHookConfigShape,
   SessionHookValidationIssueShape,
   SessionHookRunDiagnosticShape,
+  SessionPermissionRuleMutationParams,
+  SessionPermissionRuleMutationResult,
+  SessionShellExecuteParams,
+  SessionShellExecuteResult,
 } from "./protocol/index.js";
 import type { AgenCRealtimeThreadBinding } from "./realtime.js";
 import type { AgenCRealtimeCallClient } from "./realtime-transport.js";
@@ -144,7 +187,10 @@ import type {
   RealtimeTransportRequest,
 } from "../conversation/realtime/conversation.js";
 import type { RealtimeStartupContextSessionLike } from "../conversation/realtime/context.js";
-import { JSON_RPC_VERSION } from "./protocol/index.js";
+import {
+  JSON_RPC_VERSION,
+  MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES,
+} from "./protocol/index.js";
 import {
   createAgenCDaemonRuntimeAuthBackend,
   type AgenCDaemonRuntimeAuthBackend,
@@ -164,7 +210,16 @@ import {
   type RunRuntimeSettingsSnapshot,
   type RunTerminalResult,
 } from "../contracts/run-contracts.js";
+import { cloneFrozenRuntimeSettingsSnapshot } from "../state/runtime-settings-snapshot.js";
 import type { ResumeRolloutDescriptorLease } from "../session/session-store.js";
+import type { AgentRuntimeOptions } from "../session/runtime-options.js";
+import {
+  applySessionExecutionAuthority,
+  executionAuthorityForPermissionContext,
+  sandboxExecutionBrokerAuthorityFromSessionAuthority,
+} from "../session/configuration.js";
+import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
+import { transitionSandboxExecutionBrokerAuthority } from "../sandbox/execution-lifecycle.js";
 
 export interface AgenCBackgroundAgentStartParams {
   readonly objective: string;
@@ -172,6 +227,7 @@ export interface AgenCBackgroundAgentStartParams {
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  readonly configPath?: string;
   readonly initialContent?: MessageContent;
   readonly deferInitialTurn?: boolean;
   readonly initialDisplayUserMessage?: string | null;
@@ -186,6 +242,7 @@ export interface AgenCBackgroundAgentStartParams {
     | "bypassPermissions"
     | "dontAsk"
     | "auto";
+  readonly runtimeOptions: AgentRuntimeOptions;
   /**
    * Per-invocation env overrides forwarded from the CLI. Merged on
    * top of `this.#env` so the user's latest `OPENAI_BASE_URL` /
@@ -214,6 +271,7 @@ export interface AgenCBackgroundAgentRestoreParams {
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  readonly configPath?: string;
   readonly permissionMode?:
     | "default"
     | "plan"
@@ -221,6 +279,7 @@ export interface AgenCBackgroundAgentRestoreParams {
     | "bypassPermissions"
     | "dontAsk"
     | "auto";
+  readonly runtimeOptions: AgentRuntimeOptions;
   /** Exact canonical rollout selected by the trusted CLI resolver. */
   readonly resumeRolloutPath?: string;
   /** One-shot daemon descriptor authority transferred into SessionStore. */
@@ -274,6 +333,10 @@ export interface AgenCBackgroundAgentSnapshot {
   readonly status: DaemonAgentStatus;
   readonly lastActiveAt: string;
   readonly metadata?: JsonObject;
+  /** Live daemon-owned session authority, captured after its durable commit. */
+  readonly runtimeSettings?: RunRuntimeSettingsSnapshot;
+  /** Canonical cursor for strict successor reconciliation on attached clients. */
+  readonly runtimeSettingsEventId?: string;
   /** Present only after the canonical run_terminal event was fsync-committed. */
   readonly terminal?: AgenCBackgroundAgentTerminalSnapshot;
   /** Present only after the canonical run_suspended event was fsync-committed. */
@@ -353,14 +416,6 @@ export interface AgenCBackgroundAgentMessageParams {
   readonly messageId: string;
   readonly streamId: string;
   readonly acceptedAt: string;
-  /**
-   * Runs once for a newly admitted canonical user message, after persistence
-   * and before turn dispatch. Duplicate and rejected submissions do not call
-   * this hook.
-   */
-  readonly onDurableAccepted?: (
-    acceptedAt: string,
-  ) => void | Promise<void>;
   readonly ifBusy?: "reject";
 }
 
@@ -378,7 +433,7 @@ export interface AgenCBackgroundAgentMessageTerminal extends JsonObject {
 }
 
 export type AgenCBackgroundAgentMessageErrorCode =
-  "TURN_IN_PROGRESS" | "CLIENT_MESSAGE_ID_CONFLICT";
+  "TURN_IN_PROGRESS" | "CLIENT_MESSAGE_ID_CONFLICT" | "PROMPT_BLOCKED";
 
 export class AgenCBackgroundAgentMessageError extends Error {
   readonly code: AgenCBackgroundAgentMessageErrorCode;
@@ -389,6 +444,14 @@ export class AgenCBackgroundAgentMessageError extends Error {
     this.code = code;
   }
 }
+
+const DAEMON_USER_PROMPT_PREPARED: unique symbol = Symbol(
+  "agenc.daemon-user-prompt-prepared",
+);
+
+type DaemonSessionSubmitOptions = SessionSubmitOptions & {
+  readonly [DAEMON_USER_PROMPT_PREPARED]?: true;
+};
 
 export interface AgenCBackgroundAgentClearSessionParams {
   readonly sessionId: string;
@@ -444,12 +507,17 @@ export interface AgenCBackgroundAgentSetModelParams {
 
 export interface AgenCBackgroundAgentSetModelResult {
   readonly applied: boolean;
+  readonly provider: string;
+  readonly model: string;
+  readonly runtimeSettingsEventId: string;
   readonly summary: string;
 }
 
 export interface AgenCBackgroundAgentSetPermissionModeParams {
   readonly sessionId: string;
   readonly mode: string;
+  /** Bound only by an explicit allow-all decision in the tool approval flow. */
+  readonly bypassAuthority?: "operator_tool_approval";
 }
 
 export interface AgenCBackgroundAgentSetPermissionModeResult {
@@ -460,10 +528,21 @@ export interface AgenCBackgroundAgentSetPermissionModeResult {
   readonly rollback?: () => Promise<void>;
 }
 
+export interface AgenCBackgroundAgentPermissionRuleMutationResult {
+  readonly applied: boolean;
+  readonly operation: SessionPermissionRuleMutationParams["operation"];
+  readonly behavior: SessionPermissionRuleMutationParams["behavior"];
+  readonly rule: string;
+  readonly sessionRules: SessionPermissionRuleMutationResult["sessionRules"];
+}
+
 export interface AgenCBackgroundAgentHooksStatusResult {
   readonly available: boolean;
   readonly sourcePath: string;
   readonly disabled: boolean;
+  readonly hardSuppressed: boolean;
+  readonly effectiveDisabled: boolean;
+  readonly suppressionReason: "bare_mode" | "session_disabled" | null;
   readonly issues: readonly SessionHookValidationIssueShape[];
   readonly hooks: readonly SessionHookConfigShape[];
   readonly diagnostics: readonly SessionHookRunDiagnosticShape[];
@@ -476,6 +555,28 @@ export interface AgenCBackgroundAgentSetHooksDisabledParams {
 export interface AgenCBackgroundAgentSetHooksDisabledResult {
   readonly applied: boolean;
   readonly disabled: boolean;
+  readonly hardSuppressed: boolean;
+  readonly effectiveDisabled: boolean;
+  readonly suppressionReason: "bare_mode" | "session_disabled" | null;
+}
+
+function configuredHookExecutionState(runtime: {
+  isDisabled(): boolean;
+  isHardSuppressed(): boolean;
+  isExecutionSuppressed(): boolean;
+}): Omit<AgenCBackgroundAgentSetHooksDisabledResult, "applied"> {
+  const disabled = runtime.isDisabled();
+  const hardSuppressed = runtime.isHardSuppressed();
+  return {
+    disabled,
+    hardSuppressed,
+    effectiveDisabled: runtime.isExecutionSuppressed(),
+    suppressionReason: hardSuppressed
+      ? "bare_mode"
+      : disabled
+        ? "session_disabled"
+        : null,
+  };
 }
 
 export interface AgenCBackgroundAgentApplyConfigParams {
@@ -486,6 +587,9 @@ export interface AgenCBackgroundAgentApplyConfigParams {
 
 export interface AgenCBackgroundAgentApplyConfigResult {
   readonly applied: boolean;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly runtimeSettingsEventId?: string;
   readonly summary: string;
 }
 
@@ -543,6 +647,11 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentMessageParams,
   ): Promise<AgenCBackgroundAgentMessageResult>;
+  executeAgentShell?(
+    agentId: string,
+    params: SessionShellExecuteParams,
+    signal?: AbortSignal,
+  ): Promise<SessionShellExecuteResult>;
   /** Resolve the live route without exposing the primary provider to callers. */
   resolveCodePredictionSource?(
     agentId: string,
@@ -583,6 +692,7 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentMcpServerByNameParams,
   ): Promise<McpServerMutationResult>;
+  getMcpStatus?(agentId: string): Promise<McpSurfaceSnapshot>;
   partialCompactFromMessage?(
     agentId: string,
     params: AgenCBackgroundAgentPartialCompactParams,
@@ -615,6 +725,10 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentSetPermissionModeParams,
   ): Promise<AgenCBackgroundAgentSetPermissionModeResult>;
+  mutateAgentPermissionRule?(
+    agentId: string,
+    params: SessionPermissionRuleMutationParams,
+  ): Promise<AgenCBackgroundAgentPermissionRuleMutationResult>;
   getAgentHooksStatus?(
     agentId: string,
   ): Promise<AgenCBackgroundAgentHooksStatusResult>;
@@ -732,15 +846,12 @@ interface ActiveBackgroundAgent {
   unsubscribeDurableTerminalFinalizer?: () => void;
   terminationNotified?: boolean;
   lastActiveAt: string;
-  budget?: ActiveAgentBudget;
-  budgetHalt?: JsonObject;
-  budgetHaltInProgress?: boolean;
-  budgetTimer?: AgenCAgentBudgetTimer;
   unsubscribeStatus?: () => void;
   uninstallApprovalBridge?: () => void;
   uninstallRuntimeSettingsPreCommit?: () => void;
   unsubscribeElicitationEvents?: () => void;
   unsubscribePhaseEvents?: () => void;
+  unsubscribeMcpSurfaceInvalidations?: () => void;
   sessionBinding?: AgenCBackgroundAgentSessionEventBinding;
   bufferedEvents: BackgroundAgentDaemonEvent[];
   activeToolCallIds: Set<string>;
@@ -751,6 +862,8 @@ interface ActiveBackgroundAgent {
   cleanupComplete: Promise<void>;
   pendingMessageSubmissionCount: number;
   readonly messageSubmissionsById: Map<string, ActiveMessageSubmission>;
+  pendingShellExecutionCount: number;
+  readonly shellExecutionsById: Map<string, ActiveShellExecution>;
   /**
    * True when no initial turn was submitted at spawn (deferInitialTurn
    * spawns and restored agents). Their thread sits in pending_init until
@@ -759,7 +872,6 @@ interface ActiveBackgroundAgent {
    * session: the message that would initialize the thread is the message
    * being refused.
    */
-  readonly initialTurnDeferred: boolean;
   /**
    * Per-agent emission serialization chain. `#emitOrBufferEvent` awaits
    * an async-locked broadcast, so two fire-and-forget emits from a
@@ -785,6 +897,12 @@ interface ActiveMessageSubmission {
   settled: boolean;
 }
 
+interface ActiveShellExecution {
+  readonly commandFingerprint: string;
+  readonly promise: Promise<SessionShellExecuteResult>;
+  settled: boolean;
+}
+
 interface BackgroundAgentDaemonEvent {
   /** Existing session/subscription correlation envelope. */
   readonly id: string;
@@ -801,40 +919,16 @@ interface BackgroundAgentDaemonEvent {
   readonly historyEpoch?: string;
   readonly turnId?: string;
   readonly clientMessageId?: string;
-  /**
-   * Internal lifecycle classification for an `error` emitted by a tool while
-   * that exact call is still active. The canonical event remains visible to
-   * clients, but it is not a turn/run terminal boundary: the paired
-   * `tool_call_completed` carries the recoverable tool result.
-   */
-  readonly recoverableToolError?: true;
+  /** Keep operation-scoped events out of model/run status projection. */
+  readonly statusProjection?: "session_only";
 }
 
-interface ActiveAgentBudget {
-  readonly tokenCap?: number;
-  readonly dollarCap?: number;
-  readonly wallClockSeconds?: number;
-  readonly startedAt: string;
-  readonly startedAtMs: number;
-  readonly model?: string;
-  readonly provider?: string;
-  readonly priorUsage: AgentBudgetUsage;
-}
-
-interface AgentBudgetHalt {
-  readonly kind: "token_cap" | "dollar_cap" | "wall_clock_seconds";
-  readonly reason: string;
-  readonly marker: JsonObject;
-}
-
-interface AgentBudgetUsage {
+interface AgentTerminalUsage {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly totalTokens: number;
   readonly costUsd: number;
 }
-
-const MAX_AGENT_BUDGET_TIMER_MS = 2_147_483_647;
 
 /**
  * Upper bound on daemon events buffered for a single agent while no
@@ -964,28 +1058,17 @@ function gapRunId(
     );
 }
 
-export interface AgenCAgentBudgetTimer {
-  readonly unref?: () => void;
-}
-
 export interface AgenCDelegateBackgroundAgentRunnerOptions {
   readonly bootstrap?: AgenCBootstrapFunction;
   readonly ensureAgentControl?: AgenCEnsureAgentControlFunction;
   readonly authBackend?: AuthBackend;
-  readonly agentBudget?: AgentBudgetConfig;
   readonly executionAdmissionKernel?: ExecutionAdmissionKernel;
   readonly csvAgentJobsRepositories?: CsvAgentJobsRepositoryProvider;
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
   readonly now?: () => string;
-  readonly budgetNowMs?: () => number;
   readonly realtimeCallClient?: AgenCRealtimeCallClient;
   readonly realtimeConnectTransport?: AgenCBackgroundRealtimeTransportConnector;
-  readonly setBudgetTimer?: (
-    callback: () => void,
-    delayMs: number,
-  ) => AgenCAgentBudgetTimer;
-  readonly clearBudgetTimer?: (timer: AgenCAgentBudgetTimer) => void;
   readonly onActiveAgentTerminated?: (
     agentId: string,
     snapshot: AgenCBackgroundAgentSnapshot,
@@ -994,7 +1077,7 @@ export interface AgenCDelegateBackgroundAgentRunnerOptions {
 
 export type AgenCDelegateBackgroundAgentRunnerRuntimeConfig = Pick<
   AgenCDelegateBackgroundAgentRunnerOptions,
-  "agentBudget" | "realtimeCallClient" | "realtimeConnectTransport"
+  "realtimeCallClient" | "realtimeConnectTransport"
 > & {
   readonly authBackend: AuthBackend | undefined;
 };
@@ -1004,27 +1087,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   readonly #requireSandboxReadyAtStartup: boolean;
   readonly #ensureAgentControl: AgenCEnsureAgentControlFunction;
   #authBackend: AgenCDaemonRuntimeAuthBackend | undefined;
-  #agentBudget: AgentBudgetConfig | undefined;
   readonly #env: NodeJS.ProcessEnv | undefined;
   readonly #executionAdmissionKernel: ExecutionAdmissionKernel | undefined;
   readonly #csvAgentJobsRepositories:
     CsvAgentJobsRepositoryProvider | undefined;
-  /**
-   * Compatibility-only monitor for injected test bootstraps. Production
-   * sessions enforce `[agent.budget]` inside execution admission, so running
-   * this sidecar monitor too would create a second accounting authority.
-   */
-  readonly #legacyAgentBudgetMonitorEnabled: boolean;
   readonly #argv: readonly string[] | undefined;
   readonly #now: () => string;
-  readonly #budgetNowMs: () => number;
   #realtimeCallClient: AgenCRealtimeCallClient | undefined;
   #realtimeConnectTransport: AgenCBackgroundRealtimeTransportConnector;
-  readonly #setBudgetTimer: (
-    callback: () => void,
-    delayMs: number,
-  ) => AgenCAgentBudgetTimer;
-  readonly #clearBudgetTimer: (timer: AgenCAgentBudgetTimer) => void;
   readonly #active = new Map<string, ActiveBackgroundAgent>();
   readonly #pendingExplicitRestores = new Set<string>();
   readonly #pendingEvents = new Map<string, BackgroundAgentDaemonEvent[]>();
@@ -1046,25 +1116,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     this.#requireSandboxReadyAtStartup = options.bootstrap === undefined;
     this.#ensureAgentControl = options.ensureAgentControl ?? ensureAgentControl;
     this.updateAuthBackend(options.authBackend);
-    this.#agentBudget = options.agentBudget;
     this.#executionAdmissionKernel = options.executionAdmissionKernel;
     this.#csvAgentJobsRepositories = options.csvAgentJobsRepositories;
-    this.#legacyAgentBudgetMonitorEnabled =
-      options.bootstrap !== undefined &&
-      options.executionAdmissionKernel === undefined;
     this.#env = options.env;
     this.#argv = options.argv;
     this.#now = options.now ?? (() => new Date().toISOString());
-    this.#budgetNowMs = options.budgetNowMs ?? (() => Date.now());
     this.#realtimeCallClient = options.realtimeCallClient;
     this.#realtimeConnectTransport =
       options.realtimeConnectTransport ?? unavailableRealtimeTransport;
-    this.#setBudgetTimer =
-      options.setBudgetTimer ??
-      ((callback, delayMs) => setTimeout(callback, delayMs));
-    this.#clearBudgetTimer =
-      options.clearBudgetTimer ??
-      ((timer) => clearTimeout(timer as ReturnType<typeof setTimeout>));
     this.#onActiveAgentTerminated = options.onActiveAgentTerminated;
   }
 
@@ -1081,7 +1140,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     options: AgenCDelegateBackgroundAgentRunnerRuntimeConfig,
   ): void {
     this.updateAuthBackend(options.authBackend);
-    this.#agentBudget = options.agentBudget;
     this.#realtimeCallClient = options.realtimeCallClient;
     this.#realtimeConnectTransport =
       options.realtimeConnectTransport ?? unavailableRealtimeTransport;
@@ -1102,22 +1160,20 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   async startAgent(
     params: AgenCBackgroundAgentStartParams,
   ): Promise<AgenCBackgroundAgentStartResult> {
-    // Merge per-invocation envOverrides on top of the runner's
-    // captured env snapshot. Without this, the daemon's first-launch
-    // env wins for every subsequent agent — so the user's latest
-    // OPENAI_BASE_URL / proxy / API key gets silently ignored.
-    const mergedEnv =
-      params.envOverrides !== undefined && this.#env !== undefined
-        ? { ...this.#env, ...params.envOverrides }
-        : params.envOverrides !== undefined
-          ? (params.envOverrides as NodeJS.ProcessEnv)
-          : this.#env;
+    // Materialize the client's complete allowlisted snapshot on top of the
+    // runner's captured env. Protocol clear markers become absent runtime keys
+    // so daemon-start provider/config values cannot leak into this session.
+    const mergedEnv = mergeDaemonClientEnvironment(
+      this.#env,
+      params.envOverrides,
+    );
     const bootstrap = await this.#bootstrap({
       ...(mergedEnv !== undefined ? { env: mergedEnv } : {}),
       ...(this.#authBackend !== undefined
         ? { authBackend: this.#authBackend }
         : {}),
       argv: buildBootstrapArgv(params, this.#argv),
+      runtimeOptions: params.runtimeOptions,
       // Daemon agents are unattended execution for budget policy, but this
       // hint deliberately does not enable autonomous keepalive ticks.
       executionAdmissionAutonomous: true,
@@ -1142,9 +1198,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const uninstallApprovalBridge = this.#installDaemonApprovalBridge(
       bootstrap.session,
     );
-    installDaemonTurnDriverHooks(bootstrap.session);
+    installDaemonTurnDriverHooks(bootstrap.session, bootstrap.configStore);
 
+    let authorityOwner: ActiveBackgroundAgent | undefined;
+    let uninstallPermissionAuthorityCoordinator = (): void => {};
     try {
+      uninstallPermissionAuthorityCoordinator =
+        installDaemonPermissionAuthorityCoordinator(
+          bootstrap,
+          () => authorityOwner,
+        );
       const { control } = this.#ensureAgentControl(bootstrap.session);
       // The unattended policy is an internal daemon execution boundary, not
       // the user's durable interactive authority. Preserve the bootstrap
@@ -1160,14 +1223,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       const explicitlyRequestedBypassTransition =
         params.permissionMode === "bypassPermissions" ||
         (params.permissionMode === "plan" && initialBypassTransition);
-      const workspaceRoot = runtimeWorkspaceRoot(bootstrap);
+      const workspaceRoot = canonicalizeBypassPermissionsCwd(
+        runtimeWorkspaceRoot(bootstrap),
+      );
       if (
         explicitlyRequestedBypassTransition &&
         !initialInteractivePermissionContext.bypassPermissionsAcceptedIn?.includes(
           workspaceRoot,
         )
       ) {
-        // `--yolo` is explicit operator authority for this exact startup
+        // `--dangerously-bypass-approvals-and-sandbox` is explicit operator authority for this exact startup
         // workspace. Bind that authority into the live registry before the
         // durable snapshot is captured; otherwise canonical persistence would
         // either invent a broader grant or reject the legitimate startup.
@@ -1221,6 +1286,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         );
       }
 
+      const taskContent =
+        params.deferInitialTurn === true
+          ? []
+          : messageContentToLlmParts(params.initialContent);
+      const firstInput: string | readonly LLMContentPart[] =
+        taskContent ?? params.objective;
+      const hasFirstInput =
+        typeof firstInput === "string"
+          ? firstInput.trim().length > 0
+          : firstInput.length > 0;
       const startedAt = this.#now();
       const active: ActiveBackgroundAgent = {
         bootstrap,
@@ -1228,7 +1303,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         thread: managedThread,
         status: "running",
         startedAt,
-        initialTurnDeferred: params.deferInitialTurn === true,
         runEpoch: currentRunEpochFromRollout(bootstrap, managedThread.threadId),
         canonicalEventBridgeInstalled: false,
         durableTerminalFinalizerInstalled: false,
@@ -1250,37 +1324,59 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         cleanupComplete: Promise.resolve(),
         pendingMessageSubmissionCount: 0,
         messageSubmissionsById: new Map(),
+        pendingShellExecutionCount: 0,
+        shellExecutionsById: new Map(),
         dispatchChain: Promise.resolve(),
       };
-      if (supportsCanonicalRuntimeSettings(active)) {
-        const initialRuntimeSettings = captureRuntimeSettings(active, {
-          permissionContext: initialInteractivePermissionContext,
-          ...(params.profile !== undefined ? { profile: params.profile } : {}),
-          authorizeBypass:
-            params.permissionMode === "bypassPermissions" ||
-            params.permissionMode === "plan",
+      authorityOwner = active;
+      // Prompt preparation emits canonical warnings and errors. Subscribe as
+      // soon as the unpublished active record exists so those events are
+      // buffered for the eventual attach instead of falling into the gap
+      // between bootstrap and active-map publication.
+      active.unsubscribeElicitationEvents =
+        this.#installSessionEventLogBridge(active);
+
+      let preparedFirstInput = firstInput;
+      if (hasFirstInput && params.initialEditorInteraction === undefined) {
+        const prepared = await prepareDaemonUserPrompt({
+          session: bootstrap.session,
+          configStore: bootstrap.configStore,
+          input: firstInput,
         });
-        commitDurableRuntimeSettingsChange(
-          active,
-          managedThread.threadId,
-          initialRuntimeSettings,
-          "initial",
-        );
-        active.uninstallRuntimeSettingsPreCommit =
-          installRuntimeSettingsPreCommit(active, managedThread.threadId);
+        if (prepared.blocked) {
+          throw new AgenCBackgroundAgentMessageError(
+            "PROMPT_BLOCKED",
+            prepared.blockMessage ?? "UserPromptSubmit hook blocked the prompt",
+          );
+        }
+        preparedFirstInput = prepared.input;
       }
-      this.#installAgentBudget(active, {
-        startedAt,
-        ...(params.model !== undefined ? { model: params.model } : {}),
-        ...(params.provider !== undefined ? { provider: params.provider } : {}),
-        ...(params.metadata !== undefined ? { metadata: params.metadata } : {}),
+
+      requireCanonicalRuntimeSettingsSupport(active, managedThread.threadId);
+      const initialRuntimeSettings = captureRuntimeSettings(active, {
+        permissionContext: initialInteractivePermissionContext,
+        ...(params.profile !== undefined ? { profile: params.profile } : {}),
       });
+      commitDurableRuntimeSettingsChange(
+        active,
+        managedThread.threadId,
+        initialRuntimeSettings,
+        "initial",
+      );
+      const uninstallRuntimeSettingsPreCommit = installRuntimeSettingsPreCommit(
+        active,
+        managedThread.threadId,
+      );
+      active.uninstallRuntimeSettingsPreCommit = () => {
+        uninstallRuntimeSettingsPreCommit();
+        uninstallPermissionAuthorityCoordinator();
+      };
       this.#pendingEvents.delete(managedThread.threadId);
       this.#pendingActiveToolCallIds.delete(managedThread.threadId);
       this.#active.set(managedThread.threadId, active);
+      active.unsubscribeMcpSurfaceInvalidations =
+        this.#installMcpSurfaceInvalidationBridge(active);
       this.#installDurableTerminalFinalizer(active, managedThread.threadId);
-      active.unsubscribeElicitationEvents =
-        this.#installSessionEventLogBridge(active);
       this.#trackAgentStatus(active);
       // Phase events update runner-local bookkeeping only. Canonical live
       // delivery comes from Session.EventLog so replay and live clients see
@@ -1292,8 +1388,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           void this.#recordPhaseProgressEvent(managedThread.threadId, progress);
         },
       );
-      this.#scheduleAgentBudgetTimer(active);
-      void this.#enforceAgentBudget(active);
       active.cleanupComplete = this.#cleanupWhenComplete(
         managedThread.threadId,
         active,
@@ -1304,16 +1398,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       // session.submit(input) → runTurn. No directive, no fork, no
       // AgentTool dispatcher. This mirrors the upstream `turn_start`
       // shape for the first message.
-      const taskContent =
-        params.deferInitialTurn === true
-          ? []
-          : messageContentToLlmParts(params.initialContent);
-      const firstInput: string | readonly LLMContentPart[] =
-        taskContent ?? params.objective;
-      const hasFirstInput =
-        typeof firstInput === "string"
-          ? firstInput.trim().length > 0
-          : firstInput.length > 0;
       if (hasFirstInput) {
         // Emit the user_message daemon event for the initial content so
         // the TUI transcript can render it. Turn 2+ goes through
@@ -1345,33 +1429,43 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             });
           }
         }
-        const firstSubmitOptions =
-          params.initialDisplayUserMessage === undefined &&
-          params.initialEditorInteraction === undefined
-            ? undefined
-            : {
-                ...(params.initialDisplayUserMessage !== undefined
-                  ? {
-                      displayUserMessage: params.initialDisplayUserMessage,
-                    }
-                  : {}),
-                ...(params.initialEditorInteraction !== undefined
-                  ? {
-                      editorInteraction: params.initialEditorInteraction,
-                    }
-                  : {}),
-              };
-        void managedThread
-          .submit({
-            type: "user_input",
-            input: firstInput,
-            ...(firstSubmitOptions !== undefined
-              ? { submitOptions: firstSubmitOptions }
-              : {}),
-          })
-          .catch(() => {
-            /* first-turn submission errors surface via session events */
-          });
+        const firstSubmitOptions: DaemonSessionSubmitOptions = {
+          ...(params.initialEditorInteraction === undefined
+            ? { [DAEMON_USER_PROMPT_PREPARED]: true as const }
+            : {}),
+          displayUserMessage:
+            params.initialDisplayUserMessage === undefined
+              ? messageContentDisplayText(transcriptContent)
+              : params.initialDisplayUserMessage,
+          ...(params.initialEditorInteraction !== undefined
+            ? {
+                editorInteraction: params.initialEditorInteraction,
+              }
+            : {}),
+        };
+        active.pendingMessageSubmissionCount += 1;
+        const initialSubmission = active.messageSubmissionQueue.then(() =>
+          runWithCurrentRuntimeSession(active.bootstrap.session, () =>
+            managedThread.submit({
+              type: "user_input",
+              input: preparedFirstInput,
+              submitOptions: firstSubmitOptions,
+            }),
+          ),
+        );
+        const trackedInitialSubmission = initialSubmission.finally(() => {
+          active.pendingMessageSubmissionCount = Math.max(
+            0,
+            active.pendingMessageSubmissionCount - 1,
+          );
+        });
+        active.messageSubmissionQueue = trackedInitialSubmission.then(
+          () => {},
+          () => {},
+        );
+        void trackedInitialSubmission.catch(() => {
+          /* first-turn submission errors surface via session events */
+        });
       }
 
       const rolloutIdentity =
@@ -1390,6 +1484,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           : {}),
       };
     } catch (error) {
+      uninstallPermissionAuthorityCoordinator();
       uninstallApprovalBridge();
       await bootstrap.shutdown().catch(() => {});
       throw error;
@@ -1409,17 +1504,27 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // agent from `state.agents`, so the next user turn's `message.stream`
     // resolved to AGENT_NOT_FOUND and crashed the TUI client. Snapshot
     // the real status; let the caller decide whether to re-engage.
-    return {
-      status: active.status,
-      lastActiveAt: active.lastActiveAt,
-      ...(active.terminal !== undefined ? { terminal: active.terminal } : {}),
-      ...(active.suspension !== undefined
-        ? { suspension: active.suspension }
-        : {}),
-      ...(active.budgetHalt !== undefined
-        ? { metadata: { budgetHalt: active.budgetHalt } }
-        : {}),
-    };
+    return withRuntimeSettingsMutation(active, async () => {
+      if (this.#active.get(agentId) !== active) return null;
+      return {
+        status: active.status,
+        lastActiveAt: active.lastActiveAt,
+        ...(active.runtimeSettings !== undefined
+          ? {
+              runtimeSettings: cloneFrozenRuntimeSettingsSnapshot(
+                active.runtimeSettings,
+              ),
+            }
+          : {}),
+        ...(active.runtimeSettingsEventId !== undefined
+          ? { runtimeSettingsEventId: active.runtimeSettingsEventId }
+          : {}),
+        ...(active.terminal !== undefined ? { terminal: active.terminal } : {}),
+        ...(active.suspension !== undefined
+          ? { suspension: active.suspension }
+          : {}),
+      };
+    });
   }
 
   async listPermissions(agentId: string): Promise<PermissionListResult | null> {
@@ -1488,20 +1593,23 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       }
       let bootstrap: LocalRuntimeBootstrap | undefined;
       let uninstallApprovalBridge: (() => void) | undefined;
+      let authorityOwner: ActiveBackgroundAgent | undefined;
+      let uninstallPermissionAuthorityCoordinator = (): void => {};
       let insertedGeneration: ActiveBackgroundAgent | undefined;
       try {
-        const mergedEnv =
-          params.envOverrides !== undefined && this.#env !== undefined
-            ? { ...this.#env, ...params.envOverrides }
-            : params.envOverrides !== undefined
-              ? (params.envOverrides as NodeJS.ProcessEnv)
-              : this.#env;
+        // Restores retain the same complete per-client snapshot semantics as
+        // first start, including removal of cleared daemon-start state.
+        const mergedEnv = mergeDaemonClientEnvironment(
+          this.#env,
+          params.envOverrides,
+        );
         bootstrap = await this.#bootstrap({
           ...(mergedEnv !== undefined ? { env: mergedEnv } : {}),
           ...(this.#authBackend !== undefined
             ? { authBackend: this.#authBackend }
             : {}),
           conversationId: params.agentId,
+          runtimeOptions: params.runtimeOptions,
           resumeConversation: true,
           ...(params.resumeRolloutPath !== undefined
             ? { resumeRolloutPath: params.resumeRolloutPath }
@@ -1525,10 +1633,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
                   params.suspendedResumeReason ?? "explicit_continue",
               }
             : {}),
+          deferSessionStartHooks: true,
           ...(params.resumeSuspendedRun === true ||
           params.resumeStartupActivationPending === true
             ? {
-                deferSessionStartHooks: true,
                 deferAgentStartupSideEffects: true,
               }
             : {}),
@@ -1551,7 +1659,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         uninstallApprovalBridge = this.#installDaemonApprovalBridge(
           bootstrap.session,
         );
-        installDaemonTurnDriverHooks(bootstrap.session);
+        installDaemonTurnDriverHooks(bootstrap.session, bootstrap.configStore);
+        uninstallPermissionAuthorityCoordinator =
+          installDaemonPermissionAuthorityCoordinator(
+            bootstrap,
+            () => authorityOwner,
+          );
         const { control } = this.#ensureAgentControl(bootstrap.session);
         await installUnattendedPermissionPolicy(
           bootstrap.session.permissionModeRegistry,
@@ -1571,11 +1684,18 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             `restoreAgent runtime settings disagree with canonical run ${params.agentId}`,
           );
         }
-        if (canonicalRuntimeState.runtimeSettings !== undefined) {
-          await applyRestoredRuntimeSettings(
+        let restoredRuntimeSettings = canonicalRuntimeState.runtimeSettings;
+        if (restoredRuntimeSettings !== undefined) {
+          restoredRuntimeSettings = await applyRestoredRuntimeSettings(
             bootstrap,
-            canonicalRuntimeState.runtimeSettings,
+            restoredRuntimeSettings,
           );
+        }
+        if (
+          params.resumeSuspendedRun !== true &&
+          params.resumeStartupActivationPending !== true
+        ) {
+          await bootstrap.session.flushDeferredSessionStartHook();
         }
 
         // Upstream-parity restore: the bootstrap session is already
@@ -1651,10 +1771,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           thread: managedThread,
           status: "running",
           startedAt,
-          // A restored agent has no initial submission in flight either:
-          // its thread re-initializes on the first post-restore message,
-          // so pending_init must stay sendable after a daemon restart.
-          initialTurnDeferred: true,
           ...(params.restoreAttemptId !== undefined
             ? { restoreAttemptId: params.restoreAttemptId }
             : {}),
@@ -1694,19 +1810,37 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           cleanupComplete: Promise.resolve(),
           pendingMessageSubmissionCount: 0,
           messageSubmissionsById: new Map(),
+          pendingShellExecutionCount: 0,
+          shellExecutionsById: new Map(),
           dispatchChain: Promise.resolve(),
         };
-        if (canonicalRuntimeState.runtimeSettings !== undefined) {
+        authorityOwner = active;
+        if (
+          canonicalRuntimeState.runtimeSettings !== undefined &&
+          restoredRuntimeSettings !== undefined &&
+          stableStringify(restoredRuntimeSettings) !==
+            stableStringify(canonicalRuntimeState.runtimeSettings)
+        ) {
+          commitDurableRuntimeSettingsChange(
+            active,
+            params.agentId,
+            restoredRuntimeSettings,
+            "config_applied",
+          );
+        }
+        if (active.runtimeSettings !== undefined) {
+          const restoredBaseline = active.runtimeSettings;
           const restoreOverrides = runtimeSettingsWithRestoreOverrides(
-            canonicalRuntimeState.runtimeSettings,
+            restoredBaseline,
             params,
             runtimeWorkspaceRoot(bootstrap),
+            bootstrap.configStore.current(),
           );
           if (
             stableStringify(restoreOverrides) !==
-            stableStringify(canonicalRuntimeState.runtimeSettings)
+            stableStringify(restoredBaseline)
           ) {
-            const previousSettings = canonicalRuntimeState.runtimeSettings;
+            const previousSettings = restoredBaseline;
             const reason: RunRuntimeSettingsChangeReason =
               restoreOverrides.permissionMode !==
               previousSettings.permissionMode
@@ -1751,21 +1885,18 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             }
           }
         }
-        active.uninstallRuntimeSettingsPreCommit =
+        requireCanonicalRuntimeSettingsSupport(active, params.agentId);
+        const uninstallRuntimeSettingsPreCommit =
           installRuntimeSettingsPreCommit(active, params.agentId);
-        this.#installAgentBudget(active, {
-          startedAt,
-          ...(params.model !== undefined ? { model: params.model } : {}),
-          ...(params.provider !== undefined
-            ? { provider: params.provider }
-            : {}),
-          ...(params.metadata !== undefined
-            ? { metadata: params.metadata }
-            : {}),
-        });
+        active.uninstallRuntimeSettingsPreCommit = () => {
+          uninstallRuntimeSettingsPreCommit();
+          uninstallPermissionAuthorityCoordinator();
+        };
         this.#pendingEvents.delete(params.agentId);
         this.#pendingActiveToolCallIds.delete(params.agentId);
         this.#active.set(params.agentId, active);
+        active.unsubscribeMcpSurfaceInvalidations =
+          this.#installMcpSurfaceInvalidationBridge(active);
         insertedGeneration = active;
         this.#installDurableTerminalFinalizer(active, params.agentId);
         active.unsubscribeElicitationEvents =
@@ -1778,8 +1909,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             void this.#recordPhaseProgressEvent(params.agentId, progress);
           },
         );
-        this.#scheduleAgentBudgetTimer(active);
-        void this.#enforceAgentBudget(active);
         active.cleanupComplete = this.#cleanupWhenComplete(
           params.agentId,
           active,
@@ -1797,6 +1926,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         return true;
       } catch (error) {
         const cleanupErrors: unknown[] = [];
+        uninstallPermissionAuthorityCoordinator();
         if (
           insertedGeneration !== undefined &&
           this.#active.get(params.agentId) === insertedGeneration
@@ -1860,7 +1990,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // exactly like a process crash, including its effect/review gates.
     active.ingressClosed = true;
     active.status = "stopping";
-    this.#clearAgentBudgetTimer(active);
     this.#abortPendingToolDecisions(agentId);
     active.unsubscribeDurableTerminalFinalizer?.();
     active.unsubscribeStatus?.();
@@ -1868,6 +1997,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active.uninstallRuntimeSettingsPreCommit?.();
     active.unsubscribeElicitationEvents?.();
     active.unsubscribePhaseEvents?.();
+    active.unsubscribeMcpSurfaceInvalidations?.();
     if (this.#active.get(agentId) === active) {
       this.#active.delete(agentId);
       this.#pendingEvents.delete(agentId);
@@ -1927,7 +2057,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active.pendingTerminal === undefined) {
       active.status = "stopping";
       active.lastActiveAt = this.#now();
-      this.#clearAgentBudgetTimer(active);
       active.pendingTerminal = cancelledTerminalResult(
         active,
         agentId,
@@ -1971,7 +2100,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active === undefined) return;
     active.status = "stopping";
     active.lastActiveAt = this.#now();
-    this.#clearAgentBudgetTimer(active);
     let stopError: unknown;
     active.pendingTerminal ??= cancelledTerminalResult(
       active,
@@ -2022,6 +2150,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active.uninstallApprovalBridge?.();
     active.uninstallRuntimeSettingsPreCommit?.();
     active.unsubscribeElicitationEvents?.();
+    active.unsubscribePhaseEvents?.();
+    active.unsubscribeMcpSurfaceInvalidations?.();
     // gaphunt3 #48: the agentId is the session/conversationId used as the
     // vended-key cache key, so evict this session's entries on stop —
     // otherwise non-expiring keys leak for the daemon's lifetime.
@@ -2044,10 +2174,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active.ingressClosed = true;
     active.status = "stopping";
     active.lastActiveAt = this.#now();
-    this.#clearAgentBudgetTimer(active);
     await this.#drainDispatchChain(active);
 
-    if (!this.#canSuspendIdleAgent(agentId, active, true)) {
+    if (!this.#canSuspendIdleAgent(agentId, active)) {
       await this.stopAgent(agentId, "daemon_shutdown_not_idle");
       return {
         disposition: "cancelled",
@@ -2100,6 +2229,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active.uninstallRuntimeSettingsPreCommit?.();
     active.unsubscribeElicitationEvents?.();
     active.unsubscribePhaseEvents?.();
+    active.unsubscribeMcpSurfaceInvalidations?.();
     this.#abortPendingToolDecisions(agentId);
     this.#authBackend?.clearVendedKeysForSession(agentId);
     if (shutdownErrors.length > 0) {
@@ -2126,7 +2256,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   #canSuspendIdleAgent(
     agentId: string,
     active: ActiveBackgroundAgent,
-    requireIdleThread: boolean,
   ): boolean {
     if (
       active.ingressClosed !== true ||
@@ -2135,20 +2264,20 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       active.suspension !== undefined ||
       active.pendingTerminal !== undefined ||
       active.cancellationRequest !== undefined ||
-      active.budgetHalt !== undefined ||
       active.pendingMessageSubmissionCount !== 0 ||
+      active.pendingShellExecutionCount !== 0 ||
       active.messageSubmission !== undefined ||
       [...active.messageSubmissionsById.values()].some(
         (submission) => !submission.settled,
+      ) ||
+      [...active.shellExecutionsById.values()].some(
+        (execution) => !execution.settled,
       ) ||
       hasRuntimeActiveTurn(active.bootstrap.session) ||
       hasOpenAgentDescendants(active.control, active.thread.threadId) ||
       active.activeToolCallIds.size !== 0 ||
       this.#pendingToolDecisions.has(agentId)
     ) {
-      return false;
-    }
-    if (requireIdleThread && active.thread.status().status !== "idle") {
       return false;
     }
     try {
@@ -2208,34 +2337,88 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       }
       return;
     }
-    // Serialize attachment with canonical delivery. startAgent and
-    // restoreAgent both establish runtime settings before installing the
-    // Session.EventLog bridge, so that exact event cannot have entered the
-    // ordinary pre-attach buffer. Recover it from the canonical rollout and
-    // merge it into the queued tail by sequence. Repeating this for a
-    // replacement lifecycle binding gives that route the current selection
-    // without synthesizing a new identity or sequence. Physical client
-    // reconnects reconstruct older canonical state through run.replay.
-    let attachError: unknown;
-    let raised = false;
-    const tail = active.dispatchChain.then(async () => {
-      const runtimeSettingsEvent = runtimeSettingsDaemonEventForAttach(active);
-      const replay = active.bufferedEvents.splice(0);
-      const orderedReplay =
-        runtimeSettingsEvent === null
-          ? replay
-          : insertCanonicalEventBySequence(replay, runtimeSettingsEvent);
-      active.sessionBinding = binding;
-      for (const event of orderedReplay) {
-        await this.#emitDaemonEvent(active, event);
+    active.sessionBinding = binding;
+    const replay = active.bufferedEvents.splice(0);
+    for (const event of replay) {
+      await this.#emitDaemonEvent(active, event);
+    }
+  }
+
+  #installMcpSurfaceInvalidationBridge(
+    active: ActiveBackgroundAgent,
+  ): (() => void) | undefined {
+    const manager = active.bootstrap.session.services.mcpManager;
+    if (manager === undefined) return undefined;
+    const subscribe = manager.subscribeMcpSurfaceInvalidations;
+    if (subscribe === undefined) return undefined;
+    const agentId = active.thread.threadId;
+    let disposed = false;
+    let pendingRevision: number | undefined;
+    let drainScheduled = false;
+    const drain = (): void => {
+      if (drainScheduled || pendingRevision === undefined) return;
+      drainScheduled = true;
+      const tail = active.dispatchChain
+        .then(async () => {
+          while (pendingRevision !== undefined) {
+            const revision = pendingRevision;
+            pendingRevision = undefined;
+            if (
+              disposed ||
+              this.#active.get(agentId) !== active ||
+              !isRunnableActiveAgent(active)
+            ) {
+              return;
+            }
+            const binding = active.sessionBinding;
+            if (binding === undefined) continue;
+            await binding.emit(
+              notificationFromDaemonEvent(binding.sessionId, agentId, {
+                id: `mcp-status:${agentId}:${revision}`,
+                type: "mcp_status_changed",
+                payload: { revision },
+              }),
+            );
+          }
+        })
+        .catch((error: unknown) => {
+          logForDebugging(
+            `MCP status invalidation delivery failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            { level: "error" },
+          );
+        })
+        .finally(() => {
+          drainScheduled = false;
+          if (!disposed && pendingRevision !== undefined) drain();
+        });
+      active.dispatchChain = tail;
+    };
+    const unsubscribe = subscribe.call(manager, (revision) => {
+      if (
+        disposed ||
+        this.#active.get(agentId) !== active ||
+        !isRunnableActiveAgent(active)
+      ) {
+        return;
       }
+      // This is an ephemeral invalidation, not transcript state. A client that
+      // attaches later fetches the current snapshot explicitly, so never queue
+      // a pre-attachment revision for replay.
+      if (active.sessionBinding === undefined) return;
+      pendingRevision =
+        pendingRevision === undefined
+          ? revision
+          : Math.max(pendingRevision, revision);
+      drain();
     });
-    active.dispatchChain = tail.catch((error: unknown) => {
-      attachError = error;
-      raised = true;
-    });
-    await active.dispatchChain;
-    if (raised) throw attachError;
+    return () => {
+      if (disposed) return;
+      disposed = true;
+      pendingRevision = undefined;
+      unsubscribe();
+    };
   }
 
   async submitAgentMessage(
@@ -2281,17 +2464,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       };
     }
 
-    const threadStatus = active.thread.status().status;
     if (
       params.ifBusy === "reject" &&
       (active.pendingMessageSubmissionCount > 0 ||
-        hasRuntimeActiveTurn(active.bootstrap.session) ||
-        threadStatus === "running" ||
-        // pending_init is busy only while a spawn-submitted initial turn
-        // is still starting. Deferred spawns and restored agents stay
-        // pending_init until their first accepted message initializes the
-        // thread; rejecting that message would deadlock the session.
-        (threadStatus === "pending_init" && !active.initialTurnDeferred))
+        active.pendingShellExecutionCount > 0 ||
+        hasRuntimeActiveTurn(active.bootstrap.session))
     ) {
       throw new AgenCBackgroundAgentMessageError(
         "TURN_IN_PROGRESS",
@@ -2319,24 +2496,26 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active.messageSubmissionsById.set(params.messageId, submission);
     active.pendingMessageSubmissionCount += 1;
 
-    const execute = active.messageSubmissionQueue.then(async () => {
-      if (!isRunnableActiveAgent(active)) {
-        throw new Error(`AgenC daemon agent not running: ${agentId}`);
-      }
-      active.messageSubmission = submission;
-      try {
-        return await this.#executeAgentMessageSubmission(
-          active,
-          agentId,
-          params,
-          submission,
-        );
-      } finally {
-        if (active.messageSubmission === submission) {
-          active.messageSubmission = undefined;
+    const execute = active.messageSubmissionQueue.then(() =>
+      runWithCurrentRuntimeSession(active.bootstrap.session, async () => {
+        if (!isRunnableActiveAgent(active)) {
+          throw new Error(`AgenC daemon agent not running: ${agentId}`);
         }
-      }
-    });
+        active.messageSubmission = submission;
+        try {
+          return await this.#executeAgentMessageSubmission(
+            active,
+            agentId,
+            params,
+            submission,
+          );
+        } finally {
+          if (active.messageSubmission === submission) {
+            active.messageSubmission = undefined;
+          }
+        }
+      }),
+    );
     active.messageSubmissionQueue = execute.then(
       () => {},
       () => {},
@@ -2352,15 +2531,336 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     return promise;
   }
 
+  async executeAgentShell(
+    agentId: string,
+    params: SessionShellExecuteParams,
+    signal?: AbortSignal,
+  ): Promise<SessionShellExecuteResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const boundSessionId = active.sessionBinding?.sessionId;
+    if (boundSessionId !== undefined && params.sessionId !== boundSessionId) {
+      throw new Error(
+        `Shell session mismatch: ${params.sessionId} is not owned by ${agentId}`,
+      );
+    }
+    throwIfShellRequestAborted(signal);
+
+    const commandFingerprint = messageContentFingerprint(params.command);
+    const duplicate = active.shellExecutionsById.get(params.commandId);
+    if (duplicate !== undefined) {
+      if (duplicate.commandFingerprint !== commandFingerprint) {
+        throw new Error(
+          `Shell command id ${params.commandId} was already used for different content`,
+        );
+      }
+      return duplicate.promise;
+    }
+
+    const persisted = findPersistedMessageSubmission(
+      active.bootstrap.rolloutStore.readAll(),
+      shellSubmissionMessageId(params.commandId),
+    );
+    if (persisted !== undefined) {
+      if (persisted.contentFingerprint !== commandFingerprint) {
+        throw new Error(
+          `Shell command id ${params.commandId} has conflicting durable content`,
+        );
+      }
+      throw new Error(
+        `Shell command ${params.commandId} already has durable execution evidence. Its response outcome is unknown, so AgenC will not run it again.`,
+      );
+    }
+
+    if (hasRuntimeActiveTurn(active.bootstrap.session)) {
+      throw new Error(
+        `Cannot run a direct shell command while session ${params.sessionId} has an active or queued model turn`,
+      );
+    }
+
+    active.pendingShellExecutionCount += 1;
+    const execution = active.messageSubmissionQueue.then(() => {
+      if (hasRuntimeActiveTurn(active.bootstrap.session)) {
+        throw new Error(
+          `Cannot run a direct shell command while session ${params.sessionId} has an active or queued model turn`,
+        );
+      }
+      return this.#executeAgentShellCommand(active, agentId, params, signal);
+    });
+    const entry: ActiveShellExecution = {
+      commandFingerprint,
+      promise: execution,
+      settled: false,
+    };
+    active.shellExecutionsById.set(params.commandId, entry);
+    active.messageSubmissionQueue = execution.then(
+      () => {},
+      () => {},
+    );
+    const settle = (): void => {
+      entry.settled = true;
+      active.pendingShellExecutionCount = Math.max(
+        0,
+        active.pendingShellExecutionCount - 1,
+      );
+      pruneShellExecutionCache(active.shellExecutionsById);
+    };
+    void execution.then(settle, settle);
+    return execution;
+  }
+
+  async #executeAgentShellCommand(
+    active: ActiveBackgroundAgent,
+    agentId: string,
+    params: SessionShellExecuteParams,
+    signal?: AbortSignal,
+  ): Promise<SessionShellExecuteResult> {
+    if (
+      !isRunnableActiveAgent(active) ||
+      this.#active.get(agentId) !== active
+    ) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    throwIfShellRequestAborted(signal);
+
+    const session = active.bootstrap.session;
+    const executionSignal =
+      signal === undefined
+        ? session.abortController.signal
+        : AbortSignal.any([signal, session.abortController.signal]);
+    throwIfShellRequestAborted(executionSignal);
+    const acceptedAt = this.#now();
+    const eventKey = shellEventKey(params.commandId);
+    session.emit(
+      {
+        eventId: `shell-submission:${eventKey}`,
+        id: `shell-submission:${eventKey}`,
+        msg: {
+          type: "message_submission",
+          payload: {
+            contentFingerprint: messageContentFingerprint(params.command),
+            messageId: shellSubmissionMessageId(params.commandId),
+            streamId: "session.shell.execute",
+            acceptedAt,
+          },
+        },
+      },
+      { durable: true },
+    );
+    session.emit(
+      {
+        eventId: `shell-input:${eventKey}`,
+        id: `shell-input:${eventKey}`,
+        msg: {
+          type: "user_message",
+          payload: {
+            message: `<bash-input>${escapeXml(params.command)}</bash-input>`,
+            displayText: `<bash-input>${escapeXml(params.command)}</bash-input>`,
+            queuedCommandUuid: params.commandId,
+          },
+        },
+      },
+      { durable: true },
+    );
+    const shellTurnId = `shell-${eventKey}`;
+    let startedTool:
+      | { readonly name: string; readonly turnId: string }
+      | undefined;
+    const emitToolStart = (toolName: string): void => {
+      session.emit(
+        {
+          eventId: `shell-tool-start:${eventKey}`,
+          id: params.commandId,
+          msg: {
+            type: "tool_call_started",
+            payload: {
+              callId: params.commandId,
+              toolName,
+              args: JSON.stringify({ command: params.command }),
+            },
+          },
+        },
+        { durable: true },
+      );
+    };
+    const emitToolCompletion = (
+      toolName: string,
+      completion: {
+        readonly result: string;
+        readonly isError: boolean;
+        readonly turnId: string;
+        readonly metadata?: Readonly<Record<string, unknown>>;
+      },
+    ): void => {
+      session.emit(
+        {
+          eventId: `shell-tool-result:${eventKey}`,
+          id: `shell-tool-result:${eventKey}`,
+          msg: {
+            type: "tool_call_completed",
+            payload: {
+              callId: params.commandId,
+              toolName,
+              result: completion.result,
+              isError: completion.isError,
+              metadata: {
+                ...completion.metadata,
+                toolName,
+                source: "direct",
+              },
+            },
+          },
+        },
+        {
+          durable: true,
+          turnId: completion.turnId,
+          toolResultBytes: Buffer.byteLength(completion.result, "utf8"),
+        },
+      );
+    };
+    let dispatch: {
+      readonly result: ToolDispatchResult;
+      readonly toolName: string;
+      readonly turnId: string;
+    };
+    try {
+      await active.dispatchChain;
+      dispatch = await runWithCurrentRuntimeSession(session, () =>
+        runWithCanonicalSettingsAuthority(
+          active.bootstrap.configStore,
+          async () => {
+            throwIfShellRequestAborted(executionSignal);
+            const turn = session.newDefaultTurnWithSubId(shellTurnId);
+            const workspaceRoot = runtimeWorkspaceRoot(active.bootstrap);
+            if (
+              turn.cwd !== workspaceRoot ||
+              active.bootstrap.workspaceRoot !== workspaceRoot
+            ) {
+              throw new Error(
+                `Shell cwd authority mismatch for session ${params.sessionId}`,
+              );
+            }
+            const toolName =
+              resolveDefaultShell() === "powershell"
+                ? "PowerShell"
+                : "system.bash";
+            if (
+              !session.services.registry.tools.some(
+                (tool) => tool.name === toolName,
+              )
+            ) {
+              throw new Error(
+                `Configured shell ${toolName} is not available in session ${params.sessionId}`,
+              );
+            }
+            startedTool = { name: toolName, turnId: turn.subId };
+            emitToolStart(toolName);
+            await active.dispatchChain;
+            const router = routerFromRegistry(session.services.registry);
+            const result = await router.dispatchModelToolCall(
+              {
+                id: params.commandId,
+                name: toolName,
+                arguments: JSON.stringify({ command: params.command }),
+              },
+              {
+                ...buildLiveToolDispatchOptions(turn, session, executionSignal),
+                source: "direct",
+              },
+            );
+            return { result, toolName, turnId: turn.subId };
+          },
+        ),
+      );
+    } catch (error) {
+      if (startedTool === undefined) {
+        let toolName = "system.bash";
+        try {
+          toolName = runWithCurrentRuntimeSession(session, () =>
+            runWithCanonicalSettingsAuthority(
+              active.bootstrap.configStore,
+              () => resolveDefaultShell() === "powershell"
+                ? "PowerShell"
+                : "system.bash",
+            ),
+          );
+        } catch {
+          // The fallback name is used only to durably close a failed request.
+        }
+        startedTool = { name: toolName, turnId: shellTurnId };
+        emitToolStart(startedTool.name);
+      }
+      const failure = error instanceof Error ? error.message : String(error);
+      emitToolCompletion(startedTool.name, {
+        turnId: startedTool.turnId,
+        result: failure,
+        isError: true,
+      });
+      await active.dispatchChain;
+      throw error;
+    }
+    const result = normalizeSessionShellResult(
+      params.commandId,
+      dispatch.result,
+    );
+    emitToolCompletion(dispatch.toolName, {
+      turnId: dispatch.turnId,
+      result: dispatch.result.content,
+      isError: dispatch.result.isError === true,
+      ...(dispatch.result.metadata !== undefined
+        ? { metadata: dispatch.result.metadata }
+        : {}),
+    });
+    await active.dispatchChain;
+    const transcriptOutput =
+      `<bash-stdout>${escapeXml(result.stdout)}</bash-stdout>` +
+      `<bash-stderr>${escapeXml(result.stderr)}</bash-stderr>`;
+    session.emit(
+      {
+        eventId: `shell-output:${eventKey}`,
+        id: `shell-output:${eventKey}`,
+        msg: {
+          type: "user_message",
+          payload: {
+            message: transcriptOutput,
+            displayText: transcriptOutput,
+            queuedCommandUuid: params.commandId,
+          },
+        },
+      },
+      { durable: true },
+    );
+    await active.dispatchChain;
+    active.lastActiveAt = this.#now();
+    return result;
+  }
+
   async #executeAgentMessageSubmission(
     active: ActiveBackgroundAgent,
     agentId: string,
     params: AgenCBackgroundAgentMessageParams,
     submission: ActiveMessageSubmission,
   ): Promise<AgenCBackgroundAgentMessageResult> {
-    const input = messageContentToAgentInput(params.content);
-    const notifyDurableAcceptance = () =>
-      params.onDurableAccepted?.(submission.acceptedAt);
+    let input = messageContentToAgentInput(params.content);
+    if (params.editorInteraction === undefined) {
+      const prepared = await prepareDaemonUserPrompt({
+        session: active.bootstrap.session,
+        configStore: active.bootstrap.configStore,
+        input,
+        hookPrompt: userPromptDisplayText(
+          messageContentToAgentInput(params.originalContent),
+        ),
+      });
+      if (prepared.blocked) {
+        throw new AgenCBackgroundAgentMessageError(
+          "PROMPT_BLOCKED",
+          prepared.blockMessage ?? "UserPromptSubmit hook blocked the prompt",
+        );
+      }
+      input = prepared.input;
+    }
     commitDurableRunStartupActivation(active, agentId, this.#now());
     active.lastActiveAt = this.#now();
     if (params.displayUserMessage === null) {
@@ -2382,46 +2882,45 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         },
         { durable: true },
       );
-      await notifyDurableAcceptance();
     } else {
       const displayText =
         params.displayUserMessage ?? messageContentDisplayText(params.content);
-      await this.#emitPersistedUserMessage(
-        active,
-        {
-          id: params.messageId,
-          type: "user_message",
+      await this.#emitPersistedUserMessage(active, {
+        id: params.messageId,
+        type: "user_message",
+        messageId: params.messageId,
+        streamId: params.streamId,
+        acceptedAt: params.acceptedAt,
+        clientMessageId: params.messageId,
+        payload: {
+          message: params.originalContent,
+          displayText,
           messageId: params.messageId,
           streamId: params.streamId,
           acceptedAt: params.acceptedAt,
-          clientMessageId: params.messageId,
-          payload: {
-            message: params.originalContent,
-            displayText,
-            messageId: params.messageId,
-            streamId: params.streamId,
-            acceptedAt: params.acceptedAt,
-          },
         },
-        notifyDurableAcceptance,
-      );
+      });
     }
+    const submitOptions: DaemonSessionSubmitOptions = {
+      ...(params.editorInteraction === undefined
+        ? { [DAEMON_USER_PROMPT_PREPARED]: true as const }
+        : {}),
+      displayUserMessage:
+        params.displayUserMessage === undefined
+          ? messageContentDisplayText(params.originalContent)
+          : params.displayUserMessage,
+      ...(params.editorInteraction !== undefined
+        ? { editorInteraction: params.editorInteraction }
+        : {}),
+    };
     if (typeof input === "string") {
-      await active.control.sendInput(
-        agentId,
-        input,
-        ...(params.editorInteraction === undefined
-          ? []
-          : [{ editorInteraction: params.editorInteraction }]),
-      );
+      await active.control.sendInput(agentId, input, submitOptions);
     } else {
       await submitStructuredAgentInput(
         active,
         input,
         messageContentDisplayText(params.content),
-        ...(params.editorInteraction === undefined
-          ? []
-          : [{ editorInteraction: params.editorInteraction }]),
+        submitOptions,
       );
     }
     await active.dispatchChain;
@@ -2503,6 +3002,26 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     };
   }
 
+  async getMcpStatus(agentId: string): Promise<McpSurfaceSnapshot> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const manager = active.bootstrap.session.services.mcpManager;
+    if (manager === undefined) {
+      throw new Error(
+        "MCP status projection is not available for this daemon session.",
+      );
+    }
+    const snapshot = manager.mcpSurfaceSnapshot;
+    if (snapshot === undefined) {
+      throw new Error(
+        "MCP status projection is not available for this daemon session.",
+      );
+    }
+    return snapshot.call(manager);
+  }
+
   async reconnectMcpServer(
     agentId: string,
     params: AgenCBackgroundAgentMcpServerByNameParams,
@@ -2579,7 +3098,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active === undefined || !isRunnableActiveAgent(active)) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
-    const usage = budgetUsageForActiveAgent(active);
+    const usage = terminalUsageForActiveAgent(active);
     // Turn count comes from the session's history length. Each completed
     // user/assistant exchange appends entries; using length gives the
     // size of the live transcript without trying to count turn-pairs.
@@ -2594,8 +3113,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // when tool-use rounds split a single turn into multiple history
     // items, but it's a closer signal than the raw item count.
     const turnCount = Math.max(0, Math.floor(historyLength / 2));
-    const cache = await this.#sessionCacheStatsSnapshot(active);
-    const breakdown = this.#sessionContextBreakdown(active);
     return {
       sessionId: params.sessionId,
       turnCount,
@@ -2605,141 +3122,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         totalTokens: finiteNumber(usage.totalTokens),
         costUsd: finiteNumber(usage.costUsd),
       },
-      cacheStats: cache,
-      ...(breakdown !== undefined ? { contextBreakdown: breakdown } : {}),
     };
-  }
-
-  /**
-   * What occupies the context window, by source. Every figure is measured
-   * from this session's own material — the live tool registry, the MCP
-   * catalog, the memory files on disk, the conversation history — so a
-   * client can show where the window went instead of guessing.
-   *
-   * Token counts are the runtime's standard rough estimate (the same one
-   * budgeting uses); they are not a tokenizer round-trip.
-   */
-  #sessionContextBreakdown(
-    active: ActiveBackgroundAgent,
-  ): SessionSnapshotResult["contextBreakdown"] {
-    try {
-      const bootstrap = active.bootstrap;
-      const estimate = (text: string): number =>
-        text.length > 0 ? roughTokenCountEstimation(text) : 0;
-
-      const llmTools = bootstrap.registry.toLLMTools();
-      let systemToolTokens = 0;
-      let systemToolCount = 0;
-      let mcpToolTokens = 0;
-      let mcpToolCount = 0;
-      for (const tool of llmTools) {
-        const tokens = estimate(JSON.stringify(tool));
-        // MCP tools are namespaced `mcp.<server>.<tool>` by the registry.
-        if (tool.function.name.startsWith("mcp.")) {
-          mcpToolTokens += tokens;
-          mcpToolCount += 1;
-        } else {
-          systemToolTokens += tokens;
-          systemToolCount += 1;
-        }
-      }
-
-      // Deferred tools are searchable but not resident, so they cost
-      // nothing until loaded — reported apart from the resident rows.
-      const discovered = bootstrap.registry.getDiscoveredToolNames?.();
-      const residentNames = new Set(llmTools.map((tool) => tool.function.name));
-      let deferredToolTokens = 0;
-      let deferredToolCount = 0;
-      for (const tool of bootstrap.registry.tools) {
-        if (residentNames.has(tool.name)) continue;
-        if (discovered?.has(tool.name) === true) continue;
-        deferredToolCount += 1;
-        deferredToolTokens += estimate(
-          JSON.stringify({
-            name: tool.name,
-            description: tool.description,
-            parameters: tool.inputSchema,
-          }),
-        );
-      }
-
-      let memoryFileTokens = 0;
-      let memoryFileCount = 0;
-      for (const path of this.#memoryFilePaths(bootstrap)) {
-        try {
-          const text = readFileSync(path, "utf8");
-          memoryFileTokens += estimate(text);
-          memoryFileCount += 1;
-        } catch {
-          // absent or unreadable: not in the window either
-        }
-      }
-
-      const state = bootstrap.session.state?.unsafePeek?.();
-      const history = Array.isArray(
-        (state as { history?: unknown[] } | undefined)?.history,
-      )
-        ? ((state as { history: unknown[] }).history as unknown[])
-        : [];
-      let messageTokens = 0;
-      for (const item of history) {
-        try {
-          messageTokens += estimate(JSON.stringify(item));
-        } catch {
-          // unserializable history item: skip rather than guess
-        }
-      }
-
-      const instructions =
-        (
-          bootstrap.session as unknown as {
-            baseInstructions?: string;
-            instructions?: string;
-          }
-        ).baseInstructions ??
-        (bootstrap.session as unknown as { instructions?: string })
-          .instructions ??
-        "";
-
-      return {
-        windowTokens: finiteNumber(bootstrap.modelInfo.contextWindow ?? 0),
-        messageTokens: finiteNumber(messageTokens),
-        systemPromptTokens: finiteNumber(estimate(instructions)),
-        systemToolTokens: finiteNumber(systemToolTokens),
-        systemToolCount,
-        mcpToolTokens: finiteNumber(mcpToolTokens),
-        mcpToolCount,
-        deferredToolTokens: finiteNumber(deferredToolTokens),
-        deferredToolCount,
-        memoryFileTokens: finiteNumber(memoryFileTokens),
-        memoryFileCount,
-      };
-    } catch {
-      // Never fail a snapshot over the breakdown; the client treats an
-      // absent breakdown as "not measured".
-      return undefined;
-    }
-  }
-
-  /** AGENTS.md-style memory the session loads, if present. */
-  #memoryFilePaths(bootstrap: {
-    readonly memoryMdPath?: string;
-    readonly memoryDir?: string;
-  }): readonly string[] {
-    const paths: string[] = [];
-    if (bootstrap.memoryMdPath !== undefined) paths.push(bootstrap.memoryMdPath);
-    if (bootstrap.memoryDir !== undefined) {
-      try {
-        for (const entry of readdirSync(bootstrap.memoryDir)) {
-          if (entry.endsWith(".md")) {
-            paths.push(joinPath(bootstrap.memoryDir, entry));
-          }
-        }
-      } catch {
-        // no memory dir: nothing to add
-      }
-    }
-    return paths;
   }
 
   async getAgentSessionTranscript(
@@ -2847,50 +3230,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     } finally {
       driver.close();
     }
-  }
-
-  // Read the global session-level cache stats tracker (lives in the
-  // daemon process, fed by the upstream SDK call sites). Provider
-  // flows that bypass the tracker (lmstudio / xAI / chat-completions)
-  // legitimately return zeros — that's accurate, not a bug.
-  async #sessionCacheStatsSnapshot(
-    _active: ActiveBackgroundAgent,
-  ): Promise<SessionSnapshotResult["cacheStats"]> {
-    const mod = await import("../services/api/cacheStatsTracker.js").catch(
-      () => null,
-    );
-    if (mod === null) {
-      return {
-        requestCount: 0,
-        cacheReadInputTokens: 0,
-        cacheCreationInputTokens: 0,
-        cacheTotalInputTokens: 0,
-        hitRate: null,
-      };
-    }
-    const metrics = (
-      mod as {
-        getSessionCacheMetrics?: () => {
-          readonly requestCount?: number;
-          readonly cacheReadInputTokens?: number;
-          readonly cacheCreationInputTokens?: number;
-          readonly cacheTotalInputTokens?: number;
-          readonly hitRate?: number | null;
-        };
-      }
-    ).getSessionCacheMetrics?.();
-    return {
-      requestCount: finiteNumber(metrics?.requestCount ?? 0),
-      cacheReadInputTokens: finiteNumber(metrics?.cacheReadInputTokens ?? 0),
-      cacheCreationInputTokens: finiteNumber(
-        metrics?.cacheCreationInputTokens ?? 0,
-      ),
-      cacheTotalInputTokens: finiteNumber(metrics?.cacheTotalInputTokens ?? 0),
-      hitRate:
-        metrics?.hitRate === null || metrics?.hitRate === undefined
-          ? null
-          : finiteNumber(metrics.hitRate),
-    };
   }
 
   async partialCompactFromMessage(
@@ -3145,112 +3484,148 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       const session = active.bootstrap.session;
       const previousPending = session.pendingProviderSwitch;
       const previousSettings = ensureInitialRuntimeSettings(active, agentId);
-      let committedEventId: string | undefined;
-      const beforeStage = (selection: {
+      let preparedSettingsChange: PreparedRuntimeSettingsChange | undefined;
+      let preparedSettings: RunRuntimeSettingsSnapshot | undefined;
+      let preparedProviderSwitch: PreparedSessionProviderSwitch | undefined;
+      let stagedProviderSwitch: PreparedSessionProviderSwitch | undefined;
+      const stage = async (selection: {
         readonly provider: string;
         readonly model: string;
-      }): void => {
+      }): Promise<void> => {
+        if (preparedSettingsChange !== undefined) {
+          throw new Error(
+            `run ${agentId} model switch prepared more than once`,
+          );
+        }
+        preparedProviderSwitch = await runWithCurrentRuntimeSession(
+          session,
+          () =>
+            runWithCanonicalSettingsAuthority(
+              active.bootstrap.configStore,
+              () => session.prepareProviderSwitch(selection),
+            ),
+        );
         const nextSettings: RunRuntimeSettingsSnapshot = {
-          ...captureRuntimeSettings(active, { authorizeBypass: true }),
+          ...captureRuntimeSettings(active),
           provider: selection.provider,
           model: selection.model,
         };
-        commitDurableRuntimeSettingsChange(
+        preparedSettings = nextSettings;
+        preparedSettingsChange = prepareDurableRuntimeSettingsChange(
           active,
           agentId,
           nextSettings,
           "model_provider_changed",
         );
-        committedEventId = active.runtimeSettingsEventId;
+        session.stagePreparedProviderSwitch(
+          preparedProviderSwitch,
+          previousPending,
+        );
+        stagedProviderSwitch = preparedProviderSwitch;
       };
-      let summary: string;
+      let outcome: ProviderModelSelectionOutcome;
       try {
         if (params.model !== undefined) {
-          summary = await applyModelSwitch(
+          outcome = await applyModelSwitch(
             session,
             params.model,
             params.provider,
-            { beforeStage },
+            { stage },
           );
         } else if (params.provider !== undefined) {
-          summary = await applyProviderSwitch(
+          outcome = await applyProviderSwitch(
             session,
             params.provider,
             undefined,
-            { beforeStage },
+            { stage },
           );
         } else {
+          const settingsEventId = active.runtimeSettingsEventId;
+          if (settingsEventId === undefined) {
+            throw new Error(`run ${agentId} has no runtime-settings cursor`);
+          }
           return {
             applied: false,
+            provider: previousSettings.provider,
+            model: previousSettings.model,
+            runtimeSettingsEventId: settingsEventId,
             summary: "No model or provider was supplied.",
           };
         }
-      } catch (error) {
-        if (committedEventId !== undefined) {
-          compensateRuntimeSettingsChange(
-            active,
-            agentId,
-            previousSettings,
-            committedEventId,
+        if (outcome.applied !== (preparedSettingsChange !== undefined)) {
+          throw new Error(
+            `run ${agentId} model outcome disagrees with its prepared runtime-settings successor`,
           );
-          session.setPendingProviderSwitch(previousPending);
+        }
+        if (
+          outcome.applied &&
+          (preparedSettings?.provider !== outcome.provider ||
+            preparedSettings?.model !== outcome.model)
+        ) {
+          throw new Error(
+            `run ${agentId} model outcome does not match its prepared provider/model pair`,
+          );
+        }
+        if (outcome.applied) {
+          if (
+            preparedProviderSwitch === undefined ||
+            stagedProviderSwitch !== preparedProviderSwitch ||
+            session.pendingProviderSwitch !== preparedProviderSwitch.pending
+          ) {
+            throw new Error(
+              `run ${agentId} model switch lost its prepared provider binding`,
+            );
+          }
+        }
+      } catch (error) {
+        if (preparedSettingsChange !== undefined) {
+          const rollbackErrors: unknown[] = [];
+          if (
+            stagedProviderSwitch !== undefined &&
+            session.pendingProviderSwitch === stagedProviderSwitch.pending
+          ) {
+            try {
+              session.setPendingProviderSwitch(previousPending);
+            } catch (rollbackError) {
+              rollbackErrors.push(rollbackError);
+            }
+          }
+          if (rollbackErrors.length === 0) {
+            try {
+              compensatePreparedRuntimeSettingsChange(
+                active,
+                agentId,
+                previousSettings,
+                preparedSettingsChange,
+              );
+            } catch (rollbackError) {
+              rollbackErrors.push(rollbackError);
+            }
+          }
+          if (rollbackErrors.length > 0) {
+            throw new AggregateError(
+              [error, ...rollbackErrors],
+              `agent model rollback failed for ${agentId}`,
+              { cause: error },
+            );
+          }
         }
         throw error;
       }
-      const applied =
-        summary.startsWith("Model switched ") ||
-        summary.startsWith("Model switch staged:") ||
-        summary.startsWith("Provider switched ") ||
-        summary.startsWith("Provider switch staged:");
-      if (applied) {
-        void this.#resolveEffectiveConfigModel(
-          session,
-          params.model,
-          params.provider,
-        );
+      preparedSettingsChange?.finalize();
+      const settings = active.runtimeSettings ?? previousSettings;
+      const settingsEventId = active.runtimeSettingsEventId;
+      if (settingsEventId === undefined) {
+        throw new Error(`run ${agentId} has no runtime-settings cursor`);
       }
-      return { applied, summary };
+      return {
+        applied: outcome.applied,
+        provider: settings.provider,
+        model: settings.model,
+        runtimeSettingsEventId: settingsEventId,
+        summary: outcome.summary,
+      };
     });
-  }
-
-  /**
-   * Resolve the provider/model the daemon session now points at after a
-   * switch, preferring explicit params and filling gaps from the live session
-   * selection. Returns undefined when neither source yields a usable pair so
-   * we never clobber activeConfigModel with `"unknown"` placeholders.
-   */
-  #resolveEffectiveConfigModel(
-    session: unknown,
-    paramModel?: string,
-    paramProvider?: string,
-  ): { provider: string; model: string } | undefined {
-    let current: { provider: string; model: string } | undefined;
-    try {
-      current = readSessionSelection(session as never);
-    } catch {
-      current = undefined;
-    }
-    const provider =
-      paramProvider ??
-      (current?.provider !== undefined && current.provider !== "unknown"
-        ? current.provider
-        : undefined);
-    // Backfill the model from the live session ONLY when it belongs to the
-    // same provider we are resolving for. A provider-only switch is staged
-    // and consumed on the NEXT turn, so `current` still reports the
-    // pre-switch selection here — backfilling it produced mixed pairs like
-    // {provider: "grok", model: "qwen3-coder-next-fp8"} in the process-global
-    // activeConfigModel, which later daemon sessions then inherited and sent
-    // to the wrong API (audit finding #10).
-    const currentModelUsable =
-      current !== undefined &&
-      current.model !== "unknown" &&
-      current.provider !== "unknown" &&
-      (paramProvider === undefined || current.provider === paramProvider);
-    const model =
-      paramModel ?? (currentModelUsable ? current!.model : undefined);
-    if (provider === undefined || model === undefined) return undefined;
-    return { provider, model };
   }
 
   async setAgentPermissionMode(
@@ -3280,67 +3655,222 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // evaluator reads on every tool call (background-agent-runner installs
     // it from bootstrap.session.permissionModeRegistry).
     const registry = active.bootstrap.session.permissionModeRegistry;
-    const current = registry.current();
-    if (current.mode === target) {
-      return { applied: false, previousMode: current.mode, mode: target };
-    }
-    const transitioned = transitionPermissionMode(
-      current.mode,
-      target,
-      current,
-    );
-    let nextCtx: ToolPermissionContext = { ...transitioned, mode: target };
-    if (target === "bypassPermissions") {
-      // An explicit session.setPermissionMode to bypass carries the same
-      // operator authority as `--yolo` / permissionMode at agent.create
-      // (see startAgent's identical binding): grant consent for this exact
-      // workspace so canonical runtime-settings persistence accepts the
-      // transition instead of refusing with the workspace-consent error.
-      const workspaceRoot = runtimeWorkspaceRoot(active.bootstrap);
-      if (!nextCtx.bypassPermissionsAcceptedIn?.includes(workspaceRoot)) {
-        nextCtx = {
-          ...nextCtx,
-          bypassPermissionsAcceptedIn: [
-            ...(nextCtx.bypassPermissionsAcceptedIn ?? []),
-            workspaceRoot,
-          ],
-        };
-      }
-    }
-    await registry.update(nextCtx, {
-      runtimeSettings: {
-        reason: "permission_mode_changed",
-        rollbackOfSettingsEventId: null,
-      },
-    });
-    const appliedSettingsEventId = active.runtimeSettingsEventId;
-    const result: AgenCBackgroundAgentSetPermissionModeResult = {
-      applied: true,
-      previousMode: current.mode,
-      mode: target,
-    };
-    // Keep the transaction hook out of JSON and ordinary result equality;
-    // session.setPermissionMode's public result remains unchanged.
-    Object.defineProperty(result, "rollback", {
-      value: async () => {
+    return registry.transact<AgenCBackgroundAgentSetPermissionModeResult>(
+      async (liveCurrent) => {
+        if (!isRunnableActiveAgent(active)) {
+          throw new Error(`AgenC daemon agent not running: ${agentId}`);
+        }
+        const sameModeAutoAuthorityRevoked =
+          liveCurrent.mode === "auto" &&
+          target === "auto" &&
+          !runWithCurrentRuntimeSession(active.bootstrap.session, () =>
+            canCycleToAuto(liveCurrent),
+          );
         if (
-          appliedSettingsEventId === undefined ||
-          active.runtimeSettingsEventId !== appliedSettingsEventId
+          liveCurrent.mode === target &&
+          target !== "bypassPermissions" &&
+          !sameModeAutoAuthorityRevoked
         ) {
+          return {
+            next: null,
+            result: () => ({
+              applied: false,
+              previousMode: liveCurrent.mode,
+              mode: target,
+            }),
+          };
+        }
+
+        let transitionContext = liveCurrent;
+        let workspacePath: string | undefined;
+        if (target === "bypassPermissions") {
+          try {
+            const canonicalCwd = canonicalizeBypassPermissionsCwd(
+              runtimeWorkspaceRoot(active.bootstrap),
+            );
+            workspacePath = canonicalCwd;
+            const stateRepository =
+              active.bootstrap.configStore?.stateRepository;
+            if (stateRepository !== undefined) {
+              for (const acceptedCwd of loadBypassPermissionsConsent(
+                stateRepository,
+                canonicalCwd,
+                { reload: true },
+              )) {
+                transitionContext = authorizeBypassPermissionsConsent(
+                  transitionContext,
+                  acceptedCwd,
+                );
+              }
+            }
+            if (params.bypassAuthority === "operator_tool_approval") {
+              transitionContext = authorizeBypassPermissionsConsent(
+                transitionContext,
+                canonicalCwd,
+              );
+            }
+          } catch {
+            throw new Error(
+              "Switching to bypassPermissions requires explicit consent for a stable canonical cwd",
+            );
+          }
+        }
+        let nextCtx: ToolPermissionContext;
+        if (sameModeAutoAuthorityRevoked) {
+          nextCtx = createDisabledAutoModeContext(liveCurrent);
+        } else {
+          const transitioned = runWithCurrentRuntimeSession(
+            active.bootstrap.session,
+            () => {
+              if (target !== "bypassPermissions") {
+                return transitionPermissionMode(
+                  transitionContext.mode,
+                  target,
+                  transitionContext,
+                );
+              }
+              if (workspacePath === undefined) {
+                throw new Error(
+                  "Switching to bypassPermissions requires a canonical workspace",
+                );
+              }
+              return transitionPermissionMode(
+                transitionContext.mode,
+                target,
+                transitionContext,
+                { workspacePath },
+              );
+            },
+          );
+          if ("error" in transitioned) {
+            throw new Error(
+              "Switching to bypassPermissions requires explicit consent for this exact cwd",
+            );
+          }
+          nextCtx = { ...transitioned, mode: target };
+        }
+        const applied =
+          sameModeAutoAuthorityRevoked || liveCurrent.mode !== target;
+        return {
+          next: nextCtx,
+          metadata: {
+            runtimeSettings: {
+              reason: "permission_mode_changed",
+              rollbackOfSettingsEventId: null,
+            },
+          },
+          result: () => {
+            const appliedSettingsEventId = active.runtimeSettingsEventId;
+            const result: AgenCBackgroundAgentSetPermissionModeResult = {
+              applied,
+              previousMode: liveCurrent.mode,
+              mode: nextCtx.mode,
+            };
+            if (!applied || sameModeAutoAuthorityRevoked) return result;
+            // Keep the transaction hook out of JSON and ordinary result equality;
+            // session.setPermissionMode's public result remains unchanged.
+            Object.defineProperty(result, "rollback", {
+              value: async () => {
+                await registry.transact(() => {
+                  if (
+                    appliedSettingsEventId === undefined ||
+                    active.runtimeSettingsEventId !== appliedSettingsEventId
+                  ) {
+                    throw new Error(
+                      "permission-mode rollback no longer follows the applied settings event",
+                    );
+                  }
+                  return {
+                    next: liveCurrent,
+                    metadata: {
+                      runtimeSettings: {
+                        reason: "compensating_rollback",
+                        rollbackOfSettingsEventId: appliedSettingsEventId,
+                      },
+                    },
+                    result: () => undefined,
+                  };
+                });
+              },
+              enumerable: false,
+            });
+            return result;
+          },
+        };
+      },
+    );
+  }
+
+  async mutateAgentPermissionRule(
+    agentId: string,
+    params: SessionPermissionRuleMutationParams,
+  ): Promise<AgenCBackgroundAgentPermissionRuleMutationResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    if (params.operation !== "add" && params.operation !== "remove") {
+      throw new PermissionRuleMutationPrecommitError(
+        `Unknown permission rule operation: ${params.operation}`,
+      );
+    }
+    if (
+      params.behavior !== "allow" &&
+      params.behavior !== "deny" &&
+      params.behavior !== "ask"
+    ) {
+      throw new PermissionRuleMutationPrecommitError(
+        `Unknown permission rule behavior: ${params.behavior}`,
+      );
+    }
+    const parsed = parseRuleString(params.rule);
+    if (parsed === null || serializeRuleValue(parsed) !== params.rule) {
+      throw new PermissionRuleMutationPrecommitError(
+        "Permission rule must use the canonical serialized rule format",
+      );
+    }
+    const canonicalRule = serializeRuleValue(parsed);
+    const registry = active.bootstrap.session.permissionModeRegistry;
+    return registry.transact(async (current) => {
+      try {
+        if (!isRunnableActiveAgent(active)) {
+          throw new Error(`AgenC daemon agent not running: ${agentId}`);
+        }
+        const policy = await loadPermissionRulesSnapshot({
+          configStore: active.bootstrap.configStore,
+          cwd: runtimeWorkspaceRoot(active.bootstrap),
+        });
+        if (policy.managedOnly) {
           throw new Error(
-            "permission-mode rollback no longer follows the applied settings event",
+            "Session permission rules are disabled by managed-only policy",
           );
         }
-        await registry.update(current, {
-          runtimeSettings: {
-            reason: "compensating_rollback",
-            rollbackOfSettingsEventId: appliedSettingsEventId,
-          },
-        });
-      },
-      enumerable: false,
+
+        const mutation = mutatePermissionRuleSource(
+          current,
+          "session",
+          params.operation,
+          params.behavior,
+          parsed,
+        );
+        return {
+          next: mutation.applied ? mutation.next : null,
+          result: () => ({
+            applied: mutation.applied,
+            operation: params.operation,
+            behavior: params.behavior,
+            rule: canonicalRule,
+            sessionRules: mutation.buckets,
+          }),
+        };
+      } catch (error) {
+        if (error instanceof PermissionRuleMutationPrecommitError) throw error;
+        throw new PermissionRuleMutationPrecommitError(
+          error instanceof Error ? error.message : String(error),
+          { cause: error },
+        );
+      }
     });
-    return result;
   }
 
   async getAgentHooksStatus(
@@ -3358,6 +3888,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         available: false,
         sourcePath: "",
         disabled: true,
+        hardSuppressed:
+          active.bootstrap.session.services.runtimeOptions.simpleMode,
+        effectiveDisabled: true,
+        suppressionReason: active.bootstrap.session.services.runtimeOptions
+          .simpleMode
+          ? "bare_mode"
+          : null,
         issues: [],
         hooks: [],
         diagnostics: [],
@@ -3368,7 +3905,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     return {
       available: true,
       sourcePath: rt.sourcePath(),
-      disabled: rt.isDisabled(),
+      ...configuredHookExecutionState(rt),
       issues: rt.issues().map((issue) => ({
         level: issue.level,
         message: issue.message,
@@ -3425,31 +3962,50 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       }
       const previousSettings = ensureInitialRuntimeSettings(active, agentId);
       if (previousSettings.hooksDisabled === params.disabled) {
-        return { applied: false, disabled: params.disabled };
+        return { applied: false, ...configuredHookExecutionState(rt) };
       }
       const nextSettings = {
-        ...captureRuntimeSettings(active, { authorizeBypass: true }),
+        ...captureRuntimeSettings(active),
         hooksDisabled: params.disabled,
       } satisfies RunRuntimeSettingsSnapshot;
-      commitDurableRuntimeSettingsChange(
+      const preparedSettingsChange = prepareDurableRuntimeSettingsChange(
         active,
         agentId,
         nextSettings,
         "hooks_changed",
       );
-      const settingsEventId = active.runtimeSettingsEventId!;
       try {
         rt.setDisabled(params.disabled);
       } catch (error) {
-        compensateRuntimeSettingsChange(
-          active,
-          agentId,
-          previousSettings,
-          settingsEventId,
-        );
+        const rollbackErrors: unknown[] = [];
+        try {
+          rt.setDisabled(previousSettings.hooksDisabled);
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+        if (rollbackErrors.length === 0) {
+          try {
+            compensatePreparedRuntimeSettingsChange(
+              active,
+              agentId,
+              previousSettings,
+              preparedSettingsChange,
+            );
+          } catch (rollbackError) {
+            rollbackErrors.push(rollbackError);
+          }
+        }
+        if (rollbackErrors.length > 0) {
+          throw new AggregateError(
+            [error, ...rollbackErrors],
+            `agent hooks rollback failed for ${agentId}`,
+            { cause: error },
+          );
+        }
         throw error;
       }
-      return { applied: true, disabled: params.disabled };
+      preparedSettingsChange.finalize();
+      return { applied: true, ...configuredHookExecutionState(rt) };
     });
   }
 
@@ -3461,30 +4017,150 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active === undefined || !isRunnableActiveAgent(active)) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
-    return withRuntimeSettingsMutation(active, async () => {
-      const session = active.bootstrap.session;
-      const configStore = session.services.configStore;
-      if (configStore === undefined) {
-        return {
-          applied: false,
-          summary:
-            "No config store is available on the live session; nothing applied.",
-        };
+    const session = active.bootstrap.session;
+    const configStore = session.services.configStore;
+    if (configStore === undefined) {
+      return {
+        applied: false,
+        summary:
+          "No config store is available on the live session; nothing applied.",
+      };
+    }
+    if (params.profile !== undefined) {
+      resolveProfile(configStore.current(), params.profile);
+    }
+    const changes: string[] = [];
+    let applied = false;
+    let preparedReloadSelection:
+      ReturnType<typeof resolveProviderModelSelection> | undefined;
+    let preparedReloadProviderSwitch: PreparedSessionProviderSwitch | undefined;
+    if (params.reload === true) {
+      const preparedConfigReload = await configStore.prepareReload();
+      const preparedMcpAuthorityRefresh = prepareMcpAuthorityRefresh(session);
+      try {
+        const preparedConfig = preparedConfigReload.config;
+        const preparedResolved =
+          params.profile !== undefined
+            ? resolveProfile(preparedConfig, params.profile)
+            : preparedConfig;
+        if (
+          typeof preparedResolved.model === "string" ||
+          typeof preparedResolved.model_provider === "string"
+        ) {
+          preparedReloadSelection = resolveProviderModelSelection(
+            preparedConfig,
+            readSessionSelection(session, {
+              includePending: true,
+              fallbackConfig: preparedConfig,
+            }),
+            {
+              ...(typeof preparedResolved.model_provider === "string"
+                ? { model_provider: preparedResolved.model_provider }
+                : {}),
+              ...(typeof preparedResolved.model === "string"
+                ? { model: preparedResolved.model }
+                : {}),
+            },
+          );
+          preparedReloadProviderSwitch = await runWithCurrentRuntimeSession(
+            session,
+            () =>
+              runWithCanonicalSettingsAuthority(
+                preparedConfigReload.authority,
+                () =>
+                  session.prepareProviderSwitch(
+                    {
+                      ...preparedReloadSelection!,
+                      ...(params.profile !== undefined
+                        ? { profile: params.profile }
+                        : {}),
+                    },
+                    preparedConfig,
+                  ),
+              ),
+          );
+        }
+        const permissionSnapshot = await loadPermissionRulesSnapshot({
+          configStore: preparedConfigReload.authority,
+        });
+        await session.permissionModeRegistry.transact((current) => {
+          const configuredExecutionAuthority =
+            active.bootstrap.prepareConfiguredExecutionAuthority(
+              preparedConfigReload.config,
+            );
+          return {
+            next: applyPermissionRulesSnapshot(current, permissionSnapshot),
+            metadata: {
+              runtimeSettings: {
+                reason: "config_applied" as const,
+                rollbackOfSettingsEventId: null,
+              },
+              configuredExecutionAuthority,
+              preparedConfigReload,
+              ...(preparedMcpAuthorityRefresh !== undefined
+                ? { preparedMcpAuthorityRefresh }
+                : {}),
+            },
+            result: () => undefined,
+          };
+        });
+      } catch (error) {
+        const cleanupErrors: unknown[] = [];
+        if (!preparedConfigReload.settled) {
+          if (preparedConfigReload.state !== "rolled_back") {
+            try {
+              preparedConfigReload.rollback();
+            } catch (rollbackError) {
+              cleanupErrors.push(rollbackError);
+            }
+          }
+          try {
+            preparedConfigReload.settle();
+          } catch (settleError) {
+            cleanupErrors.push(settleError);
+          }
+        }
+        if (cleanupErrors.length > 0) {
+          failClosedDaemonRuntimeAuthority(
+            active,
+            new AggregateError(
+              [error, ...cleanupErrors],
+              "canonical config reload rollback was incomplete",
+              { cause: error },
+            ),
+            {
+              brokerReason:
+                "daemon permission authority failed after canonical publication",
+              abortReason: "permission_authority_failure",
+              abortFailureMessage: `agent config reload failed and session abort was incomplete for ${agentId}`,
+            },
+          );
+        }
+        throw error;
       }
+      changes.push("config reloaded from disk");
+      if (preparedMcpAuthorityRefresh !== undefined) {
+        const refreshed = preparedMcpAuthorityRefresh.result;
+        if (refreshed === undefined) {
+          throw new Error(
+            "coordinated MCP authority refresh completed without a result",
+          );
+        }
+        changes.push(
+          `MCP refreshed (${refreshed.configuredServers.length} configured, ${refreshed.requiredServers.length} required)`,
+        );
+      }
+      applied = true;
       if (params.profile !== undefined) {
         resolveProfile(configStore.current(), params.profile);
       }
-      const changes: string[] = [];
-      let applied = false;
-      if (params.reload === true) {
-        await configStore.reload();
-        changes.push("config reloaded from disk");
-        applied = true;
-        if (params.profile !== undefined) {
-          resolveProfile(configStore.current(), params.profile);
-        }
+    }
+    return withRuntimeSettingsMutation(active, async () => {
+      if (!isRunnableActiveAgent(active)) {
+        throw new Error(`AgenC daemon agent not running: ${agentId}`);
       }
-      const base = configStore.current() as unknown as Record<string, unknown>;
+      const canonicalConfig = configStore.current();
+      const base = canonicalConfig as unknown as Record<string, unknown>;
       const resolved =
         params.profile !== undefined
           ? (resolveProfile(
@@ -3495,19 +4171,54 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       const previousSettings = ensureInitialRuntimeSettings(active, agentId);
       const previousPending = session.pendingProviderSwitch;
       const previousConfiguration = session.sessionConfiguration;
-      const targetModel =
+      const requestedModel =
         typeof resolved.model === "string" ? resolved.model : undefined;
-      const targetProvider =
+      const requestedProvider =
         typeof resolved.model_provider === "string"
           ? resolved.model_provider
           : undefined;
       const currentModel =
         typeof base.model === "string" ? base.model : undefined;
-      const currentProvider =
-        typeof base.model_provider === "string"
-          ? base.model_provider
+      const targetSelection =
+        preparedReloadSelection ??
+        (requestedModel !== undefined || requestedProvider !== undefined
+          ? resolveProviderModelSelection(
+              canonicalConfig,
+              readSessionSelection(session, {
+                includePending: true,
+                fallbackConfig: canonicalConfig,
+              }),
+              {
+                ...(requestedProvider !== undefined
+                  ? { model_provider: requestedProvider }
+                  : {}),
+                ...(requestedModel !== undefined
+                  ? { model: requestedModel }
+                  : {}),
+              },
+            )
+          : undefined);
+      const targetModel = targetSelection?.model;
+      const stageProvider = targetSelection?.provider;
+      const pendingSelection =
+        targetModel !== undefined && stageProvider !== undefined
+          ? {
+              provider: stageProvider,
+              model: targetModel,
+              ...(params.profile !== undefined
+                ? { profile: params.profile }
+                : {}),
+            }
           : undefined;
-      const stageProvider = targetProvider ?? currentProvider;
+      const preparedProviderSwitch =
+        pendingSelection === undefined
+          ? undefined
+          : (preparedReloadProviderSwitch ??
+            (await runWithCurrentRuntimeSession(session, () =>
+              runWithCanonicalSettingsAuthority(configStore, () =>
+                session.prepareProviderSwitch(pendingSelection),
+              ),
+            )));
       const nextReasoning = normalizeRuntimeSetting(
         resolved.reasoning_effort,
         RUN_RUNTIME_REASONING_EFFORTS,
@@ -3524,7 +4235,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         "service tier",
       );
       const nextSettings: RunRuntimeSettingsSnapshot = {
-        ...captureRuntimeSettings(active, { authorizeBypass: true }),
+        ...captureRuntimeSettings(active),
         ...(targetModel !== undefined && stageProvider !== undefined
           ? { model: targetModel, provider: stageProvider }
           : {}),
@@ -3535,32 +4246,17 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       };
       const settingsChanged =
         stableStringify(nextSettings) !== stableStringify(previousSettings);
-      let settingsEventId: string | undefined;
+      let preparedSettingsChange: PreparedRuntimeSettingsChange | undefined;
+      let stagedProviderSwitch: PreparedSessionProviderSwitch | undefined;
       if (settingsChanged) {
-        commitDurableRuntimeSettingsChange(
+        preparedSettingsChange = prepareDurableRuntimeSettingsChange(
           active,
           agentId,
           nextSettings,
           "config_applied",
         );
-        settingsEventId = active.runtimeSettingsEventId;
       }
       try {
-        if (targetModel !== undefined && stageProvider !== undefined) {
-          session.setPendingProviderSwitch({
-            provider: stageProvider,
-            model: targetModel,
-            ...(params.profile !== undefined
-              ? { profile: params.profile }
-              : {}),
-          });
-          changes.push(
-            targetModel !== currentModel
-              ? `model ${currentModel ?? "?"}->${targetModel}`
-              : `model ${targetModel}`,
-          );
-          applied = true;
-        }
         if (
           nextReasoning !== null ||
           nextVerbosity !== null ||
@@ -3594,27 +4290,52 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           }
           applied = true;
         }
+        if (preparedProviderSwitch !== undefined) {
+          session.stagePreparedProviderSwitch(
+            preparedProviderSwitch,
+            previousPending,
+          );
+          stagedProviderSwitch = preparedProviderSwitch;
+          changes.push(
+            targetModel !== currentModel
+              ? `model ${currentModel ?? "?"}->${targetModel}`
+              : `model ${targetModel}`,
+          );
+          applied = true;
+        }
       } catch (error) {
         const rollbackErrors: unknown[] = [];
-        if (settingsEventId !== undefined) {
+        if (
+          stagedProviderSwitch !== undefined &&
+          session.pendingProviderSwitch === stagedProviderSwitch.pending
+        ) {
           try {
-            compensateRuntimeSettingsChange(
-              active,
-              agentId,
-              previousSettings,
-              settingsEventId,
-            );
+            session.setPendingProviderSwitch(previousPending);
           } catch (rollbackError) {
             rollbackErrors.push(rollbackError);
           }
         }
         try {
-          session.setPendingProviderSwitch(previousPending);
           await session.state.with((state) => {
             state.sessionConfiguration = previousConfiguration;
           });
         } catch (rollbackError) {
           rollbackErrors.push(rollbackError);
+        }
+        if (
+          rollbackErrors.length === 0 &&
+          preparedSettingsChange !== undefined
+        ) {
+          try {
+            compensatePreparedRuntimeSettingsChange(
+              active,
+              agentId,
+              previousSettings,
+              preparedSettingsChange,
+            );
+          } catch (rollbackError) {
+            rollbackErrors.push(rollbackError);
+          }
         }
         if (rollbackErrors.length > 0) {
           throw new AggregateError(
@@ -3625,6 +4346,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         }
         throw error;
       }
+      preparedSettingsChange?.finalize();
+      const runtimeSettings = active.runtimeSettings ?? previousSettings;
+      const runtimeSettingsEventId = active.runtimeSettingsEventId;
       const label =
         params.profile !== undefined
           ? `profile ${params.profile}`
@@ -3633,6 +4357,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             : "config";
       return {
         applied,
+        ...(runtimeSettingsEventId === undefined
+          ? {}
+          : {
+              provider: runtimeSettings.provider,
+              model: runtimeSettings.model,
+              runtimeSettingsEventId,
+            }),
         summary:
           changes.length > 0
             ? `${label} applied: ${changes.join(", ")}`
@@ -3820,7 +4551,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           return;
         }
         if (active.pendingSuspension !== undefined) {
-          if (this.#canSuspendIdleAgent(agentId, active, false)) {
+          if (this.#canSuspendIdleAgent(agentId, active)) {
             try {
               commitDurableRunSuspension(active, agentId);
               return;
@@ -3885,9 +4616,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     return eventLog.subscribe((event) => {
       const uncorrelated = daemonEventFromUnboundSessionEvent(event);
       if (uncorrelated === null) return;
-      const daemonEvent = correlateDaemonEvent(
+      const daemonEvent = scopeDirectShellDaemonEvent(
         active,
-        classifyRecoverableToolError(active, uncorrelated),
+        correlateDaemonEvent(active, uncorrelated),
       );
       active.lastActiveAt = this.#now();
       this.#applyCanonicalEventBookkeeping(active, daemonEvent);
@@ -3899,6 +4630,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active: ActiveBackgroundAgent,
     event: BackgroundAgentDaemonEvent,
   ): void {
+    if (event.statusProjection === "session_only") return;
     const payload = event.payload;
     switch (event.type) {
       case "agent_message_delta":
@@ -3926,14 +4658,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         return;
       case "turn_complete":
         active.status = "idle";
-        active.activeToolCallIds.clear();
         return;
       case "turn_aborted":
         active.status = "idle";
         active.activeToolCallIds.clear();
         return;
       case "error":
-        if (event.recoverableToolError === true) return;
         active.status = "error";
         active.activeToolCallIds.clear();
         return;
@@ -4003,7 +4733,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
 
   #trackAgentStatus(active: ActiveBackgroundAgent): void {
     active.unsubscribeStatus = active.thread.subscribeStatus((status) => {
-      if (active.budgetHalt !== undefined) return;
       active.status = mapThreadStatus(status);
       if (status.status === "running") {
         this.#assistantTextByAgent.set(active.thread.threadId, "");
@@ -4018,14 +4747,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       }
       active.lastActiveAt = this.#now();
       if (!active.canonicalEventBridgeInstalled) {
-        void this.#emitOrBufferEvent(
-          active,
-          withAgentBudgetUsage(
-            active,
-            eventFromThreadStatus(status),
-            this.#budgetNowMs(),
-          ),
-        );
+        void this.#emitOrBufferEvent(active, eventFromThreadStatus(status));
       }
     });
   }
@@ -4100,7 +4822,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         active.uninstallRuntimeSettingsPreCommit?.();
         active.unsubscribeElicitationEvents?.();
         active.unsubscribePhaseEvents?.();
-        this.#clearAgentBudgetTimer(active);
+        active.unsubscribeMcpSurfaceInvalidations?.();
         // gaphunt3 #48: the agentId is the session/conversationId used as the
         // vended-key cache key, so evict this session's entries on terminal
         // cleanup — otherwise non-expiring keys leak for the daemon's lifetime.
@@ -4133,9 +4855,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       status: active.status,
       lastActiveAt: active.lastActiveAt,
       ...(active.terminal !== undefined ? { terminal: active.terminal } : {}),
-      ...(active.budgetHalt !== undefined
-        ? { metadata: { budgetHalt: active.budgetHalt } }
-        : {}),
     };
     try {
       await this.#onActiveAgentTerminated(agentId, terminalSnapshot);
@@ -4151,9 +4870,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   ): Promise<void> {
     this.#trackActiveToolCall(agentId, progress);
     const active = this.#active.get(agentId);
-    if (active !== undefined && (await this.#enforceAgentBudget(active))) {
-      return;
-    }
     const event = this.#eventFromProgress(agentId, progress);
     const events = [
       ...this.#takeInterruptedToolCompletionEvents(agentId, progress),
@@ -4171,10 +4887,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     this.#applyProgressStatus(active, progress);
     for (const nextEvent of events) {
-      await this.#emitOrBufferEvent(
-        active,
-        withAgentBudgetUsage(active, nextEvent, this.#budgetNowMs()),
-      );
+      await this.#emitOrBufferEvent(active, nextEvent);
     }
   }
 
@@ -4188,7 +4901,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       return;
     }
     this.#trackActiveToolCall(agentId, progress);
-    if (await this.#enforceAgentBudget(active)) return;
     if (progress.kind === "message" && progress.message.role === "assistant") {
       this.#assistantTextByAgent.set(
         agentId,
@@ -4201,14 +4913,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     ) {
       active.activeToolCallIds.clear();
     }
-    // Once the canonical EventLog bridge is installed, its turn_complete /
-    // run_terminal events are the lifecycle authority. A phase-level error
-    // describes one failed turn; allowing it to overwrite the canonical
-    // turn_complete idle state incorrectly kills an otherwise reusable
-    // keep-alive agent.
-    if (progress.kind !== "run_error") {
-      this.#applyProgressStatus(active, progress);
-    }
+    this.#applyProgressStatus(active, progress);
   }
 
   async #recordRecoveredProgressEvent(
@@ -4233,7 +4938,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active: ActiveBackgroundAgent,
     progress: RunAgentProgressEvent,
   ): void {
-    if (active.budgetHalt !== undefined) return;
     let status: DaemonAgentStatus | null = null;
     switch (progress.kind) {
       case "run_error":
@@ -4254,149 +4958,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     active.status = status;
     active.lastActiveAt = this.#now();
-  }
-
-  #installAgentBudget(
-    active: ActiveBackgroundAgent,
-    params: {
-      readonly startedAt: string;
-      readonly model?: string;
-      readonly provider?: string;
-      readonly metadata?: JsonObject;
-    },
-  ): void {
-    if (!this.#legacyAgentBudgetMonitorEnabled) return;
-    const budget = normalizeAgentBudget(this.#agentBudget);
-    if (budget === undefined) return;
-    const startedAtMs =
-      parseBudgetTimestamp(params.startedAt) ?? this.#budgetNowMs();
-    active.budget = {
-      ...budget,
-      startedAt: params.startedAt,
-      startedAtMs,
-      ...(params.model !== undefined ? { model: params.model } : {}),
-      ...(params.provider !== undefined ? { provider: params.provider } : {}),
-      priorUsage: budgetUsageFromMetadata(params.metadata),
-    };
-  }
-
-  #scheduleAgentBudgetTimer(active: ActiveBackgroundAgent): void {
-    this.#clearAgentBudgetTimer(active);
-    const budget = active.budget;
-    if (budget?.wallClockSeconds === undefined) return;
-    const deadlineMs = budget.startedAtMs + budget.wallClockSeconds * 1000;
-    const remainingMs = deadlineMs - this.#budgetNowMs();
-    const delayMs = Math.max(
-      0,
-      Math.min(remainingMs, MAX_AGENT_BUDGET_TIMER_MS),
-    );
-    const timer = this.#setBudgetTimer(() => {
-      if (this.#active.get(active.thread.threadId) !== active) return;
-      if (active.budgetHalt !== undefined) return;
-      if (this.#budgetNowMs() < deadlineMs) {
-        this.#scheduleAgentBudgetTimer(active);
-        return;
-      }
-      void this.#haltAgentForBudget(
-        active.thread.threadId,
-        budgetHaltForActiveAgent(active, this.#budgetNowMs()) ??
-          wallClockBudgetHalt(active, this.#budgetNowMs()),
-      );
-    }, delayMs);
-    active.budgetTimer = timer;
-    timer.unref?.();
-  }
-
-  #clearAgentBudgetTimer(active: ActiveBackgroundAgent): void {
-    if (active.budgetTimer === undefined) return;
-    this.#clearBudgetTimer(active.budgetTimer);
-    delete active.budgetTimer;
-  }
-
-  async #enforceAgentBudget(active: ActiveBackgroundAgent): Promise<boolean> {
-    const halt = budgetHaltForActiveAgent(active, this.#budgetNowMs());
-    if (halt === null) return false;
-    await this.#haltAgentForBudget(active.thread.threadId, halt);
-    return true;
-  }
-
-  async #haltAgentForBudget(
-    agentId: string,
-    halt: AgentBudgetHalt,
-  ): Promise<void> {
-    const active = this.#active.get(agentId);
-    if (active === undefined) return;
-    if (
-      active.budgetHalt !== undefined ||
-      active.budgetHaltInProgress === true
-    ) {
-      return;
-    }
-    active.budgetHalt = halt.marker;
-    active.budgetHaltInProgress = true;
-    active.status = "stopped";
-    active.lastActiveAt = this.#now();
-    this.#clearAgentBudgetTimer(active);
-    let emitError: unknown;
-    active.pendingTerminal = cancelledTerminalResult(
-      active,
-      agentId,
-      "budget_limit",
-      active.lastActiveAt,
-    );
-    this.#abortPendingToolDecisions(agentId);
-    try {
-      if (!active.canonicalEventBridgeInstalled) {
-        await this.#emitOrBufferEvent(active, {
-          id: `agent-budget-${agentId}-${halt.kind}`,
-          type: "agent_status",
-          payload: {
-            status: "stopped",
-            runStatus: "stopped",
-            message: halt.reason,
-            budgetHalt: halt.marker,
-            budgetUsage: budgetUsageMarker(active, this.#budgetNowMs()),
-          },
-        });
-      }
-      if (!active.durableTerminalFinalizerInstalled) {
-        commitDurableRunTerminal(active, agentId, active.pendingTerminal);
-      }
-    } catch (error) {
-      emitError = error;
-    }
-    try {
-      await active.bootstrap.shutdown();
-      emitError ??= active.terminalCommitError;
-      if (active.terminal === undefined) {
-        emitError ??= new Error(
-          `run ${agentId} budget shutdown completed without a durable terminal result`,
-        );
-      }
-    } catch (error) {
-      active.status = "error";
-      active.lastActiveAt = this.#now();
-      try {
-        await this.#emitOrBufferEvent(active, {
-          id: `agent-budget-error-${agentId}-${hashStable(String(error))}`,
-          type: "agent_status",
-          payload: {
-            status: "error",
-            runStatus: "errored",
-            message: error instanceof Error ? error.message : String(error),
-            budgetHalt: halt.marker,
-            budgetUsage: budgetUsageMarker(active, this.#budgetNowMs()),
-          },
-        });
-      } catch {
-        // The shutdown path must not depend on notification delivery.
-      }
-    } finally {
-      active.budgetHaltInProgress = false;
-    }
-    if (emitError !== undefined) {
-      active.lastActiveAt = this.#now();
-    }
   }
 
   #trackActiveToolCall(agentId: string, progress: RunAgentProgressEvent): void {
@@ -4520,12 +5081,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   async #emitPersistedUserMessage(
     active: ActiveBackgroundAgent,
     event: BackgroundAgentDaemonEvent,
-    onPersisted: () => void | Promise<void> = () => {},
   ): Promise<void> {
     const sessionEvent = sessionUserMessageEventFromDaemonEvent(event);
     if (sessionEvent === null) {
       await this.#emitOrBufferEvent(active, event);
-      await onPersisted();
       return;
     }
 
@@ -4535,11 +5094,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     };
     if (typeof session.emit !== "function") {
       await this.#emitOrBufferEvent(active, event);
-      await onPersisted();
       return;
     }
     session.emit(sessionEvent);
-    await onPersisted();
     if (active.dispatchChain === previousDispatch) {
       await this.#emitOrBufferEvent(active, event);
       return;
@@ -4565,66 +5122,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       ),
     );
   }
-}
-
-function runtimeSettingsDaemonEventForAttach(
-  active: ActiveBackgroundAgent,
-): BackgroundAgentDaemonEvent | null {
-  const expectedEventId = active.runtimeSettingsEventId;
-  if (
-    expectedEventId === undefined ||
-    !supportsCanonicalRuntimeSettings(active)
-  ) {
-    return null;
-  }
-  const runId = active.thread.threadId;
-  const matches = active.bootstrap.rolloutStore.readAll().flatMap((item) => {
-    if (item.type !== "event_msg") return [];
-    const event = item.payload;
-    return event.msg.type === "run_runtime_settings_changed" &&
-      canonicalEventId(event) === expectedEventId &&
-      event.msg.payload.runId === runId
-      ? [event]
-      : [];
-  });
-  if (matches.length !== 1) {
-    throw new Error(
-      `run ${runId} runtime settings ${expectedEventId} must have exactly one canonical record`,
-    );
-  }
-  const daemonEvent = daemonEventFromUnboundSessionEvent(matches[0]!);
-  if (
-    daemonEvent === null ||
-    daemonEvent.type !== "run_runtime_settings_changed" ||
-    positiveSequence(daemonEvent.sequence) === undefined
-  ) {
-    throw new Error(
-      `run ${runId} runtime settings ${expectedEventId} lacks canonical coordinates`,
-    );
-  }
-  return correlateDaemonEvent(active, daemonEvent);
-}
-
-function insertCanonicalEventBySequence(
-  events: BackgroundAgentDaemonEvent[],
-  canonicalEvent: BackgroundAgentDaemonEvent,
-): BackgroundAgentDaemonEvent[] {
-  const eventId = canonicalEvent.eventId ?? canonicalEvent.id;
-  const sequence = positiveSequence(canonicalEvent.sequence);
-  if (sequence === undefined) {
-    throw new Error(`canonical attach event ${eventId} lacks a sequence`);
-  }
-  const replay = events.filter(
-    (event) => (event.eventId ?? event.id) !== eventId,
-  );
-  let insertionIndex = 0;
-  while (insertionIndex < replay.length) {
-    const nextSequence = positiveSequence(replay[insertionIndex]?.sequence);
-    if (nextSequence !== undefined && nextSequence > sequence) break;
-    insertionIndex += 1;
-  }
-  replay.splice(insertionIndex, 0, canonicalEvent);
-  return replay;
 }
 
 function sessionUserMessageEventFromDaemonEvent(
@@ -4666,160 +5163,25 @@ function sessionUserMessageEventFromDaemonEvent(
   };
 }
 
-function normalizeAgentBudget(
-  config: AgentBudgetConfig | undefined,
-):
-  | Omit<
-      ActiveAgentBudget,
-      "startedAt" | "startedAtMs" | "model" | "provider" | "priorUsage"
-    >
-  | undefined {
-  if (config === undefined) return undefined;
-  const tokenCap = normalizeBudgetCap(config.token_cap);
-  const dollarCap = normalizeBudgetCap(config.dollar_cap);
-  const wallClockSeconds = normalizeBudgetCap(config.wall_clock_seconds);
-  if (
-    tokenCap === undefined &&
-    dollarCap === undefined &&
-    wallClockSeconds === undefined
-  ) {
-    return undefined;
-  }
-  return {
-    ...(tokenCap !== undefined ? { tokenCap } : {}),
-    ...(dollarCap !== undefined ? { dollarCap } : {}),
-    ...(wallClockSeconds !== undefined ? { wallClockSeconds } : {}),
-  };
-}
-
-function normalizeBudgetCap(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? value
-    : undefined;
-}
-
-function parseBudgetTimestamp(value: string): number | undefined {
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function budgetUsageFromMetadata(
-  metadata: JsonObject | undefined,
-): AgentBudgetUsage {
-  const raw = metadata?.budgetUsage;
-  if (!isJsonObject(raw)) {
-    return { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 };
-  }
-  return {
-    inputTokens: finiteNumber(raw.inputTokens),
-    outputTokens: finiteNumber(raw.outputTokens),
-    totalTokens: finiteNumber(raw.totalTokens),
-    costUsd: finiteNumber(raw.costUsd),
-  };
-}
-
-function budgetHaltForActiveAgent(
+function terminalUsageForActiveAgent(
   active: ActiveBackgroundAgent,
-  nowMs: number,
-): AgentBudgetHalt | null {
-  const budget = active.budget;
-  if (budget === undefined) return null;
-  const usage = budgetUsageForActiveAgent(active);
-  const totalTokens = usage.totalTokens;
-  if (budget.tokenCap !== undefined && totalTokens >= budget.tokenCap) {
-    const reason = `agent budget token_cap reached: ${totalTokens} tokens >= ${budget.tokenCap}`;
-    return {
-      kind: "token_cap",
-      reason,
-      marker: budgetHaltMarker(
-        "token_cap",
-        budget.tokenCap,
-        totalTokens,
-        active,
-        nowMs,
-        reason,
-      ),
-    };
-  }
-  const costUsd = usage.costUsd;
-  if (budget.dollarCap !== undefined && costUsd >= budget.dollarCap) {
-    const reason = `agent budget dollar_cap reached: $${formatBudgetDollars(costUsd)} >= $${formatBudgetDollars(budget.dollarCap)}`;
-    return {
-      kind: "dollar_cap",
-      reason,
-      marker: budgetHaltMarker(
-        "dollar_cap",
-        budget.dollarCap,
-        costUsd,
-        active,
-        nowMs,
-        reason,
-      ),
-    };
-  }
-  if (budget.wallClockSeconds !== undefined) {
-    const elapsedSeconds = elapsedBudgetSeconds(active, nowMs);
-    if (elapsedSeconds >= budget.wallClockSeconds) {
-      return wallClockBudgetHalt(active, nowMs);
-    }
-  }
-  return null;
-}
-
-function wallClockBudgetHalt(
-  active: ActiveBackgroundAgent,
-  nowMs: number,
-): AgentBudgetHalt {
-  const cap = active.budget?.wallClockSeconds ?? 0;
-  const elapsedSeconds = elapsedBudgetSeconds(active, nowMs);
-  const reason = `agent budget wall_clock_seconds reached: ${formatBudgetSeconds(elapsedSeconds)}s >= ${formatBudgetSeconds(cap)}s`;
-  return {
-    kind: "wall_clock_seconds",
-    reason,
-    marker: budgetHaltMarker(
-      "wall_clock_seconds",
-      cap,
-      elapsedSeconds,
-      active,
-      nowMs,
-      reason,
-    ),
-  };
-}
-
-function elapsedBudgetSeconds(
-  active: ActiveBackgroundAgent,
-  nowMs: number,
-): number {
-  const startedAtMs = active.budget?.startedAtMs ?? nowMs;
-  return Math.max(0, (nowMs - startedAtMs) / 1000);
-}
-
-function budgetUsageForActiveAgent(
-  active: ActiveBackgroundAgent,
-): AgentBudgetUsage {
-  const prior = active.budget?.priorUsage ?? {
-    inputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0,
-    costUsd: 0,
-  };
+): AgentTerminalUsage {
   const live = managedTokenUsage(active.thread);
   return {
-    inputTokens: prior.inputTokens + finiteNumber(live.inputTokens),
-    outputTokens: prior.outputTokens + finiteNumber(live.outputTokens),
-    totalTokens: prior.totalTokens + finiteNumber(live.totalTokens),
-    costUsd: prior.costUsd + agentCostUsd(active),
+    inputTokens: finiteNumber(live.inputTokens),
+    outputTokens: finiteNumber(live.outputTokens),
+    totalTokens: finiteNumber(live.totalTokens),
+    costUsd: agentCostUsd(active),
   };
 }
 
 function agentCostUsd(active: ActiveBackgroundAgent): number {
   const tokenUsage = managedTokenUsage(active.thread);
-  const model = budgetModel(active);
-  const provider = budgetProvider(active);
+  const model = activeAgentModel(active);
+  const provider = activeAgentProvider(active);
   // LiveAgent currently exposes aggregate input/output token counters.
-  // The budget marker records this basis so dollar caps are auditable
-  // without pretending cached/reasoning/search dimensions were observed.
+  // Preserve that limited basis in the terminal usage snapshot without
+  // pretending cached/reasoning/search dimensions were observed.
   const usage: ModelUsage = {
     model,
     ...(provider !== undefined ? { provider } : {}),
@@ -4835,17 +5197,16 @@ function agentCostUsd(active: ActiveBackgroundAgent): number {
   return computeUsdCost(usage, DEFAULT_MODEL_COSTS);
 }
 
-function budgetModel(active: ActiveBackgroundAgent): string {
+function activeAgentModel(active: ActiveBackgroundAgent): string {
   return (
-    active.budget?.model ??
-    stringRecordField(active.thread.configSnapshot?.(), "model") ??
-    "agenc"
+    stringRecordField(active.thread.configSnapshot?.(), "model") ?? "agenc"
   );
 }
 
-function budgetProvider(active: ActiveBackgroundAgent): string | undefined {
+function activeAgentProvider(
+  active: ActiveBackgroundAgent,
+): string | undefined {
   return (
-    active.budget?.provider ??
     stringRecordField(active.thread.configSnapshot?.(), "provider") ??
     stringRecordField(active.thread.configSnapshot?.(), "model_provider")
   );
@@ -4861,100 +5222,13 @@ function stringRecordField(
     : undefined;
 }
 
-function budgetHaltMarker(
-  kind: AgentBudgetHalt["kind"],
-  cap: number,
-  observed: number,
-  active: ActiveBackgroundAgent,
-  nowMs: number,
-  reason: string,
-): JsonObject {
-  const usage = budgetUsageForActiveAgent(active);
-  const model = budgetModel(active);
-  const provider = budgetProvider(active);
-  return {
-    kind,
-    cap,
-    observed,
-    reason,
-    code:
-      kind === "token_cap"
-        ? `token_cap:${usage.totalTokens}`
-        : kind === "dollar_cap"
-          ? `dollar_cap:${formatBudgetDollars(observed)}`
-          : `wall_clock_seconds:${formatBudgetSeconds(observed)}`,
-    haltedAt: new Date(nowMs).toISOString(),
-    startedAt: active.budget?.startedAt,
-    tokens: {
-      input: usage.inputTokens,
-      output: usage.outputTokens,
-      total: usage.totalTokens,
-    },
-    costUsd: usage.costUsd,
-    costBasis: "input_output_token_usage",
-    wallClockSeconds: elapsedBudgetSeconds(active, nowMs),
-    model,
-    ...(provider !== undefined ? { provider } : {}),
-  };
-}
-
-function budgetUsageMarker(
-  active: ActiveBackgroundAgent,
-  nowMs: number,
-): JsonObject | undefined {
-  if (active.budget === undefined) return undefined;
-  const usage = budgetUsageForActiveAgent(active);
-  const model = budgetModel(active);
-  const provider = budgetProvider(active);
-  return {
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    totalTokens: usage.totalTokens,
-    costUsd: usage.costUsd,
-    costBasis: "input_output_token_usage",
-    wallClockSeconds: elapsedBudgetSeconds(active, nowMs),
-    updatedAt: new Date(nowMs).toISOString(),
-    model,
-    ...(provider !== undefined ? { provider } : {}),
-  };
-}
-
-function withAgentBudgetUsage(
-  active: ActiveBackgroundAgent,
-  event: BackgroundAgentDaemonEvent | null,
-  nowMs: number,
-): BackgroundAgentDaemonEvent | null {
-  if (event === null || event.type !== "agent_status") return event;
-  const budgetUsage = budgetUsageMarker(active, nowMs);
-  if (budgetUsage === undefined) return event;
-  return {
-    ...event,
-    payload: {
-      ...(event.payload ?? {}),
-      budgetUsage,
-    },
-  };
-}
-
 function finiteNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-function formatBudgetDollars(value: number): string {
-  return value
-    .toFixed(value >= 1 ? 2 : 6)
-    .replace(/0+$/, "")
-    .replace(/\.$/, "");
-}
-
-function formatBudgetSeconds(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(3);
 }
 
 function isRunnableActiveAgent(active: ActiveBackgroundAgent): boolean {
   return (
     active.ingressClosed !== true &&
-    active.budgetHalt === undefined &&
     active.pendingTerminal === undefined &&
     active.pendingSuspension === undefined
   );
@@ -4963,7 +5237,6 @@ function isRunnableActiveAgent(active: ActiveBackgroundAgent): boolean {
 function isInterruptibleActiveAgent(active: ActiveBackgroundAgent): boolean {
   return (
     active.ingressClosed !== true &&
-    active.budgetHalt === undefined &&
     (active.pendingTerminal === undefined ||
       active.cancellationRequest !== undefined)
   );
@@ -5016,39 +5289,12 @@ function runtimeActiveTurnId(
 }
 
 function isClearInFlight(active: ActiveBackgroundAgent): boolean {
-  if (hasRuntimeActiveTurn(active.bootstrap.session)) return true;
-  if (active.activeToolCallIds.size > 0) return true;
-  const status = active.thread.status();
-  return status.status === "running" || status.status === "pending_init";
-}
-
-function classifyRecoverableToolError(
-  active: ActiveBackgroundAgent,
-  event: BackgroundAgentDaemonEvent,
-): BackgroundAgentDaemonEvent {
-  if (
-    !isRecoverableActiveToolError(
-      event.id,
-      event.type,
-      event.payload?.turnId,
-      active.activeToolCallIds,
-    )
-  ) {
-    return event;
-  }
-  return { ...event, recoverableToolError: true };
-}
-
-function isRecoverableActiveToolError(
-  eventId: string,
-  eventType: string,
-  turnId: unknown,
-  activeToolCallIds: ReadonlySet<string>,
-): boolean {
   return (
-    eventType === "error" &&
-    typeof turnId !== "string" &&
-    activeToolCallIds.has(eventId)
+    active.pendingMessageSubmissionCount > 0 ||
+    active.pendingShellExecutionCount > 0 ||
+    active.messageSubmission !== undefined ||
+    hasRuntimeActiveTurn(active.bootstrap.session) ||
+    active.activeToolCallIds.size > 0
   );
 }
 
@@ -5175,7 +5421,6 @@ function messageTerminalFromDaemonEvent(
     };
   }
   if (event.type === "error") {
-    if (event.recoverableToolError === true) return undefined;
     return {
       code: 1,
       ...(typeof event.payload?.message === "string"
@@ -5272,6 +5517,143 @@ function messageContentFingerprint(content: unknown): string {
     .digest("hex");
 }
 
+const MAX_RETAINED_SHELL_EXECUTIONS = 256;
+const SHELL_RESULT_TRUNCATION_MARKER = "\n[truncated]";
+
+function shellSubmissionMessageId(commandId: string): string {
+  return `shell:${commandId}`;
+}
+
+function shellEventKey(commandId: string): string {
+  return createHash("sha256")
+    .update(commandId, "utf8")
+    .digest("hex")
+    .slice(0, 32);
+}
+
+function scopeDirectShellDaemonEvent(
+  active: ActiveBackgroundAgent,
+  event: BackgroundAgentDaemonEvent,
+): BackgroundAgentDaemonEvent {
+  const payload = event.payload;
+  const correlationIds = [
+    event.id,
+    payload?.callId,
+    payload?.queuedCommandUuid,
+  ];
+  if (
+    !correlationIds.some(
+      (candidate) =>
+        typeof candidate === "string" &&
+        active.shellExecutionsById.has(candidate),
+    )
+  ) {
+    return event;
+  }
+  return { ...event, statusProjection: "session_only" };
+}
+
+function throwIfShellRequestAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted !== true) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  throw new Error(
+    typeof signal.reason === "string" && signal.reason.length > 0
+      ? signal.reason
+      : "Shell command cancelled",
+  );
+}
+
+function pruneShellExecutionCache(
+  cache: Map<string, ActiveShellExecution>,
+): void {
+  if (cache.size <= MAX_RETAINED_SHELL_EXECUTIONS) return;
+  for (const [commandId, execution] of cache) {
+    if (!execution.settled) continue;
+    cache.delete(commandId);
+    if (cache.size <= MAX_RETAINED_SHELL_EXECUTIONS) return;
+  }
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function boundShellResultText(value: string): {
+  readonly value: string;
+  readonly truncated: boolean;
+} {
+  const encoded = Buffer.from(value, "utf8");
+  if (encoded.byteLength <= MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES) {
+    return { value, truncated: false };
+  }
+  const marker = Buffer.from(SHELL_RESULT_TRUNCATION_MARKER, "utf8");
+  let end = Math.max(
+    0,
+    MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES - marker.byteLength,
+  );
+  while (end > 0 && (encoded[end] & 0xc0) === 0x80) end -= 1;
+  return {
+    value: `${encoded.subarray(0, end).toString("utf8")}${SHELL_RESULT_TRUNCATION_MARKER}`,
+    truncated: true,
+  };
+}
+
+function normalizeSessionShellResult(
+  commandId: string,
+  dispatch: ToolDispatchResult,
+): SessionShellExecuteResult {
+  const metadata = recordValue(dispatch.metadata);
+  const codeMode = recordValue(dispatch.codeModeResult);
+  const metadataStdout =
+    typeof metadata.stdout === "string" ? metadata.stdout : undefined;
+  const codeModeOutput =
+    typeof codeMode.output === "string" ? codeMode.output : undefined;
+  const rawStdout =
+    metadataStdout ??
+    codeModeOutput ??
+    (dispatch.isError === true ? "" : dispatch.content);
+  const rawStderr =
+    typeof metadata.stderr === "string"
+      ? metadata.stderr
+      : dispatch.isError === true && rawStdout.length === 0
+        ? dispatch.content
+        : "";
+  const metadataExitCode = metadata.exitCode;
+  const codeModeExitCode = codeMode.exit_code;
+  const exitCode =
+    typeof metadataExitCode === "number" &&
+    Number.isSafeInteger(metadataExitCode)
+      ? metadataExitCode
+      : typeof codeModeExitCode === "number" &&
+          Number.isSafeInteger(codeModeExitCode)
+        ? codeModeExitCode
+        : null;
+  const timedOut = metadata.timedOut === true || codeMode.timed_out === true;
+  const content = boundShellResultText(dispatch.content);
+  const stdout = boundShellResultText(rawStdout);
+  const stderr = boundShellResultText(rawStderr);
+  const truncated =
+    metadata.truncated === true ||
+    content.truncated ||
+    stdout.truncated ||
+    stderr.truncated;
+  return {
+    commandId,
+    content: content.value,
+    stdout: stdout.value,
+    stderr: stderr.value,
+    exitCode,
+    timedOut,
+    truncated,
+    isError:
+      dispatch.isError === true ||
+      timedOut ||
+      (exitCode !== null && exitCode !== 0),
+  };
+}
+
 interface PersistedMessageSubmission {
   readonly contentFingerprint: string;
   readonly acceptedAt?: string;
@@ -5284,7 +5666,6 @@ function findPersistedMessageSubmission(
   clientMessageId: string,
 ): PersistedMessageSubmission | undefined {
   let match: PersistedMessageSubmission | undefined;
-  const activeToolCallIds = new Set<string>();
   for (const item of items) {
     if (item.type !== "event_msg") continue;
     const event = item.payload;
@@ -5318,23 +5699,10 @@ function findPersistedMessageSubmission(
     }
     if (event.msg.type === "turn_started" && match.turnId === undefined) {
       match = { ...match, turnId: event.msg.payload.turnId };
-      activeToolCallIds.clear();
       continue;
     }
     if (match.turnId === undefined) continue;
-    if (event.msg.type === "tool_call_started") {
-      activeToolCallIds.add(event.msg.payload.callId);
-      continue;
-    }
-    if (event.msg.type === "tool_call_completed") {
-      activeToolCallIds.delete(event.msg.payload.callId);
-      continue;
-    }
-    const terminal = messageTerminalFromEvent(
-      event,
-      match.turnId,
-      activeToolCallIds,
-    );
+    const terminal = messageTerminalFromEvent(event.msg, match.turnId);
     if (terminal !== undefined) {
       return { ...match, terminal };
     }
@@ -5343,53 +5711,42 @@ function findPersistedMessageSubmission(
 }
 
 function messageTerminalFromEvent(
-  event: Event,
+  event: Event["msg"],
   expectedTurnId: string | undefined,
-  activeToolCallIds: ReadonlySet<string>,
 ): AgenCBackgroundAgentMessageTerminal | undefined {
-  if (event.msg.type === "turn_complete") {
+  if (event.type === "turn_complete") {
     if (
       expectedTurnId !== undefined &&
-      event.msg.payload.turnId !== expectedTurnId
+      event.payload.turnId !== expectedTurnId
     ) {
       return undefined;
     }
     return {
       code: 0,
-      ...(event.msg.payload.lastAgentMessage !== undefined
-        ? { message: event.msg.payload.lastAgentMessage }
+      ...(event.payload.lastAgentMessage !== undefined
+        ? { message: event.payload.lastAgentMessage }
         : {}),
     };
   }
-  if (event.msg.type === "turn_aborted") {
+  if (event.type === "turn_aborted") {
     if (
       expectedTurnId !== undefined &&
-      event.msg.payload.turnId !== undefined &&
-      event.msg.payload.turnId !== expectedTurnId
+      event.payload.turnId !== undefined &&
+      event.payload.turnId !== expectedTurnId
     ) {
       return undefined;
     }
-    return { code: 130, message: event.msg.payload.reason };
+    return { code: 130, message: event.payload.reason };
   }
-  if (event.msg.type === "error") {
+  if (event.type === "error") {
     if (
       expectedTurnId !== undefined &&
-      event.msg.payload.turnId !== undefined &&
-      event.msg.payload.turnId !== expectedTurnId
+      event.payload.turnId !== undefined &&
+      event.payload.turnId !== expectedTurnId
     ) {
       return undefined;
     }
-    if (
-      isRecoverableActiveToolError(
-        event.id,
-        event.msg.type,
-        event.msg.payload.turnId,
-        activeToolCallIds,
-      )
-    ) {
-      return undefined;
-    }
-    return { code: 1, message: event.msg.payload.message };
+    return { code: 1, message: event.payload.message };
   }
   return undefined;
 }
@@ -5463,7 +5820,6 @@ export function sessionTranscriptV2FromRollout(
   let pendingUserIndex: number | undefined;
   let pendingClientMessageId: string | undefined;
   const assistantOrdinals = new Map<string, number>();
-  const activeToolCallIds = new Set<string>();
 
   if (boundary?.kind === "replaced") {
     const replacement = reconstructFromRollout(
@@ -5557,21 +5913,12 @@ export function sessionTranscriptV2FromRollout(
     }
     if (event.msg.type === "turn_started") {
       currentTurnId = event.msg.payload.turnId;
-      activeToolCallIds.clear();
       if (pendingUserIndex !== undefined) {
         messages[pendingUserIndex]!.turnId = currentTurnId;
         pendingUserIndex = undefined;
       }
       currentClientMessageId = pendingClientMessageId;
       pendingClientMessageId = undefined;
-      continue;
-    }
-    if (event.msg.type === "tool_call_started") {
-      activeToolCallIds.add(event.msg.payload.callId);
-      continue;
-    }
-    if (event.msg.type === "tool_call_completed") {
-      activeToolCallIds.delete(event.msg.payload.callId);
       continue;
     }
     if (event.msg.type === "agent_message") {
@@ -5604,16 +5951,6 @@ export function sessionTranscriptV2FromRollout(
       event.msg.type === "turn_aborted" ||
       event.msg.type === "error"
     ) {
-      if (
-        isRecoverableActiveToolError(
-          event.id,
-          event.msg.type,
-          event.msg.payload.turnId,
-          activeToolCallIds,
-        )
-      ) {
-        continue;
-      }
       const terminalTurnId =
         "turnId" in event.msg.payload &&
         typeof event.msg.payload.turnId === "string"
@@ -5629,7 +5966,6 @@ export function sessionTranscriptV2FromRollout(
       }
       currentTurnId = undefined;
       currentClientMessageId = undefined;
-      activeToolCallIds.clear();
     }
   }
 
@@ -5690,6 +6026,22 @@ export function notificationFromDaemonEvent(
 ): AgenCDaemonSessionNotification {
   const base = eventBaseParams(sessionId, agentId, event);
   const payload = event.payload;
+  if (
+    event.type === "mcp_status_changed" &&
+    isJsonObject(payload) &&
+    typeof payload.revision === "number" &&
+    Number.isSafeInteger(payload.revision) &&
+    payload.revision >= 0
+  ) {
+    return {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.mcp_status_changed",
+      params: {
+        sessionId,
+        revision: payload.revision,
+      },
+    };
+  }
   if (
     event.type === "agent_message_delta" &&
     isJsonObject(payload) &&
@@ -5779,6 +6131,9 @@ export function notificationFromDaemonEvent(
         callId: payload.callId,
         turnId: payload.turnId,
         questions: jsonObjectArray(payload.questions),
+        ...(isJsonObject(payload.clientAction)
+          ? { clientAction: payload.clientAction }
+          : {}),
       },
     };
   }
@@ -5896,7 +6251,8 @@ export function notificationFromDaemonEvent(
     (event.type === "turn_started" ||
       event.type === "turn_complete" ||
       event.type === "turn_aborted" ||
-      (event.type === "error" && event.recoverableToolError !== true)) &&
+      event.type === "error") &&
+    event.statusProjection !== "session_only" &&
     isJsonObject(payload)
   ) {
     return {
@@ -5934,9 +6290,6 @@ export function notificationFromDaemonEvent(
       event: {
         id: event.id,
         type: event.type,
-        ...(event.recoverableToolError === true
-          ? { recoverableToolError: true }
-          : {}),
         ...(event.messageId !== undefined
           ? { messageId: event.messageId }
           : {}),
@@ -6525,6 +6878,7 @@ function toolRequestInputFromPayload(
  *   - durable user transcript messages emitted by runtime turns
  *   - collab-agent lifecycle events emitted by `spawn_agent`,
  *     `wait_agent`, `send_message`, and `close_agent`
+ *   - runtime warnings emitted before or during a turn
  *   - streaming tool progress chunks (`tool_progress`)
  *   - extended-thinking + reasoning-summary streaming events
  *     (`assistant_thinking_block_start`/`delta`/`block_stop`,
@@ -6561,12 +6915,9 @@ const CANONICAL_CORE_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   "turn_started",
   "turn_complete",
   "turn_aborted",
+  "warning",
   "error",
   "stream_error",
-  // A turn that ends with nothing explains itself in a warning — the model
-  // phase threw, recovery swallowed it, the budget layer refused. Without
-  // this the rollout has the reason and every live client has to guess.
-  "warning",
   "effect_intent",
   "effect_result",
   "effect_unknown_outcome",
@@ -6581,11 +6932,8 @@ const CANONICAL_CORE_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   "run_reopened",
   "run_suspended",
   "run_resumed",
-  "run_cancel_requested",
-  // Runtime selections (including permissionMode) are canonical run state.
-  // Live clients must observe the exact sequenced record so their state can
-  // reconcile with run.replay after reconnect.
   "run_runtime_settings_changed",
+  "run_cancel_requested",
 ]);
 
 export function daemonEventFromUnboundSessionEvent(event: {
@@ -6644,6 +6992,9 @@ export function daemonEventFromUnboundSessionEvent(event: {
             : payload.callId,
         turnId: payload.turnId,
         questions: jsonObjectArray(payload.questions),
+        ...(isJsonObject(payload.clientAction)
+          ? { clientAction: payload.clientAction }
+          : {}),
       },
     };
   }
@@ -7049,6 +7400,12 @@ function phaseEventToProgressEvent(
           error: "Agent exceeded maxTurns",
         };
       }
+      if (event.stopReason === "max_budget_usd") {
+        return {
+          kind: "run_error",
+          error: "Agent reached the canonical session cost cap",
+        };
+      }
       if (event.stopReason === "no_progress") {
         return {
           kind: "run_error",
@@ -7113,26 +7470,20 @@ type TerminalThreadStatus = Extract<
 interface CapturedRuntimeSettingsOptions {
   readonly profile?: string;
   readonly permissionContext?: ToolPermissionContext;
-  /**
-   * The caller has already completed the ordinary bypass-consent flow. This
-   * never invents consent: capture still requires the live registry to bind
-   * the exact workspace.
-   */
-  readonly authorizeBypass?: boolean;
 }
 
 function runtimeWorkspaceRoot(bootstrap: LocalRuntimeBootstrap): string {
-  const configured = (bootstrap as { readonly workspaceRoot?: unknown })
-    .workspaceRoot;
-  if (typeof configured === "string" && configured.trim().length > 0) {
-    return configured;
+  const broker = bootstrap.session.services.sandboxExecutionBroker;
+  if (!(broker instanceof SandboxExecutionBroker)) {
+    throw new Error(
+      "canonical runtime settings require the live sandbox execution broker cwd",
+    );
   }
-  const cwd = (
-    bootstrap.session as Session & {
-      readonly sessionConfiguration?: { readonly cwd?: unknown };
-    }
-  ).sessionConfiguration?.cwd;
-  return typeof cwd === "string" && cwd.trim().length > 0 ? cwd : process.cwd();
+  const cwd = broker.cwd;
+  if (typeof cwd !== "string" || cwd.trim().length === 0) {
+    throw new Error("live sandbox execution broker cwd is unavailable");
+  }
+  return canonicalizeBypassPermissionsCwd(cwd);
 }
 
 function supportsCanonicalRuntimeSettings(
@@ -7141,9 +7492,393 @@ function supportsCanonicalRuntimeSettings(
   return (
     typeof active.bootstrap.session.permissionModeRegistry
       .installBeforeUpdateHook === "function" &&
+    typeof active.bootstrap.session.permissionModeRegistry
+      .installPublicationCoordinator === "function" &&
+    active.bootstrap.session.services.sandboxExecutionBroker instanceof
+      SandboxExecutionBroker &&
+    active.bootstrap.configuredExecutionAuthority !== undefined &&
+    typeof active.bootstrap.prepareConfiguredExecutionAuthority ===
+      "function" &&
     typeof active.bootstrap.rolloutStore.recordRunRuntimeSettingsEvent ===
       "function"
   );
+}
+
+function requireCanonicalRuntimeSettingsSupport(
+  active: ActiveBackgroundAgent,
+  runId: string,
+): void {
+  if (!supportsCanonicalRuntimeSettings(active)) {
+    throw new Error(
+      `run ${runId} requires a canonical permission registry and durable runtime-settings journal`,
+    );
+  }
+}
+
+function failClosedDaemonRuntimeAuthority(
+  active: ActiveBackgroundAgent,
+  error: unknown,
+  options: {
+    readonly brokerReason: string;
+    readonly abortReason: Parameters<Session["abortTerminal"]>[0];
+    readonly abortFailureMessage: string;
+  },
+): never {
+  const session = active.bootstrap.session;
+  const broker = session.services.sandboxExecutionBroker;
+  if (broker instanceof SandboxExecutionBroker) {
+    broker.closeAfterLifecycleAuthorityFailure(options.brokerReason);
+  }
+  active.ingressClosed = true;
+  try {
+    session.abortTerminal(options.abortReason);
+  } catch (abortError) {
+    throw new AggregateError([error, abortError], options.abortFailureMessage, {
+      cause: error,
+    });
+  }
+  throw error;
+}
+
+function installDaemonPermissionAuthorityCoordinator(
+  bootstrap: LocalRuntimeBootstrap,
+  owner: () => ActiveBackgroundAgent | undefined,
+): () => void {
+  const session = bootstrap.session;
+  const registry = session.permissionModeRegistry;
+  const broker = session.services.sandboxExecutionBroker;
+  if (!(broker instanceof SandboxExecutionBroker)) {
+    throw new Error(
+      "daemon session requires the canonical sandbox execution broker",
+    );
+  }
+  if (
+    bootstrap.configuredExecutionAuthority === undefined ||
+    typeof bootstrap.prepareConfiguredExecutionAuthority !== "function"
+  ) {
+    throw new Error(
+      "daemon session requires a configured execution-authority snapshot",
+    );
+  }
+
+  return registry.installPublicationCoordinator(
+    async (
+      next,
+      _current,
+      metadata,
+      publication: PermissionContextPublication,
+    ) => {
+      const stagedConfiguredAuthority =
+        configuredExecutionAuthorityFromPublicationMetadata(metadata);
+      const preparedConfigReload =
+        preparedConfigStoreReloadFromPublicationMetadata(metadata);
+      const preparedMcpAuthorityRefresh =
+        preparedMcpAuthorityRefreshFromPublicationMetadata(metadata);
+      const authority = executionAuthorityForPermissionContext(
+        stagedConfiguredAuthority?.authority ??
+          bootstrap.configuredExecutionAuthority,
+        next,
+        session.services.runtimeOptions
+          ?.dangerouslyBypassApprovalsAndSandbox === true,
+      );
+      let previousConfiguration: Session["sessionConfiguration"] | undefined;
+      let configurationWriteStarted = false;
+      let stagedConfiguredAuthorityCommitted = false;
+      let preparedConfigReloadCommitted = false;
+      let preparedMcpAuthorityRefreshStarted = false;
+      let authorityTransitionCompleted = false;
+      try {
+        await transitionSandboxExecutionBrokerAuthority(
+          broker,
+          sandboxExecutionBrokerAuthorityFromSessionAuthority(
+            authority,
+            broker.cwd,
+          ),
+          {
+            commit: async () => {
+              configurationWriteStarted = true;
+              await session.state.with((state) => {
+                previousConfiguration = state.sessionConfiguration;
+                state.sessionConfiguration = applySessionExecutionAuthority(
+                  state.sessionConfiguration,
+                  authority,
+                );
+              });
+              preparedConfigReload?.commit();
+              preparedConfigReloadCommitted =
+                preparedConfigReload !== undefined;
+              stagedConfiguredAuthority?.commit();
+              stagedConfiguredAuthorityCommitted =
+                stagedConfiguredAuthority !== undefined;
+              await publication.commit();
+              preparedConfigReload?.publish(
+                COORDINATED_CONFIG_STORE_PUBLICATION,
+              );
+              preparedMcpAuthorityRefreshStarted =
+                preparedMcpAuthorityRefresh !== undefined;
+              preparedMcpAuthorityRefresh?.start();
+              await preparedMcpAuthorityRefresh?.waitUntilDeferred();
+            },
+            rollback: async () => {
+              const rollbackErrors: unknown[] = [];
+              try {
+                await publication.rollback();
+              } catch (error) {
+                rollbackErrors.push(error);
+              }
+              if (stagedConfiguredAuthorityCommitted) {
+                try {
+                  stagedConfiguredAuthority?.rollback();
+                  stagedConfiguredAuthorityCommitted = false;
+                } catch (error) {
+                  rollbackErrors.push(error);
+                }
+              }
+              if (preparedConfigReloadCommitted) {
+                try {
+                  preparedConfigReload?.rollback();
+                  preparedConfigReloadCommitted = false;
+                } catch (error) {
+                  rollbackErrors.push(error);
+                }
+              }
+              if (
+                configurationWriteStarted &&
+                previousConfiguration !== undefined
+              ) {
+                try {
+                  await session.state.with((state) => {
+                    state.sessionConfiguration = previousConfiguration!;
+                  });
+                } catch (error) {
+                  rollbackErrors.push(error);
+                }
+              }
+              if (rollbackErrors.length > 0) {
+                throw new AggregateError(
+                  rollbackErrors,
+                  "daemon permission authority rollback incomplete",
+                );
+              }
+            },
+          },
+        );
+        authorityTransitionCompleted = true;
+        await preparedMcpAuthorityRefresh?.settle();
+        preparedConfigReload?.settle();
+      } catch (error) {
+        const cleanupErrors: unknown[] = [];
+        if (!authorityTransitionCompleted) {
+          try {
+            await publication.rollback();
+          } catch (rollbackError) {
+            cleanupErrors.push(rollbackError);
+          }
+          if (
+            preparedConfigReload !== undefined &&
+            !preparedConfigReload.settled
+          ) {
+            if (preparedConfigReload.state !== "rolled_back") {
+              try {
+                preparedConfigReload.rollback();
+              } catch (rollbackError) {
+                cleanupErrors.push(rollbackError);
+              }
+            }
+            try {
+              preparedConfigReload.settle();
+            } catch (settleError) {
+              cleanupErrors.push(settleError);
+            }
+          }
+        } else {
+          if (
+            preparedConfigReload !== undefined &&
+            !preparedConfigReload.settled
+          ) {
+            try {
+              preparedConfigReload.settle();
+            } catch (settleError) {
+              cleanupErrors.push(settleError);
+            }
+          }
+          if (!broker.isClosedAfterLifecycleAuthorityFailure()) {
+            broker.closeAfterLifecycleAuthorityFailure(
+              "daemon permission authority failed after canonical publication",
+            );
+          }
+        }
+        const failure =
+          cleanupErrors.length === 0
+            ? error
+            : new AggregateError(
+                [error, ...cleanupErrors],
+                "daemon permission authority cleanup was incomplete",
+                { cause: error },
+              );
+        if (
+          (cleanupErrors.length > 0 || preparedMcpAuthorityRefreshStarted) &&
+          !broker.isClosedAfterLifecycleAuthorityFailure()
+        ) {
+          broker.closeAfterLifecycleAuthorityFailure(
+            preparedMcpAuthorityRefreshStarted
+              ? "daemon permission authority failed after canonical publication"
+              : "daemon permission authority cleanup was incomplete",
+          );
+        }
+        if (!broker.isClosedAfterLifecycleAuthorityFailure()) {
+          if (
+            failure instanceof AggregateError &&
+            failure.errors.length === 1
+          ) {
+            throw failure.errors[0];
+          }
+          throw failure;
+        }
+        const active = owner();
+        if (active !== undefined) active.ingressClosed = true;
+        const terminalFailure =
+          failure instanceof AggregateError && failure.errors.length === 1
+            ? failure.errors[0]
+            : failure;
+        try {
+          session.abortTerminal("permission_authority_failure");
+        } catch (abortError) {
+          throw new AggregateError(
+            [terminalFailure, abortError],
+            "daemon permission authority failed and session abort was incomplete",
+            { cause: terminalFailure },
+          );
+        }
+        throw terminalFailure;
+      }
+    },
+  );
+}
+
+function preparedConfigStoreReloadFromPublicationMetadata(
+  metadata: unknown,
+): PreparedConfigStoreReload | undefined {
+  if (!isRecord(metadata)) return undefined;
+  const prepared = metadata.preparedConfigReload;
+  if (!isRecord(prepared)) return undefined;
+  if (
+    !isRecord(prepared.authority) ||
+    typeof prepared.commit !== "function" ||
+    typeof prepared.publish !== "function" ||
+    typeof prepared.rollback !== "function" ||
+    typeof prepared.settle !== "function"
+  ) {
+    throw new Error("prepared config reload publication metadata is invalid");
+  }
+  return prepared as unknown as PreparedConfigStoreReload;
+}
+
+interface PreparedMcpAuthorityRefresh {
+  readonly result: McpRefreshResult | undefined;
+  start(): void;
+  waitUntilDeferred(): Promise<void>;
+  settle(): Promise<void>;
+}
+
+function prepareMcpAuthorityRefresh(
+  session: Session,
+): PreparedMcpAuthorityRefresh | undefined {
+  const manager = session.services.mcpManager;
+  const refresh = manager?.refreshFromAuthority;
+  if (manager === undefined || refresh === undefined) return undefined;
+  let task: Promise<McpRefreshResult> | undefined;
+  let result: McpRefreshResult | undefined;
+  let deferred = false;
+  let readySettled = false;
+  let resolveReady!: () => void;
+  let rejectReady!: (error: unknown) => void;
+  const ready = new Promise<void>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+  void ready.catch(() => undefined);
+  const markDeferred = (): void => {
+    if (readySettled) return;
+    deferred = true;
+    readySettled = true;
+    resolveReady();
+  };
+  const failReady = (error: unknown): void => {
+    if (readySettled) return;
+    readySettled = true;
+    rejectReady(error);
+  };
+  return Object.freeze({
+    get result() {
+      return result;
+    },
+    start: () => {
+      if (task !== undefined) {
+        throw new Error("MCP authority refresh was started more than once");
+      }
+      try {
+        task = Promise.resolve(
+          refresh.call(manager, {
+            onSandboxRefreshDeferred: markDeferred,
+          }),
+        );
+      } catch (error) {
+        task = Promise.reject(error);
+      }
+      void task.then(() => {
+        if (!deferred) {
+          failReady(
+            new Error(
+              "MCP authority refresh completed before sandbox deferral was proven",
+            ),
+          );
+        }
+      }, failReady);
+      void task.catch(() => undefined);
+    },
+    waitUntilDeferred: () => ready,
+    settle: async () => {
+      if (task === undefined) {
+        throw new Error("MCP authority refresh was not started");
+      }
+      result = await task;
+    },
+  });
+}
+
+function preparedMcpAuthorityRefreshFromPublicationMetadata(
+  metadata: unknown,
+): PreparedMcpAuthorityRefresh | undefined {
+  if (!isRecord(metadata)) return undefined;
+  const prepared = metadata.preparedMcpAuthorityRefresh;
+  if (!isRecord(prepared)) return undefined;
+  if (
+    typeof prepared.start !== "function" ||
+    typeof prepared.waitUntilDeferred !== "function" ||
+    typeof prepared.settle !== "function"
+  ) {
+    throw new Error("prepared MCP refresh publication metadata is invalid");
+  }
+  return prepared as unknown as PreparedMcpAuthorityRefresh;
+}
+
+function configuredExecutionAuthorityFromPublicationMetadata(
+  metadata: unknown,
+): PreparedConfiguredExecutionAuthority | undefined {
+  if (!isRecord(metadata)) return undefined;
+  const prepared = metadata.configuredExecutionAuthority;
+  if (!isRecord(prepared)) return undefined;
+  if (
+    !isRecord(prepared.authority) ||
+    typeof prepared.commit !== "function" ||
+    typeof prepared.rollback !== "function"
+  ) {
+    throw new Error(
+      "configured execution authority publication metadata is invalid",
+    );
+  }
+  return prepared as unknown as PreparedConfiguredExecutionAuthority;
 }
 
 function captureRuntimeSettings(
@@ -7168,18 +7903,37 @@ function captureRuntimeSettings(
   const bypassTransitionCritical =
     permission.mode === "bypassPermissions" ||
     prePlanMode === "bypassPermissions";
-  const hasExactBypassConsent =
-    permission.bypassPermissionsAcceptedIn?.includes(workspaceRoot) === true &&
-    (options.authorizeBypass === true ||
-      active.runtimeSettings?.bypassPermissionsWorkspace === workspaceRoot);
-  if (bypassTransitionCritical && !hasExactBypassConsent) {
+  const hasSessionExactBypassConsent =
+    permission.bypassPermissionsAcceptedIn?.includes(workspaceRoot) === true;
+  if (bypassTransitionCritical && !hasSessionExactBypassConsent) {
     throw new Error(
       `cannot persist bypass permission authority without exact workspace consent: ${workspaceRoot}`,
     );
   }
+  let hasDurableExactBypassConsent = false;
+  try {
+    hasDurableExactBypassConsent =
+      loadBypassPermissionsConsent(
+        bootstrap.configStore.stateRepository,
+        workspaceRoot,
+        { reload: true },
+      )[0] === workspaceRoot;
+  } catch {
+    // A failed state refresh cannot add authority. Session authority remains
+    // usable for an already-active transition, but is not widened here.
+  }
+  const bypassDisabledByPolicy =
+    permission.bypassPermissionsModeDisabledByPolicy === true;
+  const hasExactBypassConsent =
+    !bypassDisabledByPolicy &&
+    (hasSessionExactBypassConsent || hasDurableExactBypassConsent);
+  const bypassPermissionsModeAvailable =
+    !bypassDisabledByPolicy &&
+    (permission.isBypassPermissionsModeAvailable === true ||
+      hasExactBypassConsent);
 
   const pending = session.pendingProviderSwitch;
-  const selection = readSessionSelection(session);
+  const selection = readSessionSelection(session, { includePending: true });
   const configuration = (
     session as Session & {
       readonly sessionConfiguration?: Session["sessionConfiguration"];
@@ -7200,13 +7954,18 @@ function captureRuntimeSettings(
     RUN_RUNTIME_SERVICE_TIERS,
     "service tier",
   );
-  return {
+  return cloneFrozenRuntimeSettingsSnapshot({
     permissionMode: permission.mode,
     prePlanMode,
     autoModeActive: permission.autoModeActive === true,
+    autoModeAvailable: permission.isAutoModeAvailable === true,
+    bypassPermissionsModeAvailable,
     bypassPermissionsWorkspace: bypassTransitionCritical ? workspaceRoot : null,
-    model: pending?.model ?? selection.model,
-    provider: pending?.provider ?? selection.provider,
+    bypassPermissionsConsentWorkspace: hasExactBypassConsent
+      ? workspaceRoot
+      : null,
+    model: selection.model,
+    provider: selection.provider,
     profile:
       options.profile ??
       pending?.profile ??
@@ -7216,7 +7975,7 @@ function captureRuntimeSettings(
     modelVerbosity,
     serviceTier,
     hooksDisabled: session.services?.hooksRuntime?.isDisabled() === true,
-  };
+  });
 }
 
 function normalizeRuntimeSetting<const T extends readonly string[]>(
@@ -7239,35 +7998,32 @@ function installRuntimeSettingsPreCommit(
   runId: string,
 ): () => void {
   const registry = active.bootstrap.session.permissionModeRegistry;
-  if (typeof registry.installBeforeUpdateHook !== "function") {
-    // Compatibility for deliberately skeletal embedding/test registries. A
-    // production Session always supplies PermissionModeRegistry itself.
-    return () => {};
-  }
-  return registry.installBeforeUpdateHook(async (next, current, metadata) =>
-    withRuntimeSettingsMutation(active, async () => {
+  requireCanonicalRuntimeSettingsSupport(active, runId);
+  return registry.installBeforeUpdateHook(async (next, current, metadata) => {
+    const release = await acquireRuntimeSettingsMutation(active);
+    try {
       if (active.ingressClosed === true) {
         throw new Error(`run ${runId} permission ingress is closed`);
       }
       if (active.runtimeSettingsEventId === undefined) {
         const baseline = captureRuntimeSettings(active, {
           permissionContext: current,
-          authorizeBypass: true,
         });
         commitDurableRuntimeSettingsChange(active, runId, baseline, "initial");
       }
+      const previousSettings = active.runtimeSettings!;
       const nextSettings = captureRuntimeSettings(active, {
         permissionContext: next,
-        authorizeBypass: true,
       });
       if (
         active.runtimeSettings !== undefined &&
         stableStringify(active.runtimeSettings) ===
           stableStringify(nextSettings)
       ) {
-        return;
+        release();
+        return undefined;
       }
-      commitDurableRuntimeSettingsChange(
+      const prepared = prepareDurableRuntimeSettingsChange(
         active,
         runId,
         nextSettings,
@@ -7276,8 +8032,34 @@ function installRuntimeSettingsPreCommit(
         runtimeSettingsCommitMetadata(metadata)?.rollbackOfSettingsEventId ??
           null,
       );
-    }),
-  );
+      return {
+        commit: () => {
+          prepared.finalize();
+        },
+        rollback: () => {
+          if (active.runtimeSettingsEventId === prepared.eventId) {
+            compensateRuntimeSettingsChange(
+              active,
+              runId,
+              previousSettings,
+              prepared.eventId,
+            );
+            return;
+          }
+          compensatePreparedRuntimeSettingsChange(
+            active,
+            runId,
+            previousSettings,
+            prepared,
+          );
+        },
+        settle: release,
+      };
+    } catch (error) {
+      release();
+      throw error;
+    }
+  });
 }
 
 function runtimeSettingsCommitMetadata(metadata: unknown):
@@ -7326,6 +8108,23 @@ async function withRuntimeSettingsMutation<T>(
   return result;
 }
 
+async function acquireRuntimeSettingsMutation(
+  active: ActiveBackgroundAgent,
+): Promise<() => void> {
+  const previous = active.runtimeSettingsMutationQueue;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const acquired = previous.then(
+    () => {},
+    () => {},
+  );
+  active.runtimeSettingsMutationQueue = acquired.then(() => held);
+  await acquired;
+  return release;
+}
+
 function ensureInitialRuntimeSettings(
   active: ActiveBackgroundAgent,
   runId: string,
@@ -7336,9 +8135,21 @@ function ensureInitialRuntimeSettings(
   ) {
     return active.runtimeSettings;
   }
-  const baseline = captureRuntimeSettings(active, { authorizeBypass: true });
+  const baseline = captureRuntimeSettings(active);
   commitDurableRuntimeSettingsChange(active, runId, baseline, "initial");
-  return baseline;
+  return active.runtimeSettings!;
+}
+
+function failClosedRuntimeSettingsAuthority(
+  active: ActiveBackgroundAgent,
+  runId: string,
+  error: unknown,
+): never {
+  return failClosedDaemonRuntimeAuthority(active, error, {
+    brokerReason: "daemon runtime-settings authority is ambiguous",
+    abortReason: "permission_authority_failure",
+    abortFailureMessage: `run ${runId} runtime-settings authority failed and session abort was incomplete`,
+  });
 }
 
 function compensateRuntimeSettingsChange(
@@ -7347,28 +8158,68 @@ function compensateRuntimeSettingsChange(
   previous: RunRuntimeSettingsSnapshot,
   failedSettingsEventId: string,
 ): void {
-  if (active.runtimeSettingsEventId !== failedSettingsEventId) {
-    throw new Error(
-      `run ${runId} settings compensation no longer follows ${failedSettingsEventId}`,
+  try {
+    if (active.runtimeSettingsEventId !== failedSettingsEventId) {
+      throw new Error(
+        `run ${runId} settings compensation no longer follows ${failedSettingsEventId}`,
+      );
+    }
+    commitDurableRuntimeSettingsChange(
+      active,
+      runId,
+      previous,
+      "compensating_rollback",
+      failedSettingsEventId,
     );
+  } catch (error) {
+    failClosedRuntimeSettingsAuthority(active, runId, error);
   }
-  commitDurableRuntimeSettingsChange(
-    active,
-    runId,
-    previous,
-    "compensating_rollback",
-    failedSettingsEventId,
-  );
+}
+
+function compensatePreparedRuntimeSettingsChange(
+  active: ActiveBackgroundAgent,
+  runId: string,
+  previous: RunRuntimeSettingsSnapshot,
+  failed: PreparedRuntimeSettingsChange,
+): void {
+  try {
+    if (active.runtimeSettingsEventId !== failed.previousSettingsEventId) {
+      throw new Error(
+        `run ${runId} settings compensation no longer follows ${failed.eventId}`,
+      );
+    }
+    const compensation = prepareDurableRuntimeSettingsChange(
+      active,
+      runId,
+      previous,
+      "compensating_rollback",
+      failed.eventId,
+      failed.eventId,
+    );
+    projectDurableRuntimeSettingsEvent(active, failed.event);
+    compensation.finalize();
+  } catch (error) {
+    projectDurableRuntimeSettingsEvent(active, failed.event);
+    failClosedRuntimeSettingsAuthority(active, runId, error);
+  }
 }
 
 async function applyRestoredRuntimeSettings(
   bootstrap: LocalRuntimeBootstrap,
   settings: RunRuntimeSettingsSnapshot,
-): Promise<void> {
-  const workspaceRoot = runtimeWorkspaceRoot(bootstrap);
+): Promise<RunRuntimeSettingsSnapshot> {
+  const workspaceRoot = canonicalizeBypassPermissionsCwd(
+    runtimeWorkspaceRoot(bootstrap),
+  );
+  assertValidRuntimeSettingsSnapshot(settings, workspaceRoot);
+  const bypassTransitionCritical =
+    settings.permissionMode === "bypassPermissions" ||
+    (settings.permissionMode === "plan" &&
+      settings.prePlanMode === "bypassPermissions");
   if (
-    settings.bypassPermissionsWorkspace !== null &&
-    settings.bypassPermissionsWorkspace !== workspaceRoot
+    (bypassTransitionCritical &&
+      settings.bypassPermissionsWorkspace !== workspaceRoot) ||
+    (!bypassTransitionCritical && settings.bypassPermissionsWorkspace !== null)
   ) {
     throw new Error(
       "canonical bypass permission workspace does not match restored workspace",
@@ -7377,22 +8228,72 @@ async function applyRestoredRuntimeSettings(
   const session = bootstrap.session;
   const registry = session.permissionModeRegistry;
   const current = registry.current();
-  let transitioned = transitionPermissionMode(
-    current.mode,
-    settings.permissionMode,
-    current,
+  const bypassDisabledByPolicy =
+    current.bypassPermissionsModeDisabledByPolicy === true;
+  const [persistedBypassConsent] = loadBypassPermissionsConsent(
+    bootstrap.configStore.stateRepository,
+    workspaceRoot,
+    { reload: true },
   );
+  const hasCurrentDurableBypassConsent =
+    persistedBypassConsent === workspaceRoot;
+  const autoModeAvailable =
+    settings.autoModeAvailable && current.isAutoModeAvailable === true;
+  const retainedConsent =
+    !bypassDisabledByPolicy &&
+    settings.bypassPermissionsModeAvailable &&
+    settings.bypassPermissionsConsentWorkspace === workspaceRoot &&
+    hasCurrentDurableBypassConsent;
+  const bypassModeAvailable =
+    !bypassDisabledByPolicy &&
+    (current.isBypassPermissionsModeAvailable === true || retainedConsent);
+  let transitionContext: ToolPermissionContext = {
+    ...current,
+    isAutoModeAvailable: autoModeAvailable,
+    isBypassPermissionsModeAvailable: bypassModeAvailable,
+    bypassPermissionsAcceptedIn: retainedConsent ? [workspaceRoot] : [],
+  };
+  if (bypassTransitionCritical) {
+    if (bypassDisabledByPolicy) {
+      throw new Error(
+        "restored bypass permission mode is disabled by managed policy",
+      );
+    }
+    if (!hasCurrentDurableBypassConsent) {
+      throw new Error(
+        "restored bypass permission mode requires persisted exact-cwd consent",
+      );
+    }
+    transitionContext = authorizeBypassPermissionsConsent(
+      {
+        ...transitionContext,
+        isBypassPermissionsModeAvailable: false,
+        bypassPermissionsAcceptedIn: [],
+      },
+      persistedBypassConsent,
+    );
+  }
+  let transitioned = runWithCurrentRuntimeSession(session, () =>
+    settings.permissionMode === "bypassPermissions"
+      ? transitionPermissionMode(
+          transitionContext.mode,
+          settings.permissionMode,
+          transitionContext,
+          { workspacePath: workspaceRoot },
+        )
+      : transitionPermissionMode(
+          transitionContext.mode,
+          settings.permissionMode,
+          transitionContext,
+        ),
+  );
+  if ("error" in transitioned) {
+    throw new Error(
+      "restored bypass permission mode lacks exact canonical workspace consent",
+    );
+  }
   const bypassAccepted =
-    settings.bypassPermissionsWorkspace === workspaceRoot
-      ? [
-          ...new Set([
-            ...(transitioned.bypassPermissionsAcceptedIn ?? []),
-            workspaceRoot,
-          ]),
-        ]
-      : (transitioned.bypassPermissionsAcceptedIn ?? []).filter(
-          (workspace) => workspace !== workspaceRoot,
-        );
+    bypassTransitionCritical || retainedConsent ? [workspaceRoot] : [];
   transitioned = {
     ...transitioned,
     mode: settings.permissionMode,
@@ -7400,10 +8301,11 @@ async function applyRestoredRuntimeSettings(
       ? { prePlanMode: settings.prePlanMode ?? "default" }
       : { prePlanMode: undefined }),
     autoModeActive: settings.autoModeActive,
+    isAutoModeAvailable: autoModeAvailable,
+    isBypassPermissionsModeAvailable: bypassModeAvailable,
     bypassPermissionsAcceptedIn: bypassAccepted,
   };
   await registry.update(transitioned);
-  await session.syncPermissionContextFromRegistry(transitioned);
 
   const liveSelection = readSessionSelection(session);
   if (
@@ -7436,6 +8338,12 @@ async function applyRestoredRuntimeSettings(
     };
   });
   session.services?.hooksRuntime?.setDisabled(settings.hooksDisabled);
+  return cloneFrozenRuntimeSettingsSnapshot({
+    ...settings,
+    autoModeAvailable,
+    bypassPermissionsModeAvailable: bypassModeAvailable,
+    bypassPermissionsConsentWorkspace: retainedConsent ? workspaceRoot : null,
+  });
 }
 
 function currentCanonicalRuntimeStateFromRollout(
@@ -7496,11 +8404,15 @@ function runtimeSettingsSnapshotFromCanonicalEvent(
     throw new Error("expected canonical runtime settings event");
   }
   const payload = event.msg.payload;
-  return {
+  return cloneFrozenRuntimeSettingsSnapshot({
     permissionMode: payload.permissionMode,
     prePlanMode: payload.prePlanMode,
     autoModeActive: payload.autoModeActive,
+    autoModeAvailable: payload.autoModeAvailable,
+    bypassPermissionsModeAvailable: payload.bypassPermissionsModeAvailable,
     bypassPermissionsWorkspace: payload.bypassPermissionsWorkspace,
+    bypassPermissionsConsentWorkspace:
+      payload.bypassPermissionsConsentWorkspace,
     model: payload.model,
     provider: payload.provider,
     profile: payload.profile,
@@ -7508,7 +8420,7 @@ function runtimeSettingsSnapshotFromCanonicalEvent(
     modelVerbosity: payload.modelVerbosity,
     serviceTier: payload.serviceTier,
     hooksDisabled: payload.hooksDisabled,
-  };
+  });
 }
 
 function commitDurableRuntimeSettingsChange(
@@ -7518,17 +8430,52 @@ function commitDurableRuntimeSettingsChange(
   reason: RunRuntimeSettingsChangeReason,
   rollbackOfSettingsEventId: string | null = null,
 ): void {
-  if (!supportsCanonicalRuntimeSettings(active)) {
-    active.runtimeSettings = settings;
-    active.runtimeSettingsEventId ??= `ephemeral-runtime-settings:${runId}:${active.runEpoch}`;
-    return;
-  }
-  assertValidRuntimeSettingsSnapshot(
+  prepareDurableRuntimeSettingsChange(
+    active,
+    runId,
     settings,
+    reason,
+    rollbackOfSettingsEventId,
+  ).finalize();
+}
+
+interface PreparedRuntimeSettingsChange {
+  readonly event: Event;
+  readonly eventId: string;
+  readonly previousSettingsEventId: string | null;
+  finalize(): void;
+}
+
+function prepareDurableRuntimeSettingsChange(
+  active: ActiveBackgroundAgent,
+  runId: string,
+  settings: RunRuntimeSettingsSnapshot,
+  reason: RunRuntimeSettingsChangeReason,
+  rollbackOfSettingsEventId: string | null = null,
+  preparedPredecessorEventId?: string,
+): PreparedRuntimeSettingsChange {
+  if (!supportsCanonicalRuntimeSettings(active)) {
+    throw new Error(
+      `run ${runId} cannot change runtime settings without canonical journal support`,
+    );
+  }
+  const canonicalSettings = cloneFrozenRuntimeSettingsSnapshot(settings);
+  assertValidRuntimeSettingsSnapshot(
+    canonicalSettings,
     runtimeWorkspaceRoot(active.bootstrap),
   );
   const epoch = active.runEpoch;
-  const previousSettingsEventId = active.runtimeSettingsEventId ?? null;
+  const previousSettingsEventId =
+    preparedPredecessorEventId ?? active.runtimeSettingsEventId ?? null;
+  if (
+    preparedPredecessorEventId !== undefined &&
+    (reason !== "compensating_rollback" ||
+      rollbackOfSettingsEventId !== preparedPredecessorEventId)
+  ) {
+    throw new Error(
+      `run ${runId} prepared predecessor is only valid for its compensation`,
+    );
+  }
   if (previousSettingsEventId === null && reason !== "initial") {
     throw new Error(
       `run ${runId} must establish initial runtime settings before ${reason}`,
@@ -7566,7 +8513,7 @@ function commitDurableRuntimeSettingsChange(
       event.msg.payload.reason !== reason ||
       event.msg.payload.changedAt !== changedAt ||
       stableStringify(runtimeSettingsSnapshotFromCanonicalEvent(event)) !==
-        stableStringify(settings)
+        stableStringify(canonicalSettings)
     ) {
       throw new Error(`runtime settings ${eventId} has conflicting evidence`);
     }
@@ -7577,8 +8524,9 @@ function commitDurableRuntimeSettingsChange(
     return event;
   };
   let event: Event;
+  let publish: () => Event;
   try {
-    event = active.bootstrap.session.emit({
+    const candidate = {
       eventId,
       id: eventId,
       msg: {
@@ -7590,20 +8538,75 @@ function commitDurableRuntimeSettingsChange(
           rollbackOfSettingsEventId,
           reason,
           changedAt,
-          ...settings,
+          ...canonicalSettings,
         },
       },
-    });
+    } satisfies Event;
+    const prepared = active.bootstrap.session.prepareEmit(candidate);
+    event = prepared.event;
+    publish = prepared.publish;
   } catch (error) {
-    const recovered = acceptCommitted(true);
+    let recovered: Event | undefined;
+    try {
+      recovered = acceptCommitted(true);
+    } catch (evidenceError) {
+      failClosedRuntimeSettingsAuthority(
+        active,
+        runId,
+        new AggregateError(
+          [error, evidenceError],
+          `runtime settings ${eventId} preparation failed after an ambiguous canonical append`,
+          { cause: error },
+        ),
+      );
+    }
     if (recovered === undefined) throw error;
     event = recovered;
+    publish = () => active.bootstrap.session.publishPreparedEvent(recovered);
   }
   if (event.eventId !== eventId || positiveSequence(event.seq) === undefined) {
     throw new Error(`runtime settings ${eventId} lacks canonical coordinates`);
   }
-  active.runtimeSettings = settings;
-  active.runtimeSettingsEventId = eventId;
+  let finalized = false;
+  return {
+    event,
+    eventId,
+    previousSettingsEventId,
+    finalize: () => {
+      if (finalized) return;
+      finalized = true;
+      active.runtimeSettings = canonicalSettings;
+      active.runtimeSettingsEventId = eventId;
+      try {
+        publish();
+      } catch (publishError) {
+        let failure: unknown = publishError;
+        try {
+          const committed = acceptCommitted(true);
+          if (committed === undefined) {
+            throw new Error(
+              `runtime settings ${eventId} publication failed without canonical evidence`,
+            );
+          }
+          projectDurableRuntimeSettingsEvent(active, committed);
+        } catch (evidenceError) {
+          failure = new AggregateError(
+            [publishError, evidenceError],
+            `runtime settings ${eventId} publication failed and canonical evidence could not be proved`,
+            { cause: publishError },
+          );
+        }
+        failClosedRuntimeSettingsAuthority(active, runId, failure);
+      }
+      projectDurableRuntimeSettingsEvent(active, event);
+    },
+  };
+}
+
+function projectDurableRuntimeSettingsEvent(
+  active: ActiveBackgroundAgent,
+  event: Event,
+): void {
   try {
     active.bootstrap.rolloutStore.recordRunRuntimeSettingsEvent(event);
   } catch {
@@ -7622,6 +8625,23 @@ function assertValidRuntimeSettingsSnapshot(
   const bypassTransitionCritical =
     settings.permissionMode === "bypassPermissions" ||
     settings.prePlanMode === "bypassPermissions";
+  const hasExactBypassConsent =
+    settings.bypassPermissionsConsentWorkspace === workspaceRoot;
+  let providerModelIsCanonical = false;
+  try {
+    const selection = mergeProviderModelLayer(
+      {},
+      {
+        model_provider: settings.provider,
+        model: settings.model,
+      },
+    );
+    providerModelIsCanonical =
+      selection.model_provider === settings.provider &&
+      selection.model === settings.model;
+  } catch {
+    providerModelIsCanonical = false;
+  }
   if (
     !RUN_RUNTIME_PERMISSION_MODES.includes(settings.permissionMode) ||
     (settings.prePlanMode !== null &&
@@ -7633,11 +8653,20 @@ function assertValidRuntimeSettingsSnapshot(
       ? settings.autoModeActive !== true
       : settings.permissionMode !== "plan" &&
         settings.autoModeActive !== false) ||
+    typeof settings.autoModeAvailable !== "boolean" ||
+    (settings.autoModeActive && !settings.autoModeAvailable) ||
+    typeof settings.bypassPermissionsModeAvailable !== "boolean" ||
+    (settings.bypassPermissionsConsentWorkspace !== null &&
+      !hasExactBypassConsent) ||
+    (hasExactBypassConsent && !settings.bypassPermissionsModeAvailable) ||
     (bypassTransitionCritical
-      ? settings.bypassPermissionsWorkspace !== workspaceRoot
+      ? settings.bypassPermissionsWorkspace !== workspaceRoot ||
+        !settings.bypassPermissionsModeAvailable ||
+        !hasExactBypassConsent
       : settings.bypassPermissionsWorkspace !== null) ||
     !bounded(settings.model, 1_024) ||
     !bounded(settings.provider, 256) ||
+    !providerModelIsCanonical ||
     !nullableBounded(settings.profile, 256) ||
     (settings.reasoningEffort !== null &&
       !RUN_RUNTIME_REASONING_EFFORTS.includes(settings.reasoningEffort)) ||
@@ -8050,7 +9079,7 @@ function cancelledTerminalResult(
     exitCode: null,
     stopReason,
     finalMessage: null,
-    usage: budgetUsageForActiveAgent(active),
+    usage: terminalUsageForActiveAgent(active),
     lastSequence: null,
     finishedAt,
   };
@@ -8099,7 +9128,7 @@ function terminalResultFromThread(
   runId: string,
   status: TerminalThreadStatus,
 ): RunTerminalResult {
-  const usage = budgetUsageForActiveAgent(active);
+  const usage = terminalUsageForActiveAgent(active);
   const finishedAt =
     "endedAtMs" in status && Number.isFinite(status.endedAtMs)
       ? new Date(status.endedAtMs).toISOString()
@@ -8132,12 +9161,7 @@ function terminalResultFromThread(
     runId,
     status: "cancelled",
     exitCode: null,
-    stopReason:
-      active.budgetHalt !== undefined
-        ? "budget_limit"
-        : status.status === "shutdown"
-          ? "shutdown"
-          : "not_found",
+    stopReason: status.status === "shutdown" ? "shutdown" : "not_found",
     finalMessage: null,
     usage,
     lastSequence: null,
@@ -8429,6 +9453,24 @@ function messageContentToAgentInput(
   });
 }
 
+function prepareDaemonUserPrompt(params: {
+  readonly session: Session;
+  readonly configStore: LocalRuntimeBootstrap["configStore"];
+  readonly input: string | readonly LLMContentPart[];
+  readonly hookPrompt?: string;
+}) {
+  return runWithCurrentRuntimeSession(params.session, () =>
+    prepareUserPromptForTurn({
+      session: params.session,
+      configStore: params.configStore,
+      input: params.input,
+      ...(params.hookPrompt !== undefined
+        ? { hookPrompt: params.hookPrompt }
+        : {}),
+    }),
+  );
+}
+
 async function submitStructuredAgentInput(
   active: ActiveBackgroundAgent,
   input: readonly LLMContentPart[],
@@ -8541,6 +9583,7 @@ function restoreBootstrapSelection(params: AgenCBackgroundAgentRestoreParams): {
   readonly provider?: string;
   readonly model?: string;
   readonly profile?: string;
+  readonly configPath?: string;
   readonly permissionMode?:
     | "default"
     | "plan"
@@ -8555,8 +9598,8 @@ function restoreBootstrapSelection(params: AgenCBackgroundAgentRestoreParams): {
     provider: canonical.provider,
     model: canonical.model,
     ...(canonical.profile !== null ? { profile: canonical.profile } : {}),
-    ...(canonical.permissionMode !== "unattended"
-      ? { permissionMode: canonical.permissionMode }
+    ...(params.configPath !== undefined
+      ? { configPath: params.configPath }
       : {}),
   };
 }
@@ -8565,6 +9608,7 @@ function runtimeSettingsWithRestoreOverrides(
   canonical: RunRuntimeSettingsSnapshot,
   params: AgenCBackgroundAgentRestoreParams,
   workspaceRoot: string,
+  config: AgenCConfig,
 ): RunRuntimeSettingsSnapshot {
   const permissionMode = params.permissionMode ?? canonical.permissionMode;
   const permissionChanged = permissionMode !== canonical.permissionMode;
@@ -8577,6 +9621,16 @@ function runtimeSettingsWithRestoreOverrides(
   const bypassTransitionCritical =
     permissionMode === "bypassPermissions" ||
     prePlanMode === "bypassPermissions";
+  const resolvedSelection = resolveProviderModelSelection(
+    config,
+    { provider: canonical.provider, model: canonical.model },
+    {
+      ...(params.provider !== undefined
+        ? { model_provider: params.provider }
+        : {}),
+      ...(params.model !== undefined ? { model: params.model } : {}),
+    },
+  );
   return {
     ...canonical,
     permissionMode,
@@ -8588,8 +9642,8 @@ function runtimeSettingsWithRestoreOverrides(
           ? canonical.autoModeActive
           : false,
     bypassPermissionsWorkspace: bypassTransitionCritical ? workspaceRoot : null,
-    model: params.model ?? canonical.model,
-    provider: params.provider ?? canonical.provider,
+    model: resolvedSelection.model,
+    provider: resolvedSelection.provider,
     profile: params.profile ?? canonical.profile,
   };
 }
@@ -8599,6 +9653,7 @@ function buildBootstrapArgv(
     readonly provider?: string;
     readonly model?: string;
     readonly profile?: string;
+    readonly configPath?: string;
     readonly permissionMode?:
       | "default"
       | "plan"
@@ -8607,76 +9662,28 @@ function buildBootstrapArgv(
       | "dontAsk"
       | "auto";
   },
-  baseArgv: readonly string[] | undefined,
+  executableArgv: readonly string[] | undefined,
 ): readonly string[] {
-  const argv = baseArgv ?? process.argv;
-  const optionArgs = tokenizeCliOptionRegion(argv.slice(2)).optionArgs;
-  const generatedOptions: string[] = [];
-  appendFlag(generatedOptions, "--provider", params.provider);
-  appendFlag(generatedOptions, "--model", params.model);
-  appendFlag(generatedOptions, "--profile", params.profile);
-  // Forward `--yolo` when the caller asked for bypassPermissions mode.
-  // bin/bootstrap.ts:1146 keys off cli.allowDangerouslySkipPermissions
-  // (which startup-selection.ts sets when --yolo is in argv), so adding
-  // the flag here makes the daemon-spawned bootstrap honor the override
-  // exactly like the CLI bootstrap does. Avoid duplicate flags if argv
-  // already carries one.
-  if (
-    params.permissionMode === "bypassPermissions" &&
-    !optionArgs.includes("--yolo") &&
-    !optionArgs.includes("--dangerously-bypass-approvals-and-sandbox") &&
-    !optionArgs.includes("--allow-dangerously-skip-permissions")
-  ) {
-    generatedOptions.push("--yolo");
-  }
-  // Mirror non-bypass modes via `--permission-mode <value>` so plan and
-  // acceptEdits also propagate. startup-selection.ts already parses
-  // this flag.
-  if (
-    params.permissionMode !== undefined &&
-    params.permissionMode !== "bypassPermissions" &&
-    !optionArgs.includes("--permission-mode")
-  ) {
-    generatedOptions.push("--permission-mode", params.permissionMode);
-  }
-  // todo-114: do not force --autonomous on every daemon agent. Unattended
-  // permission policy is installed separately; keepalive ticks only exist on
-  // the TUI contract path. Forcing autonomous here made models expect ticks
-  // that never arrived and defaulted empty unattended allowlists to pause-all.
-  return insertProcessCliOptionsBeforePrompt(argv, generatedOptions);
+  return buildStructuredSessionBootstrapArgv(
+    params,
+    executableArgv ?? [process.execPath, process.argv[1] ?? "agenc"],
+  );
 }
 
-function appendFlag(
-  argv: string[],
-  flag: string,
-  value: string | undefined,
-): void {
-  const trimmed = value?.trim();
-  if (trimmed === undefined || trimmed.length === 0) return;
-  argv.push(flag, trimmed);
-}
-
-// Install the minimal turnDriverHooks the daemon path needs so
-// session.submit(input) actually drives a turn. The non-daemon TUI
-// path installs a richer hook in bin/agenc.ts:1274 (autonomous keep-
-// alive, slash-command routing, prepared prompt). The daemon doesn't
-// have those concerns — its job is to drive runTurn for each user
-// input and emit phase events. Phase events flow out via
-// session.subscribeToEvents which background-agent-runner already
-// subscribed to in startAgent/restoreAgent.
+// Install the daemon turn driver. Prompt ingress normally runs before durable
+// message publication, while this driver retains the same authority for direct
+// Session.submit callers that do not cross the daemon message boundary.
 function installDaemonTurnDriverHooks(
   session: LocalRuntimeBootstrap["session"],
+  configStore: LocalRuntimeBootstrap["configStore"],
+  runTurnFn: typeof runTurn = runTurn,
 ): void {
   const installer = (
     session as unknown as {
       installTurnDriverHooks?: (hooks: {
         readonly submit: (
           message: string | readonly LLMContentPart[],
-          opts?: {
-            readonly source?: string;
-            readonly displayUserMessage?: string | null;
-            readonly editorInteraction?: SessionEditorInteraction;
-          },
+          opts?: DaemonSessionSubmitOptions,
         ) => Promise<void>;
         readonly flushEventLog?: () => Promise<void> | void;
       }) => void;
@@ -8685,6 +9692,27 @@ function installDaemonTurnDriverHooks(
   if (typeof installer !== "function") return;
   installer.call(session, {
     submit: async (message, opts) => {
+      let turnInput = message;
+      let promptDisplayText =
+        typeof message === "string" ? message : userPromptDisplayText(message);
+      if (
+        opts?.editorInteraction === undefined &&
+        opts?.[DAEMON_USER_PROMPT_PREPARED] !== true
+      ) {
+        const prepared = await prepareDaemonUserPrompt({
+          session,
+          configStore,
+          input: message,
+        });
+        if (prepared.blocked) {
+          throw new AgenCBackgroundAgentMessageError(
+            "PROMPT_BLOCKED",
+            prepared.blockMessage ?? "UserPromptSubmit hook blocked the prompt",
+          );
+        }
+        turnInput = prepared.input;
+        promptDisplayText = prepared.displayInput ?? promptDisplayText;
+      }
       const baseCtx = (
         session as unknown as { newDefaultTurn: () => unknown }
       ).newDefaultTurn();
@@ -8697,13 +9725,7 @@ function installDaemonTurnDriverHooks(
             };
       const rootHumanTurnText =
         opts?.source !== "autonomous_tick" && opts?.displayUserMessage !== null
-          ? (opts?.displayUserMessage ??
-            (typeof message === "string"
-              ? message
-              : message
-                  .map((part) => (part.type === "text" ? part.text : ""))
-                  .filter((part) => part.trim().length > 0)
-                  .join("\n")))
+          ? (opts?.displayUserMessage ?? promptDisplayText)
           : undefined;
       // displayUserMessage: null suppresses the run-turn user_message
       // emit. On the daemon path, submitAgentMessage above already
@@ -8711,10 +9733,10 @@ function installDaemonTurnDriverHooks(
       // metadata threaded through from the TUI). Without this guard
       // both emits fire with different ids, so the transcript-reducer
       // (which dedups by id) renders the user message twice.
-      for await (const event of runTurn(
+      for await (const event of runTurnFn(
         session as never,
         ctx as never,
-        message,
+        turnInput,
         {
           // This runner owns a root ManagedThread fed by daemon/phone human input. Bootstrap may
           // carry an agent-scoped querySource, which would make runTurn treat the same human prompt
@@ -8744,6 +9766,9 @@ function installDaemonTurnDriverHooks(
     },
   });
 }
+
+export const __installDaemonTurnDriverHooksForTest =
+  installDaemonTurnDriverHooks;
 
 async function installUnattendedPermissionPolicy(
   registry: PermissionModeRegistry,

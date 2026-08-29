@@ -1,6 +1,5 @@
 /**
- * Provider-neutral retry arithmetic and rate-limit parsing helpers ported from
- * upstream `src/services/api/withRetry.ts`.
+ * Provider-neutral retry arithmetic and rate-limit parsing helpers.
  *
  * Scope: this module exposes only the pure backoff/delay math and header
  * parsing used by the provider adapters' fallback ladders

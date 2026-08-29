@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { renderToString } from "../../../utils/staticRender.js";
 import { TeammateSpinnerTree } from "./TeammateSpinnerTree.js";
 
+const TEST_SPINNER_VERBS = ["Working"] as const;
+
 const harness = vi.hoisted(() => ({
   state: {
     showTeammateMessagePreview: false,
@@ -77,6 +79,7 @@ describe("TeammateSpinnerTree wave 200 coverage", () => {
         leaderTokenCount={0}
         leaderVerb="coordinating"
         selectedIndex={-1}
+        spinnerVerbs={TEST_SPINNER_VERBS}
       />,
       120,
     );

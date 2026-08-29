@@ -263,14 +263,6 @@ describe("AttachmentMessage rendering", () => {
       ],
       [
         {
-          name: "README",
-          server: "docs",
-          type: "mcp_resource",
-        },
-        "Read MCP resource README from docs",
-      ],
-      [
-        {
           type: "diagnostics",
         },
         "diagnostics shown",

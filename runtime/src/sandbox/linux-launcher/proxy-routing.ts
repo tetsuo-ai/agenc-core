@@ -1,6 +1,5 @@
 import net from "node:net";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import { AGENC_PROXY_SOCKET_DIR_PREFIX } from "./config.js";
@@ -74,6 +73,7 @@ export function planProxyRoutes(env: NodeJS.ProcessEnv): ProxyRoutePlan {
 
 export function prepareHostProxyRouteSpec(
   env: NodeJS.ProcessEnv,
+  sessionTempRoot: string,
 ): PreparedProxyRouteSpec {
   const plan = planProxyRoutes(env);
   if (plan.routes.length === 0) {
@@ -82,8 +82,10 @@ export function prepareHostProxyRouteSpec(
       : "managed proxy mode requires proxy environment variables";
     throw new Error(detail);
   }
-  cleanupStaleProxySocketDirs();
-  const socketDir = fs.mkdtempSync(path.join(os.tmpdir(), AGENC_PROXY_SOCKET_DIR_PREFIX));
+  cleanupStaleProxySocketDirs(sessionTempRoot);
+  const socketDir = fs.mkdtempSync(
+    path.join(sessionTempRoot, AGENC_PROXY_SOCKET_DIR_PREFIX),
+  );
   fs.chmodSync(socketDir, 0o700);
   const socketByEndpoint = new Map<string, string>();
   let nextSocketIndex = 0;
@@ -107,8 +109,9 @@ export function prepareHostProxyRouteSpec(
 
 export async function prepareHostProxyRoutes(
   env: NodeJS.ProcessEnv,
+  sessionTempRoot: string,
 ): Promise<PreparedProxyRoutes> {
-  const spec = prepareHostProxyRouteSpec(env);
+  const spec = prepareHostProxyRouteSpec(env, sessionTempRoot);
   const plan = planProxyRoutes(env);
   const servers: net.Server[] = [];
   const activeSockets = new Set<net.Socket>();
@@ -297,17 +300,19 @@ function pathWithin(candidate: string, root: string): boolean {
   return relative.length === 0 || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function cleanupStaleProxySocketDirs(now: number = Date.now()): void {
-  const tmp = os.tmpdir();
+function cleanupStaleProxySocketDirs(
+  sessionTempRoot: string,
+  now: number = Date.now(),
+): void {
   let entries: string[];
   try {
-    entries = fs.readdirSync(tmp);
+    entries = fs.readdirSync(sessionTempRoot);
   } catch {
     return;
   }
   for (const entry of entries) {
     if (!entry.startsWith(AGENC_PROXY_SOCKET_DIR_PREFIX)) continue;
-    const candidate = path.join(tmp, entry);
+    const candidate = path.join(sessionTempRoot, entry);
     try {
       const stat = fs.statSync(candidate);
       if (now - stat.mtimeMs > 24 * 60 * 60 * 1000) {

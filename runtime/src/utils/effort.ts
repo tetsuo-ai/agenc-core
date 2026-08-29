@@ -1,17 +1,24 @@
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { isUltrathinkEnabled } from './thinking.js'
 import { getExecutionAuthoritySettings } from './settings/settings.js'
-import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
+import {
+  getSubscriptionType,
+  getSubscriptionTypeForContext,
+  type ProviderAuthReadContext,
+} from './auth.js'
 import { getAPIProvider } from './model/providers.js'
 import {
   getAntModelOverrideConfig,
   resolveAntModel,
 } from './model/antModels.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
-import { supportsProviderCodeReasoningEffort } from '../services/api/providerConfig.js'
 import { resolveRegisteredModelCatalogEntry } from '../llm/registry/model-catalog.js'
-import { isEnvTruthy } from './envUtils.js'
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
+import { resolveSecureStorageHome } from './secureStorage/home.js'
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 
 export type { EffortLevel }
 
@@ -33,6 +40,15 @@ export type OpenAIEffortLevel = typeof OPENAI_EFFORT_LEVELS[number]
 export type AvailableEffortLevel = EffortLevel | OpenAIEffortLevel
 export type EffortValue = AvailableEffortLevel | number
 
+function supportsOpenAiReasoningEffort(model: string): boolean {
+  const normalized = model.trim().toLowerCase()
+  const base = normalized.split('?', 1)[0] ?? normalized
+  if (base === 'gpt-5.3-providercode-spark' || base === 'providercodespark') {
+    return false
+  }
+  return /^gpt-5(?:[.-]|$)/.test(base)
+}
+
 function getRegisteredGrokEffortLevels(
   model: string,
 ): AvailableEffortLevel[] | undefined {
@@ -45,11 +61,11 @@ function getRegisteredGrokEffortLevels(
 }
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
-export function modelSupportsEffort(model: string): boolean {
+function modelSupportsEffortForOptionalContext(
+  model: string,
+  context?: ProviderAuthReadContext,
+): boolean {
   const m = model.toLowerCase()
-  if (isEnvTruthy(process.env.AGENC_ALWAYS_ENABLE_EFFORT)) {
-    return true
-  }
   const supported3P = get3PModelCapabilityOverride(model, 'effort')
   if (supported3P !== undefined) {
     return supported3P
@@ -62,7 +78,10 @@ export function modelSupportsEffort(model: string): boolean {
       return levels.length > 0
     }
   }
-  if (modelUsesOpenAIEffort(model) && supportsProviderCodeReasoningEffort(model)) {
+  if (
+    modelUsesOpenAIEffortForOptionalContext(model, context) &&
+    supportsOpenAiReasoningEffort(model)
+  ) {
     return true
   }
   // Supported by a subset of AgenC 4 models
@@ -87,12 +106,26 @@ export function modelSupportsEffort(model: string): boolean {
   // Default to true for unknown model strings on 1P.
   // Do not default to true for 3P as they have different formats for their
   // model strings (ex. tetsuo-ai/agenc-core#30795)
-  return getAPIProvider() === 'firstParty'
+  return getAPIProvider(context?.provider) === 'firstParty'
+}
+
+export function modelSupportsEffort(model: string): boolean {
+  return modelSupportsEffortForOptionalContext(model)
+}
+
+export function modelSupportsEffortForContext(
+  model: string,
+  context: ProviderAuthReadContext,
+): boolean {
+  return modelSupportsEffortForOptionalContext(model, context)
 }
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports 'max' effort.
 // Per API docs, 'max' is Opus 4.6 only for public models — other models return an error.
-export function modelSupportsMaxEffort(model: string): boolean {
+function modelSupportsMaxEffortForOptionalContext(
+  model: string,
+  context?: ProviderAuthReadContext,
+): boolean {
   const supported3P = get3PModelCapabilityOverride(model, 'max_effort')
   if (supported3P !== undefined) {
     return supported3P
@@ -108,10 +141,25 @@ export function modelSupportsMaxEffort(model: string): boolean {
   ) {
     return true
   }
-  if (process.env.USER_TYPE === 'ant' && resolveAntModel(model)) {
+  const userType =
+    context === undefined
+      ? process.env.USER_TYPE
+      : context.environment.USER_TYPE
+  if (userType === 'ant' && resolveAntModel(model)) {
     return true
   }
   return false
+}
+
+export function modelSupportsMaxEffort(model: string): boolean {
+  return modelSupportsMaxEffortForOptionalContext(model)
+}
+
+export function modelSupportsMaxEffortForContext(
+  model: string,
+  context: ProviderAuthReadContext,
+): boolean {
+  return modelSupportsMaxEffortForOptionalContext(model, context)
 }
 
 export function isEffortLevel(value: string): value is EffortLevel {
@@ -128,29 +176,57 @@ export function isAvailableEffortLevel(
   return isEffortLevel(value) || isOpenAIEffortLevel(value)
 }
 
-export function modelUsesOpenAIEffort(_model: string): boolean {
-  const provider = getAPIProvider()
-  return provider === 'openai' || provider === 'agenc'
+function modelUsesOpenAIEffortForOptionalContext(
+  _model: string,
+  context?: ProviderAuthReadContext,
+): boolean {
+  const apiProvider = getAPIProvider(context?.provider)
+  return apiProvider === 'openai' || apiProvider === 'agenc'
 }
 
-export function getAvailableEffortLevels(
+export function modelUsesOpenAIEffort(model: string): boolean {
+  return modelUsesOpenAIEffortForOptionalContext(model)
+}
+
+export function modelUsesOpenAIEffortForContext(
   model: string,
+  context: ProviderAuthReadContext,
+): boolean {
+  return modelUsesOpenAIEffortForOptionalContext(model, context)
+}
+
+function getAvailableEffortLevelsForOptionalContext(
+  model: string,
+  context?: ProviderAuthReadContext,
 ): AvailableEffortLevel[] {
   const grokLevels = getRegisteredGrokEffortLevels(model)
   if (grokLevels !== undefined) {
     return grokLevels
   }
-  if (!modelSupportsEffort(model)) {
+  if (!modelSupportsEffortForOptionalContext(model, context)) {
     return []
   }
-  if (modelUsesOpenAIEffort(model)) {
+  if (modelUsesOpenAIEffortForOptionalContext(model, context)) {
     return [...OPENAI_EFFORT_LEVELS] as OpenAIEffortLevel[]
   }
   const levels: EffortLevel[] = ['low', 'medium', 'high']
-  if (modelSupportsMaxEffort(model)) {
+  if (modelSupportsMaxEffortForOptionalContext(model, context)) {
     levels.push('max')
   }
   return levels
+}
+
+export function getAvailableEffortLevels(
+  model: string,
+): AvailableEffortLevel[] {
+  return getAvailableEffortLevelsForOptionalContext(model)
+}
+
+export function getAvailableEffortLevelsForContext(
+  model: string,
+  context: ProviderAuthReadContext,
+): AvailableEffortLevel[] {
+  return getAvailableEffortLevelsForOptionalContext(model, context)
 }
 
 export function getEffortLevelLabel(level: AvailableEffortLevel): string {
@@ -215,61 +291,42 @@ export function toPersistableEffort(
   return undefined
 }
 
+export function reasoningEffortToEffortLevel(
+  value: string | undefined,
+): EffortLevel | undefined {
+  if (value === "none") return undefined
+  if (value === "xhigh") return "max"
+  return toPersistableEffort(value as EffortValue | undefined)
+}
+
+export function effortValueToReasoningEffort(
+  value: EffortValue | undefined,
+): "low" | "medium" | "high" | "xhigh" | undefined {
+  const persistable = toPersistableEffort(value)
+  return persistable === "max" ? "xhigh" : persistable
+}
+
 export function getInitialEffortSetting(): EffortLevel | undefined {
-  // toPersistableEffort validates 'max' on read, so a manually
-  // edited settings.json with an invalid level doesn't leak into a fresh session.
-  return toPersistableEffort(getExecutionAuthoritySettings().effortLevel)
-}
-
-/**
- * Decide what effort level (if any) to persist when the user selects a model
- * in ModelPicker. Keeps an explicit prior /effort choice sticky even when it
- * matches the picked model's default, while letting purely-default and
- * session-ephemeral effort (CLI --effort, EffortCallout default) fall through
- * to undefined so it follows future model-default changes.
- *
- * priorPersisted must come from userSettings on disk
- * (getSettingsForSource('userSettings')?.effortLevel), NOT merged settings
- * (project/policy layers would leak into the user's global settings.json)
- * and NOT AppState.effortValue (includes session-scoped sources that
- * deliberately do not write to settings.json).
- */
-export function resolvePickerEffortPersistence(
-  picked: AvailableEffortLevel | undefined,
-  modelDefault: AvailableEffortLevel,
-  priorPersisted: EffortLevel | undefined,
-  toggledInPicker: boolean,
-): AvailableEffortLevel | undefined {
-  const hadExplicit = priorPersisted !== undefined || toggledInPicker
-  return hadExplicit || picked !== modelDefault ? picked : undefined
-}
-
-export function getEffortEnvOverride(): EffortValue | null | undefined {
-  const envOverride = process.env.AGENC_EFFORT_LEVEL
-  return envOverride?.toLowerCase() === 'unset' ||
-    envOverride?.toLowerCase() === 'auto'
-    ? null
-    : parseEffortValue(envOverride)
+  return reasoningEffortToEffortLevel(
+    getExecutionAuthoritySettings().reasoning_effort,
+  )
 }
 
 /**
  * Resolve the effort value that will actually be sent to the API for a given
- * model, following the full precedence chain:
- *   env AGENC_EFFORT_LEVEL → appState.effortValue → model default
+ * model from the session-captured value, falling back to the model default.
  *
- * Returns undefined when no effort parameter should be sent (env set to
- * 'unset', or no default exists for the model).
+ * Environment overrides are folded into canonical config at startup; this
+ * runtime path never reads mutable process-global environment state.
  */
-export function resolveAppliedEffort(
+function resolveAppliedEffortForOptionalContext(
   model: string,
   appStateEffortValue: EffortValue | undefined,
+  context?: ProviderAuthReadContext,
 ): EffortValue | undefined {
-  const envOverride = getEffortEnvOverride()
-  if (envOverride === null) {
-    return undefined
-  }
   const resolved =
-    envOverride ?? appStateEffortValue ?? getDefaultEffortForModel(model)
+    appStateEffortValue ??
+    getDefaultEffortForModelForOptionalContext(model, context)
   if (resolved === 'max') {
     // The persisted cross-provider vocabulary calls its top tier `max`, while
     // xAI calls Grok 4.6's catalogued top tier `xhigh`.
@@ -277,11 +334,30 @@ export function resolveAppliedEffort(
       return 'xhigh'
     }
     // API rejects 'max' on non-Opus-4.6 models — downgrade to 'high'.
-    if (!modelSupportsMaxEffort(model)) {
+    if (!modelSupportsMaxEffortForOptionalContext(model, context)) {
       return 'high'
     }
   }
   return resolved
+}
+
+export function resolveAppliedEffort(
+  model: string,
+  appStateEffortValue: EffortValue | undefined,
+): EffortValue | undefined {
+  return resolveAppliedEffortForOptionalContext(model, appStateEffortValue)
+}
+
+export function resolveAppliedEffortForContext(
+  model: string,
+  appStateEffortValue: EffortValue | undefined,
+  context: ProviderAuthReadContext,
+): EffortValue | undefined {
+  return resolveAppliedEffortForOptionalContext(
+    model,
+    appStateEffortValue,
+    context,
+  )
 }
 
 /**
@@ -295,6 +371,16 @@ export function getDisplayedEffortLevel(
 ): AvailableEffortLevel {
   const resolved = resolveAppliedEffort(model, appStateEffort) ?? 'high'
   return convertEffortValueToLevel(resolved)
+}
+
+export function getDisplayedEffortLevelForContext(
+  model: string,
+  appStateEffort: EffortValue | undefined,
+  context: ProviderAuthReadContext,
+): AvailableEffortLevel {
+  const resolved =
+    resolveAppliedEffortForContext(model, appStateEffort, context) ?? 'high'
+  return convertEffortValueToLevelForContext(resolved, context)
 }
 
 /**
@@ -313,12 +399,24 @@ export function getEffortSuffix(
   return ` with ${convertEffortValueToLevel(resolved)} effort`
 }
 
+export function getEffortSuffixForContext(
+  model: string,
+  effortValue: EffortValue | undefined,
+  context: ProviderAuthReadContext,
+): string {
+  if (effortValue === undefined) return ''
+  const resolved = resolveAppliedEffortForContext(model, effortValue, context)
+  if (resolved === undefined) return ''
+  return ` with ${convertEffortValueToLevelForContext(resolved, context)} effort`
+}
+
 export function isValidNumericEffort(value: number): boolean {
   return Number.isInteger(value)
 }
 
-export function convertEffortValueToLevel(
+function convertEffortValueToLevelForOptionalContext(
   value: EffortValue,
+  context?: ProviderAuthReadContext,
 ): AvailableEffortLevel {
   if (typeof value === 'string') {
     // Runtime guard: value may come from remote config (GrowthBook) where
@@ -326,13 +424,30 @@ export function convertEffortValueToLevel(
     // rather than passing them through unchecked.
     return isAvailableEffortLevel(value) ? value : 'high'
   }
-  if (process.env.USER_TYPE === 'ant' && typeof value === 'number') {
+  const userType =
+    context === undefined
+      ? process.env.USER_TYPE
+      : context.environment.USER_TYPE
+  if (userType === 'ant' && typeof value === 'number') {
     if (value <= 50) return 'low'
     if (value <= 85) return 'medium'
     if (value <= 100) return 'high'
     return 'max'
   }
   return 'high'
+}
+
+export function convertEffortValueToLevel(
+  value: EffortValue,
+): AvailableEffortLevel {
+  return convertEffortValueToLevelForOptionalContext(value)
+}
+
+export function convertEffortValueToLevelForContext(
+  value: EffortValue,
+  context: ProviderAuthReadContext,
+): AvailableEffortLevel {
+  return convertEffortValueToLevelForOptionalContext(value, context)
 }
 
 /**
@@ -395,10 +510,15 @@ export function getOpusDefaultEffortConfig(): OpusDefaultEffortConfig {
 }
 
 // @[MODEL LAUNCH]: Update the default effort levels for new models
-export function getDefaultEffortForModel(
+function getDefaultEffortForModelForOptionalContext(
   model: string,
+  context?: ProviderAuthReadContext,
 ): EffortValue | undefined {
-  if (process.env.USER_TYPE === 'ant') {
+  const userType =
+    context === undefined
+      ? process.env.USER_TYPE
+      : context.environment.USER_TYPE
+  if (userType === 'ant') {
     const config = getAntModelOverrideConfig()
     const isDefaultModel =
       config?.defaultModel !== undefined &&
@@ -430,23 +550,43 @@ export function getDefaultEffortForModel(
     model.toLowerCase().includes('opus-4-7') ||
     model.toLowerCase().includes('opus-4-8')
   ) {
-    if (isProSubscriber()) {
+    const subscriptionType =
+      context === undefined
+        ? getSubscriptionType(credentialHome())
+        : getSubscriptionTypeForContext(context)
+    if (subscriptionType === 'pro') {
       return 'medium'
     }
     if (
       getOpusDefaultEffortConfig().enabled &&
-      (isMaxSubscriber() || isTeamSubscriber())
+      (subscriptionType === 'max' || subscriptionType === 'team')
     ) {
       return 'medium'
     }
   }
 
   // When ultrathink feature is on, default effort to medium (ultrathink bumps to high)
-  if (isUltrathinkEnabled() && modelSupportsEffort(model)) {
+  if (
+    isUltrathinkEnabled() &&
+    modelSupportsEffortForOptionalContext(model, context)
+  ) {
     return 'medium'
   }
 
   // Fallback to undefined, which means we don't set an effort level. This
   // should resolve to high effort level in the API.
   return undefined
+}
+
+export function getDefaultEffortForModel(
+  model: string,
+): EffortValue | undefined {
+  return getDefaultEffortForModelForOptionalContext(model)
+}
+
+export function getDefaultEffortForModelForContext(
+  model: string,
+  context: ProviderAuthReadContext,
+): EffortValue | undefined {
+  return getDefaultEffortForModelForOptionalContext(model, context)
 }

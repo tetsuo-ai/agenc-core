@@ -415,7 +415,7 @@ describe("channel gateway", () => {
     expect(client.sessions).toHaveLength(1);
     expect(client.sessions[0].prompts[0]).toContain("now public");
     expect(client.sessions[0].prompts[0]).toContain("This channel is answer-only");
-    expect(client.sessions[0].prompts[0]).not.toContain("Ledger DMK over BLE");
+    expect(client.sessions[0].prompts[0]).toContain("Ledger DMK over BLE");
     expect(client.sessions[0].prompts[0]).toContain(
       "clear natural language",
     );

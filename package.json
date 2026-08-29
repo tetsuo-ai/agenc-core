@@ -24,7 +24,7 @@
     "test:agent-surface-contract": "node --test scripts/check-agent-surface-contract.test.mjs",
     "check:hosted-runner-contract": "node scripts/check-hosted-runner-contract.mjs",
     "check:required-gates": "node scripts/run-required-gates.mjs",
-    "test:required-gates": "node --test scripts/check-hosted-runner-contract.test.mjs scripts/run-required-gates.test.mjs scripts/local-gate-github-app.test.mjs scripts/local-gate-context-seed.test.mjs scripts/local-gatekeeper.test.mjs scripts/local-gate-ruleset.test.mjs runtime/scripts/check-tui-runtime-startup.test.mjs",
+    "test:required-gates": "node --test scripts/check-hosted-runner-contract.test.mjs scripts/run-required-gates.test.mjs scripts/local-gate-github-app.test.mjs scripts/local-gate-context-seed.test.mjs scripts/local-gatekeeper.test.mjs scripts/local-gate-ruleset.test.mjs runtime/scripts/check-daemon-errors.test.mjs runtime/scripts/check-tui-runtime-startup.test.mjs",
     "check:clean-build": "node scripts/check-clean-build.mjs",
     "release:preflight": "node scripts/check-release-version-available.mjs",
     "release:verify": "node scripts/release-state.mjs verify",

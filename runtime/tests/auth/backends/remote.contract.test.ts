@@ -1,7 +1,10 @@
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getSecureStorage } from "../../utils/secureStorage/index.js";
+import { readNativeSecureStorage } from "../../utils/secureStorage/native.js";
+import { resolveSecureStorageHome } from "../../utils/secureStorage/home.js";
 import { RemoteAuthBackend } from "./remote.js";
 
 const REMOTE_AUTH_LOGIN_POLL_URL_ENV = "AGENC_REMOTE_AUTH_LOGIN_POLL_URL";
@@ -18,6 +21,10 @@ function invalidJsonResponse(): Response {
   return new Response("not-json", { status: 200 });
 }
 
+function readNativeFor(home: string) {
+  return readNativeSecureStorage(resolveSecureStorageHome({}, home));
+}
+
 function deferred<T>(): {
   readonly promise: Promise<T>;
   readonly resolve: (value: T) => void;
@@ -30,6 +37,14 @@ function deferred<T>(): {
 }
 
 describe("RemoteAuthBackend", () => {
+  beforeEach(() => {
+    getSecureStorage(resolveSecureStorageHome(process.env)).delete();
+  });
+
+  afterEach(() => {
+    getSecureStorage(resolveSecureStorageHome(process.env)).delete();
+  });
+
   it("persists a long-lived token returned by the configured login flow", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
     const accountSnapshotResolver = vi.fn(() => ({
@@ -80,8 +95,12 @@ describe("RemoteAuthBackend", () => {
           accountId: "acct-1",
         },
       });
-      await expect(readFile(join(agencHome, "auth.json"), "utf8")).resolves
-        .toContain("\"provider\": \"remote\"");
+      const authJson = await readFile(join(agencHome, "auth.json"), "utf8");
+      expect(authJson).toContain("\"provider\": \"remote\"");
+      expect(authJson).not.toContain("remote-token");
+      expect(readNativeFor(agencHome).remoteAuth).toMatchObject({
+        bearerToken: "remote-token",
+      });
       expect(loginFlow).toHaveBeenCalledWith({ sessionId: "cli" });
       expect(accountSnapshotResolver).toHaveBeenCalledWith({}, "remote-token");
     } finally {
@@ -89,7 +108,25 @@ describe("RemoteAuthBackend", () => {
     }
   });
 
-  it("uses a persisted remote login token for later HTTP auth calls", async () => {
+  it("rolls back the native bearer when metadata persistence fails", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    await mkdir(join(agencHome, "auth.json"));
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      loginFlow: () => ({ token: "rollback-token" }),
+    });
+
+    try {
+      await expect(backend.login()).rejects.toMatchObject({
+        code: expect.stringMatching(/EISDIR|ENOTDIR|ENOTEMPTY/u),
+      });
+      expect(readNativeFor(agencHome).remoteAuth).toBeUndefined();
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("lets an explicit env token beat a persisted remote login token", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ subscriptionTier: "team" }), {
@@ -120,10 +157,48 @@ describe("RemoteAuthBackend", () => {
           method: "POST",
           headers: {
             "content-type": "application/json",
-            authorization: "Bearer remote-token",
+            authorization: "Bearer bootstrap-token",
           },
           body: JSON.stringify({ sessionId: "session-1" }),
         },
+      );
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("lets an explicit constructor token beat env and persisted tokens", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ subscriptionTier: "team" }), {
+        status: 200,
+      }),
+    );
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      env: {
+        [REMOTE_AUTH_TOKEN_ENV]: "env-token",
+        [REMOTE_AUTH_TIER_URL_ENV]:
+          "https://api.agenc.tech/test/subscription-tier",
+      },
+      fetchImpl,
+      loginFlow: () => ({ token: "persisted-token" }),
+      token: "constructor-token",
+    });
+
+    try {
+      await backend.login();
+      await expect(backend.getSubscriptionTier()).resolves.toBe("team");
+      expect(fetchImpl).toHaveBeenCalledWith(
+        "https://api.agenc.tech/test/subscription-tier",
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            authorization: "Bearer constructor-token",
+          }),
+        }),
+      );
+      expect(readNativeFor(agencHome).remoteAuth?.bearerToken).toBe(
+        "persisted-token",
       );
     } finally {
       await rm(agencHome, { recursive: true, force: true });
@@ -178,8 +253,11 @@ describe("RemoteAuthBackend", () => {
           displayName: "Canonical User",
         },
         subscriptionTier: "team",
-        token: "remote-token",
       });
+      expect(persisted).not.toHaveProperty("token");
+      expect(readNativeFor(agencHome).remoteAuth?.bearerToken).toBe(
+        "remote-token",
+      );
       expect(accountSnapshotResolver).toHaveBeenCalledWith({}, "remote-token");
     } finally {
       await rm(agencHome, { recursive: true, force: true });
@@ -323,7 +401,7 @@ describe("RemoteAuthBackend", () => {
       );
       await expect(
         readFile(join(agencHome, "auth.json"), "utf8"),
-      ).resolves.toContain('"token": "remote-token"');
+      ).resolves.not.toContain("remote-token");
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }
@@ -381,9 +459,10 @@ describe("RemoteAuthBackend", () => {
         await readFile(join(agencHome, "auth.json"), "utf8"),
       ) as Record<string, unknown>;
       expect(persisted).toMatchObject({
-        token: "token-b",
         identity: { accountId: "acct-b" },
       });
+      expect(persisted).not.toHaveProperty("token");
+      expect(readNativeFor(agencHome).remoteAuth?.bearerToken).toBe("token-b");
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }
@@ -472,7 +551,8 @@ describe("RemoteAuthBackend", () => {
       });
       await expect(
         readFile(join(agencHome, "auth.json"), "utf8"),
-      ).resolves.toContain('"token": "token-b"');
+      ).resolves.not.toContain("token-b");
+      expect(readNativeFor(agencHome).remoteAuth?.bearerToken).toBe("token-b");
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }
@@ -497,7 +577,10 @@ describe("RemoteAuthBackend", () => {
       );
       await expect(
         readFile(join(agencHome, "auth.json"), "utf8").then(JSON.parse),
-      ).resolves.toMatchObject({ token: "remote-token" });
+      ).resolves.toMatchObject({ provider: "remote" });
+      expect(readNativeFor(agencHome).remoteAuth?.bearerToken).toBe(
+        "remote-token",
+      );
       const stateArtifacts = (await readdir(agencHome)).filter((name) =>
         name.endsWith(".lock") || name.endsWith(".tmp")
       );
@@ -507,7 +590,7 @@ describe("RemoteAuthBackend", () => {
     }
   });
 
-  it("uses a persisted remote login token for later HTTP LLM usage calls", async () => {
+  it("lets an explicit env token beat persisted auth for LLM usage calls", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({
@@ -556,7 +639,7 @@ describe("RemoteAuthBackend", () => {
           method: "POST",
           headers: {
             "content-type": "application/json",
-            authorization: "Bearer remote-token",
+            authorization: "Bearer bootstrap-token",
           },
           body: JSON.stringify({ sessionId: "session-1" }),
         },
@@ -897,6 +980,7 @@ describe("RemoteAuthBackend", () => {
       agencHome,
       managedKeysEnabled: true,
       keyVendor: ({ provider, sessionId }) => ({
+        kind: "api-key",
         provider,
         sessionId,
         apiKey: `managed-${++vendCount}`,
@@ -961,6 +1045,7 @@ describe("RemoteAuthBackend", () => {
   it("requests and caches managed keys per session and provider in memory", async () => {
     let vendCount = 0;
     const keyVendor = vi.fn(({ provider, sessionId }) => ({
+      kind: "api-key" as const,
       provider,
       sessionId,
       apiKey: ` managed-${++vendCount} `,
@@ -978,13 +1063,20 @@ describe("RemoteAuthBackend", () => {
     const secondProvider = await backend.vendKey("openai", "session-1");
 
     expect(first).toEqual({
+      kind: "api-key",
       provider: "grok",
       sessionId: "session-1",
       apiKey: "managed-1",
     });
     expect(duplicate).toBe(first);
-    expect(secondSession.apiKey).toBe("managed-2");
-    expect(secondProvider.apiKey).toBe("managed-3");
+    expect(secondSession).toMatchObject({
+      kind: "api-key",
+      apiKey: "managed-2",
+    });
+    expect(secondProvider).toMatchObject({
+      kind: "api-key",
+      apiKey: "managed-3",
+    });
     expect(keyVendor).toHaveBeenCalledTimes(3);
     expect(keyVendor.mock.calls.map(([request]) => request)).toEqual([
       { provider: "grok", sessionId: "session-1" },
@@ -995,6 +1087,7 @@ describe("RemoteAuthBackend", () => {
 
   it("does not request managed keys unless config selection enables them", async () => {
     const keyVendor = vi.fn(({ provider, sessionId }) => ({
+      kind: "api-key" as const,
       provider,
       sessionId,
       apiKey: "managed-key",
@@ -1013,6 +1106,7 @@ describe("RemoteAuthBackend", () => {
     let nowMs = 1_000;
     let vendCount = 0;
     const keyVendor = vi.fn(({ provider, sessionId }) => ({
+      kind: "api-key" as const,
       provider,
       sessionId,
       apiKey: `managed-${++vendCount}`,
@@ -1041,6 +1135,7 @@ describe("RemoteAuthBackend", () => {
   it("sweeps expired one-shot sessions when vending a different session", async () => {
     let nowMs = 1_000;
     const keyVendor = vi.fn(({ provider, sessionId }) => ({
+      kind: "api-key" as const,
       provider,
       sessionId,
       apiKey: `managed-${sessionId}`,
@@ -1072,7 +1167,12 @@ describe("RemoteAuthBackend", () => {
         if (attempts === 1) {
           throw new Error("remote key service unavailable");
         }
-        return { provider, sessionId, apiKey: "managed-key" };
+        return {
+          kind: "api-key",
+          provider,
+          sessionId,
+          apiKey: "managed-key",
+        };
       },
     });
 
@@ -1089,6 +1189,7 @@ describe("RemoteAuthBackend", () => {
     const backend = new RemoteAuthBackend({
       managedKeysEnabled: true,
       keyVendor: () => ({
+        kind: "api-key",
         provider: "openai",
         sessionId: "session-2",
         apiKey: "managed-key",
@@ -1097,6 +1198,35 @@ describe("RemoteAuthBackend", () => {
 
     await expect(backend.vendKey("grok", "session-1")).rejects.toThrow(
       /provider mismatch/,
+    );
+  });
+
+  it("rejects injected credential kinds that do not match the provider", async () => {
+    const bedrockBackend = new RemoteAuthBackend({
+      managedKeysEnabled: true,
+      keyVendor: ({ provider, sessionId }) => ({
+        kind: "api-key",
+        provider,
+        sessionId,
+        apiKey: "must-not-be-a-bedrock-facade",
+      }),
+    });
+    const apiBackend = new RemoteAuthBackend({
+      managedKeysEnabled: true,
+      keyVendor: ({ provider, sessionId }) => ({
+        kind: "aws-sigv4",
+        provider,
+        sessionId,
+        accessKeyId: "managed-aws-access",
+        secretAccessKey: "managed-aws-secret",
+      }),
+    });
+
+    await expect(
+      bedrockBackend.vendKey("amazon-bedrock", "session-1"),
+    ).rejects.toThrow("expected aws-sigv4");
+    await expect(apiBackend.vendKey("grok", "session-1")).rejects.toThrow(
+      "expected api-key",
     );
   });
 
@@ -1123,6 +1253,7 @@ describe("RemoteAuthBackend", () => {
     });
 
     await expect(backend.vendKey("grok", "session-1")).resolves.toEqual({
+      kind: "api-key",
       provider: "grok",
       sessionId: "session-1",
       apiKey: "managed-http-key",
@@ -1163,6 +1294,7 @@ describe("RemoteAuthBackend", () => {
     });
 
     await expect(backend.vendKey("grok", "session-1")).resolves.toEqual({
+      kind: "api-key",
       provider: "grok",
       sessionId: "session-1",
       apiKey: "hosted-litellm-key",
@@ -1185,13 +1317,13 @@ describe("RemoteAuthBackend", () => {
     );
   });
 
-  it("preserves Bedrock credential fields from HTTP key vending responses", async () => {
+  it("preserves structured Bedrock credentials from HTTP key vending responses", async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(
         JSON.stringify({
           provider: "amazon-bedrock",
           sessionId: "session-1",
-          apiKey: " managed-aws-access ",
+          accessKeyId: " managed-aws-access ",
           secretAccessKey: " managed-aws-secret ",
           sessionToken: " managed-aws-session ",
           region: " us-west-2 ",
@@ -1212,13 +1344,54 @@ describe("RemoteAuthBackend", () => {
     await expect(
       backend.vendKey("amazon-bedrock", "session-1"),
     ).resolves.toEqual({
+      kind: "aws-sigv4",
       provider: "amazon-bedrock",
       sessionId: "session-1",
-      apiKey: "managed-aws-access",
+      accessKeyId: "managed-aws-access",
       secretAccessKey: "managed-aws-secret",
       sessionToken: "managed-aws-session",
       region: "us-west-2",
     });
+  });
+
+  it("does not reinterpret API-key response fields as a Bedrock access key ID", async () => {
+    const backend = new RemoteAuthBackend({
+      agencHome: "/tmp/agenc-remote-auth-test",
+      managedKeysEnabled: true,
+      env: { [REMOTE_AUTH_TOKEN_ENV]: "remote-token" },
+      fetchImpl: vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            apiKey: "must-not-be-used-as-aws-access",
+            litellmKey: "must-not-be-used-as-aws-access-either",
+            secretAccessKey: "managed-aws-secret",
+          }),
+          { status: 200 },
+        ),
+      ),
+    });
+
+    await expect(
+      backend.vendKey("amazon-bedrock", "session-1"),
+    ).rejects.toThrow("missing accessKeyId");
+  });
+
+  it("requires a secret access key in Bedrock HTTP responses", async () => {
+    const backend = new RemoteAuthBackend({
+      agencHome: "/tmp/agenc-remote-auth-test",
+      managedKeysEnabled: true,
+      env: { [REMOTE_AUTH_TOKEN_ENV]: "remote-token" },
+      fetchImpl: vi.fn(async () =>
+        new Response(
+          JSON.stringify({ accessKeyId: "managed-aws-access" }),
+          { status: 200 },
+        ),
+      ),
+    });
+
+    await expect(
+      backend.vendKey("amazon-bedrock", "session-1"),
+    ).rejects.toThrow("missing secretAccessKey");
   });
 
   it("rejects remote key responses for a different session or provider", async () => {
@@ -1502,9 +1675,10 @@ describe("RemoteAuthBackend", () => {
         await readFile(join(agencHome, "auth.json"), "utf8"),
       ) as Record<string, unknown>;
       expect(persisted).toMatchObject({
-        token: "token-b",
         subscriptionTier: "free",
       });
+      expect(persisted).not.toHaveProperty("token");
+      expect(readNativeFor(agencHome).remoteAuth?.bearerToken).toBe("token-b");
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }
@@ -1639,6 +1813,7 @@ describe("RemoteAuthBackend", () => {
         provider: "remote",
       });
       await expect(backend.logout()).resolves.toEqual({ authenticated: false });
+      expect(readNativeFor(agencHome).remoteAuth).toBeUndefined();
       await expect(backend.whoami()).resolves.toEqual({
         authenticated: false,
         provider: "remote",

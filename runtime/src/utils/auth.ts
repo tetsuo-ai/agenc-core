@@ -1,20 +1,13 @@
-import chalk from 'chalk'
-import { exec } from 'child_process'
-import { execa } from 'execa'
-import { mkdir, stat } from 'fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdir } from 'fs/promises'
+import { join } from 'node:path'
 import memoize from 'lodash-es/memoize.js'
-import { join } from 'path'
 import { AGENC_AI_PROFILE_SCOPE } from 'src/constants/oauth.js'
-import { getModelStrings } from './model/modelStrings.js'
-import { getAPIProvider } from 'src/utils/model/providers.js'
 import {
-  getIsNonInteractiveSession,
-  preferThirdPartyAuthentication,
-} from '../bootstrap/state.js'
-import {
-  getMockSubscriptionType,
-  shouldUseMockSubscription,
-} from '../services/mockRateLimits.js'
+  getAPIProvider,
+  getSelectedProviderName,
+} from 'src/utils/model/providers.js'
+import { preferThirdPartyAuthentication } from '../bootstrap/state.js'
 
 
 // Donor-purge stub: ../services/oauth/types.js was deleted along with the
@@ -26,52 +19,33 @@ import {
   getOAuthTokenFromFileDescriptor,
 } from './authFileDescriptor.js'
 import {
-  maybeRemoveApiKeyFromMacOSKeychainThrows,
-  normalizeApiKeyForConfig,
-} from './authPortable.js'
-import {
-  checkStsCallerIdentity,
-  clearAwsIniCache,
-  isValidAwsStsOutput,
-} from './aws.js'
-import { AwsAuthStatusManager } from './awsAuthStatusManager.js'
-import { clearBetasCaches } from './betas.js'
-import {
-  type AccountInfo,
-  checkHasTrustDialogAccepted,
-  getGlobalConfig,
-  saveGlobalConfig,
-} from './config.js'
-import { logAntError, logForDebugging } from 'src/utils/debug.js'
-import {
-  getAgenCConfigHomeDir,
-  isBareMode,
   isEnvTruthy,
   isRunningOnHomespace,
 } from './envUtils.js'
-import { execSyncWithDefaults_DEPRECATED } from './execFileNoThrow.js'
 import * as lockfile from './lockfile.js'
 import { logError } from './log.js'
-import { memoizeWithTTLAsync } from './memoize.js'
-import { getSecureStorage } from './secureStorage/index.js'
 import {
-  clearLegacyApiKeyPrefetch,
-  getLegacyApiKeyPrefetchResult,
-} from './secureStorage/keychainPrefetch.js'
+  type OAuthAccountMetadata,
+  type SecureStorageData,
+} from './secureStorage/index.js'
+import {
+  readNativeSecureStorage,
+  readNativeSecureStorageAsync,
+  updateNativeSecureStorage,
+} from './secureStorage/native.js'
+import type { HomeContext } from '../config/home.js'
+import {
+  secureStorageIdentityKey,
+  resolveSecureStorageHome,
+} from './secureStorage/home.js'
+import { getSelectedProviderEnvironment } from './model/providers.js'
 import {
   clearKeychainCache,
-  getMacOsKeychainStorageServiceName,
-  getUsername,
 } from './secureStorage/macOsKeychainHelpers.js'
-import {
-  getExecutionAuthoritySettings,
-  getSettingsForSource,
-} from './settings/settings.js'
+import { getSettingsForSource } from './settings/settings.js'
 import { sleep } from './sleep.js'
-import { jsonParse } from './slowOperations.js'
-import { clearToolSchemaCache } from './toolSchemaCache.js'
-
-/** Default TTL for API key helper cache in milliseconds (5 minutes) */
+import { isSessionRemoteMode } from '../session/runtime-options.js'
+import type { ProviderEnvironment } from '../llm/provider-options.js'
 
 // ---- donor-purge stubs ----
 // These symbols used to come from modules deleted in the api.anthropic.com
@@ -85,57 +59,73 @@ const isOAuthTokenExpired = (..._args: unknown[]): boolean => true;
 const refreshOAuthToken = async (..._args: unknown[]): Promise<null> => null;
 const shouldUseAgenCAIAuth = (..._args: unknown[]): boolean => false;
 // ---- end donor-purge stubs ----
-const DEFAULT_API_KEY_HELPER_TTL = 5 * 60 * 1000
+function normalizeApiKeyForConfig(apiKey: string): string {
+  return `sha256:${createHash('sha256').update(apiKey).digest('hex')}`
+}
+
+function currentNativeHome() {
+  return resolveSecureStorageHome()
+}
 
 /**
  * CCR and AgenC Desktop spawn the CLI with OAuth and should never fall back
- * to the user's ~/.agenc/settings.json API-key config (apiKeyHelper,
- * env.ANTHROPIC_API_KEY, env.ANTHROPIC_AUTH_TOKEN). Those settings exist for
- * the user's terminal CLI, not managed sessions. Without this guard, a user
+ * to ambient plaintext API-key environment values. Without this guard, a user
  * who runs `agenc` in their terminal with an API key sees every CCD session
  * also use that key — and fail if it's stale/wrong-org.
  */
-function isManagedOAuthContext(): boolean {
+function isManagedOAuthContext(environment: ProviderEnvironment): boolean {
   return (
-    isEnvTruthy(process.env.AGENC_REMOTE) ||
-    process.env.AGENC_ENTRYPOINT === 'agenc-desktop'
+    isSessionRemoteMode() ||
+    environment.AGENC_ENTRYPOINT === 'agenc-desktop'
   )
+}
+
+export function selectedProviderUsesExternalAuth(provider: string): boolean {
+  return provider !== 'anthropic' && provider !== 'agenc'
+}
+
+export interface ProviderAuthReadContext {
+  readonly home: HomeContext
+  readonly environment: ProviderEnvironment
+  readonly provider: string
 }
 
 /** Whether we are supporting direct 1P auth. */
 // this code is closely related to getAuthTokenSource
 export function isAnthropicAuthEnabled(): boolean {
-  // --bare: API-key-only, never OAuth.
-  if (isBareMode()) return false
+  return isAnthropicAuthEnabledForContext({
+    home: currentNativeHome(),
+    environment: getSelectedProviderEnvironment(),
+    provider: getSelectedProviderName(),
+  })
+}
+
+export function isAnthropicAuthEnabledForContext(
+  context: ProviderAuthReadContext,
+): boolean {
+  const { environment } = context
+  // External providers never use Anthropic authentication, including through
+  // the `agenc ssh` auth proxy below, so decide on provider identity before
+  // inspecting any environment value or credential storage.
+  if (selectedProviderUsesExternalAuth(context.provider)) return false
 
   // `agenc ssh` remote: ANTHROPIC_UNIX_SOCKET tunnels API calls through a
   // local auth-injecting proxy. The launcher sets AGENC_OAUTH_TOKEN as a
   // placeholder iff the local side is a subscriber (so the remote includes the
   // oauth-2025 beta header to match what the proxy will inject). The remote's
-  // ~/.agenc settings (apiKeyHelper, settings.env.ANTHROPIC_API_KEY) MUST NOT
-  // flip this — they'd cause a header mismatch with the proxy and a bogus
-  // "invalid x-api-key" from the API. See src/ssh/sshAuthProxy.ts.
-  if (process.env.ANTHROPIC_UNIX_SOCKET) {
-    return !!process.env.AGENC_OAUTH_TOKEN
+  // Ambient API-key environment values MUST NOT flip this — they would cause
+  // a header mismatch with the proxy and a bogus
+  // "invalid x-api-key" from the API. See utils/proxy.ts and
+  // utils/managedEnv.ts.
+  if (environment.ANTHROPIC_UNIX_SOCKET) {
+    return !!environment.AGENC_OAUTH_TOKEN
   }
-
-  const is3P =
-    isEnvTruthy(process.env.AGENC_USE_BEDROCK) ||
-    isEnvTruthy(process.env.AGENC_USE_VERTEX) ||
-    isEnvTruthy(process.env.AGENC_USE_FOUNDRY) ||
-    isEnvTruthy(process.env.AGENC_USE_OPENAI) ||
-    isEnvTruthy(process.env.AGENC_USE_GEMINI) ||
-    isEnvTruthy(process.env.AGENC_USE_MISTRAL) ||
-    isEnvTruthy(process.env.AGENC_USE_GITHUB)
 
   // Check if user has configured an external API key source
   // This allows externally-provided API keys to work (without requiring proxy configuration)
-  const settings = getExecutionAuthoritySettings()
-  const apiKeyHelper = settings.apiKeyHelper
   const hasExternalAuthToken =
-    process.env.ANTHROPIC_AUTH_TOKEN ||
-    apiKeyHelper ||
-    process.env.AGENC_API_KEY_FILE_DESCRIPTOR
+    environment.ANTHROPIC_AUTH_TOKEN ||
+    environment.AGENC_API_KEY_FILE_DESCRIPTOR
 
   // Check if API key is from an external source (not managed by /login).
   // Predicate must not throw: getAnthropicApiKeyWithSource throws under
@@ -143,80 +133,73 @@ export function isAnthropicAuthEnabled(): boolean {
   // know the source — "no key" is a valid answer.
   let apiKeySource: ApiKeySource
   try {
-    ;({ source: apiKeySource } = getAnthropicApiKeyWithSource({
-      skipRetrievingKeyFromApiKeyHelper: true,
-    }))
+    ;({ source: apiKeySource } =
+      getAnthropicApiKeyWithSourceForContext(context))
   } catch {
     apiKeySource = 'none'
   }
   const hasExternalApiKey =
-    apiKeySource === 'ANTHROPIC_API_KEY' || apiKeySource === 'apiKeyHelper'
+    apiKeySource === 'ANTHROPIC_API_KEY'
 
   // Disable provider auth if:
-  // 1. Using 3rd party services (Bedrock/Vertex/Foundry)
-  // 2. User has an external API key (regardless of proxy configuration)
-  // 3. User has an external auth token (regardless of proxy configuration)
+  // 1. User has an external API key (regardless of proxy configuration)
+  // 2. User has an external auth token (regardless of proxy configuration)
   // this may cause issues if users have complex proxy / gateway "client-side creds" auth scenarios,
   // e.g. if they want to set X-Api-Key to a gateway key but use provider OAuth for the Authorization
   // if we get reports of that, we should probably add an env var to force OAuth enablement
   const shouldDisableAuth =
-    is3P ||
-    (hasExternalAuthToken && !isManagedOAuthContext()) ||
-    (hasExternalApiKey && !isManagedOAuthContext())
+    (hasExternalAuthToken && !isManagedOAuthContext(environment)) ||
+    (hasExternalApiKey && !isManagedOAuthContext(environment))
 
   return !shouldDisableAuth
 }
 
 /** Where the auth token is being sourced from, if any. */
 // this code is closely related to isAnthropicAuthEnabled
-export function getAuthTokenSource() {
-  // --bare: API-key-only. apiKeyHelper (from --settings) is the only
-  // bearer-token-shaped source allowed. OAuth env vars, FD tokens, and
-  // keychain are ignored.
-  if (isBareMode()) {
-    if (getConfiguredApiKeyHelper()) {
-      return { source: 'apiKeyHelper' as const, hasToken: true }
-    }
+export function getAuthTokenSource(home: HomeContext) {
+  return getAuthTokenSourceForContext({
+    home,
+    environment: getSelectedProviderEnvironment(),
+    provider: getSelectedProviderName(),
+  })
+}
+
+/** Resolve token provenance from one immutable provider/session authority. */
+export function getAuthTokenSourceForContext(
+  context: ProviderAuthReadContext,
+) {
+  const { environment, home } = context
+  if (selectedProviderUsesExternalAuth(context.provider)) {
     return { source: 'none' as const, hasToken: false }
   }
-
-  if (process.env.ANTHROPIC_AUTH_TOKEN && !isManagedOAuthContext()) {
+  if (
+    environment.ANTHROPIC_AUTH_TOKEN &&
+    !isManagedOAuthContext(environment)
+  ) {
     return { source: 'ANTHROPIC_AUTH_TOKEN' as const, hasToken: true }
   }
 
-  if (process.env.AGENC_OAUTH_TOKEN) {
+  if (environment.AGENC_OAUTH_TOKEN) {
     return { source: 'AGENC_OAUTH_TOKEN' as const, hasToken: true }
   }
 
-  // Check for OAuth token from file descriptor (or its CCR disk fallback)
-  const oauthTokenFromFd = getOAuthTokenFromFileDescriptor()
+  // Check for OAuth token from a transient descriptor or the native secure storage
+  // continuity record used by remote subprocesses.
+  const oauthTokenFromFd = getOAuthTokenFromFileDescriptor(home, environment)
   if (oauthTokenFromFd) {
-    // getOAuthTokenFromFileDescriptor has a disk fallback for CCR subprocesses
-    // that can't inherit the pipe FD. Distinguish by env var presence so the
-    // org-mismatch message doesn't tell the user to unset a variable that
-    // doesn't exist. Call sites fall through correctly — the new source is
-    // !== 'none' (cli/handlers/auth.ts → oauth_token) and not in the
-    // isEnvVarToken set (auth.ts:1844 → generic re-login message).
-    if (process.env.AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR) {
+    if (environment.AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR) {
       return {
         source: 'AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR' as const,
         hasToken: true,
       }
     }
     return {
-      source: 'CCR_OAUTH_TOKEN_FILE' as const,
+      source: 'native-secure-storage' as const,
       hasToken: true,
     }
   }
 
-  // Check if apiKeyHelper is configured without executing it
-  // This prevents security issues where arbitrary code could execute before trust is established
-  const apiKeyHelper = getConfiguredApiKeyHelper()
-  if (apiKeyHelper && !isManagedOAuthContext()) {
-    return { source: 'apiKeyHelper' as const, hasToken: true }
-  }
-
-  const oauthTokens = getAgenCAIOAuthTokens()
+  const oauthTokens = getAgenCAIOAuthTokens(home, environment)
   if (shouldUseAgenCAIAuth(oauthTokens?.scopes) && oauthTokens?.accessToken) {
     return { source: 'agenc-cloud' as const, hasToken: true }
   }
@@ -226,7 +209,6 @@ export function getAuthTokenSource() {
 
 export type ApiKeySource =
   | 'ANTHROPIC_API_KEY'
-  | 'apiKeyHelper'
   | '/login managed key'
   | 'none'
 
@@ -240,44 +222,39 @@ export function hasAnthropicApiKeyAuth(): boolean {
   // CI/NODE_ENV=test when no key is configured — but "do we have auth?" is
   // exactly the question that has to answer cleanly in that state.
   try {
-    const { key, source } = getAnthropicApiKeyWithSource({
-      skipRetrievingKeyFromApiKeyHelper: true,
-    })
+    const { key, source } = getAnthropicApiKeyWithSource()
     return key !== null && source !== 'none'
   } catch {
     return false
   }
 }
 
-export function getAnthropicApiKeyWithSource(
-  opts: { skipRetrievingKeyFromApiKeyHelper?: boolean } = {},
+export function getAnthropicApiKeyWithSource(): {
+  key: null | string
+  source: ApiKeySource
+} {
+  return getAnthropicApiKeyWithSourceForContext({
+    home: currentNativeHome(),
+    environment: getSelectedProviderEnvironment(),
+    provider: getSelectedProviderName(),
+  })
+}
+
+export function getAnthropicApiKeyWithSourceForContext(
+  context: ProviderAuthReadContext,
 ): {
   key: null | string
   source: ApiKeySource
 } {
-  // --bare: hermetic auth. Only ANTHROPIC_API_KEY env or apiKeyHelper from
-  // the --settings flag. Never touches keychain, config file, or approval
-  // lists. 3P (Bedrock/Vertex/Foundry) uses provider creds, not this path.
-  if (isBareMode()) {
-    if (process.env.ANTHROPIC_API_KEY) {
-      return { key: process.env.ANTHROPIC_API_KEY, source: 'ANTHROPIC_API_KEY' }
-    }
-    if (getConfiguredApiKeyHelper()) {
-      return {
-        key: opts.skipRetrievingKeyFromApiKeyHelper
-          ? null
-          : getApiKeyFromApiKeyHelperCached(),
-        source: 'apiKeyHelper',
-      }
-    }
+  const { environment, home } = context
+  if (selectedProviderUsesExternalAuth(context.provider)) {
     return { key: null, source: 'none' }
   }
-
   // On homespace, don't use ANTHROPIC_API_KEY (use Console key instead)
   // https://anthropic.slack.com/archives/C08428WSLKV/p1747331773214779
-  const apiKeyEnv = isRunningOnHomespace()
+  const apiKeyEnv = isRunningOnHomespace(environment)
     ? undefined
-    : process.env.ANTHROPIC_API_KEY
+    : environment.ANTHROPIC_API_KEY
 
   // Always check for direct environment variable when the user ran agenc --print.
   // This is useful for CI, etc.
@@ -290,7 +267,10 @@ export function getAnthropicApiKeyWithSource(
 
   if (isEnvTruthy(process.env.CI) || process.env.NODE_ENV === 'test') {
     // Check for API key from file descriptor first
-    const apiKeyFromFd = getApiKeyFromFileDescriptor()
+    const apiKeyFromFd = getApiKeyFromFileDescriptor(
+      home,
+      environment,
+    )
     if (apiKeyFromFd) {
       return {
         key: apiKeyFromFd,
@@ -299,17 +279,16 @@ export function getAnthropicApiKeyWithSource(
     }
 
     if (
-      !isUsing3PServices() &&
       !apiKeyEnv &&
-      !process.env.AGENC_OAUTH_TOKEN &&
-      !process.env.AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR
+      !environment.AGENC_OAUTH_TOKEN &&
+      !environment.AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR
     ) {
       throw new Error(
         'ANTHROPIC_API_KEY or AGENC_OAUTH_TOKEN env var is required',
       )
     }
 
-    if (apiKeyEnv && !isUsing3PServices()) {
+    if (apiKeyEnv) {
       return {
         key: apiKeyEnv,
         source: 'ANTHROPIC_API_KEY',
@@ -323,10 +302,10 @@ export function getAnthropicApiKeyWithSource(
       source: 'none',
     }
   }
-  // Check for ANTHROPIC_API_KEY before checking the apiKeyHelper or /login-managed key
+  // Check for ANTHROPIC_API_KEY before the securely stored managed key.
   if (
     apiKeyEnv &&
-    getGlobalConfig().customApiKeyResponses?.approved?.includes(
+    readNativeSecureStorage(home).apiKeyApprovals?.approved?.includes(
       normalizeApiKeyForConfig(apiKeyEnv),
     )
   ) {
@@ -337,7 +316,10 @@ export function getAnthropicApiKeyWithSource(
   }
 
   // Check for API key from file descriptor
-  const apiKeyFromFd = getApiKeyFromFileDescriptor()
+  const apiKeyFromFd = getApiKeyFromFileDescriptor(
+    home,
+    environment,
+  )
   if (apiKeyFromFd) {
     return {
       key: apiKeyFromFd,
@@ -345,28 +327,9 @@ export function getAnthropicApiKeyWithSource(
     }
   }
 
-  // Check for apiKeyHelper — use sync cache, never block
-  const apiKeyHelperCommand = getConfiguredApiKeyHelper()
-  if (apiKeyHelperCommand) {
-    if (opts.skipRetrievingKeyFromApiKeyHelper) {
-      return {
-        key: null,
-        source: 'apiKeyHelper',
-      }
-    }
-    // Cache may be cold (helper hasn't finished yet). Return null with
-    // source='apiKeyHelper' rather than falling through to keychain —
-    // apiKeyHelper must win. Callers needing a real key must await
-    // getApiKeyFromApiKeyHelper() first (client.ts, useApiKeyVerification do).
-    return {
-      key: getApiKeyFromApiKeyHelperCached(),
-      source: 'apiKeyHelper',
-    }
-  }
-
-  const apiKeyFromConfigOrMacOSKeychain = getApiKeyFromConfigOrMacOSKeychain()
-  if (apiKeyFromConfigOrMacOSKeychain) {
-    return apiKeyFromConfigOrMacOSKeychain
+  const securelyStoredApiKey = getPrimaryApiKeyFromSecureStorage(home)
+  if (securelyStoredApiKey) {
+    return securelyStoredApiKey
   }
 
   return {
@@ -375,696 +338,13 @@ export function getAnthropicApiKeyWithSource(
   }
 }
 
-/**
- * Get the configured apiKeyHelper from settings.
- * In bare mode, only the --settings flag source is consulted — apiKeyHelper
- * from ~/.agenc/settings.json or project settings is ignored.
- */
-export function getConfiguredApiKeyHelper(): string | undefined {
-  if (isBareMode()) {
-    return getSettingsForSource('flagSettings')?.apiKeyHelper
-  }
-  return getExecutionAuthoritySettings().apiKeyHelper
-}
-
-/**
- * Check if the configured apiKeyHelper comes from project settings (projectSettings or localSettings)
- */
-function isApiKeyHelperFromProjectOrLocalSettings(): boolean {
-  return false
-}
-
-/**
- * Get the configured awsAuthRefresh from settings
- */
-function getConfiguredAwsAuthRefresh(): string | undefined {
-  return getExecutionAuthoritySettings().awsAuthRefresh
-}
-
-/**
- * Check if the configured awsAuthRefresh comes from project settings
- */
-export function isAwsAuthRefreshFromProjectSettings(): boolean {
-  return false
-}
-
-/**
- * Get the configured awsCredentialExport from settings
- */
-function getConfiguredAwsCredentialExport(): string | undefined {
-  return getExecutionAuthoritySettings().awsCredentialExport
-}
-
-/**
- * Check if the configured awsCredentialExport comes from project settings
- */
-export function isAwsCredentialExportFromProjectSettings(): boolean {
-  return false
-}
-
-/**
- * Calculate TTL in milliseconds for the API key helper cache
- * Uses AGENC_API_KEY_HELPER_TTL_MS env var if set and valid,
- * otherwise defaults to 5 minutes
- */
-export function calculateApiKeyHelperTTL(): number {
-  const envTtl = process.env.AGENC_API_KEY_HELPER_TTL_MS
-
-  if (envTtl) {
-    const parsed = parseInt(envTtl, 10)
-    if (!Number.isNaN(parsed) && parsed >= 0) {
-      return parsed
-    }
-    logForDebugging(
-      `Found AGENC_API_KEY_HELPER_TTL_MS env var, but it was not a valid number. Got ${envTtl}`,
-      { level: 'error' },
-    )
-  }
-
-  return DEFAULT_API_KEY_HELPER_TTL
-}
-
-// Async API key helper with sync cache for non-blocking reads.
-// Epoch bumps on clearApiKeyHelperCache() — orphaned executions check their
-// captured epoch before touching module state so a settings-change or 401-retry
-// mid-flight can't clobber the newer cache/inflight.
-let _apiKeyHelperCache: { value: string; timestamp: number } | null = null
-let _apiKeyHelperInflight: {
-  promise: Promise<string | null>
-  // Only set on cold launches (user is waiting); null for SWR background refreshes.
-  startedAt: number | null
-} | null = null
-let _apiKeyHelperEpoch = 0
-
-export function getApiKeyHelperElapsedMs(): number {
-  const startedAt = _apiKeyHelperInflight?.startedAt
-  return startedAt ? Date.now() - startedAt : 0
-}
-
-export async function getApiKeyFromApiKeyHelper(
-  isNonInteractiveSession: boolean,
-): Promise<string | null> {
-  if (!getConfiguredApiKeyHelper()) return null
-  const ttl = calculateApiKeyHelperTTL()
-  if (_apiKeyHelperCache) {
-    if (Date.now() - _apiKeyHelperCache.timestamp < ttl) {
-      return _apiKeyHelperCache.value
-    }
-    // Stale — return stale value now, refresh in the background.
-    // `??=` banned here by eslint no-nullish-assign-object-call (bun bug).
-    if (!_apiKeyHelperInflight) {
-      _apiKeyHelperInflight = {
-        promise: _runAndCache(
-          isNonInteractiveSession,
-          false,
-          _apiKeyHelperEpoch,
-        ),
-        startedAt: null,
-      }
-    }
-    return _apiKeyHelperCache.value
-  }
-  // Cold cache — deduplicate concurrent calls
-  if (_apiKeyHelperInflight) return _apiKeyHelperInflight.promise
-  _apiKeyHelperInflight = {
-    promise: _runAndCache(isNonInteractiveSession, true, _apiKeyHelperEpoch),
-    startedAt: Date.now(),
-  }
-  return _apiKeyHelperInflight.promise
-}
-
-async function _runAndCache(
-  isNonInteractiveSession: boolean,
-  isCold: boolean,
-  epoch: number,
-): Promise<string | null> {
-  try {
-    const value = await _executeApiKeyHelper(isNonInteractiveSession)
-    if (epoch !== _apiKeyHelperEpoch) return value
-    if (value !== null) {
-      _apiKeyHelperCache = { value, timestamp: Date.now() }
-    }
-    return value
-  } catch (e) {
-    if (epoch !== _apiKeyHelperEpoch) return ' '
-    const detail = e instanceof Error ? e.message : String(e)
-    // biome-ignore lint/suspicious/noConsole: user-configured script failed; must be visible without --debug
-    console.error(chalk.red(`apiKeyHelper failed: ${detail}`))
-    logForDebugging(`Error getting API key from apiKeyHelper: ${detail}`, {
-      level: 'error',
-    })
-    // SWR path: a transient failure shouldn't replace a working key with
-    // the ' ' sentinel — keep serving the stale value and bump timestamp
-    // so we don't hammer-retry every call.
-    if (!isCold && _apiKeyHelperCache && _apiKeyHelperCache.value !== ' ') {
-      _apiKeyHelperCache = { ..._apiKeyHelperCache, timestamp: Date.now() }
-      return _apiKeyHelperCache.value
-    }
-    // Cold cache or prior error — cache ' ' so callers don't fall back to OAuth
-    _apiKeyHelperCache = { value: ' ', timestamp: Date.now() }
-    return ' '
-  } finally {
-    if (epoch === _apiKeyHelperEpoch) {
-      _apiKeyHelperInflight = null
-    }
-  }
-}
-
-async function _executeApiKeyHelper(
-  isNonInteractiveSession: boolean,
-): Promise<string | null> {
-  const apiKeyHelper = getConfiguredApiKeyHelper()
-  if (!apiKeyHelper) {
-    return null
-  }
-
-  if (isApiKeyHelperFromProjectOrLocalSettings()) {
-    const hasTrust = checkHasTrustDialogAccepted()
-    if (!hasTrust && !isNonInteractiveSession) {
-      const error = new Error(
-        `Security: apiKeyHelper executed before workspace trust is confirmed. If you see this message, post in ${MACRO.FEEDBACK_CHANNEL}.`,
-      )
-      logAntError('apiKeyHelper invoked before trust check', error)
-      return null
-    }
-  }
-
-  const result = await execa(apiKeyHelper, {
-    shell: true,
-    timeout: 10 * 60 * 1000,
-    reject: false,
-  })
-  if (result.failed) {
-    // reject:false — execa resolves on exit≠0/timeout, stderr is on result
-    const why = result.timedOut ? 'timed out' : `exited ${result.exitCode}`
-    const stderr = result.stderr?.trim()
-    throw new Error(stderr ? `${why}: ${stderr}` : why)
-  }
-  const stdout = result.stdout?.trim()
-  if (!stdout) {
-    throw new Error('did not return a value')
-  }
-  return stdout
-}
-
-/**
- * Sync cache reader — returns the last fetched apiKeyHelper value without executing.
- * Returns stale values to match SWR semantics of the async reader.
- * Returns null only if the async fetch hasn't completed yet.
- */
-export function getApiKeyFromApiKeyHelperCached(): string | null {
-  return _apiKeyHelperCache?.value ?? null
-}
-
-export function clearApiKeyHelperCache(): void {
-  _apiKeyHelperEpoch++
-  _apiKeyHelperCache = null
-  _apiKeyHelperInflight = null
-}
-
-export function prefetchApiKeyFromApiKeyHelperIfSafe(
-  isNonInteractiveSession: boolean,
-): void {
-  // Skip if trust not yet accepted — the inner _executeApiKeyHelper check
-  // would catch this too, but would fire a false-positive auth event.
-  if (
-    isApiKeyHelperFromProjectOrLocalSettings() &&
-    !checkHasTrustDialogAccepted()
-  ) {
-    return
-  }
-  void getApiKeyFromApiKeyHelper(isNonInteractiveSession)
-}
-
-/** Default STS credentials are one hour. We manually manage invalidation, so not too worried about this being accurate. */
-const DEFAULT_AWS_STS_TTL = 60 * 60 * 1000
-
-/**
- * Run awsAuthRefresh to perform interactive authentication (e.g., aws sso login)
- * Streams output in real-time for user visibility
- */
-async function runAwsAuthRefresh(): Promise<boolean> {
-  const awsAuthRefresh = getConfiguredAwsAuthRefresh()
-
-  if (!awsAuthRefresh) {
-    return false // Not configured, treat as success
-  }
-
-  // SECURITY: Check if awsAuthRefresh is from project settings
-  if (isAwsAuthRefreshFromProjectSettings()) {
-    // Check if trust has been established for this project
-    const hasTrust = checkHasTrustDialogAccepted()
-    if (!hasTrust && !getIsNonInteractiveSession()) {
-      const error = new Error(
-        `Security: awsAuthRefresh executed before workspace trust is confirmed. If you see this message, post in ${MACRO.FEEDBACK_CHANNEL}.`,
-      )
-      logAntError('awsAuthRefresh invoked before trust check', error)
-      return false
-    }
-  }
-
-  try {
-    logForDebugging('Fetching AWS caller identity for AWS auth refresh command')
-    await checkStsCallerIdentity()
-    logForDebugging(
-      'Fetched AWS caller identity, skipping AWS auth refresh command',
-    )
-    return false
-  } catch {
-    // only actually do the refresh if caller-identity calls
-    return refreshAwsAuth(awsAuthRefresh)
-  }
-}
-
-// Timeout for AWS auth refresh command (3 minutes).
-// Long enough for browser-based SSO flows, short enough to prevent indefinite hangs.
-const AWS_AUTH_REFRESH_TIMEOUT_MS = 3 * 60 * 1000
-
-export function refreshAwsAuth(awsAuthRefresh: string): Promise<boolean> {
-  logForDebugging('Running AWS auth refresh command')
-  // Start tracking authentication status
-  const authStatusManager = AwsAuthStatusManager.getInstance()
-  authStatusManager.startAuthentication()
-
-  return new Promise(resolve => {
-    const refreshProc = exec(awsAuthRefresh, {
-      timeout: AWS_AUTH_REFRESH_TIMEOUT_MS,
-    })
-    refreshProc.stdout!.on('data', data => {
-      const output = data.toString().trim()
-      if (output) {
-        // Add output to status manager for UI display
-        authStatusManager.addOutput(output)
-        // Also log for debugging
-        logForDebugging(output, { level: 'debug' })
-      }
-    })
-
-    refreshProc.stderr!.on('data', data => {
-      const error = data.toString().trim()
-      if (error) {
-        authStatusManager.setError(error)
-        logForDebugging(error, { level: 'error' })
-      }
-    })
-
-    refreshProc.on('close', (code, signal) => {
-      if (code === 0) {
-        logForDebugging('AWS auth refresh completed successfully')
-        authStatusManager.endAuthentication(true)
-        void resolve(true)
-      } else {
-        const timedOut = signal === 'SIGTERM'
-        const message = timedOut
-          ? chalk.red(
-              'AWS auth refresh timed out after 3 minutes. Run your auth command manually in a separate terminal.',
-            )
-          : chalk.red(
-              'Error running awsAuthRefresh (in settings or ~/.agenc.json):',
-            )
-        // biome-ignore lint/suspicious/noConsole:: intentional console output
-        console.error(message)
-        authStatusManager.endAuthentication(false)
-        void resolve(false)
-      }
-    })
-  })
-}
-
-/**
- * Run awsCredentialExport to get credentials and set environment variables
- * Expects JSON output containing AWS credentials
- */
-async function getAwsCredsFromCredentialExport(): Promise<{
-  accessKeyId: string
-  secretAccessKey: string
-  sessionToken: string
-} | null> {
-  const awsCredentialExport = getConfiguredAwsCredentialExport()
-
-  if (!awsCredentialExport) {
-    return null
-  }
-
-  // SECURITY: Check if awsCredentialExport is from project settings
-  if (isAwsCredentialExportFromProjectSettings()) {
-    // Check if trust has been established for this project
-    const hasTrust = checkHasTrustDialogAccepted()
-    if (!hasTrust && !getIsNonInteractiveSession()) {
-      const error = new Error(
-        `Security: awsCredentialExport executed before workspace trust is confirmed. If you see this message, post in ${MACRO.FEEDBACK_CHANNEL}.`,
-      )
-      logAntError('awsCredentialExport invoked before trust check', error)
-      return null
-    }
-  }
-
-  try {
-    logForDebugging(
-      'Fetching AWS caller identity for credential export command',
-    )
-    await checkStsCallerIdentity()
-    logForDebugging(
-      'Fetched AWS caller identity, skipping AWS credential export command',
-    )
-    return null
-  } catch {
-    // only actually do the export if caller-identity calls
-    try {
-      logForDebugging('Running AWS credential export command')
-      const result = await execa(awsCredentialExport, {
-        shell: true,
-        reject: false,
-      })
-      if (result.exitCode !== 0 || !result.stdout) {
-        throw new Error('awsCredentialExport did not return a valid value')
-      }
-
-      // Parse the JSON output from aws sts commands
-      const awsOutput = jsonParse(result.stdout.trim())
-
-      if (!isValidAwsStsOutput(awsOutput)) {
-        throw new Error(
-          'awsCredentialExport did not return valid AWS STS output structure',
-        )
-      }
-
-      logForDebugging('AWS credentials retrieved from awsCredentialExport')
-      return {
-        accessKeyId: awsOutput.Credentials.AccessKeyId,
-        secretAccessKey: awsOutput.Credentials.SecretAccessKey,
-        sessionToken: awsOutput.Credentials.SessionToken,
-      }
-    } catch (e) {
-      const message = chalk.red(
-        'Error getting AWS credentials from awsCredentialExport (in settings or ~/.agenc.json):',
-      )
-      if (e instanceof Error) {
-        // biome-ignore lint/suspicious/noConsole:: intentional console output
-        console.error(message, e.message)
-      } else {
-        // biome-ignore lint/suspicious/noConsole:: intentional console output
-        console.error(message, e)
-      }
-      return null
-    }
-  }
-}
-
-/**
- * Refresh AWS authentication and get credentials with cache clearing
- * This combines runAwsAuthRefresh, getAwsCredsFromCredentialExport, and clearAwsIniCache
- * to ensure fresh credentials are always used
- */
-export const refreshAndGetAwsCredentials = memoizeWithTTLAsync(
-  async (): Promise<{
-    accessKeyId: string
-    secretAccessKey: string
-    sessionToken: string
-  } | null> => {
-    // First run auth refresh if needed
-    const refreshed = await runAwsAuthRefresh()
-
-    // Get credentials from export
-    const credentials = await getAwsCredsFromCredentialExport()
-
-    // Clear AWS INI cache to ensure fresh credentials are used
-    if (refreshed || credentials) {
-      await clearAwsIniCache()
-    }
-
-    return credentials
-  },
-  DEFAULT_AWS_STS_TTL,
-)
-
-export function clearAwsCredentialsCache(): void {
-  refreshAndGetAwsCredentials.cache.clear()
-}
-
-/**
- * Get the configured gcpAuthRefresh from settings
- */
-function getConfiguredGcpAuthRefresh(): string | undefined {
-  return getExecutionAuthoritySettings().gcpAuthRefresh
-}
-
-/**
- * Check if the configured gcpAuthRefresh comes from project settings
- */
-export function isGcpAuthRefreshFromProjectSettings(): boolean {
-  return false
-}
-
-/** Short timeout for the GCP credentials probe. Without this, when no local
- *  credential source exists (no ADC file, no env var), google-auth-library falls
- *  through to the GCE metadata server which hangs ~12s outside GCP. */
-const GCP_CREDENTIALS_CHECK_TIMEOUT_MS = 5_000
-
-/**
- * Check if GCP credentials are currently valid by attempting to get an access token.
- * This uses the same authentication chain that the Vertex SDK uses.
- */
-export async function checkGcpCredentialsValid(): Promise<boolean> {
-  try {
-    // Dynamically import to avoid loading google-auth-library unnecessarily
-    const { GoogleAuth } = await import('google-auth-library')
-    const auth = new GoogleAuth({
-      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
-    })
-    const probe = (async () => {
-      const client = await auth.getClient()
-      await client.getAccessToken()
-    })()
-    const timeout = sleep(GCP_CREDENTIALS_CHECK_TIMEOUT_MS).then(() => {
-      throw new GcpCredentialsTimeoutError('GCP credentials check timed out')
-    })
-    await Promise.race([probe, timeout])
-    return true
-  } catch {
-    return false
-  }
-}
-
-/** Default GCP credential TTL - 1 hour to match typical ADC token lifetime */
-const DEFAULT_GCP_CREDENTIAL_TTL = 60 * 60 * 1000
-
-/**
- * Run gcpAuthRefresh to perform interactive authentication (e.g., gcloud auth application-default login)
- * Streams output in real-time for user visibility
- */
-async function runGcpAuthRefresh(): Promise<boolean> {
-  const gcpAuthRefresh = getConfiguredGcpAuthRefresh()
-
-  if (!gcpAuthRefresh) {
-    return false // Not configured, treat as success
-  }
-
-  // SECURITY: Check if gcpAuthRefresh is from project settings
-  if (isGcpAuthRefreshFromProjectSettings()) {
-    // Check if trust has been established for this project
-    // Pass true to indicate this is a dangerous feature that requires trust
-    const hasTrust = checkHasTrustDialogAccepted()
-    if (!hasTrust && !getIsNonInteractiveSession()) {
-      const error = new Error(
-        `Security: gcpAuthRefresh executed before workspace trust is confirmed. If you see this message, post in ${MACRO.FEEDBACK_CHANNEL}.`,
-      )
-      logAntError('gcpAuthRefresh invoked before trust check', error)
-      return false
-    }
-  }
-
-  try {
-    logForDebugging('Checking GCP credentials validity for auth refresh')
-    const isValid = await checkGcpCredentialsValid()
-    if (isValid) {
-      logForDebugging(
-        'GCP credentials are valid, skipping auth refresh command',
-      )
-      return false
-    }
-  } catch {
-    // Credentials check failed, proceed with refresh
-  }
-
-  return refreshGcpAuth(gcpAuthRefresh)
-}
-
-// Timeout for GCP auth refresh command (3 minutes).
-// Long enough for browser-based auth flows, short enough to prevent indefinite hangs.
-const GCP_AUTH_REFRESH_TIMEOUT_MS = 3 * 60 * 1000
-
-export function refreshGcpAuth(gcpAuthRefresh: string): Promise<boolean> {
-  logForDebugging('Running GCP auth refresh command')
-  // Start tracking authentication status. AwsAuthStatusManager is cloud-provider-agnostic
-  // despite the name — print.ts emits its updates as generic SDK 'auth_status' messages.
-  const authStatusManager = AwsAuthStatusManager.getInstance()
-  authStatusManager.startAuthentication()
-
-  return new Promise(resolve => {
-    const refreshProc = exec(gcpAuthRefresh, {
-      timeout: GCP_AUTH_REFRESH_TIMEOUT_MS,
-    })
-    refreshProc.stdout!.on('data', data => {
-      const output = data.toString().trim()
-      if (output) {
-        // Add output to status manager for UI display
-        authStatusManager.addOutput(output)
-        // Also log for debugging
-        logForDebugging(output, { level: 'debug' })
-      }
-    })
-
-    refreshProc.stderr!.on('data', data => {
-      const error = data.toString().trim()
-      if (error) {
-        authStatusManager.setError(error)
-        logForDebugging(error, { level: 'error' })
-      }
-    })
-
-    refreshProc.on('close', (code, signal) => {
-      if (code === 0) {
-        logForDebugging('GCP auth refresh completed successfully')
-        authStatusManager.endAuthentication(true)
-        void resolve(true)
-      } else {
-        const timedOut = signal === 'SIGTERM'
-        const message = timedOut
-          ? chalk.red(
-              'GCP auth refresh timed out after 3 minutes. Run your auth command manually in a separate terminal.',
-            )
-          : chalk.red(
-              'Error running gcpAuthRefresh (in settings or ~/.agenc.json):',
-            )
-        // biome-ignore lint/suspicious/noConsole:: intentional console output
-        console.error(message)
-        authStatusManager.endAuthentication(false)
-        void resolve(false)
-      }
-    })
-  })
-}
-
-/**
- * Refresh GCP authentication if needed.
- * This function checks if credentials are valid and runs the refresh command if not.
- * Memoized with TTL to avoid excessive refresh attempts.
- */
-export const refreshGcpCredentialsIfNeeded = memoizeWithTTLAsync(
-  async (): Promise<boolean> => {
-    // Run auth refresh if needed
-    const refreshed = await runGcpAuthRefresh()
-    return refreshed
-  },
-  DEFAULT_GCP_CREDENTIAL_TTL,
-)
-
-export function clearGcpCredentialsCache(): void {
-  refreshGcpCredentialsIfNeeded.cache.clear()
-}
-
-/**
- * Prefetches GCP credentials only if workspace trust has already been established.
- * This allows us to start the potentially slow GCP commands early for trusted workspaces
- * while maintaining security for untrusted ones.
- *
- * Returns void to prevent misuse - use refreshGcpCredentialsIfNeeded() to actually refresh.
- */
-export function prefetchGcpCredentialsIfSafe(): void {
-  // Check if gcpAuthRefresh is configured
-  const gcpAuthRefresh = getConfiguredGcpAuthRefresh()
-
-  if (!gcpAuthRefresh) {
-    return
-  }
-
-  // Check if gcpAuthRefresh is from project settings
-  if (isGcpAuthRefreshFromProjectSettings()) {
-    // Only prefetch if trust has already been established
-    const hasTrust = checkHasTrustDialogAccepted()
-    if (!hasTrust && !getIsNonInteractiveSession()) {
-      // Don't prefetch - wait for trust to be established first
-      return
-    }
-  }
-
-  // Safe to prefetch - either not from project settings or trust already established
-  void refreshGcpCredentialsIfNeeded()
-}
-
-/**
- * Prefetches AWS credentials only if workspace trust has already been established.
- * This allows us to start the potentially slow AWS commands early for trusted workspaces
- * while maintaining security for untrusted ones.
- *
- * Returns void to prevent misuse - use refreshAndGetAwsCredentials() to actually retrieve credentials.
- */
-export function prefetchAwsCredentialsAndBedRockInfoIfSafe(): void {
-  // Check if either AWS command is configured
-  const awsAuthRefresh = getConfiguredAwsAuthRefresh()
-  const awsCredentialExport = getConfiguredAwsCredentialExport()
-
-  if (!awsAuthRefresh && !awsCredentialExport) {
-    return
-  }
-
-  // Check if either command is from project settings
-  if (
-    isAwsAuthRefreshFromProjectSettings() ||
-    isAwsCredentialExportFromProjectSettings()
-  ) {
-    // Only prefetch if trust has already been established
-    const hasTrust = checkHasTrustDialogAccepted()
-    if (!hasTrust && !getIsNonInteractiveSession()) {
-      // Don't prefetch - wait for trust to be established first
-      return
-    }
-  }
-
-  // Safe to prefetch - either not from project settings or trust already established
-  void refreshAndGetAwsCredentials()
-  getModelStrings()
-}
-
 /** @private Use {@link getAnthropicApiKey} or {@link getAnthropicApiKeyWithSource} */
-export const getApiKeyFromConfigOrMacOSKeychain = memoize(
-  (): { key: string; source: ApiKeySource } | null => {
-    if (isBareMode()) return null
-    // Follow-up: migrate to SecureStorage
-    if (process.platform === 'darwin') {
-      // keychainPrefetch.ts fires this read at main.tsx top-level in parallel
-      // with module imports. If it completed, use that instead of spawning a
-      // sync `security` subprocess here (~33ms).
-      const prefetch = getLegacyApiKeyPrefetchResult()
-      if (prefetch) {
-        if (prefetch.stdout) {
-          return { key: prefetch.stdout, source: '/login managed key' }
-        }
-        // Prefetch completed with no key — fall through to config, not keychain.
-      } else {
-        const storageServiceName = getMacOsKeychainStorageServiceName()
-        try {
-          const result = execSyncWithDefaults_DEPRECATED(
-            `security find-generic-password -a $USER -w -s "${storageServiceName}"`,
-          )
-          if (result) {
-            return { key: result, source: '/login managed key' }
-          }
-        } catch (e) {
-          logError(e)
-        }
-      }
-    }
-
-    const config = getGlobalConfig()
-    if (!config.primaryApiKey) {
-      return null
-    }
-
-    return { key: config.primaryApiKey, source: '/login managed key' }
-  },
-)
+export function getPrimaryApiKeyFromSecureStorage(
+  home: HomeContext,
+): { key: string; source: ApiKeySource } | null {
+  const key = readNativeSecureStorage(home).primaryApiKey?.trim()
+  return key ? { key, source: '/login managed key' } : null
+}
 
 function isValidApiKey(apiKey: string): boolean {
   // Only allow alphanumeric characters, dashes, and underscores
@@ -1078,91 +358,107 @@ export async function saveApiKey(apiKey: string): Promise<void> {
     )
   }
 
-  // Store as primary API key
-  await maybeRemoveApiKeyFromMacOSKeychain()
-  let savedToKeychain = false
-  if (process.platform === 'darwin') {
-    try {
-      // Follow-up: migrate to SecureStorage
-      const storageServiceName = getMacOsKeychainStorageServiceName()
-      const username = getUsername()
-
-      // Convert to hexadecimal to avoid any escaping issues
-      const hexValue = Buffer.from(apiKey, 'utf-8').toString('hex')
-
-      // Use security's interactive mode (-i) with -X (hexadecimal) option
-      // This ensures credentials never appear in process command-line arguments
-      // Process monitors only see "security -i", not the password
-      const command = `add-generic-password -U -a "${username}" -s "${storageServiceName}" -X "${hexValue}"\n`
-
-      await execa('security', ['-i'], {
-        input: command,
-        reject: false,
-      })
-
-      savedToKeychain = true
-    } catch (e) {
-      logError(e)
-    }
-  }
-
   const normalizedKey = normalizeApiKeyForConfig(apiKey)
-
-  // Save config with all updates
-  saveGlobalConfig(current => {
-    const approved = current.customApiKeyResponses?.approved ?? []
-    return {
-      ...current,
-      // Only save to config if keychain save failed or not on darwin
-      primaryApiKey: savedToKeychain ? current.primaryApiKey : apiKey,
-      customApiKeyResponses: {
-        ...current.customApiKeyResponses,
-        approved: approved.includes(normalizedKey)
-          ? approved
-          : [...approved, normalizedKey],
-        rejected: current.customApiKeyResponses?.rejected ?? [],
-      },
-    }
-  })
-
-  // Clear memo cache
-  getApiKeyFromConfigOrMacOSKeychain.cache.clear?.()
-  clearLegacyApiKeyPrefetch()
+  updateNativeSecureStorage(
+    currentNativeHome(),
+    current => {
+      const approved = current.apiKeyApprovals?.approved ?? []
+      return {
+        ...current,
+        primaryApiKey: apiKey,
+        apiKeyApprovals: {
+          approved: approved.includes(normalizedKey)
+            ? approved
+            : [...approved, normalizedKey],
+          rejected: current.apiKeyApprovals?.rejected ?? [],
+        },
+      }
+    },
+    'Native secure storage is unavailable; the API key was not saved.',
+  )
 }
 
 export function isCustomApiKeyApproved(apiKey: string): boolean {
-  const config = getGlobalConfig()
   const normalizedKey = normalizeApiKeyForConfig(apiKey)
   return (
-    config.customApiKeyResponses?.approved?.includes(normalizedKey) ?? false
+    readNativeSecureStorage(currentNativeHome()).apiKeyApprovals?.approved?.includes(normalizedKey) ??
+    false
   )
 }
 
 export async function removeApiKey(): Promise<void> {
-  await maybeRemoveApiKeyFromMacOSKeychain()
-
-  // Also remove from config instead of returning early, for older clients
-  // that set keys before we supported keychain.
-  saveGlobalConfig(current => ({
-    ...current,
-    primaryApiKey: undefined,
-  }))
-
-  // Clear memo cache
-  getApiKeyFromConfigOrMacOSKeychain.cache.clear?.()
-  clearLegacyApiKeyPrefetch()
+  updateNativeSecureStorage(
+    currentNativeHome(),
+    current => {
+      const next = { ...current }
+      delete next.primaryApiKey
+      return next
+    },
+    'Native secure storage is unavailable; the API key was not removed.',
+  )
 }
 
-async function maybeRemoveApiKeyFromMacOSKeychain(): Promise<void> {
-  try {
-    await maybeRemoveApiKeyFromMacOSKeychainThrows()
-  } catch (e) {
-    logError(e)
+type StoredAgenCAIOauth = NonNullable<SecureStorageData['agencAiOauth']>
+
+class AgenCAIOauthConflictError extends Error {
+  readonly name = 'AgenCAIOauthConflictError'
+}
+
+function comparableAgenCAIOauth(value: OAuthTokens | StoredAgenCAIOauth | null | undefined) {
+  if (!value?.accessToken) return undefined
+  return {
+    accessToken: value.accessToken,
+    refreshToken: value.refreshToken ?? undefined,
+    expiresAt: value.expiresAt ?? undefined,
+    scopes: value.scopes ?? undefined,
+    subscriptionType: value.subscriptionType ?? null,
+    rateLimitTier: value.rateLimitTier ?? null,
   }
 }
 
+function sameAgenCAIOauth(
+  left: OAuthTokens | StoredAgenCAIOauth | null | undefined,
+  right: OAuthTokens | StoredAgenCAIOauth | null | undefined,
+): boolean {
+  return JSON.stringify(comparableAgenCAIOauth(left)) ===
+    JSON.stringify(comparableAgenCAIOauth(right))
+}
+
+function writeAgenCAIOAuthTokens(
+  home: HomeContext,
+  tokens: OAuthTokens,
+  expected?: OAuthTokens,
+): void {
+  updateNativeSecureStorage(
+    home,
+    current => {
+      const existing = current.agencAiOauth
+      if (expected !== undefined && !sameAgenCAIOauth(existing, expected)) {
+        throw new AgenCAIOauthConflictError(
+          'AgenC AI OAuth credentials changed while refresh was in flight',
+        )
+      }
+      const next: StoredAgenCAIOauth = {
+        accessToken: tokens.accessToken,
+        ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
+        ...(tokens.expiresAt ? { expiresAt: tokens.expiresAt } : {}),
+        ...(tokens.scopes ? { scopes: tokens.scopes } : {}),
+        subscriptionType:
+          tokens.subscriptionType ?? existing?.subscriptionType ?? null,
+        rateLimitTier:
+          tokens.rateLimitTier ?? existing?.rateLimitTier ?? null,
+      }
+      return { ...current, agencAiOauth: next }
+    },
+    'Native secure storage is unavailable; AgenC AI OAuth credentials were not saved.',
+  )
+}
+
 // Function to store OAuth tokens in secure storage
-export function saveOAuthTokensIfNeeded(tokens: OAuthTokens): {
+export function saveOAuthTokensIfNeeded(
+  home: HomeContext,
+  tokens: OAuthTokens,
+): {
   success: boolean
   warning?: string
 } {
@@ -1175,47 +471,41 @@ export function saveOAuthTokensIfNeeded(tokens: OAuthTokens): {
     return { success: true }
   }
 
-  const secureStorage = getSecureStorage()
-
   try {
-    const storageData = secureStorage.read() || {}
-    const existingOauth = storageData.agencAiOauth
-
-    storageData.agencAiOauth = {
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-      expiresAt: tokens.expiresAt,
-      scopes: tokens.scopes,
-      // Profile fetch in refreshOAuthToken swallows errors and returns null on
-      // transient failures (network, 5xx, rate limit). Don't clobber a valid
-      // stored subscription with null — fall back to the existing value.
-      subscriptionType:
-        tokens.subscriptionType ?? existingOauth?.subscriptionType ?? null,
-      rateLimitTier:
-        tokens.rateLimitTier ?? existingOauth?.rateLimitTier ?? null,
-    }
-
-    const updateStatus = secureStorage.update(storageData)
-
-    getAgenCAIOAuthTokens.cache?.clear?.()
-    clearBetasCaches()
-    clearToolSchemaCache()
-    return updateStatus
+    writeAgenCAIOAuthTokens(home, tokens)
+    clearAgenCAIOAuthTokenCache(home)
+    return { success: true }
   } catch (error) {
     logError(error)
     return { success: false, warning: 'Failed to save OAuth tokens' }
   }
 }
 
-export const getAgenCAIOAuthTokens = memoize((): OAuthTokens | null => {
-  // --bare: API-key-only. No OAuth env tokens, no keychain, no credentials file.
-  if (isBareMode()) return null
+const readPersistedAgenCAIOAuthTokens = memoize((home: HomeContext): OAuthTokens | null => {
+  try {
+    const storageData = readNativeSecureStorage(home)
+    const oauthData = storageData?.agencAiOauth
 
+    if (!oauthData?.accessToken) {
+      return null
+    }
+
+    return oauthData
+  } catch (error) {
+    logError(error)
+    return null
+  }
+}, secureStorageIdentityKey)
+
+export function getAgenCAIOAuthTokens(
+  home: HomeContext,
+  environment: ProviderEnvironment,
+): OAuthTokens | null {
   // Check for force-set OAuth token from environment variable
-  if (process.env.AGENC_OAUTH_TOKEN) {
+  if (environment.AGENC_OAUTH_TOKEN) {
     // Return an inference-only token (unknown refresh and expiry)
     return {
-      accessToken: process.env.AGENC_OAUTH_TOKEN,
+      accessToken: environment.AGENC_OAUTH_TOKEN,
       refreshToken: null,
       expiresAt: null,
       scopes: ['user:inference'],
@@ -1225,7 +515,7 @@ export const getAgenCAIOAuthTokens = memoize((): OAuthTokens | null => {
   }
 
   // Check for OAuth token from file descriptor
-  const oauthTokenFromFd = getOAuthTokenFromFileDescriptor()
+  const oauthTokenFromFd = getOAuthTokenFromFileDescriptor(home, environment)
   if (oauthTokenFromFd) {
     // Return an inference-only token (unknown refresh and expiry)
     return {
@@ -1238,21 +528,12 @@ export const getAgenCAIOAuthTokens = memoize((): OAuthTokens | null => {
     }
   }
 
-  try {
-    const secureStorage = getSecureStorage()
-    const storageData = secureStorage.read()
-    const oauthData = storageData?.agencAiOauth
+  return readPersistedAgenCAIOAuthTokens(home)
+}
 
-    if (!oauthData?.accessToken) {
-      return null
-    }
-
-    return oauthData
-  } catch (error) {
-    logError(error)
-    return null
-  }
-})
+function clearAgenCAIOAuthTokenCache(home: HomeContext): void {
+  readPersistedAgenCAIOAuthTokens.cache.delete?.(secureStorageIdentityKey(home))
+}
 
 /**
  * Clears all OAuth token caches. Call this on 401 errors to ensure
@@ -1260,41 +541,17 @@ export const getAgenCAIOAuthTokens = memoize((): OAuthTokens | null => {
  * This handles the case where the local expiration check disagrees with the
  * server (e.g., due to clock corrections after token was issued).
  */
-export function clearOAuthTokenCache(): void {
-  getAgenCAIOAuthTokens.cache?.clear?.()
+export function clearOAuthTokenCache(home: HomeContext): void {
+  clearAgenCAIOAuthTokenCache(home)
   clearKeychainCache()
 }
 
-let lastCredentialsMtimeMs = 0
-
-// Cross-process staleness: another CC instance may write fresh tokens to
-// disk (refresh or /login), but this process's memoize caches forever.
-// Without this, terminal 1's /login fixes terminal 1; terminal 2's /login
-// then revokes terminal 1 server-side, and terminal 1's memoize never
-// re-reads — infinite /login regress (CC-1096, GH#24317).
-async function invalidateOAuthCacheIfDiskChanged(): Promise<void> {
-  try {
-    const { mtimeMs } = await stat(
-      join(getAgenCConfigHomeDir(), '.credentials.json'),
-    )
-    if (mtimeMs !== lastCredentialsMtimeMs) {
-      lastCredentialsMtimeMs = mtimeMs
-      clearOAuthTokenCache()
-    }
-  } catch {
-    // ENOENT — macOS keychain path (file deleted on migration). Clear only
-    // the memoize so it delegates to the keychain cache's 30s TTL instead
-    // of caching forever on top. `security find-generic-password` is
-    // ~15ms; bounded to once per 30s by the keychain cache.
-    getAgenCAIOAuthTokens.cache?.clear?.()
-  }
-}
-
-// In-flight dedup: when N AgenC cloud proxy connectors hit 401 with the same
-// token simultaneously (common at startup — #20930), only one should clear
-// caches and re-read the keychain. Without this, each call's clearOAuthTokenCache()
-// nukes readInFlight in macOsKeychainStorage and triggers a fresh spawn —
-// sync spawns stacked to 800ms+ of blocked render frames.
+// In-flight deduplication: when N AgenC cloud proxy connectors hit 401 with
+// the same token simultaneously (common at startup, #20930), only one should
+// clear caches and reread native secure storage. Otherwise, each call to
+// clearOAuthTokenCache() invalidates readInFlight in macOsKeychainStorage and
+// starts another synchronous child process. Stacked child processes blocked
+// rendering for more than 800ms.
 const pending401Handlers = new Map<string, Promise<boolean>>()
 
 /**
@@ -1304,66 +561,77 @@ const pending401Handlers = new Map<string, Promise<boolean>>()
  * even if our local expiration check disagrees (which can happen due to clock
  * issues when the token was issued).
  *
- * Safety: We compare the failed token with what's in keychain. If another tab
- * already refreshed (different token in keychain), we use that instead of
+ * Safety: We compare the failed token with native secure storage. If another
+ * process already refreshed and stored a different token, we use that instead of
  * refreshing again. Concurrent calls with the same failedAccessToken are
- * deduplicated to a single keychain read.
+ * deduplicated to a single native secure storage read.
  *
  * @param failedAccessToken - The access token that was rejected with 401
  * @returns true if we now have a valid token, false otherwise
  */
 export function handleOAuth401Error(
+  home: HomeContext,
   failedAccessToken: string,
+  environment: ProviderEnvironment,
 ): Promise<boolean> {
-  const pending = pending401Handlers.get(failedAccessToken)
+  const key = `${secureStorageIdentityKey(home)}\0${oauthEnvironmentIdentity(environment)}\0${failedAccessToken}`
+  const pending = pending401Handlers.get(key)
   if (pending) return pending
 
-  const promise = handleOAuth401ErrorImpl(failedAccessToken).finally(() => {
-    pending401Handlers.delete(failedAccessToken)
+  const promise = handleOAuth401ErrorImpl(
+    home,
+    failedAccessToken,
+    environment,
+  ).finally(() => {
+    pending401Handlers.delete(key)
   })
-  pending401Handlers.set(failedAccessToken, promise)
+  pending401Handlers.set(key, promise)
   return promise
 }
 
 async function handleOAuth401ErrorImpl(
+  home: HomeContext,
   failedAccessToken: string,
+  environment: ProviderEnvironment,
 ): Promise<boolean> {
-  // Clear caches and re-read from keychain (async — sync read blocks ~100ms/call)
-  clearOAuthTokenCache()
-  const currentTokens = await getAgenCAIOAuthTokensAsync()
+  // Clear caches and reread native secure storage asynchronously. A synchronous
+  // read blocks for about 100ms per call.
+  clearOAuthTokenCache(home)
+  const currentTokens = await getAgenCAIOAuthTokensAsync(home, environment)
 
   if (!currentTokens?.refreshToken) {
     return false
   }
 
-  // If keychain has a different token, another tab already refreshed - use it
+  // If native secure storage has a different token, another process refreshed it.
   if (currentTokens.accessToken !== failedAccessToken) {
     return true
   }
 
   // Same token that failed - force refresh, bypassing local expiration check
-  return checkAndRefreshOAuthTokenIfNeeded(0, true)
+  return checkAndRefreshOAuthTokenIfNeeded(home, environment, 0, true)
 }
 
 /**
- * Reads OAuth tokens asynchronously, avoiding blocking keychain reads.
+ * Reads OAuth tokens asynchronously, avoiding blocking native storage reads.
  * Delegates to the sync memoized version for env var / file descriptor tokens
- * (which don't hit the keychain), and only uses async for storage reads.
+ * (which do not read native secure storage), and only uses async for storage reads.
  */
-export async function getAgenCAIOAuthTokensAsync(): Promise<OAuthTokens | null> {
-  if (isBareMode()) return null
-
-  // Env var and FD tokens are sync and don't hit the keychain
+export async function getAgenCAIOAuthTokensAsync(
+  home: HomeContext,
+  environment: ProviderEnvironment,
+): Promise<OAuthTokens | null> {
+  // Env var and file-descriptor tokens are synchronous and do not read native
+  // secure storage.
   if (
-    process.env.AGENC_OAUTH_TOKEN ||
-    getOAuthTokenFromFileDescriptor()
+    environment.AGENC_OAUTH_TOKEN ||
+    getOAuthTokenFromFileDescriptor(home, environment)
   ) {
-    return getAgenCAIOAuthTokens()
+    return getAgenCAIOAuthTokens(home, environment)
   }
 
   try {
-    const secureStorage = getSecureStorage()
-    const storageData = await secureStorage.readAsync()
+    const storageData = await readNativeSecureStorageAsync(home)
     const oauthData = storageData?.agencAiOauth
     if (!oauthData?.accessToken) {
       return null
@@ -1375,40 +643,72 @@ export async function getAgenCAIOAuthTokensAsync(): Promise<OAuthTokens | null> 
   }
 }
 
-// In-flight promise for deduplicating concurrent calls
-let pendingRefreshCheck: Promise<boolean> | null = null
+// In-flight promise for deduplicating concurrent calls, isolated per home and
+// immutable session environment. Sessions that share a home may still carry
+// different transient OAuth/descriptor inputs.
+const pendingRefreshChecks = new Map<string, Promise<boolean>>()
+
+const oauthEnvironmentIdentities = new WeakMap<object, number>()
+let nextOAuthEnvironmentIdentity = 1
+
+function oauthEnvironmentIdentity(environment: ProviderEnvironment): number {
+  const existing = oauthEnvironmentIdentities.get(environment)
+  if (existing !== undefined) return existing
+  const identity = nextOAuthEnvironmentIdentity
+  nextOAuthEnvironmentIdentity += 1
+  oauthEnvironmentIdentities.set(environment, identity)
+  return identity
+}
 
 export function checkAndRefreshOAuthTokenIfNeeded(
+  home: HomeContext,
+  environment: ProviderEnvironment,
   retryCount = 0,
   force = false,
 ): Promise<boolean> {
+  const key = `${secureStorageIdentityKey(home)}\0${oauthEnvironmentIdentity(environment)}`
   // Deduplicate concurrent non-retry, non-force calls
   if (retryCount === 0 && !force) {
-    if (pendingRefreshCheck) {
-      return pendingRefreshCheck
+    const existing = pendingRefreshChecks.get(key)
+    if (existing) {
+      return existing
     }
 
-    const promise = checkAndRefreshOAuthTokenIfNeededImpl(retryCount, force)
-    pendingRefreshCheck = promise.finally(() => {
-      pendingRefreshCheck = null
+    const promise = checkAndRefreshOAuthTokenIfNeededImpl(
+      home,
+      environment,
+      retryCount,
+      force,
+    )
+    const pending = promise.finally(() => {
+      if (pendingRefreshChecks.get(key) === pending) {
+        pendingRefreshChecks.delete(key)
+      }
     })
-    return pendingRefreshCheck
+    pendingRefreshChecks.set(key, pending)
+    return pending
   }
 
-  return checkAndRefreshOAuthTokenIfNeededImpl(retryCount, force)
+  return checkAndRefreshOAuthTokenIfNeededImpl(
+    home,
+    environment,
+    retryCount,
+    force,
+  )
 }
 
 async function checkAndRefreshOAuthTokenIfNeededImpl(
+  home: HomeContext,
+  environment: ProviderEnvironment,
   retryCount: number,
   force: boolean,
 ): Promise<boolean> {
   const MAX_RETRIES = 5
 
-  await invalidateOAuthCacheIfDiskChanged()
 
   // First check if token is expired with cached value
   // Skip this check if force=true (server already told us token is bad)
-  const tokens = getAgenCAIOAuthTokens()
+  const tokens = getAgenCAIOAuthTokens(home, environment)
   if (!force) {
     if (!tokens?.refreshToken || !isOAuthTokenExpired(tokens.expiresAt)) {
       return false
@@ -1425,9 +725,9 @@ async function checkAndRefreshOAuthTokenIfNeededImpl(
 
   // Re-read tokens async to check if they're still expired
   // Another process might have refreshed them
-  getAgenCAIOAuthTokens.cache?.clear?.()
+  clearAgenCAIOAuthTokenCache(home)
   clearKeychainCache()
-  const freshTokens = await getAgenCAIOAuthTokensAsync()
+  const freshTokens = await getAgenCAIOAuthTokensAsync(home, environment)
   if (
     !freshTokens?.refreshToken ||
     !isOAuthTokenExpired(freshTokens.expiresAt)
@@ -1436,19 +736,25 @@ async function checkAndRefreshOAuthTokenIfNeededImpl(
   }
 
   // Tokens are still expired, try to acquire lock and refresh
-  const agencDir = getAgenCConfigHomeDir()
-  await mkdir(agencDir, { recursive: true })
+  await mkdir(home.path, { recursive: true })
 
   let release
   try {
-    release = await lockfile.lock(agencDir)
+    release = await lockfile.lock(join(home.path, '.agenc-ai-oauth-refresh'), {
+      realpath: false,
+    })
   } catch (err) {
     if ((err as { code?: string }).code === 'ELOCKED') {
       // Another process has the lock, let's retry if we haven't exceeded max retries
       if (retryCount < MAX_RETRIES) {
         // Wait a bit before retrying
         await sleep(1000 + Math.random() * 1000)
-        return checkAndRefreshOAuthTokenIfNeededImpl(retryCount + 1, force)
+        return checkAndRefreshOAuthTokenIfNeededImpl(
+          home,
+          environment,
+          retryCount + 1,
+          force,
+        )
       }
       return false
     }
@@ -1457,9 +763,9 @@ async function checkAndRefreshOAuthTokenIfNeededImpl(
   }
   try {
     // Check one more time after acquiring lock
-    getAgenCAIOAuthTokens.cache?.clear?.()
+    clearAgenCAIOAuthTokenCache(home)
     clearKeychainCache()
-    const lockedTokens = await getAgenCAIOAuthTokensAsync()
+    const lockedTokens = await getAgenCAIOAuthTokensAsync(home, environment)
     if (
       !lockedTokens?.refreshToken ||
       !isOAuthTokenExpired(lockedTokens.expiresAt)
@@ -1475,18 +781,27 @@ async function checkAndRefreshOAuthTokenIfNeededImpl(
         ? undefined
         : lockedTokens.scopes,
     })
-    saveOAuthTokensIfNeeded(refreshedTokens)
+    try {
+      writeAgenCAIOAuthTokens(home, refreshedTokens, lockedTokens)
+    } catch (error) {
+      if (error instanceof AgenCAIOauthConflictError) {
+        clearAgenCAIOAuthTokenCache(home)
+        const adopted = await getAgenCAIOAuthTokensAsync(home, environment)
+        return Boolean(adopted && adopted.accessToken !== lockedTokens.accessToken)
+      }
+      throw error
+    }
 
     // Clear the cache after refreshing token
-    getAgenCAIOAuthTokens.cache?.clear?.()
+    clearAgenCAIOAuthTokenCache(home)
     clearKeychainCache()
     return true
   } catch (error) {
     logError(error)
 
-    getAgenCAIOAuthTokens.cache?.clear?.()
+    clearAgenCAIOAuthTokenCache(home)
     clearKeychainCache()
-    const currentTokens = await getAgenCAIOAuthTokensAsync()
+    const currentTokens = await getAgenCAIOAuthTokensAsync(home, environment)
     if (currentTokens && !isOAuthTokenExpired(currentTokens.expiresAt)) {
       return true
     }
@@ -1497,12 +812,24 @@ async function checkAndRefreshOAuthTokenIfNeededImpl(
   }
 }
 
-export function isAgenCAISubscriber(): boolean {
-  if (!isAnthropicAuthEnabled()) {
+export function isAgenCAISubscriber(home: HomeContext): boolean {
+  return isAgenCAISubscriberForContext({
+    home,
+    environment: getSelectedProviderEnvironment(),
+    provider: getSelectedProviderName(),
+  })
+}
+
+export function isAgenCAISubscriberForContext(
+  context: ProviderAuthReadContext,
+): boolean {
+  if (!isAnthropicAuthEnabledForContext(context)) {
     return false
   }
 
-  return shouldUseAgenCAIAuth(getAgenCAIOAuthTokens()?.scopes)
+  return shouldUseAgenCAIAuth(
+    getAgenCAIOAuthTokens(context.home, context.environment)?.scopes,
+  )
 }
 
 /**
@@ -1513,30 +840,38 @@ export function isAgenCAISubscriber(): boolean {
  * to gate calls to profile-scoped endpoints so service key sessions don't
  * generate 403 storms against /api/oauth/profile, bootstrap, etc.
  */
-export function hasProfileScope(): boolean {
+export function hasProfileScope(
+  home: HomeContext,
+  environment: ProviderEnvironment,
+): boolean {
   return (
-    getAgenCAIOAuthTokens()?.scopes?.includes(AGENC_AI_PROFILE_SCOPE) ?? false
+    getAgenCAIOAuthTokens(home, environment)?.scopes?.includes(
+      AGENC_AI_PROFILE_SCOPE,
+    ) ?? false
   )
 }
 
-export function is1PApiCustomer(): boolean {
+export function is1PApiCustomer(home: HomeContext): boolean {
   // 1P API customers are users who are NOT:
   // 1. AgenC.ai subscribers (Max, Pro, Enterprise, Team)
   // 2. Vertex AI users
   // 3. AWS Bedrock users
   // 4. Foundry users
 
-  // Exclude Vertex, Bedrock, and Foundry customers
+  // Exclude cloud-adapter customers. Vertex and Foundry are rejected at
+  // canonical config ingress, but keep the classification fail-closed for
+  // callers that inspect an unvalidated embedding environment.
+  const selectedProvider = getSelectedProviderName()
   if (
-    isEnvTruthy(process.env.AGENC_USE_BEDROCK) ||
-    isEnvTruthy(process.env.AGENC_USE_VERTEX) ||
-    isEnvTruthy(process.env.AGENC_USE_FOUNDRY)
+    selectedProvider === 'amazon-bedrock' ||
+    selectedProvider === 'vertex' ||
+    selectedProvider === 'foundry'
   ) {
     return false
   }
 
   // Exclude AgenC.ai subscribers
-  if (isAgenCAISubscriber()) {
+  if (isAgenCAISubscriber(home)) {
     return false
   }
 
@@ -1548,20 +883,24 @@ export function is1PApiCustomer(): boolean {
  * Gets OAuth account information when provider auth is enabled.
  * Returns undefined when using external API keys or third-party services.
  */
-export function getOauthAccountInfo(): AccountInfo | undefined {
-  return isAnthropicAuthEnabled() ? getGlobalConfig().oauthAccount : undefined
+export function getOauthAccountInfo(
+  home: HomeContext,
+): OAuthAccountMetadata | undefined {
+  return isAnthropicAuthEnabled()
+    ? readNativeSecureStorage(home).oauthAccountMetadata
+    : undefined
 }
 
 /**
  * Checks if overage/extra usage provisioning is allowed for this organization.
  * This mirrors the logic in apps/agenc-ai `useIsOverageProvisioningAllowed` hook as closely as possible.
  */
-export function isOverageProvisioningAllowed(): boolean {
-  const accountInfo = getOauthAccountInfo()
+export function isOverageProvisioningAllowed(home: HomeContext): boolean {
+  const accountInfo = getOauthAccountInfo(home)
   const billingType = accountInfo?.billingType
 
   // Must be a AgenC subscriber with a supported subscription type
-  if (!isAgenCAISubscriber() || !billingType) {
+  if (!isAgenCAISubscriber(home) || !billingType) {
     return false
   }
 
@@ -1580,8 +919,8 @@ export function isOverageProvisioningAllowed(): boolean {
 
 // Returns whether the user has Opus access at all, regardless of whether they
 // are a subscriber or PayG.
-export function hasOpusAccess(): boolean {
-  const subscriptionType = getSubscriptionType()
+export function hasOpusAccess(home: HomeContext): boolean {
+  const subscriptionType = getSubscriptionType(home)
 
   return (
     subscriptionType === 'max' ||
@@ -1595,16 +934,24 @@ export function hasOpusAccess(): boolean {
   )
 }
 
-export function getSubscriptionType(): SubscriptionType | null {
-  // Check for mock subscription type first (ANT-only testing)
-  if (shouldUseMockSubscription()) {
-    return getMockSubscriptionType()
-  }
+export function getSubscriptionType(home: HomeContext): SubscriptionType | null {
+  return getSubscriptionTypeForContext({
+    home,
+    environment: getSelectedProviderEnvironment(),
+    provider: getSelectedProviderName(),
+  })
+}
 
-  if (!isAnthropicAuthEnabled()) {
+export function getSubscriptionTypeForContext(
+  context: ProviderAuthReadContext,
+): SubscriptionType | null {
+  if (!isAnthropicAuthEnabledForContext(context)) {
     return null
   }
-  const oauthTokens = getAgenCAIOAuthTokens()
+  const oauthTokens = getAgenCAIOAuthTokens(
+    context.home,
+    context.environment,
+  )
   if (!oauthTokens) {
     return null
   }
@@ -1612,34 +959,37 @@ export function getSubscriptionType(): SubscriptionType | null {
   return oauthTokens.subscriptionType ?? null
 }
 
-export function isMaxSubscriber(): boolean {
-  return getSubscriptionType() === 'max'
+export function isMaxSubscriber(home: HomeContext): boolean {
+  return getSubscriptionType(home) === 'max'
 }
 
-export function isTeamSubscriber(): boolean {
-  return getSubscriptionType() === 'team'
+export function isTeamSubscriber(home: HomeContext): boolean {
+  return getSubscriptionType(home) === 'team'
 }
 
-export function isTeamPremiumSubscriber(): boolean {
+export function isTeamPremiumSubscriber(home: HomeContext): boolean {
   return (
-    getSubscriptionType() === 'team' &&
-    getRateLimitTier() === 'default_claude_max_5x'
+    getSubscriptionType(home) === 'team' &&
+    getRateLimitTier(home) === 'default_claude_max_5x'
   )
 }
 
-export function isEnterpriseSubscriber(): boolean {
-  return getSubscriptionType() === 'enterprise'
+export function isEnterpriseSubscriber(home: HomeContext): boolean {
+  return getSubscriptionType(home) === 'enterprise'
 }
 
-export function isProSubscriber(): boolean {
-  return getSubscriptionType() === 'pro'
+export function isProSubscriber(home: HomeContext): boolean {
+  return getSubscriptionType(home) === 'pro'
 }
 
-export function getRateLimitTier(): string | null {
+export function getRateLimitTier(home: HomeContext): string | null {
   if (!isAnthropicAuthEnabled()) {
     return null
   }
-  const oauthTokens = getAgenCAIOAuthTokens()
+  const oauthTokens = getAgenCAIOAuthTokens(
+    home,
+    getSelectedProviderEnvironment(),
+  )
   if (!oauthTokens) {
     return null
   }
@@ -1647,8 +997,8 @@ export function getRateLimitTier(): string | null {
   return oauthTokens.rateLimitTier ?? null
 }
 
-export function getSubscriptionName(): string {
-  const subscriptionType = getSubscriptionType()
+export function getSubscriptionName(home: HomeContext): string {
+  const subscriptionType = getSubscriptionType(home)
 
   switch (subscriptionType) {
     case 'enterprise':
@@ -1664,27 +1014,19 @@ export function getSubscriptionName(): string {
   }
 }
 
-/** Check if using third-party services (Bedrock or Vertex or Foundry or openai-compatible or Gemini or GitHub Models) */
+/** Check whether the selected provider uses external provider authentication. */
 export function isUsing3PServices(): boolean {
-  return !!(
-    isEnvTruthy(process.env.AGENC_USE_BEDROCK) ||
-    isEnvTruthy(process.env.AGENC_USE_VERTEX) ||
-    isEnvTruthy(process.env.AGENC_USE_FOUNDRY) ||
-    isEnvTruthy(process.env.AGENC_USE_OPENAI) ||
-    isEnvTruthy(process.env.AGENC_USE_GEMINI) ||
-    isEnvTruthy(process.env.AGENC_USE_MISTRAL) ||
-    isEnvTruthy(process.env.AGENC_USE_GITHUB)
-  )
+  return selectedProviderUsesExternalAuth(getSelectedProviderName())
 }
 
 function isConsumerPlan(plan: SubscriptionType): plan is 'max' | 'pro' {
   return plan === 'max' || plan === 'pro'
 }
 
-export function isConsumerSubscriber(): boolean {
-  const subscriptionType = getSubscriptionType()
+export function isConsumerSubscriber(home: HomeContext): boolean {
+  const subscriptionType = getSubscriptionType(home)
   return (
-    isAgenCAISubscriber() &&
+    isAgenCAISubscriber(home) &&
     subscriptionType !== null &&
     isConsumerPlan(subscriptionType)
   )
@@ -1698,21 +1040,21 @@ export type UserAccountInfo = {
   email?: string
 }
 
-export function getAccountInformation() {
+export function getAccountInformation(home: HomeContext) {
   const apiProvider = getAPIProvider()
   // Only provide account info for first-party provider API
   if (apiProvider !== 'firstParty') {
     return undefined
   }
-  const { source: authTokenSource } = getAuthTokenSource()
+  const { source: authTokenSource } = getAuthTokenSource(home)
   const accountInfo: UserAccountInfo = {}
   if (
     authTokenSource === 'AGENC_OAUTH_TOKEN' ||
     authTokenSource === 'AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR'
   ) {
     accountInfo.tokenSource = authTokenSource
-  } else if (isAgenCAISubscriber()) {
-    accountInfo.subscription = getSubscriptionName()
+  } else if (isAgenCAISubscriber(home)) {
+    accountInfo.subscription = getSubscriptionName(home)
   } else {
     accountInfo.tokenSource = authTokenSource
   }
@@ -1727,12 +1069,12 @@ export function getAccountInformation() {
     apiKeySource === '/login managed key'
   ) {
     // Get organization name from OAuth account info
-    const orgName = getOauthAccountInfo()?.organizationName
+    const orgName = getOauthAccountInfo(home)?.organizationName
     if (orgName) {
       accountInfo.organization = orgName
     }
   }
-  const email = getOauthAccountInfo()?.emailAddress
+  const email = getOauthAccountInfo(home)?.emailAddress
   if (
     (authTokenSource === 'agenc-cloud' ||
       apiKeySource === '/login managed key') &&
@@ -1758,11 +1100,14 @@ export type OrgValidationResult =
  * Fails closed: if `forceLoginOrgUUID` is set and we cannot determine the
  * token's org (network error, missing profile data), validation fails.
  */
-export async function validateForceLoginOrg(): Promise<OrgValidationResult> {
+export async function validateForceLoginOrg(
+  home: HomeContext,
+): Promise<OrgValidationResult> {
+  const environment = getSelectedProviderEnvironment()
   // `agenc ssh` remote: real auth lives on the local machine and is injected
   // by the proxy. The placeholder token can't be validated against the profile
   // endpoint. The local side already ran this check before establishing the session.
-  if (process.env.ANTHROPIC_UNIX_SOCKET) {
+  if (environment.ANTHROPIC_UNIX_SOCKET) {
     return { valid: true }
   }
 
@@ -1778,17 +1123,17 @@ export async function validateForceLoginOrg(): Promise<OrgValidationResult> {
 
   // Ensure the access token is fresh before hitting the profile endpoint.
   // No-op for env-var tokens (refreshToken is null).
-  await checkAndRefreshOAuthTokenIfNeeded()
+  await checkAndRefreshOAuthTokenIfNeeded(home, environment)
 
-  const tokens = getAgenCAIOAuthTokens()
+  const tokens = getAgenCAIOAuthTokens(home, environment)
   if (!tokens) {
     return { valid: true }
   }
 
   // Always fetch the authoritative org UUID from the profile endpoint.
-  // Even keychain-sourced tokens verify server-side: the cached org UUID
-  // in ~/.agenc.json is user-writable and cannot be trusted.
-  const { source } = getAuthTokenSource()
+  // Even native-storage-sourced tokens verify server-side: the cached org UUID
+  // in local runtime state is user-writable and cannot be trusted.
+  const { source } = getAuthTokenSource(home)
   const isEnvVarToken =
     source === 'AGENC_OAUTH_TOKEN' ||
     source === 'AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR'
@@ -1836,8 +1181,6 @@ export async function validateForceLoginOrg(): Promise<OrgValidationResult> {
       `Please log in with the correct organization: agenc auth login`,
   }
 }
-
-class GcpCredentialsTimeoutError extends Error {}
 
 export const getproviderApiKey = getAnthropicApiKey
 export const getproviderApiKeyWithSource = getAnthropicApiKeyWithSource

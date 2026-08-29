@@ -14,6 +14,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EventLog } from "../session/event-log.js";
+import { runWithCurrentRuntimeSession } from "../session/current-session.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import { resolveHomeContext } from "../config/home.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
@@ -55,6 +58,7 @@ import { verifyToolResultIntegrity } from "../session/tool-result-integrity.js";
 
 const UNTRUSTED_TOOL_RESULT_BOUNDARY =
   "===== AGENC UNTRUSTED TOOL RESULT DATA =====";
+const TEST_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
 
 function expectFramedWorkspaceResult(content: unknown, raw: string): void {
   expect(content).toEqual(expect.stringContaining("untrusted workspace data"));
@@ -114,8 +118,6 @@ function mkRegistry(tools: Tool[]): ToolRegistry {
 interface MkSessionOpts {
   readonly log: EventLog;
   readonly registry: ToolRegistry;
-  /** The active turn's task controller — the executor's escalation target. */
-  readonly activeTurnAbort?: AbortController;
   readonly preToolUseHooks?: ReadonlyArray<PreToolUseHook>;
   readonly postToolUseHooks?: ReadonlyArray<PostToolUseHook>;
   readonly approvalResolver?: {
@@ -178,6 +180,7 @@ function mkSession(opts: MkSessionOpts): Session {
   }> = [];
   const servicesRecord: Record<string, unknown> = {
     admissionRequired: false,
+    runtimeOptions: TEST_RUNTIME_OPTIONS,
     registry: opts.registry,
     provider: opts.provider ?? { name: "stub-provider" },
     hooks: {
@@ -209,18 +212,6 @@ function mkSession(opts: MkSessionOpts): Session {
   const baseSession: Record<string, unknown> = {
     conversationId: "conv-1",
     abortController: opts.abortController ?? new AbortController(),
-    ...(opts.activeTurnAbort !== undefined
-      ? {
-          activeTurn: {
-            // turnId matches mkCtx's subId so approval staleness checks see
-            // this as the same turn the tool call belongs to.
-            unsafePeek: () => ({
-              turnId: "turn-1",
-              abortController: opts.activeTurnAbort,
-            }),
-          },
-        }
-      : {}),
     eventLog: opts.log,
     services: servicesRecord,
     nextInternalSubId: () => `s-${++i}`,
@@ -3035,13 +3026,11 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       },
     };
 
-    const sessionAbort = new AbortController();
-    const turnAbort = new AbortController();
+    const abortController = new AbortController();
     const session = mkSession({
       log: new EventLog(),
       registry: mkRegistry([tool]),
-      abortController: sessionAbort,
-      activeTurnAbort: turnAbort,
+      abortController,
       approvalResolver: {
         request: async () => ({ kind: "abort" }),
       },
@@ -3064,14 +3053,11 @@ describe("executeTools — T7 gap #109 pipeline", () => {
         sandboxPolicy: { value: "workspace_write" },
       } as unknown as TurnContext,
       session,
-      turnAbort.signal,
+      abortController.signal,
     );
 
     expect(executed).toBe(0);
-    // The abort cancels the ACTIVE TURN, and only the turn: the session's
-    // one-shot root controller must survive so the next message still runs.
-    expect(turnAbort.signal.aborted).toBe(true);
-    expect(sessionAbort.signal.aborted).toBe(false);
+    expect(abortController.signal.aborted).toBe(true);
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]!.content).toContain("approval aborted");
   });
@@ -3268,6 +3254,14 @@ describe("executeTools — T7 gap #109 pipeline", () => {
         },
       },
     });
+    Object.assign(session.services, {
+      configStore: {
+        homeContext: resolveHomeContext(
+          { AGENC_HOME: agencHome, HOME: agencHome },
+          { platformHome: agencHome },
+        ),
+      },
+    });
     const state = mkState({
       toolCalls: [
         {
@@ -3278,14 +3272,16 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       ],
     });
 
-    await executeTools(
-      state,
-      {
-        ...mkCtx(),
-        approvalPolicy: { value: "on_request" },
-        sandboxPolicy: { value: "workspace_write" },
-      } as unknown as TurnContext,
-      session,
+    await runWithCurrentRuntimeSession(session, () =>
+      executeTools(
+        state,
+        {
+          ...mkCtx(),
+          approvalPolicy: { value: "on_request" },
+          sandboxPolicy: { value: "workspace_write" },
+        } as unknown as TurnContext,
+        session,
+      ),
     );
 
     expect(approvalInput?.["plan"]).toContain("Wire approval gate");
@@ -3513,7 +3509,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(chat).not.toHaveBeenCalled();
   });
 
-  test("executor-originated aborts cancel the active turn, not the session", async () => {
+  test("executor-originated aborts propagate to the session controller", async () => {
     let markStarted: (() => void) | undefined;
     const started = new Promise<void>((resolve) => {
       markStarted = resolve;
@@ -3538,13 +3534,11 @@ describe("executeTools — T7 gap #109 pipeline", () => {
         });
       },
     };
-    const sessionAbort = new AbortController();
-    const turnAbort = new AbortController();
+    const abortController = new AbortController();
     const session = mkSession({
       log: new EventLog(),
       registry: mkRegistry([tool]),
-      abortController: sessionAbort,
-      activeTurnAbort: turnAbort,
+      abortController,
     });
     const state = mkState({
       toolCalls: [{ id: "cancelable", name: "Cancelable", arguments: "{}" }],
@@ -3553,17 +3547,13 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       state,
       mkCtx(),
       session,
-      turnAbort.signal,
+      abortController.signal,
     );
 
     await started;
     state.streamingToolExecutor!.abort("mode_changed");
 
-    // Escalates to the active turn's controller so the turn loop ends
-    // cleanly — never to the session's one-shot root controller, which
-    // must stay live for the next message.
-    expect(turnAbort.signal.aborted).toBe(true);
-    expect(sessionAbort.signal.aborted).toBe(false);
+    expect(abortController.signal.aborted).toBe(true);
     await execution;
   });
 

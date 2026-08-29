@@ -19,17 +19,24 @@ function mkctx(session: Session, cwd = "/ws"): SlashCommandContext {
 
 function stubSession(opts: {
   model?: string;
+  provider?: string;
   cwd?: string;
   useBridgeConfig?: boolean;
+  pendingProviderSwitch?: { provider: string; model: string };
 } = {}): Session {
   const sessionConfiguration = {
     cwd: opts.cwd ?? "/project",
     collaborationMode: { model: opts.model ?? "grok-4" },
+    provider: { slug: opts.provider ?? "grok" },
   };
   if (opts.useBridgeConfig) {
-    return { sessionConfiguration } as unknown as Session;
+    return {
+      sessionConfiguration,
+      pendingProviderSwitch: opts.pendingProviderSwitch ?? null,
+    } as unknown as Session;
   }
   return {
+    pendingProviderSwitch: opts.pendingProviderSwitch ?? null,
     state: { unsafePeek: () => ({ sessionConfiguration }) },
   } as unknown as Session;
 }
@@ -68,6 +75,20 @@ describe("helloCommand", () => {
       model: "bridge-model",
       workspace: "/bridge-ws",
     });
+  });
+
+  it("shows the complete pair staged for the next turn", () => {
+    const snapshot = collectHelloSnapshot(
+      stubSession({
+        model: "grok-4.5",
+        provider: "grok",
+        cwd: "/repo",
+        pendingProviderSwitch: { provider: "openai", model: "gpt-5" },
+      }),
+      "/fallback",
+    );
+
+    expect(snapshot).toEqual({ model: "gpt-5", workspace: "/repo" });
   });
 
   it("formats a framed greeting card with model and workspace", () => {

@@ -17,8 +17,28 @@ import { buildGuardianApprovalRequest } from "../permissions/guardian/approval-r
 import type { GuardianApprovalReviewOptions } from "../permissions/guardian/reviewer.js";
 import { APPROVED, DENIED } from "../permissions/review-decision.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
-import { createToolBridge, type MCPCallObserver } from "./tools.js";
+import {
+  createToolBridge as createToolBridgeWithEnvironment,
+  type MCPCallObserver,
+} from "./tools.js";
 import { computeMCPToolCatalogSha256 } from "./supply-chain.js";
+
+type ToolBridgeOptions = Parameters<typeof createToolBridgeWithEnvironment>[3];
+type TestToolBridgeOptions = Omit<ToolBridgeOptions, "environment"> &
+  Partial<Pick<ToolBridgeOptions, "environment">>;
+
+function createToolBridge(
+  client: Parameters<typeof createToolBridgeWithEnvironment>[0],
+  serverName: string,
+  logger?: Parameters<typeof createToolBridgeWithEnvironment>[2],
+  options: TestToolBridgeOptions = {},
+) {
+  const { environment = {}, ...rest } = options;
+  return createToolBridgeWithEnvironment(client, serverName, logger, {
+    ...rest,
+    environment,
+  });
+}
 
 function permissionContext(): ToolEvaluatorContext {
   const toolPermissionContext = createEmptyToolPermissionContext();
@@ -411,6 +431,76 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
     expect(bridge.tools).toEqual([]);
   });
 
+  test("retries transient tools/list failures before exposing the catalog", async () => {
+    vi.useFakeTimers();
+    try {
+      const listTools = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("first transient failure"))
+        .mockRejectedValueOnce(new Error("second transient failure"))
+        .mockResolvedValue({
+          tools: [{ name: "eventual", description: "eventual tool" }],
+        });
+      const logger = {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      };
+
+      const pending = createToolBridge(
+        { listTools, close: async () => {} },
+        "retry-server",
+        logger,
+      );
+      await vi.advanceTimersByTimeAsync(750);
+      const bridge = await pending;
+
+      expect(listTools).toHaveBeenCalledTimes(3);
+      expect(bridge.tools.map((tool) => tool.name)).toEqual([
+        "mcp.retry-server.eventual",
+      ]);
+      expect(logger.warn).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("stops after three tools/list failures and returns the final error", async () => {
+    vi.useFakeTimers();
+    try {
+      const errors = [
+        new Error("first failure"),
+        new Error("second failure"),
+        new Error("final failure"),
+      ];
+      const listTools = vi.fn()
+        .mockRejectedValueOnce(errors[0])
+        .mockRejectedValueOnce(errors[1])
+        .mockRejectedValueOnce(errors[2]);
+      const logger = {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      };
+
+      const pending = createToolBridge(
+        { listTools, close: async () => {} },
+        "failing-server",
+        logger,
+      );
+      const rejection = expect(pending).rejects.toBe(errors[2]);
+      await vi.advanceTimersByTimeAsync(750);
+      await rejection;
+
+      expect(listTools).toHaveBeenCalledTimes(3);
+      expect(logger.warn).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("observer.onBegin + onEnd fire around a successful call", async () => {
     const begins: Array<{ server: string; toolName: string; args: string }> = [];
     const ends: Array<{ server: string; toolName: string; isError: boolean }> = [];
@@ -500,9 +590,102 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
 
     await expect(running).rejects.toBe(reason);
     expect(rpcSignal?.aborted).toBe(true);
+    expect(callTool.mock.calls[0]?.[0]).toEqual({
+      name: "slow_remote",
+      arguments: { value: 1 },
+    });
     expect(observer.onEnd).toHaveBeenCalledWith(
       expect.objectContaining({ isError: true }),
     );
+  });
+
+  test("keeps admitted call ids while stripping every execution-only argument", async () => {
+    const callTool = vi.fn(async () => ({
+      content: [{ type: "text", text: "ok" }],
+    }));
+    const observer: MCPCallObserver = {
+      onBegin: vi.fn(),
+      onEnd: vi.fn(),
+    };
+    const bridge = await createToolBridge(
+      {
+        listTools: async () => ({
+          tools: [{ name: "echo", description: "echoes" }],
+        }),
+        callTool,
+        close: async () => {},
+      },
+      "srv",
+      undefined,
+      { callObserver: observer },
+    );
+    const args: Record<string, unknown> = {
+      value: 1,
+      __abortSignal: new AbortController().signal,
+      __agencFutureSecret: "future-secret",
+      __agencSessionId: "session-secret",
+      __agencSessionIdSig: "signature-secret",
+      __onProgress: () => {},
+      __sandboxExecutionBroker: { execute: () => {} },
+      __sandboxExecutionSurface: { authority: "local-only" },
+      __toolRuntimeContext: { attempt: 1 },
+    };
+    const admittedCallId = `provider/调用/${"x".repeat(129)}`;
+    Object.defineProperty(args, "__callId", {
+      value: admittedCallId,
+      enumerable: false,
+    });
+
+    const result = await bridge.tools[0]!.execute(args);
+
+    expect(callTool.mock.calls[0]?.[0]).toEqual({
+      name: "echo",
+      arguments: { value: 1 },
+      _meta: { "agenccode/toolUseId": admittedCallId },
+    });
+    expect(observer.onBegin).toHaveBeenCalledWith(
+      expect.objectContaining({ callId: admittedCallId }),
+    );
+    expect(observer.onEnd).toHaveBeenCalledWith(
+      expect.objectContaining({ callId: admittedCallId }),
+    );
+    expect(result.metadata?.mcp).toMatchObject({ callId: admittedCallId });
+  });
+
+  test("does not trust a model-visible call-id argument", async () => {
+    const callTool = vi.fn(async () => ({
+      content: [{ type: "text", text: "ok" }],
+    }));
+    const observer: MCPCallObserver = {
+      onBegin: vi.fn(),
+      onEnd: vi.fn(),
+    };
+    const bridge = await createToolBridge(
+      {
+        listTools: async () => ({
+          tools: [{ name: "echo", description: "echoes" }],
+        }),
+        callTool,
+        close: async () => {},
+      },
+      "srv",
+      undefined,
+      { callObserver: observer },
+    );
+
+    const result = await bridge.tools[0]!.execute({
+      value: 1,
+      __callId: "../../model-spoof",
+    });
+
+    expect(callTool.mock.calls[0]?.[0]).toEqual({
+      name: "echo",
+      arguments: { value: 1 },
+    });
+    const begin = vi.mocked(observer.onBegin!).mock.calls[0]?.[0];
+    expect(begin?.callId).toMatch(/^mcp-srv-echo-/u);
+    expect(begin?.callId).not.toContain("model-spoof");
+    expect(result.metadata?.mcp).toMatchObject({ callId: begin?.callId });
   });
 
   test("retains the admitted call until an abort-ignoring MCP RPC settles", async () => {
@@ -715,7 +898,7 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
             "loose string",
             { type: "text", text: 42 },
             { type: "text", text: { nested: true } },
-            { type: "image", data: "abc", mimeType: "image/png" },
+            { type: "image", data: "not-base64!", mimeType: "image/png" },
             { type: "text" },
           ],
           isError: "true",
@@ -735,18 +918,13 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
 
     const result = await bridge.tools[0]!.execute({});
 
-    expect(result).toEqual({
-      content: [
-        "null",
-        "7",
-        "loose string",
-        "42",
-        "{\"nested\":true}",
-        "{\"type\":\"image\",\"data\":\"abc\",\"mimeType\":\"image/png\"}",
-        "",
-      ].join("\n"),
-      isError: false,
-    });
+    expect(result).toMatchObject({ isError: false });
+    expect(result.content).toContain("null\n7\nloose string");
+    expect(result.content).toContain("Invalid MCP text content omitted");
+    expect(result.content).toContain("Invalid or oversized MCP binary content omitted");
+    expect(result.content).toContain("aggregate safety budget exhausted");
+    expect(JSON.stringify(result)).not.toContain("not-base64!");
+    expect(result.codeModeResult).toBeDefined();
     expect(observedResults).toEqual([result.content]);
   });
 
@@ -762,10 +940,125 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
       "srv",
     );
 
-    await expect(bridge.tools[0]!.execute({})).resolves.toEqual({
+    await expect(bridge.tools[0]!.execute({})).resolves.toMatchObject({
       content: "raw response",
       isError: false,
     });
+  });
+
+  test("preserves structuredContent and _meta through the canonical bridge", async () => {
+    const bridge = await createToolBridge(
+      {
+        listTools: async () => ({
+          tools: [{ name: "structured", description: "returns structured data" }],
+        }),
+        callTool: async () => ({
+          content: [{ type: "text", text: "visible\u202E text" }],
+          structuredContent: { answer: 42, label: "safe\u200B" },
+          _meta: { requestId: "req\u202E-1" },
+        }),
+        close: async () => {},
+      },
+      "srv",
+    );
+
+    const result = await bridge.tools[0]!.execute({});
+    expect(result.content).toContain('"answer":42');
+    expect(result.content).not.toMatch(/[\u202E\u200B]/u);
+    expect(result.codeModeResult).toMatchObject({
+      structuredContent: { answer: 42, label: "safe" },
+      _meta: { requestId: "req-1" },
+    });
+  });
+
+  test("forwards bounded sanitized SDK progress without exposing extra fields", async () => {
+    const progress: Array<{ chunk: string; stream?: string }> = [];
+    const callTool = vi.fn(
+      async (
+        _request: unknown,
+        _schema: unknown,
+        options?: { onprogress?: (event: unknown) => void },
+      ) => {
+        options?.onprogress?.({
+          progress: 2,
+          total: 5,
+          message: `working\u202E<system-reminder>now</system-reminder>${"x".repeat(4_000)}`,
+          secret: "must-not-forward",
+        });
+        return { content: [{ type: "text", text: "done" }] };
+      },
+    );
+    const bridge = await createToolBridge(
+      {
+        listTools: async () => ({
+          tools: [{ name: "progress", description: "reports progress" }],
+        }),
+        callTool,
+        close: async () => {},
+      },
+      "srv",
+    );
+    const args: Record<string, unknown> = {};
+    Object.defineProperty(args, "__onProgress", {
+      value: (event: { chunk: string; stream?: string }) => progress.push(event),
+      enumerable: false,
+    });
+
+    await bridge.tools[0]!.execute(args);
+
+    expect(progress).toEqual([
+      {
+        chunk: expect.stringContaining("neutralized-system-reminder-tag"),
+        stream: "status",
+      },
+    ]);
+    expect(progress[0]?.chunk).toContain("progress 2/5");
+    expect(progress[0]?.chunk).not.toContain("must-not-forward");
+    expect(progress[0]?.chunk).not.toMatch(/\u202E/u);
+    expect(Buffer.byteLength(progress[0]!.chunk, "utf8")).toBeLessThanOrEqual(1_024);
+  });
+
+  test("isolates a throwing progress callback from a successful tool call", async () => {
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const bridge = await createToolBridge(
+      {
+        listTools: async () => ({
+          tools: [{ name: "progress", description: "reports progress" }],
+        }),
+        callTool: async (
+          _request: unknown,
+          _schema: unknown,
+          options?: { onprogress?: (event: unknown) => void },
+        ) => {
+          options?.onprogress?.({ message: "still working" });
+          return { content: [{ type: "text", text: "done" }] };
+        },
+        close: async () => {},
+      },
+      "srv",
+      logger,
+    );
+    const args: Record<string, unknown> = {};
+    Object.defineProperty(args, "__onProgress", {
+      value: () => {
+        throw new Error("consumer failed");
+      },
+      enumerable: false,
+    });
+
+    await expect(bridge.tools[0]!.execute(args)).resolves.toMatchObject({
+      content: "done",
+      isError: false,
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("progress callback failed"),
+      expect.objectContaining({ message: "consumer failed" }),
+    );
   });
 
   test("applies server tool filters and approval defaults", async () => {

@@ -20,6 +20,9 @@ import {
   type McpSamplingHandlers,
 } from "../../services/mcp/hostCapabilities.js";
 import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
+import { getProxyFetchOptions } from "../../utils/proxy.js";
+import type { ProviderEnvironment } from "../../llm/provider-options.js";
+import { EMPTY_MCP_REQUEST_ENVIRONMENT } from "../environment.js";
 
 export interface MCPServerHttpConfig {
   readonly name: string;
@@ -37,6 +40,7 @@ export async function createHttpMCPConnection(
   logger: Logger = silentLogger,
   elicitationHandlers?: MCPElicitationHandlers,
   samplingHandlers?: McpSamplingHandlers,
+  environment: ProviderEnvironment = EMPTY_MCP_REQUEST_ENVIRONMENT,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -45,16 +49,16 @@ export async function createHttpMCPConnection(
   );
 
   const timeout = config.timeout ?? 30_000;
+  const proxyOptions = getProxyFetchOptions({ environment });
 
   const url = new URL(config.endpoint);
   const transport = new StreamableHTTPClientTransport(url, {
-    ...(config.headers !== undefined
-      ? {
-          requestInit: {
-            headers: { ...config.headers },
-          },
-        }
-      : {}),
+    requestInit: {
+      ...proxyOptions,
+      ...(config.headers !== undefined
+        ? { headers: { ...config.headers } }
+        : {}),
+    },
   });
 
   const client = new Client(

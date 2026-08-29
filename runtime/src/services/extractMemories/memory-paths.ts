@@ -23,14 +23,19 @@ import {
   sep,
 } from "node:path";
 import { findGitRoot as findCanonicalGitRoot } from "../../agents/worktree.js";
-import { getAgenCConfigHomeDir, isEnvDefinedFalsy, isEnvTruthy } from "../../utils/envUtils.js";
-import { findProjectRootSync } from "../../session/session-store.js";
+import type { AgenCConfig } from "../../config/schema.js";
+import type { ConfigStore } from "../../config/store.js";
 import {
-  getSettingsFilePathForSource,
-  readSettingsFileLenient,
-  type SettingsJson,
-} from "../../permissions/settings.js";
+  getAgenCHomeDir,
+  isBareMode,
+} from "../../utils/envUtils.js";
+import { findProjectRootSync } from "../../session/session-store.js";
 import type { PermissionRuleSource } from "../../permissions/types.js";
+import { getSettingsForSource } from "../../utils/settings/settings.js";
+import {
+  getActiveAgentRuntimeOptions,
+  type AgentRuntimeOptions,
+} from "../../session/runtime-options.js";
 
 export const AUTO_MEMORY_INDEX_FILE = "MEMORY.md";
 const AUTO_MEMORY_DIRNAME = "memory";
@@ -47,29 +52,35 @@ export type TrustedAutoMemoryDirectorySource = Extract<
   PermissionRuleSource,
   "policySettings" | "flagSettings" | "userSettings"
 >;
+type CanonicalSettingSource = Extract<
+  PermissionRuleSource,
+  "policySettings" | "flagSettings" | "userSettings" | "projectSettings" | "localSettings"
+>;
 
 export interface ResolveAutoMemoryDirectoryOptions {
   readonly env?: MemoryPathEnv;
   readonly cwd?: string;
   readonly homeDir?: string;
   readonly configHomeDir?: string;
-  readonly flagSettingsPath?: string;
-  readonly managedSettingsPath?: string;
+  readonly configStore?: ConfigStore;
+  readonly runtimeOptions?: Pick<
+    AgentRuntimeOptions,
+    "coworkMemoryPathOverride" | "remoteMode" | "remoteMemoryRoot"
+  >;
   readonly settings?: {
-    readonly [K in PermissionRuleSource]?: SettingsJson | null;
+    readonly [K in PermissionRuleSource]?: AgenCConfig | null;
   };
-  readonly readSettingsFile?: (path: string) => Promise<SettingsJson | null>;
 }
 
 const AUTO_MEMORY_DIRECTORY_SOURCES: readonly TrustedAutoMemoryDirectorySource[] =
   ["policySettings", "flagSettings", "userSettings"];
 
-const AUTO_MEMORY_ENABLED_AUTHORITY_SOURCES: readonly PermissionRuleSource[] = [
+const AUTO_MEMORY_ENABLED_AUTHORITY_SOURCES: readonly CanonicalSettingSource[] = [
   "policySettings",
   "flagSettings",
   "userSettings",
 ];
-const AUTO_MEMORY_REPOSITORY_SOURCES: readonly PermissionRuleSource[] = [
+const AUTO_MEMORY_REPOSITORY_SOURCES: readonly CanonicalSettingSource[] = [
   "localSettings",
   "projectSettings",
 ];
@@ -90,7 +101,9 @@ function effectiveHome(opts: ResolveAutoMemoryDirectoryOptions): string {
 }
 
 function resolveConfigHome(opts: ResolveAutoMemoryDirectoryOptions): string {
-  return opts.configHomeDir ?? getAgenCConfigHomeDir();
+  return opts.configHomeDir ??
+    opts.configStore?.homeContext.path ??
+    getAgenCHomeDir();
 }
 
 function envValue(
@@ -166,20 +179,15 @@ export function sanitizePathForProjectKey(path: string): string {
 }
 
 async function readSettings(
-  source: PermissionRuleSource,
+  source: CanonicalSettingSource,
   opts: ResolveAutoMemoryDirectoryOptions,
-): Promise<SettingsJson | null> {
-  if (opts.settings && Object.prototype.hasOwnProperty.call(opts.settings, source)) {
+): Promise<AgenCConfig | null> {
+  if (opts.settings) {
     return opts.settings[source] ?? null;
   }
-  const path = getSettingsFilePathForSource(source, {
-    cwd: effectiveCwd(opts),
-    home: effectiveHome(opts),
-    flagSettingsPath: opts.flagSettingsPath,
-    managedSettingsPath: opts.managedSettingsPath,
-  });
-  if (path === null) return null;
-  return (opts.readSettingsFile ?? readSettingsFileLenient)(path);
+  return opts.configStore
+    ? getSettingsForSource(source, opts.configStore)
+    : getSettingsForSource(source);
 }
 
 async function readAutoMemoryEnabledSetting(
@@ -230,28 +238,22 @@ export async function resolveAutoMemoryDirectory(
   opts: ResolveAutoMemoryDirectoryOptions = {},
 ): Promise<AutoMemoryPathResult> {
   const env = effectiveEnv(opts.env);
-  const disabled = envValue(env, "AGENC_DISABLE_AUTO_MEMORY");
-  if (isEnvTruthy(disabled)) {
-    return { enabled: false, reason: "disabled_by_env" };
+  const runtimeOptions = opts.runtimeOptions ?? getActiveAgentRuntimeOptions();
+  if (isBareMode()) {
+    return { enabled: false, reason: "simple_mode" };
   }
-  if (!isEnvDefinedFalsy(disabled)) {
-    if (isEnvTruthy(envValue(env, "AGENC_SIMPLE"))) {
-      return { enabled: false, reason: "simple_mode" };
-    }
-    if (
-      isEnvTruthy(envValue(env, "AGENC_REMOTE")) &&
-      !envValue(env, "AGENC_REMOTE_MEMORY_DIR")
-    ) {
-      return { enabled: false, reason: "remote_without_memory_dir" };
-    }
-    const enabledSetting = await readAutoMemoryEnabledSetting(opts);
-    if (enabledSetting === false) {
-      return { enabled: false, reason: "disabled_by_settings" };
-    }
+  if (runtimeOptions?.remoteMode && !runtimeOptions.remoteMemoryRoot) {
+    return { enabled: false, reason: "remote_without_memory_dir" };
+  }
+  const enabledSetting = await readAutoMemoryEnabledSetting(opts);
+  if (enabledSetting === false) {
+    return { enabled: false, reason: "disabled_by_settings" };
   }
 
   const homeDir = effectiveHome(opts);
-  const overrideRaw = envValue(env, "AGENC_COWORK_MEMORY_PATH_OVERRIDE");
+  const overrideRaw = runtimeOptions === undefined
+    ? envValue(env, "AGENC_COWORK_MEMORY_PATH_OVERRIDE")
+    : runtimeOptions.coworkMemoryPathOverride;
   if (overrideRaw !== undefined && overrideRaw.trim().length > 0) {
     const override = validateAutoMemoryDirectoryPath(overrideRaw, {
       expandTilde: false,
@@ -278,7 +280,7 @@ export async function resolveAutoMemoryDirectory(
     return { enabled: true, path: settingPath };
   }
 
-  const remoteMemoryDir = envValue(env, "AGENC_REMOTE_MEMORY_DIR");
+  const remoteMemoryDir = runtimeOptions?.remoteMemoryRoot;
   const baseRoot =
     remoteMemoryDir !== undefined && remoteMemoryDir.trim().length > 0
       ? validateAutoMemoryDirectoryPath(remoteMemoryDir, {

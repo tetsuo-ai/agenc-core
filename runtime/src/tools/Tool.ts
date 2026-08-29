@@ -11,6 +11,7 @@ import type { z } from "zod/v4";
 import type { Command } from "../commands.js";
 import type { CanUseToolFn } from "../tui/hooks/useCanUseTool.js";
 import type { ThinkingConfig } from "../utils/thinking.js";
+import type { LLMProvider } from "../llm/types.js";
 import type {
   ToolAdmissionEstimate,
   ToolAdmissionUsage,
@@ -88,7 +89,6 @@ export type {
 
 import type { SpinnerMode } from "../tui/components/spinner/Spinner.js";
 import type { QuerySource } from "../constants/querySource.js";
-import type { SDKStatus } from "../entrypoints/agentSdkTypes.js";
 import type { AppState } from "../tui/state/AppState.js";
 import type {
   HookProgress,
@@ -100,6 +100,7 @@ import type { DeepImmutable } from "../types/utils.js";
 import type { AttributionState } from "../utils/commitAttribution.js";
 import type { FileHistoryState } from "../utils/fileHistory.js";
 import type { Theme, ThemeName } from "../utils/theme.js";
+import type { SkillsManager } from "../session/session.js";
 
 export type QueryChainTracking = {
   chainId: string;
@@ -196,9 +197,9 @@ export type ToolUseContext = {
     querySource?: QuerySource;
     /** Optional callback to get the latest tools (e.g., after MCP servers connect mid-query) */
     refreshTools?: () => Tools;
-    /** Per-agent provider override from agentRouting config */
-    providerOverride?: { model: string; baseURL: string; apiKey: string };
   };
+  /** Canonical provider selected for this tool/fork context. */
+  provider?: LLMProvider;
   abortController: AbortController;
   readFileState: FileStateCache;
   getAppState(): AppState;
@@ -243,6 +244,8 @@ export type ToolUseContext = {
    */
   loadedNestedMemoryPaths?: Set<string>;
   dynamicSkillDirTriggers?: Set<string>;
+  /** Exact session owner for touched-path and nested skill discovery. */
+  skillsManager?: SkillsManager;
   /** Skill names surfaced via skill_discovery this session. Telemetry only (feeds was_discovered). */
   discoveredSkillNames?: Set<string>;
   userModified?: boolean;
@@ -255,7 +258,6 @@ export type ToolUseContext = {
   pushApiMetricsEntry?: (ttftMs: number) => void;
   setStreamMode?: (mode: SpinnerMode) => void;
   onCompactProgress?: (event: CompactProgressEvent) => void;
-  setSDKStatus?: (status: SDKStatus) => void;
   openMessageSelector?: () => void;
   updateFileHistoryState: (
     updater: (prev: FileHistoryState) => FileHistoryState,
@@ -269,11 +271,6 @@ export type ToolUseContext = {
   /** When true, canUseTool must always be called even when hooks auto-approve.
    *  Used by speculation for overlay file path rewriting. */
   requireCanUseTool?: boolean;
-  /**
-   * Optional callback used by hook-chain fallback actions that launch
-   * AgentTool from hook runtime paths.
-   */
-  hookChainsCanUseTool?: CanUseToolFn;
   messages: Message[];
   fileReadingLimits?: {
     maxTokens?: number;
@@ -326,10 +323,9 @@ export type ToolUseContext = {
     replacements: ReadonlyMap<string, string>,
   ) => void;
   /**
-   * Parent's rendered system prompt bytes, frozen at turn start.
-   * Used by fork subagents to share the parent's prompt cache — re-calling
-   * getSystemPrompt() at fork-spawn time can diverge (GrowthBook cold→warm)
-   * and bust the cache. See forkSubagent.ts.
+   * Parent's admitted system-prompt bytes, frozen at turn start. Forks,
+   * resumes, and in-process teammates consume this exact snapshot instead of
+   * rebuilding prompt state from ambient configuration.
    */
   renderedSystemPrompt?: SystemPrompt;
 };
@@ -410,7 +406,7 @@ export type Tool<
     args: Readonly<Record<string, unknown>>,
   ) => ToolAdmissionEstimate;
   /**
-   * One-line capability phrase used by ToolSearch for keyword matching.
+   * One-line capability phrase used by system.searchTools for keyword matching.
    * Helps the model find this tool via keyword search when it's deferred.
    * 3–10 words, no trailing period.
    * Prefer terms not already in the tool name (e.g. 'jupyter' for NotebookEdit).
@@ -476,21 +472,9 @@ export type Tool<
   isMcp?: boolean;
   isLsp?: boolean;
   /**
-   * When true, this tool is deferred (sent with defer_loading: true) and requires
-   * ToolSearch to be used before it can be called.
-   */
-  readonly shouldDefer?: boolean;
-  /**
-   * When true, this tool is never deferred — its full schema appears in the
-   * initial prompt even when ToolSearch is enabled. For MCP tools, set via
-   * `_meta['anthropic/alwaysLoad']`. Use for tools the model must see on
-   * turn 1 without a ToolSearch round-trip.
-   */
-  readonly alwaysLoad?: boolean;
-  /**
    * For MCP tools: the server and tool names as received from the MCP server (unnormalized).
    * Present on all MCP tools regardless of whether `name` is prefixed (mcp__server__tool)
-   * or unprefixed (AGENC_AGENT_SDK_MCP_NO_PREFIX mode).
+   * Permission checks use this canonical identity independently of display metadata.
    */
   mcpInfo?: { serverName: string; toolName: string };
   readonly name: string;
@@ -644,7 +628,12 @@ export type Tool<
    */
   renderToolUseMessage(
     input: Partial<z.infer<Input>>,
-    options: { theme: ThemeName; verbose: boolean; commands?: Command[] },
+    options: {
+      theme: ThemeName;
+      verbose: boolean;
+      fullscreen: boolean;
+      commands?: Command[];
+    },
   ): React.ReactNode;
   /**
    * Returns true when the non-verbose rendering of this output is truncated
@@ -670,6 +659,7 @@ export type Tool<
       terminalSize?: { columns: number; rows: number };
       inProgressToolCallCount?: number;
       isTranscriptMode?: boolean;
+      fullscreen: boolean;
     },
   ): React.ReactNode;
   renderToolUseQueuedMessage?(): React.ReactNode;
@@ -689,6 +679,7 @@ export type Tool<
       verbose: boolean;
       progressMessagesForMessage: ProgressMessage[];
       isTranscriptMode?: boolean;
+      fullscreen: boolean;
     },
   ): React.ReactNode;
   /**
@@ -703,6 +694,7 @@ export type Tool<
       tools: Tools;
       verbose: boolean;
       isTranscriptMode?: boolean;
+      fullscreen: boolean;
     },
   ): React.ReactNode;
 
@@ -730,6 +722,7 @@ export type Tool<
     options: {
       shouldAnimate: boolean;
       tools: Tools;
+      fullscreen: boolean;
     },
   ): React.ReactNode | null;
 };

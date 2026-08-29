@@ -1,6 +1,7 @@
-import { basename, isAbsolute, normalize, resolve, sep } from "node:path";
+import { isAbsolute, normalize, resolve, sep } from "node:path";
 import { validateHooksConfig } from "../config/schema.js";
 import { isRecord } from "../utils/record.js";
+import { isCanonicalPluginName } from "./identifier.js";
 
 export { isRecord };
 
@@ -79,7 +80,7 @@ export interface PluginUserConfigOption {
   readonly title: string;
   readonly description: string;
   readonly required?: boolean;
-  readonly default?: string | number | boolean | readonly string[];
+  readonly default?: string | number | boolean | string[];
   readonly multiple?: boolean;
   readonly sensitive?: boolean;
   readonly min?: number;
@@ -134,7 +135,6 @@ export class PluginManifestError extends Error {
 export function normalizePluginManifest(
   value: unknown,
   pluginRoot: string,
-  fallbackName = basename(pluginRoot),
 ): PluginManifest {
   if (!isRecord(value)) {
     throw new PluginManifestError("Plugin manifest must be a JSON object", [
@@ -143,7 +143,7 @@ export function normalizePluginManifest(
   }
   const issues: ManifestIssue[] = [];
   validateManifestFieldTypes(value, issues);
-  const name = normalizeManifestName(value.name, fallbackName, issues);
+  const name = normalizeManifestName(value.name, issues);
 
   const manifest: PluginManifest = {
     name,
@@ -180,21 +180,27 @@ export function normalizePluginManifest(
 
 function normalizeManifestName(
   value: unknown,
-  fallbackName: string,
   issues: ManifestIssue[],
 ): string {
-  if (value === undefined) return fallbackName;
+  if (value === undefined) {
+    issues.push({ path: "name", message: "Plugin manifest requires name" });
+    return "__invalid_plugin_name__";
+  }
   if (typeof value !== "string") {
     issues.push({ path: "name", message: "Plugin name must be a string" });
-    return fallbackName;
+    return "__invalid_plugin_name__";
   }
   const name = value.trim();
   if (name.length === 0) {
     issues.push({ path: "name", message: "Plugin name cannot be empty" });
-    return fallbackName;
+    return "__invalid_plugin_name__";
   }
-  if (name.includes(" ")) {
-    issues.push({ path: "name", message: "Plugin name cannot contain spaces" });
+  if (value !== name || !isCanonicalPluginName(name)) {
+    issues.push({
+      path: "name",
+      message:
+        "Plugin name must be a lowercase canonical identifier using letters, digits, '.', '_', or '-'",
+    });
   }
   return name;
 }
@@ -473,6 +479,34 @@ function validateManifestFieldTypes(
   record: Record<string, unknown>,
   issues: ManifestIssue[],
 ): void {
+  const allowedKeys = new Set([
+    "name",
+    "version",
+    "description",
+    "author",
+    "homepage",
+    "repository",
+    "license",
+    "keywords",
+    "dependencies",
+    "commands",
+    "agents",
+    "skills",
+    "outputStyles",
+    "apps",
+    "hooks",
+    "mcpServers",
+    "lspServers",
+    "channels",
+    "settings",
+    "userConfig",
+    "interface",
+  ]);
+  for (const key of Object.keys(record)) {
+    if (!allowedKeys.has(key)) {
+      issues.push({ path: key, message: "Unknown plugin manifest field" });
+    }
+  }
   for (const key of ["version", "description", "homepage", "repository", "license"] as const) {
     if (record[key] !== undefined && typeof record[key] !== "string") {
       issues.push({ path: key, message: "Expected string" });
@@ -1121,7 +1155,7 @@ function normalizeUserConfigOption(
 
 function validDefaultValue(
   value: unknown,
-): value is string | number | boolean | readonly string[] {
+): value is string | number | boolean | string[] {
   return typeof value === "string" ||
     typeof value === "number" ||
     typeof value === "boolean" ||

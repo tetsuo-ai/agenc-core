@@ -11,6 +11,7 @@ import type {
   AuthBackend,
   AuthSessionId,
   AuthSubscriptionTier,
+  AuthVendedCredential,
 } from "../../../auth/backend.js";
 import type {
   LLMChatOptions,
@@ -22,6 +23,8 @@ import type {
   StreamProgressCallback,
 } from "../../types.js";
 import type { ProviderFactoryOptions, ProviderName } from "../../provider.js";
+import { normalizeProviderIdentity } from "../../../provider-identity.js";
+import { BUILT_IN_PROVIDER_DEFAULT_MODELS } from "../../registry/provider-info.js";
 
 type ConcreteProviderName = Exclude<ProviderName, "agenc">;
 
@@ -121,7 +124,9 @@ export class AgenCProvider implements LLMProvider {
     if (options.provider === undefined || options.provider === "agenc") {
       return new AgenCProvider({
         ...this.#config,
-        model: firstNonEmpty(options.model, this.#config.model) ?? "agenc",
+        model:
+          firstNonEmpty(options.model, this.#config.model) ??
+          BUILT_IN_PROVIDER_DEFAULT_MODELS.agenc,
         tools: [],
         timeoutMs: options.timeoutMs,
         maxTokens: options.maxOutputTokens,
@@ -137,12 +142,10 @@ export class AgenCProvider implements LLMProvider {
     if (key.provider !== provider || key.sessionId !== this.#config.sessionId) {
       throw new Error(`prediction credential route mismatch for ${provider}`);
     }
-    const apiKey = firstNonEmpty(key.apiKey);
-    if (apiKey === undefined) {
-      throw new Error(
-        `prediction credential vending returned an empty key for ${provider}`,
-      );
-    }
+    const apiKey = requireVendedApiKey(
+      key,
+      `prediction credential vending for ${provider}`,
+    );
     const baseURL = firstNonEmpty(
       key.baseUrl,
       this.#config.providerOptions?.baseURL,
@@ -230,7 +233,8 @@ export class AgenCProvider implements LLMProvider {
     options?: Pick<LLMChatOptions, "model">,
   ): Promise<ResolvedAgenCDelegate> {
     const requestedModel =
-      firstNonEmpty(options?.model, this.#config.model) ?? "agenc";
+      firstNonEmpty(options?.model, this.#config.model) ??
+      BUILT_IN_PROVIDER_DEFAULT_MODELS.agenc;
     const cacheKey = `${this.#config.subscriptionTier ?? ""}\0${requestedModel}`;
     const existing = this.#delegates.get(cacheKey);
     if (existing !== undefined) {
@@ -279,12 +283,10 @@ export class AgenCProvider implements LLMProvider {
       provider,
       this.#config.sessionId,
     );
-    const apiKey = firstNonEmpty(key.apiKey);
-    if (apiKey === undefined) {
-      throw new Error(
-        "AgenCProvider managed key vending returned an empty key",
-      );
-    }
+    const apiKey = requireVendedApiKey(
+      key,
+      "AgenCProvider managed credential vending",
+    );
     const baseURL = firstNonEmpty(key.baseUrl);
     const expiresAtMs =
       parseExpiresAtMs(key.expiresAt) ??
@@ -345,12 +347,17 @@ function withoutExecutionHandle(
 }
 
 function concreteProviderName(provider: string): ConcreteProviderName {
-  const normalized =
-    provider.trim().toLowerCase() === "xai"
-      ? "grok"
-      : provider.trim().toLowerCase();
+  const normalized = normalizeProviderIdentity(
+    provider,
+    "AgenC managed provider inference",
+  );
   if (normalized === "agenc") {
     throw new Error("AgenCProvider model inference returned provider agenc");
+  }
+  if (normalized === undefined) {
+    throw new Error(
+      `AgenCProvider model inference returned an empty provider`,
+    );
   }
   if ((CONCRETE_PROVIDER_NAMES as readonly string[]).includes(normalized)) {
     return normalized as ConcreteProviderName;
@@ -369,6 +376,20 @@ function firstNonEmpty(
     }
   }
   return undefined;
+}
+
+function requireVendedApiKey(
+  credential: AuthVendedCredential,
+  operation: string,
+): string {
+  if (credential.kind !== "api-key") {
+    throw new Error(`${operation} returned non-API-key credentials`);
+  }
+  const apiKey = firstNonEmpty(credential.apiKey);
+  if (apiKey === undefined) {
+    throw new Error(`${operation} returned an empty API key`);
+  }
+  return apiKey;
 }
 
 function parseExpiresAtMs(expiresAt: string | undefined): number | undefined {

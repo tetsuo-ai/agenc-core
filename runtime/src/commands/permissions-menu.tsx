@@ -13,6 +13,7 @@ import {
   permissionModeShortTitle,
   permissionModeTitle,
 } from "../permissions/mode-display.js";
+import { canonicalizeBypassPermissionsCwd } from "../permissions/bypass-consent-state.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
@@ -172,7 +173,13 @@ function behaviorGlyph(row: PermissionRow, currentMode: PermissionMode): string 
 }
 
 function bypassAccepted(ctx: ToolPermissionContext, workspacePath: string): boolean {
-  return ctx.bypassPermissionsAcceptedIn?.includes(workspacePath) === true;
+  try {
+    return ctx.bypassPermissionsAcceptedIn?.includes(
+      canonicalizeBypassPermissionsCwd(workspacePath),
+    ) === true;
+  } catch {
+    return false;
+  }
 }
 
 function ConfirmBypassView({

@@ -3,11 +3,13 @@
  */
 
 import { Buffer } from 'buffer'
-import { unlink, writeFile } from 'node:fs/promises'
 import { env } from '../../../utils/env.js'
 import { execFileNoThrow } from '../../../utils/execFileNoThrow.js'
 import { logError } from '../../../utils/log.js'
-import { generateTempFilePath } from '../../../utils/tempfile.js'
+import {
+  createPrivateTempFile,
+  type PrivateTempFileArtifact,
+} from '../../../utils/tempfile.js'
 import { BEL, ESC, ESC_TYPE, SEP } from './ansi.js'
 import type { Action, Color, TabStatusAction } from './types.js'
 
@@ -203,10 +205,14 @@ function copyNative(text: string): void {
       // boundary. Write UTF-8 text to a temp file and let PowerShell read it
       // directly as UTF-8 before calling Set-Clipboard.
       void (async () => {
-        const tempPath = generateTempFilePath('agenc-clipboard', '.txt')
-        const escapedTempPath = tempPath.replace(/'/g, "''")
+        let tempFile: PrivateTempFileArtifact | undefined
         try {
-          await writeFile(tempPath, text, { encoding: 'utf8' })
+          tempFile = createPrivateTempFile({
+            prefix: 'agenc-clipboard',
+            extension: '.txt',
+            content: text,
+          })
+          const escapedTempPath = tempFile.path.replace(/'/g, "''")
           await execFileNoThrow(
             'powershell',
             [
@@ -224,7 +230,11 @@ function copyNative(text: string): void {
         } catch (error) {
           logError(error)
         } finally {
-          await unlink(tempPath).catch(logError)
+          try {
+            tempFile?.dispose()
+          } catch (error) {
+            logError(error)
+          }
         }
       })().catch(logError)
       return

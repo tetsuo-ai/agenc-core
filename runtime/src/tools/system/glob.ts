@@ -45,6 +45,10 @@ import {
   applyReadOnlyRuntimeSandboxToSpawn,
   type SandboxSpawnCommand,
 } from "./apply-runtime-sandbox.js";
+import {
+  isSandboxPreparedSpawn,
+  type SandboxPreparedSpawn,
+} from "../../sandbox/execution-broker.js";
 import { selectPinnedRipgrepPath } from "./pinned-ripgrep.js";
 import {
   materializeRipgrepIgnoreFiles,
@@ -474,7 +478,7 @@ function prepareBoundRipgrepFilesCommand(params: {
   readonly program: string;
   readonly args: readonly string[];
   readonly env: Record<string, string>;
-}): SandboxSpawnCommand {
+}): SandboxSpawnCommand | SandboxPreparedSpawn {
   const command = applyReadOnlyRuntimeSandboxToSpawn({
     toolArgs: params.toolArgs,
     fallbackCwd: params.fallbackCwd,
@@ -486,17 +490,37 @@ function prepareBoundRipgrepFilesCommand(params: {
     cwdBinding: "inherited_readonly",
     env: params.env,
   });
-  if (command.cwd !== BOUND_RIPGREP_COMMAND_CWD) {
-    throw new Error(
-      "sandbox transform changed descriptor-bound ripgrep cwd; refusing to leave the authenticated capability root",
-    );
-  }
-  assertGrepArgumentEncoding(command.program, "ripgrep executable");
-  assertRipgrepFilesArgvWithinLimits(
-    command.argv0 ?? command.program,
-    command.args,
-  );
   return command;
+}
+
+async function withBoundRipgrepFilesCommand<T>(
+  command: SandboxSpawnCommand | SandboxPreparedSpawn,
+  operation: (
+    command: SandboxSpawnCommand,
+    lifecycleSignal?: AbortSignal,
+  ) => Promise<T>,
+): Promise<T> {
+  const run = (
+    resolved: SandboxSpawnCommand,
+    lifecycleSignal?: AbortSignal,
+  ): Promise<T> => {
+    if (resolved.cwd !== BOUND_RIPGREP_COMMAND_CWD) {
+      throw new Error(
+        "sandbox transform changed descriptor-bound ripgrep cwd; refusing to leave the authenticated capability root",
+      );
+    }
+    assertGrepArgumentEncoding(resolved.program, "ripgrep executable");
+    assertRipgrepFilesArgvWithinLimits(
+      resolved.argv0 ?? resolved.program,
+      resolved.args,
+    );
+    return operation(resolved, lifecycleSignal);
+  };
+  return isSandboxPreparedSpawn(command)
+    ? command.run((resolved, lifecycleSignal) =>
+        run(resolved, lifecycleSignal),
+      )
+    : run(command);
 }
 
 export async function runRipgrepFiles(
@@ -535,7 +559,7 @@ async function runRipgrepFilesWithIgnorePaths(
     };
   }
   if (params.readCapability !== undefined) {
-    let command: SandboxSpawnCommand;
+    let command: SandboxSpawnCommand | SandboxPreparedSpawn;
     try {
       command = prepareBoundRipgrepFilesCommand({
         toolArgs: params.toolArgs,
@@ -555,25 +579,38 @@ async function runRipgrepFilesWithIgnorePaths(
         spawnError: error instanceof Error ? error : new Error(String(error)),
       };
     }
-    const result = await params.readCapability.runRipgrep({
-      program: command.program,
-      args: command.args,
-      env: command.env,
-      ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
-      timeoutMs,
-      maxOutputBytes,
-      structuredLineLimit: {
-        outputMode: "files_with_matches",
-        maximumLines: params.limit,
-        maximumRecordBytes: MAX_GREP_RECORD_BYTES,
-        // The helper validates every record already delivered in a pipe chunk,
-        // including records after the retained page witness. Keep that bounded
-        // independently from the caller's page size so normal chunking cannot
-        // turn clean truncation into a RESULT_LIMIT error.
-        maximumWorkUnits: MAX_GREP_RESULTS,
-      },
-      ...(params.signal !== undefined ? { signal: params.signal } : {}),
-    });
+    const result = await withBoundRipgrepFilesCommand(
+      command,
+      (resolved, lifecycleSignal) =>
+        params.readCapability!.runRipgrep({
+          program: resolved.program,
+          args: resolved.args,
+          env: resolved.env,
+          ...(resolved.argv0 !== undefined ? { argv0: resolved.argv0 } : {}),
+          timeoutMs,
+          maxOutputBytes,
+          structuredLineLimit: {
+            outputMode: "files_with_matches",
+            maximumLines: params.limit,
+            maximumRecordBytes: MAX_GREP_RECORD_BYTES,
+            // The helper validates every record already delivered in a pipe
+            // chunk, including records after the retained page witness. Keep
+            // that bounded independently from the caller's page size so
+            // normal chunking cannot turn clean truncation into a result
+            // limit error.
+            maximumWorkUnits: MAX_GREP_RESULTS,
+          },
+          ...(params.signal !== undefined || lifecycleSignal !== undefined
+            ? {
+                signal:
+                  params.signal !== undefined &&
+                  lifecycleSignal !== undefined
+                    ? AbortSignal.any([params.signal, lifecycleSignal])
+                    : (params.signal ?? lifecycleSignal),
+              }
+            : {}),
+        }),
+    );
     const parser = createRipgrepWireParser("files_with_matches", {
       maxRecordBytes: MAX_GREP_RECORD_BYTES,
       maxDecodedBytes: MAX_GREP_DECODED_BYTES,
@@ -604,7 +641,7 @@ async function runRipgrepFilesWithIgnorePaths(
           : {}),
     };
   }
-  let command: SandboxSpawnCommand;
+  let command: SandboxSpawnCommand | SandboxPreparedSpawn;
   try {
     command = applyReadOnlyRuntimeSandboxToSpawn({
       toolArgs: params.toolArgs,

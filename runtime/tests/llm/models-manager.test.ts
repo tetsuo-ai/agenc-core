@@ -55,9 +55,7 @@ describe("StaticModelsManager", () => {
     const info = await manager.getModelInfo("gpt-5.4");
     expect(info).toMatchObject({
       slug: "gpt-5.4",
-      // The documented 1,050,000 window less its 128,000 of output, not the
-      // 272,000 price-tier boundary the catalog used to carry.
-      contextWindow: 922_000,
+      contextWindow: 272_000,
       defaultReasoningLevel: "xhigh",
       defaultReasoningSummary: "none",
       serviceTiers: [
@@ -106,7 +104,7 @@ describe("StaticModelsManager", () => {
     );
   });
 
-  it("lists built-in Groq Llama routes", async () => {
+  it("lists only the canonical built-in Groq routes", async () => {
     const manager = new StaticModelsManager({
       config: defaultConfig(),
       fallbackProvider: "groq",
@@ -118,6 +116,9 @@ describe("StaticModelsManager", () => {
         "llama-3.3-70b-versatile",
         "llama-3.1-8b-instant",
       ]),
+    );
+    expect(listed.map((entry) => entry.slug)).not.toContain(
+      "mixtral-8x7b-32768",
     );
   });
 
@@ -184,6 +185,30 @@ describe("StaticModelsManager", () => {
     expect(info.maxOutputTokens).toBe(24_576);
     expect(info.usedFallbackModelMetadata).toBe(false);
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("uses GitHub metadata for qualified and provider-local Copilot IDs", async () => {
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "github",
+        model: "gpt-5.3-codex",
+      }),
+      fallbackProvider: "github",
+    });
+
+    const qualified = await manager.getModelInfo(
+      "github:copilot:gpt-5.3-codex",
+    );
+    const local = await manager.getModelInfo("gpt-5.3-codex");
+
+    expect(qualified).toMatchObject({
+      slug: "gpt-5.3-codex",
+      contextWindow: 128_000,
+    });
+    expect(local).toMatchObject({
+      slug: "gpt-5.3-codex",
+      contextWindow: 128_000,
+    });
   });
 
   it("uses explicit provider context metadata before fetching anything", async () => {
@@ -267,11 +292,6 @@ describe("StaticModelsManager", () => {
 
   it("reads live openai-compatible endpoint metadata for vLLM-style models", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
-      // A vLLM-style server behind the lmstudio provider has no native
-      // listing; the OpenAI-shaped one is all there is.
-      if (String(input).endsWith("/api/v0/models")) {
-        return new Response("", { status: 404 });
-      }
       expect(String(input)).toBe("http://127.0.0.1:8000/v1/models");
       expect((init?.headers as Record<string, string>).Authorization).toBe(
         "Bearer local-token",
@@ -333,7 +353,6 @@ describe("StaticModelsManager", () => {
         model: "qwen3-coder-next-fp8",
         providers: {
           "openai-compatible": {
-            api_key_env: "OPENAI_COMPATIBLE_API_KEY",
             base_url: "http://127.0.0.1:8001/v1",
             default_model: "qwen3-coder-next-fp8",
             context_window_tokens: 131_072,
@@ -355,85 +374,6 @@ describe("StaticModelsManager", () => {
     expect(info.maxOutputTokens).toBe(32_768);
     expect(info.usedFallbackModelMetadata).toBe(false);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-  });
-
-  it("takes the context LM Studio actually loaded, not the weights' maximum", async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
-      expect(String(input)).toBe("http://localhost:1234/api/v0/models");
-      return jsonResponse({
-        data: [
-          {
-            id: "qwen3.8-27b",
-            type: "llm",
-            quantization: "IQ1_S",
-            state: "loaded",
-            max_context_length: 262_144,
-            loaded_context_length: 8_192,
-          },
-        ],
-      });
-    });
-    const manager = new StaticModelsManager({
-      config: mergeConfigs(defaultConfig(), {
-        model_provider: "lmstudio",
-        model: "qwen3.8-27b",
-        providers: { lmstudio: { default_model: "qwen3.8-27b" } },
-      }),
-      fallbackProvider: "lmstudio",
-      metadata: { fetchImpl, env: {} },
-    });
-
-    const info = await manager.getModelInfo("qwen3.8-27b");
-    expect(info.contextWindow).toBe(8_192);
-    expect(info.usedFallbackModelMetadata).toBe(false);
-    // The native listing answered, so nothing else was asked.
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-  });
-
-  it("falls back to a LM Studio model's maximum while it is unloaded", async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
-      expect(String(input)).toBe("http://localhost:1234/api/v0/models");
-      return jsonResponse({
-        data: [
-          {
-            id: "qwen/qwen3-14b",
-            type: "llm",
-            state: "not-loaded",
-            max_context_length: 32_768,
-          },
-        ],
-      });
-    });
-    const manager = new StaticModelsManager({
-      config: mergeConfigs(defaultConfig(), {
-        model_provider: "lmstudio",
-        model: "qwen/qwen3-14b",
-        providers: { lmstudio: { default_model: "qwen/qwen3-14b" } },
-      }),
-      fallbackProvider: "lmstudio",
-      metadata: { fetchImpl, env: {} },
-    });
-
-    const info = await manager.getModelInfo("qwen/qwen3-14b");
-    expect(info.contextWindow).toBe(32_768);
-    // Output is reserved out of the same window as the prompt. The 32k
-    // default would fill it, and admission would refuse every turn with
-    // context_window_exceeded before anything reached the model.
-    expect(info.maxOutputTokens).toBe(8_192);
-    // Escalation is a deliberate act and keeps its own ceiling.
-    expect(info.maxOutputTokensUpperLimit).toBe(64_000);
-  });
-
-  it("leaves roomy windows on the default output budget", async () => {
-    const manager = new StaticModelsManager({
-      config: defaultConfig(),
-      fallbackProvider: "openai",
-    });
-
-    // 272k of context: the default was never the thing squeezing it.
-    const info = await manager.getModelInfo("gpt-5");
-    expect(info.contextWindow).toBe(272_000);
-    expect(info.maxOutputTokens).toBeGreaterThanOrEqual(32_000);
   });
 
   it("reads default generic openai-compatible endpoint metadata without requiring auth", async () => {

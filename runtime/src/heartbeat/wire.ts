@@ -5,10 +5,6 @@
  * (turn runner), its channel adapters (delivery), and the workspace
  * HEARTBEAT.md. The daemon execution-admission kernel owns spend accounting.
  * Returns null when heartbeat is disabled.
- *
- * The utility-model OVERRIDE (running heartbeat turns on a cheaper model) is
- * carried through `policy.model` to the turn runner, but applying it to the
- * live daemon turn needs a per-turn model seam the SDK does not yet expose.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -42,7 +38,6 @@ export interface StartHeartbeatOptions {
   readonly agencHome: string;
   readonly workspaceDir: string;
   readonly config: AgenCConfig;
-  readonly env?: Readonly<Record<string, string | undefined>>;
   readonly client: GatewayDaemonClient;
   readonly adapters: readonly ChannelAdapter[];
   readonly log?: (line: string) => void;
@@ -113,7 +108,6 @@ function gatewayTurnRunner(supplier: {
     });
     return {
       finalMessage: result.finalMessage,
-      ...(result.usage !== undefined ? { usage: result.usage } : {}),
     };
   };
   return {
@@ -146,9 +140,8 @@ function delivery(adapters: readonly ChannelAdapter[]): HeartbeatDelivery {
 export async function startHeartbeat(
   options: StartHeartbeatOptions,
 ): Promise<HeartbeatScheduler | null> {
-  const env = options.env ?? process.env;
   const log = options.log ?? (() => {});
-  const policy = resolveHeartbeatPolicy(options.config.heartbeat, env);
+  const policy = resolveHeartbeatPolicy(options.config.heartbeat);
   if (!policy.enabled) return null;
 
   const runner = new HeartbeatRunner({
@@ -174,7 +167,6 @@ export async function startHeartbeat(
     onTick: () => runner.tick(),
     onOutcome: (o) => {
       if (o.kind === "delivered") log("heartbeat: delivered a message");
-      else if (o.kind === "budget_paused") log(`heartbeat: ${o.message}`);
       else if (o.kind === "error") log(`heartbeat error: ${o.message}`);
     },
   });

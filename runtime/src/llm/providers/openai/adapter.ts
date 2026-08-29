@@ -48,7 +48,6 @@ import {
 import { chatCompletionsCapabilityHintsForProvider } from "../../wire/capability-gating.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import { coerceUsage } from "../../wire/shared.js";
-import { ThinkTagStreamFilter } from "../../wire/think-tags.js";
 import {
   buildOpenAIResponsesRequest,
   parseOpenAIResponsesResponse,
@@ -57,7 +56,6 @@ import {
   assertProviderStructuredOutputCompatibility,
 } from "../../provider-capabilities.js";
 import type { OpenAIProviderConfig } from "./types.js";
-import { OPENAI_STREAM_IDLE_TIMEOUT_MS_DEFAULT } from "../../stream-watchdog.js";
 import { OpenAIAuthSession } from "./auth.js";
 import { parseSSEFrames } from "../../_deps/sse.js";
 import {
@@ -67,10 +65,9 @@ import {
 } from "../../api/fallback-ladder.js";
 import { getRetryDelay, sleepMs } from "../../api/retry.js";
 import {
-  CHATGPT_MODELS_CLIENT_VERSION,
-} from "../../../services/api/openAiChatGptBackend.js";
-
-const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+  providerApiKeyEnvironmentLabel,
+  resolveBuiltInProviderInfo,
+} from "../../registry/provider-info.js";
 const OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE =
   "OpenAI Responses stream emitted invalid function_call"; // branding-scan: allow real OpenAI provider identifier
 const OPENAI_STREAM_FAILED_MESSAGE = "OpenAI stream failed"; // branding-scan: allow real OpenAI provider identifier
@@ -78,26 +75,6 @@ const OPENAI_CHAT_COMPLETIONS_INVALID_TOOL_CALL_MESSAGE =
   "OpenAI chat-completions stream emitted invalid tool_call"; // branding-scan: allow real OpenAI provider identifier
 const CHAT_COMPLETIONS_CONTEXT_SAFETY_BUFFER_TOKENS = 1024;
 const CHAT_COMPLETIONS_MIN_OUTPUT_TOKENS = 256;
-
-export async function refreshAndSyncOpenAiSubscriptionBearer(options: {
-  readonly readSubscriptionAuth: () =>
-    | { readonly accessToken: string; readonly accountId: string }
-    | undefined;
-  readonly refreshSubscription: () => Promise<boolean>;
-  readonly applySubscriptionAuth: (auth: {
-    readonly accessToken: string;
-    readonly accountId: string;
-  }) => void;
-}): Promise<void> {
-  if (options.readSubscriptionAuth() === undefined) return;
-  await options.refreshSubscription();
-  // A sibling process may already have rotated secure storage, in which case
-  // refresh correctly returns false. The live client must still adopt the
-  // stored bearer instead of continuing indefinitely with its stale copy.
-  const auth = options.readSubscriptionAuth();
-  if (!auth?.accessToken.trim() || !auth.accountId.trim()) return;
-  options.applySubscriptionAuth(auth);
-}
 
 interface OpenAISseEvent {
   readonly event?: string;
@@ -348,26 +325,6 @@ function inferErrorStatus(
   return undefined;
 }
 
-function inferErrorType(errorBody: unknown): string | undefined {
-  if (!errorBody || typeof errorBody !== "object") return undefined;
-  const record = errorBody as Record<string, unknown>;
-  const nested =
-    record.error && typeof record.error === "object"
-      ? (record.error as Record<string, unknown>)
-      : undefined;
-  for (const candidate of [
-    record.type,
-    record.code,
-    nested?.type,
-    nested?.code,
-  ]) {
-    if (typeof candidate === "string" && candidate.trim().length > 0) {
-      return candidate.trim().toLowerCase();
-    }
-  }
-  return undefined;
-}
-
 function mapOpenAIHttpFailureToError(args: {
   readonly providerName: string;
   readonly message: string;
@@ -433,7 +390,6 @@ function mapOpenAIStreamError(args: {
   readonly fallbackMessage: string;
 }): Error {
   const status = inferErrorStatus(args.errorBody);
-  const errorType = inferErrorType(args.errorBody);
   const message =
     typeof (args.errorBody as { message?: unknown })?.message === "string"
       ? String((args.errorBody as { message: string }).message)
@@ -461,10 +417,7 @@ function mapOpenAIStreamError(args: {
       body: args.errorBody,
     });
   }
-  if (errorType === "overloaded_error" || errorType === "server_error") {
-    return new LLMServerError(args.providerName, 503, message);
-  }
-  return mapLLMError(args.providerName, new Error(message), 0);
+  return new LLMProviderError(args.providerName, message);
 }
 
 function openAIStreamFallbackCandidate(
@@ -501,36 +454,69 @@ type ProviderFallbackWaitDecision = Extract<
   { readonly kind: "wait" }
 >;
 
+type ResolvedOpenAIProviderConfig = OpenAIProviderConfig & {
+  readonly baseURL: string;
+  readonly providerName: string;
+};
+
+function resolveOpenAIProviderConfig(
+  config: OpenAIProviderConfig,
+): ResolvedOpenAIProviderConfig {
+  const providerName = config.providerName ?? "openai";
+  const providerInfo = resolveBuiltInProviderInfo(providerName);
+  const baseURL = config.baseURL ?? providerInfo?.baseURL;
+  if (baseURL === undefined || baseURL.trim().length === 0) {
+    throw new Error(
+      `${providerName} provider requires an explicit baseURL because it is not registered`,
+    );
+  }
+
+  const apiKeyEnvLabel =
+    config.apiKeyEnvLabel ?? providerApiKeyEnvironmentLabel(providerName);
+  const authStrategy = config.authStrategy ?? "bearer";
+  const hasOAuthCredential =
+    config.authMode === "oauth" &&
+    Boolean(config.oauth?.accessToken.trim());
+  if (
+    !hasOAuthCredential &&
+    authStrategy === "bearer" &&
+    apiKeyEnvLabel === undefined
+  ) {
+    throw new Error(
+      `${providerName} provider requires an explicit apiKeyEnvLabel because it is not registered`,
+    );
+  }
+
+  return {
+    ...config,
+    providerName,
+    baseURL,
+    ...(apiKeyEnvLabel !== undefined ? { apiKeyEnvLabel } : {}),
+  };
+}
+
 export class OpenAIProvider implements LLMProvider {
   readonly name: string;
-  readonly defaultStreamIdleTimeoutMs?: number;
 
-  private readonly config: OpenAIProviderConfig;
+  private readonly config: ResolvedOpenAIProviderConfig;
   private readonly client: ProviderHttpClient;
   private readonly auth: OpenAIAuthSession;
 
   constructor(config: OpenAIProviderConfig) {
-    this.name = config.providerName ?? "openai";
-    // Only the first-party OpenAI Responses provider has a liveness contract
-    // strong enough for an implicit deadline. OpenAI-compatible subclasses
-    // may be silent indefinitely and keep the generic unbounded behavior.
-    this.defaultStreamIdleTimeoutMs =
-      this.name === "openai"
-        ? OPENAI_STREAM_IDLE_TIMEOUT_MS_DEFAULT
-        : undefined;
-    this.config = config;
-    this.auth = new OpenAIAuthSession(config);
+    this.config = resolveOpenAIProviderConfig(config);
+    this.name = this.config.providerName;
+    this.auth = new OpenAIAuthSession(this.config);
     this.client = new ProviderHttpClient({
       providerName: this.name,
-      baseURL: config.baseURL ?? DEFAULT_BASE_URL,
-      model: config.model,
-      defaultHeaders: config.defaultHeaders,
+      baseURL: this.config.baseURL,
+      model: this.config.model,
+      defaultHeaders: this.config.defaultHeaders,
       resolveAuthHeaders: (context) => this.auth.resolveHeaders(context),
-      timeoutMs: config.timeoutMs,
-      fetchImpl: config.fetchImpl,
-      providerFallback: config.providerFallback,
-      emitWarning: config.emitWarning,
-      onCapabilityDrift: config.onCapabilityDrift,
+      timeoutMs: this.config.timeoutMs,
+      fetchImpl: this.config.fetchImpl,
+      providerFallback: this.config.providerFallback,
+      emitWarning: this.config.emitWarning,
+      onCapabilityDrift: this.config.onCapabilityDrift,
     });
   }
 
@@ -583,7 +569,6 @@ export class OpenAIProvider implements LLMProvider {
     messages: LLMMessage[],
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
-    await this.refreshSubscriptionBearerIfExpiring();
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
     const model = options?.model?.trim() || this.config.model;
     const requestTools = options?.tools
@@ -693,7 +678,7 @@ export class OpenAIProvider implements LLMProvider {
       const networkError = mapOpenAINetworkFailureToError({
         providerName: this.name,
         error,
-        url: this.config.baseURL ?? DEFAULT_BASE_URL,
+        url: this.config.baseURL,
       });
       if (networkError) {
         throw networkError;
@@ -707,7 +692,6 @@ export class OpenAIProvider implements LLMProvider {
     onChunk: StreamProgressCallback,
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
-    await this.refreshSubscriptionBearerIfExpiring();
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
 
     try {
@@ -738,7 +722,7 @@ export class OpenAIProvider implements LLMProvider {
       const networkError = mapOpenAINetworkFailureToError({
         providerName: this.name,
         error,
-        url: this.config.baseURL ?? DEFAULT_BASE_URL,
+        url: this.config.baseURL,
       });
       if (networkError) {
         throw networkError;
@@ -749,15 +733,11 @@ export class OpenAIProvider implements LLMProvider {
 
   async healthCheck(): Promise<boolean> {
     try {
-      await this.refreshSubscriptionBearerIfExpiring();
       const session = this.client.createTurnSession();
       await this.auth.withAuthorizedOperation(async () => {
         await session.requestJson<Record<string, unknown>>({
           path: this.resolvePath("/models"),
           method: "GET",
-          ...(this.isChatGptBackend()
-            ? { query: { client_version: CHATGPT_MODELS_CLIENT_VERSION } }
-            : {}),
         });
       });
       return true;
@@ -771,7 +751,7 @@ export class OpenAIProvider implements LLMProvider {
       provider: this.name,
       model: this.config.model,
       usageReporting: "authoritative" as const,
-      supportsMaxOutputTokens: true,
+      supportsMaxOutputTokens: this.config.chatgptBackend !== true,
       ...(this.config.contextWindowTokens !== undefined
         ? { contextWindowTokens: this.config.contextWindowTokens }
         : {}),
@@ -958,36 +938,12 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   /**
-   * A ChatGPT subscription bearer lives ~10 days and this adapter can
-   * outlive that. Refresh in front of the request and swap the bearer on
-   * the live auth session, mirroring the grok adapter. Best-effort:
-   * on failure the current bearer stands and the wire reports the real
-   * auth error rather than a local refresh crash.
-   */
-  private async refreshSubscriptionBearerIfExpiring(): Promise<void> {
-    if (!this.isChatGptBackend()) return;
-    try {
-      const { readOpenAiSubscriptionAuth, refreshOpenAiSubscriptionIfNeeded } =
-        await import("../../../utils/openAiOauthCredentials.js");
-      await refreshAndSyncOpenAiSubscriptionBearer({
-        readSubscriptionAuth: readOpenAiSubscriptionAuth,
-        refreshSubscription: refreshOpenAiSubscriptionIfNeeded,
-        applySubscriptionAuth: (auth) =>
-          this.auth.updateSubscriptionAuth(auth),
-      });
-    } catch {
-      // best-effort: the wire attempt surfaces its own auth failure
-    }
-  }
-
-  /**
    * True when this provider talks to the ChatGPT subscription backend
    * rather than the platform API. That host speaks the Responses shape
    * but rejects some platform-only fields, so the wire needs to know.
    */
   private isChatGptBackend(): boolean {
-    // branding-scan: allow factual reference to real provider in host check
-    return /(^|\/\/)chatgpt\.com\//.test(this.config.baseURL ?? "");
+    return this.config.chatgptBackend === true;
   }
 
   private async streamResponses(
@@ -1061,65 +1017,9 @@ export class OpenAIProvider implements LLMProvider {
         { id: string; name: string; arguments: string }
       >();
       let completedResponse: Record<string, unknown> | null = null;
-      const streamedReasoning = new Map<number, string>();
-      const reasoningIndexByIdentity = new Map<string, number>();
 
-      for await (const event of this.readSseEvents(response, () => {
-        // Raw SSE comments/keepalives and partial frames prove transport
-        // liveness even before they form a JSON Responses event.
-        onChunk({ content: "", done: false });
-      })) {
+      for await (const event of this.readSseEvents(response)) {
         const eventType = event.event ?? String(event.data.type ?? "");
-
-        if (
-          eventType === "response.reasoning_summary_text.delta" ||
-          eventType === "response.reasoning_text.delta"
-        ) {
-          const delta =
-            typeof event.data.delta === "string" ? event.data.delta : "";
-          if (delta.length > 0) {
-            const family =
-              eventType === "response.reasoning_text.delta"
-                ? "raw"
-                : "summary";
-            const outputIdentity =
-              typeof event.data.output_index === "number"
-                ? `output:${event.data.output_index}`
-                : typeof event.data.item_id === "string" &&
-                    event.data.item_id.length > 0
-                  ? `item:${event.data.item_id}`
-                  : "output:0";
-            const innerIndex =
-              family === "summary" &&
-              typeof event.data.summary_index === "number"
-                ? event.data.summary_index
-                : family === "raw" &&
-                    typeof event.data.content_index === "number"
-                  ? event.data.content_index
-                  : 0;
-            const identity = `${family}:${outputIdentity}:${innerIndex}`;
-            let summaryIndex = reasoningIndexByIdentity.get(identity);
-            if (summaryIndex === undefined) {
-              summaryIndex = reasoningIndexByIdentity.size;
-              reasoningIndexByIdentity.set(identity, summaryIndex);
-            }
-            streamedReasoning.set(
-              summaryIndex,
-              (streamedReasoning.get(summaryIndex) ?? "") + delta,
-            );
-            onChunk({
-              content: "",
-              done: false,
-              reasoningSummaryDelta: {
-                delta,
-                summaryIndex,
-              },
-            });
-          } else {
-            onChunk({ content: "", done: false });
-          }
-          continue;
-        }
 
         if (eventType === "response.output_text.delta") {
           const delta =
@@ -1127,9 +1027,6 @@ export class OpenAIProvider implements LLMProvider {
           if (delta.length > 0) {
             streamedContent += delta;
             onChunk({ content: delta, done: false });
-          } else {
-            // Even an empty, well-formed delta is authoritative wire progress.
-            onChunk({ content: "", done: false });
           }
           continue;
         }
@@ -1199,8 +1096,6 @@ export class OpenAIProvider implements LLMProvider {
             }
             streamedToolCalls.set(toolCall.id, toolCall);
             onChunk({ content: "", done: false, toolCalls: [toolCall] });
-          } else {
-            onChunk({ content: "", done: false });
           }
           continue;
         }
@@ -1262,12 +1157,6 @@ export class OpenAIProvider implements LLMProvider {
           consecutiveFallbackFailures = 0;
           throw streamError;
         }
-
-        // Every successfully parsed Responses event is authoritative provider
-        // activity, including future event names this adapter does not yet
-        // render. Forward a content-free heartbeat so protocol evolution
-        // cannot starve the session watchdog or leak into visible output.
-        onChunk({ content: "", done: false });
       }
 
       if (!completedResponse) {
@@ -1296,21 +1185,6 @@ export class OpenAIProvider implements LLMProvider {
           toolCalls.length > 0 && parsed.finishReason === "stop"
             ? "tool_calls"
             : parsed.finishReason,
-        ...(streamedReasoning.size > 0
-          ? {
-              thinking: Object.freeze(
-                Array.from(streamedReasoning.entries())
-                  .sort(([a], [b]) => a - b)
-                  .map(([, text]) =>
-                    Object.freeze({
-                      text,
-                      redacted: false,
-                      kind: "reasoning_summary" as const,
-                    })
-                  ),
-              ),
-            }
-          : {}),
       };
       onChunk({
         content: "",
@@ -1403,11 +1277,6 @@ export class OpenAIProvider implements LLMProvider {
       // `delta.content`. Preserve it as an explicit hidden thinking channel;
       // it must never become canonical assistant content.
       let reasoningContent = "";
-      // Others (MiniMax M3, Qwen3, Kimi K2 templates) inline the
-      // chain-of-thought in `delta.content` behind think markers; the
-      // filter reroutes those spans to the same hidden channel so the
-      // transcript never shows literal tags.
-      const thinkFilter = new ThinkTagStreamFilter();
       let model = requestModel;
       let finishReason: LLMResponse["finishReason"] = "stop";
       let usage: Record<string, unknown> = {};
@@ -1416,9 +1285,7 @@ export class OpenAIProvider implements LLMProvider {
         { id: string; name: string; arguments: string }
       >();
 
-      for await (const event of this.readSseEvents(response, () => {
-        onChunk({ content: "", done: false });
-      })) {
+      for await (const event of this.readSseEvents(response)) {
         const chunk = event.data;
         if (chunk.error && typeof chunk.error === "object") {
           const streamError = mapOpenAIStreamError({
@@ -1451,8 +1318,6 @@ export class OpenAIProvider implements LLMProvider {
           throw streamError;
         }
 
-        let emittedActivity = false;
-
         if (typeof chunk.model === "string" && chunk.model.length > 0) {
           model = chunk.model;
         }
@@ -1469,29 +1334,8 @@ export class OpenAIProvider implements LLMProvider {
               ? (choice.delta as Record<string, unknown>)
               : {};
           if (typeof delta.content === "string" && delta.content.length > 0) {
-            const split = thinkFilter.push(delta.content);
-            if (split.text.length > 0) {
-              content += split.text;
-              onChunk({ content: split.text, done: false });
-            }
-            if (split.reasoning.length > 0) {
-              reasoningContent += split.reasoning;
-              onChunk({
-                content: "",
-                done: false,
-                reasoningSummaryDelta: {
-                  delta: split.reasoning,
-                  summaryIndex:
-                    typeof choice.index === "number" ? choice.index : 0,
-                },
-              });
-            }
-            if (split.text.length === 0 && split.reasoning.length === 0) {
-              // Held in the filter's marker buffer — still authoritative
-              // wire progress, same as an empty well-formed delta.
-              onChunk({ content: "", done: false });
-            }
-            emittedActivity = true;
+            content += delta.content;
+            onChunk({ content: delta.content, done: false });
           }
           if (
             typeof delta.reasoning_content === "string" &&
@@ -1507,7 +1351,6 @@ export class OpenAIProvider implements LLMProvider {
                   typeof choice.index === "number" ? choice.index : 0,
               },
             });
-            emittedActivity = true;
           }
 
           const deltaToolCalls = Array.isArray(delta.tool_calls)
@@ -1559,33 +1402,6 @@ export class OpenAIProvider implements LLMProvider {
             }
           }
         }
-
-        // Parsed usage/model/finish/tool-argument-only chunks are real wire
-        // progress too. Without this heartbeat, a long function-call argument
-        // stream could be active while the session watchdog saw only silence.
-        if (!emittedActivity) {
-          onChunk({ content: "", done: false });
-        }
-      }
-
-      // The stream can end while the filter still holds an unresolved
-      // marker prefix (or a think block the model never closed). Drain
-      // it to the channel its state says it belongs to.
-      const filterTail = thinkFilter.flush();
-      if (filterTail.text.length > 0) {
-        content += filterTail.text;
-        onChunk({ content: filterTail.text, done: false });
-      }
-      if (filterTail.reasoning.length > 0) {
-        reasoningContent += filterTail.reasoning;
-        onChunk({
-          content: "",
-          done: false,
-          reasoningSummaryDelta: {
-            delta: filterTail.reasoning,
-            summaryIndex: 0,
-          },
-        });
       }
 
       const includeToolCalls = finishReason !== "length";
@@ -1672,7 +1488,6 @@ export class OpenAIProvider implements LLMProvider {
 
   private async *readSseEvents(
     response: ProviderHttpStreamResponse,
-    onTransportActivity?: () => void,
   ): AsyncGenerator<OpenAISseEvent> {
     const decoder = new TextDecoder();
     let buffer = "";
@@ -1680,7 +1495,6 @@ export class OpenAIProvider implements LLMProvider {
       buffer += decoder.decode(chunk.value, { stream: true });
       const parsed = parseSSEFrames(buffer, this.name);
       buffer = parsed.remaining;
-      let yieldedEvent = false;
 
       for (const frame of parsed.frames) {
         if (!frame.data || frame.data === "[DONE]") {
@@ -1689,17 +1503,10 @@ export class OpenAIProvider implements LLMProvider {
         }
         try {
           const data = JSON.parse(frame.data) as Record<string, unknown>;
-          yieldedEvent = true;
           yield { event: frame.event, data };
         } catch {
           continue;
         }
-      }
-      // The outer semantic watchdog cannot see wire bytes directly. Surface a
-      // content-free heartbeat only when this transport chunk did not already
-      // produce a parsed event (which the caller maps separately).
-      if (!yieldedEvent && chunk.value.length > 0) {
-        onTransportActivity?.();
       }
     }
 

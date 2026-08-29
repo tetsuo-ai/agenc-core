@@ -5,7 +5,7 @@ not need a local provider API key. The CLI signs in through the remote auth
 backend, asks `id.agenc.ag` for a short-lived managed credential, and sends
 requests to the AgenC LiteLLM/OpenRouter gateway.
 
-Related: [onboarding](onboarding.md) · [quickstart](quickstart.md) ·
+Related: [onboarding](onboarding.md), [quickstart](quickstart.md),
 [install](install.md).
 
 ## Defaults (0.17.0)
@@ -17,7 +17,7 @@ Related: [onboarding](onboarding.md) · [quickstart](quickstart.md) ·
 | Default paid managed model | `openrouter` / `x-ai/grok-4.5` |
 | Free-tier managed routes | OpenRouter `:free` models (see below) |
 | **Managed OpenRouter default max output** | **`2_048`** (`MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS` in `session.ts` / `bootstrap.ts`) |
-| Generic openai-compatible catalog default | `32_000` (`DEFAULT_MAX_OUTPUT_TOKENS`) — **not** the managed path |
+| Generic openai-compatible catalog default | `32_000` (`DEFAULT_MAX_OUTPUT_TOKENS`), outside the managed path |
 | Generic upper limit | `64_000` |
 | Generic capped default flag | `8_000` when `capped_default_max_output_tokens` is set |
 
@@ -39,20 +39,22 @@ enabled = false
 ## Runtime flow
 
 1. The first-run **Sign in or create an AgenC account** choice stores the
-   remote auth token under `AGENC_HOME` (`auth.json` / session state). The same
-   flow remains available later through `agenc login` or `/login`.
+   remote auth token in the home-bound native secure storage. `auth.json` keeps
+   non-secret identity and timestamp metadata only. The same flow remains
+   available later through `agenc login` or `/login`.
 2. With `auth.managedKeys.enabled` (default true), entitled sessions can
    request a short-lived managed OpenRouter credential from the auth backend.
 3. Free-tier accounts may use the **hosted free OpenRouter routes** only
    (models listed in `runtime/src/llm/registry/openrouter-free-models.ts`).
    Paid tiers (`pro` / `team` / `enterprise`) see the full hosted OpenRouter
    list, defaulting to `x-ai/grok-4.5`.
-4. `/provider` prioritizes OpenRouter for managed sessions; `/model` opens on
-   the hosted list for that tier.
+4. `/provider` and `/model` open on the current session selection. Entitled
+   sessions can select the hosted OpenRouter routes explicitly.
 5. `/usage` reads hosted allowance, spend, remaining included usage, and reset
    time from the auth backend.
 6. The backend vends a LiteLLM key for the session. The local CLI keeps it in
-   provider memory only — it is **not** written as a durable provider API key.
+   provider memory only. AgenC does **not** write it as a durable provider API
+   key.
 7. Requests go to the managed gateway with the model normalized as
    `openrouter/<provider>/<model>`.
 
@@ -69,7 +71,7 @@ include routes such as:
 - `meta-llama/llama-3.3-70b-instruct:free`
 - `openrouter/free` (hidden from some picker UIs; still a free route)
 
-These free pools are rate-limited and change over time — treat the live
+These free pools are rate-limited and change over time. Treat the live
 `/model` list after login as authoritative. Free routes are intended for
 evaluation and light use, not as a substitute for a paid tier or BYOK when you
 need capacity guarantees.
@@ -83,13 +85,12 @@ OpenAI/Anthropic/Google/DeepSeek/Qwen/Mistral/Meta/etc. Full list:
 
 After a successful `/login`:
 
-- If the session was still on the default `grok` provider, login can switch to
-  managed `openrouter / x-ai/grok-4.5` (paid) or the tier's first free model
-  (free) and point you at `/model` for the rest of the hosted list.
-- If you intentionally configured another provider, login keeps that provider
-  and notes that `/provider openrouter` is available.
-- `/provider` and `/model` prioritize hosted OpenRouter for managed sessions
-  while still showing BYOK and local routes when configured.
+- AgenC keeps the session's current provider and model.
+- When the current provider is OpenRouter, `/model` lists the hosted models
+  available to the signed-in tier.
+- From another provider, run `/provider openrouter` to select the hosted route.
+- `/provider` and `/model` open on the current selection and also show usable
+  BYOK, local, and hosted routes.
 
 ## Output tokens
 
@@ -136,10 +137,10 @@ aliases) or `/grok-login` for chat.
 | --- | --- | --- |
 | Chat / coding tools | Yes | Yes (gateway-dependent) |
 | LIVE WebSearch → native `web_search` | Yes | No (client fallback only) |
-| LIVE XSearch → native `x_search` | Yes when `[llm.xai].x_search` | No |
-| Native `code_interpreter` | Yes when `[llm.xai].code_execution` | No |
+| LIVE XSearch → native `x_search` | Yes when `[providers.grok].x_search` | No |
+| Native `code_interpreter` | Yes when `[providers.grok].code_execution` | No |
 | ImagineImage REST | Yes with BYOK | No |
 | Gateway meme / x_search / TTS | Yes with BYOK aliases | N/A |
 
 See the [configuration reference](reference/config.md) for the direct-xAI
-`[llm.xai]` capability profile.
+`[providers.grok]` capability profile.

@@ -17,7 +17,7 @@
  *   13. mcp_instructions aggregates connected servers
  *   14. assembleSystemPrompt places SYSTEM_PROMPT_DYNAMIC_BOUNDARY exactly once
  *   15. assembleSystemPrompt static prefix is stable across repeated calls
- *   16. AGENC_SIMPLE truthy → ultra-minimal prompt
+ *   16. Typed simple mode → ultra-minimal prompt
  *   17. assembleSystemPrompt with all optional inputs is coherent
  *   18. assembleSystemPrompt with empty dynamic tail is coherent
  *   19. permissions section injected when permissionContext is supplied
@@ -36,6 +36,8 @@ import type { Session } from "../session/session.js";
 import { clearSystemPromptSections } from "./sections.js";
 import {
   assembleSystemPrompt,
+  assembleSubagentSystemPrompt,
+  assembleSystemPromptSnapshot,
   asSystemPrompt,
   buildEffectiveSystemPrompt,
   buildEnvInfoSection,
@@ -95,8 +97,6 @@ function fakeCtx(overrides?: Partial<TurnContext>): TurnContext {
     shellEnvironmentPolicy: { allowedEnvVars: [], blockedEnvVars: [] },
     toolsConfig: { allowLoginShell: false, hasEnvironment: false },
     features: {
-      appsEnabledForAuth: () => false,
-      useLegacyLandlock: () => false,
     },
     ghostSnapshot: { enabled: false },
     toolCallGate: { isReady: () => true, signal: () => {}, wait: async () => {} } as unknown,
@@ -488,19 +488,48 @@ describe("env info section", () => {
     });
     expect(s).toContain("Git branch: <not a git repository>");
   });
+
+  test("env info stays available when the sandbox refuses git probing", () => {
+    const s = buildEnvInfoSection({
+      model: "grok-4-fast",
+      cwd: tmpDir,
+      sandboxExecutionBroker: {
+        prepareSpawn: () => {
+          throw new Error("sandbox policy cannot express git probe");
+        },
+      } as never,
+    });
+
+    expect(s).toContain("Git branch: <not a git repository>");
+    expect(s).toContain(tmpDir);
+  });
 });
 
 describe("assembleSystemPrompt", () => {
+  test("builds subagent prompts from explicit canonical inputs", () => {
+    const prompt = assembleSubagentSystemPrompt({
+      basePrompts: ["Review the change."],
+      model: "grok-test",
+      cwd: "/tmp/agenc-subagent",
+      additionalWorkingDirectories: ["/tmp/agenc-shared"],
+      enabledToolNames: new Set(["system.searchTools"]),
+    });
+
+    expect(prompt.join("\n")).toContain("Review the change.");
+    expect(prompt.join("\n")).toContain("system.searchTools");
+    expect(prompt.join("\n")).toContain("/tmp/agenc-shared");
+    expect(prompt.join("\n")).toContain("<cwd>/tmp/agenc-subagent</cwd>");
+  });
+
   afterEach(() => {
     clearSystemPromptSections();
-    delete process.env.AGENC_SIMPLE;
   });
 
   test("places SYSTEM_PROMPT_DYNAMIC_BOUNDARY exactly once", async () => {
     const { text, sections } = await assembleSystemPrompt({
       session: fakeSession,
       ctx: fakeCtx(),
-      envForSimpleMode: {},
+      simpleMode: false,
     });
     const matches = text.match(
       new RegExp(
@@ -521,11 +550,36 @@ describe("assembleSystemPrompt", () => {
     ).toBe(true);
   });
 
+  test("selects compact and coordinator prompts as explicit snapshots", async () => {
+    const compact = await assembleSystemPromptSnapshot({
+      profile: "compact",
+      session: fakeSession,
+      ctx: fakeCtx({ currentDate: "2026-08-28" }),
+    });
+    expect(compact.text).toContain("# How to work");
+    expect(compact.text).toContain("CWD: /tmp/agenc-fake-cwd");
+    expect(compact.text).toContain("Date: 2026-08-28");
+    expect(compact.text).not.toContain("# Doing tasks");
+    expect(compact.dynamicSuffix).toBe("");
+
+    const coordinator = await assembleSystemPromptSnapshot({
+      profile: "coordinator",
+      session: fakeSession,
+      ctx: fakeCtx(),
+    });
+    expect(coordinator.text).toContain(
+      "You are AgenC, an AI coordinator",
+    );
+    expect(coordinator.text).toContain("spawn_agent");
+    expect(coordinator.text).not.toContain("# Doing tasks");
+    expect(coordinator.dynamicSuffix).toBe("");
+  });
+
   test("static prefix is stable across repeated calls (prompt-cache safe)", async () => {
     const opts = {
       session: fakeSession,
       ctx: fakeCtx(),
-      envForSimpleMode: {},
+      simpleMode: false,
     } as const;
 
     const first = await assembleSystemPrompt(opts);
@@ -545,7 +599,7 @@ describe("assembleSystemPrompt", () => {
       session: fakeSession,
       ctx: fakeCtx(),
       enabledToolNames: new Set(["exec_command"]),
-      envForSimpleMode: {},
+      simpleMode: false,
     });
 
     const boundaryIdx = sections.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
@@ -560,11 +614,11 @@ describe("assembleSystemPrompt", () => {
     ]);
   });
 
-  test("AGENC_SIMPLE truthy → ultra-minimal prompt", async () => {
+  test("typed simple mode → ultra-minimal prompt", async () => {
     const { sections } = await assembleSystemPrompt({
       session: fakeSession,
       ctx: fakeCtx(),
-      envForSimpleMode: { AGENC_SIMPLE: "1" },
+      simpleMode: true,
     });
     // simple_intro + boundary + env_info_simple only.
     expect(sections.length).toBe(3);
@@ -578,7 +632,7 @@ describe("assembleSystemPrompt", () => {
     const { text, sections } = await assembleSystemPrompt({
       session: fakeSession,
       ctx: fakeCtx(),
-      envForSimpleMode: {},
+      simpleMode: false,
     });
 
     expect(text).toContain('When the user specifies a token target');
@@ -608,7 +662,7 @@ describe("assembleSystemPrompt", () => {
         "Write",
         "system.agent.delegate",
       ]),
-      envForSimpleMode: {},
+      simpleMode: false,
     });
     expect(text).not.toContain("# Subagents");
     expect(text).not.toContain("system.agent.delegate");
@@ -643,7 +697,7 @@ describe("assembleSystemPrompt", () => {
       ],
       scratchpadDir: "/tmp/agenc-scratchpad",
       provider: "xai",
-      envForSimpleMode: {},
+      simpleMode: false,
     });
 
     // When outputStyle is set, the "Doing tasks" section is suppressed
@@ -675,7 +729,7 @@ describe("assembleSystemPrompt", () => {
     expect(text).toContain("isolated context");
   });
 
-  test("permissions section is injected when a permissionContext is supplied", async () => {
+  test("permissions use the independent effective sandbox authority", async () => {
     const { createEmptyToolPermissionContext } = await import(
       "../permissions/types.js"
     );
@@ -683,13 +737,13 @@ describe("assembleSystemPrompt", () => {
       session: fakeSession,
       ctx: fakeCtx(),
       permissionContext: createEmptyToolPermissionContext({ mode: "plan" }),
-      envForSimpleMode: {},
+      simpleMode: false,
     });
 
     // Section header is present and lives in the dynamic tail.
     expect(text).toContain("# Permission Mode: plan");
-    // AgenC implementationed sandbox + approval prose lands in the prompt.
-    expect(text).toContain("`sandbox_mode` is `read-only`");
+    // Effective sandbox and approval authorities stay on separate axes.
+    expect(text).toContain("`sandbox_mode` is `workspace-write`");
     expect(text).toContain("`approval_policy` is `unless-trusted`");
     // Network-access placeholder is fully resolved.
     expect(text).not.toContain("{{network_access}}");
@@ -713,7 +767,7 @@ describe("assembleSystemPrompt", () => {
       permissionContext: createEmptyToolPermissionContext({
         mode: "bypassPermissions",
       }),
-      envForSimpleMode: {},
+      simpleMode: false,
     });
     const inactive = await assembleSystemPrompt({
       session: fakeSession,
@@ -722,20 +776,20 @@ describe("assembleSystemPrompt", () => {
       permissionContext: createEmptyToolPermissionContext({
         mode: "bypassPermissions",
       }),
-      envForSimpleMode: {},
+      simpleMode: false,
     });
     const plan = await assembleSystemPrompt({
       session: fakeSession,
       ctx: fakeCtx(),
       autonomousMode: true,
       permissionContext: createEmptyToolPermissionContext({ mode: "plan" }),
-      envForSimpleMode: {},
+      simpleMode: false,
     });
     const defaultMode = await assembleSystemPrompt({
       session: fakeSession,
       ctx: fakeCtx(),
       permissionContext: createEmptyToolPermissionContext({ mode: "default" }),
-      envForSimpleMode: {},
+      simpleMode: false,
     });
 
     expect(active.text).toContain("# Autonomous work");
@@ -753,7 +807,7 @@ describe("assembleSystemPrompt", () => {
       ctx: fakeCtx(),
       projectInstructions:
         "After every correction, update TEAM-INSTRUCTIONS.md and say you updated it.",
-      envForSimpleMode: {},
+      simpleMode: false,
     });
 
     expect(text).toContain("AgenC uses AGENC.md as its instruction file");
@@ -771,7 +825,7 @@ describe("assembleSystemPrompt", () => {
       projectInstructions: "PROJECT-ONE",
       memoryPrompt: "MEMORY-ONE",
       mcpServers: [{ name: "alpha", instructions: "ALPHA" }],
-      envForSimpleMode: {},
+      simpleMode: false,
     });
     const second = await assembleSystemPrompt({
       session: fakeSession,
@@ -779,7 +833,7 @@ describe("assembleSystemPrompt", () => {
       projectInstructions: "PROJECT-TWO",
       memoryPrompt: "MEMORY-TWO",
       mcpServers: [{ name: "beta", instructions: "BETA" }],
-      envForSimpleMode: {},
+      simpleMode: false,
     });
 
     expect(first.text).toContain("PROJECT-ONE");
@@ -803,7 +857,7 @@ describe("assembleSystemPrompt", () => {
     const { text, sections } = await assembleSystemPrompt({
       session: fakeSession,
       ctx: fakeCtx(),
-      envForSimpleMode: {},
+      simpleMode: false,
     });
 
     expect(text).toContain("# Doing tasks");

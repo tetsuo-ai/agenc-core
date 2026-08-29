@@ -9,6 +9,7 @@ import {
   setCurrentRuntimeSession,
 } from "../../src/session/current-session.js";
 import type { Session } from "../../src/session/session.js";
+import { createTestConfigStore } from "../fixtures.js";
 
 /**
  * Regression: persistence derived its target from process-global bootstrap
@@ -45,10 +46,12 @@ describe("getToolResultsDir session identity", () => {
     expect(dir.length).toBeGreaterThan("tool-results".length);
   });
 
-  test("an ambient session without a rollout store falls back too", () => {
-    const session = {} as unknown as Session;
+  test("an ambient session without a rollout store uses its canonical home", () => {
+    const configStore = createTestConfigStore();
+    const session = { services: { configStore } } as unknown as Session;
     setCurrentRuntimeSession(session);
     const dir = getToolResultsDir();
+    expect(dir.startsWith(configStore.homeContext.path)).toBe(true);
     expect(dir.endsWith(join("tool-results"))).toBe(true);
   });
 });

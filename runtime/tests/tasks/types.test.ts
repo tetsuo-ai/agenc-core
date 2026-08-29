@@ -29,13 +29,13 @@ describe("task discriminator types", () => {
     expect(isTaskType("local_agent")).toBe(true);
     expect(isTaskType("in_process_teammate")).toBe(true);
 
-    expect(isAgenCBackgroundTaskType("monitor")).toBe(true);
     expect(isAgenCBackgroundTaskType("generic")).toBe(true);
 
     // "remote_agent" was a producer-less scaffold deleted from the runtime;
     // it must stay rejected alongside the dropped donor kinds.
     for (const droppedType of [
       "local_workflow",
+      "monitor",
       "monitor_mcp",
       "dream",
       "remote_agent",
@@ -45,7 +45,7 @@ describe("task discriminator types", () => {
     }
   });
 
-  it("keeps donor-compatible task status helpers", () => {
+  it("keeps task status helpers consistent", () => {
     expect(isTerminalTaskStatus("completed")).toBe(true);
     expect(isTerminalTaskStatus("failed")).toBe(true);
     expect(isTerminalTaskStatus("killed")).toBe(true);
@@ -58,7 +58,7 @@ describe("task discriminator types", () => {
   it("generates prefixed task IDs and creates base task state", () => {
     expect(generateTaskId("local_bash")).toMatch(/^b[0-9a-z]{8}$/);
     expect(generateTaskId("local_agent")).toMatch(/^a[0-9a-z]{8}$/);
-    expect(generateTaskId("monitor")).toMatch(/^m[0-9a-z]{8}$/);
+    expect(generateTaskId("generic")).toMatch(/^t[0-9a-z]{8}$/);
 
     const base = createTaskStateBase(
       "agent-1",

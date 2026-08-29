@@ -4,6 +4,8 @@ import type {
   ServerCapabilities,
 } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod/v4'
+import type { HomeContext } from '../../config/home.js'
+import type { ConfigScope as RepositoryConfigScope } from '../../config/repository.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 
 // Configuration schemas and types
@@ -20,11 +22,6 @@ export const ConfigScopeSchema = lazySchema(() =>
 )
 export type ConfigScope = z.infer<ReturnType<typeof ConfigScopeSchema>>
 
-export const TransportSchema = lazySchema(() =>
-  z.enum(['stdio', 'sse', 'sse-ide', 'http', 'ws', 'sdk']),
-)
-export type Transport = z.infer<ReturnType<typeof TransportSchema>>
-
 const PermissionDefaultModeSchema = lazySchema(() =>
   z.enum(['untrusted', 'on-failure', 'on-request', 'never']),
 )
@@ -33,11 +30,8 @@ const NonEmptyStringSchema = lazySchema(() => z.string().min(1))
 
 const PerToolConfigSchema = lazySchema(() =>
   z.object({
-    enabled: z.boolean().optional(),
     default_permission_mode: PermissionDefaultModeSchema().optional(),
-    defaultPermissionMode: PermissionDefaultModeSchema().optional(),
-    approval_mode: z.enum(['auto', 'prompt', 'approve']).optional(),
-  }),
+  }).strict(),
 )
 
 const McpToolCatalogPolicyConfigSchema = lazySchema(() =>
@@ -70,15 +64,14 @@ export const McpStdioServerConfigSchema = lazySchema(() =>
 )
 
 // Cross-App Access (XAA / SEP-990): just a per-server flag. IdP connection
-// details (issuer, clientId, callbackPort) come from settings.xaaIdp — configured
+// details (issuer, client_id, callback_port) come from canonical xaa_idp TOML — configured
 // once, shared across all XAA-enabled servers. clientId/clientSecret (parent
-// oauth config + keychain slot) are for the MCP server's AS.
+// oauth config + native secure-storage slot) are for the MCP server's AS.
 const McpXaaConfigSchema = lazySchema(() => z.boolean())
 
 const McpOAuthConfigSchema = lazySchema(() =>
   z.object({
     clientId: z.string().optional(),
-    callbackPort: z.number().int().positive().optional(),
     authServerMetadataUrl: z
       .string()
       .url()
@@ -140,13 +133,6 @@ export const McpWebSocketServerConfigSchema = lazySchema(() =>
   }),
 )
 
-export const McpSdkServerConfigSchema = lazySchema(() =>
-  z.object({
-    type: z.literal('sdk'),
-    name: z.string(),
-  }),
-)
-
 // Config type for AgenC.ai proxy servers
 export const McpAgenCAIProxyServerConfigSchema = lazySchema(() =>
   z.object({
@@ -164,7 +150,6 @@ export const McpServerConfigSchema = lazySchema(() =>
     McpWebSocketIDEServerConfigSchema(),
     McpHTTPServerConfigSchema(),
     McpWebSocketServerConfigSchema(),
-    McpSdkServerConfigSchema(),
     McpAgenCAIProxyServerConfigSchema(),
   ]),
 )
@@ -187,9 +172,6 @@ export type McpHTTPServerConfig = z.infer<
 export type McpWebSocketServerConfig = z.infer<
   ReturnType<typeof McpWebSocketServerConfigSchema>
 >
-export type McpSdkServerConfig = z.infer<
-  ReturnType<typeof McpSdkServerConfigSchema>
->
 export type McpAgenCAIProxyServerConfig = z.infer<
   ReturnType<typeof McpAgenCAIProxyServerConfigSchema>
 >
@@ -202,6 +184,8 @@ export type PluginMcpServerIdentity = {
 
 export type ScopedMcpServerConfig = McpServerConfig & {
   scope: ConfigScope
+  /** Exact canonical repository authority that supplied the winning definition. */
+  authoritySource?: RepositoryConfigScope | 'session'
   // For plugin-provided servers: the providing plugin's LoadedPlugin.source
   // (e.g. 'slack@anthropic'). Stashed at config-build time so the channel
   // gate doesn't have to race AppState.plugins.enabled hydration.
@@ -232,6 +216,8 @@ export type ConnectedMCPServer = {
   instructions?: string
   config: ScopedMcpServerConfig
   cleanup: () => Promise<void>
+  /** Captured credential authority for reconnects; set for remote OAuth servers. */
+  homeContext?: HomeContext
 }
 
 export type FailedMCPServer = {
@@ -245,6 +231,8 @@ export type NeedsAuthMCPServer = {
   name: string
   type: 'needs-auth'
   config: ScopedMcpServerConfig
+  /** Present for live remote connections; synthetic UI projections omit it. */
+  homeContext?: HomeContext
 }
 
 export type PendingMCPServer = {

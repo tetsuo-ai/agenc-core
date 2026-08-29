@@ -5,15 +5,8 @@ import { safeStringify } from "../types.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import type { BashToolConfig } from "./types.js";
 import { UnifiedExecError } from "../../unified-exec/types.js";
-import {
-  UnifiedExecPreSpawnRefusalError,
-  UnifiedExecProcessManager,
-} from "../../unified-exec/process-manager.js";
-import type {
-  UnifiedExecObserver,
-  UnifiedExecProcessManagerLike,
-  UnifiedExecRuntimeSandbox,
-} from "../../unified-exec/types.js";
+import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
+import type { UnifiedExecProcessManagerLike, UnifiedExecRuntimeSandbox } from "../../unified-exec/types.js";
 import { processOwnerIdFromToolArgs } from "../../unified-exec/process-ownership.js";
 import type {
   NetworkSandboxPolicy,
@@ -148,6 +141,22 @@ export function runtimeSandboxForExec(
   const sandboxPolicyCwd = resolve(
     stringValue(turn.cwd) ?? fallbackCwd,
   );
+  const sessionTempRoot =
+    context.invocation.session.services.runtimeOptions.sessionTempRoot;
+  if (sessionTempRoot === undefined) {
+    throw new SandboxExecutionError({
+      code: "sandbox_surface_uncovered",
+      surface: executionSurface,
+      status: {
+        kind: "unavailable",
+        mode: context.sandboxMode,
+        platform: process.platform,
+        reason:
+          "authenticated runtime session has no captured temp-root authority",
+        remediation: "Create the session through the canonical runtime ingress.",
+      },
+    });
+  }
   const network = networkPolicy(turn.networkSandboxPolicy);
   const networkInterfaces = networkPolicyInterfaces(turn.network);
   return {
@@ -159,11 +168,11 @@ export function runtimeSandboxForExec(
       ? { additionalPermissions: context.additionalPermissions }
       : {}),
     sandboxPolicyCwd,
+    sessionTempRoot,
     preference: "require",
     ...(booleanValue(turn.config?.sandboxAllowGpu) === true
       ? { allowGpu: true }
       : {}),
-    useLegacyLandlock: useLegacyLandlock(turn.features ?? turn.config?.features),
     windowsSandboxLevel: windowsSandboxLevel(turn.windowsSandboxLevel),
     windowsSandboxPrivateDesktop: booleanValue(
       turn.windowsSandboxPrivateDesktop,
@@ -249,25 +258,7 @@ function windowsSandboxLevel(value: unknown): WindowsSandboxLevel {
   }
 }
 
-function useLegacyLandlock(features: unknown): boolean {
-  if (typeof features !== "object" || features === null) return false;
-  const candidate = features as {
-    readonly useLegacyLandlock?: unknown;
-    readonly enabled?: unknown;
-  };
-  if (typeof candidate.useLegacyLandlock === "function") {
-    return candidate.useLegacyLandlock() === true;
-  }
-  if (typeof candidate.enabled === "function") {
-    return candidate.enabled("use_legacy_landlock") === true;
-  }
-  return false;
-}
-
-function errorResult(
-  error: unknown,
-  options: { readonly confirmedPreSpawn?: boolean } = {},
-): ToolResult {
+function errorResult(error: unknown): ToolResult {
   const message = error instanceof Error ? error.message : String(error);
   return {
     content: safeStringify({
@@ -275,7 +266,7 @@ function errorResult(
       ...(error instanceof UnifiedExecError ? { code: error.code } : {}),
     }),
     isError: true,
-    ...(options.confirmedPreSpawn === true
+    ...(error instanceof UnifiedExecError || error instanceof SandboxExecutionError
       ? {
           effectDisposition: confirmedNoEffectDisposition(
             "tool:system.exec-command:pre-spawn-error",
@@ -283,47 +274,6 @@ function errorResult(
           ),
         }
       : {}),
-  };
-}
-
-function isDeterministicPreSpawnRefusal(error: unknown): boolean {
-  if (error instanceof UnifiedExecPreSpawnRefusalError) return true;
-  if (!(error instanceof UnifiedExecError)) return false;
-  switch (error.code) {
-    case "missing_command":
-    case "process_limit":
-      return true;
-    default:
-      // In particular, `create_process` is intentionally excluded. It can be
-      // raised from the spawn path before onBegin is emitted, so the absence of
-      // that observer callback is not proof that no child was created.
-      return false;
-  }
-}
-
-function execObserverWithEffectBoundary(
-  observer: ExecCommandToolConfig["execObserver"],
-  markProcessStarted: () => void,
-): UnifiedExecObserver {
-  return {
-    onBegin(begin) {
-      // The process manager emits begin only after it owns a spawned process.
-      // Mark the boundary before invoking third-party telemetry: if that
-      // callback throws, the command outcome is ambiguous rather than a safe
-      // no-effect refusal.
-      markProcessStarted();
-      observer?.onBegin?.(begin);
-    },
-    onEnd(end) {
-      // onEnd is telemetry emitted after collect() has produced an
-      // authoritative process observation. Telemetry must never erase that
-      // receipt and turn a known exit/yield into an unknown effect outcome.
-      try {
-        observer?.onEnd?.(end);
-      } catch {
-        // Best-effort observer only; the process result remains authoritative.
-      }
-    },
   };
 }
 
@@ -400,8 +350,8 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
     // the transcript — and most of the context budget. Same classifier as
     // Bash, so a build or an upload still renders in full: those are the ones
     // worth looking at.
-    isSearchOrReadCommand: (input: { cmd?: string; command?: string }) =>
-      isSearchOrReadBashCommand(input?.cmd ?? input?.command ?? ""),
+    isSearchOrReadCommand: (input: { cmd?: string }) =>
+      isSearchOrReadBashCommand(input?.cmd ?? ""),
     supportsParallelToolCalls: false,
     isConcurrencySafe: () => false,
     interruptBehavior: () => "cancel",
@@ -413,19 +363,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           description:
             "Shell command to execute. MCP tool names such as mcp.server.tool are not shell commands; call those tools directly. Do not use echo/printf placeholders like \"I need to call the MCP tool\".",
         },
-        command: {
-          type: "string",
-          description:
-            "Compatibility alias for cmd. Prefer cmd for AgenC calls.",
-        },
         workdir: {
           type: "string",
           description: "Working directory. Defaults to the AgenC workspace root.",
-        },
-        cwd: {
-          type: "string",
-          description:
-            "Compatibility alias for workdir. Prefer workdir for AgenC calls.",
         },
         timeoutMs: {
           type: "number",
@@ -487,12 +427,25 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           description: "Approval-cache command prefix rule, when applicable.",
         },
       },
-      anyOf: [{ required: ["cmd"] }, { required: ["command"] }],
+      required: ["cmd"],
       additionalProperties: false,
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as Record<string, unknown> & ToolExecutionInjectedArgs;
-      const cmd = asString(args.cmd) ?? asString(args.command);
+      for (const removedAlias of ["command", "cwd"] as const) {
+        if (Object.prototype.hasOwnProperty.call(args, removedAlias)) {
+          const message = `unknown field \`${removedAlias}\``;
+          return {
+            content: safeStringify({ error: message }),
+            isError: true,
+            effectDisposition: confirmedNoEffectDisposition(
+              "tool:system.exec-command:invalid-input",
+              message,
+            ),
+          };
+        }
+      }
+      const cmd = asString(args.cmd);
       if (!cmd) {
         const message = "cmd must be a non-empty string";
         return {
@@ -504,7 +457,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           ),
         };
       }
-      const workdir = asString(args.workdir) ?? asString(args.cwd);
+      const workdir = asString(args.workdir);
       const timeoutMs = asNumber(args.timeoutMs);
       const tty = asBoolean(args.tty);
 
@@ -600,26 +553,11 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         }
       }
 
-      let runtimeSandbox: UnifiedExecRuntimeSandbox | undefined;
       try {
-        runtimeSandbox = runtimeSandboxForExec(
+        const runtimeSandbox = runtimeSandboxForExec(
           args,
           config?.cwd ?? process.cwd(),
         );
-      } catch (error) {
-        // Runtime-boundary selection happens before execCommand can spawn or
-        // otherwise invoke the requested command.
-        return errorResult(error, { confirmedPreSpawn: true });
-      }
-
-      let processStarted = false;
-      const observer = execObserverWithEffectBoundary(
-        config?.execObserver,
-        () => {
-          processStarted = true;
-        },
-      );
-      try {
         const ownerId = processOwnerIdFromToolArgs(
           args as Record<string, unknown>,
         );
@@ -643,7 +581,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           ...(args.__onProgress !== undefined
             ? { __onProgress: args.__onProgress }
             : {}),
-          observer,
+          ...(config?.execObserver !== undefined
+            ? { observer: config.execObserver }
+            : {}),
           ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
           ...(ownerId !== undefined ? { ownerId } : {}),
         });
@@ -693,15 +633,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           },
         };
       } catch (error) {
-        return errorResult(error, {
-          // onBegin is emitted only after the manager has acquired the spawned
-          // process, but its absence does not prove that spawning never
-          // happened: a manager can reject between spawn and observer
-          // notification. Only typed refusals whose contract is strictly
-          // pre-spawn may therefore claim the no-effect boundary.
-          confirmedPreSpawn:
-            !processStarted && isDeterministicPreSpawnRefusal(error),
-        });
+        return errorResult(error);
       }
     },
   };

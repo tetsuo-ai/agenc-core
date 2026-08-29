@@ -17,11 +17,6 @@ vi.mock("../../keybindings/loadUserBindings.js", () => ({
   isKeybindingCustomizationEnabled: () => false,
 }));
 
-vi.mock("../../../utils/fastMode.js", () => ({
-  isFastModeAvailable: () => false,
-  isFastModeEnabled: () => false,
-}));
-
 vi.mock("../../../utils/platform.js", () => ({
   getPlatform: () => "linux",
 }));
@@ -35,7 +30,7 @@ function RerenderGeneral() {
     }
   }, [tick]);
 
-  return <General />;
+  return <General runtimeState={{}} />;
 }
 
 describe("HelpV2 General", () => {

@@ -7,7 +7,7 @@ import {
   mcpInfoFromString,
 } from '../../services/mcp/mcpStringUtils.js'
 import type { Tool, ToolPermissionContext, ToolUseContext } from '../../tools/Tool.js'
-import { toolNameAliases } from '../../permissions/rules.js'
+import { toolNamesInPermissionRiskFamily } from '../../permissions/rules.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import { shouldUseSandbox } from '../../tools/BashTool/shouldUseSandbox.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
@@ -36,13 +36,14 @@ import type {
   PermissionBehavior,
   PermissionRule,
   PermissionRuleSource,
-  PermissionRuleValue,
 } from './PermissionRule.js'
+import {
+  persistPermissionUpdates,
+} from './PermissionUpdate.js'
 import {
   applyPermissionUpdate,
   applyPermissionUpdates,
-  persistPermissionUpdates,
-} from './PermissionUpdate.js'
+} from '../../permissions/permission-updates.js'
 import type {
   PermissionUpdate,
   PermissionUpdateDestination,
@@ -51,12 +52,7 @@ import {
   permissionRuleValueFromString,
   permissionRuleValueToString,
 } from './permissionRuleParser.js'
-import {
-  deletePermissionRuleFromSettings,
-  filterRepositoryControlledPermissionGrants,
-  type PermissionRuleFromEditableSettings,
-  shouldAllowManagedPermissionRulesOnly,
-} from './permissionsLoader.js'
+import { deletePermissionRule as deleteDiskPermissionRule } from '../../permissions/settings.js'
 import * as classifierDecision from './classifierDecision.js'
 import * as autoModeState from './autoModeState.js'
 
@@ -155,7 +151,7 @@ export function createPermissionRequestMessage(
           if (result.behavior === 'ask' || result.behavior === 'passthrough') {
             // Strip output redirections for display to avoid showing filenames as commands
             // Only do this for Bash tool to avoid affecting other tools
-            if (toolName === 'Bash') {
+            if (toolName === BASH_TOOL_NAME) {
               const { commandWithoutRedirections, redirections } =
                 extractOutputRedirections(cmd)
               // Only use stripped version if there were actual redirections
@@ -219,7 +215,8 @@ export function getAskRules(context: ToolPermissionContext): PermissionRule[] {
 
 /**
  * Check if the entire tool matches a rule
- * For example, this matches "Bash" but not "Bash(prefix:*)" for BashTool
+ * For example, this matches "system.bash" but not
+ * "system.bash(prefix:*)" for the shell tool.
  * This also matches MCP tools with a server name, e.g. the rule "mcp__server1"
  */
 function toolMatchesRule(
@@ -231,14 +228,13 @@ function toolMatchesRule(
     return false
   }
 
-  // MCP tools are matched by their fully qualified mcp__server__tool name. In
-  // skip-prefix mode (AGENC_AGENT_SDK_MCP_NO_PREFIX), MCP tools have unprefixed
-  // display names (e.g., "Write") that collide with builtin names; rules targeting
-  // builtins should not match their MCP replacements.
+  // MCP tools are matched by their fully qualified mcp__server__tool identity,
+  // so permission rules cannot confuse them with similarly named builtins.
   const nameForRuleMatch = getToolNameForPermissionCheck(tool)
 
-  // Direct tool name match, including renamed builtin aliases.
-  if (toolNameAliases(nameForRuleMatch).includes(rule.ruleValue.toolName)) {
+  // Direct canonical tool-name match, including distinct tools in the same
+  // permission risk family.
+  if (toolNamesInPermissionRiskFamily(nameForRuleMatch).includes(rule.ruleValue.toolName)) {
     return true
   }
 
@@ -257,7 +253,8 @@ function toolMatchesRule(
 
 /**
  * Check if the entire tool is listed in the always allow rules
- * For example, this finds "Bash" but not "Bash(prefix:*)" for BashTool
+ * For example, this finds "system.bash" but not
+ * "system.bash(prefix:*)" for the shell tool.
  */
 export function toolAlwaysAllowedRule(
   context: ToolPermissionContext,
@@ -407,10 +404,27 @@ async function runPermissionRequestHooksForHeadlessAgent(
       }
       const decision = hookResult.permissionRequestResult
       if (decision.behavior === 'allow') {
+        const attemptsBypassActivation = decision.updatedPermissions?.some(
+          update =>
+            update.type === 'setMode' &&
+            update.mode === 'bypassPermissions',
+        )
+        if (attemptsBypassActivation) {
+          return {
+            behavior: 'deny',
+            message:
+              'PermissionRequest hooks cannot enable bypassPermissions without exact workspace consent',
+            decisionReason: {
+              type: 'hook',
+              hookName: 'PermissionRequest',
+              reason: 'bypassPermissions requires explicit workspace consent',
+            },
+          }
+        }
         const finalInput = decision.updatedInput ?? input
         // Persist permission updates if provided
         if (decision.updatedPermissions?.length) {
-          persistPermissionUpdates(decision.updatedPermissions)
+          await persistPermissionUpdates(decision.updatedPermissions)
           context.setAppState(prev => ({
             ...prev,
             toolPermissionContext: applyPermissionUpdates(
@@ -553,9 +567,8 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
       // Note: this runs inside the behavior === 'ask' branch, so allow rules
       // that fire earlier (step 2b toolAlwaysAllowedRule, PS prefix allow)
       // return before reaching here. Allow-rule protection is handled by
-      // permissionSetup.ts: isOverlyBroadPowerShellAllowRule strips PowerShell(*)
-      // and isDangerousPowerShellPermission strips iex/pwsh/Start-Process
-      // prefix rules for ant users and auto mode entry.
+      // The canonical mode authority strips PowerShell(*) and dangerous
+      // iex/pwsh/Start-Process prefix rules for internal users and auto mode.
       if (
         tool.name === POWERSHELL_TOOL_NAME &&
         !feature('POWERSHELL_AUTO_MODE')
@@ -1198,10 +1211,7 @@ export async function deletePermissionRule({
     case 'localSettings':
     case 'userSettings':
     case 'projectSettings': {
-      // Note: Typescript doesn't know that rule conforms to `PermissionRuleFromEditableSettings` even when we switch on `rule.source`
-      deletePermissionRuleFromSettings(
-        rule as PermissionRuleFromEditableSettings,
-      )
+      await deleteDiskPermissionRule({ destination, rule })
       break
     }
     case 'cliArg':
@@ -1213,110 +1223,6 @@ export async function deletePermissionRule({
 
   // Update React state with updated context
   setToolPermissionContext(updatedContext)
-}
-
-/**
- * Helper to convert PermissionRule array to PermissionUpdate array
- */
-function convertRulesToUpdates(
-  rules: PermissionRule[],
-  updateType: 'addRules' | 'replaceRules',
-): PermissionUpdate[] {
-  // Group rules by source and behavior
-  const grouped = new Map<string, PermissionRuleValue[]>()
-
-  for (const rule of rules) {
-    const key = `${rule.source}:${rule.ruleBehavior}`
-    if (!grouped.has(key)) {
-      grouped.set(key, [])
-    }
-    grouped.get(key)!.push(rule.ruleValue)
-  }
-
-  // Convert to PermissionUpdate array
-  const updates: PermissionUpdate[] = []
-  for (const [key, ruleValues] of grouped) {
-    const [source, behavior] = key.split(':')
-    updates.push({
-      type: updateType,
-      rules: ruleValues,
-      behavior: behavior as PermissionBehavior,
-      destination: source as PermissionUpdateDestination,
-    })
-  }
-
-  return updates
-}
-
-/**
- * Apply permission rules to context (additive - for initial setup)
- */
-export function applyPermissionRulesToPermissionContext(
-  toolPermissionContext: ToolPermissionContext,
-  rules: PermissionRule[],
-): ToolPermissionContext {
-  const updates = convertRulesToUpdates(rules, 'addRules')
-  return applyPermissionUpdates(toolPermissionContext, updates)
-}
-
-/**
- * Sync permission rules from disk (replacement - for settings changes)
- */
-export function syncPermissionRulesFromDisk(
-  toolPermissionContext: ToolPermissionContext,
-  rules: PermissionRule[],
-): ToolPermissionContext {
-  let context = toolPermissionContext
-
-  // When allowManagedPermissionRulesOnly is enabled, clear all non-policy sources
-  if (shouldAllowManagedPermissionRulesOnly()) {
-    const sourcesToClear: PermissionUpdateDestination[] = [
-      'userSettings',
-      'projectSettings',
-      'localSettings',
-      'cliArg',
-      'session',
-    ]
-    const behaviors: PermissionBehavior[] = ['allow', 'deny', 'ask']
-
-    for (const source of sourcesToClear) {
-      for (const behavior of behaviors) {
-        context = applyPermissionUpdate(context, {
-          type: 'replaceRules',
-          rules: [],
-          behavior,
-          destination: source,
-        })
-      }
-    }
-  }
-
-  // Clear all disk-based source:behavior combos before applying new rules.
-  // Without this, removing a rule from settings (e.g. deleting a deny entry)
-  // would leave the old rule in the context because convertRulesToUpdates
-  // only generates replaceRules for source:behavior pairs that have rules —
-  // an empty group produces no update, so stale rules persist.
-  const diskSources: PermissionUpdateDestination[] = [
-    'userSettings',
-    'projectSettings',
-    'localSettings',
-  ]
-  for (const diskSource of diskSources) {
-    for (const behavior of ['allow', 'deny', 'ask'] as PermissionBehavior[]) {
-      context = applyPermissionUpdate(context, {
-        type: 'replaceRules',
-        rules: [],
-        behavior,
-        destination: diskSource,
-      })
-    }
-  }
-
-  const updates = convertRulesToUpdates(
-    filterRepositoryControlledPermissionGrants(rules),
-    'replaceRules',
-  )
-  return applyPermissionUpdates(context, updates)
 }
 
 /**

@@ -1,13 +1,13 @@
 /**
- * --yolo multi-turn scenario.
+ * --dangerously-bypass-approvals-and-sandbox multi-turn scenario.
  *
- * Same as 07 but under --yolo. Catches yolo-specific session/transcript
+ * Same as 07 but under --dangerously-bypass-approvals-and-sandbox. Catches yolo-specific session/transcript
  * regressions that don't manifest in default mode (e.g. permission-skip
  * paths leaving the daemon in a different state on the second submit).
  */
 export const meta = {
-  description: "--yolo: two messages in one session, both reach idle.",
-  args: ["--yolo"],
+  description: "--dangerously-bypass-approvals-and-sandbox: two messages in one session, both reach idle.",
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   timeoutMs: 360_000,
   slimCwd: true,
 };

@@ -46,7 +46,7 @@ describe('in-process teammate role policy', () => {
       identity: { ...identity, planModeRequired: true },
       teammateSystemPrompt: 'Plan first.',
       agentDefinition: {
-        agentType: 'worker',
+        agentType: 'runner',
         whenToUse: 'Worker',
         source: 'projectSettings',
         permissionMode: 'acceptEdits',

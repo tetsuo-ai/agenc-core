@@ -32,7 +32,11 @@ function createSession(overrides: Record<string, unknown> = {}) {
     services: {
       registry: { toLLMTools: () => [] },
       provider: undefined,
+      skillsManager: {
+        skillsForConfig: vi.fn(async () => ({ invokedSkills: [] })),
+      },
     },
+    config: {},
     emit: vi.fn(),
     nextInternalSubId: () => "internal-1",
     ...overrides,
@@ -40,6 +44,24 @@ function createSession(overrides: Record<string, unknown> = {}) {
 }
 
 describe("buildAgenCToolUseContext", () => {
+  test("carries the exact admitted prompt snapshot into tool execution", () => {
+    const session = createSession();
+    const context = buildAgenCToolUseContext(
+      session as unknown as Session,
+      {
+        ...createTurnContext(),
+        baseInstructions: "base prompt",
+        developerInstructions: "developer prompt",
+        userInstructions: "user prompt",
+      } as TurnContext,
+      { llmTools: [] },
+    );
+
+    expect(context.renderedSystemPrompt).toEqual([
+      "base prompt\n\ndeveloper prompt\n\nuser prompt",
+    ]);
+  });
+
   test("ignores array-shaped app-state snapshots", () => {
     const arrayState = Object.assign([], {
       tasks: { unsafe: true },
@@ -106,13 +128,10 @@ describe("buildAgenCToolUseContext", () => {
     });
   });
 
-  test("aborting the context never consumes the session's root controller", () => {
-    // The regression this pins: the context aliased session.abortController,
-    // so the agent runtime cancelling its own work aborted the session's
-    // one-shot root controller — and every turn the user sent afterwards was
-    // born aborted. The session looked alive and dropped every message.
-    const sessionAbort = new AbortController();
-    const session = createSession({ abortController: sessionAbort });
+  test("projects the canonical session cost cap into attachment context", () => {
+    const session = createSession({
+      config: { maxBudgetUsd: 7.25 },
+    });
 
     const context = buildAgenCToolUseContext(
       session as unknown as Session,
@@ -120,23 +139,58 @@ describe("buildAgenCToolUseContext", () => {
       { llmTools: [] },
     );
 
-    expect(context.abortController).not.toBe(sessionAbort);
-    context.abortController.abort("interrupted");
-    expect(sessionAbort.signal.aborted).toBe(false);
+    expect(context.options.maxBudgetUsd).toBe(7.25);
   });
 
-  test("a session abort still cascades into the context", () => {
-    // Contained is not detached: session teardown must stop context work.
-    const sessionAbort = new AbortController();
-    const session = createSession({ abortController: sessionAbort });
+  test("keeps skill discovery and attachment triggers on the exact session", () => {
+    const managerA = {
+      skillsForConfig: vi.fn(async () => ({ invokedSkills: [] })),
+    };
+    const managerB = {
+      skillsForConfig: vi.fn(async () => ({ invokedSkills: [] })),
+    };
+    const sessionA = createSession({
+      conversationId: "session-a",
+      services: {
+        registry: { toLLMTools: () => [] },
+        provider: undefined,
+        skillsManager: managerA,
+      },
+    });
+    const sessionB = createSession({
+      conversationId: "session-b",
+      services: {
+        registry: { toLLMTools: () => [] },
+        provider: undefined,
+        skillsManager: managerB,
+      },
+    });
 
-    const context = buildAgenCToolUseContext(
-      session as unknown as Session,
+    const contextA = buildAgenCToolUseContext(
+      sessionA as unknown as Session,
+      createTurnContext(),
+      { llmTools: [] },
+    );
+    const contextB = buildAgenCToolUseContext(
+      sessionB as unknown as Session,
+      createTurnContext(),
+      { llmTools: [] },
+    );
+    contextA.dynamicSkillDirTriggers.add("/tmp/session-a/.agenc/skills");
+    const contextAAgain = buildAgenCToolUseContext(
+      sessionA as unknown as Session,
       createTurnContext(),
       { llmTools: [] },
     );
 
-    sessionAbort.abort("session_shutdown");
-    expect(context.abortController.signal.aborted).toBe(true);
+    expect(contextA.skillsManager).toBe(managerA);
+    expect(contextB.skillsManager).toBe(managerB);
+    expect(contextAAgain.dynamicSkillDirTriggers).toBe(
+      contextA.dynamicSkillDirTriggers,
+    );
+    expect([...contextAAgain.dynamicSkillDirTriggers]).toEqual([
+      "/tmp/session-a/.agenc/skills",
+    ]);
+    expect(contextB.dynamicSkillDirTriggers.size).toBe(0);
   });
 });

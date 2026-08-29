@@ -1,8 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
   applyPermissionRulesToPermissionContext,
-  applyPermissionUpdate,
-  applyPermissionUpdates,
   clearAllRulesFromSource,
   convertRulesToUpdates,
   escapeRuleContent,
@@ -24,6 +22,10 @@ import {
   toolAlwaysAllowedRule,
   unescapeRuleContent,
 } from "./rules.js";
+import {
+  applyPermissionUpdate,
+  applyPermissionUpdates,
+} from "./permission-updates.js";
 import {
   createEmptyToolPermissionContext,
   type PermissionRule,
@@ -63,22 +65,22 @@ describe("escapeRuleContent / unescapeRuleContent", () => {
 
 describe("parseRuleString", () => {
   test("parses plain tool name", () => {
-    expect(parseRuleString("Bash")).toEqual({ toolName: "Bash" });
+    expect(parseRuleString("system.bash")).toEqual({ toolName: "system.bash" });
   });
 
   test("parses tool with content", () => {
-    expect(parseRuleString("Bash(npm install)")).toEqual({
-      toolName: "Bash",
+    expect(parseRuleString("system.bash(npm install)")).toEqual({
+      toolName: "system.bash",
       ruleContent: "npm install",
     });
   });
 
-  test("collapses Bash(*) to whole-tool rule", () => {
-    expect(parseRuleString("Bash(*)")).toEqual({ toolName: "Bash" });
+  test("collapses system.bash(*) to whole-tool rule", () => {
+    expect(parseRuleString("system.bash(*)")).toEqual({ toolName: "system.bash" });
   });
 
-  test("collapses Bash() to whole-tool rule", () => {
-    expect(parseRuleString("Bash()")).toEqual({ toolName: "Bash" });
+  test("collapses system.bash() to whole-tool rule", () => {
+    expect(parseRuleString("system.bash()")).toEqual({ toolName: "system.bash" });
   });
 
   test("keeps tool names literal", () => {
@@ -90,9 +92,9 @@ describe("parseRuleString", () => {
   });
 
   test("handles escaped parens in content", () => {
-    const parsed = parseRuleString("Bash(python -c \"print\\(1\\)\")");
+    const parsed = parseRuleString("system.bash(python -c \"print\\(1\\)\")");
     expect(parsed).toEqual({
-      toolName: "Bash",
+      toolName: "system.bash",
       ruleContent: 'python -c "print(1)"',
     });
   });
@@ -102,10 +104,10 @@ describe("parseRuleString", () => {
   });
 
   test("returns tool-only when content closes early", () => {
-    // "Bash(foo)extra" — trailing text after close paren; treat as
+    // "system.bash(foo)extra" — trailing text after close paren; treat as
     // plain tool name (invalid shape).
-    const p = parseRuleString("Bash(foo)extra");
-    expect(p).toEqual({ toolName: "Bash(foo)extra" });
+    const p = parseRuleString("system.bash(foo)extra");
+    expect(p).toEqual({ toolName: "system.bash(foo)extra" });
   });
 });
 
@@ -115,27 +117,27 @@ describe("parseRuleString", () => {
 
 describe("serializeRuleValue", () => {
   test("omits parens for whole-tool rule", () => {
-    expect(serializeRuleValue({ toolName: "Bash" })).toBe("Bash");
+    expect(serializeRuleValue({ toolName: "system.bash" })).toBe("system.bash");
   });
 
   test("includes parens for content", () => {
     expect(
-      serializeRuleValue({ toolName: "Bash", ruleContent: "git commit:*" }),
-    ).toBe("Bash(git commit:*)");
+      serializeRuleValue({ toolName: "system.bash", ruleContent: "git commit:*" }),
+    ).toBe("system.bash(git commit:*)");
   });
 
   test("escapes parens in content", () => {
     expect(
-      serializeRuleValue({ toolName: "Bash", ruleContent: "print(1)" }),
-    ).toBe("Bash(print\\(1\\))");
+      serializeRuleValue({ toolName: "system.bash", ruleContent: "print(1)" }),
+    ).toBe("system.bash(print\\(1\\))");
   });
 
   test("roundtrip preserves input", () => {
     const cases = [
-      "Bash",
-      "Read",
-      "Bash(git commit:*)",
-      "Bash(python -c \"print\\(1\\)\")",
+      "system.bash",
+      "FileRead",
+      "system.bash(git commit:*)",
+      "system.bash(python -c \"print\\(1\\)\")",
       "mcp__server1__tool1",
     ];
     for (const c of cases) {
@@ -154,19 +156,19 @@ describe("matchRule", () => {
   const allowBash: PermissionRule = {
     source: "cliArg",
     ruleBehavior: "allow",
-    ruleValue: { toolName: "Bash" },
+    ruleValue: { toolName: "system.bash" },
   };
 
   test("whole-tool rule matches plain tool name", () => {
-    expect(matchRule(allowBash, { name: "Bash" })).toBe(true);
+    expect(matchRule(allowBash, { name: "system.bash" })).toBe(true);
   });
 
   test("whole-tool rule does not match when content is set", () => {
     const rule: PermissionRule = {
       ...allowBash,
-      ruleValue: { toolName: "Bash", ruleContent: "foo:*" },
+      ruleValue: { toolName: "system.bash", ruleContent: "foo:*" },
     };
-    expect(matchRule(rule, { name: "Bash" })).toBe(false);
+    expect(matchRule(rule, { name: "system.bash" })).toBe(false);
   });
 
   test("mcp server rule matches tools under that server", () => {
@@ -188,7 +190,7 @@ describe("matchRule", () => {
   });
 
   test("does not match different tool names", () => {
-    expect(matchRule(allowBash, { name: "Read" })).toBe(false);
+    expect(matchRule(allowBash, { name: "FileRead" })).toBe(false);
   });
 });
 
@@ -206,12 +208,12 @@ describe("getAllowRules / getDenyRules / getAskRules", () => {
     const r1: PermissionRule = {
       source: "userSettings",
       ruleBehavior: "allow",
-      ruleValue: { toolName: "Read" },
+      ruleValue: { toolName: "FileRead" },
     };
     const r2: PermissionRule = {
       source: "session",
       ruleBehavior: "allow",
-      ruleValue: { toolName: "Bash" },
+      ruleValue: { toolName: "system.bash" },
     };
     const ctx = buildCtxWithRules([r2, r1]);
     const flat = getAllowRules(ctx);
@@ -228,7 +230,7 @@ describe("getAllowRules / getDenyRules / getAskRules", () => {
     const ask: PermissionRule = {
       source: "userSettings",
       ruleBehavior: "ask",
-      ruleValue: { toolName: "Bash", ruleContent: "npm publish:*" },
+      ruleValue: { toolName: "system.bash", ruleContent: "npm publish:*" },
     };
     const ctx = buildCtxWithRules([deny, ask]);
     expect(getDenyRules(ctx).length).toBe(1);
@@ -240,10 +242,10 @@ describe("getAllowRules / getDenyRules / getAskRules", () => {
     const allow: PermissionRule = {
       source: "userSettings",
       ruleBehavior: "allow",
-      ruleValue: { toolName: "Read" },
+      ruleValue: { toolName: "FileRead" },
     };
     const ctx = buildCtxWithRules([allow]);
-    expect(toolAlwaysAllowedRule(ctx, "Read")?.source).toBe("userSettings");
+    expect(toolAlwaysAllowedRule(ctx, "FileRead")?.source).toBe("userSettings");
     expect(toolAlwaysAllowedRule(ctx, "Write")).toBeNull();
   });
 
@@ -251,54 +253,54 @@ describe("getAllowRules / getDenyRules / getAskRules", () => {
     const deny: PermissionRule = {
       source: "userSettings",
       ruleBehavior: "deny",
-      ruleValue: { toolName: "Bash" },
+      ruleValue: { toolName: "system.bash" },
     };
     const ctx = buildCtxWithRules([deny]);
-    expect(getDenyRuleForTool(ctx, "Bash")?.source).toBe("userSettings");
-    // LIVE shell tool name must share the Bash deny (todo-102).
-    expect(getDenyRuleForTool(ctx, "exec_command")?.source).toBe("userSettings");
-    expect(getDenyRuleForTool(ctx, "desktop.bash")?.source).toBe("userSettings");
     expect(getDenyRuleForTool(ctx, "system.bash")?.source).toBe("userSettings");
-    expect(getDenyRuleForTool(ctx, "Read")).toBeNull();
-    expect(getAskRuleForTool(ctx, "Bash")).toBeNull();
+    // Distinct canonical shell tools share one execution-risk family.
+    expect(getDenyRuleForTool(ctx, "exec_command")?.source).toBe("userSettings");
+    expect(getDenyRuleForTool(ctx, "system.bash")?.source).toBe("userSettings");
+    expect(getDenyRuleForTool(ctx, "desktop.bash")).toBeNull();
+    expect(getDenyRuleForTool(ctx, "FileRead")).toBeNull();
+    expect(getAskRuleForTool(ctx, "system.bash")).toBeNull();
   });
 
-  test("deny exec_command also covers Bash legacy name", () => {
+  test("deny exec_command covers the canonical shell risk family", () => {
     const deny: PermissionRule = {
       source: "userSettings",
       ruleBehavior: "deny",
       ruleValue: { toolName: "exec_command" },
     };
     const ctx = buildCtxWithRules([deny]);
-    expect(getDenyRuleForTool(ctx, "Bash")?.source).toBe("userSettings");
+    expect(getDenyRuleForTool(ctx, "system.bash")?.source).toBe("userSettings");
     expect(getDenyRuleForTool(ctx, "exec_command")?.source).toBe("userSettings");
   });
 
-  test("renamed builtin tool rules match legacy and canonical names", () => {
+  test("canonical builtin rules match exact dispatch names", () => {
     const denyRead: PermissionRule = {
       source: "userSettings",
       ruleBehavior: "deny",
-      ruleValue: { toolName: "Read" },
+      ruleValue: { toolName: "FileRead" },
     };
     const askEdit: PermissionRule = {
       source: "userSettings",
       ruleBehavior: "ask",
-      ruleValue: { toolName: "FileEdit" },
+      ruleValue: { toolName: "Edit" },
     };
     const allowWrite: PermissionRule = {
       source: "userSettings",
       ruleBehavior: "allow",
-      ruleValue: { toolName: "FileWrite" },
+      ruleValue: { toolName: "Write" },
     };
     const denyGrep: PermissionRule = {
       source: "userSettings",
       ruleBehavior: "deny",
-      ruleValue: { toolName: "system.grep" },
+      ruleValue: { toolName: "Grep" },
     };
     const askGlob: PermissionRule = {
       source: "userSettings",
       ruleBehavior: "ask",
-      ruleValue: { toolName: "system.glob" },
+      ruleValue: { toolName: "Glob" },
     };
     const ctx = buildCtxWithRules([
       denyRead,
@@ -311,7 +313,7 @@ describe("getAllowRules / getDenyRules / getAskRules", () => {
     expect(getDenyRuleForTool(ctx, "FileRead")?.source).toBe("userSettings");
     expect(getAskRuleForTool(ctx, "Edit")?.source).toBe("userSettings");
     expect(toolAlwaysAllowedRule(ctx, "Write")?.source).toBe("userSettings");
-    expect(getDenyRuleForTool(ctx, "Read")?.source).toBe("userSettings");
+    expect(getDenyRuleForTool(ctx, "FileRead")?.source).toBe("userSettings");
     expect(getDenyRuleForTool(ctx, "Grep")?.source).toBe("userSettings");
     expect(getAskRuleForTool(ctx, "Glob")?.source).toBe("userSettings");
   });
@@ -322,15 +324,15 @@ describe("getRuleByContentsForTool", () => {
     const a: PermissionRule = {
       source: "userSettings",
       ruleBehavior: "allow",
-      ruleValue: { toolName: "Bash", ruleContent: "git commit:*" },
+      ruleValue: { toolName: "system.bash", ruleContent: "git commit:*" },
     };
     const b: PermissionRule = {
       source: "userSettings",
       ruleBehavior: "allow",
-      ruleValue: { toolName: "Bash", ruleContent: "npm install" },
+      ruleValue: { toolName: "system.bash", ruleContent: "npm install" },
     };
     const ctx = buildCtxWithRules([a, b]);
-    const map = getRuleByContentsForTool(ctx, "Bash", "allow");
+    const map = getRuleByContentsForTool(ctx, "system.bash", "allow");
     expect(map.size).toBe(2);
     expect(map.get("git commit:*")?.ruleValue.ruleContent).toBe("git commit:*");
   });
@@ -339,10 +341,10 @@ describe("getRuleByContentsForTool", () => {
     const whole: PermissionRule = {
       source: "userSettings",
       ruleBehavior: "allow",
-      ruleValue: { toolName: "Bash" },
+      ruleValue: { toolName: "system.bash" },
     };
     const ctx = buildCtxWithRules([whole]);
-    expect(getRuleByContentsForTool(ctx, "Bash", "allow").size).toBe(0);
+    expect(getRuleByContentsForTool(ctx, "system.bash", "allow").size).toBe(0);
   });
 });
 
@@ -368,12 +370,12 @@ describe("matchContentRule / findMatchingContentRule", () => {
     const a: PermissionRule = {
       source: "session",
       ruleBehavior: "allow",
-      ruleValue: { toolName: "Bash", ruleContent: "git:*" },
+      ruleValue: { toolName: "system.bash", ruleContent: "git:*" },
     };
     const b: PermissionRule = {
       source: "session",
       ruleBehavior: "allow",
-      ruleValue: { toolName: "Bash", ruleContent: "npm:*" },
+      ruleValue: { toolName: "system.bash", ruleContent: "npm:*" },
     };
     const match = findMatchingContentRule(
       new Map([
@@ -436,15 +438,46 @@ describe("applyPermissionUpdate", () => {
     expect(out.mode).toBe("acceptEdits");
   });
 
+  test("setMode cannot activate bypassPermissions", () => {
+    const ctx = createEmptyToolPermissionContext();
+    expect(() =>
+      applyPermissionUpdate(ctx, {
+        type: "setMode",
+        destination: "session",
+        mode: "bypassPermissions",
+      }),
+    ).toThrow(/exact-cwd consent transition/u);
+    expect(ctx.mode).toBe("default");
+  });
+
   test("addRules appends to the correct source bucket", () => {
     const ctx = createEmptyToolPermissionContext();
     const out = applyPermissionUpdate(ctx, {
       type: "addRules",
       destination: "session",
       behavior: "allow",
-      rules: [{ toolName: "Read" }],
+      rules: [{ toolName: "FileRead" }],
     });
-    expect(out.alwaysAllowRules.session).toEqual(["Read"]);
+    expect(out.alwaysAllowRules.session).toEqual(["FileRead"]);
+  });
+
+  test("addRules keeps source buckets canonical when a rule is added twice", () => {
+    const duplicated = applyPermissionUpdate(
+      applyPermissionUpdate(createEmptyToolPermissionContext(), {
+        type: "addRules",
+        destination: "session",
+        behavior: "deny",
+        rules: [{ toolName: "Write" }],
+      }),
+      {
+        type: "addRules",
+        destination: "session",
+        behavior: "deny",
+        rules: [{ toolName: "Write" }],
+      },
+    );
+
+    expect(duplicated.alwaysDenyRules.session).toEqual(["Write"]);
   });
 
   test("replaceRules replaces the entire bucket", () => {
@@ -512,7 +545,7 @@ describe("applyPermissionUpdate", () => {
       type: "addRules",
       destination: "session",
       behavior: "allow",
-      rules: [{ toolName: "Read" }],
+      rules: [{ toolName: "FileRead" }],
     });
     expect(Object.isFrozen(ctx)).toBe(true);
   });
@@ -542,12 +575,12 @@ describe("setRulesForSource", () => {
   test("writes rule strings to a given source regardless of destination-eligibility", () => {
     const ctx = createEmptyToolPermissionContext();
     const out = setRulesForSource(ctx, "policySettings", "allow", [
-      "Read",
-      "Bash(git:*)",
+      "FileRead",
+      "system.bash(git:*)",
     ]);
     expect(out.alwaysAllowRules.policySettings).toEqual([
-      "Read",
-      "Bash(git:*)",
+      "FileRead",
+      "system.bash(git:*)",
     ]);
   });
 
@@ -599,17 +632,17 @@ describe("clearAllRulesFromSource", () => {
     const otherRule: PermissionRule = {
       source: "userSettings",
       ruleBehavior: "allow",
-      ruleValue: { toolName: "Read" },
+      ruleValue: { toolName: "FileRead" },
     };
     let ctx = buildCtxWithRules([otherRule]);
     ctx = applyPermissionUpdate(ctx, {
       type: "addRules",
       destination: "session",
       behavior: "allow",
-      rules: [{ toolName: "Bash" }],
+      rules: [{ toolName: "system.bash" }],
     });
     const cleared = clearAllRulesFromSource(ctx, "session");
-    expect(cleared.alwaysAllowRules.userSettings).toEqual(["Read"]);
+    expect(cleared.alwaysAllowRules.userSettings).toEqual(["FileRead"]);
     expect(cleared.alwaysAllowRules.session).toEqual([]);
   });
 });
@@ -696,14 +729,14 @@ describe("applyPermissionRulesToPermissionContext", () => {
       {
         source: "userSettings",
         ruleBehavior: "allow",
-        ruleValue: { toolName: "Read" },
+        ruleValue: { toolName: "FileRead" },
       },
     ];
     const ctx = applyPermissionRulesToPermissionContext(
       createEmptyToolPermissionContext(),
       rules,
     );
-    expect(ctx.alwaysAllowRules.userSettings).toEqual(["Read"]);
+    expect(ctx.alwaysAllowRules.userSettings).toEqual(["FileRead"]);
   });
 
   test("installs rules from policySettings (non-destination source)", () => {
@@ -711,14 +744,14 @@ describe("applyPermissionRulesToPermissionContext", () => {
       {
         source: "policySettings",
         ruleBehavior: "deny",
-        ruleValue: { toolName: "Bash", ruleContent: "rm -rf:*" },
+        ruleValue: { toolName: "system.bash", ruleContent: "rm -rf:*" },
       },
     ];
     const ctx = applyPermissionRulesToPermissionContext(
       createEmptyToolPermissionContext(),
       rules,
     );
-    expect(ctx.alwaysDenyRules.policySettings).toEqual(["Bash(rm -rf:*)"]);
+    expect(ctx.alwaysDenyRules.policySettings).toEqual(["system.bash(rm -rf:*)"]);
   });
 
   test("is additive across calls", () => {

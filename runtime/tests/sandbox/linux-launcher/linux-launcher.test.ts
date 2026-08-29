@@ -3,7 +3,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createBwrapCommandArgs,
@@ -14,6 +14,7 @@ import {
   LinuxSandboxCliError,
 } from "./cli.js";
 import {
+  AGENC_PROXY_SOCKET_DIR_PREFIX,
   INHERITED_CWD_FD,
   INHERITED_CWD_SANDBOX_PATH,
   SECCOMP_STDIN_FD,
@@ -21,6 +22,7 @@ import {
 import {
   createNetworkSeccompProgram,
   networkSeccompMode,
+  openNetworkSeccompProgramFile,
 } from "./landlock.js";
 import {
   findSystemBubblewrapInPath,
@@ -45,6 +47,8 @@ import {
   type PermissionProfile,
 } from "../engine/index.js";
 
+const TEST_SESSION_TEMP_ROOT = "/tmp/agenc-test-session-root";
+
 describe("Linux sandbox launcher", () => {
   it("parses the manager handoff arguments and preserves command argv", () => {
     const profile = workspaceWriteProfile("/workspace", "restricted");
@@ -55,6 +59,8 @@ describe("Linux sandbox launcher", () => {
       "/workspace",
       "--permission-profile",
       JSON.stringify(profile),
+      "--session-temp-root",
+      os.tmpdir(),
       "--allow-network-for-proxy",
       "--",
       "/bin/echo",
@@ -64,6 +70,7 @@ describe("Linux sandbox launcher", () => {
     expect(parsed.sandboxPolicyCwd).toBe("/repo");
     expect(parsed.commandCwd).toBe("/workspace");
     expect(parsed.allowNetworkForProxy).toBe(true);
+    expect(parsed.sessionTempRoot).toBe(path.normalize(os.tmpdir()));
     expect(parsed.command).toEqual(["/bin/echo", "hello world"]);
     expect(parsed.permissionProfile).toMatchObject(profile);
   });
@@ -74,6 +81,8 @@ describe("Linux sandbox launcher", () => {
       "--inherited-readonly-command-cwd",
       "--permission-profile",
       JSON.stringify(profile),
+      "--session-temp-root",
+      os.tmpdir(),
       "--",
       "/bin/true",
     ]);
@@ -88,6 +97,8 @@ describe("Linux sandbox launcher", () => {
         "--inherited-readonly-command-cwd",
         "--permission-profile",
         JSON.stringify(profile),
+        "--session-temp-root",
+        os.tmpdir(),
         "--",
         "/bin/true",
       ]),
@@ -96,6 +107,24 @@ describe("Linux sandbox launcher", () => {
 
   it("rejects malformed handoff input", () => {
     expect(() => parseLinuxSandboxLauncherArgs([])).toThrow(LinuxSandboxCliError);
+    expect(() =>
+      parseLinuxSandboxLauncherArgs([
+        "--permission-profile",
+        JSON.stringify(workspaceWriteProfile("/workspace", "disabled")),
+        "--",
+        "/bin/true",
+      ]),
+    ).toThrow(/session temp root is missing/u);
+    expect(() =>
+      parseLinuxSandboxLauncherArgs([
+        "--permission-profile",
+        JSON.stringify(workspaceWriteProfile("/workspace", "disabled")),
+        "--session-temp-root",
+        "relative",
+        "--",
+        "/bin/true",
+      ]),
+    ).toThrow(/session temp root must be an absolute path/u);
     expect(() =>
       parseLinuxSandboxLauncherArgs([
         "--permission-profile",
@@ -113,7 +142,7 @@ describe("Linux sandbox launcher", () => {
         "--",
         "/bin/true",
       ]),
-    ).toThrow(/cannot be combined/u);
+    ).toThrow(/unknown Linux sandbox argument/u);
     expect(() =>
       parseLinuxSandboxLauncherArgs([
         "--permission-profile",
@@ -152,6 +181,7 @@ describe("Linux sandbox launcher", () => {
       {
         mountProc: true,
         networkMode: "isolated",
+        sessionTempRoot: TEST_SESSION_TEMP_ROOT,
         seccompFd: SECCOMP_STDIN_FD,
       },
     );
@@ -181,7 +211,11 @@ describe("Linux sandbox launcher", () => {
       unrestrictedFileSystemPolicy(),
       "/",
       "/",
-      { mountProc: true, networkMode: "full-access" },
+      {
+        mountProc: true,
+        networkMode: "full-access",
+        sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+      },
     );
 
     expect(args.usesBubblewrap).toBe(false);
@@ -205,7 +239,12 @@ describe("Linux sandbox launcher", () => {
       policy,
       root,
       root,
-      { mountProc: true, networkMode: "isolated", seccompFd: SECCOMP_STDIN_FD },
+      {
+        mountProc: true,
+        networkMode: "isolated",
+        sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+        seccompFd: SECCOMP_STDIN_FD,
+      },
     ).args;
 
     expect(args).toContain("--tmpfs");
@@ -217,6 +256,55 @@ describe("Linux sandbox launcher", () => {
     expect(args).toContain(otherSecret);
     expect(args).toContain(path.join(root, ".git"));
     expect(args).toContain("--unshare-net");
+  });
+
+  it("binds tmpdir specials to each explicit session root outside ambient context", () => {
+    const rootA = withTempDir("agenc-linux-policy-temp-a-");
+    const rootB = withTempDir("agenc-linux-policy-temp-b-");
+    const previous = process.env["TMPDIR"];
+    const policy = restrictedFileSystemPolicy([
+      {
+        path: { kind: "special", value: { kind: "tmpdir" } },
+        access: "write",
+      },
+    ]);
+    try {
+      process.env["TMPDIR"] = "/tmp/generic-must-not-win";
+      const argsA = createBwrapCommandArgs(
+        ["/bin/true"],
+        policy,
+        "/repo",
+        "/repo",
+        {
+          mountProc: false,
+          networkMode: "isolated",
+          sessionTempRoot: rootA,
+        },
+      ).args;
+      const argsB = createBwrapCommandArgs(
+        ["/bin/true"],
+        policy,
+        "/repo",
+        "/repo",
+        {
+          mountProc: false,
+          networkMode: "isolated",
+          sessionTempRoot: rootB,
+        },
+      ).args;
+
+      expect(argsA).toContain(rootA);
+      expect(argsA).not.toContain(rootB);
+      expect(argsA).not.toContain("/tmp/generic-must-not-win");
+      expect(argsB).toContain(rootB);
+      expect(argsB).not.toContain(rootA);
+    } finally {
+      if (previous === undefined) {
+        delete process.env["TMPDIR"];
+      } else {
+        process.env["TMPDIR"] = previous;
+      }
+    }
   });
 
   it("mounts launcher roots read-only and keeps proxy roots explicitly writable", () => {
@@ -239,6 +327,7 @@ describe("Linux sandbox launcher", () => {
       {
         mountProc: true,
         networkMode: "isolated",
+        sessionTempRoot: TEST_SESSION_TEMP_ROOT,
         extraReadOnlyBindRoots: [launcherRoot],
         extraWritableBindRoots: [proxyRoot],
       },
@@ -259,6 +348,7 @@ describe("Linux sandbox launcher", () => {
       createBwrapCommandArgs(["/bin/true"], policy, root, root, {
         mountProc: true,
         networkMode: "isolated",
+        sessionTempRoot: TEST_SESSION_TEMP_ROOT,
       }),
     ).toThrow(/cannot enforce missing read-only subpath/u);
   });
@@ -275,6 +365,7 @@ describe("Linux sandbox launcher", () => {
     const args = createBwrapCommandArgs(["/bin/true"], policy, child, child, {
       mountProc: true,
       networkMode: "isolated",
+      sessionTempRoot: TEST_SESSION_TEMP_ROOT,
     });
 
     expect(args.protectedCreateTargets).toContain(path.join(child, ".git"));
@@ -293,6 +384,7 @@ describe("Linux sandbox launcher", () => {
     const args = createBwrapCommandArgs(["/bin/true"], policy, child, child, {
       mountProc: true,
       networkMode: "isolated",
+      sessionTempRoot: TEST_SESSION_TEMP_ROOT,
     }).args;
 
     const parentMask = args.findIndex((value, index) =>
@@ -331,6 +423,8 @@ describe("Linux sandbox launcher", () => {
       child,
       "--permission-profile",
       JSON.stringify(workspaceWriteProfile(child, "disabled")),
+      "--session-temp-root",
+      parent,
       "--",
       "/bin/true",
     ], {
@@ -367,6 +461,7 @@ describe("Linux sandbox launcher", () => {
     const args = createBwrapCommandArgs(["/bin/true"], policy, workspace, workspace, {
       mountProc: true,
       networkMode: "isolated",
+      sessionTempRoot: TEST_SESSION_TEMP_ROOT,
     });
 
     expect(args.args).toContain(secret);
@@ -385,6 +480,7 @@ describe("Linux sandbox launcher", () => {
       createBwrapCommandArgs(["/bin/true"], policy, workspace, workspace, {
         mountProc: true,
         networkMode: "isolated",
+        sessionTempRoot: TEST_SESSION_TEMP_ROOT,
       }),
     ).toThrow(/too broad/u);
   });
@@ -437,6 +533,56 @@ describe("Linux sandbox launcher", () => {
     ).toThrow(/does not support/u);
   });
 
+  it("isolates seccomp and proxy artifacts across two explicit session temp roots", async () => {
+    const rootA = withTempDir("agenc-linux-session-temp-a-");
+    const rootB = withTempDir("agenc-linux-session-temp-b-");
+    const staleA = path.join(rootA, `${AGENC_PROXY_SOCKET_DIR_PREFIX}stale-a`);
+    const staleB = path.join(rootB, `${AGENC_PROXY_SOCKET_DIR_PREFIX}stale-b`);
+    fs.mkdirSync(staleA);
+    fs.mkdirSync(staleB);
+    const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    fs.utimesSync(staleA, staleTime, staleTime);
+    fs.utimesSync(staleB, staleTime, staleTime);
+
+    const seccompA = openNetworkSeccompProgramFile("restricted", rootA, "x64");
+    const seccompB = openNetworkSeccompProgramFile("restricted", rootB, "x64");
+    let proxyA: ReturnType<typeof prepareHostProxyRouteSpec> | undefined;
+    let proxyB: ReturnType<typeof prepareHostProxyRouteSpec> | undefined;
+    try {
+      expect(path.relative(rootA, seccompA.path)).not.toMatch(/^\.\.(?:[/\\]|$)/u);
+      expect(path.relative(rootB, seccompB.path)).not.toMatch(/^\.\.(?:[/\\]|$)/u);
+
+      proxyA = prepareHostProxyRouteSpec(
+        { HTTP_PROXY: "http://127.0.0.1:3128" },
+        rootA,
+      );
+      expect(proxyA.socketDir.startsWith(`${rootA}${path.sep}`)).toBe(true);
+      expect(fs.existsSync(staleA)).toBe(false);
+      expect(fs.existsSync(staleB)).toBe(true);
+
+      proxyB = prepareHostProxyRouteSpec(
+        { HTTP_PROXY: "http://127.0.0.1:3128" },
+        rootB,
+      );
+      expect(proxyB.socketDir.startsWith(`${rootB}${path.sep}`)).toBe(true);
+      expect(fs.existsSync(staleB)).toBe(false);
+
+      seccompA.cleanup();
+      fs.rmSync(proxyA.socketDir, { recursive: true, force: true });
+      expect(fs.existsSync(seccompB.path)).toBe(true);
+      expect(fs.existsSync(proxyB.socketDir)).toBe(true);
+    } finally {
+      seccompA.cleanup();
+      seccompB.cleanup();
+      if (proxyA !== undefined) {
+        fs.rmSync(proxyA.socketDir, { recursive: true, force: true });
+      }
+      if (proxyB !== undefined) {
+        fs.rmSync(proxyB.socketDir, { recursive: true, force: true });
+      }
+    }
+  });
+
   it("discovers system bubblewrap while ignoring workspace-local candidates", () => {
     const root = withTempDir("agenc-linux-launcher-path-");
     const cwd = path.join(root, "workspace");
@@ -469,6 +615,41 @@ describe("Linux sandbox launcher", () => {
       supportsArgv0: true,
       supportsBindFd: false,
     });
+  });
+
+  it("does not recover a missing session PATH from the launcher process", () => {
+    const root = withTempDir("agenc-linux-launcher-path-authority-");
+    const cwd = path.join(root, "workspace");
+    const daemonBin = path.join(root, "daemon-bin");
+    fs.mkdirSync(cwd);
+    fs.mkdirSync(daemonBin);
+    const daemonBubblewrap = path.join(daemonBin, "bwrap");
+    writeExecutable(daemonBubblewrap, "#!/bin/sh\nexit 0\n");
+    const previousPath = process.env.PATH;
+    process.env.PATH = daemonBin;
+    try {
+      expect(
+        findSystemBubblewrapInPath(undefined, cwd, [daemonBin]),
+      ).toBeNull();
+      expect(
+        preferredBubblewrapLauncher({
+          cwd,
+          env: {},
+          trustedDirectories: [daemonBin],
+          probeArgv0: () => true,
+        }),
+      ).toBeNull();
+      expect(
+        preferredBubblewrapLauncher({
+          cwd,
+          trustedDirectories: [daemonBin],
+          probeArgv0: () => true,
+        }),
+      ).toMatchObject({ program: fs.realpathSync(daemonBubblewrap) });
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
   });
 
   it("rejects bubblewrap that advertises required flags but cannot create namespaces", () => {
@@ -628,6 +809,8 @@ describe("Linux sandbox launcher", () => {
             "--inherited-readonly-command-cwd",
             "--permission-profile",
             JSON.stringify(profile),
+            "--session-temp-root",
+            root,
             "--no-proc",
             "--",
             "/bin/true",
@@ -734,6 +917,8 @@ describe("Linux sandbox launcher", () => {
       workspace,
       "--permission-profile",
       JSON.stringify(profile),
+      "--session-temp-root",
+      root,
       "--",
       "/bin/true",
     ], {
@@ -799,6 +984,49 @@ describe("Linux sandbox launcher", () => {
     ).resolves.toBe(7);
   });
 
+  it("does not resolve an inner command from the launcher process PATH", async () => {
+    const root = withTempDir("agenc-linux-inner-path-authority-");
+    const daemonBin = path.join(root, "daemon-bin");
+    fs.mkdirSync(daemonBin);
+    const daemonCommand = path.join(daemonBin, "session-command");
+    writeExecutable(daemonCommand, "#!/bin/sh\nexit 0\n");
+    const previousPath = process.env.PATH;
+    const previousCwd = process.cwd();
+    let invokedProgram: string | undefined;
+    const execve = vi.spyOn(process, "execve").mockImplementation(
+      ((file: string): never => {
+        invokedProgram = file;
+        throw new Error("stop after capturing execve");
+      }) as typeof process.execve,
+    );
+    process.env.PATH = daemonBin;
+    try {
+      const exitCode = await runLinuxSandboxMain([
+        "--sandbox-policy-cwd",
+        root,
+        "--command-cwd",
+        root,
+        "--permission-profile",
+        JSON.stringify(workspaceWriteProfile(root, "disabled")),
+        "--session-temp-root",
+        root,
+        "--apply-seccomp-then-exec",
+        "--",
+        "session-command",
+      ], {
+        env: { AGENC_LINUX_SANDBOX_ACTIVE: "1" },
+      });
+
+      expect(exitCode).toBe(2);
+      expect(invokedProgram).toBe("session-command");
+    } finally {
+      process.chdir(previousCwd);
+      execve.mockRestore();
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
+  });
+
   it("validates managed proxy route inputs without accepting non-loopback endpoints", () => {
     const plan = planProxyRoutes({
       HTTP_PROXY: "http://127.0.0.1:3128",
@@ -825,7 +1053,9 @@ describe("Linux sandbox launcher", () => {
     expect(rewriteProxyEnvValue("socks4a://127.0.0.1", 43210)).toBe(
       "socks4a://127.0.0.1:43210",
     );
-    expect(() => prepareHostProxyRouteSpec({ PATH: "/usr/bin" })).toThrow(
+    expect(() =>
+      prepareHostProxyRouteSpec({ PATH: "/usr/bin" }, os.tmpdir()),
+    ).toThrow(
       /requires proxy environment variables/u,
     );
   });
@@ -842,6 +1072,8 @@ describe("Linux sandbox launcher", () => {
       root,
       "--permission-profile",
       JSON.stringify(profile),
+      "--session-temp-root",
+      root,
       "--apply-seccomp-then-exec",
       "--",
       "/bin/true",
@@ -884,7 +1116,7 @@ describe("Linux sandbox launcher", () => {
       AGENC_LINUX_SANDBOX_ACTIVE: "1",
       AGENC_INNER_SECCOMP_CAPTURE: capture,
     };
-    const prepared = await prepareHostProxyRoutes(env);
+    const prepared = await prepareHostProxyRoutes(env, os.tmpdir());
     try {
       const exitCode = await runLinuxSandboxMain([
         "--sandbox-policy-cwd",
@@ -893,6 +1125,8 @@ describe("Linux sandbox launcher", () => {
         root,
         "--permission-profile",
         JSON.stringify(workspaceWriteProfile(root, "enabled")),
+        "--session-temp-root",
+        os.tmpdir(),
         "--apply-seccomp-then-exec",
         "--allow-network-for-proxy",
         "--proxy-route-spec",
@@ -935,7 +1169,7 @@ describe("Linux sandbox launcher", () => {
       ...process.env,
       HTTP_PROXY: `http://127.0.0.1:${address.port}`,
     };
-    const prepared = await prepareHostProxyRoutes(env);
+    const prepared = await prepareHostProxyRoutes(env, os.tmpdir());
     const activated = await activateProxyRoutesInNetns(prepared.serializedSpec, env);
     try {
       const rewritten = new URL(activated.env.HTTP_PROXY ?? "");
@@ -960,7 +1194,7 @@ describe("Linux sandbox launcher", () => {
       ...process.env,
       HTTP_PROXY: `http://127.0.0.1:${address.port}`,
     };
-    const prepared = await prepareHostProxyRoutes(env);
+    const prepared = await prepareHostProxyRoutes(env, os.tmpdir());
     const activated = await activateProxyRoutesInNetns(prepared.serializedSpec, env);
     const rewritten = new URL(activated.env.HTTP_PROXY ?? "");
     const socket = net.connect({
@@ -1007,6 +1241,7 @@ describe("Linux sandbox launcher", () => {
       {
         mountProc: false,
         networkMode: "isolated",
+        sessionTempRoot: TEST_SESSION_TEMP_ROOT,
         seccompFd: SECCOMP_STDIN_FD,
       },
     ).args;
@@ -1028,6 +1263,7 @@ describe("Linux sandbox launcher", () => {
     const args = createBwrapCommandArgs(["/bin/true"], policy, root, root, {
       mountProc: false,
       networkMode: "isolated",
+      sessionTempRoot: TEST_SESSION_TEMP_ROOT,
     }).args;
 
     expect(procMaskIndex(args)).toBeGreaterThanOrEqual(0);
@@ -1041,7 +1277,12 @@ describe("Linux sandbox launcher", () => {
       unrestrictedFileSystemPolicy(),
       "/",
       "/",
-      { mountProc: true, networkMode: "isolated", seccompFd: SECCOMP_STDIN_FD },
+      {
+        mountProc: true,
+        networkMode: "isolated",
+        sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+        seccompFd: SECCOMP_STDIN_FD,
+      },
     ).args;
 
     expect(procMaskIndex(args)).toBe(-1);

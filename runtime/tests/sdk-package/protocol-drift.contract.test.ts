@@ -8,8 +8,9 @@
  * here until `packages/agenc-sdk/src/protocol.ts` is updated.
  */
 
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
@@ -18,13 +19,20 @@ import {
   AGENC_DAEMON_NOTIFICATION_METHODS,
 } from "../../src/app-server/protocol/index.js";
 import { resolveAgenCDaemonSocketPath } from "../../src/app-server/daemon-cli.js";
+import { agenCDaemonLocalEndpoint } from "../../src/app-server/transport/unix-socket.js";
+import { resolveHomeContext } from "../../src/config/home.js";
 import {
   AGENC_SDK_DAEMON_PROTOCOL_VERSION,
   AGENC_SDK_DAEMON_METHODS,
   AGENC_SDK_DAEMON_NOTIFICATION_METHODS,
   type AgencParamsByMethod,
 } from "../../../packages/agenc-sdk/src/protocol";
-import { resolveDaemonSocketPath } from "../../../packages/agenc-sdk/src/socket";
+import {
+  connect,
+  resolveAgencHome,
+  resolveDaemonSocketPath,
+} from "../../../packages/agenc-sdk/src/socket";
+import { resolveAgenCHome as resolveLauncherHome } from "../../../packages/agenc/lib/home-authority.mjs";
 
 // @ts-expect-error A partial evidence request must not match the legacy branch.
 const invalidPartialToolResolution: AgencParamsByMethod["session.resolveToolCall"] = {
@@ -91,13 +99,66 @@ describe("agenc-sdk protocol mirror", () => {
   it("mirrors the runtime local endpoint on Unix and Windows", () => {
     for (const [home, platform] of [
       ["/tmp/agenc-sdk-home", "linux"],
-      [String.raw`C:\Users\Test\.agenc`, "win32"],
+      ["/tmp/agenc-sdk-windows-home", "win32"],
     ] as const) {
       const env = { AGENC_HOME: home };
       expect(resolveDaemonSocketPath(env, home, platform)).toBe(
-        resolveAgenCDaemonSocketPath(env, home, platform),
+        agenCDaemonLocalEndpoint(home, platform),
       );
     }
+    const hostHome = "/tmp/agenc-sdk-host-home";
+    expect(resolveDaemonSocketPath(
+      { AGENC_HOME: hostHome },
+      hostHome,
+      process.platform,
+    )).toBe(resolveAgenCDaemonSocketPath(
+      { AGENC_HOME: hostHome },
+      hostHome,
+      process.platform,
+    ));
+  });
+
+  it("matches runtime and launcher home validation and canonicalization", () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-cross-package-home-"));
+    try {
+      const canonical = join(root, "canonical");
+      const alias = join(root, "alias");
+      mkdirSync(canonical);
+      symlinkSync(canonical, alias, "dir");
+      const configured = join(alias, "nested", "home");
+      const env = { AGENC_HOME: configured };
+      const expected = resolveHomeContext(env, { platformHome: root }).path;
+
+      expect(resolveLauncherHome(env, root)).toBe(expected);
+      expect(resolveAgencHome(env, root)).toBe(expected);
+
+      for (const resolveHome of [
+        (candidate: NodeJS.ProcessEnv) =>
+          resolveHomeContext(candidate, { platformHome: root }).path,
+        (candidate: NodeJS.ProcessEnv) => resolveLauncherHome(candidate, root),
+        (candidate: NodeJS.ProcessEnv) => resolveAgencHome(candidate, root),
+      ]) {
+        expect(() => resolveHome({ AGENC_HOME: "relative-home" })).toThrow(
+          /AGENC_HOME must be an absolute path/,
+        );
+        expect(() => resolveHome({ AGENC_CONFIG_DIR: join(root, "retired") })).toThrow(
+          /AGENC_CONFIG_DIR is no longer a runtime configuration authority/,
+        );
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("validates home authority before connect uses explicit endpoint overrides", async () => {
+    await expect(connect({
+      env: { AGENC_CONFIG_DIR: "/tmp/retired-agenc-home" },
+      socketPath: "/tmp/explicit-agenc.sock",
+      cookiePath: "/tmp/explicit-agenc.cookie",
+      autostart: false,
+    })).rejects.toThrow(
+      /AGENC_CONFIG_DIR is no longer a runtime configuration authority/,
+    );
   });
 });
 

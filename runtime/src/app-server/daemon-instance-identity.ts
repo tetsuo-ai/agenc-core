@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { open, opendir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
+import { resolveHomeContext } from "../config/home.js";
 import {
   BoundedRegularFileError,
   readBoundedRegularFile,
@@ -429,15 +430,14 @@ async function inspectLinuxAgenCDaemonProcessWithTracker(
       join(procDir, "environ"),
       scanTracker,
     );
-    const configuredHome =
-      environment.AGENC_HOME ??
-      (environment.HOME !== undefined
-        ? join(environment.HOME, ".agenc")
-        : null);
-    if (configuredHome === null) return null;
-    const candidateHome = isAbsolute(configuredHome)
-      ? resolve(configuredHome)
-      : resolve(cwdBefore.path, configuredHome);
+    if (environment.AGENC_HOME === undefined && environment.HOME === undefined) {
+      return null;
+    }
+    const candidateHome = resolveHomeContext(environment, {
+      ...(environment.HOME !== undefined
+        ? { platformHome: environment.HOME }
+        : {}),
+    }).path;
     const targetHomeBefore = await readLinuxDaemonHomeIdentity(
       resolve(daemonHome),
       scanTracker,

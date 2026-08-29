@@ -57,11 +57,6 @@ vi.mock("../../keybindings/loadUserBindings.js", () => ({
   isKeybindingCustomizationEnabled: () => false,
 }));
 
-vi.mock("../../../utils/fastMode.js", () => ({
-  isFastModeAvailable: () => false,
-  isFastModeEnabled: () => false,
-}));
-
 vi.mock("../../../utils/platform.js", () => ({
   getPlatform: () => "linux",
 }));
@@ -139,7 +134,7 @@ function renderNode(commands: Command[], onClose: () => void): React.ReactNode {
     <ModalContext.Provider
       value={{ rows: 18, columns: 90, scrollRef: null }}
     >
-      <HelpV2 commands={commands} onClose={onClose} />
+      <HelpV2 commands={commands} onClose={onClose} runtimeState={{}} />
     </ModalContext.Provider>
   );
 }

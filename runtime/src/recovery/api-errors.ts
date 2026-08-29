@@ -1,9 +1,6 @@
 /**
  * API-error classification primitives used by the recovery ladder.
  *
- * Port of agenc `services/api/errors.ts` subset + the
- * `FallbackTriggeredError` from `services/api/withRetry.ts`.
- *
  * Every classifier here is a pure predicate — no I/O. The recovery
  * ladder uses them to decide which strategy branch applies to the
  * last assistant message.
@@ -21,15 +18,18 @@ import {
   LLMMessageValidationError,
   LLMProviderError,
 } from "../llm/errors.js";
+import {
+  parsePromptTooLongTokenCounts,
+  PROMPT_TOO_LONG_ERROR_MESSAGE,
+} from "../errors/api.js";
+export { parsePromptTooLongTokenCounts } from "../errors/api.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // String constants
 // ─────────────────────────────────────────────────────────────────────
 
-const PROMPT_TOO_LONG_ERROR_MESSAGE = "Prompt is too long";
-
 // ─────────────────────────────────────────────────────────────────────
-// FallbackTriggeredError — port of withRetry.ts:169
+// FallbackTriggeredError
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -88,27 +88,6 @@ function assistantText(msg: AssistantMessage): string {
 }
 
 /**
- * The local twin of a provider's prompt-too-long: token accounting saw the
- * request would not fit and admission refused it before the wire.
- *
- * It has to reach the recovery ladder for the same reason a 413 does. Left
- * unrecognised it travels out as a plain model error, which ends the turn
- * terminally and errors the whole run — and the conversation is then
- * unreachable, when compacting and retrying would have carried it on.
- */
-export function isContextWindowDenial(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  const denied =
-    (err as { code?: unknown }).code === "ADMISSION_DENIED" ||
-    err.name === "AdmissionDeniedError";
-  if (!denied) return false;
-  const reason = (err as { reason?: unknown }).reason;
-  return (
-    typeof reason === "string" && reason.startsWith("context_window_exceeded")
-  );
-}
-
-/**
  * Port of agenc `isPromptTooLongMessage`. Matches an assistant
  * message whose text begins with the sentinel PTL error phrase.
  */
@@ -122,20 +101,6 @@ export function isPromptTooLongMessage(msg: AssistantMessage): boolean {
  * Parse actual / limit token counts from a PTL error string. Used by
  * reactive compact to jump multiple groups in one retry.
  */
-export function parsePromptTooLongTokenCounts(raw: string): {
-  readonly actualTokens?: number;
-  readonly limitTokens?: number;
-} {
-  const match = raw.match(
-    /prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)/i,
-  );
-  if (!match) return {};
-  return {
-    actualTokens: Number.parseInt(match[1]!, 10),
-    limitTokens: Number.parseInt(match[2]!, 10),
-  };
-}
-
 /** Returns the gap by which PTL exceeded the limit, or undefined. */
 export function getPromptTooLongTokenGap(
   msg: AssistantMessage,
@@ -374,10 +339,6 @@ const TRANSIENT_PROVIDER_MESSAGE_PARTS = [
   "connection reset",
   "socket connection was closed unexpectedly",
   "socket closed",
-  "overloaded_error",
-  "server_error",
-  "server is currently overloaded",
-  "servers are currently overloaded",
 ];
 
 function isExplicitNonTransientProviderError(err: unknown): boolean {

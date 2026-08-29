@@ -1,8 +1,10 @@
 import { z } from 'zod/v4'
 import { mcpInfoFromString } from '../../services/mcp/mcpStringUtils.js'
 import { lazySchema } from '../lazySchema.js'
-import { permissionRuleValueFromString } from '../permissions/permissionRuleParser.js'
-import { capitalize } from '../stringUtils.js'
+import {
+  permissionRuleValueFromString,
+} from '../permissions/permissionRuleParser.js'
+import { isRemovedLiveToolName } from '../../permissions/tool-names.js'
 import {
   getCustomValidation,
   isBashPrefixTool,
@@ -134,12 +136,11 @@ export function validatePermissionRule(rule: string): {
     return { valid: false, error: 'Tool name cannot be empty' }
   }
 
-  // Check tool name starts with uppercase (standard tools)
-  if (parsed.toolName[0] !== parsed.toolName[0]?.toUpperCase()) {
+  if (isRemovedLiveToolName(parsed.toolName)) {
     return {
       valid: false,
-      error: 'Tool names must start with uppercase',
-      suggestion: `Use "${capitalize(String(parsed.toolName))}"`,
+      error: `Removed tool name "${parsed.toolName}"`,
+      suggestion: 'Use the canonical tool name or run agenc config migrate',
     }
   }
 
@@ -156,7 +157,7 @@ export function validatePermissionRule(rule: string): {
   if (isBashPrefixTool(parsed.toolName) && parsed.ruleContent !== undefined) {
     const content = parsed.ruleContent
 
-    // Check for common :* mistakes - :* must be at the end (compatibility prefix syntax)
+    // Check canonical prefix syntax: :* must be at the end.
     if (content.includes(':*') && !content.endsWith(':*')) {
       return {
         valid: false,
@@ -164,7 +165,7 @@ export function validatePermissionRule(rule: string): {
         suggestion:
           'Move :* to the end for prefix matching, or use * for wildcard matching',
         examples: [
-          'Bash(npm run:*) - prefix matching (legacy)',
+          'Bash(npm run:*) - word-boundary prefix matching',
           'Bash(npm run *) - wildcard matching',
         ],
       }
@@ -192,7 +193,7 @@ export function validatePermissionRule(rule: string): {
     // - "git * main" matches "git checkout main", "git push main", etc.
     // - "npm * --save" matches "npm install foo --save", etc.
     //
-    // Compatibility :* syntax continues to work for backwards compatibility:
+    // Canonical :* syntax provides word-boundary prefix matching:
     // - "npm:*" matches "npm" or "npm <anything>" (prefix matching with word boundary)
   }
 

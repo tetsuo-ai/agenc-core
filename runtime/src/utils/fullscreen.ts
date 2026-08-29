@@ -1,12 +1,8 @@
 import { spawnSync } from 'child_process'
-import { getIsInteractive } from '../bootstrap/state.js'
-import { getGlobalConfig } from './config.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
-import { execFileNoThrow } from './execFileNoThrow.js'
 
 let loggedTmuxCcDisable = false
-let checkedTmuxMouseHint = false
 
 /**
  * Cached result from `tmux display-message -p '#{client_control_mode}'`.
@@ -105,39 +101,85 @@ export function _resetTmuxControlModeProbeForTesting(): void {
   loggedTmuxCcDisable = false
 }
 
+export type FullscreenTerminalEnvironment = Readonly<
+  Partial<
+    Pick<
+      NodeJS.ProcessEnv,
+      'AGENC_NO_FLICKER' | 'TMUX' | 'TERM_PROGRAM' | 'TERM'
+    >
+  >
+>
+
+export type FullscreenResolutionInput = {
+  readonly environmentOverride: boolean | undefined
+  readonly tmuxControlMode: boolean
+  readonly configuredPreference: boolean | undefined
+}
+
+/** Parse the terminal-local environment override without reading settings. */
+export function readFullscreenEnvironmentOverride(
+  env: Pick<FullscreenTerminalEnvironment, 'AGENC_NO_FLICKER'>,
+): boolean | undefined {
+  if (isEnvDefinedFalsy(env.AGENC_NO_FLICKER)) return false
+  if (isEnvTruthy(env.AGENC_NO_FLICKER)) return true
+  return undefined
+}
+
 /**
- * Whether fullscreen (flicker-free) mode is enabled. Env var takes highest
- * precedence, then the `flickerFreeMode` config setting, then defaults to off.
- * Users can enable via `/config` instead of setting the env.
+ * Resolve the active fullscreen mode from explicit inputs.
  *
  * Priority order:
  *   AGENC_NO_FLICKER=0  → always off
  *   AGENC_NO_FLICKER=1  → always on (overrides tmux -CC guard too)
- *   tmux -CC detected         → off (corrupts terminal state)
- *   config flickerFreeMode    → on/off per user preference
- *   default                   → off
+ *   tmux -CC detected   → off (corrupts terminal state)
+ *   configured setting → on/off per user preference
+ *   default             → on
+ *
+ * This function is deliberately pure: the caller owns environment, terminal,
+ * and configuration authority.
  */
-export function isFullscreenEnvEnabled(): boolean {
-  // Explicit env opt-out always wins.
-  if (isEnvDefinedFalsy(process.env.AGENC_NO_FLICKER)) return false
-  // Explicit env opt-in overrides everything including tmux -CC.
-  if (isEnvTruthy(process.env.AGENC_NO_FLICKER)) return true
-  // Auto-disable under tmux -CC: alt-screen + mouse tracking corrupts
-  // terminal state on double-click and mouse wheel is dead.
-  if (isTmuxControlMode()) {
-    if (!loggedTmuxCcDisable) {
-      loggedTmuxCcDisable = true
-      logForDebugging(
-        'fullscreen disabled: tmux -CC (iTerm2 integration mode) detected · set AGENC_NO_FLICKER=1 to override',
-      )
-    }
-    return false
+export function resolveFullscreenEnabled({
+  environmentOverride,
+  tmuxControlMode,
+  configuredPreference,
+}: FullscreenResolutionInput): boolean {
+  if (environmentOverride !== undefined) return environmentOverride
+  if (tmuxControlMode) return false
+  return configuredPreference ?? true
+}
+
+/**
+ * Bind the local terminal detector to an explicit configuration preference.
+ * This is the only impure fullscreen adapter: it reads process environment
+ * and may run the cached tmux control-mode probe, but never reads settings.
+ */
+export function isFullscreenEnabledForCurrentTerminal(
+  configuredPreference: boolean | undefined,
+): boolean {
+  const environmentOverride = readFullscreenEnvironmentOverride(process.env)
+  // Preserve the existing short-circuit: an explicit env value never probes
+  // tmux, and an explicit opt-in overrides tmux control mode.
+  const tmuxControlMode =
+    environmentOverride === undefined ? isTmuxControlMode() : false
+  const enabled = resolveFullscreenEnabled({
+    environmentOverride,
+    tmuxControlMode,
+    configuredPreference,
+  })
+
+  if (
+    !enabled &&
+    environmentOverride === undefined &&
+    tmuxControlMode &&
+    !loggedTmuxCcDisable
+  ) {
+    loggedTmuxCcDisable = true
+    logForDebugging(
+      'fullscreen disabled: tmux -CC (iTerm2 integration mode) detected · set AGENC_NO_FLICKER=1 to override',
+    )
   }
-  // Config-based toggle: lets external users enable flicker-free mode via
-  // `/config` without having to set an env var.
-  const configValue = getGlobalConfig().flickerFreeMode
-  if (configValue !== undefined) return configValue
-  return false
+
+  return enabled
 }
 
 /**
@@ -162,53 +204,4 @@ export function isMouseTrackingEnabled(): boolean {
  */
 export function isMouseClicksDisabled(): boolean {
   return isEnvTruthy(process.env.AGENC_DISABLE_MOUSE_CLICKS)
-}
-
-/**
- * True when the fullscreen alt-screen layout is actually rendering —
- * requires an interactive REPL session AND the env var not explicitly
- * set falsy. Headless paths (--print, SDK, in-process teammates) never
- * enter fullscreen, so features that depend on alt-screen re-rendering
- * should gate on this.
- */
-export function isFullscreenActive(): boolean {
-  return getIsInteractive() && isFullscreenEnvEnabled()
-}
-
-/**
- * One-time hint for tmux users in fullscreen with `mouse off`.
- *
- * tmux's `mouse` option is session-scoped by design — there is no
- * pane-level equivalent. We used to `tmux set mouse on` when entering
- * alt-screen so wheel scrolling worked, but that changed mouse behavior
- * for every sibling pane (vim, less, shell) and leaked on kill-pane or
- * when multiple CC instances raced on restore. Now we leave tmux state
- * alone — same as vim/less/htop — and just tell the user their options.
- *
- * Fire-and-forget from REPL startup. Returns the hint text once per
- * session if TMUX is set, fullscreen is active, and tmux's current
- * `mouse` option is off; null otherwise.
- */
-export async function maybeGetTmuxMouseHint(): Promise<string | null> {
-  if (!process.env.TMUX) return null
-  // tmux -CC auto-disables fullscreen above, but belt-and-suspenders.
-  if (!isFullscreenActive() || isTmuxControlMode()) return null
-  if (checkedTmuxMouseHint) return null
-  checkedTmuxMouseHint = true
-  // -A includes inherited values: `show -v mouse` returns empty when the
-  // option is set globally (`set -g mouse on` in .tmux.conf) but not at
-  // session level — which is the common case. -A gives the effective value.
-  const { stdout, code } = await execFileNoThrow(
-    'tmux',
-    ['show', '-Av', 'mouse'],
-    { useCwd: false, timeout: 2000 },
-  )
-  if (code !== 0 || stdout.trim() === 'on') return null
-  return "tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux.conf for wheel scroll"
-}
-
-/** Test-only: reset module-level once-per-session flags. */
-export function _resetForTesting(): void {
-  loggedTmuxCcDisable = false
-  checkedTmuxMouseHint = false
 }

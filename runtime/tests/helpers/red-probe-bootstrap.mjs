@@ -54,6 +54,7 @@ const isArray = Array.isArray;
 const keys = Object.keys;
 const parseJson = JSON.parse;
 const cancelInterval = clearInterval;
+const exitProcess = process.exit.bind(process);
 const scheduleInterval = setInterval;
 const stringifyJson = JSON.stringify;
 const writeStandardOutput = process.stdout.write.bind(process.stdout);
@@ -568,7 +569,10 @@ heartbeatTimer.unref();
 function emitAuthenticatedExpectedRedResult() {
   cancelInterval(heartbeatTimer);
   if (!expectedFailureReported) return;
-  if (process.exitCode !== undefined && process.exitCode !== 0) return;
+  const dependencyExitCode = process.exitCode;
+  if (dependencyExitCode !== undefined && dependencyExitCode !== 0) {
+    exitProcess(dependencyExitCode);
+  }
   const evidence = createObject(null);
   evidence.protocolVersion = PROTOCOL_VERSION;
   evidence.outcome = PROTOCOL_OUTCOME;

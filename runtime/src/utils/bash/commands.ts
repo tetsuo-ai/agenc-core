@@ -499,7 +499,7 @@ Note that not every command has a prefix. If a command has no prefix, return "no
 ONLY return the prefix. Do not return any other text, markdown markers, or other content or formatting.`
 
 const getCommandPrefix = createCommandPrefixExtractor({
-  toolName: 'Bash',
+  toolName: 'system.bash',
   policySpec: BASH_POLICY_SPEC,
   eventName: 'tengu_bash_prefix',
   querySource: 'bash_extract_prefix',

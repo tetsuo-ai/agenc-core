@@ -2,15 +2,9 @@ export type ConnectorTextBlock = {
   type: 'connector_text'
   connector_text: string
   connector?: string
-  // Populated from signature_delta events when CONNECTOR_TEXT streaming is
-  // enabled (see services/api/anthropic.ts signature_delta handling).
+  // Populated from signature_delta events when connector-text streaming is
+  // enabled.
   signature?: string
-}
-
-export type ConnectorTextDelta = {
-  type: 'connector_text_delta'
-  connector_text: string
-  connector?: string
 }
 
 export function isConnectorTextBlock(

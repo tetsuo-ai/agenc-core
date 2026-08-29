@@ -62,7 +62,6 @@ export type CronEnqueue = (command: {
   value: string;
   mode: "task-notification";
   isMeta: true;
-  workload: string;
   queueOwner: CronSessionQueueOwner;
   agentId?: string;
 }) => void;
@@ -496,7 +495,6 @@ export class CronScheduler {
         value: task.prompt,
         mode: "task-notification",
         isMeta: true,
-        workload: "cron",
         queueOwner: { ...queueOwner },
         ...(task.agentId ? { agentId: task.agentId } : {}),
       });
@@ -772,7 +770,6 @@ export function cronEnqueueToCommandQueue(
     value: command.value,
     mode: command.mode,
     isMeta: command.isMeta,
-    workload: command.workload,
     queueOwner: { ...command.queueOwner },
     ...(command.agentId ? { agentId: command.agentId as AgentId } : {}),
   });

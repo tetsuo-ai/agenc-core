@@ -145,6 +145,9 @@ export function normalizeRequestUserInputArgs(
     throw new Error("request_user_input requires an object argument");
   }
   const record = raw as Record<string, unknown>;
+  if (record.clientAction !== undefined) {
+    throw new Error("request_user_input cannot set clientAction");
+  }
   if (!Array.isArray(record.questions)) {
     throw new Error("request_user_input requires a questions array");
   }

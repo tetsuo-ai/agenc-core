@@ -1,7 +1,7 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { createContext, useCallback, useContext, useEffect, useMemo } from 'react';
-import { saveCurrentProjectConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { saveCurrentProjectRuntimeState } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 export type StatsStore = {
   increment(name: string, value?: number): void;
   set(name: string, value: number): void;
@@ -124,7 +124,7 @@ export function StatsProvider(t0) {
       const flush = () => {
         const metrics = store.getAll();
         if (Object.keys(metrics).length > 0) {
-          saveCurrentProjectConfig(current => ({
+          saveCurrentProjectRuntimeState(current => ({
             ...current,
             lastSessionMetrics: metrics
           }));

@@ -1,12 +1,11 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import { feature } from 'bun:bundle';
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { useStdin } from '../../ink/components/StdinContext.js';
-import { configReadsEnabled } from '../../../config/init.js';
-import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logError } from '../../../utils/log.js';
-import { getSystemThemeName, type SystemTheme } from '../../../utils/systemTheme.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getExecutionAuthoritySettings, updateSettingsForSource } from '../../../utils/settings/settings.js';
+import { getCanonicalSettingsAuthority } from '../../../utils/settings/canonicalAuthority.js';
+import { getTerminalBackground, type TerminalBackground } from '../../../utils/terminalBackground.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { ThemeName, ThemeSetting } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type ThemeContextValue = {
   /** The saved user preference. May be 'auto'. */
@@ -35,19 +34,20 @@ type Props = {
   onThemeSave?: (setting: ThemeSetting) => void;
 };
 function defaultInitialTheme(): ThemeSetting {
-  if (!configReadsEnabled()) {
+  if (getCanonicalSettingsAuthority() === null) {
     return DEFAULT_THEME;
   }
-  return getGlobalConfig().theme;
+  return getExecutionAuthoritySettings().tui?.theme ?? DEFAULT_THEME;
 }
 function defaultSaveTheme(setting: ThemeSetting): void {
-  if (!configReadsEnabled()) {
+  if (getCanonicalSettingsAuthority() === null) {
     return;
   }
-  saveGlobalConfig(current => ({
-    ...current,
-    theme: setting
-  }));
+  void updateSettingsForSource('userSettings', {
+    tui: { theme: setting }
+  }).then(({ error }) => {
+    if (error) logError(error);
+  });
 }
 export function ThemeProvider({
   children,
@@ -59,7 +59,7 @@ export function ThemeProvider({
 
   // Track terminal theme for 'auto' resolution. Seeds from $COLORFGBG (or
   // 'dark' if unset); the OSC 11 watcher corrects it on first poll.
-  const [systemTheme, setSystemTheme] = useState<SystemTheme>(() => (initialState ?? themeSetting) === 'auto' ? getSystemThemeName() : 'dark');
+  const [terminalBackground, setTerminalBackground] = useState<TerminalBackground>(() => (initialState ?? themeSetting) === 'auto' ? getTerminalBackground() : 'dark');
 
   // The setting currently in effect (preview wins while picker is open)
   const activeSetting = previewTheme ?? themeSetting;
@@ -67,32 +67,30 @@ export function ThemeProvider({
     internal_querier
   } = useStdin();
 
-  // Watch for live terminal theme changes while 'auto' is active.
-  // Positive feature() pattern so the watcher import is dead-code-eliminated
-  // in external builds.
+  // Watch for live terminal theme changes while 'auto' is active. The watcher
+  // polls OSC 11 immediately, then continues polling until this effect cleans
+  // it up. COLORFGBG remains the synchronous seed above so first render never
+  // waits on the terminal round-trip.
   useEffect(() => {
-    if (feature('AUTO_THEME')) {
-      if (activeSetting !== 'auto' || !internal_querier) return;
-      let cleanup: (() => void) | undefined;
-      let cancelled = false;
-      void import('../../../utils/systemThemeWatcher.js').then(({
-        watchSystemTheme
-      }) => {
-        if (cancelled) return;
-        try {
-          cleanup = watchSystemTheme(internal_querier, setSystemTheme);
-        } catch (error) {
-          logError(error);
-        }
-      }, logError);
-      return () => {
-        cancelled = true;
-        cleanup?.();
-      };
-    }
-    return undefined;
+    if (activeSetting !== 'auto' || !internal_querier) return;
+    let cleanup: (() => void) | undefined;
+    let cancelled = false;
+    void import('../../../utils/terminalBackgroundWatcher.js').then(({
+      watchTerminalBackground
+    }) => {
+      if (cancelled) return;
+      try {
+        cleanup = watchTerminalBackground(internal_querier, setTerminalBackground);
+      } catch (error) {
+        logError(error);
+      }
+    }, logError);
+    return () => {
+      cancelled = true;
+      cleanup?.();
+    };
   }, [activeSetting, internal_querier]);
-  const currentTheme: ThemeName = activeSetting === 'auto' ? systemTheme : activeSetting;
+  const currentTheme: ThemeName = activeSetting === 'auto' ? terminalBackground : activeSetting;
   const value = useMemo<ThemeContextValue>(() => ({
     themeSetting,
     setThemeSetting: (newSetting: ThemeSetting) => {
@@ -102,14 +100,14 @@ export function ThemeProvider({
       // first poll fires immediately. Seed from the cache so the OSC
       // round-trip doesn't flash the wrong palette.
       if (newSetting === 'auto') {
-        setSystemTheme(getSystemThemeName());
+        setTerminalBackground(getTerminalBackground());
       }
       onThemeSave?.(newSetting);
     },
     setPreviewTheme: (newSetting_0: ThemeSetting) => {
       setPreviewTheme(newSetting_0);
       if (newSetting_0 === 'auto') {
-        setSystemTheme(getSystemThemeName());
+        setTerminalBackground(getTerminalBackground());
       }
     },
     savePreview: () => {
@@ -152,8 +150,9 @@ export function useTheme() {
 }
 
 /**
- * Returns the raw theme setting as stored in config. Use this in UI that
- * needs to show 'auto' as a distinct choice (e.g., ThemePicker).
+ * Returns the raw theme setting stored by the canonical settings authority.
+ * Use this in UI that needs to show 'auto' as a distinct choice (for example,
+ * ThemePicker).
  */
 export function useThemeSetting() {
   return useContext(ThemeContext).themeSetting;

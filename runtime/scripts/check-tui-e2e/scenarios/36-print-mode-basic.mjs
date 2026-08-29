@@ -12,7 +12,7 @@ export const meta = {
 
 export default async function (session) {
   const result = await session.runAgenc(
-    ["--yolo", "-p", "say only the word HELLO and nothing else"],
+    ["--dangerously-bypass-approvals-and-sandbox", "-p", "say only the word HELLO and nothing else"],
     { timeoutMs: 80_000 },
   );
   if (result.code !== 0) {

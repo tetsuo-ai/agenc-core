@@ -23,6 +23,10 @@
  * @module
  */
 import type { HookResultMessage } from "../../types/message.js";
+import {
+  isHookExecutionSuppressed,
+  type HookRuntimeAuthority,
+} from "../../hooks/runtime-policy.js";
 import { peekAmbientRuntimeSession } from "../../session/current-session.js";
 import {
   getLifecycleHookRegistry,
@@ -51,6 +55,8 @@ export const HOOK_EXECUTION_TIMEOUT_MS = 60_000;
 
 interface DispatchOpts<H> {
   readonly hooks?: ReadonlyArray<H>;
+  /** Immutable authority captured from the session that owns this dispatch. */
+  readonly runtimeOptions?: HookRuntimeAuthority;
   /**
    * The dispatching session's lifecycle hook registry. Configured
    * per-session hooks (SessionStart/SessionEnd/PreCompact/…) live in the
@@ -104,6 +110,7 @@ export async function dispatchPreCompact(
       | undefined
   > = {},
 ): Promise<PreCompactDispatchResult> {
+  if (isHookExecutionSuppressed(opts.runtimeOptions)) return {};
   const hooks =
     opts.hooks ?? resolveHooks((r) => r.getPreCompact(), opts.registry);
   if (hooks.length === 0) return {};
@@ -150,6 +157,7 @@ export async function dispatchPostCompact(
       | undefined
   > = {},
 ): Promise<PostCompactDispatchResult> {
+  if (isHookExecutionSuppressed(opts.runtimeOptions)) return {};
   const hooks =
     opts.hooks ?? resolveHooks((r) => r.getPostCompact(), opts.registry);
   if (hooks.length === 0) return {};
@@ -177,6 +185,7 @@ export async function dispatchSessionStart(
       | undefined
   > = {},
 ): Promise<HookResultMessage[]> {
+  if (isHookExecutionSuppressed(opts.runtimeOptions)) return [];
   const hooks =
     opts.hooks ?? resolveHooks((r) => r.getSessionStart(), opts.registry);
   if (hooks.length === 0) return [];
@@ -271,6 +280,7 @@ export async function dispatchSubagentStop(
       | undefined
   > = {},
 ): Promise<SubagentStopDispatchResult> {
+  if (isHookExecutionSuppressed(opts.runtimeOptions)) return {};
   const hooks =
     opts.hooks ?? resolveHooks((r) => r.getSubagentStop(), opts.registry);
   if (hooks.length === 0) return {};
@@ -303,6 +313,7 @@ export async function dispatchSessionEnd(
       | undefined
   > = {},
 ): Promise<void> {
+  if (isHookExecutionSuppressed(opts.runtimeOptions)) return;
   const hooks =
     opts.hooks ?? resolveHooks((r) => r.getSessionEnd(), opts.registry);
   for (const h of hooks) {
@@ -323,6 +334,7 @@ export async function dispatchNotification(
       | undefined
   > = {},
 ): Promise<void> {
+  if (isHookExecutionSuppressed(opts.runtimeOptions)) return;
   const hooks =
     opts.hooks ?? resolveHooks((r) => r.getNotification(), opts.registry);
   for (const h of hooks) {

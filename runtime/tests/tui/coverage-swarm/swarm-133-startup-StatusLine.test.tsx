@@ -4,6 +4,7 @@ import React from 'react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 import { createRoot } from '../ink/root.js'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../remoteAuthSessionContext.fixture.js'
 
 const harness = vi.hoisted(() => ({
   addNotification: vi.fn(),
@@ -14,7 +15,7 @@ const harness = vi.hoisted(() => ({
     },
     statusLineText: '',
   } as Record<string, unknown>,
-  checkHasProjectTrustAcceptedSync: vi.fn(() => true),
+  hookExecutionDecision: vi.fn(() => ({ allowed: true })),
   contextPercentages: { used: 13, remaining: 87 },
   currentUsage: 130,
   doesMostRecentAssistantMessageExceed200k: vi.fn(() => false),
@@ -29,8 +30,6 @@ const harness = vi.hoisted(() => ({
   isRemoteMode: false,
   logForDebugging: vi.fn(),
   mainLoopModel: 'gpt-5',
-  rawUtilization: {} as Record<string, unknown>,
-  runtimeModel: 'runtime-gpt-5',
   sessionTitle: undefined as string | undefined,
   settings: {
     statusLine: { command: 'statusline', padding: 0 },
@@ -52,10 +51,6 @@ vi.mock('bun:bundle', () => ({
   feature: harness.feature,
 }))
 
-vi.mock('../../../src/tui/rate-limits/agenc-ai-limits.js', () => ({
-  getRawUtilization: () => harness.rawUtilization,
-}))
-
 vi.mock('../../../src/bootstrap/state.js', () => ({
   flushInteractionTime: () => {},
   getActiveTimeCounter: () => 0,
@@ -63,7 +58,6 @@ vi.mock('../../../src/bootstrap/state.js', () => ({
   getKairosActive: harness.getKairosActive,
   getMainThreadAgentType: harness.getMainThreadAgentType,
   getOriginalCwd: harness.getOriginalCwd,
-  getSdkBetas: () => ['beta-133'],
   getSessionId: harness.getSessionId,
   updateLastInteractionTime: () => {},
 }))
@@ -96,13 +90,13 @@ vi.mock('../../../src/tui/hooks/useSettings.js', () => ({
   useSettings: () => harness.settings,
 }))
 
-vi.mock('../../../src/permissions/trust/project-trust.js', () => ({
-  checkHasProjectTrustAcceptedSync: harness.checkHasProjectTrustAcceptedSync,
+vi.mock('../../../src/hooks/execution-authority.js', () => ({
+  resolveAmbientHookExecutionDecision: harness.hookExecutionDecision,
 }))
 
 vi.mock('../../../src/utils/context.js', () => ({
   calculateContextPercentages: () => harness.contextPercentages,
-  getContextWindowForModel: () => 1000,
+  getContextWindowForModelForContext: () => 1000,
 }))
 
 vi.mock('../../../src/utils/cwd.js', () => ({
@@ -113,8 +107,8 @@ vi.mock('../../../src/utils/debug.js', () => ({
   logForDebugging: harness.logForDebugging,
 }))
 
-vi.mock('../../../src/utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => harness.fullscreenEnabled,
+vi.mock('../../../src/tui/context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => harness.fullscreenEnabled,
 }))
 
 vi.mock('../../../src/utils/hooks.js', () => ({
@@ -130,7 +124,6 @@ vi.mock('../../../src/utils/messages.js', () => ({
 }))
 
 vi.mock('../../../src/utils/model/model.js', () => ({
-  getRuntimeMainLoopModel: () => harness.runtimeModel,
   renderModelName: (model: string) => `Rendered ${model}`,
 }))
 
@@ -221,8 +214,8 @@ function resetHarness(): void {
     },
     statusLineText: '',
   }
-  harness.checkHasProjectTrustAcceptedSync.mockReset()
-  harness.checkHasProjectTrustAcceptedSync.mockReturnValue(true)
+  harness.hookExecutionDecision.mockReset()
+  harness.hookExecutionDecision.mockReturnValue({ allowed: true })
   harness.contextPercentages = { used: 13, remaining: 87 }
   harness.currentUsage = 130
   harness.doesMostRecentAssistantMessageExceed200k.mockReset()
@@ -245,8 +238,6 @@ function resetHarness(): void {
   harness.isRemoteMode = false
   harness.logForDebugging.mockClear()
   harness.mainLoopModel = 'gpt-5'
-  harness.rawUtilization = {}
-  harness.runtimeModel = 'runtime-gpt-5'
   harness.sessionTitle = undefined
   harness.settings = {
     statusLine: { command: 'statusline', padding: 0 },
@@ -311,7 +302,7 @@ describe('StatusLine coverage swarm row 133', () => {
 
     try {
       root.render(
-        <StatusLine messagesRef={{ current: [] }} lastAssistantMessageId={null} />,
+        <StatusLine messagesRef={{ current: [] }} lastAssistantMessageId={null} providerContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />,
       )
       await waitFor(() => harness.setAppState.mock.calls.length === 1)
     } finally {
@@ -322,9 +313,7 @@ describe('StatusLine coverage swarm row 133', () => {
 
     expect(output()).toContain('same-status')
     expect(harness.appState).toBe(stateBefore)
-    expect(harness.checkHasProjectTrustAcceptedSync).toHaveBeenCalledWith({
-      cwd: '/workspace/fallback',
-    })
+    expect(harness.hookExecutionDecision).toHaveBeenCalledWith('command')
 
     const [input, signal, timeout, logResult] =
       harness.executeStatusLineCommand.mock.calls[0]!
@@ -334,8 +323,8 @@ describe('StatusLine coverage swarm row 133', () => {
     expect(input).toMatchObject({
       transcript_path: '/workspace/transcript.jsonl',
       model: {
-        id: 'runtime-gpt-5',
-        display_name: 'Rendered runtime-gpt-5',
+        id: 'gpt-5',
+        display_name: 'Rendered gpt-5',
       },
       workspace: {
         current_dir: '/workspace/fallback',
@@ -385,6 +374,7 @@ describe('StatusLine coverage swarm row 133', () => {
         <StatusLine
           messagesRef={{ current: messages }}
           lastAssistantMessageId={null}
+          providerContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
         />,
       )
       await waitFor(() => harness.executeStatusLineCommand.mock.calls.length === 1)
@@ -396,6 +386,7 @@ describe('StatusLine coverage swarm row 133', () => {
         <StatusLine
           messagesRef={{ current: messages }}
           lastAssistantMessageId={null}
+          providerContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
         />,
       )
       await waitFor(() => harness.executeStatusLineCommand.mock.calls.length === 2)
@@ -424,6 +415,7 @@ describe('StatusLine coverage swarm row 133', () => {
         <StatusLine
           messagesRef={{ current: messages }}
           lastAssistantMessageId="assistant-before"
+          providerContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
         />,
       )
       await waitFor(() => harness.executeStatusLineCommand.mock.calls.length === 1)
@@ -438,7 +430,7 @@ describe('StatusLine coverage swarm row 133', () => {
     expect(harness.executeStatusLineCommand.mock.calls[0]![3]).toBe(true)
   })
 
-  test('reports trust-blocked status lines and swallows command failures', async () => {
+  test('reports policy-blocked status lines and swallows command failures', async () => {
     harness.appState = {
       toolPermissionContext: {
         mode: 'default',
@@ -446,7 +438,10 @@ describe('StatusLine coverage swarm row 133', () => {
       },
       statusLineText: 'before-error',
     }
-    harness.checkHasProjectTrustAcceptedSync.mockReturnValue(false)
+    harness.hookExecutionDecision.mockReturnValue({
+      allowed: false,
+      reason: 'untrusted_workspace',
+    })
     harness.executeStatusLineCommand.mockRejectedValue(new Error('status failed'))
     harness.settings = {
       disableAllHooks: true,
@@ -462,7 +457,7 @@ describe('StatusLine coverage swarm row 133', () => {
 
     try {
       root.render(
-        <StatusLine messagesRef={{ current: [] }} lastAssistantMessageId={null} />,
+        <StatusLine messagesRef={{ current: [] }} lastAssistantMessageId={null} providerContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />,
       )
       await waitFor(() => harness.executeStatusLineCommand.mock.calls.length === 1)
       await new Promise(resolve => setTimeout(resolve, 0))
@@ -476,7 +471,7 @@ describe('StatusLine coverage swarm row 133', () => {
     expect(harness.setAppState).not.toHaveBeenCalled()
     expect(harness.addNotification).toHaveBeenCalledWith({
       key: 'statusline-trust-blocked',
-      text: 'statusline skipped until project trust is accepted',
+      text: 'status line command blocked by session hook policy',
       color: 'warning',
       priority: 'low',
     })
@@ -485,7 +480,7 @@ describe('StatusLine coverage swarm row 133', () => {
       { level: 'warn' },
     )
     expect(harness.logForDebugging).toHaveBeenCalledWith(
-      'Status line command skipped: workspace trust not accepted',
+      'Status line command skipped: untrusted_workspace',
       { level: 'warn' },
     )
   })

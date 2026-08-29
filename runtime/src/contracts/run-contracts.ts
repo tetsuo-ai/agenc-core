@@ -116,7 +116,6 @@ export type RunRuntimePermissionMode =
   (typeof RUN_RUNTIME_PERMISSION_MODES)[number];
 
 export const RUN_RUNTIME_REASONING_EFFORTS = [
-  "minimal",
   "low",
   "medium",
   "high",
@@ -130,20 +129,23 @@ export const RUN_RUNTIME_MODEL_VERBOSITIES = ["low", "medium", "high"] as const;
 export type RunRuntimeModelVerbosity =
   (typeof RUN_RUNTIME_MODEL_VERBOSITIES)[number];
 
-export const RUN_RUNTIME_SERVICE_TIERS = ["fast", "priority", "flex"] as const;
+export const RUN_RUNTIME_SERVICE_TIERS = ["priority", "flex"] as const;
 export type RunRuntimeServiceTier = (typeof RUN_RUNTIME_SERVICE_TIERS)[number];
 
 /**
  * Complete desired session overlay. It intentionally omits permission rules:
  * those are recomputed from current trusted policy on recovery. A bypass
- * authorization is retained only while it is transition-critical and is
- * bound to the exact canonical workspace spelling.
+ * authorization and availability are daemon-owned. Any retained bypass
+ * consent is bound to the exact canonical workspace spelling.
  */
 export interface RunRuntimeSettingsSnapshot {
   readonly permissionMode: RunRuntimePermissionMode;
   readonly prePlanMode: RunRuntimePermissionMode | null;
   readonly autoModeActive: boolean;
+  readonly autoModeAvailable: boolean;
+  readonly bypassPermissionsModeAvailable: boolean;
   readonly bypassPermissionsWorkspace: string | null;
+  readonly bypassPermissionsConsentWorkspace: string | null;
   readonly model: string;
   readonly provider: string;
   readonly profile: string | null;

@@ -4,8 +4,8 @@
  * (`tests/protocol/fixture.ts`).
  *
  * Pins four things:
- *   1. Revert-safe default: with `[protocol]` absent, disabled, or on
- *      the "null" adapter, every verb returns EXACTLY the historical
+ *   1. Revert-safe default: with `[protocol]` absent or disabled, every
+ *      verb returns EXACTLY the historical
  *      "transport is not attached" stub text.
  *   2. Enabled marketplace-cli transport: `/claim` lists claimable
  *      tasks; `/claim <PDA>` shows task detail — both read-only, both
@@ -112,19 +112,13 @@ describe("/claim transport wiring — revert-safe defaults", () => {
     });
   });
 
-  it("keeps the stub for enabled=false and for the null adapter", async () => {
-    for (const protocol of [
-      { enabled: false, adapter: "marketplace-cli" },
-      { enabled: true, adapter: "null" },
-      { enabled: true },
-    ] as const) {
-      const res = await byName("claim").execute(
-        makeCtx({ configStore: storeWith(protocol as ProtocolConfig) }),
-      );
-      expect(res.kind).toBe("text");
-      if (res.kind === "text") {
-        expect(res.text).toContain("Protocol transport is not attached");
-      }
+  it("keeps the stub for enabled=false", async () => {
+    const res = await byName("claim").execute(
+      makeCtx({ configStore: storeWith({ enabled: false }) }),
+    );
+    expect(res.kind).toBe("text");
+    if (res.kind === "text") {
+      expect(res.text).toContain("Protocol transport is not attached");
     }
   });
 

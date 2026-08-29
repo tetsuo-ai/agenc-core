@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import type { MarketplaceSource } from "./marketplace.js";
 import { isLoopbackHostname } from "./fetchGuards.js";
 
@@ -166,7 +166,15 @@ async function parseLocalPath(value: string, workspaceRoot: string | undefined):
   }
   const resolvedPath = value.startsWith("~")
     ? resolve(value.replace(/^~/u, homedir()))
-    : resolve(workspaceRoot ?? process.cwd(), value);
+    : isAbsolute(value)
+      ? resolve(value)
+    : workspaceRoot === undefined
+      ? (() => {
+          throw new Error(
+            "Relative marketplace paths require an explicit workspace root",
+          );
+        })()
+      : resolve(workspaceRoot, value);
   let stats;
   try {
     stats = await stat(resolvedPath);

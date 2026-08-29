@@ -184,6 +184,16 @@ describe("createPromptBridge", () => {
     await expect(bridge.listPrompts()).resolves.toEqual([]);
   });
 
+  it("propagates upstream prompt rendering failures", async () => {
+    const upstreamError = new Error("prompt unavailable");
+    const client = makeClient({
+      getPrompt: vi.fn().mockRejectedValue(upstreamError),
+    });
+    const bridge = await createPromptBridge(client, "srv");
+
+    await expect(bridge.renderPrompt("x")).rejects.toBe(upstreamError);
+  });
+
   it("renders a prompt into plain-text messages", async () => {
     const client = makeClient({
       getPrompt: vi.fn().mockResolvedValue({

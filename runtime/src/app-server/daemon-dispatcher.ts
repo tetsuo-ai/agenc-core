@@ -7,9 +7,8 @@
  * land.
  */
 
-import { basename, isAbsolute } from "node:path";
+import { isAbsolute } from "node:path";
 import { isSafeSessionIdSegment } from "../session/session-store.js";
-import { AUDIO_MEDIA_TYPES } from "../llm/transcribe-audio.js";
 
 import {
   AgenCDaemonAgentLifecycleError,
@@ -56,12 +55,6 @@ import {
   type AgenCDaemonOverloadLimitOptions,
 } from "./overload.js";
 import {
-  AgenCAudioTranscriptionServiceImpl,
-  MAX_AUDIO_TRANSCRIPTION_BYTES,
-  type AgenCAudioTranscriptionRequest,
-  type AgenCAudioTranscriptionService,
-} from "./audio-transcription.js";
-import {
   AgenCDaemonRunInspectionError,
   type AgenCDaemonRunInspectionService,
 } from "./run-inspection.js";
@@ -71,6 +64,13 @@ import {
 } from "./csv-job-review.js";
 import type { AuthBackend, AuthDaemonSocketIdentity } from "../auth/backend.js";
 import {
+  AgentRuntimeOptionsError,
+  validateAgentRuntimeOptions,
+} from "../session/runtime-options.js";
+import { normalizeDaemonClientEnvOverrides } from "./client-env-snapshot.js";
+import { MAX_SESSION_PERMISSION_RULE_UTF8_BYTES } from "../permissions/session-rule-buckets.js";
+import { PermissionRuleMutationPrecommitError } from "../permissions/permission-updates.js";
+import {
   requireAbsoluteWorkspaceCwd,
   WorkspaceCwdError,
 } from "./workspace-cwd.js";
@@ -79,7 +79,7 @@ import {
   assertWorkspaceEditorProposalStatusResponseFitsFrame,
   canonicalWorkspaceRoot,
   type WorkspaceMutationCoordinator,
-  workspaceMutationCoordinators,
+  type WorkspaceMutationCoordinatorRegistry,
 } from "../workspace/mutation-coordinator.js";
 import {
   AGENC_DAEMON_INTERNAL_METHODS,
@@ -87,6 +87,9 @@ import {
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
+  MAX_SESSION_SHELL_COMMAND_UTF8_BYTES,
+  MAX_SESSION_SHELL_IDENTIFIER_UTF8_BYTES,
+  MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES,
   isAgenCDaemonKnownMethod,
   JSON_RPC_VERSION,
   type AgentAttachParams,
@@ -94,7 +97,6 @@ import {
   type AgentListParams,
   type AgentLogsParams,
   type AgentStopParams,
-  type AudioTranscribeParams,
   type RunEvidenceParams,
   type RunReplayParams,
   type RunResultParams,
@@ -138,6 +140,7 @@ import {
   type SessionResolveToolCallLegacyParams,
   type SessionResolveToolCallParams,
   type SessionClearParams,
+  type SessionMcpStatusParams,
   type SessionMcpAddServerParams,
   type SessionMcpServerByNameParams,
   type WorkspaceEditorAcquireParams,
@@ -171,8 +174,11 @@ import {
   type SessionExtendCompactionRollbackRetentionParams,
   type SessionRewindConversationToMessageParams,
   type SessionFileRewindParams,
+  type SessionShellExecuteParams,
+  type SessionShellExecuteResult,
   type SessionSetModelParams,
   type SessionSetPermissionModeParams,
+  type SessionPermissionRuleMutationParams,
   type SessionHooksStatusParams,
   type SessionHooksSetDisabledParams,
   type SessionApplyConfigParams,
@@ -187,6 +193,7 @@ import {
   type ToolDenyParams,
 } from "./protocol/index.js";
 import { isRecord } from "../utils/record.js";
+import { LEDGER_SOLANA_SIGN_CLIENT_CAPABILITY } from "../elicitation/types.js";
 import { AgenCDaemonWorkflowStartError } from "./workflow/run-start-service.js";
 import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
 import type { CodePredictionService } from "../services/code-prediction/service.js";
@@ -237,6 +244,21 @@ const THREAD_REALTIME_VOICES = [
   "verse",
 ] as const;
 
+/**
+ * Single compatibility table for methods added after protocol 1.0. The same
+ * negotiated method capability gates both requests and any notification that
+ * tells a client to call that method.
+ */
+const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
+  Partial<Record<AgenCDaemonKnownMethod, number>>
+> = Object.freeze({
+  "workspace.editor.topology.recovered.resolve": 1,
+  "session.transcript.v2": 2,
+  "session.mcp.status": 3,
+  "session.permissions.mutateRule": 7,
+  "session.shell.execute": 9,
+});
+
 const CSV_JOB_REVIEW_MAX_PAGE_SIZE = 100;
 const CSV_JOB_REVIEW_MAX_IDENTIFIER_BYTES = 1_024;
 const CSV_JOB_REVIEW_MAX_EVIDENCE_REF_BYTES = 4_096;
@@ -271,7 +293,7 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly workflow: AgenCDaemonDispatcherOptions["workflow"];
   readonly csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly codePrediction: AgenCDaemonDispatcherOptions["codePrediction"];
-  readonly audioTranscription: AgenCAudioTranscriptionService;
+  readonly workspaceMutations: WorkspaceMutationCoordinatorRegistry | undefined;
 }
 
 function buildServerCapabilities(
@@ -282,7 +304,6 @@ function buildServerCapabilities(
   const methodCapabilities = {
     initialize: true,
     "request.cancel": true,
-    "audio.transcribe": hasMethod(inputs.audioTranscription, "transcribe"),
     "agent.create": hasMethod(agentManager, "createAgent"),
     "agent.list": hasMethod(agentManager, "listAgents"),
     "agent.attach": hasMethod(agentManager, "attachAgent"),
@@ -311,6 +332,7 @@ function buildServerCapabilities(
       agentManager,
       "resolveSessionToolCall",
     ),
+    "session.mcp.status": hasMethod(agentManager, "getMcpStatusForSession"),
     "session.mcp.addServer": hasMethod(agentManager, "addMcpServerToSession"),
     "message.send": hasMethod(agentManager, "streamAgentMessage"),
     "message.stream": hasMethod(agentManager, "streamAgentMessage"),
@@ -346,21 +368,30 @@ function buildServerCapabilities(
     "auth.login": inputs.authHandlers !== undefined,
     "auth.whoami": inputs.authHandlers !== undefined,
     "auth.logout": inputs.authHandlers !== undefined,
-    "workspace.editor.acquire": true,
-    "workspace.editor.sync": true,
-    "workspace.editor.staleAuthority.refresh": true,
-    "workspace.editor.heartbeat": true,
-    "workspace.editor.release": true,
-    "workspace.editor.topology.reserve": true,
-    "workspace.editor.topology.complete": true,
-    "workspace.editor.topology.release": true,
-    "workspace.editor.topology.recovered.list": true,
-    "workspace.editor.topology.recovered.resolve": true,
-    "workspace.editor.proposal.get": true,
-    "workspace.editor.proposal.status": true,
-    "workspace.editor.proposal.apply": true,
-    "workspace.editor.proposal.discard": true,
-    "workspace.editor.changes.list": true,
+    "workspace.editor.acquire": inputs.workspaceMutations !== undefined,
+    "workspace.editor.sync": inputs.workspaceMutations !== undefined,
+    "workspace.editor.staleAuthority.refresh":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.heartbeat": inputs.workspaceMutations !== undefined,
+    "workspace.editor.release": inputs.workspaceMutations !== undefined,
+    "workspace.editor.topology.reserve":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.topology.complete":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.topology.release":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.topology.recovered.list":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.topology.recovered.resolve":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.proposal.get": inputs.workspaceMutations !== undefined,
+    "workspace.editor.proposal.status":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.proposal.apply":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.proposal.discard":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.changes.list": inputs.workspaceMutations !== undefined,
     "workspace.editor.predict": hasMethod(inputs.codePrediction, "complete"),
     "workspace.editor.cancelPrediction": hasMethod(
       inputs.codePrediction,
@@ -388,10 +419,15 @@ function buildServerCapabilities(
       agentManager,
       "rewindFilesToMessage",
     ),
+    "session.shell.execute": hasMethod(agentManager, "executeSessionShell"),
     "session.setModel": hasMethod(agentManager, "setSessionModel"),
     "session.setPermissionMode": hasMethod(
       agentManager,
       "setSessionPermissionMode",
+    ),
+    "session.permissions.mutateRule": hasMethod(
+      agentManager,
+      "mutateSessionPermissionRule",
     ),
     "session.hooks.status": hasMethod(agentManager, "getSessionHooksStatus"),
     "session.hooks.setDisabled": hasMethod(
@@ -437,6 +473,15 @@ function hasMethod(target: object | undefined, key: PropertyKey): boolean {
   );
 }
 
+function requiresWorkspaceMutationRegistry(method: string): boolean {
+  return (
+    method.startsWith("workspace.editor.") &&
+    method !== "workspace.editor.predict" &&
+    method !== "workspace.editor.cancelPrediction" &&
+    method !== "workspace.editor.predictionFeedback"
+  );
+}
+
 export interface AgenCDaemonDispatcherOptions {
   readonly agentManager: Pick<
     AgenCDaemonAgentManager,
@@ -451,6 +496,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "snapshotSession"
     | "getSessionTranscript"
     | "getSessionTranscriptV2"
+    | "getMcpStatusForSession"
     | "addMcpServerToSession"
     | "reconnectMcpServerOnSession"
     | "enableMcpServerOnSession"
@@ -461,8 +507,10 @@ export interface AgenCDaemonDispatcherOptions {
     | "rewindConversationToMessage"
     | "previewFileRewind"
     | "rewindFilesToMessage"
+    | "executeSessionShell"
     | "setSessionModel"
     | "setSessionPermissionMode"
+    | "mutateSessionPermissionRule"
     | "applyConfigToSession"
     | "respondToElicitation"
     | "getAgentLogs"
@@ -485,6 +533,7 @@ export interface AgenCDaemonDispatcherOptions {
     AgenCDaemonClientMultiplexer,
     | "attachClientToSession"
     | "broadcastSessionEvent"
+    | "detachClientFromSession"
     | "detachSession"
     | "registerClient"
     | "terminateSession"
@@ -528,8 +577,8 @@ export interface AgenCDaemonDispatcherOptions {
     CodePredictionService,
     "complete" | "cancel" | "feedback"
   >;
-  /** Provider-aware, one-shot pre-turn speech-to-text service. */
-  readonly audioTranscription?: AgenCAudioTranscriptionService;
+  /** Home-bound mutation registry captured by daemon startup. */
+  readonly workspaceMutations?: WorkspaceMutationCoordinatorRegistry;
   readonly healthStateCounter?: AgenCHealthStateCounter;
   readonly now?: () => string;
 }
@@ -551,6 +600,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "snapshotSession"
     | "getSessionTranscript"
     | "getSessionTranscriptV2"
+    | "getMcpStatusForSession"
     | "addMcpServerToSession"
     | "reconnectMcpServerOnSession"
     | "enableMcpServerOnSession"
@@ -561,8 +611,10 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "rewindConversationToMessage"
     | "previewFileRewind"
     | "rewindFilesToMessage"
+    | "executeSessionShell"
     | "setSessionModel"
     | "setSessionPermissionMode"
+    | "mutateSessionPermissionRule"
     | "applyConfigToSession"
     | "respondToElicitation"
     | "getAgentLogs"
@@ -588,6 +640,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         AgenCDaemonClientMultiplexer,
         | "attachClientToSession"
         | "broadcastSessionEvent"
+        | "detachClientFromSession"
         | "detachSession"
         | "registerClient"
         | "terminateSession"
@@ -634,7 +687,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly #codePrediction:
     Pick<CodePredictionService, "complete" | "cancel" | "feedback"> | undefined;
-  readonly #audioTranscription: AgenCAudioTranscriptionService;
+  readonly #workspaceMutations: WorkspaceMutationCoordinatorRegistry | undefined;
   readonly #serverCapabilities: AgenCDaemonServerCapabilities;
   readonly #now: () => string;
 
@@ -666,8 +719,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#workflow = options.workflow;
     this.#csvJobReview = options.csvJobReview;
     this.#codePrediction = options.codePrediction;
-    this.#audioTranscription =
-      options.audioTranscription ?? new AgenCAudioTranscriptionServiceImpl();
+    this.#workspaceMutations = options.workspaceMutations;
     this.#authHandlers =
       options.authBackend !== undefined
         ? createAgenCDaemonAuthHandlers(options.authBackend)
@@ -689,7 +741,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       workflow: this.#workflow,
       csvJobReview: this.#csvJobReview,
       codePrediction: this.#codePrediction,
-      audioTranscription: this.#audioTranscription,
+      workspaceMutations: this.#workspaceMutations,
     });
     this.#now = options.now ?? (() => new Date().toISOString());
   }
@@ -807,10 +859,17 @@ export class AgenCDaemonJsonRpcDispatcher {
       }
 
       if (
-        method === "session.transcript.v2" &&
+        MINIMUM_PROTOCOL_MINOR_BY_METHOD[method] !== undefined &&
         connection.initializeState?.serverCapabilities[
           AGENC_DAEMON_METHOD_CAPABILITIES_KEY
         ][method] !== true
+      ) {
+        return methodNotImplementedResponse(id, method);
+      }
+
+      if (
+        requiresWorkspaceMutationRegistry(method) &&
+        this.#workspaceMutations === undefined
       ) {
         return methodNotImplementedResponse(id, method);
       }
@@ -848,14 +907,6 @@ export class AgenCDaemonJsonRpcDispatcher {
     signal: AbortSignal,
   ): Promise<AgenCDaemonResponse> {
     switch (method) {
-      case "audio.transcribe":
-        return successResponse(
-          id,
-          await this.#audioTranscription.transcribe(
-            validateAudioTranscribeParams(params),
-            { signal },
-          ),
-        );
       case "agent.create":
         return successResponse(
           id,
@@ -1026,6 +1077,13 @@ export class AgenCDaemonJsonRpcDispatcher {
             validateSessionResolveToolCallParams(params),
           ),
         );
+      case "session.mcp.status":
+        return successResponse(
+          id,
+          await this.#agentManager.getMcpStatusForSession(
+            validateSessionMcpStatusParams(params),
+          ),
+        );
       case "session.mcp.addServer":
         return successResponse(
           id,
@@ -1067,18 +1125,23 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await acquireWorkspaceEditor(
+            this.#workspaceMutations!,
             validateWorkspaceEditorAcquireParams(params),
           ),
         );
       case "workspace.editor.sync":
         return internalSuccessResponse(
           id,
-          await syncWorkspaceEditor(validateWorkspaceEditorSyncParams(params)),
+          await syncWorkspaceEditor(
+            this.#workspaceMutations!,
+            validateWorkspaceEditorSyncParams(params),
+          ),
         );
       case "workspace.editor.staleAuthority.refresh":
         return internalSuccessResponse(
           id,
           await refreshWorkspaceEditorStaleAuthority(
+            this.#workspaceMutations!,
             validateWorkspaceEditorHeartbeatParams(
               params,
               "workspace.editor.staleAuthority.refresh",
@@ -1089,6 +1152,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await heartbeatWorkspaceEditor(
+            this.#workspaceMutations!,
             validateWorkspaceEditorHeartbeatParams(
               params,
               "workspace.editor.heartbeat",
@@ -1099,6 +1163,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await releaseWorkspaceEditor(
+            this.#workspaceMutations!,
             validateWorkspaceEditorReleaseParams(params),
           ),
         );
@@ -1106,6 +1171,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await reserveWorkspaceEditorTopology(
+            this.#workspaceMutations!,
             validateWorkspaceEditorTopologyReserveParams(params),
           ),
         );
@@ -1113,6 +1179,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await completeWorkspaceEditorTopology(
+            this.#workspaceMutations!,
             validateWorkspaceEditorTopologyCompleteParams(params),
           ),
         );
@@ -1120,6 +1187,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await releaseWorkspaceEditorTopology(
+            this.#workspaceMutations!,
             validateWorkspaceEditorTopologyFinalizeParams(
               params,
               "workspace.editor.topology.release",
@@ -1130,6 +1198,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await listRecoveredWorkspaceEditorTopologies(
+            this.#workspaceMutations!,
             validateWorkspaceEditorHeartbeatParams(
               params,
               "workspace.editor.topology.recovered.list",
@@ -1140,11 +1209,13 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await resolveRecoveredWorkspaceEditorTopology(
+            this.#workspaceMutations!,
             validateWorkspaceEditorRecoveredTopologyResolveParams(params),
           ),
         );
       case "workspace.editor.proposal.get": {
         const proposal = await inspectWorkspaceEditorProposal(
+          this.#workspaceMutations!,
           validateWorkspaceEditorProposalParams(
             params,
             "workspace.editor.proposal.get",
@@ -1157,6 +1228,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await statusWorkspaceEditorProposal(
+            this.#workspaceMutations!,
             validateWorkspaceEditorProposalStatusParams(params),
             id,
           ),
@@ -1165,6 +1237,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await applyWorkspaceEditorProposal(
+            this.#workspaceMutations!,
             validateWorkspaceEditorProposalApplyParams(params),
           ),
         );
@@ -1172,6 +1245,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await discardWorkspaceEditorProposal(
+            this.#workspaceMutations!,
             validateWorkspaceEditorProposalParams(
               params,
               "workspace.editor.proposal.discard",
@@ -1182,6 +1256,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await listWorkspaceEditorChanges(
+            this.#workspaceMutations!,
             validateWorkspaceEditorChangesListParams(params),
           ),
         );
@@ -1266,6 +1341,17 @@ export class AgenCDaemonJsonRpcDispatcher {
             ),
           ),
         );
+      case "session.shell.execute": {
+        const validated = validateSessionShellExecuteParams(params);
+        const result = await this.#agentManager.executeSessionShell(
+          validated,
+          signal,
+        );
+        return internalSuccessResponse(
+          id,
+          validateSessionShellExecuteResult(result, validated.commandId),
+        );
+      }
       case "session.setModel":
         return successResponse(
           id,
@@ -1278,6 +1364,13 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.setSessionPermissionMode(
             validateSessionSetPermissionModeParams(params),
+          ),
+        );
+      case "session.permissions.mutateRule":
+        return internalSuccessResponse(
+          id,
+          await this.#agentManager.mutateSessionPermissionRule(
+            validateSessionPermissionRuleMutationParams(params),
           ),
         );
       case "session.hooks.status":
@@ -1549,15 +1642,11 @@ export class AgenCDaemonJsonRpcDispatcher {
     params: JsonObject,
   ): Promise<AgenCDaemonResponse> {
     const attachParams = validateAgentAttachParams(params);
-    const result = await this.#agentManager.attachAgent(attachParams);
-    const primarySessionId = result.sessionIds[0];
-    if (primarySessionId !== undefined) {
-      await this.#registerAttachedClient(
-        connection,
-        attachParams,
-        primarySessionId,
-      );
-    }
+    const result = await this.#agentManager.attachAgent(
+      attachParams,
+      (sessionId) =>
+        this.#registerAttachedClient(connection, attachParams, sessionId),
+    );
     return successResponse(id, result);
   }
 
@@ -1631,22 +1720,44 @@ export class AgenCDaemonJsonRpcDispatcher {
     connection: AgenCDaemonJsonRpcConnection,
     params: AgentAttachParams,
     sessionId: string,
-  ): Promise<void> {
-    await this.#attachTrackedClientToSession(
+  ): Promise<() => Promise<void>> {
+    const clientId = params.clientId;
+    const wasTracked =
+      clientId !== undefined && connection.trackedClientIds.includes(clientId);
+    const attachment = await this.#attachTrackedClientToSession(
       connection,
-      params.clientId,
+      clientId,
       sessionId,
     );
+    return async () => {
+      if (
+        attachment === undefined ||
+        clientId === undefined ||
+        this.#clientMultiplexer === undefined
+      ) {
+        return;
+      }
+      if (!wasTracked) {
+        connection.untrackClientId(clientId);
+        await this.#clientMultiplexer.removeClient(clientId).catch(() => {});
+        return;
+      }
+      await this.#clientMultiplexer
+        .detachClientFromSession(sessionId, clientId)
+        .catch(() => {});
+    };
   }
 
   async #registerInitializedCapabilityClient(
     connection: AgenCDaemonJsonRpcConnection,
     capabilities: JsonObject,
   ): Promise<void> {
+    const receivesLedgerActions =
+      capabilities[LEDGER_SOLANA_SIGN_CLIENT_CAPABILITY] === true;
     const receivesMobileStatus =
       capabilities[AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY] === true;
     if (
-      !receivesMobileStatus ||
+      (!receivesLedgerActions && !receivesMobileStatus) ||
       this.#clientMultiplexer === undefined ||
       connection.sendNotification === undefined
     ) {
@@ -1681,6 +1792,8 @@ export class AgenCDaemonJsonRpcDispatcher {
           clientId,
           deliveryKey: connection.cancellationScope,
           send: (message) => connection.sendNotification!(message),
+          acceptsSessionEvent: (event) =>
+            connection.acceptsSessionEvent(event),
         })
         .catch((error) => {
           if (
@@ -1931,6 +2044,16 @@ export class AgenCDaemonJsonRpcConnection {
     return this.#sendNotification;
   }
 
+  acceptsSessionEvent(event: JsonObject): boolean {
+    const requiredMethod = requiredMethodCapabilityForSessionEvent(event);
+    if (requiredMethod === undefined) return true;
+    return (
+      this.#initializeState?.serverCapabilities[
+        AGENC_DAEMON_METHOD_CAPABILITIES_KEY
+      ][requiredMethod] === true
+    );
+  }
+
   trackClientId(clientId: string): void {
     this.#clientIds.add(clientId);
   }
@@ -2066,7 +2189,6 @@ function methodSupportsRequestCancellation(
   method: AgenCDaemonKnownMethod,
 ): boolean {
   return (
-    method === "audio.transcribe" ||
     method === "fs.fuzzy_search" ||
     method === "commandExec.start" ||
     method === "csvJob.review.list" ||
@@ -2074,6 +2196,7 @@ function methodSupportsRequestCancellation(
     method === "csvJob.review.resolve" ||
     method === "session.partialCompactFromMessage" ||
     method === "session.rewindConversationToMessage" ||
+    method === "session.shell.execute" ||
     method === "workspace.editor.predict" ||
     method === "message.stream" ||
     method === "message.send"
@@ -2160,18 +2283,21 @@ function negotiateInitializeProtocol(
   const clientProtocol = parseProtocolVersion(clientVersion)!;
   const methodCapabilities = {
     ...serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY],
-    ...(clientProtocol.minor < 1
-      ? { "workspace.editor.topology.recovered.resolve": false }
-      : {}),
-    ...(clientProtocol.minor < 2 ? { "session.transcript.v2": false } : {}),
-  };
-  const negotiatedCapabilities =
-    clientProtocol.minor < 2
-      ? ({
-          ...serverCapabilities,
-          [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: methodCapabilities,
-        } satisfies AgenCDaemonServerCapabilities)
-      : serverCapabilities;
+  } as Record<AgenCDaemonKnownMethod, boolean>;
+  let capabilitiesChanged = false;
+  for (const [method, minimumMinor] of Object.entries(
+    MINIMUM_PROTOCOL_MINOR_BY_METHOD,
+  ) as Array<[AgenCDaemonKnownMethod, number]>) {
+    if (clientProtocol.minor >= minimumMinor) continue;
+    methodCapabilities[method] = false;
+    capabilitiesChanged = true;
+  }
+  const negotiatedCapabilities = capabilitiesChanged
+    ? ({
+        ...serverCapabilities,
+        [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: methodCapabilities,
+      } satisfies AgenCDaemonServerCapabilities)
+    : serverCapabilities;
   return {
     supported: true,
     state: {
@@ -2206,6 +2332,14 @@ function parseProtocolVersion(
   };
 }
 
+function requiredMethodCapabilityForSessionEvent(
+  event: JsonObject,
+): AgenCDaemonKnownMethod | undefined {
+  return event.method === "event.mcp_status_changed"
+    ? "session.mcp.status"
+    : undefined;
+}
+
 function cloneJsonObject(value: JsonObject | undefined): JsonObject {
   if (value === undefined) return {};
   return { ...value };
@@ -2227,112 +2361,6 @@ function validateRequestCancelParams(params: JsonObject): RequestCancelParams {
   return validated as RequestCancelParams;
 }
 
-const AUDIO_TRANSCRIBE_MIME_TYPES = new Set(
-  Object.values(AUDIO_MEDIA_TYPES),
-);
-const MAX_AUDIO_TRANSCRIPTION_BASE64_LENGTH =
-  Math.ceil(MAX_AUDIO_TRANSCRIPTION_BYTES / 3) * 4;
-
-function isStrictBase64(data: string): boolean {
-  if (data.length === 0 || data.length % 4 !== 0) return false;
-  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
-  const contentEnd = data.length - padding;
-  for (let index = 0; index < contentEnd; index += 1) {
-    const code = data.charCodeAt(index);
-    if (
-      !(
-        (code >= 65 && code <= 90) ||
-        (code >= 97 && code <= 122) ||
-        (code >= 48 && code <= 57) ||
-        code === 43 ||
-        code === 47
-      )
-    ) {
-      return false;
-    }
-  }
-  for (let index = contentEnd; index < data.length; index += 1) {
-    if (data.charCodeAt(index) !== 61) return false;
-  }
-  return true;
-}
-
-function validateAudioTranscribeParams(
-  params: JsonObject,
-): AgenCAudioTranscriptionRequest {
-  const validated = validateObjectShape(params, {
-    methodName: "audio.transcribe",
-    objectFields: ["audio"],
-    stringFields: ["preferredProvider"],
-  }) as AudioTranscribeParams;
-  if (!isPlainJsonObject(validated.audio)) {
-    throw invalidParams("audio.transcribe requires audio");
-  }
-  const audio = validateObjectShape(validated.audio, {
-    methodName: "audio.transcribe.audio",
-    stringFields: ["data", "mimeType", "fileName"],
-  });
-  validateRequiredString(audio, "audio.transcribe.audio", "data");
-  validateRequiredString(audio, "audio.transcribe.audio", "mimeType");
-  validateRequiredString(audio, "audio.transcribe.audio", "fileName");
-
-  const data = audio.data as string;
-  const mimeType = audio.mimeType as string;
-  const fileName = audio.fileName as string;
-  validateOptionalEnumOrNull(
-    validated,
-    "audio.transcribe",
-    "preferredProvider",
-    ["openai", "gemini", "local"],
-  );
-  if (!AUDIO_TRANSCRIBE_MIME_TYPES.has(mimeType)) {
-    throw invalidParams(
-      `audio.transcribe audio.mimeType must be one of: ${[
-        ...AUDIO_TRANSCRIBE_MIME_TYPES,
-      ].join(", ")}`,
-    );
-  }
-  if (
-    fileName !== basename(fileName) ||
-    fileName.includes("/") ||
-    fileName.includes("\\") ||
-    fileName === "." ||
-    fileName === ".." ||
-    fileName.includes("\0")
-  ) {
-    throw invalidParams(
-      "audio.transcribe audio.fileName must be a basename without path components",
-    );
-  }
-  if (data.length > MAX_AUDIO_TRANSCRIPTION_BASE64_LENGTH) {
-    throw invalidParams(
-      `audio.transcribe audio.data exceeds the ${MAX_AUDIO_TRANSCRIPTION_BYTES} byte decoded limit`,
-    );
-  }
-  if (!isStrictBase64(data)) {
-    throw invalidParams("audio.transcribe audio.data must be strict base64");
-  }
-  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
-  const decodedBytes = (data.length / 4) * 3 - padding;
-  if (decodedBytes > MAX_AUDIO_TRANSCRIPTION_BYTES) {
-    throw invalidParams(
-      `audio.transcribe audio.data exceeds the ${MAX_AUDIO_TRANSCRIPTION_BYTES} byte decoded limit`,
-    );
-  }
-  const bytes = Buffer.from(data, "base64");
-  if (bytes.length !== decodedBytes || bytes.toString("base64") !== data) {
-    throw invalidParams("audio.transcribe audio.data must be strict base64");
-  }
-  return {
-    bytes,
-    mimeType,
-    fileName,
-    ...(validated.preferredProvider !== undefined
-      ? { preferredProvider: validated.preferredProvider }
-      : {}),
-  };
-}
-
 function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
   const validated = validateObjectShape(params, {
     methodName: "agent.create",
@@ -2344,6 +2372,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "model",
       "provider",
       "profile",
+      "configPath",
       "instructions",
       "permissionMode",
     ],
@@ -2351,6 +2380,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
     objectFields: [
       "metadata",
       "envOverrides",
+      "runtimeOptions",
       "initialEditorInteraction",
       "resumeSourceProof",
     ],
@@ -2369,6 +2399,16 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       throw invalidParams(error.message);
     }
     throw error;
+  }
+  if (
+    validated.configPath !== undefined &&
+    (typeof validated.configPath !== "string" ||
+      validated.configPath.trim().length === 0 ||
+      !isAbsolute(validated.configPath))
+  ) {
+    throw invalidParams(
+      "agent.create param 'configPath' must be a non-empty absolute path",
+    );
   }
   if (validated.initialContent !== undefined) {
     validateMessageContent(
@@ -2504,6 +2544,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       );
     }
   }
+  let envOverrides: Record<string, string>;
   if (validated.envOverrides !== undefined) {
     validateStringRecord(
       validated.envOverrides as JsonObject,
@@ -2511,9 +2552,32 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "envOverrides",
     );
   }
+  try {
+    envOverrides = normalizeDaemonClientEnvOverrides(
+      validated.envOverrides as Record<string, string> | undefined,
+    );
+  } catch (error) {
+    throw invalidParams(
+      `agent.create param 'envOverrides' ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (validated.runtimeOptions === undefined) {
+    throw invalidParams("agent.create requires runtimeOptions");
+  }
+  let runtimeOptions;
+  try {
+    runtimeOptions = validateAgentRuntimeOptions(validated.runtimeOptions);
+  } catch (error) {
+    if (error instanceof AgentRuntimeOptionsError) {
+      throw invalidParams(`agent.create ${error.message}`);
+    }
+    throw error;
+  }
   return {
     ...validated,
     cwd,
+    envOverrides,
+    runtimeOptions,
     ...(initialEditorInteraction !== undefined
       ? { initialEditorInteraction }
       : {}),
@@ -3084,11 +3148,10 @@ function validateSessionMcpAddServerParams(
     config.transport !== "stdio" &&
     config.transport !== "sse" &&
     config.transport !== "http" &&
-    config.transport !== "websocket" &&
-    config.transport !== "ws"
+    config.transport !== "websocket"
   ) {
     throw invalidParams(
-      "session.mcp.addServer.config transport must be stdio, sse, http, websocket, or ws",
+      "session.mcp.addServer.config transport must be stdio, sse, http, or websocket",
     );
   }
   for (const field of ["enabled", "required"] as const) {
@@ -3100,6 +3163,17 @@ function validateSessionMcpAddServerParams(
     }
   }
   return validated as SessionMcpAddServerParams;
+}
+
+function validateSessionMcpStatusParams(
+  params: JsonObject,
+): SessionMcpStatusParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.mcp.status",
+    stringFields: ["sessionId"],
+  });
+  validateRequiredString(validated, "session.mcp.status", "sessionId");
+  return validated as SessionMcpStatusParams;
 }
 
 function validateSessionMcpServerByNameParams(
@@ -3234,6 +3308,110 @@ function validateSessionFileRewindParams(
   return validated as SessionFileRewindParams;
 }
 
+function validateSessionShellExecuteParams(
+  params: JsonObject,
+): SessionShellExecuteParams {
+  const methodName = "session.shell.execute";
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: ["sessionId", "commandId", "command"],
+  });
+  validateRequiredString(validated, methodName, "sessionId");
+  validateRequiredString(validated, methodName, "commandId");
+  validateRequiredString(validated, methodName, "command");
+  validateMaximumUtf8Bytes(
+    validated.sessionId,
+    methodName,
+    "sessionId",
+    MAX_SESSION_SHELL_IDENTIFIER_UTF8_BYTES,
+  );
+  validateMaximumUtf8Bytes(
+    validated.commandId,
+    methodName,
+    "commandId",
+    MAX_SESSION_SHELL_IDENTIFIER_UTF8_BYTES,
+  );
+  validateMaximumUtf8Bytes(
+    validated.command,
+    methodName,
+    "command",
+    MAX_SESSION_SHELL_COMMAND_UTF8_BYTES,
+  );
+  return validated as SessionShellExecuteParams;
+}
+
+function validateSessionShellExecuteResult(
+  value: unknown,
+  expectedCommandId: string,
+): SessionShellExecuteResult {
+  if (!isPlainJsonObject(value)) {
+    throw new Error("session.shell.execute returned a non-object result");
+  }
+
+  const allowedKeys = new Set([
+    "commandId",
+    "content",
+    "stdout",
+    "stderr",
+    "exitCode",
+    "timedOut",
+    "truncated",
+    "isError",
+  ]);
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `session.shell.execute returned unexpected field '${key}'`,
+      );
+    }
+  }
+
+  if (value.commandId !== expectedCommandId) {
+    throw new Error("session.shell.execute returned a mismatched commandId");
+  }
+  for (const field of ["content", "stdout", "stderr"] as const) {
+    const text = value[field];
+    if (typeof text !== "string") {
+      throw new Error(
+        `session.shell.execute returned non-string field '${field}'`,
+      );
+    }
+    if (
+      Buffer.byteLength(text, "utf8") > MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES
+    ) {
+      throw new Error(
+        `session.shell.execute returned field '${field}' larger than ${MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES} UTF-8 bytes`,
+      );
+    }
+  }
+  if (
+    value.exitCode !== null &&
+    (typeof value.exitCode !== "number" ||
+      !Number.isSafeInteger(value.exitCode))
+  ) {
+    throw new Error(
+      "session.shell.execute returned exitCode that is not an integer or null",
+    );
+  }
+  for (const field of ["timedOut", "truncated", "isError"] as const) {
+    if (typeof value[field] !== "boolean") {
+      throw new Error(
+        `session.shell.execute returned non-boolean field '${field}'`,
+      );
+    }
+  }
+  return {
+    commandId: expectedCommandId,
+    content: value.content as string,
+    stdout: value.stdout as string,
+    stderr: value.stderr as string,
+    exitCode: value.exitCode as number | null,
+    timedOut: value.timedOut as boolean,
+    truncated: value.truncated as boolean,
+    isError: value.isError as boolean,
+  };
+}
+
 function validateSessionSetModelParams(
   params: JsonObject,
 ): SessionSetModelParams {
@@ -3273,6 +3451,33 @@ function validateSessionSetPermissionModeParams(
   validateRequiredString(validated, "session.setPermissionMode", "sessionId");
   validateRequiredString(validated, "session.setPermissionMode", "mode");
   return validated as SessionSetPermissionModeParams;
+}
+
+function validateSessionPermissionRuleMutationParams(
+  params: JsonObject,
+): SessionPermissionRuleMutationParams {
+  const methodName = "session.permissions.mutateRule";
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: ["sessionId", "operation", "behavior", "rule"],
+  });
+  validateRequiredString(validated, methodName, "sessionId");
+  validateRequiredEnum(validated, methodName, "operation", ["add", "remove"]);
+  validateRequiredEnum(validated, methodName, "behavior", [
+    "allow",
+    "deny",
+    "ask",
+  ]);
+  validateRequiredString(validated, methodName, "rule");
+  if (
+    Buffer.byteLength(validated.rule as string, "utf8") >
+    MAX_SESSION_PERMISSION_RULE_UTF8_BYTES
+  ) {
+    throw invalidParams(
+      `${methodName} rule exceeds ${MAX_SESSION_PERMISSION_RULE_UTF8_BYTES} UTF-8 bytes`,
+    );
+  }
+  return validated as SessionPermissionRuleMutationParams;
 }
 
 function validateSessionHooksStatusParams(
@@ -4579,10 +4784,13 @@ function validateWorkspaceEditorPredictionFeedbackParams(
   return validated as WorkspaceEditorPredictionFeedbackParams;
 }
 
-async function acquireWorkspaceEditor(params: WorkspaceEditorAcquireParams) {
+async function acquireWorkspaceEditor(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
+  params: WorkspaceEditorAcquireParams,
+) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const lease = workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
+    const lease = workspaceMutations.acquireEditor(workspaceRoot, {
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
       ...(params.takeover !== undefined ? { takeover: params.takeover } : {}),
@@ -4596,7 +4804,7 @@ async function acquireWorkspaceEditor(params: WorkspaceEditorAcquireParams) {
     // projecting terminal audit entries. If that append failed, acquiring the
     // same in-process coordinator is the client's retry boundary: do not
     // acknowledge the lease until the append-once outbox is durably drained.
-    await workspaceMutationCoordinators
+    await workspaceMutations
       .getOrCreate(workspaceRoot)
       .flushPendingAuditOutbox();
     return lease;
@@ -4605,11 +4813,14 @@ async function acquireWorkspaceEditor(params: WorkspaceEditorAcquireParams) {
   }
 }
 
-async function syncWorkspaceEditor(params: WorkspaceEditorSyncParams) {
+async function syncWorkspaceEditor(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
+  params: WorkspaceEditorSyncParams,
+) {
   let coordinator: WorkspaceMutationCoordinator | null = null;
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     const input = {
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
@@ -4637,11 +4848,12 @@ async function syncWorkspaceEditor(params: WorkspaceEditorSyncParams) {
 }
 
 async function refreshWorkspaceEditorStaleAuthority(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorHeartbeatParams,
 ) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    return workspaceMutationCoordinators
+    return workspaceMutations
       .getOrCreate(workspaceRoot)
       .refreshStaleAuthority({
         workspaceRoot,
@@ -4655,11 +4867,12 @@ async function refreshWorkspaceEditorStaleAuthority(
 }
 
 async function heartbeatWorkspaceEditor(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorHeartbeatParams,
 ) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    return workspaceMutationCoordinators.getOrCreate(workspaceRoot).heartbeat({
+    return workspaceMutations.getOrCreate(workspaceRoot).heartbeat({
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
       leaseToken: params.leaseToken,
@@ -4670,11 +4883,13 @@ async function heartbeatWorkspaceEditor(
   }
 }
 
-async function releaseWorkspaceEditor(params: WorkspaceEditorReleaseParams) {
+async function releaseWorkspaceEditor(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
+  params: WorkspaceEditorReleaseParams,
+) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const coordinator =
-      workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    const coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     const result = await coordinator.release({
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
@@ -4692,12 +4907,13 @@ async function releaseWorkspaceEditor(params: WorkspaceEditorReleaseParams) {
 }
 
 async function reserveWorkspaceEditorTopology(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorTopologyReserveParams,
 ) {
   let coordinator: WorkspaceMutationCoordinator | null = null;
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     const token = await coordinator.reserveEditorTopologyMutation({
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
@@ -4717,12 +4933,13 @@ async function reserveWorkspaceEditorTopology(
 }
 
 async function completeWorkspaceEditorTopology(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorTopologyCompleteParams,
 ) {
   let coordinator: WorkspaceMutationCoordinator | null = null;
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     return await coordinator.completeEditorTopologyMutation({
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
@@ -4740,12 +4957,13 @@ async function completeWorkspaceEditorTopology(
 }
 
 async function releaseWorkspaceEditorTopology(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorTopologyFinalizeParams,
 ) {
   let coordinator: WorkspaceMutationCoordinator | null = null;
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     return await coordinator.releaseEditorTopologyMutation({
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
@@ -4762,12 +4980,12 @@ async function releaseWorkspaceEditorTopology(
 }
 
 async function listRecoveredWorkspaceEditorTopologies(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorRecoveredTopologyListParams,
 ) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const coordinator =
-      workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    const coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     return {
       mutations: coordinator.listRecoveredEditorTopologyMutations({
         workspaceRoot,
@@ -4782,12 +5000,13 @@ async function listRecoveredWorkspaceEditorTopologies(
 }
 
 async function resolveRecoveredWorkspaceEditorTopology(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorRecoveredTopologyResolveParams,
 ) {
   let coordinator: WorkspaceMutationCoordinator | null = null;
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     return await coordinator.resolveRecoveredEditorTopologyMutation({
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
@@ -4804,12 +5023,13 @@ async function resolveRecoveredWorkspaceEditorTopology(
 }
 
 async function inspectWorkspaceEditorProposal(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorProposalParams,
   requestId: RequestId,
 ) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const proposal = workspaceMutationCoordinators
+    const proposal = workspaceMutations
       .getOrCreate(workspaceRoot)
       .inspectProposal({
         workspaceRoot,
@@ -4829,12 +5049,13 @@ async function inspectWorkspaceEditorProposal(
 }
 
 async function statusWorkspaceEditorProposal(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorProposalStatusParams,
   requestId: RequestId,
 ) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const status = await workspaceMutationCoordinators
+    const status = await workspaceMutations
       .getOrCreate(workspaceRoot)
       .proposalStatus({
         workspaceRoot,
@@ -4851,11 +5072,12 @@ async function statusWorkspaceEditorProposal(
 }
 
 async function applyWorkspaceEditorProposal(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorProposalApplyParams,
 ) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    return await workspaceMutationCoordinators
+    return await workspaceMutations
       .getOrCreate(workspaceRoot)
       .applyProposal({
         workspaceRoot,
@@ -4873,11 +5095,12 @@ async function applyWorkspaceEditorProposal(
 }
 
 async function discardWorkspaceEditorProposal(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorProposalParams,
 ) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    return await workspaceMutationCoordinators
+    return await workspaceMutations
       .getOrCreate(workspaceRoot)
       .discardProposalForEditor({
         workspaceRoot,
@@ -4892,12 +5115,12 @@ async function discardWorkspaceEditorProposal(
 }
 
 async function listWorkspaceEditorChanges(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorChangesListParams,
 ) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const coordinator =
-      workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    const coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     const result = coordinator.listChanges({
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
@@ -5253,6 +5476,12 @@ function mapDispatchError(
   id: RequestId | null,
   error: unknown,
 ): AgenCDaemonResponse {
+  if (error instanceof PermissionRuleMutationPrecommitError) {
+    return errorResponse(id, -32602, error.message, {
+      code: "PERMISSION_RULE_MUTATION_REJECTED",
+      authorityPhase: "precommit",
+    });
+  }
   if (error instanceof AgenCDaemonRequestCancelledError) {
     return errorResponse(id, -32000, error.message, {
       code: "REQUEST_CANCELLED",

@@ -5,19 +5,18 @@ import type {
   StatusNoticeContext,
   StatusNoticeDefinition,
 } from './statusNoticeDefinitions.js'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../remoteAuthSessionContext.fixture.js'
 
 type AuthSource =
   | 'ANTHROPIC_AUTH_TOKEN'
   | 'AGENC_OAUTH_TOKEN'
   | 'AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR'
-  | 'CCR_OAUTH_TOKEN_FILE'
-  | 'apiKeyHelper'
-  | 'managedOAuth'
+  | 'native-secure-storage'
+  | 'agenc-cloud'
   | 'none'
 type ApiKeySource =
   | 'ANTHROPIC_API_KEY'
   | '/login managed key'
-  | 'apiKeyHelper'
   | 'none'
 
 const mocks = vi.hoisted(() => ({
@@ -45,11 +44,18 @@ vi.mock('../ink.js', async () => {
 })
 
 vi.mock('../../utils/auth.js', () => ({
-  getApiKeyFromConfigOrMacOSKeychain: () =>
-    mocks.apiKeyConfigured ? 'configured-key' : null,
-  getAuthTokenSource: () => mocks.authTokenSource,
-  getproviderApiKeyWithSource: () => ({ source: mocks.apiKeySource }),
-  isAgenCAISubscriber: () => mocks.subscriber,
+  selectedProviderUsesExternalAuth: (provider: string) =>
+    provider !== 'anthropic' && provider !== 'agenc',
+  getPrimaryApiKeyFromSecureStorage: () =>
+    mocks.apiKeyConfigured
+      ? { key: 'configured-key', source: '/login managed key' }
+      : null,
+  getAuthTokenSourceForContext: () => mocks.authTokenSource,
+  getAnthropicApiKeyWithSourceForContext: () => ({
+    key: null,
+    source: mocks.apiKeySource,
+  }),
+  isAgenCAISubscriberForContext: () => mocks.subscriber,
 }))
 
 vi.mock('../../utils/format.js', () => ({
@@ -78,6 +84,8 @@ function baseContext(
     config: {
       autoInstallIdeExtension: true,
     } as StatusNoticeContext['config'],
+    homeContext: TEST_REMOTE_AUTH_SESSION_CONTEXT.home,
+    providerAuthContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
     daemonStatus: {
       autostartDisabled: false,
     },
@@ -148,7 +156,7 @@ describe('statusNoticeDefinitions wave200-142 coverage', () => {
     ).toContain('101 tokens > 100')
 
     mocks.subscriber = true
-    mocks.authTokenSource = { hasToken: true, source: 'apiKeyHelper' }
+    mocks.authTokenSource = { hasToken: true, source: 'ANTHROPIC_AUTH_TOKEN' }
     expect(getActiveNotices(baseContext()).map(notice => notice.id)).toContain(
       'agenc-account-external-token',
     )
@@ -159,10 +167,11 @@ describe('statusNoticeDefinitions wave200-142 coverage', () => {
           'agenc-account-external-token',
         ).render(baseContext()),
       ),
-    ).toContain('Using apiKeyHelper instead of AgenC account')
+    ).toContain('Using ANTHROPIC_AUTH_TOKEN instead of AgenC account')
 
+    mocks.authTokenSource = { hasToken: false, source: 'none' }
     mocks.apiKeyConfigured = true
-    mocks.apiKeySource = 'apiKeyHelper'
+    mocks.apiKeySource = 'ANTHROPIC_API_KEY'
     expect(getActiveNotices(baseContext()).map(notice => notice.id)).toContain(
       'api-key-conflict',
     )
@@ -172,7 +181,7 @@ describe('statusNoticeDefinitions wave200-142 coverage', () => {
           baseContext(),
         ),
       ),
-    ).toContain('Using apiKeyHelper instead of provider Console key')
+    ).toContain('Using ANTHROPIC_API_KEY instead of provider Console key')
     expect(getActiveNotices(baseContext()).map(notice => notice.id)).not.toContain(
       'both-auth-methods',
     )
@@ -195,13 +204,13 @@ describe('statusNoticeDefinitions wave200-142 coverage', () => {
       },
       {
         apiKeySource: '/login managed key',
-        expected: 'Remove the managed OAuth token file',
-        source: 'CCR_OAUTH_TOKEN_FILE',
+        expected: 'Run agenc /logout to clear persisted authentication',
+        source: 'native-secure-storage',
       },
       {
-        apiKeySource: 'apiKeyHelper',
-        expected: 'Unset the apiKeyHelper setting',
-        source: 'apiKeyHelper',
+        apiKeySource: '/login managed key',
+        expected: 'Unset the AGENC_OAUTH_TOKEN environment variable',
+        source: 'AGENC_OAUTH_TOKEN',
       },
       {
         apiKeySource: '/login managed key',
@@ -211,7 +220,7 @@ describe('statusNoticeDefinitions wave200-142 coverage', () => {
       {
         apiKeySource: '/login managed key',
         expected: 'sign out of the AgenC account',
-        source: 'managedOAuth',
+        source: 'agenc-cloud',
       },
     ]
 

@@ -21,6 +21,10 @@ import {
   isAutoModeAllowlistedTool,
 } from "src/permissions/classifier.js";
 import { createEmptyToolPermissionContext } from "src/permissions/types.js";
+import { createProvider } from "src/llm/provider.js";
+import { runWithCurrentRuntimeSession } from "src/session/current-session.js";
+import { SessionProviderService } from "src/session/provider-service.js";
+import type { Session } from "src/session/session.js";
 
 const AUTO_MODE_ENV_KEYS = [
   "XAI_API_KEY",
@@ -46,7 +50,17 @@ function withAutoModeEnv<T>(
     }
   }
   try {
-    return body();
+    const providerService = new SessionProviderService({
+      initialProvider: createProvider("openai-compatible", {
+        model: "classifier-test",
+        baseURL: "http://127.0.0.1:18000/v1",
+      }),
+      environment: overrides,
+    });
+    return runWithCurrentRuntimeSession(
+      { providerService } as unknown as Session,
+      body,
+    );
   } finally {
     for (const key of AUTO_MODE_ENV_KEYS) {
       const value = previous[key];
@@ -76,7 +90,7 @@ describe("gaphunt3 #9 — WebFetch/WebSearch are not auto-mode allowlisted", () 
     // The change is surgical: other safe tools remain allowlisted.
     expect(all).toContain("Grep");
     expect(all).toContain("Glob");
-    expect(all).toContain("ToolSearch");
+    expect(all).toContain("system.searchTools");
     expect(all).toContain("FileRead");
   });
 

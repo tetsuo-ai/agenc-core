@@ -24,6 +24,11 @@ import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
 import { isValidPermissionDefaultMode } from "../config/schema.js";
 import { MCPTransportCleanupError } from "./transports/connect-with-cleanup.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
+import {
+  EMPTY_MCP_REQUEST_ENVIRONMENT,
+  snapshotMcpRequestEnvironment,
+} from "./environment.js";
 
 /**
  * Derive the tool catalog policy (allow/deny filter, I-74 SHA-256 catalog
@@ -37,24 +42,23 @@ import { MCPTransportCleanupError } from "./transports/connect-with-cleanup.js";
  * or access controls (#6). Keeping one implementation means a new security
  * field added to the policy derivation lands on both paths at once.
  *
- * The policy fields live alongside `MCPServerConfig` but are not part of its
- * public surface, so they are read through a widened cast.
+ * Every field read here is part of the runtime config contract. Keeping the
+ * contract explicit lets the manager take a complete immutable snapshot
+ * before any asynchronous connection work begins.
  */
 export function toToolCatalogPolicyConfig(
   config: MCPServerConfig,
 ): MCPToolCatalogPolicyConfig | undefined {
-  const typed = config as MCPServerConfig & MCPToolCatalogPolicyConfig;
-  const allowedTools = typed.allowedTools ?? config.enabled_tools;
-  const deniedTools = typed.deniedTools ?? config.disabled_tools;
+  const allowedTools = config.enabled_tools;
+  const deniedTools = config.disabled_tools;
   const defaultToolsApprovalMode = isValidPermissionDefaultMode(
     config.default_tools_approval_mode,
   )
     ? config.default_tools_approval_mode
     : undefined;
   if (
-    !typed.riskControls &&
-    !typed.supplyChain &&
-    !typed.pinnedCatalogSha256 &&
+    !config.supplyChain &&
+    !config.pinnedCatalogSha256 &&
     allowedTools === undefined &&
     deniedTools === undefined &&
     defaultToolsApprovalMode === undefined &&
@@ -65,15 +69,14 @@ export function toToolCatalogPolicyConfig(
   return {
     ...(allowedTools !== undefined ? { allowedTools } : {}),
     ...(deniedTools !== undefined ? { deniedTools } : {}),
-    ...(typed.pinnedCatalogSha256 !== undefined
-      ? { pinnedCatalogSha256: typed.pinnedCatalogSha256 }
+    ...(config.pinnedCatalogSha256 !== undefined
+      ? { pinnedCatalogSha256: config.pinnedCatalogSha256 }
       : {}),
     ...(defaultToolsApprovalMode !== undefined
       ? { defaultToolsApprovalMode }
       : {}),
     ...(config.tools !== undefined ? { tools: config.tools } : {}),
-    riskControls: typed.riskControls,
-    supplyChain: typed.supplyChain,
+    supplyChain: config.supplyChain,
   };
 }
 
@@ -162,6 +165,8 @@ interface ResilientMCPBridgeOptions {
   /** Session-provided MCP sampling handler, re-registered on reconnect. */
   readonly samplingHandlers?: McpSamplingHandlers;
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+  /** Immutable transport authority reused by every automatic reconnect. */
+  readonly environment?: ProviderEnvironment;
 }
 
 /**
@@ -212,7 +217,14 @@ export class ResilientMCPBridge implements MCPToolBridge {
     this.catalogPolicy = toToolCatalogPolicyConfig(config);
     this.inner = initialBridge;
     this.logger = logger;
-    this.options = options;
+    this.options = {
+      ...options,
+      ...(options.environment !== undefined
+        ? {
+            environment: snapshotMcpRequestEnvironment(options.environment),
+          }
+        : {}),
+    };
     this.serverName = initialBridge.serverName;
 
     // Build stable proxy tools that delegate to the current inner bridge
@@ -375,6 +387,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
         this.options.elicitationHandlers,
         this.options.samplingHandlers,
         this.options.sandboxExecutionBroker,
+        this.options.environment ?? EMPTY_MCP_REQUEST_ENVIRONMENT,
       );
       if (!this.isReconnectCurrent(epoch)) {
         await closeClientForAbandonedReconnect(client, this.serverName);
@@ -406,6 +419,8 @@ export class ResilientMCPBridge implements MCPToolBridge {
           ...(this.options.serverOrigin !== undefined
             ? { serverOrigin: this.options.serverOrigin }
             : {}),
+          environment:
+            this.options.environment ?? EMPTY_MCP_REQUEST_ENVIRONMENT,
         },
       );
 

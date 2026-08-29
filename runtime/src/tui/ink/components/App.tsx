@@ -43,6 +43,7 @@ type Props = {
   readonly stdout: NodeJS.WriteStream;
   readonly stderr: NodeJS.WriteStream;
   readonly exitOnCtrlC: boolean;
+  readonly stdinMode?: 'readable' | 'data';
   readonly onExit: (error?: Error) => void;
   readonly terminalColumns: number;
   readonly terminalRows: number;
@@ -125,7 +126,7 @@ export default class App extends PureComponent<Props, State> {
   // Default to readable-mode stdin (compatibility Ink behavior). The data-mode path
   // is kept as an explicit opt-in because some terminals can enter a state
   // where startup input appears frozen when data mode is the default.
-  stdinMode: 'readable' | 'data' = process.env.AGENC_USE_DATA_STDIN === '1' || process.env.AGENC_USE_READABLE_STDIN === '0' ? 'data' : 'readable';
+  stdinMode: 'readable' | 'data' = this.props.stdinMode ?? 'readable';
   // Timeout durations for incomplete sequences (ms)
   // 25ms keeps lone-ESC→feedback snappy (ESC + 16ms render throttle ≈ 41ms).
   // Split escape/meta sequences are still safe: when the continuation bytes

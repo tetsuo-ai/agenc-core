@@ -29,10 +29,10 @@ import { Byline } from '../design-system/Byline.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { useTasksV2 } from '../../hooks/useTasksV2.js';
 import { formatDuration } from '../../../utils/format.js';
-import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js';
+import { useFullscreenMode } from '../../context/fullscreenModeContext.js';
+import { useSettings } from '../../hooks/useSettings.js';
 import { isXtermJs } from '../../ink/terminal.js';
 import { useHasSelection, useSelection } from '../../ink/hooks/use-selection.js';
-import { getGlobalConfig } from '../../../utils/config.js';
 import { getPlatform } from '../../../utils/platform.js';
 import { PrBadge } from '../PrBadge.js';
 import {
@@ -243,6 +243,8 @@ function ModeIndicator({
   const {
     columns
   } = useTerminalSize();
+  const settings = useSettings();
+  const isFullscreen = useFullscreenMode();
   const modeCycleShortcut = useShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab');
   const tasks = useAppState(s => s.tasks);
   const teamContext = useAppState(s_0 => s_0.teamContext);
@@ -254,7 +256,8 @@ function ModeIndicator({
   const viewingAgentTaskId = useAppState(s_2 => s_2.viewingAgentTaskId);
   const expandedView = useAppState(s_3 => s_3.expandedView);
   const showSpinnerTree = expandedView === 'teammates';
-  const prStatus = usePrStatus(isLoading, isPrStatusEnabled());
+  const prStatusEnabled = settings.tui?.prStatusFooterEnabled ?? true;
+  const prStatus = usePrStatus(isLoading, prStatusEnabled);
   const nextTickAt = useSyncExternalStore((feature('PROACTIVE') || feature('KAIROS')) ? subscribeToPromptInputProactiveChanges : NO_OP_SUBSCRIBE, (feature('PROACTIVE') || feature('KAIROS')) ? getPromptInputProactiveNextTickAt : NULL, NULL);
   const hasSelection = useHasSelection();
   const selGetState = useSelection().getState;
@@ -290,7 +293,7 @@ function ModeIndicator({
   // >=100 threshold was tuned for. Now that auto mode is effectively the
   // baseline, primaryItemCount is ≥1 for most sessions; keep the threshold
   // low enough to show PR status on standard 80-col terminals.
-  const shouldShowPrStatus = isPrStatusEnabled() && prStatus.number !== null && prStatus.reviewState !== null && prStatus.url !== null && primaryItemCount < 2 && (primaryItemCount === 0 || columns >= 80);
+  const shouldShowPrStatus = prStatusEnabled && prStatus.number !== null && prStatus.reviewState !== null && prStatus.url !== null && primaryItemCount < 2 && (primaryItemCount === 0 || columns >= 80);
 
   // Hide the shift+tab hint when there are 2 primary items
   const shouldShowModeHint = primaryItemCount < 2;
@@ -369,10 +372,10 @@ function ModeIndicator({
       </Text>);
   }
 
-  const copyOnSelect = getGlobalConfig().copyOnSelect ?? true;
+  const copyOnSelect = settings.tui?.copyOnSelect ?? true;
   const selectionHintHasContent = hasSelection && (!copyOnSelect || isXtermJs());
 
-  if (isFullscreenEnvEnabled() && selectionHintHasContent) {
+  if (isFullscreen && selectionHintHasContent) {
     // branding-scan: allow Cursor is a supported editor name in this selection hint.
     // xterm.js (VS Code/Cursor/Windsurf) force-selection modifier is
     // platform-specific and gated on macOS (SelectionService.shouldForceSelection):
@@ -404,7 +407,7 @@ function ModeIndicator({
   // from 0→1 row. Always render 1 row in fullscreen; return a space when
   // empty so Yoga reserves the row without painting anything visible.
   if (parts.length === 0 && !tasksPart && !modePart) {
-    return isFullscreenEnvEnabled() ? <Text> </Text> : null;
+    return isFullscreen ? <Text> </Text> : null;
   }
 
   // flexShrink=0 keeps mode + pill at natural width; the remaining parts
@@ -453,7 +456,4 @@ function getSpinnerHintParts(isLoading: boolean, todosShortcut: string, killAgen
           </Text>] : []), ...(showToggleHint ? [<Text dimColor key="toggle-tasks">
             <KeyboardShortcutHint shortcut={todosShortcut} action={toggleAction} />
           </Text>] : [])];
-}
-function isPrStatusEnabled(): boolean {
-  return getGlobalConfig().prStatusFooterEnabled ?? true;
 }

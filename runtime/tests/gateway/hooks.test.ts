@@ -11,17 +11,16 @@
 
 import {
   existsSync,
-  mkdirSync,
   mkdtempSync,
   rmSync,
-  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { HooksServer, HOOKS_PATH } from "../../src/gateway/hooks.js";
-import { loadGatewayConfig } from "../../src/gateway/config.js";
+import { gatewayConfigFromCanonical } from "../../src/gateway/config.js";
+import { validateStrictConfigDocument } from "../../src/config/repository.js";
 import { InMemoryChannelAdapter } from "../../src/gateway/test-channel.js";
 import type {
   GatewayDaemonClient,
@@ -325,34 +324,28 @@ describe("HooksServer", () => {
 });
 
 describe("gateway config hooks section", () => {
-  let home: string;
-  beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), "agenc-hooks-cfg-"));
-  });
-  afterEach(() => rmSync(home, { recursive: true, force: true }));
-
-  function write(config: unknown): void {
-    mkdirSync(join(home, "gateway"), { recursive: true });
-    writeFileSync(join(home, "gateway", "config.json"), JSON.stringify(config));
-  }
-
-  test("valid hooks section parses; absent section stays undefined", () => {
-    write({ hooks: { enabled: true, host: "127.0.0.1", port: 9911 } });
-    expect(loadGatewayConfig({ agencHome: home }).hooks).toEqual({
+  test("adapts the validated canonical hooks section and preserves absence", () => {
+    const canonical = validateStrictConfigDocument({
+      config_version: 2,
+      gateway: { hooks: { enabled: true, host: "127.0.0.1", port: 9911 } },
+    }, "config.toml");
+    expect(gatewayConfigFromCanonical(canonical).hooks).toEqual({
       enabled: true,
       host: "127.0.0.1",
       port: 9911,
     });
-    write({});
-    expect(loadGatewayConfig({ agencHome: home }).hooks).toBeUndefined();
+    expect(gatewayConfigFromCanonical({}).hooks).toBeUndefined();
   });
 
-  test("malformed hooks sections fail CLOSED (disabled, never coerced on)", () => {
-    write({ hooks: "yes please" });
-    expect(loadGatewayConfig({ agencHome: home }).hooks).toBeUndefined();
-    write({ hooks: { enabled: "true" } }); // string, not boolean
-    expect(loadGatewayConfig({ agencHome: home }).hooks).toEqual({ enabled: false });
-    write({ hooks: { enabled: true, port: 99999 } }); // invalid port dropped
-    expect(loadGatewayConfig({ agencHome: home }).hooks).toEqual({ enabled: true });
+  test.each([
+    { hooks: "yes please" },
+    { hooks: { enabled: "true" } },
+    { hooks: { enabled: true, port: 99_999 } },
+    { hooks: { enabled: true, future: true } },
+  ])("malformed hooks fail the canonical config load: %j", (gateway) => {
+    expect(() => validateStrictConfigDocument({
+      config_version: 2,
+      gateway,
+    }, "config.toml")).toThrow();
   });
 });

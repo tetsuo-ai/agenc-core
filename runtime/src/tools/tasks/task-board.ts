@@ -30,7 +30,6 @@ import { isRecord } from "../../utils/record.js";
 import type { Tool, ToolResult } from "../types.js";
 import {
   TASK_CONCURRENCY,
-  asTaskPreEffectRefusal,
   stringValue,
   taskStrictArgs,
   taskTextResult,
@@ -221,42 +220,22 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
           allowed: new Set(["subject", "description", "activeForm", "metadata"]),
           required: ["subject", "description"],
         });
-        if (strict) {
-          return asTaskPreEffectRefusal(
-            strict,
-            "tool:task-create:input-validation",
-          );
-        }
+        if (strict) return strict;
         const subject = stringValue(args.subject);
         if (!subject) {
-          return asTaskPreEffectRefusal(
-            taskTextResult(
-              "subject is required",
-              { error: "subject is required" },
-              true,
-            ),
-            "tool:task-create:input-validation",
-          );
+          return taskTextResult("subject is required", { error: "subject is required" }, true);
         }
         const description = stringValue(args.description);
         if (!description) {
-          return asTaskPreEffectRefusal(
-            taskTextResult(
-              "description is required",
-              { error: "description is required" },
-              true,
-            ),
-            "tool:task-create:input-validation",
+          return taskTextResult(
+            "description is required",
+            { error: "description is required" },
+            true,
           );
         }
         const activeForm = stringValue(args.activeForm);
         const parsedMetadata = parseTaskMetadata(args.metadata);
-        if (parsedMetadata.error) {
-          return asTaskPreEffectRefusal(
-            parsedMetadata.error,
-            "tool:task-create:input-validation",
-          );
-        }
+        if (parsedMetadata.error) return parsedMetadata.error;
         const metadata = parsedMetadata.metadata;
         const task = await taskCreateNew(storeOpts, {
           subject,
@@ -353,32 +332,17 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
           ]),
           required: ["taskId"],
         });
-        if (strict) {
-          return asTaskPreEffectRefusal(
-            strict,
-            "tool:task-update:input-validation",
-          );
-        }
+        if (strict) return strict;
         const taskId = stringValue(args.taskId);
         if (!taskId) {
-          return asTaskPreEffectRefusal(
-            taskTextResult(
-              "taskId is required",
-              { error: "taskId is required" },
-              true,
-            ),
-            "tool:task-update:input-validation",
-          );
+          return taskTextResult("taskId is required", { error: "taskId is required" }, true);
         }
         const existing = await taskLoadOne(storeOpts, taskId);
         if (existing === null) {
-          return asTaskPreEffectRefusal(
-            taskTextResult(
-              "Task not found",
-              { error: "Task not found", taskId },
-              true,
-            ),
-            "tool:task-update:not-found",
+          return taskTextResult(
+            "Task not found",
+            { error: "Task not found", taskId },
+            true,
           );
         }
         const update: UpdateTaskInput = {};
@@ -394,13 +358,10 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
         }
         const status = normalizeTaskUpdateStatus(args.status);
         if (args.status !== undefined && status === undefined) {
-          return asTaskPreEffectRefusal(
-            taskTextResult(
-              "status must be pending, in_progress, completed, or deleted",
-              { error: "invalid status" },
-              true,
-            ),
-            "tool:task-update:input-validation",
+          return taskTextResult(
+            "status must be pending, in_progress, completed, or deleted",
+            { error: "invalid status" },
+            true,
           );
         }
         if (status !== undefined) {
@@ -416,10 +377,7 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
         }
         const parsedAddBlocks = taskStringArray(args.addBlocks, "addBlocks");
         if (parsedAddBlocks !== undefined && "content" in parsedAddBlocks) {
-          return asTaskPreEffectRefusal(
-            parsedAddBlocks,
-            "tool:task-update:input-validation",
-          );
+          return parsedAddBlocks;
         }
         const addBlocks = parsedAddBlocks ?? [];
         if (addBlocks.length > 0) {
@@ -427,22 +385,14 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
         }
         const parsedAddBlockedBy = taskStringArray(args.addBlockedBy, "addBlockedBy");
         if (parsedAddBlockedBy !== undefined && "content" in parsedAddBlockedBy) {
-          return asTaskPreEffectRefusal(
-            parsedAddBlockedBy,
-            "tool:task-update:input-validation",
-          );
+          return parsedAddBlockedBy;
         }
         const addBlockedBy = parsedAddBlockedBy ?? [];
         if (addBlockedBy.length > 0) {
           (update as { addBlockedBy?: readonly string[] }).addBlockedBy = addBlockedBy;
         }
         const parsedMetadata = parseTaskMetadata(args.metadata);
-        if (parsedMetadata.error) {
-          return asTaskPreEffectRefusal(
-            parsedMetadata.error,
-            "tool:task-update:input-validation",
-          );
-        }
+        if (parsedMetadata.error) return parsedMetadata.error;
         const metadata = parsedMetadata.metadata;
         if (metadata !== undefined) {
           (update as { metadata?: Record<string, unknown> }).metadata = metadata;

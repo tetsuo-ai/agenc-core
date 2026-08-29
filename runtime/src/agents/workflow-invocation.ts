@@ -136,20 +136,6 @@ export function validateWorkflowInvocationToolArgs(
   return validateWorkflowInvocationValue(Object.freeze(invocation));
 }
 
-export function assertLegacyCommandInvocation(
-  invocation: WorkflowInvocation,
-): void {
-  if (
-    invocation.args !== undefined &&
-    Object.keys(invocation.args).length !== 0
-  ) {
-    throw new WorkflowInvocationValidationError(
-      "WORKFLOW_LEGACY_ARGS",
-      "legacy command workflows do not accept invocation overrides",
-    );
-  }
-}
-
 /**
  * Invocation values may tighten approved manifest/default ceilings, never
  * widen them. Registry capacity is a live ceiling supplied by B3b.

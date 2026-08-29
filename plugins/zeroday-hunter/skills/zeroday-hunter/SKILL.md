@@ -35,7 +35,7 @@ PoCs run only inside sandboxed worktrees. Never aim findings at third-party syst
 5. **Breadth before depth.** Full attack-surface map first; targets ranked by score; deep
    work only on what scores.
 6. **State lives on disk, not in your head.** Every campaign has a state directory
-   (`../../scripts/zdh-init.sh`). If it isn't written down, it didn't happen.
+   (`zdh-init.sh`). If it isn't written down, it didn't happen.
 7. **Volume × validation is the whole game.** Published success rates on real targets are
    low (pass@1 ≈ 10–40%). You win by running many cheap, independent, validated attempts —
    never by trusting one brilliant analysis.
@@ -44,7 +44,7 @@ PoCs run only inside sandboxed worktrees. Never aim findings at third-party syst
 
 - **Full campaign** — the state machine below over a bounded slice set. First contact with
   a target, or a new bug class.
-- **Watch mode** (`../../scripts/zdh-watch.sh`) — continuous delta auditing: after any campaign, audit
+- **Watch mode** (`zdh-watch.sh`) — continuous delta auditing: after any campaign, audit
   only `baseline..HEAD` changes **against the existing threat model**. New/changed code
   touching sinks, entry points, or auth checks becomes the slice set. This is how you
   catch regressions and incomplete patches cheaply — a full re-audit per commit is waste.
@@ -104,11 +104,11 @@ backtrack between vuln types. Organize like HPTSA:
   cap is discarded, never "re-educated" mid-run.
 - **FALSIFIER** — a *different provider/model* (`--reviewer-model`) briefed to disprove:
   it wins by finding one broken link in the claimed path.
-- **TRIAGER** — clusters crashes via `../../scripts/zdh-triage.sh`; answers: *bug in the harness, or
+- **TRIAGER** — clusters crashes via `zdh-triage.sh`; answers: *bug in the harness, or
   bug in the project?*
 
 AgenC wiring: `agenc agent start --unattended-allow read,grep,glob,bash` per expert
-(`../../scripts/campaign.sh swarm` automates this); `agenc run start --verify ... --reviewer-model ...`
+(`campaign.sh swarm` automates this); `agenc run start --verify ... --reviewer-model ...`
 for G3/G4; `agenc run evidence` at G5; gateway pairing pings the user when a critical
 finding needs a risky verification step.
 
@@ -119,7 +119,7 @@ For each candidate path, a hypothesis record containing the **mandatory walkthro
 1. Step-by-step description of the code path from entry point to the vulnerable operation.
 2. For **every conditional** on that path: concretely how the attacker controls its
    outcome. Cannot explain a branch → hypothesis is unproven, demote it.
-3. Missing function/type definition → fetch it (`../../scripts/zdh-slice.sh`), never assume it.
+3. Missing function/type definition → fetch it (`zdh-slice.sh`), never assume it.
 4. Check the FP library first: [references/fp-patterns.md](references/fp-patterns.md).
    Matching a known FP pattern kills the candidate on sight.
 5. Check reasoning twice. A single contradiction kills the candidate.
@@ -128,7 +128,7 @@ For each candidate path, a hypothesis record containing the **mandatory walkthro
 
 - Payloads are produced by **generator scripts** (computed length fields, checksums,
   nested formats), never hand-typed blobs.
-- Verifier = `../../scripts/poc-check.sh` wrapping the execution; exit 0 is the only success signal.
+- Verifier = `poc-check.sh` wrapping the execution; exit 0 is the only success signal.
   Run it externally. Feed failures verbatim into the next iteration.
 - **Never edit the verifier to make a PoC pass.** The target changes, never the test.
 - **Off-target crashes are findings, not noise.** A crash that fails the target-specific
@@ -145,7 +145,7 @@ For each candidate path, a hypothesis record containing the **mandatory walkthro
 ## After confirmation
 
 - **Variant-as-query sweep**: codify the confirmed pattern as a query/rule
-  (`../../scripts/zdh-variant.sh` — semgrep/CodeQL when available) stored in `.zdh/queries/`, run it
+  (`zdh-variant.sh` — semgrep/CodeQL when available) stored in `.zdh/queries/`, run it
   across the *whole* repo (and sibling repos in scope). One confirmed bug becomes a
   permanent detector: every future hit is a pre-scored hypothesis, and the query doubles
   as the regression test for the fix.
@@ -156,7 +156,7 @@ For each candidate path, a hypothesis record containing the **mandatory walkthro
 
 ## Report contract
 
-Every finding uses [../../templates/finding.md](../../templates/finding.md): Title, Status
+Every finding uses [templates/finding.md](../../templates/finding.md): Title, Status
 (CONFIRMED | HYPOTHESIS), Summary, Entry→Sink with file:line, Attacker control per
 walkthrough step, Evidence (verifier cmd + output + run id), Impact ceiling, Severity
 rationale, Variants (with query path), Remediation + regression test. Campaign closes

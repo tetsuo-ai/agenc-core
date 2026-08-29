@@ -9,7 +9,7 @@
  * objects under their `event` field, so one mapper serves both.
  *
  * Terminal-status and message-chunk detection intentionally mirrors the
- * CLI's daemon one-shot path (`runtime/src/bin/agenc.ts`:
+ * CLI's daemon one-shot path (`runtime/src/bin/agenc-main.ts`:
  * `daemonOneShotMessageChunk` / `daemonOneShotFinalStatus`) so an embedder
  * sees the same text and the same completion semantics as `agenc -p`.
  */
@@ -70,6 +70,7 @@ export type AgencPromptEvent = AgencPromptEventIdentity &
         readonly serverName?: string;
         readonly questions?: readonly JsonObject[];
         readonly request?: JsonObject;
+        readonly clientAction?: JsonObject;
       }
     | {
         readonly type: "status";
@@ -111,7 +112,6 @@ export interface AgencPromptResult {
   /** Permission requests that were auto- or callback-denied during the turn. */
   readonly deniedPermissionRequestIds: readonly string[];
   readonly usage?: JsonObject;
-  readonly cacheStats?: JsonObject;
 }
 
 export interface AgencTerminalStatus {
@@ -212,7 +212,6 @@ export function terminalStatusFromNotification(
     };
   }
   if (transcriptEvent.type === "error") {
-    if (transcriptEvent.recoverableToolError === true) return null;
     const errorMessage =
       payload !== null && typeof payload.message === "string"
         ? payload.message
@@ -369,6 +368,9 @@ export function promptEventFromNotification(
       requestId: params.requestId,
       questions,
       ...identity,
+      ...(isJsonObject(params.clientAction)
+        ? { clientAction: params.clientAction }
+        : {}),
     };
   }
 

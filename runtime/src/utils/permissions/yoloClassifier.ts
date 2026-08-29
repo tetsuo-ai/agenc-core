@@ -12,9 +12,7 @@ import {
   getSessionId,
   setLastClassifierRequests,
 } from '../../bootstrap/state.js'
-import { getCacheControl } from '../../services/api/anthropic.js'
-import { parsePromptTooLongTokenCounts } from '../../services/api/errors.js'
-import { getDefaultMaxRetries } from '../../services/api/withRetry.js'
+import { parsePromptTooLongTokenCounts } from '../../errors/api.js'
 import type { Tool, ToolPermissionContext, Tools } from '../../tools/Tool.js'
 import type { Message } from '../../types/message.js'
 import type {
@@ -45,6 +43,11 @@ import { getAgenCTempDir } from './filesystem.js'
 import { YOLO_CLASSIFIER_TOOL_NAME } from './yoloClassifierConstants.js'
 
 export { YOLO_CLASSIFIER_TOOL_NAME } from './yoloClassifierConstants.js'
+
+const DEFAULT_CLASSIFIER_MAX_RETRIES = 10
+const CLASSIFIER_CACHE_CONTROL = Object.freeze({
+  type: 'ephemeral' as const,
+})
 
 // Dead code elimination: conditional imports for auto mode classifier prompts.
 // The built ESM artifact uses createRequire so this module can run without a
@@ -837,7 +840,7 @@ async function classifyYoloActionXml(
     {
       type: 'text' as const,
       text: xmlSystemPrompt,
-      cache_control: getCacheControl({ querySource: 'auto_mode' }),
+      cache_control: CLASSIFIER_CACHE_CONTROL,
     },
   ]
   let stage1Usage: ClassifierUsage | undefined
@@ -880,7 +883,7 @@ async function classifyYoloActionXml(
           ...prefixMessages,
           { role: 'user' as const, content: stage1Content },
         ],
-        maxRetries: getDefaultMaxRetries(),
+        maxRetries: DEFAULT_CLASSIFIER_MAX_RETRIES,
         signal,
         ...(mode !== 'fast' && { stop_sequences: ['</block>'] }),
         querySource: 'auto_mode',
@@ -957,7 +960,7 @@ async function classifyYoloActionXml(
         ...prefixMessages,
         { role: 'user' as const, content: stage2Content },
       ],
-      maxRetries: getDefaultMaxRetries(),
+      maxRetries: DEFAULT_CLASSIFIER_MAX_RETRIES,
       signal,
       querySource: 'auto_mode' as const,
     }
@@ -1071,7 +1074,7 @@ async function classifyYoloActionXml(
  *
  * On API errors, returns shouldBlock: true with unavailable: true so callers
  * can distinguish "classifier actively blocked" from "classifier couldn't respond".
- * Transient errors (429, 500) are retried by sideQuery internally (see getDefaultMaxRetries).
+ * Transient errors (429, 500) are retried by sideQuery internally.
  *
  * @param messages - The conversation history
  * @param action - The action being evaluated (tool name + input)
@@ -1153,9 +1156,7 @@ export async function classifyYoloAction(
     )
   }
 
-  // Use getCacheControl for consistency with the main agent loop —
-  // respects GrowthBook TTL allowlist and query-source gating.
-  const cacheControl = getCacheControl({ querySource: 'auto_mode' })
+  const cacheControl = CLASSIFIER_CACHE_CONTROL
   // Place cache_control on the action block. In the two-stage classifier,
   // stage 2 shares the same transcript+action prefix as stage 1 — the
   // breakpoint here gives stage 2 a guaranteed cache hit on the full prefix.
@@ -1200,7 +1201,7 @@ export async function classifyYoloAction(
         {
           type: 'text' as const,
           text: systemPrompt,
-          cache_control: getCacheControl({ querySource: 'auto_mode' }),
+          cache_control: CLASSIFIER_CACHE_CONTROL,
         },
       ],
       temperature: 0,
@@ -1214,7 +1215,7 @@ export async function classifyYoloAction(
         type: 'tool' as const,
         name: YOLO_CLASSIFIER_TOOL_NAME,
       },
-      maxRetries: getDefaultMaxRetries(),
+      maxRetries: DEFAULT_CLASSIFIER_MAX_RETRIES,
       signal,
       querySource: 'auto_mode' as const,
     }
@@ -1365,18 +1366,9 @@ type AutoModeConfig = {
 
 /**
  * Get the model for the classifier.
- * Ant-only env var takes precedence, then GrowthBook JSON config override,
- * then the main loop model.
+ * The classifier inherits the session-owned canonical model.
  */
 function getClassifierModel(): string {
-  if (process.env.USER_TYPE === 'ant') {
-    const envModel = process.env.AGENC_AUTO_MODE_MODEL
-    if (envModel) return envModel
-  }
-  const config = {} as AutoModeConfig
-  if (config?.model) {
-    return config.model
-  }
   return getMainLoopModel()
 }
 

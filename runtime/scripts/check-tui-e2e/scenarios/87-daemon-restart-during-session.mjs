@@ -18,7 +18,7 @@
 export const meta = {
   description:
     "TUI survives a daemon restart between turns (or fails cleanly).",
-  args: ["--yolo"],
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   timeoutMs: 240_000,
   slimCwd: true,
 };

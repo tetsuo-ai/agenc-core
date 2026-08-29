@@ -75,6 +75,55 @@ afterEach(async () => {
 });
 
 describe("MCPManager stdio lifecycle", () => {
+  it("keeps each manager's immutable parent environment after ambient mutation", async () => {
+    const dir = await makeTempDir();
+    tempDirs.add(dir);
+    const pidFileA = join(dir, "session-a.pid");
+    const pidFileB = join(dir, "session-b.pid");
+    const config = (name: string, pidFile: string): MCPServerConfig => ({
+      ...makeConfig(pidFile),
+      name,
+      env_vars: ["MCP_SESSION_MARKER"],
+    });
+    const managerA = new MCPManager(
+      [config("session-a", pidFileA)],
+      undefined,
+      { PATH: process.env.PATH, MCP_SESSION_MARKER: "session-a" },
+    );
+    const managerB = new MCPManager(
+      [config("session-b", pidFileB)],
+      undefined,
+      { PATH: process.env.PATH, MCP_SESSION_MARKER: "session-b" },
+    );
+    const brokerA = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: process.cwd(),
+    });
+    const brokerB = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: process.cwd(),
+    });
+    managerA.setSandboxExecutionBroker(brokerA);
+    managerB.setSandboxExecutionBroker(brokerB);
+
+    const previousMarker = process.env.MCP_SESSION_MARKER;
+    process.env.MCP_SESSION_MARKER = "mutated-daemon-environment";
+    try {
+      await Promise.all([
+        managerA.start({ requireOneReady: true }),
+        managerB.start({ requireOneReady: true }),
+      ]);
+      const [, markerA] = (await readFile(pidFileA, "utf8")).trim().split("\n");
+      const [, markerB] = (await readFile(pidFileB, "utf8")).trim().split("\n");
+      expect(markerA).toBe("session-a");
+      expect(markerB).toBe("session-b");
+    } finally {
+      if (previousMarker === undefined) delete process.env.MCP_SESSION_MARKER;
+      else process.env.MCP_SESSION_MARKER = previousMarker;
+      await Promise.allSettled([managerA.stop(), managerB.stop()]);
+    }
+  });
+
   it("reaps stdio MCP child processes on stop()", async () => {
     const dir = await makeTempDir();
     tempDirs.add(dir);

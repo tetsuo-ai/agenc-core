@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,7 +18,11 @@ import type {
   LLMToolCall,
 } from "../llm/types.js";
 import type { PhaseEvent } from "../phases/events.js";
-import type { MCPServerConfig } from "../mcp-client/types.js";
+import {
+  approveProjectMcpServerSync,
+  trustProjectSync,
+} from "../permissions/trust/project-trust.js";
+import { projectMcpServerApprovalDigest } from "../services/mcp/utils.js";
 import { runCommand } from "../utils/process.js";
 
 const FIXTURE_PATH = sourcePath("mcp-client/test-fixtures/stdio-pid-server.cjs");
@@ -38,6 +42,11 @@ async function makeTempDir(prefix: string): Promise<string> {
 async function readPid(pidFile: string): Promise<number> {
   const raw = await readFile(pidFile, "utf8");
   return Number.parseInt(raw.trim(), 10);
+}
+
+async function readSessionMarker(pidFile: string): Promise<string> {
+  const [, marker = ""] = (await readFile(pidFile, "utf8")).split(/\r?\n/u);
+  return marker;
 }
 
 function isPidAlive(pid: number): boolean {
@@ -204,6 +213,7 @@ async function expectLiveMcpEndToEnd(params: {
   readonly pidFile: string;
   readonly env: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
+  readonly expectedSessionMarker?: string;
 }): Promise<void> {
   const seenToolNamesByCall: string[][] = [];
   const seenMessagesByCall: LLMMessage[][] = [];
@@ -219,7 +229,7 @@ async function expectLiveMcpEndToEnd(params: {
   let boot: LocalRuntimeBootstrap | null = null;
   let pid: number | undefined;
   try {
-    boot = await bootstrapLocalRuntimeSession({
+    const bootstrapPromise = bootstrapLocalRuntimeSession({
       apiKey: "test-key",
       env: params.env,
       ...(params.argv !== undefined ? { argv: [...params.argv] } : {}),
@@ -228,8 +238,20 @@ async function expectLiveMcpEndToEnd(params: {
       // guarded in bootstrap.test.ts.
       cwd: params.env.AGENC_WORKSPACE as string,
     });
+    if (params.expectedSessionMarker !== undefined) {
+      params.env.MCP_SESSION_MARKER = "mutated-after-bootstrap-ingress";
+    }
+    boot = await bootstrapPromise;
 
     pid = await readPid(params.pidFile);
+    if (params.expectedSessionMarker !== undefined) {
+      expect(await readSessionMarker(params.pidFile)).toBe(
+        params.expectedSessionMarker,
+      );
+      expect(boot.session.services.providerEnvironment).not.toHaveProperty(
+        "MCP_SESSION_MARKER",
+      );
+    }
     expect(isPidAlive(pid)).toBe(true);
     expect(boot.mcpManager.getConnectedServers()).toEqual([MCP_SERVER_NAME]);
     expect(boot.mcpManager.getTools().map((tool) => tool.name)).toContain(
@@ -337,33 +359,20 @@ afterEach(async () => {
 });
 
 describe("bootstrapLocalRuntimeSession live MCP integration", () => {
-  it("starts a real stdio MCP server, discovers its deferred tool, and dispatches it during a turn", async () => {
+  it("rejects the removed MCP JSON environment channel", async () => {
     const home = await makeTempDir("agenc-live-mcp-home-");
     const workspace = await makeTempDir("agenc-live-mcp-ws-");
-    const pidFile = join(home, "mcp", "live.pid");
-    const mcpServers: MCPServerConfig[] = [
-      {
-        name: MCP_SERVER_NAME,
-        transport: "stdio",
-        command: process.execPath,
-        args: [FIXTURE_PATH, pidFile],
-        timeout: 10_000,
-      },
-    ];
-
-    await expectLiveMcpEndToEnd({
-      home,
-      workspace,
-      pidFile,
-      env: {
-        ...process.env,
-        AGENC_HOME: home,
-        AGENC_WORKSPACE: workspace,
-        AGENC_MCP_SERVERS: JSON.stringify(mcpServers),
-        HOME: home,
-      },
-      argv: ["node", "agenc", "--yolo"],
-    });
+    await expect(
+      bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        cwd: workspace,
+        env: {
+          AGENC_HOME: home,
+          AGENC_MCP_SERVERS: "[]",
+          HOME: home,
+        },
+      }),
+    ).rejects.toThrow(/obsolete.*AGENC_MCP_SERVERS/u);
   });
 
   it("starts a real stdio MCP server from config.toml mcp_servers", async () => {
@@ -373,10 +382,13 @@ describe("bootstrapLocalRuntimeSession live MCP integration", () => {
     await writeFile(
       join(home, "config.toml"),
       `
+config_version = 2
+
 [mcp_servers.${MCP_SERVER_NAME}]
 transport = "stdio"
 command = ${tomlString(process.execPath)}
-args = [${tomlString(FIXTURE_PATH)}, ${tomlString(pidFile)}]
+args = [${tomlString(FIXTURE_PATH)}, ${tomlString("${MCP_PID_FILE}")}]
+env_vars = ["MCP_SESSION_MARKER"]
 timeout = 10000
       `,
       "utf8",
@@ -390,29 +402,46 @@ timeout = 10000
         ...process.env,
         AGENC_HOME: home,
         AGENC_WORKSPACE: workspace,
-        AGENC_MCP_SERVERS: "",
         HOME: home,
+        MCP_PID_FILE: pidFile,
+        MCP_SESSION_MARKER: "captured-bootstrap-session",
       },
-      argv: ["node", "agenc", "--yolo"],
+      argv: ["node", "agenc", "--dangerously-bypass-approvals-and-sandbox"],
+      expectedSessionMarker: "captured-bootstrap-session",
     });
   });
 
-  it("starts a real stdio MCP server from project .mcp.json in yolo mode", async () => {
+  it("starts a real stdio MCP server from project config.toml in yolo mode", async () => {
     const home = await makeTempDir("agenc-live-mcp-home-");
     const workspace = await makeTempDir("agenc-live-mcp-ws-");
     const pidFile = join(home, "mcp", "live.pid");
+    trustProjectSync({
+      agencHome: home,
+      cwd: workspace,
+      env: { HOME: home },
+    });
+    await mkdir(join(workspace, ".agenc"), { recursive: true });
     await writeFile(
-      join(workspace, ".mcp.json"),
-      JSON.stringify({
-        mcpServers: {
-          [MCP_SERVER_NAME]: {
-            type: "stdio",
-            command: process.execPath,
-            args: [FIXTURE_PATH, pidFile],
-          },
-        },
-      }),
+      join(workspace, ".agenc", "config.toml"),
+      `
+config_version = 2
+
+[mcp_servers.${MCP_SERVER_NAME}]
+transport = "stdio"
+command = ${tomlString(process.execPath)}
+args = [${tomlString(FIXTURE_PATH)}, ${tomlString(pidFile)}]
+      `,
       "utf8",
+    );
+    approveProjectMcpServerSync(
+      MCP_SERVER_NAME,
+      projectMcpServerApprovalDigest({
+        scope: "project",
+        type: "stdio",
+        command: process.execPath,
+        args: [FIXTURE_PATH, pidFile],
+      }),
+      { agencHome: home, projectRoot: workspace },
     );
 
     await expectLiveMcpEndToEnd({
@@ -423,10 +452,9 @@ timeout = 10000
         ...process.env,
         AGENC_HOME: home,
         AGENC_WORKSPACE: workspace,
-        AGENC_MCP_SERVERS: "",
         HOME: home,
       },
-      argv: ["node", "agenc", "--yolo"],
+      argv: ["node", "agenc", "--dangerously-bypass-approvals-and-sandbox"],
     });
   });
 });
@@ -449,12 +477,11 @@ describe("bootstrapLocalRuntimeSession deferred built-in tool discovery", () => 
         apiKey: "test-key",
         // This integration test intentionally executes host git. Declare the
         // same explicit operator boundary as the live MCP cases above.
-        argv: ["node", "agenc", "--yolo"],
+        argv: ["node", "agenc", "--dangerously-bypass-approvals-and-sandbox"],
         env: {
           ...process.env,
           AGENC_HOME: home,
           AGENC_WORKSPACE: workspace,
-          AGENC_MCP_SERVERS: "",
           HOME: home,
         },
         // Explicit cwd beats AGENC_WORKSPACE since bug-audit #2.

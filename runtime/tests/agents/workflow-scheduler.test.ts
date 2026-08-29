@@ -941,7 +941,6 @@ function options(
     runId: "run-1",
     manifest: workflowManifest,
     manifestDigest: MANIFEST_DIGEST,
-    sourceVersion: 2,
     effectiveLimits: {
       formatVersion: 2,
       maxConcurrency: limits.maxConcurrency ?? 16,

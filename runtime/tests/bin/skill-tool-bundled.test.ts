@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-// The bundled registry still consults the build-time version in production.
-// Stub it before the dynamic imports below.
+// Invoking a bundled skill extracts its reference files, which resolves the
+// build-time MACRO define. Stub before the dynamic imports below.
 (globalThis as Record<string, unknown>).MACRO = {
   VERSION: "99.0.0",
   DISPLAY_VERSION: "0.0.0-test",
@@ -35,6 +35,10 @@ function sessionWithoutLocalSkill(): Session {
 }
 
 describe("Skill tool with runtime-registered bundled skills", () => {
+  // Regression: exercised against a real ESP32-S3, the model saw $iot-builder,
+  // called Skill(iot-builder) and got a hard `Unknown skill: iot-builder` for
+  // a skill the runtime ships, lists in /skills, and answers to as
+  // /iot-builder. It derailed the turn with an error instead of loading.
   it("loads a bundled skill the local loader cannot render", async () => {
     const { createModelFacingTools } = await import("./model-facing-tools.js");
     const session = sessionWithoutLocalSkill();
@@ -44,11 +48,11 @@ describe("Skill tool with runtime-registered bundled skills", () => {
     });
     const skill = tools.find((tool) => tool.name === "Skill")!;
 
-    const result = await skill.execute({ skill: "browser-automation" });
+    const result = await skill.execute({ skill: "iot-builder" });
 
     expect(result.isError).toBeUndefined();
-    expect(result.content).toContain("<command-name>browser-automation</command-name>");
-    expect(result.content).toContain("snapshot → act → re-snapshot");
+    expect(result.content).toContain("<command-name>iot-builder</command-name>");
+    expect(result.content).toContain("Identify the hardware");
   });
 
   it("still reports genuinely unknown names, listing bundled ones as available", async () => {
@@ -68,8 +72,8 @@ describe("Skill tool with runtime-registered bundled skills", () => {
       available: string[];
     };
     expect(payload.error).toContain("no-such-skill");
+    expect(payload.available).toContain("iot-builder");
     expect(payload.available).toContain("browser-automation");
-    expect(payload.available).not.toContain("iot-builder");
     expect(payload.available).toContain("local-only");
   });
 });

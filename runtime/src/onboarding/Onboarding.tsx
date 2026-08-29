@@ -8,10 +8,13 @@ import React, {
 } from "react";
 
 import {
-  resolveProviderSelection,
+  readProviderConfig,
   resolveProviderSettings,
 } from "../config/resolve-provider.js";
-import type { AgenCConfig } from "../config/schema.js";
+import {
+  TUI_THEME_SETTINGS,
+  type AgenCConfig,
+} from "../config/schema.js";
 import {
   createAuthBackend,
   resolveAuthManagedKeysEnabled,
@@ -25,16 +28,38 @@ import {
   hasEntitledRemoteAuthSessionSync,
   hasRemoteAuthSessionSync,
   remoteAuthSessionSubscriptionTierSync,
+  type RemoteAuthSessionReadContext,
 } from "../auth/session-state.js";
 import {
-  BUILT_IN_PROVIDER_API_KEY_ENVS,
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   listBuiltInProviderInfo,
-  normalizeBuiltInProviderSlug,
+  providerApiKeyEnvironmentLabel,
+  providerCredentialEnvironmentLabel,
+  resolveBuiltInProviderInfo,
+  resolveBuiltInProviderSlug,
+  type BuiltInProviderOnboardingInfo,
   type BuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
+import {
+  type ProviderCredentialProvenance,
+} from "../llm/registry/provider-ingress.js";
+import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
+import { readLocalByokCredential } from "../auth/native-credentials.js";
+import { resolveProviderRuntimeAuthority } from "../llm/provider-options.js";
+import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
+import {
+  geminiEndpointFor,
+} from "../llm/providers/gemini/endpoint-plan.js";
+import {
+  readGeminiRuntimeOptions,
+} from "../llm/providers/gemini/runtime-options.js";
+import {
+  getGeminiAuthMode,
+  resolveGeminiCredentialPlan,
+  type GeminiCredentialPlan,
+} from "../utils/geminiAuth.js";
 import { ApproveApiKey, maskedApiKeyTail } from "./ApproveApiKey.js";
 import {
   maybeTruncateInput,
@@ -56,15 +81,16 @@ import { Box } from "../tui/ink.js";
 import ThemedBox from "../tui/components/design-system/ThemedBox.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { useTheme } from "../tui/components/design-system/ThemeProvider.js";
-import { getSystemThemeName, isSystemThemeDetected } from "../utils/systemTheme.js";
+import {
+  getTerminalBackground,
+  isTerminalBackgroundDetected,
+} from "../utils/terminalBackground.js";
 import type { ThemeSetting } from "../utils/theme.js";
 import { TerminalSizeContext } from "../tui/ink/components/TerminalSizeContext.js";
 import { WelcomeV2 } from "./WelcomeV2.js";
 import {
-  DEFAULT_PROVIDER_VERIFY_TIMEOUT_MS,
-  isKeyRejectedStatus,
-  providerVerificationUrl,
   verifyApiKey,
+  verifyPreparedProviderConnection,
   type VerificationStatus,
 } from "./useApiKeyVerification.js";
 import {
@@ -73,19 +99,20 @@ import {
   subscriptionManagedDefaultModel,
   subscriptionManagedDefaultModelForTier,
 } from "../commands/subscription-managed-models.js";
+import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 
 export type FirstRunOnboardingStepId =
   | "preflight"
   | "theme"
   | "provider"
   | "connection-test"
-  | "api-key"
+  | "model-access"
   | "security"
   | "terminal-setup";
 
 export type ProviderConnectionStatus =
   | "ready"
-  | "needs-key"
+  | "credentials-required"
   | "auth-failed"
   | "provider-unreachable"
   | "local-unchecked"
@@ -104,10 +131,17 @@ export interface ProviderConnectionCheck {
   readonly status: ProviderConnectionStatus;
   readonly ok: boolean;
   readonly detail: string;
-  readonly keyEnvVar?: string;
+  /** Human-readable configuration guidance, never evidence of a winning source. */
+  readonly credentialLabel?: string;
+  /** Exact credential provenance, without credential values. */
+  readonly credentialProvenance?: ProviderConnectionCredentialProvenance;
   readonly baseURL?: string;
   readonly canSkip?: boolean;
 }
+
+export type ProviderConnectionCredentialProvenance =
+  | ProviderCredentialProvenance
+  | { readonly kind: "verified-input" };
 
 export interface PendingApiKeyApproval {
   readonly provider: BuiltInProviderSlug;
@@ -123,7 +157,7 @@ export interface PendingApiKeyApproval {
 export interface FirstRunOnboardingState {
   readonly currentStepId: FirstRunOnboardingStepId;
   readonly completedStepIds: readonly FirstRunOnboardingStepId[];
-  readonly selectedTheme: string;
+  readonly selectedTheme: ThemeSetting;
   readonly selectedProvider: BuiltInProviderSlug;
   readonly selectedModel: string;
   readonly connection: ProviderConnectionCheck | null;
@@ -169,6 +203,8 @@ export interface FirstRunOnboardingContext {
   readonly config: AgenCConfig;
   readonly cwd?: string;
   readonly env?: OnboardingEnv;
+  /** Captured home/environment pair used for synchronous remote-auth reads. */
+  readonly remoteAuthSessionContext?: RemoteAuthSessionReadContext;
   readonly permissionMode?: string;
   readonly sandboxMode?: string;
   readonly terminalName?: string;
@@ -198,6 +234,10 @@ async function defaultRunGrokOauthLogin(
   context: FirstRunOnboardingContext,
 ): Promise<GrokOauthLoginResult> {
   try {
+    const ingress = captureSecureStorageIngress(
+      context.env ?? process.env,
+      context.agencHome,
+    );
     const [oauth, { openUrlInBrowser }, creds] =
       await Promise.all([
         import("../services/xai/oauth.js"),
@@ -249,7 +289,7 @@ async function defaultRunGrokOauthLogin(
     const blob = creds.xaiOauthTokensToBlob(login.tokens, {
       tokenEndpoint: login.tokenEndpoint,
     });
-    const saved = creds.saveXaiOauthCredentials(blob);
+    const saved = creds.saveXaiOauthCredentials(ingress.home, blob);
     if (!saved.success) {
       return {
         ok: false,
@@ -298,12 +338,14 @@ async function defaultRunAgenCAccountLogin(
   context: FirstRunOnboardingContext,
 ): Promise<AgenCAccountLoginResult> {
   try {
+    const ingress = captureSecureStorageIngress(
+      context.env ?? process.env,
+      context.agencHome,
+    );
     const { openUrlInBrowser } = await import("../commands/auth.js");
     const backend = createAuthBackend(context.config, {
-      ...(context.agencHome !== undefined
-        ? { agencHome: context.agencHome }
-        : {}),
-      env: context.env ?? process.env,
+      agencHome: ingress.home.path,
+      env: ingress.environment,
       remote: {
         onDeviceCode: async (prompt) => {
           reportAgenCDeviceCode(context, prompt);
@@ -358,7 +400,7 @@ const FIRST_RUN_STEP_ORDER: readonly FirstRunOnboardingStepId[] = Object.freeze(
   "preflight",
   "theme",
   "provider",
-  "api-key",
+  "model-access",
   "connection-test",
   "security",
   "terminal-setup",
@@ -370,43 +412,32 @@ const STEP_TITLES: Readonly<Record<FirstRunOnboardingStepId, string>> =
     theme: "Theme",
     provider: "Provider",
     "connection-test": "Connection check",
-    "api-key": "Model access",
+    "model-access": "Model access",
     security: "Security",
     "terminal-setup": "Terminal setup",
   });
 
-const THEME_CHOICES = Object.freeze(["dark", "light", "system"] as const);
+const THEME_CHOICES: readonly ThemeSetting[] = TUI_THEME_SETTINGS;
 
 /**
- * Map a wizard theme choice to the config `ThemeSetting` the ThemeProvider
- * consumes. The wizard says "system"; the theme engine calls that "auto".
- * Returns undefined for anything unknown so callers can no-op safely.
+ * Accept exactly the canonical `ThemeSetting` vocabulary. Returns undefined
+ * for anything unknown so stale onboarding state cannot corrupt config.
  */
 export function wizardThemeToSetting(
   choice: string,
 ): ThemeSetting | undefined {
-  if (choice === "dark") return "dark";
-  if (choice === "light") return "light";
-  if (choice === "system") return "auto";
-  return undefined;
+  return THEME_CHOICES.find((theme) => theme === choice);
 }
-const LOCAL_PROVIDERS = new Set<BuiltInProviderSlug>([
-  "ollama",
-  "lmstudio",
-  "openai-compatible",
-]);
-const KEY_REQUIRED_PROVIDERS = new Set<BuiltInProviderSlug>([
-  "grok",
-  "openai",
-  "anthropic",
-  "openrouter",
-  "groq",
-  "deepseek",
-  "gemini",
-]);
-const MANAGED_KEY_PROVIDERS = new Set<BuiltInProviderSlug>([
-  "openrouter",
-]);
+
+function providerOnboardingInfo(
+  provider: BuiltInProviderSlug,
+): BuiltInProviderOnboardingInfo {
+  const info = resolveBuiltInProviderInfo(provider);
+  if (info === undefined) {
+    throw new Error(`Missing built-in provider metadata for ${provider}`);
+  }
+  return info.onboarding;
+}
 
 function buildFirstRunOnboardingSteps(
   state: FirstRunOnboardingState,
@@ -421,59 +452,61 @@ function buildFirstRunOnboardingSteps(
 
 function providerDefaultModel(
   provider: BuiltInProviderSlug,
-  config: AgenCConfig,
-  env: OnboardingEnv | undefined,
+  context: Pick<
+    FirstRunOnboardingContext,
+    "config" | "env" | "remoteAuthSessionContext"
+  >,
 ): string {
   if (
-    MANAGED_KEY_PROVIDERS.has(provider) &&
-    resolveAuthManagedKeysEnabled(config) &&
-    hasRemoteAuthSessionSync(env)
+    providerOnboardingInfo(provider).supportsManagedKeyAccess &&
+    resolveAuthManagedKeysEnabled(context.config) &&
+    context.remoteAuthSessionContext !== undefined &&
+    hasRemoteAuthSessionSync(context.remoteAuthSessionContext)
   ) {
     return (
       subscriptionManagedDefaultModelForTier(
         provider,
-        remoteAuthSessionSubscriptionTierSync(env),
+        remoteAuthSessionSubscriptionTierSync(
+          context.remoteAuthSessionContext,
+        ),
       ) ??
       subscriptionManagedDefaultModel(provider) ??
       BUILT_IN_PROVIDER_DEFAULT_MODELS[provider]
     );
   }
-  const settings = resolveProviderSettings(provider, config, env);
+  if (provider === "gemini") {
+    return readProviderConfig(context.config, provider)?.default_model?.trim() ||
+      BUILT_IN_PROVIDER_DEFAULT_MODELS[provider];
+  }
+  const settings = resolveProviderSettings(provider, context.config, context.env);
   return settings?.defaultModel ?? BUILT_IN_PROVIDER_DEFAULT_MODELS[provider];
 }
 
 function initialProvider(
-  config: AgenCConfig,
-  env: OnboardingEnv | undefined,
+  context: Pick<FirstRunOnboardingContext, "config">,
 ): BuiltInProviderSlug {
-  const envOrShortcut = resolveProviderSelection({
-    config: { ...config, model_provider: undefined },
-    env,
-  });
-  if (envOrShortcut !== undefined) return envOrShortcut;
-  const configured = normalizeBuiltInProviderSlug(config.model_provider);
-  if (resolveAuthManagedKeysEnabled(config) && hasRemoteAuthSessionSync(env)) {
-    return configured === undefined || configured === "grok"
-      ? "openrouter"
-      : configured;
-  }
-  return configured ?? "grok";
+  return resolveBuiltInProviderSlug(context.config.model_provider) ?? "grok";
 }
 
 export function createInitialFirstRunOnboardingState(
-  context: Pick<FirstRunOnboardingContext, "config" | "env">,
+  context: Pick<
+    FirstRunOnboardingContext,
+    "config" | "env" | "remoteAuthSessionContext"
+  >,
 ): FirstRunOnboardingState {
-  const provider = initialProvider(context.config, context.env);
+  const provider = initialProvider(context);
   const configuredProvider =
-    normalizeBuiltInProviderSlug(context.config.model_provider) ?? provider;
+    resolveBuiltInProviderSlug(context.config.model_provider) ?? provider;
   const model =
     configuredProvider === provider && context.config.model !== undefined
       ? context.config.model
-      : providerDefaultModel(provider, context.config, context.env);
+      : providerDefaultModel(provider, context);
   return {
     currentStepId: "preflight",
     completedStepIds: [],
-    selectedTheme: context.config.outputStyle?.theme?.trim() || "dark",
+    selectedTheme:
+      wizardThemeToSetting(context.config.tui?.theme ?? "dark") ??
+      "dark",
     selectedProvider: provider,
     selectedModel: model,
     connection: null,
@@ -490,15 +523,17 @@ export function createInitialFirstRunOnboardingState(
 
 /**
  * Probe the well-known local runtimes (O-1, onboarding-plan-2026-07): a user
- * with Ollama or LM Studio already running has a ZERO-KEY path to a working
+ * with Ollama or LM Studio already running has a credential-free path to a working
  * agent — the provider step must say so instead of walling them at the
- * api-key step. Short-timeout, parallel, never throws.
+ * model-access step. Short-timeout, parallel, never throws.
  */
 export async function detectRunningLocalProviders(
   context: Pick<FirstRunOnboardingContext, "config" | "env" | "fetchImpl" | "checkLocalProviders">,
 ): Promise<readonly BuiltInProviderSlug[]> {
   if (context.checkLocalProviders === false) return [];
-  const candidates: readonly BuiltInProviderSlug[] = ["ollama", "lmstudio"];
+  const candidates = listBuiltInProviderInfo()
+    .filter((provider) => provider.onboarding.access === "local")
+    .map((provider) => provider.id);
   const results = await Promise.all(
     candidates.map(async (provider) => {
       const settings = resolveProviderSettings(provider, context.config, context.env);
@@ -515,44 +550,12 @@ export async function detectRunningLocalProviders(
   return results.filter((p): p is BuiltInProviderSlug => p !== null);
 }
 
-function providerChoices(
-  context?: Pick<FirstRunOnboardingContext, "config" | "env">,
-): readonly BuiltInProviderSlug[] {
-  const hostedReady =
-    context !== undefined &&
-    resolveAuthManagedKeysEnabled(context.config) &&
-    hasRemoteAuthSessionSync(context.env);
-  const preferredOrder: readonly BuiltInProviderSlug[] = Object.freeze(
-    hostedReady
-      ? [
-          "openrouter",
-          "grok",
-          "openai",
-          "anthropic",
-          "ollama",
-          "lmstudio",
-          "openai-compatible",
-          "groq",
-          "deepseek",
-          "gemini",
-          "agenc",
-        ]
-      : [
-          "grok",
-          "openai",
-          "anthropic",
-          "ollama",
-          "lmstudio",
-          "openai-compatible",
-          "openrouter",
-          "groq",
-          "deepseek",
-          "gemini",
-          "agenc",
-        ],
+function providerChoices(): readonly BuiltInProviderSlug[] {
+  return Object.freeze(
+    [...listBuiltInProviderInfo()]
+      .sort((left, right) => left.onboarding.order - right.onboarding.order)
+      .map((provider) => provider.id),
   );
-  const available = new Set(listBuiltInProviderInfo().map((info) => info.id));
-  return preferredOrder.filter((provider) => available.has(provider));
 }
 
 function withCompletedStep(
@@ -585,7 +588,7 @@ function withCompletedSteps(
   };
 }
 
-function parseTheme(raw: string, current: string): string | null {
+function parseTheme(raw: string, current: ThemeSetting): ThemeSetting | null {
   const input = raw.trim().toLowerCase();
   if (input === "" || input === "next") return current;
   const index = Number(input);
@@ -602,16 +605,15 @@ function parseTheme(raw: string, current: string): string | null {
 function parseProvider(
   raw: string,
   current: BuiltInProviderSlug,
-  context: Pick<FirstRunOnboardingContext, "config" | "env">,
 ): BuiltInProviderSlug | null {
   const input = raw.trim().toLowerCase();
   if (input === "" || input === "next") return current;
-  const choices = providerChoices(context);
+  const choices = providerChoices();
   const index = Number(input);
   if (Number.isInteger(index) && index >= 1 && index <= choices.length) {
     return choices[index - 1] ?? current;
   }
-  const bySlug = normalizeBuiltInProviderSlug(input);
+  const bySlug = resolveBuiltInProviderSlug(input);
   if (bySlug !== undefined) return bySlug;
   const byName = listBuiltInProviderInfo().find(
     (info) => info.name.toLowerCase() === input,
@@ -647,7 +649,7 @@ function lowerCommand(raw: string): string {
   return raw.trim().toLowerCase();
 }
 
-function isSkipApiKeyCommand(command: string): boolean {
+function isConfigureLaterCommand(command: string): boolean {
   return (
     command === "" ||
     command === "4" ||
@@ -686,12 +688,12 @@ function isApiKeyEntryCommand(command: string): boolean {
   );
 }
 
-function apiKeySkipError(
+function modelAccessSkipError(
   connection: ProviderConnectionCheck | null,
 ): string | null {
   if (connection?.canSkip !== false) return null;
   return (
-    `${connection.keyEnvVar ?? "A provider API key"} is required before continuing ` +
+    `${connection.credentialLabel ?? "A provider credential"} is required before continuing ` +
     `with ${connection.provider}. Paste a BYOK key or choose another provider.`
   );
 }
@@ -720,7 +722,7 @@ function defaultOnboardingCommand(
     case "theme":
     case "provider":
       return raw;
-    case "api-key":
+    case "model-access":
       // Empty input intentionally means "continue without saving" on the
       // ordinary credential step. Never choose for the user once a verified
       // key is awaiting the explicit yes/no persistence decision.
@@ -758,8 +760,18 @@ function verifiedApiKeyConnection(
     status: "ready",
     ok: true,
     detail: "Provider API key verified.",
-    keyEnvVar: BUILT_IN_PROVIDER_API_KEY_ENVS[provider],
+    credentialLabel: providerApiKeyEnvironmentLabel(provider),
+    credentialProvenance: { kind: "verified-input" },
   };
+}
+
+function providerConnectionCredentialProvenanceLabel(
+  provenance: ProviderConnectionCredentialProvenance | undefined,
+): string | undefined {
+  if (provenance === undefined) return undefined;
+  if (provenance.kind === "oauth") return "xAI OAuth";
+  if (provenance.kind === "verified-input") return "pasted API key";
+  return provenance.fields.map((field) => field.envVar).join(" + ");
 }
 
 function authenticatedConnection(
@@ -817,10 +829,14 @@ async function saveOnboardingByokKey(
   if (context.agencHome === undefined) {
     throw new Error("AgenC home is required to save a BYOK API key");
   }
-  await new LocalAuthBackend({ agencHome: context.agencHome }).saveByokKey({
-    provider,
-    apiKey,
-  });
+  const ingress = captureSecureStorageIngress(
+    context.env ?? process.env,
+    context.agencHome,
+  );
+  await new LocalAuthBackend({
+    agencHome: ingress.home.path,
+    env: ingress.environment,
+  }).saveByokKey({ provider, apiKey });
 }
 
 async function saveApprovedApiKeyPaste(
@@ -849,19 +865,6 @@ function localModelsUrl(provider: BuiltInProviderSlug, baseURL: string): string 
     return `${trimmed}/models`;
   }
   return `${trimmed}/v1/models`;
-}
-
-function remoteProviderHeaders(
-  provider: BuiltInProviderSlug,
-  apiKey: string,
-): Readonly<Record<string, string>> {
-  if (provider === "anthropic") {
-    return {
-      "anthropic-version": "2023-06-01",
-      "x-api-key": apiKey,
-    };
-  }
-  return { Authorization: `Bearer ${apiKey}` };
 }
 
 async function probeLocalProvider(params: {
@@ -980,38 +983,60 @@ function hasLocalProviderModel(
   );
 }
 
-async function probeRemoteProvider(params: {
-  readonly provider: BuiltInProviderSlug;
-  readonly baseURL: string;
-  readonly apiKey: string;
-  readonly fetchImpl?: typeof fetch;
-  readonly timeoutMs?: number;
-}): Promise<{ readonly ok: boolean; readonly status?: number }> {
-  const fetchImpl = params.fetchImpl ?? globalThis.fetch?.bind(globalThis);
-  if (fetchImpl === undefined) return { ok: false };
-  const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort(),
-    params.timeoutMs ?? DEFAULT_PROVIDER_VERIFY_TIMEOUT_MS,
-  );
-  if (typeof (timer as { unref?: () => void }).unref === "function") {
-    (timer as { unref: () => void }).unref();
+function geminiCredentialLabel(plan: GeminiCredentialPlan): string {
+  if (plan.kind === "api-key") {
+    return "GEMINI_API_KEY or GOOGLE_API_KEY";
   }
+  if (plan.kind === "access-token") return plan.source;
+  if (plan.kind === "adc") {
+    return plan.source === "GOOGLE_APPLICATION_CREDENTIALS"
+      ? "GOOGLE_APPLICATION_CREDENTIALS"
+      : "well-known Google ADC credentials";
+  }
+  if (plan.expected === "access-token") return "GEMINI_ACCESS_TOKEN";
+  if (plan.expected === "adc") {
+    return plan.configuredPath === undefined
+      ? "Google ADC credentials"
+      : `an existing ADC credential file at ${plan.configuredPath}`;
+  }
+  if (plan.expected === "api-key") {
+    return "GEMINI_API_KEY or GOOGLE_API_KEY (or a saved Gemini BYOK key)";
+  }
+  return "a Gemini API key, GEMINI_ACCESS_TOKEN, or Google ADC credentials";
+}
+
+function configuredGeminiCredentialLabel(environment: NodeJS.ProcessEnv): string {
   try {
-    const response = await fetchImpl(
-      providerVerificationUrl(params.provider, params.baseURL),
-      {
-        method: "GET",
-        headers: remoteProviderHeaders(params.provider, params.apiKey),
-        signal: controller.signal,
-      },
-    );
-    return { ok: response.ok, status: response.status };
+    const mode = getGeminiAuthMode(environment);
+    if (mode === "access-token") return "GEMINI_ACCESS_TOKEN";
+    if (mode === "adc") return "Google ADC credentials";
+    if (mode === "api-key") {
+      return "GEMINI_API_KEY or GOOGLE_API_KEY (or a saved Gemini BYOK key)";
+    }
   } catch {
-    return { ok: false };
-  } finally {
-    clearTimeout(timer);
+    // The canonical resolver returns the invalid-mode detail to the caller.
   }
+  return "Gemini credential and endpoint configuration";
+}
+
+function geminiCredentialSourceLabel(
+  plan: Exclude<GeminiCredentialPlan, { kind: "none" | "adc" }>,
+): string {
+  return plan.kind === "api-key" && plan.source === "saved-byok"
+    ? "saved Gemini BYOK"
+    : plan.source;
+}
+
+function resolveOnboardingGeminiCredentialPlan(
+  context: FirstRunOnboardingContext,
+): GeminiCredentialPlan {
+  const ingress = captureSecureStorageIngress(
+    context.env ?? process.env,
+    context.agencHome,
+  );
+  return resolveGeminiCredentialPlan(ingress.environment, {
+    savedApiKey: readLocalByokCredential(ingress.home, "gemini")?.apiKey,
+  });
 }
 
 export async function checkOnboardingProviderConnection(
@@ -1019,23 +1044,79 @@ export async function checkOnboardingProviderConnection(
   provider: BuiltInProviderSlug,
   model: string,
 ): Promise<ProviderConnectionCheck> {
-  const settings = resolveProviderSettings(provider, context.config, context.env);
-  const baseURL =
-    settings?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS[provider];
-  const keyEnvVar =
-    settings?.apiKeyEnvVar ?? BUILT_IN_PROVIDER_API_KEY_ENVS[provider];
-
-  if (provider === "agenc") {
+  const ingress = captureSecureStorageIngress(
+    context.env ?? process.env,
+    context.agencHome,
+  );
+  const environment = ingress.environment;
+  const runtimeRequest = resolveProviderRuntimeRequest({
+    provider,
+    model,
+    config: context.config,
+    environment,
+    credentialHome: ingress.home,
+  });
+  let authority: Awaited<ReturnType<typeof resolveProviderRuntimeAuthority>>;
+  try {
+    authority = await resolveProviderRuntimeAuthority(
+      provider,
+      runtimeRequest.requested,
+      environment,
+      {
+        readSavedApiKey: async (candidateProvider) =>
+          readLocalByokCredential(ingress.home, candidateProvider)?.apiKey,
+      },
+    );
+  } catch (error) {
     return {
       provider,
       model,
-      status: "needs-key",
+      status: "credentials-required",
+      ok: false,
+      detail: error instanceof Error ? error.message : String(error),
+      credentialLabel:
+        providerCredentialEnvironmentLabel(provider) ?? "provider credentials",
+    };
+  }
+  let geminiRuntime: ReturnType<typeof readGeminiRuntimeOptions> = undefined;
+  if (provider === "gemini") {
+    geminiRuntime = readGeminiRuntimeOptions(authority.factoryOptions.extra);
+    if (geminiRuntime === undefined) {
+      return {
+        provider,
+        model,
+        status: "credentials-required",
+        ok: false,
+        detail: "Gemini runtime authority was not resolved",
+        credentialLabel: configuredGeminiCredentialLabel(environment),
+      };
+    }
+  }
+  const baseURL = geminiRuntime === undefined
+    ? authority.factoryOptions.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS[provider]
+    : geminiEndpointFor(geminiRuntime.endpointPlan);
+  const credentialLabel = provider === "gemini"
+    ? geminiCredentialLabel(geminiRuntime!.credentialPlan)
+    : providerCredentialEnvironmentLabel(provider) ??
+      (authority.credential.status === "missing"
+        ? authority.credential.missingLabel
+        : undefined);
+  const credentialProvenance = "provenance" in authority.credential
+    ? authority.credential.provenance
+    : undefined;
+  const onboarding = providerOnboardingInfo(provider);
+
+  if (onboarding.access === "managed") {
+    return {
+      provider,
+      model,
+      status: "credentials-required",
       ok: false,
       detail: "Hosted AgenC requires account auth; choose a BYOK provider for this first-run path.",
     };
   }
 
-  if (LOCAL_PROVIDERS.has(provider)) {
+  if (onboarding.access === "local") {
     if (context.checkLocalProviders === false) {
       return {
         provider,
@@ -1094,24 +1175,124 @@ export async function checkOnboardingProviderConnection(
     };
   }
 
-  if (!KEY_REQUIRED_PROVIDERS.has(provider)) {
+  if (onboarding.access === "environment") {
+    if (
+      authority.credential.status !== "ready" &&
+      authority.credential.status !== "missing"
+    ) {
+      return {
+        provider,
+        model,
+        status: "credentials-required",
+        ok: false,
+        detail: "Provider credential metadata is unavailable.",
+        ...(credentialLabel !== undefined ? { credentialLabel } : {}),
+        baseURL,
+      };
+    }
+    if (authority.credential.status === "missing") {
+      return {
+        provider,
+        model,
+        status: "credentials-required",
+        ok: false,
+        detail: `Set ${authority.credential.missingLabel} before the first model turn.`,
+        ...(credentialLabel !== undefined ? { credentialLabel } : {}),
+        ...(credentialProvenance !== undefined
+          ? { credentialProvenance }
+          : {}),
+        baseURL,
+      };
+    }
     return {
       provider,
       model,
       status: "ready",
       ok: true,
-      detail: "Provider is available without a local API key.",
+      detail:
+        "Required AWS SigV4 credential fields are present. AgenC will verify them on the first signed Bedrock request.",
+      ...(credentialLabel !== undefined ? { credentialLabel } : {}),
+      ...(credentialProvenance !== undefined
+        ? { credentialProvenance }
+        : {}),
+      baseURL,
+    };
+  }
+
+  if (provider === "gemini") {
+    const credentialPlan = geminiRuntime!.credentialPlan;
+    if (credentialPlan.kind === "none") {
+      return {
+        provider,
+        model,
+        status: "credentials-required",
+        ok: false,
+        detail: `Set ${credentialLabel} before the first model turn, or continue and add it later.`,
+        credentialLabel,
+        baseURL,
+      };
+    }
+    if (credentialPlan.kind === "adc") {
+      return {
+        provider,
+        model,
+        status: "ready",
+        ok: true,
+        detail:
+          `Google ADC credential file selected via ${credentialPlan.source}. ` +
+          "AgenC will exchange and refresh its access token on model requests.",
+        credentialLabel,
+        baseURL,
+      };
+    }
+    const remote = await verifyPreparedProviderConnection({
+      provider,
+      factoryOptions: authority.factoryOptions,
+      environment,
+      ...(context.fetchImpl !== undefined
+        ? { fetchImpl: context.fetchImpl }
+        : {}),
+    });
+    if (remote.status !== "valid") {
+      const authFailed = remote.status === "invalid";
+      return {
+        provider,
+        model,
+        status: authFailed ? "auth-failed" : "provider-unreachable",
+        ok: false,
+        detail: authFailed
+          ? `Provider rejected ${geminiCredentialSourceLabel(credentialPlan)}.`
+          : "Provider readiness check did not complete; verify network access and retry.",
+        credentialLabel,
+        ...(credentialProvenance !== undefined
+          ? { credentialProvenance }
+          : {}),
+        baseURL,
+      };
+    }
+    return {
+      provider,
+      model,
+      status: "ready",
+      ok: true,
+      detail: `Gemini credential found via ${geminiCredentialSourceLabel(credentialPlan)}.`,
+      credentialLabel,
+      ...(credentialProvenance !== undefined ? { credentialProvenance } : {}),
       baseURL,
     };
   }
 
   if (
-    MANAGED_KEY_PROVIDERS.has(provider) &&
+    onboarding.supportsManagedKeyAccess &&
+    authority.credential.status === "missing" &&
     resolveAuthManagedKeysEnabled(context.config) &&
-    hasRemoteAuthSessionSync(context.env)
+    context.remoteAuthSessionContext !== undefined &&
+    hasRemoteAuthSessionSync(context.remoteAuthSessionContext)
   ) {
     const tier =
-      remoteAuthSessionSubscriptionTierSync(context.env) ?? "unknown";
+      remoteAuthSessionSubscriptionTierSync(
+        context.remoteAuthSessionContext,
+      ) ?? "unknown";
     if (
       tier === "free" &&
       isFreeSubscriptionManagedModel(provider, model)
@@ -1125,17 +1306,17 @@ export async function checkOnboardingProviderConnection(
         baseURL,
       };
     }
-    if (!hasEntitledRemoteAuthSessionSync(context.env)) {
-      const keyLabel = keyEnvVar ?? "a BYOK API key";
+    if (!hasEntitledRemoteAuthSessionSync(context.remoteAuthSessionContext)) {
+      const keyLabel = credentialLabel ?? "a BYOK API key";
       return {
         provider,
         model,
-        status: "needs-key",
+        status: "credentials-required",
         ok: false,
         detail:
           `AgenC account is signed in on the ${tier} plan. ` +
           `Managed provider keys require an active AgenC subscription; paste ${keyLabel} to continue.`,
-        ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
+        ...(credentialLabel !== undefined ? { credentialLabel } : {}),
         baseURL,
         canSkip: false,
       };
@@ -1150,26 +1331,65 @@ export async function checkOnboardingProviderConnection(
     };
   }
 
-  const apiKey = settings?.apiKey?.trim();
-  if (apiKey !== undefined && apiKey.length > 0) {
-    const remote = await probeRemoteProvider({
+  const apiKey = authority.factoryOptions.apiKey?.trim();
+  const authToken = authority.factoryOptions.authToken?.trim();
+  if (
+    authority.credential.status === "ready" &&
+    authority.credential.mode === "openai-oauth"
+  ) {
+    return {
       provider,
+      model,
+      status: "ready",
+      ok: true,
+      detail:
+        "OpenAI sign-in is configured. AgenC will verify it on the first model request.",
+      ...(credentialLabel !== undefined ? { credentialLabel } : {}),
       baseURL,
-      apiKey,
-      fetchImpl: context.fetchImpl,
+    };
+  }
+  const preparedCredential = apiKey || authToken;
+  if (preparedCredential !== undefined && preparedCredential.length > 0) {
+    if (
+      provider === "grok" &&
+      authority.credential.status === "ready" &&
+      authority.credential.mode === "xai-oauth" &&
+      !isTrustedXaiOauthInferenceBaseUrl(baseURL)
+    ) {
+      return {
+        provider,
+        model,
+        status: "auth-failed",
+        ok: false,
+        detail:
+          "Refusing to send the stored xAI OAuth credential to a custom Grok base URL.",
+        ...(credentialLabel !== undefined ? { credentialLabel } : {}),
+        credentialProvenance,
+        baseURL,
+      };
+    }
+    const remote = await verifyPreparedProviderConnection({
+      provider,
+      factoryOptions: authority.factoryOptions,
+      environment,
+      ...(context.fetchImpl !== undefined
+        ? { fetchImpl: context.fetchImpl }
+        : {}),
     });
-    if (!remote.ok) {
-      const authFailed =
-        remote.status !== undefined && isKeyRejectedStatus(provider, remote.status);
+    if (remote.status !== "valid") {
+      const authFailed = remote.status === "invalid";
       return {
         provider,
         model,
         status: authFailed ? "auth-failed" : "provider-unreachable",
         ok: false,
         detail: authFailed
-          ? `Provider rejected ${keyEnvVar ?? "the configured API key"}.`
+          ? `Provider rejected ${providerConnectionCredentialProvenanceLabel(credentialProvenance) ?? "the configured API key"}.`
           : "Provider readiness check did not complete; verify network access and retry.",
-        ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
+        ...(credentialLabel !== undefined ? { credentialLabel } : {}),
+        ...(credentialProvenance !== undefined
+          ? { credentialProvenance }
+          : {}),
         baseURL,
       };
     }
@@ -1178,10 +1398,11 @@ export async function checkOnboardingProviderConnection(
       model,
       status: "ready",
       ok: true,
-      detail: keyEnvVar === undefined
-        ? "Provider credential found in config."
-        : `Provider credential found via ${keyEnvVar}.`,
-      ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
+      detail: credentialProvenance === undefined
+        ? "Provider credential found."
+        : `Provider credential found via ${providerConnectionCredentialProvenanceLabel(credentialProvenance)}.`,
+      ...(credentialLabel !== undefined ? { credentialLabel } : {}),
+      ...(credentialProvenance !== undefined ? { credentialProvenance } : {}),
       baseURL,
     };
   }
@@ -1189,10 +1410,10 @@ export async function checkOnboardingProviderConnection(
   return {
     provider,
     model,
-    status: "needs-key",
+    status: "credentials-required",
     ok: false,
-    detail: `Set ${keyEnvVar ?? "the provider API key"} before the first model turn, or continue and add it later.`,
-    ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
+    detail: `Set ${credentialLabel ?? "the provider API key"} before the first model turn, or continue and add it later.`,
+    ...(credentialLabel !== undefined ? { credentialLabel } : {}),
     baseURL,
   };
 }
@@ -1233,7 +1454,10 @@ export async function submitFirstRunOnboardingInput(
       const theme = parseTheme(raw, state.selectedTheme);
       if (theme === null) {
         return {
-          state: { ...state, error: "Choose 1, 2, 3, dark, light, or system." },
+          state: {
+            ...state,
+            error: `Choose a theme number or one of: ${THEME_CHOICES.join(", ")}.`,
+          },
           completed: false,
         };
       }
@@ -1247,7 +1471,7 @@ export async function submitFirstRunOnboardingInput(
       };
     }
     case "provider": {
-      const provider = parseProvider(raw, state.selectedProvider, context);
+      const provider = parseProvider(raw, state.selectedProvider);
       if (provider === null) {
         return {
           state: { ...state, error: "Choose a provider number or slug." },
@@ -1256,7 +1480,7 @@ export async function submitFirstRunOnboardingInput(
       }
       const selectedModel = provider === state.selectedProvider
         ? state.selectedModel
-        : providerDefaultModel(provider, context.config, context.env);
+        : providerDefaultModel(provider, context);
       return {
         state: withCompletedStep(
           {
@@ -1270,7 +1494,7 @@ export async function submitFirstRunOnboardingInput(
             authPrompt: null,
           },
           "provider",
-          "api-key",
+          "model-access",
         ),
         completed: false,
       };
@@ -1300,7 +1524,7 @@ export async function submitFirstRunOnboardingInput(
         completed: false,
       };
     }
-    case "api-key":
+    case "model-access":
       if (state.pendingApiKeyApproval !== null) {
         const answer = approvalAnswer(lowerCommand(raw));
         if (answer === null) {
@@ -1316,7 +1540,7 @@ export async function submitFirstRunOnboardingInput(
           return {
             state: withCompletedStep(
               { ...state, pendingApiKeyApproval: null },
-              "api-key",
+              "model-access",
               "connection-test",
             ),
             completed: false,
@@ -1365,7 +1589,7 @@ export async function submitFirstRunOnboardingInput(
                 state.selectedModel,
               ),
             },
-            ["api-key", "connection-test"],
+            ["model-access", "connection-test"],
             "security",
           ),
           completed: false,
@@ -1401,7 +1625,7 @@ export async function submitFirstRunOnboardingInput(
               completed: false,
             };
           }
-          const hostedProvider = normalizeBuiltInProviderSlug(
+          const hostedProvider = resolveBuiltInProviderSlug(
             SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
           );
           const hostedModel =
@@ -1442,7 +1666,7 @@ export async function submitFirstRunOnboardingInput(
                 modelAccessInput: "menu",
                 authPrompt: null,
               },
-              ["api-key", "connection-test"],
+              ["model-access", "connection-test"],
               "security",
             ),
             completed: false,
@@ -1464,11 +1688,7 @@ export async function submitFirstRunOnboardingInput(
             };
           }
           const provider: BuiltInProviderSlug = "grok";
-          const model = providerDefaultModel(
-            provider,
-            context.config,
-            context.env,
-          );
+          const model = providerDefaultModel(provider, context);
           return {
             state: withCompletedSteps(
               {
@@ -1483,14 +1703,58 @@ export async function submitFirstRunOnboardingInput(
                 modelAccessInput: "menu",
                 authPrompt: null,
               },
-              ["api-key", "connection-test"],
+              ["model-access", "connection-test"],
               "security",
             ),
             completed: false,
           };
         }
         if (isApiKeyEntryCommand(command)) {
-          if (!KEY_REQUIRED_PROVIDERS.has(state.selectedProvider)) {
+          const access = providerOnboardingInfo(state.selectedProvider).access;
+          if (state.selectedProvider === "gemini") {
+            const plan = resolveOnboardingGeminiCredentialPlan(context);
+            if (plan.kind !== "none") {
+              return {
+                state: withCompletedStep(
+                  {
+                    ...state,
+                    modelAccessInput: "menu",
+                    authPrompt: null,
+                    error: null,
+                  },
+                  "model-access",
+                  "connection-test",
+                ),
+                completed: false,
+              };
+            }
+            if (plan.expected === "access-token" || plan.expected === "adc") {
+              return {
+                state: {
+                  ...state,
+                  modelAccessInput: "menu",
+                  authPrompt: null,
+                  error:
+                    `Set ${geminiCredentialLabel(plan)}. A pasted API key ` +
+                    `cannot override GEMINI_AUTH_MODE=${plan.mode}.`,
+                },
+                completed: false,
+              };
+            }
+          }
+          if (access === "environment") {
+            return {
+              state: {
+                ...state,
+                modelAccessInput: "menu",
+                authPrompt: null,
+                error:
+                  `Amazon Bedrock uses AWS SigV4 credentials. Set ${providerCredentialEnvironmentLabel(state.selectedProvider) ?? "the required AWS credential fields"}; one-field API-key storage is not supported.`,
+              },
+              completed: false,
+            };
+          }
+          if (access !== "api-key") {
             return {
               state: withCompletedStep(
                 {
@@ -1498,7 +1762,7 @@ export async function submitFirstRunOnboardingInput(
                   modelAccessInput: "menu",
                   authPrompt: null,
                 },
-                "api-key",
+                "model-access",
                 "connection-test",
               ),
               completed: false,
@@ -1525,8 +1789,8 @@ export async function submitFirstRunOnboardingInput(
             completed: false,
           };
         }
-        if (isSkipApiKeyCommand(command)) {
-          const skipError = apiKeySkipError(state.connection);
+        if (isConfigureLaterCommand(command)) {
+          const skipError = modelAccessSkipError(state.connection);
           if (skipError !== null) {
             return {
               state: { ...state, error: skipError },
@@ -1540,11 +1804,46 @@ export async function submitFirstRunOnboardingInput(
                 modelAccessInput: "menu",
                 authPrompt: null,
               },
-              "api-key",
+              "model-access",
               "connection-test",
             ),
             completed: false,
           };
+        }
+        if (
+          providerOnboardingInfo(state.selectedProvider).access ===
+            "environment"
+        ) {
+          return {
+            state: {
+              ...state,
+              modelAccessInput: "menu",
+              authPrompt: null,
+              error:
+                `Amazon Bedrock uses AWS SigV4 credentials. Set ${providerCredentialEnvironmentLabel(state.selectedProvider) ?? "the required AWS credential fields"}; pasted one-field API keys cannot configure it.`,
+            },
+            completed: false,
+          };
+        }
+        if (state.selectedProvider === "gemini") {
+          const ingress = captureSecureStorageIngress(
+            context.env ?? process.env,
+            context.agencHome,
+          );
+          const authMode = getGeminiAuthMode(ingress.environment);
+          if (authMode === "access-token" || authMode === "adc") {
+            return {
+              state: {
+                ...state,
+                modelAccessInput: "menu",
+                authPrompt: null,
+                error:
+                  `A pasted API key cannot override GEMINI_AUTH_MODE=${authMode}. ` +
+                  `Set ${authMode === "access-token" ? "GEMINI_ACCESS_TOKEN" : "Google ADC credentials"}.`,
+              },
+              completed: false,
+            };
+          }
         }
         const apiKey = normalizeApiKeyEntry(raw);
         if (apiKey.length === 0 || /\s/.test(apiKey)) {
@@ -1718,11 +2017,24 @@ export function useFirstRunOnboardingController(
             options.onAuthPrompt?.(prompt);
           },
         };
-        const result = await submitFirstRunOnboardingInput(
-          checkingState,
-          input,
-          submitContext,
-        );
+        let result: FirstRunOnboardingSubmitResult;
+        try {
+          result = await submitFirstRunOnboardingInput(
+            checkingState,
+            input,
+            submitContext,
+          );
+        } catch (error) {
+          const failedState = {
+            ...stateRef.current,
+            authPrompt: null,
+            error: error instanceof Error ? error.message : String(error),
+            isCheckingConnection: false,
+          };
+          stateRef.current = failedState;
+          setState(failedState);
+          return true;
+        }
         const nextState = {
           ...result.state,
           detectedLocalProviders: stateRef.current.detectedLocalProviders,
@@ -1731,6 +2043,7 @@ export function useFirstRunOnboardingController(
         stateRef.current = nextState;
         setState(nextState);
         if (result.completed) {
+          await options.onComplete?.(nextState);
           if (options.agencHome !== undefined) {
             markFirstRunOnboardingComplete({
               agencHome: options.agencHome,
@@ -1740,7 +2053,6 @@ export function useFirstRunOnboardingController(
               completedStepIds: nextState.completedStepIds,
             });
           }
-          await options.onComplete?.(nextState);
           setActive(false);
         }
         return true;
@@ -1761,44 +2073,75 @@ export function useFirstRunOnboardingController(
   };
 }
 
-function apiKeyInstructionForConnection(
+function credentialInstructionForConnection(
   connection: ProviderConnectionCheck | null,
 ): string {
   if (connection === null) {
     return "Paste an API key to verify it, or press Enter to continue without saving.";
   }
   if (connection.status === "ready") {
-    if (connection.keyEnvVar !== undefined) {
-      return `${connection.keyEnvVar} is present and verified. Press Enter to continue, or paste a replacement key.`;
+    if (
+      connection.credentialProvenance?.kind === "environment" &&
+      connection.credentialProvenance.fields.some(
+        (field) => field.role === "accessKeyId",
+      )
+    ) {
+      return "AWS SigV4 credential fields are present. AgenC will verify them on the first signed Bedrock request.";
+    }
+    const source = providerConnectionCredentialProvenanceLabel(
+      connection.credentialProvenance,
+    );
+    if (source !== undefined) {
+      return `${source} is present and verified. Press Enter to continue, or paste a replacement key.`;
     }
     return "Provider credential is verified. Press Enter to continue, or paste a replacement key.";
   }
-  if (connection.keyEnvVar === undefined) {
+  if (connection.credentialLabel === undefined) {
     return "Paste an API key to verify it, or press Enter to continue.";
   }
   if (connection.canSkip === false) {
-    return `Paste ${connection.keyEnvVar} to verify it before continuing.`;
+    return `Paste ${connection.credentialLabel} to verify it before continuing.`;
   }
   if (
     connection.status === "auth-failed" ||
     connection.status === "provider-unreachable"
   ) {
-    return `${connection.keyEnvVar} did not verify. Press Enter to continue without saving, or paste a replacement key.`;
+    const source = providerConnectionCredentialProvenanceLabel(
+      connection.credentialProvenance,
+    ) ?? connection.credentialLabel;
+    return `${source} did not verify. Press Enter to continue without saving, or paste a replacement key.`;
   }
-  return `Paste ${connection.keyEnvVar} to verify it, or press Enter to add it later.`;
+  return `Paste ${connection.credentialLabel} to verify it, or press Enter to add it later.`;
 }
 
-function apiKeyInstructionForProvider(
+function modelAccessInstructionForProvider(
   provider: BuiltInProviderSlug,
+  geminiPlan?: GeminiCredentialPlan,
 ): string {
-  const keyEnvVar = BUILT_IN_PROVIDER_API_KEY_ENVS[provider];
-  if (!KEY_REQUIRED_PROVIDERS.has(provider)) {
+  if (provider === "gemini" && geminiPlan !== undefined) {
+    if (geminiPlan.kind !== "none") {
+      return `${geminiCredentialLabel(geminiPlan)} is configured. Press Enter to use it, or type back to choose another access method.`;
+    }
+    if (geminiPlan.expected === "access-token" || geminiPlan.expected === "adc") {
+      return `Set ${geminiCredentialLabel(geminiPlan)}, then press Enter to continue. A pasted API key cannot override GEMINI_AUTH_MODE=${geminiPlan.mode}.`;
+    }
+    return `Paste ${geminiCredentialLabel(geminiPlan)} to verify it, or press Enter to add it later.`;
+  }
+  const credentialLabel = providerApiKeyEnvironmentLabel(provider);
+  const onboarding = providerOnboardingInfo(provider);
+  if (onboarding.access === "managed") {
+    return "This provider requires AgenC account auth. Choose the account sign-in option to continue.";
+  }
+  if (onboarding.access !== "api-key") {
+    if (onboarding.access === "environment") {
+      return `Set ${providerCredentialEnvironmentLabel(provider) ?? "the required provider credential fields"} in the environment, then press Enter to continue.`;
+    }
     return "This provider can continue without a BYOK API key. Press Enter to continue.";
   }
-  if (keyEnvVar === undefined) {
+  if (credentialLabel === undefined) {
     return "Paste an API key to verify it, or press Enter to add it later.";
   }
-  return `Paste ${keyEnvVar} to verify it, or press Enter to add it later.`;
+  return `Paste ${credentialLabel} to verify it, or press Enter to add it later.`;
 }
 
 function securityLinesForContext(
@@ -1806,9 +2149,9 @@ function securityLinesForContext(
 ): readonly string[] {
   if (context.permissionMode === "bypassPermissions") {
     return [
-      "Permission mode: bypassPermissions (--yolo skips tool approval prompts).",
-      "Sandbox: danger-full-access (--yolo disables workspace sandboxing for this session).",
-      "Press Enter to continue with --yolo, or restart without --yolo for prompts and sandboxing.",
+      "Permission mode: bypassPermissions (--dangerously-bypass-approvals-and-sandbox skips tool approval prompts).",
+      "Sandbox: danger-full-access (--dangerously-bypass-approvals-and-sandbox disables workspace sandboxing for this session).",
+      "Press Enter to continue with --dangerously-bypass-approvals-and-sandbox, or restart without --dangerously-bypass-approvals-and-sandbox for prompts and sandboxing.",
     ];
   }
   return [
@@ -1838,7 +2181,7 @@ export function firstRunOnboardingInputPresentation(
       };
     case "theme":
       return {
-        placeholder: `Press Enter to keep ${state.selectedTheme}, or type 1–3`,
+        placeholder: `Press Enter to keep ${state.selectedTheme}, or type 1–${THEME_CHOICES.length}`,
         footerHint: standardFooter,
         allowEmptySubmit: true,
       };
@@ -1848,7 +2191,7 @@ export function firstRunOnboardingInputPresentation(
         footerHint: standardFooter,
         allowEmptySubmit: true,
       };
-    case "api-key":
+    case "model-access":
       if (state.pendingApiKeyApproval !== null) {
         return {
           placeholder: "Type yes to save this key, or no to discard it",
@@ -1858,10 +2201,10 @@ export function firstRunOnboardingInputPresentation(
         };
       }
       if (state.modelAccessInput === "api-key") {
-        const keyEnvVar =
-          BUILT_IN_PROVIDER_API_KEY_ENVS[state.selectedProvider] ?? "API key";
+        const credentialLabel =
+          providerApiKeyEnvironmentLabel(state.selectedProvider) ?? "API key";
         return {
-          placeholder: `Paste ${keyEnvVar}, type back, or press Enter to configure later`,
+          placeholder: `Paste ${credentialLabel}, type back, or press Enter to configure later`,
           footerHint:
             "Keys are verified before an explicit save confirmation · /exit leaves setup",
           allowEmptySubmit: true,
@@ -1904,7 +2247,7 @@ export function detailLinesForStep(
         `Workspace: ${context.cwd ?? process.cwd()}`,
         `AgenC home: ${context.agencHome ?? "not configured"}`,
         ...(context.permissionMode === "bypassPermissions"
-          ? ["--yolo is active: tool approvals and workspace sandboxing are bypassed for this session."]
+          ? ["--dangerously-bypass-approvals-and-sandbox is active: tool approvals and workspace sandboxing are bypassed for this session."]
           : []),
         "Onboarding input only. Use /exit, Ctrl-C twice, or Ctrl-D twice to leave.",
         "Press Enter to continue (or type next).",
@@ -1915,16 +2258,16 @@ export function detailLinesForStep(
       // as grey-on-black. The terminal background is already detected for the
       // 'auto' mode (COLORFGBG seed + OSC 11 watcher) — surface it here so the
       // user picks with that context instead of discovering the mismatch.
-      const terminalBackground = getSystemThemeName();
+      const terminalBackground = getTerminalBackground();
       // Only give a directional recommendation when the background was actually
       // measured. Most terminals don't export $COLORFGBG, so an unmeasured value
       // is a guessed `dark` — asserting "your terminal looks dark" there is the
       // exact inverted advice this tip was added to prevent (M-ONB-2).
-      const themeTip = isSystemThemeDetected()
+      const themeTip = isTerminalBackgroundDetected()
         ? `Tip: your terminal background looks ${terminalBackground} — ${
-            terminalBackground === "light" ? '"light" or "system"' : '"dark" or "system"'
+            terminalBackground === "light" ? '"light" or "auto"' : '"dark" or "auto"'
           } will read best here.`
-        : `Tip: couldn't detect your terminal background — if it's light, pick "light" or "system"; if dark, "dark" or "system".`;
+        : `Tip: couldn't detect your terminal background — if it's light, pick "light" or "auto"; if dark, "dark" or "auto".`;
       return [
         ...THEME_CHOICES.map((theme, index) =>
           `${index + 1}. ${theme}${theme === state.selectedTheme ? " (current)" : ""}`
@@ -1936,7 +2279,7 @@ export function detailLinesForStep(
     case "provider": {
       const detected = new Set(state.detectedLocalProviders);
       return [
-        ...providerChoices(context).map((provider, index) =>
+        ...providerChoices().map((provider, index) =>
           `${index + 1}. ${provider}${provider === state.selectedProvider ? " (current)" : ""}${detected.has(provider) ? " — detected, running locally, no key needed" : ""}`
         ),
         ...(detected.size > 0
@@ -1955,7 +2298,10 @@ export function detailLinesForStep(
             `Model: ${state.selectedModel}`,
             "Press Enter to run the connection check (or type test).",
           ];
-    case "api-key": {
+    case "model-access": {
+      const geminiPlan = state.selectedProvider === "gemini"
+        ? resolveOnboardingGeminiCredentialPlan(context)
+        : undefined;
       if (state.pendingApiKeyApproval !== null) {
         return [];
       }
@@ -1971,13 +2317,24 @@ export function detailLinesForStep(
         ];
       }
       if (state.modelAccessInput === "menu") {
-        const keyEnvVar =
-          BUILT_IN_PROVIDER_API_KEY_ENVS[state.selectedProvider];
+        const credentialLabel =
+          providerApiKeyEnvironmentLabel(state.selectedProvider);
         const billingProvider =
           state.selectedProvider === "grok" ? "xAI" : state.selectedProvider;
-        const providerAccess =
-          KEY_REQUIRED_PROVIDERS.has(state.selectedProvider)
-            ? `Use ${keyEnvVar ?? `a ${state.selectedProvider} API key`} — requests are billed by ${billingProvider}.`
+        const onboarding = providerOnboardingInfo(state.selectedProvider);
+        const providerAccess = state.selectedProvider === "gemini" &&
+            geminiPlan !== undefined
+          ? geminiPlan.kind === "none"
+            ? geminiPlan.expected === "access-token" || geminiPlan.expected === "adc"
+              ? `Use Gemini with ${geminiCredentialLabel(geminiPlan)}. A one-field BYOK key cannot override GEMINI_AUTH_MODE=${geminiPlan.mode}.`
+              : `Use Gemini with ${geminiCredentialLabel(geminiPlan)}.`
+            : `Use Gemini with configured ${geminiCredentialLabel(geminiPlan)}.`
+          : onboarding.access === "managed"
+          ? `Use ${state.selectedProvider} through AgenC account auth.`
+          : onboarding.access === "api-key"
+            ? `Use ${credentialLabel ?? `a ${state.selectedProvider} API key`} — requests are billed by ${billingProvider}.`
+            : onboarding.access === "environment"
+              ? `Use ${state.selectedProvider} with ${providerCredentialEnvironmentLabel(state.selectedProvider) ?? "its required environment credentials"} — one-field API-key storage is not supported.`
             : `Use ${state.selectedProvider} directly — no account sign-in or provider API key required.`;
         return [
           `Provider: ${state.selectedProvider}`,
@@ -1986,20 +2343,24 @@ export function detailLinesForStep(
           "2. Sign in with X / xAI — use Grok through an eligible X or xAI subscription.",
           `3. ${providerAccess}`,
           "4. Configure later — continue without signing in or saving a key.",
-          "Choose a number. You can also paste a provider API key directly.",
+          ...(geminiPlan?.kind === "none" &&
+            (geminiPlan.expected === "access-token" ||
+              geminiPlan.expected === "adc")
+            ? ["Choose a number. Configure the forced Gemini credential source before testing."]
+            : ["Choose a number. You can also paste a provider API key directly."]),
         ];
       }
       const connection = state.connection;
       if (connection === null) {
         return [
           `Provider: ${state.selectedProvider}`,
-          apiKeyInstructionForProvider(state.selectedProvider),
+          modelAccessInstructionForProvider(state.selectedProvider, geminiPlan),
           "Type back to choose a different access method.",
         ];
       }
       return [
         connection.detail,
-        apiKeyInstructionForConnection(connection),
+        credentialInstructionForConnection(connection),
         "Type back to choose a different access method.",
         ...(state.pastedContents.length > 0
           ? [`Captured ${state.pastedContents.length} large paste privately.`]
@@ -2161,7 +2522,8 @@ export function Onboarding({
   const cardWidth = Math.max(40, Math.min(84, columns - 2));
   const detailLines = detailLinesForStep(state, context);
   const showApproval =
-    state.currentStepId === "api-key" && state.pendingApiKeyApproval !== null;
+    state.currentStepId === "model-access" &&
+    state.pendingApiKeyApproval !== null;
 
   return (
     <Box flexDirection="column" width="100%" paddingX={1}>

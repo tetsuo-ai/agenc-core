@@ -2,6 +2,7 @@ import React from 'react'
 import { describe, expect, test, vi } from 'vitest'
 
 import { renderToString } from '../../../utils/staticRender.js'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../../remoteAuthSessionContext.fixture.js'
 
 const harness = vi.hoisted(() => ({
   appState: {
@@ -42,6 +43,7 @@ vi.mock('../../context/promptOverlayContext.js', () => ({
 
 vi.mock('../../hooks/useSettings.js', () => ({
   useSettings: () => ({
+    tui: {},
     statusLine: harness.statusLineEnabled
       ? {
           command: 'status',
@@ -57,8 +59,8 @@ vi.mock('../../hooks/useTerminalSize.js', () => ({
   }),
 }))
 
-vi.mock('../../../utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => harness.fullscreen,
+vi.mock('../../context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => harness.fullscreen,
 }))
 
 vi.mock('../../state/AppState.js', () => ({
@@ -196,6 +198,7 @@ function props(overrides: Partial<FooterProps> = {}): FooterProps {
     mode: 'prompt',
     onAutoUpdaterResult: vi.fn(),
     onChangeIsUpdating: vi.fn(),
+    remoteAuthSessionContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
     selectedSuggestion: 0,
     setHistoryQuery: vi.fn(),
     suggestionType: 'command',
@@ -208,6 +211,7 @@ function props(overrides: Partial<FooterProps> = {}): FooterProps {
     } as FooterProps['toolPermissionContext'],
     verbose: false,
     vimMode: 'INSERT',
+    runtimeState: {},
     ...overrides,
   }
 }

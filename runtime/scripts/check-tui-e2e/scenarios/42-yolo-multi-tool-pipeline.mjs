@@ -6,8 +6,8 @@
  * loss, model-side handoff bugs.
  */
 export const meta = {
-  description: "--yolo: model chains two Bash calls in a single turn.",
-  args: ["--yolo"],
+  description: "--dangerously-bypass-approvals-and-sandbox: model chains two Bash calls in a single turn.",
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   timeoutMs: 120_000,
   slimCwd: true,
 };

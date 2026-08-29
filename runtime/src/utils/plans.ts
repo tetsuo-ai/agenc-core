@@ -15,7 +15,7 @@ import { getPlanSlugCache, getSessionId } from '../bootstrap/state.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../tools/ExitPlanModeTool/constants.js'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getAgenCConfigHomeDir } from './envUtils.js'
+import { getAgenCHomeDir } from './envUtils.js'
 import { isENOENT } from './errors.js'
 import { getEnvironmentKind } from './filePersistence/outputsScanner.js'
 import { getFsImplementation } from './fsOperations.js'
@@ -83,7 +83,7 @@ export const getPlansDirectory = memoize(function getPlansDirectory(): string {
   let plansPath: string
 
   if (settingsDir) {
-    // Settings.json (relative to project root)
+    // Canonical config.toml value (relative to project root)
     const cwd = getCwd()
     const resolved = resolve(cwd, settingsDir)
 
@@ -92,13 +92,13 @@ export const getPlansDirectory = memoize(function getPlansDirectory(): string {
       logError(
         new Error(`plansDirectory must be within project root: ${settingsDir}`),
       )
-      plansPath = join(getAgenCConfigHomeDir(), 'plans')
+      plansPath = join(getAgenCHomeDir(), 'plans')
     } else {
       plansPath = resolved
     }
   } else {
     // Default
-    plansPath = join(getAgenCConfigHomeDir(), 'plans')
+    plansPath = join(getAgenCHomeDir(), 'plans')
   }
 
   // Ensure directory exists (mkdirSync with recursive: true is a no-op if it exists)
@@ -114,7 +114,7 @@ export const getPlansDirectory = memoize(function getPlansDirectory(): string {
         logError(
           new Error(`plansDirectory resolves outside project root: ${settingsDir}`),
         )
-        plansPath = join(getAgenCConfigHomeDir(), 'plans')
+        plansPath = join(getAgenCHomeDir(), 'plans')
         getFsImplementation().mkdirSync(plansPath)
       }
     }
@@ -123,6 +123,9 @@ export const getPlansDirectory = memoize(function getPlansDirectory(): string {
   }
 
   return plansPath
+}, () => {
+  const settingsDir = getExecutionAuthoritySettings().plansDirectory ?? ''
+  return `${getAgenCHomeDir()}\u0000${getCwd()}\u0000${settingsDir}`
 })
 
 /**

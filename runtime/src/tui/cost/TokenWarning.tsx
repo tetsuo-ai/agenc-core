@@ -2,28 +2,31 @@
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { Box, Text } from '../ink.js';
-import { calculateTokenWarningState, getEffectiveContextWindowSize, isAutoCompactEnabled } from '../../services/compact/autoCompact.js';
+import { calculateTokenWarningStateForEnvironment, getEffectiveContextWindowSizeForEnvironment, isAutoCompactEnabledForEnvironment } from '../../services/compact/autoCompact.js';
+import type { ProviderEnvironment } from '../../llm/provider-options.js';
 import { useCompactWarningSuppression } from '../../services/compact/compactWarningHook.js';
-import { getUpgradeMessage } from '../../utils/model/contextWindowUpgradeCheck.js';
+import { getUpgradeMessage } from '../../llm/context-window-upgrade.js';
 import { isContextCollapseEnabled } from '../../services/contextCollapse/index.js';
 type Props = {
   tokenUsage: number;
   model: string;
+  environment: ProviderEnvironment;
 };
 export function TokenWarning({
   tokenUsage,
-  model
+  model,
+  environment
 }: Props): React.ReactElement | null {
   const {
     percentLeft,
     isAboveWarningThreshold,
     isAboveErrorThreshold
-  } = calculateTokenWarningState(tokenUsage, model);
+  } = calculateTokenWarningStateForEnvironment(tokenUsage, model, environment);
   const suppressWarning = useCompactWarningSuppression();
   if (!isAboveWarningThreshold || suppressWarning) {
     return null;
   }
-  const showAutoCompactWarning = isAutoCompactEnabled();
+  const showAutoCompactWarning = isAutoCompactEnabledForEnvironment(environment);
   const upgradeMessage = getUpgradeMessage("warning");
   let displayPercentLeft = percentLeft;
   let reactiveOnlyMode = false;
@@ -39,7 +42,7 @@ export function TokenWarning({
     }
   }
   if (reactiveOnlyMode || collapseMode) {
-    const effectiveWindow = getEffectiveContextWindowSize(model);
+    const effectiveWindow = getEffectiveContextWindowSizeForEnvironment(model, environment);
     displayPercentLeft = Math.max(
       0,
       Math.round((effectiveWindow - tokenUsage) / effectiveWindow * 100),

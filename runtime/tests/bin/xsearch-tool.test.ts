@@ -57,7 +57,7 @@ describe("LIVE XSearch tool catalog gate (Hermes-style)", () => {
       workspaceRoot: process.cwd(),
       getSession: () => null,
       sessionProvider: "openai",
-      llmXai: { x_search: true },
+      grokCapabilities: { x_search: true },
     });
     expect(tools.some((t) => t.name === "XSearch")).toBe(false);
   });
@@ -68,7 +68,7 @@ describe("LIVE XSearch tool catalog gate (Hermes-style)", () => {
       getSession: () => null,
       sessionProvider: "grok",
       sessionBaseURL: "https://openrouter.ai/api/v1",
-      llmXai: { x_search: true },
+      grokCapabilities: { x_search: true },
     });
     expect(tools.some((t) => t.name === "XSearch")).toBe(false);
   });
@@ -79,7 +79,7 @@ describe("LIVE XSearch tool catalog gate (Hermes-style)", () => {
       getSession: () => null,
       sessionProvider: "grok",
       sessionBaseURL: "https://api.x.ai/v1",
-      llmXai: { x_search: false },
+      grokCapabilities: { x_search: false },
     });
     expect(tools.some((t) => t.name === "XSearch")).toBe(false);
   });
@@ -90,7 +90,7 @@ describe("LIVE XSearch tool catalog gate (Hermes-style)", () => {
       getSession: () => null,
       sessionProvider: "grok",
       sessionBaseURL: "https://api.x.ai/v1",
-      llmXai: { x_search: true },
+      grokCapabilities: { x_search: true },
     });
     expect(tools.some((t) => t.name === "XSearch")).toBe(true);
   });
@@ -134,7 +134,7 @@ describe("LIVE XSearch tool catalog gate (Hermes-style)", () => {
         }) as unknown as Session,
       sessionProvider: "grok",
       sessionBaseURL: "https://api.x.ai/v1",
-      llmXai: { x_search: true },
+      grokCapabilities: { x_search: true },
       providerFactory: factory as typeof createProvider,
     });
     const xsearch = findTool(tools as never, "XSearch");

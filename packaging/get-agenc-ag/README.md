@@ -2,7 +2,7 @@
 
 Static installer page for **agenc-core** (the `agenc` CLI) in the AgenC b/w
 design system (Archivo + IBM Plex Mono, 1px #0a0a0a borders, offset shadows,
-grid background).
+grid background). Product docs: [docs/INDEX.md](../../docs/INDEX.md).
 
 ## Files
 

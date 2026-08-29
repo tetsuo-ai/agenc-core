@@ -28,7 +28,7 @@
  * must still complete normally with this feature ON by default).
  */
 
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 // The run-turn module fans out into magic-docs / session-memory hooks and
 // an axios client at import time; stub them exactly like run-turn.test.ts.
@@ -53,6 +53,8 @@ vi.mock("../memory/session/sessionMemory.js", () => ({
 }));
 
 import { AsyncQueue } from "../utils/async-queue.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { runTurn } from "./run-turn.js";
 import {
   Session,
@@ -79,37 +81,17 @@ import type { ToolRegistry } from "../tool-registry.js";
 import type { Terminal } from "./turn-state.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
 import type { PhaseEvent } from "../phases/events.js";
+import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
+import { createTestConfigStore } from "../fixtures.js";
 
-// ── env isolation ───────────────────────────────────────────────────
-
-const ENV_KEYS = [
-  "AGENC_BEHAVIORAL_BACKSTOP",
-  "AGENC_NOPROGRESS_WARN",
-  "AGENC_NOPROGRESS_TERMINATE",
-  "AGENC_ABAB_TERMINATE",
-  "AGENC_LOWGAIN_TERMINATE",
-  "AGENC_PROGRESS_WINDOW",
-  "AGENC_MAX_TURNS",
-] as const;
-const savedEnv: Record<string, string | undefined> = {};
-beforeEach(() => {
-  for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
-});
 afterEach(() => {
-  for (const k of ENV_KEYS) {
-    if (savedEnv[k] === undefined) delete process.env[k];
-    else process.env[k] = savedEnv[k];
-  }
   vi.restoreAllMocks();
 });
 
 // ── harness factories (mirrors run-turn.test.ts) ────────────────────
 
 function mkFeatures(): ManagedFeatures {
-  return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
-  };
+  return {};
 }
 
 function mkConfig(): Config {
@@ -172,7 +154,9 @@ function mkCtx(maxTurns: number): TurnContext {
   return {
     subId: "turn-progress",
     cwd: "/tmp",
-    config: { maxTurns } as unknown,
+    config: {
+      maxTurns,
+    } as unknown,
     configSnapshot: {} as unknown,
     modelInfo: mkModelInfo(),
     collaborationMode: { model: "test-model" },
@@ -208,9 +192,10 @@ function mkCtx(maxTurns: number): TurnContext {
  * A scripted streaming provider. `step(i)` returns the LLMResponse for the
  * i-th model call (0-based). Tracks the call count.
  */
-function mkScriptedProvider(
-  step: (i: number) => Partial<LLMResponse>,
-): { provider: LLMProvider; calls: () => number } {
+function mkScriptedProvider(step: (i: number) => Partial<LLMResponse>): {
+  provider: LLMProvider;
+  calls: () => number;
+} {
   let calls = 0;
   const make = (i: number): LLMResponse => ({
     content: "",
@@ -285,10 +270,10 @@ function mkScriptedRegistry(
   return { registry, dispatchCalls: () => dispatchCalls };
 }
 
-function mkSession(opts: {
-  provider: LLMProvider;
-  registry: ToolRegistry;
-}): { session: Session; events: Event[] } {
+function mkSession(opts: { provider: LLMProvider; registry: ToolRegistry }): {
+  session: Session;
+  events: Event[];
+} {
   const events: Event[] = [];
   const state = {
     sessionConfiguration: mkSessionConfiguration(),
@@ -296,7 +281,15 @@ function mkSession(opts: {
     totalTokenUsage: 0,
   };
   const services: SessionServices = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     admissionRequired: false,
+    runtimeOptions: resolveAgentRuntimeOptions({}),
+    configStore: createTestConfigStore({
+      cwd: state.sessionConfiguration.cwd,
+    }),
+    providerEnvironment: {},
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},
@@ -349,7 +342,7 @@ function identicalToolCall(i: number): Partial<LLMResponse> {
     toolCalls: [
       {
         id: `call-${i}`,
-        name: "Read",
+        name: "FileRead",
         arguments: JSON.stringify({ file_path: "/x" }),
       },
     ],
@@ -358,15 +351,13 @@ function identicalToolCall(i: number): Partial<LLMResponse> {
   };
 }
 
-
 // ── A1 — repetition runaway trips no_progress ───────────────────────
 
 describe("A1 — repetition runaway finalizes with no_progress", () => {
   test("trips no_progress, model called <=9 (not 1000), honest terminal, no fabricated result", async () => {
-    process.env.AGENC_MAX_TURNS = "1000";
     const ctx = mkCtx(1000);
     const { provider, calls } = mkScriptedProvider((i) => identicalToolCall(i));
-    const { registry } = mkScriptedRegistry(["Read"], () => ({
+    const { registry } = mkScriptedRegistry(["FileRead"], () => ({
       content: "stable content", // IDENTICAL every step
       isError: false,
     }));
@@ -405,39 +396,24 @@ describe("A1 — repetition runaway finalizes with no_progress", () => {
     expect(honest).not.toMatch(/stable content/); // not a fabricated tool result
     expect(honest).not.toMatch(/success|task completed/i);
   });
-
-  test("REVERT: master switch OFF → same repro spins to max_turns", async () => {
-    process.env.AGENC_BEHAVIORAL_BACKSTOP = "0";
-    process.env.AGENC_MAX_TURNS = "12"; // keep the revert fast
-    const ctx = mkCtx(12);
-    const { provider, calls } = mkScriptedProvider((i) => identicalToolCall(i));
-    const { registry } = mkScriptedRegistry(["Read"], () => ({
-      content: "stable content",
-      isError: false,
-    }));
-    const { session } = mkSession({ provider, registry });
-
-    const { terminal } = await drainTurn(runTurn(session, ctx, "go"));
-
-    expect(terminal.reason).toBe("max_turns");
-    // ran to the cap, NOT bounded at ~8
-    expect(calls()).toBeGreaterThanOrEqual(12);
-  });
 });
 
 // ── A5 — soft-nudge then recover ────────────────────────────────────
 
 describe("A5 — soft-nudge-then-recover completes normally", () => {
   test("nudge fires once at the soft threshold, model changes, no trip", async () => {
-    process.env.AGENC_MAX_TURNS = "50";
     // Repeat identically until the soft warn fires (3), then on the 4th
     // model call produce a final assistant message (no tool calls) to end.
     const ctx = mkCtx(50);
     const { provider } = mkScriptedProvider((i) => {
       if (i < 3) return identicalToolCall(i);
-      return { content: "Done — changed approach.", toolCalls: [], finishReason: "stop" };
+      return {
+        content: "Done — changed approach.",
+        toolCalls: [],
+        finishReason: "stop",
+      };
     });
-    const { registry } = mkScriptedRegistry(["Read"], () => ({
+    const { registry } = mkScriptedRegistry(["FileRead"], () => ({
       content: "stable content",
       isError: false,
     }));
@@ -456,7 +432,7 @@ describe("A5 — soft-nudge-then-recover completes normally", () => {
     expect(warns.length).toBe(1);
     const warnMsg =
       warns[0]?.msg.type === "warning"
-        ? (warns[0].msg.payload as { message?: string }).message ?? ""
+        ? ((warns[0].msg.payload as { message?: string }).message ?? "")
         : "";
     expect(warnMsg).toMatch(/repeated/i);
     // NO terminate warning fired — the model changed approach and finished.
@@ -473,16 +449,13 @@ describe("A5 — soft-nudge-then-recover completes normally", () => {
 
 describe("B1 — status polling that progresses never trips (killer test)", () => {
   test("same tool 12x with CHANGING result → reason:completed, no trip", async () => {
-    process.env.AGENC_MAX_TURNS = "50";
     const ctx = mkCtx(50);
     // 12 identical GetStatus calls, then a final stop.
     const { provider } = mkScriptedProvider((i) => {
       if (i < 12) {
         return {
           content: "",
-          toolCalls: [
-            { id: `poll-${i}`, name: "GetStatus", arguments: "{}" },
-          ],
+          toolCalls: [{ id: `poll-${i}`, name: "GetStatus", arguments: "{}" }],
           finishReason: "tool_calls",
         };
       }
@@ -514,7 +487,6 @@ describe("B1 — status polling that progresses never trips (killer test)", () =
 
 describe("C1 — the policing path is non-blocking (no extra calls)", () => {
   test("a healthy 2-step tool turn yields exactly the expected call counts", async () => {
-    process.env.AGENC_MAX_TURNS = "50";
     const ctx = mkCtx(50);
     // 1 tool call then stop → provider called twice, tool dispatched once.
     const { provider, calls } = mkScriptedProvider((i) => {
@@ -554,10 +526,9 @@ describe("D1 — terminalToStopReason maps no_progress honestly", () => {
     // Indirect proof through the running loop: A1's turn_complete event
     // carries stopReason "no_progress", which can only happen if the
     // mapper's `case "no_progress"` arm (not default→"error") is present.
-    process.env.AGENC_MAX_TURNS = "1000";
     const ctx = mkCtx(1000);
     const { provider } = mkScriptedProvider((i) => identicalToolCall(i));
-    const { registry } = mkScriptedRegistry(["Read"], () => ({
+    const { registry } = mkScriptedRegistry(["FileRead"], () => ({
       content: "stable content",
       isError: false,
     }));

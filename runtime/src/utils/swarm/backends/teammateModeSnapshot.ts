@@ -1,14 +1,13 @@
 /**
  * Teammate mode snapshot module.
  *
- * Captures the teammate mode at session startup, following the same pattern
- * as hooksConfigSnapshot.ts. This ensures that runtime config changes don't
- * affect the teammate mode for the current session.
+ * Captures teammate mode at session startup so runtime config changes do not
+ * alter the current session's execution backend.
  */
 
-import { getGlobalConfig } from '../../config.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from '../../log.js'
+import { getExecutionAuthoritySettings } from '../../settings/settings.js'
 
 export type TeammateMode = 'auto' | 'tmux' | 'in-process'
 
@@ -60,8 +59,8 @@ export function captureTeammateModeSnapshot(): void {
       `[TeammateModeSnapshot] Captured from CLI override: ${initialTeammateMode}`,
     )
   } else {
-    const config = getGlobalConfig()
-    initialTeammateMode = config.teammateMode ?? 'auto'
+    initialTeammateMode =
+      getExecutionAuthoritySettings().teammates?.mode ?? 'auto'
     logForDebugging(
       `[TeammateModeSnapshot] Captured from config: ${initialTeammateMode}`,
     )

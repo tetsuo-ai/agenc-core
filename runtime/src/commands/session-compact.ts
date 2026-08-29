@@ -6,13 +6,11 @@ import {
 } from "./types.js";
 import React from "react";
 import type { LLMContentPart, LLMMessage, LLMProvider, LLMTool } from "../llm/types.js";
-import { createChildAbortController } from "../utils/abortController.js";
 import {
   cloneLlmContent as cloneContent,
   fromRuntimeMessageContent,
   toRuntimeMessageContent,
 } from "../llm/content-conversion.js";
-import { readProviderFactoryOptions } from "../llm/provider.js";
 import type {
   CompactCleanupDeps,
   CompactionResult,
@@ -43,14 +41,11 @@ import {
 import { asRecord } from "../utils/record.js";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 import {
-  getAutoCompactThreshold,
-  getEffectiveContextWindowSize,
-  isAutoCompactEnabled,
+  getAutoCompactThresholdForEnvironment,
+  getEffectiveContextWindowSizeForEnvironment,
+  isAutoCompactEnabledForEnvironment,
 } from "../services/compact/autoCompact.js";
-import {
-  withCompactContextGuards,
-  type CompactGuardEnv,
-} from "../session/compact-env-guard.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
 import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
 import {
   assembleSystemPrompt,
@@ -65,6 +60,7 @@ import {
 import { getOutputStyleConfig } from "../constants/outputStyles.js";
 import { openCompactStatusModal } from "./compact-menu.js";
 import { openAsyncLocalJsxCommand } from "./local-jsx-command.js";
+import { providerEnvironmentFromCommandContext } from "./config-context.js";
 
 /**
  * Both /compact and /context allocate a fresh TurnContext via the
@@ -212,6 +208,7 @@ export const contextCommand: SlashCommand = {
         session: ctx.session,
         ctx: allocated.turnContext,
         args: ctx.argsRaw,
+        providerEnvironment: providerEnvironmentFromCommandContext(ctx),
       });
       if (await openContextUsageModal(ctx, result.text)) {
         return { kind: "skip" };
@@ -249,6 +246,7 @@ async function buildFallbackContextUsageText(
   const estimated = computeContextUsageBreakdown({
     messages,
     tools,
+    providerEnvironment: providerEnvironmentFromCommandContext(ctx),
     ...(model !== undefined ? { model } : {}),
     ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
     ...(sessionTokenUsage !== undefined ? { sessionTokenUsage } : {}),
@@ -413,11 +411,6 @@ interface AgenCToolUseContext {
     readonly contextWindowTokens: number;
     readonly maxOutputTokens?: number;
     readonly systemPrompt?: string;
-    readonly providerOverride?: {
-      readonly model: string;
-      readonly baseURL: string;
-      readonly apiKey: string;
-    };
     readonly querySource?: string;
     readonly agentDefinitions: {
       readonly agentRoleWorkspaceId?: string;
@@ -440,7 +433,6 @@ interface AgenCToolUseContext {
   readonly setStreamMode: (mode: "requesting" | "responding" | null) => void;
   readonly setResponseLength: (updater: (length: number) => number) => void;
   readonly onCompactProgress: (event: unknown) => void;
-  readonly setSDKStatus: (status: "compacting" | null) => void;
   readonly addNotification: (notification: unknown) => void;
   readonly emitWarning: (warning: { readonly cause: string; readonly message: string }) => void;
   readonly queryTracking?: {
@@ -470,7 +462,6 @@ function buildAgenCToolUseContext(
   opts: { readonly querySource?: string; readonly verbose?: boolean } = {},
 ): AgenCToolUseContext {
   const model = toAgenCModelContext(ctx);
-  const providerOverride = buildProviderOverride(session, model.model);
   const surface = readSessionSurface(session);
   const agentDefinitions = {
     ...(firstNonEmpty(surface.agentDefinitions?.agentRoleWorkspaceId) !== undefined
@@ -496,13 +487,7 @@ function buildAgenCToolUseContext(
     )
     .join("\n\n");
   return {
-    // Child of the session controller — cancelling a compaction must never
-    // consume the session's one-shot root controller (see
-    // agenc-tool-use-context.ts for the incident this prevents).
-    abortController:
-      session.abortController !== undefined
-        ? createChildAbortController(session.abortController)
-        : new AbortController(),
+    abortController: session.abortController ?? new AbortController(),
     sessionId: session.conversationId,
     options: {
       mainLoopModel: model.model,
@@ -513,7 +498,6 @@ function buildAgenCToolUseContext(
         ? { maxOutputTokens: model.maxOutputTokens }
         : {}),
       ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
-      ...(providerOverride !== undefined ? { providerOverride } : {}),
       ...(opts.querySource !== undefined ? { querySource: opts.querySource } : {}),
       agentDefinitions,
       isNonInteractiveSession: false,
@@ -536,7 +520,6 @@ function buildAgenCToolUseContext(
     setStreamMode: surface.setStreamMode ?? (() => {}),
     setResponseLength: surface.setResponseLength ?? (() => {}),
     onCompactProgress: surface.onCompactProgress ?? (() => {}),
-    setSDKStatus: surface.setSDKStatus ?? (() => {}),
     addNotification: surface.addNotification ?? (() => {}),
     emitWarning:
       surface.emitWarning ??
@@ -586,22 +569,6 @@ function toAgenCRuntimeTools(tools: readonly LLMTool[]): AgenCRuntimeTool[] {
   });
 }
 
-function buildProviderOverride(
-  session: Session,
-  fallbackModel: string,
-): AgenCToolUseContext["options"]["providerOverride"] | undefined {
-  const provider = session.services.provider;
-  const options = readProviderFactoryOptions(provider);
-  const model = firstNonEmpty(options.model, fallbackModel);
-  const baseURL = firstNonEmpty(options.baseURL);
-  if (!model || !baseURL) return undefined;
-  return {
-    model,
-    baseURL,
-    apiKey: options.apiKey ?? "",
-  };
-}
-
 function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
   for (const value of values) {
     if (typeof value === "string" && value.trim().length > 0) {
@@ -633,7 +600,6 @@ type SessionSurface = {
   readonly setStreamMode?: (mode: "requesting" | "responding" | null) => void;
   readonly setResponseLength?: (updater: (length: number) => number) => void;
   readonly onCompactProgress?: (event: unknown) => void;
-  readonly setSDKStatus?: (status: "compacting" | null) => void;
   readonly addNotification?: (notification: unknown) => void;
   readonly emitWarning?: (warning: { readonly cause: string; readonly message: string }) => void;
   readonly clearSearchIndexes?: () => void;
@@ -667,7 +633,6 @@ function readSessionSurface(session: Session): SessionSurface {
     setResponseLength:
       read<(updater: (length: number) => number) => void>("setResponseLength"),
     onCompactProgress: read<(event: unknown) => void>("onCompactProgress"),
-    setSDKStatus: read<(status: "compacting" | null) => void>("setSDKStatus"),
     addNotification: read<(notification: unknown) => void>("addNotification"),
     emitWarning:
       read<(warning: { readonly cause: string; readonly message: string }) => void>(
@@ -744,7 +709,6 @@ type AgenCCompactionResult = {
   readonly summaryMessages?: readonly AgenCRuntimeMessage[];
   readonly messagesToKeep?: readonly AgenCRuntimeMessage[];
   readonly attachments?: readonly AgenCRuntimeMessage[];
-  readonly hookResults?: readonly AgenCRuntimeMessage[];
   readonly userDisplayMessage?: string;
   readonly preCompactTokenCount?: number;
   readonly postCompactTokenCount?: number;
@@ -787,12 +751,12 @@ async function runManualCompact(params: {
       theme: "dark",
     },
   };
-  const result = await withCompactContextGuards(async () => {
-    const { manualCompactCall } =
-      await import("../services/compact/compact.js");
-    const call = manualCompactCall;
-    return await call(params.customInstructions ?? "", commandContext as never);
-  }, envForToolUseContext(toolUseContext));
+  const { manualCompactCall } =
+    await import("../services/compact/compact.js");
+  const result = await manualCompactCall(
+    params.customInstructions ?? "",
+    commandContext as never,
+  );
   if (result.type !== "compact") {
     throw new Error("Compact command did not return a compaction result");
   }
@@ -806,7 +770,6 @@ async function runManualCompact(params: {
     : rawCompactionResult;
   const compactionResult = await toAgenCCompactionResult(
     compactionResultWithSlashMessages,
-    toolUseContext,
   );
   const compactedRollout = buildAgenCCompactedRolloutItem(compactionResult);
   const rolloutStore = params.session.rolloutStore;
@@ -861,6 +824,7 @@ async function runContextUsage(params: {
   readonly session: Session;
   readonly ctx: TurnContext;
   readonly args?: string;
+  readonly providerEnvironment: ProviderEnvironment;
 }): Promise<AgenCContextUsageResult> {
   // The session's history (snapshotHistoryMessages) starts AFTER
   // the synthetic system message; durableHistoryStartIndex in
@@ -929,6 +893,7 @@ async function runContextUsage(params: {
   const commandContext = {
     ...toolUseContext,
     messages,
+    providerEnvironment: params.providerEnvironment,
     tools,
     options: {
       ...toolUseContext.options,
@@ -937,9 +902,10 @@ async function runContextUsage(params: {
     },
     ...(sessionTokenUsage !== undefined ? { sessionTokenUsage } : {}),
   };
-  const result = await withCompactContextGuards(async () => {
-    return contextUsageCall(params.args ?? "", commandContext as never);
-  }, envForToolUseContext(toolUseContext));
+  const result = await contextUsageCall(
+    params.args ?? "",
+    commandContext as never,
+  );
   return { text: result.value };
 }
 
@@ -967,9 +933,14 @@ async function loadProjectInstructionsForContext(
     // tier chain with default markers/limits and produces a count
     // that diverges from the real turn payload whenever the user
     // has either field set in their config.
-    const currentConfig = session.services.configStore?.current();
+    const configStore = session.services.configStore;
+    if (configStore === undefined) return "";
+    const currentConfig = configStore.current();
+    const configHomeDir = configStore.homeContext.path;
     const tiered = await loadTieredInstructions({
       cwd,
+      configHomeDir,
+      managedPath: configStore.managedPaths.instructions,
       ...(currentConfig?.project_root_markers !== undefined
         ? { projectRootMarkers: currentConfig.project_root_markers }
         : {}),
@@ -1163,6 +1134,8 @@ interface ContextUsageInputs {
    * entirely and reported numbers far below what the model sees.
    */
   readonly tools: readonly LLMTool[];
+  /** Immutable provider environment captured by the session at ingress. */
+  readonly providerEnvironment: ProviderEnvironment;
   /** Provider hint forwarded to the family-aware estimator. */
   readonly providerHint?: { readonly provider?: string; readonly model?: string };
   /**
@@ -1240,12 +1213,18 @@ export function computeContextUsageBreakdown(
   const lookup = inputs.contextWindowTokens !== undefined && inputs.contextWindowTokens > 0
     ? { options: { contextWindowTokens: inputs.contextWindowTokens, mainLoopModel: inputs.model } }
     : (inputs.model ?? "");
-  const hardLimit = getEffectiveContextWindowSize(
+  const hardLimit = getEffectiveContextWindowSizeForEnvironment(
     typeof lookup === "string" ? lookup : (lookup as never),
+    inputs.providerEnvironment,
   );
-  const autoCompactEnabled = isAutoCompactEnabled();
+  const autoCompactEnabled = isAutoCompactEnabledForEnvironment(
+    inputs.providerEnvironment,
+  );
   const compactionThreshold = autoCompactEnabled
-    ? getAutoCompactThreshold(typeof lookup === "string" ? lookup : (lookup as never))
+    ? getAutoCompactThresholdForEnvironment(
+      typeof lookup === "string" ? lookup : (lookup as never),
+      inputs.providerEnvironment,
+    )
     : hardLimit;
   const accountingContext = {
     provider: {
@@ -1365,6 +1344,7 @@ async function contextUsageCall(
       readonly tools?: readonly LLMTool[];
     };
     readonly provider?: { readonly name?: string };
+    readonly providerEnvironment: ProviderEnvironment;
     readonly tools?: readonly LLMTool[];
     readonly sessionTokenUsage?: {
       readonly promptTokens: number;
@@ -1376,6 +1356,7 @@ async function contextUsageCall(
   const breakdown = computeContextUsageBreakdown({
     messages: context.messages ?? [],
     tools: context.tools ?? context.options?.tools ?? [],
+    providerEnvironment: context.providerEnvironment,
     ...(context.options?.mainLoopModel !== undefined
       ? { model: context.options.mainLoopModel }
       : {}),
@@ -1405,17 +1386,14 @@ async function contextUsageCall(
 
 async function toAgenCCompactionResult(
   result: AgenCCompactionResult,
-  toolUseContext?: AgenCToolUseContext,
 ): Promise<NonNullable<AgenCAutoCompactResult["compactionResult"]>> {
   let replacementHistory: LLMMessage[];
   try {
-    replacementHistory = await withCompactContextGuards(async () => {
-      const { buildPostCompactMessages } =
-        await import("../services/compact/compact.js");
-      return fromAgenCRuntimeMessages(
-        buildPostCompactMessages(toCompactServiceResult(result)) as AgenCRuntimeMessage[],
-      );
-    }, toolUseContext ? envForToolUseContext(toolUseContext) : undefined);
+    const { buildPostCompactMessages } =
+      await import("../services/compact/compact.js");
+    replacementHistory = fromAgenCRuntimeMessages(
+      buildPostCompactMessages(toCompactServiceResult(result)) as AgenCRuntimeMessage[],
+    );
   } catch (error) {
     if (result.transaction !== undefined) {
       throw new CompactionReconstructionRequiredError(
@@ -1451,7 +1429,6 @@ function toCompactServiceResult(result: AgenCCompactionResult): CompactionResult
     boundaryMarker: result.boundaryMarker,
     summaryMessages: result.summaryMessages ?? [],
     attachments: result.attachments ?? [],
-    hookResults: result.hookResults ?? [],
     ...(result.messagesToKeep !== undefined
       ? { messagesToKeep: result.messagesToKeep }
       : {}),
@@ -1682,21 +1659,6 @@ function cloneLLMMessage(message: LLMMessage): LLMMessage {
     ...(message.runtimeOnly !== undefined
       ? { runtimeOnly: { ...message.runtimeOnly } }
       : {}),
-  };
-}
-
-function envForToolUseContext(
-  toolUseContext: AgenCToolUseContext,
-): CompactGuardEnv {
-  const providerOverride = toolUseContext.options.providerOverride;
-  if (!providerOverride) return {};
-  return {
-    AGENC_USE_OPENAI: "1",
-    OPENAI_MODEL: providerOverride.model,
-    OPENAI_BASE_URL: providerOverride.baseURL,
-    OPENAI_API_KEY: providerOverride.apiKey,
-    AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW:
-      toolUseContext.options.contextWindowTokens.toString(),
   };
 }
 

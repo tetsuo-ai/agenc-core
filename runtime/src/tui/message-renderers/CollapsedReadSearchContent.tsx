@@ -1,4 +1,3 @@
-import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import { basename } from 'path';
 import React, { useRef } from 'react';
@@ -12,13 +11,13 @@ import { uniq } from '../../utils/array.js';
 import { getToolUseIdsFromCollapsedGroup } from '../../utils/collapseReadSearch.js';
 import { getDisplayPath } from '../../utils/file.js';
 import { formatDuration, formatSecondsShort } from '../../utils/format.js';
-import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import type { buildMessageLookups } from '../../utils/messages.js';
 import type { ThemeName } from '../../utils/theme.js';
 import { CtrlOToExpand } from '../components/CtrlOToExpand';
 import { useSelectedMessageBg } from '../components/messageActions';
 import { PrBadge } from '../components/PrBadge';
 import { ToolUseLoader } from '../components/ToolUseLoader';
+import { useFullscreenMode } from '../context/fullscreenModeContext.js';
 import * as teamMemCollapsedModule from './teamMemCollapsed';
 
 const teamMemCollapsed = feature('TEAMMEM') ? teamMemCollapsedModule : null;
@@ -38,106 +37,85 @@ type Props = {
   isActiveGroup?: boolean;
 };
 
-/** Render a single tool use in verbose mode */
-function VerboseToolUse(t0) {
-  const $ = _c(24);
-  const {
-    content,
-    tools,
-    lookups,
-    inProgressToolUseIDs,
-    shouldAnimate,
-    theme
-  } = t0;
+type VerboseToolUseProps = {
+  readonly content: {
+    readonly id: string;
+    readonly input: unknown;
+    readonly name: string;
+  };
+  readonly fullscreen: boolean;
+  readonly inProgressToolUseIDs: Set<string>;
+  readonly lookups: ReturnType<typeof buildMessageLookups>;
+  readonly shouldAnimate: boolean;
+  readonly theme: ThemeName;
+  readonly tools: Tools;
+};
+
+/** Render a single tool use in verbose mode. */
+function VerboseToolUse({
+  content,
+  fullscreen,
+  tools,
+  lookups,
+  inProgressToolUseIDs,
+  shouldAnimate,
+  theme,
+}: VerboseToolUseProps): React.ReactNode {
   const bg = useSelectedMessageBg();
-  let t1;
-  let t2;
-  if ($[0] !== bg || $[1] !== content.id || $[2] !== content.input || $[3] !== content.name || $[4] !== inProgressToolUseIDs || $[5] !== lookups || $[6] !== shouldAnimate || $[7] !== theme || $[8] !== tools) {
-    t2 = Symbol.for("react.early_return_sentinel");
-    bb0: {
-      const tool = findToolByName(tools, content.name) ?? findToolByName(getReplPrimitiveTools(), content.name);
-      if (!tool) {
-        t2 = null;
-        break bb0;
-      }
-      let t3;
-      if ($[11] !== content.id || $[12] !== lookups.resolvedToolUseIDs) {
-        t3 = lookups.resolvedToolUseIDs.has(content.id);
-        $[11] = content.id;
-        $[12] = lookups.resolvedToolUseIDs;
-        $[13] = t3;
-      } else {
-        t3 = $[13];
-      }
-      const isResolved = t3;
-      let t4;
-      if ($[14] !== content.id || $[15] !== lookups.erroredToolUseIDs) {
-        t4 = lookups.erroredToolUseIDs.has(content.id);
-        $[14] = content.id;
-        $[15] = lookups.erroredToolUseIDs;
-        $[16] = t4;
-      } else {
-        t4 = $[16];
-      }
-      const isError = t4;
-      let t5;
-      if ($[17] !== content.id || $[18] !== inProgressToolUseIDs) {
-        t5 = inProgressToolUseIDs.has(content.id);
-        $[17] = content.id;
-        $[18] = inProgressToolUseIDs;
-        $[19] = t5;
-      } else {
-        t5 = $[19];
-      }
-      const isInProgress = t5;
-      const resultMsg = lookups.toolResultByToolUseID.get(content.id);
-      const rawToolResult = resultMsg?.type === "user" ? resultMsg.toolUseResult : undefined;
-      const parsedOutput = tool.outputSchema?.safeParse(rawToolResult);
-      const toolResult = parsedOutput?.success ? parsedOutput.data : undefined;
-      const parsedInput = tool.inputSchema.safeParse(content.input);
-      const input = parsedInput.success ? parsedInput.data : undefined;
-      const userFacingName = tool.userFacingName(input);
-      const toolUseMessage = input ? tool.renderToolUseMessage(input, {
+  const tool =
+    findToolByName(tools, content.name) ??
+    findToolByName(getReplPrimitiveTools(), content.name);
+  if (!tool) return null;
+
+  const isResolved = lookups.resolvedToolUseIDs.has(content.id);
+  const isError = lookups.erroredToolUseIDs.has(content.id);
+  const isInProgress = inProgressToolUseIDs.has(content.id);
+  const resultMsg = lookups.toolResultByToolUseID.get(content.id);
+  const rawToolResult =
+    resultMsg?.type === 'user' ? resultMsg.toolUseResult : undefined;
+  const parsedOutput = tool.outputSchema?.safeParse(rawToolResult);
+  const toolResult = parsedOutput?.success ? parsedOutput.data : undefined;
+  const parsedInput = tool.inputSchema.safeParse(content.input);
+  const input = parsedInput.success ? parsedInput.data : undefined;
+  const userFacingName = tool.userFacingName(input);
+  const toolUseMessage = input
+    ? tool.renderToolUseMessage(input, {
+        fullscreen,
         theme,
-        verbose: true
-      }) : null;
-      const t6 = shouldAnimate && isInProgress;
-      const t7 = !isResolved;
-      let t8;
-      if ($[20] !== isError || $[21] !== t6 || $[22] !== t7) {
-        t8 = <ToolUseLoader shouldAnimate={t6} isUnresolved={t7} isError={isError} />;
-        $[20] = isError;
-        $[21] = t6;
-        $[22] = t7;
-        $[23] = t8;
-      } else {
-        t8 = $[23];
-      }
-      t1 = <Box key={content.id} flexDirection="column" marginTop={1} backgroundColor={bg}><Box flexDirection="row">{t8}<Text><Text bold={true}>{userFacingName}</Text>{toolUseMessage && <Text>({toolUseMessage})</Text>}</Text>{input && tool.renderToolUseTag?.(input)}</Box>{isResolved && !isError && toolResult !== undefined && <Box>{tool.renderToolResultMessage?.(toolResult, [], {
+        verbose: true,
+      })
+    : null;
+
+  return (
+    <Box
+      key={content.id}
+      flexDirection="column"
+      marginTop={1}
+      backgroundColor={bg}
+    >
+      <Box flexDirection="row">
+        <ToolUseLoader
+          shouldAnimate={shouldAnimate && isInProgress}
+          isUnresolved={!isResolved}
+          isError={isError}
+        />
+        <Text>
+          <Text bold={true}>{userFacingName}</Text>
+          {toolUseMessage && <Text>({toolUseMessage})</Text>}
+        </Text>
+        {input && tool.renderToolUseTag?.(input)}
+      </Box>
+      {isResolved && !isError && toolResult !== undefined && (
+        <Box>
+          {tool.renderToolResultMessage?.(toolResult, [], {
             verbose: true,
             tools,
-            theme
-          })}</Box>}</Box>;
-    }
-    $[0] = bg;
-    $[1] = content.id;
-    $[2] = content.input;
-    $[3] = content.name;
-    $[4] = inProgressToolUseIDs;
-    $[5] = lookups;
-    $[6] = shouldAnimate;
-    $[7] = theme;
-    $[8] = tools;
-    $[9] = t1;
-    $[10] = t2;
-  } else {
-    t1 = $[9];
-    t2 = $[10];
-  }
-  if (t2 !== Symbol.for("react.early_return_sentinel")) {
-    return t2;
-  }
-  return t1;
+            theme,
+          })}
+        </Box>
+      )}
+    </Box>
+  );
 }
 export function CollapsedReadSearchContent({
   message,
@@ -148,6 +126,7 @@ export function CollapsedReadSearchContent({
   lookups,
   isActiveGroup
 }: Props): React.ReactNode {
+  const isFullscreen = useFullscreenMode();
   const bg = useSelectedMessageBg();
   const {
     searchCount: rawSearchCount,
@@ -190,7 +169,7 @@ export function CollapsedReadSearchContent({
   // same command isn't counted twice. gitOpBashCount is read live (no max-ref
   // needed — it's 0 until results arrive, then only grows).
   const gitOpBashCount = message.gitOpBashCount ?? 0;
-  const bashCount = isFullscreenEnvEnabled() ? Math.max(0, maxBashCountRef.current - gitOpBashCount) : 0;
+  const bashCount = isFullscreen ? Math.max(0, maxBashCountRef.current - gitOpBashCount) : 0;
   const hasNonMemoryOps = searchCount > 0 || readCount > 0 || listCount > 0 || replCount > 0 || mcpCallCount > 0 || bashCount > 0 || gitOpBashCount > 0;
   const readPaths = message.readFilePaths;
   const searchArgs = message.searchArgs;
@@ -235,7 +214,7 @@ export function CollapsedReadSearchContent({
         {toolUses.map(msg_0 => {
         const content = msg_0.message.content[0];
         if (content?.type !== 'tool_use') return null;
-        return <VerboseToolUse key={content.id} content={content} tools={tools} lookups={lookups} inProgressToolUseIDs={inProgressToolUseIDs} shouldAnimate={shouldAnimate} theme={theme} />;
+        return <VerboseToolUse key={content.id} content={content} fullscreen={isFullscreen} tools={tools} lookups={lookups} inProgressToolUseIDs={inProgressToolUseIDs} shouldAnimate={shouldAnimate} theme={theme} />;
       })}
         {message.hookInfos && message.hookInfos.length > 0 && <>
             <Text dimColor>
@@ -275,7 +254,7 @@ export function CollapsedReadSearchContent({
   // commands (npm install, tests) looked frozen. Shown after 2s so fast
   // commands stay clean; the ticking counter reassures that slow ones aren't stuck.
   let shellProgressSuffix = '';
-  if (isFullscreenEnvEnabled() && isActiveGroup) {
+  if (isFullscreen && isActiveGroup) {
     let elapsed: number | undefined;
     let lines = 0;
     for (const id_1 of toolUseIds) {
@@ -307,7 +286,7 @@ export function CollapsedReadSearchContent({
         {isFirst ? verb[0]!.toUpperCase() + verb.slice(1) : verb} {body}
       </Text>);
   }
-  if (isFullscreenEnvEnabled() && message.commits?.length) {
+  if (isFullscreen && message.commits?.length) {
     const byKind = {
       committed: 'committed',
       amended: 'amended commit',
@@ -320,11 +299,11 @@ export function CollapsedReadSearchContent({
       }
     }
   }
-  if (isFullscreenEnvEnabled() && message.pushes?.length) {
+  if (isFullscreen && message.pushes?.length) {
     const branches = uniq(message.pushes.map(p => p.branch));
     pushPart('push', 'pushed to', <Text bold>{branches.join(', ')}</Text>);
   }
-  if (isFullscreenEnvEnabled() && message.branches?.length) {
+  if (isFullscreen && message.branches?.length) {
     const byAction = {
       merged: 'merged',
       rebased: 'rebased onto'
@@ -333,7 +312,7 @@ export function CollapsedReadSearchContent({
       pushPart(`br-${b.action}-${b.ref}`, byAction[b.action], <Text bold>{b.ref}</Text>);
     }
   }
-  if (isFullscreenEnvEnabled() && message.prs?.length) {
+  if (isFullscreen && message.prs?.length) {
     const verbs = {
       created: 'created',
       edited: 'edited',
@@ -404,7 +383,7 @@ export function CollapsedReadSearchContent({
           </>}
       </Text>);
   }
-  if (isFullscreenEnvEnabled() && bashCount > 0) {
+  if (isFullscreen && bashCount > 0) {
     const isFirst_4 = nonMemParts.length === 0;
     const verb_1 = isActiveGroup ? isFirst_4 ? 'Running' : 'running' : isFirst_4 ? 'Ran' : 'ran';
     if (!isFirst_4) {

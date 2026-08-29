@@ -1,21 +1,10 @@
 /**
- * `Monitor` — port of the donor `MonitorTool`.
+ * Canonical `Monitor` tool.
  *
- * Verbatim model-facing prompt from donor `MonitorTool.ts:90`. The
- * tool spawns a shell command in the background and streams its stdout
- * line-by-line as `tool_progress` events that the runtime delivers to
- * the model as notifications. For one-shot "wait until done" commands
- * the model uses `exec_command` with a short `yield_time_ms` instead.
- *
- * Implementation contract:
- *   - Schema: `{ command: string, description: string }` (verbatim).
- *   - Returns: `{ taskId, outputFile }` text confirmation matching
- *     donor `mapToolResultToToolResultBlockParam` content.
- *   - Streams output through AgenC's existing `unifiedExecManager`
- *     `tool_progress` event channel — the same path `exec_command`
- *     uses for live stdout/stderr chunks. The foreground stream yields
- *     after about 30 seconds, while the process itself has no implicit
- *     runtime deadline.
+ * Commands run through the unified-exec process manager and stream over the
+ * same `tool_progress` channel as `exec_command`. The foreground stream yields
+ * after about 30 seconds while the managed process remains available for
+ * polling or cancellation.
  *
  * @module
  */
@@ -32,13 +21,6 @@ import { runtimeSandboxForExec } from "./exec-command.js";
 
 const MONITOR_INITIAL_YIELD_MS = 30_000;
 
-/**
- * Verbatim port of donor `MonitorTool.prompt()`
- * (`src/tools/MonitorTool/MonitorTool.ts:89-91`). Adapted only to
- * mention AgenC's `exec_command`'s `yield_time_ms` instead of
- * AgenC's `Bash` `run_in_background`, since that's the AgenC
- * primitive the model already knows.
- */
 const MONITOR_DESCRIPTION = `Execute a shell command in the background and stream its stdout line-by-line as notifications for up to ~30 seconds. After that streaming window the command keeps running, but new output is NOT pushed automatically — poll for more with write_stdin(session_id, "") (an empty write) until it exits. Use this for monitoring logs, watching build output, or observing long-running processes. For one-shot "wait until done" commands, prefer exec_command with a short yield_time_ms instead.`;
 
 interface MonitorToolInput extends ToolExecutionInjectedArgs {
@@ -137,17 +119,11 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
           output.process_id !== undefined
             ? `monitor-${output.process_id}`
             : `monitor-${startedAt.toString(36)}`;
-        // AgenC has no on-disk task-output mirror (AgenC's
-        // `getTaskOutputPath`), but the live stream is delivered via
-        // tool_progress events which the model already consumes.
-        // Use a synthetic agenc:// URI so the result shape matches
-        // upstream without inventing an unused file path.
+        // Unified exec owns the live stream rather than an on-disk task-output
+        // mirror. The synthetic URI identifies that managed output without
+        // inventing an unused filesystem path.
         const outputFile = `agenc://exec/${taskId}/output`;
 
-        // Verbatim port of AgenC
-        // `mapToolResultToToolResultBlockParam` content
-        // (`MonitorTool.ts:140-145`), with the stop instruction phrased
-        // around AgenC's current tool surface.
         const content =
           `Monitor task started with ID: ${taskId}. ` +
           `Output is being streamed to: ${outputFile}. ` +

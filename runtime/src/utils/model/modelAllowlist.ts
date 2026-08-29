@@ -1,19 +1,63 @@
-import { getExecutionAuthoritySettings } from '../settings/settings.js'
+import type { AgenCConfig } from '../../config/schema.js'
+import {
+  providerModelCatalogIdentifiers,
+  resolveBuiltInProviderSlug,
+} from '../../llm/registry/provider-info.js'
 import { isModelAlias, isModelFamilyAlias } from './aliases.js'
-import { parseUserSpecifiedModel } from './model.js'
-import { resolveOverriddenModel } from './modelStrings.js'
+import {
+  resolveConfiguredModelOverride,
+  resolveProviderModelAlias,
+} from './configs.js'
+
+export type ModelAllowlistPolicy = Pick<
+  AgenCConfig,
+  'availableModels' | 'modelOverrides'
+>
+
+export class ModelNotAllowedError extends Error {
+  readonly model: string
+
+  constructor(model: string) {
+    super(`model '${model}' is not allowed by managed availableModels policy`)
+    this.name = 'ModelNotAllowedError'
+    this.model = model
+  }
+}
+
+export function resolveAllowedModelProjection(
+  provider: string | undefined,
+  projectedModel: string,
+  policy: ModelAllowlistPolicy,
+  fallbackModel?: string,
+): string {
+  if (isModelAllowed(provider, projectedModel, policy)) {
+    return projectedModel
+  }
+  if (
+    fallbackModel !== undefined &&
+    fallbackModel !== projectedModel &&
+    isModelAllowed(provider, fallbackModel, policy)
+  ) {
+    return fallbackModel
+  }
+  throw new ModelNotAllowedError(projectedModel)
+}
 
 /**
  * Check if a model belongs to a given family by checking if its name
  * (or resolved name) contains the family identifier.
  */
-function modelBelongsToFamily(model: string, family: string): boolean {
+function modelBelongsToFamily(
+  provider: string,
+  model: string,
+  family: string,
+): boolean {
   if (model.includes(family)) {
     return true
   }
   // Resolve aliases like "best" → "claude-opus-4-6" to check family membership
   if (isModelAlias(model)) {
-    const resolved = parseUserSpecifiedModel(model).toLowerCase()
+    const resolved = resolveProviderModelAlias(provider, model).toLowerCase()
     return resolved.includes(family)
   }
   return false
@@ -36,10 +80,17 @@ function prefixMatchesModel(modelName: string, prefix: string): boolean {
  * Supports shorthand like "opus-4-5" (mapped to "claude-opus-4-5") and
  * full prefixes like "claude-opus-4-5". Resolves input aliases before matching.
  */
-function modelMatchesVersionPrefix(model: string, entry: string): boolean {
+function modelMatchesVersionPrefix(
+  provider: string,
+  model: string,
+  entry: string,
+): boolean {
+  if (!/^(?:claude-)?(?:opus|sonnet|haiku)-\d/u.test(entry)) {
+    return false
+  }
   // Resolve the input model to a full name if it's an alias
   const resolvedModel = isModelAlias(model)
-    ? parseUserSpecifiedModel(model).toLowerCase()
+    ? resolveProviderModelAlias(provider, model).toLowerCase()
     : model
 
   // Try the entry as-is (e.g. "claude-opus-4-5")
@@ -73,7 +124,7 @@ function familyHasSpecificEntries(
     // Check if entry is a version-qualified variant of this family
     // e.g., "opus-4-5" or "claude-opus-4-5-20251101" for the "opus" family
     // Must match at a segment boundary (followed by '-' or end) to avoid
-    // false positives like "opusplan" matching "opus"
+    // false positives from unrelated identifiers containing the family name
     const idx = entry.indexOf(family)
     if (idx === -1) {
       continue
@@ -87,7 +138,7 @@ function familyHasSpecificEntries(
 }
 
 /**
- * Check if a model is allowed by the availableModels allowlist in settings.
+ * Check if a model is allowed by the final canonical managed policy.
  * If availableModels is not set, all models are allowed.
  *
  * Matching tiers:
@@ -97,9 +148,12 @@ function familyHasSpecificEntries(
  * 2. Version prefixes ("opus-4-5", "claude-opus-4-5") — any build of that version
  * 3. Full model IDs ("claude-opus-4-5-20251101") — exact match only
  */
-export function isModelAllowed(model: string): boolean {
-  const settings = getExecutionAuthoritySettings()
-  const { availableModels } = settings
+export function isModelAllowed(
+  provider: string | undefined,
+  model: string,
+  policy: ModelAllowlistPolicy,
+): boolean {
+  const availableModels = policy.availableModels
   if (!availableModels) {
     return true // No restrictions
   }
@@ -107,9 +161,33 @@ export function isModelAllowed(model: string): boolean {
     return false // Empty allowlist blocks all user-specified models
   }
 
-  const resolvedModel = resolveOverriddenModel(model)
-  const normalizedModel = resolvedModel.trim().toLowerCase()
   const normalizedAllowlist = availableModels.map(m => m.trim().toLowerCase())
+  const providerSlug = resolveBuiltInProviderSlug(provider)
+  const identifiers = providerSlug === undefined
+    ? [model]
+    : providerModelCatalogIdentifiers(providerSlug, model)
+  const normalizedModels = [...new Set(identifiers)].map(
+    candidate =>
+      resolveConfiguredModelOverride(candidate, policy.modelOverrides)
+        .trim()
+        .toLowerCase(),
+  )
+
+  const providerIdentity = providerSlug ?? provider ?? 'openai'
+  return normalizedModels.some(normalizedModel =>
+    normalizedModelAllowed(
+      providerIdentity,
+      normalizedModel,
+      normalizedAllowlist,
+    )
+  )
+}
+
+function normalizedModelAllowed(
+  provider: string,
+  normalizedModel: string,
+  normalizedAllowlist: string[],
+): boolean {
 
   // Direct match (alias-to-alias or full-name-to-full-name)
   // Skip family aliases that have been narrowed by specific entries —
@@ -131,7 +209,7 @@ export function isModelAllowed(model: string): boolean {
     if (
       isModelFamilyAlias(entry) &&
       !familyHasSpecificEntries(entry, normalizedAllowlist) &&
-      modelBelongsToFamily(normalizedModel, entry)
+      modelBelongsToFamily(provider, normalizedModel, entry)
     ) {
       return true
     }
@@ -140,7 +218,10 @@ export function isModelAllowed(model: string): boolean {
   // For non-family entries, do bidirectional alias resolution
   // If model is an alias, resolve it and check if the resolved name is in the list
   if (isModelAlias(normalizedModel)) {
-    const resolved = parseUserSpecifiedModel(normalizedModel).toLowerCase()
+    const resolved = resolveProviderModelAlias(
+      provider,
+      normalizedModel,
+    ).toLowerCase()
     if (normalizedAllowlist.includes(resolved)) {
       return true
     }
@@ -149,7 +230,7 @@ export function isModelAllowed(model: string): boolean {
   // If any non-family alias in the allowlist resolves to the input model
   for (const entry of normalizedAllowlist) {
     if (!isModelFamilyAlias(entry) && isModelAlias(entry)) {
-      const resolved = parseUserSpecifiedModel(entry).toLowerCase()
+      const resolved = resolveProviderModelAlias(provider, entry).toLowerCase()
       if (resolved === normalizedModel) {
         return true
       }
@@ -160,7 +241,7 @@ export function isModelAllowed(model: string): boolean {
   // "claude-opus-4-5-20251101" at a segment boundary
   for (const entry of normalizedAllowlist) {
     if (!isModelFamilyAlias(entry) && !isModelAlias(entry)) {
-      if (modelMatchesVersionPrefix(normalizedModel, entry)) {
+      if (modelMatchesVersionPrefix(provider, normalizedModel, entry)) {
         return true
       }
     }

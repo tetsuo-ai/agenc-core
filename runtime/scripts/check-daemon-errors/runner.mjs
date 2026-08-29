@@ -1,7 +1,7 @@
 /**
  * AgenC daemon JSON-RPC error-path gate.
  *
- * Opens raw Unix-socket connections to the user's running daemon and
+ * Opens raw Unix-socket connections to a gate-owned private daemon and
  * sends crafted requests to verify every error code in the daemon's
  * JSON-RPC contract:
  *
@@ -21,18 +21,22 @@
  * means a daemon protocol regression doesn't get blamed on a TUI flake.
  */
 import { connect } from "node:net";
-import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  createTuiGateState,
+  installTuiGateSignalHandlers,
+  startTuiGateDaemon,
+  teardownTuiGateState,
+} from "../tui-gate-state.mjs";
 
-const SOCKET_PATH = path.join(homedir(), ".agenc", "daemon.sock");
-const COOKIE_PATH = path.join(homedir(), ".agenc", "daemon.cookie");
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const RUNTIME_DIR = path.resolve(SCRIPT_DIR, "..", "..");
 const BIN_AGENC = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
 const PROTOCOL_VERSION = "1.0.0";
+let activeGatePaths;
+let gateRunClaimed = false;
 
 const COLORS = {
   reset: "\x1b[0m",
@@ -45,30 +49,17 @@ const COLORS = {
 const color = (c, s) => (process.stdout.isTTY ? `${COLORS[c]}${s}${COLORS.reset}` : s);
 
 function readCookie() {
-  return readFileSync(COOKIE_PATH, "utf8").trim();
-}
-
-function daemonStatusOk() {
-  const result = spawnSync(
-    process.execPath,
-    [BIN_AGENC, "daemon", "status"],
-    { encoding: "utf8", timeout: 5_000 },
-  );
-  return result.status === 0 && existsSync(SOCKET_PATH);
-}
-
-function ensureDaemonReady() {
-  if (daemonStatusOk()) return true;
-  spawnSync(
-    process.execPath,
-    [BIN_AGENC, "daemon", "start"],
-    { encoding: "utf8", timeout: 20_000 },
-  );
-  for (let i = 0; i < 60; i += 1) {
-    if (daemonStatusOk()) return true;
-    spawnSync("sleep", ["0.25"]);
+  if (activeGatePaths === undefined) {
+    throw new Error("daemon error gate state is not configured");
   }
-  return false;
+  return readFileSync(activeGatePaths.cookie, "utf8").trim();
+}
+
+function connectToDaemon() {
+  if (activeGatePaths === undefined) {
+    throw new Error("daemon error gate state is not configured");
+  }
+  return connect(activeGatePaths.socket);
 }
 
 function createResponseCollector(expected, settle) {
@@ -118,7 +109,7 @@ async function sendFrames(frames, { timeoutMs = 5_000, expectedResponses } = {})
   const expected =
     expectedResponses ?? frames.filter((f) => f.id !== undefined).length;
   return new Promise((resolve, reject) => {
-    const socket = connect(SOCKET_PATH);
+    const socket = connectToDaemon();
     let done = false;
     let timer;
 
@@ -413,7 +404,7 @@ scenarios.push({
   description: "non-JSON payload doesn't crash the daemon",
   async run() {
     return new Promise((resolve, reject) => {
-      const socket = connect(SOCKET_PATH);
+      const socket = connectToDaemon();
       let buffer = "";
       let settled = false;
       const timer = setTimeout(() => {
@@ -458,49 +449,109 @@ scenarios.push({
   },
 });
 
-async function main() {
-  console.log(color("bold", `agenc daemon protocol-error gate (${scenarios.length} scenarios)`));
-  process.stdout.write(color("dim", "  ensuring daemon is ready ... "));
-  const daemonReady = ensureDaemonReady();
-  console.log(color("dim", daemonReady ? "ok" : "failed"));
-  if (!daemonReady) {
-    console.error(color("red", "fatal: default daemon is not reachable"));
-    process.exit(1);
+export async function runDaemonErrorGate({
+  binAgenc = BIN_AGENC,
+  baseEnv = process.env,
+  injectedEnv = {},
+} = {}) {
+  if (gateRunClaimed) {
+    throw new Error("daemon error gate is already running in this process");
   }
-  console.log("");
-
-  const failed = [];
-  let passed = 0;
-  for (const sc of scenarios) {
-    process.stdout.write(`  ${color("dim", "→")} ${sc.name} … `);
-    const start = Date.now();
+  gateRunClaimed = true;
+  let gateState;
+  let removeSignalHandlers = () => {};
+  let runError = null;
+  try {
     try {
-      await sc.run();
-      passed += 1;
-      console.log(
-        `${color("green", "PASS")} ${color("dim", `(${Date.now() - start}ms)`)}`,
-      );
-    } catch (e) {
-      console.log(`${color("red", "FAIL")} ${color("dim", `(${Date.now() - start}ms)`)}`);
-      console.log(`      ${color("red", "✗")} ${e.message}`);
-      failed.push({ name: sc.name, error: e });
-    }
-  }
+      gateState = await createTuiGateState({
+        baseEnv,
+        injectedEnv,
+        prefix: "agenc-daemon-error-gate-",
+      });
+      activeGatePaths = {
+        cookie: path.join(gateState.agencHome, "daemon.cookie"),
+        socket: path.join(gateState.agencHome, "daemon.sock"),
+      };
+      removeSignalHandlers = installTuiGateSignalHandlers(() =>
+        teardownTuiGateState(gateState, binAgenc));
+      console.log(color("bold", `agenc daemon protocol-error gate (${scenarios.length} scenarios)`));
+      console.log(color("dim", "  state: private HOME/AGENC_HOME + owned daemon"));
+      process.stdout.write(color("dim", "  ensuring private daemon is ready ... "));
+      await startTuiGateDaemon(gateState, binAgenc);
+      console.log(color("dim", "ok"));
+      console.log("");
 
-  console.log("");
-  if (failed.length === 0) {
-    console.log(color("green", `✓ ${passed}/${scenarios.length} passed`));
-    process.exit(0);
-  } else {
-    console.log(color("red", `✗ ${failed.length}/${scenarios.length} failed (${passed} passed)`));
-    for (const f of failed) {
-      console.log(`    - ${f.name}: ${f.error.message}`);
+      const failed = [];
+      let passed = 0;
+      for (const sc of scenarios) {
+        process.stdout.write(`  ${color("dim", "→")} ${sc.name} … `);
+        const start = Date.now();
+        try {
+          await sc.run();
+          passed += 1;
+          console.log(
+            `${color("green", "PASS")} ${color("dim", `(${Date.now() - start}ms)`)}`,
+          );
+        } catch (e) {
+          console.log(`${color("red", "FAIL")} ${color("dim", `(${Date.now() - start}ms)`)}`);
+          console.log(`      ${color("red", "✗")} ${e.message}`);
+          failed.push({ name: sc.name, error: e });
+        }
+      }
+
+      console.log("");
+      if (failed.length === 0) {
+        console.log(color("green", `✓ ${passed}/${scenarios.length} passed`));
+      } else {
+        console.log(color("red", `✗ ${failed.length}/${scenarios.length} failed (${passed} passed)`));
+        for (const f of failed) {
+          console.log(`    - ${f.name}: ${f.error.message}`);
+        }
+        throw new Error("daemon protocol-error scenarios failed");
+      }
+    } catch (error) {
+      runError = error;
     }
-    process.exit(1);
+
+    let cleanupError = null;
+    if (gateState !== undefined) {
+      try {
+        await teardownTuiGateState(gateState, binAgenc);
+      } catch (error) {
+        cleanupError = error;
+      }
+    }
+
+    if (runError !== null && cleanupError !== null) {
+      throw new AggregateError(
+        [runError, cleanupError],
+        "daemon error gate and private-state cleanup both failed",
+      );
+    }
+    if (runError !== null) throw runError;
+    if (cleanupError !== null) throw cleanupError;
+  } finally {
+    try {
+      removeSignalHandlers();
+    } finally {
+      activeGatePaths = undefined;
+      gateRunClaimed = false;
+    }
   }
 }
 
-main().catch((e) => {
-  console.error(color("red", "fatal: " + (e?.stack ?? e)));
-  process.exit(1);
-});
+function isEntrypoint() {
+  if (process.argv[1] === undefined) return false;
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isEntrypoint()) {
+  runDaemonErrorGate().catch((e) => {
+    console.error(color("red", "fatal: " + (e?.stack ?? e)));
+    process.exitCode = 1;
+  });
+}

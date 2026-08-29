@@ -40,7 +40,7 @@ vi.mock('../../utils/cleanupRegistry.js', () => ({
 }))
 
 vi.mock('../../utils/envUtils.js', () => ({
-  getAgenCConfigHomeDir: () => '/tmp/agenc-home',
+  getAgenCHomeDir: () => '/tmp/agenc-home',
   isEnvTruthy: () => false,
 }))
 

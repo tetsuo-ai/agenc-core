@@ -8,9 +8,12 @@
 import { type ChildProcess, spawn, spawnSync } from 'child_process'
 import { readFile } from 'fs/promises'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isEnvTruthy, isRunningOnHomespace } from '../utils/envUtils.js'
+import { isRunningOnHomespace } from '../utils/envUtils.js'
 import { logError } from '../utils/log.js'
 import { getPlatform } from '../utils/platform.js'
+import { getSelectedProviderEnvironment } from '../utils/model/providers.js'
+import { isSessionRemoteMode } from '../session/runtime-options.js'
+import { getIsRemoteMode } from '../bootstrap/state.js'
 
 // Lazy-loaded native audio module. audio-capture.node links against
 // CoreAudio.framework + AudioUnit.framework; dlopen is synchronous and
@@ -259,7 +262,12 @@ export async function requestMicrophonePermission(): Promise<boolean> {
 
 export async function checkRecordingAvailability(): Promise<RecordingAvailability> {
   // Remote environments have no local microphone
-  if (isRunningOnHomespace() || isEnvTruthy(process.env.AGENC_REMOTE)) {
+  const environment = getSelectedProviderEnvironment()
+  if (
+    isRunningOnHomespace(environment) ||
+    isSessionRemoteMode() ||
+    getIsRemoteMode()
+  ) {
     return {
       available: false,
       reason:

@@ -93,6 +93,7 @@ static int count_direct_children(size_t *count_out);
 static int signal_direct_child(pid_t child_pid, const void *context);
 static int signal_direct_children(int signal_number);
 static void signal_root_directly(int signal_number);
+static bool reached_by_group_signal(pid_t pid, int signal_number);
 static int signal_owned_tree(int signal_number);
 static int reap_nonblocking(bool *has_children);
 static int reap_until_blocked(int *root_status, bool *root_finished);
@@ -499,10 +500,27 @@ static int count_direct_children(size_t *count_out) {
   return visit_direct_children(NULL, NULL, count_out);
 }
 
+/*
+ * The root becomes a session leader before exec, so kill(-root_pid) already
+ * reaches it and every descendant that stayed in its process group. A second
+ * direct kill of the same process is not idempotent for a graceful signal:
+ * a target scheduled between the two calls observes SIGTERM twice, and many
+ * programs treat a repeated SIGTERM as "abandon the shutdown". Forced SIGKILL
+ * keeps the redundant delivery; a duplicate cannot change its outcome and it
+ * still covers a member that joins the group between the two calls.
+ */
+static bool reached_by_group_signal(pid_t pid, int signal_number) {
+  if (signal_number == SIGKILL || root_pid <= AGENC_BROKER_MAXIMUM_UNSAFE_PID) {
+    return false;
+  }
+  return getpgid(pid) == root_pid;
+}
+
 static int signal_direct_child(pid_t child_pid, const void *context) {
   const struct child_signal_context *signal_context = context;
 
   if (child_pid == root_pid ||
+      reached_by_group_signal(child_pid, signal_context->signal_number) ||
       kill(child_pid, signal_context->signal_number) == AGENC_BROKER_SUCCESS ||
       errno == ESRCH) {
     return AGENC_BROKER_SUCCESS;
@@ -522,7 +540,9 @@ static void signal_root_directly(int signal_number) {
     return;
   }
   (void)kill(-root_pid, signal_number);
-  (void)kill(root_pid, signal_number);
+  if (!reached_by_group_signal(root_pid, signal_number)) {
+    (void)kill(root_pid, signal_number);
+  }
 }
 
 static int signal_owned_tree(int signal_number) {
@@ -533,7 +553,8 @@ static int signal_owned_tree(int signal_number) {
         errno != ESRCH) {
       result = AGENC_BROKER_FAILURE;
     }
-    if (kill(root_pid, signal_number) != AGENC_BROKER_SUCCESS &&
+    if (!reached_by_group_signal(root_pid, signal_number) &&
+        kill(root_pid, signal_number) != AGENC_BROKER_SUCCESS &&
         errno != ESRCH) {
       result = AGENC_BROKER_FAILURE;
     }

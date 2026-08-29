@@ -114,7 +114,7 @@ describe("SystemAPIErrorMessage", () => {
     expect(output.trim()).toBe("");
   });
 
-  test("renders formatted retry text and timeout hint", () => {
+  test("renders formatted retry text without ambient timeout state", () => {
     process.env.API_TIMEOUT_MS = "1000";
 
     const output = renderPlain(
@@ -136,7 +136,7 @@ describe("SystemAPIErrorMessage", () => {
 
     expect(output).toContain("Request timed out");
     expect(output).toContain("Retrying in 3 seconds");
-    expect(output).toContain("API_TIMEOUT_MS=1000ms");
+    expect(output).not.toContain("API_TIMEOUT_MS");
   });
 
   test("uses shared ASCII response gutter when ASCII glyphs are requested", () => {

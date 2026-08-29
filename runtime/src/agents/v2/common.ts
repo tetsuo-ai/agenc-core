@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentControl } from "../control.js";
+import type { AgentRoleCatalog } from "../role-catalog.js";
 import {
   ROOT_AGENT_PATH,
   type AgentPath,
@@ -24,7 +25,6 @@ import type {
   ToolResult,
 } from "../../tools/types.js";
 import { safeStringify } from "../../tools/types.js";
-import { validationErrorToolResult } from "../../tools/results.js";
 
 export const MIN_WAIT_TIMEOUT_MS = 10_000;
 export const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
@@ -44,6 +44,8 @@ export function localZeroAdmissionEstimate(): ToolAdmissionEstimate {
 export interface MultiAgentV2Options {
   readonly getSession: () => Session | null;
   readonly workspace: AgentRoleWorkspace;
+  /** Exact startup/session catalog used before and after Session construction. */
+  readonly roleCatalog?: AgentRoleCatalog;
   readonly ensureAgentControl: (session: Session) => {
     readonly control: AgentControl;
     readonly registry: AgentRegistry;
@@ -61,32 +63,6 @@ export function json(content: unknown, isError?: boolean): ToolResult {
   return {
     content: safeStringify(content),
     ...(isError ? { isError: true } : {}),
-  };
-}
-
-/**
- * A refusal from argument validation, before the tool attempted anything.
- *
- * A bare `isError` from a tool the runtime knows is side-effecting cannot
- * be told apart from "it may have half-happened", so the boundary records
- * an unknown outcome that needs review and blocks every later mutating
- * call. For spawn_agent that meant one malformed argument took the whole
- * swarm down with it:
- *
- *   effect_unknown_outcome  spawn_agent
- *   reason: tool_error_result_without_authoritative_effect_disposition
- *
- * and the model was left asking a human to resolve a settlement by hand.
- * These paths provably touched nothing, so they say so.
- */
-export function jsonValidationError(
-  evidenceRef: string,
-  content: unknown,
-): ToolResult {
-  const message = safeStringify(content);
-  return {
-    ...validationErrorToolResult(evidenceRef, message),
-    content: message,
   };
 }
 
@@ -146,17 +122,13 @@ export function strictArgs(
   ]);
   for (const key of Object.keys(args)) {
     if (!allowed.has(key)) {
-      return jsonValidationError("agents-v2-strict-args", {
-        error: `unknown field \`${key}\``,
-      });
+      return json({ error: `unknown field \`${key}\`` }, true);
     }
   }
   for (const key of opts.required ?? []) {
     const value = args[key];
     if (typeof value !== "string") {
-      return jsonValidationError("agents-v2-strict-args", {
-        error: `${key} is required`,
-      });
+      return json({ error: `${key} is required` }, true);
     }
   }
   return null;
@@ -167,9 +139,7 @@ export function getSessionOrError(
 ): Session | ToolResult {
   const session = opts.getSession();
   if (session === null) {
-    return jsonValidationError("agents-v2-session-not-initialized", {
-      error: "tool invoked before session was initialized",
-    });
+    return json({ error: "tool invoked before session was initialized" }, true);
   }
   return session;
 }
@@ -235,10 +205,13 @@ export function isCurrentAgentContextError(
 }
 
 function invalidRuntimeIdentity(reason: string): ToolResult {
-  return jsonValidationError("agents-v2-runtime-identity", {
-    error: "invalid-runtime-identity",
-    reason,
-  });
+  return json(
+    {
+      error: "invalid-runtime-identity",
+      reason,
+    },
+    true,
+  );
 }
 
 export function resolveAgentId(

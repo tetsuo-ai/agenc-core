@@ -1,15 +1,6 @@
 /**
- * Ports the donor auto-fix post-tool hook onto AgenC's tool hook
- * surface.
- *
- * Why this lives here / shape difference from upstream:
- *   - AgenC models post-tool feedback as `additionalContext` from the
- *     typed hook pipeline. The retry counter remains scoped to the
- *     current turn/conversation key, matching the donor loop guard.
- *
- * Cross-cuts deliberately NOT carried:
- *   - Donor product events; hook failures are contained locally so
- *     a broken lint command cannot fail the original tool call.
+ * Adds post-tool feedback after canonical file mutations, with turn-scoped
+ * retry accounting and contained check failures.
  */
 
 import type { PostToolUseHook } from "../../tools/hooks.js";
@@ -28,21 +19,22 @@ import {
   type AutoFixResult,
 } from "./autoFixRunner.js";
 import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
+import type { HookExecutionAuthority } from "../../hooks/execution-authority.js";
 
 const AUTO_FIX_TOOLS = new Set([
   FILE_EDIT_TOOL_NAME,
   FILE_MULTI_EDIT_TOOL_NAME,
   FILE_WRITE_TOOL_NAME,
-  "file_edit",
-  "file_write",
-  "edit_file",
-  "write_file",
 ]);
 
 export interface AutoFixPostToolHookOptions {
   readonly configSource: () => unknown;
   readonly cwd: string;
+  readonly executionAuthority: HookExecutionAuthority;
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly shellPath?: string;
+  readonly commandWrapperArgv?: readonly string[];
   readonly retryScope?: (input: Parameters<PostToolUseHook>[0]) => string;
   readonly runCheck?: (options: AutoFixCheckOptions) => Promise<AutoFixResult>;
   readonly onError?: (error: unknown) => void;
@@ -98,6 +90,9 @@ export function createAutoFixPostToolHook(
   const retryScope = options.retryScope ?? defaultRetryScope;
 
   return async (input) => {
+    if (!options.executionAuthority.decision("command").allowed) {
+      return { kind: "continue" };
+    }
     const config = getAutoFixConfig(options.configSource());
     if (!shouldRunAutoFix(input.tool.name, config) || !config) {
       return { kind: "continue" };
@@ -118,6 +113,13 @@ export function createAutoFixPostToolHook(
         test: config.test,
         timeout: config.timeout,
         cwd: options.cwd,
+        ...(options.env !== undefined ? { env: options.env } : {}),
+        ...(options.shellPath !== undefined
+          ? { shellPath: options.shellPath }
+          : {}),
+        ...(options.commandWrapperArgv !== undefined
+          ? { commandWrapperArgv: options.commandWrapperArgv }
+          : {}),
         signal: input.signal,
         sandboxExecutionBroker: options.sandboxExecutionBroker,
       });

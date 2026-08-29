@@ -18,6 +18,7 @@ import type { SandboxExecutionBrokerLike } from './sandbox/execution-broker.js'
 import { gitChildEnvironment } from './sandbox/git-environment.js'
 import { runSupervisedProcess } from './utils/supervisedProcess.js'
 import { hardenGitWorktreeMutationArgs } from './sandbox/worktree-permissions.js'
+import { isSessionRemoteMode } from './session/runtime-options.js'
 
 const MAX_STATUS_CHARS = 2000
 
@@ -141,7 +142,7 @@ export const getSystemContext = memoize(
 
     // Skip git status in CCR (unnecessary overhead on resume) or when git instructions are disabled
     const gitStatus =
-      isEnvTruthy(process.env.AGENC_REMOTE) ||
+      isSessionRemoteMode() ||
       !shouldIncludeGitInstructions()
         ? null
         : await getGitStatus(sandboxExecutionBroker)

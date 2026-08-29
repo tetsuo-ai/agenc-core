@@ -110,7 +110,8 @@ export interface XaiAcpClientOptions {
   args?: readonly string[]
   /** @deprecated The authenticated sandbox broker is the cwd authority. */
   cwd: string
-  env?: NodeJS.ProcessEnv
+  /** Prepared child environment captured at provider ingress. */
+  env: NodeJS.ProcessEnv
   /** Authenticated session boundary used for the Grok CLI process. */
   sandboxExecutionBroker?: SandboxExecutionBrokerLike
   clientInfo?: { name: string; version: string }
@@ -193,7 +194,7 @@ export class XaiAcpClient {
       // authenticated workspace authority.
       cwd: sandboxExecutionBroker.cwd,
     }
-    const sourceEnv = options.env ?? process.env
+    const sourceEnv = options.env
     const env = {
       ...scrubEnvForChildProcess(sourceEnv),
       // ACP is the one child that legitimately consumes this provider secret.
@@ -203,22 +204,30 @@ export class XaiAcpClient {
         : {}),
       [GROK_ACP_REFERRER_ENV]: GROK_ACP_REFERRER,
     }
-    const spawnCommand = sandboxExecutionBroker.prepareSpawn('provider', {
-      program: command,
-      args,
-      cwd: this.options.cwd,
-      env,
-      additionalPermissions: { network: { enabled: true } },
-    })
+    const preparedSpawn = sandboxExecutionBroker.prepareSpawn(
+      'provider',
+      {
+        program: command,
+        args,
+        cwd: this.options.cwd,
+        env,
+        additionalPermissions: { network: { enabled: true } },
+      },
+      { lifecycleParticipant: 'grok-acp-provider' },
+    )
     try {
-      this.child = spawn(spawnCommand.program, [...spawnCommand.args], {
-        cwd: spawnCommand.cwd,
-        env: spawnCommand.env,
-        argv0: spawnCommand.argv0,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        detached: process.platform !== 'win32',
-        windowsHide: true,
-      })
+      this.child = preparedSpawn.spawnLifecycleParticipant(
+        'grok-acp-provider',
+        (spawnCommand) =>
+          spawn(spawnCommand.program, [...spawnCommand.args], {
+            cwd: spawnCommand.cwd,
+            env: spawnCommand.env,
+            argv0: spawnCommand.argv0,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            detached: process.platform !== 'win32',
+            windowsHide: true,
+          }),
+      )
     } catch (error) {
       throw new XaiAcpError(
         'spawn_failed',
@@ -250,6 +259,19 @@ export class XaiAcpClient {
       this.stderrTail = (this.stderrTail + chunk.toString('utf8')).slice(
         -STDERR_TAIL_LIMIT,
       )
+    })
+    this.child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+      // Writable-stream failures such as EPIPE are emitted asynchronously, so
+      // the try/catch in send() cannot observe them. Keep the listener installed
+      // after closure as well so a late error never becomes an uncaught event.
+      if (this.closed) return
+      this.failAll(
+        new XaiAcpError(
+          'closed',
+          `Grok CLI stdin failed: ${error.message}`,
+        ),
+      )
+      void this.terminateProcessTree().catch(() => {})
     })
 
     this.reader = createInterface({ input: this.child.stdout })

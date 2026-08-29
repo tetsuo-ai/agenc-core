@@ -3,10 +3,13 @@ import { afterEach, expect, test, vi } from 'vitest'
 const providersModulePath = '../../src/utils/model/providers.js'
 const modelSupportOverridesModulePath =
   '../../src/utils/model/modelSupportOverrides.js'
+const authModulePath = '../../src/utils/auth.js'
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   vi.doUnmock(providersModulePath)
   vi.doUnmock(modelSupportOverridesModulePath)
+  vi.doUnmock(authModulePath)
   vi.clearAllMocks()
   vi.resetModules()
 })
@@ -16,7 +19,12 @@ async function importFreshEffortModule(options: {
 }) {
   vi.resetModules()
   vi.doMock(providersModulePath, () => ({
-    getAPIProvider: () => options.provider,
+    getAPIProvider: (provider?: string) => {
+      if (provider === 'openai' || provider === 'agenc') return provider
+      if (provider === 'grok' || provider === 'xai') return 'xai'
+      if (provider === 'anthropic') return 'firstParty'
+      return options.provider
+    },
     isFirstPartyAnthropicBaseUrl: () => options.provider === 'agenc',
     isFirstPartyproviderBaseUrl: () => options.provider === 'agenc',
     isGithubNativeAnthropicMode: () => false,
@@ -25,6 +33,12 @@ async function importFreshEffortModule(options: {
   }))
   vi.doMock(modelSupportOverridesModulePath, () => ({
     get3PModelCapabilityOverride: () => undefined,
+  }))
+  vi.doMock(authModulePath, () => ({
+    getSubscriptionType: () => null,
+    getSubscriptionTypeForContext: (context: {
+      environment: Record<string, string | undefined>
+    }) => context.environment.TEST_SUBSCRIPTION ?? null,
   }))
 
   return import('../../src/utils/effort.ts')
@@ -58,6 +72,31 @@ test('gpt-5.4 on the openai provider still supports effort selection', async () 
     'high',
     'xhigh',
   ])
+})
+
+test('explicit effort context wins over ambient provider and subscription state', async () => {
+  const {
+    getAvailableEffortLevelsForContext,
+    getDefaultEffortForModelForContext,
+    modelSupportsEffortForContext,
+  } = await importFreshEffortModule({ provider: 'xai' })
+  vi.stubEnv('USER_TYPE', 'ant')
+  const context = {
+    home: {},
+    environment: { TEST_SUBSCRIPTION: 'pro' },
+    provider: 'openai',
+  } as never
+
+  expect(modelSupportsEffortForContext('gpt-5.4', context)).toBe(true)
+  expect(getAvailableEffortLevelsForContext('gpt-5.4', context)).toEqual([
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+  ])
+  expect(getDefaultEffortForModelForContext('opus-4-8', context)).toBe(
+    'medium',
+  )
 })
 
 test('gpt-5.3-providercode-spark stays without effort controls', async () => {

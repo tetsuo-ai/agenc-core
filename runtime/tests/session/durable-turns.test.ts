@@ -22,8 +22,6 @@ import type { ResponseItem } from "./rollout-item.js";
 afterEach(() => {
   delete process.env.AGENC_BUILD_ID;
   delete process.env.AGENC_BUILD_COMMIT;
-  delete process.env.AGENC_DURABLE_TURNS;
-  delete process.env.AGENC_DURABLE_TURNS_RESUME;
   resetBuildIdForTestingOnly();
 });
 
@@ -43,27 +41,23 @@ describe("currentBuildId", () => {
 });
 
 describe("resolveDurableTurnsConfig", () => {
-  test("conservative defaults: checkpoint on, resume on, policy safe, lease+pin on", () => {
+  test("conservative defaults: checkpoint, resume, lease, and pin are on", () => {
     const cfg = resolveDurableTurnsConfig(undefined);
     expect(cfg.checkpointEnabled).toBe(true);
     expect(cfg.resumeOnRestart).toBe(true);
-    expect(cfg.resumePolicy).toBe("safe");
     expect(cfg.requireLease).toBe(true);
     expect(cfg.buildPinning).toBe(true);
   });
 
-  test("AGENC_DURABLE_TURNS=0 disables checkpoint AND resume", () => {
-    process.env.AGENC_DURABLE_TURNS = "0";
-    const cfg = resolveDurableTurnsConfig(undefined);
+  test("canonical config disables checkpoint and resume", () => {
+    const cfg = resolveDurableTurnsConfig({
+      durableTurns: {
+        checkpoint: { enabled: false },
+        resume: { onRestart: false },
+      },
+    });
     expect(cfg.checkpointEnabled).toBe(false);
     expect(cfg.resumeOnRestart).toBe(false);
-  });
-
-  test("policy is clamped to safe even if config requests idempotent (Stage 1)", () => {
-    const cfg = resolveDurableTurnsConfig({
-      durableTurns: { resume: { policy: "idempotent" } },
-    });
-    expect(cfg.resumePolicy).toBe("safe");
   });
 
   test("explicit config disables resume while leaving checkpoint on", () => {

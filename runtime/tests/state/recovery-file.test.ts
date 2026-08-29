@@ -1,13 +1,15 @@
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import Database from "better-sqlite3";
 
 import {
   backfillPinnedRolloutFile,
@@ -28,6 +30,7 @@ import {
 } from "./recovery-contract.js";
 import {
   RecoveryDescriptorBudget,
+  DiskCanonicalIdentityRegistry,
   recoveryFileLimits,
   recoveryFailureSourcePath,
   withPinnedCanonicalJournalRun,
@@ -44,6 +47,24 @@ afterEach(() => {
 });
 
 describe("descriptor-pinned canonical recovery", () => {
+  it("removes a partial identity registry when SQLite initialization fails", () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-identity-init-failure-"));
+    temporaryRoots.push(root);
+    const pragmaSpy = vi
+      .spyOn(Database.prototype, "pragma")
+      .mockImplementation(() => {
+        throw new Error("injected identity registry initialization failure");
+      });
+    try {
+      expect(() => new DiskCanonicalIdentityRegistry(root)).toThrow(
+        "injected identity registry initialization failure",
+      );
+    } finally {
+      pragmaSpy.mockRestore();
+    }
+    expect(readdirSync(root)).toEqual([]);
+  });
+
   it("freezes conservative defaults separately from hard override ceilings", () => {
     expect(recoveryFileLimits()).toMatchObject({
       maxLineBytes: DEFAULT_MAX_RECOVERY_LINE_BYTES,

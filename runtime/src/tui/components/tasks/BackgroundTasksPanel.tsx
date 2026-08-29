@@ -313,7 +313,6 @@ function buildTaskDetailRows(
   switch (task.type) {
     case "local_bash":
       addDetailRows(rows, "shell", "command", task.command, "text2");
-      addDetailRows(rows, "shell", "kind", task.kind, "inactive");
       if (task.result) {
         addDetailRows(rows, "shell", "exit", `code ${task.result.code}`, task.result.code === 0 ? "success" : "error");
         addDetailRows(rows, "shell", "interrupted", task.result.interrupted ? "yes" : "no", task.result.interrupted ? "error" : "inactive");

@@ -6,10 +6,21 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { resolveHomeContext } from "../../../src/config/home.js";
 import { createImagineImageTool } from "../../../src/tools/system/imagine-image.js";
 import { createModelFacingTools } from "../../../src/bin/model-facing-tools.js";
 import { createProvider } from "../../../src/llm/provider.js";
 import type { Session } from "../../../src/session/session.js";
+
+function testHome(workspaceRoot: string) {
+  return resolveHomeContext(
+    {
+      AGENC_HOME: join(workspaceRoot, ".agenc-test-home"),
+      HOME: workspaceRoot,
+    },
+    { platformHome: workspaceRoot },
+  );
+}
 
 describe("ImagineImage tool", () => {
   it("is not catalog-registered for non-Grok (Claude/OpenAI) sessions", () => {
@@ -33,34 +44,19 @@ describe("ImagineImage tool", () => {
     expect(tools.some((t) => t.name === "ImagineImage")).toBe(true);
   });
 
-  it("refuses a provider with no image route at execute time (defense-in-depth)", async () => {
+  it("refuses non-grok sessions at execute time (defense-in-depth)", async () => {
     const tool = createImagineImageTool({
       workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
       getSession: () =>
         ({
-          services: { provider: { name: "anthropic" } },
+          services: { provider: { name: "openai" } },
         }) as unknown as Session,
       env: { XAI_API_KEY: "key" },
     });
     const result = await tool.execute({ prompt: "a cat" });
     expect(result.isError).toBe(true);
-    expect(result.content).toMatch(/no image route/i);
-  });
-
-  it("tells an openai session what its image route needs", async () => {
-    // openai has a route now, but only a subscription sign-in can open it.
-    // Without those credentials the refusal has to say which door is shut.
-    const tool = createImagineImageTool({
-      workspaceRoot: process.cwd(),
-      getSession: () =>
-        ({
-          services: { provider: { name: "openai" } },
-        }) as unknown as Session,
-      env: {},
-    });
-    const result = await tool.execute({ prompt: "a cat" });
-    expect(result.isError).toBe(true);
-    expect(result.content).toMatch(/subscription sign-in|platform API key/i);
+    expect(result.content).toMatch(/session provider is grok/i);
   });
 
   it("accepts session OAuth bearer when BYOK env is unset (subscription path)", async () => {
@@ -81,6 +77,7 @@ describe("ImagineImage tool", () => {
 
     const tool = createImagineImageTool({
       workspaceRoot: root,
+      home: testHome(root),
       getSession: () =>
         ({ services: { provider } }) as unknown as Session,
       env: {}, // no BYOK
@@ -112,6 +109,7 @@ describe("ImagineImage tool", () => {
 
     const tool = createImagineImageTool({
       workspaceRoot: root,
+      home: testHome(root),
       getSession: () =>
         ({ services: { provider } }) as unknown as Session,
       env: { XAI_API_KEY: "real-byok-key" },
@@ -161,6 +159,7 @@ describe("ImagineImage tool", () => {
     ) as unknown as typeof fetch;
     const tool = createImagineImageTool({
       workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
       getSession: () => ({ services: { provider } }) as unknown as Session,
       env: {},
       fetchImpl,

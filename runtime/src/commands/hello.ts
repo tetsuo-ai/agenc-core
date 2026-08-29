@@ -9,6 +9,7 @@
  */
 
 import { asRecord } from "../utils/record.js";
+import { readSessionSelection } from "../session/provider-model-selection.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -22,7 +23,6 @@ export interface HelloSnapshot {
 }
 
 interface SessionConfigShape {
-  readonly collaborationMode?: { readonly model?: string };
   readonly cwd?: string;
 }
 
@@ -50,11 +50,9 @@ export function collectHelloSnapshot(
   cwd: string,
 ): HelloSnapshot {
   const sc = readSessionConfiguration(session);
-  const model =
-    typeof sc?.collaborationMode?.model === "string" &&
-    sc.collaborationMode.model.trim().length > 0
-      ? sc.collaborationMode.model
-      : "unknown";
+  const model = readSessionSelection(session, {
+    includePending: true,
+  }).model;
   const workspace =
     typeof sc?.cwd === "string" && sc.cwd.trim().length > 0 ? sc.cwd : cwd;
   return { model, workspace };

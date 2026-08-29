@@ -1,13 +1,8 @@
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-import { c as _c } from "react-compiler-runtime";
 import React, { useContext, useEffect, useState, useSyncExternalStore } from 'react';
 import { MailboxProvider } from '../context/mailbox.js';
-import { useEffectEventCompat } from '../hooks/useEffectEventCompat.js';
-import { useSettingsChange } from '../hooks/useSettingsChange.js';
-import { logForDebugging } from '../../utils/debug.js';
-import { createDisabledBypassPermissionsContext, isBypassPermissionsModeDisabled } from '../../utils/permissions/permissionSetup.js';
-import { applySettingsChange } from '../../utils/settings/applySettingsChange.js';
-import type { SettingSource } from '../../utils/settings/constants.js';
+import type { ConfigStore } from '../../config/store.js';
+import { reasoningEffortToEffortLevel } from '../../utils/effort.js';
+import { getInitialSettings } from '../../utils/settings/settings.js';
 import { createStore } from './store.js';
 
 import { type AppState, type AppStateStore, getDefaultAppState } from './AppStateStore.js';
@@ -15,10 +10,11 @@ import { type AppState, type AppStateStore, getDefaultAppState } from './AppStat
 // Follow-up: Remove these re-exports once all callers import directly from the
 // paired AppStateStore module. Kept for back-compat during migration so .ts
 // callers can incrementally move off the .tsx import and stop pulling React.
-export { type AppState, type AppStateStore, type CompletionBoundary, getDefaultAppState, IDLE_SPECULATION_STATE, type SpeculationResult, type SpeculationState } from './AppStateStore.js';
+export { type AppState, type AppStateStore, type CompletionBoundary, getDefaultAppState, getDefaultAppStateForProviderEnvironment, IDLE_SPECULATION_STATE, type SpeculationResult, type SpeculationState } from './AppStateStore.js';
 export const AppStoreContext = React.createContext<AppStateStore | null>(null);
 type Props = {
   children: React.ReactNode;
+  configStore?: ConfigStore;
   initialState?: AppState;
   onChangeAppState?: (args: {
     newState: AppState;
@@ -26,85 +22,52 @@ type Props = {
   }) => void;
 };
 const HasAppStateContext = React.createContext<boolean>(false);
-export function AppStateProvider(t0: Props) {
-  const $ = _c(13);
-  const {
-    children,
-    initialState,
-    onChangeAppState
-  } = t0;
+export function AppStateProvider({
+  children,
+  configStore,
+  initialState,
+  onChangeAppState,
+}: Props) {
   const hasAppStateContext = useContext(HasAppStateContext);
   if (hasAppStateContext) {
     throw new Error("AppStateProvider can not be nested within another AppStateProvider");
   }
-  let t1;
-  if ($[0] !== initialState || $[1] !== onChangeAppState) {
-    t1 = () => createStore(initialState ?? getDefaultAppState(), onChangeAppState);
-    $[0] = initialState;
-    $[1] = onChangeAppState;
-    $[2] = t1;
-  } else {
-    t1 = $[2];
-  }
-  const [store] = useState(t1);
-  let t2;
-  if ($[3] !== store) {
-    t2 = () => {
-      const {
-        toolPermissionContext
-      } = store.getState();
-      if (toolPermissionContext.isBypassPermissionsModeAvailable && isBypassPermissionsModeDisabled()) {
-        logForDebugging("Disabling bypass permissions mode on mount (remote settings loaded before mount)");
-        store.setState(_temp);
-      }
-    };
-    $[3] = store;
-    $[4] = t2;
-  } else {
-    t2 = $[4];
-  }
-  let t3: React.DependencyList;
-  if ($[5] === Symbol.for("react.memo_cache_sentinel")) {
-    t3 = [];
-    $[5] = t3;
-  } else {
-    t3 = $[5];
-  }
-  useEffect(t2, t3);
-  let t4;
-  if ($[6] !== store.setState) {
-    t4 = (source: SettingSource) => applySettingsChange(source, store.setState);
-    $[6] = store.setState;
-    $[7] = t4;
-  } else {
-    t4 = $[7];
-  }
-  const onSettingsChange = useEffectEventCompat(t4);
-  useSettingsChange(onSettingsChange);
-  let t5;
-  if ($[8] !== children) {
-    t5 = <MailboxProvider>{children}</MailboxProvider>;
-    $[8] = children;
-    $[9] = t5;
-  } else {
-    t5 = $[9];
-  }
-  let t6;
-  if ($[10] !== store || $[11] !== t5) {
-    t6 = <HasAppStateContext.Provider value={true}><AppStoreContext.Provider value={store}>{t5}</AppStoreContext.Provider></HasAppStateContext.Provider>;
-    $[10] = store;
-    $[11] = t5;
-    $[12] = t6;
-  } else {
-    t6 = $[12];
-  }
-  return t6;
-}
-function _temp(prev: AppState): AppState {
-  return {
-    ...prev,
-    toolPermissionContext: createDisabledBypassPermissionsContext(prev.toolPermissionContext)
-  };
+  const [store] = useState(() =>
+    createStore(initialState ?? getDefaultAppState(), onChangeAppState),
+  );
+
+  useEffect(() => {
+    if (configStore === undefined) return;
+    return configStore.subscribe(() => {
+      const settings = getInitialSettings(configStore);
+      store.setState(prev => {
+        const previousEffort = reasoningEffortToEffortLevel(
+          prev.settings.reasoning_effort,
+        );
+        const nextEffort = reasoningEffortToEffortLevel(
+          settings.reasoning_effort,
+        );
+        const effortChanged = previousEffort !== nextEffort;
+        const swarmChanged = prev.settings.swarmMode !== settings.swarmMode;
+        return {
+          ...prev,
+          settings,
+          ...(effortChanged && nextEffort !== undefined
+            ? { effortValue: nextEffort }
+            : {}),
+          ...(swarmChanged && settings.swarmMode !== undefined
+            ? { swarmMode: settings.swarmMode }
+            : {}),
+        };
+      });
+    });
+  }, [configStore, store]);
+
+  return <HasAppStateContext.Provider value={true}>
+    <AppStoreContext.Provider value={store}>
+      <MailboxProvider>{children}</MailboxProvider>
+    </AppStoreContext.Provider>
+  </HasAppStateContext.Provider>;
 }
 function useAppStore(): AppStateStore {
   // eslint-disable-next-line react-hooks/rules-of-hooks

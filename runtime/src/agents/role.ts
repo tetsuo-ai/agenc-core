@@ -20,12 +20,9 @@
  *
  * Built-in roles:
  *   - `netrunner` — unrestricted default agent; inherits parent config
- *   - `scanner`   — codebase queries; compatibility alias for the
- *                   internal `explorer` id and loads the upstream runtime's
- *                   built-in `explorer.toml` role layer
- *   - `runner`    — execution/production work; compatibility alias for
- *                   the internal `worker` id and inherits parent tool
- *                   catalog
+ *   - `scanner`   — read-only codebase reconnaissance; loads the embedded
+ *                   `scanner.toml` role layer
+ *   - `runner`    — execution/production work; inherits the parent tool catalog
  *
  * Programmatic user roles register via
  * `registerAgentRole(workspace, { name, config })` and override built-ins only
@@ -34,24 +31,10 @@
  * @module
  */
 
-import {
-  closeSync,
-  constants,
-  existsSync,
-  fstatSync,
-  lstatSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-} from "node:fs";
+import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import type { BigIntStats, Dirent } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import yaml from "js-yaml";
 import type { AgentRegistry } from "./registry.js";
-import { normalizeAgenCKeyAliases, normalizeRawConfig } from "../config/schema.js";
+import { normalizeRawConfig } from "../config/schema.js";
 import { parseToml } from "../config/loader.js";
 import { resolveProfile } from "../config/profiles.js";
 import type { AgenCConfig } from "../config/schema.js";
@@ -63,7 +46,7 @@ import {
 } from "./role-presentation.js";
 import {
   BUILTIN_READONLY_DISALLOWLIST,
-  EXPLORE_SYSTEM_PROMPT,
+  SCANNER_SYSTEM_PROMPT,
   PLAN_SYSTEM_PROMPT,
   PLAN_WHEN_TO_USE,
   VERIFICATION_SYSTEM_PROMPT,
@@ -94,9 +77,6 @@ export interface AgentRoleConfig {
   /** Inline TOML role layer. Useful for tests and bootstrap-time
    *  in-memory role registration. */
   readonly configToml?: string;
-  /** Compatibility inline parsed config object. Prefer `configToml` or
-   *  `configFile` for AgenC behavior. */
-  readonly configBundle?: Record<string, unknown>;
   /** Candidate nicknames for this role; registry picks one on spawn. */
   readonly nicknameCandidates?: ReadonlyArray<string>;
   /** Runtime hint derived from the loaded role layer when possible. */
@@ -132,6 +112,7 @@ export interface AgentRole {
   readonly source?:
     | "built-in"
     | "programmatic"
+    | "plugin"
     | "userSettings"
     | "projectSettings"
     | "policySettings";
@@ -164,7 +145,7 @@ export function agentRoleFingerprint(role: AgentRole): string {
 }
 
 const BUILT_IN_ROLE_CONFIG_TOML = Object.freeze({
-  "explorer.toml": "",
+  "scanner.toml": "",
   // Upstream keeps awaiter temporarily removed from the built-in role set, but
   // still exposes the embedded role file for user-defined roles that reference
   // `awaiter.toml`. AgenC intentionally omits the historical one-hour terminal
@@ -173,7 +154,7 @@ const BUILT_IN_ROLE_CONFIG_TOML = Object.freeze({
   // `developer_instructions`; AgenC's TOML parser is escape-only
   // (no triple-quoted production), so the body is encoded with `\n`
   // escapes. The string value is identical post-parse.
-  "awaiter.toml": `model_reasoning_effort = "low"
+  "awaiter.toml": `reasoning_effort = "low"
 developer_instructions = "You are an awaiter.\\nYour role is to await the completion of a specific command or task and report its status only when it is finished.\\n\\nBehavior rules:\\n\\n1. When given a command or task identifier, you must:\\n   - Execute or await it using the appropriate tool\\n   - Continue awaiting until the task reaches a terminal state.\\n\\n2. You must NOT:\\n   - Modify the task.\\n   - Interpret or optimize the task.\\n   - Perform unrelated actions.\\n   - Stop awaiting unless explicitly instructed.\\n\\n3. Awaiting behavior:\\n   - If the task is still running, continue polling using tool calls.\\n   - Use repeated tool calls if necessary.\\n   - Do not hallucinate completion.\\n   - Use long timeouts when awaiting for something. If you need multiple awaits, increase the timeouts/yield times exponentially.\\n\\n4. If asked for status:\\n   - Return the current known status.\\n   - Immediately resume awaiting afterward.\\n\\n5. Termination:\\n   - Only exit awaiting when:\\n     - The task completes successfully, OR\\n     - The task fails, OR\\n     - You receive an explicit stop instruction.\\n\\nYou must behave deterministically and conservatively.\\n"`,
 } as const);
 
@@ -290,26 +271,22 @@ const DEFAULT_AGENT_NICKNAME_CANDIDATES = Object.freeze([
   "NewRoseHotel",
 ] as const);
 
-const EXPLORER_DESCRIPTION = `Use \`scanner\` for specific codebase reconnaissance.
+const SCANNER_DESCRIPTION = `Use \`scanner\` for specific codebase reconnaissance.
 Scanners are fast and authoritative.
 They must be used to ask specific, well-scoped questions on the codebase.
 Rules:
 - Avoid scanning the same problem that scanners have already covered. Typically, you should trust the scanner results without additional verification. You are still allowed to inspect the code yourself to gain the needed context.
 - Spawn multiple scanners in parallel when you have distinct codebase questions that can be answered independently. While waiting for scanner results, continue working on local tasks that do not depend on those results.
-- Reuse existing scanners for related questions.
+- Reuse existing scanners for related questions.`;
 
-Compatibility: \`explorer\` remains accepted as a legacy alias for \`scanner\`.`;
-
-const WORKER_DESCRIPTION = `Use \`runner\` for execution and production work.
+const RUNNER_DESCRIPTION = `Use \`runner\` for execution and production work.
 Typical tasks:
 - Implement part of a feature
 - Fix tests or bugs
 - Split large refactors into independent chunks
 Rules:
 - Explicitly assign ownership of the task (files / responsibility). When the subtask involves code changes, clearly specify which files or modules the runner owns. This avoids merge conflicts and makes accountability explicit.
-- Always tell runners they are not alone in the codebase. They should not revert edits made by others, and they should adjust their implementation to accommodate changes made by others.
-
-Compatibility: \`worker\` remains accepted as a legacy alias for \`runner\`.`;
+- Always tell runners they are not alone in the codebase. They should not revert edits made by others, and they should adjust their implementation to accommodate changes made by others.`;
 
 // ─────────────────────────────────────────────────────────────────────
 // Built-in roles
@@ -328,27 +305,26 @@ const DEFAULT_ROLE: AgentRole = freezeRole({
   },
 });
 
-// `explorer` (public name `scanner`) is the read-only codebase-reconnaissance
-// role. It now carries the Explore agent's system prompt + read-only denylist
-// (formerly the stranded EXPLORE_AGENT const). `model` is left undefined
+// `scanner` is the read-only codebase-reconnaissance role. It carries the
+// scanner system prompt + read-only denylist. `model` is left undefined
 // (inherit) — the const's `haiku` was a model alias the v2 spawn validator
 // rejects, and it never ran on the live path; see built-in-prompts.ts.
-const EXPLORER_ROLE: AgentRole = freezeRole({
-  name: "explorer",
+const SCANNER_ROLE: AgentRole = freezeRole({
+  name: "scanner",
   source: "built-in",
   config: {
-    description: EXPLORER_DESCRIPTION,
-    configFile: "explorer.toml",
-    systemPrompt: EXPLORE_SYSTEM_PROMPT,
+    description: SCANNER_DESCRIPTION,
+    configFile: "scanner.toml",
+    systemPrompt: SCANNER_SYSTEM_PROMPT,
     disallowlist: BUILTIN_READONLY_DISALLOWLIST,
   },
 });
 
-const WORKER_ROLE: AgentRole = freezeRole({
-  name: "worker",
+const RUNNER_ROLE: AgentRole = freezeRole({
+  name: "runner",
   source: "built-in",
   config: {
-    description: WORKER_DESCRIPTION,
+    description: RUNNER_DESCRIPTION,
   },
 });
 
@@ -382,8 +358,8 @@ const VERIFICATION_ROLE: AgentRole = freezeRole({
 
 const BUILT_INS: ReadonlyArray<AgentRole> = Object.freeze([
   DEFAULT_ROLE,
-  EXPLORER_ROLE,
-  WORKER_ROLE,
+  SCANNER_ROLE,
+  RUNNER_ROLE,
   PLAN_ROLE,
   VERIFICATION_ROLE,
 ]);
@@ -396,19 +372,6 @@ const builtInRoles = new Map<string, AgentRole>();
 for (const role of BUILT_INS) builtInRoles.set(role.name, role);
 
 const registeredRolesByWorkspace = new Map<string, Map<string, AgentRole>>();
-
-interface MarkdownRoleNamespace {
-  readonly roles: Map<string, AgentRole>;
-  readonly signature: string;
-}
-
-// Markdown-loaded roles are namespaced by the requesting workspace so two
-// projects with same-named `.agenc/agents/<name>.md` roles resolve independently
-// inside one daemon process. There is deliberately no cwd-less fallback.
-const markdownRolesByCwd = new Map<string, MarkdownRoleNamespace>();
-let markdownAgentRoleReadHookForTesting:
-  | ((filePath: string) => void)
-  | undefined;
 
 export function registerAgentRole(
   workspace: AgentRoleWorkspace,
@@ -433,7 +396,7 @@ export function getAgentRole(
  * Resolve only the persisted role name, without public-name alias fallback.
  *
  * Durable role provenance must use this lookup: if a workspace override named
- * `scanner` disappears, reopening it as the built-in `explorer` alias would
+ * `scanner` disappears, reopening it through any presentation alias would
  * silently weaken the original prompt/tool policy.
  */
 export function getAgentRoleByExactName(
@@ -448,21 +411,9 @@ function lookupRoleByExactName(
   name: string,
 ): AgentRole | undefined {
   return (
-    lookupMarkdownRole(workspace, name) ??
     registeredRolesByWorkspace.get(workspace.id)?.get(name) ??
     builtInRoles.get(name)
   );
-}
-
-function lookupMarkdownRole(
-  workspace: AgentRoleWorkspace,
-  name: string,
-): AgentRole | undefined {
-  loadMarkdownAgentRoles(workspace);
-  const role = markdownRolesByCwd.get(workspace.id)?.roles.get(name);
-  return role?.source === "projectSettings" && isBuiltInRoleNameOrAlias(name)
-    ? undefined
-    : role;
 }
 
 export function getDefaultAgentRole(): AgentRole {
@@ -493,11 +444,6 @@ export function listAgentRoles(
   for (const role of registeredRolesByWorkspace.get(workspace.id)?.values() ?? []) {
     merged.set(role.name, role);
   }
-  loadMarkdownAgentRoles(workspace);
-  const namespace = markdownRolesByCwd.get(workspace.id);
-  if (namespace) {
-    for (const role of namespace.roles.values()) merged.set(role.name, role);
-  }
   return Array.from(merged.values());
 }
 
@@ -518,65 +464,7 @@ export function defaultAgentNicknameCandidates(): ReadonlyArray<string> {
 }
 
 export function _resetAgentRolesForTesting(): void {
-  markdownRolesByCwd.clear();
   registeredRolesByWorkspace.clear();
-  markdownAgentRoleReadHookForTesting = undefined;
-}
-
-/** Deterministic validation-to-open race seam; tests only. */
-export function _setMarkdownAgentRoleReadHookForTesting(
-  hook: ((filePath: string) => void) | undefined,
-): void {
-  markdownAgentRoleReadHookForTesting = hook;
-}
-
-export function loadMarkdownAgentRoles(workspace: AgentRoleWorkspace): void {
-  const key = workspace.id;
-  // Cheap identity/metadata invalidation: inspect candidate role dirs and files
-  // on every load so editing a role .md takes effect for new sessions without
-  // a daemon restart. Only when the signature changes do we securely open and
-  // re-parse the files.
-  const signature = markdownAgentRoleSignature(workspace.cwd);
-  const existing = markdownRolesByCwd.get(key);
-  if (existing !== undefined && existing.signature === signature) return;
-
-  const roles = new Map<string, AgentRole>();
-  for (const file of readMarkdownAgentRoleFiles(workspace.cwd)) {
-    const role = markdownAgentRoleFromFile(file);
-    if (
-      role &&
-      (role.source !== "projectSettings" ||
-        !isBuiltInRoleNameOrAlias(role.name))
-    ) {
-      roles.set(role.name, freezeRole(role));
-    }
-  }
-  markdownRolesByCwd.set(key, { roles, signature });
-}
-
-function isBuiltInRoleNameOrAlias(name: string): boolean {
-  return builtInRoles.has(canonicalAgentRoleName(name));
-}
-
-function markdownAgentRoleSignature(cwd: string): string {
-  const parts: string[] = [];
-  for (const source of markdownAgentRoleDirs(cwd)) {
-    const directory = validateTrustedMarkdownDirectory(source, source.dir);
-    parts.push(
-      `${source.source}\u0000${source.dir}\u0000${directory === null ? "missing-or-untrusted" : trustedDirectorySignature(directory)}`,
-    );
-    // A directory's mtime does not change when a contained file is edited
-    // in place, so include each trusted markdown file's identity and metadata.
-    for (const filePath of collectMarkdownFiles(source)) {
-      const file = validateTrustedMarkdownRoleFile(source, filePath);
-      if (file !== null) {
-        parts.push(
-          `${filePath}\u0000${stableEntrySignature(file.fileState)}`,
-        );
-      }
-    }
-  }
-  return parts.join("\n");
 }
 
 export function resolveAgentRole(
@@ -676,7 +564,7 @@ export function formatNicknameWithSuffix(
 //
 // Upstream runtime layers TOML documents: `base → role-layer → user-layer` with
 // config/profile resolution (`role.rs:155-270`). AgenC now loads role
-// TOML through the same config-parser aliases, strips role-only
+// TOML through the canonical config vocabulary, strips role-only
 // metadata, and merges the resulting config keys onto a plain object
 // blob so `control.ts spawn()` can keep the seam live before the child
 // session config source is wired.
@@ -714,7 +602,7 @@ export type OptionalRoleShapedConfig = {
 /**
  * Apply the role's loaded TOML layer onto a base config blob. Mirrors
  * upstream runtime `apply_role_to_config` (`role.rs:40`) at the config-loading
- * seam: role metadata is ignored, config aliases are normalized, and
+ * seam: role metadata is ignored, canonical config keys are validated, and
  * top-level `profile = "..."` selectors are resolved against the
  * merged config snapshot.
  */
@@ -754,8 +642,7 @@ function applyRoleToConfigInner<Base extends RoleShapedConfig>(
  *     layer is returned
  *
  * The returned object is TOML-shaped rather than fully normalized so
- * callers can still inspect AgenC-native keys like
- * `model_reasoning_effort` or `profile`.
+ * callers can still inspect role-control keys such as `profile`.
  */
 export function loadRoleLayerToml(role: AgentRole): Record<string, unknown> {
   const rawLayer = readRoleLayerSource(role);
@@ -831,9 +718,7 @@ function formatRole(role: AgentRole): string {
 
   const roleLayerToml = tryLoadRoleLayerToml(role);
   const model = asString(roleLayerToml?.model);
-  const reasoningEffort = asString(
-    roleLayerToml?.model_reasoning_effort ?? roleLayerToml?.reasoning_effort,
-  );
+  const reasoningEffort = asString(roleLayerToml?.reasoning_effort);
   const serviceTier = asString(roleLayerToml?.service_tier);
 
   let lockedSettingsNote = "";
@@ -922,7 +807,7 @@ function deriveRoleRuntimeHints(
   }
 
   if (config.maxDepth === undefined) {
-    const maxDepth = asPositiveInteger(normalizedLayer.agent_max_depth);
+    const maxDepth = asNonNegativeInteger(normalizedLayer.agent_max_depth);
     if (maxDepth !== undefined) {
       derived.maxDepth = maxDepth;
     }
@@ -931,494 +816,7 @@ function deriveRoleRuntimeHints(
   return derived;
 }
 
-type MarkdownAgentRoleFile = {
-  readonly filePath: string;
-  readonly frontmatter: Record<string, unknown>;
-  readonly content: string;
-  readonly source: "userSettings" | "projectSettings" | "policySettings";
-};
-
-interface MarkdownAgentRoleDirectory {
-  readonly dir: string;
-  readonly trustAnchor: string;
-  readonly source: "userSettings" | "projectSettings" | "policySettings";
-}
-
-interface StableEntryState {
-  readonly dev: bigint;
-  readonly ino: bigint;
-  readonly mode: bigint;
-  readonly nlink: bigint;
-  readonly size: bigint;
-  readonly mtimeNs: bigint;
-  readonly ctimeNs: bigint;
-}
-
-interface TrustedDirectoryComponent {
-  readonly path: string;
-  readonly canonicalPath: string;
-  readonly state: StableEntryState;
-}
-
-interface TrustedDirectorySnapshot {
-  readonly components: ReadonlyArray<TrustedDirectoryComponent>;
-  readonly canonicalAnchor: string;
-  readonly canonicalTier: string;
-  readonly canonicalDirectory: string;
-}
-
-interface TrustedMarkdownRoleFileSnapshot {
-  readonly directory: TrustedDirectorySnapshot;
-  readonly canonicalFile: string;
-  readonly fileState: StableEntryState;
-}
-
-interface OpenedMarkdownRoleFile {
-  readonly raw: string;
-  readonly identity: string;
-}
-
-function readMarkdownAgentRoleFiles(cwd: string): MarkdownAgentRoleFile[] {
-  const out: MarkdownAgentRoleFile[] = [];
-  const seenFiles = new Set<string>();
-  for (const source of markdownAgentRoleDirs(cwd)) {
-    for (const filePath of collectMarkdownFiles(source)) {
-      try {
-        const opened = readTrustedMarkdownRoleFile(source, filePath);
-        if (opened === null || seenFiles.has(opened.identity)) continue;
-        seenFiles.add(opened.identity);
-        const { frontmatter, content } = parseMarkdownAgentRole(
-          normalizeExternalText(opened.raw),
-        );
-        out.push({ filePath, frontmatter, content, source: source.source });
-      } catch {
-        continue;
-      }
-    }
-  }
-  return out;
-}
-
-function markdownAgentRoleDirs(cwd: string): MarkdownAgentRoleDirectory[] {
-  const dirs: MarkdownAgentRoleDirectory[] = [];
-  const userRoot = resolve(
-    process.env.AGENC_CONFIG_DIR ?? join(homedir(), ".agenc"),
-  );
-  dirs.push({
-    dir: join(userRoot, "agents"),
-    trustAnchor: userRoot,
-    source: "userSettings",
-  });
-
-  const projectDirs: MarkdownAgentRoleDirectory[] = [];
-  let current = resolve(cwd);
-  const home = resolve(homedir());
-  while (true) {
-    projectDirs.push({
-      dir: join(current, ".agenc", "agents"),
-      trustAnchor: current,
-      source: "projectSettings",
-    });
-    if (current === home || current === dirname(current)) break;
-    if (existsSync(join(current, ".git"))) break;
-    current = dirname(current);
-  }
-  dirs.push(...projectDirs.reverse());
-
-  const managed = process.env.AGENC_MANAGED_AGENTS_DIR;
-  if (managed && managed.trim().length > 0) {
-    const managedDir = resolve(managed);
-    dirs.push({
-      dir: managedDir,
-      trustAnchor: dirname(managedDir),
-      source: "policySettings",
-    });
-  }
-
-  return dirs;
-}
-
-function collectMarkdownFiles(
-  source: MarkdownAgentRoleDirectory,
-  dir: string = source.dir,
-  visitedDirs = new Set<string>(),
-): string[] {
-  const before = validateTrustedMarkdownDirectory(source, dir);
-  if (before === null) return [];
-  const dirState = before.components.at(-1)?.state;
-  if (dirState === undefined) return [];
-  const dirKey =
-    dirState.dev === 0n && dirState.ino === 0n
-      ? before.canonicalDirectory
-      : `${dirState.dev}:${dirState.ino}`;
-  if (visitedDirs.has(dirKey)) return [];
-  visitedDirs.add(dirKey);
-
-  let entries: Dirent<string>[];
-  try {
-    entries = readdirSync(dir, { encoding: "utf8", withFileTypes: true });
-  } catch {
-    return [];
-  }
-
-  const files: string[] = [];
-  for (const entry of entries) {
-    if (entry.isSymbolicLink()) continue;
-    const fullPath = join(dir, entry.name);
-    try {
-      const stats = lstatSync(fullPath, { bigint: true });
-      if (stats.isSymbolicLink()) continue;
-      if (stats.isDirectory()) {
-        files.push(...collectMarkdownFiles(source, fullPath, visitedDirs));
-      } else if (
-        stats.isFile() &&
-        entry.name.endsWith(".md") &&
-        validateTrustedMarkdownRoleFile(source, fullPath) !== null
-      ) {
-        files.push(fullPath);
-      }
-    } catch {
-      continue;
-    }
-  }
-  const after = validateTrustedMarkdownDirectory(source, dir);
-  return after !== null && sameTrustedDirectoryIdentity(before, after)
-    ? files.sort()
-    : [];
-}
-
-function validateTrustedMarkdownDirectory(
-  source: MarkdownAgentRoleDirectory,
-  candidateDirectory: string,
-): TrustedDirectorySnapshot | null {
-  try {
-    const anchor = resolve(source.trustAnchor);
-    const tier = resolve(source.dir);
-    const candidate = resolve(candidateDirectory);
-    if (
-      !isSameOrChildPath(anchor, tier) ||
-      !isSameOrChildPath(tier, candidate)
-    ) {
-      return null;
-    }
-
-    const components: TrustedDirectoryComponent[] = [];
-    let componentPath = anchor;
-    const componentPaths = [anchor];
-    const child = relative(anchor, candidate);
-    if (child.length > 0) {
-      for (const component of child.split(sep)) {
-        componentPath = join(componentPath, component);
-        componentPaths.push(componentPath);
-      }
-    }
-
-    for (const path of componentPaths) {
-      const before = lstatSync(path, { bigint: true });
-      if (!before.isDirectory() || before.isSymbolicLink()) return null;
-      const canonicalPath = realpathSync(path);
-      const after = lstatSync(path, { bigint: true });
-      if (
-        !after.isDirectory() ||
-        after.isSymbolicLink() ||
-        !sameStableEntryState(stableEntryState(before), stableEntryState(after))
-      ) {
-        return null;
-      }
-      components.push({
-        path,
-        canonicalPath,
-        state: stableEntryState(after),
-      });
-    }
-
-    const anchorComponent = components[0];
-    const tierComponent = components.find((component) => component.path === tier);
-    const directoryComponent = components.at(-1);
-    if (
-      anchorComponent === undefined ||
-      tierComponent === undefined ||
-      directoryComponent === undefined ||
-      !isSameOrChildPath(
-        anchorComponent.canonicalPath,
-        tierComponent.canonicalPath,
-      ) ||
-      !isSameOrChildPath(
-        tierComponent.canonicalPath,
-        directoryComponent.canonicalPath,
-      )
-    ) {
-      return null;
-    }
-
-    return {
-      components,
-      canonicalAnchor: anchorComponent.canonicalPath,
-      canonicalTier: tierComponent.canonicalPath,
-      canonicalDirectory: directoryComponent.canonicalPath,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function validateTrustedMarkdownRoleFile(
-  source: MarkdownAgentRoleDirectory,
-  filePath: string,
-): TrustedMarkdownRoleFileSnapshot | null {
-  try {
-    const lexicalFile = resolve(filePath);
-    const lexicalTier = resolve(source.dir);
-    if (
-      lexicalFile === lexicalTier ||
-      !isSameOrChildPath(lexicalTier, lexicalFile)
-    ) {
-      return null;
-    }
-    const directory = validateTrustedMarkdownDirectory(
-      source,
-      dirname(lexicalFile),
-    );
-    if (directory === null) return null;
-
-    const before = lstatSync(lexicalFile, { bigint: true });
-    if (
-      !before.isFile() ||
-      before.isSymbolicLink() ||
-      before.nlink !== 1n
-    ) {
-      return null;
-    }
-    const canonicalFile = realpathSync(lexicalFile);
-    const after = lstatSync(lexicalFile, { bigint: true });
-    const beforeState = stableEntryState(before);
-    const afterState = stableEntryState(after);
-    if (
-      !after.isFile() ||
-      after.isSymbolicLink() ||
-      after.nlink !== 1n ||
-      !sameStableEntryState(beforeState, afterState) ||
-      canonicalFile === directory.canonicalDirectory ||
-      !isSameOrChildPath(directory.canonicalDirectory, canonicalFile) ||
-      !isSameOrChildPath(directory.canonicalTier, canonicalFile)
-    ) {
-      return null;
-    }
-    return { directory, canonicalFile, fileState: afterState };
-  } catch {
-    return null;
-  }
-}
-
-function readTrustedMarkdownRoleFile(
-  source: MarkdownAgentRoleDirectory,
-  filePath: string,
-): OpenedMarkdownRoleFile | null {
-  let fd: number | undefined;
-  try {
-    const before = validateTrustedMarkdownRoleFile(source, filePath);
-    if (before === null) return null;
-    markdownAgentRoleReadHookForTesting?.(filePath);
-
-    fd = openSync(
-      filePath,
-      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
-    );
-    const opened = fstatSync(fd, { bigint: true });
-    const openedState = stableEntryState(opened);
-    if (
-      !opened.isFile() ||
-      opened.nlink !== 1n ||
-      !sameStableEntryState(before.fileState, openedState)
-    ) {
-      return null;
-    }
-
-    // The descriptor, not the pathname, is the single source of role bytes.
-    const raw = readFileSync(fd, "utf8");
-    const afterRead = fstatSync(fd, { bigint: true });
-    if (
-      !afterRead.isFile() ||
-      afterRead.nlink !== 1n ||
-      !sameStableEntryState(openedState, stableEntryState(afterRead))
-    ) {
-      return null;
-    }
-
-    const after = validateTrustedMarkdownRoleFile(source, filePath);
-    if (
-      after === null ||
-      after.canonicalFile !== before.canonicalFile ||
-      !sameStableEntryState(after.fileState, before.fileState) ||
-      !sameTrustedDirectoryIdentity(after.directory, before.directory)
-    ) {
-      return null;
-    }
-    return {
-      raw,
-      identity:
-        openedState.dev === 0n && openedState.ino === 0n
-          ? after.canonicalFile
-          : `${openedState.dev}:${openedState.ino}`,
-    };
-  } catch {
-    return null;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
-}
-
-function stableEntryState(stats: BigIntStats): StableEntryState {
-  return {
-    dev: stats.dev,
-    ino: stats.ino,
-    mode: stats.mode,
-    nlink: stats.nlink,
-    size: stats.size,
-    mtimeNs: stats.mtimeNs,
-    ctimeNs: stats.ctimeNs,
-  };
-}
-
-function sameStableEntryState(
-  left: StableEntryState,
-  right: StableEntryState,
-): boolean {
-  return (
-    left.dev === right.dev &&
-    left.ino === right.ino &&
-    left.mode === right.mode &&
-    left.nlink === right.nlink &&
-    left.size === right.size &&
-    left.mtimeNs === right.mtimeNs &&
-    left.ctimeNs === right.ctimeNs
-  );
-}
-
-function sameTrustedDirectoryIdentity(
-  left: TrustedDirectorySnapshot,
-  right: TrustedDirectorySnapshot,
-): boolean {
-  return (
-    left.canonicalAnchor === right.canonicalAnchor &&
-    left.canonicalTier === right.canonicalTier &&
-    left.canonicalDirectory === right.canonicalDirectory &&
-    left.components.length === right.components.length &&
-    left.components.every((component, index) => {
-      const other = right.components[index];
-      return (
-        other !== undefined &&
-        component.path === other.path &&
-        component.canonicalPath === other.canonicalPath &&
-        component.state.dev === other.state.dev &&
-        component.state.ino === other.state.ino &&
-        component.state.mode === other.state.mode
-      );
-    })
-  );
-}
-
-function trustedDirectorySignature(
-  directory: TrustedDirectorySnapshot,
-): string {
-  const state = directory.components.at(-1)?.state;
-  return state === undefined
-    ? "missing-or-untrusted"
-    : `${directory.canonicalDirectory}:${stableEntrySignature(state)}`;
-}
-
-function stableEntrySignature(state: StableEntryState): string {
-  return [
-    state.dev,
-    state.ino,
-    state.mode,
-    state.nlink,
-    state.size,
-    state.mtimeNs,
-    state.ctimeNs,
-  ].join(":");
-}
-
-function isSameOrChildPath(parent: string, candidate: string): boolean {
-  const child = relative(parent, candidate);
-  return (
-    child === "" ||
-    (child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child))
-  );
-}
-
-function parseMarkdownAgentRole(raw: string): {
-  readonly frontmatter: Record<string, unknown>;
-  readonly content: string;
-} {
-  if (!raw.startsWith("---")) {
-    return { frontmatter: {}, content: raw };
-  }
-  const end = raw.indexOf("\n---", 3);
-  if (end === -1) {
-    return { frontmatter: {}, content: raw };
-  }
-  const frontmatterRaw = raw.slice(3, end);
-  const contentStart = raw.indexOf("\n", end + 4);
-  const content = contentStart === -1 ? "" : raw.slice(contentStart + 1);
-  const parsed = yaml.load(frontmatterRaw);
-  return {
-    frontmatter: isPlainObject(parsed) ? parsed : {},
-    content,
-  };
-}
-
-function markdownAgentRoleFromFile(
-  file: MarkdownAgentRoleFile,
-): AgentRole | null {
-  const name = nonEmptyString(file.frontmatter.name);
-  const description = nonEmptyString(file.frontmatter.description);
-  if (!name || !description) return null;
-
-  const repositoryControlled = file.source === "projectSettings";
-  const tools = parseMarkdownToolList(file.frontmatter.tools);
-  const reasoningEffort = repositoryControlled
-    ? undefined
-    : asAgentReasoningEffort(
-        file.frontmatter.effort ??
-          file.frontmatter.reasoning_effort ??
-          file.frontmatter.model_reasoning_effort,
-      );
-  const background =
-    !repositoryControlled &&
-    (file.frontmatter.background === true ||
-      file.frontmatter.background === "true");
-
-  return {
-    name,
-    source: file.source,
-    config: {
-      description: description.replace(/\\n/g, "\n"),
-      systemPrompt: file.content.trim(),
-      ...(tools !== undefined ? { allowlist: tools } : {}),
-      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-      ...(background ? { background: true } : {}),
-    },
-  };
-}
-
-function parseMarkdownToolList(value: unknown): string[] | undefined {
-  if (value === undefined || value === null) return undefined;
-  const raw = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
-  const tools = raw
-    .filter((item): item is string => typeof item === "string")
-    .flatMap((item) => item.split(/[,\s]+/))
-    .map((item) => item.trim())
-    .filter(Boolean);
-  if (tools.includes("*")) return undefined;
-  return tools.length > 0 ? tools : undefined;
-}
-
 function readRoleLayerSource(role: AgentRole): Record<string, unknown> {
-  if (role.config.configBundle) {
-    return cloneRecord(role.config.configBundle);
-  }
-
   if (role.config.configToml !== undefined) {
     return parseRoleLayerToml(role.config.configToml);
   }
@@ -1459,10 +857,18 @@ function stripRoleDeclarationMetadata(
 function roleTomlToConfigLayer(
   roleLayerToml: Record<string, unknown>,
 ): Record<string, unknown> {
-  const aliased = normalizeAgenCKeyAliases(roleLayerToml);
+  const configFields = cloneRecord(roleLayerToml);
+  delete configFields.profile;
+  delete configFields.background_terminal_max_timeout;
   const normalized = cloneRecord(
-    normalizeRawConfig(aliased) as Record<string, unknown>,
+    normalizeRawConfig(configFields) as Record<string, unknown>,
   );
+  const unknown = normalized._unknown;
+  if (isPlainObject(unknown) && Object.keys(unknown).length > 0) {
+    throw new Error(
+      `role config contains unknown schema-v2 keys: ${Object.keys(unknown).sort().join(", ")}`,
+    );
+  }
   delete normalized._unknown;
   return normalized;
 }
@@ -1529,18 +935,20 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value.trim()
-    : undefined;
-}
-
 function asPositiveInteger(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return undefined;
   }
   const normalized = Math.trunc(value);
   return normalized > 0 ? normalized : undefined;
+}
+
+function asNonNegativeInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const normalized = Math.trunc(value);
+  return normalized >= 0 ? normalized : undefined;
 }
 
 function asAgentReasoningEffort(

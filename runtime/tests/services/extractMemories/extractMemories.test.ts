@@ -19,12 +19,16 @@ import {
   validateAutoMemoryDirectoryPath,
 } from "./memory-paths.js";
 import { formatMemoryManifest, scanMemoryFiles } from "../../memory/index.js";
+import { resolveAgentRuntimeOptions } from "../../session/runtime-options.js";
 
 vi.mock("bun:bundle", () => ({ feature: () => false }));
 vi.mock("../../tools.js", () => ({}));
 vi.mock("src/tools.js", () => ({}));
 
-const defaultSession = {} as Session;
+const defaultRuntimeOptions = resolveAgentRuntimeOptions({});
+const defaultSession = {
+  services: { runtimeOptions: defaultRuntimeOptions },
+} as Session;
 
 function ctx(cwd: string): TurnContext {
   return {
@@ -68,6 +72,7 @@ describe("auto memory path resolution", () => {
       resolveAutoMemoryDirectory({
         env: { AGENC_COWORK_MEMORY_PATH_OVERRIDE: "/" },
         cwd: "/work/project",
+        settings: {},
       }),
     ).resolves.toEqual({
       enabled: false,
@@ -78,7 +83,7 @@ describe("auto memory path resolution", () => {
   it("disables remote sessions without a memory mount", async () => {
     await expect(
       resolveAutoMemoryDirectory({
-        env: { AGENC_REMOTE: "1" },
+        runtimeOptions: { remoteMode: true },
         cwd: "/work/project",
       }),
     ).resolves.toEqual({
@@ -113,7 +118,7 @@ describe("auto memory path resolution", () => {
         env: {},
         cwd: "/tmp/foo",
         configHomeDir: configHome,
-        readSettingsFile: async () => null,
+        settings: {},
       }),
     ).resolves.toEqual({
       enabled: true,
@@ -145,7 +150,7 @@ describe("auto memory path resolution", () => {
           env: {},
           cwd: linkedWorktree,
           configHomeDir: configHome,
-          readSettingsFile: async () => null,
+          settings: {},
         }),
       ).resolves.toEqual({
         enabled: true,
@@ -682,8 +687,14 @@ describe("extract memories service", () => {
   });
 
   it("scopes extraction cursors by session and memory directory", async () => {
-    const sessionA = { conversationId: "session-a" } as Session;
-    const sessionB = { conversationId: "session-b" } as Session;
+    const sessionA = {
+      conversationId: "session-a",
+      services: { runtimeOptions: defaultRuntimeOptions },
+    } as Session;
+    const sessionB = {
+      conversationId: "session-b",
+      services: { runtimeOptions: defaultRuntimeOptions },
+    } as Session;
     const memoryDirB = join(root, "memory-b");
     await mkdir(memoryDirB, { recursive: true });
     const runChild = vi.fn(async () => ({ outcome: "completed" as const }));

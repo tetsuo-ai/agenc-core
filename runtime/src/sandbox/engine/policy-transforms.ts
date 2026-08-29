@@ -72,6 +72,7 @@ export function intersectPermissionProfiles(
   requested: AdditionalPermissionProfile,
   granted: AdditionalPermissionProfile,
   cwd: string,
+  sessionTempRoot: string,
 ): AdditionalPermissionProfile {
   const requestedFileSystem = requested.fileSystem;
   const grantedFileSystem = granted.fileSystem ?? { entries: [] };
@@ -80,6 +81,7 @@ export function intersectPermissionProfiles(
         requestedFileSystem,
         grantedFileSystem,
         cwd,
+        sessionTempRoot,
       )
     : undefined;
   const network =
@@ -197,6 +199,7 @@ function intersectFileSystemPermissions(
   requested: FileSystemPermissions,
   granted: FileSystemPermissions,
   cwd: string,
+  sessionTempRoot: string,
 ): FileSystemPermissions {
   const requestedPolicy = restrictedFileSystemPolicy(requested.entries);
   const acceptedEntries: FileSystemSandboxEntry[] = [];
@@ -208,9 +211,13 @@ function intersectFileSystemPermissions(
         requestedPolicy,
         grantedEntry,
         cwd,
+        sessionTempRoot,
       )
     ) {
-      pushUnique(acceptedEntries, materializeCwdDependentEntry(grantedEntry, cwd));
+      pushUnique(
+        acceptedEntries,
+        materializeCwdDependentEntry(grantedEntry, cwd, sessionTempRoot),
+      );
     }
   }
   const entries = [...acceptedEntries];
@@ -218,12 +225,14 @@ function intersectFileSystemPermissions(
     requested.entries,
     acceptedEntries,
     cwd,
+    sessionTempRoot,
     entries,
   );
   const grantedDenyEntries = retainConstrainingDenyEntries(
     granted.entries,
     acceptedEntries,
     cwd,
+    sessionTempRoot,
     entries,
   );
   const globScanMaxDepth = mergeGlobScanMaxDepth(
@@ -247,15 +256,25 @@ function grantedFileSystemEntryWithinRequest(
   requestedPolicy: FileSystemSandboxPolicy,
   grantedEntry: FileSystemSandboxEntry,
   cwd: string,
+  sessionTempRoot: string,
 ): boolean {
   if (!canReadAccess(grantedEntry.access)) return false;
-  const grantedPath = resolvePermissionPath(grantedEntry.path, cwd);
+  const grantedPath = resolvePermissionPath(
+    grantedEntry.path,
+    cwd,
+    sessionTempRoot,
+  );
   if (grantedPath !== null) {
-    if (isReadDenied(requestedPolicy, grantedPath, cwd)) {
+    if (isReadDenied(requestedPolicy, grantedPath, cwd, sessionTempRoot)) {
       return false;
     }
     return accessCovers(
-      resolveAccessWithCwd(requestedPolicy, grantedPath, cwd),
+      resolveAccessWithCwd(
+        requestedPolicy,
+        grantedPath,
+        cwd,
+        sessionTempRoot,
+      ),
       grantedEntry.access,
     );
   }
@@ -270,13 +289,25 @@ function retainConstrainingDenyEntries(
   sourceEntries: readonly FileSystemSandboxEntry[],
   acceptedEntries: readonly FileSystemSandboxEntry[],
   cwd: string,
+  sessionTempRoot: string,
   outputEntries: FileSystemSandboxEntry[],
 ): FileSystemSandboxEntry[] {
   const retained: FileSystemSandboxEntry[] = [];
   for (const entry of sourceEntries) {
     if (entry.access !== "none") continue;
-    if (!denyEntryConstrainsAcceptedGrant(entry, acceptedEntries, cwd)) continue;
-    const materialized = materializeCwdDependentEntry(entry, cwd);
+    if (
+      !denyEntryConstrainsAcceptedGrant(
+        entry,
+        acceptedEntries,
+        cwd,
+        sessionTempRoot,
+      )
+    ) continue;
+    const materialized = materializeCwdDependentEntry(
+      entry,
+      cwd,
+      sessionTempRoot,
+    );
     pushUnique(outputEntries, materialized);
     retained.push(materialized);
   }
@@ -287,15 +318,20 @@ function denyEntryConstrainsAcceptedGrant(
   denyEntry: FileSystemSandboxEntry,
   acceptedEntries: readonly FileSystemSandboxEntry[],
   cwd: string,
+  sessionTempRoot: string,
 ): boolean {
   return acceptedEntries.filter((entry) => canReadAccess(entry.access)).some((entry) => {
-    const grantPath = resolvePermissionPath(entry.path, cwd);
+    const grantPath = resolvePermissionPath(entry.path, cwd, sessionTempRoot);
     if (grantPath === null) return false;
     if (denyEntry.path.kind === "glob") {
       const prefix = globStaticPrefixPath(denyEntry.path.pattern, cwd);
       return prefix !== null && pathOverlaps(prefix, grantPath);
     }
-    const denyPath = resolvePermissionPath(denyEntry.path, cwd);
+    const denyPath = resolvePermissionPath(
+      denyEntry.path,
+      cwd,
+      sessionTempRoot,
+    );
     return denyPath !== null && pathOverlaps(denyPath, grantPath);
   });
 }
@@ -316,9 +352,10 @@ function globStaticPrefixPath(pattern: string, cwd: string): string | null {
 function materializeCwdDependentEntry(
   entry: FileSystemSandboxEntry,
   cwd: string,
+  sessionTempRoot: string,
 ): FileSystemSandboxEntry {
   if (entry.path.kind === "special" && entry.path.value.kind === "project_roots") {
-    const resolved = resolvePermissionPath(entry.path, cwd);
+    const resolved = resolvePermissionPath(entry.path, cwd, sessionTempRoot);
     return resolved
       ? { path: { kind: "path", path: resolved }, access: entry.access }
       : entry;
@@ -427,8 +464,13 @@ function isReadDenied(
   policy: FileSystemSandboxPolicy,
   target: string,
   cwd: string,
+  sessionTempRoot: string,
 ): boolean {
-  const deniedRoots = getUnreadableRootsWithCwd(policy, cwd);
+  const deniedRoots = getUnreadableRootsWithCwd(
+    policy,
+    cwd,
+    sessionTempRoot,
+  );
   if (deniedRoots.some((root) => targetStartsWith(target, root))) {
     return true;
   }

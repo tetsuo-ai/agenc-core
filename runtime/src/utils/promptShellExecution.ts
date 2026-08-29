@@ -39,12 +39,12 @@ import { isPowerShellToolEnabled } from './shell/shellToolUtils.js'
 const getPowerShellTool = (() => {
   let cached: PromptShellTool | undefined
   return (): PromptShellTool => {
-    if (!cached) {
-      cached = (
-        require('../tools/PowerShellTool/PowerShellTool.js') as typeof import('../tools/PowerShellTool/PowerShellTool.js')
-      ).PowerShellTool
-    }
-    return cached
+    if (cached !== undefined) return cached
+    const loaded = (
+      require('../tools/PowerShellTool/PowerShellTool.js') as typeof import('../tools/PowerShellTool/PowerShellTool.js')
+    ).PowerShellTool as unknown as PromptShellTool
+    cached = loaded
+    return loaded
   }
 })()
 /* eslint-enable @typescript-eslint/no-require-imports */
@@ -112,7 +112,6 @@ const INLINE_PATTERN = /(?<=^|\s)!`([^`]+)`/gm
  * @param shell - Shell to route commands through. Defaults to bash.
  *   This is *never* read from settings.defaultShell — it comes from .md
  *   frontmatter (author's choice) or is undefined for built-in commands.
- *   See docs/design/ps-shell-selection.md §5.3.
  */
 export async function executeShellCommandsInPrompt(
   text: string,

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   dispatchPostCompact,
   dispatchPreCompact,
@@ -16,6 +16,12 @@ import type {
   SessionStartHook,
 } from "./types.js";
 
+const compactHookContext = {
+  session_id: "session-test",
+  transcript_path: "/tmp/agenc-test-transcript.jsonl",
+  cwd: "/tmp/agenc-test-workspace",
+} as const;
+
 afterEach(() => {
   resetLifecycleHookRegistry();
 });
@@ -23,6 +29,7 @@ afterEach(() => {
 describe("dispatchPreCompact", () => {
   it("returns empty result with no registered hooks", async () => {
     const r = await dispatchPreCompact({
+      ...compactHookContext,
       hook_event_name: "PreCompact",
       trigger: "manual",
       custom_instructions: null,
@@ -45,6 +52,7 @@ describe("dispatchPreCompact", () => {
     registerPreCompactHook(b);
 
     const r = await dispatchPreCompact({
+      ...compactHookContext,
       hook_event_name: "PreCompact",
       trigger: "auto",
       custom_instructions: null,
@@ -69,6 +77,7 @@ describe("dispatchPreCompact", () => {
     }));
 
     const r = await dispatchPreCompact({
+      ...compactHookContext,
       hook_event_name: "PreCompact",
       trigger: "manual",
       custom_instructions: null,
@@ -85,6 +94,7 @@ describe("dispatchPreCompact", () => {
       throw new Error("bad");
     });
     const r = await dispatchPreCompact({
+      ...compactHookContext,
       hook_event_name: "PreCompact",
       trigger: "manual",
       custom_instructions: null,
@@ -107,6 +117,7 @@ describe("dispatchPreCompact", () => {
     };
     await dispatchPreCompact(
       {
+        ...compactHookContext,
         hook_event_name: "PreCompact",
         trigger: "manual",
         custom_instructions: null,
@@ -121,6 +132,7 @@ describe("dispatchPreCompact", () => {
 describe("dispatchPostCompact", () => {
   it("returns empty when no hooks", async () => {
     const r = await dispatchPostCompact({
+      ...compactHookContext,
       hook_event_name: "PostCompact",
       trigger: "manual",
       compact_summary: "summary",
@@ -143,6 +155,7 @@ describe("dispatchPostCompact", () => {
     registerPostCompactHook(b);
 
     const r = await dispatchPostCompact({
+      ...compactHookContext,
       hook_event_name: "PostCompact",
       trigger: "auto",
       compact_summary: "summary",
@@ -235,5 +248,60 @@ describe("dispatchSessionStart", () => {
       hookEvent: "SessionStart",
       content: ["ctx-before-stop"],
     });
+  });
+});
+
+describe("bare lifecycle authority", () => {
+  it("hard-neutralizes compact and session-start hooks before invocation", async () => {
+    const preHook: PreCompactHook = vi.fn(() => ({
+      succeeded: true,
+      output: "pre ran",
+    }));
+    const postHook: PostCompactHook = vi.fn(() => ({
+      succeeded: true,
+      output: "post ran",
+    }));
+    const startHook: SessionStartHook = vi.fn(() => ({
+      succeeded: true,
+      output: "",
+      additionalContexts: ["start ran"],
+    }));
+    const runtimeOptions = { simpleMode: true } as const;
+
+    await expect(
+      dispatchPreCompact(
+        {
+          ...compactHookContext,
+          hook_event_name: "PreCompact",
+          trigger: "manual",
+          custom_instructions: null,
+        },
+        { hooks: [preHook], runtimeOptions },
+      ),
+    ).resolves.toEqual({});
+    await expect(
+      dispatchPostCompact(
+        {
+          ...compactHookContext,
+          hook_event_name: "PostCompact",
+          trigger: "manual",
+          compact_summary: "summary",
+        },
+        { hooks: [postHook], runtimeOptions },
+      ),
+    ).resolves.toEqual({});
+    await expect(
+      dispatchSessionStart(
+        {
+          hook_event_name: "SessionStart",
+          source: "startup",
+        },
+        { hooks: [startHook], runtimeOptions },
+      ),
+    ).resolves.toEqual([]);
+
+    expect(preHook).not.toHaveBeenCalled();
+    expect(postHook).not.toHaveBeenCalled();
+    expect(startHook).not.toHaveBeenCalled();
   });
 });

@@ -175,6 +175,8 @@ export const REQUIRED_GATE_POLICY_PATHS = Object.freeze([
   "runtime/vitest.powershell.config.ts",
   "runtime/scripts/build-runtime.mjs",
   "runtime/scripts/check-package-entrypoints.mjs",
+  "runtime/scripts/check-daemon-errors.test.mjs",
+  "runtime/scripts/check-daemon-errors/fake-daemon.mjs",
   "runtime/scripts/check-sdk-generated-types.mjs",
   "runtime/scripts/check-tui-runtime-startup.mjs",
   "runtime/scripts/check-tui-runtime-startup.test.mjs",
