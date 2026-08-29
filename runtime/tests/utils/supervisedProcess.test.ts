@@ -732,6 +732,46 @@ describe("runSupervisedProcess", () => {
     },
   );
 
+  it.runIf(process.platform === "linux")(
+    "delivers one graceful signal to a subreaper-contained leader",
+    async () => {
+      // The broker signals the leader's process group and then the leader
+      // itself. A leader scheduled between those two calls observed SIGTERM
+      // twice; parallel runs make that window easy to hit.
+      const runs = 40;
+      const results = await Promise.all(
+        Array.from({ length: runs }, () =>
+          runSupervisedProcess(
+            nodeCommand(
+              "process.on('SIGTERM', () => {" +
+                "process.stdout.write('graceful-once');" +
+                "});" +
+                "process.stderr.write('complete\\n');" +
+                "setInterval(() => {}, 1000);",
+            ),
+            {
+              maxOutputBytes: 1_024,
+              terminateGraceMs: 100,
+              settleBackstopMs: 500,
+              linuxContainment: "subreaper",
+              onStderr(_chunk, control) {
+                control.stop();
+              },
+            },
+          ),
+        ),
+      );
+
+      expect(results.map((result) => result.stopReason)).toEqual(
+        Array.from({ length: runs }, () => "consumer_limit"),
+      );
+      expect(results.map((result) => result.stdout.toString())).toEqual(
+        Array.from({ length: runs }, () => "graceful-once"),
+      );
+    },
+    30_000,
+  );
+
   it.runIf(process.platform !== "win32")(
     "kills a TERM-resistant process group after the grace period",
     async () => {
