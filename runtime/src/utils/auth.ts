@@ -80,7 +80,7 @@ function isManagedOAuthContext(environment: ProviderEnvironment): boolean {
   )
 }
 
-function selectedProviderUsesExternalAuth(provider: string): boolean {
+export function selectedProviderUsesExternalAuth(provider: string): boolean {
   return provider !== 'anthropic' && provider !== 'agenc'
 }
 
@@ -166,6 +166,9 @@ export function getAuthTokenSourceForContext(
   context: ProviderAuthReadContext,
 ) {
   const { environment, home } = context
+  if (selectedProviderUsesExternalAuth(context.provider)) {
+    return { source: 'none' as const, hasToken: false }
+  }
   if (
     environment.ANTHROPIC_AUTH_TOKEN &&
     !isManagedOAuthContext(environment)
@@ -241,6 +244,9 @@ export function getAnthropicApiKeyWithSourceForContext(
   source: ApiKeySource
 } {
   const { environment, home } = context
+  if (selectedProviderUsesExternalAuth(context.provider)) {
+    return { key: null, source: 'none' }
+  }
   // On homespace, don't use ANTHROPIC_API_KEY (use Console key instead)
   // https://anthropic.slack.com/archives/C08428WSLKV/p1747331773214779
   const apiKeyEnv = isRunningOnHomespace(environment)
@@ -270,7 +276,6 @@ export function getAnthropicApiKeyWithSourceForContext(
     }
 
     if (
-      !selectedProviderUsesExternalAuth(context.provider) &&
       !apiKeyEnv &&
       !environment.AGENC_OAUTH_TOKEN &&
       !environment.AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR
@@ -280,7 +285,7 @@ export function getAnthropicApiKeyWithSourceForContext(
       )
     }
 
-    if (apiKeyEnv && !selectedProviderUsesExternalAuth(context.provider)) {
+    if (apiKeyEnv) {
       return {
         key: apiKeyEnv,
         source: 'ANTHROPIC_API_KEY',

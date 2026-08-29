@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 import { resolveHomeContext, type HomeContext } from '../../src/config/home.js'
+import type { StatusNoticeContext } from '../../src/tui/startup/statusNoticeDefinitions.js'
 import type { SecureStorageData } from '../../src/utils/secureStorage/index.js'
 
 const CONFIG_MODULE = '../../src/utils/config.js'
@@ -94,16 +95,77 @@ describe('primary API-key native storage', () => {
     'does not read Anthropic credentials for an external provider in %s mode',
     async nodeEnv => {
       process.env.NODE_ENV = nodeEnv
-      const { isAnthropicAuthEnabledForContext } = await loadAuthModule()
+      const {
+        getAnthropicApiKeyWithSourceForContext,
+        getAuthTokenSourceForContext,
+        isAgenCAISubscriberForContext,
+        isAnthropicAuthEnabledForContext,
+      } = await loadAuthModule()
       const boundHome = resolveHomeContext({ AGENC_HOME: home })
+      const context = {
+        home: boundHome,
+        environment: {
+          AGENC_OAUTH_TOKEN: 'irrelevant-agenc-token',
+          ANTHROPIC_API_KEY: 'irrelevant-anthropic-key',
+          ANTHROPIC_AUTH_TOKEN: 'irrelevant-anthropic-token',
+        },
+        provider: 'openai-compatible',
+      }
 
       expect(
-        isAnthropicAuthEnabledForContext({
-          home: boundHome,
-          environment: {},
-          provider: 'openai-compatible',
-        }),
+        isAnthropicAuthEnabledForContext(context),
       ).toBe(false)
+      expect(getAnthropicApiKeyWithSourceForContext(context)).toEqual({
+        key: null,
+        source: 'none',
+      })
+      expect(getAuthTokenSourceForContext(context)).toEqual({
+        source: 'none',
+        hasToken: false,
+      })
+      expect(isAgenCAISubscriberForContext(context)).toBe(false)
+      const { getActiveNotices } = await import(
+        '../../src/tui/startup/statusNoticeDefinitions.js'
+      )
+      expect(
+        getActiveNotices({
+          config: {} as StatusNoticeContext['config'],
+          homeContext: boundHome,
+          providerAuthContext: context,
+          memoryDiagnostics: [],
+          daemonStatus: { autostartDisabled: false },
+        }),
+      ).toEqual([])
+      expect(storageCalls).toBe(0)
+    },
+  )
+
+  test.each(['test', 'production'] as const)(
+    'does not inspect persisted credentials for an external provider in %s mode',
+    async nodeEnv => {
+      process.env.NODE_ENV = nodeEnv
+      storedData.primaryApiKey = 'irrelevant-stored-key'
+      storedData.agenc = {
+        accessToken: 'irrelevant-stored-token',
+      }
+      const {
+        getAnthropicApiKeyWithSourceForContext,
+        getAuthTokenSourceForContext,
+      } = await loadAuthModule()
+      const context = {
+        home: resolveHomeContext({ AGENC_HOME: home }),
+        environment: { XAI_API_KEY: 'provider-owned-key' },
+        provider: 'grok',
+      }
+
+      expect(getAnthropicApiKeyWithSourceForContext(context)).toEqual({
+        key: null,
+        source: 'none',
+      })
+      expect(getAuthTokenSourceForContext(context)).toEqual({
+        source: 'none',
+        hasToken: false,
+      })
       expect(storageCalls).toBe(0)
     },
   )

@@ -49,6 +49,8 @@ vi.mock("../../utils/format.js", () => ({
 }));
 
 vi.mock("../../utils/auth.js", () => ({
+  selectedProviderUsesExternalAuth: (provider: string) =>
+    provider !== "anthropic" && provider !== "agenc",
   getAnthropicApiKeyWithSourceForContext: (context: unknown) => {
     mocks.providerAuthContexts.push(context);
     if (mocks.throwApiKeyLookup) {
@@ -138,12 +140,7 @@ describe("startup status notice definitions", () => {
     expect(ids.filter((id) => id.endsWith("-external-token"))).toEqual([
       "agenc-account-external-token",
     ]);
-    expect(mocks.credentialHomes.length).toBeGreaterThan(0);
-    expect(
-      mocks.credentialHomes.every(
-        (home) => home === TEST_REMOTE_AUTH_SESSION_CONTEXT.home,
-      ),
-    ).toBe(true);
+    expect(mocks.credentialHomes).toEqual([]);
     expect(mocks.providerAuthContexts.length).toBeGreaterThan(0);
     expect(
       mocks.providerAuthContexts.every(
@@ -153,6 +150,25 @@ describe("startup status notice definitions", () => {
     expect(
       Object.isFrozen(TEST_REMOTE_AUTH_SESSION_CONTEXT.environment),
     ).toBe(true);
+  });
+
+  it("does not inspect Anthropic credentials for an external provider", async () => {
+    const context = {
+      ...baseContext(),
+      providerAuthContext: {
+        ...TEST_REMOTE_AUTH_SESSION_CONTEXT,
+        provider: "openai-compatible",
+      },
+    };
+
+    const { getActiveNotices } = await import("./statusNoticeDefinitions.js");
+    const ids = getActiveNotices(context).map((notice) => notice.id);
+
+    expect(ids).not.toContain("agenc-account-external-token");
+    expect(ids).not.toContain("api-key-conflict");
+    expect(ids).not.toContain("both-auth-methods");
+    expect(mocks.providerAuthContexts).toEqual([]);
+    expect(mocks.credentialHomes).toEqual([]);
   });
 
   it("activates the API-key conflict notice for configured external keys", async () => {

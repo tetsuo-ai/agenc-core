@@ -4,7 +4,7 @@ import type * as React from 'react';
 import type { HomeContext } from '../../config/home.js';
 import { formatNumber } from '../../utils/format.js';
 import type { getRuntimeState } from '../../utils/config.js';
-import { getAnthropicApiKeyWithSourceForContext, getPrimaryApiKeyFromSecureStorage, getAuthTokenSourceForContext, isAgenCAISubscriberForContext, type ProviderAuthReadContext } from '../../utils/auth.js';
+import { getAnthropicApiKeyWithSourceForContext, getPrimaryApiKeyFromSecureStorage, getAuthTokenSourceForContext, isAgenCAISubscriberForContext, selectedProviderUsesExternalAuth, type ProviderAuthReadContext } from '../../utils/auth.js';
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js';
 import { getAgentDescriptionsTotalTokens, AGENT_DESCRIPTIONS_THRESHOLD } from '../../utils/statusNoticeHelpers.js';
 import { isSupportedJetBrainsTerminal, toIDEDisplayName, getTerminalIdeType } from '../../utils/ide.js';
@@ -27,6 +27,7 @@ export type StatusNoticeContext = {
 export type StatusNoticeDefinition = {
   id: string;
   type: StatusNoticeType;
+  authScope?: 'anthropic';
   isActive: (context: StatusNoticeContext) => boolean;
   render: (context: StatusNoticeContext) => React.ReactNode;
 };
@@ -112,6 +113,7 @@ const largeMemoryFilesNotice: StatusNoticeDefinition = {
 const agencAccountExternalTokenNotice: StatusNoticeDefinition = {
   id: 'agenc-account-external-token',
   type: 'warning',
+  authScope: 'anthropic',
   isActive: ctx => {
     const authTokenInfo = readAuthTokenSource(ctx.providerAuthContext);
     return readSubscriberStatus(ctx.providerAuthContext) && authTokenInfo.source === 'ANTHROPIC_AUTH_TOKEN';
@@ -124,12 +126,13 @@ const agencAccountExternalTokenNotice: StatusNoticeDefinition = {
 const apiKeyConflictNotice: StatusNoticeDefinition = {
   id: 'api-key-conflict',
   type: 'warning',
+  authScope: 'anthropic',
   isActive: ctx => {
     const {
       source: apiKeySource
     } = readApiKeyWithSource(ctx.providerAuthContext);
-    return hasManagedApiKey(ctx.providerAuthContext) &&
-      apiKeySource === 'ANTHROPIC_API_KEY';
+    return apiKeySource === 'ANTHROPIC_API_KEY' &&
+      hasManagedApiKey(ctx.providerAuthContext);
   },
   render: ctx => {
     const {
@@ -141,6 +144,7 @@ const apiKeyConflictNotice: StatusNoticeDefinition = {
 const bothAuthMethodsNotice: StatusNoticeDefinition = {
   id: 'both-auth-methods',
   type: 'warning',
+  authScope: 'anthropic',
   isActive: ctx => {
     const {
       source: apiKeySource
@@ -215,5 +219,12 @@ export const statusNoticeDefinitions: StatusNoticeDefinition[] = [largeMemoryFil
 
 // Helper functions for external use
 export function getActiveNotices(context: StatusNoticeContext): StatusNoticeDefinition[] {
-  return statusNoticeDefinitions.filter(notice => notice.isActive(context));
+  const externalAuth = selectedProviderUsesExternalAuth(
+    context.providerAuthContext.provider,
+  );
+  return statusNoticeDefinitions.filter(
+    notice =>
+      !(externalAuth && notice.authScope === 'anthropic') &&
+      notice.isActive(context),
+  );
 }

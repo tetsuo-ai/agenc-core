@@ -47,6 +47,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../utils/auth.js", () => ({
+  selectedProviderUsesExternalAuth: (provider: string) =>
+    provider !== "anthropic" && provider !== "agenc",
   getPrimaryApiKeyFromSecureStorage: () =>
     mocks.apiKeyConfigured
       ? { key: "configured-key", source: "/login managed key" }
