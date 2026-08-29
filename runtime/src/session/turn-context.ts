@@ -93,7 +93,6 @@ export interface ModelInfo {
   readonly usedFallbackModelMetadata: boolean;
 }
 
-/** `max` sits above `xhigh`; the gpt-5.6 family accepts it. */
 export type ReasoningEffort =
   | "none"
   | "minimal"
