@@ -2,7 +2,7 @@
   "rowId": "control-registry-roles",
   "contractName": "agent-surface-contract",
   "reviewer": "independent-parity-auditor",
-  "reviewedAt": "2026-07-23T05:33:14Z",
+  "reviewedAt": "2026-08-29T00:59:42Z",
   "verdict": "APPROVED",
   "behaviorCoverage": {
     "behaviorsAudited": [
@@ -47,10 +47,10 @@
       "runtime/tests/agents/status.test.ts"
     ],
     "testsExecuted": [
-      "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/agents/control.test.ts tests/agents/registry.test.ts tests/agents/role.test.ts tests/agents/role-definitions.test.ts tests/agents/status.test.ts --reporter=dot"
+      "node runtime/scripts/run-hermetic-test-boundary.mjs run tests/agents/control.test.ts tests/agents/registry.test.ts tests/agents/role.test.ts tests/agents/role-definitions.test.ts tests/agents/status.test.ts --reporter=dot"
     ],
     "commandResults": [
-      "PASS: 5 test files passed, 154 tests passed"
+      "PASS: 5 test files passed, 157 tests passed"
     ],
     "implementationEvidence": [
       "AgentControl spawn admission reserves registry capacity and path ownership before exposing a live child, and releases both on failed finalization.",

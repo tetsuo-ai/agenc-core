@@ -2,7 +2,7 @@
   "rowId": "task-tool-bridge",
   "contractName": "agent-surface-contract",
   "reviewer": "independent-parity-auditor",
-  "reviewedAt": "2026-07-23T05:33:14Z",
+  "reviewedAt": "2026-08-29T00:59:42Z",
   "verdict": "APPROVED",
   "behaviorCoverage": {
     "behaviorsAudited": [
@@ -122,10 +122,10 @@
       "runtime/tests/phases/stream-model.test.ts"
     ],
     "testsExecuted": [
-      "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/session/agent-task-lifecycle.test.ts tests/tasks/lifecycle.test.ts tests/tools/AgentTool/loadAgentsDir.test.ts tests/tools/tasks/task-tools.test.ts tests/commands/agent-management.test.tsx tests/bin/model-facing-tools.test.ts tests/agents/jobs/job-orchestrator.test.ts tests/agents/run-agent.test.ts tests/agents/v2/common.test.ts tests/agents/v2/spawn-isolation.test.ts tests/agents/worktree.test.ts tests/agents/delegate-worktree.test.ts tests/agents/workflow-runner.test.ts tests/llm/model-registry.test.ts tests/llm/models-manager.test.ts tests/phases/stream-model.test.ts --reporter=dot"
+      "node runtime/scripts/run-hermetic-test-boundary.mjs run tests/session/agent-task-lifecycle.test.ts tests/tasks/lifecycle.test.ts tests/tools/AgentTool/loadAgentsDir.test.ts tests/tools/tasks/task-tools.test.ts tests/commands/agent-management.test.tsx tests/bin/model-facing-tools.test.ts tests/agents/jobs/job-orchestrator.test.ts tests/agents/run-agent.test.ts tests/agents/v2/common.test.ts tests/agents/v2/spawn-isolation.test.ts tests/agents/worktree.test.ts tests/agents/delegate-worktree.test.ts tests/agents/workflow-scheduler.test.ts tests/llm/model-registry.test.ts tests/llm/models-manager.test.ts tests/phases/stream-model.test.ts --reporter=dot"
     ],
     "commandResults": [
-      "PASS: 16 test files passed, 331 tests passed"
+      "PASS: 16 test files passed, 381 tests passed"
     ],
     "implementationEvidence": [
       "The v2 tool surface delegates spawn, passive message, correlated assignment, wait, list, and close operations through AgentControl; the deleted followup_task alias is not callable.",

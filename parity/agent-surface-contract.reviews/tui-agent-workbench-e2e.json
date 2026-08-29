@@ -2,7 +2,7 @@
   "rowId": "tui-agent-workbench-e2e",
   "contractName": "agent-surface-contract",
   "reviewer": "independent-parity-auditor",
-  "reviewedAt": "2026-07-23T05:33:14Z",
+  "reviewedAt": "2026-08-29T00:59:42Z",
   "verdict": "APPROVED",
   "behaviorCoverage": {
     "behaviorsAudited": [
@@ -62,11 +62,11 @@
       "runtime/tests/bin/agenc.deferred-input.test.ts"
     ],
     "testsExecuted": [
-      "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/agent-surface.test.tsx tests/tui/workbench/agents-rail.test.tsx tests/tui/workbench/agents.test.ts tests/tui/components/App.local-agents.test.tsx tests/tui/hooks/useApiKeyVerification.wave200-066.coverage.test.tsx tests/tui/hooks/useTasksV2.test.tsx tests/tui/startup/statusNoticeDefinitions.test.tsx tests/tui/state/collabAgentTaskSync.test.ts tests/tui/components/App.render.test.tsx tests/tui/daemon-session.contract.test.ts tests/bin/agenc.deferred-input.test.ts --reporter=dot",
+      "node runtime/scripts/run-hermetic-test-boundary.mjs run tests/tui/workbench/agent-surface.test.tsx tests/tui/workbench/agents-rail.test.tsx tests/tui/workbench/agents.test.ts tests/tui/components/App.local-agents.test.tsx tests/tui/hooks/useApiKeyVerification.wave200-066.coverage.test.tsx tests/tui/hooks/useTasksV2.test.tsx tests/tui/startup/statusNoticeDefinitions.test.tsx tests/tui/state/collabAgentTaskSync.test.ts tests/tui/components/App.render.test.tsx tests/tui/daemon-session.contract.test.ts tests/bin/agenc.deferred-input.test.ts --reporter=dot",
       "npm --workspace=@tetsuo-ai/runtime run build && npm --workspace=@tetsuo-ai/runtime run check:tui-e2e -- --filter 03-subagent-completion && npm --workspace=@tetsuo-ai/runtime run check:tui-e2e -- --filter 23-slash-agents"
     ],
     "commandResults": [
-      "PASS: 11 test files passed, 201 tests passed",
+      "PASS: 11 test files passed, 295 tests passed",
       "PASS: runtime build completed",
       "PASS: TUI E2E scenario 03-subagent-completion",
       "PASS: TUI E2E scenario 23-slash-agents"
