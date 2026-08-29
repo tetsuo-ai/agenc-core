@@ -155,6 +155,8 @@ describe("bootstrapLocalRuntimeSession", () => {
     const rebasedWorkspace = await mkdtemp(
       join(tmpdir(), "agenc-bootstrap-authority-rebased-"),
     );
+    await mkdir(join(workspace, ".git"));
+    await mkdir(join(rebasedWorkspace, ".git"));
     trustWorkspaceForTest(home, workspace);
     await writeFile(
       join(home, "config.toml"),
