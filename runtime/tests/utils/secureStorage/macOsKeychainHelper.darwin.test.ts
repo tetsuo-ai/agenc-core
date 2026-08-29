@@ -433,13 +433,18 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
         ...originalSearchList,
       ]);
     }
-    if (originalDefaultCaptured && originalDefaultKeychain !== undefined) {
+    if (originalDefaultCaptured) {
+      // `-s` without a path unsets the user default, matching the captured
+      // no-default state that the test asserted before pointing the default
+      // at temporary keychains that are deleted below.
       void runSecurity([
         "default-keychain",
         "-d",
         "user",
         "-s",
-        originalDefaultKeychain,
+        ...(originalDefaultKeychain === undefined
+          ? []
+          : [originalDefaultKeychain]),
       ]);
     }
     for (const keychain of temporaryKeychains) {

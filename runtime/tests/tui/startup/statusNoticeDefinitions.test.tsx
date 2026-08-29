@@ -179,6 +179,9 @@ describe("startup status notice definitions", () => {
     const ids = getActiveNotices(baseContext()).map((notice) => notice.id);
 
     expect(ids).toContain("api-key-conflict");
+    expect(mocks.credentialHomes).toEqual([
+      TEST_REMOTE_AUTH_SESSION_CONTEXT.home,
+    ]);
   });
 
   it("does not throw when auth notice API-key source lookup fails", async () => {

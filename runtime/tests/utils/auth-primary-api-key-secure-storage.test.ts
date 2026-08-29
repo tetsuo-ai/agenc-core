@@ -170,6 +170,55 @@ describe('primary API-key native storage', () => {
     },
   )
 
+  test.each(['test', 'production'] as const)(
+    'keeps an external provider off the ssh auth proxy path in %s mode',
+    async nodeEnv => {
+      process.env.NODE_ENV = nodeEnv
+      storedData.agenc = { accessToken: 'irrelevant-stored-token' }
+      const {
+        isAgenCAISubscriberForContext,
+        isAnthropicAuthEnabledForContext,
+      } = await loadAuthModule()
+      const boundHome = resolveHomeContext({ AGENC_HOME: home })
+      const proxyEnvironment = {
+        AGENC_OAUTH_TOKEN: 'proxy-placeholder-token',
+        ANTHROPIC_UNIX_SOCKET: '/tmp/agenc-ssh-auth.sock',
+      }
+
+      expect(
+        isAnthropicAuthEnabledForContext({
+          home: boundHome,
+          environment: { ...proxyEnvironment, XAI_API_KEY: 'provider-owned-key' },
+          provider: 'grok',
+        }),
+      ).toBe(false)
+      expect(
+        isAgenCAISubscriberForContext({
+          home: boundHome,
+          environment: { ...proxyEnvironment, XAI_API_KEY: 'provider-owned-key' },
+          provider: 'grok',
+        }),
+      ).toBe(false)
+      expect(storageCalls).toBe(0)
+
+      // The proxy placeholder still decides the first-party case.
+      expect(
+        isAnthropicAuthEnabledForContext({
+          home: boundHome,
+          environment: proxyEnvironment,
+          provider: 'anthropic',
+        }),
+      ).toBe(true)
+      expect(
+        isAnthropicAuthEnabledForContext({
+          home: boundHome,
+          environment: { ANTHROPIC_UNIX_SOCKET: '/tmp/agenc-ssh-auth.sock' },
+          provider: 'anthropic',
+        }),
+      ).toBe(false)
+    },
+  )
+
   test('bare mode keeps the canonical saved credential authority', async () => {
     storedData.primaryApiKey = 'stored-bare-key'
     vi.doMock(ENV_UTILS_MODULE, async importOriginal => {

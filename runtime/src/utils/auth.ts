@@ -104,6 +104,11 @@ export function isAnthropicAuthEnabledForContext(
   context: ProviderAuthReadContext,
 ): boolean {
   const { environment } = context
+  // External providers never use Anthropic authentication, including through
+  // the `agenc ssh` auth proxy below, so decide on provider identity before
+  // inspecting any environment value or credential storage.
+  if (selectedProviderUsesExternalAuth(context.provider)) return false
+
   // `agenc ssh` remote: ANTHROPIC_UNIX_SOCKET tunnels API calls through a
   // local auth-injecting proxy. The launcher sets AGENC_OAUTH_TOKEN as a
   // placeholder iff the local side is a subscriber (so the remote includes the
@@ -114,9 +119,6 @@ export function isAnthropicAuthEnabledForContext(
   if (environment.ANTHROPIC_UNIX_SOCKET) {
     return !!environment.AGENC_OAUTH_TOKEN
   }
-
-  const is3P = selectedProviderUsesExternalAuth(context.provider)
-  if (is3P) return false
 
   // Check if user has configured an external API key source
   // This allows externally-provided API keys to work (without requiring proxy configuration)
