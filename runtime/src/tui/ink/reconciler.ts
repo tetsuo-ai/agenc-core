@@ -263,12 +263,26 @@ export function resetProfileCounters(): void {
 }
 
 let startupCommitCount = 0
+let startupHostInstanceCount = 0
 
 function traceStartupCommit(): void {
   if (process.env.TUI_E2E_DEBUG !== '1') return
   startupCommitCount += 1
   if (startupCommitCount <= 7) {
     traceTuiStartupPhase(`reconciler-reset-${startupCommitCount}`)
+  }
+}
+
+function traceStartupHostInstance(): void {
+  if (process.env.TUI_E2E_DEBUG !== '1') return
+  startupHostInstanceCount += 1
+  if (
+    startupHostInstanceCount === 1 ||
+    startupHostInstanceCount === 64 ||
+    startupHostInstanceCount === 256 ||
+    startupHostInstanceCount === 1024
+  ) {
+    traceTuiStartupPhase(`reconciler-host-${startupHostInstanceCount}`)
   }
 }
 // --- END ---
@@ -280,6 +294,7 @@ function traceStartupCommit(): void {
 const reconciler = createReconciler({
   getRootHostContext: () => ({ isInsideText: false }),
   prepareForCommit: () => {
+    traceTuiStartupPhase('reconciler-prepare-commit')
     if (COMMIT_LOG) _prepareAt = performance.now()
     return null
   },
@@ -381,6 +396,7 @@ const reconciler = createReconciler({
     hostContext: HostContext,
     internalHandle?: unknown,
   ): DOMElement {
+    traceStartupHostInstance()
     if (hostContext.isInsideText && originalType === 'ink-box') {
       throw new Error(`<Box> can't be nested inside <Text> component`)
     }
@@ -462,6 +478,7 @@ const reconciler = createReconciler({
     }
   },
   commitMount(node: DOMElement): void {
+    traceTuiStartupPhase('reconciler-commit-mount')
     getFocusManager(node).handleAutoFocus(node)
   },
   isPrimaryRenderer: true,
