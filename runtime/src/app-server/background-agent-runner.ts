@@ -3371,6 +3371,54 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
   }
 
+  // Read the global session-level cache stats tracker (lives in the
+  // daemon process, fed by the upstream SDK call sites). Provider
+  // flows that bypass the tracker (lmstudio / xAI / chat-completions)
+  // legitimately return zeros — that's accurate, not a bug. The
+  // canonical-authority refactor retired the tracker module itself, so
+  // until it returns this degrades to zeros through the tolerant
+  // import below rather than breaking the snapshot surface.
+  async #sessionCacheStatsSnapshot(
+    _active: ActiveBackgroundAgent,
+  ): Promise<SessionSnapshotResult["cacheStats"]> {
+    const trackerPath = "../services/api/cacheStatsTracker.js";
+    const mod: unknown = await import(/* @vite-ignore */ trackerPath).catch(
+      () => null,
+    );
+    if (mod === null) {
+      return {
+        requestCount: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheTotalInputTokens: 0,
+        hitRate: null,
+      };
+    }
+    const metrics = (
+      mod as {
+        getSessionCacheMetrics?: () => {
+          readonly requestCount?: number;
+          readonly cacheReadInputTokens?: number;
+          readonly cacheCreationInputTokens?: number;
+          readonly cacheTotalInputTokens?: number;
+          readonly hitRate?: number | null;
+        };
+      }
+    ).getSessionCacheMetrics?.();
+    return {
+      requestCount: finiteNumber(metrics?.requestCount ?? 0),
+      cacheReadInputTokens: finiteNumber(metrics?.cacheReadInputTokens ?? 0),
+      cacheCreationInputTokens: finiteNumber(
+        metrics?.cacheCreationInputTokens ?? 0,
+      ),
+      cacheTotalInputTokens: finiteNumber(metrics?.cacheTotalInputTokens ?? 0),
+      hitRate:
+        metrics?.hitRate === null || metrics?.hitRate === undefined
+          ? null
+          : finiteNumber(metrics.hitRate),
+    };
+  }
+
   async partialCompactFromMessage(
     agentId: string,
     params: AgenCBackgroundAgentPartialCompactParams,
