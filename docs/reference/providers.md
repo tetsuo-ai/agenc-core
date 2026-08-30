@@ -246,6 +246,39 @@ Grok server tools (`web_search`, `x_search`, `code_interpreter`, `file_search`,
 MCP) cannot be counted before the turn. Admission reserves the **full context
 window** for those tools so later usage does not trip `provider_overrun`.
 
+## Local provider context windows
+
+Planning a turn against the wrong window is how a local session ends in
+truncation or a refused request. Ollama's OpenAI-compatible `/v1/models`
+returns only `{id, object, created, owned_by}` — no context length — so a
+static 128k fallback used to over-plan by as much as 62× (for example
+`qwen2.5-coder:1.5b` at 32,768 and `moondream` at 2,048).
+
+`runtime/src/llm/model-metadata.ts` resolves the served window in this order:
+
+1. **Live OpenAI-compatible `/v1/models`** for `lmstudio` and
+   `openai-compatible`. Nested llama.cpp `meta.n_ctx` wins over
+   `meta.n_ctx_train` and over flat `max_model_len` / `context_length` fields,
+   because `llama-server -c 4096` on a 32k model refuses at 4,097.
+2. **Ollama native `/api/show`** when the compatible surface has no window.
+   The real number lives under an architecture-prefixed `model_info` key
+   (`qwen2.context_length`, `phi2.context_length`). This also runs when
+   `openai-compatible` or `lmstudio` is pointed at an Ollama origin — a
+   common setup. A non-Ollama server 404s and the resolver falls through.
+3. **`providers.<slug>.context_window_tokens`** when no live window is found.
+   On `openai-compatible` a live window still wins over this explicit value.
+4. **Conservative 128k fallback** only after those probes miss.
+
+The native probe collapses `/v1` (and similar) suffixes so
+`OLLAMA_BASE_URL=http://host:11434/v1` and `http://host:11434` hit the same
+`/api/show`. The provider factory already honored a non-default host; metadata
+now uses that same resolved base URL instead of silently probing localhost.
+
+Set `providers.ollama.context_window_tokens` (or the matching slug) when the
+server does not publish a window. Token admission still uses the conservative
+byte estimator for local providers; see
+[provider-aware-token-accounting.md](../design/provider-aware-token-accounting.md).
+
 ## Related docs
 
 - Tool / provider compatibility notes: [`../provider-tool-compat.md`](../provider-tool-compat.md)

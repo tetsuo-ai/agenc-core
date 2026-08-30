@@ -235,6 +235,15 @@ A canonical plugin ID can be installed in one managed scope at a time.
 Uninstall it before moving it between user and project/local scope. Uninstall
 still accepts an explicit scope so old duplicate copies can be removed safely.
 
+Workspace-resident (`project` / `local`) packages are
+**repository-controlled**. The loader strips `hooks`, `mcpServers`, and
+`lspServers` at load time so a cloned repo cannot inject session-owned
+process children. `agenc plugin install --scope project` (or `local`)
+warns on stderr when the manifest still declares hooks or MCP servers and
+tells you to reinstall with `--scope user`. Skills, commands, agents, and
+output styles from those packages still load. Plugin MCP merge, sandbox
+profile, and connect diagnostics: [mcp.md](mcp.md#plugin-mcp-servers).
+
 ### Marketplace
 
 Local path, git, URL, or GitHub sources enter only through `marketplace add`.

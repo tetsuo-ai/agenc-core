@@ -315,6 +315,13 @@ agenc gateway install-service   # optional always-on channels after Act 2
 Full journey (identity, channels, budgeted autonomy):
 [onboarding.md](onboarding.md). Five-minute path: [quickstart.md](quickstart.md).
 
+Start `agenc` from a project directory, not `$HOME`. The Linux sandbox helper
+lives under `~/.agenc`, and a home workspace can never place that helper
+outside the writable tree. `agenc doctor` reports
+`[sandbox_required_unavailable]` with the home-workspace remediation in that
+case; opening a project directory is the fix, not a reinstall. See
+[tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md).
+
 ## Release/publish procedure
 
 Releases are exact-SHA and resumable. The private state record under

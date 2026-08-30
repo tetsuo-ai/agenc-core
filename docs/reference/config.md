@@ -470,7 +470,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `providers`, `providers.<provider>` | Provider definitions keyed only by canonical built-in provider slug. Unknown and retired names are rejected. Provider credentials use each provider's documented canonical environment variable or native secure storage; the retired `api_key_env` indirection is rejected. |
 | `providers.<provider>.base_url` | Provider API base URL. |
 | `providers.<provider>.default_model` | Provider fallback model. |
-| `providers.<provider>.context_window_tokens` | Positive context window. |
+| `providers.<provider>.context_window_tokens` | Positive context window used when live local-server metadata does not publish one. On `openai-compatible`, a live `/v1/models` or Ollama `/api/show` window still wins. See [providers.md](providers.md#local-provider-context-windows). |
 | `providers.<provider>.max_output_tokens` | Positive provider output cap. |
 | `providers.<provider>.timeout_ms` | Non-negative provider request/stream idle timeout; `0` disables. |
 | `providers.<provider>.capability_overrides` | Capability override block. |

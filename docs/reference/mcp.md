@@ -123,6 +123,45 @@ passive status projection contains no executable client. Returned resource
 content keeps the canonical size, normalization, truncation, and untrusted-data
 framing rules above.
 
+### Plugin MCP servers
+
+Enabled user-scoped plugins contribute outbound servers from the manifest
+`mcpServers` field. Session startup
+(`runtime/src/services/mcp/config.ts` +
+`runtime/src/plugins/registration/mcp-plugin-integration.ts`) merges those
+declarations into the live manager:
+
+- Plugin-scoped names (`plugin:<id>:<server>`) never clobber an explicit
+  `mcp_servers` entry. A disabled manual server does not suppress a plugin
+  server that would otherwise connect.
+- A broken plugin source is reported on `/mcp` and cannot fail session
+  startup. `pluginDefinitionKnowledgeComplete` is false when discovery
+  threw or recorded issues.
+- Templates expand `${AGENC_PLUGIN_ROOT}`, `${AGENC_PLUGIN_DATA}`,
+  `${AGENC_SESSION_ID}`, `${user_config.<field>}`, and `${NAME}` /
+  `${NAME:-default}` from the session environment. Unexpanded required
+  env names drop that server with `Missing environment variables: …`.
+- Stdio children receive `AGENC_PLUGIN_ROOT`, `AGENC_PLUGIN_DATA`,
+  `AGENC_PLUGIN_NAME`, `AGENC_PLUGIN_MCP_SERVER`, and
+  `AGENC_PLUGIN_SANDBOX`. Working directory must stay inside the plugin
+  root.
+- Under `workspace_write`, plugin stdio uses
+  `pluginMcpPermissionProfile`: root read, writes confined to the plugin
+  data directory (and its `tmp/`). That profile is stricter than the
+  workspace profile and Landlock-expressible, so plugin MCP keeps working
+  when bubblewrap is blocked. Ordinary workspace-write MCP still fails
+  with `[sandbox_policy_unexpressible]` on those hosts.
+- Pre-handshake connect failures attach a bounded tail of child stderr
+  (8 lines, 400 characters each) as `; server stderr: …`. The production
+  manager uses a silent logger, so without that tail a sandbox refusal
+  used to surface only as `MCP error -32000: Connection closed`.
+
+Project- and local-scope installs are repository-controlled: hooks, MCP
+servers, and LSP servers are stripped at load time. `agenc plugin install
+--scope project` (or `local`) warns when the manifest still declares hooks
+or MCP servers. Install with `--scope user` to enable them. Details:
+[skills-plugins.md](skills-plugins.md).
+
 ### Model-facing MCP tools
 
 There is **no** LIVE tool named `MCPTool`. External MCP tools appear as deferred
@@ -226,5 +265,6 @@ the daemon-owned admission kernel.
 ## Related
 
 - Tools / permissions overview: [`tools-permissions-sandbox.md`](tools-permissions-sandbox.md)
+- Skills / plugins (including project-scope MCP stripping): [`skills-plugins.md`](skills-plugins.md)
 - Client README: [`../../runtime/src/mcp-client/README.md`](../../runtime/src/mcp-client/README.md)
 - Architecture map: [`../ARCHITECTURE.md`](../ARCHITECTURE.md)

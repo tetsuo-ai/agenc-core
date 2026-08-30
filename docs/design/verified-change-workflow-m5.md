@@ -162,7 +162,10 @@ explicit future contract change.
 - CLI: `agenc run start --goal <text> [--cwd] [--model] [--reviewer-model]
   [--max-cost] [--permission-mode] [--verify "label=script"]... [--json]
   [--follow]`; `agenc run status` renders the step table; `agenc run
-  evidence` exports the machine-readable bundle.
+  evidence` exports the machine-readable bundle. Pipeline children are
+  registered as `workflowChildAgentName(childRunId)` (lowercase, non
+  `[a-z0-9_]` folded to `_`) so the agent registry accepts the derived
+  name. See [cli.md](../reference/cli.md#run).
 - SDK: `client.startRun(params)`; attach/replay/result/evidence by run id
   with the existing cursor contract.
 - TUI: the run appears on the agents rail like any daemon-owned run.

@@ -412,6 +412,23 @@ Native helpers:
 warns `[sandbox_landlock_fallback]` when Linux is ready only via Landlock.
 `[sandbox].allow_gpu` is the macOS Metal opt-in ([config.md](config.md)).
 
+A userland install puts `agenc-linux-sandbox` under `~/.agenc`. A bare
+`agenc` in a fresh terminal opens `$HOME` as the workspace, so the helper
+sits inside the writable tree and startup fails closed with
+`[sandbox_required_unavailable]` (`Linux sandbox helper must be outside the
+writable workspace`). The refusal is correct: a jailed process that can
+rewrite its own jailer is not jailed. `agenc doctor` names that home
+workspace and tells you to open a project directory; it does not ask you to
+reinstall the helper. A helper that is genuinely inside an ordinary project
+workspace still gets the reinstall remediation.
+
+Plugin-declared stdio MCP servers use a tighter profile (root read, writes
+only in the plugin data directory). That profile is Landlock-expressible, so
+those servers keep working when bubblewrap is blocked. Ordinary
+workspace-write MCP still needs bubblewrap; see
+[install.md](../install.md#ubuntu-apparmor-and-bubblewrap) and
+[mcp.md](mcp.md#plugin-mcp-servers).
+
 Runtime `read_only` and `workspace_write` profiles use a full-disk read
 baseline. Explicit deny-read entries still override it. `read_only` grants no
 write entries; `workspace_write` grants writes only to the workspace, approved
