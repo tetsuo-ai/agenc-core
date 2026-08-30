@@ -125,8 +125,87 @@ const LOCAL_IMAGE_ID_PATTERN = /^sha256:[0-9a-f]{64}$/u;
  * offline by contract, and a rebuild step that needs egress must fail loudly
  * as QA signal instead of being quietly granted network.
  */
+/** Every runner constructed in this process, for signal-time cleanup. */
+const activeRunners = new Set<DockerContainerRunner>();
+
+/**
+ * Set once abortAll() starts. Run paths keep executing while the cleanup
+ * removes what exists (a killed docker exec surfaces as a per-task error and
+ * a batch moves on), so every create path refuses new work from this point.
+ */
+let aborting = false;
+
+function assertNotAborting(): void {
+  if (aborting) {
+    throw new EvalExecutorError(["eval-executor is shutting down"]);
+  }
+}
+
+/**
+ * Creates that passed the shutdown check and have not settled. A create is
+ * registered synchronously, before its first docker call, so a sweep that
+ * starts afterwards can wait for it and then remove what it made.
+ */
+const inFlightCreates = new Set<Promise<unknown>>();
+
+function trackInFlight<T>(work: Promise<T>): Promise<T> {
+  inFlightCreates.add(work);
+  const settle = (): void => {
+    inFlightCreates.delete(work);
+  };
+  void work.then(settle, settle);
+  return work;
+}
+
 export class DockerContainerRunner implements ContainerRunner {
-  constructor(private readonly options: DockerContainerRunnerOptions = {}) {}
+  /** Containers this runner created and has not yet removed. */
+  private readonly liveContainers = new Set<string>();
+  /** Networks this runner created and has not yet removed. */
+  private readonly liveNetworks = new Set<string>();
+
+  constructor(private readonly options: DockerContainerRunnerOptions = {}) {
+    activeRunners.add(this);
+  }
+
+  /**
+   * Force-remove everything this runner still owns. The run paths remove
+   * containers and lanes in finally blocks; this is for the CLI's signal
+   * handler, where those blocks never run. Best effort and bounded per item.
+   */
+  async abortLive(): Promise<void> {
+    for (const id of [...this.liveContainers]) {
+      await spawnBounded("docker", ["rm", "-f", id], { timeoutMs: DOCKER_COMMAND_TIMEOUT_MS });
+      this.liveContainers.delete(id);
+    }
+    for (const name of [...this.liveNetworks]) {
+      await spawnBounded("docker", ["network", "rm", name], { timeoutMs: DOCKER_COMMAND_TIMEOUT_MS });
+      this.liveNetworks.delete(name);
+    }
+  }
+
+  /**
+   * Force-remove every live container and network of every runner. New
+   * creations are refused from the first call onward; the sweep removes what
+   * is live, waits for creates that were already past the check, then sweeps
+   * once more so their results are removed too.
+   */
+  static async abortAll(): Promise<void> {
+    aborting = true;
+    for (const runner of activeRunners) {
+      await runner.abortLive();
+    }
+    // A create that passed the shutdown check before the flag was set may
+    // still be issuing docker calls; wait for it, then sweep what it made.
+    await Promise.allSettled([...inFlightCreates]);
+    for (const runner of activeRunners) {
+      await runner.abortLive();
+    }
+  }
+
+  /** Test seam: forget the shutdown state between cases. */
+  static resetAbortStateForTesting(): void {
+    aborting = false;
+  }
 
   async environment(): Promise<ContainerEnvironment> {
     const version = await spawnBounded(
@@ -151,6 +230,14 @@ export class DockerContainerRunner implements ContainerRunner {
     imageReference: string,
     options: CreateTaskContainerOptions = {},
   ): Promise<ContainerHandle> {
+    return trackInFlight(this.createTaskContainerNow(imageReference, options));
+  }
+
+  private async createTaskContainerNow(
+    imageReference: string,
+    options: CreateTaskContainerOptions,
+  ): Promise<ContainerHandle> {
+    assertNotAborting();
     const { dockerReference, imageDigest } = this.resolveImageRef(imageReference);
     const mountArguments: string[] = [];
     for (const mount of options.readOnlyMounts ?? []) {
@@ -186,11 +273,13 @@ export class DockerContainerRunner implements ContainerRunner {
       ]);
     }
     const id = created.stdout.trim();
+    this.liveContainers.add(id);
     const started = await spawnBounded("docker", ["start", id], {
       timeoutMs: DOCKER_COMMAND_TIMEOUT_MS,
     });
     if (started.exitCode !== 0) {
       await spawnBounded("docker", ["rm", "-f", id], { timeoutMs: DOCKER_COMMAND_TIMEOUT_MS });
+      this.liveContainers.delete(id);
       throw new EvalExecutorError([
         `docker start failed for ${imageReference}: ${started.stderr.trim()}`,
       ]);
@@ -233,6 +322,11 @@ export class DockerContainerRunner implements ContainerRunner {
   }
 
   async createAuxiliaryContainer(imageReference: string): Promise<ContainerHandle> {
+    return trackInFlight(this.createAuxiliaryContainerNow(imageReference));
+  }
+
+  private async createAuxiliaryContainerNow(imageReference: string): Promise<ContainerHandle> {
+    assertNotAborting();
     const { dockerReference, imageDigest } = this.resolveImageRef(imageReference);
     const created = await spawnBounded(
       "docker",
@@ -245,11 +339,13 @@ export class DockerContainerRunner implements ContainerRunner {
       ]);
     }
     const id = created.stdout.trim();
+    this.liveContainers.add(id);
     const started = await spawnBounded("docker", ["start", id], {
       timeoutMs: DOCKER_COMMAND_TIMEOUT_MS,
     });
     if (started.exitCode !== 0) {
       await spawnBounded("docker", ["rm", "-f", id], { timeoutMs: DOCKER_COMMAND_TIMEOUT_MS });
+      this.liveContainers.delete(id);
       throw new EvalExecutorError([
         `docker start failed for auxiliary image ${imageReference}: ${started.stderr.trim()}`,
       ]);
@@ -265,6 +361,11 @@ export class DockerContainerRunner implements ContainerRunner {
    * `teardown()` in a finally.
    */
   async createEgressLane(request: EgressLaneRequest): Promise<EgressLane> {
+    return trackInFlight(this.createEgressLaneNow(request));
+  }
+
+  private async createEgressLaneNow(request: EgressLaneRequest): Promise<EgressLane> {
+    assertNotAborting();
     const { dockerReference, imageDigest } = this.resolveImageRef(request.taskImage);
     const overlayHostDir = request.overlayHostDir;
     if (!overlayHostDir.startsWith("/") || overlayHostDir.includes(":") || overlayHostDir.includes(",")) {
@@ -287,9 +388,11 @@ export class DockerContainerRunner implements ContainerRunner {
     const teardown = async (): Promise<void> => {
       for (const id of containers) {
         await spawnBounded("docker", ["rm", "-f", id], { timeoutMs: DOCKER_COMMAND_TIMEOUT_MS });
+        this.liveContainers.delete(id);
       }
       for (const name of networks) {
         await spawnBounded("docker", ["network", "rm", name], { timeoutMs: DOCKER_COMMAND_TIMEOUT_MS });
+        this.liveNetworks.delete(name);
       }
     };
     const requireOk = (result: SpawnResult, what: string): SpawnResult => {
@@ -304,11 +407,13 @@ export class DockerContainerRunner implements ContainerRunner {
         "egress network create",
       );
       networks.push(plan.egressNetName);
+      this.liveNetworks.add(plan.egressNetName);
       requireOk(
         await spawnBounded("docker", [...plan.upstreamCreateArgs], { timeoutMs: DOCKER_COMMAND_TIMEOUT_MS }),
         "upstream network create",
       );
       networks.push(plan.upstreamNetName);
+      this.liveNetworks.add(plan.upstreamNetName);
 
       const sidecarArgs = buildSidecarCreateArgs({
         name: `agenc-eval-proxy-${request.runId}`,
@@ -329,6 +434,7 @@ export class DockerContainerRunner implements ContainerRunner {
       const sidecarId = sidecar.stdout.trim();
       if (!sidecarId) throw new EvalExecutorError(["sidecar create returned no id"]);
       containers.push(sidecarId);
+      this.liveContainers.add(sidecarId);
       requireOk(
         await spawnBounded(
           "docker", ["network", "connect", plan.upstreamNetName, sidecarId],
@@ -358,6 +464,7 @@ export class DockerContainerRunner implements ContainerRunner {
       const agentId = agent.stdout.trim();
       if (!agentId) throw new EvalExecutorError(["agent create returned no id"]);
       containers.push(agentId);
+      this.liveContainers.add(agentId);
       requireOk(
         await spawnBounded("docker", ["start", agentId], { timeoutMs: DOCKER_COMMAND_TIMEOUT_MS }),
         "agent container start",
@@ -497,5 +604,6 @@ export class DockerContainerRunner implements ContainerRunner {
     await spawnBounded("docker", ["rm", "-f", handle.id], {
       timeoutMs: DOCKER_COMMAND_TIMEOUT_MS,
     });
+    this.liveContainers.delete(handle.id);
   }
 }

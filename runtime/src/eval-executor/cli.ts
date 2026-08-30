@@ -1,8 +1,10 @@
 import { randomBytes, randomInt } from "node:crypto";
 import { resolve4 } from "node:dns/promises";
 import { mkdir, writeFile } from "node:fs/promises";
+import net from "node:net";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { runAgentOnTask, runRealProviderAgentOnTask } from "./agent-run.js";
 import {
@@ -31,6 +33,52 @@ const DEFAULT_LOCK_PATH =
   "eval/suites/competitive-coding/1.0.0/task-sets/pilot/1.0.0/source-lock.json";
 
 const DEFAULT_TRUST_SUITE_DIR = "eval/suites/trust-conformance/1.0.0";
+
+/**
+ * Parse an integer option strictly: decimal digits only, so hexadecimal,
+ * exponent, signed, blank, and empty spellings are rejected instead of being
+ * coerced by Number() into a value the operator did not write.
+ */
+function parseIntegerOption(raw: string, flag: string, minimum: number): number {
+  const message = `${flag} must be a decimal integer of at least ${minimum}`;
+  if (!/^[0-9]+$/u.test(raw)) {
+    throw new EvalExecutorError([message]);
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < minimum) {
+    throw new EvalExecutorError([message]);
+  }
+  return value;
+}
+
+/**
+ * Resolve the provider host to the IPv4 addresses the egress sidecar pins.
+ * An IPv4 literal is pinned as given; an IPv6 literal is refused because the
+ * lane only dials IPv4; a hostname that resolves to nothing fails with the
+ * resolver's reason instead of a bare "could not resolve".
+ */
+async function resolveProviderPins(host: string): Promise<string[]> {
+  if (net.isIPv4(host)) {
+    return [host];
+  }
+  if (net.isIPv6(host)) {
+    throw new EvalExecutorError([
+      `provider host ${host} must be a hostname or IPv4 literal; the egress lane pins IPv4 addresses`,
+    ]);
+  }
+  let addresses: string[];
+  try {
+    addresses = await resolve4(host);
+  } catch (error) {
+    throw new EvalExecutorError([
+      `could not resolve an IPv4 address for ${host}: ${error instanceof Error ? error.message : String(error)}`,
+    ]);
+  }
+  if (addresses.length === 0) {
+    throw new EvalExecutorError([`could not resolve any IPv4 address for ${host}`]);
+  }
+  return addresses;
+}
 
 const USAGE = `Usage:
   eval:executor verify-lock [--lock <source-lock.json>]
@@ -244,10 +292,7 @@ async function runRealProviderAgentTask(
   await runner.environment();
   // Resolve the provider host once, on the host, to a set of pinned IPs the
   // sidecar dials — so a mid-run DNS flip cannot redirect egress.
-  const pinIps = await resolve4(options.allowHost);
-  if (pinIps.length === 0) {
-    throw new EvalExecutorError([`could not resolve any IP for ${options.allowHost}`]);
-  }
+  const pinIps = await resolveProviderPins(options.allowHost);
   const { report, patchBytes, rawAgentResult } = await runRealProviderAgentOnTask(
     runner,
     (request) => runner.createEgressLane(request),
@@ -349,15 +394,11 @@ async function runRealProviderAgentBatch(
   return summary.driverErrors === 0 ? 0 : 1;
 }
 
-export async function main(argv: readonly string[]): Promise<number> {
-  const [command, ...rest] = argv;
-  if (!command || command === "--help" || command === "-h") {
-    process.stdout.write(`${USAGE}\n`);
-    return command ? 0 : 2;
-  }
-  const { values } = parseArgs({
-    args: [...rest],
-    options: {
+function parseCommandOptions(rest: readonly string[]) {
+  try {
+    return parseArgs({
+      args: [...rest],
+      options: {
       lock: { type: "string" },
       task: { type: "string" },
       output: { type: "string" },
@@ -373,10 +414,33 @@ export async function main(argv: readonly string[]): Promise<number> {
       tasks: { type: "string" },
       "suite-dir": { type: "string" },
       "seed-slot": { type: "string" },
-      "repository-commit": { type: "string" },
-    },
-    strict: true,
-  });
+        "repository-commit": { type: "string" },
+      },
+      strict: true,
+    }).values;
+  } catch (error) {
+    throw new EvalExecutorError([
+      `${error instanceof Error ? error.message : String(error)} (run with --help for usage)`,
+    ]);
+  }
+}
+
+export async function main(argv: readonly string[]): Promise<number> {
+  const [command, ...rest] = argv;
+  if (
+    command === "--help" ||
+    command === "-h" ||
+    rest.includes("--help") ||
+    rest.includes("-h")
+  ) {
+    process.stdout.write(`${USAGE}\n`);
+    return 0;
+  }
+  if (!command) {
+    process.stderr.write(`${USAGE}\n`);
+    return 2;
+  }
+  const values = parseCommandOptions(rest);
   const lockPath = values.lock ?? DEFAULT_LOCK_PATH;
   if (command === "verify-lock") {
     return verifyLock(lockPath);
@@ -402,10 +466,9 @@ export async function main(argv: readonly string[]): Promise<number> {
       throw new EvalExecutorError(["run-agent requires --task <instanceId> and --overlay <dir>"]);
     }
     const timeoutRaw = values["agent-timeout-ms"];
-    const agentTimeoutMs = timeoutRaw === undefined ? undefined : Number(timeoutRaw);
-    if (agentTimeoutMs !== undefined && (!Number.isSafeInteger(agentTimeoutMs) || agentTimeoutMs <= 0)) {
-      throw new EvalExecutorError(["--agent-timeout-ms must be a positive integer"]);
-    }
+    const agentTimeoutMs = timeoutRaw === undefined
+      ? undefined
+      : parseIntegerOption(timeoutRaw, "--agent-timeout-ms", 1);
     return runAgent({
       lockPath,
       taskId: values.task,
@@ -428,10 +491,9 @@ export async function main(argv: readonly string[]): Promise<number> {
       ]);
     }
     const timeoutRaw = values["agent-timeout-ms"];
-    const agentTimeoutMs = timeoutRaw === undefined ? undefined : Number(timeoutRaw);
-    if (agentTimeoutMs !== undefined && (!Number.isSafeInteger(agentTimeoutMs) || agentTimeoutMs <= 0)) {
-      throw new EvalExecutorError(["--agent-timeout-ms must be a positive integer"]);
-    }
+    const agentTimeoutMs = timeoutRaw === undefined
+      ? undefined
+      : parseIntegerOption(timeoutRaw, "--agent-timeout-ms", 1);
     return runRealProviderAgent({
       lockPath,
       taskId: values.task,
@@ -458,15 +520,17 @@ export async function main(argv: readonly string[]): Promise<number> {
       ]);
     }
     const timeoutRaw = values["agent-timeout-ms"];
-    const agentTimeoutMs = timeoutRaw === undefined ? undefined : Number(timeoutRaw);
-    if (agentTimeoutMs !== undefined && (!Number.isSafeInteger(agentTimeoutMs) || agentTimeoutMs <= 0)) {
-      throw new EvalExecutorError(["--agent-timeout-ms must be a positive integer"]);
-    }
+    const agentTimeoutMs = timeoutRaw === undefined
+      ? undefined
+      : parseIntegerOption(timeoutRaw, "--agent-timeout-ms", 1);
     const taskIds = values.tasks === undefined
       ? undefined
       : values.tasks.split(",").map((id) => id.trim()).filter((id) => id.length > 0);
     if (taskIds !== undefined && taskIds.length === 0) {
       throw new EvalExecutorError(["--tasks must name at least one task id"]);
+    }
+    if (taskIds !== undefined && new Set(taskIds).size !== taskIds.length) {
+      throw new EvalExecutorError(["--tasks must not repeat a task id"]);
     }
     return runRealProviderAgentBatch({
       lockPath,
@@ -490,10 +554,9 @@ export async function main(argv: readonly string[]): Promise<number> {
       ]);
     }
     const seedSlotRaw = values["seed-slot"];
-    const seedSlot = seedSlotRaw === undefined ? 0 : Number(seedSlotRaw);
-    if (!Number.isSafeInteger(seedSlot) || seedSlot < 0) {
-      throw new EvalExecutorError(["--seed-slot must be a non-negative integer"]);
-    }
+    const seedSlot = seedSlotRaw === undefined
+      ? 0
+      : parseIntegerOption(seedSlotRaw, "--seed-slot", 0);
     const summary = await runTrustSuiteFromFiles({
       suiteDir: values["suite-dir"] ?? DEFAULT_TRUST_SUITE_DIR,
       seedSlot,
@@ -509,9 +572,55 @@ export async function main(argv: readonly string[]): Promise<number> {
   return 2;
 }
 
-const isDirectInvocation = process.argv[1] !== undefined &&
-  import.meta.url === new URL(`file://${path.resolve(process.argv[1])}`).href;
-if (isDirectInvocation) {
+/**
+ * True when this module is the script Node was asked to run. The comparison
+ * goes through pathToFileURL so a checkout path containing `#`, `%`, or
+ * another URL-significant character still matches; building the URL by
+ * string concatenation made the CLI a silent no-op under such paths.
+ */
+export function isDirectInvocation(
+  moduleUrl: string,
+  scriptPath: string | undefined,
+): boolean {
+  if (scriptPath === undefined) {
+    return false;
+  }
+  try {
+    return moduleUrl === pathToFileURL(path.resolve(scriptPath)).href;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Containers and networks are normally removed by the finally blocks in the
+ * run paths. A termination signal would skip those, so remove everything this
+ * process created before exiting with the conventional signal status. A
+ * second signal of either kind exits immediately without a second sweep.
+ */
+function installSignalCleanup(): void {
+  let cleanupStarted = false;
+  const onSignal = (signal: NodeJS.Signals): void => {
+    const code = signal === "SIGINT" ? 130 : 143;
+    // A second signal of either kind ends the process at once; the first
+    // one's cleanup is best effort and must never hold an operator hostage.
+    if (cleanupStarted) {
+      process.exit(code);
+    }
+    cleanupStarted = true;
+    process.stderr.write(
+      `${signal}: removing eval-executor containers and networks before exit\n`,
+    );
+    void DockerContainerRunner.abortAll().finally(() => {
+      process.exit(code);
+    });
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+}
+
+if (isDirectInvocation(import.meta.url, process.argv[1])) {
+  installSignalCleanup();
   main(process.argv.slice(2)).then(
     (code) => {
       process.exitCode = code;

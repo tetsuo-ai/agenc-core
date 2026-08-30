@@ -145,6 +145,7 @@ export interface PersistentMemoryIndexOptions {
   readonly now?: () => number;
   readonly backgroundRefresh?: boolean;
   readonly resourceLimitsForTesting?: {
+    readonly incrementalReaderDrainMs?: number;
     readonly maxDatabaseBytes?: number;
     readonly maxFilesPerRoot?: number;
   };
@@ -315,6 +316,7 @@ export class PersistentMemoryIndex {
   readonly #closeController = new AbortController();
   readonly #ftsAvailable: boolean;
   readonly #backgroundRefreshEnabled: boolean;
+  readonly #incrementalReaderDrainMs: number;
   readonly #maxDatabaseBytes: number;
   readonly #maxFilesPerRoot: number;
   readonly #beforeIncrementalReadForTesting?: () => void | Promise<void>;
@@ -328,6 +330,21 @@ export class PersistentMemoryIndex {
     this.#queryPool = options.queryPool ?? new MemoryQueryProcessPool();
     this.#now = options.now ?? Date.now;
     this.#backgroundRefreshEnabled = options.backgroundRefresh ?? true;
+    if (
+      options.resourceLimitsForTesting?.incrementalReaderDrainMs !==
+        undefined &&
+      (!Number.isSafeInteger(
+        options.resourceLimitsForTesting.incrementalReaderDrainMs,
+      ) ||
+        options.resourceLimitsForTesting.incrementalReaderDrainMs < 1 ||
+        options.resourceLimitsForTesting.incrementalReaderDrainMs >
+          MAX_MEMORY_INDEX_BUILD_SLICE_MS)
+    ) {
+      throw new RangeError("memory index test reader-drain limit is invalid");
+    }
+    this.#incrementalReaderDrainMs =
+      options.resourceLimitsForTesting?.incrementalReaderDrainMs ??
+      MAX_MEMORY_INDEX_BUILD_SLICE_MS;
     if (
       options.resourceLimitsForTesting?.maxDatabaseBytes !== undefined &&
       (!Number.isSafeInteger(
@@ -1336,6 +1353,21 @@ export class PersistentMemoryIndex {
     generation: GenerationRow,
     signal: AbortSignal,
   ): Promise<MemoryIndexGenerationStatus> {
+    if (!(await this.#waitForIncrementalReaderDrain(generation.id, signal))) {
+      return {
+        ...this.#rootStatus(root),
+        state: "refresh_pending",
+        reason: MEMORY_INDEX_INCREMENTAL_CONTENTION_REASON,
+      };
+    }
+    throwIfAborted(signal);
+    if (!this.#claimBuildLease(generation.id)) {
+      return {
+        ...this.#rootStatus(root),
+        state: "refresh_pending",
+        reason: MEMORY_INDEX_INCREMENTAL_CONTENTION_REASON,
+      };
+    }
     const startedAt = performance.now();
     const changes = this.#db
       .prepare<[string, number, number], IncrementalChangeRow>(
@@ -2745,6 +2777,32 @@ export class PersistentMemoryIndex {
       .get(rootId)!.cursor;
   }
 
+  async #waitForIncrementalReaderDrain(
+    generationId: number,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const deadline = performance.now() + this.#incrementalReaderDrainMs;
+    while (this.#hasLiveReaderPin(generationId)) {
+      throwIfAborted(signal);
+      if (performance.now() >= deadline) return false;
+      await waitForIncrementalRetry(signal);
+    }
+    return true;
+  }
+
+  #hasLiveReaderPin(generationId: number): boolean {
+    const now = this.#now();
+    return (
+      this.#db
+        .prepare<[number, number], { present: number }>(
+          `SELECT 1 AS present FROM memory_index_reader_pins
+            WHERE generation_id = ? AND lease_expires_at_ms > ?
+            LIMIT 1`,
+        )
+        .get(generationId, now) !== undefined
+    );
+  }
+
   #claimBuildLease(generationId: number): boolean {
     const now = this.#now();
     return this.#db
@@ -2759,13 +2817,6 @@ export class PersistentMemoryIndex {
                   builder_owner IS NULL OR builder_owner = ? OR
                   builder_lease_expires_at_ms IS NULL OR
                   builder_lease_expires_at_ms <= ?
-                )
-                AND (
-                  state = 'staging' OR NOT EXISTS (
-                    SELECT 1 FROM memory_index_reader_pins p
-                     WHERE p.generation_id = memory_index_generations.id
-                       AND p.lease_expires_at_ms > ?
-                  )
                 )`,
           )
           .run(
@@ -2773,7 +2824,6 @@ export class PersistentMemoryIndex {
             now + MEMORY_INDEX_BUILD_LEASE_MS,
             generationId,
             this.#builderOwner,
-            now,
             now,
           );
         return result.changes === 1;

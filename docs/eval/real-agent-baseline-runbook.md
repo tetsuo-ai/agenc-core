@@ -71,6 +71,25 @@ Default output dirs: `eval-executor-output` (agent) and
   complete); any driver-level loss exits 1 and is listed in
   `batch-summary.json`.
 
+### Fail-closed CLI
+
+`runtime/src/eval-executor/cli.ts` refuses ambiguous input instead of
+coercing it:
+
+| Input | Refusal |
+| --- | --- |
+| `--agent-timeout-ms` / `--seed-slot` | Decimal digits only; hex, exponents, signs, blanks, and `12.0` fail |
+| `--provider-host` IPv6 literal | Egress pins IPv4 only |
+| `--tasks` empty or with a repeated id | Batch subset must be an explicit unique list |
+| Unknown flags or stray positionals | Usage error (run with `--help`) |
+| `trust-run` without `--repository-commit` | Explicit 40–64 hex pin required |
+
+SIGINT/SIGTERM remove every container and network this process created, then
+exit 130/143. A second signal of either kind exits immediately without a
+second sweep. Docker spawn stdout/stderr is capped at
+`EVAL_EXECUTOR_MAXIMUM_CAPTURED_OUTPUT_BYTES` (1 MiB) unless a caller raises
+the bound for a specific exec.
+
 ## Outputs
 
 Under `--output`:

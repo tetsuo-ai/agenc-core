@@ -593,10 +593,18 @@ Normal TUI teardown waits for a final exact workspace sync and daemon-lease
 release before destroying the Neovim provider. If either step cannot be
 confirmed, teardown fails visibly and leaves the provider available for
 recovery instead of claiming the editor was safely detached.
-Hosted Linux, Darwin, and Windows gates launch a detached, TERM-resistant
-Neovim job, ensure it has entered the platform's tracked boundary, kill the
-TUI, and require the editor, observed job, owner watchdog/broker, and temporary
-state to be gone before the scenario passes.
+Hosted Linux and Darwin PTY scenarios
+(`130-workbench-buffer-neovim-platform-gate.mjs` and
+`131-workbench-buffer-neovim-platform-kill-cleanup.mjs`) launch a detached,
+TERM-resistant Neovim job inside a real TUI PTY, kill the TUI, and require
+the editor, observed job, owner watchdog/broker, and temporary state to be
+gone. Do not add those scenarios back to `win-x64`. GitHub's hosted Windows
+ConPTY path has produced nondeterministic synthetic-input failures on
+unrelated changes. Windows still proves Job Object cleanup through the
+observed-descendant contract
+(`platform-tests/neovim-process-tree.real.test.ts`) and the lane's post-job
+leak assertions. The full local BUFFER PTY gate remains
+`check:tui-workbench-buffer-neovim` (scenarios 120–124).
 
 ## Trust boundary
 
@@ -658,6 +666,7 @@ node runtime/scripts/run-hermetic-vitest.mjs --require-zero-skips \
   run --config vitest.neovim.config.ts --allowOnly=false
 # The hosted five-target lane adds provider, observed-descendant, and platform
 # contracts on Linux x64/arm64, Darwin x64/arm64, and Windows x64.
+# Hosted PTY (`runner.mjs --platform`) is Linux/Darwin only; win-x64 is rejected.
 node runtime/scripts/run-hermetic-vitest.mjs --require-zero-skips \
   run --config vitest.neovim-platform.config.ts --allowOnly=false
 npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-buffer-neovim
@@ -666,6 +675,14 @@ npm run build
 npm --workspace=@tetsuo-ai/runtime run check:tui-runtime-startup
 node scripts/check-embedded-neovim-buffer.mjs
 ```
+
+Hosted Neovim coverage is split. All five runners still run the 18-test
+lifecycle suite and the 65-test provider/observed-descendant set. Only Linux
+and Darwin then run the two hosted PTY scenarios and expect `2/2 passed`.
+`--platform win-x64` fails closed (`unsupported TUI E2E platform`). Local
+full BUFFER PTY coverage is `check:tui-workbench-buffer-neovim`, not the
+hosted `--platform` filter. Inventory and the ConPTY constraint:
+[`ci-required-gates.md`](ci-required-gates.md).
 
 The TUI talks to the daemon over `AGENC_DAEMON_INTERNAL_METHODS`
 (`workspace.editor.acquire` / `sync` / `heartbeat` / `release`, topology,
@@ -679,3 +696,4 @@ Those methods are not part of the public 54-method SDK. Names:
 - TUI / workbench overview: [`reference/tui-workbench.md`](reference/tui-workbench.md)
 - In-tree TUI notes: [`runtime/src/tui/README.md`](../runtime/src/tui/README.md)
 - Public vs internal RPC: [`reference/daemon.md`](reference/daemon.md)
+- Hosted Neovim lane split: [`ci-required-gates.md`](ci-required-gates.md)

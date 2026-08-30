@@ -59,7 +59,13 @@ and adding a boundary regression test.
   layouts agree. It is launched through the absolute trusted Node executable,
   and runtime/native-loader injection variables are removed before the first
   pre-sandbox process. A command profile that could write either launcher is
-  rejected.
+  rejected. A workspace that contains the user's home (the default for a bare
+  `agenc` in a fresh terminal) cannot satisfy that containment rule; the
+  probe still refuses, but remediation names the home workspace and points at
+  a project directory instead of a reinstall. The helper's own argv parser
+  (`linux-launcher/cli.ts`) also fails closed: policy cwd is required and
+  never inferred, value flags are accepted once, unknown profile fields and
+  NUL bytes are rejected, and `globScanMaxDepth` cannot exceed 128.
 - macOS requires `/usr/bin/sandbox-exec` and a bounded restricted-process probe.
 - Native Windows restricted-token isolation is not implemented, so restricted
   execution fails closed. Operators can use WSL2, an explicit external sandbox,

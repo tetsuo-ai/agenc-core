@@ -18,10 +18,12 @@ function usage(): never {
 async function main(): Promise<void> {
   const arguments_ = process.argv.slice(2);
   const json = arguments_.includes("--json");
-  const paths = arguments_.filter((argument) => !argument.startsWith("--"));
+  // Anything that looks like an option other than --json is a usage error,
+  // including single-dash spellings, so a typo cannot be read as a path.
+  const paths = arguments_.filter((argument) => !argument.startsWith("-"));
   if (
     paths.length > 1 ||
-    arguments_.some((argument) => argument.startsWith("--") && argument !== "--json")
+    arguments_.some((argument) => argument.startsWith("-") && argument !== "--json")
   ) {
     usage();
   }
