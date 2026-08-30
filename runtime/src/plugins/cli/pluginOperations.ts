@@ -728,7 +728,7 @@ async function describeSkills(
     } catch {
       continue;
     }
-    for (const child of children.sort()) {
+    for (const child of [...children].sort((a, b) => a.localeCompare(b))) {
       const childDir = join(skillPath, child);
       try {
         if (!(await stat(join(childDir, "SKILL.md"))).isFile()) continue;
