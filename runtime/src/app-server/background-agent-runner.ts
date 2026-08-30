@@ -5152,6 +5152,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     switch (progress.kind) {
       case "run_error":
         status = "error";
+        // The reason the run ended. Without this line the cause reached
+        // neither the rollout nor any log: agents flipped to status=error
+        // with nothing recorded anywhere to say why.
+        process.stderr.write(
+          `[agenc-daemon] agent ${active.thread.threadId} run error: ${String(
+            (progress as { error?: unknown }).error ?? "unknown",
+          ).slice(0, 800)}\n`,
+        );
         break;
       case "run_interrupted":
         status = "stopped";

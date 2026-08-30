@@ -222,6 +222,13 @@ export function buildOpenAIResponsesRequest(
       )
       .map((message) => messageTextContent(message.content))
       .map((text) => text.trim()),
+    // The ChatGPT subscription backend rejects system-role input items
+    // outright ("System messages are not allowed"), so the volatile tail
+    // folds into instructions there: a colder prefix cache beats a turn
+    // that cannot run at all. Platform keys keep the split below.
+    ...(input.chatgptBackend === true && dynamicSystemPrompt !== undefined
+      ? [dynamicSystemPrompt]
+      : []),
   ]
     .filter((text): text is string => typeof text === "string" && text.length > 0)
     .join("\n\n");
@@ -279,7 +286,7 @@ export function buildOpenAIResponsesRequest(
     });
   }
 
-  if (dynamicSystemPrompt !== undefined) {
+  if (dynamicSystemPrompt !== undefined && input.chatgptBackend !== true) {
     responseInput.push({
       type: "message",
       role: "system",

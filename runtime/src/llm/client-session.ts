@@ -414,7 +414,12 @@ function errorMessageFromBody(status: number, body: unknown): string {
         ? record.message
         : typeof record.error === "string"
           ? record.error
-          : undefined;
+          : // The ChatGPT subscription backend reports errors as
+            // {"detail": "..."} — without this arm its refusals surfaced
+            // as a bare "HTTP 400" with the reason discarded.
+            typeof record.detail === "string"
+              ? record.detail
+              : undefined;
     if (direct) return direct;
     if (record.error && typeof record.error === "object") {
       const nested = record.error as Record<string, unknown>;
