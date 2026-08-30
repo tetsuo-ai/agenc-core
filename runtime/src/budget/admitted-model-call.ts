@@ -414,15 +414,16 @@ export async function runAdmittedModelCall(
   const hasHardTokenCap =
     client?.scope.hasHardTokenCap === true ||
     client?.scope.maxTokens !== undefined;
-  // Every admitted model call needs a provider-enforced output ceiling. The
-  // reservation is only a real upper bound when the request-scoped maximum
-  // reaches the provider wire, regardless of whether this run currently has a
-  // hard aggregate token/USD cap. Authoritative usage remains specifically a
-  // hard-cap requirement; uncapped calls with missing usage are conservatively
-  // held unknown after dispatch.
+  // Under a hard aggregate token/USD cap the reservation must be a real
+  // upper bound, so the provider has to enforce the request-scoped output
+  // ceiling and report authoritative usage. Without a hard cap that
+  // requirement would brick every provider that cannot accept an output
+  // ceiling at all — the ChatGPT subscription backend rejects
+  // max_output_tokens by design — so uncapped calls admit as before and
+  // their usage is conservatively held unknown after dispatch.
   const providerContractUnavailable =
-    profile?.supportsMaxOutputTokens !== true ||
-    ((hasHardCostCap || hasHardTokenCap) &&
+    (hasHardCostCap || hasHardTokenCap) &&
+    (profile?.supportsMaxOutputTokens !== true ||
       profile.usageReporting !== "authoritative");
 
   const contextWindowTokens =
