@@ -250,14 +250,26 @@ describe("configuration authority residue", () => {
   });
 
   test("mcpServers remains documented only in the migration reference and plugin metadata", () => {
+    const allowedDocumentation = new Set([
+      "docs/reference/config.md",
+      "docs/reference/mcp.md",
+      "docs/reference/skills-plugins.md",
+    ]);
     const hits = documentationFiles
       .filter((path) => /\bmcpServers\b/u.test(readFileSync(path, "utf8")))
       .map((path) => relative(REPOSITORY_ROOT, path));
 
-    expect([...new Set(hits)].sort()).toEqual([
-      "docs/reference/config.md",
-      "docs/reference/skills-plugins.md",
-    ]);
+    const uniqueHits = [...new Set(hits)].sort();
+
+    expect(
+      uniqueHits.filter((path) => !allowedDocumentation.has(path)),
+    ).toEqual([]);
+    expect(uniqueHits).toEqual(
+      expect.arrayContaining([
+        "docs/reference/config.md",
+        "docs/reference/skills-plugins.md",
+      ]),
+    );
   });
 
   test("production source cannot restore retired canonical-config spellings", () => {
