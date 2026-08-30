@@ -217,6 +217,15 @@ export function prepareResponsesContinuationRequest(
   }
 
   const request = cloneJsonRecord(snapshot);
+  // previous_response_id can only reference a STORED response. A request
+  // that explicitly opts out of storage leaves nothing server-side to
+  // chain to — the stateless ChatGPT subscription backend (always
+  // store:false) rejects the parameter outright ("Unsupported parameter:
+  // previous_response_id"), which killed every multi-request subscription
+  // turn. Keep the prompt-cache key; skip the incremental delta.
+  if (snapshot.store === false) {
+    return { request, snapshot };
+  }
   const currentInput = getResponseInputItems(snapshot);
   const previousInput =
     state.lastRequest !== undefined ? getResponseInputItems(state.lastRequest) : null;
