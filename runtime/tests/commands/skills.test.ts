@@ -56,7 +56,7 @@ function stubSession(opts: {
   } as unknown as Session;
 }
 
-// Bundled skills (browser-automation, iot-builder, the kit installer) are
+// Bundled skills (browser-automation, the kit installer) are
 // registered in the runtime and are always part of the snapshot. These cases
 // are about how LOCAL and MCP skills merge, so drop the bundled rows here and
 // let tests/commands/skills-bundled-listing.test.ts own the bundled contract.
