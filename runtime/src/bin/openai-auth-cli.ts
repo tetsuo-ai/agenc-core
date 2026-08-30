@@ -142,6 +142,11 @@ export async function runOpenAiAuthCli(
         ...(existing?.accountLabel !== undefined
           ? { account: existing.accountLabel }
           : {}),
+        // The desktop treats this field as the capability signal for
+        // `openai-models`: without it, discovery reports an outdated core.
+        ...(existing?.authMode !== undefined
+          ? { authMode: existing.authMode }
+          : {}),
       },
       existing !== undefined
         ? `Signed in to ChatGPT as ${existing.accountLabel ?? "ChatGPT account"}.`
