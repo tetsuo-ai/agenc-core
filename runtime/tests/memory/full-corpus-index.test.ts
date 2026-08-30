@@ -1379,7 +1379,7 @@ describe("C3b persistent full-corpus index", () => {
     }
   });
 
-  it("defers an incremental second writer while a queued query pins the generation", async () => {
+  it("returns refresh pending when a reader outlives the incremental drain bound", async () => {
     temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-query-race-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
@@ -1419,6 +1419,7 @@ describe("C3b persistent full-corpus index", () => {
       databasePath,
       backgroundRefresh: false,
       queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+      resourceLimitsForTesting: { incrementalReaderDrainMs: 50 },
     });
     const roots = [{ path: memoryRoot, role: "project" as const }];
     await index.refresh(roots, new AbortController().signal, {
@@ -1516,7 +1517,7 @@ describe("C3b persistent full-corpus index", () => {
     }
   });
 
-  it("lands an incremental update while overlapping readers keep the generation pinned", async () => {
+  it("lands an incremental update after overlapping readers outlive the prior drain bound", async () => {
     temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-reader-stream-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
@@ -1533,6 +1534,7 @@ describe("C3b persistent full-corpus index", () => {
     const queryPool = new MemoryQueryProcessPool({ helperEntrypoint });
     const runQuery = queryPool.query.bind(queryPool);
     const releaseReaders = Promise.withResolvers<void>();
+    let releaseTimer: ReturnType<typeof setTimeout> | undefined;
     vi.spyOn(queryPool, "query").mockImplementation(
       async (request, signal) => {
         await releaseReaders.promise;
@@ -1548,8 +1550,8 @@ describe("C3b persistent full-corpus index", () => {
       databasePath,
       backgroundRefresh: false,
       queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
-      beforeIncrementalReadForTesting: async () => {
-        releaseReaders.resolve();
+      beforeIncrementalReadForTesting: () => {
+        releaseTimer = setTimeout(() => releaseReaders.resolve(), 1_100);
       },
     });
     const roots = [{ path: memoryRoot, role: "project" as const }];
@@ -1592,6 +1594,7 @@ describe("C3b persistent full-corpus index", () => {
       expect(readCurrentGenerationId(databasePath)).toBe(generationId);
     } finally {
       streaming = false;
+      if (releaseTimer !== undefined) clearTimeout(releaseTimer);
       releaseReaders.resolve();
       await stream;
       await Promise.allSettled(readers);
@@ -1607,6 +1610,70 @@ describe("C3b persistent full-corpus index", () => {
     expect(refreshed.candidates[0]).toMatchObject({
       description: "readerstreamterm bravo",
     });
+  });
+
+  it("renews an expired builder lease after reader drain before incremental preparation", async () => {
+    temporaryRoot = await mkdtemp(
+      join(tmpdir(), "agenc-c3b-lease-renewal-"),
+    );
+    const memoryRoot = join(temporaryRoot, "memory");
+    const stateRoot = join(temporaryRoot, "state");
+    const databasePath = join(stateRoot, "memory.sqlite");
+    const memoryPath = join(memoryRoot, "renewed.md");
+    await mkdir(memoryRoot, { recursive: true });
+    await mkdir(stateRoot, { recursive: true });
+    await writeMemory(memoryPath, "Lease renewal", "leaserenewalterm alpha");
+
+    let now = 1_000;
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      now: () => now,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+    });
+    const writer = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      now: () => now,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+      beforeIncrementalReadForTesting: () => {
+        now += MEMORY_INDEX_BUILD_LEASE_MS;
+      },
+    });
+    const roots = [{ path: memoryRoot, role: "project" as const }];
+    await index.refresh(roots, new AbortController().signal, {
+      explicit: true,
+    });
+    const generationId = readCurrentGenerationId(databasePath);
+
+    try {
+      await writeMemory(
+        memoryPath,
+        "Lease renewal",
+        "leaserenewalterm bravo",
+      );
+      writer.recordChange({
+        rootPath: memoryRoot,
+        relativePath: "renewed.md",
+        kind: "update",
+      });
+      await expect(
+        writer.refresh(roots, new AbortController().signal),
+      ).resolves.toMatchObject({ kind: "complete" });
+      expect(readCurrentGenerationId(databasePath)).toBe(generationId);
+
+      const refreshed = await writer.query(
+        roots,
+        ["leaserenewalterm"],
+        new AbortController().signal,
+      );
+      expect(refreshed.candidates[0]).toMatchObject({
+        description: "leaserenewalterm bravo",
+        generationId,
+      });
+    } finally {
+      writer.close();
+    }
   });
 
   it("atomically refuses every requested root while one current generation has a writer lease", async () => {

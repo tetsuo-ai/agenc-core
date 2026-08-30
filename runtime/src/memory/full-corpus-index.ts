@@ -48,7 +48,6 @@ import {
   MAX_MEMORY_INDEX_ROOTS,
   MAX_MEMORY_INDEX_WATCHERS,
   MAX_MEMORY_PATH_UTF8_BYTES,
-  MAX_MEMORY_QUERY_MS,
   MAX_MEMORY_RECENT_UNION,
   MEMORY_AUDIT_BACKOFF_MULTIPLIER,
   MEMORY_AUDIT_MAX_INTERVAL_MS,
@@ -94,7 +93,6 @@ const MEMORY_INDEX_READER_PIN_HEARTBEAT_MS = 10_000;
 const MEMORY_INDEX_READER_PIN_LEASE_MS = 60_000;
 const MEMORY_INDEX_INCREMENTAL_CONTENTION_REASON =
   "memory index update is waiting for an active reader or writer";
-const MEMORY_INDEX_INCREMENTAL_READER_DRAIN_MS = MAX_MEMORY_QUERY_MS * 2;
 const CHANGE_KIND_VALUES = new Set(["create", "update", "delete", "rename"]);
 
 type MemoryIndexGenerationState =
@@ -147,6 +145,7 @@ export interface PersistentMemoryIndexOptions {
   readonly now?: () => number;
   readonly backgroundRefresh?: boolean;
   readonly resourceLimitsForTesting?: {
+    readonly incrementalReaderDrainMs?: number;
     readonly maxDatabaseBytes?: number;
     readonly maxFilesPerRoot?: number;
   };
@@ -317,6 +316,7 @@ export class PersistentMemoryIndex {
   readonly #closeController = new AbortController();
   readonly #ftsAvailable: boolean;
   readonly #backgroundRefreshEnabled: boolean;
+  readonly #incrementalReaderDrainMs: number;
   readonly #maxDatabaseBytes: number;
   readonly #maxFilesPerRoot: number;
   readonly #beforeIncrementalReadForTesting?: () => void | Promise<void>;
@@ -330,6 +330,21 @@ export class PersistentMemoryIndex {
     this.#queryPool = options.queryPool ?? new MemoryQueryProcessPool();
     this.#now = options.now ?? Date.now;
     this.#backgroundRefreshEnabled = options.backgroundRefresh ?? true;
+    if (
+      options.resourceLimitsForTesting?.incrementalReaderDrainMs !==
+        undefined &&
+      (!Number.isSafeInteger(
+        options.resourceLimitsForTesting.incrementalReaderDrainMs,
+      ) ||
+        options.resourceLimitsForTesting.incrementalReaderDrainMs < 1 ||
+        options.resourceLimitsForTesting.incrementalReaderDrainMs >
+          MAX_MEMORY_INDEX_BUILD_SLICE_MS)
+    ) {
+      throw new RangeError("memory index test reader-drain limit is invalid");
+    }
+    this.#incrementalReaderDrainMs =
+      options.resourceLimitsForTesting?.incrementalReaderDrainMs ??
+      MAX_MEMORY_INDEX_BUILD_SLICE_MS;
     if (
       options.resourceLimitsForTesting?.maxDatabaseBytes !== undefined &&
       (!Number.isSafeInteger(
@@ -1346,6 +1361,13 @@ export class PersistentMemoryIndex {
       };
     }
     throwIfAborted(signal);
+    if (!this.#claimBuildLease(generation.id)) {
+      return {
+        ...this.#rootStatus(root),
+        state: "refresh_pending",
+        reason: MEMORY_INDEX_INCREMENTAL_CONTENTION_REASON,
+      };
+    }
     const startedAt = performance.now();
     const changes = this.#db
       .prepare<[string, number, number], IncrementalChangeRow>(
@@ -2759,8 +2781,7 @@ export class PersistentMemoryIndex {
     generationId: number,
     signal: AbortSignal,
   ): Promise<boolean> {
-    const deadline =
-      performance.now() + MEMORY_INDEX_INCREMENTAL_READER_DRAIN_MS;
+    const deadline = performance.now() + this.#incrementalReaderDrainMs;
     while (this.#hasLiveReaderPin(generationId)) {
       throwIfAborted(signal);
       if (performance.now() >= deadline) return false;
