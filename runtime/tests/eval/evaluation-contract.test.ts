@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -252,6 +252,27 @@ describe("evaluation contract v1", () => {
       const usage = run();
       expect(usage.status).toBe(2);
       expect(usage.stderr).toContain("Usage:");
+
+      // A single-dash typo is a usage error, not a document name.
+      const dashTypo = run("-legacy", validPath);
+      expect(dashTypo.status).toBe(2);
+      expect(dashTypo.stderr).toContain("Usage:");
+
+      // Documents after "--" are always file names.
+      const separated = run("--", validPath);
+      expect(separated.status).toBe(0);
+      expect(JSON.parse(separated.stdout)).toMatchObject({
+        results: [{ valid: true, file: validPath }],
+      });
+
+      // The reader never follows a symlink to a document.
+      const linkPath = path.join(directory, "link.json");
+      await symlink(validPath, linkPath);
+      const linked = run(linkPath);
+      expect(linked.status).toBe(1);
+      expect(JSON.parse(linked.stdout)).toMatchObject({
+        results: [{ valid: false, error: expect.stringContaining("non-symlink") }],
+      });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

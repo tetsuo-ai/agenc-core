@@ -58,7 +58,7 @@ Credential values are not written into the canonical config snapshot.
 | NVIDIA NIM | `NVIDIA_API_KEY`, `NVIDIA_BASE_URL` |
 | MiniMax | `MINIMAX_API_KEY`, `MINIMAX_BASE_URL` |
 | GitHub | `GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_BASE_URL` |
-| Ollama | `OLLAMA_BASE_URL` |
+| Ollama | `OLLAMA_BASE_URL` (session wire and `/api/show` metadata probe) |
 | Amazon Bedrock | access (required): `AWS_BEDROCK_ACCESS_KEY_ID`, then `AWS_ACCESS_KEY_ID`; secret (required): `AWS_BEDROCK_SECRET_ACCESS_KEY`, then `AWS_SECRET_ACCESS_KEY`; session token (optional): `AWS_BEDROCK_SESSION_TOKEN`, then `AWS_SESSION_TOKEN`; endpoint: `AWS_BEDROCK_BASE_URL`; region: `AWS_BEDROCK_REGION`, then `AWS_REGION`, then `AWS_DEFAULT_REGION` |
 | AgenC managed auth | `AGENC_API_KEY`, `AGENC_ACCOUNT_ID`, `AGENC_BASE_URL`; descriptor variants `AGENC_API_KEY_FILE_DESCRIPTOR`, `AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR`; OAuth/session vars are cataloged below. `AGENC_API_KEY` authenticates managed AgenC APIs and is not a provider BYOK key alias |
 
@@ -66,7 +66,8 @@ Aliases in a row are evaluated from left to right after trimming empty values.
 They do not cross provider boundaries unless the row explicitly lists the
 shared alias. In particular, LM Studio does not inherit `OPENAI_API_KEY` or
 `OPENAI_BASE_URL`. `OPENAI_API_BASE` applies only to `openai` and
-`openai-compatible`.
+`openai-compatible`. The same endpoint aliases feed the context-window
+metadata probe; see [providers.md](providers.md#local-context-windows).
 
 Amazon Bedrock uses the required access/secret pair for direct SigV4 signing;
 the session token is optional. Only the Bedrock variables in the table are

@@ -172,6 +172,166 @@ describe("Linux sandbox launcher", () => {
     ).toThrow(/project root subpath must stay within the project root/u);
   });
 
+  it("fails closed on handoff input that would widen or corrupt the sandbox boundary", () => {
+    const nul = String.fromCharCode(0);
+    const profileJson = (
+      overrides: Record<string, unknown> = {},
+      fileSystemOverrides: Record<string, unknown> = {},
+    ): string =>
+      JSON.stringify({
+        fileSystem: {
+          ...restrictedFileSystemPolicy([
+            { path: { kind: "path", path: "/workspace" }, access: "write" },
+          ]),
+          ...fileSystemOverrides,
+        },
+        network: "disabled",
+        ...overrides,
+      });
+    const withProfile = (profile: string, ...rest: string[]): string[] => [
+      "--sandbox-policy-cwd",
+      "/repo",
+      "--permission-profile",
+      profile,
+      "--session-temp-root",
+      TEST_SESSION_TEMP_ROOT,
+      ...rest,
+    ];
+    const argv = (...rest: string[]): string[] => withProfile(profileJson(), ...rest);
+
+    // The policy cwd anchors project-root grants; it is never inferred from
+    // the launcher's own working directory.
+    expect(() =>
+      parseLinuxSandboxLauncherArgs([
+        "--permission-profile",
+        profileJson(),
+        "--session-temp-root",
+        TEST_SESSION_TEMP_ROOT,
+        "--",
+        "/bin/true",
+      ]),
+    ).toThrow(/policy cwd is missing/u);
+
+    // A flag cannot be swallowed as another flag's value.
+    expect(() =>
+      parseLinuxSandboxLauncherArgs(argv("--command-cwd", "--no-proc", "--", "/bin/true")),
+    ).toThrow(/--command-cwd requires a value/u);
+    // A value flag is accepted once.
+    expect(() =>
+      parseLinuxSandboxLauncherArgs(
+        argv("--command-cwd", "/one", "--command-cwd", "/two", "--", "/bin/true"),
+      ),
+    ).toThrow(/--command-cwd may only be given once/u);
+    // NUL bytes are rejected at the edge, in arguments and inside the profile.
+    expect(() =>
+      parseLinuxSandboxLauncherArgs(argv("--command-cwd", `/tmp/a${nul}b`, "--", "/bin/true")),
+    ).toThrow(/must not contain a NUL byte/u);
+    expect(() =>
+      parseLinuxSandboxLauncherArgs(
+        withProfile(
+          JSON.stringify({
+            fileSystem: restrictedFileSystemPolicy([
+              { path: { kind: "path", path: `/work${nul}space` }, access: "write" },
+            ]),
+            network: "disabled",
+          }),
+          "--",
+          "/bin/true",
+        ),
+      ),
+    ).toThrow(/path entry path must not contain a NUL byte/u);
+    expect(() =>
+      parseLinuxSandboxLauncherArgs(argv("--", "/bin/true", `arg${nul}`)),
+    ).toThrow(/command argument must not contain a NUL byte/u);
+    // The command program must exist.
+    expect(() => parseLinuxSandboxLauncherArgs(argv("--", ""))).toThrow(
+      /command program cannot be empty/u,
+    );
+    // Only known enforcement modes and known fields reach the engine.
+    expect(() =>
+      parseLinuxSandboxLauncherArgs(
+        withProfile(profileJson({ enforcement: "disabled" }), "--", "/bin/true"),
+      ),
+    ).toThrow(/enforcement must be default, untrusted, or managed/u);
+    expect(() =>
+      parseLinuxSandboxLauncherArgs(
+        withProfile(profileJson({ superuser: true }), "--", "/bin/true"),
+      ),
+    ).toThrow(/permission profile has an unsupported field: superuser/u);
+    expect(() =>
+      parseLinuxSandboxLauncherArgs(
+        withProfile(profileJson({}, { bypass: true }), "--", "/bin/true"),
+      ),
+    ).toThrow(/fileSystem has an unsupported field: bypass/u);
+    expect(() =>
+      parseLinuxSandboxLauncherArgs(
+        withProfile(profileJson({}, { globScanMaxDepth: 129 }), "--", "/bin/true"),
+      ),
+    ).toThrow(/globScanMaxDepth must be an integer between 0 and 128/u);
+    expect(() =>
+      parseLinuxSandboxLauncherArgs(withProfile("[]", "--", "/bin/true")),
+    ).toThrow(/permission profile must be an object/u);
+    // A cwd is never anchored to the launcher's own working directory.
+    expect(() =>
+      parseLinuxSandboxLauncherArgs(argv("--command-cwd", "relative/dir", "--", "/bin/true")),
+    ).toThrow(/--command-cwd must be an absolute path/u);
+    expect(() =>
+      parseLinuxSandboxLauncherArgs(argv("--command-cwd", "", "--", "/bin/true")),
+    ).toThrow(/--command-cwd cannot be empty/u);
+    // Path kinds are matched as own properties, never through Object.prototype.
+    for (const kind of ["constructor", "__proto__", "hasOwnProperty"]) {
+      expect(() =>
+        parseLinuxSandboxLauncherArgs(
+          withProfile(
+            JSON.stringify({
+              fileSystem: restrictedFileSystemPolicy([
+                { path: { kind, path: "/x" } as never, access: "read" },
+              ]),
+              network: "disabled",
+            }),
+            "--",
+            "/bin/true",
+          ),
+        ),
+      ).toThrow(/fileSystem entry path kind is invalid/u);
+      expect(() =>
+        parseLinuxSandboxLauncherArgs(
+          withProfile(
+            JSON.stringify({
+              fileSystem: restrictedFileSystemPolicy([
+                { path: { kind: "special", value: { kind } } as never, access: "read" },
+              ]),
+              network: "disabled",
+            }),
+            "--",
+            "/bin/true",
+          ),
+        ),
+      ).toThrow(/special path kind is invalid/u);
+    }
+    // A proxy route spec only makes sense for the proxy-routed inner stage.
+    expect(() =>
+      parseLinuxSandboxLauncherArgs(argv("--proxy-route-spec", "{}", "--", "/bin/true")),
+    ).toThrow(/--proxy-route-spec requires --allow-network-for-proxy/u);
+
+    // The same inputs in their valid form still parse.
+    const parsed = parseLinuxSandboxLauncherArgs(
+      withProfile(
+        profileJson({ enforcement: "managed" }, { globScanMaxDepth: 128 }),
+        "--allow-network-for-proxy",
+        "--proxy-route-spec",
+        "{}",
+        "--",
+        "/bin/true",
+        "arg",
+      ),
+    );
+    expect(parsed.permissionProfile.enforcement).toBe("managed");
+    expect(parsed.permissionProfile.fileSystem.globScanMaxDepth).toBe(128);
+    expect(parsed.proxyRouteSpec).toBe("{}");
+    expect(parsed.command).toEqual(["/bin/true", "arg"]);
+  });
+
   it("builds full-filesystem bubblewrap flags for network-isolated full-write policies", () => {
     const args = createBwrapCommandArgs(
       ["/bin/true"],

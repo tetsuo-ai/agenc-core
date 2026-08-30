@@ -414,7 +414,7 @@ describe("C3b persistent full-corpus index", () => {
     expect(restored.discoveryOperations).toBeGreaterThan(0);
   });
 
-  it("updates one file at a compacted page ceiling and rolls back growth without advancing its cursor", async () => {
+  it("updates one file with bounded SQLite maintenance headroom and rolls back growth without advancing its cursor", async () => {
     temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-page-cap-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
@@ -447,6 +447,7 @@ describe("C3b persistent full-corpus index", () => {
     index = undefined;
 
     const ceilingDatabase = new Database(databasePath);
+    let compactedPageCount = 0;
     let pageCeiling = 0;
     let byteCeiling = 0;
     try {
@@ -455,9 +456,13 @@ describe("C3b persistent full-corpus index", () => {
       expect(
         ceilingDatabase.pragma("freelist_count", { simple: true }),
       ).toBe(0);
-      pageCeiling = Number(
+      compactedPageCount = Number(
         ceilingDatabase.pragma("page_count", { simple: true }),
       );
+      // FTS5 may append one maintenance page when replacing terms even when
+      // the indexed header has the same logical size. Keep that bounded
+      // storage headroom while still exercising rollback at the hard limit.
+      pageCeiling = compactedPageCount + 1;
       byteCeiling =
         pageCeiling *
         Number(ceilingDatabase.pragma("page_size", { simple: true }));
@@ -489,14 +494,17 @@ describe("C3b persistent full-corpus index", () => {
     });
     expect(after.digest).not.toBe(before.digest);
 
+    let committedPageCount = 0;
     const inspection = new Database(databasePath, {
       readonly: true,
       fileMustExist: true,
     });
     try {
-      expect(Number(inspection.pragma("page_count", { simple: true }))).toBe(
-        pageCeiling,
+      committedPageCount = Number(
+        inspection.pragma("page_count", { simple: true }),
       );
+      expect(committedPageCount).toBeGreaterThanOrEqual(compactedPageCount);
+      expect(committedPageCount).toBeLessThanOrEqual(pageCeiling);
       expect(
         (
           inspection
@@ -534,7 +542,7 @@ describe("C3b persistent full-corpus index", () => {
     );
     expect(rejectedState.changeCursor).toBe(committedState.changeCursor);
     expect(rejectedState.pendingChanges).toBeGreaterThan(0);
-    expect(readDatabasePageCount(databasePath)).toBe(pageCeiling);
+    expect(readDatabasePageCount(databasePath)).toBe(committedPageCount);
   });
 
   it("rejects the exact 512-to-513 incremental create and recovers after a deletion", async () => {
@@ -1371,7 +1379,7 @@ describe("C3b persistent full-corpus index", () => {
     }
   });
 
-  it("defers an incremental second writer while a queued query pins the generation", async () => {
+  it("returns refresh pending when a reader outlives the incremental drain bound", async () => {
     temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-query-race-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
@@ -1411,6 +1419,7 @@ describe("C3b persistent full-corpus index", () => {
       databasePath,
       backgroundRefresh: false,
       queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+      resourceLimitsForTesting: { incrementalReaderDrainMs: 50 },
     });
     const roots = [{ path: memoryRoot, role: "project" as const }];
     await index.refresh(roots, new AbortController().signal, {
@@ -1504,6 +1513,165 @@ describe("C3b persistent full-corpus index", () => {
       });
     } finally {
       releaseQuery();
+      writer.close();
+    }
+  });
+
+  it("lands an incremental update after overlapping readers outlive the prior drain bound", async () => {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-reader-stream-"));
+    const memoryRoot = join(temporaryRoot, "memory");
+    const stateRoot = join(temporaryRoot, "state");
+    const databasePath = join(stateRoot, "memory.sqlite");
+    const memoryPath = join(memoryRoot, "streamed.md");
+    await mkdir(memoryRoot, { recursive: true });
+    await mkdir(stateRoot, { recursive: true });
+    await writeMemory(
+      memoryPath,
+      "Reader stream",
+      "readerstreamterm alpha",
+    );
+
+    const queryPool = new MemoryQueryProcessPool({ helperEntrypoint });
+    const runQuery = queryPool.query.bind(queryPool);
+    const releaseReaders = Promise.withResolvers<void>();
+    let releaseTimer: ReturnType<typeof setTimeout> | undefined;
+    vi.spyOn(queryPool, "query").mockImplementation(
+      async (request, signal) => {
+        await releaseReaders.promise;
+        return await runQuery(request, signal);
+      },
+    );
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      queryPool,
+    });
+    const writer = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+      beforeIncrementalReadForTesting: () => {
+        releaseTimer = setTimeout(() => releaseReaders.resolve(), 1_100);
+      },
+    });
+    const roots = [{ path: memoryRoot, role: "project" as const }];
+    await index.refresh(roots, new AbortController().signal, {
+      explicit: true,
+    });
+    const generationId = readCurrentGenerationId(databasePath);
+
+    const readers: Promise<unknown>[] = [];
+    let streaming = true;
+    const stream = (async () => {
+      while (streaming) {
+        readers.push(
+          index!.query(
+            roots,
+            ["readerstreamterm"],
+            new AbortController().signal,
+          ),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    })();
+    try {
+      await expectEventually(async () =>
+        readReaderPinState(databasePath, generationId).pinCount >= 2,
+      );
+      await writeMemory(
+        memoryPath,
+        "Reader stream",
+        "readerstreamterm bravo",
+      );
+      writer.recordChange({
+        rootPath: memoryRoot,
+        relativePath: "streamed.md",
+        kind: "update",
+      });
+      await expect(
+        writer.refresh(roots, new AbortController().signal),
+      ).resolves.toMatchObject({ kind: "complete" });
+      expect(readCurrentGenerationId(databasePath)).toBe(generationId);
+    } finally {
+      streaming = false;
+      if (releaseTimer !== undefined) clearTimeout(releaseTimer);
+      releaseReaders.resolve();
+      await stream;
+      await Promise.allSettled(readers);
+      writer.close();
+    }
+
+    const refreshed = await index.query(
+      roots,
+      ["readerstreamterm"],
+      new AbortController().signal,
+    );
+    expect(refreshed.candidates).toHaveLength(1);
+    expect(refreshed.candidates[0]).toMatchObject({
+      description: "readerstreamterm bravo",
+    });
+  });
+
+  it("renews an expired builder lease after reader drain before incremental preparation", async () => {
+    temporaryRoot = await mkdtemp(
+      join(tmpdir(), "agenc-c3b-lease-renewal-"),
+    );
+    const memoryRoot = join(temporaryRoot, "memory");
+    const stateRoot = join(temporaryRoot, "state");
+    const databasePath = join(stateRoot, "memory.sqlite");
+    const memoryPath = join(memoryRoot, "renewed.md");
+    await mkdir(memoryRoot, { recursive: true });
+    await mkdir(stateRoot, { recursive: true });
+    await writeMemory(memoryPath, "Lease renewal", "leaserenewalterm alpha");
+
+    let now = 1_000;
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      now: () => now,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+    });
+    const writer = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      now: () => now,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+      beforeIncrementalReadForTesting: () => {
+        now += MEMORY_INDEX_BUILD_LEASE_MS;
+      },
+    });
+    const roots = [{ path: memoryRoot, role: "project" as const }];
+    await index.refresh(roots, new AbortController().signal, {
+      explicit: true,
+    });
+    const generationId = readCurrentGenerationId(databasePath);
+
+    try {
+      await writeMemory(
+        memoryPath,
+        "Lease renewal",
+        "leaserenewalterm bravo",
+      );
+      writer.recordChange({
+        rootPath: memoryRoot,
+        relativePath: "renewed.md",
+        kind: "update",
+      });
+      await expect(
+        writer.refresh(roots, new AbortController().signal),
+      ).resolves.toMatchObject({ kind: "complete" });
+      expect(readCurrentGenerationId(databasePath)).toBe(generationId);
+
+      const refreshed = await writer.query(
+        roots,
+        ["leaserenewalterm"],
+        new AbortController().signal,
+      );
+      expect(refreshed.candidates[0]).toMatchObject({
+        description: "leaserenewalterm bravo",
+        generationId,
+      });
+    } finally {
       writer.close();
     }
   });

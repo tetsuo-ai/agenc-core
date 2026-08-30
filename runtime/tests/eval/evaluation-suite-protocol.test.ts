@@ -401,5 +401,10 @@ describe("versioned evaluation suite protocol", () => {
     const usage = run("--unknown");
     expect(usage.status).toBe(2);
     expect(usage.stderr).toContain("Usage:");
+
+    // A single-dash typo is a usage error, not a catalog path.
+    const dashTypo = run("-json");
+    expect(dashTypo.status).toBe(2);
+    expect(dashTypo.stderr).toContain("Usage:");
   });
 });

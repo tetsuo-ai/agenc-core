@@ -3,8 +3,11 @@ export const HOSTED_NEOVIM_TARGETS = Object.freeze([
   "linux-arm64",
   "darwin-x64",
   "darwin-arm64",
-  "win-x64",
 ]);
+
+// Do not add win-x64 back. GitHub's hosted Windows ConPTY path has produced
+// nondeterministic synthetic-input failures on unrelated changes. Windows
+// keeps the real Neovim lifecycle and provider contracts in platform-tests.
 
 export const HOSTED_NEOVIM_SCENARIOS = Object.freeze([
   "130-workbench-buffer-neovim-platform-gate.mjs",
