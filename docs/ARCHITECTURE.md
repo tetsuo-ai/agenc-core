@@ -7,7 +7,7 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 | Doc                                                                              | Scope                                                                        |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | [`reference/daemon.md`](reference/daemon.md)                                     | Daemon process, socket, protocol, lifecycle                                  |
-| [`reference/providers.md`](reference/providers.md)                               | Built-in providers, defaults, credentials                                    |
+| [`reference/providers.md`](reference/providers.md)                               | Built-in providers, defaults, credentials, local context-window probes       |
 | [`reference/autonomy.md`](reference/autonomy.md)                                 | Budget, heartbeat, cron delivery, hooks HTTP                                 |
 | [`design/execution-admission-kernel.md`](design/execution-admission-kernel.md)   | Live durable budget/admission design                                         |
 | [`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md) | Canonical run journal, effects, terminal results, replay, and crash recovery |
@@ -399,7 +399,8 @@ output, low/medium/high/xhigh effort with high default); `grok-4.5` remains a
 selectable entry. Model metadata
 and cost assumptions: [`reference/providers.md`](reference/providers.md).
 
-There are **16 built-in provider slugs**. Full table, env vars, and base URLs:
+There are **16 built-in provider slugs**. Full table, env vars, base URLs,
+and how local servers publish a context window:
 [`reference/providers.md`](reference/providers.md).
 `runtime/src/llm/registry/provider-info.ts` contains one authored definition
 row per slug. That row owns its display name, default model and base URL,

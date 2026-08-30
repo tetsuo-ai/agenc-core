@@ -57,7 +57,7 @@ history; the linked pages below are current product truth.
 | [reference/config.md](reference/config.md) | `config.toml` sections, env overrides, `agenc config` |
 | [reference/env.md](reference/env.md) | Operator `AGENC_*` / provider key environment variables |
 | [reference/daemon.md](reference/daemon.md) | Daemon process model, socket auth, lifecycle |
-| [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs |
+| [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes |
 | [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics |
 | [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery + hooks HTTP |
 | [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, correlated outcomes, and worktree evidence |
