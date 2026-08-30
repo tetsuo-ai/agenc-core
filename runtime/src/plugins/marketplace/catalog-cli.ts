@@ -89,6 +89,12 @@ export interface MarketplaceCatalogPluginRow {
   readonly root: string;
   /** Manifest description read at the pinned commit, when available. */
   readonly description?: string;
+  /** Manifest version read at the pinned commit, when available. */
+  readonly version?: string;
+  /** Skills the pinned manifest declares, with SKILL.md descriptions. */
+  readonly skills?: readonly { name: string; description?: string }[];
+  /** Commands the pinned manifest declares. */
+  readonly commands?: readonly { name: string; description?: string }[];
   /** Absolute path of the plugin logo, present only when it exists. */
   readonly logoPath?: string;
   /**
@@ -241,21 +247,144 @@ async function fetchBounded(
  * per plugin on first sight and none afterwards. Every failure is
  * silent: a missing logo is a generic card, never a broken catalog.
  */
+interface MarketplaceComponentRow {
+  readonly name: string;
+  readonly description?: string;
+}
+
 interface PrefetchedCardMeta {
   readonly logoPath?: string;
   readonly displayName?: string;
   readonly description?: string;
+  readonly version?: string;
+  readonly interface?: Record<string, unknown>;
+  readonly skills?: readonly MarketplaceComponentRow[];
+  readonly commands?: readonly MarketplaceComponentRow[];
 }
 
 /** Card copy is display text, not documents; keep it card-sized. */
 const CARD_DISPLAY_NAME_MAX = 80;
 const CARD_DESCRIPTION_MAX = 280;
+const CARD_LONG_DESCRIPTION_MAX = 2000;
+const CARD_URL_MAX = 300;
+const CARD_LIST_MAX = 12;
+const CARD_PROMPT_MAX = 4;
+const CARD_SKILLS_MAX = 8;
+const SKILL_PREFETCH_MAX_BYTES = 32 * 1024;
 
 function cardString(value: unknown, maxLength: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   if (trimmed.length === 0) return undefined;
   return trimmed.slice(0, maxLength);
+}
+
+function cardStringList(
+  value: unknown,
+  maxItems: number,
+  maxLength: number,
+): readonly string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items = value
+    .map((entry) => cardString(entry, maxLength))
+    .filter((entry): entry is string => entry !== undefined)
+    .slice(0, maxItems);
+  return items.length > 0 ? items : undefined;
+}
+
+/**
+ * The bounded, display-only projection of a pinned manifest interface.
+ * Never trusts lengths, never carries the logo (that travels as a
+ * verified cached file path), never carries screenshots (unfetched
+ * relative paths are useless to a catalog client).
+ */
+function cardInterface(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const raw = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  const put = (key: string, entry: unknown): void => {
+    if (entry !== undefined) out[key] = entry;
+  };
+  put("displayName", cardString(raw.displayName, CARD_DISPLAY_NAME_MAX));
+  put("shortDescription", cardString(raw.shortDescription, CARD_DESCRIPTION_MAX));
+  put("longDescription", cardString(raw.longDescription, CARD_LONG_DESCRIPTION_MAX));
+  put("developerName", cardString(raw.developerName, CARD_DISPLAY_NAME_MAX));
+  put("category", cardString(raw.category, CARD_DISPLAY_NAME_MAX));
+  put("capabilities", cardStringList(raw.capabilities, CARD_LIST_MAX, 64));
+  put("websiteUrl", cardString(raw.websiteUrl, CARD_URL_MAX));
+  put("privacyPolicyUrl", cardString(raw.privacyPolicyUrl, CARD_URL_MAX));
+  put("termsOfServiceUrl", cardString(raw.termsOfServiceUrl, CARD_URL_MAX));
+  put("defaultPrompt", cardStringList(raw.defaultPrompt, CARD_PROMPT_MAX, 200));
+  const brand = cardString(raw.brandColor, 16);
+  if (brand !== undefined && /^#[0-9a-f]{3,8}$/iu.test(brand)) {
+    out.brandColor = brand;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function cardComponentRows(value: unknown): readonly MarketplaceComponentRow[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const rows = value.flatMap((entry): MarketplaceComponentRow[] => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const raw = entry as Record<string, unknown>;
+    const name = cardString(raw.name, CARD_DISPLAY_NAME_MAX);
+    if (name === undefined) return [];
+    const description = cardString(raw.description, CARD_DESCRIPTION_MAX);
+    return [{ name, ...(description !== undefined ? { description } : {}) }];
+  }).slice(0, CARD_LIST_MAX);
+  return rows.length > 0 ? rows : undefined;
+}
+
+async function prefetchSkillRows(
+  fetcher: Fetcher,
+  source: MarketplacePlugin["source"],
+  declaredSkills: unknown,
+): Promise<readonly MarketplaceComponentRow[] | undefined> {
+  if (!Array.isArray(declaredSkills)) return undefined;
+  const rows: MarketplaceComponentRow[] = [];
+  for (const declared of declaredSkills.slice(0, CARD_SKILLS_MAX)) {
+    if (typeof declared !== "string" || declared.length === 0) continue;
+    const clean = declared.replace(/^\.\//u, "").replace(/\/+$/u, "");
+    const name = clean.split("/").pop();
+    if (name === undefined || name.length === 0) continue;
+    let description: string | undefined;
+    const skillUrl = pinnedRawUrl(source, `${clean}/SKILL.md`);
+    if (skillUrl !== undefined) {
+      const bytes = await fetchBounded(fetcher, skillUrl, SKILL_PREFETCH_MAX_BYTES);
+      if (bytes !== undefined) {
+        const head = Buffer.from(bytes).toString("utf8");
+        const match = /^description:\s*(.+)$/mu.exec(head);
+        if (match?.[1] !== undefined) {
+          description = match[1].trim().slice(0, CARD_DESCRIPTION_MAX);
+        }
+      }
+    }
+    rows.push({ name, ...(description !== undefined ? { description } : {}) });
+  }
+  return rows.length > 0 ? rows : undefined;
+}
+
+function metaFromSidecar(value: unknown, logoPath: string | undefined): PrefetchedCardMeta {
+  const raw = typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : {};
+  const surface = cardInterface(raw.interface);
+  const displayName =
+    cardString(raw.displayName, CARD_DISPLAY_NAME_MAX) ??
+    (surface?.displayName as string | undefined);
+  const description = cardString(raw.description, CARD_DESCRIPTION_MAX);
+  const version = cardString(raw.version, 64);
+  const skills = cardComponentRows(raw.skills);
+  const commands = cardComponentRows(raw.commands);
+  return {
+    ...(logoPath !== undefined ? { logoPath } : {}),
+    ...(displayName !== undefined ? { displayName } : {}),
+    ...(description !== undefined ? { description } : {}),
+    ...(version !== undefined ? { version } : {}),
+    ...(surface !== undefined ? { interface: surface } : {}),
+    ...(skills !== undefined ? { skills } : {}),
+    ...(commands !== undefined ? { commands } : {}),
+  };
 }
 
 async function prefetchPinnedCardMeta(
@@ -273,30 +402,21 @@ async function prefetchPinnedCardMeta(
       await readFile(join(cacheRoot, `${key}.meta.json`), "utf8"),
     );
     if (typeof cachedRaw === "object" && cachedRaw !== null) {
-      const cached = cachedRaw as {
-        displayName?: unknown;
-        description?: unknown;
-        logoExt?: unknown;
-      };
-      const meta: {
-        logoPath?: string;
-        displayName?: string;
-        description?: string;
-      } = {};
-      const displayName = cardString(cached.displayName, CARD_DISPLAY_NAME_MAX);
-      const description = cardString(cached.description, CARD_DESCRIPTION_MAX);
-      if (displayName !== undefined) meta.displayName = displayName;
-      if (description !== undefined) meta.description = description;
-      if (typeof cached.logoExt === "string" && /^(png|jpg|webp)$/u.test(cached.logoExt)) {
+      const cached = cachedRaw as Record<string, unknown>;
+      let logoPath: string | undefined;
+      if (
+        typeof cached.logoExt === "string" &&
+        /^(png|jpg|webp)$/u.test(cached.logoExt)
+      ) {
         const cachedLogo = join(cacheRoot, `${key}.${cached.logoExt}`);
         try {
           const stats = await stat(cachedLogo);
-          if (stats.isFile() && stats.size > 0) meta.logoPath = cachedLogo;
+          if (stats.isFile() && stats.size > 0) logoPath = cachedLogo;
         } catch {
           // Meta survives a pruned logo file.
         }
       }
-      return meta;
+      return metaFromSidecar(cached, logoPath);
     }
   } catch {
     // Not cached yet.
@@ -307,24 +427,38 @@ async function prefetchPinnedCardMeta(
     MANIFEST_PREFETCH_MAX_BYTES,
   );
   if (manifestBytes === undefined) return undefined;
-  let declaredLogo: unknown;
-  let displayName: string | undefined;
-  let description: string | undefined;
+  let manifest: Record<string, unknown>;
   try {
-    const manifest: unknown = JSON.parse(
+    const parsed: unknown = JSON.parse(
       Buffer.from(manifestBytes).toString("utf8"),
     );
-    if (typeof manifest !== "object" || manifest === null) return undefined;
-    const shaped = manifest as {
-      description?: unknown;
-      interface?: { logo?: unknown; displayName?: unknown };
-    };
-    declaredLogo = shaped.interface?.logo;
-    displayName = cardString(shaped.interface?.displayName, CARD_DISPLAY_NAME_MAX);
-    description = cardString(shaped.description, CARD_DESCRIPTION_MAX);
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    manifest = parsed as Record<string, unknown>;
   } catch {
     return undefined;
   }
+  const surface = cardInterface(manifest.interface);
+  const description = cardString(manifest.description, CARD_DESCRIPTION_MAX);
+  const version = cardString(manifest.version, 64);
+  const commands =
+    typeof manifest.commands === "object" && manifest.commands !== null
+      ? cardComponentRows(
+          Object.entries(manifest.commands as Record<string, unknown>).map(
+            ([name, entry]) => ({
+              name,
+              description:
+                typeof entry === "object" && entry !== null
+                  ? (entry as { description?: unknown }).description
+                  : undefined,
+            }),
+          ),
+        )
+      : undefined;
+  const skills = await prefetchSkillRows(fetcher, plugin.source, manifest.skills);
+  const declaredLogo =
+    typeof manifest.interface === "object" && manifest.interface !== null
+      ? ((manifest.interface as { logo?: unknown }).logo)
+      : undefined;
   let logoPath: string | undefined;
   let logoExt: string | undefined;
   if (typeof declaredLogo === "string" && declaredLogo.length > 0) {
@@ -351,25 +485,28 @@ async function prefetchPinnedCardMeta(
       }
     }
   }
+  const sidecar = {
+    ...(surface?.displayName !== undefined
+      ? { displayName: surface.displayName }
+      : {}),
+    ...(description !== undefined ? { description } : {}),
+    ...(version !== undefined ? { version } : {}),
+    ...(surface !== undefined ? { interface: surface } : {}),
+    ...(skills !== undefined ? { skills } : {}),
+    ...(commands !== undefined ? { commands } : {}),
+    ...(logoExt !== undefined ? { logoExt } : {}),
+  };
   try {
     await mkdir(cacheRoot, { recursive: true, mode: 0o700 });
     await writeFile(
       join(cacheRoot, `${key}.meta.json`),
-      `${JSON.stringify({
-        ...(displayName !== undefined ? { displayName } : {}),
-        ...(description !== undefined ? { description } : {}),
-        ...(logoExt !== undefined ? { logoExt } : {}),
-      })}\n`,
+      `${JSON.stringify(sidecar)}\n`,
       { mode: 0o600 },
     );
   } catch {
     // Uncached is refetched next catalog, never fatal.
   }
-  return {
-    ...(logoPath !== undefined ? { logoPath } : {}),
-    ...(displayName !== undefined ? { displayName } : {}),
-    ...(description !== undefined ? { description } : {}),
-  };
+  return metaFromSidecar(sidecar, logoPath);
 }
 
 async function catalogRowsForMarketplace(
@@ -393,14 +530,16 @@ async function catalogRowsForMarketplace(
         : prefetched?.logoPath !== undefined
           ? logoCacheRoot(options)
           : undefined;
-    const displayName =
-      plugin.interface?.displayName ?? prefetched?.displayName;
-    // Overlaying displayName keeps every other declared field; the cast
-    // is needed because a spread re-widens exact-optional properties.
+    // The marketplace entry's own declarations win field-by-field over
+    // what the pinned manifest reports; the cast is needed because a
+    // spread re-widens exact-optional properties.
     const surface =
-      displayName !== undefined
-        ? ({ ...plugin.interface, displayName } as MarketplacePlugin["interface"])
-        : plugin.interface;
+      plugin.interface !== undefined || prefetched?.interface !== undefined
+        ? ({
+            ...(prefetched?.interface ?? {}),
+            ...(plugin.interface ?? {}),
+          } as MarketplacePlugin["interface"])
+        : undefined;
     rows.push({
       id: `${plugin.name}@${marketplace.name}`,
       name: plugin.name,
@@ -411,6 +550,13 @@ async function catalogRowsForMarketplace(
       root: marketplace.root,
       ...(prefetched?.description !== undefined
         ? { description: prefetched.description }
+        : {}),
+      ...(prefetched?.version !== undefined
+        ? { version: prefetched.version }
+        : {}),
+      ...(prefetched?.skills !== undefined ? { skills: prefetched.skills } : {}),
+      ...(prefetched?.commands !== undefined
+        ? { commands: prefetched.commands }
         : {}),
       ...(logoPath !== undefined ? { logoPath } : {}),
       ...(logoRoot !== undefined ? { logoRoot } : {}),
