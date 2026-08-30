@@ -16,14 +16,17 @@
  * its own trusted scheme instead of guessing.
  */
 
-import { isAbsolute, resolve, sep } from "node:path";
-import { realpath, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { isAbsolute, join, resolve, sep } from "node:path";
+import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 
 import {
   findInstallableMarketplacePlugin,
   loadMarketplace,
   marketplaceRootDir,
+  marketplaceStoreRoot,
   readMarketplaceIndex,
+  type Fetcher,
   type Marketplace,
   type MarketplacePlugin,
   type MarketplaceRecord,
@@ -36,6 +39,45 @@ export const PLUGIN_MARKETPLACE_CATALOG_KIND =
 export const PLUGIN_MARKETPLACE_INSTALL_KIND =
   "agenc.plugin.marketplace.install";
 
+/**
+ * The marketplace AgenC publishes. A fresh profile has no marketplaces at
+ * all, so a GUI client's first catalog request would truthfully return
+ * nothing installable; registering this once turns that into the shipped
+ * plugin set. Opt out with AGENC_SKIP_OFFICIAL_MARKETPLACE=1.
+ */
+export const OFFICIAL_MARKETPLACE_NAME = "agenc-plugins";
+export const OFFICIAL_MARKETPLACE_URL =
+  "https://agenc.tech/plugins/marketplace.json";
+
+/**
+ * Register the official marketplace when the profile has none. Returns
+ * true when it was added. Never throws: an offline first run must still
+ * produce a catalog (an empty one), not a hard CLI failure.
+ */
+export async function ensureOfficialMarketplace(
+  options: MarketplaceOperationOptions,
+  addMarketplace: (input: {
+    readonly source: string;
+    readonly name: string;
+    readonly force: boolean;
+  } & MarketplaceOperationOptions) => Promise<unknown>,
+): Promise<boolean> {
+  if (options.env?.AGENC_SKIP_OFFICIAL_MARKETPLACE === "1") return false;
+  const index = await readMarketplaceIndex(options);
+  if (Object.keys(index.marketplaces).length > 0) return false;
+  try {
+    await addMarketplace({
+      ...options,
+      source: OFFICIAL_MARKETPLACE_URL,
+      name: OFFICIAL_MARKETPLACE_NAME,
+      force: false,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export interface MarketplaceCatalogPluginRow {
   readonly id: string;
   readonly name: string;
@@ -45,8 +87,16 @@ export interface MarketplaceCatalogPluginRow {
   readonly interface?: MarketplacePlugin["interface"];
   /** Absolute marketplace root this row's relative assets resolve against. */
   readonly root: string;
-  /** Absolute path of the manifest logo, present only when it exists. */
+  /** Manifest description read at the pinned commit, when available. */
+  readonly description?: string;
+  /** Absolute path of the plugin logo, present only when it exists. */
   readonly logoPath?: string;
+  /**
+   * Directory `logoPath` is proven to sit inside. Prefetched artwork is
+   * cached outside the marketplace root, so a client must contain its
+   * check to this directory rather than assume `root`.
+   */
+  readonly logoRoot?: string;
 }
 
 export interface MarketplaceCatalogMarketplace {
@@ -112,7 +162,218 @@ async function resolveLogoPath(
   }
 }
 
+/** Where prefetched catalog artwork is cached, inside the plugin store. */
+function logoCacheRoot(options: MarketplaceOperationOptions): string {
+  return join(marketplaceStoreRoot(options), ".logo-cache");
+}
+
+/** Bounded reads: a catalog must never be a memory or bandwidth hazard. */
+const MANIFEST_PREFETCH_MAX_BYTES = 256 * 1024;
+const LOGO_PREFETCH_MAX_BYTES = 4 * 1024 * 1024;
+
+const IMAGE_MAGIC: readonly { readonly bytes: readonly number[]; readonly ext: string }[] = [
+  { bytes: [0x89, 0x50, 0x4e, 0x47], ext: "png" },
+  { bytes: [0xff, 0xd8, 0xff], ext: "jpg" },
+  { bytes: [0x52, 0x49, 0x46, 0x46], ext: "webp" },
+];
+
+function imageExtension(bytes: Uint8Array): string | undefined {
+  for (const candidate of IMAGE_MAGIC) {
+    if (candidate.bytes.every((byte, index) => bytes[index] === byte)) {
+      return candidate.ext;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Raw-content URL for a file inside a SHA-pinned GitHub plugin source.
+ * Only github.com sources with an explicit sha qualify: the pin is what
+ * makes the fetched bytes content-addressed rather than "whatever the
+ * branch says today".
+ */
+function pinnedRawUrl(
+  source: MarketplacePlugin["source"],
+  relativePath: string,
+): string | undefined {
+  if (source.type !== "git" || source.sha === undefined) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(source.url);
+  } catch {
+    return undefined;
+  }
+  if (parsed.hostname !== "github.com") return undefined;
+  const segments = parsed.pathname.replace(/^\/+/u, "").replace(/\.git$/u, "").split("/");
+  const [owner, repo, ...rest] = segments;
+  if (owner === undefined || repo === undefined || rest.length > 0) return undefined;
+  const prefix = source.path === undefined ? "" : `${source.path.replace(/^\/+|\/+$/gu, "")}/`;
+  const clean = relativePath.replace(/^\.\//u, "").replace(/^\/+/u, "");
+  if (clean.length === 0 || clean.includes("..")) return undefined;
+  return `https://raw.githubusercontent.com/${owner}/${repo}/${source.sha}/${prefix}${clean}`;
+}
+
+async function fetchBounded(
+  fetcher: Fetcher,
+  url: string,
+  maxBytes: number,
+): Promise<Uint8Array | undefined> {
+  try {
+    const response = await fetcher(url);
+    if (!response.ok) return undefined;
+    const buffer = new Uint8Array(await response.arrayBuffer());
+    return buffer.byteLength > 0 && buffer.byteLength <= maxBytes
+      ? buffer
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Materialize a catalog plugin's logo before it is installed.
+ *
+ * A URL marketplace ships names and sources, not artwork, so the only
+ * honest way to show a plugin's own logo on its card is to read the
+ * plugin manifest at the pinned commit, take the `logo` it declares, and
+ * fetch exactly that file. The bytes are cached under the marketplace
+ * store keyed by commit + path, so a catalog is one network round trip
+ * per plugin on first sight and none afterwards. Every failure is
+ * silent: a missing logo is a generic card, never a broken catalog.
+ */
+interface PrefetchedCardMeta {
+  readonly logoPath?: string;
+  readonly displayName?: string;
+  readonly description?: string;
+}
+
+/** Card copy is display text, not documents; keep it card-sized. */
+const CARD_DISPLAY_NAME_MAX = 80;
+const CARD_DESCRIPTION_MAX = 280;
+
+function cardString(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return undefined;
+  return trimmed.slice(0, maxLength);
+}
+
+async function prefetchPinnedCardMeta(
+  options: MarketplaceOperationOptions,
+  plugin: MarketplacePlugin,
+): Promise<PrefetchedCardMeta | undefined> {
+  const fetcher = options.fetcher ?? (globalThis.fetch as unknown as Fetcher);
+  if (typeof fetcher !== "function") return undefined;
+  const manifestUrl = pinnedRawUrl(plugin.source, ".agenc-plugin/plugin.json");
+  if (manifestUrl === undefined) return undefined;
+  const cacheRoot = logoCacheRoot(options);
+  const key = createHash("sha256").update(manifestUrl).digest("hex").slice(0, 24);
+  try {
+    const cachedRaw: unknown = JSON.parse(
+      await readFile(join(cacheRoot, `${key}.meta.json`), "utf8"),
+    );
+    if (typeof cachedRaw === "object" && cachedRaw !== null) {
+      const cached = cachedRaw as {
+        displayName?: unknown;
+        description?: unknown;
+        logoExt?: unknown;
+      };
+      const meta: {
+        logoPath?: string;
+        displayName?: string;
+        description?: string;
+      } = {};
+      const displayName = cardString(cached.displayName, CARD_DISPLAY_NAME_MAX);
+      const description = cardString(cached.description, CARD_DESCRIPTION_MAX);
+      if (displayName !== undefined) meta.displayName = displayName;
+      if (description !== undefined) meta.description = description;
+      if (typeof cached.logoExt === "string" && /^(png|jpg|webp)$/u.test(cached.logoExt)) {
+        const cachedLogo = join(cacheRoot, `${key}.${cached.logoExt}`);
+        try {
+          const stats = await stat(cachedLogo);
+          if (stats.isFile() && stats.size > 0) meta.logoPath = cachedLogo;
+        } catch {
+          // Meta survives a pruned logo file.
+        }
+      }
+      return meta;
+    }
+  } catch {
+    // Not cached yet.
+  }
+  const manifestBytes = await fetchBounded(
+    fetcher,
+    manifestUrl,
+    MANIFEST_PREFETCH_MAX_BYTES,
+  );
+  if (manifestBytes === undefined) return undefined;
+  let declaredLogo: unknown;
+  let displayName: string | undefined;
+  let description: string | undefined;
+  try {
+    const manifest: unknown = JSON.parse(
+      Buffer.from(manifestBytes).toString("utf8"),
+    );
+    if (typeof manifest !== "object" || manifest === null) return undefined;
+    const shaped = manifest as {
+      description?: unknown;
+      interface?: { logo?: unknown; displayName?: unknown };
+    };
+    declaredLogo = shaped.interface?.logo;
+    displayName = cardString(shaped.interface?.displayName, CARD_DISPLAY_NAME_MAX);
+    description = cardString(shaped.description, CARD_DESCRIPTION_MAX);
+  } catch {
+    return undefined;
+  }
+  let logoPath: string | undefined;
+  let logoExt: string | undefined;
+  if (typeof declaredLogo === "string" && declaredLogo.length > 0) {
+    const logoUrl = pinnedRawUrl(plugin.source, declaredLogo);
+    if (logoUrl !== undefined) {
+      const logoBytes = await fetchBounded(
+        fetcher,
+        logoUrl,
+        LOGO_PREFETCH_MAX_BYTES,
+      );
+      if (logoBytes !== undefined) {
+        const ext = imageExtension(logoBytes);
+        if (ext !== undefined) {
+          const destination = join(cacheRoot, `${key}.${ext}`);
+          try {
+            await mkdir(cacheRoot, { recursive: true, mode: 0o700 });
+            await writeFile(destination, logoBytes, { mode: 0o600 });
+            logoPath = destination;
+            logoExt = ext;
+          } catch {
+            // A failed logo write only downgrades the card.
+          }
+        }
+      }
+    }
+  }
+  try {
+    await mkdir(cacheRoot, { recursive: true, mode: 0o700 });
+    await writeFile(
+      join(cacheRoot, `${key}.meta.json`),
+      `${JSON.stringify({
+        ...(displayName !== undefined ? { displayName } : {}),
+        ...(description !== undefined ? { description } : {}),
+        ...(logoExt !== undefined ? { logoExt } : {}),
+      })}\n`,
+      { mode: 0o600 },
+    );
+  } catch {
+    // Uncached is refetched next catalog, never fatal.
+  }
+  return {
+    ...(logoPath !== undefined ? { logoPath } : {}),
+    ...(displayName !== undefined ? { displayName } : {}),
+    ...(description !== undefined ? { description } : {}),
+  };
+}
+
 async function catalogRowsForMarketplace(
+  options: MarketplaceOperationOptions,
   marketplace: Marketplace,
   product: string | undefined,
 ): Promise<readonly MarketplaceCatalogPluginRow[]> {
@@ -120,18 +381,39 @@ async function catalogRowsForMarketplace(
   for (const plugin of marketplace.plugins) {
     if (plugin.policy.installation === "NOT_AVAILABLE") continue;
     if (!marketplacePluginSupportsProduct(plugin.policy, product)) continue;
-    const logoPath = await resolveLogoPath(marketplace.root, plugin);
+    const manifestLogo = await resolveLogoPath(marketplace.root, plugin);
+    const prefetched =
+      manifestLogo === undefined
+        ? await prefetchPinnedCardMeta(options, plugin)
+        : undefined;
+    const logoPath = manifestLogo ?? prefetched?.logoPath;
+    const logoRoot =
+      manifestLogo !== undefined
+        ? marketplace.root
+        : prefetched?.logoPath !== undefined
+          ? logoCacheRoot(options)
+          : undefined;
+    const displayName =
+      plugin.interface?.displayName ?? prefetched?.displayName;
+    // Overlaying displayName keeps every other declared field; the cast
+    // is needed because a spread re-widens exact-optional properties.
+    const surface =
+      displayName !== undefined
+        ? ({ ...plugin.interface, displayName } as MarketplacePlugin["interface"])
+        : plugin.interface;
     rows.push({
       id: `${plugin.name}@${marketplace.name}`,
       name: plugin.name,
       marketplace: marketplace.name,
       source: plugin.source,
       policy: plugin.policy,
-      ...(plugin.interface !== undefined
-        ? { interface: plugin.interface }
-        : {}),
+      ...(surface !== undefined ? { interface: surface } : {}),
       root: marketplace.root,
+      ...(prefetched?.description !== undefined
+        ? { description: prefetched.description }
+        : {}),
       ...(logoPath !== undefined ? { logoPath } : {}),
+      ...(logoRoot !== undefined ? { logoRoot } : {}),
     });
   }
   return rows;
@@ -165,7 +447,7 @@ export async function buildMarketplaceCatalog(
           : {}),
         sourceType: record.sourceType,
         source: record.source,
-        plugins: await catalogRowsForMarketplace(marketplace, product),
+        plugins: await catalogRowsForMarketplace(options, marketplace, product),
       });
     } catch (error) {
       errors.push({

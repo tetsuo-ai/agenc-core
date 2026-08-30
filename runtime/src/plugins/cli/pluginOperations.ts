@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { resolveHomeContext } from "../../config/home.js";
 import { loadCanonicalConfig } from "../../config/repository.js";
 import type { PluginEntryConfig } from "../../config/schema.js";
@@ -68,6 +68,8 @@ export interface InstalledPluginSummary {
   readonly enabled: boolean;
   readonly root: string;
   readonly source: string;
+  /** Absolute path of the plugin's own logo, proven to sit inside root. */
+  readonly logoPath?: string;
 }
 
 export interface PluginListResult {
@@ -619,6 +621,16 @@ function resolvePath(path: string, base: string): string {
 }
 
 function summarizeLoadedPlugin(plugin: LoadedPlugin): InstalledPluginSummary {
+  // The manifest normalizer resolved declared artwork to an absolute
+  // in-root path; report it so a GUI client can serve the plugin's own
+  // logo instead of falling back to a generic mark. Anything outside the
+  // plugin root is not this plugin's artwork and is dropped.
+  const logo = plugin.manifest.interface?.logo;
+  const logoPath =
+    typeof logo === "string" && logo.length > 0 && isAbsolute(logo) &&
+    logo.startsWith(plugin.root.endsWith(sep) ? plugin.root : plugin.root + sep)
+      ? logo
+      : undefined;
   return {
     id: plugin.id,
     name: plugin.name,
@@ -627,6 +639,7 @@ function summarizeLoadedPlugin(plugin: LoadedPlugin): InstalledPluginSummary {
     enabled: plugin.enabled,
     root: plugin.root,
     source: plugin.source,
+    ...(logoPath !== undefined ? { logoPath } : {}),
   };
 }
 

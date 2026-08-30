@@ -22,6 +22,7 @@ import {
 } from "../marketplace/marketplace.js";
 import {
   buildMarketplaceCatalog,
+  ensureOfficialMarketplace,
   installRequiresSignature,
   resolveMarketplaceInstallTarget,
   PLUGIN_MARKETPLACE_CATALOG_SCHEMA_VERSION,
@@ -80,6 +81,9 @@ export function formatAgenCPluginCliHelpText(): string {
     "                                                   Add local, git, URL, or GitHub marketplace",
     "  marketplace remove <name>                      Remove a marketplace",
     "  marketplace upgrade [name]                     Refresh git or local marketplaces",
+    "  marketplace catalog [--product <id>] [--json]  List installable plugins per marketplace",
+    "  marketplace install <plugin@marketplace>       Install a catalog plugin",
+    "                     [--product <id>] [--scope user|project] [--force] [--json]",
     "",
     "Install options:",
     "  --name <name>     Set the installed plugin ID or marketplace name",
@@ -307,6 +311,10 @@ export async function runAgenCPluginCli(
         return 0;
       }
       case "marketplace-catalog": {
+        // A profile with no marketplaces has nothing installable to report;
+        // register the official one first so a fresh client sees the
+        // shipped plugins instead of an empty shelf.
+        await ensureOfficialMarketplace(options, addMarketplaceOp);
         const catalog = await buildMarketplaceCatalog(options, command.product);
         if (command.json) {
           io.stdout.write(`${JSON.stringify(catalog, null, 2)}\n`);
