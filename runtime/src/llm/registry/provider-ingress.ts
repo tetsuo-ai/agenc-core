@@ -262,8 +262,8 @@ export function canonicalProviderApiKeyEnvVar(
 ): string | undefined {
   const info = resolveProviderInfo(provider);
   if (info?.credentials.kind !== "api-key") return undefined;
-  for (const envVar of info.credentials.apiKey.envVars) return envVar;
-  return undefined;
+  const [canonical] = info.credentials.apiKey.envVars;
+  return canonical;
 }
 
 /** Resolve the first non-empty API-key alias in canonical provider order. */
