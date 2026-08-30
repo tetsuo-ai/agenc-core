@@ -394,11 +394,24 @@ export function ensureStreamingToolExecutor(
     signal,
   );
 
+  // Optional-chained: session shims in tests (and older embedders) may not
+  // carry an activeTurn slot at all.
+  const activeTurnAbort = session.activeTurn?.unsafePeek()?.abortController;
   executor = new StreamingToolExecutor({
     registry: session.services.registry,
     maxConcurrency: resolveMaxToolUseConcurrency(),
     abortSignal: signal,
-    parentAbortController: session.abortController,
+    // The escalation target when a tool abort must end the turn: the
+    // ACTIVE TURN's task controller — run-turn merges it into the kernel
+    // signal, so aborting it ends this turn cleanly. It must never be
+    // session.abortController: that controller is one-shot for the
+    // session's whole life, and burning it on a mid-turn tool abort left
+    // every later turn born aborted — a live session that silently
+    // dropped each message the user sent after one Stop during
+    // wait_agent.
+    ...(activeTurnAbort !== undefined
+      ? { parentAbortController: activeTurnAbort }
+      : {}),
     runtime,
     onSiblingAbort: (reason) => {
       session.emit({

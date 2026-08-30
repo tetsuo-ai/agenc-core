@@ -48,6 +48,7 @@ import {
 import { chatCompletionsCapabilityHintsForProvider } from "../../wire/capability-gating.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import { coerceUsage } from "../../wire/shared.js";
+import { ThinkTagStreamFilter } from "../../wire/think-tags.js";
 import {
   buildOpenAIResponsesRequest,
   parseOpenAIResponsesResponse,
@@ -1277,6 +1278,11 @@ export class OpenAIProvider implements LLMProvider {
       // `delta.content`. Preserve it as an explicit hidden thinking channel;
       // it must never become canonical assistant content.
       let reasoningContent = "";
+      // Others (MiniMax M3, Qwen3, Kimi K2 templates) inline the
+      // chain-of-thought in `delta.content` behind think markers; the
+      // filter reroutes those spans to the same hidden channel so the
+      // transcript never shows literal tags.
+      const thinkFilter = new ThinkTagStreamFilter();
       let model = requestModel;
       let finishReason: LLMResponse["finishReason"] = "stop";
       let usage: Record<string, unknown> = {};
@@ -1334,8 +1340,28 @@ export class OpenAIProvider implements LLMProvider {
               ? (choice.delta as Record<string, unknown>)
               : {};
           if (typeof delta.content === "string" && delta.content.length > 0) {
-            content += delta.content;
-            onChunk({ content: delta.content, done: false });
+            const split = thinkFilter.push(delta.content);
+            if (split.text.length > 0) {
+              content += split.text;
+              onChunk({ content: split.text, done: false });
+            }
+            if (split.reasoning.length > 0) {
+              reasoningContent += split.reasoning;
+              onChunk({
+                content: "",
+                done: false,
+                reasoningSummaryDelta: {
+                  delta: split.reasoning,
+                  summaryIndex:
+                    typeof choice.index === "number" ? choice.index : 0,
+                },
+              });
+            }
+            if (split.text.length === 0 && split.reasoning.length === 0) {
+              // Held in the filter's marker buffer — still authoritative
+              // wire progress, same as an empty well-formed delta.
+              onChunk({ content: "", done: false });
+            }
           }
           if (
             typeof delta.reasoning_content === "string" &&
@@ -1402,6 +1428,26 @@ export class OpenAIProvider implements LLMProvider {
             }
           }
         }
+      }
+
+      // The stream can end while the filter still holds an unresolved
+      // marker prefix (or a think block the model never closed). Drain
+      // it to the channel its state says it belongs to.
+      const filterTail = thinkFilter.flush();
+      if (filterTail.text.length > 0) {
+        content += filterTail.text;
+        onChunk({ content: filterTail.text, done: false });
+      }
+      if (filterTail.reasoning.length > 0) {
+        reasoningContent += filterTail.reasoning;
+        onChunk({
+          content: "",
+          done: false,
+          reasoningSummaryDelta: {
+            delta: filterTail.reasoning,
+            summaryIndex: 0,
+          },
+        });
       }
 
       const includeToolCalls = finishReason !== "length";

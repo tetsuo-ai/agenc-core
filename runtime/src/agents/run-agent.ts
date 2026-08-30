@@ -19,6 +19,7 @@
 
 import { normalize } from "node:path";
 import { LRUCache } from "lru-cache";
+import { createChildAbortController } from "../utils/abortController.js";
 import type {
   LLMChatOptions,
   LLMContentPart,
@@ -722,7 +723,13 @@ function buildAgentRunContext(
   };
   const cwd = ctx.cwd;
   return {
-    abortController: session.abortController ?? new AbortController(),
+    // Child of the session controller — cancelling this context must never
+    // consume the session's one-shot root controller (see
+    // agenc-tool-use-context.ts for the incident this prevents).
+    abortController:
+      session.abortController !== undefined
+        ? createChildAbortController(session.abortController)
+        : new AbortController(),
     sessionId: session.conversationId,
     options: {
       mainLoopModel: model.model,

@@ -110,6 +110,106 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
       ).toThrow(/retired provider selector/);
     });
 
+    test("nim reasoning families accept only their documented enum", () => {
+      // branding-scan: allow real model identifiers used as test fixtures
+      const cases: readonly {
+        readonly model: string;
+        readonly allowed: readonly string[];
+        readonly stripped: readonly string[];
+      }[] = [
+        {
+          model: "moonshotai/kimi-k3",
+          allowed: ["low", "high", "max"],
+          stripped: ["minimal", "medium", "xhigh"],
+        },
+        {
+          model: "deepseek-ai/deepseek-v4-pro-0813",
+          allowed: ["none", "high", "max"],
+          stripped: ["low", "medium", "xhigh"],
+        },
+        {
+          model: "deepseek-ai/deepseek-v4-flash-0731",
+          allowed: ["none", "high", "max"],
+          stripped: ["low", "xhigh"],
+        },
+        {
+          model: "openai/gpt-oss-120b",
+          allowed: ["low", "medium", "high"],
+          stripped: ["none", "xhigh", "max"],
+        },
+        {
+          model: "nvidia/nemotron-3-super-120b-a12b",
+          allowed: ["none", "low", "high"],
+          stripped: ["medium", "max"],
+        },
+        {
+          model: "nvidia/nemotron-3-ultra-550b-a55b",
+          allowed: ["none", "medium", "high"],
+          stripped: ["low", "max"],
+        },
+      ];
+      for (const { model, allowed, stripped } of cases) {
+        const hints = chatCompletionsCapabilityHintsForProvider(
+          "nvidia-nim",
+          model,
+        );
+        expect(hints.acceptsReasoningEffort).toBe(true);
+        for (const value of allowed) {
+          const request = buildChatCompletionsRequest({
+            model,
+            messages: [{ role: "user", content: "hello" }],
+            tools: [],
+            options: { reasoningEffort: value },
+            providerCapabilityHints: hints,
+          });
+          expect(request.reasoning_effort).toBe(value);
+        }
+        for (const value of stripped) {
+          const request = buildChatCompletionsRequest({
+            model,
+            messages: [{ role: "user", content: "hello" }],
+            tools: [],
+            options: { reasoningEffort: value },
+            providerCapabilityHints: hints,
+          });
+          expect(request.reasoning_effort).toBeUndefined();
+        }
+      }
+    });
+
+    test("nim models without a documented effort field stay stripped", () => {
+      // branding-scan: allow real model identifiers used as test fixtures
+      const models = [
+        "moonshotai/kimi-k2.6",
+        "moonshotai/kimi-k2-thinking",
+        "minimaxai/minimax-m3",
+        "meta/llama-3.3-70b-instruct",
+        "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+      ];
+      for (const model of models) {
+        const hints = chatCompletionsCapabilityHintsForProvider(
+          "nvidia-nim",
+          model,
+        );
+        expect(hints.acceptsReasoningEffort).toBe(false);
+        expect(hints.reasoningEffortAllowedValues).toBeUndefined();
+      }
+    });
+
+    test("nim enums do not leak to other providers or hint shapes", () => {
+      // branding-scan: allow real model identifiers used as test fixtures
+      expect(
+        chatCompletionsCapabilityHintsForProvider(
+          "openrouter",
+          "moonshotai/kimi-k3",
+        ).acceptsReasoningEffort,
+      ).toBe(false);
+      expect(
+        chatCompletionsCapabilityHintsForProvider("grok", "grok-4.6")
+          .reasoningEffortAllowedValues,
+      ).toBeUndefined();
+    });
+
     test("non-openai non-grok providers never accept reasoning_effort", () => {
       // branding-scan: allow real model identifiers used as test fixtures
       const providers = [

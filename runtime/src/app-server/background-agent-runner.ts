@@ -72,7 +72,10 @@ import {
   DEFAULT_MODEL_COSTS,
   type ModelUsage,
 } from "../session/cost.js";
-import { runWithCurrentRuntimeSession } from "../session/current-session.js";
+import {
+  runWithBootstrapSessionScope,
+  runWithCurrentRuntimeSession,
+} from "../session/current-session.js";
 import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import { resolveDefaultShell } from "../utils/shell/resolveDefaultShell.js";
 import { escapeXml } from "../utils/xml.js";
@@ -216,6 +219,7 @@ import {
 import { cloneFrozenRuntimeSettingsSnapshot } from "../state/runtime-settings-snapshot.js";
 import type { ResumeRolloutDescriptorLease } from "../session/session-store.js";
 import type { AgentRuntimeOptions } from "../session/runtime-options.js";
+import { runWithAgentRuntimeOptions } from "../session/runtime-options.js";
 import {
   applySessionExecutionAuthority,
   executionAuthorityForPermissionContext,
@@ -1170,7 +1174,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       this.#env,
       params.envOverrides,
     );
-    const bootstrap = await this.#bootstrap({
+    // Bootstrap runs helper code that resolves the runtime-options
+    // authority ambiently. With a second live session in this process the
+    // module-level session fallback is ambiguous by design, so the
+    // options must ride the async context — the same scope the daemon-only
+    // TUI client establishes before ITS bound context is created.
+    const bootstrap = await runWithAgentRuntimeOptions(
+      params.runtimeOptions,
+      () =>
+        runWithBootstrapSessionScope(() =>
+          this.#bootstrap({
       ...(mergedEnv !== undefined ? { env: mergedEnv } : {}),
       ...(this.#authBackend !== undefined
         ? { authBackend: this.#authBackend }
@@ -1197,7 +1210,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       ...(this.#csvAgentJobsRepositories !== undefined
         ? { csvAgentJobsRepositories: this.#csvAgentJobsRepositories }
         : {}),
-    });
+          }),
+        ),
+    );
     const uninstallApprovalBridge = this.#installDaemonApprovalBridge(
       bootstrap.session,
     );
@@ -1606,7 +1621,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           this.#env,
           params.envOverrides,
         );
-        bootstrap = await this.#bootstrap({
+        // Same ambient-authority scope as first start: restores also run
+        // bootstrap helpers outside any session context.
+        bootstrap = await runWithAgentRuntimeOptions(
+          params.runtimeOptions,
+          () =>
+            runWithBootstrapSessionScope(() =>
+              this.#bootstrap({
           ...(mergedEnv !== undefined ? { env: mergedEnv } : {}),
           ...(this.#authBackend !== undefined
             ? { authBackend: this.#authBackend }
@@ -1658,7 +1679,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           ...(this.#csvAgentJobsRepositories !== undefined
             ? { csvAgentJobsRepositories: this.#csvAgentJobsRepositories }
             : {}),
-        });
+              }),
+            ),
+        );
         uninstallApprovalBridge = this.#installDaemonApprovalBridge(
           bootstrap.session,
         );
