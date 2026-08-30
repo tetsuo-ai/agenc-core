@@ -250,6 +250,11 @@ import {
   runAgenCPluginCli,
 } from "../plugins/cli/pluginCliCommands.js";
 import {
+  formatAgenCSkillsCliHelpText,
+  parseAgenCSkillsCliArgs,
+  runAgenCSkillsCli,
+} from "../skills/skills-cli.js";
+import {
   formatAgenCPermissionsCliHelpText,
   parseAgenCPermissionsCliArgs,
   runAgenCPermissionsCli,
@@ -520,6 +525,8 @@ export function formatCliHelpTopicText(topic: string): string | null {
     case "plugin":
     case "plugins":
       return formatAgenCPluginCliHelpText();
+    case "skills":
+      return formatAgenCSkillsCliHelpText();
     case "providers":
       return formatAgenCProvidersCliHelpText();
     case "config":
@@ -5658,6 +5665,17 @@ export async function main(): Promise<number> {
       env: pluginEnvironment,
       pluginStorageRoot: pluginRuntimeOptions.pluginStorageRoot,
       sessionTempRoot: pluginRuntimeOptions.sessionTempRoot,
+      workspaceRoot: process.cwd(),
+    });
+  }
+  const skillsCommand = parseAgenCSkillsCliArgs(argv);
+  if (skillsCommand !== null) {
+    const skillsEnvironment = Object.freeze({ ...process.env });
+    const skillsRuntimeOptions = resolveAgentRuntimeOptions(skillsEnvironment);
+    return runAgenCSkillsCli(skillsCommand, {
+      agencHome: resolveAgencHome(skillsEnvironment),
+      env: skillsEnvironment,
+      pluginStorageRoot: skillsRuntimeOptions.pluginStorageRoot,
       workspaceRoot: process.cwd(),
     });
   }
