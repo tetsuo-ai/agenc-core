@@ -412,6 +412,26 @@ Native helpers:
 warns `[sandbox_landlock_fallback]` when Linux is ready only via Landlock.
 `[sandbox].allow_gpu` is the macOS Metal opt-in ([config.md](config.md)).
 
+A userland install puts `agenc-linux-sandbox` under `~/.agenc`. A bare
+`agenc` in a fresh terminal opens `$HOME` as the workspace, so the helper
+sits inside the writable workspace and startup fails closed
+(`[sandbox_required_unavailable]`). The refusal is correct: a jailed
+process that can rewrite its jailer is not jailed. When the workspace
+contains the user's home, `linuxSandboxHelperRemediation` names that
+fact and tells you to open a project directory. A helper misplaced
+inside an ordinary project still says to reinstall it outside the
+workspace.
+
+Stdio MCP uses the same broker. On Landlock-fallback hosts,
+workspace-write MCP policies that need a writable project with
+read-only `.git` / `.agenc` carve-outs are refused in pre-flight as
+`[sandbox_policy_unexpressible]` (plus the doctor warning above). Plugin
+MCP servers substitute a tighter profile (writes only to the plugin data
+dir) and keep working. Restricted-network seccomp allows
+`getsockname` / `getpeername` / `getsockopt` so Node's inherited pipe
+stdio does not see instant EOF. See [mcp.md](mcp.md#plugin-declared-servers)
+and [install.md](../install.md#ubuntu-apparmor-and-bubblewrap).
+
 Runtime `read_only` and `workspace_write` profiles use a full-disk read
 baseline. Explicit deny-read entries still override it. `read_only` grants no
 write entries; `workspace_write` grants writes only to the workspace, approved

@@ -242,6 +242,17 @@ which the Landlock fallback can express. `[sandbox].writable_roots` extends the
 workspace-write allowlist, but it cannot weaken protected `.git`, `.agenc`, or
 agent-control paths and therefore does not bypass this fallback limitation.
 
+### Home as workspace
+
+A userland install places `agenc-linux-sandbox` under `~/.agenc`. Starting
+`agenc` from a home directory (a fresh terminal with no project cwd) makes
+that helper sit inside the writable workspace, so the probe fails closed
+with `[sandbox_required_unavailable]`. Do not reinstall the helper to
+"move it outside" a home-sized workspace — that can never succeed. Open
+AgenC in a project directory, then run `agenc doctor`. A helper that is
+genuinely misplaced inside an ordinary project still uses the reinstall
+guidance. Details: [tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md).
+
 ## npm launcher
 
 ```bash

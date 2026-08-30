@@ -137,6 +137,9 @@ of claiming hooks were enabled.
 | `hooks/user-prompt-submit.ts` | UserPromptSubmit adapter |
 
 Plugin hooks merge via `plugins/registration/load-plugin-hooks.ts`.
+Project- and local-scope installs are repository-controlled and do not
+contribute hooks (same strip as plugin MCP). Use `--scope user`. See
+[skills-plugins.md](skills-plugins.md#plugin-mcp-servers).
 
 ### TUI: `/hooks`
 

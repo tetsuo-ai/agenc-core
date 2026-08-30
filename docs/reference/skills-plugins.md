@@ -142,6 +142,26 @@ Load + register: `refreshPluginRegistrations` →
 `loadPluginHooks`, `loadPluginMcpServers`, `loadPluginLspServers`,
 `loadPluginOutputStyles`.
 
+### Plugin MCP servers
+
+`loadPluginMcpServers` is not enough by itself. Session startup must also
+merge those registrations into the live `MCPManager`
+(`getAllMcpConfigs` in `runtime/src/services/mcp/config.ts`). Enabled
+user-scoped plugins then appear in `/mcp` as `plugin:<id>:<server>` and
+as model tools `mcp.plugin:<id>:<server>.<tool>`.
+
+Project- and local-scope installs are **repository-controlled**
+(`isRepositoryControlledPlugin`). The loader strips their `mcpServers`
+and hooks so workspace-resident packages cannot become a second MCP or
+hook authority. `agenc plugin install --scope project` (or `local`)
+warns when the manifest ships those surfaces. Reinstall with
+`--scope user` to load them.
+
+Stdio plugin servers run under a tight sandbox profile (writes confined
+to the plugin data directory). That profile is Landlock-expressible;
+ordinary workspace-write MCP is not. Operator merge rules, templates,
+and failure symptoms: [mcp.md](mcp.md#plugin-declared-servers).
+
 ## Shipped plugins
 
 Source of truth is repo `plugins/<name>/`. `runtime/scripts/sync-shipped-plugins.mjs`
@@ -230,6 +250,11 @@ Install roots use the same collision-resistant child key: user
 `<workspace>/.agents/plugins/<readable-id>--<sha256>`. Extra discovery also
 `<workspace>/plugins/` and git-root `plugins/`. `[plugins] enabled = false`
 in `defaultConfig()`.
+
+Installs that are not `--scope user` stay repository-controlled. If the
+plugin ships hooks or MCP servers, the CLI writes a stderr warning that
+those surfaces will not load. The warning is install-time only; the
+loader still strips them.
 
 A canonical plugin ID can be installed in one managed scope at a time.
 Uninstall it before moving it between user and project/local scope. Uninstall
