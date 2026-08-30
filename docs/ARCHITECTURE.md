@@ -464,8 +464,9 @@ crashing the process.
   contract runs locally. GitHub Actions adds `default-suite` (four Ubuntu
   Vitest shards plus runtime typecheck, no Docker hermetic/red-probe path)
   and capability lanes: Linux-kernel sandbox, PowerShell, Neovim (five
-  OS/arch), macOS native, Windows native. Each PR records the exact locally
-  tested SHA, commands, results, and skips before merge; release verification
+  OS/arch; hosted PTY scenarios are Linux/Darwin only), macOS native,
+  Windows native. Each PR records the exact locally tested SHA,
+  commands, results, and skips before merge; release verification
   repeats the gates at exact current `main` before any release tag exists.
   GitHub remains the branch/PR/merge record. Candidate macOS/Windows
   inventories are in [ci-required-gates.md](ci-required-gates.md), not a
