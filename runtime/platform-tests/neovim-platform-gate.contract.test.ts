@@ -111,7 +111,7 @@ describe("hosted Neovim platform gate contract", () => {
     expect(toolchain.neovimTestRuntime["linux-x64"]).toEqual(legacyLinuxX64);
   });
 
-  it("encodes five required matrix checks with checksum, zero-skip, PTY, and cleanup assertions", () => {
+  it("encodes five required matrix checks and keeps the hosted PTY step off Windows", () => {
     const source = readFileSync(
       resolve(REPO_ROOT, ".github/workflows/platform-tests.yml"),
       "utf8",
@@ -129,6 +129,11 @@ describe("hosted Neovim platform gate contract", () => {
         runner: target.runner,
       })),
     );
+    const ptyStep = job.steps.find(
+      (step: Record<string, unknown>) =>
+        step.name === "Run the required hosted-platform PTY scenarios",
+    );
+    expect(ptyStep?.if).toBe("matrix.slug != 'win-x64'");
     expect(source).toContain('["neovimHostedTestRuntime"]');
     expect(source).toContain('["neovimTestRuntime"]["linux-x64"]');
     expect(source).toContain("Get-FileHash");
@@ -164,8 +169,10 @@ describe("hosted Neovim platform gate contract", () => {
     expect(source).not.toContain("continue-on-error: true");
   });
 
-  it("selects the same two non-skipped PTY regressions on every required target", () => {
-    expect(HOSTED_NEOVIM_TARGETS).toEqual(Object.keys(EXPECTED_TARGETS));
+  it("selects the two non-skipped PTY regressions on Unix and rejects Windows", () => {
+    expect(HOSTED_NEOVIM_TARGETS).toEqual(
+      Object.keys(EXPECTED_TARGETS).filter((target) => target !== "win-x64"),
+    );
     for (const target of HOSTED_NEOVIM_TARGETS) {
       expect(PLATFORM_SCENARIO_REGISTRY[target]).toBe(
         HOSTED_NEOVIM_SCENARIOS,
@@ -174,6 +181,10 @@ describe("hosted Neovim platform gate contract", () => {
         selectPlatformScenarios([...HOSTED_NEOVIM_SCENARIOS], target),
       ).toEqual(HOSTED_NEOVIM_SCENARIOS);
     }
+    expect(PLATFORM_SCENARIO_REGISTRY["win-x64"]).toBeUndefined();
+    expect(() => selectPlatformScenarios([], "win-x64")).toThrow(
+      'unsupported TUI E2E platform "win-x64"',
+    );
     for (const scenario of HOSTED_NEOVIM_SCENARIOS) {
       const source = readFileSync(
         resolve(

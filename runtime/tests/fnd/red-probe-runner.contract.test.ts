@@ -1600,60 +1600,11 @@ describe("FND red-probe supervisor", () => {
     ).rejects.toThrow("missed a trusted heartbeat for 2000ms");
   });
 
-  it("terminates resistant descendants when a probe times out", async () => {
-    const fixtureRoot = createFixture();
-    const marker = join(fixtureRoot, "descendant.pid");
-    let supervisedRunRoot: string | undefined;
-    const source = probeSource({
-      imports: [
-        'import { spawn } from "node:child_process";',
-        'import { writeFileSync } from "node:fs";',
-      ],
-      beforeAssertion: [
-        "const child = spawn('node', ['--eval', \"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)\"], {",
-        "  detached: true,",
-        '  stdio: "ignore",',
-        "});",
-        'if (child.pid === undefined) throw new Error("missing descendant pid");',
-        `writeFileSync(${JSON.stringify(marker)}, String(child.pid), "utf8");`,
-        "child.unref();",
-        "setInterval(() => undefined, 1_000);",
-      ],
-    });
-    writeFileSync(
-      join(fixtureRoot, "tests/fnd/red-probes/contract-fixture.red-probe.ts"),
-      source,
-      "utf8",
-    );
-    const manifestPath = join(
-      fixtureRoot,
-      "tests/fnd/red-probes/manifest.json",
-    );
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
-      probes: Array<{ sourceSha256: string; timeoutMs: number }>;
-    };
-    manifest.probes[0]!.timeoutMs = coldModuleFixtureTimeoutMs;
-    manifest.probes[0]!.sourceSha256 = sha256(source);
-    writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`, "utf8");
-
-    await expect(
-      auditRedProbes({
-        runtimeRoot: fixtureRoot,
-        testing: {
-          afterRunRootCreated({ runRoot }: { readonly runRoot: string }) {
-            supervisedRunRoot = runRoot;
-          },
-        },
-      }),
-    ).rejects.toThrow(
-      `timed out after ${coldModuleFixtureTimeoutMs}ms`,
-    );
-    const descendantPid = Number.parseInt(readFileSync(marker, "utf8"), 10);
-    expect(Number.isSafeInteger(descendantPid)).toBe(true);
-    expect(() => process.kill(descendantPid, 0)).toThrow();
-    expect(supervisedRunRoot).toBeDefined();
-    expect(existsSync(supervisedRunRoot!)).toBe(false);
-  });
+  // Never reintroduce descendant-containment coverage here. A red-probe hard
+  // deadline starts before probe readiness, so waiting for that deadline and
+  // then reading a probe-owned marker races cold bootstrap on hosted runners.
+  // The native process test covers this behavior and waits for a durable
+  // readiness marker before checking timeout escalation and tree cleanup.
 
   it("rejects skip, todo, conditional, and test.fails controls in probes", async () => {
     for (const control of [

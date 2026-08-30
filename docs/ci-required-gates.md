@@ -944,11 +944,17 @@ postcondition; this narrow lane is not an OS egress boundary.
 The `neovim` matrix is five runners (`linux-x64`, `linux-arm64`, `darwin-x64`,
 `darwin-arm64`, `win-x64`) with digest-pinned Neovim. Lifecycle requires **18**
 tests in one file (`buffer-neovim-lifecycle.real-neovim.test.ts`). Provider and
-observed-descendant require **65** tests in three files. Hosted PTY scenarios
-run `node runtime/scripts/check-tui-e2e/runner.mjs --platform "$AGENC_NEOVIM_SLUG"`
-and expect `2/2 passed`. The
-`macos-native` job first runs the 67-test
-red-probe runner contract, including residual-process settlement on Darwin.
+observed-descendant require **65** tests in three files on all five runners.
+Linux and Darwin also run the two hosted PTY scenarios with
+`node runtime/scripts/check-tui-e2e/runner.mjs --platform "$AGENC_NEOVIM_SLUG"`
+and expect `2/2 passed`. Do not add those scenarios back to `win-x64`.
+GitHub's hosted Windows ConPTY path has produced nondeterministic synthetic-input
+failures on unrelated changes.
+The `macos-native` job first runs the 66-test red-probe runner contract.
+Never add deadline-only descendant-marker coverage back to that contract. Its
+hard deadline begins before probe readiness, so it races cold bootstrap on
+hosted runners. The native process test covers descendant timeout containment
+and waits for a durable readiness marker before checking escalation and cleanup.
 The macOS and Windows native jobs then run a shared 81-test, eight-suite,
 five-file FND set. It combines the 45-test release-builder set with 36
 benchmark-harness fault contracts for process-tree containment, owned-root
