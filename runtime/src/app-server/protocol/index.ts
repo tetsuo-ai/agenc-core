@@ -1682,6 +1682,15 @@ export type WorkspaceEditorPredictionFeedbackSessionParams = Pick<
 export interface SessionSetPermissionModeParams extends JsonObject {
   readonly sessionId: string;
   readonly mode: string;
+  /**
+   * Explicit operator consent to run bypassPermissions in this session's
+   * exact workspace. Without it a live session can never switch to
+   * bypass: the transition gate refuses unless the workspace is already
+   * consent-bound, and only creation-time bypass binds it. The runner has
+   * honored this field all along — it was never declared on the wire, so
+   * no client could send it.
+   */
+  readonly bypassAuthority?: "operator_tool_approval";
 }
 
 export type SessionPermissionRuleMutationOperation = "add" | "remove";

@@ -3323,6 +3323,12 @@ export class AgenCDaemonAgentManager {
     const result = await this.#runner.setAgentPermissionMode(agentId, {
       sessionId: params.sessionId,
       mode: params.mode,
+      // Operator consent for a live switch to bypassPermissions. The
+      // runner has always honored this; the RPC route dropped it, so no
+      // client could ever switch a running session into bypass.
+      ...(params.bypassAuthority === "operator_tool_approval"
+        ? { bypassAuthority: params.bypassAuthority }
+        : {}),
     });
     return {
       sessionId: params.sessionId,
