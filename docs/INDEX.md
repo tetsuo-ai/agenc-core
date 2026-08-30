@@ -62,7 +62,7 @@ history; the linked pages below are current product truth.
 | [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery + hooks HTTP |
 | [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, correlated outcomes, and worktree evidence |
 | [reference/workflows.md](reference/workflows.md) | Version-2 agent DAG manifests, scheduling, handoff artifacts, limits, and result outcomes |
-| [reference/memory.md](reference/memory.md) | Persona, AGENC.md, auto-memory paths, privacy |
+| [reference/memory.md](reference/memory.md) | Persona, AGENC.md, auto-memory paths, full-corpus index, privacy |
 | [reference/mcp.md](reference/mcp.md) | MCP client and server |
 | [reference/skills-plugins.md](reference/skills-plugins.md) | Skills load paths, plugin CLI, registration surfaces |
 | [reference/hooks.md](reference/hooks.md) | Session lifecycle hooks vs gateway HTTP hooks |
