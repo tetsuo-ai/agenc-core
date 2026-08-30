@@ -299,11 +299,26 @@ permission policy, required verification commands) and the fixed pipeline
 in the daemon. At least one `--verify "label=script"` command is required —
 `completed` mechanically demands every required command exit 0, an
 adversarial-verification `VERDICT: PASS`, and an independent review with zero
-blockers. The frozen spec's `--permission-mode` and unattended allow/deny
-lists are applied to the run's daemon session, so pipeline children execute
-under the declared policy rather than the daemon default. The command returns
-after the durable intake commit (`runId`, `specDigest`, `baseCommit`);
-`--follow` then tails the run journal until the terminal result.
+blockers. The frozen spec's `--permission-mode`, unattended allow/deny
+lists, and `--model` are applied to the run's daemon session
+(`workflowSessionArgv`), so pipeline children execute under the declared
+policy and model rather than the daemon default. The CLI has no
+`--provider` flag; the `run.start` RPC and SDK `startRun` may also pass
+`provider`. A child inherits the run session's **provider**; only the
+model name can be overridden per child. The command returns after the
+durable intake commit (`runId`, `specDigest`, `baseCommit`); `--follow`
+then tails the run journal until the terminal result.
+
+Child agents register under `workflowChildAgentName(childRunId)` — the run
+id lowercased with every character outside `[a-z0-9_]` folded to `_` —
+because the agent registry rejects the raw `wf-…:plan#1` form. A child that
+dies before it speaks records `workflow <kind> child <outcome>: <error>`
+instead of an empty `final_message`. Independent review allows one repair
+turn for unstructured prose, then fails closed with a bounded excerpt.
+Finalize pins the delivered commit at `refs/agenc/runs/<runId>` before
+deleting the worktree branch; a failed pin leaves the worktree in place.
+Design and troubleshooting:
+[`../design/verified-change-workflow-m5.md`](../design/verified-change-workflow-m5.md).
 
 The other commands use the daemon's durable run/admission contract and print
 canonical JSON. `status` includes aggregate admission and budget/hold state;
