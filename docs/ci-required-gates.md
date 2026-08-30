@@ -950,8 +950,11 @@ Linux and Darwin also run the two hosted PTY scenarios with
 and expect `2/2 passed`. Do not add those scenarios back to `win-x64`.
 GitHub's hosted Windows ConPTY path has produced nondeterministic synthetic-input
 failures on unrelated changes.
-The `macos-native` job first runs the 67-test
-red-probe runner contract, including residual-process settlement on Darwin.
+The `macos-native` job first runs the 66-test red-probe runner contract.
+Never add deadline-only descendant-marker coverage back to that contract. Its
+hard deadline begins before probe readiness, so it races cold bootstrap on
+hosted runners. The native process test covers descendant timeout containment
+and waits for a durable readiness marker before checking escalation and cleanup.
 The macOS and Windows native jobs then run a shared 81-test, eight-suite,
 five-file FND set. It combines the 45-test release-builder set with 36
 benchmark-harness fault contracts for process-tree containment, owned-root
