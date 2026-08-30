@@ -325,7 +325,10 @@ workspace, approved temporary paths, and other explicit write entries; write
 checks run against the canonical permission profile on every resolved target.
 On macOS the profile is enforced by Seatbelt, and on Linux by the configured
 platform helper. This is a read-scope compatibility fix, not full-disk write
-authority.
+authority. On Linux the helper must sit outside the writable workspace; a
+home-directory workspace fails that test and the remediation is to open a
+project directory, not to reinstall. See
+[tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md).
 
 Mutating tools are guarded: file edits enforce read-before-write + mtime-drift
 checks; `apply_patch` applies multi-file patches transactionally.

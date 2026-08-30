@@ -48,8 +48,10 @@ The script (source: `scripts/install/install.sh`):
    system compatibility floors before downloading; the host Node version and
    native ABI never control modern artifact selection,
 4. downloads only the manifest's canonical HTTPS release URL, rejects an
-   HTTPS-to-HTTP redirect, enforces one two-minute monotonic deadline across
-   redirects, headers, and body, and verifies both byte count and sha256,
+   HTTPS-to-HTTP redirect, enforces one monotonic deadline across redirects,
+   headers, and body (two minutes for undeclared sizes; sized artifacts scale
+   with the declared byte count), aborts a 60s stall, and verifies both byte
+   count and sha256,
 5. for an official modern v2 release, downloads the artifact's canonical
    `.sigstore.json` bundle and a fresh digest-pinned GitHub CLI 2.96.0 into the
    private temporary root, then verifies the artifact against the exact hosted
@@ -83,6 +85,30 @@ including on failure.
 
 Flags: `--version`, `--manifest-url`, `--repo`, `--prefix`, `--no-daemon`.
 Re-running is idempotent: a verified existing install skips the download.
+
+### Download deadlines
+
+The Node `fetch_to` helper in `scripts/install/install.sh` and
+`scripts/install/install.ps1` owns every post-bootstrap HTTPS fetch (manifest,
+runtime artifact, Sigstore bundle, GitHub CLI archive). A fixed two-minute
+ceiling made any link under about 1 MiB/s unable to finish a ~120 MiB runtime.
+
+| Input | Deadline |
+| --- | --- |
+| Undeclared size (manifests, some bundles) | 120s |
+| Declared `exact` byte count | `max(120s, ceil(exact / 128 KiB/s) + 30s)` |
+| Official runtime artifact ceiling (`MAX_ARTIFACT_BYTES` = 256 MiB) | about 34 minutes at the 128 KiB/s floor |
+| Stall (no delivered bytes) | 60s abort, independent of the total budget |
+
+The Windows Node bootstrap uses the same sized formula against the pinned
+Node distro byte count. Unix Node bootstrap still uses the trusted OS `curl`
+before `fetch_to` exists. Test-only `AGENC_INSTALL_TEST_*` overrides may
+shorten a deadline; they cannot extend it. A byzantine server stays bounded
+by the declared size at that minimum sustained rate.
+
+`download deadline exceeded after …ms` is a slow or stalled link, not a
+corrupt artifact. Retry; a hash mismatch is a different failure.
+
 Modern official installs additionally require the matching policy receipt; a
 legacy sha256-only cache is re-downloaded and verified rather than grandfathered.
 Supported standalone pins are the frozen `0.7.2` bridge, which requires host
@@ -314,6 +340,15 @@ agenc gateway install-service   # optional always-on channels after Act 2
 
 Full journey (identity, channels, budgeted autonomy):
 [onboarding.md](onboarding.md). Five-minute path: [quickstart.md](quickstart.md).
+
+On Linux, a userland install puts `agenc-linux-sandbox` under
+`$AGENC_HOME/runtime/…`. A bare `agenc` in a fresh terminal opens `$HOME` as
+the workspace, so the helper sits inside the writable tree and startup fails
+closed (`[sandbox_required_unavailable]`). That refusal is correct: a jailed
+process that can rewrite its jailer is not jailed. The remediation names the
+home workspace and tells you to open a project directory — do not reinstall
+the helper. See
+[tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md).
 
 ## Release/publish procedure
 

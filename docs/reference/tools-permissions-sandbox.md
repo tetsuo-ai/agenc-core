@@ -412,6 +412,54 @@ Native helpers:
 warns `[sandbox_landlock_fallback]` when Linux is ready only via Landlock.
 `[sandbox].allow_gpu` is the macOS Metal opt-in ([config.md](config.md)).
 
+### Home workspace vs helper containment
+
+A userland install places `agenc-linux-sandbox` under
+`$AGENC_HOME/runtime/<version>/…`. The helper must sit outside the writable
+workspace (`resolveTrustedLinuxSandboxExecutable` in
+`runtime/src/sandbox/execution-broker.ts`). A bare `agenc` in a fresh
+terminal opens `$HOME` as the workspace, so the helper is inside that tree
+and restricted startup fails closed:
+
+```text
+[sandbox_required_unavailable] required sandbox blocked startup: Linux sandbox
+helper must be outside the writable workspace.
+```
+
+`linuxSandboxHelperRemediation` then names the cause. When the workspace is
+the home directory, or an ancestor such as `/home` or `/`, the message says
+so and tells the operator to open a project directory. When the helper is
+misplaced inside an ordinary project, the original reinstall guidance stays
+in force. `HOME` is used only when it is an absolute path; otherwise the
+probe falls back to `os.homedir()`. Both sides are realpath'd, matching the
+containment test they explain.
+
+Do not carve `~/.agenc` out of a home workspace to make that layout work.
+The Landlock fallback cannot express a read-only carve-out inside a writable
+root, and home-as-workspace would also grant the agent write access to the
+entire home directory.
+
+### Linux launcher argv contract
+
+`agenc-linux-sandbox` (`runtime/src/sandbox/linux-launcher/cli.ts`) fails
+closed on handoff input that would widen or hide the boundary:
+
+| Refusal | Why |
+| --- | --- |
+| Missing `--sandbox-policy-cwd` (unless `--inherited-readonly-command-cwd`) | Policy cwd is never inferred from the launcher's own working directory |
+| Relative cwd or session-temp-root | Would re-anchor grants to the launcher cwd |
+| Repeated value flags | A second `--command-cwd` would silently replace the first |
+| A value that spells another `--flag` | Missing argument, not a path |
+| Unknown argv or unknown profile JSON fields | Policies cannot smuggle unvalidated settings |
+| `globScanMaxDepth` above `MAX_GLOB_SCAN_DEPTH` (128) | One glob must not become an unbounded filesystem walk |
+| Project-root `subpath` that is absolute or escapes `..` | Grants stay inside the project root |
+| NUL bytes in paths, profile strings, or command argv | Would truncate at an exec / C-string boundary |
+| `--proxy-route-spec` without `--allow-network-for-proxy` | Network grant is explicit |
+| `--inherited-readonly-command-cwd` plus explicit cwd or `--apply-seccomp-then-exec` | Inherited cwd is only valid for the outer launcher stage |
+
+Production sessions never invoke this helper with operator-typed argv. The
+contract matters when diagnosing a spawn refusal or writing a regression.
+
 Runtime `read_only` and `workspace_write` profiles use a full-disk read
 baseline. Explicit deny-read entries still override it. `read_only` grants no
 write entries; `workspace_write` grants writes only to the workspace, approved
@@ -440,6 +488,15 @@ design and stable error codes are documented in
 [`../design/fail-closed-sandbox-execution.md`](../design/fail-closed-sandbox-execution.md).
 Docker sandbox driver and SSH remote exec targets remain roadmap items
 ([`../roadmap.md`](../roadmap.md)).
+
+### Troubleshooting
+
+| Symptom | What to do |
+| --- | --- |
+| `[sandbox_required_unavailable]` + helper "outside the writable workspace" after a stock Linux install | The workspace is `$HOME` (or contains it). Open a project directory. Do not reinstall. |
+| `[sandbox_landlock_fallback]` from `agenc doctor` | Bubblewrap is unusable; Linux is ready only via Landlock. On Ubuntu 24.04+ install the AppArmor profile in [install.md](../install.md). Otherwise restore `bwrap` or accept the fallback limits. |
+| `[sandbox_policy_unexpressible]` on shell or workspace-write stdio MCP | Landlock cannot keep `.git` / `.agenc` read-only inside a writable project. Restore bubblewrap, use `sandbox_mode = "read-only"`, or choose `danger-full-access`. Plugin-declared MCP servers keep a tighter, Landlock-expressible profile. |
+| Windows restricted-mode spawn refused | Native restricted-token isolation is unimplemented. Use WSL2, `external_sandbox`, or the deliberate danger-mode escape hatch. |
 
 ## Pre-execute guards
 

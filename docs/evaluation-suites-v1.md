@@ -31,6 +31,10 @@ Validate the committed catalog without running a task or loading a provider:
 npm --workspace=@tetsuo-ai/runtime run check:eval-suites -- --json
 ```
 
+Any flag other than `--json` is a usage error (exit 2), including single-dash
+spellings, so a typo cannot be read as a catalog path
+(`runtime/src/eval-suites/cli.ts`).
+
 That command and the committed catalog are source-repository tooling, not a new
 installed `agenc` CLI verb. The validator/plan/report APIs are included in the
 built runtime root export. The deterministic trust executor now exists (see
