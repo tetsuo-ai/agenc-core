@@ -508,8 +508,13 @@ export async function getCommands(
   // (`plugin:skill`) and as local skills (`skill`) when the plugin root is
   // inside the workspace. Drop the local copy so the TUI shows one entry.
   const pluginScopedBaseNames = new Set<string>();
+  const enabledPluginNames = new Set<string>();
   for (const command of commands) {
     if (command.source === "plugin" && command.name.includes(":")) {
+      const pluginName = command.name.split(":")[0];
+      if (pluginName !== undefined && pluginName.length > 0) {
+        enabledPluginNames.add(pluginName.toLowerCase());
+      }
       const baseName = command.name.split(":").pop();
       if (baseName !== undefined && baseName.length > 0) {
         pluginScopedBaseNames.add(baseName);
@@ -520,6 +525,14 @@ export async function getCommands(
   const seen = new Set<string>();
   return commands.filter(command => {
     if (!isCommandEnabled(command)) return false;
+    const shadowOwner = marketplaceTwinOwner(command, enabledPluginNames);
+    if (shadowOwner !== undefined) {
+      logForDebugging(
+        `core-shipped '${command.name}' yields to enabled marketplace plugin '${shadowOwner}'`,
+        { level: "warn" },
+      );
+      return false;
+    }
     const key = command.name.toLowerCase();
     if (seen.has(key)) return false;
     if (
@@ -532,6 +545,33 @@ export async function getCommands(
     seen.add(key);
     return true;
   });
+}
+
+/**
+ * An enabled marketplace plugin owns its name. Core ships some
+ * capabilities twice — as a bundled skill (iot-builder) or a builtin
+ * plugin (zeroday-hunter@builtin) AND as a signed marketplace plugin —
+ * and two same-name twins racing in one session surface means the one
+ * that answers depends on registration order and can silently diverge
+ * by version. While the marketplace twin is installed and enabled it is
+ * the single owner; uninstalling or disabling it restores the
+ * core-shipped copy. Returns the owning plugin name when the command is
+ * a shadowed core twin.
+ */
+export function marketplaceTwinOwner(
+  command: Pick<Command, "name" | "source">,
+  enabledPluginNames: ReadonlySet<string>,
+): string | undefined {
+  const source = typeof command.source === "string" ? command.source : "";
+  if (source === "bundled") {
+    const key = command.name.toLowerCase();
+    return enabledPluginNames.has(key) ? key : undefined;
+  }
+  if (source.endsWith("@builtin")) {
+    const owner = source.slice(0, -"@builtin".length).toLowerCase();
+    return enabledPluginNames.has(owner) ? owner : undefined;
+  }
+  return undefined;
 }
 
 function pluginConfigSurface(config: unknown): PluginConfigSurface | undefined {
