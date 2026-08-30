@@ -182,6 +182,11 @@ import {
   runGrokAuthCli,
 } from "./grok-auth-cli.js";
 import {
+  formatOpenAiModelsCliHelpText,
+  parseOpenAiModelsCliArgs,
+  runOpenAiModelsCli,
+} from "./openai-models-cli.js";
+import {
   formatAgenCMcpCliHelpText,
   parseAgenCMcpCliArgs,
   runAgenCMcpCli,
@@ -375,6 +380,7 @@ export function formatCliHelpText(): string {
     "       agenc <login|logout|whoami>",
     "       agenc <openai-login|openai-logout|openai-auth-status> [--json]",
     "       agenc <grok-login|grok-logout|grok-auth-status> [--json]",
+    "       agenc openai-models [--json]",
     "       agenc providers [--json] [--no-local-check]",
     "       agenc config <command> [args]",
     "       agenc plugin <command> [options]",
@@ -406,6 +412,7 @@ export function formatCliHelpText(): string {
     "  openai-auth-status                        Inspect OpenAI ChatGPT sign-in",
     "  grok-login | grok-logout                  Manage X / xAI subscription sign-in",
     "  grok-auth-status                          Inspect X / xAI sign-in",
+    "  openai-models                             List models the OpenAI credential can reach",
     "  providers                               Check provider readiness and local health",
     "  config                                  Show, mutate, validate, or edit config.toml",
     "  plugin                                  Manage local plugins and marketplaces",
@@ -486,6 +493,8 @@ export function formatCliHelpTopicText(topic: string): string | null {
     case "xai-logout":
     case "xai-auth-status":
       return formatGrokAuthCliHelpText();
+    case "openai-models":
+      return formatOpenAiModelsCliHelpText();
     case "daemon":
       return formatAgenCDaemonCliHelpText();
     case "remote":
@@ -5550,6 +5559,14 @@ export async function main(): Promise<number> {
   if (grokAuthCommand !== null) {
     const ingress = captureSecureStorageIngress(process.env);
     return runGrokAuthCli(grokAuthCommand, { home: ingress.home });
+  }
+  const openAiModelsCommand = parseOpenAiModelsCliArgs(argv);
+  if (openAiModelsCommand !== null) {
+    const ingress = captureSecureStorageIngress(process.env);
+    return runOpenAiModelsCli(openAiModelsCommand, {
+      home: ingress.home,
+      environment: snapshotProviderEnvironment(ingress.environment),
+    });
   }
   const authCommand = parseAgenCAuthCliArgs(argv);
   if (authCommand !== null) {
