@@ -9,6 +9,7 @@
  * tokens never appear in the output.
  */
 
+import { createHeadlessEmitters } from "./headless-cli-io.js";
 import {
   CHATGPT_BACKEND_BASE_URL,
   chatGptSubscriptionHeaders,
@@ -111,19 +112,11 @@ export async function runOpenAiModelsCli(
     return 1;
   }
 
-  const emit = (payload: Record<string, unknown>, plain: string): void => {
-    io.stdout.write(
-      command.json ? `${JSON.stringify(payload)}\n` : `${plain}\n`,
-    );
-  };
-  const fail = (error: string): number => {
-    if (command.json) {
-      io.stdout.write(`${JSON.stringify({ ok: false, error })}\n`);
-    } else {
-      io.stderr.write(`Model discovery failed: ${error}\n`);
-    }
-    return 1;
-  };
+  const { emit, fail } = createHeadlessEmitters(
+    command.json,
+    io,
+    "Model discovery failed",
+  );
 
   const fetchImpl: FetchLike =
     io.fetchImpl ?? (fetch as unknown as FetchLike);

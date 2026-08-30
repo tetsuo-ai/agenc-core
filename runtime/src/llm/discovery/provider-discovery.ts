@@ -11,6 +11,7 @@ import type { HomeContext } from "../../config/home.js";
 import { readLocalByokCredential } from "../../auth/native-credentials.js";
 import { captureSecureStorageIngress } from "../../utils/secureStorage/home.js";
 import {
+  canonicalProviderApiKeyEnvVar,
   resolveProviderBaseURLEnvironment,
   type ProviderCredentialProvenance,
 } from "../registry/provider-ingress.js";
@@ -66,6 +67,12 @@ export interface ProviderAvailabilityEntry {
   readonly subscriptionTier?: AuthSubscriptionTier;
   readonly authBackendKind?: AuthBackendKind;
   readonly detail: string;
+  /**
+   * Canonical API-key environment variable for BYOK entry (first alias),
+   * absent for keyless credential kinds. Clients render their key input
+   * from this — without it the desktop showed no API-key option at all.
+   */
+  readonly keyEnvVar?: string;
 }
 
 export interface ProviderAvailabilityReport {
@@ -405,12 +412,14 @@ function buildEntry(params: {
   readonly detail: string;
   readonly credentialProvenance?: ProviderCredentialProvenance;
 }): ProviderAvailabilityEntry {
+  const keyEnvVar = canonicalProviderApiKeyEnvVar(params.provider);
   return {
     provider: params.provider,
     model: params.model,
     status: params.usable ? "usable" : "unusable",
     usable: params.usable,
     credentialStatus: params.credentialStatus,
+    ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
     ...(params.credentialProvenance !== undefined
       ? { credentialProvenance: params.credentialProvenance }
       : {}),

@@ -12,8 +12,10 @@
  * `device` argument.
  */
 
-import { spawn } from "node:child_process";
-
+import {
+  createHeadlessEmitters,
+  openUrlDetached,
+} from "./headless-cli-io.js";
 import {
   runXaiBrowserLogin,
   runXaiDeviceLogin,
@@ -98,21 +100,6 @@ export function formatGrokAuthCliHelpText(): string {
   ].join("\n");
 }
 
-function openUrlDetached(url: string): void {
-  const command =
-    process.platform === "darwin"
-      ? "open"
-      : process.platform === "win32"
-        ? "cmd"
-        : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  const child = spawn(command, args, { detached: true, stdio: "ignore" });
-  child.on("error", () => {
-    // The URL is printed either way; a missing opener is not fatal.
-  });
-  child.unref();
-}
-
 export async function runGrokAuthCli(
   command: GrokAuthCliCommand,
   runtime: GrokAuthCliRuntime,
@@ -128,21 +115,11 @@ export async function runGrokAuthCli(
     return 1;
   }
 
-  const emit = (payload: Record<string, unknown>, plain: string): void => {
-    io.stdout.write(
-      command.json ? `${JSON.stringify(payload)}\n` : `${plain}\n`,
-    );
-  };
-  const fail = (error: string, code?: string): number => {
-    if (command.json) {
-      io.stdout.write(
-        `${JSON.stringify({ ok: false, error, ...(code !== undefined ? { code } : {}) })}\n`,
-      );
-    } else {
-      io.stderr.write(`Sign-in failed: ${error}\n`);
-    }
-    return 1;
-  };
+  const { emit, fail } = createHeadlessEmitters(
+    command.json,
+    io,
+    "Sign-in failed",
+  );
 
   if (command.kind === "status") {
     const existing = readXaiOauthCredentials(runtime.home);
