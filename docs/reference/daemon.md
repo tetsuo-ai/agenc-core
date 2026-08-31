@@ -209,6 +209,14 @@ reimplementing the workbench. Source:
 | Session controls | `session.setModel`, `setPermissionMode`, `applyConfig`, `session.permissions.mutateRule`, `session.shell.execute` |
 | Hooks / MCP | `session.hooks.status`, `session.hooks.setDisabled`, `session.mcp.reconnectServer`, `session.mcp.enableServer`, `session.mcp.disableServer` |
 
+`session.partialCompactFromMessage` is the daemon path behind TUI `/compact`
+(`messageOrdinal: 0`, `direction: "from"`). A successful transactional
+compact returns optional `attemptId` (`compact-<uuid-v4>`) and `displayText`
+(`Conversation compacted` plus `Rollback attempt ID: <id>`). The runner
+forwards those fields after it emits `transcript_epoch` and `history_replaced`.
+`rollbackCompaction` and `extendCompactionRollbackRetention` take that same
+ID. Operator recovery: [CP-0006](../design/critical-path/0006-compaction-transaction.md#rollback-and-retention).
+
 Workbench BUFFER and Neovim behavior: [`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md).
 
 `session.setPermissionMode` mutates the live session permission registry.

@@ -201,8 +201,10 @@ Primary references: [The Instruction Hierarchy](https://arxiv.org/abs/2404.13208
 
 The decision above is the durable-transaction spec. This section is the
 live operator surface. Sources: `runtime/src/services/compact/autoCompact.ts`,
-`compact.ts`, `transaction.ts`, `session/run-turn.ts`,
-`commands/session-compact.ts`, and `budget/admitted-model-call.ts`.
+`compact.ts`, `transaction.ts`, `operator.ts`, `session/run-turn.ts`,
+`session/session.ts`, `commands/session-compact.ts`,
+`tui/components/Message.tsx`, `app-server/background-agent-runner.ts`,
+and `budget/admitted-model-call.ts`.
 
 ### Entry points
 
@@ -302,6 +304,22 @@ keeps that work and materializes the restored history as the named session.
 `/compact-retain` can only extend the deadline. Commands refuse during an
 active turn.
 
+A committed attempt is `compact-${randomUUID()}` (UUID v4). After
+`compaction_committed` the ID is recoverable without digging the event log:
+
+| Surface | What you see |
+| --- | --- |
+| `/compact` result | `formatCompactionOperatorDisplay` appends `Rollback attempt ID: <id>` to the command text. The in-process path and the daemon-backed TUI both do this. |
+| TUI replacement-history boundary | `CompactBoundaryMessage` prints the same line under `✻ Conversation compacted`. It reads `compactionHistory` on the system message. |
+| Daemon `session.partialCompactFromMessage` | Success includes optional `attemptId` and `displayText`. The runner forwards those fields after it broadcasts `history_replaced`. |
+
+The TUI prints an ID only when the marker is `version: 1`, `kind: "boundary"`,
+`summary_sha256` is 64 hex characters, and `attempt_id` matches UUID v4
+`compact-...`. Auto-compact writes the same authenticated marker, so its
+boundary also shows the ID. Reconstructed legacy rows use
+`legacy-compacted:<sha256>` and stay hidden. A compact that never produced a
+`transaction` (no durable adapter) has no rollback ID.
+
 ### Troubleshooting
 
 | Symptom | What to check |
@@ -311,6 +329,7 @@ active turn.
 | A summary call includes a client or provider-native tool | This violates the summary-call contract. Summary calls must send an empty client catalog and an empty native-tool routing allowlist. Admission must account the same selected native catalog as the wire. |
 | History vanished after a failed compact | Only a flushed `compaction_committed` may replace active history. Any earlier replacement is a transaction bug and must not be treated as a commit. |
 | `/compact` says durable adapter unavailable | Compaction requires the canonical rollout owner (`readCompactionTransactionAdapter`). There is no character-extract fallback. |
+| Compacted, but no rollback attempt ID in the TUI | Confirm a flushed `compaction_committed`. The TUI only prints UUID v4 `compact-...` IDs from an authenticated `kind: "boundary"` marker. Legacy `legacy-compacted:` reconstructions stay hidden. Recheck the `/compact` result text or the daemon `attemptId` field. |
 
 Operator command syntax also lives in [cli.md](../../reference/cli.md#compaction-operator-commands).
 Threshold vs admission accounting: [provider-aware-token-accounting.md](../provider-aware-token-accounting.md).
