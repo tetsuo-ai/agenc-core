@@ -585,21 +585,7 @@ export async function updatePluginOp(
       `plugin ${input.pluginId} has no recorded source; rerun with --source <path>`,
     );
   }
-  if (typeof source === "string") {
-    const sourceKind = await classifyPluginSource(source, workspaceRoot);
-    if (sourceKind === "local") {
-      const localSource = resolvePath(source, workspaceRoot);
-      if (await pathExists(localSource)) {
-        const sourceReal = await realpath(localSource);
-        const rootReal = await realpath(previousRoot);
-        if (sourceReal === rootReal || sourceReal.startsWith(`${rootReal}/`)) {
-          throw new Error(
-            `plugin update source cannot be the installed plugin root: ${source}`,
-          );
-        }
-      }
-    }
-  }
+  await assertUpdateSourceOutsideInstalledRoot(source, workspaceRoot, previousRoot);
   let requireSignature = input.requireSignature;
   if (requireSignature === undefined && recordedSource.signatureRequired) {
     requireSignature = true;
@@ -620,6 +606,23 @@ export async function updatePluginOp(
     previousRoot,
     source,
   };
+}
+
+async function assertUpdateSourceOutsideInstalledRoot(
+  source: PluginInstallSource,
+  workspaceRoot: string,
+  previousRoot: string,
+): Promise<void> {
+  if (typeof source !== "string") return;
+  if (await classifyPluginSource(source, workspaceRoot) !== "local") return;
+  const localSource = resolvePath(source, workspaceRoot);
+  if (!(await pathExists(localSource))) return;
+  const sourceReal = await realpath(localSource);
+  const rootReal = await realpath(previousRoot);
+  if (sourceReal !== rootReal && !sourceReal.startsWith(`${rootReal}/`)) return;
+  throw new Error(
+    `plugin update source cannot be the installed plugin root: ${source}`,
+  );
 }
 
 async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
