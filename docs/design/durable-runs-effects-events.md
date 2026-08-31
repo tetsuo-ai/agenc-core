@@ -286,7 +286,7 @@ write so a genuine mid-flight failure remains `unknown_outcome`.
 | Offline `resolve-tool-call` reports `not_found` for a dangling intent | Expected. A raw intent has no `unknown_outcome` settlement to review and needs recovery classification or evidence repair rather than a review disposition. |
 | "You are not in plan mode" blocked later mutations | Fixed: that refusal now attests `confirmed_no_effect`. A leftover poison is an older journal. |
 | Retained session refuses with a createdAt mismatch of a few milliseconds | Current code allows 5s. A larger gap, or a model/provider/objective mismatch, is still a hard refuse. |
-| Interrupted turn starts over instead of continuing from its last checkpoint | See [In-turn checkpoint resume](#in-turn-checkpoint-resume). A last checkpoint with an unversioned slice field (`pendingAdmissionFallback` or `editorToolCallsAdmitted`) fails the A3 reader. |
+| Interrupted turn starts over instead of continuing from its last checkpoint | See [In-turn checkpoint resume](#in-turn-checkpoint-resume) and check the recorded resume-gate failure reason. |
 
 ## In-turn checkpoint resume
 
@@ -297,18 +297,21 @@ its last `turn_checkpoint` instead of opening a fresh turn.
 After a successful nonterminal sample, `run-turn.ts` advances
 `modelSampleOrdinal`. Before the next admission, it force-emits a `turn_checkpoint`
 (`emitTurnCheckpoint("iteration", { force: true })`). Interval throttling
-cannot defer that barrier. The event fsyncs:
+cannot defer that barrier. The version-3 event fsyncs:
 
-- the durable response prefix and its v2 `prefixHash`
+- the durable response prefix and its version-2 `prefixHash` algorithm
 - `resumableState` from `toCheckpointSlice(state)`
 
 The slice always carries `turnCount`, `recoveryReentryCount`,
 `maxOutputTokensRecoveryCount`, `continuationNudgeCount`,
 `stopHookBlockingCount`, `planToolRequiredRetryCount`, and
 `modelSampleOrdinal`. It optionally stores `modelSampleResumePrompt` as
-`continuation_nudge` or `empty_response`. Crash recovery can restore that
-runtime-only prompt and derive the same next sample step ID from the
-checkpointed ordinal. See
+`continuation_nudge` or `empty_response`. It also stores
+`editorToolCallsAdmitted` after an editor admission and
+`pendingAdmissionFallback` while a provider swap awaits admission. The
+reader validates those fields before `restoreFromCheckpoint` applies them.
+Crash recovery can restore the runtime-only state and derive the same next
+sample step ID from the checkpointed ordinal. See
 [execution-admission-kernel.md](execution-admission-kernel.md#model-step-identity).
 
 `resumeTurnFromCheckpoint` (`runtime/src/conversation/thread-manager.ts`)
@@ -321,27 +324,19 @@ fresh-turn events append afterward.
 | `durableTurns.resume.onRestart` | `true` | `disabled` |
 | A readable checkpoint exists on an unterminated turn | n/a | `no-checkpoint` |
 | `durableTurns.resume.buildPinning` matches the writing build | `true` | `build-mismatch` |
-| A3 reader accepts the payload (`readTurnCheckpoint`) | n/a | `integrity-invalid` or `integrity-deferred` |
+| Checkpoint reader accepts the payload (`readTurnCheckpoint`) | n/a | `integrity-invalid` or `integrity-deferred` |
 | History prefix hash matches | n/a | `prefix-mismatch` |
 | Single-writer resume lease (`durableTurns.resume.requireLease`) | `true` | `lease-unavailable` |
 
-The A3 reader (`CHECKPOINT_SLICE_KEYS` in
-`runtime/src/session/durable-checkpoint-reader.ts`) rejects any key outside
-the allowlist with `resumableState contains unversioned fields`.
-`toCheckpointSlice` currently writes two fields that are **not** on that
-list:
-
-| Slice field | When it is written | Resume effect |
-| --- | --- | --- |
-| `editorToolCallsAdmitted` | After any BUFFER / editor-interaction tool admission (`editorToolCallsAdmitted > 0`). `resetIterationFields` does not clear it. Any later checkpoint, including `postAssistant` or the forced pre-admission checkpoint, carries the field | `integrity-invalid` -> fresh turn |
-| `pendingAdmissionFallback` | After `recovery/model-fallback.ts` records a provider swap, until `stream-model.ts` consumes it at the next admitted call. Written only if a checkpoint is emitted while that decision is still pending | Same |
-
-`restoreFromCheckpoint` would apply those fields if they reached it. The
-reader currently rejects both fields. This section documents the
-limitation.
-
-The nudge, mid-turn compact, and empty-response retry checkpoint fields
-are allowlisted and do not cause this rejection by themselves.
+The writer, event types, and strict reader share the slice contract in
+`runtime/src/session/turn-checkpoint-slice.ts`. The reader accepts legacy
+version 1, canonical version 2, and version 3. It also has a narrow
+compatibility path for version-2 checkpoints written with
+`editorToolCallsAdmitted` or `pendingAdmissionFallback`; those rows are
+validated against the version-3 slice and normalized in memory. Other
+unknown fields still fail with `resumableState contains unversioned fields`.
+Schema-1 and schema-2 rollouts are promoted atomically after their prefix and
+tool-result integrity checks pass. A rejected checkpoint is not rewritten.
 
 ## Persist before publish
 

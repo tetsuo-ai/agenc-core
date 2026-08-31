@@ -292,7 +292,7 @@ describe("admitted model sample identity", () => {
               .modelSampleOrdinal === 1,
         );
         expect(readTurnCheckpoint(modelSampleCheckpoint)).toMatchObject({
-          version: 2,
+          version: 3,
           checkpoint: {
             boundary: "iteration",
             resumableState: {

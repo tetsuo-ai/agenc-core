@@ -12,9 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeMessagesForAPI } from "../../src/llm/messages.js";
 import type { LLMMessage } from "../../src/llm/types.js";
 import { resumeTurnFromCheckpoint } from "../../src/conversation/thread-manager.js";
-import {
-  computeCheckpointPrefixHashV2,
-} from "../../src/session/durable-checkpoint-reader.js";
+import { computeCheckpointPrefixHashV2 } from "../../src/session/durable-checkpoint-reader.js";
 import {
   currentBuildId,
   resetBuildIdForTestingOnly,
@@ -185,7 +183,8 @@ describe("A3b history and provider boundary", () => {
     });
     const parsed = parseRolloutLine(serialized);
     expect(parsed?.type).toBe("response_item");
-    if (parsed?.type !== "response_item") throw new Error("response item missing");
+    if (parsed?.type !== "response_item")
+      throw new Error("response item missing");
     expect(
       verifyToolResultIntegrity({
         integrity: parsed.payload.toolResultIntegrity,
@@ -396,7 +395,9 @@ describe("A3b shared ID-paired validator cutover", () => {
       expect.objectContaining<ToolPairHistoryBlockedError>({
         outcome: expect.objectContaining({
           status: "invalid",
-          failure: expect.objectContaining({ code: "tool_result_without_call" }),
+          failure: expect.objectContaining({
+            code: "tool_result_without_call",
+          }),
         }),
       }),
     );
@@ -420,7 +421,9 @@ describe("A3b shared ID-paired validator cutover", () => {
     const nextAssistant: ResponseItem = {
       role: "assistant",
       content: "",
-      toolCalls: [{ id: "ordered-call-next", name: "FileRead", arguments: "{}" }],
+      toolCalls: [
+        { id: "ordered-call-next", name: "FileRead", arguments: "{}" },
+      ],
     };
     const nextTool: ResponseItem = {
       role: "tool",
@@ -434,7 +437,10 @@ describe("A3b shared ID-paired validator cutover", () => {
       }),
     };
     expect(() => {
-      restarted.appendRollout({ type: "response_item", payload: nextAssistant });
+      restarted.appendRollout({
+        type: "response_item",
+        payload: nextAssistant,
+      });
       restarted.appendRollout({ type: "response_item", payload: nextTool });
     }).not.toThrow();
     expect(() =>
@@ -497,7 +503,7 @@ describe("A3b atomic legacy publication", () => {
     expect(
       upgradedItems
         .filter((item) => item.type === "session_meta")
-        .every((item) => item.payload.rolloutSchemaVersion === 2),
+        .every((item) => item.payload.rolloutSchemaVersion === 3),
     ).toBe(true);
     expect(
       upgradedItems.find(
@@ -509,7 +515,7 @@ describe("A3b atomic legacy publication", () => {
       payload: {
         msg: {
           payload: {
-            checkpointVersion: 2,
+            checkpointVersion: 3,
             toolResultIntegrityVersion: 1,
           },
         },
@@ -539,7 +545,7 @@ describe("A3b atomic legacy publication", () => {
     restarted.close();
   });
 
-  it("fails a malformed legacy sequence closed without publishing v2", () => {
+  it("fails a malformed legacy sequence closed without publishing an upgrade", () => {
     const sessionId = "invalid-upgrade-session";
     const meta = {
       sessionId,
@@ -557,7 +563,8 @@ describe("A3b atomic legacy publication", () => {
         item.payload.msg.type !== "turn_checkpoint",
     );
     const assistantIndex = fixture.findIndex(
-      (item) => item.type === "response_item" && item.payload.role === "assistant",
+      (item) =>
+        item.type === "response_item" && item.payload.role === "assistant",
     );
     const resultIndex = fixture.findIndex(
       (item) => item.type === "response_item" && item.payload.role === "tool",

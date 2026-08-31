@@ -1,7 +1,10 @@
-import type {
-  TurnCheckpointSliceLine,
-  TurnCheckpointV1Event,
-  TurnCheckpointV2Event,
+import {
+  ROLLOUT_SCHEMA_VERSION,
+  type LegacyTurnCheckpointSliceLine,
+  type TurnCheckpointSliceLine,
+  type TurnCheckpointV1Event,
+  type TurnCheckpointV2Event,
+  type TurnCheckpointV3Event,
 } from "./event-log.js";
 import type { ToolResultIntegrityResponseItem } from "./rollout-item.js";
 import {
@@ -25,10 +28,18 @@ import {
   type ToolPairProjection,
   type ToolPairProjectionSummary,
 } from "./tool-pair-validator.js";
+import {
+  LEGACY_TURN_CHECKPOINT_SLICE_KEYS,
+  TURN_CHECKPOINT_SLICE_KEYS,
+  validatePendingAdmissionFallbackSlice,
+} from "./turn-checkpoint-slice.js";
 
 export const LEGACY_DURABLE_CHECKPOINT_VERSION = 1 as const;
-export const DURABLE_CHECKPOINT_READ_VERSION = 2 as const;
+export const DURABLE_CHECKPOINT_V2 = 2 as const;
+export const DURABLE_CHECKPOINT_READ_VERSION = 3 as const;
+export const DURABLE_CHECKPOINT_WRITE_VERSION = DURABLE_CHECKPOINT_READ_VERSION;
 export const DURABLE_ROLLOUT_SCHEMA_V2 = 2 as const;
+export const DURABLE_ROLLOUT_SCHEMA_VERSION = ROLLOUT_SCHEMA_VERSION;
 export const MAX_CHECKPOINT_PREFIX_MESSAGES = 2_000_000;
 
 const CHECKPOINT_PREFIX_DIGEST_DOMAIN = "agenc.checkpoint-prefix.v2";
@@ -42,20 +53,6 @@ const CHECKPOINT_BASE_KEYS = Object.freeze([
   "prefixHash",
   "resumableState",
   "turnId",
-]);
-const CHECKPOINT_SLICE_KEYS = Object.freeze([
-  "autoCompactTracking",
-  "continuationNudgeCount",
-  "maxOutputTokensRecoveryCount",
-  "modelSampleOrdinal",
-  "modelSampleResumePrompt",
-  "pendingBudgetDecision",
-  "planToolRequiredRetryCount",
-  "recoveryReentryCount",
-  "stopHookBlockingCount",
-  "taskBudgetRemaining",
-  "transition",
-  "turnCount",
 ]);
 const RESPONSE_ITEM_KEYS = Object.freeze([
   "agentInvocation",
@@ -74,11 +71,19 @@ const TOOL_CALL_KEYS = Object.freeze(["arguments", "id", "name"]);
 export type ReadableTurnCheckpoint =
   | {
       readonly version: typeof LEGACY_DURABLE_CHECKPOINT_VERSION;
+      readonly sourceVersion: typeof LEGACY_DURABLE_CHECKPOINT_VERSION;
       readonly checkpoint: TurnCheckpointV1Event;
     }
   | {
-      readonly version: typeof DURABLE_CHECKPOINT_READ_VERSION;
+      readonly version: typeof DURABLE_CHECKPOINT_V2;
+      readonly sourceVersion: typeof DURABLE_CHECKPOINT_V2;
       readonly checkpoint: TurnCheckpointV2Event;
+    }
+  | {
+      readonly version: typeof DURABLE_CHECKPOINT_READ_VERSION;
+      readonly sourceVersion:
+        typeof DURABLE_CHECKPOINT_V2 | typeof DURABLE_CHECKPOINT_READ_VERSION;
+      readonly checkpoint: TurnCheckpointV3Event;
     };
 
 export type DurableCheckpointReadFailureCode =
@@ -148,6 +153,7 @@ export function readTurnCheckpoint(payload: unknown): ReadableTurnCheckpoint {
     rawVersion === undefined ? LEGACY_DURABLE_CHECKPOINT_VERSION : rawVersion;
   if (
     version !== LEGACY_DURABLE_CHECKPOINT_VERSION &&
+    version !== DURABLE_CHECKPOINT_V2 &&
     version !== DURABLE_CHECKPOINT_READ_VERSION
   ) {
     throw new DurableCheckpointReadError(
@@ -170,7 +176,6 @@ export function readTurnCheckpoint(payload: unknown): ReadableTurnCheckpoint {
     throw malformed("checkpoint payload contains unversioned fields");
   }
 
-  const common = parseCheckpointBase(payload);
   if (version === LEGACY_DURABLE_CHECKPOINT_VERSION) {
     if (
       payload.toolResultIntegrityVersion !== undefined ||
@@ -180,19 +185,38 @@ export function readTurnCheckpoint(payload: unknown): ReadableTurnCheckpoint {
     }
     return {
       version,
+      sourceVersion: version,
       checkpoint: {
-        ...common,
+        ...parseCheckpointBase(payload, "legacy"),
         ...(rawVersion === 1 ? { checkpointVersion: 1 as const } : {}),
       },
     };
   }
   if (payload.toolResultIntegrityVersion !== 1) {
-    throw malformed("checkpoint v2 requires toolResultIntegrityVersion 1");
+    throw malformed(
+      `checkpoint v${version} requires toolResultIntegrityVersion 1`,
+    );
+  }
+  const hasWriterExtensions = checkpointSliceHasWriterExtensions(
+    payload.resumableState,
+  );
+  if (version === DURABLE_CHECKPOINT_V2 && !hasWriterExtensions) {
+    const legacyCommon = parseCheckpointBase(payload, "legacy");
+    return {
+      version,
+      sourceVersion: version,
+      checkpoint: {
+        ...legacyCommon,
+        checkpointVersion: DURABLE_CHECKPOINT_V2,
+        toolResultIntegrityVersion: 1,
+      },
+    };
   }
   return {
-    version,
+    version: DURABLE_CHECKPOINT_READ_VERSION,
+    sourceVersion: version,
     checkpoint: {
-      ...common,
+      ...parseCheckpointBase(payload, "current"),
       checkpointVersion: DURABLE_CHECKPOINT_READ_VERSION,
       toolResultIntegrityVersion: 1,
     },
@@ -287,10 +311,7 @@ export function computeCheckpointPrefixHashV2(
     if (agentInvocation !== undefined) {
       writer.writeCount("agent-invocation-version", agentInvocation.version);
       writer.writeString("agent-invocation-kind", agentInvocation.kind);
-      writer.writeString(
-        "agent-invocation-id",
-        agentInvocation.invocationId,
-      );
+      writer.writeString("agent-invocation-id", agentInvocation.invocationId);
       writer.writeCount(
         "agent-invocation-minimum-reader-version",
         agentInvocation.minimumReaderVersion,
@@ -330,7 +351,7 @@ export function computeCheckpointPrefixHashV2(
  * closed for the A3b resume gate.
  */
 export function validateCheckpointPrefixV2(params: {
-  readonly checkpoint: TurnCheckpointV2Event;
+  readonly checkpoint: TurnCheckpointV2Event | TurnCheckpointV3Event;
   readonly expectedRunId: string;
   readonly messages: ReadonlyArray<ToolResultIntegrityResponseItem>;
   readonly projection: ToolPairProjection;
@@ -405,9 +426,9 @@ export function validateCheckpointPrefixV2(params: {
   }
 
   try {
-    validateAgentInvocationResponseSequence(
-      [...prefixMessages(params.messages, count)],
-    );
+    validateAgentInvocationResponseSequence([
+      ...prefixMessages(params.messages, count),
+    ]);
   } catch (error) {
     if (error instanceof DurableCheckpointReadError) {
       return {
@@ -511,7 +532,24 @@ export function validateCheckpointPrefixV2(params: {
 
 function parseCheckpointBase(
   payload: Record<string, unknown>,
-): Omit<TurnCheckpointV1Event, "checkpointVersion"> {
+  sliceVersion: "legacy",
+): Omit<TurnCheckpointV1Event, "checkpointVersion">;
+function parseCheckpointBase(
+  payload: Record<string, unknown>,
+  sliceVersion: "current",
+): Omit<
+  TurnCheckpointV3Event,
+  "checkpointVersion" | "toolResultIntegrityVersion"
+>;
+function parseCheckpointBase(
+  payload: Record<string, unknown>,
+  sliceVersion: "legacy" | "current",
+):
+  | Omit<TurnCheckpointV1Event, "checkpointVersion">
+  | Omit<
+      TurnCheckpointV3Event,
+      "checkpointVersion" | "toolResultIntegrityVersion"
+    > {
   const turnId = requiredText(payload.turnId, "turnId");
   if (Buffer.byteLength(turnId, "utf8") > MAX_CHECKPOINT_TURN_ID_BYTES) {
     throw malformed(
@@ -541,7 +579,10 @@ function parseCheckpointBase(
       "persistedMessageCount",
     ),
     prefixHash,
-    resumableState: parseCheckpointSlice(payload.resumableState),
+    resumableState:
+      sliceVersion === "legacy"
+        ? parseCheckpointSlice(payload.resumableState, "legacy")
+        : parseCheckpointSlice(payload.resumableState, "current"),
   };
 }
 
@@ -645,7 +686,9 @@ function validateAgentInvocationResponseSequence(
       })),
     );
   } catch (error) {
-    throw malformed(`agent invocation sequence is invalid: ${errorMessage(error)}`);
+    throw malformed(
+      `agent invocation sequence is invalid: ${errorMessage(error)}`,
+    );
   }
 }
 
@@ -653,9 +696,24 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function parseCheckpointSlice(value: unknown): TurnCheckpointSliceLine {
+function parseCheckpointSlice(
+  value: unknown,
+  sliceVersion: "legacy",
+): LegacyTurnCheckpointSliceLine;
+function parseCheckpointSlice(
+  value: unknown,
+  sliceVersion: "current",
+): TurnCheckpointSliceLine;
+function parseCheckpointSlice(
+  value: unknown,
+  sliceVersion: "legacy" | "current",
+): TurnCheckpointSliceLine | LegacyTurnCheckpointSliceLine {
   if (!isRecord(value)) throw malformed("resumableState must be an object");
-  if (!hasOnlyKnownKeys(value, CHECKPOINT_SLICE_KEYS)) {
+  const keys =
+    sliceVersion === "legacy"
+      ? LEGACY_TURN_CHECKPOINT_SLICE_KEYS
+      : TURN_CHECKPOINT_SLICE_KEYS;
+  if (!hasOnlyKnownKeys(value, keys)) {
     throw malformed("resumableState contains unversioned fields");
   }
   const result: {
@@ -667,6 +725,8 @@ function parseCheckpointSlice(value: unknown): TurnCheckpointSliceLine {
     continuationNudgeCount: number;
     stopHookBlockingCount: number;
     planToolRequiredRetryCount?: number;
+    editorToolCallsAdmitted?: number;
+    pendingAdmissionFallback?: TurnCheckpointSliceLine["pendingAdmissionFallback"];
     taskBudgetRemaining?: number;
     autoCompactTracking?: TurnCheckpointSliceLine["autoCompactTracking"];
     transition?: TurnCheckpointSliceLine["transition"];
@@ -695,6 +755,20 @@ function parseCheckpointSlice(value: unknown): TurnCheckpointSliceLine {
       value.planToolRequiredRetryCount,
       "resumableState.planToolRequiredRetryCount",
     );
+  }
+  if (value.editorToolCallsAdmitted !== undefined) {
+    result.editorToolCallsAdmitted = nonNegativeInteger(
+      value.editorToolCallsAdmitted,
+      "resumableState.editorToolCallsAdmitted",
+    );
+  }
+  if (value.pendingAdmissionFallback !== undefined) {
+    const fallback = validatePendingAdmissionFallbackSlice(
+      value.pendingAdmissionFallback,
+      "resumableState.pendingAdmissionFallback",
+    );
+    if (!fallback.ok) throw malformed(fallback.reason);
+    result.pendingAdmissionFallback = fallback.value;
   }
   if (value.modelSampleOrdinal !== undefined) {
     result.modelSampleOrdinal = nonNegativeInteger(
@@ -856,6 +930,14 @@ function safeVersion(value: unknown): string {
     return JSON.stringify(value);
   }
   return `<${typeof value}>`;
+}
+
+function checkpointSliceHasWriterExtensions(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (
+    Object.prototype.hasOwnProperty.call(value, "editorToolCallsAdmitted") ||
+    Object.prototype.hasOwnProperty.call(value, "pendingAdmissionFallback")
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

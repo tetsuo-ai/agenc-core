@@ -7891,7 +7891,7 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
     // Non-per-iteration counters hold their EXACT restored pre-crash values.
     expect(cp.recoveryReentryCount).toBe(3);
     expect(cp.taskBudgetRemaining).toBe(9999);
-    expect(cp.checkpointVersion).toBe(2);
+    expect(cp.checkpointVersion).toBe(3);
     expect(cp.toolResultIntegrityVersion).toBe(1);
     expect(
       appendRollout.mock.calls
