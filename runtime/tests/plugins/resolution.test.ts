@@ -235,28 +235,7 @@ describe("plugin source resolution", () => {
 
   test("direct resolver requires a trusted signature for remote sources by default", async () => {
     await withTempDir(async (root) => {
-      const runProcess: PluginProcessRunner = async (command, args) => {
-        if (command === "npm") {
-          const packDir = String(args[args.indexOf("--pack-destination") + 1]);
-          await writeFile(join(packDir, "unsigned-1.0.0.tgz"), "fixture");
-          return {
-            stdout: JSON.stringify([{ filename: "unsigned-1.0.0.tgz" }]),
-            stderr: "",
-          };
-        }
-        if (command === "tar") {
-          if (args[0] === "-tzf") {
-            return { stdout: safeTarListing("package"), stderr: "" };
-          }
-          if (args[0] === "-tvzf") {
-            return { stdout: safeTarVerboseListing("package"), stderr: "" };
-          }
-          const extractRoot = String(args[args.indexOf("-C") + 1]);
-          await writePlugin(join(extractRoot, "package"), "unsigned-demo");
-          return { stdout: "", stderr: "" };
-        }
-        throw new Error(`unexpected process: ${command}`);
-      };
+      const runProcess = unsignedNpmPluginRunner("unsigned-demo");
 
       await expect(
         resolvePluginSource("@tetsuo-ai/unsigned-plugin", {
@@ -515,28 +494,7 @@ describe("plugin source resolution", () => {
 
   test("install operation requires a trusted signature for remote sources by default", async () => {
     await withTempDir(async (root) => {
-      const runProcess: PluginProcessRunner = async (command, args) => {
-        if (command === "npm") {
-          const packDir = String(args[args.indexOf("--pack-destination") + 1]);
-          await writeFile(join(packDir, "unsigned-1.0.0.tgz"), "fixture");
-          return {
-            stdout: JSON.stringify([{ filename: "unsigned-1.0.0.tgz" }]),
-            stderr: "",
-          };
-        }
-        if (command === "tar") {
-          if (args[0] === "-tzf") {
-            return { stdout: safeTarListing("package"), stderr: "" };
-          }
-          if (args[0] === "-tvzf") {
-            return { stdout: safeTarVerboseListing("package"), stderr: "" };
-          }
-          const extractRoot = String(args[args.indexOf("-C") + 1]);
-          await writePlugin(join(extractRoot, "package"), "unsigned-demo");
-          return { stdout: "", stderr: "" };
-        }
-        throw new Error(`unexpected process: ${command}`);
-      };
+      const runProcess = unsignedNpmPluginRunner("unsigned-demo");
 
       await expect(
         installPluginOp({
@@ -562,28 +520,7 @@ describe("plugin source resolution", () => {
       expect(installed.resolutionKind).toBe("local");
       expect(installed.signatureVerified).toBe(false);
 
-      const runProcess: PluginProcessRunner = async (command, args) => {
-        if (command === "npm") {
-          const packDir = String(args[args.indexOf("--pack-destination") + 1]);
-          await writeFile(join(packDir, "unsigned-1.0.0.tgz"), "fixture");
-          return {
-            stdout: JSON.stringify([{ filename: "unsigned-1.0.0.tgz" }]),
-            stderr: "",
-          };
-        }
-        if (command === "tar") {
-          if (args[0] === "-tzf") {
-            return { stdout: safeTarListing("package"), stderr: "" };
-          }
-          if (args[0] === "-tvzf") {
-            return { stdout: safeTarVerboseListing("package"), stderr: "" };
-          }
-          const extractRoot = String(args[args.indexOf("-C") + 1]);
-          await writePlugin(join(extractRoot, "package"), "unsigned-remote");
-          return { stdout: "", stderr: "" };
-        }
-        throw new Error(`unexpected process: ${command}`);
-      };
+      const runProcess = unsignedNpmPluginRunner("unsigned-remote");
 
       await expect(
         updatePluginOp({
@@ -646,28 +583,7 @@ describe("plugin source resolution", () => {
         agencHome,
         workspaceRoot: root,
       });
-      const runProcess: PluginProcessRunner = async (command, args) => {
-        if (command === "npm") {
-          const packDir = String(args[args.indexOf("--pack-destination") + 1]);
-          await writeFile(join(packDir, "unsigned-1.0.0.tgz"), "fixture");
-          return {
-            stdout: JSON.stringify([{ filename: "unsigned-1.0.0.tgz" }]),
-            stderr: "",
-          };
-        }
-        if (command === "tar") {
-          if (args[0] === "-tzf") {
-            return { stdout: safeTarListing("package"), stderr: "" };
-          }
-          if (args[0] === "-tvzf") {
-            return { stdout: safeTarVerboseListing("package"), stderr: "" };
-          }
-          const extractRoot = String(args[args.indexOf("-C") + 1]);
-          await writePlugin(join(extractRoot, "package"), "unsigned-remote");
-          return { stdout: "", stderr: "" };
-        }
-        throw new Error(`unexpected process: ${command}`);
-      };
+      const runProcess = unsignedNpmPluginRunner("unsigned-remote");
 
       const updated = await updatePluginOp({
         pluginId: installed.plugin.id,
@@ -1804,6 +1720,31 @@ function safeTarVerboseListing(root: string): string {
     `-rw-r--r-- 0/0 0 2026-05-05 00:00 ${root}/.agenc-plugin/plugin.json`,
     `-rw-r--r-- 0/0 0 2026-05-05 00:00 ${root}/commands/hello.md`,
   ].join("\n");
+}
+
+function unsignedNpmPluginRunner(pluginName: string): PluginProcessRunner {
+  return async (command, args) => {
+    if (command === "npm") {
+      const packDir = String(args[args.indexOf("--pack-destination") + 1]);
+      await writeFile(join(packDir, "unsigned-1.0.0.tgz"), "fixture");
+      return {
+        stdout: JSON.stringify([{ filename: "unsigned-1.0.0.tgz" }]),
+        stderr: "",
+      };
+    }
+    if (command === "tar") {
+      if (args[0] === "-tzf") {
+        return { stdout: safeTarListing("package"), stderr: "" };
+      }
+      if (args[0] === "-tvzf") {
+        return { stdout: safeTarVerboseListing("package"), stderr: "" };
+      }
+      const extractRoot = String(args[args.indexOf("-C") + 1]);
+      await writePlugin(join(extractRoot, "package"), pluginName);
+      return { stdout: "", stderr: "" };
+    }
+    throw new Error(`unexpected process: ${command}`);
+  };
 }
 
 function safeZipListing(): string {
