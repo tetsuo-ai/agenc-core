@@ -62,7 +62,7 @@ for await (const event of run) {
     case "elicitation_request":
       /* also routed to onElicitationRequest */ break;
     case "history_reset":
-      /* drop buffered history; reload transcriptV2() */ break;
+      /* drop buffered history and turn markers; reload transcriptV2() */ break;
     case "gap":
       /* event.event_gap; do not skip */ break;
     case "session_event":
@@ -152,9 +152,14 @@ authenticated Android portal client advertises those explicitly. A future SDK
 capability option must remain opt-in and bind delivery to a concrete handler.
 
 Usage/cost: after the turn ends the SDK fetches `session.snapshot` and puts
-`tokenUsage` on the result (`includeUsage: false` to skip). Raw daemon snapshot
+`tokenUsage` on the result (`includeUsage: false` to skip). That aggregate is
+the live session total. Historical per-turn duration and usage after attach
+or restore come from `session.transcript.v2` `turnResults` (see
+[daemon.md](reference/daemon.md#closed-turn-results)). Raw daemon snapshot
 responses may carry an additive `contextBreakdown` object, but the current
-public SDK type does not expose a named field. `prompt()` copies only token
+public SDK type does not expose a named field. The current
+`SessionTranscriptV2Result` likewise does not name `turnResults`;
+`transcriptV2()` still returns the daemon JSON. `prompt()` copies only token
 usage.
 
 Prompt admission is reserved synchronously per session, before attach or send,

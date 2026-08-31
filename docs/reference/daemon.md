@@ -281,7 +281,8 @@ a process crash without duplicating the hidden prompt in that marker.
 `committedSequence`. Migrated `response_item` rows use
 `committedSequence: 0`; this explicitly means they predate the canonical event
 cursor. Compaction, rewind, rollback, and clear each advance `historyEpoch` and
-replace the active projection.
+replace the active projection. The same scan may also emit additive
+`activeTurn` and `turnResults` (below).
 
 Live notifications carry the same `eventId`, `sequence`, `runId`,
 `historyEpoch`, `turnId`, `clientMessageId`, and `messageId` correlation where
@@ -289,6 +290,82 @@ available. `event.message_chunk` is an assistant delta only; a durable
 `agent_message` is a distinct committed message. Consumers buffer live events
 while loading the snapshot, discard only events at or before
 `asOfSequence` in the same epoch, and resync when the epoch changes.
+
+#### Closed-turn results
+
+`sessionTranscriptV2FromRollout` in
+`runtime/src/app-server/background-agent-runner.ts` rebuilds one
+`turnResults` row per closed turn while it scans the canonical events.
+The live runner (`getAgentSessionTranscriptV2`) and the persisted-thread
+fallback (`#readPersistedSessionTranscriptV2`) share this function, so
+attach-after-reopen and restore-after-restart both receive the rows.
+Older 1.2 clients ignore the additive field.
+
+| Field | Source |
+| --- | --- |
+| `turnId` | The open `turn_started` |
+| `committedSequence` | Durable sequence of that turn's terminal event (placement anchor) |
+| `outcome` | `completed` (`turn_complete`), `aborted` (`turn_aborted`), or `errored` (`error`) |
+| `durationMs` | Completed turns only: `turn_complete.durationMs`, else `completedAt - startedAt` when both stamps are finite and ≥ 0 |
+| `inputTokens` / `outputTokens` / `totalTokens` | Sum of enclosed `token_count.promptTokens` / `completionTokens` / `totalTokens` |
+| `model` / `provider` | Last nonempty strings on those same `token_count` events |
+
+Constraints:
+
+- The field is omitted entirely when no turn closed. It is never `[]`.
+- An in-flight turn is `activeTurn` on the live runner only, when
+  `messageSubmission.turnId` is set. The persisted fallback does not
+  invent one. A `turn_started` with no terminal leaves no result row
+  (a later `turn_started` replaces the dangling accumulator).
+- A terminal whose `turnId` does not match the open turn is skipped —
+  the same mismatched-terminal guard the message scan already applies.
+- `durationMs` is not emitted for aborted or errored turns.
+- A `token_count` with no finite non-negative token field is ignored,
+  including its model/provider. Cache, reasoning, and search counters
+  on that event are not copied.
+- The scan starts after the current epoch boundary. Replacement and
+  legacy prefix rows have no `turnResults`. After compact, rewind,
+  rollback, or clear, do not expect pre-boundary markers to reappear.
+
+Do not keep a client-side turn-mark ledger keyed by a live session UUID.
+After reopen or restart, rebuild markers from `turnResults` and
+`committedSequence`.
+
+```json
+{
+  "turnResults": [
+    {
+      "turnId": "turn-1",
+      "committedSequence": 15,
+      "outcome": "completed",
+      "durationMs": 4137,
+      "inputTokens": 300,
+      "outputTokens": 100,
+      "totalTokens": 400,
+      "model": "grok-4.6",
+      "provider": "grok"
+    },
+    {
+      "turnId": "turn-2",
+      "committedSequence": 18,
+      "outcome": "aborted"
+    }
+  ]
+}
+```
+
+The public SDK `SessionTranscriptV2Result` in
+`packages/agenc-sdk/src/protocol.ts` does not yet name `turnResults`.
+`transcriptV2()` still returns the daemon JSON; read the field from the
+raw object until the mirror is updated. `session.snapshot.tokenUsage` is
+the live session aggregate, not this per-turn history.
+
+| Symptom | What to check |
+| --- | --- |
+| No `turnResults` after attach | No durable terminal yet, or the SDK type hid the field. Inspect the raw result. |
+| Markers missing after compact or rewind | Expected. Rows exist only for turns that closed after the current `historyEpoch`. |
+| Duration missing on a completed turn | The terminal lacked `durationMs` and a usable `completedAt - startedAt` pair. |
+| Tokens or model missing | No enclosed `token_count` carried a finite non-negative token field. |
 
 `session.resolveToolCall` accepts two strict protocol-1.0 request shapes. The
 earlier `{ sessionId, toolCallId?, reviewer? }` shape can settle only a legacy

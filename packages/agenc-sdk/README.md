@@ -33,7 +33,8 @@ does not opt a generic embedder into global status or Ledger signing delivery.
 Daemon prompts reserve one local run per session synchronously and use a
 stable `clientMessageId` for correlation/idempotent retry. Protocol 1.2 adds
 opt-in `ifBusy: "reject"`, turn-scoped cancellation, identity-bearing
-`transcriptV2()`, distinct delta/committed assistant events, and
+`transcriptV2()` (including additive closed-turn `turnResults` on current
+daemons), distinct delta/committed assistant events, and
 `history_reset`. The SDK capability-falls back when initialization discovers a
 1.0 through 1.8 daemon. Protocol 1.8 makes complete owning runtime authority,
 including the exact plugin storage root, part of `agent.create` and
