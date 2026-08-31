@@ -344,8 +344,9 @@ export async function runAgenCPluginCli(
         );
         const result = await installPluginOp({
           ...options,
-          // A local marketplace entry is a plain path source; git entries
-          // carry their pinned coordinates through unchanged.
+          // Bundled marketplace entries are plain directory sources. Git
+          // coordinates stay structured. requireSignature still applies to
+          // both; a directory on disk is not a signature waiver.
           source:
             target.source.type === "local"
               ? target.source.path

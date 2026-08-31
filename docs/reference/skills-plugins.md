@@ -6,6 +6,7 @@ Sources of truth:
 | --- | --- |
 | Skill load / `SKILL.md` | `runtime/src/skills/local-loader.ts` |
 | Bundled skills | `runtime/src/skills/bundledSkills.ts` |
+| Headless inventory CLI | `runtime/src/skills/skills-cli.ts` → `agenc skills list` |
 | MCP skills | `runtime/src/skills/mcpSkills.ts` |
 | Plugin load / dirs | `runtime/src/plugins/loader.ts`, `directories.ts` |
 | Manifest | `runtime/src/plugins/manifest.ts`, `manifest-schema.ts` |
@@ -39,10 +40,12 @@ Existing directories only (missing roots skipped). Project walk: cwd up to home.
 
 The runtime command catalog and `/skills` use this same discovery result.
 `/skills` can list roots and manage project skills; bundled skills are tagged
-`[bundled]`. Local-snapshot inventory rows preserve `whenToUse` and
-`argumentHint` when declared, including inline built-ins that have no
-`SKILL.md` a client could open. Registry-only bundled fallback rows currently
-expose their descriptions but not those two optional fields.
+`[bundled]`. Headless clients that must not open a session use
+[`agenc skills list`](#agenc-skills-list-cli) instead. Local-snapshot
+inventory rows preserve `whenToUse` and `argumentHint` when declared,
+including inline built-ins that have no `SKILL.md` a client could open.
+Registry-only bundled fallback rows currently expose their descriptions but
+not those two optional fields.
 
 A plugin manifest may declare a skill root that **is** the skill
 (`skills: ["./skills/flash-board"]` with `SKILL.md` in that directory).
@@ -57,12 +60,25 @@ literal placeholder was not rendered from a plugin root.
 
 ### Bundled skills
 
+The local loader defines eleven built-in skills: `update-config`,
+`keybindings`, `debug`, `simplify`, `batch`, `loop`, `agenc-in-browser`,
+`schedule-agents`, `agenc-api`, `ledger-wallet-cli`, and `verify`.
+
+Separately, `registerBundledSkill` in `bundledSkills.ts` registers these two
+commands. They are compiled into the runtime and appear as
+`origin: "built-in"` on `agenc skills list`.
+
 | Name | Purpose |
 | --- | --- |
 | `browser-automation` | Snapshot → act → re-snapshot workflow for the LIVE `Browser` tool ([browser.md](../browser.md)) |
 | `agenc-marketplace-kit-installer` | Marketplace kit install helper |
-| `iot-builder` | IoT/embedded project builder: measurement-first hardware identification, toolchain selection (PlatformIO, Arduino CLI, ESP-IDF, MicroPython, SBC cross-compile), build → flash → serial-monitor loop, flash backup before first overwrite, and an electrical-safety checklist. Extracts per-board and per-toolchain reference files on first invoke |
-| `zeroday-hunter` | See shipped plugins below (not `bundledSkills.ts`) |
+
+`zeroday-hunter` is a signed marketplace plugin, not a `bundledSkills.ts`
+registration. The in-package builtin-plugin skill seam
+(`initBuiltinPlugins` / `getBuiltinPluginSkillCommands`) is intentionally
+empty so a first-party skill cannot exist twice under one name.
+`/skills` still folds that seam; `agenc skills list` does not. An older
+`iot-builder` bundled skill is not registered in this tree.
 
 ### `SKILL.md` frontmatter (high level)
 
@@ -86,6 +102,90 @@ Parsed fields include:
 
 Author under e.g. `.agenc/skills/my-skill/SKILL.md` in the project or
 `$AGENC_HOME/skills/my-skill/SKILL.md` for user-global skills.
+
+### `agenc skills list` CLI
+
+Inventory of the local-loader snapshot plus the registered bundled skills.
+Desktop and other GUI clients can use it without opening a session. It does
+not change config, install content, or print skill bodies. Ordinary runtime
+initialization can create runtime directories, and plugin discovery can
+migrate legacy plugin-data directories.
+
+```text
+agenc skills list
+agenc skills list --json
+agenc help skills
+```
+
+```bash
+agenc skills list --json
+```
+
+`--json` writes a schema-versioned document to stdout:
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "agenc.skills.inventory",
+  "skills": [
+    {
+      "name": "verify",
+      "description": "Checks the requested behavior.",
+      "whenToUse": "Use after making a change.",
+      "origin": "built-in",
+      "root": "/path/to/skill",
+      "userInvocable": true
+    }
+  ],
+  "errors": []
+}
+```
+
+| Field | Notes |
+| --- | --- |
+| `origin` | `built-in`, `personal`, `project`, `plugin`, or `managed` |
+| `pluginRoot` | Owning plugin directory; present only for `plugin` origin |
+| `root` | Loader discovery root for disk-backed skills. Inline built-ins use their prospective extraction directory. Empty string for registry-only bundled rows with no local-loader entry |
+| `whenToUse` / `argumentHint` | Omitted when empty. Registry-only bundled fallback rows currently omit both even when the in-session command has them |
+| `conditional` | `true` when the skill activates only for configured paths |
+| `errors` | Config or bundled-registry failures. A config load error still lists personal/project/built-in rows and skips plugin skills |
+
+Text mode prints one line per skill, sorted by origin then name:
+
+```text
+[built-in] verify — Plan and run a concrete verification pass.
+[personal] my-notes — Consult personal project notes.
+[plugin] demo-skill — Use the demo plugin workflow.
+```
+
+Errors go to stderr with an `agenc: ` prefix. Both text and JSON return **0**
+after emitting the document, so callers must inspect `errors[]`.
+
+Workspace is `process.cwd()`. Home and plugin storage follow
+`AGENC_HOME` and the captured `pluginStorageRoot`
+(`AGENC_PLUGIN_CACHE_DIR` replaces `$AGENC_HOME/plugins` as one unit).
+No daemon or session is required. `--bare` is a session ingress flag and does
+not change this CLI; a `--bare` TUI session still skips skill discovery for
+that session only.
+
+#### Constraints
+
+- The parser accepts only `agenc skills list` and optional `--json`.
+  `agenc skills`, `agenc skills --help`, `agenc skills install <name>`, and any
+  extra flag return `null` from `parseAgenCSkillsCliArgs` and fall through
+  to the default CLI route, which treats the tokens as a **session prompt**.
+  Use `agenc help skills` for syntax.
+- Top-level `agenc help` / `agenc --help` does not list this command.
+- This is not `agenc plugin`. Skills are authored capabilities; plugins
+  are the installable distribution unit.
+- This inventory is not identical to `/skills`. It includes inactive
+  path-conditional rows with `conditional: true` and preserves same-name rows
+  from different origins. It omits MCP skills, live invocation state, the
+  effective skill-root summary, and the builtin-plugin command seam. Therefore,
+  an in-package plugin skill (none are registered today) can appear in
+  `/skills` and remain absent from `agenc skills list`.
+- Duplicate `origin:name` keys keep the first row (local snapshot before
+  the bundled-registry fallback).
 
 ---
 
@@ -349,18 +449,19 @@ marketplace `sourceType` is not `local` (`installRequiresSignature` in
 `catalog-cli.ts`). There is no `agenc plugin sign` command and no shipped
 default keyring.
 
-#### When verification actually runs
+#### When verification runs
 
 | Path | Signature check |
 | --- | --- |
 | `agenc plugin install ./dir` | Never. The CLI does not pass `requireSignature`. |
-| `marketplace install` from a **local** marketplace | Not required. |
-| `marketplace install` from a non-local marketplace (`sourceType` git or url), catalog source is `./path` (already a directory) | `requireSignature` is set, but `installPluginOp` skips `resolvePluginSource` for an existing directory. `signatureVerified` stays `false`. |
-| Resolver for git / npm / tarball / mcpb that is **not** already a directory | Required by default. Structured git with a `file:` or absolute URL is treated as local and is not required. Missing `.agenc-plugin/signature.json` throws `plugin signature is required`. |
+| Marketplace install from a **local** marketplace | Not required, even when its catalog row points at a remote source. |
+| Marketplace install from a non-local marketplace (`sourceType` git or url), including a bundled `./path` directory | Required. `installPluginOp` verifies a directory before copying it. A missing `.agenc-plugin/signature.json` fails the install and leaves the configured plugin list unchanged. |
+| Resolver for git / npm / tarball / mcpb outside marketplace install | Required by default unless the caller passes `requireSignature: false`. Structured git using a `file:` URL or absolute filesystem path is local and is not required by that default. |
 
 Callers must treat `signatureVerified: false` as **unverified**, not as a pass.
-A git marketplace whose `marketplace.json` lists `{ "source": "./plugin" }`
-takes the directory path even though the marketplace itself is remote.
+The shipped CLI and `/plugins` marketplace paths require a verified result for
+non-local marketplaces. A successful non-local marketplace install reporting
+`false` is an invariant failure.
 
 #### Keyring
 
@@ -377,9 +478,13 @@ in-process `publishersPath` override; there is no operator CLI for it.
 }
 ```
 
-A publisher entry may be that base64 string directly. An unknown publisher
-throws `plugin publisher is not trusted: <name>`. Failed crypto throws
-`plugin signature verification failed for publisher <name>`.
+A publisher entry may be that base64 string directly. A parsed keyring without
+a usable entry for the named publisher throws
+`plugin publisher is not trusted: <name>`. Missing, unreadable, or malformed
+keyrings surface their filesystem or JSON error. A well-formed public key and
+signature that do not verify throw
+`plugin signature verification failed for publisher <name>`; malformed key
+material can surface a crypto parsing error.
 
 #### Signature file
 
@@ -411,10 +516,10 @@ payload.
 
 | Symptom | What to check |
 | --- | --- |
-| `plugin signature is required` | Remote git / npm / tarball / mcpb without `.agenc-plugin/signature.json`. Local `plugin install ./dir` does not take this path. |
-| `plugin publisher is not trusted` | `$AGENC_HOME/plugin-publishers.json` missing, unreadable, or lacking that publisher's SPKI. |
-| `signatureVerified: false` after marketplace install | Catalog source was an in-tree `./path` (directory install) or the resolver ran with `requireSignature` unset. Inspect `resolutionKind` on the JSON result. |
-| `payload digest set does not match` / `digest mismatch` | Extra, missing, or edited files vs `files`. `.git` is ignored; everything else in the tree is covered. |
+| `plugin signature is required` | A required install lacks `.agenc-plugin/signature.json`. Direct local `plugin install ./dir` does not take this path. |
+| `plugin publisher is not trusted` | The parsed `$AGENC_HOME/plugin-publishers.json` has no usable key for that publisher. Missing, unreadable, or malformed keyrings report their underlying error instead. |
+| `signatureVerified: false` after marketplace install | Expected only for a local marketplace or a custom caller that disabled the requirement. A successful non-local marketplace install returning false violates the shipped path's invariant. |
+| `payload digest set does not match` / `digest mismatch` | Extra, missing, or edited regular payload files vs `files`. The manifest, `signature.json`, install metadata, and `.git` / `.hg` / `.svn` directories are excluded as described above. |
 
 ---
 

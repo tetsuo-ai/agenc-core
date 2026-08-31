@@ -37,6 +37,7 @@ import {
   redactPluginInstallSource,
   resolvePluginSource,
   shouldCopyPluginPayloadPath,
+  verifyResolvedPluginSignature,
   type PluginInstallSource,
   type PluginProcessRunner,
   type PluginResolutionKind,
@@ -173,6 +174,18 @@ function resolvePluginWorkspaceRoot(options: PluginOperationOptions): string {
     throw new Error("Plugin operations require an explicit workspace root");
   }
   return resolve(options.workspaceRoot);
+}
+
+async function verifyRequiredDirectorySignature(
+  pluginRoot: string,
+  input: InstallPluginInput,
+): Promise<boolean> {
+  const signature = await verifyResolvedPluginSignature(pluginRoot, {
+    agencHome: resolvePluginAgencHome(input),
+    requireSignature: true,
+    publishersPath: input.publishersPath,
+  });
+  return signature.verified === true;
 }
 
 function pluginScopeRoot(
@@ -369,6 +382,7 @@ export async function installPluginOp(
   let resolved: ResolvedPluginSource | null = null;
   let source = localSource ?? "";
   let resolutionKind: PluginResolutionKind = "local";
+  let signatureRequired = false;
   let signatureVerified = false;
   if (localSource === undefined || !(await pathIsDirectory(localSource))) {
     resolved = await resolvePluginSource(input.source, {
@@ -384,7 +398,17 @@ export async function installPluginOp(
     });
     source = resolved.pluginRoot;
     resolutionKind = resolved.kind;
+    signatureRequired = input.requireSignature === true ||
+      resolved.signature?.required === true;
     signatureVerified = resolved.signature?.verified === true;
+  } else if (input.requireSignature === true) {
+    // Marketplace install passes bundled plugin dirs as plain paths.
+    // Remote marketplaces still require a publisher signature.
+    signatureVerified = await verifyRequiredDirectorySignature(
+      localSource,
+      input,
+    );
+    signatureRequired = true;
   }
   try {
     await requireDirectory(source, "plugin source");
@@ -447,6 +471,7 @@ export async function installPluginOp(
       sourceRoot: source,
       scope,
       resolutionKind,
+      signatureRequired,
       signatureVerified,
       installedAt: (input.now ?? (() => new Date()))().toISOString(),
     });
@@ -549,9 +574,8 @@ export async function updatePluginOp(
     throw new Error(`plugin resolves to multiple install roots in ${scope} scope: ${input.pluginId}`);
   }
   const previousRoot = roots[0]!;
-  const source = input.source !== undefined
-    ? input.source
-    : await readInstalledPluginSource(previousRoot);
+  const recordedSource = await readInstalledPluginSource(previousRoot);
+  const source = input.source ?? recordedSource.source;
   if (source === undefined) {
     throw new Error(
       `plugin ${input.pluginId} has no recorded source; rerun with --source <path>`,
@@ -576,6 +600,8 @@ export async function updatePluginOp(
     scope,
     force: true,
     refreshCache: true,
+    requireSignature:
+      input.requireSignature ?? recordedSource.signatureRequired,
   });
   return {
     ...installed,
@@ -851,6 +877,7 @@ async function writeInstallMetadata(
     readonly sourceRoot?: string;
     readonly scope: PluginScope;
     readonly resolutionKind?: PluginResolutionKind;
+    readonly signatureRequired?: boolean;
     readonly signatureVerified?: boolean;
     readonly installedAt: string;
   },
@@ -861,14 +888,25 @@ async function writeInstallMetadata(
 
 async function readInstalledPluginSource(
   pluginRoot: string,
-): Promise<PluginInstallSource | undefined> {
+): Promise<{
+  readonly source?: PluginInstallSource;
+  readonly signatureRequired: boolean;
+}> {
   const metadata = await readJsonFile<unknown>(
     join(pluginRoot, ".agenc-plugin", INSTALL_METADATA_FILE),
     null,
   );
-  return isRecord(metadata) && metadata.sourceRedacted !== true
+  if (!isRecord(metadata)) return { signatureRequired: false };
+  const signatureRequired = metadata.signatureRequired === true ||
+    (metadata.signatureRequired === undefined &&
+      metadata.signatureVerified === true);
+  const source = metadata.sourceRedacted !== true
     ? parsePluginInstallSource(metadata.source)
     : undefined;
+  return {
+    ...(source !== undefined ? { source } : {}),
+    signatureRequired,
+  };
 }
 
 async function resolvePluginRootsForRemoval(
