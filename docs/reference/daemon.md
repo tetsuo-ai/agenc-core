@@ -472,6 +472,45 @@ snapshot clears the stamp. A daemon-restart recovery that restored the
 record without an attached runtime (`recovered === true` and no
 runtime) is immediately reapable because it cannot resume on its own.
 
+### Admission step identity on keep-alive turns
+
+Daemon sessions set `admissionRequired`. Each streamed sample is admitted
+under `(runId, stepId)`. Stream-model builds:
+
+```text
+model:<subId>:<turnCount>:<recoveryReentryCount>:<attempt>
+model:<subId>:<turnCount>:<recoveryReentryCount>:sample-<N>:<attempt>
+```
+
+The first physical sample uses the first shape (`modelSampleOrdinal = 0`)
+so an in-flight row from an older build can still reattach. Every later
+sample in the same turn uses `sample-N`.
+
+Recovery re-entries bump `recoveryReentryCount` (cap 5). Continuation
+nudge, mid-turn compact, and one empty-response retry do not: they
+`continue` the same turn without `commit`, then advance
+`modelSampleOrdinal`. The nudge (at most 3 per turn) injects a
+runtime-only "Continue with the task…" user line when the model stopped
+on a continuation signal with no tool calls. Mid-turn compact runs when
+the last sample's `promptTokens` is at the auto-compact limit and a
+follow-up is still required. Empty-response retry injects one
+"no visible final answer" line.
+
+`runTurn` force-checkpoints the new ordinal before the next acquire so
+crash resume can re-inject that ephemeral prompt and reuse the exact
+reserved `stepId`. Reusing the first-sample id with a changed token
+estimate is still `AdmissionStepConflictError` (or
+`admission_already_terminal`); that collision used to finish the turn
+empty. Tool retries already append `:dispatchN`.
+
+See [execution-admission-kernel.md](../design/execution-admission-kernel.md#model-step-identity).
+
+| Symptom | What to check |
+| --- | --- |
+| Daemon turn goes silent after "Now I'll create the file." with no tools | On current main the follow-up should admit as `…:sample-1:primary`. If the journal has only `model:<sub>:<turn>:<reentry>:primary`, the build predates unique sample ids. |
+| Empty answer after a mid-turn compact with tools or mailbox still pending | Same: look for `sample-N` after the compact continue. Missing suffix is the old collision. |
+| `AdmissionStepConflictError` on a local / prefixed model slug | Different cause: compare with `isSameModelIdentity` (vendor prefix and case). |
+
 ## What the daemon owns
 
 - **Sessions** — create/attach, multi-turn transcripts, rollouts under the
@@ -530,5 +569,10 @@ agenc budget status    # configured policy only; usage is agenc run status <run-
 | Local socket / Windows named pipe | `runtime/src/app-server/transport/unix-socket.ts`   |
 | Cookie auth                       | `runtime/src/app-server/transport/auth.ts`          |
 | Health                            | `runtime/src/app-server/health.ts`                  |
+| Model admission step id           | `runtime/src/phases/stream-model.ts`                |
+| Continuation nudge                | `runtime/src/phases/continuation-nudge.ts`          |
+| Mid-turn compact continue         | `runtime/src/session/run-turn.ts`                   |
+| Sample ordinal / resume prompt    | `runtime/src/session/turn-state.ts`                 |
+| Step uniqueness / conflict        | `runtime/src/state/execution-admission.ts`          |
 | Launcher autostart                | `packages/agenc/src/launcher.mjs`                   |
 | SDK connect                       | `packages/agenc-sdk/src/socket.ts`                  |

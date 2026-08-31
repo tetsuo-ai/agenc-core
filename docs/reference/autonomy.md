@@ -103,6 +103,13 @@ charged tool:
 - Unpriced or unbounded work is denied under a hard USD cap.
 - Cancellation, queueing, denial, dispatch, fallback, and settlement are
   journaled under durable run/step/reservation identities.
+- `(runId, stepId)` is unique. A second acquire with a changed token
+  estimate is `AdmissionStepConflictError`. Streamed model ids are
+  `model:<sub>:<turn>:<reentry>[:sample-N]:<attempt>`. Continuation
+  nudge, mid-turn compact, and one empty-response retry advance
+  `modelSampleOrdinal` so they do not reuse the first-sample id.
+  Recovery re-entries also bump `recoveryReentryCount`. See
+  [execution-admission-kernel.md](../design/execution-admission-kernel.md#model-step-identity).
 
 `reconcile(reservationId, usage)` replaces the hold exactly once. Missing
 post-dispatch usage remains `held_unknown`; provider excess becomes

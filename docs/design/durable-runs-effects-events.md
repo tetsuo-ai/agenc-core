@@ -287,6 +287,31 @@ write so a genuine mid-flight failure remains `unknown_outcome`.
 | "You are not in plan mode" blocked later mutations | Fixed: that refusal now attests `confirmed_no_effect`. A leftover poison is an older journal. |
 | Retained session refuses with a createdAt mismatch of a few milliseconds | Current code allows 5s. A larger gap, or a model/provider/objective mismatch, is still a hard refuse. |
 
+### Turn sample checkpoints
+
+A keep-alive turn can issue another provider sample without bumping
+`turnCount` or `recoveryReentryCount` (continuation nudge, mid-turn
+compact, one empty-response retry). The admission kernel still treats
+`(runId, stepId)` as unique, so `runTurn` advances
+`TurnState.modelSampleOrdinal` and force-emits a `turn_checkpoint`
+(`emitTurnCheckpoint(..., { force: true })`) before the next acquire.
+Interval throttling (`durableTurns.checkpoint.minIntervalMs`) cannot
+defer that identity.
+
+The resumable slice stores:
+
+| Field | Role |
+| --- | --- |
+| `modelSampleOrdinal` | `0` keeps the historical `model:<sub>:<turn>:<reentry>:<attempt>` id; later samples use `:sample-N:` |
+| `modelSampleResumePrompt` | `continuation_nudge` or `empty_response`; omitted when the next sample needs no runtime-only user line |
+
+Those prompts are ephemeral (`runtimeOnly.excludeFromDurableHistory`).
+`restoreFromCheckpoint` plus `restoreModelSampleResumePrompt` re-inject
+the same line so crash resume reattaches the reserved row instead of
+conflicting on a changed token estimate. An older checkpoint that omits
+the ordinal resumes at `0` (first-sample reattach). See
+[execution-admission-kernel.md](execution-admission-kernel.md#model-step-identity).
+
 ## Persist before publish
 
 For a durable event, `Session.emit` uses a split publication path:

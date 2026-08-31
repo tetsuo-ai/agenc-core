@@ -52,6 +52,64 @@ identity with different request data is an error. The explicit decisions are
 `allow`, `queue`, `deny`, and `approval_required`. Only `allow` carries a
 durable reservation.
 
+### Model step identity
+
+`runAdmittedModelCall` persists the caller's `stepId`. Streamed turns build
+it in `phases/stream-model.ts` (`admittedModelStepId`):
+
+```text
+# first physical sample (ordinal 0) — upgrade-compatible
+model:<subId>:<turnCount>:<recoveryReentryCount>:<attempt>
+
+# later physical samples in the same turn
+model:<subId>:<turnCount>:<recoveryReentryCount>:sample-<N>:<attempt>
+```
+
+`attempt` is the wire kind (`primary`, `prewarm`, or `prewarm_fallback`),
+not a retry counter. `N` is `TurnState.modelSampleOrdinal`. Ordinal **0**
+keeps the historical id so an in-flight admission row from an older build
+can still reattach. Every later non-terminal sample calls
+`advanceModelSampleOrdinal` before the next acquire.
+
+The kernel compares the whole request with `JSON.stringify`
+(`requestsMatch` in `state/execution-admission.ts`):
+
+| Second acquire of the same `(runId, stepId)` | Result |
+| --- | --- |
+| Request JSON matches the stored row | Idempotent reattach (crash recovery) |
+| Request JSON differs (model, tokens, messages, …) | `AdmissionStepConflictError` |
+| Row is already terminal | deny `admission_already_terminal` |
+
+`maxInputTokens` is part of that JSON. A second sample whose prompt grew
+or shrank is a different request even when the model id is unchanged.
+
+| Continue path | What changes | New model `stepId`? |
+| --- | --- | --- |
+| Recovery ladder (`fallback-ladder.ts`) | `recoveryReentryCount` (cap 5) plus ordinal | Yes (base and suffix) |
+| Continuation nudge (`continuation-nudge.ts`) | `modelSampleOrdinal`; cap 3 nudges | Yes (`sample-N`) |
+| Mid-turn compact (`run-turn.ts` before execute-tools) | `modelSampleOrdinal`; compacted history | Yes (`sample-N`) |
+| Empty-response retry (`run-turn.ts`) | `modelSampleOrdinal`; one retry | Yes (`sample-N`) |
+| Tool physical retry (`admitted-tool-call.ts`) | `:dispatchN` suffix | Yes (tool steps only) |
+
+Nudge injects a runtime-only user line (`Continue with the task. Use the
+appropriate tools to proceed.`) and re-enters `prepareContext` without
+`commit`. Mid-turn compact runs when the last sample's `promptTokens` is
+at or past `autoCompactTokenLimit` and a follow-up is still required
+(pending tool calls or mailbox input). Empty-response retry injects
+`Your previous response contained no visible final answer…` once. All
+three change the next sample's token estimate while keeping `turnCount`.
+
+Before the next acquire, `runTurn` force-emits a `turn_checkpoint` when
+the ordinal changed so interval throttling cannot defer the new identity.
+The checkpoint slice stores `modelSampleOrdinal` and
+`modelSampleResumePrompt` (`continuation_nudge` or `empty_response`).
+Resume re-injects that ephemeral line via `restoreModelSampleResumePrompt`
+so the reserved sample matches the original request. See
+[durable-runs-effects-events.md](durable-runs-effects-events.md#turn-sample-checkpoints).
+
+Inspect the journal with `agenc run evidence <run-id>` and the `step_id`
+column.
+
 ## Admitted surfaces and fail-closed behavior
 
 Coverage is enforced at execution boundaries rather than duplicated in each
