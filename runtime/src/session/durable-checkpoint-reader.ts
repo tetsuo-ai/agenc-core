@@ -1,5 +1,4 @@
 import {
-  ROLLOUT_SCHEMA_VERSION,
   type LegacyTurnCheckpointSliceLine,
   type TurnCheckpointSliceLine,
   type TurnCheckpointV1Event,
@@ -31,6 +30,7 @@ import {
 import {
   LEGACY_TURN_CHECKPOINT_SLICE_KEYS,
   TURN_CHECKPOINT_SLICE_KEYS,
+  type PendingAdmissionFallbackSlice,
   validatePendingAdmissionFallbackSlice,
 } from "./turn-checkpoint-slice.js";
 
@@ -39,7 +39,7 @@ export const DURABLE_CHECKPOINT_V2 = 2 as const;
 export const DURABLE_CHECKPOINT_READ_VERSION = 3 as const;
 export const DURABLE_CHECKPOINT_WRITE_VERSION = DURABLE_CHECKPOINT_READ_VERSION;
 export const DURABLE_ROLLOUT_SCHEMA_V2 = 2 as const;
-export const DURABLE_ROLLOUT_SCHEMA_VERSION = ROLLOUT_SCHEMA_VERSION;
+export { ROLLOUT_SCHEMA_VERSION as DURABLE_ROLLOUT_SCHEMA_VERSION } from "./event-log.js";
 export const MAX_CHECKPOINT_PREFIX_MESSAGES = 2_000_000;
 
 const CHECKPOINT_PREFIX_DIGEST_DOMAIN = "agenc.checkpoint-prefix.v2";
@@ -85,6 +85,11 @@ export type ReadableTurnCheckpoint =
         typeof DURABLE_CHECKPOINT_V2 | typeof DURABLE_CHECKPOINT_READ_VERSION;
       readonly checkpoint: TurnCheckpointV3Event;
     };
+
+type ReadableCheckpointVersion =
+  | typeof LEGACY_DURABLE_CHECKPOINT_VERSION
+  | typeof DURABLE_CHECKPOINT_V2
+  | typeof DURABLE_CHECKPOINT_READ_VERSION;
 
 export type DurableCheckpointReadFailureCode =
   "checkpoint_shape_invalid" | "checkpoint_version_unsupported";
@@ -148,6 +153,22 @@ export function readTurnCheckpoint(payload: unknown): ReadableTurnCheckpoint {
   if (!isRecord(payload)) {
     throw malformed("checkpoint payload must be an object");
   }
+  const { rawVersion, version } = readCheckpointVersion(payload);
+  const expectedKeys = checkpointEnvelopeKeys(version, rawVersion);
+  if (!hasExactKeys(payload, expectedKeys)) {
+    throw malformed("checkpoint payload contains unversioned fields");
+  }
+
+  if (version === LEGACY_DURABLE_CHECKPOINT_VERSION) {
+    return readLegacyTurnCheckpoint(payload, rawVersion);
+  }
+  return readIntegrityTurnCheckpoint(payload, version);
+}
+
+function readCheckpointVersion(payload: Record<string, unknown>): {
+  readonly rawVersion: unknown;
+  readonly version: ReadableCheckpointVersion;
+} {
   const rawVersion = payload.checkpointVersion;
   const version =
     rawVersion === undefined ? LEGACY_DURABLE_CHECKPOINT_VERSION : rawVersion;
@@ -161,37 +182,55 @@ export function readTurnCheckpoint(payload: unknown): ReadableTurnCheckpoint {
       `durable checkpoint version ${safeVersion(version)} is not readable; maximum is ${DURABLE_CHECKPOINT_READ_VERSION}`,
     );
   }
+  return { rawVersion, version };
+}
 
-  const expectedKeys =
-    version === LEGACY_DURABLE_CHECKPOINT_VERSION
-      ? rawVersion === undefined
-        ? CHECKPOINT_BASE_KEYS
-        : [...CHECKPOINT_BASE_KEYS, "checkpointVersion"]
-      : [
-          ...CHECKPOINT_BASE_KEYS,
-          "checkpointVersion",
-          "toolResultIntegrityVersion",
-        ];
-  if (!hasExactKeys(payload, expectedKeys)) {
-    throw malformed("checkpoint payload contains unversioned fields");
+function checkpointEnvelopeKeys(
+  version: ReadableCheckpointVersion,
+  rawVersion: unknown,
+): readonly string[] {
+  if (version !== LEGACY_DURABLE_CHECKPOINT_VERSION) {
+    return [
+      ...CHECKPOINT_BASE_KEYS,
+      "checkpointVersion",
+      "toolResultIntegrityVersion",
+    ];
   }
+  if (rawVersion === undefined) return CHECKPOINT_BASE_KEYS;
+  return [...CHECKPOINT_BASE_KEYS, "checkpointVersion"];
+}
 
-  if (version === LEGACY_DURABLE_CHECKPOINT_VERSION) {
-    if (
-      payload.toolResultIntegrityVersion !== undefined ||
-      (rawVersion !== undefined && rawVersion !== 1)
-    ) {
-      throw malformed("legacy checkpoint carries incompatible v2 metadata");
-    }
-    return {
-      version,
-      sourceVersion: version,
-      checkpoint: {
-        ...parseCheckpointBase(payload, "legacy"),
-        ...(rawVersion === 1 ? { checkpointVersion: 1 as const } : {}),
-      },
-    };
+function readLegacyTurnCheckpoint(
+  payload: Record<string, unknown>,
+  rawVersion: unknown,
+): Extract<
+  ReadableTurnCheckpoint,
+  { readonly version: typeof LEGACY_DURABLE_CHECKPOINT_VERSION }
+> {
+  if (
+    payload.toolResultIntegrityVersion !== undefined ||
+    (rawVersion !== undefined && rawVersion !== 1)
+  ) {
+    throw malformed("legacy checkpoint carries incompatible v2 metadata");
   }
+  return {
+    version: LEGACY_DURABLE_CHECKPOINT_VERSION,
+    sourceVersion: LEGACY_DURABLE_CHECKPOINT_VERSION,
+    checkpoint: {
+      ...parseCheckpointBase(payload, "legacy"),
+      ...(rawVersion === 1 ? { checkpointVersion: 1 as const } : {}),
+    },
+  };
+}
+
+function readIntegrityTurnCheckpoint(
+  payload: Record<string, unknown>,
+  version:
+    typeof DURABLE_CHECKPOINT_V2 | typeof DURABLE_CHECKPOINT_READ_VERSION,
+): Exclude<
+  ReadableTurnCheckpoint,
+  { readonly version: typeof LEGACY_DURABLE_CHECKPOINT_VERSION }
+> {
   if (payload.toolResultIntegrityVersion !== 1) {
     throw malformed(
       `checkpoint v${version} requires toolResultIntegrityVersion 1`,
@@ -709,29 +748,39 @@ function parseCheckpointSlice(
   sliceVersion: "legacy" | "current",
 ): TurnCheckpointSliceLine | LegacyTurnCheckpointSliceLine {
   if (!isRecord(value)) throw malformed("resumableState must be an object");
-  const keys =
-    sliceVersion === "legacy"
-      ? LEGACY_TURN_CHECKPOINT_SLICE_KEYS
-      : TURN_CHECKPOINT_SLICE_KEYS;
+  const keys = checkpointSliceKeys(sliceVersion);
   if (!hasOnlyKnownKeys(value, keys)) {
     throw malformed("resumableState contains unversioned fields");
   }
-  const result: {
-    turnCount: number;
-    recoveryReentryCount: number;
-    maxOutputTokensRecoveryCount: number;
-    modelSampleOrdinal?: number;
-    modelSampleResumePrompt?: "continuation_nudge" | "empty_response";
-    continuationNudgeCount: number;
-    stopHookBlockingCount: number;
-    planToolRequiredRetryCount?: number;
-    editorToolCallsAdmitted?: number;
-    pendingAdmissionFallback?: TurnCheckpointSliceLine["pendingAdmissionFallback"];
-    taskBudgetRemaining?: number;
-    autoCompactTracking?: TurnCheckpointSliceLine["autoCompactTracking"];
-    transition?: TurnCheckpointSliceLine["transition"];
-    pendingBudgetDecision?: TurnCheckpointSliceLine["pendingBudgetDecision"];
-  } = {
+  return {
+    ...parseRequiredCheckpointSlice(value),
+    ...parseCheckpointRetryCounts(value),
+    ...parseCheckpointAdmissionState(value),
+    ...parseCheckpointModelSampleState(value),
+    ...parseCheckpointBudgetState(value),
+    ...parseCheckpointAutoCompactState(value),
+    ...parseCheckpointTransitionState(value),
+  };
+}
+
+function checkpointSliceKeys(
+  sliceVersion: "legacy" | "current",
+): readonly string[] {
+  if (sliceVersion === "legacy") return LEGACY_TURN_CHECKPOINT_SLICE_KEYS;
+  return TURN_CHECKPOINT_SLICE_KEYS;
+}
+
+function parseRequiredCheckpointSlice(
+  value: Record<string, unknown>,
+): Pick<
+  TurnCheckpointSliceLine,
+  | "turnCount"
+  | "recoveryReentryCount"
+  | "maxOutputTokensRecoveryCount"
+  | "continuationNudgeCount"
+  | "stopHookBlockingCount"
+> {
+  return {
     turnCount: nonNegativeInteger(value.turnCount, "resumableState.turnCount"),
     recoveryReentryCount: nonNegativeInteger(
       value.recoveryReentryCount,
@@ -750,12 +799,34 @@ function parseCheckpointSlice(
       "resumableState.stopHookBlockingCount",
     ),
   };
+}
+
+interface ParsedCheckpointRetryCounts {
+  planToolRequiredRetryCount?: number;
+}
+
+function parseCheckpointRetryCounts(
+  value: Record<string, unknown>,
+): ParsedCheckpointRetryCounts {
+  const result: ParsedCheckpointRetryCounts = {};
   if (value.planToolRequiredRetryCount !== undefined) {
     result.planToolRequiredRetryCount = nonNegativeInteger(
       value.planToolRequiredRetryCount,
       "resumableState.planToolRequiredRetryCount",
     );
   }
+  return result;
+}
+
+interface ParsedCheckpointAdmissionState {
+  editorToolCallsAdmitted?: number;
+  pendingAdmissionFallback?: PendingAdmissionFallbackSlice;
+}
+
+function parseCheckpointAdmissionState(
+  value: Record<string, unknown>,
+): ParsedCheckpointAdmissionState {
+  const result: ParsedCheckpointAdmissionState = {};
   if (value.editorToolCallsAdmitted !== undefined) {
     result.editorToolCallsAdmitted = nonNegativeInteger(
       value.editorToolCallsAdmitted,
@@ -770,6 +841,18 @@ function parseCheckpointSlice(
     if (!fallback.ok) throw malformed(fallback.reason);
     result.pendingAdmissionFallback = fallback.value;
   }
+  return result;
+}
+
+interface ParsedCheckpointModelSampleState {
+  modelSampleOrdinal?: number;
+  modelSampleResumePrompt?: "continuation_nudge" | "empty_response";
+}
+
+function parseCheckpointModelSampleState(
+  value: Record<string, unknown>,
+): ParsedCheckpointModelSampleState {
+  const result: ParsedCheckpointModelSampleState = {};
   if (value.modelSampleOrdinal !== undefined) {
     result.modelSampleOrdinal = nonNegativeInteger(
       value.modelSampleOrdinal,
@@ -785,100 +868,149 @@ function parseCheckpointSlice(
     }
     result.modelSampleResumePrompt = value.modelSampleResumePrompt;
   }
+  return result;
+}
+
+type PendingBudgetDecision =
+  | { readonly kind: "continue"; readonly remaining: number }
+  | { readonly kind: "stop"; readonly reason: string };
+
+interface ParsedCheckpointBudgetState {
+  taskBudgetRemaining?: number;
+  pendingBudgetDecision?: PendingBudgetDecision;
+}
+
+function parseCheckpointBudgetState(
+  value: Record<string, unknown>,
+): ParsedCheckpointBudgetState {
+  const result: ParsedCheckpointBudgetState = {};
   if (value.taskBudgetRemaining !== undefined) {
     result.taskBudgetRemaining = nonNegativeInteger(
       value.taskBudgetRemaining,
       "resumableState.taskBudgetRemaining",
     );
   }
-  if (value.autoCompactTracking !== undefined) {
-    if (!isRecord(value.autoCompactTracking)) {
-      throw malformed("resumableState.autoCompactTracking must be an object");
-    }
-    const tracking = value.autoCompactTracking;
-    if (
-      !hasExactKeys(tracking, [
-        "compacted",
-        "consecutiveFailures",
-        "turnCounter",
-        "turnId",
-      ])
-    ) {
+  const pendingBudgetDecision = parsePendingBudgetDecision(
+    value.pendingBudgetDecision,
+  );
+  if (pendingBudgetDecision !== undefined) {
+    result.pendingBudgetDecision = pendingBudgetDecision;
+  }
+  return result;
+}
+
+function parsePendingBudgetDecision(
+  value: unknown,
+): PendingBudgetDecision | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) {
+    throw malformed("resumableState.pendingBudgetDecision must be an object");
+  }
+  if (value.kind === "continue") {
+    if (!hasExactKeys(value, ["kind", "remaining"])) {
       throw malformed(
-        "resumableState.autoCompactTracking contains unversioned fields",
+        "resumableState.pendingBudgetDecision contains unversioned fields",
       );
     }
-    if (typeof tracking.compacted !== "boolean") {
+    return {
+      kind: "continue",
+      remaining: nonNegativeInteger(
+        value.remaining,
+        "resumableState.pendingBudgetDecision.remaining",
+      ),
+    };
+  }
+  if (value.kind === "stop") {
+    if (!hasExactKeys(value, ["kind", "reason"])) {
       throw malformed(
-        "resumableState.autoCompactTracking.compacted is invalid",
+        "resumableState.pendingBudgetDecision contains unversioned fields",
       );
     }
-    result.autoCompactTracking = {
-      compacted: tracking.compacted,
+    return {
+      kind: "stop",
+      reason: requiredText(
+        value.reason,
+        "resumableState.pendingBudgetDecision.reason",
+      ),
+    };
+  }
+  throw malformed("resumableState.pendingBudgetDecision.kind is invalid");
+}
+
+interface ParsedAutoCompactState {
+  autoCompactTracking?: {
+    readonly compacted: boolean;
+    readonly turnId: string;
+    readonly turnCounter: number;
+    readonly consecutiveFailures: number;
+  };
+}
+
+function parseCheckpointAutoCompactState(
+  value: Record<string, unknown>,
+): ParsedAutoCompactState {
+  const rawTracking = value.autoCompactTracking;
+  if (rawTracking === undefined) return {};
+  if (!isRecord(rawTracking)) {
+    throw malformed("resumableState.autoCompactTracking must be an object");
+  }
+  if (
+    !hasExactKeys(rawTracking, [
+      "compacted",
+      "consecutiveFailures",
+      "turnCounter",
+      "turnId",
+    ])
+  ) {
+    throw malformed(
+      "resumableState.autoCompactTracking contains unversioned fields",
+    );
+  }
+  if (typeof rawTracking.compacted !== "boolean") {
+    throw malformed("resumableState.autoCompactTracking.compacted is invalid");
+  }
+  return {
+    autoCompactTracking: {
+      compacted: rawTracking.compacted,
       turnId: requiredText(
-        tracking.turnId,
+        rawTracking.turnId,
         "resumableState.autoCompactTracking.turnId",
       ),
       turnCounter: nonNegativeInteger(
-        tracking.turnCounter,
+        rawTracking.turnCounter,
         "resumableState.autoCompactTracking.turnCounter",
       ),
       consecutiveFailures: nonNegativeInteger(
-        tracking.consecutiveFailures,
+        rawTracking.consecutiveFailures,
         "resumableState.autoCompactTracking.consecutiveFailures",
       ),
-    };
+    },
+  };
+}
+
+interface ParsedCheckpointTransitionState {
+  transition?: { readonly reason: string };
+}
+
+function parseCheckpointTransitionState(
+  value: Record<string, unknown>,
+): ParsedCheckpointTransitionState {
+  const transition = value.transition;
+  if (transition === undefined) return {};
+  if (!isRecord(transition)) {
+    throw malformed("resumableState.transition must be an object");
   }
-  if (value.transition !== undefined) {
-    if (!isRecord(value.transition)) {
-      throw malformed("resumableState.transition must be an object");
-    }
-    if (!hasExactKeys(value.transition, ["reason"])) {
-      throw malformed("resumableState.transition contains unversioned fields");
-    }
-    result.transition = {
+  if (!hasExactKeys(transition, ["reason"])) {
+    throw malformed("resumableState.transition contains unversioned fields");
+  }
+  return {
+    transition: {
       reason: requiredText(
-        value.transition.reason,
+        transition.reason,
         "resumableState.transition.reason",
       ),
-    };
-  }
-  if (value.pendingBudgetDecision !== undefined) {
-    if (!isRecord(value.pendingBudgetDecision)) {
-      throw malformed("resumableState.pendingBudgetDecision must be an object");
-    }
-    const decision = value.pendingBudgetDecision;
-    if (decision.kind === "continue") {
-      if (!hasExactKeys(decision, ["kind", "remaining"])) {
-        throw malformed(
-          "resumableState.pendingBudgetDecision contains unversioned fields",
-        );
-      }
-      result.pendingBudgetDecision = {
-        kind: "continue",
-        remaining: nonNegativeInteger(
-          decision.remaining,
-          "resumableState.pendingBudgetDecision.remaining",
-        ),
-      };
-    } else if (decision.kind === "stop") {
-      if (!hasExactKeys(decision, ["kind", "reason"])) {
-        throw malformed(
-          "resumableState.pendingBudgetDecision contains unversioned fields",
-        );
-      }
-      result.pendingBudgetDecision = {
-        kind: "stop",
-        reason: requiredText(
-          decision.reason,
-          "resumableState.pendingBudgetDecision.reason",
-        ),
-      };
-    } else {
-      throw malformed("resumableState.pendingBudgetDecision.kind is invalid");
-    }
-  }
-  return result;
+    },
+  };
 }
 
 function* prefixMessages(
@@ -935,8 +1067,8 @@ function safeVersion(value: unknown): string {
 function checkpointSliceHasWriterExtensions(value: unknown): boolean {
   if (!isRecord(value)) return false;
   return (
-    Object.prototype.hasOwnProperty.call(value, "editorToolCallsAdmitted") ||
-    Object.prototype.hasOwnProperty.call(value, "pendingAdmissionFallback")
+    Object.hasOwn(value, "editorToolCallsAdmitted") ||
+    Object.hasOwn(value, "pendingAdmissionFallback")
   );
 }
 
@@ -948,12 +1080,10 @@ function hasExactKeys(
   value: Record<string, unknown>,
   expected: readonly string[],
 ): boolean {
-  const actual = Object.keys(value).sort();
-  const sortedExpected = [...expected].sort();
-  return (
-    actual.length === sortedExpected.length &&
-    actual.every((key, index) => key === sortedExpected[index])
-  );
+  const actual = Object.keys(value);
+  if (actual.length !== expected.length) return false;
+  const expectedKeys = new Set(expected);
+  return actual.every((key) => expectedKeys.has(key));
 }
 
 function hasOnlyKnownKeys(

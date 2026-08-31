@@ -666,14 +666,13 @@ function findSourceSchemaVersion(items: ReadonlyArray<RolloutItem>): {
       sawLegacy = true;
     }
   }
-  return {
-    version: sawV3
-      ? DURABLE_ROLLOUT_SCHEMA_VERSION
-      : sawV2
-        ? DURABLE_ROLLOUT_SCHEMA_V2
-        : 1,
-    mixed: sawLegacy && (sawV2 || sawV3),
-  };
+  let version: number = 1;
+  if (sawV3) {
+    version = DURABLE_ROLLOUT_SCHEMA_VERSION;
+  } else if (sawV2) {
+    version = DURABLE_ROLLOUT_SCHEMA_V2;
+  }
+  return { version, mixed: sawLegacy && (sawV2 || sawV3) };
 }
 
 function checkpointMatchesRolloutSchema(

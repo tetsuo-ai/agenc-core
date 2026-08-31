@@ -284,6 +284,79 @@ describe("durable checkpoint reader", () => {
     );
   });
 
+  it("keeps each checkpoint-slice parser strict after decomposition", () => {
+    const legacy = legacyCheckpoint("a".repeat(64));
+    const resumableState = legacy.resumableState as Record<string, unknown>;
+    const invalidStates: Array<{
+      readonly state: Record<string, unknown>;
+      readonly reason: RegExp;
+    }> = [
+      {
+        state: { ...resumableState, turnCount: -1 },
+        reason: /turnCount must be a non-negative safe integer/,
+      },
+      {
+        state: { ...resumableState, planToolRequiredRetryCount: -1 },
+        reason:
+          /planToolRequiredRetryCount must be a non-negative safe integer/,
+      },
+      {
+        state: { ...resumableState, editorToolCallsAdmitted: -1 },
+        reason: /editorToolCallsAdmitted must be a non-negative safe integer/,
+      },
+      {
+        state: { ...resumableState, modelSampleResumePrompt: "retry_anyway" },
+        reason: /modelSampleResumePrompt is invalid/,
+      },
+      {
+        state: { ...resumableState, taskBudgetRemaining: -1 },
+        reason: /taskBudgetRemaining must be a non-negative safe integer/,
+      },
+      {
+        state: {
+          ...resumableState,
+          pendingBudgetDecision: {
+            kind: "continue",
+            remaining: 1,
+            extra: true,
+          },
+        },
+        reason: /pendingBudgetDecision contains unversioned fields/,
+      },
+      {
+        state: {
+          ...resumableState,
+          autoCompactTracking: {
+            compacted: false,
+            consecutiveFailures: 0,
+            turnCounter: 1,
+            turnId: "turn-1",
+            extra: true,
+          },
+        },
+        reason: /autoCompactTracking contains unversioned fields/,
+      },
+      {
+        state: {
+          ...resumableState,
+          transition: { reason: "resume", extra: true },
+        },
+        reason: /transition contains unversioned fields/,
+      },
+    ];
+
+    for (const invalid of invalidStates) {
+      expect(() =>
+        readTurnCheckpoint({
+          ...legacy,
+          checkpointVersion: 3,
+          toolResultIntegrityVersion: 1,
+          resumableState: invalid.state,
+        }),
+      ).toThrowError(invalid.reason);
+    }
+  });
+
   it("rejects checkpoint sequence zero for every readable version", () => {
     const legacy = { ...legacyCheckpoint("a".repeat(64)), checkpointSeq: 0 };
     const explicitV1 = { ...legacy, checkpointVersion: 1 };

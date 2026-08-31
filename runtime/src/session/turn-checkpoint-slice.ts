@@ -166,12 +166,18 @@ function hasExactKeys(
   value: Record<string, unknown>,
   expected: readonly string[],
 ): boolean {
-  const actual = Object.keys(value).sort();
+  const actual = Object.keys(value).sort(compareCodeUnits);
   const sortedExpected = [...expected]
     .filter((key) => value[key] !== undefined)
-    .sort();
+    .sort(compareCodeUnits);
   return (
     actual.length === sortedExpected.length &&
     actual.every((key, index) => key === sortedExpected[index])
   );
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
 }

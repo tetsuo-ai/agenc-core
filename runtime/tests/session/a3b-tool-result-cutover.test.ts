@@ -289,6 +289,45 @@ describe("A3b raw checkpoint validation", () => {
     });
     expect(runTurn).not.toHaveBeenCalled();
   });
+
+  it("keeps legacy replay deferred with a version-neutral upgrade reason", async () => {
+    const legacyRollout = v2OrphanRollout("legacy-turn", []).map((item) => {
+      if (
+        item.type !== "event_msg" ||
+        item.payload.msg.type !== "turn_checkpoint"
+      ) {
+        return item;
+      }
+      const {
+        checkpointVersion: _checkpointVersion,
+        toolResultIntegrityVersion: _toolResultIntegrityVersion,
+        ...legacyPayload
+      } = item.payload.msg.payload;
+      return {
+        ...item,
+        payload: {
+          ...item.payload,
+          msg: { type: "turn_checkpoint" as const, payload: legacyPayload },
+        },
+      };
+    });
+    const reconstruction = reconstructFromRollout(legacyRollout);
+    expect(reconstruction.resumableTurns[0]).toMatchObject({
+      checkpointIntegrityStatus: "deferred",
+      checkpointIntegrityReason:
+        "legacy checkpoint requires an atomic checkpoint upgrade before replay",
+    });
+
+    const runTurn = vi.fn();
+    const session = {
+      config: { durableTurns: { resume: { onRestart: true } } },
+      runTurn,
+    } as unknown as Session;
+    await expect(
+      resumeTurnFromCheckpoint(session, reconstruction),
+    ).resolves.toEqual({ resumed: false, reason: "integrity-deferred" });
+    expect(runTurn).not.toHaveBeenCalled();
+  });
 });
 
 describe("A3b shared ID-paired validator cutover", () => {
