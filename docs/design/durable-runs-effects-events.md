@@ -286,6 +286,62 @@ write so a genuine mid-flight failure remains `unknown_outcome`.
 | Offline `resolve-tool-call` reports `not_found` for a dangling intent | Expected. A raw intent has no `unknown_outcome` settlement to review and needs recovery classification or evidence repair rather than a review disposition. |
 | "You are not in plan mode" blocked later mutations | Fixed: that refusal now attests `confirmed_no_effect`. A leftover poison is an older journal. |
 | Retained session refuses with a createdAt mismatch of a few milliseconds | Current code allows 5s. A larger gap, or a model/provider/objective mismatch, is still a hard refuse. |
+| Interrupted turn starts over instead of continuing from its last checkpoint | See [In-turn checkpoint resume](#in-turn-checkpoint-resume). A last checkpoint with an unversioned slice field (`pendingAdmissionFallback` or `editorToolCallsAdmitted`) fails the A3 reader. |
+
+## In-turn checkpoint resume
+
+Epoch reopen (table above) decides whether a **run** may start another
+turn. In-turn resume decides whether an **orphaned turn** continues from
+its last `turn_checkpoint` instead of opening a fresh turn.
+
+After a successful nonterminal sample, `run-turn.ts` advances
+`modelSampleOrdinal`. Before the next admission, it force-emits a `turn_checkpoint`
+(`emitTurnCheckpoint("iteration", { force: true })`). Interval throttling
+cannot defer that barrier. The event fsyncs:
+
+- the durable response prefix and its v2 `prefixHash`
+- `resumableState` from `toCheckpointSlice(state)`
+
+The slice always carries `turnCount`, `recoveryReentryCount`,
+`maxOutputTokensRecoveryCount`, `continuationNudgeCount`,
+`stopHookBlockingCount`, `planToolRequiredRetryCount`, and
+`modelSampleOrdinal`. It optionally stores `modelSampleResumePrompt` as
+`continuation_nudge` or `empty_response`. Crash recovery can restore that
+runtime-only prompt and derive the same next sample step ID from the
+checkpointed ordinal. See
+[execution-admission-kernel.md](execution-admission-kernel.md#model-step-identity).
+
+`resumeTurnFromCheckpoint` (`runtime/src/conversation/thread-manager.ts`)
+continues that turn only when every gate holds. If any gate fails, startup
+opens a fresh turn. The existing checkpoint remains unchanged, and normal
+fresh-turn events append afterward.
+
+| Gate | Default | Failure reason |
+| --- | --- | --- |
+| `durableTurns.resume.onRestart` | `true` | `disabled` |
+| A readable checkpoint exists on an unterminated turn | n/a | `no-checkpoint` |
+| `durableTurns.resume.buildPinning` matches the writing build | `true` | `build-mismatch` |
+| A3 reader accepts the payload (`readTurnCheckpoint`) | n/a | `integrity-invalid` or `integrity-deferred` |
+| History prefix hash matches | n/a | `prefix-mismatch` |
+| Single-writer resume lease (`durableTurns.resume.requireLease`) | `true` | `lease-unavailable` |
+
+The A3 reader (`CHECKPOINT_SLICE_KEYS` in
+`runtime/src/session/durable-checkpoint-reader.ts`) rejects any key outside
+the allowlist with `resumableState contains unversioned fields`.
+`toCheckpointSlice` currently writes two fields that are **not** on that
+list:
+
+| Slice field | When it is written | Resume effect |
+| --- | --- | --- |
+| `editorToolCallsAdmitted` | After any BUFFER / editor-interaction tool admission (`editorToolCallsAdmitted > 0`). `resetIterationFields` does not clear it. Any later checkpoint, including `postAssistant` or the forced pre-admission checkpoint, carries the field | `integrity-invalid` -> fresh turn |
+| `pendingAdmissionFallback` | After `recovery/model-fallback.ts` records a provider swap, until `stream-model.ts` consumes it at the next admitted call. Written only if a checkpoint is emitted while that decision is still pending | Same |
+
+`restoreFromCheckpoint` would apply those fields if they reached it. The
+reader currently rejects both fields. This section documents the
+limitation.
+
+The nudge, mid-turn compact, and empty-response retry checkpoint fields
+are allowlisted and do not cause this rejection by themselves.
 
 ## Persist before publish
 
@@ -489,6 +545,7 @@ they remain the evidence needed for a later v15-aware reconciliation.
 | Effect dispatch boundary                    | `runtime/src/budget/admitted-tool-call.ts`                                                         |
 | v15 state and projection rules              | `runtime/src/state/run-durability.ts` (`reopenRun`), `runtime/src/state/migrations/015_run_durability_schema.ts` |
 | Resume reopen + pending-review gate         | `runtime/src/session/rollout-store.ts` (`reopenTerminalEpoch`), `runtime/src/app-server/agent-lifecycle.ts` (`RETAINED_CREATED_AT_TOLERANCE_MS`) |
+| In-turn checkpoint resume                   | `runtime/src/session/run-turn.ts` (`emitTurnCheckpoint`), `runtime/src/session/turn-state.ts` (`toCheckpointSlice`), `runtime/src/session/durable-checkpoint-reader.ts`, `runtime/src/conversation/thread-manager.ts` (`resumeTurnFromCheckpoint`) |
 | Journal projection and cursor pages         | `runtime/src/app-server/run-journal-replay.ts`, `runtime/src/app-server/run-inspection.ts`         |
 | Terminal lifecycle commit                   | `runtime/src/app-server/background-agent-runner.ts`, `runtime/src/app-server/daemon-cli.ts`        |
 | Operator effect-review evidence             | `runtime/src/state/effect-review.ts`, `runtime/src/commands/resolve.ts`, `runtime/src/bin/state-cli.ts` |
