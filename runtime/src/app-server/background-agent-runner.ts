@@ -7565,7 +7565,9 @@ export function managedTokenUsage(
 // Translate Session PhaseEvents only for runner-local status/tool bookkeeping.
 // Live delivery is owned by the canonical Session.EventLog bridge above; using
 // this phase shape for delivery would invent competing IDs without sequences.
-function phaseEventToProgressEvent(
+// Exported as a test seam: the stop-reason mapping decides whether a turn
+// outcome ends the turn or the whole run.
+export function phaseEventToProgressEvent(
   event: import("../phases/events.js").PhaseEvent,
 ): RunAgentProgressEvent | null {
   switch (event.type) {
@@ -7612,23 +7614,24 @@ function phaseEventToProgressEvent(
           error: event.error?.message ?? "turn errored",
         };
       }
-      if (event.stopReason === "max_turns") {
+      // Bounded stops — the backstop, a turn cap, the cost cap — are
+      // per-TURN outcomes, not run deaths. Mapping them to run_error
+      // bricked the whole session: the user saw "no longer running
+      // (status: error)" and could never prompt again after one bad
+      // turn. The turn ends honestly with its message; the session
+      // stays available for the next prompt, exactly like "completed".
+      const boundedStopFallback: Partial<Record<string, string>> = {
+        max_turns: "Turn capped: iteration limit hit; send a new prompt to continue.",
+        max_budget_usd: "Turn capped: cost ceiling hit; send a new prompt to continue.",
+        no_progress: "Turn halted by the progress backstop; send a new prompt to continue.",
+      };
+      const boundedFallback = boundedStopFallback[event.stopReason];
+      if (boundedFallback !== undefined) {
         return {
-          kind: "run_error",
-          error: "Agent exceeded maxTurns",
-        };
-      }
-      if (event.stopReason === "max_budget_usd") {
-        return {
-          kind: "run_error",
-          error: "Agent reached the canonical session cost cap",
-        };
-      }
-      if (event.stopReason === "no_progress") {
-        return {
-          kind: "run_error",
-          error:
-            "Agent stopped by the no-progress backstop (semantic non-termination)",
+          kind: "turn_complete",
+          turnId,
+          toolCallCount: 0,
+          finalMessage: event.content.length > 0 ? event.content : boundedFallback,
         };
       }
       // "completed" | "empty_response" — a per-turn completion. Emit

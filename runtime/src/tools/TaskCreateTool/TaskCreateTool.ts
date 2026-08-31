@@ -18,7 +18,10 @@ import { DESCRIPTION, getPrompt } from './prompt.js'
 const inputSchema = lazySchema(() =>
   z.strictObject({
     subject: z.string().describe('A brief title for the task'),
-    description: z.string().describe('What needs to be done'),
+    description: z
+      .string()
+      .optional()
+      .describe('What needs to be done. Defaults to the subject when omitted.'),
     activeForm: z
       .string()
       .optional()
@@ -76,7 +79,7 @@ export const TaskCreateTool = buildTool({
   renderToolUseMessage() {
     return null
   },
-  async call({ subject, description, activeForm, metadata }, context) {
+  async call({ subject, description = subject, activeForm, metadata }, context) {
     const taskId = await createTask(getTaskListId(), {
       subject,
       description,
