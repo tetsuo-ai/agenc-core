@@ -23,12 +23,17 @@ import {
   type PluginScope,
 } from "../plugins/cli/pluginOperations.js";
 import {
+  installRequiresSignature,
+} from "../plugins/marketplace/catalog-cli.js";
+import {
   findInstallableMarketplacePlugin,
   listMarketplaces,
   readMarketplaceIndex,
   type Marketplace,
+  type MarketplaceIndex,
   type MarketplaceListOutcome,
   type MarketplacePlugin,
+  type MarketplaceRecord,
 } from "../plugins/marketplace/marketplace.js";
 
 type PluginRow = {
@@ -117,6 +122,25 @@ function isPathInside(path: string, root: string): boolean {
     (!relativePath.startsWith("..") && !isAbsolute(relativePath));
 }
 
+function marketplaceRecordForMenuSelection(
+  index: MarketplaceIndex,
+  marketplace: Marketplace,
+): MarketplaceRecord {
+  const selectedManifest = resolve(marketplace.path);
+  const selectedRoot = resolve(marketplace.root);
+  const matches = Object.values(index.marketplaces).filter(
+    (record) =>
+      resolve(record.manifestPath) === selectedManifest &&
+      resolve(record.installedPath) === selectedRoot,
+  );
+  if (matches.length !== 1) {
+    throw new Error(
+      "marketplace selection no longer matches configured inventory; reopen /plugins and try again",
+    );
+  }
+  return matches[0]!;
+}
+
 export function createPluginMenuActions(
   options: PluginOperationOptions,
 ): PluginMenuActions {
@@ -136,11 +160,13 @@ export function createPluginMenuActions(
       return listMarketplaces(roots);
     },
     installFromMarketplace: async (marketplace, pluginName) => {
+      const index = await readMarketplaceIndex(options);
+      const record = marketplaceRecordForMenuSelection(index, marketplace);
       const resolved = await findInstallableMarketplacePlugin(
-        marketplace.path,
+        record.manifestPath,
         pluginName,
         undefined,
-        marketplace.name,
+        record.name,
       );
       const source = resolved.source.type === "local"
         ? resolved.source.path
@@ -149,6 +175,7 @@ export function createPluginMenuActions(
         ...options,
         source,
         name: resolved.pluginId,
+        requireSignature: installRequiresSignature(record),
       });
       return installed.plugin;
     },

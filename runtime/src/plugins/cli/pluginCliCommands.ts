@@ -346,7 +346,7 @@ export async function runAgenCPluginCli(
           ...options,
           // Bundled marketplace entries are plain directory sources. Git
           // coordinates stay structured. requireSignature still applies to
-          // both — a directory on disk is not a signature waiver.
+          // both; a directory on disk is not a signature waiver.
           source:
             target.source.type === "local"
               ? target.source.path

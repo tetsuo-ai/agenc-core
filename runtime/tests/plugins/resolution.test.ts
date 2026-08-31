@@ -724,7 +724,7 @@ describe("plugin source resolution", () => {
     });
   });
 
-  test("refuses unsigned directory installs when a signature is required", async () => {
+  test("enforces required signatures for directory installs and updates", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
       const pluginRoot = join(root, "bundled");
@@ -772,6 +772,19 @@ describe("plugin source resolution", () => {
       });
       expect(installed.signatureVerified).toBe(true);
       expect(installed.resolutionKind).toBe("local");
+
+      await writeFile(
+        join(pluginRoot, ".agenc-plugin", "plugin.json"),
+        JSON.stringify({ name: "bundled-unsigned", version: "2.0.0" }),
+      );
+      await expect(
+        updatePluginOp({
+          pluginId: installed.plugin.id,
+          agencHome,
+          workspaceRoot: root,
+          publishersPath,
+        }),
+      ).rejects.toThrow(/signature verification failed/u);
     });
   });
 
