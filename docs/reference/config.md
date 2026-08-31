@@ -346,7 +346,7 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `model_provider` | Configured startup canonical provider slug. Strict v2 rejects the retired `xai`, `custom`, and `openai_compatible` selector spellings. |
 | `approval_policy` | `untrusted`, `on-failure`, `on-request`, or `never`. |
 | `sandbox_mode` | `read-only`, `workspace-write`, or `danger-full-access`. |
-| `reasoning_effort` | `low`, `medium`, `high`, `xhigh`, or `none`. |
+| `reasoning_effort` | `low`, `medium`, `high`, `xhigh`, or `none`. On Gemini, `low` / `medium` / `high` become `thinkingConfig.thinkingLevel`; `/effort` cannot set this. See [providers.md](providers.md#gemini-thinking-level). |
 | `reasoning_summary` | `auto`, `concise`, `detailed`, or `none`. |
 | `approvals_reviewer` | `user` or `auto_review`. |
 | `model_verbosity` | `low`, `medium`, or `high`. |

@@ -93,6 +93,50 @@ the Grok 4.6 default and capability change.
 they run only through the Grok Build CLI ACP path. See
 [grok-oauth.md](../grok-oauth.md#composer-models-acp).
 
+## Gemini thinking level
+
+`/effort` does **not** work on Gemini. The command allowlist treats
+`gemini` as a third-party provider (`getAPIProvider("gemini") ===
+"gemini"`), so show and set both return
+`<model> does not support effort levels.` Do not treat that message as
+proof that Gemini has no thinking control.
+
+The Gemini adapter still maps an already-set `options.reasoningEffort`
+onto `generationConfig.thinkingConfig.thinkingLevel` (camelCase, nested).
+A flat `thinking_level` field is not part of this API and 400s. Source:
+`geminiGenerationConfig` in `runtime/src/llm/providers/gemini/index.ts`.
+
+Stream-model builds that option in `resolveSessionReasoningEffort`:
+
+1. `collaborationMode.reasoningEffort` when the session already stamped
+   one (daemon `applyAgentConfig` / profile apply, spawn override).
+2. Otherwise canonical `reasoning_effort` via
+   `getInitialEffortSetting()` — `config.toml`, `AGENC_EFFORT_LEVEL`, or
+   a prior `/effort` write on a model that accepted the command.
+
+The settings fallback forwards only `low` / `medium` / `high`.
+`none` omits the block. `xhigh` from settings becomes `max` and is
+dropped on that fallback; a daemon apply that writes `xhigh` onto
+`collaborationMode` does reach the adapter.
+
+| Session / config value | Gemini `thinkingLevel` |
+| --- | --- |
+| `minimal`, `low` | `low` |
+| `medium` | `medium` |
+| `high`, `xhigh`, `max`, or any other forwarded value | `high` |
+
+Gemini's capability table keeps `acceptsReasoningEffort: false`.
+`/provider` and `/model` call `checkModelHistoryCompat`. If the live
+`collaborationMode.reasoningEffort` is a non-empty value other than
+`none`, the switch is blocked with
+`cannot satisfy this session's reasoning effort requirements`. A fresh
+session that never stamped that field can still switch; the next Gemini
+turn then uses the settings fallback above. To start on Gemini with a
+chosen level, set `reasoning_effort` (or `AGENC_EFFORT_LEVEL`) to
+`low` / `medium` / `high` and launch with `model_provider = "gemini"`.
+`providers.gemini.capability_overrides.acceptsReasoningEffort = true`
+widens only the switch check. It does not make `/effort` accept Gemini.
+
 ## Built-in providers (16)
 
 | Slug | Display name | Default model | Default base URL | Ordered credential env aliases | Ordered endpoint env aliases | Onboarding access |
@@ -332,6 +376,8 @@ wins and the live probe is not consulted.
 | A later ChatGPT subscription request fails with `Unsupported parameter: previous_response_id` | Subscription requests are `store: false`. The continuation optimizer never attaches `previous_response_id` from an unstored response. The prompt-cache key is kept; the incremental delta is skipped. |
 | ChatGPT / Responses refuses to continue after an interrupted tool turn | An unmatched `function_call` in history is closed with a synthetic `function_call_output` marked `interrupted`. The session stays usable; the model must not wait on that call id. |
 | ChatGPT subscription 400s on `max_output_tokens` | Uncapped calls no longer require a provider-enforced output ceiling. Hard token or USD caps still demand a real ceiling and authoritative usage. |
+| `/effort` on Gemini says the model does not support effort | The slash allowlist is first-party / Grok / `gpt-5*`, not Gemini. Config `reasoning_effort` of `low` / `medium` / `high` still maps to `thinkingConfig.thinkingLevel`. See [Gemini thinking level](#gemini-thinking-level). |
+| `/provider gemini` blocked: `cannot satisfy this session's reasoning effort requirements` | The live session already stamped `collaborationMode.reasoningEffort`. Gemini advertises `acceptsReasoningEffort: false`. Start a Gemini session instead, or clear effort (`reasoning_effort = "none"` / `/effort default` on a model that accepts the command) before switching. |
 
 See [provider-aware token accounting](../design/provider-aware-token-accounting.md)
 for how the resolved window is enforced. Grammar-safe schemas, the local
@@ -498,6 +544,7 @@ Grammar-safe tool schemas and the reduced local catalog:
 | Transcript shows `<think>...</think>` | The request did not use this chat-completions shaping, or the marker was not at the start of the assistant message | Use `lmstudio` / `openai-compatible` for the local chat-completions path. A mid-answer `<think>` is left visible on purpose |
 | LM Studio/openai-compatible turn ends after a long generation | The fixed 8192 output ceiling may have ended generation, or an unclosed leading think block remained in the thinking channel | Inspect the finish reason and provider diagnostics; an unclosed leading block is not visible answer text |
 | `/effort` on Ollama / LM Studio / compatible does nothing | `reasoning_effort` is stripped for those slugs | Expected. Pin a model that documents the field, or use the `/no_think` Qwen3 switch |
+| `/effort` on Gemini is refused but the model still thinks | The slash command is refused; the adapter still maps an already-set effort onto `thinkingConfig` | Set `reasoning_effort` / `AGENC_EFFORT_LEVEL` to `low` / `medium` / `high` before the Gemini session. Do not expect `/effort` to change it. |
 | `failed to parse grammar` on the first tool turn | llama.cpp rejected a tool-schema keyword | `lmstudio` / `openai-compatible` now sanitize to the GBNF-safe subset. A leftover 400 is a keyword those servers still reject |
 | LM Studio/openai-compatible model cannot call a team, task, or MCP tool | The reduced local profile does not include that tool | `system.searchTools` cannot bypass the local allowlist. Use another provider slug when the full catalog is required |
 | Compatible-to-Ollama session looks different from `ollama:` | Same HTTP server, different adapter and gates | Native `ollama` is the SDK path. `openai-compatible` pointing at Ollama is the gated chat-completions path |
@@ -507,4 +554,5 @@ Grammar-safe tool schemas and the reduced local catalog:
 - Tool / provider compatibility (object root, grammar-safe schemas, Gemini compiler, local catalog): [`../provider-tool-compat.md`](../provider-tool-compat.md)
 - Token admission invariant: [`../design/provider-aware-token-accounting.md`](../design/provider-aware-token-accounting.md)
 - Managed OpenRouter path: [`../managed-openrouter.md`](../managed-openrouter.md)
+- `/effort` allowlist and Gemini refusal: [`slash-commands.md`](slash-commands.md)
 - Onboarding: `agenc onboard`

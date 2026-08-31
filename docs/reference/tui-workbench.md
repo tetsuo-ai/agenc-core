@@ -65,8 +65,12 @@ is no inert operator layout setting.
   (`handleTurnCancel`). A 20s submit-ack watchdog (`SUBMIT_ACK_WATCHDOG_MS`)
   recovers turns the daemon never acknowledged. There is no 60s stall timer.
 - **`/effort`** — show or set reasoning effort (`low` / `medium` / `high` /
-  `xhigh` when the model catalog lists it) for the current model;
-  `/effort default` restores the model default.
+  `xhigh` when the model catalog lists it) for models the command
+  allowlists; `/effort default` restores the model default. Gemini
+  refuses the command. Config `reasoning_effort` still maps to
+  `thinkingConfig`:
+  [slash-commands.md](slash-commands.md),
+  [providers.md](providers.md#gemini-thinking-level).
 
 Classic fullscreen owns v2 top chrome and status bar (`BrandCells`,
 `TuiHeader`, `StatusBar`). Plan mode shows a `PlanModeBanner` above scrollback.

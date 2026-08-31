@@ -57,7 +57,7 @@ history; the linked pages below are current product truth.
 | [reference/config.md](reference/config.md) | `config.toml` sections, env overrides, `agenc config` |
 | [reference/env.md](reference/env.md) | Operator `AGENC_*` / provider key environment variables, and provider credential isolation |
 | [reference/daemon.md](reference/daemon.md) | Daemon lifecycle, socket auth, deferred first messages, bypass consent, bounded-stop survival, admission step identity, and compaction recovery fields |
-| [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes, Responses continuation, and overflow diagnostics |
+| [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes, Responses continuation, Gemini thinking-level mapping, and overflow diagnostics |
 | [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics and `/compact` |
 | [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery (pinned webhook destinations) + hooks HTTP |
 | [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, deferred first message, worktree evidence, and turn-scoped abort |
