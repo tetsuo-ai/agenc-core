@@ -1529,7 +1529,7 @@ describe("streamModel — execution admission identity", () => {
     expect(getExecutionProfile).toHaveBeenCalledOnce();
     expect(acquire).not.toHaveBeenCalled();
     expect(recordFallback).toHaveBeenCalledWith({
-      stepId: "model:turn-stream:1:0:primary",
+      stepId: "model:turn-stream:1:0:0:none:primary",
       fromModel: "primary-model",
       toModel: "fallback-model",
       fromProvider: "primary-provider",
@@ -1626,12 +1626,12 @@ describe("streamModel — execution admission identity", () => {
     );
 
     expect(acquire.mock.calls[0]?.[0]).toMatchObject({
-      stepId: "model:turn-stream:1:2:primary",
+      stepId: "model:turn-stream:1:2:0:none:primary",
       model: "fallback-model",
       provider: "stub-provider",
     });
     expect(recordFallback).toHaveBeenCalledWith({
-      stepId: "model:turn-stream:1:2:primary",
+      stepId: "model:turn-stream:1:2:0:none:primary",
       fromModel: "primary-model",
       toModel: "fallback-model",
       fromProvider: "primary-provider",

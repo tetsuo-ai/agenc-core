@@ -117,6 +117,39 @@ export interface StreamModelRequestContract {
   readonly skipCacheWrite?: boolean;
 }
 
+type AdmittedModelAttempt = "primary" | "prewarm" | "prewarm_fallback";
+
+const ADMISSION_STEP_NO_COMPACT = "none";
+
+/**
+ * Durable identity for one physical model sample.
+ *
+ * Recovery re-entries already bump `recoveryReentryCount`. Continuation
+ * nudges and mid-turn compact `continue`s do not — they reuse turnCount
+ * and recoveryReentryCount. The admission kernel treats (runId, stepId)
+ * as unique: a second acquire with a changed token estimate throws
+ * AdmissionStepConflictError, and an identical replay of a reconciled
+ * step is denied as admission_already_terminal. Fold the nudge count and
+ * compact generation into the id so those live re-samples are new steps.
+ */
+export function admittedModelStepId(
+  ctx: Pick<TurnContext, "subId">,
+  state: Pick<
+    TurnState,
+    | "turnCount"
+    | "recoveryReentryCount"
+    | "continuationNudgeCount"
+    | "autoCompactTracking"
+  >,
+  attempt: AdmittedModelAttempt,
+): string {
+  const compactGeneration =
+    state.autoCompactTracking?.compacted === true
+      ? state.autoCompactTracking.turnId
+      : ADMISSION_STEP_NO_COMPACT;
+  return `model:${ctx.subId}:${state.turnCount}:${state.recoveryReentryCount}:${state.continuationNudgeCount}:${compactGeneration}:${attempt}`;
+}
+
 interface AssistantDisplayState {
   parser: AssistantVisibleTextStreamParser;
   visibleText: string;
@@ -1065,7 +1098,7 @@ export async function streamModel(
       provider: session.services.provider,
       messages,
       options,
-      stepId: `model:${ctx.subId}:${state.turnCount}:${state.recoveryReentryCount}:${attempt}`,
+      stepId: admittedModelStepId(ctx, state, attempt),
       sessionId: session.conversationId,
       model,
       providerName,
