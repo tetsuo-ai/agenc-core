@@ -229,10 +229,16 @@ export async function classifyPluginSource(
   workspaceRoot: string,
 ): Promise<PluginResolutionKind> {
   const localPath = resolve(workspaceRoot, source);
+  if (isRemotePluginSourceSpec(source)) {
+    if (isGitSource(source)) return "git";
+    if (isTarballSource(source)) return "tarball";
+    if (isMcpbSource(source)) return "mcpb";
+    return "npm";
+  }
   if (await pathIsDirectory(localPath)) return "local";
-  if (isGitSource(source)) return "git";
-  if (isTarballSource(source)) return "tarball";
-  if (isMcpbSource(source) || (source.endsWith(".mcpb") && await pathIsFile(localPath))) return "mcpb";
+  if (isMcpbSource(source) || (source.endsWith(".mcpb") && await pathIsFile(localPath))) {
+    return "mcpb";
+  }
   return "npm";
 }
 
@@ -1789,6 +1795,36 @@ function assertNotOptionLikeSource(source: string, label: string): void {
   if (trimmed.length === 0) throw new Error(`invalid ${label} source: empty`);
   if (trimmed.startsWith("-")) throw new Error(`invalid ${label} source: leading dashes are not allowed`);
   if (trimmed.includes("\0")) throw new Error(`invalid ${label} source: null bytes are not allowed`);
+}
+
+function isExplicitLocalPluginSource(source: string): boolean {
+  if (isAbsolute(source)) return true;
+  if (source === "." || source === "..") return true;
+  return source.startsWith("./") ||
+    source.startsWith("../") ||
+    source.startsWith(".\\") ||
+    source.startsWith("..\\");
+}
+
+function isScopedNpmPackageSource(source: string): boolean {
+  if (!source.startsWith("@")) return false;
+  const slash = source.indexOf("/");
+  if (slash <= 1) return false;
+  const scope = source.slice(1, slash);
+  const rest = source.slice(slash + 1);
+  return scope.length > 0 && rest.length > 0 &&
+    !scope.includes("\\") &&
+    !rest.startsWith("/") &&
+    !rest.startsWith("\\");
+}
+
+function isRemotePluginSourceSpec(source: string): boolean {
+  if (isExplicitLocalPluginSource(source)) return false;
+  return isGitSource(source) ||
+    isTarballSource(source) ||
+    isMcpbSource(source) ||
+    isHttpUrl(source) ||
+    isScopedNpmPackageSource(source);
 }
 
 function isGitSource(source: string): boolean {

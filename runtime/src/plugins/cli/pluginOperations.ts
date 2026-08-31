@@ -31,6 +31,7 @@ import {
   pluginFilesystemKey,
 } from "../directories.js";
 import {
+  classifyPluginSource,
   pluginDependencyIdentityFromSource,
   parsePluginInstallSource,
   pluginInstallSourceNeedsRedaction,
@@ -376,7 +377,10 @@ export async function installPluginOp(
 ): Promise<InstallPluginResult> {
   const scope = input.scope ?? "user";
   const workspaceRoot = resolvePluginWorkspaceRoot(input);
-  const localSource = typeof input.source === "string"
+  const sourceKind = typeof input.source === "string"
+    ? await classifyPluginSource(input.source, workspaceRoot)
+    : "git";
+  const localSource = sourceKind === "local" && typeof input.source === "string"
     ? resolvePath(input.source, workspaceRoot)
     : undefined;
   let resolved: ResolvedPluginSource | null = null;
@@ -384,7 +388,7 @@ export async function installPluginOp(
   let resolutionKind: PluginResolutionKind = "local";
   let signatureRequired = false;
   let signatureVerified = false;
-  if (localSource === undefined || !(await pathIsDirectory(localSource))) {
+  if (localSource === undefined) {
     resolved = await resolvePluginSource(input.source, {
       agencHome: resolvePluginAgencHome(input),
       pluginStorageRoot: input.pluginStorageRoot,
