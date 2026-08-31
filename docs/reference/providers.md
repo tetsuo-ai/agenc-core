@@ -376,9 +376,103 @@ Grok server tools (`web_search`, `x_search`, `code_interpreter`, `file_search`,
 MCP) cannot be counted before the turn. Admission reserves the **full context
 window** for those tools so later usage does not trip `provider_overrun`.
 
+## Local openai-compat wire
+
+Two ways a local turn used to look empty: the chat-completions parser
+promoting hidden chain-of-thought into (or instead of) the answer, and a
+4096-token output cap that truncated a real reply and then discarded the
+remainder as `max_output_tokens`.
+
+This section is the **OpenAI chat-completions adapter** and its subclasses
+(`lmstudio`, `openai-compatible`, Groq, DeepSeek, Mistral, NVIDIA NIM,
+GitHub, MiniMax, OpenRouter). Native `ollama` uses the Ollama SDK and does
+**not** take these gates. Pointing `openai-compatible` at an Ollama HTTP
+port does.
+
+Source: `runtime/src/llm/wire/think-tags.ts`, `capability-gating.ts`,
+`chat-completions.ts`; streaming split in
+`runtime/src/llm/providers/openai/adapter.ts`.
+
+### Think tags and `reasoning_content`
+
+Reasoning models disagree about where chain-of-thought goes.
+
+| Source | What AgenC does |
+| --- | --- |
+| `delta.reasoning_content` / `message.reasoning_content` | Hidden thinking channel. Never becomes canonical assistant text. |
+| Leading `<think>…</think>` or `◁think▷…◁/think▷` in `content` | First leading block (whitespace before the opener allowed) moves to thinking. Text after the closer is the answer. |
+| Literal `<think>` later in the answer | Left visible. Only a marker that opens at the start of the assistant message starts a block. |
+| Opener with no closer | Remainder is thinking. The generation died mid-thought; it is not an answer. |
+
+`ThinkTagStreamFilter` holds marker prefixes that straddle SSE chunks so
+neither channel retracts text it already emitted. `flush()` at stream end
+drains the buffer to the channel the state says it belongs to.
+
+An explicit empty `content` string is kept empty. The non-streaming parser
+must not promote leftover `reasoning_content` into the transcript
+(`parseChatCompletionsResponse`).
+
+### Capability field strip
+
+`chatCompletionsCapabilityHintsForProvider` strips fields the destination
+rejects or silently ignores. An undefined `acceptsX` flag still means
+"include if the caller supplied a value."
+
+| Field | Who gets it |
+| --- | --- |
+| `reasoning_effort` | OpenAI reasoning-family slugs (`gpt-5`, `o1`, `o3`, `o4`, `codex`, `chatgpt-5`). Grok 4.3 / 4.5 / 4.6, `grok-4-20-multi-agent` / `grok-4.20-multi-agent`, and `grok-build-latest`. NVIDIA NIM families below, and only values in that family's enum. Everyone else: stripped. `/effort` on a local model is a no-op on the wire. |
+| `service_tier` | `openai` and `azure-openai` only |
+| `stream_options.include_usage` | Default **on**. `STREAM_USAGE_INCOMPATIBLE_PROVIDERS` is empty until a real install reproduces a tear-down. There is no operator config to strip it; an adapter can pass `acceptsStreamUsage: false` on that instance. |
+
+NVIDIA NIM `reasoning_effort` enums (hosted schemas, 2026-08):
+
+| Family | Allowed values |
+| --- | --- |
+| `kimi-k3` | `low`, `high`, `max` |
+| `deepseek-v4-pro` / `deepseek-v4-flash` | `none`, `high`, `max` |
+| `gpt-oss-<N>b` | `low`, `medium`, `high` |
+| `nemotron-3-super` | `none`, `low`, `high` |
+| `nemotron-3-ultra` | `none`, `medium`, `high` |
+
+Other NIM models (Kimi K2.x, MiniMax M3, plain Llama instruct) do not get
+the field. They think through `chat_template_kwargs` or not at all.
+
+### Local output ceiling and `/no_think`
+
+For `lmstudio` and `openai-compatible` only
+(`GRAMMAR_CONSTRAINED_TOOL_PROVIDERS`):
+
+- **Output ceiling 8192** (`outputTokensCeiling`). The request
+  `max_tokens` / `max_output_tokens` is `min(requested, 8192)`. The
+  runtime default remains `DEFAULT_MAX_OUTPUT_TOKENS` (**32_000**); this
+  ceiling only clamps those two slugs. 4096 used to clip legitimate
+  long answers and the executor dropped the withheld tail — the turn
+  looked empty. 8192 still bounds runaway think-traces on consumer GPUs.
+- **`/no_think` system suffix** when the model slug matches `qwen3` /
+  `qwen-3`. Qwen3 hybrid thinking honors that line. LM Studio ignores
+  `chat_template_kwargs.enable_thinking`, so the prompt switch is the
+  control that works on llama.cpp-served Qwen. Turns that spent 16–24s
+  thinking drop to 1–3s on the same hardware.
+
+Native `ollama` gets neither the ceiling nor `/no_think`.
+
+Grammar-safe tool schemas and the reduced local catalog:
+[provider-tool-compat.md](../provider-tool-compat.md).
+
+### Operator pitfalls
+
+| Symptom | Cause | What to do |
+| --- | --- | --- |
+| Transcript shows `<think>…</think>` | Native `ollama` adapter, or the marker was not at the start of the assistant message | Use `lmstudio` / `openai-compatible` for leading-tag split. A mid-answer `<think>` is left visible on purpose |
+| Local turn is empty after a long generation | Pre-#1772: 4096 ceiling or think-block swallowed the answer | Current ceiling is 8192 on `lmstudio` / `openai-compatible`. An unclosed leading think block is still thinking, not an answer |
+| `/effort` on Ollama / LM Studio / compatible does nothing | `reasoning_effort` is stripped for those slugs | Expected. Pin a model that documents the field, or use the `/no_think` Qwen3 switch |
+| `failed to parse grammar` on the first tool turn | llama.cpp rejected a tool-schema keyword | `lmstudio` / `openai-compatible` now sanitize to the GBNF-safe subset. A leftover 400 is a keyword those servers still reject |
+| Local model never calls tools | Frontier catalog (~20 + orchestration) drowns 7–32B models | `lmstudio` / `openai-compatible` advertise the local profile only. Discover MCP via `system.searchTools`. Native `ollama` still gets the full catalog |
+| Compatible-to-Ollama session looks different from `ollama:` | Same HTTP server, different adapter and gates | Native `ollama` is the SDK path. `openai-compatible` pointing at Ollama is the gated chat-completions path |
+
 ## Related docs
 
-- Tool / provider compatibility notes: [`../provider-tool-compat.md`](../provider-tool-compat.md)
+- Tool / provider compatibility (object root, grammar-safe schemas, local catalog): [`../provider-tool-compat.md`](../provider-tool-compat.md)
 - Token admission invariant: [`../design/provider-aware-token-accounting.md`](../design/provider-aware-token-accounting.md)
 - Managed OpenRouter path: [`../managed-openrouter.md`](../managed-openrouter.md)
 - Onboarding: `agenc onboard`
