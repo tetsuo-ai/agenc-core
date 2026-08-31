@@ -469,7 +469,7 @@ function parseInstall(args: readonly string[]): AgenCPluginCliCommand {
     positional.push(arg);
   }
   if (positional.length !== 1) {
-    return { kind: "error", message: "plugin install requires exactly one source path" };
+    return { kind: "error", message: "plugin install requires exactly one source" };
   }
   return {
     kind: "install",

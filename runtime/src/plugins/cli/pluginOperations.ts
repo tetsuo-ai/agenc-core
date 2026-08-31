@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { cp, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { resolveHomeContext } from "../../config/home.js";
 import { loadCanonicalConfig } from "../../config/repository.js";
 import type { PluginEntryConfig } from "../../config/schema.js";
@@ -582,7 +582,7 @@ export async function updatePluginOp(
   const source = input.source ?? recordedSource.source;
   if (source === undefined) {
     throw new Error(
-      `plugin ${input.pluginId} has no recorded source; rerun with --source <path>`,
+      `plugin ${input.pluginId} has no recorded source; rerun with --source <source>`,
     );
   }
   await assertUpdateSourceOutsideInstalledRoot(source, workspaceRoot, previousRoot);
@@ -619,9 +619,9 @@ async function assertUpdateSourceOutsideInstalledRoot(
   if (!(await pathExists(localSource))) return;
   const sourceReal = await realpath(localSource);
   const rootReal = await realpath(previousRoot);
-  if (sourceReal !== rootReal && !sourceReal.startsWith(`${rootReal}/`)) return;
+  if (!isPathInside(sourceReal, rootReal)) return;
   throw new Error(
-    `plugin update source cannot be the installed plugin root: ${source}`,
+    `plugin update source cannot be the installed plugin root or its descendant: ${source}`,
   );
 }
 
@@ -858,8 +858,10 @@ async function copyDirectoryAtomically(
   if (existing) {
     const sourceReal = await realpath(source);
     const destinationReal = await realpath(destination);
-    if (sourceReal === destinationReal || sourceReal.startsWith(`${destinationReal}/`)) {
-      throw new Error(`plugin source cannot be the installed plugin root: ${source}`);
+    if (isPathInside(sourceReal, destinationReal)) {
+      throw new Error(
+        `plugin source cannot be the installed plugin root or its descendant: ${source}`,
+      );
     }
   }
   if (existing && !options.force) {
@@ -968,10 +970,43 @@ async function pluginIdRemainsInstalled(
   return listed.plugins.some((plugin) => plugin.id === pluginId);
 }
 
-function isPathInside(path: string, root: string): boolean {
-  const relativePath = relative(resolve(root), resolve(path));
+interface PathContainmentApi {
+  readonly isAbsolute: (path: string) => boolean;
+  readonly relative: (from: string, to: string) => string;
+  readonly resolve: (...paths: string[]) => string;
+  readonly sep: string;
+}
+
+function isPathInsideWithApi(
+  path: string,
+  root: string,
+  pathApi: PathContainmentApi,
+): boolean {
+  const relativePath = pathApi.relative(
+    pathApi.resolve(root),
+    pathApi.resolve(path),
+  );
   return relativePath === "" ||
-    (!relativePath.startsWith("..") && !isAbsolute(relativePath));
+    (relativePath !== ".." &&
+      !relativePath.startsWith(`..${pathApi.sep}`) &&
+      !pathApi.isAbsolute(relativePath));
+}
+
+function isPathInside(path: string, root: string): boolean {
+  return isPathInsideWithApi(path, root, {
+    isAbsolute,
+    relative,
+    resolve,
+    sep,
+  });
+}
+
+export function __isPathInsideForTesting(
+  path: string,
+  root: string,
+  platform: "posix" | "win32",
+): boolean {
+  return isPathInsideWithApi(path, root, platform === "win32" ? win32 : posix);
 }
 
 async function writePluginConfigEntry(

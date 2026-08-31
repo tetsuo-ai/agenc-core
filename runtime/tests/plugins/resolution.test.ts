@@ -22,6 +22,7 @@ import {
   type PluginProcessRunner,
 } from "./resolution.js";
 import {
+  __isPathInsideForTesting,
   installPluginOp as installPluginOpWithAuthority,
   updatePluginOp as updatePluginOpWithAuthority,
 } from "./cli/pluginOperations.js";
@@ -421,7 +422,10 @@ describe("plugin source resolution", () => {
           workspaceRoot: root,
           runResolutionProcess: runProcess,
         }),
-      ).rejects.toThrow(/no recorded source/u);
+      ).rejects.toMatchObject({
+        message:
+          "plugin private-demo has no recorded source; rerun with --source <source>",
+      });
 
       let errorMessage = "";
       try {
@@ -570,6 +574,57 @@ describe("plugin source resolution", () => {
       ).rejects.toThrow(/plugin signature is required/u);
     });
   });
+
+  test.each([
+    { label: "installed root", nested: false },
+    { label: "installed-root descendant", nested: true },
+  ])("update rejects an explicit local $label", async ({ nested }) => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const pluginRoot = join(root, "local-unsigned");
+      await writePlugin(pluginRoot, "local-unsigned");
+      const installed = await installPluginOp({
+        source: pluginRoot,
+        agencHome,
+        workspaceRoot: root,
+      });
+      const source = nested
+        ? join(installed.destination, "nested-source")
+        : installed.destination;
+      if (nested) await writePlugin(source, "nested-source");
+
+      await expect(
+        updatePluginOp({
+          pluginId: installed.plugin.id,
+          source,
+          agencHome,
+          workspaceRoot: root,
+        }),
+      ).rejects.toThrow(/installed plugin root or its descendant/u);
+    });
+  });
+
+  test.each([
+    {
+      platform: "posix" as const,
+      root: "/plugins/demo",
+      descendant: "/plugins/demo/nested",
+      sibling: "/plugins/demo-copy",
+    },
+    {
+      platform: "win32" as const,
+      root: "C:\\plugins\\demo",
+      descendant: "C:\\plugins\\demo\\nested",
+      sibling: "C:\\plugins\\demo-copy",
+    },
+  ])(
+    "installed-root containment follows $platform path semantics",
+    ({ platform, root, descendant, sibling }) => {
+      expect(__isPathInsideForTesting(root, root, platform)).toBe(true);
+      expect(__isPathInsideForTesting(descendant, root, platform)).toBe(true);
+      expect(__isPathInsideForTesting(sibling, root, platform)).toBe(false);
+    },
+  );
 
   test("ordinary update preserves a recorded waiver for the same structured remote source", async () => {
     await withTempDir(async (root) => {

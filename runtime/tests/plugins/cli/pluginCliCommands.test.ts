@@ -107,11 +107,17 @@ function options(
 }
 
 describe("agenc plugin CLI", () => {
-  it("documents marketplace source forms in help text", () => {
+  it("documents marketplace and plugin source forms in help text", () => {
     const help = formatAgenCPluginCliHelpText();
 
     expect(help).toContain("marketplace add <path|git|url|github>");
     expect(help).toContain("Add local, git, URL, or GitHub marketplace");
+    expect(help).toContain(
+      "install <source> [--scope <user|project|local>]  Install from ./path, npm, git, tarball, or mcpb",
+    );
+    expect(help).toContain(
+      "update <id> [--source <source>]                Refresh an installed plugin from its source",
+    );
   });
 
   it("parses plugin and marketplace commands", () => {
@@ -123,6 +129,10 @@ describe("agenc plugin CLI", () => {
     expect(parseAgenCPluginCliArgs(["plugin", "list", "--json"])).toEqual({
       kind: "list",
       json: true,
+    });
+    expect(parseAgenCPluginCliArgs(["plugin", "install"])).toEqual({
+      kind: "error",
+      message: "plugin install requires exactly one source",
     });
     expect(parseAgenCPluginCliArgs([
       "plugin",
