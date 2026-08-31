@@ -688,27 +688,37 @@ export async function discoverPluginSkillRoots(
 export interface PluginSkillRoot {
   readonly path: string;
   readonly contentProvenance: PluginContentProvenance;
+  /** Root of the plugin that ships this skill dir; substitution target. */
+  readonly pluginRoot: string;
 }
 
 export async function discoverPluginSkillRootsWithProvenance(
   options: PluginLoaderOptions,
 ): Promise<readonly PluginSkillRoot[]> {
   const result = await loadPlugins(options);
-  const roots = new Map<string, PluginContentProvenance>();
+  const roots = new Map<
+    string,
+    { provenance: PluginContentProvenance; pluginRoot: string }
+  >();
   for (const plugin of result.enabled) {
     for (const path of plugin.skillsPaths) {
       const current = roots.get(path);
-      roots.set(
-        path,
-        current === "repository-controlled" ||
+      roots.set(path, {
+        provenance:
+          current?.provenance === "repository-controlled" ||
             plugin.contentProvenance === "repository-controlled"
-          ? "repository-controlled"
-          : "authority-controlled",
-      );
+            ? "repository-controlled"
+            : "authority-controlled",
+        pluginRoot: current?.pluginRoot ?? plugin.root,
+      });
     }
   }
   return [...roots]
-    .map(([path, contentProvenance]) => ({ path, contentProvenance }))
+    .map(([path, entry]) => ({
+      path,
+      contentProvenance: entry.provenance,
+      pluginRoot: entry.pluginRoot,
+    }))
     .sort((a, b) => a.path.localeCompare(b.path));
 }
 

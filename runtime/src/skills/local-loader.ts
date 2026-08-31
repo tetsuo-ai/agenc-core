@@ -80,6 +80,8 @@ export interface LocalSkillMetadata {
   readonly allowedTools: readonly string[];
   readonly argumentHint?: string;
   readonly argNames?: readonly string[];
+  /** Root of the owning plugin when the skill ships inside one. */
+  readonly pluginRoot?: string;
   readonly whenToUse?: string;
   readonly version?: string;
   readonly model?: string;
@@ -144,6 +146,8 @@ interface SkillRoot {
   readonly scope: Exclude<LocalSkillScope, "bundled" | "mcp">;
   readonly source: Exclude<SkillSource, "bundled" | "mcp">;
   readonly loadedFrom: Exclude<LoadedFrom, "bundled" | "mcp">;
+  /** Root of the owning plugin when this root ships inside one. */
+  readonly pluginRoot?: string;
 }
 
 interface SkillWithContent {
@@ -345,6 +349,7 @@ export async function discoverSkillRoots(
         ? "projectSettings" as const
         : "plugin" as const,
       loadedFrom: "plugin" as const,
+      pluginRoot: root.pluginRoot,
     })),
   );
 
@@ -587,6 +592,9 @@ async function loadSkillFile(
     scope: root.scope,
     source: root.source,
     loadedFrom: root.loadedFrom,
+    ...(root.pluginRoot !== undefined
+      ? { pluginRoot: root.pluginRoot }
+      : {}),
     contentLength: markdown.length,
     ...(() => {
       const aliases = implicitAliasesForSkillName(skillName);
@@ -795,6 +803,15 @@ async function loadSkillContent(
   content = content
     .replace(/\$\{AGENC_SKILL_DIR\}/gu, skillDir)
     .replace(/\$\{AGENC_SESSION_ID\}/gu, sessionId);
+  // Plugin-shipped skills may address sibling assets (scripts, prompts)
+  // through their plugin root; without this the literal placeholder
+  // reaches the model and every such path breaks.
+  if (skill.pluginRoot !== undefined) {
+    content = content.replace(
+      /\$\{AGENC_PLUGIN_ROOT\}/gu,
+      normalizeDisplayPath(skill.pluginRoot),
+    );
+  }
   void options;
   return { skill, content };
 }

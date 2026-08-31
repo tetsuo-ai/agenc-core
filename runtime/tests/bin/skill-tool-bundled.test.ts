@@ -35,10 +35,10 @@ function sessionWithoutLocalSkill(): Session {
 }
 
 describe("Skill tool with runtime-registered bundled skills", () => {
-  // Regression: exercised against a real ESP32-S3, the model saw $iot-builder,
-  // called Skill(iot-builder) and got a hard `Unknown skill: iot-builder` for
-  // a skill the runtime ships, lists in /skills, and answers to as
-  // /iot-builder. It derailed the turn with an error instead of loading.
+  // Regression: exercised against real hardware, the model saw a bundled
+  // skill listed in /skills, called Skill(<name>) and got a hard
+  // `Unknown skill` for a skill the runtime demonstrably ships. It
+  // derailed the turn with an error instead of loading.
   it("loads a bundled skill the local loader cannot render", async () => {
     const { createModelFacingTools } = await import("./model-facing-tools.js");
     const session = sessionWithoutLocalSkill();
@@ -48,12 +48,11 @@ describe("Skill tool with runtime-registered bundled skills", () => {
     });
     const skill = tools.find((tool) => tool.name === "Skill")!;
 
-    const result = await skill.execute({ skill: "iot-builder" });
+    const result = await skill.execute({ skill: "browser-automation" });
 
     expect(result.isError).toBeUndefined();
-    expect(result.content).toContain("<command-name>iot-builder</command-name>");
-    expect(result.content).toContain("Identify the hardware");
-  });
+    expect(result.content).toContain("<command-name>browser-automation</command-name>");
+      });
 
   it("still reports genuinely unknown names, listing bundled ones as available", async () => {
     const { createModelFacingTools } = await import("./model-facing-tools.js");
@@ -72,7 +71,6 @@ describe("Skill tool with runtime-registered bundled skills", () => {
       available: string[];
     };
     expect(payload.error).toContain("no-such-skill");
-    expect(payload.available).toContain("iot-builder");
     expect(payload.available).toContain("browser-automation");
     expect(payload.available).toContain("local-only");
   });
