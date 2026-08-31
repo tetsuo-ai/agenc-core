@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 
 import { createTokenAccountingRequest } from "../../token-accounting.js";
-import type { LLMTool } from "../../types.js";
+import type { LLMMessage, LLMTool } from "../../types.js";
 import { createGeminiEndpointPlan } from "./endpoint-plan.js";
 import { GeminiProvider } from "./index.js";
 import {
@@ -393,6 +393,42 @@ describe("GeminiProvider", () => {
     });
     expect("model" in requestBody).toBe(false);
     expect("store" in requestBody).toBe(false);
+  });
+
+  test("defaults a malformed document MIME type without object stringification", async () => {
+    const fetchImpl = successfulGeminiFetch();
+    const provider = providerWithFetch(fetchImpl);
+    const message = {
+      role: "user",
+      content: [
+        {
+          type: "document",
+          source: {
+            type: "base64",
+            media_type: { invalid: true },
+            data: "JVBERi0xLjQ=",
+          },
+        },
+      ],
+    } as unknown as LLMMessage;
+
+    await provider.chat([message]);
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      contents: [
+        {
+          parts: [
+            {
+              inlineData: {
+                mimeType: "application/pdf",
+                data: "JVBERi0xLjQ=",
+              },
+            },
+          ],
+        },
+      ],
+    });
   });
 
   test("materializes the selected bearer plan with its quota project", async () => {
@@ -788,6 +824,186 @@ describe("GeminiProvider", () => {
   });
 
   test.each([
+    {
+      label: "a local root reference",
+      schema: {
+        $ref: "#/$defs/Args",
+        $defs: {
+          Args: {
+            type: "object",
+            properties: { value: { type: "string" } },
+          },
+        },
+      },
+    },
+    {
+      label: "an embedded-resource root reference",
+      schema: {
+        $id: "https://example.test/tool-root.json",
+        $ref: "args.json",
+        $defs: {
+          Args: {
+            $id: "args.json",
+            type: "object",
+            properties: { value: { type: "string" } },
+          },
+        },
+      },
+    },
+    {
+      label: "an all-object anyOf",
+      schema: {
+        anyOf: [
+          { type: "object", properties: { text: { type: "string" } } },
+          { $ref: "#/$defs/Args" },
+        ],
+        $defs: { Args: { type: "object", additionalProperties: false } },
+      },
+    },
+    {
+      label: "an all-object oneOf",
+      schema: {
+        oneOf: [
+          { type: "object", properties: { text: { type: "string" } } },
+          { $ref: "#/$defs/Args" },
+        ],
+        $defs: { Args: { type: "object", additionalProperties: false } },
+      },
+    },
+  ])("preserves $label tool root", async ({ schema }) => {
+    const fetchImpl = successfulGeminiFetch();
+    const provider = providerWithFetch(fetchImpl);
+
+    await provider.chat([{ role: "user", content: "run tool" }], {
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "rooted_tool",
+            description: "Exercise a referenced object root",
+            parameters: schema,
+          },
+        },
+      ],
+    });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const requestBody = JSON.parse(String(init?.body)) as {
+      readonly tools: readonly [
+        {
+          readonly functionDeclarations: readonly [Record<string, unknown>];
+        },
+      ];
+    };
+    expect(
+      requestBody.tools[0].functionDeclarations[0]?.parametersJsonSchema,
+    ).toEqual(schema);
+  });
+
+  test.each([
+    { label: "an array", schema: { type: "array", items: { type: "string" } } },
+    { label: "a scalar", schema: { type: "string" } },
+    { label: "a nullable object", schema: { type: ["object", "null"] } },
+    { label: "an unconstrained schema", schema: {} },
+    {
+      label: "a mixed-object union",
+      schema: { anyOf: [{ type: "object" }, { type: "string" }] },
+    },
+    {
+      label: "a contradictory allOf",
+      schema: { allOf: [{ type: "object" }, { type: "string" }] },
+    },
+    {
+      label: "an object sibling beside a scalar root reference",
+      schema: {
+        type: "object",
+        $ref: "#/$defs/Scalar",
+        $defs: { Scalar: { type: "string" } },
+      },
+    },
+    {
+      label: "an unresolved root reference",
+      schema: { $ref: "#/$defs/Missing" },
+    },
+    {
+      label: "an external root reference",
+      schema: { $ref: "https://example.test/external.json" },
+    },
+  ])("rejects $label tool root before dispatch", async ({ schema }) => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = providerWithFetch(fetchImpl);
+
+    await expect(
+      provider.chat([{ role: "user", content: "run tool" }], {
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "invalid_root",
+              description: "Invalid root",
+              parameters: schema,
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow('tools["invalid_root"].parameters');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test.each(["chat", "stream", "count"] as const)(
+    "validates tool roots before %s dispatch",
+    async (operation) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const provider = providerWithFetch(fetchImpl);
+      const tools: LLMTool[] = [
+        {
+          type: "function",
+          function: {
+            name: "invalid_root",
+            description: "Invalid root",
+            parameters: { type: "array", items: { type: "string" } },
+          },
+        },
+      ];
+      const options = { tools };
+
+      let invocation: Promise<unknown>;
+      switch (operation) {
+        case "chat":
+          invocation = provider.chat(
+            [{ role: "user", content: "run tool" }],
+            options,
+          );
+          break;
+        case "stream":
+          invocation = provider.chatStream(
+            [{ role: "user", content: "run tool" }],
+            () => {},
+            options,
+          );
+          break;
+        case "count":
+          invocation = provider.tokenCountCapability.countTokens(
+            createTokenAccountingRequest({
+              provider: provider.name,
+              model: "gemini-2.5-pro",
+              messages: [{ role: "user", content: "run tool" }],
+              options,
+              reservedOutputTokens: 0,
+            }),
+            new AbortController().signal,
+          );
+          break;
+      }
+
+      await expect(invocation).rejects.toThrow(
+        'tools["invalid_root"].parameters',
+      );
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([
     { label: "Developer v1beta", endpointPlan: developerEndpointPlan },
     { label: "Vertex v1", endpointPlan: vertexEndpointPlan },
     { label: "a custom native endpoint", endpointPlan: customEndpointPlan },
@@ -978,6 +1194,109 @@ describe("GeminiProvider", () => {
     expect(requestBody.generationConfig.responseJsonSchema).toEqual(
       responseSchema,
     );
+  });
+
+  test("resolves references and anchors within embedded schema resources", async () => {
+    const fetchImpl = successfulGeminiFetch('{"node":{"value":"ok"}}');
+    const provider = providerWithFetch(fetchImpl);
+    const responseSchema = {
+      $id: "https://example.test/root.json",
+      $anchor: "Shared",
+      type: "object",
+      properties: {
+        node: { $ref: "node.json" },
+        value: { $ref: "node.json#/$defs/Value" },
+      },
+      $defs: {
+        Node: {
+          $id: "node.json",
+          $anchor: "Shared",
+          type: "object",
+          properties: {
+            value: { $ref: "#/$defs/Value" },
+            child: { $ref: "#Shared" },
+          },
+          $defs: { Value: { type: "string" } },
+        },
+      },
+    };
+
+    await provider.chat([{ role: "user", content: "answer" }], {
+      structuredOutput: {
+        enabled: true,
+        schema: { type: "json_schema", name: "answer", schema: responseSchema },
+      },
+    });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const requestBody = JSON.parse(String(init?.body)) as {
+      readonly generationConfig: Record<string, unknown>;
+    };
+    expect(requestBody.generationConfig.responseJsonSchema).toEqual(
+      responseSchema,
+    );
+  });
+
+  test("rejects a required cycle inside an embedded schema resource", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = providerWithFetch(fetchImpl);
+
+    await expect(
+      provider.chat([{ role: "user", content: "answer" }], {
+        structuredOutput: {
+          enabled: true,
+          schema: {
+            type: "json_schema",
+            name: "answer",
+            schema: {
+              $id: "https://example.test/root.json",
+              $ref: "node.json",
+              $defs: {
+                Node: {
+                  $id: "node.json",
+                  $anchor: "Node",
+                  type: "object",
+                  properties: { child: { $ref: "#Node" } },
+                  required: ["child"],
+                },
+              },
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow(
+      'schema.$defs.Node.properties.child.$ref: cyclic $ref is inside required property "child"',
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    {
+      label: "a non-empty $id fragment",
+      schema: {
+        $id: "https://example.test/root.json#fragment",
+        type: "object",
+      },
+      message: "must not contain a non-empty fragment",
+    },
+    {
+      label: "an invalid $id URI-reference",
+      schema: { $id: "http://[", type: "object" },
+      message: "expected a valid URI-reference",
+    },
+  ])("rejects $label before dispatch", async ({ schema, message }) => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = providerWithFetch(fetchImpl);
+
+    await expect(
+      provider.chat([{ role: "user", content: "answer" }], {
+        structuredOutput: {
+          enabled: true,
+          schema: { type: "json_schema", name: "answer", schema },
+        },
+      }),
+    ).rejects.toThrow(message);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test.each([

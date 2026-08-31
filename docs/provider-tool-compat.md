@@ -127,6 +127,12 @@ inlining or keyword rewriting. Repeated and recursive refs do not consume a
 local expansion budget. This also applies to MCP `inputSchema` after its
 model-facing size and annotation sanitization.
 
+Gemini requires tool parameters to describe a JSON object. AgenC checks that
+root before dispatch without changing the accepted schema. An explicit object,
+a local `$ref` to an object schema, or a union whose every branch is object-only
+is accepted. Scalar, array, nullable, unconstrained, mixed-union, contradictory,
+and unresolved roots fail on chat, streaming, and admission token counting.
+
 Response schemas are checked against Google's documented common subset before
 the request is built. AgenC accepts these keywords:
 
@@ -143,10 +149,12 @@ capability record is updated.
 
 Google lists `oneOf`, but interprets it as `anyOf`. A response sub-schema that
 contains `$ref` may have only `$`-prefixed siblings. AgenC rejects both shapes
-instead of changing their meaning. Local `$ref` values must resolve through an
-RFC 6901 JSON Pointer or a declared anchor. Remote and unresolved references
-also fail locally. Recursive references are accepted only when the reference
-appears in a non-required property, as required by the Gemini contract.
+instead of changing their meaning. `$id` establishes a schema-resource base,
+and `$anchor` names are scoped to that resource. A local `$ref` may select an
+embedded resource by URI, then use an RFC 6901 JSON Pointer or declared anchor
+within it. External and unresolved references fail locally. Recursive
+references are accepted only when the reference appears in a non-required
+property, as required by the Gemini contract.
 
 Successful validation does not rewrite the response schema. Type arrays,
 `$defs` maps, ordering, and optional recursive references reach the provider
@@ -161,13 +169,14 @@ Use `anyOf` only when inclusive-OR behavior is correct. For a response `$ref`,
 move `description` and other non-`$` keywords into the referenced definition.
 Move a recursive `$ref` out of `required` when omission is valid. Tool
 parameter schemas are not subject to these local response-schema checks and
-remain exact `parametersJsonSchema` values.
+remain exact `parametersJsonSchema` values after the object-root check.
 
 Primary API references:
 
 - [Gemini Developer API: `FunctionDeclaration` and `GenerationConfig`](https://ai.google.dev/api/generate-content)
 - [Vertex v1: `FunctionDeclaration`](https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1/FunctionDeclaration)
 - [Vertex v1: `GenerationConfig`](https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1/GenerationConfig)
+- [JSON Schema resource and reference rules](https://json-schema.org/draft/2020-12/draft-bhutton-json-schema-01#section-8.2)
 - [`@google/genai` function-calling example](https://googleapis.github.io/js-genai/release_docs/index.html#function-calling)
 
 ## When adding tools
@@ -177,10 +186,10 @@ stay strict-eligible. If a true union is required for execution-side clarity,
 keep the union on the tool definition. The Grok/DeepSeek normalizer collapses
 a **root** union for those providers and reports `strictEligible: false`.
 Gemini sends tool parameters through `parametersJsonSchema` without local
-keyword rewriting. LM Studio and openai-compatible still use the
-grammar-safe subset, so do not rely on `$ref`, `oneOf`, `allOf`, or
-`x-agenc-*` reaching those providers. Gemini structured output rejects
-`oneOf` because Google treats it as `anyOf` there.
+keyword rewriting after proving that every possible root is an object. LM
+Studio and openai-compatible still use the grammar-safe subset, so do not rely
+on `$ref`, `oneOf`, `allOf`, or `x-agenc-*` reaching those providers. Gemini
+structured output rejects `oneOf` because Google treats it as `anyOf` there.
 
 For a tool to remain callable through the LM Studio/openai-compatible profile,
 its registry name must appear in `LOCAL_PROFILE_TOOL_NAMES`, and its wire
@@ -197,6 +206,7 @@ but `builtTools` applies the local-profile filter afterward.
 | LM Studio/openai-compatible empty turn after a long answer                          | Check whether the fixed 8192 output ceiling ended generation                                                                                                                                                                     |
 | LM Studio/openai-compatible session does not call team/task tools                   | Those tools are outside the reduced catalog; use another provider slug when they are required                                                                                                                                    |
 | Qwen3 think-trace burns minutes                                                     | `/no_think` only attaches on `lmstudio` / `openai-compatible` + qwen3                                                                                                                                                            |
+| Gemini tool schema fails locally at `tools["name"].parameters`                      | The root can accept a non-object value, is unconstrained or contradictory, or contains a root reference that does not resolve locally                                                                                            |
 | Gemini response schema fails locally with `Gemini cannot preserve schema at <path>` | Structured output used an unsupported keyword, a lossy `oneOf`, an invalid or remote `$ref`, a non-`$` sibling beside `$ref`, or a required reference cycle. Follow the path in the error and use the documented response subset |
 | Custom Gemini endpoint rejects `parametersJsonSchema` or `responseJsonSchema`       | `GEMINI_BASE_URL` must expose the current native Gemini request shape. Update the proxy or use the official Developer API or Vertex endpoint                                                                                     |
 | NIM ignores or 400s `reasoning_effort`                                              | Family has no documented enum, or the value is outside it                                                                                                                                                                        |

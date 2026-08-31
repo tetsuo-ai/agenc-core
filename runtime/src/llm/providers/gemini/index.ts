@@ -267,9 +267,10 @@ function geminiPartsFromContent(
         ) {
           parts.push({
             inlineData: {
-              mimeType: String(
-                source.media_type ?? source.mediaType ?? "application/pdf",
-              ),
+              mimeType:
+                nonEmptyString(source.media_type) ??
+                nonEmptyString(source.mediaType) ??
+                "application/pdf",
               data: source.data.replace(/\s+/gu, ""),
             },
           });
@@ -430,6 +431,19 @@ const GEMINI_RESPONSE_JSON_SCHEMA_SUPPORTED_KEYWORDS: ReadonlySet<string> =
     "propertyOrdering",
   ]);
 
+function geminiResponseJsonSchemaSurface(
+  endpointPlan: GeminiEndpointPlan,
+): GeminiResponseJsonSchemaCapabilities["surface"] {
+  switch (endpointPlan.kind) {
+    case "developer":
+      return "developer-v1beta";
+    case "vertex":
+      return "vertex-v1";
+    case "custom":
+      return "custom-native";
+  }
+}
+
 function geminiResponseJsonSchemaCapabilities(
   endpointPlan: GeminiEndpointPlan,
   model: string,
@@ -439,14 +453,8 @@ function geminiResponseJsonSchemaCapabilities(
     .startsWith("gemini-")
     ? "gemini"
     : "unknown";
-  const surface =
-    endpointPlan.kind === "developer"
-      ? "developer-v1beta"
-      : endpointPlan.kind === "vertex"
-        ? "vertex-v1"
-        : "custom-native";
   return {
-    surface,
+    surface: geminiResponseJsonSchemaSurface(endpointPlan),
     modelFamily,
     supportedKeywords: GEMINI_RESPONSE_JSON_SCHEMA_SUPPORTED_KEYWORDS,
     supportsRemoteReferences: false,
@@ -463,6 +471,17 @@ interface GeminiSchemaGraphEdge {
   readonly target: Record<string, unknown>;
 }
 
+interface GeminiSchemaResource {
+  readonly uri: string;
+  readonly root: Record<string, unknown>;
+  readonly path: string;
+}
+
+interface GeminiResolvedSchemaReference {
+  readonly schema: Record<string, unknown>;
+  readonly resource: GeminiSchemaResource;
+}
+
 interface GeminiSchemaReference {
   readonly source: Record<string, unknown>;
   readonly path: string;
@@ -472,12 +491,14 @@ interface GeminiSchemaReference {
 }
 
 interface GeminiSchemaValidationState {
-  readonly root: Record<string, unknown>;
   readonly capabilities: GeminiResponseJsonSchemaCapabilities;
   readonly ancestors: Set<Record<string, unknown>>;
   readonly nodes: Set<Record<string, unknown>>;
   readonly edges: Map<Record<string, unknown>, GeminiSchemaGraphEdge[]>;
   readonly references: GeminiSchemaReference[];
+  readonly nodePaths: Map<Record<string, unknown>, string>;
+  readonly nodeResources: Map<Record<string, unknown>, GeminiSchemaResource>;
+  readonly resources: Map<string, GeminiSchemaResource>;
   readonly anchors: Map<
     string,
     Readonly<{ schema: Record<string, unknown>; path: string }>
@@ -487,6 +508,8 @@ interface GeminiSchemaValidationState {
 const GEMINI_NO_PROPERTY_CONTEXT: GeminiSchemaPropertyContext = {
   kind: "none",
 };
+const GEMINI_INTERNAL_SCHEMA_BASE =
+  "https://schema.invalid/.well-known/agenc/gemini/";
 const GEMINI_JSON_SCHEMA_TYPES: ReadonlySet<string> = new Set([
   "array",
   "boolean",
@@ -638,29 +661,197 @@ function validateGeminiSchemaBounds(
   }
 }
 
-function registerGeminiSchemaAnchor(
-  state: GeminiSchemaValidationState,
+function validateGeminiSchemaAnchorName(value: string, path: string): void {
+  if (!/^[A-Za-z][A-Za-z0-9._:-]*$/u.test(value)) {
+    geminiSchemaError(path, "expected a valid JSON Schema anchor name");
+  }
+}
+
+function validateGeminiResponseSchemaOneOf(
   schema: Record<string, unknown>,
   path: string,
+  state: GeminiSchemaValidationState,
 ): void {
-  if (typeof schema.$anchor !== "string") return;
-  if (!/^[A-Za-z][A-Za-z0-9._:-]*$/u.test(schema.$anchor)) {
+  if (
+    Object.hasOwn(schema, "oneOf") &&
+    !state.capabilities.preservesOneOfSemantics
+  ) {
     geminiSchemaError(
-      geminiSchemaChildPath(path, "$anchor"),
-      "expected a valid JSON Schema anchor name",
+      geminiSchemaChildPath(path, "oneOf"),
+      "Gemini interprets oneOf as anyOf, which would weaken validation",
     );
   }
-  const existing = state.anchors.get(schema.$anchor);
-  if (existing !== undefined && existing.schema !== schema) {
+}
+
+function registerGeminiResponseSchemaReference(
+  schema: Record<string, unknown>,
+  path: string,
+  propertyContext: GeminiSchemaPropertyContext,
+  state: GeminiSchemaValidationState,
+): void {
+  if (!Object.hasOwn(schema, "$ref")) return;
+  const referencePath = geminiSchemaChildPath(path, "$ref");
+  if (typeof schema.$ref !== "string" || schema.$ref.trim() === "") {
+    geminiSchemaError(referencePath, "expected a non-empty string");
+  }
+  const unsupportedSibling = Object.keys(schema).find(
+    (key) => key !== "$ref" && !key.startsWith("$"),
+  );
+  if (unsupportedSibling !== undefined) {
     geminiSchemaError(
-      geminiSchemaChildPath(path, "$anchor"),
-      `duplicates the anchor declared at ${existing.path}`,
+      geminiSchemaChildPath(path, unsupportedSibling),
+      "Gemini does not allow non-$ siblings beside $ref",
     );
   }
-  state.anchors.set(schema.$anchor, {
-    schema,
-    path: geminiSchemaChildPath(path, "$anchor"),
+  state.references.push({
+    source: schema,
+    path: referencePath,
+    value: schema.$ref,
+    propertyContext,
   });
+}
+
+function validateGeminiResponseSchemaKeywords(
+  schema: Record<string, unknown>,
+  path: string,
+  state: GeminiSchemaValidationState,
+): void {
+  const unsupportedKeyword = Object.keys(schema).find(
+    (key) => !state.capabilities.supportedKeywords.has(key),
+  );
+  if (unsupportedKeyword !== undefined) {
+    geminiSchemaError(
+      geminiSchemaChildPath(path, unsupportedKeyword),
+      `keyword ${JSON.stringify(unsupportedKeyword)} is not supported by Gemini responseJsonSchema`,
+    );
+  }
+}
+
+function geminiResponseRequiredProperties(
+  schema: Record<string, unknown>,
+  path: string,
+): ReadonlySet<string> {
+  if (!Object.hasOwn(schema, "required")) return new Set();
+  return new Set(
+    geminiSchemaStringArray(
+      schema.required,
+      geminiSchemaChildPath(path, "required"),
+      { unique: true },
+    ),
+  );
+}
+
+function visitGeminiResponseSchemaMap(
+  schema: Record<string, unknown>,
+  entry: unknown,
+  key: "$defs" | "properties",
+  path: string,
+  required: ReadonlySet<string>,
+  state: GeminiSchemaValidationState,
+): void {
+  const childPath = geminiSchemaChildPath(path, key);
+  if (!isPlainSchemaObject(entry)) {
+    geminiSchemaError(childPath, "expected a schema map");
+  }
+  for (const [name, child] of Object.entries(entry)) {
+    const itemPath = geminiSchemaChildPath(childPath, name);
+    const childSchema = geminiSchemaObject(child, itemPath);
+    addGeminiSchemaEdge(state, schema, childSchema);
+    const childContext =
+      key === "properties"
+        ? ({
+            kind: required.has(name) ? "required" : "optional",
+            name,
+          } as const)
+        : GEMINI_NO_PROPERTY_CONTEXT;
+    validateGeminiJsonSchemaAt(childSchema, itemPath, childContext, state);
+  }
+}
+
+function visitGeminiResponseSchemaArray(
+  schema: Record<string, unknown>,
+  entry: unknown,
+  key: "anyOf" | "prefixItems",
+  path: string,
+  propertyContext: GeminiSchemaPropertyContext,
+  state: GeminiSchemaValidationState,
+): void {
+  const childPath = geminiSchemaChildPath(path, key);
+  if (!Array.isArray(entry)) {
+    geminiSchemaError(childPath, "expected a schema array");
+  }
+  if (key === "anyOf" && entry.length === 0) {
+    geminiSchemaError(childPath, "expected at least one schema");
+  }
+  entry.forEach((child, index) => {
+    const itemPath = `${childPath}[${index}]`;
+    const childSchema = geminiSchemaObject(child, itemPath);
+    addGeminiSchemaEdge(state, schema, childSchema);
+    validateGeminiJsonSchemaAt(childSchema, itemPath, propertyContext, state);
+  });
+}
+
+function visitGeminiResponseSchemaChild(
+  schema: Record<string, unknown>,
+  entry: unknown,
+  key: "items" | "additionalProperties",
+  path: string,
+  propertyContext: GeminiSchemaPropertyContext,
+  state: GeminiSchemaValidationState,
+): void {
+  if (key === "additionalProperties" && typeof entry === "boolean") return;
+  const childPath = geminiSchemaChildPath(path, key);
+  const childSchema = geminiSchemaObject(entry, childPath);
+  addGeminiSchemaEdge(state, schema, childSchema);
+  validateGeminiJsonSchemaAt(childSchema, childPath, propertyContext, state);
+}
+
+function validateGeminiResponseSchemaEntry(
+  schema: Record<string, unknown>,
+  key: string,
+  entry: unknown,
+  path: string,
+  propertyContext: GeminiSchemaPropertyContext,
+  required: ReadonlySet<string>,
+  state: GeminiSchemaValidationState,
+): void {
+  if (key === "$defs" || key === "properties") {
+    visitGeminiResponseSchemaMap(schema, entry, key, path, required, state);
+    return;
+  }
+  if (key === "anyOf" || key === "prefixItems") {
+    visitGeminiResponseSchemaArray(
+      schema,
+      entry,
+      key,
+      path,
+      propertyContext,
+      state,
+    );
+    return;
+  }
+  if (key === "items" || key === "additionalProperties") {
+    visitGeminiResponseSchemaChild(
+      schema,
+      entry,
+      key,
+      path,
+      propertyContext,
+      state,
+    );
+    return;
+  }
+  const childPath = geminiSchemaChildPath(path, key);
+  if (key === "propertyOrdering") {
+    geminiSchemaStringArray(entry, childPath, { unique: true });
+    return;
+  }
+  if (key === "$anchor" && typeof entry === "string") {
+    validateGeminiSchemaAnchorName(entry, childPath);
+  }
+  if (key !== "required" && key !== "$ref" && key !== "oneOf") {
+    validateGeminiSchemaScalarKeyword(key, entry, childPath);
+  }
 }
 
 function validateGeminiJsonSchemaAt(
@@ -676,126 +867,20 @@ function validateGeminiJsonSchemaAt(
   state.ancestors.add(schema);
   state.nodes.add(schema);
   try {
-    if (
-      Object.hasOwn(schema, "oneOf") &&
-      !state.capabilities.preservesOneOfSemantics
-    ) {
-      geminiSchemaError(
-        geminiSchemaChildPath(path, "oneOf"),
-        "Gemini interprets oneOf as anyOf, which would weaken validation",
-      );
-    }
-
-    if (Object.hasOwn(schema, "$ref")) {
-      if (typeof schema.$ref !== "string" || schema.$ref.trim() === "") {
-        geminiSchemaError(
-          geminiSchemaChildPath(path, "$ref"),
-          "expected a non-empty string",
-        );
-      }
-      const unsupportedSibling = Object.keys(schema).find(
-        (key) => key !== "$ref" && !key.startsWith("$"),
-      );
-      if (unsupportedSibling !== undefined) {
-        geminiSchemaError(
-          geminiSchemaChildPath(path, unsupportedSibling),
-          "Gemini does not allow non-$ siblings beside $ref",
-        );
-      }
-      state.references.push({
-        source: schema,
-        path: geminiSchemaChildPath(path, "$ref"),
-        value: schema.$ref,
-        propertyContext,
-      });
-    }
-
-    const unsupportedKeyword = Object.keys(schema).find(
-      (key) => !state.capabilities.supportedKeywords.has(key),
-    );
-    if (unsupportedKeyword !== undefined) {
-      geminiSchemaError(
-        geminiSchemaChildPath(path, unsupportedKeyword),
-        `keyword ${JSON.stringify(unsupportedKeyword)} is not supported by Gemini responseJsonSchema`,
-      );
-    }
-
-    const required = Object.hasOwn(schema, "required")
-      ? new Set(
-          geminiSchemaStringArray(
-            schema.required,
-            geminiSchemaChildPath(path, "required"),
-            { unique: true },
-          ),
-        )
-      : new Set<string>();
-
-    registerGeminiSchemaAnchor(state, schema, path);
-
+    validateGeminiResponseSchemaOneOf(schema, path, state);
+    registerGeminiResponseSchemaReference(schema, path, propertyContext, state);
+    validateGeminiResponseSchemaKeywords(schema, path, state);
+    const required = geminiResponseRequiredProperties(schema, path);
     for (const [key, entry] of Object.entries(schema)) {
-      const childPath = geminiSchemaChildPath(path, key);
-      if (key === "$defs" || key === "properties") {
-        if (!isPlainSchemaObject(entry)) {
-          geminiSchemaError(childPath, "expected a schema map");
-        }
-        for (const [name, child] of Object.entries(entry)) {
-          const itemPath = geminiSchemaChildPath(childPath, name);
-          const childSchema = geminiSchemaObject(child, itemPath);
-          addGeminiSchemaEdge(state, schema, childSchema);
-          validateGeminiJsonSchemaAt(
-            childSchema,
-            itemPath,
-            key === "properties"
-              ? {
-                  kind: required.has(name) ? "required" : "optional",
-                  name,
-                }
-              : GEMINI_NO_PROPERTY_CONTEXT,
-            state,
-          );
-        }
-        continue;
-      }
-      if (key === "anyOf" || key === "prefixItems") {
-        if (!Array.isArray(entry)) {
-          geminiSchemaError(childPath, "expected a schema array");
-        }
-        if (key === "anyOf" && entry.length === 0) {
-          geminiSchemaError(childPath, "expected at least one schema");
-        }
-        entry.forEach((child, index) => {
-          const itemPath = `${childPath}[${index}]`;
-          const childSchema = geminiSchemaObject(child, itemPath);
-          addGeminiSchemaEdge(state, schema, childSchema);
-          validateGeminiJsonSchemaAt(
-            childSchema,
-            itemPath,
-            propertyContext,
-            state,
-          );
-        });
-        continue;
-      }
-      if (key === "items" || key === "additionalProperties") {
-        if (key === "additionalProperties" && typeof entry === "boolean") {
-          continue;
-        }
-        const childSchema = geminiSchemaObject(entry, childPath);
-        addGeminiSchemaEdge(state, schema, childSchema);
-        validateGeminiJsonSchemaAt(
-          childSchema,
-          childPath,
-          propertyContext,
-          state,
-        );
-        continue;
-      }
-      if (key === "propertyOrdering") {
-        geminiSchemaStringArray(entry, childPath, { unique: true });
-        continue;
-      }
-      if (key === "required" || key === "$ref" || key === "oneOf") continue;
-      validateGeminiSchemaScalarKeyword(key, entry, childPath);
+      validateGeminiResponseSchemaEntry(
+        schema,
+        key,
+        entry,
+        path,
+        propertyContext,
+        required,
+        state,
+      );
     }
     validateGeminiSchemaBounds(schema, path);
   } finally {
@@ -807,82 +892,336 @@ function decodeGeminiJsonPointerToken(token: string, path: string): string {
   if (/~(?:[^01]|$)/u.test(token)) {
     geminiSchemaError(path, "contains an invalid RFC 6901 escape");
   }
-  return token.replace(/~1/gu, "/").replace(/~0/gu, "~");
+  return token.replaceAll("~1", "/").replaceAll("~0", "~");
 }
 
-function resolveGeminiLocalSchemaReference(
-  reference: GeminiSchemaReference,
-  state: GeminiSchemaValidationState,
-): Record<string, unknown> | undefined {
-  if (!reference.value.startsWith("#")) {
-    if (!state.capabilities.supportsRemoteReferences) {
-      geminiSchemaError(
-        reference.path,
-        `remote references are not supported by the ${state.capabilities.surface}/${state.capabilities.modelFamily} responseJsonSchema contract`,
-      );
-    }
-    return undefined;
-  }
+const GEMINI_SCHEMA_MAP_KEYWORDS: ReadonlySet<string> = new Set([
+  "$defs",
+  "definitions",
+  "dependentSchemas",
+  "patternProperties",
+  "properties",
+]);
+const GEMINI_SCHEMA_ARRAY_KEYWORDS: ReadonlySet<string> = new Set([
+  "allOf",
+  "anyOf",
+  "oneOf",
+  "prefixItems",
+]);
+const GEMINI_SINGLE_SCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
+  "additionalProperties",
+  "contains",
+  "contentSchema",
+  "else",
+  "if",
+  "items",
+  "not",
+  "propertyNames",
+  "then",
+  "unevaluatedItems",
+  "unevaluatedProperties",
+]);
 
-  let fragment: string;
-  try {
-    fragment = decodeURIComponent(reference.value.slice(1));
-  } catch {
-    geminiSchemaError(reference.path, "contains invalid URI-fragment encoding");
-  }
-  if (fragment === "") return state.root;
-  if (!fragment.startsWith("/")) {
-    const anchored = state.anchors.get(fragment);
-    if (anchored === undefined) {
-      geminiSchemaError(
-        reference.path,
-        `does not resolve local anchor #${fragment}`,
-      );
-    }
-    return anchored.schema;
-  }
+interface GeminiSchemaChild {
+  readonly schema: Record<string, unknown>;
+  readonly path: string;
+}
 
-  let target: unknown = state.root;
-  for (const rawToken of fragment.slice(1).split("/")) {
-    const token = decodeGeminiJsonPointerToken(rawToken, reference.path);
-    if (Array.isArray(target)) {
-      if (!/^(?:0|[1-9][0-9]*)$/u.test(token)) {
-        geminiSchemaError(
-          reference.path,
-          `does not resolve JSON Pointer ${reference.value}`,
-        );
-      }
-      const index = Number(token);
-      if (!Number.isSafeInteger(index) || index >= target.length) {
-        geminiSchemaError(
-          reference.path,
-          `does not resolve JSON Pointer ${reference.value}`,
-        );
-      }
-      target = target[index];
+function geminiSchemaMapChildren(
+  value: unknown,
+  path: string,
+): readonly GeminiSchemaChild[] {
+  if (!isPlainSchemaObject(value)) return [];
+  return Object.entries(value).flatMap(([name, child]) =>
+    isPlainSchemaObject(child)
+      ? [{ schema: child, path: geminiSchemaChildPath(path, name) }]
+      : [],
+  );
+}
+
+function geminiSchemaArrayChildren(
+  value: unknown,
+  path: string,
+): readonly GeminiSchemaChild[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((child, index) =>
+    isPlainSchemaObject(child)
+      ? [{ schema: child, path: `${path}[${index}]` }]
+      : [],
+  );
+}
+
+function geminiSchemaChildren(
+  schema: Record<string, unknown>,
+  path: string,
+): readonly GeminiSchemaChild[] {
+  const children: GeminiSchemaChild[] = [];
+  for (const [key, value] of Object.entries(schema)) {
+    const childPath = geminiSchemaChildPath(path, key);
+    if (GEMINI_SCHEMA_MAP_KEYWORDS.has(key)) {
+      children.push(...geminiSchemaMapChildren(value, childPath));
       continue;
     }
-    if (!isPlainSchemaObject(target) || !Object.hasOwn(target, token)) {
+    if (GEMINI_SCHEMA_ARRAY_KEYWORDS.has(key)) {
+      children.push(...geminiSchemaArrayChildren(value, childPath));
+      continue;
+    }
+    if (GEMINI_SINGLE_SCHEMA_KEYWORDS.has(key) && isPlainSchemaObject(value)) {
+      children.push({ schema: value, path: childPath });
+      continue;
+    }
+    if (key === "dependencies" && isPlainSchemaObject(value)) {
+      children.push(...geminiSchemaMapChildren(value, childPath));
+    }
+  }
+  return children;
+}
+
+function geminiSchemaUri(value: string, baseUri: string, path: string): URL {
+  try {
+    return new URL(value, baseUri);
+  } catch {
+    geminiSchemaError(path, "expected a valid URI-reference");
+  }
+}
+
+function geminiSchemaResourceUri(url: URL): string {
+  const hashIndex = url.href.indexOf("#");
+  return hashIndex === -1 ? url.href : url.href.slice(0, hashIndex);
+}
+
+function geminiSchemaFragment(url: URL, path: string): string {
+  const hashIndex = url.href.indexOf("#");
+  if (hashIndex === -1) return "";
+  try {
+    return decodeURIComponent(url.href.slice(hashIndex + 1));
+  } catch {
+    geminiSchemaError(path, "contains invalid URI-fragment encoding");
+  }
+}
+
+function geminiSchemaResourceForNode(
+  schema: Record<string, unknown>,
+  path: string,
+  parent: GeminiSchemaResource,
+  state: GeminiSchemaValidationState,
+): GeminiSchemaResource {
+  if (!Object.hasOwn(schema, "$id")) return parent;
+  const idPath = geminiSchemaChildPath(path, "$id");
+  if (typeof schema.$id !== "string" || schema.$id.length === 0) {
+    geminiSchemaError(idPath, "expected a non-empty string");
+  }
+  const resolved = geminiSchemaUri(schema.$id, parent.uri, idPath);
+  if (geminiSchemaFragment(resolved, idPath) !== "") {
+    geminiSchemaError(idPath, "must not contain a non-empty fragment");
+  }
+  const uri = geminiSchemaResourceUri(resolved);
+  const existing = state.resources.get(uri);
+  if (existing !== undefined && existing.root !== schema) {
+    geminiSchemaError(
+      idPath,
+      `duplicates the schema resource declared at ${existing.path}`,
+    );
+  }
+  const resource = { uri, root: schema, path };
+  state.resources.set(uri, resource);
+  return resource;
+}
+
+function registerGeminiSchemaResourceAnchor(
+  schema: Record<string, unknown>,
+  path: string,
+  resource: GeminiSchemaResource,
+  state: GeminiSchemaValidationState,
+): void {
+  if (!Object.hasOwn(schema, "$anchor")) return;
+  const anchorPath = geminiSchemaChildPath(path, "$anchor");
+  if (typeof schema.$anchor !== "string") {
+    geminiSchemaError(anchorPath, "expected a non-empty string");
+  }
+  validateGeminiSchemaAnchorName(schema.$anchor, anchorPath);
+  const key = `${resource.uri}#${schema.$anchor}`;
+  const existing = state.anchors.get(key);
+  if (existing !== undefined && existing.schema !== schema) {
+    geminiSchemaError(
+      anchorPath,
+      `duplicates the anchor declared at ${existing.path}`,
+    );
+  }
+  state.anchors.set(key, { schema, path: anchorPath });
+}
+
+function indexGeminiSchemaResourcesAt(
+  schema: Record<string, unknown>,
+  path: string,
+  parentResource: GeminiSchemaResource,
+  state: GeminiSchemaValidationState,
+): void {
+  if (state.ancestors.has(schema)) {
+    geminiSchemaError(path, "the JavaScript schema object is circular");
+  }
+  state.ancestors.add(schema);
+  try {
+    const resource = geminiSchemaResourceForNode(
+      schema,
+      path,
+      parentResource,
+      state,
+    );
+    state.nodes.add(schema);
+    state.nodePaths.set(schema, path);
+    state.nodeResources.set(schema, resource);
+    registerGeminiSchemaResourceAnchor(schema, path, resource, state);
+    for (const child of geminiSchemaChildren(schema, path)) {
+      indexGeminiSchemaResourcesAt(child.schema, child.path, resource, state);
+    }
+  } finally {
+    state.ancestors.delete(schema);
+  }
+}
+
+function indexGeminiSchemaResources(
+  root: Record<string, unknown>,
+  path: string,
+  state: GeminiSchemaValidationState,
+): void {
+  const initialResource = {
+    uri: new URL(encodeURIComponent(path), GEMINI_INTERNAL_SCHEMA_BASE).href,
+    root,
+    path,
+  };
+  state.resources.set(initialResource.uri, initialResource);
+  indexGeminiSchemaResourcesAt(root, path, initialResource, state);
+}
+
+function geminiJsonPointerArrayEntry(
+  target: readonly unknown[],
+  token: string,
+  referencePath: string,
+  referenceValue: string,
+): unknown {
+  if (!/^(?:0|[1-9]\d*)$/u.test(token)) {
+    geminiSchemaError(
+      referencePath,
+      `does not resolve JSON Pointer ${referenceValue}`,
+    );
+  }
+  const index = Number(token);
+  if (!Number.isSafeInteger(index) || index >= target.length) {
+    geminiSchemaError(
+      referencePath,
+      `does not resolve JSON Pointer ${referenceValue}`,
+    );
+  }
+  return target[index];
+}
+
+function geminiJsonPointerObjectEntry(
+  target: Record<string, unknown>,
+  token: string,
+  referencePath: string,
+  referenceValue: string,
+): unknown {
+  if (!Object.hasOwn(target, token)) {
+    geminiSchemaError(
+      referencePath,
+      `does not resolve JSON Pointer ${referenceValue}`,
+    );
+  }
+  return target[token];
+}
+
+function geminiJsonPointerTarget(
+  resource: GeminiSchemaResource,
+  fragment: string,
+  referencePath: string,
+  referenceValue: string,
+): unknown {
+  let target: unknown = resource.root;
+  for (const rawToken of fragment.slice(1).split("/")) {
+    const token = decodeGeminiJsonPointerToken(rawToken, referencePath);
+    if (Array.isArray(target)) {
+      target = geminiJsonPointerArrayEntry(
+        target,
+        token,
+        referencePath,
+        referenceValue,
+      );
+      continue;
+    }
+    if (!isPlainSchemaObject(target)) {
       geminiSchemaError(
-        reference.path,
-        `does not resolve JSON Pointer ${reference.value}`,
+        referencePath,
+        `does not resolve JSON Pointer ${referenceValue}`,
       );
     }
-    target = target[token];
+    target = geminiJsonPointerObjectEntry(
+      target,
+      token,
+      referencePath,
+      referenceValue,
+    );
   }
+  return target;
+}
+
+function geminiReferencedResource(
+  resolved: URL,
+  referencePath: string,
+  state: GeminiSchemaValidationState,
+  contract: "response" | "tool-root",
+): GeminiSchemaResource | undefined {
+  const resource = state.resources.get(geminiSchemaResourceUri(resolved));
+  if (resource !== undefined) return resource;
+  if (!state.capabilities.supportsRemoteReferences) {
+    const detail =
+      contract === "response"
+        ? `remote references are not supported by the ${state.capabilities.surface}/${state.capabilities.modelFamily} responseJsonSchema contract`
+        : "tool root references must resolve within parametersJsonSchema";
+    geminiSchemaError(referencePath, detail);
+  }
+  return undefined;
+}
+
+function resolveGeminiSchemaReference(
+  value: string,
+  path: string,
+  sourceResource: GeminiSchemaResource,
+  state: GeminiSchemaValidationState,
+  contract: "response" | "tool-root" = "response",
+): GeminiResolvedSchemaReference | undefined {
+  const resolved = geminiSchemaUri(value, sourceResource.uri, path);
+  const resource = geminiReferencedResource(resolved, path, state, contract);
+  if (resource === undefined) return undefined;
+  const fragment = geminiSchemaFragment(resolved, path);
+  if (fragment === "") return { schema: resource.root, resource };
+  if (!fragment.startsWith("/")) {
+    const anchored = state.anchors.get(`${resource.uri}#${fragment}`);
+    if (anchored === undefined) {
+      geminiSchemaError(path, `does not resolve local anchor #${fragment}`);
+    }
+    return {
+      schema: anchored.schema,
+      resource: state.nodeResources.get(anchored.schema) ?? resource,
+    };
+  }
+  const target = geminiJsonPointerTarget(resource, fragment, path, value);
   if (!isPlainSchemaObject(target)) {
     geminiSchemaError(
-      reference.path,
-      `JSON Pointer ${reference.value} does not identify a schema object`,
+      path,
+      `JSON Pointer ${value} does not identify a schema object`,
     );
   }
   if (!state.nodes.has(target)) {
     geminiSchemaError(
-      reference.path,
-      `JSON Pointer ${reference.value} identifies a schema container, not a schema object`,
+      path,
+      `JSON Pointer ${value} identifies a schema container, not a schema object`,
     );
   }
-  return target;
+  return {
+    schema: target,
+    resource: state.nodeResources.get(target) ?? resource,
+  };
 }
 
 function geminiSchemaComponentIds(
@@ -938,11 +1277,20 @@ function validateGeminiSchemaReferences(
   state: GeminiSchemaValidationState,
 ): void {
   for (const reference of state.references) {
-    const target = resolveGeminiLocalSchemaReference(reference, state);
-    if (target === undefined) continue;
-    reference.target = target;
-    state.nodes.add(target);
-    addGeminiSchemaEdge(state, reference.source, target);
+    const sourceResource = state.nodeResources.get(reference.source);
+    if (sourceResource === undefined) {
+      geminiSchemaError(reference.path, "has no enclosing schema resource");
+    }
+    const resolved = resolveGeminiSchemaReference(
+      reference.value,
+      reference.path,
+      sourceResource,
+      state,
+    );
+    if (resolved === undefined) continue;
+    reference.target = resolved.schema;
+    state.nodes.add(resolved.schema);
+    addGeminiSchemaEdge(state, reference.source, resolved.schema);
   }
 
   if (state.capabilities.supportsRequiredReferenceCycles) return;
@@ -966,6 +1314,22 @@ function validateGeminiSchemaReferences(
   }
 }
 
+function createGeminiSchemaValidationState(
+  capabilities: GeminiResponseJsonSchemaCapabilities,
+): GeminiSchemaValidationState {
+  return {
+    capabilities,
+    ancestors: new Set(),
+    nodes: new Set(),
+    edges: new Map(),
+    references: [],
+    nodePaths: new Map(),
+    nodeResources: new Map(),
+    resources: new Map(),
+    anchors: new Map(),
+  };
+}
+
 /** Validate restrictions documented for Gemini response JSON Schema. */
 function compileGeminiSchema(
   value: unknown,
@@ -973,22 +1337,219 @@ function compileGeminiSchema(
   capabilities: GeminiResponseJsonSchemaCapabilities,
 ): Record<string, unknown> {
   const root = geminiSchemaObject(value, path);
-  const state: GeminiSchemaValidationState = {
-    root,
-    capabilities,
-    ancestors: new Set(),
-    nodes: new Set(),
-    edges: new Map(),
-    references: [],
-    anchors: new Map(),
-  };
+  const state = createGeminiSchemaValidationState(capabilities);
   validateGeminiJsonSchemaAt(root, path, GEMINI_NO_PROPERTY_CONTEXT, state);
+  indexGeminiSchemaResources(root, path, state);
   validateGeminiSchemaReferences(state);
+  return root;
+}
+
+const GEMINI_TOOL_ROOT_TYPES: ReadonlySet<string> = new Set([
+  "array",
+  "boolean",
+  "integer",
+  "null",
+  "number",
+  "object",
+  "string",
+]);
+
+function intersectGeminiToolRootTypes(
+  left: ReadonlySet<string>,
+  right: ReadonlySet<string>,
+): Set<string> {
+  return new Set([...left].filter((type) => right.has(type)));
+}
+
+function unionGeminiToolRootTypes(
+  domains: readonly ReadonlySet<string>[],
+): Set<string> {
+  return new Set(domains.flatMap((domain) => [...domain]));
+}
+
+function geminiToolExplicitTypeDomain(value: unknown): ReadonlySet<string> {
+  const values = typeof value === "string" ? [value] : value;
+  if (!Array.isArray(values) || values.length === 0) return new Set();
+  if (
+    values.some(
+      (entry) =>
+        typeof entry !== "string" || !GEMINI_TOOL_ROOT_TYPES.has(entry),
+    )
+  ) {
+    return new Set();
+  }
+  return new Set(values as string[]);
+}
+
+function geminiToolSchemaReferenceDomain(
+  schema: Record<string, unknown>,
+  path: string,
+  resource: GeminiSchemaResource,
+  state: GeminiSchemaValidationState,
+  visiting: Set<Record<string, unknown>>,
+): ReadonlySet<string> | undefined {
+  if (!Object.hasOwn(schema, "$ref")) return undefined;
+  const referencePath = geminiSchemaChildPath(path, "$ref");
+  if (typeof schema.$ref !== "string" || schema.$ref.trim() === "") {
+    geminiSchemaError(referencePath, "expected a non-empty string");
+  }
+  const resolved = resolveGeminiSchemaReference(
+    schema.$ref,
+    referencePath,
+    resource,
+    state,
+    "tool-root",
+  );
+  if (resolved === undefined) return new Set();
+  return geminiToolSchemaRootDomain(
+    resolved.schema,
+    state.nodePaths.get(resolved.schema) ?? referencePath,
+    resolved.resource,
+    state,
+    visiting,
+  );
+}
+
+function geminiToolSchemaUnionDomain(
+  value: unknown,
+  path: string,
+  state: GeminiSchemaValidationState,
+  visiting: Set<Record<string, unknown>>,
+): ReadonlySet<string> | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) return new Set();
+  const domains = value.map((branch, index): ReadonlySet<string> => {
+    if (branch === true) return GEMINI_TOOL_ROOT_TYPES;
+    if (branch === false || !isPlainSchemaObject(branch)) return new Set();
+    const resource = state.nodeResources.get(branch);
+    if (resource === undefined) return new Set();
+    return geminiToolSchemaRootDomain(
+      branch,
+      `${path}[${index}]`,
+      resource,
+      state,
+      visiting,
+    );
+  });
+  return unionGeminiToolRootTypes(domains);
+}
+
+function geminiToolSchemaAllOfDomain(
+  value: unknown,
+  path: string,
+  state: GeminiSchemaValidationState,
+  visiting: Set<Record<string, unknown>>,
+): ReadonlySet<string> | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) return new Set();
+  let domain = new Set(GEMINI_TOOL_ROOT_TYPES);
+  value.forEach((branch, index) => {
+    if (branch === true) return;
+    if (branch === false || !isPlainSchemaObject(branch)) {
+      domain = new Set();
+      return;
+    }
+    const resource = state.nodeResources.get(branch);
+    const branchDomain =
+      resource === undefined
+        ? new Set<string>()
+        : geminiToolSchemaRootDomain(
+            branch,
+            `${path}[${index}]`,
+            resource,
+            state,
+            visiting,
+          );
+    domain = intersectGeminiToolRootTypes(domain, branchDomain);
+  });
+  return domain;
+}
+
+function constrainGeminiToolRootDomain(
+  domain: ReadonlySet<string>,
+  constraint: ReadonlySet<string> | undefined,
+): ReadonlySet<string> {
+  return constraint === undefined
+    ? domain
+    : intersectGeminiToolRootTypes(domain, constraint);
+}
+
+function geminiToolSchemaRootDomain(
+  schema: Record<string, unknown>,
+  path: string,
+  resource: GeminiSchemaResource,
+  state: GeminiSchemaValidationState,
+  visiting: Set<Record<string, unknown>>,
+): ReadonlySet<string> {
+  if (visiting.has(schema)) return GEMINI_TOOL_ROOT_TYPES;
+  visiting.add(schema);
+  try {
+    let domain: ReadonlySet<string> = GEMINI_TOOL_ROOT_TYPES;
+    if (Object.hasOwn(schema, "type")) {
+      domain = intersectGeminiToolRootTypes(
+        domain,
+        geminiToolExplicitTypeDomain(schema.type),
+      );
+    }
+    const reference = geminiToolSchemaReferenceDomain(
+      schema,
+      path,
+      resource,
+      state,
+      visiting,
+    );
+    domain = constrainGeminiToolRootDomain(domain, reference);
+    const allOf = geminiToolSchemaAllOfDomain(
+      schema.allOf,
+      geminiSchemaChildPath(path, "allOf"),
+      state,
+      visiting,
+    );
+    domain = constrainGeminiToolRootDomain(domain, allOf);
+    const anyOf = geminiToolSchemaUnionDomain(
+      schema.anyOf,
+      geminiSchemaChildPath(path, "anyOf"),
+      state,
+      visiting,
+    );
+    domain = constrainGeminiToolRootDomain(domain, anyOf);
+    const oneOf = geminiToolSchemaUnionDomain(
+      schema.oneOf,
+      geminiSchemaChildPath(path, "oneOf"),
+      state,
+      visiting,
+    );
+    return constrainGeminiToolRootDomain(domain, oneOf);
+  } finally {
+    visiting.delete(schema);
+  }
+}
+
+function validateGeminiToolSchemaRoot(
+  value: unknown,
+  path: string,
+  capabilities: GeminiResponseJsonSchemaCapabilities,
+): Record<string, unknown> {
+  const root = geminiSchemaObject(value, path);
+  const state = createGeminiSchemaValidationState(capabilities);
+  indexGeminiSchemaResources(root, path, state);
+  const resource = state.nodeResources.get(root);
+  const rootDomain =
+    resource === undefined
+      ? new Set<string>()
+      : geminiToolSchemaRootDomain(root, path, resource, state, new Set());
+  if (rootDomain.size !== 1 || !rootDomain.has("object")) {
+    geminiSchemaError(
+      path,
+      "tool parametersJsonSchema must describe an object at the root",
+    );
+  }
   return root;
 }
 
 function geminiTools(
   tools: readonly LLMTool[],
+  capabilities: GeminiResponseJsonSchemaCapabilities,
 ): readonly Record<string, unknown>[] {
   if (tools.length === 0) return [];
   return [
@@ -996,7 +1557,11 @@ function geminiTools(
       functionDeclarations: tools.map((tool) => ({
         name: tool.function.name,
         description: tool.function.description,
-        parametersJsonSchema: tool.function.parameters,
+        parametersJsonSchema: validateGeminiToolSchemaRoot(
+          tool.function.parameters,
+          `tools[${JSON.stringify(tool.function.name)}].parameters`,
+          capabilities,
+        ),
       })),
     },
   ];
@@ -1101,7 +1666,11 @@ function buildGeminiRequest(args: {
       : []),
     ...args.messages,
   ]);
-  const tools = geminiTools(args.tools);
+  const schemaCapabilities = geminiResponseJsonSchemaCapabilities(
+    args.config.endpointPlan,
+    args.model,
+  );
+  const tools = geminiTools(args.tools, schemaCapabilities);
   const toolConfig = geminiToolConfig(args.options);
   const cachedContent = cachedContentName(args.config, args.options);
   return {
@@ -1112,10 +1681,7 @@ function buildGeminiRequest(args: {
     generationConfig: geminiGenerationConfig(
       args.options,
       args.config.maxTokens,
-      geminiResponseJsonSchemaCapabilities(
-        args.config.endpointPlan,
-        args.model,
-      ),
+      schemaCapabilities,
     ),
     ...(tools.length > 0 ? { tools } : {}),
     ...(toolConfig ? { toolConfig } : {}),
