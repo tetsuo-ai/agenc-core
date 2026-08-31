@@ -7707,6 +7707,86 @@ describe("AgenC delegate background-agent runner", () => {
     expect(rolloutStore.recordRunStartupActivationEvent).not.toHaveBeenCalled();
     expect(stub.thread.submit).not.toHaveBeenCalled();
     expect(control.sendInput).not.toHaveBeenCalled();
+    const snapshot = await runner.getAgentSnapshot(
+      "session-follow-up-prompt-blocked",
+    );
+    expect(snapshot?.status).not.toBe("error");
+  });
+
+  it("[managed-thread] keeps the run alive after a blocked follow-up so a later allowed prompt can run", async () => {
+    const blockHook = vi.fn((input: { readonly prompt: string }) =>
+      input.prompt === "blocked follow-up prompt"
+        ? { blockingError: { blockingError: "follow-up prompt denied" } }
+        : {},
+    );
+    const { runner, control, stub } = makeTopLevelRunner({
+      conversationId: "session-follow-up-prompt-survives-block",
+      userPromptSubmitHooks: [blockHook],
+    });
+    await runner.startAgent({
+      objective: "passive hook test",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    await expect(
+      runner.submitAgentMessage("session-follow-up-prompt-survives-block", {
+        sessionId: "session_1",
+        content: "blocked follow-up prompt",
+        originalContent: "blocked follow-up prompt",
+        messageId: "blocked-follow-up-message",
+        streamId: "blocked-follow-up-stream",
+        acceptedAt: "2026-08-25T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      code: "PROMPT_BLOCKED",
+    });
+    const snapshot = await runner.getAgentSnapshot(
+      "session-follow-up-prompt-survives-block",
+    );
+    expect(snapshot?.status).not.toBe("error");
+
+    await expect(
+      runner.submitAgentMessage("session-follow-up-prompt-survives-block", {
+        sessionId: "session_1",
+        content: "allowed follow-up prompt",
+        originalContent: "allowed follow-up prompt",
+        messageId: "allowed-follow-up-after-block",
+        streamId: "allowed-follow-up-after-block-stream",
+        acceptedAt: "2026-08-25T00:00:01.000Z",
+      }),
+    ).resolves.toMatchObject({ disposition: "started" });
+    expect(control.sendInput).toHaveBeenCalledTimes(1);
+    expect(stub.thread.submit).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] does not treat a journaled hook-block error as run death", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "session-hook-block-legacy-error",
+    });
+    await runner.startAgent({
+      objective: "passive hook test",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    session.emit({
+      id: "legacy-hook-block",
+      msg: {
+        type: "error",
+        payload: {
+          cause: "user_prompt_submit_hook_blocked",
+          message: "policy denied",
+        },
+      },
+    });
+
+    const snapshot = await runner.getAgentSnapshot(
+      "session-hook-block-legacy-error",
+    );
+    expect(snapshot?.status).not.toBe("error");
   });
 
   it("[managed-thread] applies owning-session hook context to follow-up model input exactly once", async () => {

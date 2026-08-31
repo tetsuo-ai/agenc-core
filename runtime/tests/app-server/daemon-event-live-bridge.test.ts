@@ -117,6 +117,32 @@ describe("daemon live bridge for usage and tool-input events", () => {
     });
   });
 
+  it("forwards UserPromptSubmit hook blocks as warnings, not run-fatal errors", () => {
+    const daemonEvent = daemonEventFromUnboundSessionEvent({
+      eventId: "journal-hook-block-1",
+      id: "hook-block-1",
+      seq: 14,
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "user_prompt_submit_hook_blocked",
+          message: "policy denied",
+        },
+      },
+    });
+
+    expect(daemonEvent).toEqual({
+      id: "hook-block-1",
+      eventId: "journal-hook-block-1",
+      sequence: 14,
+      type: "warning",
+      payload: {
+        cause: "user_prompt_submit_hook_blocked",
+        message: "policy denied",
+      },
+    });
+  });
+
   it("still drops malformed tool_input payloads", () => {
     expect(
       daemonEventFromUnboundSessionEvent({

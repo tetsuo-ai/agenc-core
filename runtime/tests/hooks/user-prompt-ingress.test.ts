@@ -101,8 +101,16 @@ describe("canonical user prompt ingress", () => {
       expect(
         getSessionReadSnapshot(session.conversationId, canonicalNotePath),
       ).toBeUndefined();
-      expect(JSON.stringify(events)).toContain(
-        "user_prompt_submit_hook_blocked",
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          msg: expect.objectContaining({
+            type: "warning",
+            payload: expect.objectContaining({
+              cause: "user_prompt_submit_hook_blocked",
+              message: expect.stringContaining("policy denied"),
+            }),
+          }),
+        }),
       );
     } finally {
       clearSessionReadState(session.conversationId, tmpdir());

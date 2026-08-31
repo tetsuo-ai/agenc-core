@@ -223,7 +223,7 @@ async function collectUserPromptSubmitHookOutcome(params: {
       params.session.emit({
         id: params.session.nextInternalSubId(),
         msg: {
-          type: "error",
+          type: "warning",
           payload: {
             cause: "user_prompt_submit_hook_blocked",
             message: messageWithContext,

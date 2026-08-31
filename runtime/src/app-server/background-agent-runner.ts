@@ -4832,9 +4832,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     return eventLog.subscribe((event) => {
       const uncorrelated = daemonEventFromUnboundSessionEvent(event);
       if (uncorrelated === null) return;
-      const daemonEvent = scopeDirectShellDaemonEvent(
-        active,
-        correlateDaemonEvent(active, uncorrelated),
+      const daemonEvent = projectPerPromptRejectionAsSessionOnly(
+        scopeDirectShellDaemonEvent(
+          active,
+          correlateDaemonEvent(active, uncorrelated),
+        ),
       );
       active.lastActiveAt = this.#now();
       this.#applyCanonicalEventBookkeeping(active, daemonEvent);
@@ -4880,6 +4882,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         active.activeToolCallIds.clear();
         return;
       case "error":
+        if (isPerPromptSessionErrorCause(payload?.cause)) return;
         active.status = "error";
         active.activeToolCallIds.clear();
         return;
@@ -5753,6 +5756,31 @@ function shellEventKey(commandId: string): string {
     .update(commandId, "utf8")
     .digest("hex")
     .slice(0, 32);
+}
+
+const PER_PROMPT_SESSION_ERROR_CAUSES: ReadonlySet<string> = new Set([
+  "user_prompt_submit_hook_blocked",
+]);
+
+function isPerPromptSessionErrorCause(cause: unknown): boolean {
+  return typeof cause === "string" && PER_PROMPT_SESSION_ERROR_CAUSES.has(cause);
+}
+
+/**
+ * UserPromptSubmit blockingError is a per-prompt refusal, not a run
+ * death. Historical journals still emit it as type "error"; keep that
+ * record visible but out of model/run status projection.
+ */
+function projectPerPromptRejectionAsSessionOnly(
+  event: BackgroundAgentDaemonEvent,
+): BackgroundAgentDaemonEvent {
+  if (
+    event.type === "error" &&
+    isPerPromptSessionErrorCause(event.payload?.cause)
+  ) {
+    return { ...event, statusProjection: "session_only" };
+  }
+  return event;
 }
 
 function scopeDirectShellDaemonEvent(

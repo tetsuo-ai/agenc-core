@@ -405,7 +405,7 @@ describe("UserPromptSubmit prompt ingress", () => {
     expect(events).toContainEqual(
       expect.objectContaining({
         msg: expect.objectContaining({
-          type: "error",
+          type: "warning",
           payload: expect.objectContaining({
             cause: "user_prompt_submit_hook_blocked",
             message: expect.stringContaining("policy denied"),
@@ -620,7 +620,7 @@ describe("UserPromptSubmit prompt ingress", () => {
     expect(events).toContainEqual(
       expect.objectContaining({
         msg: expect.objectContaining({
-          type: "error",
+          type: "warning",
           payload: expect.objectContaining({
             cause: "user_prompt_submit_hook_blocked",
             message: expect.stringContaining("daemon policy denied"),
