@@ -33,6 +33,12 @@ const MAX_WINDOWS_GIT_SEARCH_PATH_ENTRY_BYTES = 32_768;
 const WINDOWS_GIT_EXECUTABLE_NAMES = Object.freeze(["git.com", "git.exe"]);
 const WINDOWS_SEARCH_PATH_SEPARATOR = ";";
 const WINDOWS_SEARCH_PATH_QUOTES = Object.freeze(['"', "'"]);
+const FRESH_CLONE_REF_IDENTITY_ARGS = Object.freeze([
+  "-c",
+  "user.name=AgenC Benchmark Harness",
+  "-c",
+  "user.email=benchmark@agenc.invalid",
+]);
 
 export function captureBenchmarkProvenance(options) {
   const validated = validateProvenanceOptions(options);
@@ -670,18 +676,38 @@ export function materializeFreshCloneDefaultBranch(
   assertRevisionIsCommit(canonicalRoot, defaultRevision);
   gitText(
     canonicalRoot,
-    ["update-ref", "refs/heads/main", defaultRevision],
+    [
+      ...FRESH_CLONE_REF_IDENTITY_ARGS,
+      "update-ref",
+      "refs/heads/main",
+      defaultRevision,
+    ],
     "install fresh-clone main",
   );
   gitText(
     canonicalRoot,
-    ["update-ref", "refs/remotes/origin/main", defaultRevision],
+    [
+      ...FRESH_CLONE_REF_IDENTITY_ARGS,
+      "update-ref",
+      "refs/remotes/origin/main",
+      defaultRevision,
+    ],
     "install fresh-clone origin/main",
   );
-  gitStatus(canonicalRoot, ["update-ref", "-d", "refs/remotes/origin/HEAD"]);
+  gitStatus(canonicalRoot, [
+    ...FRESH_CLONE_REF_IDENTITY_ARGS,
+    "update-ref",
+    "-d",
+    "refs/remotes/origin/HEAD",
+  ]);
   gitText(
     canonicalRoot,
-    ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+    [
+      ...FRESH_CLONE_REF_IDENTITY_ARGS,
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/main",
+    ],
     "install fresh-clone origin HEAD",
   );
 }

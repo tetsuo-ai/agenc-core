@@ -2004,6 +2004,15 @@ describe("FND benchmark harness fault contracts", () => {
       materializeFreshCloneDefaultBranch(cloneRoot, defaultRevision);
 
       expect(resolveDefaultBranchRevision(cloneRoot)).toBe(defaultRevision);
+      expect(
+        readGitText(cloneRoot, [
+          "log",
+          "-g",
+          "-1",
+          "--format=%gn <%ge>",
+          "refs/heads/main",
+        ]),
+      ).toBe("AgenC Benchmark Harness <benchmark@agenc.invalid>");
       expect(readGitText(cloneRoot, ["rev-parse", "HEAD"])).toBe(headRevision);
       expect(
         spawnSync("git", ["cat-file", "-e", `${danglingRevision}^{commit}`], {
