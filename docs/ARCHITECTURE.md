@@ -193,11 +193,20 @@ Effects add `effect_intent` before physical dispatch, followed by a proven
 contract is explicitly `idempotent` carry an idempotency key or qualify for
 replay. Side-effecting and interactive work never receives an arbitrary
 exactly-once claim. Terminal results are immutable within a lifecycle epoch;
-an explicit reopen creates the next epoch and keeps prior results. The final
-automatic execution event is `run_terminal`; a stopped-session operator may
-later take the exclusive rollout lease to append review evidence without
-resuming execution. The terminal result's `lastSequence` remains that terminal
-snapshot coordinate even when the audit-journal tail advances.
+an explicit reopen creates the next epoch and keeps prior results. Pending
+unknown-outcome reviews do not block reopen of a `completed`, `failed`, or
+`cancelled` epoch. `/resolve` then runs in the live session while dependent
+mutations stay gated. A dangling intent (no settlement at all) refuses reopen
+and cannot be settled by the review command. The public resume path also
+refuses an `unknown_outcome` terminal even after its projected effect reviews
+are resolved. A stopped-session operator may append review evidence for a
+recorded unknown-outcome effect, but that audit action does not make the same
+terminal session resumable. A clean suspended epoch resumes in place when its
+canonical and durable projections match and no effects remain unresolved. The
+final automatic execution event is `run_terminal`; the terminal result's
+`lastSequence` remains that snapshot coordinate even when later review evidence
+advances the audit-journal tail. See
+[`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md#resume-and-effect-review).
 
 Admitted child and review runs have their own canonical journals. A failure
 after spawn dispatch but before child construction seals a minimal failed or
@@ -408,6 +417,9 @@ and cost assumptions: [`reference/providers.md`](reference/providers.md).
 There are **16 built-in provider slugs**. Full table, env vars, base URLs,
 and how local servers publish a context window:
 [`reference/providers.md`](reference/providers.md).
+`session.snapshot.contextBreakdown` gives a rough category estimate for the
+effective window, tools, MCP schemas, memory files, and history; see
+[`design/provider-aware-token-accounting.md`](design/provider-aware-token-accounting.md#session-context-estimate).
 `runtime/src/llm/registry/provider-info.ts` contains one authored definition
 row per slug. That row owns its display name, default model and base URL,
 onboarding classification, and ordered API-key/base-URL environment names;

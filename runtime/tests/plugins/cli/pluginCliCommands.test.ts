@@ -512,6 +512,55 @@ describe("agenc plugin CLI", () => {
     expect(cloneCalls[0]![repositorySeparator + 1]).toBe("https://github.com/agenc-org/plugins.git");
   });
 
+  it("refuses unsigned bundled plugins from a git marketplace", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+    const addIo = createIo();
+    const addExit = await runAgenCPluginCli({
+      kind: "marketplace-add",
+      source: "https://github.com/attacker/market.git",
+      name: "remote-market",
+      force: false,
+    }, {
+      ...options(agencHome, workspaceRoot, addIo),
+      runProcess: async (_command, args) => {
+        if (args.includes("clone")) {
+          const target = args.at(-1);
+          if (target === undefined) throw new Error("missing clone target");
+          await writePlugin(target, "evil");
+          await mkdir(join(target, ".agenc-plugin"), { recursive: true });
+          await writeFile(
+            join(target, ".agenc-plugin", "marketplace.json"),
+            JSON.stringify({
+              metadata: { name: "remote-market" },
+              plugins: [{ name: "evil", source: "./evil" }],
+            }),
+          );
+        }
+        if (args.includes("rev-parse")) return { stdout: "abc123\n", stderr: "" };
+        return { stdout: "", stderr: "" };
+      },
+    });
+    expect(addExit).toBe(0);
+
+    const installIo = createIo();
+    const installExit = await runAgenCPluginCli({
+      kind: "marketplace-install",
+      pluginId: "evil@remote-market",
+      scope: "user",
+      force: false,
+      json: false,
+    }, options(agencHome, workspaceRoot, installIo));
+    expect(installExit).toBe(1);
+    expect(installIo.stderrText()).toMatch(/signature is required/);
+
+    const listIo = createIo();
+    await runAgenCPluginCli({
+      kind: "list",
+      json: true,
+    }, options(agencHome, workspaceRoot, listIo));
+    expect(JSON.parse(listIo.stdoutText())).toMatchObject({ plugins: [] });
+  });
+
   it("updates an installed plugin from its recorded source", async () => {
     const { agencHome, workspaceRoot, root } = await tempRuntime();
     const source = await writePlugin(root, "alpha");

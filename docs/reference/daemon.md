@@ -180,6 +180,18 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 | `daemon.shutdown`                                                                                           | Ask the daemon process to exit                                                                                     |
 | `auth.login` / `auth.whoami` / `auth.logout`                                                                | Auth backend                                                                                                       |
 
+`session.snapshot` may include `contextBreakdown`, a rough estimate for
+resident, MCP, and deferred tools, readable memory files, history, the system
+prompt, and the session's effective window. The field is omitted when a
+top-level measurement fails; individual unreadable or unserializable inputs
+are skipped. The public SDK's `SessionSnapshotResult` does not currently type
+this raw daemon field. `session.resolveToolCall` runs in a live session: resume
+a settled `completed`, `failed`, or `cancelled` epoch even when unknown-outcome
+reviews are still pending. See
+[durable-runs-effects-events.md](../design/durable-runs-effects-events.md#resume-and-effect-review)
+and
+[provider-aware-token-accounting.md](../design/provider-aware-token-accounting.md#session-context-estimate).
+
 ### Internal methods (`AGENC_DAEMON_INTERNAL_METHODS`)
 
 Not part of the public 54-method SDK surface. The TUI and workbench use them

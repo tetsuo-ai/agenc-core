@@ -152,7 +152,10 @@ authenticated Android portal client advertises those explicitly. A future SDK
 capability option must remain opt-in and bind delivery to a concrete handler.
 
 Usage/cost: after the turn ends the SDK fetches `session.snapshot` and puts
-`tokenUsage` on the result (`includeUsage: false` to skip).
+`tokenUsage` on the result (`includeUsage: false` to skip). Raw daemon snapshot
+responses may carry an additive `contextBreakdown` object, but the current
+public SDK type does not expose a named field. `prompt()` copies only token
+usage.
 
 Prompt admission is reserved synchronously per session, before attach or send,
 so a second local `prompt()` throws `AgencPromptRunInProgressError`. Every SDK

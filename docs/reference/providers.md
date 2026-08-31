@@ -321,7 +321,8 @@ wins and the live probe is not consulted.
 
 | Symptom | What to check |
 | --- | --- |
-| Local turn denied `context_window_exceeded` or the server refuses a short prompt | Session likely planned against 128k. Confirm the model is pulled, the endpoint env matches the session host, and `/api/show` or `/v1/models` reports a positive integer window. |
+| Local turn denied `context_window_exceeded` or the server refuses a short prompt | The live TUI shows the reason code and suggests `/compact`; it does not show the accounting values. Confirm the model is pulled, the endpoint env matches the session host, and `/api/show` or `/v1/models` reports a positive integer window. If diagnostics resolve to 128000 and neither configuration nor selected-model metadata declares it, the OpenAI-compatible fallback may have been used. A configured output reserve can consume a large share of a small window, so inspect `providers.<slug>.max_output_tokens` too. |
+| Streamed answer vanished; `AdmissionStepConflictError` / empty `lastAgentMessage` | Admission compares model ids case-insensitively and ignores path segments before the final slash. If the conflict remains, inspect the requested and reported execution identities and the other persisted step data. |
 | `OLLAMA_BASE_URL` sessions still look at localhost for the window | Metadata used to ignore the env and probe the built-in default. Current code uses the same ingress alias as the provider factory. |
 | Picker shows 128k, session later uses 32k | Picker is `resolveSync`. The admitted window comes from the async live probe at session start. |
 | llama.cpp refuses just past 4096 on a 32k GGUF | Window is `meta.n_ctx` (what `-c` loaded), not `n_ctx_train`. |
