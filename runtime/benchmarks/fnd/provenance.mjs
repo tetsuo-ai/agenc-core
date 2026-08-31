@@ -635,22 +635,53 @@ export function assertCleanBenchmarkWorktree(repositoryRoot) {
   }
 }
 
-export function resolveDefaultBranchRevision(repositoryRoot) {
+const DEFAULT_BRANCH_SELECTORS = Object.freeze([
+  "refs/remotes/origin/HEAD",
+  "refs/heads/main",
+  "refs/heads/master",
+]);
+
+export function resolveDefaultBranchSelector(repositoryRoot) {
   const canonicalRoot = canonicalizeRepositoryRoot(repositoryRoot);
-  const selectors = [
-    "refs/remotes/origin/HEAD",
-    "refs/heads/main",
-    "refs/heads/master",
-  ];
-  for (const selector of selectors) {
+  for (const selector of DEFAULT_BRANCH_SELECTORS) {
     if (!hasGitCommitSelector(canonicalRoot, selector)) continue;
-    return resolveGitCommitSelector(
-      canonicalRoot,
-      selector,
-      "resolve repository default branch",
-    );
+    return selector;
   }
   throw new Error("could not resolve the repository default branch");
+}
+
+export function resolveDefaultBranchRevision(repositoryRoot) {
+  const canonicalRoot = canonicalizeRepositoryRoot(repositoryRoot);
+  return resolveGitCommitSelector(
+    canonicalRoot,
+    resolveDefaultBranchSelector(canonicalRoot),
+    "resolve repository default branch",
+  );
+}
+
+export function materializeFreshCloneDefaultBranch(
+  repositoryRoot,
+  defaultRevision,
+) {
+  const canonicalRoot = canonicalizeRepositoryRoot(repositoryRoot);
+  assertGitRevision(defaultRevision);
+  assertRevisionIsCommit(canonicalRoot, defaultRevision);
+  gitText(
+    canonicalRoot,
+    ["update-ref", "refs/heads/main", defaultRevision],
+    "install fresh-clone main",
+  );
+  gitText(
+    canonicalRoot,
+    ["update-ref", "refs/remotes/origin/main", defaultRevision],
+    "install fresh-clone origin/main",
+  );
+  gitStatus(canonicalRoot, ["update-ref", "-d", "refs/remotes/origin/HEAD"]);
+  gitText(
+    canonicalRoot,
+    ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+    "install fresh-clone origin HEAD",
+  );
 }
 
 export function assertRevisionIsAncestorOfDefaultBranch(

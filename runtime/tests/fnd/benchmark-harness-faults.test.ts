@@ -60,11 +60,13 @@ import {
   collectNormalizedFileBindings,
   createBenchmarkSubprocessEnvironment,
   createSanitizedGitEnvironment,
+  materializeFreshCloneDefaultBranch,
   METADATA_COMMAND_SETTLEMENT_TIMEOUT_MS,
   METADATA_COMMAND_WORKER_OVERHEAD_MS,
   resolveBenchmarkGitExecutable,
   resolveBenchmarkNpmCliPath,
   resolveDefaultBranchRevision,
+  resolveDefaultBranchSelector,
   runBoundedCommandText,
   verifyBenchmarkCapture,
   verifyCheckedBenchmarkProvenance,
@@ -1901,6 +1903,110 @@ describe("FND benchmark harness fault contracts", () => {
       ).not.toThrow();
     } finally {
       rmSync(fixture.repositoryRoot, { force: true, recursive: true });
+    }
+  });
+
+  test("fresh-clone bundle keeps the default branch and drops dangling commits", () => {
+    const fixture = createProvenanceFixture();
+    const cloneParent = mkdtempSync(
+      join(tmpdir(), "agenc-fnd-fresh-clone-test-"),
+    );
+    try {
+      const options = provenanceOptions(fixture.repositoryRoot);
+      const defaultSelector = resolveDefaultBranchSelector(
+        fixture.repositoryRoot,
+      );
+      const defaultRevision = resolveDefaultBranchRevision(
+        fixture.repositoryRoot,
+      );
+      expect(defaultSelector).toMatch(/^refs\/heads\/(?:main|master)$/u);
+
+      writeFileSync(join(fixture.repositoryRoot, "dangling.txt"), "x\n", "utf8");
+      runGit(fixture.repositoryRoot, ["add", "dangling.txt"]);
+      runGit(fixture.repositoryRoot, [
+        "-c",
+        "user.name=AgenC Test",
+        "-c",
+        "user.email=test@agenc.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        "dangling commit",
+      ]);
+      const danglingRevision = readGitText(fixture.repositoryRoot, [
+        "rev-parse",
+        "HEAD",
+      ]);
+      runGit(fixture.repositoryRoot, ["reset", "--hard", defaultRevision]);
+
+      runGit(fixture.repositoryRoot, ["checkout", "-b", "topic"]);
+      runGit(fixture.repositoryRoot, [
+        "-c",
+        "user.name=AgenC Test",
+        "-c",
+        "user.email=test@agenc.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "topic commit",
+      ]);
+      const headRevision = readGitText(fixture.repositoryRoot, [
+        "rev-parse",
+        "HEAD",
+      ]);
+
+      const bundlePath = join(cloneParent, "provenance.bundle");
+      const cloneRoot = join(cloneParent, "clone");
+      expect(() =>
+        runGit(fixture.repositoryRoot, [
+          "bundle",
+          "create",
+          join(cloneParent, "empty.bundle"),
+          defaultRevision,
+          headRevision,
+        ]),
+      ).toThrow();
+      runGit(fixture.repositoryRoot, [
+        "bundle",
+        "create",
+        bundlePath,
+        "HEAD",
+        defaultSelector,
+      ]);
+      runGit(cloneParent, ["clone", "--quiet", bundlePath, cloneRoot]);
+      runGit(cloneRoot, ["checkout", "--quiet", headRevision]);
+      materializeFreshCloneDefaultBranch(cloneRoot, defaultRevision);
+
+      expect(resolveDefaultBranchRevision(cloneRoot)).toBe(defaultRevision);
+      expect(readGitText(cloneRoot, ["rev-parse", "HEAD"])).toBe(headRevision);
+      expect(
+        spawnSync("git", ["cat-file", "-e", `${danglingRevision}^{commit}`], {
+          cwd: cloneRoot,
+          timeout: FIXTURE_GIT_TIMEOUT_MS,
+          windowsHide: true,
+        }).status,
+      ).not.toBe(0);
+
+      expect(() =>
+        captureBenchmarkProvenance({
+          ...options,
+          repositoryRoot: cloneRoot,
+          sourceRevision: defaultRevision,
+        }),
+      ).not.toThrow();
+      expect(() =>
+        captureBenchmarkProvenance({
+          ...options,
+          repositoryRoot: cloneRoot,
+          sourceRevision: headRevision,
+        }),
+      ).toThrow(/ancestor of the default branch/u);
+    } finally {
+      rmSync(fixture.repositoryRoot, { force: true, recursive: true });
+      rmSync(cloneParent, { force: true, recursive: true });
     }
   });
 });

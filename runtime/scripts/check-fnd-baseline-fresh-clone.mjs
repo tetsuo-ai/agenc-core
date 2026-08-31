@@ -8,8 +8,9 @@ import { fileURLToPath } from "node:url";
 
 import {
   createSanitizedGitEnvironment,
+  materializeFreshCloneDefaultBranch,
   resolveBenchmarkGitExecutable,
-  resolveDefaultBranchRevision,
+  resolveDefaultBranchSelector,
 } from "../benchmarks/fnd/provenance.mjs";
 
 const DEFAULT_REPOSITORY_ROOT = resolve(
@@ -30,7 +31,21 @@ const cloneRoot = join(cloneParent, "clone");
 try {
   const environment = createSanitizedGitEnvironment();
   const gitExecutable = resolveBenchmarkGitExecutable(environment);
-  const defaultRevision = resolveDefaultBranchRevision(options.repositoryRoot);
+  const defaultBranchSelector = resolveDefaultBranchSelector(
+    options.repositoryRoot,
+  );
+  const defaultRevision = gitText(
+    gitExecutable,
+    environment,
+    options.repositoryRoot,
+    [
+      "rev-parse",
+      "--verify",
+      "--end-of-options",
+      `${defaultBranchSelector}^{commit}`,
+    ],
+    "resolve fresh-clone default branch",
+  );
   const headRevision = gitText(
     gitExecutable,
     environment,
@@ -38,11 +53,13 @@ try {
     ["rev-parse", "HEAD"],
     "resolve fresh-clone HEAD",
   );
+  // git bundle create requires named refs. Raw object IDs produce an empty
+  // bundle and refuse to write a file.
   runGit(
     gitExecutable,
     environment,
     options.repositoryRoot,
-    ["bundle", "create", bundlePath, defaultRevision, headRevision],
+    ["bundle", "create", bundlePath, "HEAD", defaultBranchSelector],
     "create a default-branch provenance bundle",
     BUNDLE_TIMEOUT_MS,
   );
@@ -58,9 +75,10 @@ try {
     gitExecutable,
     environment,
     cloneRoot,
-    ["checkout", "--quiet", headRevision],
+    ["-c", "advice.detachedHead=false", "checkout", "--quiet", headRevision],
     "check out the captured HEAD in the fresh clone",
   );
+  materializeFreshCloneDefaultBranch(cloneRoot, defaultRevision);
   symlinkSync(
     join(options.repositoryRoot, NODE_MODULES_RELATIVE_PATH),
     join(cloneRoot, NODE_MODULES_RELATIVE_PATH),

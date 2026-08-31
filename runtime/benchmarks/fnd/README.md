@@ -160,6 +160,10 @@ benchmark harness and generated artifact are being committed together; this
 avoids a self-reference while still binding every executed production
 dependency to a revision that remains reachable after a squash merge.
 
+The fresh-clone lane bundles named `HEAD` and default-branch refs. Passing
+raw object IDs to `git bundle create` produces an empty bundle, so the
+lane reinstalls `main` and `origin/HEAD` in the clone before `--check`.
+
 Compare runs made on the same pinned runtime and machine state. Review raw
 samples, median absolute deviation, operation counts, and relative scaling.
 Absolute wall-clock differences remain informative rather than gating until a
