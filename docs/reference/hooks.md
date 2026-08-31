@@ -160,6 +160,99 @@ Project- and local-scope installs are repository-controlled and do not
 contribute hooks (same strip as plugin MCP). Use `--scope user`. See
 [skills-plugins.md](skills-plugins.md#plugin-mcp-servers).
 
+### UserPromptSubmit
+
+Canonical ingress is `prepareUserPromptForTurn`
+(`runtime/src/hooks/user-prompt-ingress.ts`). Local CLI turns, daemon
+`message.send` / `message.stream`, and `agent.create` first content
+all go through it. Hooks run **exactly once** against the original
+display text (`hookPrompt`, else `userPromptDisplayText`). File
+mentions expand only after the turn is allowed. Hook
+`additionalContext` is appended after that expansion so repository
+text cannot change hook input.
+
+`--bare` / `hardSuppressed` skips the hook loop. Daemon **editor**
+submissions (`editorInteraction` set) skip it too. BUFFER / Neovim
+requests do not start configured lifecycle or prompt hooks. See
+[the embedded Neovim buffer contract](../embedded-neovim-buffer.md).
+
+#### How a command hook refuses one prompt
+
+Configured `UserPromptSubmit` commands (`configured-hooks.ts`
+`createUserPromptSubmitHook`) can refuse the **current** prompt in
+three forms. `UserPromptSubmit` does not filter entries by `matcher`.
+Every enabled entry runs in configuration order. The first result that
+blocks or stops ends evaluation, so later hooks do not run. A thrown
+hook emits a warning and evaluation continues with the next entry.
+
+| Hook result | Session event `cause` | Blocks the prompt? |
+| --- | --- | --- |
+| Exit code **2** with non-empty stderr | `user_prompt_submit_hook_blocked` | Yes |
+| JSON `decision: "block"` plus a non-empty `reason` | `user_prompt_submit_hook_blocked` | Yes |
+| JSON `continue: false` (optional `stopReason`) | `user_prompt_submit_hook_stopped` | Yes |
+| Hook function throws (SDK/plugin callback or unexpected adapter throw) | `user_prompt_submit_hook_threw` | No. Remaining hooks still run. |
+
+Exit 2 with empty stderr, or `decision: "block"` without a non-empty
+`reason`, is recorded as a hook-output issue and does **not** block.
+Other non-zero exits are non-blocking errors.
+
+To deny one prompt with a reason on stderr:
+
+```toml
+[[hooks.UserPromptSubmit]]
+hooks = [{ type = "command", command = "/usr/local/bin/deny-secrets.sh", timeout_ms = 5000 }]
+```
+
+```bash
+#!/bin/sh
+# stdin is JSON: { hook_event_name, prompt, permission_mode, cwd, ... }
+printf '%s\n' "policy denied: prompt mentions a secret path" >&2
+exit 2
+```
+
+The equivalent structured stdout is:
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "decision": "block",
+    "reason": "policy denied: prompt mentions a secret path"
+  }
+}
+```
+
+On a block the runtime emits a session **`warning`** and returns
+`PreparedUserPrompt.blocked`. It emits no `error` or `user_message`,
+does not expand file mentions, and does not start `runTurn`.
+Daemon callers surface that as JSON-RPC `-32602` with
+`data.code: "PROMPT_BLOCKED"` (`AgenCDaemonAgentLifecycleError`).
+The TUI prints the three causes above as transcript warnings
+(`USER_VISIBLE_WARNING_CAUSES` in `tui/session-transcript.ts`).
+
+A throw is a warning only. It never flips the run to `error` and
+never refuses the prompt.
+
+#### Daemon sessions stay promptable
+
+A blocked follow-up is a **per-prompt** refusal. The runner keeps
+`agent.status` off `error`, so a later allowed `message.send` can
+start a turn. If a legacy-format `type: "error"` with
+`cause: "user_prompt_submit_hook_blocked"` crosses the live event-log
+bridge, the daemon applies `statusProjection: "session_only"`.
+An event received before attach stays in the runner's in-memory buffer.
+Attach later delivers it as `event.session_event`. The bridge does not
+emit `event.agent_status` or change run status. The rule applies to live
+events and the pre-attach buffer. Events seeded from an older persisted
+rollout remain outside this bridge and its in-memory attach replay.
+
+`agent.create` with blocked **first** content follows startup failure
+semantics. Start fails with `PROMPT_BLOCKED`, the unpublished bootstrap
+is shut down, and no agent is published.
+
+See [daemon prompt-block behavior](daemon.md#prompt-hook-blocks-stay-per-prompt)
+for operator details.
+
 ### TUI: `/hooks`
 
 ```text
@@ -208,6 +301,7 @@ Full request shape, security table, and operator checklist:
 | --- | --- |
 | Config events + validation | `runtime/src/config/schema.ts` (`HOOK_EVENT_NAMES`, `validateHooksConfig`) |
 | Session hook runtime | `runtime/src/hooks/` |
+| UserPromptSubmit ingress | `runtime/src/hooks/user-prompt-ingress.ts`, `user-prompt-submit.ts` |
 | Settings hook Zod | `runtime/src/schemas/hooks.ts` |
 | SDK event enum (wider) | `runtime/src/entrypoints/sdk/coreTypes.ts` |
 | Slash command | `runtime/src/commands/hooks.ts` |

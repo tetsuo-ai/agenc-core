@@ -472,6 +472,44 @@ subject instead of failing validation. A model that retried a missing
 description used to walk into the no-progress backstop and brick the
 session.
 
+### Prompt hook blocks stay per-prompt
+
+`UserPromptSubmit` can refuse a single prompt (exit 2 + stderr, or
+JSON `decision: "block"` + `reason`). That used to emit a canonical
+`error` with `cause: "user_prompt_submit_hook_blocked"`. The live
+event-log bridge treated every `error` as run death
+(`#applyCanonicalEventBookkeeping` sets `active.status = "error"`),
+so one denied follow-up flipped the agent and every later
+`message.send` answered
+`no longer running (status: error)`.
+
+Live refusals now emit `warning` with the same cause, matching hook
+throw (`user_prompt_submit_hook_threw`) and `continue: false`
+(`user_prompt_submit_hook_stopped`). `warning` is not a status
+event. The runner still throws `PROMPT_BLOCKED` for that
+`message.send` / `message.stream` (JSON-RPC `-32602`); it does not
+mark the run `error`. A later allowed prompt can start a turn.
+
+Legacy-format `type: "error"` events with that blocked cause are
+remapped when they cross the live event-log bridge
+(`projectPerPromptRejectionAsSessionOnly` in
+`background-agent-runner.ts`). An event received before attach stays
+in the runner's in-memory buffer. Attach later delivers
+`event.session_event` with the stored type and payload. The daemon event
+gets `statusProjection: "session_only"`, so it skips run-status
+bookkeeping and does **not** produce `event.agent_status`. The rule
+applies to live events and the pre-attach buffer. Events seeded from an
+older persisted rollout remain outside the live bridge and its in-memory
+attach replay. The allowlist is only `user_prompt_submit_hook_blocked`;
+throw and stop were already warnings.
+
+`agent.create` first-content blocks follow startup failure semantics.
+Start throws `PROMPT_BLOCKED`, shuts down the unpublished bootstrap,
+and never publishes the agent.
+
+Editor submissions skip UserPromptSubmit entirely. See the
+[UserPromptSubmit hook contract](hooks.md#userpromptsubmit).
+
 The lifecycle refresh path may briefly report `runtimeAvailable=false`
 (registration race, post-turn snapshot gap). The reaper waits
 **60 seconds** (`RUNTIME_UNAVAILABLE_GRACE_MS`) of continuous
@@ -506,6 +544,8 @@ See [execution-admission-kernel.md](../design/execution-admission-kernel.md#mode
 
 | Symptom | What to check |
 | --- | --- |
+| `PROMPT_BLOCKED` on `message.send` / `message.stream` | A `UserPromptSubmit` hook refused this prompt. The session should stay promptable. Confirm `agent.status` is not `error`, then send an allowed follow-up. See [hooks.md](hooks.md#userpromptsubmit). |
+| `no longer running (status: error)` right after a hook denial | Unexpected after the warning remap. Look for a real `type: "error"` without `cause: "user_prompt_submit_hook_blocked"`, or a one-shot / `--print` bounded stop. |
 | `AdmissionStepConflictError` | The same `(runId, stepId)` was acquired with different normalized admission data. Compare the `stepId`, provider, model, token bounds, and budget identity in `agenc run evidence`. |
 | A crash-resumed nudge or empty-response retry conflicts | Verify the latest turn checkpoint contains the expected sample ordinal and resume-prompt kind. |
 | A later model call lacks `sample-<ordinal>` | Check whether the prior response was terminal. Only successful nonterminal responses reserve another physical sample. |
@@ -565,6 +605,7 @@ agenc budget status    # configured policy only; usage is agenc run status <run-
 | Session lifecycle                 | `runtime/src/app-server/session-lifecycle.ts`       |
 | Agent lifecycle                   | `runtime/src/app-server/agent-lifecycle.ts`         |
 | Background runs                   | `runtime/src/app-server/background-agent-runner.ts` |
+| Prompt-hook block projection      | `projectPerPromptRejectionAsSessionOnly` in `background-agent-runner.ts`; emit in `hooks/user-prompt-ingress.ts` |
 | Local socket / Windows named pipe | `runtime/src/app-server/transport/unix-socket.ts`   |
 | Cookie auth                       | `runtime/src/app-server/transport/auth.ts`          |
 | Health                            | `runtime/src/app-server/health.ts`                  |
