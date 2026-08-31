@@ -111,13 +111,103 @@ Interactive menus (via `MenuModal`) include:
 Full registry: [slash-commands.md](slash-commands.md).
 
 - Provider switch is **`/provider` only** — there is **no** `/model-provider`.
-- `/context` (alias `/ctx`) uses `ContextUsageModal` when the TUI bridge is
-  available.
+- `/context` (alias `/ctx`) reports what fills the next-turn window. See
+  [Context usage (`/context`)](#context-usage-context) below.
 - `/keybindings` creates a canonical `tui.keybindings` scaffold when needed,
   opens `config.toml` through the locked validated editor workflow, and reloads
   the ConfigStore snapshot. Explicit removals use each block's `unbind` array.
 - Protocol commands `/claim`, `/delegate`, `/proof`, `/settle`, `/stake` are
   registered from `commands/protocol.ts` with plugin-style attribution.
+
+## Context usage (`/context`)
+
+`/context` (alias `/ctx`) estimates context occupancy from the current session.
+Its registry entry is `contextCommand` in
+`runtime/src/commands/session-compact.ts`. It runs immediately on the `runtime`
+and `daemon-tui` surfaces and also works non-interactively. The TUI opens
+`ContextUsageModal` when the local JSX bridge is available. Other callers print
+the same text in the transcript.
+
+Admission uses [provider-aware token accounting](../design/provider-aware-token-accounting.md),
+which may include provider-native tools and admission policy values that this
+command does not receive. `session.snapshot.contextBreakdown` is another
+estimate with its own categories.
+
+### What the report counts
+
+On the in-process runtime path, `runContextUsage` rebuilds the client-side
+request from current session state:
+
+| Bucket | Source |
+| --- | --- |
+| System prompt | `assembleSystemPrompt` with the AGENC.md tiered chain, permissions, environment information, MCP server instructions, and autonomous-work instructions. The tiered loader honors `project_root_markers` and `project_doc_max_bytes`. |
+| Conversation | `session.snapshotHistoryMessages()` (history after the stored system message is stripped) |
+| Tool catalog | Visible client tool schemas from `registry.toLLMTools()`. Names from `registry.allSpecs()` are used in the system-prompt tool list, including deferred MCP tool names. Provider-native tool definitions are not included. |
+| Window and compact line | `getEffectiveContextWindowSizeForEnvironment` and `getAutoCompactThresholdForEnvironment`, the same helpers used by auto-compact |
+| Prompt cache | Shown when session usage contains `cachedInputTokens` and `promptTokens` is positive |
+
+`estimateMessagesTokens` is called twice (tools empty vs tools present) so
+the client tool catalog is reported separately. The line labeled `messages`
+is the base request estimate. It can include framing, the output reserve, and
+the safety margin in addition to message content. A large MCP or factory
+catalog can dominate the estimate even when the transcript is short.
+
+Rendered shape (`formatContextUsageReport`):
+
+```text
+Context: <used> / <hard> tokens (<pct>% of hard limit)
+  • messages: <n> tokens
+  • tool catalog: <n> tokens
+  • compaction threshold: <n> tokens (<n> until auto-compact fires)
+```
+
+When either `AGENC_DISABLE_AUTO_COMPACT` or `AGENC_DISABLE_COMPACT` is set,
+the compact line becomes `auto-compact: disabled` and the threshold equals
+the hard limit. `/compact` ignores both flags. `AGENC_DISABLE_AUTO_COMPACT`
+disables automatic pre-turn and mid-turn compaction. `AGENC_DISABLE_COMPACT`
+disables the compact operation. A mid-turn threshold crossing can still end
+the turn with cause `mid_turn_compact_failed` and message
+`mid_turn_compact_skipped`.
+
+A configured `providers.<slug>.context_window_tokens` overrides the
+model-string table for the hard-limit line. Free headroom clamps to **0**
+when usage already exceeds the window (never a negative remainder).
+
+### Daemon TUI fallback
+
+The daemon-backed TUI session does not expose `newDefaultTurnWithSubId`.
+`/context` has no daemon RPC, so `tryAllocateTurnContext` fails and
+`buildFallbackContextUsageText` runs:
+
+- Conversation and visible `toLLMTools()` schemas are estimated. The fallback
+  does not reconstruct the system prompt or use `allSpecs()` deferred names.
+- If `getDaemonSessionSnapshot().tokenUsage.totalTokens` is present, that
+  cumulative session total replaces the estimated total. Messages are
+  reported as `max(0, total - tools)`.
+- The last line explains why the fallback estimate was used. It usually says
+  that the command needs the in-process runtime.
+
+The fallback is not a bound on next-turn occupancy. The cumulative daemon
+total can overstate the current request after old messages are removed, while
+the missing system prompt and provider-native tools can understate it.
+
+Missing or malformed AGENC.md never fails `/context`; assembly errors drop
+the synthetic system message and count conversation + tools. Tiered-instruction
+warnings are not printed here; they still appear at the next turn.
+
+### Operator pitfalls
+
+| Symptom | Cause |
+| --- | --- |
+| Tool catalog is thousands of tokens on a one-line chat | The visible client catalog and its accounting overhead are included in the estimate |
+| Daemon TUI differs from a later `context_window_exceeded` | The fallback combines a cumulative usage counter with an incomplete reconstruction of the next request |
+| `/context` hard limit is 128k after setting a 256k config window | The report only overrides the model-string table when it can read `providers.<slug>.context_window_tokens` (config store + `model_provider`). Otherwise the static table wins |
+| Prompt-cache line missing | Current session usage has no positive prompt count or no `cachedInputTokens` field |
+| `/context` says auto-compact disabled but `/compact` still works | Either disable flag hides the threshold line; `/compact` ignores both |
+
+Related: [slash-commands.md](slash-commands.md) (registry row),
+[providers.md](providers.md) (window resolution),
+[token accounting](../design/provider-aware-token-accounting.md).
 
 ## BUFFER (editor)
 
@@ -232,3 +322,4 @@ Broader suites and env knobs for design-state smoke are listed in
 - Architecture: [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
 - Embedded Neovim BUFFER: [`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md)
 - Agents rail / multi-agent: [`agents.md`](agents.md)
+- `/context` occupancy: [Context usage](#context-usage-context)
