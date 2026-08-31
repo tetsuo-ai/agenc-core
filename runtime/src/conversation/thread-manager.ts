@@ -703,6 +703,7 @@ export interface DurableResumeAttempt {
     | "prefix-mismatch"
     | "integrity-invalid"
     | "integrity-deferred"
+    | "provider-restore-failed"
     | "lease-unavailable";
   /** Tool names the safe policy halted on (surfaced, not retried). */
   readonly halted?: ReadonlyArray<string>;
@@ -740,6 +741,102 @@ function selectResumableTurn(
     return { turn, reason: "prefix-mismatch" };
   }
   return { turn };
+}
+
+function emitProviderRestoreFailure(
+  session: Session,
+  turnId: string,
+  reason: string,
+): void {
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "warning",
+      payload: {
+        cause: "durable_resume_provider_restore_failed",
+        message: `durable resume for turn ${turnId} could not restore its provider route: ${reason}`,
+      },
+    },
+  });
+}
+
+function providerRouteMatches(
+  expected: { readonly provider: string; readonly model: string },
+  actual: { readonly provider: string; readonly model: string },
+): boolean {
+  return (
+    actual.provider === expected.provider && actual.model === expected.model
+  );
+}
+
+async function restoreCheckpointProviderRoute(
+  session: Session,
+  turn: ResumableTurn,
+): Promise<boolean> {
+  const fallback = turn.lastCheckpoint.resumableState.pendingAdmissionFallback;
+  if (fallback === undefined) return true;
+  if (fallback.toProvider === undefined) {
+    emitProviderRestoreFailure(
+      session,
+      turn.turnId,
+      "the checkpoint does not identify the target provider",
+    );
+    return false;
+  }
+
+  const target = {
+    provider: fallback.toProvider,
+    model: fallback.toModel,
+  };
+  const pending = session.pendingProviderSwitch;
+  if (pending !== null && !providerRouteMatches(target, pending)) {
+    emitProviderRestoreFailure(
+      session,
+      turn.turnId,
+      "another provider switch is already pending",
+    );
+    return false;
+  }
+
+  const active = session.providerBinding;
+  if (pending === null && providerRouteMatches(target, active)) {
+    return true;
+  }
+
+  try {
+    if (pending === null) {
+      const prepared = await session.prepareProviderSwitch(target);
+      if (!providerRouteMatches(target, prepared.pending)) {
+        emitProviderRestoreFailure(
+          session,
+          turn.turnId,
+          "the resolved provider route does not match the checkpoint",
+        );
+        return false;
+      }
+      session.stagePreparedProviderSwitch(prepared, null);
+    }
+
+    const outcome = await session.consumePendingProviderSwitch();
+    const restored = session.providerBinding;
+    if (outcome.applied !== true || !providerRouteMatches(target, restored)) {
+      emitProviderRestoreFailure(
+        session,
+        turn.turnId,
+        outcome.reason ??
+          "the provider switch did not commit the checkpoint route",
+      );
+      return false;
+    }
+    return true;
+  } catch (error) {
+    const reason =
+      error instanceof Error && error.message.length > 0
+        ? error.message
+        : "provider restoration failed";
+    emitProviderRestoreFailure(session, turn.turnId, reason);
+    return false;
+  }
 }
 
 /**
@@ -788,6 +885,10 @@ export async function resumeTurnFromCheckpoint(
   }
 
   try {
+    if (!(await restoreCheckpointProviderRoute(session, turn))) {
+      return { resumed: false, reason: "provider-restore-failed" };
+    }
+
     // Classify dangling tool_use blocks (no persisted result) under the
     // safe-by-default policy. Over-halt is acceptable; under-halt is NOT.
     const toolByName = new Map(

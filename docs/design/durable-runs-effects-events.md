@@ -319,6 +319,12 @@ continues that turn only when every gate holds. If any gate fails, startup
 opens a fresh turn. The existing checkpoint remains unchanged, and normal
 fresh-turn events append afterward.
 
+When the checkpoint carries `pendingAdmissionFallback`, resume first prepares
+and commits that fallback's provider and model as one route. The resumed turn
+context, admission evidence, and provider call are created only after the
+session binding matches both values. If the complete route cannot be restored,
+resume returns `provider-restore-failed` without dispatching a provider call.
+
 | Gate | Default | Failure reason |
 | --- | --- | --- |
 | `durableTurns.resume.onRestart` | `true` | `disabled` |
@@ -327,6 +333,7 @@ fresh-turn events append afterward.
 | Checkpoint reader accepts the payload (`readTurnCheckpoint`) | n/a | `integrity-invalid` or `integrity-deferred` |
 | History prefix hash matches | n/a | `prefix-mismatch` |
 | Single-writer resume lease (`durableTurns.resume.requireLease`) | `true` | `lease-unavailable` |
+| Pending fallback provider and model are restored together | n/a | `provider-restore-failed` |
 
 The writer, event types, and strict reader share the slice contract in
 `runtime/src/session/turn-checkpoint-slice.ts`. The reader accepts legacy
