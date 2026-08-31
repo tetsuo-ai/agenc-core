@@ -722,11 +722,11 @@ describe("durable checkpoint reader", () => {
 });
 
 describe("legacy durable checkpoint upgrade planner", () => {
-  it("cuts the live rollout writer over to schema v3", () => {
-    expect(ROLLOUT_SCHEMA_VERSION).toBe(3);
+  it("cuts the live rollout writer over to schema v4", () => {
+    expect(ROLLOUT_SCHEMA_VERSION).toBe(4);
   });
 
-  it("promotes the known version-2 writer extension to version 3", () => {
+  it("promotes the known version-2 writer extension to checkpoint v3 in rollout schema v4", () => {
     const source: RolloutItem[] = [
       {
         type: "session_meta",
@@ -772,7 +772,7 @@ describe("legacy durable checkpoint upgrade planner", () => {
       status: "planned",
       plan: {
         sourceSchemaVersion: 2,
-        targetSchemaVersion: 3,
+        targetSchemaVersion: 4,
         checkpointsUpgraded: 1,
         checkpointsValidated: 1,
         changed: true,
@@ -790,6 +790,149 @@ describe("legacy durable checkpoint upgrade planner", () => {
       },
     });
     expect(JSON.stringify(source)).toBe(before);
+  });
+
+  it("atomically plans schema-v3 compaction history and extended-v2 checkpoints for schema v4", () => {
+    const history: ToolResultIntegrityResponseItem[] = [
+      { role: "user", content: "preserve this prefix" },
+    ];
+    const checkpoint = checkpointForHistory(history);
+    const extendedCheckpoint = {
+      ...checkpoint,
+      resumableState: {
+        ...checkpoint.resumableState,
+        editorToolCallsAdmitted: 2,
+        pendingAdmissionFallback: {
+          fromModel: "grok-4.5",
+          toModel: "gemini-3.1-pro",
+          fromProvider: "grok",
+          toProvider: "gemini",
+          reason: "provider_fallback_ladder",
+        },
+      },
+    } as unknown as TurnCheckpointEvent;
+    const compactionFailure: RolloutItem = {
+      type: "compaction_failed",
+      payload: {
+        format_version: 1,
+        minimum_reader_runtime: "0.14.0",
+        attempt_id: "schema3-compaction-attempt",
+        recorded_at_ms: 1_785_451_200_000,
+        source_sha256: "1".repeat(64),
+        history_digest: "2".repeat(64),
+        reason: "provider_timeout",
+        detail_digest: "3".repeat(64),
+      },
+    };
+    const source: RolloutItem[] = [
+      {
+        type: "session_meta",
+        payload: {
+          sessionId: "schema3-run",
+          timestamp: "2026-08-31T00:00:00.000Z",
+          cwd: "/workspace",
+          originator: "test",
+          agencVersion: "0.17.0",
+          rolloutSchemaVersion: 3,
+        },
+      },
+      { type: "response_item", payload: history[0]! },
+      checkpointItem(extendedCheckpoint),
+      compactionFailure,
+    ];
+    const sourceBefore = JSON.stringify(source);
+
+    const outcome = planLegacyDurableCheckpointUpgrade({
+      items: source,
+      runId: "schema3-run",
+      projection,
+      projectionId: "schema3-plan",
+      sourceKey: "schema3-rollout",
+    });
+
+    expect(outcome).toMatchObject({
+      status: "planned",
+      plan: {
+        sourceSchemaVersion: 3,
+        targetSchemaVersion: 4,
+        changed: true,
+        checkpointsUpgraded: 1,
+        checkpointsValidated: 1,
+      },
+    });
+    if (outcome.status !== "planned") throw new Error("upgrade failed");
+    expect(outcome.plan.upgradedItems[0]).toMatchObject({
+      type: "session_meta",
+      payload: { rolloutSchemaVersion: 4 },
+    });
+    expect(v3Checkpoint(outcome.plan.upgradedItems)).toMatchObject({
+      checkpointVersion: 3,
+      resumableState: {
+        editorToolCallsAdmitted: 2,
+        pendingAdmissionFallback: {
+          fromProvider: "grok",
+          toProvider: "gemini",
+        },
+      },
+    });
+    expect(outcome.plan.upgradedItems[3]).toEqual(compactionFailure);
+    expect(JSON.stringify(source)).toBe(sourceBefore);
+  });
+
+  it("keeps rollout schema and checkpoint versions one-to-one", () => {
+    const v2Checkpoint = checkpointForHistory([]);
+    const v3Checkpoint = currentCheckpointForHistory([]);
+    const metadata = (rolloutSchemaVersion: number): RolloutItem => ({
+      type: "session_meta",
+      payload: {
+        sessionId: "version-pair-run",
+        timestamp: "2026-08-31T00:00:00.000Z",
+        cwd: "/workspace",
+        originator: "test",
+        agencVersion: "0.17.0",
+        rolloutSchemaVersion,
+      },
+    });
+    const plan = (items: RolloutItem[], projectionId: string) =>
+      planLegacyDurableCheckpointUpgrade({
+        items,
+        runId: "version-pair-run",
+        projection,
+        projectionId,
+        sourceKey: projectionId,
+      });
+
+    expect(
+      plan(
+        [metadata(3), checkpointItem(v3Checkpoint)],
+        "schema3-checkpoint3",
+      ),
+    ).toMatchObject({
+      status: "invalid",
+      failure: { code: "rollout_schema_mixed", itemIndex: 1 },
+    });
+    expect(
+      plan(
+        [metadata(4), checkpointItem(v2Checkpoint)],
+        "schema4-checkpoint2",
+      ),
+    ).toMatchObject({
+      status: "invalid",
+      failure: { code: "rollout_schema_mixed", itemIndex: 1 },
+    });
+    expect(
+      plan(
+        [
+          metadata(4),
+          checkpointItem(v3Checkpoint),
+          checkpointItem(v2Checkpoint),
+        ],
+        "schema4-mixed-checkpoints",
+      ),
+    ).toMatchObject({
+      status: "invalid",
+      failure: { code: "rollout_schema_mixed", itemIndex: 2 },
+    });
   });
 
   it("makes equal-length fixture substitutions produce distinct v2 identities", () => {
@@ -896,7 +1039,7 @@ describe("legacy durable checkpoint upgrade planner", () => {
     expect(planned.plan.sessionMetaPromotionRequired).toBe(false);
     expect(planned.plan.upgradedItems[0]).toMatchObject({
       type: "session_meta",
-      payload: { rolloutSchemaVersion: 3 },
+      payload: { rolloutSchemaVersion: 4 },
     });
     expect(source[0]).toMatchObject({
       type: "session_meta",
@@ -1436,6 +1579,24 @@ function checkpointForHistory(
     persistedMessageCount: history.length,
   });
   if (readable.version !== 2) throw new Error("checkpoint is not v2");
+  return readable.checkpoint;
+}
+
+function currentCheckpointForHistory(
+  history: ReadonlyArray<ToolResultIntegrityResponseItem>,
+): TurnCheckpointV3Event {
+  const state = buildInitialTurnState(mkCtx(), {
+    role: "user",
+    content: "resume this turn",
+  });
+  const readable = readTurnCheckpoint({
+    ...legacyCheckpoint(computeCheckpointPrefixHashV2(history, history.length)),
+    checkpointVersion: 3,
+    toolResultIntegrityVersion: 1,
+    persistedMessageCount: history.length,
+    resumableState: toCheckpointSlice(state),
+  });
+  if (readable.version !== 3) throw new Error("checkpoint is not v3");
   return readable.checkpoint;
 }
 

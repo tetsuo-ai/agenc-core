@@ -297,7 +297,8 @@ its last `turn_checkpoint` instead of opening a fresh turn.
 After a successful nonterminal sample, `run-turn.ts` advances
 `modelSampleOrdinal`. Before the next admission, it force-emits a `turn_checkpoint`
 (`emitTurnCheckpoint("iteration", { force: true })`). Interval throttling
-cannot defer that barrier. The version-3 event fsyncs:
+cannot defer that barrier. The checkpoint-version-3 event, stored in rollout
+schema 4, fsyncs:
 
 - the durable response prefix and its version-2 `prefixHash` algorithm
 - `resumableState` from `toCheckpointSlice(state)`
@@ -342,8 +343,13 @@ compatibility path for version-2 checkpoints written with
 `editorToolCallsAdmitted` or `pendingAdmissionFallback`; those rows are
 validated against the version-3 slice and normalized in memory. Other
 unknown fields still fail with `resumableState contains unversioned fields`.
-Schema-1 and schema-2 rollouts are promoted atomically after their prefix and
-tool-result integrity checks pass. A rejected checkpoint is not rewritten.
+Rollout schemas 1, 2, and 3 are promoted atomically to schema 4 after their
+prefix and tool-result integrity checks pass. Schema 3 remains the
+transactional-compaction format and can contain checkpoint-version-2 rows;
+schema 4 requires checkpoint-version-3 rows. The rewrite preserves compaction
+records and publishes the new header with the upgraded checkpoints as one
+operation. A rejected checkpoint is not rewritten, and a runtime whose maximum
+rollout schema is 3 refuses a schema-4 header before replay or append.
 
 ## Persist before publish
 

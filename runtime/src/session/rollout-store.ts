@@ -3328,13 +3328,6 @@ export class RolloutStore {
     meta: Parameters<SessionStore["open"]>[0],
   ): void {
     const items = this.store.readAll();
-    const sessionMeta = items.find((item) => item.type === "session_meta");
-    if (
-      sessionMeta?.type === "session_meta" &&
-      sessionMeta.payload.rolloutSchemaVersion >= DURABLE_ROLLOUT_SCHEMA_VERSION
-    ) {
-      return;
-    }
     const projectionContext = this.checkpointProjectionContext("upgrade");
     const outcome = planLegacyDurableCheckpointUpgrade({
       items,

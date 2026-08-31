@@ -839,6 +839,111 @@ async function restoreCheckpointProviderRoute(
   }
 }
 
+interface DurableResumeLeaseAttempt {
+  readonly lease?: SessionLock;
+  readonly reason?: "lease-unavailable";
+}
+
+function acquireDurableResumeLease(
+  session: Session,
+  turn: ResumableTurn,
+  requireLease: boolean,
+): DurableResumeLeaseAttempt {
+  if (!requireLease) return {};
+  const rolloutPath = session.rolloutStore?.rolloutPath;
+  if (rolloutPath === undefined) return {};
+
+  const lease = new SessionLock(`${rolloutPath}.resume-${turn.turnId}.lock`);
+  try {
+    lease.acquire();
+    return { lease };
+  } catch {
+    return { reason: "lease-unavailable" };
+  }
+}
+
+interface DurableResumePlan {
+  readonly haltedSideEffectingTools: ReadonlyArray<string>;
+  readonly danglingPairings: ReadonlyArray<{
+    readonly callId: string;
+    readonly toolName: string;
+    readonly halt: boolean;
+  }>;
+}
+
+function planDanglingToolResume(
+  session: Session,
+  turn: ResumableTurn,
+): DurableResumePlan {
+  const toolByName = new Map(
+    session.services.registry.tools.map((tool) => [tool.name, tool] as const),
+  );
+  const classification = classifyDanglingToolUses(
+    turn.danglingToolUses,
+    (toolName) => {
+      const tool = toolByName.get(toolName);
+      return (
+        tool !== undefined &&
+        isResumeReplaySafe(tool as Parameters<typeof isResumeReplaySafe>[0])
+      );
+    },
+  );
+  return {
+    haltedSideEffectingTools: [
+      ...new Set(classification.mustHalt.map((tool) => tool.toolName)),
+    ],
+    danglingPairings: [
+      ...classification.mustHalt.map((tool) => ({
+        callId: tool.callId,
+        toolName: tool.toolName,
+        halt: true,
+      })),
+      ...classification.replaySafe.map((tool) => ({
+        callId: tool.callId,
+        toolName: tool.toolName,
+        halt: false,
+      })),
+    ],
+  };
+}
+
+async function driveResumedTurn(
+  session: Session,
+  reconstruction: RolloutReconstruction,
+  turn: ResumableTurn,
+  plan: DurableResumePlan,
+): Promise<void> {
+  const reconstructedPrefix = reconstruction.history.slice(
+    0,
+    turn.lastCheckpoint.persistedMessageCount,
+  );
+  const history = reconstructedPrefix.map((item) =>
+    responseItemToLlmMessage(item),
+  );
+  const iter = session.runTurn("", {
+    subId: turn.turnId,
+    history,
+    displayUserMessage: null,
+    resume: {
+      turnId: turn.turnId,
+      fromIteration: turn.lastCheckpoint.iterationIndex,
+      fromCheckpointSeq: turn.lastCheckpoint.checkpointSeq,
+      persistedMessageCount: turn.lastCheckpoint.persistedMessageCount,
+      restoreSlice: turn.lastCheckpoint
+        .resumableState as unknown as import("../session/turn-state.js").TurnCheckpointSlice,
+      ...(plan.haltedSideEffectingTools.length > 0
+        ? { haltedSideEffectingTools: plan.haltedSideEffectingTools }
+        : {}),
+      ...(plan.danglingPairings.length > 0
+        ? { danglingPairings: plan.danglingPairings }
+        : {}),
+    },
+  });
+  while (!(await iter.next()).done) {
+    // Drain the resumed turn to its terminal event.
+  }
+}
+
 /**
  * Attempt to resume-CONTINUE an interrupted turn from its last durable
  * checkpoint instead of discarding it and starting fresh.
@@ -866,96 +971,29 @@ export async function resumeTurnFromCheckpoint(
     return reason !== undefined ? { resumed: false, reason } : { resumed: false };
   }
 
-  // Single-writer resume lease — reuse the SessionLock flock keyed per
-  // turnId so two concurrent resumers cannot both re-drive the turn. The
-  // lease path is distinct from the session-store rollout lock and from the
-  // /resume cold-rollout handoff (a session-id slot), so it composes with
-  // both rather than fighting them.
-  let lease: SessionLock | undefined;
-  if (cfg.requireLease) {
-    const rolloutPath = session.rolloutStore?.rolloutPath;
-    if (rolloutPath !== undefined) {
-      lease = new SessionLock(`${rolloutPath}.resume-${turn.turnId}.lock`);
-      try {
-        lease.acquire();
-      } catch {
-        return { resumed: false, reason: "lease-unavailable" };
-      }
-    }
+  const leaseAttempt = acquireDurableResumeLease(
+    session,
+    turn,
+    cfg.requireLease,
+  );
+  if (leaseAttempt.reason !== undefined) {
+    return { resumed: false, reason: leaseAttempt.reason };
   }
 
   try {
     if (!(await restoreCheckpointProviderRoute(session, turn))) {
       return { resumed: false, reason: "provider-restore-failed" };
     }
-
-    // Classify dangling tool_use blocks (no persisted result) under the
-    // safe-by-default policy. Over-halt is acceptable; under-halt is NOT.
-    const toolByName = new Map(
-      session.services.registry.tools.map((t) => [t.name, t] as const),
-    );
-    const { replaySafe, mustHalt } = classifyDanglingToolUses(
-      turn.danglingToolUses,
-      (toolName) => {
-        const tool = toolByName.get(toolName);
-        if (tool === undefined) return false; // unknown → side-effecting → halt
-        return isResumeReplaySafe(tool as Parameters<typeof isResumeReplaySafe>[0]);
-      },
-    );
-    const haltedSideEffectingTools = [
-      ...new Set(mustHalt.map((d) => d.toolName)),
-    ];
-    const danglingPairings = [
-      ...mustHalt.map((d) => ({
-        callId: d.callId,
-        toolName: d.toolName,
-        halt: true,
-      })),
-      ...replaySafe.map((d) => ({
-        callId: d.callId,
-        toolName: d.toolName,
-        halt: false,
-      })),
-    ];
-
-    const reconstructedPrefix = reconstruction.history.slice(
-      0,
-      turn.lastCheckpoint.persistedMessageCount,
-    );
-    const history = reconstructedPrefix.map((item) =>
-      responseItemToLlmMessage(item),
-    );
-
-    const iter = session.runTurn("", {
-      subId: turn.turnId,
-      history,
-      displayUserMessage: null,
-      resume: {
-        turnId: turn.turnId,
-        fromIteration: turn.lastCheckpoint.iterationIndex,
-        fromCheckpointSeq: turn.lastCheckpoint.checkpointSeq,
-        persistedMessageCount: turn.lastCheckpoint.persistedMessageCount,
-        restoreSlice: turn.lastCheckpoint
-          .resumableState as unknown as import("../session/turn-state.js").TurnCheckpointSlice,
-        ...(haltedSideEffectingTools.length > 0
-          ? { haltedSideEffectingTools }
-          : {}),
-        ...(danglingPairings.length > 0 ? { danglingPairings } : {}),
-      },
-    });
-    // Drive the resumed turn to completion.
-    while (true) {
-      const next = await iter.next();
-      if (next.done) break;
-    }
+    const plan = planDanglingToolResume(session, turn);
+    await driveResumedTurn(session, reconstruction, turn, plan);
     return {
       resumed: true,
-      ...(haltedSideEffectingTools.length > 0
-        ? { halted: haltedSideEffectingTools }
+      ...(plan.haltedSideEffectingTools.length > 0
+        ? { halted: plan.haltedSideEffectingTools }
         : {}),
     };
   } finally {
-    lease?.release();
+    leaseAttempt.lease?.release();
   }
 }
 

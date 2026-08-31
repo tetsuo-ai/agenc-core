@@ -10,6 +10,7 @@ import {
   DURABLE_CHECKPOINT_READ_VERSION,
   DURABLE_CHECKPOINT_V2,
   DURABLE_ROLLOUT_SCHEMA_V2,
+  DURABLE_ROLLOUT_SCHEMA_V3,
   DURABLE_ROLLOUT_SCHEMA_VERSION,
   LEGACY_DURABLE_CHECKPOINT_VERSION,
   DurableCheckpointReadError,
@@ -685,10 +686,12 @@ function checkpointMatchesRolloutSchema(
   if (rolloutSchemaVersion === DURABLE_ROLLOUT_SCHEMA_V2) {
     return checkpointVersion === DURABLE_CHECKPOINT_V2;
   }
+  if (rolloutSchemaVersion === DURABLE_ROLLOUT_SCHEMA_V3) {
+    return checkpointVersion === DURABLE_CHECKPOINT_V2;
+  }
   return (
     rolloutSchemaVersion === DURABLE_ROLLOUT_SCHEMA_VERSION &&
-    (checkpointVersion === DURABLE_CHECKPOINT_V2 ||
-      checkpointVersion === DURABLE_CHECKPOINT_READ_VERSION)
+    checkpointVersion === DURABLE_CHECKPOINT_READ_VERSION
   );
 }
 

@@ -64,11 +64,12 @@ export type {
  * Incremented on any breaking change to the rollout JSONL format.
  * - v1: initial T6 shape (18 event variants, 6 rollout wrappers).
  * - v2: exact tool-result seals and version-2 durable checkpoints.
- * - v3: durable checkpoints carry the complete versioned writer slice.
+ * - v3: transactional compaction intents and commits.
+ * - v4: durable checkpoints carry the complete version-3 writer slice.
  * On open, if rollout.schemaVersion > runtime.ROLLOUT_SCHEMA_VERSION,
  * hard-fail with migration message (I-49).
  */
-export const ROLLOUT_SCHEMA_VERSION = 3;
+export const ROLLOUT_SCHEMA_VERSION = 4;
 
 // ─────────────────────────────────────────────────────────────────────
 // Event envelope: { eventId, id, msg, seq }
