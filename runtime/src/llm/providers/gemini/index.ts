@@ -1680,11 +1680,15 @@ function geminiToolOneOfAlwaysAcceptsType(
   );
 }
 
-function geminiToolSchemaAlwaysAcceptedOneOfDomain(
+function geminiToolSchemaOneOfDomainMatching(
   value: unknown,
   path: string,
   state: GeminiSchemaValidationState,
   visiting: Set<Record<string, unknown>>,
+  acceptsType: (
+    branches: readonly GeminiToolOneOfBranchDomains[],
+    type: string,
+  ) => boolean,
 ): ReadonlySet<string> | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.length === 0) return new Set();
@@ -1697,9 +1701,22 @@ function geminiToolSchemaAlwaysAcceptedOneOfDomain(
     ),
   );
   return new Set(
-    [...GEMINI_TOOL_ROOT_TYPES].filter((type) =>
-      geminiToolOneOfAlwaysAcceptsType(branches, type),
-    ),
+    [...GEMINI_TOOL_ROOT_TYPES].filter((type) => acceptsType(branches, type)),
+  );
+}
+
+function geminiToolSchemaAlwaysAcceptedOneOfDomain(
+  value: unknown,
+  path: string,
+  state: GeminiSchemaValidationState,
+  visiting: Set<Record<string, unknown>>,
+): ReadonlySet<string> | undefined {
+  return geminiToolSchemaOneOfDomainMatching(
+    value,
+    path,
+    state,
+    visiting,
+    geminiToolOneOfAlwaysAcceptsType,
   );
 }
 
@@ -1717,20 +1734,12 @@ function geminiToolSchemaOneOfDomain(
   state: GeminiSchemaValidationState,
   visiting: Set<Record<string, unknown>>,
 ): ReadonlySet<string> | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.length === 0) return new Set();
-  const branches = value.map((branch, index) =>
-    geminiToolSchemaOneOfBranchDomains(
-      branch,
-      `${path}[${index}]`,
-      state,
-      visiting,
-    ),
-  );
-  return new Set(
-    [...GEMINI_TOOL_ROOT_TYPES].filter((type) =>
-      geminiToolOneOfCanAcceptType(branches, type),
-    ),
+  return geminiToolSchemaOneOfDomainMatching(
+    value,
+    path,
+    state,
+    visiting,
+    geminiToolOneOfCanAcceptType,
   );
 }
 

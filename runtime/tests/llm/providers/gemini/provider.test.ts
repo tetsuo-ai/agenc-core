@@ -23,26 +23,27 @@ function invocationMessages() {
 }
 
 function jsonResponse(body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status: 200,
-    headers: { "content-type": "application/json" },
+  return Response.json(body);
+}
+
+function chunkedTextResponse(chunks: readonly string[], contentType: string) {
+  const encoder = new TextEncoder();
+  let index = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (index === chunks.length) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(encoder.encode(chunks[index]));
+      index += 1;
+    },
   });
+  return new Response(stream, { headers: { "content-type": contentType } });
 }
 
 function sseResponse(frames: string[]): Response {
-  const encoder = new TextEncoder();
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const frame of frames) {
-        controller.enqueue(encoder.encode(frame));
-      }
-      controller.close();
-    },
-  });
-  return new Response(body, {
-    status: 200,
-    headers: { "content-type": "text/event-stream" },
-  });
+  return chunkedTextResponse(frames, "text/event-stream");
 }
 
 const echoTool: LLMTool = {
@@ -136,6 +137,63 @@ function invokeGeminiWithTools(
         new AbortController().signal,
       );
   }
+}
+
+async function dispatchGeminiToolSchema(
+  schema: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const fetchImpl = successfulGeminiFetch();
+  const provider = providerWithFetch(fetchImpl);
+  await provider.chat([{ role: "user", content: "run tool" }], {
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "schema_tool",
+          description: "Exercise a schema",
+          parameters: schema,
+        },
+      },
+    ],
+  });
+
+  const [, init] = fetchImpl.mock.calls[0] ?? [];
+  const requestBody = JSON.parse(String(init?.body)) as {
+    readonly tools: readonly [
+      {
+        readonly functionDeclarations: readonly [Record<string, unknown>];
+      },
+    ];
+  };
+  return requestBody.tools[0].functionDeclarations[0];
+}
+
+async function expectGeminiToolSchemaRejected(
+  operation: GeminiToolOperation,
+  schema: Record<string, unknown>,
+  options: {
+    readonly name?: string;
+    readonly expectedPath?: string;
+  } = {},
+): Promise<void> {
+  const name = options.name ?? "invalid_root";
+  const expectedPath =
+    options.expectedPath ?? `tools[${JSON.stringify(name)}].parameters`;
+  const fetchImpl = vi.fn<typeof fetch>();
+  const provider = providerWithFetch(fetchImpl);
+  const invocation = invokeGeminiWithTools(provider, operation, [
+    {
+      type: "function",
+      function: {
+        name,
+        description: "Invalid root",
+        parameters: schema,
+      },
+    },
+  ]);
+
+  await expect(invocation).rejects.toThrow(expectedPath);
+  expect(fetchImpl).not.toHaveBeenCalled();
 }
 
 describe("GeminiProvider", () => {
@@ -825,31 +883,7 @@ describe("GeminiProvider", () => {
         },
       },
     };
-    const fetchImpl = successfulGeminiFetch();
-    const provider = providerWithFetch(fetchImpl);
-
-    await provider.chat([{ role: "user", content: "search" }], {
-      tools: [
-        {
-          type: "function",
-          function: {
-            name: "mcp.search",
-            description: "Search a referenced schema",
-            parameters: schema,
-          },
-        },
-      ],
-    });
-
-    const [, init] = fetchImpl.mock.calls[0] ?? [];
-    const requestBody = JSON.parse(String(init?.body)) as {
-      readonly tools: readonly [
-        {
-          readonly functionDeclarations: readonly [Record<string, unknown>];
-        },
-      ];
-    };
-    const declaration = requestBody.tools[0].functionDeclarations[0];
+    const declaration = await dispatchGeminiToolSchema(schema);
     expect(declaration?.parametersJsonSchema).toEqual(schema);
     expect(declaration).not.toHaveProperty("parameters");
   });
@@ -906,33 +940,8 @@ describe("GeminiProvider", () => {
       schema: { type: "object", not: { oneOf: [{}, {}] } },
     },
   ])("preserves $label tool root", async ({ schema }) => {
-    const fetchImpl = successfulGeminiFetch();
-    const provider = providerWithFetch(fetchImpl);
-
-    await provider.chat([{ role: "user", content: "run tool" }], {
-      tools: [
-        {
-          type: "function",
-          function: {
-            name: "rooted_tool",
-            description: "Exercise a referenced object root",
-            parameters: schema,
-          },
-        },
-      ],
-    });
-
-    const [, init] = fetchImpl.mock.calls[0] ?? [];
-    const requestBody = JSON.parse(String(init?.body)) as {
-      readonly tools: readonly [
-        {
-          readonly functionDeclarations: readonly [Record<string, unknown>];
-        },
-      ];
-    };
-    expect(
-      requestBody.tools[0].functionDeclarations[0]?.parametersJsonSchema,
-    ).toEqual(schema);
+    const declaration = await dispatchGeminiToolSchema(schema);
+    expect(declaration.parametersJsonSchema).toEqual(schema);
   });
 
   test.each([
@@ -1024,103 +1033,42 @@ describe("GeminiProvider", () => {
       schema: { $ref: "https://example.test/external.json" },
     },
   ])("rejects $label tool root before dispatch", async ({ schema }) => {
-    const fetchImpl = vi.fn<typeof fetch>();
-    const provider = providerWithFetch(fetchImpl);
-
-    await expect(
-      provider.chat([{ role: "user", content: "run tool" }], {
-        tools: [
-          {
-            type: "function",
-            function: {
-              name: "invalid_root",
-              description: "Invalid root",
-              parameters: schema,
-            },
-          },
-        ],
-      }),
-    ).rejects.toThrow('tools["invalid_root"].parameters');
-    expect(fetchImpl).not.toHaveBeenCalled();
+    await expectGeminiToolSchemaRejected("chat", schema);
   });
 
   test.each(["chat", "stream", "count"] as const)(
     "rejects an unsatisfiable tool root before %s dispatch",
     async (operation) => {
-      const fetchImpl = vi.fn<typeof fetch>();
-      const provider = providerWithFetch(fetchImpl);
-      const tools: LLMTool[] = [
-        {
-          type: "function",
-          function: {
-            name: "invalid_root",
-            description: "Invalid root",
-            parameters: {
-              type: "object",
-              not: { oneOf: [{ type: "object" }] },
-            },
-          },
-        },
-      ];
-      const invocation = invokeGeminiWithTools(provider, operation, tools);
-
-      await expect(invocation).rejects.toThrow(
-        'tools["invalid_root"].parameters',
-      );
-      expect(fetchImpl).not.toHaveBeenCalled();
+      await expectGeminiToolSchemaRejected(operation, {
+        type: "object",
+        not: { oneOf: [{ type: "object" }] },
+      });
     },
   );
 
   test.each(["chat", "stream", "count"] as const)(
     "rejects an exclusive oneOf with duplicate object branches before %s dispatch",
     async (operation) => {
-      const fetchImpl = vi.fn<typeof fetch>();
-      const provider = providerWithFetch(fetchImpl);
-      const tools: LLMTool[] = [
-        {
-          type: "function",
-          function: {
-            name: "invalid_root",
-            description: "Invalid root",
-            parameters: {
-              oneOf: [{ type: "object" }, { type: "object" }],
-            },
-          },
-        },
-      ];
-      const invocation = invokeGeminiWithTools(provider, operation, tools);
-
-      await expect(invocation).rejects.toThrow(
-        'tools["invalid_root"].parameters',
-      );
-      expect(fetchImpl).not.toHaveBeenCalled();
+      await expectGeminiToolSchemaRejected(operation, {
+        oneOf: [{ type: "object" }, { type: "object" }],
+      });
     },
   );
 
   test.each(["chat", "stream", "count"] as const)(
     "rejects a tool schema whose serialized root changes before %s dispatch",
     async (operation) => {
-      const fetchImpl = vi.fn<typeof fetch>();
-      const provider = providerWithFetch(fetchImpl);
-      const tools: LLMTool[] = [
+      await expectGeminiToolSchemaRejected(
+        operation,
         {
-          type: "function",
-          function: {
-            name: "invalid_serialized_root",
-            description: "Invalid serialized root",
-            parameters: {
-              type: "object",
-              toJSON: () => ({ type: "string" }),
-            },
-          },
+          type: "object",
+          toJSON: () => ({ type: "string" }),
         },
-      ];
-      const invocation = invokeGeminiWithTools(provider, operation, tools);
-
-      await expect(invocation).rejects.toThrow(
-        'tools["invalid_serialized_root"].parameters.toJSON',
+        {
+          name: "invalid_serialized_root",
+          expectedPath: 'tools["invalid_serialized_root"].parameters.toJSON',
+        },
       );
-      expect(fetchImpl).not.toHaveBeenCalled();
     },
   );
 
