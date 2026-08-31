@@ -389,7 +389,7 @@ agenc plugin list [--json]
 agenc plugin validate <path> [--marketplace] [--json]
 agenc plugin install <path> [--scope user|project|local] [--name …] [--force]
 agenc plugin uninstall <name> [--scope …] [--keep-data]
-agenc plugin update <name> [--scope user|project|local] [--source <path>]
+agenc plugin update <name> [--scope user|project|local] [--source <source>]
 agenc plugin enable <name> [--path <path>]
 agenc plugin disable <name>
 agenc plugin disable-all
@@ -519,6 +519,18 @@ A legacy metadata file with `signatureVerified: true` and no
 installed before directory verification was enforced has neither signal and
 can still update from its recorded source without a signature. Uninstall and
 reinstall it from the marketplace to establish the current requirement.
+
+```bash
+agenc plugin install ./unsigned-plugin
+agenc plugin update unsigned-plugin
+# Same-source refresh. Reuses the recorded local waiver.
+
+agenc plugin update unsigned-plugin --source @scope/unsigned-plugin
+# Fails closed: plugin signature is required but .agenc-plugin/signature.json is missing
+```
+
+`--source` is classified like any other install string (existing directory,
+git URL, tarball, mcpb, otherwise npm). The shipped CLI cannot opt out.
 
 #### Keyring
 
