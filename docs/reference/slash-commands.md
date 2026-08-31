@@ -32,7 +32,7 @@ Order matches `buildDefaultRegistry`.
 | `/cost` | `stats` | Show session cost, token usage, and per-agent spend |
 | `/model` | | Switch the model (picker or pass a name) |
 | `/provider` | | Switch the LLM provider for subsequent turns |
-| `/effort` | | Show or set reasoning effort for the current model (`low` / `medium` / `high` / `xhigh` when the catalog allows it; `default` restores the model default) |
+| `/effort` | | Show or set reasoning effort when the current model catalog allows it. Gemini refuses the command; set `reasoning_effort` / `AGENC_EFFORT_LEVEL` instead |
 | `/resolve` | `resolve-effects` | Resolve a blocked unknown-outcome tool effect in the **live** session (`<call-id> <disposition> <evidence-ref> <evidence-sha256>`). Resume a settled terminal first. |
 | `/swarm` | | Show or set conservative adaptive routing (`on`, `off`, `status`) |
 | `/ledger` | `wallet` | Ledger wallet CLI: `status`, `install`, `session`, `discover`, `balances`, `operations`, `receive`, `send`, `swap`, `earn`, `ring`, `help` |
@@ -146,6 +146,51 @@ remains available in transcript history. `/compact-rollback` and
 an active turn (`ACTIVE_TURN`). Syntax:
 [cli.md](cli.md#compaction-operator-commands).
 
+## `/effort`
+
+`/effort` shows or sets reasoning effort for the **current session
+model**. It asks `modelSupportsEffortForContext`
+(`runtime/src/utils/effort.ts`). That helper is catalog-driven:
+
+- Grok uses `supportedReasoningLevels` from the model catalog
+  (`grok-4.3` / `4.5` / `4.6` accept `low` / `medium` / `high`; `grok-4.6`
+  also accepts `xhigh`).
+- OpenAI reasoning-family slugs use the OpenAI ladder.
+- Everyone else defaults to first-party only
+  (`getAPIProvider(...) === "firstParty"`).
+
+Gemini's API provider is `gemini`, not `firstParty`. Gemini models are
+not in the effort catalog, and the capability table sets
+`acceptsReasoningEffort: false`. `/effort` therefore prints
+`<model> does not support effort levels.` and refuses to set a level,
+including `/effort default`. `spawn_agent.reasoning_effort` fails the
+same catalog check (`supportedReasoningLevels` is empty).
+
+That refusal is the slash command and spawn gate only. Fresh config still
+defaults `reasoning_effort` to `medium`. Session bootstrap writes
+`collaborationMode: { model }` with no effort, so
+`resolveSessionReasoningEffort` (`runtime/src/phases/stream-model.ts`)
+falls back to the persisted config value. The Gemini adapter then maps
+`options.reasoningEffort` onto
+`generationConfig.thinkingConfig.thinkingLevel` (camelCase; a flat
+`thinking_level` field 400s):
+
+| Config / `AGENC_EFFORT_LEVEL` | Gemini `thinkingLevel` |
+| --- | --- |
+| `low` | `low` |
+| `medium` (fresh-config default) | `medium` |
+| `high` | `high` |
+| `xhigh` via env/config fallback | omitted (`getInitialEffortSetting` yields `max`, which is not a wire value) |
+| `none` | omitted (`thinkingConfig` is not sent) |
+
+`AGENC_EFFORT_LEVEL` writes the same `reasoning_effort` key. To change
+Gemini thinking depth, set that key in `config.toml` or the env var. Do
+not expect `/effort` to work on Gemini.
+
+Local `ollama` / `lmstudio` / `openai-compatible` slugs either refuse
+the command or strip `reasoning_effort` on the chat-completions wire;
+see [providers.md](providers.md#capability-field-strip).
+
 ## `/permissions`
 
 `/permissions` opens the permission editor. The command also accepts `list`,
@@ -194,5 +239,6 @@ success. Full reopen table:
 | `/provider` vs config | Slash name `/provider`; persisted field `model_provider` |
 | Help groups | Presentation metadata in `runtime/src/commands/help-groups.ts` |
 | Plugin-added commands | Plugins can register additional commands outside this minimal registry (see [skills-plugins.md](skills-plugins.md)) |
+| `/effort` on Gemini | Command refuses. Default `reasoning_effort = medium` still becomes `thinkingConfig.thinkingLevel`. Set the config key or `AGENC_EFFORT_LEVEL`. |
 
-Related: [cli.md](cli.md) (top-level `agenc` subcommands), [tui-workbench.md](tui-workbench.md).
+Related: [cli.md](cli.md) (top-level `agenc` subcommands), [tui-workbench.md](tui-workbench.md), [env.md](env.md).

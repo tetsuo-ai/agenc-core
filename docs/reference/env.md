@@ -25,7 +25,7 @@ Boolean-like values that go through `applyEnvOverrides` treat
 | `AGENC_WORKSPACE` | Workspace root override |
 | `AGENC_MODEL` | Session model (`grok-4.6` when unset and config is fresh) |
 | `AGENC_PROVIDER` | Canonical provider slug. Retired selector spellings are rejected; use `grok` and `openai-compatible` directly |
-| `AGENC_EFFORT_LEVEL` | Reasoning effort captured into canonical session config: `low`, `medium`, `high`, `xhigh`, or `none`; other values are rejected |
+| `AGENC_EFFORT_LEVEL` | Captured as `reasoning_effort`: `low`, `medium`, `high`, `xhigh`, or `none`; other values are rejected. This is the Gemini thinking-depth setter (`thinkingConfig.thinkingLevel`); `/effort` on Gemini refuses. The settings fallback only forwards `low` / `medium` / `high`, so `xhigh` does not reach Gemini |
 | `AGENC_PROFILE` | Named config profile (`--profile`) |
 | `AGENC_AUTONOMOUS` | Truthy enables autonomous tick mode |
 | `AGENC_MAX_OUTPUT_TOKENS` | Positive integer output-token budget |
