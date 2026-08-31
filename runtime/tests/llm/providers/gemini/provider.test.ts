@@ -870,6 +870,10 @@ describe("GeminiProvider", () => {
         $defs: { Args: { type: "object", additionalProperties: false } },
       },
     },
+    {
+      label: "an object preserved by an overlapping oneOf under not",
+      schema: { type: "object", not: { oneOf: [{}, {}] } },
+    },
   ])("preserves $label tool root", async ({ schema }) => {
     const fetchImpl = successfulGeminiFetch();
     const provider = providerWithFetch(fetchImpl);
@@ -916,6 +920,28 @@ describe("GeminiProvider", () => {
     {
       label: "an object rejected by an always-true not schema",
       schema: { type: "object", not: {} },
+    },
+    {
+      label: "an object rejected by a single-branch oneOf under not",
+      schema: {
+        type: "object",
+        not: { oneOf: [{ type: "object" }] },
+      },
+    },
+    {
+      label: "an object rejected by a local reference under not",
+      schema: {
+        type: "object",
+        not: { $ref: "#/$defs/Object" },
+        $defs: { Object: { type: "object" } },
+      },
+    },
+    {
+      label: "an object rejected by an object-covering anyOf under not",
+      schema: {
+        type: "object",
+        not: { anyOf: [{ type: "object" }, { type: "string" }] },
+      },
     },
     {
       label: "an object type with a scalar enum",
@@ -973,7 +999,10 @@ describe("GeminiProvider", () => {
           function: {
             name: "invalid_root",
             description: "Invalid root",
-            parameters: { type: "object", not: {} },
+            parameters: {
+              type: "object",
+              not: { oneOf: [{ type: "object" }] },
+            },
           },
         },
       ];

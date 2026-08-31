@@ -1521,6 +1521,179 @@ function complementGeminiToolRootTypes(
   return new Set([...GEMINI_TOOL_ROOT_TYPES].filter((type) => !domain.has(type)));
 }
 
+function geminiToolSchemaAlwaysAcceptedBranchDomain(
+  branch: unknown,
+  path: string,
+  state: GeminiSchemaValidationState,
+  visiting: Set<Record<string, unknown>>,
+): ReadonlySet<string> {
+  if (branch === true) return GEMINI_TOOL_ROOT_TYPES;
+  if (branch === false || !isPlainSchemaObject(branch)) return new Set();
+  const resource = state.nodeResources.get(branch);
+  return resource === undefined
+    ? new Set()
+    : geminiToolSchemaAlwaysAcceptedDomain(
+        branch,
+        path,
+        resource,
+        state,
+        visiting,
+      );
+}
+
+function geminiToolSchemaAlwaysAcceptedReferenceDomain(
+  schema: Record<string, unknown>,
+  path: string,
+  resource: GeminiSchemaResource,
+  state: GeminiSchemaValidationState,
+  visiting: Set<Record<string, unknown>>,
+): ReadonlySet<string> | undefined {
+  if (!Object.hasOwn(schema, "$ref")) return undefined;
+  const referencePath = geminiSchemaChildPath(path, "$ref");
+  if (typeof schema.$ref !== "string" || schema.$ref.trim() === "") {
+    return new Set();
+  }
+  const resolved = resolveGeminiSchemaReference(
+    schema.$ref,
+    referencePath,
+    resource,
+    state,
+    "tool-root",
+  );
+  return resolved === undefined
+    ? new Set()
+    : geminiToolSchemaAlwaysAcceptedDomain(
+        resolved.schema,
+        state.nodePaths.get(resolved.schema) ?? referencePath,
+        resolved.resource,
+        state,
+        visiting,
+      );
+}
+
+function geminiToolSchemaAlwaysAcceptedAllOfDomain(
+  value: unknown,
+  path: string,
+  state: GeminiSchemaValidationState,
+  visiting: Set<Record<string, unknown>>,
+): ReadonlySet<string> | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) return new Set();
+  return value.reduce<ReadonlySet<string>>(
+    (domain, branch, index) =>
+      intersectGeminiToolRootTypes(
+        domain,
+        geminiToolSchemaAlwaysAcceptedBranchDomain(
+          branch,
+          `${path}[${index}]`,
+          state,
+          visiting,
+        ),
+      ),
+    GEMINI_TOOL_ROOT_TYPES,
+  );
+}
+
+function geminiToolSchemaAlwaysAcceptedAnyOfDomain(
+  value: unknown,
+  path: string,
+  state: GeminiSchemaValidationState,
+  visiting: Set<Record<string, unknown>>,
+): ReadonlySet<string> | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) return new Set();
+  return unionGeminiToolRootTypes(
+    value.map((branch, index) =>
+      geminiToolSchemaAlwaysAcceptedBranchDomain(
+        branch,
+        `${path}[${index}]`,
+        state,
+        visiting,
+      ),
+    ),
+  );
+}
+
+interface GeminiToolOneOfBranchDomains {
+  readonly always: ReadonlySet<string>;
+  readonly possible: ReadonlySet<string>;
+}
+
+function geminiToolSchemaOneOfBranchDomains(
+  branch: unknown,
+  path: string,
+  state: GeminiSchemaValidationState,
+  visiting: Set<Record<string, unknown>>,
+): GeminiToolOneOfBranchDomains {
+  const always = geminiToolSchemaAlwaysAcceptedBranchDomain(
+    branch,
+    path,
+    state,
+    visiting,
+  );
+  if (branch === true) {
+    return { always, possible: GEMINI_TOOL_ROOT_TYPES };
+  }
+  if (branch === false || !isPlainSchemaObject(branch)) {
+    return { always, possible: new Set() };
+  }
+  const resource = state.nodeResources.get(branch);
+  return {
+    always,
+    possible:
+      resource === undefined
+        ? new Set()
+        : geminiToolSchemaRootDomain(
+            branch,
+            path,
+            resource,
+            state,
+            visiting,
+          ),
+  };
+}
+
+function geminiToolOneOfAlwaysAcceptsType(
+  branches: readonly GeminiToolOneOfBranchDomains[],
+  type: string,
+): boolean {
+  const alwaysIndex = branches.findIndex((branch) => branch.always.has(type));
+  if (alwaysIndex === -1) return false;
+  if (
+    branches.findIndex(
+      (branch, index) => index > alwaysIndex && branch.always.has(type),
+    ) !== -1
+  ) {
+    return false;
+  }
+  return branches.every(
+    (branch, index) => index === alwaysIndex || !branch.possible.has(type),
+  );
+}
+
+function geminiToolSchemaAlwaysAcceptedOneOfDomain(
+  value: unknown,
+  path: string,
+  state: GeminiSchemaValidationState,
+  visiting: Set<Record<string, unknown>>,
+): ReadonlySet<string> | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) return new Set();
+  const branches = value.map((branch, index) =>
+    geminiToolSchemaOneOfBranchDomains(
+      branch,
+      `${path}[${index}]`,
+      state,
+      visiting,
+    ),
+  );
+  return new Set(
+    [...GEMINI_TOOL_ROOT_TYPES].filter((type) =>
+      geminiToolOneOfAlwaysAcceptsType(branches, type),
+    ),
+  );
+}
+
 function geminiToolSchemaAlwaysAcceptedDomain(
   schema: Record<string, unknown>,
   path: string,
@@ -1537,7 +1710,8 @@ function geminiToolSchemaAlwaysAcceptedDomain(
         key !== "type" &&
         key !== "$ref" &&
         key !== "allOf" &&
-        key !== "anyOf",
+        key !== "anyOf" &&
+        key !== "oneOf",
     );
     if (validatingKeys.length > 0) return new Set();
 
@@ -1548,78 +1722,43 @@ function geminiToolSchemaAlwaysAcceptedDomain(
         geminiToolExplicitTypeDomain(schema.type),
       );
     }
-    if (Object.hasOwn(schema, "$ref")) {
-      const referencePath = geminiSchemaChildPath(path, "$ref");
-      if (typeof schema.$ref !== "string" || schema.$ref.trim() === "") {
-        return new Set();
-      }
-      const resolved = resolveGeminiSchemaReference(
-        schema.$ref,
-        referencePath,
+    domain = constrainGeminiToolRootDomain(
+      domain,
+      geminiToolSchemaAlwaysAcceptedReferenceDomain(
+        schema,
+        path,
         resource,
         state,
-        "tool-root",
-      );
-      if (resolved === undefined) return new Set();
-      domain = intersectGeminiToolRootTypes(
-        domain,
-        geminiToolSchemaAlwaysAcceptedDomain(
-          resolved.schema,
-          state.nodePaths.get(resolved.schema) ?? referencePath,
-          resolved.resource,
-          state,
-          visiting,
-        ),
-      );
-    }
-    if (Object.hasOwn(schema, "allOf")) {
-      if (!Array.isArray(schema.allOf) || schema.allOf.length === 0) {
-        return new Set();
-      }
-      for (const [index, branch] of schema.allOf.entries()) {
-        if (branch === false) return new Set();
-        if (branch === true) continue;
-        if (!isPlainSchemaObject(branch)) return new Set();
-        const branchResource = state.nodeResources.get(branch);
-        if (branchResource === undefined) return new Set();
-        domain = intersectGeminiToolRootTypes(
-          domain,
-          geminiToolSchemaAlwaysAcceptedDomain(
-            branch,
-            `${geminiSchemaChildPath(path, "allOf")}[${index}]`,
-            branchResource,
-            state,
-            visiting,
-          ),
-        );
-      }
-    }
-    if (Object.hasOwn(schema, "anyOf")) {
-      if (!Array.isArray(schema.anyOf) || schema.anyOf.length === 0) {
-        return new Set();
-      }
-      const branchDomains = schema.anyOf.map(
-        (branch, index): ReadonlySet<string> => {
-          if (branch === true) return GEMINI_TOOL_ROOT_TYPES;
-          if (branch === false || !isPlainSchemaObject(branch)) return new Set();
-          const branchResource = state.nodeResources.get(branch);
-          return branchResource === undefined
-            ? new Set()
-            : geminiToolSchemaAlwaysAcceptedDomain(
-                branch,
-                `${geminiSchemaChildPath(path, "anyOf")}[${index}]`,
-                branchResource,
-                state,
-                visiting,
-              );
-        },
-      );
-      domain = intersectGeminiToolRootTypes(
-        domain,
-        unionGeminiToolRootTypes(branchDomains),
-      );
-    }
-    return domain;
+        visiting,
+      ),
+    );
+    domain = constrainGeminiToolRootDomain(
+      domain,
+      geminiToolSchemaAlwaysAcceptedAllOfDomain(
+        schema.allOf,
+        geminiSchemaChildPath(path, "allOf"),
+        state,
+        visiting,
+      ),
+    );
+    domain = constrainGeminiToolRootDomain(
+      domain,
+      geminiToolSchemaAlwaysAcceptedAnyOfDomain(
+        schema.anyOf,
+        geminiSchemaChildPath(path, "anyOf"),
+        state,
+        visiting,
+      ),
+    );
+    return constrainGeminiToolRootDomain(
+      domain,
+      geminiToolSchemaAlwaysAcceptedOneOfDomain(
+        schema.oneOf,
+        geminiSchemaChildPath(path, "oneOf"),
+        state,
+        visiting,
+      ),
+    );
   } finally {
     visiting.delete(schema);
   }
