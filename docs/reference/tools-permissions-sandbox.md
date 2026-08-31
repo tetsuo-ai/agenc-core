@@ -148,7 +148,7 @@ path. Model-facing search is `WebSearch` (plus gated `XSearch` when enabled).
 | `ExitPlanMode` | Exit plan mode (approval path) |
 | `VerifyPlanExecution` | Compare plan vs progress summary |
 | `WorkflowTool` | Bounded event-driven agent DAG runner; **deferred**. See [workflows.md](workflows.md) |
-| `CronCreate` / `CronDelete` / `CronList` | Local scheduled prompts (`.agenc/scheduled_tasks.json`); **deferred** |
+| `CronCreate` / `CronDelete` / `CronList` | Local scheduled prompts (`.agenc/scheduled_tasks.json`); **deferred**. Delivery-routed `webhook` URLs are public-egress only and address-pinned at fire time — see [autonomy.md](autonomy.md#cron-delivery-runtimesrcgatewaycron-deliveryts) |
 
 ### Interaction / user input
 

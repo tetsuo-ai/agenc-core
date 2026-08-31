@@ -59,7 +59,7 @@ history; the linked pages below are current product truth.
 | [reference/daemon.md](reference/daemon.md) | Daemon process model, socket auth, lifecycle |
 | [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes |
 | [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics |
-| [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery + hooks HTTP |
+| [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery (pinned webhook destinations) + hooks HTTP |
 | [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, correlated outcomes, and worktree evidence |
 | [reference/workflows.md](reference/workflows.md) | Version-2 agent DAG manifests, scheduling, handoff artifacts, limits, and result outcomes |
 | [reference/memory.md](reference/memory.md) | Persona, AGENC.md, auto-memory paths, full-corpus index, privacy |

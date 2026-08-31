@@ -229,7 +229,7 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | `AGENC_AUTO_COMPACT_WINDOW` | Positive integer context-window override used by compaction thresholds |
 | `AGENC_AUTOCOMPACT_PCT_OVERRIDE` | Percentage `1` to `100`; can only make automatic compaction fire earlier than the safety default |
 | `AGENC_DISABLE_LSP` | Do not start LSP |
-| `AGENC_DISABLE_CRON` | Skip local cron delivery |
+| `AGENC_DISABLE_CRON` | Disable CronCreate/List/Delete and the in-session scheduler. Delivery-routed jobs still need `agenc gateway run`; their webhook destinations are public-only and address-pinned ([autonomy.md](autonomy.md#webhook-destinations-pinned-fail-closed)) |
 | `AGENC_DISABLE_BACKGROUND_TASKS` | Block background tasks |
 | `AGENC_CODE_MODE` | `1`/`true`/`on` plus resolvable `quickjs-emscripten` registers LIVE `exec`/`wait` |
 | `AGENC_SHELL` | Absolute executable path whose filename is `bash` or `zsh`; an unsupported or non-executable explicit path fails instead of falling back |

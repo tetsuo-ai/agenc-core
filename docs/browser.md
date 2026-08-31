@@ -63,7 +63,12 @@ Precedence: **env > config.toml > built-in defaults** (`browser/config.ts`).
 ## SSRF / security posture
 
 - Default: **deny** private, loopback, and link-local destinations.
-- Cloud metadata endpoints remain blocked even when private network is allowed.
+- Cloud metadata endpoints remain blocked even when private network is allowed,
+  in every address representation (dotted IPv4, IPv4-mapped IPv6, scoped IPv6,
+  AWS IPv6 IMDS).
+- The same `resolveAllowedAddress` classifier also pins **cron webhook**
+  destinations (no private-network override there). See
+  [autonomy.md](reference/autonomy.md#webhook-destinations-pinned-fail-closed).
 - Only enable `allow_private_network` / `AGENC_BROWSER_ALLOW_PRIVATE_NETWORK=on`
   for intentional local-dev targets.
 - Treat page content as **untrusted work data** (same discipline as channel

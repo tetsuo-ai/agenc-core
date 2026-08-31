@@ -8,7 +8,7 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | [`reference/daemon.md`](reference/daemon.md)                                     | Daemon process, socket, protocol, lifecycle                                  |
 | [`reference/providers.md`](reference/providers.md)                               | Built-in providers, defaults, credentials, local context-window probes       |
-| [`reference/autonomy.md`](reference/autonomy.md)                                 | Budget, heartbeat, cron delivery, hooks HTTP                                 |
+| [`reference/autonomy.md`](reference/autonomy.md)                                 | Budget, heartbeat, cron delivery (pinned webhook destinations), hooks HTTP   |
 | [`design/execution-admission-kernel.md`](design/execution-admission-kernel.md)   | Live durable budget/admission design                                         |
 | [`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md) | Canonical run journal, effects, terminal results, replay, and crash recovery |
 | [`gateway.md`](gateway.md)                                                       | Channel gateway operator guide                                               |
@@ -266,7 +266,7 @@ lock creation; Windows lock paths are NTFS-only and do not accept ReFS.
 | Background agents | `agent.*` daemon methods / `agenc agent …` | Per-run `AgentBudgetConfig` caps only (not cumulative budget) |
 | Channel gateway   | `agenc gateway run` via SDK                | Telegram, Discord, Slack, WebChat, stdio                      |
 | Hooks HTTP        | Gateway hooks server                       | `POST /hooks/agent` (loopback, bearer token)                  |
-| Cron delivery     | Gateway cron delivery loop                 | Delivery-tagged tasks from `.agenc/scheduled_tasks.json`      |
+| Cron delivery     | Gateway cron delivery loop                 | Delivery-tagged tasks from `.agenc/scheduled_tasks.json`; outbound webhooks pin the resolved IP (no DNS rebinding) |
 | Embedding SDK     | `@tetsuo-ai/agenc-sdk` `connect()`         | Typed JSON-RPC client; also `promptViaSubprocess()`           |
 | Remote control    | `agenc remote` / remote auth backend       | See [`remote-control.md`](remote-control.md)                  |
 
@@ -420,7 +420,7 @@ Autonomous surfaces share one design: **fail closed, never silent spend**.
 | Surface                       | Module                                  | Daemon execution admission?                                                        |
 | ----------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------- |
 | Heartbeat ticks               | `heartbeat/` (wired from gateway run)   | **Yes**, inside its daemon-owned background session                                |
-| Cron delivery                 | `gateway/cron-delivery.ts`              | **Yes**, inside its daemon-owned background session                                |
+| Cron delivery                 | `gateway/cron-delivery.ts`              | **Yes**, inside its daemon-owned background session; webhook egress is address-pinned (public only) |
 | Hooks HTTP                    | `gateway/hooks.ts`                      | **Yes**, inside its daemon-owned background session; denial is HTTP 429            |
 | Interactive TUI / print turns | `session/`                              | **Yes** at model/tool boundaries; `[budget]` windows require `enforce_interactive` |
 | Background agent runs         | `app-server/background-agent-runner.ts` | **Yes**; unattended admission policy without enabling keepalive ticks              |
