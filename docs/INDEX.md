@@ -45,7 +45,7 @@ history; the linked pages below are current product truth.
 | [embedded-neovim-buffer.md](embedded-neovim-buffer.md) | Embedded Neovim workspace, multi-buffer safety, recovery, editor/chat handoff, configuration, troubleshooting, and hosted PTY split |
 | [browser.md](browser.md) | Browser tool, Chromium profile, SSRF proxy, `[browser]` config |
 | [imagine.md](imagine.md) | Grok ImagineImage / ImagineVideo tools (direct xAI only) |
-| [sdk.md](sdk.md) | Embed via `@tetsuo-ai/agenc-sdk` (socket + subprocess), including `startRun` model/provider and the generated transcript.v2 protocol slice |
+| [sdk.md](sdk.md) | Embed via `@tetsuo-ai/agenc-sdk` (socket + subprocess), including `startRun` model/provider, the generated transcript.v2 protocol slice, and marker-checked workflow-result types |
 | [security/slm-transaction-guard.md](security/slm-transaction-guard.md) | Opt-in SLM CourtGuard for Solana-like tool calls |
 | [security/mobile-ledger-transfer.md](security/mobile-ledger-transfer.md) | Typed Android `@ledger` SOL handoff: trust boundary, schemas, idempotency, recovery |
 
@@ -61,7 +61,7 @@ history; the linked pages below are current product truth.
 | [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics and `/compact` |
 | [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery (pinned webhook destinations) + hooks HTTP; autonomous keepalive stops after `compact_failed` |
 | [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, spawn `task_name` normalization, spawn preflight no-effect, deferred first message, worktree evidence, turn-scoped abort, and keep-alive `compact_failed` idle |
-| [reference/workflows.md](reference/workflows.md) | Version-2 agent DAG manifests, derived child agent names, scheduling, handoff artifacts, limits, and result outcomes |
+| [reference/workflows.md](reference/workflows.md) | Version-2 agent DAG manifests, derived child agent names, scheduling, handoff artifacts, limits, result outcomes, and public SDK result-type sync |
 | [reference/memory.md](reference/memory.md) | Persona, AGENC.md, auto-memory paths, full-corpus index, privacy |
 | [reference/mcp.md](reference/mcp.md) | MCP client and server, plugin-declared server precedence, model-facing inputSchema sanitization, omitted-type object schemas, model-facing tool text, and Landlock diagnostics |
 | [reference/skills-plugins.md](reference/skills-plugins.md) | Skills, `agenc skills list`, plugin registration, marketplace install, publisher signatures, plugin-update signature policy, explicit local install sources, HTTP(S) archive fetch limits, recorded-source redaction, native archive fetch error redaction, repository-controlled scope stripping, and canonical `plugins.allowlist` identity |

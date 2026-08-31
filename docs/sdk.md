@@ -139,7 +139,8 @@ not change their public shapes independently:
   manual refresh steps.
 - `packages/agenc-sdk/src/workflow-result.generated.ts` mirrors workflow result
   contracts whose source schemas live under `runtime/src/agents/`. The same
-  generated-type command checks selected version and outcome markers.
+  generated-type command checks selected version and outcome markers. See
+  [Workflow result generated mirror](#workflow-result-generated-mirror).
 - `packages/agenc-sdk/src/workflow-handoff.generated.ts` mirrors the workflow
   handoff schema under `runtime/src/agents/`. Run
   `npm exec --workspace=@tetsuo-ai/runtime -- vitest run tests/sdk-package/workflow-handoff.contract.test.ts`
@@ -485,7 +486,7 @@ of the public surface:
 | --- | --- | --- |
 | Method registry and handwritten params/result maps | `packages/agenc-sdk/src/protocol.ts` | `runtime/tests/sdk-package/protocol-drift.contract.test.ts` compares `AGENC_SDK_DAEMON_METHODS` / `AGENC_SDK_DAEMON_NOTIFICATION_METHODS` to the runtime arrays (names **and** order) and requires a params/result map entry for every method |
 | `session.transcript.v2` result shapes | `runtime/src/app-server/protocol/index.ts` | `check:sdk-generated-types` renders `transcript-v2.generated.ts` and compares the complete committed file after newline normalization |
-| Workflow result contract markers | `runtime/src/entrypoints/sdk/coreSchemas.ts`, `coreTypes.generated.ts`, and `packages/agenc-sdk/src/workflow-result.generated.ts` | The same check requires selected version and outcome markers. It does not compare the complete file |
+| Workflow result contract markers | `runtime/src/agents/workflow-result.ts`, `coreSchemas.ts`, `coreTypes.generated.ts`, and `packages/agenc-sdk/src/workflow-result.generated.ts` | The same check requires selected version and outcome markers. It does not compare the complete file. Refresh and the extra contract-test lock: [Workflow result generated mirror](#workflow-result-generated-mirror) |
 | Workflow handoff contract markers | `runtime/src/entrypoints/sdk/coreSchemas.ts` and `coreTypes.generated.ts` | The same check requires selected runtime handoff markers. It does not read or structurally compare `packages/agenc-sdk/src/workflow-handoff.generated.ts` |
 
 `runtime/tests/sdk-package/workflow-handoff.contract.test.ts` supplies separate
@@ -551,6 +552,72 @@ Constraints:
 | `must extend JsonObject` | A mirrored interface dropped or changed its heritage |
 | `transcriptV2()` type-checks but a new field is only `JsonObject` | The generated file was not refreshed; `protocol.ts` re-exports those interfaces |
 
+### Workflow result generated mirror
+
+`runtime/scripts/check-sdk-generated-types.mjs` reads
+`packages/agenc-sdk/src/workflow-result.generated.ts` and requires these
+substrings:
+
+- `export const AGENC_WORKFLOW_RESULT_VERSION = 2 as const`
+- `export const AGENC_WORKFLOW_STEP_OUTCOMES_V2`
+- `export const AGENC_WORKFLOW_RUN_OUTCOMES_V2`
+- `export interface WorkflowRunResultV2`
+- `"blocked_dependency_unknown"`
+- `"unknown_outcome"`
+
+It does **not** render or compare the complete file. Changing a field type,
+optionality, property order, cancellation-cause list, or numeric limit does
+not fail this check. Runtime `coreSchemas.ts` and `coreTypes.generated.ts`
+have their own selected marker lists (handoff markers live only there).
+
+Authorities:
+
+| Public export | Runtime authority |
+| --- | --- |
+| Version, step/run outcome unions, cancellation causes | `runtime/src/agents/workflow-result.ts` |
+| `AGENC_DEFAULT_WORKFLOW_MAX_CONCURRENCY` / `AGENC_MAX_WORKFLOW_MAX_CONCURRENCY` / handoff-token defaults and max | `runtime/src/agents/workflow-manifest-schema.ts` |
+| `AGENC_MAX_WORKFLOW_FINAL_RESPONSE_BYTES` | `runtime/src/agents/workflow-handoff-schema.ts` |
+
+The checker does **not** write the file. Refresh is a synchronized manual
+replacement from those authorities.
+
+Refresh after a result-contract edit:
+
+1. Change the runtime authority first (`workflow-result.ts` and, for limits,
+   the manifest or handoff schema module).
+2. Keep the selected `coreSchemas.ts` / `coreTypes.generated.ts` markers in
+   sync when those files declare the same literals.
+3. Manually update `packages/agenc-sdk/src/workflow-result.generated.ts`.
+   Preserve export names, frozen array order, and `as const` on the version
+   and numeric limits.
+4. Run `npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types`.
+5. `runtime/tests/sdk-package/workflow-result.contract.test.ts` compares the
+   public version, outcome unions, cancellation causes, and limit constants
+   with the runtime modules. It also parses a valid `WorkflowRunResultV2`
+   through `WorkflowRunResultV2Schema` and rejects legacy scheduler states
+   (`errored`, `interrupted`, `aborted`, `skipped`, `queued`, `running`) plus
+   `workflow_result_version: 1`.
+
+Constraints:
+
+- Outcome and cancellation field semantics stay in
+  [workflows.md](reference/workflows.md#failures-and-results). This page
+  only covers how the public types stay in sync.
+- The public handoff file is a separate, weaker guard: the generated-type
+  command does not read
+  `packages/agenc-sdk/src/workflow-handoff.generated.ts`.
+  [#1941](https://github.com/tetsuo-ai/agenc-core/issues/1941) tracks
+  structural parity for that file. Do not treat a green generated-type
+  check as proof the handoff mirror is current.
+- Leading comments and interface member lists are outside the marker check.
+
+| Symptom | What to check |
+| --- | --- |
+| `is missing workflow result marker` | A required substring was renamed or dropped in `workflow-result.generated.ts`, `coreSchemas.ts`, or `coreTypes.generated.ts` |
+| Check passes but embedders see a stale field or limit | Expected. Refresh the generated file and rely on `workflow-result.contract.test.ts` for unions and limits |
+| `workflow-result.contract.test.ts` rejects a step outcome | Version-2 results do not accept live scheduler states or pre-v2 names such as `errored` or `skipped` |
+| Handoff constants drifted but generated-types is green | Expected. That public file is not in the generated-type read set |
+
 Event semantics (streamed text extraction, terminal-status detection) mirror
 the CLI's daemon one-shot path in `runtime/src/bin/agenc-main.ts`
 (`daemonOneShotMessageChunk` / `daemonOneShotFinalStatus`), so an embedder
@@ -563,6 +630,8 @@ sees the same output and completion behavior as `agenc -p`.
 - `protocol-drift.contract.test.ts` — mirror pinned to the runtime registry.
 - `transcript-v2.contract.test.ts` compares generated result shapes with the
   daemon protocol and checks that `transcriptV2()` preserves typed `turnResults`.
+- `workflow-result.contract.test.ts` compares public version, outcome, and
+  cancellation unions plus limit constants with the runtime modules.
 - `client-inprocess.contract.test.ts` — full connect → createSession →
   prompt event stream and permission round-trips against a fake daemon hosted
   on the **real** in-process transport (real dispatcher, session lifecycle,
