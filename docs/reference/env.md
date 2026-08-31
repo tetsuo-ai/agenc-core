@@ -165,17 +165,21 @@ other than `anthropic` and `agenc` never read:
   `AGENC_OAUTH_TOKEN`)
 
 Grok, OpenAI, openai-compatible, Gemini, and the other BYOK slugs use only
-the aliases in the table above plus that provider's own native sign-in
-namespace. Setting `ANTHROPIC_API_KEY` does not authenticate a grok session.
-Those slugs also skip the Anthropic secure-storage read that would otherwise
-run on first TUI paint (Windows DPAPI / macOS Keychain).
+the aliases in the table above and provider-scoped saved BYOK credentials
+where supported. Grok and OpenAI also have dedicated OAuth commands.
+The `openai-compatible` provider has no OAuth command; use
+`OPENAI_COMPATIBLE_API_KEY`, its
+documented `OPENAI_API_KEY` fallback, or a provider-scoped saved BYOK
+credential. Setting `ANTHROPIC_API_KEY` does not authenticate a Grok session.
+External-provider slugs also skip the Anthropic secure-storage read that would
+otherwise run on first TUI paint (Windows DPAPI / macOS Keychain).
 
-The TUI footer "Not logged in · Run `/login`" is gated by
-`usesAnthropicAccountFlow` (`runtime/src/utils/model/providers.ts`). That
-helper is first-party only: `anthropic` and `amazon-bedrock`. A working grok
-or openai-compatible BYOK session is not "logged out". Anthropic-scoped
-startup notices (`getActiveNotices` with `authScope: "anthropic"`) stay
-empty for every external slug.
+The TUI login footer is gated by `usesAnthropicAccountFlow`
+(`runtime/src/utils/model/providers.ts`). That helper is first-party only:
+`anthropic` and `amazon-bedrock`. A Grok or openai-compatible session does not
+show that footer when its provider selection is correct. Anthropic-scoped
+startup notices (`getActiveNotices` with `authScope: "anthropic"`) stay empty
+for every external slug.
 
 `agenc` is grouped with `anthropic` for this gate so managed-account lookup
 still works. `amazon-bedrock` uses AWS SigV4 aliases and does not read
@@ -183,8 +187,8 @@ still works. `amazon-bedrock` uses AWS SigV4 aliases and does not read
 
 | Symptom | Cause |
 | --- | --- |
-| Grok or openai-compatible reports missing credentials while `ANTHROPIC_API_KEY` is set | That env is Anthropic-only. Use `XAI_API_KEY` / `GROK_API_KEY`, or `OPENAI_COMPATIBLE_API_KEY` |
-| TUI says "Not logged in" on a working grok session | The footer is first-party only. Use `/grok-login` or a grok BYOK key; `/login` is the AgenC account, not xAI |
+| Grok or openai-compatible reports missing credentials while `ANTHROPIC_API_KEY` is set | That variable is Anthropic-only. Use `XAI_API_KEY` / `GROK_API_KEY`, or `OPENAI_COMPATIBLE_API_KEY` |
+| TUI shows the login footer when Grok was intended | The active session is on a first-party provider | Run `/provider` and select `grok`, then use `/grok-login` or a Grok BYOK key if credentials are missing. `/login` is the AgenC account, not xAI |
 | `ANTHROPIC_UNIX_SOCKET` is set but grok ignores the ssh proxy | The proxy path is Anthropic-only; provider identity is decided first |
 
 ## Daemon
