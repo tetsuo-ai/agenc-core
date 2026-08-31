@@ -688,6 +688,50 @@ describe("admitted model sample identity", () => {
     expect(runTurn).toHaveBeenCalledTimes(1);
   });
 
+  test("preserves a pre-existing pending switch even when its route matches the checkpoint", async () => {
+    const pending = Object.freeze({ provider: "openai", model: "gpt-5" });
+    const prepareProviderSwitch = vi.fn();
+    const consumePendingProviderSwitchTransaction = vi.fn();
+    const runTurn = vi.fn();
+    const session = {
+      config: {
+        durableTurns: {
+          resume: {
+            onRestart: true,
+            requireLease: false,
+            buildPinning: false,
+          },
+        },
+      },
+      pendingProviderSwitch: pending,
+      providerBinding: {
+        provider: "grok",
+        model: "grok-4.5",
+      },
+      prepareProviderSwitch,
+      stagePreparedProviderSwitch: vi.fn(),
+      consumePendingProviderSwitchTransaction,
+      emit: vi.fn(),
+      nextInternalSubId: () => "provider-restore-pending",
+      services: { registry: { tools: [] } },
+      runTurn,
+    } as unknown as Parameters<typeof resumeTurnFromCheckpoint>[0];
+
+    await expect(
+      resumeTurnFromCheckpoint(
+        session,
+        fallbackReconstruction({ provider: "openai", model: "gpt-5" }),
+      ),
+    ).resolves.toEqual({
+      resumed: false,
+      reason: "provider-restore-failed",
+    });
+    expect(session.pendingProviderSwitch).toBe(pending);
+    expect(prepareProviderSwitch).not.toHaveBeenCalled();
+    expect(consumePendingProviderSwitchTransaction).not.toHaveBeenCalled();
+    expect(runTurn).not.toHaveBeenCalled();
+  });
+
   test("declines resume when the fallback provider cannot be restored", async () => {
     const emit = vi.fn();
     const runTurn = vi.fn();
@@ -740,5 +784,57 @@ describe("admitted model sample identity", () => {
         },
       }),
     );
+  });
+
+  test("marks rollback failure as unsafe for startup fresh-turn fallback", async () => {
+    const runTurn = vi.fn();
+    const terminalReason =
+      "provider state publication failed; rollback failed: live revision changed";
+    const session = {
+      config: {
+        durableTurns: {
+          resume: {
+            onRestart: true,
+            requireLease: false,
+            buildPinning: false,
+          },
+        },
+      },
+      pendingProviderSwitch: null,
+      providerBinding: {
+        provider: "grok",
+        model: "grok-4.5",
+      },
+      prepareProviderSwitch: vi.fn(
+        async (pending: {
+          readonly provider: string;
+          readonly model: string;
+        }) => ({
+          pending,
+        }),
+      ),
+      stagePreparedProviderSwitch: vi.fn(),
+      consumePendingProviderSwitchTransaction: vi.fn(async () => ({
+        status: "terminal-failure" as const,
+        reason: terminalReason,
+      })),
+      emit: vi.fn(),
+      nextInternalSubId: () => "provider-restore-terminal",
+      services: { registry: { tools: [] } },
+      runTurn,
+    } as unknown as Parameters<typeof resumeTurnFromCheckpoint>[0];
+
+    await expect(
+      resumeTurnFromCheckpoint(
+        session,
+        fallbackReconstruction({ provider: "openai", model: "gpt-5" }),
+      ),
+    ).resolves.toEqual({
+      resumed: false,
+      reason: "provider-restore-failed",
+      freshTurnAllowed: false,
+      failureDetail: terminalReason,
+    });
+    expect(runTurn).not.toHaveBeenCalled();
   });
 });

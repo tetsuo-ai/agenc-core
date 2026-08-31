@@ -707,6 +707,10 @@ export interface DurableResumeAttempt {
     | "lease-unavailable";
   /** Tool names the safe policy halted on (surfaced, not retried). */
   readonly halted?: ReadonlyArray<string>;
+  /** False when provider restoration could not prove an exact rollback. */
+  readonly freshTurnAllowed?: false;
+  /** Operator-facing detail for a terminal provider restoration failure. */
+  readonly failureDetail?: string;
 }
 
 /**
@@ -769,19 +773,39 @@ function providerRouteMatches(
   );
 }
 
+type CheckpointProviderRestoreOutcome =
+  | { readonly status: "restored" }
+  | {
+      readonly status: "clean-rejection" | "terminal-failure";
+      readonly reason: string;
+    };
+
+function rejectCheckpointProviderRestore(
+  session: Session,
+  turn: ResumableTurn,
+  reason: string,
+  status: "clean-rejection" | "terminal-failure" = "clean-rejection",
+): CheckpointProviderRestoreOutcome {
+  try {
+    emitProviderRestoreFailure(session, turn.turnId, reason);
+  } catch {
+    // The structured outcome remains authoritative if warning persistence fails.
+  }
+  return { status, reason };
+}
+
 async function restoreCheckpointProviderRoute(
   session: Session,
   turn: ResumableTurn,
-): Promise<boolean> {
+): Promise<CheckpointProviderRestoreOutcome> {
   const fallback = turn.lastCheckpoint.resumableState.pendingAdmissionFallback;
-  if (fallback === undefined) return true;
+  if (fallback === undefined) return { status: "restored" };
   if (fallback.toProvider === undefined) {
-    emitProviderRestoreFailure(
+    return rejectCheckpointProviderRestore(
       session,
-      turn.turnId,
+      turn,
       "the checkpoint does not identify the target provider",
     );
-    return false;
   }
 
   const target = {
@@ -789,53 +813,49 @@ async function restoreCheckpointProviderRoute(
     model: fallback.toModel,
   };
   const pending = session.pendingProviderSwitch;
-  if (pending !== null && !providerRouteMatches(target, pending)) {
-    emitProviderRestoreFailure(
+  if (pending !== null) {
+    return rejectCheckpointProviderRestore(
       session,
-      turn.turnId,
+      turn,
       "another provider switch is already pending",
     );
-    return false;
   }
 
   const active = session.providerBinding;
-  if (pending === null && providerRouteMatches(target, active)) {
-    return true;
+  if (providerRouteMatches(target, active)) {
+    return { status: "restored" };
   }
 
   try {
-    if (pending === null) {
-      const prepared = await session.prepareProviderSwitch(target);
-      if (!providerRouteMatches(target, prepared.pending)) {
-        emitProviderRestoreFailure(
-          session,
-          turn.turnId,
-          "the resolved provider route does not match the checkpoint",
-        );
-        return false;
-      }
-      session.stagePreparedProviderSwitch(prepared, null);
-    }
-
-    const outcome = await session.consumePendingProviderSwitch();
-    const restored = session.providerBinding;
-    if (outcome.applied !== true || !providerRouteMatches(target, restored)) {
-      emitProviderRestoreFailure(
+    const prepared = await session.prepareProviderSwitch(target);
+    if (!providerRouteMatches(target, prepared.pending)) {
+      return rejectCheckpointProviderRestore(
         session,
-        turn.turnId,
-        outcome.reason ??
-          "the provider switch did not commit the checkpoint route",
+        turn,
+        "the resolved provider route does not match the checkpoint",
       );
-      return false;
     }
-    return true;
+    session.stagePreparedProviderSwitch(prepared, null);
+
+    const outcome = await session.consumePendingProviderSwitchTransaction();
+    if (outcome.status === "terminal-failure") {
+      return rejectCheckpointProviderRestore(
+        session,
+        turn,
+        outcome.reason,
+        "terminal-failure",
+      );
+    }
+    if (outcome.status === "clean-rejection") {
+      return rejectCheckpointProviderRestore(session, turn, outcome.reason);
+    }
+    return { status: "restored" };
   } catch (error) {
     const reason =
       error instanceof Error && error.message.length > 0
         ? error.message
         : "provider restoration failed";
-    emitProviderRestoreFailure(session, turn.turnId, reason);
-    return false;
+    return rejectCheckpointProviderRestore(session, turn, reason);
   }
 }
 
@@ -948,11 +968,12 @@ async function driveResumedTurn(
  * Attempt to resume-CONTINUE an interrupted turn from its last durable
  * checkpoint instead of discarding it and starting fresh.
  *
- * Safety gates (ALL must hold; any failure → caller falls back to today's
- * fresh turn): config enables resume, the build pin matches (§3.6), the raw
- * persisted checkpoint passes the A3 integrity gate, and the single-writer
- * resume lease is acquired (§3.5). Dangling `tool_use` blocks are classified by the
- * EXISTING `recoveryCategory` via `isResumeReplaySafe`: side-effecting /
+ * Safety gates (ALL must hold): config enables resume, the build pin matches
+ * (§3.6), the raw persisted checkpoint passes the A3 integrity gate, and the
+ * single-writer resume lease is acquired (§3.5). A clean rejection may fall
+ * back to a fresh turn. An incomplete provider rollback fences the session.
+ * Dangling `tool_use` blocks are classified by the EXISTING
+ * `recoveryCategory` via `isResumeReplaySafe`: side-effecting /
  * interactive dangling tools HALT and surface (never auto-re-dispatch) —
  * the on-chain-safety property — while read-only ones re-run on the fresh
  * sampling request.
@@ -981,8 +1002,18 @@ export async function resumeTurnFromCheckpoint(
   }
 
   try {
-    if (!(await restoreCheckpointProviderRoute(session, turn))) {
-      return { resumed: false, reason: "provider-restore-failed" };
+    const providerRestore = await restoreCheckpointProviderRoute(session, turn);
+    if (providerRestore.status !== "restored") {
+      return {
+        resumed: false,
+        reason: "provider-restore-failed",
+        ...(providerRestore.status === "terminal-failure"
+          ? {
+              freshTurnAllowed: false as const,
+              failureDetail: providerRestore.reason,
+            }
+          : {}),
+      };
     }
     const plan = planDanglingToolResume(session, turn);
     await driveResumedTurn(session, reconstruction, turn, plan);
@@ -1004,19 +1035,28 @@ async function defaultStartupPrewarm({
   // GOAL #4b Stage 1 — if reconstruction surfaced an orphaned in-flight turn
   // with a valid durable checkpoint (and the build/prefix/lease gates pass),
   // resume-CONTINUE it instead of discarding it for a fresh default turn.
-  // Any failure or absence falls through to EXACTLY today's behavior —
-  // byte-identical for sessions with no checkpoint (backward compat).
+  // Absence and clean rejection retain the existing fresh-turn behavior.
+  // An incomplete provider rollback stops startup before a fresh context can
+  // use state whose authority is no longer provable.
   const reconstruction = lastReconstructionBySession.get(session);
   if (reconstruction !== undefined) {
+    let attempt: DurableResumeAttempt | undefined;
     try {
-      const attempt = await resumeTurnFromCheckpoint(session, reconstruction);
-      if (attempt.resumed) {
-        await scheduleProviderStartupPrewarm(session, threadId);
-        return;
-      }
+      attempt = await resumeTurnFromCheckpoint(session, reconstruction);
     } catch {
       // Resume is strictly best-effort; never let it block boot. Fall
       // through to the legacy fresh-turn prewarm.
+    }
+    if (attempt?.resumed === true) {
+      await scheduleProviderStartupPrewarm(session, threadId);
+      return;
+    }
+    if (attempt?.freshTurnAllowed === false) {
+      throw new Error(
+        `startup halted after an incomplete checkpoint provider restore: ${
+          attempt.failureDetail ?? "provider state could not be restored"
+        }`,
+      );
     }
   }
   session.newDefaultTurn();
