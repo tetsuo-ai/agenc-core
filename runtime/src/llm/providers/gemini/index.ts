@@ -426,10 +426,17 @@ function geminiSchemaChildPath(path: string, key: string): string {
     : `${path}[${JSON.stringify(key)}]`;
 }
 
+function geminiSchemaHasAnyOfUnion(schema: Record<string, unknown>): boolean {
+  return Array.isArray(schema.anyOf) && schema.anyOf.length > 0;
+}
+
 /**
- * Gemini Schema.type is one required proto enum. Preserve a null-only schema,
- * and lower one concrete JSON Schema type plus null to `type` + `nullable`.
- * Multiple concrete types cannot be expressed without changing validation
+ * Gemini Schema.type is one proto enum when present. Preserve a null-only
+ * schema, and lower one concrete JSON Schema type plus null to `type` +
+ * `nullable`. A parent `anyOf` is Gemini's documented union form and does
+ * not carry a sibling type — FileRead.offset/limit, searchTools.select, and
+ * exec_command.sandbox_permissions all use that shape. Multiple concrete
+ * types in a `type` array cannot be expressed without changing validation
  * semantics, so reject them before provider dispatch.
  */
 function normalizeGeminiSchemaType(
@@ -444,6 +451,9 @@ function normalizeGeminiSchemaType(
         `unsupported type ${JSON.stringify(typeValue)}`,
       );
     }
+    return;
+  }
+  if (typeValue === undefined && geminiSchemaHasAnyOfUnion(schema)) {
     return;
   }
   if (!Array.isArray(typeValue)) {

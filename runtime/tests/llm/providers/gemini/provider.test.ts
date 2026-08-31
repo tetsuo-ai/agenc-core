@@ -661,6 +661,99 @@ describe("GeminiProvider", () => {
     ]);
   });
 
+  test("compiles default-tool anyOf unions that omit a parent type", async () => {
+    const fileReadTool: LLMTool = {
+      type: "function",
+      function: {
+        name: "FileRead",
+        description: "Read a file",
+        parameters: {
+          type: "object",
+          properties: {
+            file_path: { type: "string" },
+            offset: {
+              anyOf: [
+                { type: "number" },
+                { type: "string", pattern: "^[1-9]\\d*$" },
+              ],
+              description: "Optional. Line number to start from.",
+            },
+            limit: {
+              anyOf: [
+                { type: "number" },
+                { type: "string", pattern: "^[1-9]\\d*$" },
+              ],
+            },
+          },
+          required: ["file_path"],
+        },
+      },
+    };
+    const searchToolsTool: LLMTool = {
+      type: "function",
+      function: {
+        name: "system.searchTools",
+        description: "Search the tool catalog",
+        parameters: {
+          type: "object",
+          properties: {
+            select: {
+              anyOf: [
+                { type: "string" },
+                { type: "array", items: { type: "string" } },
+              ],
+            },
+          },
+        },
+      },
+    };
+    const fetchImpl = successfulGeminiFetch();
+    const provider = providerWithFetch(fetchImpl);
+
+    await provider.chat([{ role: "user", content: "read file" }], {
+      tools: [fileReadTool, searchToolsTool],
+    });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const declarations = (
+      (requestBody.tools as readonly Record<string, unknown>[])[0]
+        ?.functionDeclarations as readonly Record<string, unknown>[]
+    );
+    const fileRead = declarations.find((tool) => tool.name === "FileRead");
+    const searchTools = declarations.find(
+      (tool) => tool.name === "system.searchTools",
+    );
+    const fileReadParams = fileRead?.parameters as {
+      readonly properties: {
+        readonly offset: Record<string, unknown>;
+        readonly limit: Record<string, unknown>;
+      };
+    };
+    const searchParams = searchTools?.parameters as {
+      readonly properties: { readonly select: Record<string, unknown> };
+    };
+    expect(fileReadParams.properties.offset).toEqual({
+      description: "Optional. Line number to start from.",
+      anyOf: [
+        { type: "number" },
+        { type: "string", pattern: "^[1-9]\\d*$" },
+      ],
+    });
+    expect(fileReadParams.properties.limit).toEqual({
+      anyOf: [
+        { type: "number" },
+        { type: "string", pattern: "^[1-9]\\d*$" },
+      ],
+    });
+    expect(searchParams.properties.select).toEqual({
+      anyOf: [
+        { type: "string" },
+        { type: "array", items: { type: "string" } },
+      ],
+    });
+  });
+
   test("uses the same Gemini schema compiler for structured output", async () => {
     const fetchImpl = successfulGeminiFetch('{"answer":null}');
     const provider = providerWithFetch(fetchImpl);
