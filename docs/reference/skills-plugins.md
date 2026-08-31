@@ -40,7 +40,7 @@ Existing directories only (missing roots skipped). Project walk: cwd up to home.
 The runtime command catalog and `/skills` use this same discovery result.
 `/skills` can list roots and manage project skills; bundled skills are tagged
 `[bundled]`. Headless clients that must not open a session use
-[`agenc skills list`](#cli-agenc-skills-list) instead. Local-snapshot
+[`agenc skills list`](#agenc-skills-list-cli) instead. Local-snapshot
 inventory rows preserve `whenToUse` and `argumentHint` when declared,
 including inline built-ins that have no `SKILL.md` a client could open.
 Registry-only bundled fallback rows currently expose their descriptions but
@@ -59,9 +59,13 @@ literal placeholder was not rendered from a plugin root.
 
 ### Bundled skills
 
-`registerBundledSkill` in `bundledSkills.ts` currently registers only these
-two. They are compiled into the runtime and appear as `origin: "built-in"`
-on `agenc skills list`.
+The local loader defines eleven built-in skills: `update-config`,
+`keybindings`, `debug`, `simplify`, `batch`, `loop`, `agenc-in-browser`,
+`schedule-agents`, `agenc-api`, `ledger-wallet-cli`, and `verify`.
+
+Separately, `registerBundledSkill` in `bundledSkills.ts` registers these two
+commands. They are compiled into the runtime and appear as
+`origin: "built-in"` on `agenc skills list`.
 
 | Name | Purpose |
 | --- | --- |
@@ -98,13 +102,13 @@ Parsed fields include:
 Author under e.g. `.agenc/skills/my-skill/SKILL.md` in the project or
 `$AGENC_HOME/skills/my-skill/SKILL.md` for user-global skills.
 
-### CLI: `agenc skills list`
+### `agenc skills list` CLI
 
-Readonly inventory of every skill this runtime would serve from the local
-snapshot plus the registered bundled skills. Desktop and other GUI clients
-use it so they can show the same listing `/skills` uses for disk-backed and
-bundled skills **without opening a session**. It never mutates config,
-never installs, and never prints skill bodies.
+Inventory of the local-loader snapshot plus the registered bundled skills.
+Desktop and other GUI clients can use it without opening a session. It does
+not change config, install content, or print skill bodies. Ordinary runtime
+initialization can create runtime directories, and plugin discovery can
+migrate legacy plugin-data directories.
 
 ```text
 agenc skills list
@@ -125,8 +129,8 @@ agenc skills list --json
   "skills": [
     {
       "name": "verify",
-      "description": "…",
-      "whenToUse": "…",
+      "description": "Checks the requested behavior.",
+      "whenToUse": "Use after making a change.",
       "origin": "built-in",
       "root": "/path/to/skill",
       "userInvocable": true
@@ -140,7 +144,7 @@ agenc skills list --json
 | --- | --- |
 | `origin` | `built-in`, `personal`, `project`, `plugin`, or `managed` |
 | `pluginRoot` | Owning plugin directory; present only for `plugin` origin |
-| `root` | Skill directory. Empty string for registry-only bundled rows that have no on-disk `SKILL.md` |
+| `root` | Loader discovery root for disk-backed skills. Inline built-ins use their prospective extraction directory. Empty string for registry-only bundled rows with no local-loader entry |
 | `whenToUse` / `argumentHint` | Omitted when empty. Registry-only bundled fallback rows currently omit both even when the in-session command has them |
 | `conditional` | `true` when the skill activates only for configured paths |
 | `errors` | Config or bundled-registry failures. A config load error still lists personal/project/built-in rows and skips plugin skills |
@@ -148,34 +152,37 @@ agenc skills list --json
 Text mode prints one line per skill, sorted by origin then name:
 
 ```text
-[built-in] verify — …
-[personal] my-notes — …
-[plugin] demo-skill — …
+[built-in] verify — Plan and run a concrete verification pass.
+[personal] my-notes — Consult personal project notes.
+[plugin] demo-skill — Use the demo plugin workflow.
 ```
 
-Errors go to stderr as `agenc: …`. Both text and JSON always exit **0**
+Errors go to stderr with an `agenc: ` prefix. Both text and JSON return **0**
 after emitting the document, so callers must inspect `errors[]`.
 
 Workspace is `process.cwd()`. Home and plugin storage follow
 `AGENC_HOME` and the captured `pluginStorageRoot`
 (`AGENC_PLUGIN_CACHE_DIR` replaces `$AGENC_HOME/plugins` as one unit).
-No daemon is required. `--bare` is a session ingress flag and does not
-change this CLI; a `--bare` TUI session still skips skill discovery for
+No daemon or session is required. `--bare` is a session ingress flag and does
+not change this CLI; a `--bare` TUI session still skips skill discovery for
 that session only.
 
 #### Constraints
 
 - The parser accepts only `agenc skills list` and optional `--json`.
-  `agenc skills`, `agenc skills --help`, `agenc skills install …`, and any
+  `agenc skills`, `agenc skills --help`, `agenc skills install <name>`, and any
   extra flag return `null` from `parseAgenCSkillsCliArgs` and fall through
   to the default CLI route, which treats the tokens as a **session prompt**.
   Use `agenc help skills` for syntax.
 - Top-level `agenc help` / `agenc --help` does not list this command.
 - This is not `agenc plugin`. Skills are authored capabilities; plugins
   are the installable distribution unit.
-- The CLI does **not** fold `getBuiltinPluginSkillCommands()`. `/skills`
-  does, so an in-package plugin skill (none are registered today) can
-  appear in the TUI listing and still be absent from `agenc skills list`.
+- This inventory is not identical to `/skills`. It includes inactive
+  path-conditional rows with `conditional: true` and preserves same-name rows
+  from different origins. It omits MCP skills, live invocation state, the
+  effective skill-root summary, and the builtin-plugin command seam. Therefore,
+  an in-package plugin skill (none are registered today) can appear in
+  `/skills` and remain absent from `agenc skills list`.
 - Duplicate `origin:name` keys keep the first row (local snapshot before
   the bundled-registry fallback).
 

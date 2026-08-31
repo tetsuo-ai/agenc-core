@@ -601,25 +601,28 @@ agenc skills list
 agenc skills list --json
 ```
 
-Readonly skill inventory for the current cwd and `AGENC_HOME`. Desktop
-clients use this instead of opening a session to read `/skills`. It never
-installs or prints skill bodies.
+Skill inventory for the current cwd and `AGENC_HOME`. Desktop clients can use
+this instead of opening a session to read `/skills`. It does not install
+content or print skill bodies. Normal runtime initialization can still create
+runtime directories or migrate legacy plugin-data directories.
 
 ```bash
 agenc skills list --json
 ```
 
 `--json` emits `{ schemaVersion: 1, kind: "agenc.skills.inventory", skills, errors }`.
-Text mode prints `[origin] name — description`. Both modes exit 0; inspect
-`errors[]` (or stderr in text mode) for config/registry failures.
+Text mode prints `[origin] name — description`. After an inventory is emitted,
+both modes exit 0; inspect `errors[]` (or stderr in text mode) for
+config/registry failures.
 
 Only `list` plus optional `--json` is a skills command. `agenc skills` or
 `agenc skills --help` is **not** help: the parser rejects it and the default
 route treats those tokens as a prompt. Use `agenc help skills`. Top-level
 `agenc help` does not list this command.
 
-This is not `agenc plugin`. Details, JSON fields, and the `/skills` delta:
-[skills-plugins.md](skills-plugins.md#cli-agenc-skills-list).
+This is not `agenc plugin`. Details, JSON fields, and differences from
+`/skills`:
+[skills-plugins.md](skills-plugins.md#agenc-skills-list-cli).
 
 ---
 
