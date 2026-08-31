@@ -121,7 +121,7 @@ list`). `Schema.type` is a single proto enum, not a repeating field.
 `properties`, `required`, `anyOf`, numeric/length bounds, `pattern`, and
 other documented keys). It then walks `properties`, `items`, and `anyOf`
 recursively and **lowers** type arrays before dispatch. `oneOf` / `allOf` /
-`$ref` are not on the allowlist; they are dropped.
+`$ref` are not on the allowlist. They are dropped.
 
 The same compiler runs on:
 
@@ -146,10 +146,11 @@ Allowed names: `string`, `number`, `integer`, `boolean`, `array`, `object`,
 rejected.
 
 This is **not** the grammar-safe rewrite. LM Studio / openai-compatible drop
-null from a single-concrete union (llama.cpp grammar) or rewrite a
-multi-concrete union to `anyOf`. Gemini cannot express multiple concrete
-types without changing validation semantics, so those schemas fail closed
-instead of being rewritten.
+null from a single-concrete union for llama.cpp or rewrite a multi-concrete
+union to `anyOf`. The Gemini compiler does not make that rewrite. Moving
+sibling constraints into generated branches would need a separate,
+semantics-preserving transformation, so the compiler rejects the source type
+array instead.
 
 ```jsonc
 // TaskUpdate.owner on the tool definition
@@ -161,8 +162,8 @@ instead of being rewritten.
 
 ### Union-only nodes (`anyOf` without a parent `type`)
 
-Gemini's documented union form is a node with `anyOf` and **no** sibling
-`type`. Several default-catalog parameters use that shape:
+The Gemini compiler preserves a non-empty `anyOf` when the node has no sibling
+`type`. Several built-in tool parameters use that shape:
 
 | Tool | Field | Union |
 | --- | --- | --- |
@@ -186,11 +187,11 @@ recursively. The wire copy keeps `anyOf` and does **not** invent a parent
 }
 ```
 
-An earlier compiler required a sibling `type` on every node, so the default
-catalog threw `Gemini cannot represent schema at …: a JSON Schema type is
-required` on `FileRead.offset` before the first `generateContent` **and**
-before admission `countTokens`. Every later Gemini turn failed the same
-way. Current code compiles those unions.
+An earlier compiler required a sibling `type` on every node. A turn that
+advertised the built-in catalog threw `Gemini cannot represent schema at
+<path>: a JSON Schema type is required` on `FileRead.offset` while building
+the request. This happened before either an outbound `generateContent` call
+or admission `countTokens` call. Current code compiles those unions.
 
 Constraints:
 
@@ -207,8 +208,9 @@ Constraints:
 
 ### Fail-closed before dispatch
 
-`compileGeminiSchema` throws `LLMProviderError` (`provider: "gemini"`) and
-does **not** call `generateContent` or `countTokens` when:
+`compileGeminiSchema` throws `LLMProviderError` (`provider: "gemini"`) before
+the outbound provider request on both the generate-content and token-counting
+paths when:
 
 - `type` is missing **and** the node has no non-empty `anyOf`
 - `type` is not a string or array, an empty array, or an unsupported name
@@ -229,7 +231,7 @@ They are no longer silently deleted from a non-object branch (that used to
 hide the Gemini 400 "only allowed for OBJECT type").
 
 ```jsonc
-// Rejected before dispatch — would lose validation semantics
+// Rejected before dispatch because the compiler does not rewrite this array
 { "type": ["object", "string"] }
 ```
 
@@ -242,7 +244,7 @@ a **root** union for those providers and reports `strictEligible: false`.
 Gemini keeps nested `anyOf` (with or without a parent `type`) and fails
 closed on a multi-concrete `type` array. Do not rely on `$ref`, `oneOf`,
 `allOf`, or `x-agenc-*` reaching LM Studio, openai-compatible, or Gemini.
-Nullable fields may keep `type: ["T", "null"]` on the definition; Gemini
+Nullable fields may keep `type: ["T", "null"]` on the definition. Gemini
 lowers that to `type` + `nullable`. Do not use a multi-concrete `type`
 array if the tool or structured-output schema must stay Gemini-callable.
 
@@ -262,9 +264,9 @@ but `builtTools` applies the local-profile filter afterward.
 | LM Studio/openai-compatible session does not call team/task tools | Those tools are outside the reduced catalog; use another provider slug when they are required |
 | Qwen3 think-trace burns minutes | `/no_think` only attaches on `lmstudio` / `openai-compatible` + qwen3 |
 | Gemini 400 `Unknown name "additionalProperties"` / empty reply | Pre-allowlist wire schema; current code strips those keys |
-| Gemini 400 `Proto field is not repeating, cannot start list` / empty reply | Pre-compiler `type` array on the wire; current code lowers `["T","null"]` to `type` + `nullable` |
-| Gemini session dies before the first generateContent / `countTokens` with `a JSON Schema type is required` | Older compiler required a sibling `type` on every node. Default `FileRead.offset` / `searchTools.select` / `exec_command.sandbox_permissions` are `anyOf` with no parent type. Current code compiles that shape |
-| Gemini turn fails locally with `Gemini cannot represent schema at …` | Multi-concrete type union, a node with neither `type` nor `anyOf` (including `oneOf`-only after the allowlist drop), empty `anyOf`, or `required`/`properties` on a non-object. Fix the tool or structured-output schema; the request never left the process |
+| Gemini 400 `Proto field is not repeating, cannot start list` / empty reply | Pre-compiler `type` array on the wire. Current code lowers `["T","null"]` to `type` + `nullable` |
+| Gemini compile fails before outbound `generateContent` or `countTokens` with `a JSON Schema type is required` | An older compiler required a sibling `type` on every node. Built-in `FileRead.offset` / `searchTools.select` / `exec_command.sandbox_permissions` use `anyOf` with no parent type. Current code compiles that shape |
+| Gemini turn fails locally with `Gemini cannot represent schema at <path>` | Multi-concrete type union, a node with neither `type` nor `anyOf` (including `oneOf`-only after the allowlist drop), empty `anyOf`, or `required`/`properties` on a non-object. Fix the tool or structured-output schema. The request never left the process |
 | NIM ignores or 400s `reasoning_effort` | Family has no documented enum, or the value is outside it |
 
 There is no operator config for the grammar-safe key set, the 8192 ceiling, or
