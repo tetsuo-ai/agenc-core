@@ -925,32 +925,11 @@ describe("plugin source resolution", () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
       const calls: string[] = [];
-      const runProcess: PluginProcessRunner = async (command, args) => {
-        calls.push(`${command} ${args.join(" ")}`);
-        if (command === "tar") {
-          if (args[0] === "-tzf") {
-            return { stdout: safeTarListing("package"), stderr: "" };
-          }
-          if (args[0] === "-tvzf") {
-            return { stdout: safeTarVerboseListing("package"), stderr: "" };
-          }
-          const extractRoot = String(args[args.indexOf("-C") + 1]);
-          await writePlugin(join(extractRoot, "package"), "tarball-demo");
-          return { stdout: "", stderr: "" };
-        }
-        if (command === "unzip") {
-          if (args[0] === "-Z1") {
-            return { stdout: safeZipListing(), stderr: "" };
-          }
-          if (args[0] === "-Z" && args[1] === "-v") {
-            return { stdout: safeZipVerboseListing(), stderr: "" };
-          }
-          const extractRoot = String(args[args.indexOf("-d") + 1]);
-          await writePlugin(extractRoot, "bundle-demo");
-          return { stdout: "", stderr: "" };
-        }
-        throw new Error(`unexpected process: ${command}`);
-      };
+      const runProcess = archivePluginRunner(
+        "tarball-demo",
+        "bundle-demo",
+        (command, args) => calls.push(`${command} ${args.join(" ")}`),
+      );
 
       const tarball = await resolvePluginSource("https://agenc.tech/plugins/demo.tgz", {
         agencHome,
@@ -1798,19 +1777,9 @@ describe("plugin source resolution", () => {
 
   test.each([
     {
-      label: "ordinary repository",
-      source: "https://github.com/tetsuo-ai/plugin",
+      label: "dev.azure.com repository",
+      source: "https://dev.azure.com/tetsuo-ai/plugin",
       expected: "git",
-    },
-    {
-      label: "mcpb pathname with query and fragment",
-      source: "https://github.com/tetsuo-ai/plugin.mcpb?download=1#release",
-      expected: "mcpb",
-    },
-    {
-      label: "tgz pathname with query and fragment",
-      source: "https://gitlab.com/tetsuo-ai/plugin.tgz?download=1#release",
-      expected: "tarball",
     },
     {
       label: "gz pathname",
@@ -1822,12 +1791,80 @@ describe("plugin source resolution", () => {
       source: "https://codeberg.org/tetsuo-ai/plugin.tar",
       expected: "tarball",
     },
+    {
+      label: "git+ URL with a bundle suffix",
+      source: "git+https://github.com/tetsuo-ai/plugin.mcpb",
+      expected: "git",
+    },
   ] as const)(
-    "gives known-host $label classification the documented suffix precedence",
+    "classifies an additional known-host $label",
     async ({ source, expected }) => {
       await expect(
         classifyPluginSource(source, process.cwd()),
       ).resolves.toBe(expected);
+    },
+  );
+
+  test.each([
+    {
+      label: "mcpb URL",
+      source: "https://github.com/tetsuo-ai/plugin.mcpb?download=1#release",
+      expectedKind: "mcpb",
+      downstream: "fetch",
+    },
+    {
+      label: "archive URL",
+      source: "https://gitlab.com/tetsuo-ai/plugin.tgz?download=1#release",
+      expectedKind: "tarball",
+      downstream: "fetch",
+    },
+    {
+      label: "repository URL",
+      source: "https://github.com/tetsuo-ai/plugin",
+      expectedKind: "git",
+      downstream: "clone",
+    },
+  ] as const)(
+    "routes a known-host $label through the public resolver",
+    async ({ source, expectedKind, downstream }) => {
+      await withTempDir(async (root) => {
+        const forwardedSources: Array<{
+          readonly seam: "fetch" | "clone";
+          readonly source: string;
+        }> = [];
+        const runArchiveProcess = archivePluginRunner(
+          "known-host-tarball",
+          "known-host-bundle",
+        );
+        const runProcess: PluginProcessRunner = async (command, args) => {
+          if (command === "git" && args[0] === "clone") {
+            const separator = args.indexOf("--");
+            forwardedSources.push({
+              seam: "clone",
+              source: String(args[separator + 1]),
+            });
+            await writePlugin(String(args[separator + 2]), "known-host-git");
+            return { stdout: "", stderr: "" };
+          }
+          return runArchiveProcess(command, args);
+        };
+
+        const resolved = await resolvePluginSource(source, {
+          agencHome: join(root, "home"),
+          workspaceRoot: root,
+          cache: false,
+          requireSignature: false,
+          runProcess,
+          fetchBytes: async (url) => {
+            forwardedSources.push({ seam: "fetch", source: url });
+            return new Uint8Array([1, 2, 3]);
+          },
+        });
+
+        expect(resolved.kind).toBe(expectedKind);
+        expect(forwardedSources).toEqual([{ seam: downstream, source }]);
+        await resolved.cleanup();
+      });
     },
   );
 });
@@ -1932,6 +1969,39 @@ function safeZipVerboseListing(): string {
     "  commands/hello.md",
     "  Unix file attributes (100660 octal):            -rw-rw----",
   ].join("\n");
+}
+
+function archivePluginRunner(
+  tarballPluginName: string,
+  bundlePluginName: string,
+  observe?: (command: string, args: readonly string[]) => void,
+): PluginProcessRunner {
+  return async (command, args) => {
+    observe?.(command, args);
+    if (command === "tar") {
+      if (args[0] === "-tzf") {
+        return { stdout: safeTarListing("package"), stderr: "" };
+      }
+      if (args[0] === "-tvzf") {
+        return { stdout: safeTarVerboseListing("package"), stderr: "" };
+      }
+      const extractRoot = String(args[args.indexOf("-C") + 1]);
+      await writePlugin(join(extractRoot, "package"), tarballPluginName);
+      return { stdout: "", stderr: "" };
+    }
+    if (command === "unzip") {
+      if (args[0] === "-Z1") {
+        return { stdout: safeZipListing(), stderr: "" };
+      }
+      if (args[0] === "-Z" && args[1] === "-v") {
+        return { stdout: safeZipVerboseListing(), stderr: "" };
+      }
+      const extractRoot = String(args[args.indexOf("-d") + 1]);
+      await writePlugin(extractRoot, bundlePluginName);
+      return { stdout: "", stderr: "" };
+    }
+    throw new Error(`unexpected process: ${command} ${args.join(" ")}`);
+  };
 }
 
 function pluginZipBytes(name: string, includeSymlink = false): Uint8Array {
