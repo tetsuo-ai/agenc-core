@@ -114,6 +114,12 @@ fresh model-turn/run context, timeout controller, `turn_id`, and per-turn tool
 count; a tool-using task may make multiple provider calls. The originating
 `task_id` is the spawn/assignment call correlation ID.
 
+A keep-alive worker that hits `max_turns`, `max_budget_usd`, or the
+no-progress backstop returns to `idle` after that turn. The same bounded
+stop on a one-shot / compatibility agent is terminal (`errored` /
+failed run). Interactive session survival:
+[daemon.md](daemon.md#interactive-session-survival).
+
 ### Assignment admission and passive messages
 
 `assign_task` accepts only when all of these are true:
@@ -308,6 +314,15 @@ session when the feature is available (`AGENC_COORDINATOR_MODE` /
 | `agent.attach` | Attach a client to a running agent |
 | `agent.stop` | Stop an agent |
 | `agent.logs` | Fetch agent logs |
+
+`agent.create` accepts `deferInitialTurn: true` to provision a live session
+without submitting a first model turn (Editor cold-start). Startup hooks
+and Agent side effects stay deferred until the first non-Editor message.
+The flag cannot combine with `initialContent` or other first-turn fields
+(`runtime/src/app-server/daemon-dispatcher.ts`). The thread sits in
+`pending_init`; `ifBusy: "reject"` on `message.send` refuses only an
+in-flight or queued turn, not `pending_init`. Rejecting the first prompt would
+deadlock the session. See [daemon.md](daemon.md).
 
 SDK helpers on `AgencClient`: `spawnAgent`, `listAgents`, `attachAgent`,
 `stopAgent`, `agentLogs`. See [`../sdk.md`](../sdk.md).

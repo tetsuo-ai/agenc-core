@@ -306,11 +306,26 @@ lowercase letters, digits, and underscores`.
 At least one `--verify "label=script"` command is required. A `completed`
 result mechanically demands every required command exit 0, an
 adversarial-verification `VERDICT: PASS`, and an independent review with zero
-blockers. The frozen spec's `--permission-mode` and unattended allow/deny
-lists are applied to the run's daemon session, so pipeline children execute
-under the declared policy rather than the daemon default. The command returns
-after the durable intake commit (`runId`, `specDigest`, `baseCommit`);
-`--follow` then tails the run journal until the terminal result.
+blockers. The frozen spec's `--permission-mode`, unattended allow/deny
+lists, and `--model` are applied to the run's daemon session
+(`workflowSessionArgv`), so pipeline children execute under the declared
+policy and model rather than the daemon default. The CLI has no
+`--provider` flag; the `run.start` RPC and SDK `startRun` may also pass
+`provider`. A child inherits the run session's **provider**; only the
+model name can be overridden per child. The command returns after the
+durable intake commit (`runId`, `specDigest`, `baseCommit`); `--follow`
+then tails the run journal until the terminal result.
+
+Child agents register under `workflowChildAgentName(childRunId)`: the run id
+is lowercased and every character outside `[a-z0-9_]` is folded to `_`.
+The agent registry rejects a raw id such as `wf-example:plan#1`. A child that
+dies before it speaks records `workflow <kind> child <outcome>: <error>`
+instead of an empty `final_message`. Independent review allows one repair
+turn for unstructured prose, then fails closed with a bounded excerpt.
+Finalize pins the delivered commit at `refs/agenc/runs/<runId>` before
+deleting the worktree branch; a failed pin leaves the worktree in place.
+Design and troubleshooting:
+[`../design/verified-change-workflow-m5.md`](../design/verified-change-workflow-m5.md).
 
 The other commands use the daemon's durable run/admission contract and print
 canonical JSON. `status` includes aggregate admission and budget/hold state;
@@ -406,12 +421,46 @@ accounts store an exchanged API key; ChatGPT-only accounts store subscription
 authentication. Both use the single home-scoped native `openAiOauth` record.
 The stored sign-in wins over `OPENAI_API_KEY` only when `openai` is selected
 and is restricted to the first-party endpoint. `openai-logout` deletes that
-record; `openai-auth-status` reports whether it exists. `--json` emits
-machine-readable progress and results for desktop or scripted callers.
-`-h` or `--help` prints command help without starting login or changing the
-stored credential; other arguments are rejected.
+record; `openai-auth-status` reports whether it exists and, when known,
+`authMode` (`chatgpt` or `apiKey`). `--json` emits machine-readable progress
+and results for desktop or scripted callers. Tokens never appear in the
+output. `-h` or `--help` prints command help without starting login or
+changing the stored credential; other arguments are rejected.
 
 Aliases: `chatgpt-login`, `chatgpt-logout`, and `chatgpt-auth-status`.
+
+### `openai-models`
+
+```text
+agenc openai-models [--json]
+```
+
+Lists the models the stored credential can actually reach. A ChatGPT
+subscription sign-in queries the ChatGPT backend (`/models` with a
+`client_version` query). A platform key (stored or `OPENAI_API_KEY`)
+queries `https://api.openai.com/v1/models`. `--json` ends with
+`{ok, models, authMode}` or `{ok:false, error}`. Tokens never appear.
+Accepts only `--json`, `--help`, or `-h`.
+
+---
+
+## Grok auth: `grok-login` | `grok-logout` | `grok-auth-status`
+
+```text
+agenc grok-login [device] [--json]
+agenc grok-logout [--json]
+agenc grok-auth-status [--json]
+```
+
+Headless X / xAI subscription sign-in. Browser PKCE with a loopback
+callback is the default; pass `device` to select the RFC 8628 device-code
+flow. A failed browser callback also falls back to that flow. `--json` emits one NDJSON record per
+stage (`authorize`, `callback_received`, `exchanging_code`,
+`device_fallback`, `device_authorize`) plus a result. Tokens never
+appear. A stored sign-in wins over `XAI_API_KEY` / `GROK_API_KEY` while
+the selected provider is `grok`. See [grok-oauth.md](../grok-oauth.md).
+
+Aliases: `xai-login`, `xai-logout`, `xai-auth-status`.
 
 ---
 
@@ -424,7 +473,9 @@ agenc providers [--json] [--no-local-check]
 Provider readiness: credential status, local server health, and AgenC
 subscription tier. `--json` reports `credentialStatus` and, when an exact
 source won, redacted `credentialProvenance`; credential values are never
-included.
+included. Every API-key credential kind also carries `keyEnvVar`, the canonical
+BYOK environment name (for example, `XAI_API_KEY` or `OPENAI_API_KEY`). Alias
+order stays private; keyless providers omit the field.
 
 | Option | Meaning |
 | --- | --- |
@@ -527,9 +578,13 @@ agenc plugin <command> [options]
 | `marketplace add <path\|git\|url\|github> [--name <name>]` | Add marketplace |
 | `marketplace remove <name>` | Remove a marketplace |
 | `marketplace upgrade [name]` | Refresh git or local marketplaces |
+| `marketplace catalog [--product <id>] [--json]` | List installable plugins per marketplace |
+| `marketplace install <plugin@marketplace> [--product <id>] [--scope user\|project] [--force] [--json]` | Install a catalog plugin |
 
 Install options: `--name`, `--force`, `--keep-data`. Marketplace options:
-`--ref`, `--sparse`.
+`--ref`, `--sparse`. `marketplace catalog` / `marketplace install` are
+the desktop enumeration and qualified-install surface; see
+[skills-plugins.md](skills-plugins.md#marketplace).
 
 A canonical plugin ID can be installed in one managed scope at a time. Remove
 the existing copy before installing that ID in another scope.
@@ -591,12 +646,15 @@ agenc state recovery quarantine list --state active --json
 agenc state recovery deferred show <block-id> --json
 ```
 
-Prefer the live session: resume first, then `/resolve` (or
-`session.resolveToolCall`). Pending reviews on a settled terminal no longer
-block that reopen. Run the offline `resolve-tool-call` from the affected
-session's project directory after stopping the live session — required when
-the terminal itself is `unknown_outcome` or a dangling intent refuses
-resume. For an M4 effect, either path appends and fsyncs a canonical
+For a `completed`, `failed`, or `cancelled` terminal, prefer the live session:
+resume first, then use `/resolve` (or `session.resolveToolCall`). Pending
+reviews on those settled terminals do not block reopen. Run the offline
+`resolve-tool-call` from the affected session's project directory after
+stopping the live session. It can review a projected `unknown_outcome` effect,
+including one under an `unknown_outcome` terminal, but it cannot settle a raw
+dangling intent. Reviewing an `unknown_outcome` terminal also does not make the
+same terminal session resumable through `agent.create`. For an M4 effect,
+either review path appends and fsyncs a canonical
 `effect_review_resolved` event before advancing the SQLite review projection;
 it never reruns the tool or rewrites `unknown_outcome` as success. Valid
 dispositions are `confirmed_committed`, `confirmed_no_effect`, and

@@ -130,12 +130,13 @@ A deliberate reopen is a new lifecycle epoch, not a rewrite. A durable
 `run_reopened` event names the previous epoch, the next epoch, the reason, and
 the reopen time. Reopen is allowed only after the current epoch is terminal.
 Pending unknown-outcome reviews do **not** block reopen when that terminal is
-`completed`, `failed`, or `cancelled` — `/resolve` and
-`session.resolveToolCall` run inside the reopened session. An
-`unknown_outcome` terminal with unresolved reviews still refuses reopen, and
-an intent with no settlement record at all (a dangling intent) refuses at
-every layer. Dependent mutations stay stopped until each review resolves; no
-automatic replay occurs. Terminal history for prior epochs stays queryable.
+`completed`, `failed`, or `cancelled`; `/resolve` and
+`session.resolveToolCall` run inside the reopened session. The public agent
+resume path refuses an `unknown_outcome` terminal regardless of review status.
+An intent with no settlement record at all (a dangling intent) also refuses
+reopen and cannot be settled by an effect-review command. Dependent mutations
+stay stopped until each projected review resolves; no automatic replay occurs.
+Terminal history for prior epochs stays queryable.
 
 Runs created before M4 can still have a terminal `agent_runs` row without a
 canonical terminal payload. For that compatibility case, `run.result` returns
@@ -186,12 +187,13 @@ journal does not become a second secret-bearing input store.
 `effect_result` acknowledges only a proven `committed`, `failed`, or
 `cancelled` outcome. `effect_unknown_outcome` is terminal-but-unresolved. Its
 projection is review-locked: a late result cannot overwrite it, and the review
-state can move only `pending -> resolved`. Review-required does not mean
-resume-refused. Settled terminals (`completed`, `failed`, `cancelled`) reopen
-with reviews still pending so the operator can run `/resolve` in the live
-session. The in-flight tool recovery index still marks the call `poisoned`,
-so `assertDependentMutationAllowed` and the live-effect gate block a new
-side-effecting dispatch until that review is resolved.
+state can move only `pending -> resolved`. For a settled terminal status,
+review-required does not mean resume-refused. `completed`, `failed`, and
+`cancelled` terminals reopen with reviews still pending so the operator can
+run `/resolve` in the live session. The in-flight tool recovery index still
+marks the call `poisoned`, so `assertDependentMutationAllowed` and the
+live-effect gate block a new side-effecting dispatch until that review is
+resolved.
 
 Restart classification consults the durable admission boundary. A reservation
 still `reserved`, or already recovered to `voided`, proves the effect never
@@ -208,10 +210,9 @@ post-dispatch crash, a reservation may remain `held_unknown` while the effect
 requires review. Neither state is refunded or replayed merely because the
 daemon restarted.
 
-Two operator paths settle a review. Prefer the live session: resume first,
-then `/resolve` or `session.resolveToolCall`. That is the path the reopen
-gate was opened for — refusing resume made `/resolve` unreachable because it
-runs only inside a live session.
+Two operator paths settle a projected `unknown_outcome` review. For a
+`completed`, `failed`, or `cancelled` terminal, resume first and then use
+`/resolve` or `session.resolveToolCall` in the live session.
 
 The offline CLI still works after the session is stopped:
 
@@ -222,9 +223,10 @@ AGENC_REVIEWER_ID=operator_7 \
     <evidence-ref> <evidence-sha256>
 ```
 
-For an M4 effect, both paths take the canonical journal's single-writer
-lease, verify the matching `effect_unknown_outcome`, and append and fsync
-one idempotent `effect_review_resolved` event before either SQLite review
+For an M4 effect, the live path appends through the Session that already owns
+the journal lease. The offline path takes the stopped rollout's exclusive
+lease. Both verify the matching `effect_unknown_outcome`, then append and fsync
+one idempotent `effect_review_resolved` event before the SQLite review
 projection advances. The event records the run, step, call, typed disposition,
 reviewer, evidence reference and SHA-256, workflow status, domain action, and
 review time. It lifts the mutation gate only for a terminal typed disposition;
@@ -240,24 +242,26 @@ Replay and journal-binding bounds include the later review evidence;
 
 ## Resume and effect review
 
-`reopenRun` (`runtime/src/state/run-durability.ts`) and the matching
-rollout-store gate (`reopenTerminalEpoch`) encode the same table. The M4
-requirements stand: dependent mutations stop, review is required, no
-automatic replay.
+`reopenRun` (`runtime/src/state/run-durability.ts`) and the rollout-store gate
+(`reopenTerminalEpoch`) enforce the durable epoch rules. The public
+app-server resume path adds the stricter rule for an `unknown_outcome`
+terminal. The M4 requirements stand: dependent mutations stop, review is
+required, and no automatic replay occurs.
 
 | Terminal / evidence | Reopen | What happens next |
 | --- | --- | --- |
 | `completed`, `failed`, or `cancelled` with pending reviews | Allowed | New epoch. `/resolve` runs in the live session. Side-effecting tools stay gated. |
 | `cancelled` with no pending reviews | Allowed | Everyday Ctrl-C-then-continue. Cancel is a settled terminal, not a brick. |
-| `unknown_outcome` with pending reviews | Refused (`RUN_REOPEN_REVIEW_REQUIRED`) | Reviews reconcile the unsettled terminal. Use the offline CLI, then resume. |
-| Dangling intent (side-effecting or interactive intent, no settlement record) | Refused | Evidence gap, not a review queue. Do not reopen over it. |
-| Active suspension | Refused (`RUN_SUSPENSION_CONFLICT`) | Clear the suspension first. |
-| Non-terminal current epoch | Refused (`RUN_EPOCH_NOT_TERMINAL`) | Crash recovery continues in place; it is not a lifecycle retry. |
+| `unknown_outcome` terminal | Refused by public `agent.create` resume | The offline CLI can append review evidence for a projected unknown-outcome effect, but the same terminal session remains non-resumable. |
+| Dangling intent (side-effecting or interactive intent, no settlement record) | Refused | Evidence gap, not a review queue. `/resolve` and the offline review command cannot settle it. |
+| Active suspension with matching canonical and durable state and no unresolved effects | Resumed in the same epoch | Appends `run_resumed`; this is not a terminal reopen. |
+| Active suspension with mismatched state or unresolved effects | Refused | Repair or reconcile the durable evidence before another resume attempt. |
+| Non-terminal open epoch | Continued in the same epoch | Crash recovery applies its evidence gates; this is not a lifecycle retry. |
 
 A cancelled epoch is a settled terminal outcome. An explicit resume reopens
-it under a new epoch exactly like a completed run. `unknown_outcome`
-terminals stay refused while their effect reviews are unresolved; resolved
-reviews reconcile them.
+it under a new epoch exactly like a completed run. An `unknown_outcome`
+terminal stays refused by the public resume path after review resolution; the
+review preserves audit evidence but does not rewrite that terminal result.
 
 Retained-agent resume compares `createdAt` on the retained record (daemon
 clock at `agent.create`) to the rollout header (session writer) within
@@ -265,12 +269,12 @@ clock at `agent.create`) to the rollout header (session writer) within
 refuse every retained root session. Identity checks on objective, model, and
 provider still fail closed for a swapped-in rollout.
 
-Pre-dispatch planning refusals that never crossed the effect boundary
-(`validationErrorToolResult` — ExitPlanMode "You are not in plan mode",
-argument/mode checks) attest `confirmed_no_effect`. A bare `isError` from a
-non-idempotent tool still poisons the mutation gate. The one planning path
-that can follow a plan-file write keeps the bare error so a genuine
-mid-flight failure stays `unknown_outcome`.
+Planning refusals that provably occur before any physical effect use
+`validationErrorToolResult` to record `confirmed_no_effect`. These include the
+ExitPlanMode "You are not in plan mode" check and other argument or mode
+checks. A bare `isError` from a non-idempotent tool still poisons the mutation
+gate. ExitPlanMode deliberately keeps a bare error after a possible plan-file
+write so a genuine mid-flight failure remains `unknown_outcome`.
 
 ### Troubleshooting
 
@@ -278,7 +282,8 @@ mid-flight failure stays `unknown_outcome`.
 | --- | --- |
 | Ctrl-C then `--resume` / `/resume` is refused with review-required | Confirm the terminal is `unknown_outcome` or a dangling intent exists. Settled cancel/complete/fail should reopen. |
 | Session opens but every write/shell tool is blocked | Pending `unknown_outcome` reviews. Run `/resolve`, not another resume. |
-| `/resolve` says there is no live session | Resume first. Review-required used to mean resume-refused, which made this command unreachable. |
+| `/resolve` says there is no live session | Resume first only for a settled `completed`, `failed`, or `cancelled` terminal. For an `unknown_outcome` terminal, use the offline command to record review evidence; that does not make the same session resumable. |
+| Offline `resolve-tool-call` reports `not_found` for a dangling intent | Expected. A raw intent has no `unknown_outcome` settlement to review and needs recovery classification or evidence repair rather than a review disposition. |
 | "You are not in plan mode" blocked later mutations | Fixed: that refusal now attests `confirmed_no_effect`. A leftover poison is an older journal. |
 | Retained session refuses with a createdAt mismatch of a few milliseconds | Current code allows 5s. A larger gap, or a model/provider/objective mismatch, is still a hard refuse. |
 

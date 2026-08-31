@@ -150,6 +150,9 @@ stores credential values.
   retired native `agenc` credential field are explicit one-way migration
   inputs only. Reads, refreshes, and clears stay bound to the client's captured
   `HomeContext`, and refresh compare-and-swap preserves a newer login.
+  List reachable models with `agenc openai-models --json`
+  (`{ok, models, authMode}`; tokens never in the output). See
+  [cli.md](cli.md#openai-models).
 - **Provider-native tokens** — GitHub Models, xAI OAuth, and AgenC AI
   subscription OAuth persist only in the home-scoped native `githubModels`,
   `xaiOauth`, and `agencAiOauth` namespaces. Their production APIs require an
@@ -318,16 +321,41 @@ wins and the live probe is not consulted.
 
 | Symptom | What to check |
 | --- | --- |
-| Local turn denied `context_window_exceeded` or the server refuses a short prompt | Read the parenthetical: `accounted input (N) plus reserved output (M) exceeds context window (W)`. If `W` is 128000, the live probe missed and the session planned against the conservative fallback. If `W` is the real 8k–32k window, `M` is often the larger term — set `providers.<slug>.max_output_tokens` or confirm the served window. Confirm the model is pulled, the endpoint env matches the session host, and `/api/show` or `/v1/models` reports a positive integer window. |
-| Streamed answer vanished; `AdmissionStepConflictError` / empty `lastAgentMessage` | Local servers often echo a vendor-prefixed or differently cased id. Current admission treats those as the same model. A leftover conflict is a real request-data mismatch, not a prefix. |
+| Local turn denied `context_window_exceeded` or the server refuses a short prompt | The live TUI shows the reason code and suggests `/compact`; it does not show the accounting values. Confirm the model is pulled, the endpoint env matches the session host, and `/api/show` or `/v1/models` reports a positive integer window. If diagnostics resolve to 128000 and neither configuration nor selected-model metadata declares it, the OpenAI-compatible fallback may have been used. A configured output reserve can consume a large share of a small window, so inspect `providers.<slug>.max_output_tokens` too. |
+| Streamed answer vanished; `AdmissionStepConflictError` / empty `lastAgentMessage` | Admission compares model ids case-insensitively and ignores path segments before the final slash. If the conflict remains, inspect the requested and reported execution identities and the other persisted step data. |
 | `OLLAMA_BASE_URL` sessions still look at localhost for the window | Metadata used to ignore the env and probe the built-in default. Current code uses the same ingress alias as the provider factory. |
 | Picker shows 128k, session later uses 32k | Picker is `resolveSync`. The admitted window comes from the async live probe at session start. |
 | llama.cpp refuses just past 4096 on a 32k GGUF | Window is `meta.n_ctx` (what `-c` loaded), not `n_ctx_train`. |
 | Hard USD cap holds every Ollama/LM Studio success as unpriced | Those three local slugs must resolve to the `localZeroCost` rows. A prefixed model id that was not stripped used to miss both the window and the free cost entry. |
 | Compatible server 404s `/api/show` | Expected for non-Ollama runtimes. The probe is best-effort; a working `/v1/models` window is enough. |
+| A later ChatGPT subscription request fails with `Unsupported parameter: previous_response_id` | Subscription requests are `store: false`. The continuation optimizer never attaches `previous_response_id` from an unstored response. The prompt-cache key is kept; the incremental delta is skipped. |
+| ChatGPT / Responses refuses to continue after an interrupted tool turn | An unmatched `function_call` in history is closed with a synthetic `function_call_output` marked `interrupted`. The session stays usable; the model must not wait on that call id. |
+| ChatGPT subscription 400s on `max_output_tokens` | Uncapped calls no longer require a provider-enforced output ceiling. Hard token or USD caps still demand a real ceiling and authoritative usage. |
 
 See [provider-aware token accounting](../design/provider-aware-token-accounting.md)
 for how the resolved window is enforced.
+
+## Responses history and continuation
+
+OpenAI-compatible Responses backends treat an unmatched `function_call`
+as unresolved session state. `closeDanglingFunctionCalls`
+(`runtime/src/llm/wire/responses-openai.ts`) inserts a synthetic
+`function_call_output` immediately after every unmatched call so history
+always pairs. The output text is an interrupted marker, not a fake
+success.
+
+`previous_response_id` can only reference a **stored** response. When
+the request snapshot has `store: false` (ChatGPT subscription is always
+stateless), the continuation optimizer keeps `prompt_cache_key` and
+skips the incremental delta. Chaining an unstored id used to reject
+every later request of a subscription conversation once tools or
+history made it an extension.
+
+Under a hard aggregate token or USD cap, admission still requires a
+provider-enforced `max_output_tokens` and authoritative usage. Without
+that cap, providers that reject an output ceiling (ChatGPT
+subscription) admit without one. Reported, priced provider usage is reconciled;
+missing usage or pricing is held unknown after dispatch.
 
 ## Wire layer
 
@@ -336,6 +364,8 @@ for how the resolved window is enforced.
 | Registry / provider metadata | `runtime/src/llm/registry/provider-info.ts` |
 | Model catalog | `runtime/src/llm/registry/model-catalog.ts` |
 | Context-window resolver | `runtime/src/llm/model-metadata.ts` |
+| Responses continuation / `store: false` | `runtime/src/llm/shape-request.ts` |
+| Dangling function-call pairing | `runtime/src/llm/wire/responses-openai.ts` |
 | Provider-neutral HTTP client / retry loop | `runtime/src/llm/client.ts`, `client-session.ts` |
 | Stream idle deadline | `runtime/src/llm/stream-watchdog.ts` |
 | Per-provider modules | `runtime/src/llm/providers/*` |

@@ -29,7 +29,7 @@ history; the linked pages below are current product truth.
 | [gateway.md](gateway.md) | Channel gateway: Telegram, Discord, Slack, WebChat, stdio; pairing; heartbeat/hooks |
 | [remote-control.md](remote-control.md) | Pair host with AgenC phone app (`agenc remote`) |
 | [managed-openrouter.md](managed-openrouter.md) | Hosted OpenRouter / managed keys via remote auth |
-| [grok-oauth.md](grok-oauth.md) | Sign in with X — Grok subscription access without an API key |
+| [grok-oauth.md](grok-oauth.md) | Sign in with X for Grok subscription access without an API key (`agenc grok-login` + TUI) |
 | [deploy/vps.md](deploy/vps.md) | Run the daemon on a VPS (installer or Docker) |
 | [migrate-from-openclaw.md](migrate-from-openclaw.md) | Surface map from OpenClaw |
 | [migrate-from-hermes.md](migrate-from-hermes.md) | Surface map from Hermes Agent |
@@ -45,7 +45,7 @@ history; the linked pages below are current product truth.
 | [embedded-neovim-buffer.md](embedded-neovim-buffer.md) | Embedded Neovim workspace, multi-buffer safety, recovery, editor/chat handoff, configuration, troubleshooting, and hosted PTY split |
 | [browser.md](browser.md) | Browser tool, Chromium profile, SSRF proxy, `[browser]` config |
 | [imagine.md](imagine.md) | Grok ImagineImage / ImagineVideo tools (direct xAI only) |
-| [sdk.md](sdk.md) | Embed via `@tetsuo-ai/agenc-sdk` (socket + subprocess) |
+| [sdk.md](sdk.md) | Embed via `@tetsuo-ai/agenc-sdk` (socket + subprocess), including `startRun` model/provider |
 | [security/slm-transaction-guard.md](security/slm-transaction-guard.md) | Opt-in SLM CourtGuard for Solana-like tool calls |
 | [security/mobile-ledger-transfer.md](security/mobile-ledger-transfer.md) | Typed Android `@ledger` SOL handoff: trust boundary, schemas, idempotency, recovery |
 
@@ -53,20 +53,20 @@ history; the linked pages below are current product truth.
 
 | Doc | Summary |
 | --- | --- |
-| [reference/cli.md](reference/cli.md) | Full CLI: top-level flags, all subcommands |
+| [reference/cli.md](reference/cli.md) | Full CLI, including M5 `run start`, Grok auth, and OpenAI model discovery |
 | [reference/config.md](reference/config.md) | `config.toml` sections, env overrides, `agenc config` |
 | [reference/env.md](reference/env.md) | Operator `AGENC_*` / provider key environment variables |
-| [reference/daemon.md](reference/daemon.md) | Daemon process model, socket auth, lifecycle |
-| [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes, and overflow denial text |
+| [reference/daemon.md](reference/daemon.md) | Daemon lifecycle, socket auth, deferred first messages, bypass consent, and bounded-stop survival |
+| [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes, Responses continuation, and overflow diagnostics |
 | [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics |
-| [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery + hooks HTTP |
-| [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, correlated outcomes, and worktree evidence |
+| [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery (pinned webhook destinations) + hooks HTTP |
+| [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, deferred first message, and worktree evidence |
 | [reference/workflows.md](reference/workflows.md) | Version-2 agent DAG manifests, scheduling, handoff artifacts, limits, and result outcomes |
 | [reference/memory.md](reference/memory.md) | Persona, AGENC.md, auto-memory paths, full-corpus index, privacy |
 | [reference/mcp.md](reference/mcp.md) | MCP client and server, plugin-declared server precedence, and Landlock diagnostics |
-| [reference/skills-plugins.md](reference/skills-plugins.md) | Skills load paths, plugin CLI, registration surfaces, and repository-controlled scope stripping |
+| [reference/skills-plugins.md](reference/skills-plugins.md) | Skills, plugin registration, marketplace catalog/install, and repository-controlled scope stripping |
 | [reference/hooks.md](reference/hooks.md) | Session lifecycle hooks vs gateway HTTP hooks |
-| [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, OS sandbox, home-workspace remediation, launcher contract, and plugin MCP confinement |
+| [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, live bypass consent, OS sandbox, home-workspace remediation, launcher contract, and plugin MCP confinement |
 | [reference/tui-workbench.md](reference/tui-workbench.md) | TUI shell, workbench layout, BUFFER operator shortcuts, and safety prompts |
 
 ## Explanation
@@ -82,10 +82,10 @@ history; the linked pages below are current product truth.
 | [design/fail-closed-sandbox-execution.md](design/fail-closed-sandbox-execution.md) | Required process isolation boundary, platform probes, launcher argv contract, failure semantics, and research |
 | [design/reconnect-backoff-policy.md](design/reconnect-backoff-policy.md) | Finite full-jitter reconnect policy, typed Retry-After parsing, elapsed accounting, and A1 replay-safety ordering |
 | [design/execution-admission-kernel.md](design/execution-admission-kernel.md) | M3 daemon admission, durable budgets/queue/cancellation, evidence, rollout, and rollback |
-| [design/provider-aware-token-accounting.md](design/provider-aware-token-accounting.md) | Complete-request native/fallback accounting, bounded cache/single-flight, context enforcement, occupancy snapshot, and calibration |
+| [design/provider-aware-token-accounting.md](design/provider-aware-token-accounting.md) | Complete-request native/fallback accounting, bounded cache/single-flight, context enforcement, context estimates, and calibration |
 | [design/durable-runs-effects-events.md](design/durable-runs-effects-events.md) | M4 canonical run journal, honest effects, resume with pending reviews, terminal results, replay-safe cursors, crash matrix, and rollback |
 | [design/shared-run-contracts-v1.md](design/shared-run-contracts-v1.md) | Frozen v1 run, admission, budget, effect, event, and cursor contracts |
-| [design/verified-change-workflow-m5.md](design/verified-change-workflow-m5.md) | Verified-change workflow contract, durable step semantics, recovery, and evidence |
+| [design/verified-change-workflow-m5.md](design/verified-change-workflow-m5.md) | Verified-change workflow contract, session bootstrap, child names, review repair, run refs, and evidence |
 | [design/eval-pilot-executor.md](design/eval-pilot-executor.md) | Pilot preflight and offline-agent executor. Phase 2b egress shipped. Evidence-ledger binding in eval-executor is still target |
 | [design/eval-pilot-executor-phase2b-egress.md](design/eval-pilot-executor-phase2b-egress.md) | Contained real-provider egress implementation and adversarial proof record |
 | [design/swarm-orchestration.md](design/swarm-orchestration.md) | Enforced initial delegation for parallel routing, durable task outcomes, immutable worktree evidence, external research, and local evaluation gate |

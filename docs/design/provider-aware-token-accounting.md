@@ -142,10 +142,10 @@ and abandoned results are never cached as zero.
 - The durable model-call admission boundary accounts before reservation,
   persists a denial reason for uncertainty or context overflow, and passes the
   admitted input count to provider-side final fitting.
-- A context overflow is `context_window_exceeded` and names both sides:
-  `accounted input (N) plus reserved output (M) exceeds context window (W)`.
-  The denial is not "your prompt is too long" — on a 8k–32k local window the
-  reserved output is often the larger term.
+- Model-call admission records a context overflow as
+  `context_window_exceeded`. The live TUI renders that reason and suggests
+  `/compact`; it does not currently show the input count, output reserve, or
+  window. Compaction paths use a detailed error containing those values.
 - Local servers may reply with a vendor-prefixed or differently cased model
   id (`unsloth/qwen3.8-27b` vs `qwen3.8-27b`). Admission treats those as the
   same model (`isSameModelIdentity` in `admitted-model-call.ts`). A raw
@@ -160,30 +160,32 @@ and abandoned results are never cached as zero.
   cannot be proven below the cap.
 - Historical rough estimators remain only for display, local file sizing, and
   other non-admission compatibility surfaces. They share the UTF-8 primitive
-  and do not authorize inference. `warning` is on the live canonical-event
-  allowlist (`CANONICAL_CORE_SESSION_EVENT_TYPES`), so a denial reason reaches
-  attached clients instead of dying in the rollout.
+  and do not authorize inference. `execution_admission` is a canonical event
+  and carries denied model-turn reasons. `warning` is forwarded as a separate
+  canonical event type.
 
-## Session occupancy snapshot
+## Session context estimate
 
-`session.snapshot` may include `contextBreakdown`. The figures are measured
-from that session's own material with `roughTokenCountEstimation` — the same
-basis budgeting uses, not a tokenizer round-trip. If measurement throws, the
-field is **absent**; a client must render "not measured" rather than invent
-a number.
+`session.snapshot` may include `contextBreakdown`, a best-effort diagnostic
+estimate built from current daemon session state. It does not reproduce the
+provider request and must not be used for admission or exact percentages. A
+top-level failure omits the field; unreadable memory files and unserializable
+history items are skipped.
 
 | Field | Source |
 | --- | --- |
-| `windowTokens` | Session `modelInfo.contextWindow` |
-| `systemPromptTokens` | Session instructions |
-| `messageTokens` | Conversation history |
-| `systemToolTokens` / `systemToolCount` | Resident tool schemas that are not `mcp.*` |
-| `mcpToolTokens` / `mcpToolCount` | Resident schemas in the `mcp.*` namespace |
-| `deferredToolTokens` / `deferredToolCount` | Registered but not resident (searchable) |
-| `memoryFileTokens` / `memoryFileCount` | Memory files actually read from disk |
+| `windowTokens` | Resolved model context window from configuration, a probe, the catalog, or a fallback |
+| `systemPromptTokens` | Rough estimate of session instructions |
+| `messageTokens` | Rough estimate of serializable conversation history |
+| `systemToolTokens` / `systemToolCount` | Rough estimate and count of resident non-MCP tool schemas |
+| `mcpToolTokens` / `mcpToolCount` | Rough estimate and count of resident schemas in the `mcp.*` namespace |
+| `deferredToolTokens` / `deferredToolCount` | Rough estimate and count of registered schemas that are not resident or already discovered |
+| `memoryFileTokens` / `memoryFileCount` | Rough estimate and count of readable top-level memory Markdown files; paths are not deduplicated and this is not bound to sent attachments |
 
-This is occupancy reporting, not admission. Admission still uses the
-structured token-accounting result above. Sources:
+These categories do not form an authoritative used-token total. Admission
+still uses the structured token-accounting result above. The raw daemon
+protocol types the optional field; the public SDK's `SessionSnapshotResult`
+does not currently expose it. Sources:
 `runtime/src/app-server/background-agent-runner.ts`
 (`#sessionContextBreakdown`) and
 `SessionSnapshotResult` in `runtime/src/app-server/protocol/index.ts`.
