@@ -264,8 +264,13 @@ Delivery-routed cron jobs (`announceChannel` / `announceTo` / webhook on
 CronCreate) persist as `deliver.{channel,to,webhook}` in
 `.agenc/scheduled_tasks.json`. They run only while **`agenc gateway run`**
 is up (`startCronDelivery`), not from a daemon restart alone. Isolated session
-key `cron|default|<id>`. Permissions denied. Scan cap 5 minutes. Spend rides the same
+key `cron|default|<id>` (`SessionRouter.conversationKey`). Permissions denied.
+Scan cap 5 minutes (`CRON_DELIVERY_SCAN_CAP_MS`). Spend rides the same
 budget envelope as other autonomous surfaces.
+
+The in-session cron scheduler skips any task with `deliver` set
+(`cronScheduler.loadRunnableTasks`). Gateway delivery is the exclusive
+executor for those jobs. A fire is never double-run.
 
 Webhook POST is **address-pinned**: the gateway resolves the host once, dials
 that exact IP, and keeps the original hostname on `Host` / TLS SNI. http(s)
@@ -278,7 +283,51 @@ re-pinned (max 5; no scheme change; 15 s budget across DNS and hops).
 Unlike session HTTP hooks, cron webhooks **do not** allow loopback, and
 `[browser].allow_private_network` does not apply.
 
-Full pin table, payload shape, and pitfalls:
+### Consume after every attempt
+
+`tick()` appends a due task to `firedRecurring` / `firedOneShots` as soon as
+`fireTask()` returns, including the error path. Recurring jobs then get
+`lastFiredAt` via `markCronTasksFired`. One-shots are deleted with
+`removeCronTasks`. There is no retry and no failed-fire cooldown.
+
+| Fire outcome | What the operator sees | Consumed? |
+| --- | --- | --- |
+| Successful turn | Channel send and optional webhook POST | Yes |
+| Webhook POST fails after a successful turn | `cron: webhook POST failed for task <id>` | Yes. The turn is not retried. |
+| `router.runTurn()` throws (daemon down, turn error) | `cron: task <id> failed: …` | Yes |
+| Execution admission deny / `approval_required` / cancelled | Pause notice `⏸ cron task <id> paused: …` when `deliver.to` is set | Yes. `fireTask` swallows the error after the notice. |
+| Unknown `announceChannel` | `cron: task <id> targets unknown channel` | Yes. The isolated turn still runs on the null adapter and may POST the webhook. |
+
+Admission denial is recognized by `isExecutionAdmissionDenied` (`ADMISSION_DENIED`
+or the `execution admission deny|approval_required|cancelled:` message). That
+path does not throw, so `tick()` cannot tell it from a completed delivery.
+A one-shot reminder that fails at fire time is gone from
+`.agenc/scheduled_tasks.json`. A recurring job skips the current slot; the
+next due time is computed from the new `lastFiredAt`.
+
+In-session jobs (no `deliver`) are a different runner. `CronScheduler.dispatchDue`
+stamps or deletes when it **enqueues** the prompt, before the turn finishes.
+
+Cron and heartbeat turns call `session.prompt` with the daemon session catalog.
+They are not the tool-free compaction path. A large MCP catalog can still
+deny the fire with `context_window_exceeded`. See
+[mcp.md](reference/mcp.md#compaction-summaries-stay-tool-free).
+
+Recovery: recreate a consumed one-shot with `CronCreate`. Inspect remaining
+jobs with `CronList`. Recurring jobs fire again on the next schedule after
+`lastFiredAt`.
+
+### Operator pitfalls
+
+| Symptom | What to check |
+| --- | --- |
+| One-shot reminder never arrived and the id is gone from `scheduled_tasks.json` | The fire was consumed. Look for `cron: task <id> failed` or a pause notice. Recreate the job. |
+| Recurring job skipped a slot after a daemon outage | `lastFiredAt` advanced on the failed attempt. The next fire is from that stamp. |
+| Channel shows `⏸ cron task <id> paused` | Admission denied the turn (`budget_exceeded`, spend cap, or approval). The job was still consumed. |
+| Webhook never received the POST but the job is gone or stamped | The turn succeeded; the POST failed. Check `cron: webhook POST failed`. |
+| `cron webhook: blocked` | Destination failed the pin (loopback, private, mixed DNS). Create-time only checks `http(s)`. |
+
+Full pin table, payload shape, and webhook pitfalls:
 [Cron delivery](reference/autonomy.md#cron-delivery-runtimesrcgatewaycron-deliveryts).
 
 ## Security model (non-negotiable)

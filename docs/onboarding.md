@@ -144,7 +144,10 @@ Order is enforced in code (`runtime/src/onboarding/acts/autonomy.ts`):
 
 1. **Budget** — daily/monthly spend envelope (or explicit "no cap")
 2. **Heartbeat** — `HEARTBEAT.md` + `[heartbeat]` / `AGENC_HEARTBEAT*`
-3. **Cron** — scheduled jobs with optional channel delivery
+3. **Cron** — scheduled jobs with optional channel delivery. Delivery-routed
+   jobs fire only while `agenc gateway run` is up. A failed or
+   admission-paused fire is still consumed; see
+   [gateway.md](gateway.md#consume-after-every-attempt).
 4. **Hooks** — enable gateway `hooks.enabled` + token for `POST /hooks/agent`
 
 Every sub-step is skippable. Config writes are conservative: TOML sections
