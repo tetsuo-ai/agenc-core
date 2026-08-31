@@ -593,6 +593,12 @@ export async function updatePluginOp(
       }
     }
   }
+  let requireSignature = input.requireSignature;
+  if (requireSignature === undefined && recordedSource.signatureRequired) {
+    requireSignature = true;
+  } else if (requireSignature === undefined && input.source === undefined) {
+    requireSignature = false;
+  }
   const installed = await installPluginOp({
     ...input,
     source,
@@ -600,8 +606,7 @@ export async function updatePluginOp(
     scope,
     force: true,
     refreshCache: true,
-    requireSignature:
-      input.requireSignature ?? recordedSource.signatureRequired,
+    ...(requireSignature !== undefined ? { requireSignature } : {}),
   });
   return {
     ...installed,

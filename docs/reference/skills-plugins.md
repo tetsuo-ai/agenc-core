@@ -12,6 +12,7 @@ Sources of truth:
 | Manifest | `runtime/src/plugins/manifest.ts`, `manifest-schema.ts` |
 | Registration | `runtime/src/plugins/registration/*` |
 | CLI | `runtime/src/plugins/cli/pluginCliCommands.ts` → `agenc plugin` |
+| Install / update ops | `runtime/src/plugins/cli/pluginOperations.ts` (`installPluginOp`, `updatePluginOp`) |
 | Marketplace | `runtime/src/plugins/marketplace/` |
 | Publisher signatures | `runtime/src/plugins/resolution.ts` (`verifyResolvedPluginSignature`) |
 | Config | `[plugins]` in [config.md](config.md) |
@@ -462,6 +463,8 @@ signature requirement.
 | Marketplace install from a **local** marketplace | Not required, even when its catalog row points at a remote source. |
 | Marketplace install from a non-local marketplace (`sourceType` git or url), including a bundled `./path` directory | Required. `installPluginOp` verifies a directory before copying it. A missing `.agenc-plugin/signature.json` fails the install and leaves the configured plugin list unchanged. |
 | Resolver for git / npm / tarball / mcpb outside marketplace install | Required by default unless the caller passes `requireSignature: false`. Structured git using a `file:` URL or absolute filesystem path is local and is not required by that default. |
+| `agenc plugin update` without `--source` | Reuses the recorded requirement for the recorded source. |
+| `agenc plugin update --source <source>` | Keeps a recorded `true`. A recorded `false` does not waive checks for the replacement source, so remote sources require signatures and local sources do not. |
 
 Callers must treat `signatureVerified: false` as **unverified**, not as a pass.
 The shipped CLI and `/plugins` marketplace paths require a verified result for
@@ -471,12 +474,17 @@ invariant failure.
 
 Install metadata in `.agenc-plugin/agenc-install.json` records
 `signatureRequired` and `signatureVerified`. `agenc plugin update` has no
-`--require-signature` flag, so it re-applies the recorded requirement. A legacy
-metadata file with `signatureVerified: true` and no `signatureRequired` field
-is also treated as signature-required. An unsigned copy installed before
-directory verification was enforced has neither signal and can update without
-a signature; uninstall and reinstall it from the marketplace to establish the
-current requirement.
+`--require-signature` flag. An ordinary update of the recorded source reuses
+the recorded requirement. When `--source` supplies a replacement, a recorded
+requirement stays in force, while a recorded waiver gives way to the new
+source's resolver default. In-process callers can pass `requireSignature`
+explicitly, and that value takes priority.
+
+A legacy metadata file with `signatureVerified: true` and no
+`signatureRequired` field is treated as signature-required. An unsigned copy
+installed before directory verification was enforced has neither signal and
+can still update from its recorded source without a signature. Uninstall and
+reinstall it from the marketplace to establish the current requirement.
 
 #### Keyring
 
@@ -534,7 +542,8 @@ payload.
 | `plugin signature is required` | A required install lacks `.agenc-plugin/signature.json`. Direct local `plugin install ./dir` does not take this path. |
 | `plugin publisher is not trusted` | The parsed `$AGENC_HOME/plugin-publishers.json` has no usable key for that publisher. Missing, unreadable, or malformed keyrings report their underlying error instead. |
 | `signatureVerified: false` after marketplace install | Expected only for a local marketplace or a custom caller that disabled the requirement. A successful non-local marketplace install returning false violates the shipped path's invariant. |
-| `plugin update` accepts an unsigned tree | Install metadata has neither `signatureRequired: true` nor the legacy `signatureVerified: true` signal. Reinstall the plugin from its marketplace to establish the current requirement. |
+| `plugin update` without `--source` accepts an unsigned tree | Install metadata records a waiver or has neither `signatureRequired: true` nor the legacy `signatureVerified: true` signal. Reinstall the plugin from its marketplace to establish the current requirement. |
+| `plugin update --source <remote>` rejects an unsigned tree after a local install | The replacement source uses the remote resolver default. Sign the replacement or keep using a local source. |
 | `payload digest set does not match` / `digest mismatch` | Extra, missing, or edited regular payload files vs `files`. The manifest, `signature.json`, install metadata, and `.git` / `.hg` / `.svn` directories are excluded as described above. |
 
 ---

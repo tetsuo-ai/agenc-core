@@ -549,6 +549,140 @@ describe("plugin source resolution", () => {
     });
   });
 
+  test("update from a remote source requires a signature even when the original install was local", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const pluginRoot = join(root, "local-unsigned");
+      await writePlugin(pluginRoot, "local-unsigned");
+      const installed = await installPluginOp({
+        source: pluginRoot,
+        agencHome,
+        workspaceRoot: root,
+      });
+      expect(installed.resolutionKind).toBe("local");
+      expect(installed.signatureVerified).toBe(false);
+
+      const runProcess: PluginProcessRunner = async (command, args) => {
+        if (command === "npm") {
+          const packDir = String(args[args.indexOf("--pack-destination") + 1]);
+          await writeFile(join(packDir, "unsigned-1.0.0.tgz"), "fixture");
+          return {
+            stdout: JSON.stringify([{ filename: "unsigned-1.0.0.tgz" }]),
+            stderr: "",
+          };
+        }
+        if (command === "tar") {
+          if (args[0] === "-tzf") {
+            return { stdout: safeTarListing("package"), stderr: "" };
+          }
+          if (args[0] === "-tvzf") {
+            return { stdout: safeTarVerboseListing("package"), stderr: "" };
+          }
+          const extractRoot = String(args[args.indexOf("-C") + 1]);
+          await writePlugin(join(extractRoot, "package"), "unsigned-remote");
+          return { stdout: "", stderr: "" };
+        }
+        throw new Error(`unexpected process: ${command}`);
+      };
+
+      await expect(
+        updatePluginOp({
+          pluginId: installed.plugin.id,
+          source: "@tetsuo-ai/unsigned-remote",
+          agencHome,
+          workspaceRoot: root,
+          runResolutionProcess: runProcess,
+        }),
+      ).rejects.toThrow(/plugin signature is required/u);
+    });
+  });
+
+  test("ordinary update preserves a recorded waiver for the same structured remote source", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const source = {
+        type: "git" as const,
+        url: "https://github.com/tetsuo-ai/unsigned-waived.git",
+      };
+      let clones = 0;
+      const runProcess: PluginProcessRunner = async (command, args) => {
+        if (command !== "git") {
+          throw new Error(`unexpected process: ${command}`);
+        }
+        clones += 1;
+        await writePlugin(String(args.at(-1)), "unsigned-waived");
+        return { stdout: "", stderr: "" };
+      };
+      const installed = await installPluginOp({
+        source,
+        name: "unsigned-waived",
+        agencHome,
+        workspaceRoot: root,
+        runResolutionProcess: runProcess,
+        requireSignature: false,
+      });
+
+      const updated = await updatePluginOp({
+        pluginId: installed.plugin.id,
+        agencHome,
+        workspaceRoot: root,
+        runResolutionProcess: runProcess,
+      });
+
+      expect(updated.source).toEqual(source);
+      expect(updated.resolutionKind).toBe("git");
+      expect(updated.signatureVerified).toBe(false);
+      expect(clones).toBe(2);
+    });
+  });
+
+  test("explicit signature waiver wins for a replacement remote source", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const pluginRoot = join(root, "local-explicit-waiver");
+      await writePlugin(pluginRoot, "local-explicit-waiver");
+      const installed = await installPluginOp({
+        source: pluginRoot,
+        agencHome,
+        workspaceRoot: root,
+      });
+      const runProcess: PluginProcessRunner = async (command, args) => {
+        if (command === "npm") {
+          const packDir = String(args[args.indexOf("--pack-destination") + 1]);
+          await writeFile(join(packDir, "unsigned-1.0.0.tgz"), "fixture");
+          return {
+            stdout: JSON.stringify([{ filename: "unsigned-1.0.0.tgz" }]),
+            stderr: "",
+          };
+        }
+        if (command === "tar") {
+          if (args[0] === "-tzf") {
+            return { stdout: safeTarListing("package"), stderr: "" };
+          }
+          if (args[0] === "-tvzf") {
+            return { stdout: safeTarVerboseListing("package"), stderr: "" };
+          }
+          const extractRoot = String(args[args.indexOf("-C") + 1]);
+          await writePlugin(join(extractRoot, "package"), "unsigned-remote");
+          return { stdout: "", stderr: "" };
+        }
+        throw new Error(`unexpected process: ${command}`);
+      };
+
+      const updated = await updatePluginOp({
+        pluginId: installed.plugin.id,
+        source: "@tetsuo-ai/unsigned-remote",
+        agencHome,
+        workspaceRoot: root,
+        runResolutionProcess: runProcess,
+        requireSignature: false,
+      });
+
+      expect(updated.resolutionKind).toBe("npm");
+      expect(updated.signatureVerified).toBe(false);
+    });
+  });
+
   test("uses the plugin cache on repeated remote resolutions", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
