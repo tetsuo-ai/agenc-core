@@ -387,9 +387,9 @@ this reconfiguration.
 ```text
 agenc plugin list [--json]
 agenc plugin validate <path> [--marketplace] [--json]
-agenc plugin install <path> [--scope user|project|local] [--name …] [--force]
+agenc plugin install <source> [--scope user|project|local] [--name ...] [--force]
 agenc plugin uninstall <name> [--scope …] [--keep-data]
-agenc plugin update <name> [--scope user|project|local] [--source <path>]
+agenc plugin update <name> [--scope user|project|local] [--source <source>]
 agenc plugin enable <name> [--path <path>]
 agenc plugin disable <name>
 agenc plugin disable-all
@@ -493,10 +493,10 @@ signature requirement.
 
 | Path | Signature check |
 | --- | --- |
-| `agenc plugin install ./dir` | Never. The CLI does not pass `requireSignature`. Explicit paths (`./`, `../`, absolute) stay local even when the folder name looks like `@scope/name`. |
+| `agenc plugin install ./dir` | Never. The CLI does not pass `requireSignature`. Local directory sources must be explicit paths (`./`, `../`, or absolute), even when a same-named directory exists in the workspace. |
 | Marketplace install from a **local** marketplace | Not required, even when its catalog row points at a remote source. |
 | Marketplace install from a non-local marketplace (`sourceType` git or url), including a bundled `./path` directory | Required. `installPluginOp` verifies a directory before copying it. A missing `.agenc-plugin/signature.json` fails the install and leaves the configured plugin list unchanged. |
-| Resolver for git / npm / tarball / mcpb outside marketplace install | Required by default unless the caller passes `requireSignature: false`. Structured git using a `file:` URL or absolute filesystem path is local and is not required by that default. A workspace directory whose name matches `@scope/name`, a git URL, or a tarball URL does **not** reclassify that specifier as local. |
+| Resolver for git / npm / tarball / mcpb outside marketplace install | Required by default unless the caller passes `requireSignature: false`. Structured git using a `file:` URL or absolute filesystem path is local and is not required by that default. Workspace contents never reclassify a bare remote specifier as local. |
 | `agenc plugin update` without `--source` | Reuses the recorded requirement for the recorded source. |
 | `agenc plugin update --source <source>` | Keeps a recorded `true`. A recorded `false` does not waive checks for the replacement source, so remote sources require signatures and local sources do not. |
 
@@ -519,6 +519,19 @@ A legacy metadata file with `signatureVerified: true` and no
 installed before directory verification was enforced has neither signal and
 can still update from its recorded source without a signature. Uninstall and
 reinstall it from the marketplace to establish the current requirement.
+
+```bash
+agenc plugin install ./unsigned-plugin
+agenc plugin update unsigned-plugin
+# Same-source refresh. Reuses the recorded local waiver.
+
+agenc plugin update unsigned-plugin --source @scope/unsigned-plugin
+# Fails closed: plugin signature is required but .agenc-plugin/signature.json is missing
+```
+
+An explicit directory path remains local. Every bare string uses the remote
+resolver, so npm / git / tarball / mcpb sources cannot be replaced by a
+same-named workspace directory. The shipped CLI cannot opt out.
 
 #### Keyring
 
@@ -578,7 +591,7 @@ payload.
 | `signatureVerified: false` after marketplace install | Expected only for a local marketplace or a custom caller that disabled the requirement. A successful non-local marketplace install returning false violates the shipped path's invariant. |
 | `plugin update` without `--source` accepts an unsigned tree | Install metadata records a waiver or has neither `signatureRequired: true` nor the legacy `signatureVerified: true` signal. Reinstall the plugin from its marketplace to establish the current requirement. |
 | `plugin update --source <remote>` rejects an unsigned tree after a local install | The replacement source uses the remote resolver default. Sign the replacement or keep using a local source. |
-| `plugin install @scope/name` fetches npm even though `@scope/name/` exists in the workspace | Expected. Remote-looking specifiers are not shadowed by a coincidental directory. Prefix the path with `./` to install that local tree. |
+| `plugin install package-name` fetches npm even though `package-name/` exists in the workspace | Expected. Bare specifiers are not shadowed by workspace contents. Prefix the path with `./` to install that local tree. |
 | `payload digest set does not match` / `digest mismatch` | Extra, missing, or edited regular payload files vs `files`. The manifest, `signature.json`, install metadata, and `.git` / `.hg` / `.svn` directories are excluded as described above. |
 
 ---

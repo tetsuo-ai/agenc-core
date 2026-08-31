@@ -226,19 +226,14 @@ export async function resolvePluginSource(
 
 export async function classifyPluginSource(
   source: string,
-  workspaceRoot: string,
+  _workspaceRoot: string,
 ): Promise<PluginResolutionKind> {
-  const localPath = resolve(workspaceRoot, source);
-  if (isRemotePluginSourceSpec(source)) {
-    if (isGitSource(source)) return "git";
-    if (isTarballSource(source)) return "tarball";
-    if (isMcpbSource(source)) return "mcpb";
-    return "npm";
+  if (isExplicitLocalPluginSource(source)) {
+    return source.endsWith(".mcpb") ? "mcpb" : "local";
   }
-  if (await pathIsDirectory(localPath)) return "local";
-  if (isMcpbSource(source) || (source.endsWith(".mcpb") && await pathIsFile(localPath))) {
-    return "mcpb";
-  }
+  if (isGitSource(source)) return "git";
+  if (isTarballSource(source)) return "tarball";
+  if (isMcpbSource(source)) return "mcpb";
   return "npm";
 }
 
@@ -1806,27 +1801,6 @@ function isExplicitLocalPluginSource(source: string): boolean {
     source.startsWith("..\\");
 }
 
-function isScopedNpmPackageSource(source: string): boolean {
-  if (!source.startsWith("@")) return false;
-  const slash = source.indexOf("/");
-  if (slash <= 1) return false;
-  const scope = source.slice(1, slash);
-  const rest = source.slice(slash + 1);
-  return scope.length > 0 && rest.length > 0 &&
-    !scope.includes("\\") &&
-    !rest.startsWith("/") &&
-    !rest.startsWith("\\");
-}
-
-function isRemotePluginSourceSpec(source: string): boolean {
-  if (isExplicitLocalPluginSource(source)) return false;
-  return isGitSource(source) ||
-    isTarballSource(source) ||
-    isMcpbSource(source) ||
-    isHttpUrl(source) ||
-    isScopedNpmPackageSource(source);
-}
-
 function isGitSource(source: string): boolean {
   if (source.startsWith("git+") ||
     source.startsWith("git@") ||
@@ -1880,14 +1854,6 @@ function tarballExtension(source: string): string {
 async function pathIsDirectory(path: string): Promise<boolean> {
   try {
     return (await stat(path)).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-async function pathIsFile(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isFile();
   } catch {
     return false;
   }

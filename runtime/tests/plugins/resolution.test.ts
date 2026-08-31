@@ -473,6 +473,23 @@ describe("plugin source resolution", () => {
     });
   });
 
+  test("a workspace directory cannot shadow an unscoped npm specifier", async () => {
+    await withTempDir(async (root) => {
+      const planted = join(root, "unsigned-shadow");
+      await writePlugin(planted, "unsigned-shadow");
+      const runProcess = npmPluginRunner("unsigned-shadow");
+
+      await expect(
+        installPluginOp({
+          source: "unsigned-shadow",
+          agencHome: join(root, "home"),
+          workspaceRoot: root,
+          runResolutionProcess: runProcess,
+        }),
+      ).rejects.toThrow(/plugin signature is required/u);
+    });
+  });
+
   test("an explicit relative scoped path still installs as local", async () => {
     await withTempDir(async (root) => {
       const planted = join(root, "@tetsuo-ai", "local-scoped");
@@ -487,6 +504,21 @@ describe("plugin source resolution", () => {
       expect(installed.resolutionKind).toBe("local");
       expect(installed.signatureVerified).toBe(false);
       expect(installed.plugin.name).toBe("local-scoped");
+    });
+  });
+
+  test("a missing explicit local path does not fall through to npm", async () => {
+    await withTempDir(async (root) => {
+      await expect(
+        installPluginOp({
+          source: "./missing-plugin",
+          agencHome: join(root, "home"),
+          workspaceRoot: root,
+          runResolutionProcess: async () => {
+            throw new Error("npm resolution must not run");
+          },
+        }),
+      ).rejects.toThrow(/plugin source not found/u);
     });
   });
 
@@ -536,6 +568,34 @@ describe("plugin source resolution", () => {
           source: "@tetsuo-ai/unsigned-remote",
           agencHome,
           workspaceRoot: root,
+          runResolutionProcess: runProcess,
+        }),
+      ).rejects.toThrow(/plugin signature is required/u);
+    });
+  });
+
+  test("update --source does not let an unscoped npm specifier resolve inside the installed root", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const pluginRoot = join(root, "local-unsigned");
+      await writePlugin(pluginRoot, "local-unsigned");
+      const installed = await installPluginOp({
+        source: pluginRoot,
+        agencHome,
+        workspaceRoot: root,
+      });
+      await writePlugin(
+        join(installed.destination, "unsigned-remote"),
+        "unsigned-remote",
+      );
+      const runProcess = npmPluginRunner("unsigned-remote");
+
+      await expect(
+        updatePluginOp({
+          pluginId: installed.plugin.id,
+          source: "unsigned-remote",
+          agencHome,
+          workspaceRoot: installed.destination,
           runResolutionProcess: runProcess,
         }),
       ).rejects.toThrow(/plugin signature is required/u);
@@ -1663,8 +1723,12 @@ describe("plugin source resolution", () => {
       await mkdir(join(root, "local"), { recursive: true });
       await writeFile(join(root, "plugin.mcpb"), "fixture");
 
-      await expect(classifyPluginSource("local", root)).resolves.toBe("local");
-      await expect(classifyPluginSource("plugin.mcpb", root)).resolves.toBe("mcpb");
+      await expect(classifyPluginSource("local", root)).resolves.toBe("npm");
+      await expect(classifyPluginSource("./local", root)).resolves.toBe("local");
+      await expect(classifyPluginSource(".\\local", root)).resolves.toBe("local");
+      await expect(classifyPluginSource(join(root, "local"), root)).resolves.toBe("local");
+      await expect(classifyPluginSource("plugin.mcpb", root)).resolves.toBe("npm");
+      await expect(classifyPluginSource("./plugin.mcpb", root)).resolves.toBe("mcpb");
       await expect(classifyPluginSource("package-like.git", root)).resolves.toBe("npm");
       await expect(classifyPluginSource("package-like.mcpb", root)).resolves.toBe("npm");
       await expect(classifyPluginSource("https://agenc.tech/plugin.mcpb", root)).resolves.toBe("mcpb");

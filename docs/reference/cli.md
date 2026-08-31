@@ -598,9 +598,9 @@ agenc plugin <command> [options]
 | --- | --- |
 | `list [--json]` | List discovered, installed, and path-configured plugins, including disabled rows. For discovered or installed plugins, allowlist the printed ID. For path-configured plugins, allowlist the parenthesized manifest name; see [skills-plugins.md](skills-plugins.md#config-enable) |
 | `validate <path> [--marketplace] [--json]` | Validate plugin or marketplace manifest |
-| `install <path> [--scope <user\|project\|local>]` | Install a local plugin directory |
+| `install <source> [--scope <user\|project\|local>]` | Install from an explicit local path (`./`, `../`, or absolute), npm, git, tarball, or mcpb. Bare names resolve remotely even when a same-named workspace directory exists |
 | `uninstall <name> [--scope …]` | Remove an installed plugin |
-| `update <name> [--source <path>]` | Refresh an installed plugin from its source |
+| `update <name> [--source <source>]` | Refresh from the recorded source, or from `--source` (explicit directory, git URL, tarball, mcpb, or npm spec). A remote replacement requires a publisher signature; a recorded local waiver does not travel with it. See [Publisher signatures](skills-plugins.md#publisher-signatures) |
 | `enable <name> [--path <path>]` | Enable a plugin in user config |
 | `disable <name>` | Disable a plugin in user config |
 | `disable-all` | Disable every currently enabled plugin |
@@ -617,7 +617,11 @@ the desktop enumeration and qualified-install surface; see
 [skills-plugins.md](skills-plugins.md#marketplace). Non-local marketplace
 installs, including bundled `./path` catalog rows, require a publisher
 signature and fail closed when it is missing. Direct `plugin install ./dir`
-does not require one. See
+does not require one. `plugin update` without `--source` reuses the recorded
+requirement. `plugin update --source` keeps a recorded `true` and otherwise
+uses the replacement source's resolver default, so npm / git / tarball / mcpb
+replacements fail closed without a signature. The CLI has no
+`--require-signature` flag. See
 [Publisher signatures](skills-plugins.md#publisher-signatures).
 
 A canonical plugin ID can be installed in one managed scope at a time. Remove

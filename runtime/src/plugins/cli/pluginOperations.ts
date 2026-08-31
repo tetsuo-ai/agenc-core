@@ -586,14 +586,17 @@ export async function updatePluginOp(
     );
   }
   if (typeof source === "string") {
-    const localSource = resolvePath(source, workspaceRoot);
-    if (await pathExists(localSource)) {
-      const sourceReal = await realpath(localSource);
-      const rootReal = await realpath(previousRoot);
-      if (sourceReal === rootReal || sourceReal.startsWith(`${rootReal}/`)) {
-        throw new Error(
-          `plugin update source cannot be the installed plugin root: ${source}`,
-        );
+    const sourceKind = await classifyPluginSource(source, workspaceRoot);
+    if (sourceKind === "local") {
+      const localSource = resolvePath(source, workspaceRoot);
+      if (await pathExists(localSource)) {
+        const sourceReal = await realpath(localSource);
+        const rootReal = await realpath(previousRoot);
+        if (sourceReal === rootReal || sourceReal.startsWith(`${rootReal}/`)) {
+          throw new Error(
+            `plugin update source cannot be the installed plugin root: ${source}`,
+          );
+        }
       }
     }
   }
