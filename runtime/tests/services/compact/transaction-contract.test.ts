@@ -43,7 +43,12 @@ import { reduceAll } from "../../../src/session/event-log-reducer.js";
 import { readCompactionRolloutPayload } from "../../../src/session/compaction-event-reader.js";
 import type { RolloutItem } from "../../../src/session/rollout-item.js";
 import type { Session } from "../../../src/session/session.js";
-import type { LLMMessage, LLMProvider, LLMResponse } from "../../../src/llm/types.js";
+import type {
+  LLMMessage,
+  LLMProvider,
+  LLMResponse,
+  LLMTool,
+} from "../../../src/llm/types.js";
 import { ExecutionAdmissionKernel } from "../../../src/budget/execution-admission-kernel.js";
 import { bindExecutionAdmissionJournal } from "../../../src/session/execution-admission-journal.js";
 import type { Event } from "../../../src/session/event-log.js";
@@ -272,6 +277,13 @@ describe("transactional compaction production path", () => {
         });
 
         expect(timeline).toEqual(["pre", "intent", "provider", "commit", "post"]);
+        expect(provider.chat).toHaveBeenCalledWith(
+          expect.any(Array),
+          expect.objectContaining({
+            tools: [],
+            toolRouting: { allowedToolNames: [] },
+          }),
+        );
         expect(hooks.executePreCompact).toHaveBeenCalledOnce();
         expect(hooks.executePostCompact).toHaveBeenCalledOnce();
         expect(preInput).toEqual({
@@ -351,6 +363,34 @@ describe("transactional compaction production path", () => {
         }),
       );
       expect(post).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("does not inherit constructor-scoped session tools into admitted summaries", async () => {
+    await withTransactionalStore("transaction-tool-free-factory-catalog", async (store) => {
+      const factoryTools: readonly LLMTool[] = [
+        {
+          type: "function",
+          function: {
+            name: "session_catalog_tool",
+            description: "x".repeat(300_000),
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ];
+      const provider = compactionProvider({}, undefined, factoryTools);
+      const source = appendSourceMessages(store, 8, 4_000);
+
+      const result = await runRealTransaction(store, source, provider);
+
+      expect(result.transaction).toBeDefined();
+      expect(provider.chat).toHaveBeenCalledWith(
+        expect.any(Array),
+        expect.objectContaining({
+          tools: [],
+          toolRouting: { allowedToolNames: [] },
+        }),
+      );
     });
   });
 
@@ -836,6 +876,7 @@ function appendSourceMessages(
 function compactionProvider(
   overrides: Partial<LLMResponse> = {},
   onChat?: () => void,
+  factoryTools: readonly LLMTool[] = [],
 ): LLMProvider & { readonly chat: ReturnType<typeof vi.fn> } {
   const chat = vi.fn(async (messages: LLMMessage[]): Promise<LLMResponse> => {
     onChat?.();
@@ -865,6 +906,7 @@ function compactionProvider(
   });
   return {
     name: "grok",
+    ...(factoryTools.length > 0 ? { config: { tools: factoryTools } } : {}),
     getExecutionProfile: async () => ({
       provider: "grok",
       model: "grok-4.5",
@@ -879,10 +921,19 @@ function compactionProvider(
       capabilityVersion: "c2-contract-v1",
       adapterRevision: "c2-contract-adapter-v1",
       configurationRevision: "c2-contract-config-v1",
-      countTokens: async (request: { readonly messages: readonly LLMMessage[] }) => ({
+      countTokens: async (request: {
+        readonly messages: readonly LLMMessage[];
+        readonly options?: { readonly tools?: readonly unknown[] };
+      }) => ({
         inputTokens: Math.max(
           1,
-          Math.ceil(Buffer.byteLength(JSON.stringify(request.messages), "utf8") / 4),
+          Math.ceil(
+            (Buffer.byteLength(JSON.stringify(request.messages), "utf8") +
+              Buffer.byteLength(
+                JSON.stringify(request.options?.tools ?? []),
+                "utf8",
+              )) / 4,
+          ),
         ),
         complete: true as const,
         confidence: "exact" as const,

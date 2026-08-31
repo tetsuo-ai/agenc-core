@@ -1128,6 +1128,13 @@ async function invokeCompactionProvider(params: {
     systemPrompt: params.systemPrompt,
     maxOutputTokens: params.outputReserveTokens,
     contextWindowTokens: params.contextWindowTokens,
+    // Compaction is a constrained summarization call, not an agent turn. Keep
+    // it explicitly tool-free so constructor-scoped client tools and
+    // provider-native server tools cannot be added after preflight token
+    // accounting. Besides being unnecessary here, an injected tool catalog
+    // can add thousands of unreserved prompt tokens at the provider wire.
+    tools: [],
+    toolRouting: { allowedToolNames: [] },
     ...(signal !== undefined ? { signal } : {}),
   };
   const request = createTokenAccountingRequest({
