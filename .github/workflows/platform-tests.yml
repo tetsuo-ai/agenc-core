@@ -163,6 +163,14 @@ jobs:
               --shard=${{ matrix.shard }}/4 \
               --maxWorkers=2
 
+      - name: Prove FND baseline provenance in a fresh clone
+        if: matrix.shard == 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$AGENC_NODE_EXECUTABLE_PATH" \
+            runtime/scripts/check-fnd-baseline-fresh-clone.mjs
+
       - name: Assert the suite left the checkout clean
         shell: bash
         run: |
