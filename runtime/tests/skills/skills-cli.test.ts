@@ -60,6 +60,7 @@ describe("agenc skills CLI", () => {
     expect(byOrigin.has("plugin:demo-skill")).toBe(true);
     expect(byOrigin.get("plugin:demo-skill")?.pluginRoot).toBeDefined();
     expect(byOrigin.has("built-in:verify")).toBe(true);
+    expect(byOrigin.get("built-in:batch")?.whenToUse).toMatch(/migrations/iu);
     expect(byOrigin.has("built-in:ledger-wallet-cli")).toBe(true);
     const names = inventory.skills.map((skill) => skill.name);
     expect(names).not.toContain("iot-builder");
