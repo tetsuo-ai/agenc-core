@@ -624,6 +624,12 @@ replacements fail closed without a signature. The CLI has no
 `--require-signature` flag. See
 [Publisher signatures](skills-plugins.md#publisher-signatures).
 
+HTTP(S) install URLs pick `mcpb` or `tarball` from an explicit
+`.mcpb` / `.tgz` / `.gz` / `.tar` pathname suffix before a known Git
+host is treated as a repository. `https://github.com/acme/tool.mcpb`
+is a bundle; `https://github.com/acme/tool` is git. See
+[HTTP(S) URL kind precedence](skills-plugins.md#https-url-kind-precedence).
+
 A canonical plugin ID can be installed in one managed scope at a time. Remove
 the existing copy before installing that ID in another scope.
 

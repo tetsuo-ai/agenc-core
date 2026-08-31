@@ -14,6 +14,7 @@ Sources of truth:
 | CLI | `runtime/src/plugins/cli/pluginCliCommands.ts` → `agenc plugin` |
 | Install / update ops | `runtime/src/plugins/cli/pluginOperations.ts` (`installPluginOp`, `updatePluginOp`) |
 | Marketplace | `runtime/src/plugins/marketplace/` |
+| Source classification | `runtime/src/plugins/resolution.ts` (`classifyPluginSource`) |
 | Publisher signatures | `runtime/src/plugins/resolution.ts` (`verifyResolvedPluginSignature`) |
 | Config | `[plugins]` in [config.md](config.md) |
 
@@ -475,6 +476,32 @@ manifest interface (logo stripped; artwork travels as a verified path) and
 command rows. A subsequent `plugin list --json` also includes skill rows read
 from each skill directory's `SKILL.md` frontmatter.
 
+### HTTP(S) URL kind precedence
+
+`classifyPluginSource` picks an HTTP(S) kind from the URL pathname
+suffix **before** it treats a known Git host as a repository.
+`plugin install` and `plugin update --source` use that kind.
+
+| Specifier | Kind |
+| --- | --- |
+| `http(s)://` pathname ending in `.mcpb` | `mcpb` |
+| `http(s)://` pathname ending in `.tgz`, `.gz`, or `.tar` | `tarball` |
+| `http(s)://` on `github.com`, `gitlab.com`, `bitbucket.org`, `codeberg.org`, or `dev.azure.com` with an owner/repo path and none of those suffixes | `git` |
+
+```bash
+agenc plugin install https://github.com/acme/tool.mcpb
+agenc plugin install https://gitlab.com/acme/tool.tgz
+agenc plugin install https://github.com/acme/tool
+```
+
+The first URL is a bundle. The second is an archive. The third is a
+Git clone. A known-host URL is not Git when the pathname carries an
+explicit bundle or archive suffix.
+
+`git+<url>`, `git@<host>:<owner>/<repo>`, and `ssh://` specifiers are
+always `git`, even when the path looks like a bundle or archive. The
+suffix rule applies only to `http:` / `https:` URLs.
+
 ### Publisher signatures
 
 Remote plugin resolution (`resolvePluginSource` in
@@ -589,6 +616,7 @@ payload.
 | `plugin signature is required` | A required install lacks `.agenc-plugin/signature.json`. Direct local `plugin install ./dir` does not take this path. |
 | `plugin publisher is not trusted` | The parsed `$AGENC_HOME/plugin-publishers.json` has no usable key for that publisher. Missing, unreadable, or malformed keyrings report their underlying error instead. |
 | `signatureVerified: false` after marketplace install | Expected only for a local marketplace or a custom caller that disabled the requirement. A successful non-local marketplace install returning false violates the shipped path's invariant. |
+| `plugin install https://github.com/acme/tool.mcpb` fetches a bundle, not a git clone | Expected. HTTP(S) `.mcpb` and archive suffixes win over known-host git recognition. Use a suffix-free owner/repo URL, or a `git+` / `git@` / `ssh://` specifier, to clone. |
 | `plugin update` without `--source` accepts an unsigned tree | Install metadata records a waiver or has neither `signatureRequired: true` nor the legacy `signatureVerified: true` signal. Reinstall the plugin from its marketplace to establish the current requirement. |
 | `plugin update --source <remote>` rejects an unsigned tree after a local install | The replacement source uses the remote resolver default. Sign the replacement or keep using a local source. |
 | `plugin install package-name` fetches npm even though `package-name/` exists in the workspace | Expected. Bare specifiers are not shadowed by workspace contents. Prefix the path with `./` to install that local tree. |

@@ -1765,6 +1765,76 @@ describe("plugin source resolution", () => {
       ).resolves.toBe("local");
     });
   });
+
+  test("classifies known-host archive suffixes before git-host recognition", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const runProcess: PluginProcessRunner = async (command, args) => {
+        if (command === "git") {
+          const target = String(args.at(-1));
+          await writePlugin(target, "known-host-git");
+          return { stdout: "", stderr: "" };
+        }
+        if (command === "tar") {
+          if (args[0] === "-tzf") {
+            return { stdout: safeTarListing("package"), stderr: "" };
+          }
+          if (args[0] === "-tvzf") {
+            return { stdout: safeTarVerboseListing("package"), stderr: "" };
+          }
+          const extractRoot = String(args[args.indexOf("-C") + 1]);
+          await writePlugin(join(extractRoot, "package"), "known-host-tarball");
+          return { stdout: "", stderr: "" };
+        }
+        if (command === "unzip") {
+          if (args[0] === "-Z1") {
+            return { stdout: safeZipListing(), stderr: "" };
+          }
+          if (args[0] === "-Z" && args[1] === "-v") {
+            return { stdout: safeZipVerboseListing(), stderr: "" };
+          }
+          const extractRoot = String(args[args.indexOf("-d") + 1]);
+          await writePlugin(extractRoot, "known-host-mcpb");
+          return { stdout: "", stderr: "" };
+        }
+        throw new Error(`unexpected process: ${command}`);
+      };
+
+      const cases = [
+        {
+          source: "https://github.com/acme/tool.mcpb",
+          kind: "mcpb",
+        },
+        {
+          source: "https://gitlab.com/acme/tool.tgz",
+          kind: "tarball",
+        },
+        {
+          source: "https://github.com/acme/tool",
+          kind: "git",
+        },
+      ] as const;
+
+      for (const { source, kind } of cases) {
+        await expect(classifyPluginSource(source, root)).resolves.toBe(kind);
+        const resolved = await resolvePluginSource(source, {
+          agencHome,
+          workspaceRoot: root,
+          runProcess,
+          requireSignature: false,
+          refreshCache: true,
+          fetchBytes: async () => new Uint8Array([1, 2, 3]),
+        });
+        expect(resolved.kind).toBe(kind);
+        expect(resolved.requestedSource).toBe(source);
+        await resolved.cleanup();
+      }
+
+      await expect(
+        classifyPluginSource("git+https://github.com/acme/tool.mcpb", root),
+      ).resolves.toBe("git");
+    });
+  });
 });
 
 function loadedPlugin(
