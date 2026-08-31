@@ -103,6 +103,12 @@ charged tool:
 - Unpriced or unbounded work is denied under a hard USD cap.
 - Cancellation, queueing, denial, dispatch, fallback, and settlement are
   journaled under durable run/step/reservation identities.
+- `(runId, stepId)` is unique. The first model sample uses
+  `model:<sub>:<turn>:<reentry>:<attempt>`; later samples add
+  `:sample-<ordinal>` before `:<attempt>`. The ordinal is checkpointed before
+  the next admission, so nudge, compact, empty-response, and other follow-up
+  samples remain distinct and crash-resumable.
+  See [execution-admission-kernel.md](../design/execution-admission-kernel.md#model-step-identity).
 
 `reconcile(reservationId, usage)` replaces the hold exactly once. Missing
 post-dispatch usage remains `held_unknown`; provider excess becomes

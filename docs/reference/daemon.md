@@ -472,6 +472,36 @@ snapshot clears the stamp. A daemon-restart recovery that restored the
 record without an attached runtime (`recovered === true` and no
 runtime) is immediately reapable because it cannot resume on its own.
 
+### Admission step identity on keep-alive turns
+
+Daemon sessions set `admissionRequired`. Each streamed sample is admitted
+under `(runId, stepId)`. Stream-model builds:
+
+```text
+model:<subId>:<turnCount>:<recoveryReentryCount>:<attempt>
+```
+
+Recovery re-entries bump `recoveryReentryCount`, so they get a new id.
+Every successful nonterminal response also advances a durable sample ordinal.
+Ordinal zero keeps the format above. Later physical samples add
+`:sample-<ordinal>` before `:<attempt>`. This covers continuation nudges,
+mid-turn compaction, an empty-response retry, tool follow-up, and stop-hook
+re-entry without relying on whether the prompt token estimate changed.
+
+Before the next admission, the runtime fsyncs a turn checkpoint containing the
+ordinal. Runtime-only nudge and empty-response prompts are named in that
+checkpoint and reconstructed after a crash. A resumed in-flight sample
+therefore uses the exact same id and request, while a new physical sample gets
+a new id.
+
+See [execution-admission-kernel.md](../design/execution-admission-kernel.md#model-step-identity).
+
+| Symptom | What to check |
+| --- | --- |
+| `AdmissionStepConflictError` | The same `(runId, stepId)` was acquired with different normalized admission data. Compare the `stepId`, provider, model, token bounds, and budget identity in `agenc run evidence`. |
+| A crash-resumed nudge or empty-response retry conflicts | Verify the latest turn checkpoint contains the expected sample ordinal and resume-prompt kind. |
+| A later model call lacks `sample-<ordinal>` | Check whether the prior response was terminal. Only successful nonterminal responses reserve another physical sample. |
+
 ## What the daemon owns
 
 - **Sessions** — create/attach, multi-turn transcripts, rollouts under the
@@ -530,5 +560,9 @@ agenc budget status    # configured policy only; usage is agenc run status <run-
 | Local socket / Windows named pipe | `runtime/src/app-server/transport/unix-socket.ts`   |
 | Cookie auth                       | `runtime/src/app-server/transport/auth.ts`          |
 | Health                            | `runtime/src/app-server/health.ts`                  |
+| Model admission step id           | `runtime/src/phases/stream-model.ts`                |
+| Continuation nudge                | `runtime/src/phases/continuation-nudge.ts`          |
+| Mid-turn compact continue         | `runtime/src/session/run-turn.ts`                   |
+| Step uniqueness / conflict        | `runtime/src/state/execution-admission.ts`          |
 | Launcher autostart                | `packages/agenc/src/launcher.mjs`                   |
 | SDK connect                       | `packages/agenc-sdk/src/socket.ts`                  |

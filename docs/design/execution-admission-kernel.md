@@ -52,6 +52,52 @@ identity with different request data is an error. The explicit decisions are
 `allow`, `queue`, `deny`, and `approval_required`. Only `allow` carries a
 durable reservation.
 
+### Model step identity
+
+`runAdmittedModelCall` persists the caller's `stepId`. The first physical
+model sample in a turn keeps the historical form:
+
+```text
+model:<subId>:<turnCount>:<recoveryReentryCount>:<attempt>
+```
+
+Later physical samples in the same turn use:
+
+```text
+model:<subId>:<turnCount>:<recoveryReentryCount>:sample-<ordinal>:<attempt>
+```
+
+Ordinal zero deliberately omits the sample segment so a running row created by
+an older runtime can reattach after an upgrade. Each successful nonterminal
+response advances the ordinal before another sample can be admitted. Recovery
+re-entry also increments `recoveryReentryCount`. `attempt` is the wire kind
+(`primary`, `prewarm`, or `prewarm_fallback`), not a retry counter.
+
+The admission repository compares normalized admission requests, not raw
+provider messages. The comparison includes fields such as model, provider,
+token bounds, budget identity, and step identity. Prompt changes do not need to
+produce a different token estimate because physical samples already have
+different ids.
+
+| Second acquire of the same `(runId, stepId)` | Result |
+| --- | --- |
+| Different normalized request, regardless of row state | Throw `AdmissionStepConflictError` |
+| Same request, queued row | Return the existing queue decision |
+| Same request, approval-required row | Return the existing approval decision |
+| Same request, running row with a reservation | Reattach to the existing reservation |
+| Same request, terminal row | Deny with the stored reason or `admission_already_terminal` |
+
+Before a later sample reaches admission, `run-turn.ts` persists new response
+items and emits a forced, fsync-durable `turn_checkpoint`. The checkpoint stores
+the ordinal and any runtime-only continuation or empty-response prompt. Crash
+recovery restores both, so it reuses the reserved sample id and reconstructs
+the same request instead of creating a different call.
+
+Production bootstraps set `admissionRequired: true`
+(`bin/bootstrap.ts`). Inspect the machine-readable journal with
+`agenc run evidence <run-id>` and its `stepId` fields. Raw SQLite uses the
+`step_id` column.
+
 ## Admitted surfaces and fail-closed behavior
 
 Coverage is enforced at execution boundaries rather than duplicated in each

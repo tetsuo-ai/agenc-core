@@ -6,11 +6,11 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 
 | Doc                                                                              | Scope                                                                        |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| [`reference/daemon.md`](reference/daemon.md)                                     | Daemon lifecycle, deferred first messages, bypass consent, bounded-stop survival |
+| [`reference/daemon.md`](reference/daemon.md)                                     | Daemon lifecycle, deferred first messages, bypass consent, bounded-stop survival, admission step identity |
 | [`reference/providers.md`](reference/providers.md)                               | Built-in providers, defaults, credentials, local context-window probes, Responses continuation |
 | [`reference/autonomy.md`](reference/autonomy.md)                                 | Budget, heartbeat, cron delivery (pinned webhook destinations), hooks HTTP   |
 | [`reference/mcp.md`](reference/mcp.md)                                           | Outbound/inbound MCP, plugin-declared servers, Landlock stdio failures       |
-| [`design/execution-admission-kernel.md`](design/execution-admission-kernel.md)   | Live durable budget/admission design                                         |
+| [`design/execution-admission-kernel.md`](design/execution-admission-kernel.md)   | Live durable budget/admission design, model step identity                    |
 | [`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md) | Canonical run journal, effects, terminal results, replay, and crash recovery |
 | [`gateway.md`](gateway.md)                                                       | Channel gateway operator guide                                               |
 | [`sdk.md`](sdk.md)                                                               | `@tetsuo-ai/agenc-sdk` embedding API                                         |
@@ -361,7 +361,7 @@ phase machine. Module files under `runtime/src/phases/` own the heavy steps;
 | #   | Stage                | Module / site                    | Role                                                                                              |
 | --- | -------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------- |
 | 1   | `prepareContext`     | inline in `session/run-turn.ts`  | Build messages for query, attachments, compact, request contract                                  |
-| 2   | `streamModel`        | `phases/stream-model.ts`         | Stream provider response; capture assistant + tool-use blocks (may start streaming tool dispatch) |
+| 2   | `streamModel`        | `phases/stream-model.ts`         | Admit one physical sample; stream the provider response; capture assistant + tool-use blocks (may start streaming tool dispatch) |
 | 3   | `postSampleRecovery` | `phases/post-sample-recovery.ts` | Run recovery ladder on stream outcome / withheld errors                                           |
 | 4   | `continuationNudge`  | `phases/continuation-nudge.ts`   | Nudge re-entry when the model stopped without required follow-up                                  |
 | 5   | `executeTools`       | `phases/execute-tools.ts`        | Drain / finalize tool dispatch → tool results                                                     |
@@ -372,7 +372,12 @@ evaluated from `commit` (and can set `transition` so the outer loop re-enters).
 `phases/events.ts` is the phase-yielded event envelope for the TUI / clients.
 
 Continue reasons and terminal reasons live on `session/turn-state.ts`
-(`ContinueReason`, `TerminalReason`).
+(`ContinueReason`, `TerminalReason`). Mid-turn compact (in `run-turn.ts`,
+before execute-tools) is also a `continue` without `commit`. Every successful
+nonterminal model response advances a durable sample ordinal, so nudge,
+compact, empty-response, and other follow-up samples receive a new admission
+`stepId`. See
+[execution-admission-kernel.md](design/execution-admission-kernel.md#model-step-identity).
 
 ## Recovery ladder (`runtime/src/recovery`)
 

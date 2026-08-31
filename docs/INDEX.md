@@ -56,7 +56,7 @@ history; the linked pages below are current product truth.
 | [reference/cli.md](reference/cli.md) | Full CLI, including M5 `run start`, Grok auth, OpenAI model discovery, and `agenc skills list` |
 | [reference/config.md](reference/config.md) | `config.toml` sections, env overrides, `agenc config` |
 | [reference/env.md](reference/env.md) | Operator `AGENC_*` / provider key environment variables, and provider credential isolation |
-| [reference/daemon.md](reference/daemon.md) | Daemon lifecycle, socket auth, deferred first messages, bypass consent, and bounded-stop survival |
+| [reference/daemon.md](reference/daemon.md) | Daemon lifecycle, socket auth, deferred first messages, bypass consent, bounded-stop survival, and admission step identity |
 | [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes, Responses continuation, and overflow diagnostics |
 | [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics |
 | [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery (pinned webhook destinations) + hooks HTTP |
@@ -81,7 +81,7 @@ history; the linked pages below are current product truth.
 | [design/secure-project-instructions.md](design/secure-project-instructions.md) | Live instruction delivery, precedence, descriptor-bound reads, approvals, and threat model |
 | [design/fail-closed-sandbox-execution.md](design/fail-closed-sandbox-execution.md) | Required process isolation boundary, platform probes, launcher argv contract, failure semantics, and research |
 | [design/reconnect-backoff-policy.md](design/reconnect-backoff-policy.md) | Finite full-jitter reconnect policy, typed Retry-After parsing, elapsed accounting, and A1 replay-safety ordering |
-| [design/execution-admission-kernel.md](design/execution-admission-kernel.md) | M3 daemon admission, durable budgets/queue/cancellation, evidence, rollout, and rollback |
+| [design/execution-admission-kernel.md](design/execution-admission-kernel.md) | M3 daemon admission, model step identity, durable budgets/queue/cancellation, evidence, rollout, and rollback |
 | [design/provider-aware-token-accounting.md](design/provider-aware-token-accounting.md) | Complete-request native/fallback accounting, bounded cache/single-flight, context enforcement, context estimates, and calibration |
 | [design/durable-runs-effects-events.md](design/durable-runs-effects-events.md) | M4 canonical run journal, honest effects, resume with pending reviews, terminal results, replay-safe cursors, crash matrix, and rollback |
 | [design/shared-run-contracts-v1.md](design/shared-run-contracts-v1.md) | Frozen v1 run, admission, budget, effect, event, and cursor contracts |
