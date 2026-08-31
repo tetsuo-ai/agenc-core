@@ -128,9 +128,14 @@ changing a recorded failure or unknown outcome into success.
 
 A deliberate reopen is a new lifecycle epoch, not a rewrite. A durable
 `run_reopened` event names the previous epoch, the next epoch, the reason, and
-the reopen time. Reopen is allowed only after the current epoch is terminal
-and all unknown-outcome reviews are resolved. Terminal history for prior
-epochs stays queryable.
+the reopen time. Reopen is allowed only after the current epoch is terminal.
+Pending unknown-outcome reviews do **not** block reopen when that terminal is
+`completed`, `failed`, or `cancelled` — `/resolve` and
+`session.resolveToolCall` run inside the reopened session. An
+`unknown_outcome` terminal with unresolved reviews still refuses reopen, and
+an intent with no settlement record at all (a dangling intent) refuses at
+every layer. Dependent mutations stay stopped until each review resolves; no
+automatic replay occurs. Terminal history for prior epochs stays queryable.
 
 Runs created before M4 can still have a terminal `agent_runs` row without a
 canonical terminal payload. For that compatibility case, `run.result` returns
@@ -180,11 +185,13 @@ journal does not become a second secret-bearing input store.
 
 `effect_result` acknowledges only a proven `committed`, `failed`, or
 `cancelled` outcome. `effect_unknown_outcome` is terminal-but-unresolved. Its
-projection is review-locked: a late result cannot overwrite it, the review
-state can move only `pending -> resolved`, and a terminal run cannot reopen
-while any review remains pending. The existing in-flight tool recovery index
-also marks the call `poisoned` so the pre-dispatch mutation gate can block a
-new side effect in the same session.
+projection is review-locked: a late result cannot overwrite it, and the review
+state can move only `pending -> resolved`. Review-required does not mean
+resume-refused. Settled terminals (`completed`, `failed`, `cancelled`) reopen
+with reviews still pending so the operator can run `/resolve` in the live
+session. The in-flight tool recovery index still marks the call `poisoned`,
+so `assertDependentMutationAllowed` and the live-effect gate block a new
+side-effecting dispatch until that review is resolved.
 
 Restart classification consults the durable admission boundary. A reservation
 still `reserved`, or already recovered to `voided`, proves the effect never
@@ -201,8 +208,12 @@ post-dispatch crash, a reservation may remain `held_unknown` while the effect
 requires review. Neither state is refunded or replayed merely because the
 daemon restarted.
 
-An operator resolves that review from the affected project after stopping the
-live session:
+Two operator paths settle a review. Prefer the live session: resume first,
+then `/resolve` or `session.resolveToolCall`. That is the path the reopen
+gate was opened for — refusing resume made `/resolve` unreachable because it
+runs only inside a live session.
+
+The offline CLI still works after the session is stopped:
 
 ```bash
 AGENC_REVIEWER_ID=operator_7 \
@@ -211,8 +222,8 @@ AGENC_REVIEWER_ID=operator_7 \
     <evidence-ref> <evidence-sha256>
 ```
 
-For an M4 effect, the command takes the canonical journal's single-writer
-lease, verifies the matching `effect_unknown_outcome`, and appends and fsyncs
+For an M4 effect, both paths take the canonical journal's single-writer
+lease, verify the matching `effect_unknown_outcome`, and append and fsync
 one idempotent `effect_review_resolved` event before either SQLite review
 projection advances. The event records the run, step, call, typed disposition,
 reviewer, evidence reference and SHA-256, workflow status, domain action, and
@@ -221,11 +232,55 @@ it never reruns the tool or changes the unknown physical outcome into a
 fabricated success. Reviewer identity falls
 back from `AGENC_REVIEWER_ID` to `USER`, `USERNAME`, then `local_operator`.
 
-This is an explicit post-terminal audit exception when `run_terminal` already
-exists. The command can append only after taking the stopped rollout's
-exclusive lease, and it never resumes agent execution or changes the terminal
-result. Replay and journal-binding bounds include the later review evidence;
+The offline command is a post-terminal audit exception when `run_terminal`
+already exists: it appends only after taking the stopped rollout's exclusive
+lease, and it never resumes agent execution or changes the terminal result.
+Replay and journal-binding bounds include the later review evidence;
 `run.result.output.lastSequence` remains the sequence of the terminal snapshot.
+
+## Resume and effect review
+
+`reopenRun` (`runtime/src/state/run-durability.ts`) and the matching
+rollout-store gate (`reopenTerminalEpoch`) encode the same table. The M4
+requirements stand: dependent mutations stop, review is required, no
+automatic replay.
+
+| Terminal / evidence | Reopen | What happens next |
+| --- | --- | --- |
+| `completed`, `failed`, or `cancelled` with pending reviews | Allowed | New epoch. `/resolve` runs in the live session. Side-effecting tools stay gated. |
+| `cancelled` with no pending reviews | Allowed | Everyday Ctrl-C-then-continue. Cancel is a settled terminal, not a brick. |
+| `unknown_outcome` with pending reviews | Refused (`RUN_REOPEN_REVIEW_REQUIRED`) | Reviews reconcile the unsettled terminal. Use the offline CLI, then resume. |
+| Dangling intent (side-effecting or interactive intent, no settlement record) | Refused | Evidence gap, not a review queue. Do not reopen over it. |
+| Active suspension | Refused (`RUN_SUSPENSION_CONFLICT`) | Clear the suspension first. |
+| Non-terminal current epoch | Refused (`RUN_EPOCH_NOT_TERMINAL`) | Crash recovery continues in place; it is not a lifecycle retry. |
+
+A cancelled epoch is a settled terminal outcome. An explicit resume reopens
+it under a new epoch exactly like a completed run. `unknown_outcome`
+terminals stay refused while their effect reviews are unresolved; resolved
+reviews reconcile them.
+
+Retained-agent resume compares `createdAt` on the retained record (daemon
+clock at `agent.create`) to the rollout header (session writer) within
+**5 seconds** (`RETAINED_CREATED_AT_TOLERANCE_MS`). Strict equality used to
+refuse every retained root session. Identity checks on objective, model, and
+provider still fail closed for a swapped-in rollout.
+
+Pre-dispatch planning refusals that never crossed the effect boundary
+(`validationErrorToolResult` — ExitPlanMode "You are not in plan mode",
+argument/mode checks) attest `confirmed_no_effect`. A bare `isError` from a
+non-idempotent tool still poisons the mutation gate. The one planning path
+that can follow a plan-file write keeps the bare error so a genuine
+mid-flight failure stays `unknown_outcome`.
+
+### Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| Ctrl-C then `--resume` / `/resume` is refused with review-required | Confirm the terminal is `unknown_outcome` or a dangling intent exists. Settled cancel/complete/fail should reopen. |
+| Session opens but every write/shell tool is blocked | Pending `unknown_outcome` reviews. Run `/resolve`, not another resume. |
+| `/resolve` says there is no live session | Resume first. Review-required used to mean resume-refused, which made this command unreachable. |
+| "You are not in plan mode" blocked later mutations | Fixed: that refusal now attests `confirmed_no_effect`. A leftover poison is an older journal. |
+| Retained session refuses with a createdAt mismatch of a few milliseconds | Current code allows 5s. A larger gap, or a model/provider/objective mismatch, is still a hard refuse. |
 
 ## Persist before publish
 
@@ -427,10 +482,12 @@ they remain the evidence needed for a later v15-aware reconciliation.
 | Canonical event types and split publication | `runtime/src/session/event-log.ts`, `runtime/src/session/session.ts`                               |
 | Append/fsync rollout store                  | `runtime/src/session/session-store.ts`                                                             |
 | Effect dispatch boundary                    | `runtime/src/budget/admitted-tool-call.ts`                                                         |
-| v15 state and projection rules              | `runtime/src/state/run-durability.ts`, `runtime/src/state/migrations/015_run_durability_schema.ts` |
+| v15 state and projection rules              | `runtime/src/state/run-durability.ts` (`reopenRun`), `runtime/src/state/migrations/015_run_durability_schema.ts` |
+| Resume reopen + pending-review gate         | `runtime/src/session/rollout-store.ts` (`reopenTerminalEpoch`), `runtime/src/app-server/agent-lifecycle.ts` (`RETAINED_CREATED_AT_TOLERANCE_MS`) |
 | Journal projection and cursor pages         | `runtime/src/app-server/run-journal-replay.ts`, `runtime/src/app-server/run-inspection.ts`         |
 | Terminal lifecycle commit                   | `runtime/src/app-server/background-agent-runner.ts`, `runtime/src/app-server/daemon-cli.ts`        |
-| Operator effect-review evidence             | `runtime/src/state/effect-review.ts`, `runtime/src/bin/state-cli.ts`                               |
+| Operator effect-review evidence             | `runtime/src/state/effect-review.ts`, `runtime/src/commands/resolve.ts`, `runtime/src/bin/state-cli.ts` |
+| Pre-effect validation (no mutation poison)  | `runtime/src/tools/results.ts` (`validationErrorToolResult`)                                       |
 | Replay-safe SDK client                      | `packages/agenc-sdk/src/client.ts`, `packages/agenc-sdk/src/protocol.ts`                           |
 | Immutable artifact publication              | `runtime/src/durability/atomic-artifact.ts`                                                        |
 | Crash injection                             | `runtime/src/durability/failpoints.ts`                                                             |

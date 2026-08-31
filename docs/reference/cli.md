@@ -591,8 +591,12 @@ agenc state recovery quarantine list --state active --json
 agenc state recovery deferred show <block-id> --json
 ```
 
-Run `resolve-tool-call` from the affected session's project directory after
-stopping the live session. For an M4 effect, it appends and fsyncs a canonical
+Prefer the live session: resume first, then `/resolve` (or
+`session.resolveToolCall`). Pending reviews on a settled terminal no longer
+block that reopen. Run the offline `resolve-tool-call` from the affected
+session's project directory after stopping the live session — required when
+the terminal itself is `unknown_outcome` or a dangling intent refuses
+resume. For an M4 effect, either path appends and fsyncs a canonical
 `effect_review_resolved` event before advancing the SQLite review projection;
 it never reruns the tool or rewrites `unknown_outcome` as success. Valid
 dispositions are `confirmed_committed`, `confirmed_no_effect`, and

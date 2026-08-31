@@ -152,7 +152,11 @@ authenticated Android portal client advertises those explicitly. A future SDK
 capability option must remain opt-in and bind delivery to a concrete handler.
 
 Usage/cost: after the turn ends the SDK fetches `session.snapshot` and puts
-`tokenUsage` on the result (`includeUsage: false` to skip).
+`tokenUsage` on the result (`includeUsage: false` to skip). The same snapshot
+may include `contextBreakdown` (tool schemas, MCP catalog, memory files,
+history, and the model's real window). The field is omitted when measurement
+throws; do not invent a number. See
+[provider-aware-token-accounting.md](design/provider-aware-token-accounting.md#session-occupancy-snapshot).
 
 Prompt admission is reserved synchronously per session, before attach or send,
 so a second local `prompt()` throws `AgencPromptRunInProgressError`. Every SDK

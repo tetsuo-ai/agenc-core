@@ -33,7 +33,7 @@ Order matches `buildDefaultRegistry`.
 | `/model` | | Switch the model (picker or pass a name) |
 | `/provider` | | Switch the LLM provider for subsequent turns |
 | `/effort` | | Show or set reasoning effort for the current model (`low` / `medium` / `high` / `xhigh` when the catalog allows it; `default` restores the model default) |
-| `/resolve` | `resolve-effects` | Resolve a blocked unknown-outcome tool effect through the live daemon (`<call-id> <disposition> <evidence-ref> <evidence-sha256>`) |
+| `/resolve` | `resolve-effects` | Resolve a blocked unknown-outcome tool effect in the **live** session (`<call-id> <disposition> <evidence-ref> <evidence-sha256>`). Resume first if the run is terminal. |
 | `/swarm` | | Show or set conservative adaptive routing (`on`, `off`, `status`) |
 | `/ledger` | `wallet` | Ledger wallet CLI: `status`, `install`, `session`, `discover`, `balances`, `operations`, `receive`, `send`, `swap`, `earn`, `ring`, `help` |
 | `/permissions` | `approvals`, `allowed-tools` | Manage permission mode and rules |
@@ -119,6 +119,27 @@ consent is stored in permission-owned runtime state and is loaded by later
 sessions for that same workspace. It does not apply to another path or to a
 replacement directory at the same path. Managed policy may disable bypass
 mode.
+
+## `/resolve`
+
+`/resolve` settles one `unknown_outcome` tool effect **inside a live
+session**. It is the same daemon path as `session.resolveToolCall`.
+
+```text
+/resolve <call-id> <confirmed_committed|confirmed_no_effect|remains_unknown> \
+  <evidence-ref> <evidence-sha256>
+```
+
+Resume first (`--resume` / `/resume`) when the previous epoch is terminal.
+Pending reviews on a `completed`, `failed`, or `cancelled` run no longer
+block that reopen. Side-effecting tools stay gated until the review lands.
+An `unknown_outcome` terminal with unresolved reviews, or a dangling intent
+with no settlement record, still refuses resume — use
+`agenc state resolve-tool-call` from the project directory, then resume.
+
+The command never reruns the tool or rewrites the physical outcome as
+success. Full reopen table:
+[durable-runs-effects-events.md](../design/durable-runs-effects-events.md#resume-and-effect-review).
 
 ---
 

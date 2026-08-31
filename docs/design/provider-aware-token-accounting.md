@@ -142,6 +142,15 @@ and abandoned results are never cached as zero.
 - The durable model-call admission boundary accounts before reservation,
   persists a denial reason for uncertainty or context overflow, and passes the
   admitted input count to provider-side final fitting.
+- A context overflow is `context_window_exceeded` and names both sides:
+  `accounted input (N) plus reserved output (M) exceeds context window (W)`.
+  The denial is not "your prompt is too long" — on a 8k–32k local window the
+  reserved output is often the larger term.
+- Local servers may reply with a vendor-prefixed or differently cased model
+  id (`unsloth/qwen3.8-27b` vs `qwen3.8-27b`). Admission treats those as the
+  same model (`isSameModelIdentity` in `admitted-model-call.ts`). A raw
+  string compare used to book a fallback against a spent step and drop the
+  streamed answer (`AdmissionStepConflictError`, empty `lastAgentMessage`).
 - Auto-compaction includes system, tools, tool choice, framing, and reserved
   output through the same accounting representation. Uncertain content forces
   compaction rather than being treated as free.
@@ -151,7 +160,33 @@ and abandoned results are never cached as zero.
   cannot be proven below the cap.
 - Historical rough estimators remain only for display, local file sizing, and
   other non-admission compatibility surfaces. They share the UTF-8 primitive
-  and do not authorize inference.
+  and do not authorize inference. `warning` is on the live canonical-event
+  allowlist (`CANONICAL_CORE_SESSION_EVENT_TYPES`), so a denial reason reaches
+  attached clients instead of dying in the rollout.
+
+## Session occupancy snapshot
+
+`session.snapshot` may include `contextBreakdown`. The figures are measured
+from that session's own material with `roughTokenCountEstimation` — the same
+basis budgeting uses, not a tokenizer round-trip. If measurement throws, the
+field is **absent**; a client must render "not measured" rather than invent
+a number.
+
+| Field | Source |
+| --- | --- |
+| `windowTokens` | Session `modelInfo.contextWindow` |
+| `systemPromptTokens` | Session instructions |
+| `messageTokens` | Conversation history |
+| `systemToolTokens` / `systemToolCount` | Resident tool schemas that are not `mcp.*` |
+| `mcpToolTokens` / `mcpToolCount` | Resident schemas in the `mcp.*` namespace |
+| `deferredToolTokens` / `deferredToolCount` | Registered but not resident (searchable) |
+| `memoryFileTokens` / `memoryFileCount` | Memory files actually read from disk |
+
+This is occupancy reporting, not admission. Admission still uses the
+structured token-accounting result above. Sources:
+`runtime/src/app-server/background-agent-runner.ts`
+(`#sessionContextBreakdown`) and
+`SessionSnapshotResult` in `runtime/src/app-server/protocol/index.ts`.
 
 ## Observability and privacy
 
