@@ -114,6 +114,12 @@ fresh model-turn/run context, timeout controller, `turn_id`, and per-turn tool
 count; a tool-using task may make multiple provider calls. The originating
 `task_id` is the spawn/assignment call correlation ID.
 
+A keep-alive worker that hits `max_turns`, `max_budget_usd`, or the
+no-progress backstop returns to `idle` after that turn. The same bounded
+stop on a one-shot / compatibility agent is terminal (`errored` /
+failed run). Interactive session survival:
+[daemon.md](daemon.md#interactive-session-survival).
+
 ### Assignment admission and passive messages
 
 `assign_task` accepts only when all of these are true:
@@ -382,7 +388,7 @@ each following message.
 | --- | --- | --- |
 | Fork / conversation interrupt | Only the fork turn's `activeTurnAbort` scope | `runtime/src/conversation/thread-manager.ts` (`ForkedConversationThread.submit`) |
 | Mid-turn tool abort | The **active turn** task controller (`session.activeTurn.abortController`) | `runtime/src/phases/execute-tools.ts` |
-| Process / stdin / permission-authority death | `session.abortTerminal(...)` — still ends the session | `session.ts`, daemon / CLI signal paths |
+| Process / stdin / permission-authority death | `session.abortTerminal(...)`; still ends the session | `session.ts`, daemon / CLI signal paths |
 
 Fork interrupt used to call `sourceSession.abortTerminal()`. That cut through
 the turn lock but aborted the shared parent terminal controller. An interrupt

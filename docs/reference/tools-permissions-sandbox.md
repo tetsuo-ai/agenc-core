@@ -148,7 +148,7 @@ path. Model-facing search is `WebSearch` (plus gated `XSearch` when enabled).
 | `ExitPlanMode` | Exit plan mode (approval path) |
 | `VerifyPlanExecution` | Compare plan vs progress summary |
 | `WorkflowTool` | Bounded event-driven agent DAG runner; **deferred**. See [workflows.md](workflows.md) |
-| `CronCreate` / `CronDelete` / `CronList` | Local scheduled prompts (`.agenc/scheduled_tasks.json`); **deferred** |
+| `CronCreate` / `CronDelete` / `CronList` | Local scheduled prompts (`.agenc/scheduled_tasks.json`); **deferred**. Delivery-routed `webhook` URLs are public-egress only and address-pinned at fire time; see [autonomy.md](autonomy.md#cron-delivery-runtimesrcgatewaycron-deliveryts) |
 
 ### Interaction / user input
 
@@ -221,7 +221,7 @@ workflow.
 
 | Name | Notes |
 | --- | --- |
-| `TaskCreate` | Durable project task board; **deferred** |
+| `TaskCreate` | Durable project task board; **deferred**. `description` is optional and defaults to `subject` |
 | `TaskGet` | Durable project task board; **deferred** |
 | `TaskUpdate` | Durable project task board; **deferred** |
 | `TaskList` | Durable project task board; **deferred** |
@@ -335,6 +335,13 @@ bypassPermissions` refuses the transition until the operator runs
 runtime state for the exact canonical workspace path and directory identity.
 It does not authorize another path or a replacement directory at the same
 path. Managed policy can disable bypass mode entirely.
+
+A live daemon client can carry the same consent on
+`session.setPermissionMode` as `bypassAuthority: "operator_tool_approval"`
+(the only accepted value). The field is still checked against the exact
+canonical cwd; it is not a remote or cross-workspace waiver. Without it,
+the RPC is refused with "requires explicit consent for this exact cwd"
+unless stored accept-bypass consent already matches.
 
 `--permission-mode bypassPermissions` is an explicit startup opt-in for the
 current session and workspace; it does not write durable consent. The

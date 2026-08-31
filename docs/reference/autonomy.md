@@ -193,6 +193,12 @@ so a fire is never double-run.
 - Source file: workspace **`.agenc/scheduled_tasks.json`**.
 - Past-due schedules coalesce to **one** fire; stamps `lastFiredAt` / removes
   one-shots.
+- Delivery-routed jobs (`announceChannel` / `announceTo` / `webhook` on
+  CronCreate) are **always durable** and run only while
+  **`agenc gateway run`** is up (`startCronDelivery`). A daemon restart
+  alone does not fire them.
+- Isolated session key: `cron|default|<id>`
+  (`SessionRouter.conversationKey`).
 
 ### Per fire
 
@@ -201,10 +207,72 @@ so a fire is never double-run.
    requests **denied**.
 3. Model/tool calls reserve and reconcile through daemon execution admission.
    On denial: log + optional channel pause notice.
-4. Optionally POST the successful result payload to the configured webhook.
+4. On a successful turn, optionally POST the result JSON to
+   `deliver.webhook`. A webhook failure is **logged and does not retry**
+   the turn; the fire is still stamped.
 
 `isRunning()` is exposed so heartbeat can defer while a cron delivery turn is
 in flight.
+
+### Webhook destinations (pinned, fail-closed)
+
+Cron webhooks are **public-egress only**. The delivery client resolves the
+host once, then dials that exact IP (`requestPinnedCronWebhook`). The HTTP
+`Host` header and TLS SNI keep the original hostname. There is no
+DNS-rebinding window between the policy check and the socket.
+
+`CronCreate` only checks that `webhook` is an `http(s)` URL. The pinned
+address gate runs at **delivery** (and again on every redirect hop).
+`assertCronWebhookUrlSafe` is an optional early check; it is not the
+enforcement boundary.
+
+| Constraint | Behavior |
+| --- | --- |
+| Scheme | `http:` or `https:` only |
+| Credentials | Username/password in the URL are rejected |
+| Local names | `localhost` and `*.localhost` blocked before DNS |
+| Address policy | `resolveAllowedAddress(..., { allowPrivateNetwork: false })`, the same classifier as the browser SSRF proxy |
+| Mixed DNS | **Fail closed** if **any** answer is disallowed (public + `10/8` is rejected) |
+| Loopback / private | Blocked. Unlike session HTTP hooks, **loopback is not allowed** |
+| Cloud metadata | Blocked in every representation (`169.254.169.254`, `100.100.100.200`, AWS IPv6 IMDS, IPv4-mapped and scoped forms) |
+| Special-purpose | Reserved, documentation, benchmark, multicast, CGNAT, unique-local, and link-local ranges blocked |
+| Redirects | At most **5** hops (`CRON_WEBHOOK_MAX_REDIRECTS`). Each hop is re-resolved and re-pinned |
+| Redirect protocol | Scheme changes (`https` → `http`) are rejected |
+| Redirect method | `307` / `308` keep POST + body; `301` / `302` / `303` become GET with no body |
+| Timeout | **15 s** (`CRON_WEBHOOK_TIMEOUT_MS`) covering DNS **and** every hop |
+| Private-network override | **None.** `[browser].allow_private_network` does not apply to cron |
+
+There is no cron equivalent of `AGENC_BROWSER_ALLOW_PRIVATE_NETWORK`. Point
+webhooks at a reachable public HTTPS endpoint, not `127.0.0.1`, RFC1918,
+link-local, or metadata addresses.
+
+Successful POST body (JSON):
+
+```json
+{
+  "taskId": "abc123",
+  "cron": "7 * * * *",
+  "prompt": "summarize overnight deploys",
+  "finalMessage": "No failed overnight deploys.",
+  "stopReason": "end_turn",
+  "firedAt": "2026-08-31T16:00:00.000Z"
+}
+```
+
+### Operator pitfalls
+
+- A webhook that only listens on loopback or a private network will store
+  successfully (`https://127.0.0.1:9000/hook` passes CronCreate) and then
+  fail at fire with a `cron webhook: blocked` error.
+- A hostname that answers both a public and a private address is rejected
+  even if the public address would have been fine.
+- A public URL that **redirects** to a private or metadata host is rejected
+  on that hop; the first request already happened.
+- Webhook POST errors do not pause the job or refund the turn. Check
+  gateway logs (`cron: webhook POST failed for task <task-id>`).
+- Channel delivery still needs a running adapter. An unknown
+  `announceChannel` skips channel send for that fire and may still POST
+  the webhook via the null adapter.
 
 ---
 
@@ -275,7 +343,10 @@ Identifier fields (`name` / `agent` / `sessionKey`) must match
    channel up.
 4. Optional hooks: enable hooks on gateway with a long random token; never put
    the token in query strings; prefer loopback + SSH/tailnet.
-5. Monitor and recover:
+5. Cron webhooks must be public http(s) URLs. Loopback, private, and
+   metadata destinations are rejected at delivery even if CronCreate stored
+   them. There is no private-network override.
+6. Monitor and recover:
 
    ```bash
    agenc budget status
@@ -285,7 +356,7 @@ Identifier fields (`name` / `agent` / `sessionKey`) must match
    agenc run cancel <run-id> --reason "operator stop"
    ```
 
-6. Set `[agent.budget]` when a run also needs a hard token/USD/wall-clock
+7. Set `[agent.budget]` when a run also needs a hard token/USD/wall-clock
    allocation; descendants conserve that allocation transactionally.
 
 ## Source map
@@ -296,6 +367,7 @@ Identifier fields (`name` / `agent` / `sessionKey`) must match
 | Budget CLI | `runtime/src/bin/budget-cli.ts` |
 | Heartbeat policy / runner / wire | `runtime/src/heartbeat/` |
 | Cron delivery | `runtime/src/gateway/cron-delivery.ts` |
+| Cron webhook pin / SSRF | `runtime/src/gateway/cron-delivery.ts` (`postCronWebhook`, `requestPinnedCronWebhook`), `runtime/src/browser/ssrf.ts` (`resolveAllowedAddress`) |
 | Hooks server | `runtime/src/gateway/hooks.ts` |
 | Session routing | `runtime/src/gateway/session-router.ts` |
 | Config schema `[budget]` / `[heartbeat]` | `runtime/src/config/schema.ts` |

@@ -91,7 +91,7 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   openai, anthropic, ollama, lmstudio, openai-compatible, openrouter, groq,
   deepseek, gemini, mistral, nvidia-nim, minimax, github, amazon-bedrock, agenc.
   See [`docs/reference/providers.md`](docs/reference/providers.md).
-- **Grok OAuth** — sign in with X during onboarding or via `/grok-login` for
+- **Grok OAuth:** sign in with X during onboarding, via `/grok-login`, or `agenc grok-login` for
   subscription Grok access without an API key
   ([`docs/grok-oauth.md`](docs/grok-oauth.md)).
 - **Embedding SDK** — `@tetsuo-ai/agenc-sdk` for socket / subprocess embedding.

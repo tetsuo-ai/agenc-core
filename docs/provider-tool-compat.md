@@ -11,9 +11,9 @@ Local window probes and `context_window_exceeded` text:
 ## Object-root tools (Grok / DeepSeek)
 
 Strict OpenAI-compatible providers (x.ai / Grok, DeepSeek) require each tool
-`parameters` schema root to be `type: "object"`. Several AgenC tools
-(`exec_command`, `write_stdin`, `tool_search`) declare a root-level
-`anyOf`/`oneOf` to express alternative input shapes, e.g.:
+`parameters` schema root to be `type: "object"`. A supplied or future tool
+schema can still declare a root-level `anyOf`/`oneOf` to express alternative
+input shapes, for example:
 
 ```jsonc
 { "type": "object", "properties": { ... },
@@ -35,11 +35,14 @@ rewrites only the presented schema:
   `anyOf`/`oneOf`) → unchanged, strict-eligible.
 - **Union root** (`anyOf`/`oneOf`) → merge object-branch `properties` into
   `{ type: "object", properties: <merged>, additionalProperties: true }`,
-  fields optional, `strict: false`.
-- **Any other non-object root** → permissive empty object, `strict: false`.
+  leave fields optional, and report `strictEligible: false`.
+- **Any other non-object root** → use a permissive empty object and report
+  `strictEligible: false`.
 
 `toolParameters()` in `runtime/src/llm/wire/tools.ts` applies this for
 chat-completions, OpenAI Responses, xAI Responses, and Anthropic builders.
+The current builders use the normalized schema but do not serialize the
+normalizer's `strictEligible` result or a `strict` field.
 
 ## Grammar-constrained local servers (LM Studio / openai-compatible)
 
@@ -72,15 +75,13 @@ providers clamp `max_tokens` / `max_completion_tokens` to **8192**
 (`outputTokensCeiling` in `buildChatCompletionsRequest`). That is a fixed
 ceiling, not window/4.
 
-4096 clipped legitimate long generations (code, multi-file answers); the
-executor then discarded withheld output and the user saw an empty turn. 8192
-still caps runaway think-traces on consumer hardware.
+The 8192 limit replaces the earlier 4096 limit while retaining a fixed bound
+for these providers.
 
 ### Local tool catalog and compact prompt
 
-The frontier catalog (~20 tools plus team/task orchestration) produced zero
-tool calls on 7–32B models. `usesLocalToolProfile` / `filterToolsForLocalProfile`
-advertise only:
+`usesLocalToolProfile` / `filterToolsForLocalProfile` advertise this reduced
+catalog to the two grammar-constrained provider slugs:
 
 `exec_command`, `write_stdin`, `kill_process`, `FileRead`, `Edit`,
 `MultiEdit`, `Write`, `Glob`, `Grep`, `Orient`, `AskUserQuestion`,
@@ -101,7 +102,7 @@ everywhere llama.cpp serves Qwen3.
 ### NVIDIA NIM `reasoning_effort`
 
 `nvidia-nim` forwards `reasoning_effort` only when the model family documents
-that enum (`kimi-k3`, `deepseek-v4-{pro,flash}`, `gpt-oss-*`,
+that enum (`kimi-k3`, `deepseek-v4-{pro,flash}`, `gpt-oss-<digits>b`,
 `nemotron-3-super`, `nemotron-3-ultra`). Other NIM families strip the field so
 the host default runs. Out-of-enum values are not translated.
 
@@ -115,30 +116,31 @@ like an empty reply.
 `sanitizeGeminiSchema` in `runtime/src/llm/providers/gemini/index.ts` keeps a
 documented allowlist (`type`, `format`, `title`, `description`, `nullable`,
 `enum`, `items`, `properties`, `required`, `anyOf`, numeric/length bounds,
-`pattern`, …). `required` and `properties` stay **only** on `type: object`
-branches — carrying them onto an `anyOf` arm 400s with "only allowed for
+`pattern`, and other documented keys). `required` and `properties` stay
+**only** on `type: object` branches; carrying them onto an `anyOf` arm 400s
+with "only allowed for
 OBJECT type".
 
 ## When adding tools
 
 Prefer a clean object root with optional fields when the provider surface must
 stay strict-eligible. If a true union is required for execution-side clarity,
-keep the union on the tool definition — the normalizer collapses it for the
-wire and marks `strict: false`. Do not rely on `$ref` or `x-agenc-*` reaching
-LM Studio, openai-compatible, or Gemini.
+keep the union on the tool definition. The normalizer collapses it for the
+wire and reports `strictEligible: false`. Do not rely on `$ref` or `x-agenc-*`
+reaching LM Studio, openai-compatible, or Gemini.
 
 ## Troubleshooting
 
 | Symptom | Cause |
 | --- | --- |
 | Grok/DeepSeek 400 "root must be an object type" | Root `anyOf`/`oneOf` before `normalizeToolParamSchema` |
-| Local 400 `failed to parse grammar` | Keyword outside the grammar-safe subset, or using the `ollama` slug vs `openai-compatible` pointed at llama.cpp |
-| Local empty turn after a long answer | 8192 ceiling withheld the rest; not a missing model |
-| Local session never calls team/task tools | Local catalog by design; switch to a cloud slug for the frontier set |
+| LM Studio/openai-compatible 400 `failed to parse grammar` | Tool schema contains a keyword outside the grammar-safe subset |
+| LM Studio/openai-compatible empty turn after a long answer | Check whether the fixed 8192 output ceiling ended generation |
+| LM Studio/openai-compatible session does not call team/task tools | Those tools are outside the reduced catalog; use another provider slug when they are required |
 | Qwen3 think-trace burns minutes | `/no_think` only attaches on `lmstudio` / `openai-compatible` + qwen3 |
 | Gemini 400 `Unknown name "additionalProperties"` / empty reply | Pre-allowlist wire schema; current code strips those keys |
 | NIM ignores or 400s `reasoning_effort` | Family has no documented enum, or the value is outside it |
 
 There is no operator config for the grammar-safe key set, the 8192 ceiling, or
-the local catalog. `max_output_tokens` still wins when it is **lower** than
-8192; it cannot raise the local ceiling.
+the local catalog. The configured `max_output_tokens` still wins when it is
+**lower** than 8192; it cannot raise this provider ceiling.

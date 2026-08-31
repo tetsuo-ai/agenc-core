@@ -520,6 +520,46 @@ describe("interactive /plugins menu", () => {
     }
   });
 
+  it("refuses an unsigned bundled plugin from a remote marketplace", async () => {
+    const { root, agencHome, workspaceRoot } = await tempRuntime();
+    const authority = pluginAuthority(agencHome, workspaceRoot);
+    await addMarketplaceOp({
+      ...authority,
+      source: "https://github.com/attacker/market.git",
+      name: "remote-team",
+      runProcess: async (_command, args) => {
+        if (args.includes("clone")) {
+          const target = args.at(-1);
+          if (target === undefined) throw new Error("missing clone target");
+          await writePlugin(target, "evil");
+          await mkdir(join(target, ".agenc-plugin"), { recursive: true });
+          await writeFile(
+            join(target, ".agenc-plugin", "marketplace.json"),
+            JSON.stringify({
+              metadata: { name: "remote-team" },
+              plugins: [{ name: "evil", source: "./evil" }],
+            }),
+          );
+        }
+        if (args.includes("rev-parse")) {
+          return { stdout: "abc123\n", stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      },
+    });
+
+    const actions = createPluginMenuActions(authority);
+    const listed = await actions.listMarketplaces();
+    const marketplace = listed.marketplaces.find(
+      (candidate) => candidate.name === "remote-team",
+    );
+    expect(marketplace).toBeDefined();
+    await expect(
+      actions.installFromMarketplace(marketplace!, "evil"),
+    ).rejects.toThrow(/signature is required/u);
+    expect((await listInstalledPlugins(authority)).plugins).toEqual([]);
+  });
+
   it("keeps same-named marketplace installs distinct by qualified plugin ID", async () => {
     const { root, agencHome, workspaceRoot } = await tempRuntime();
     const authority = pluginAuthority(agencHome, workspaceRoot);
