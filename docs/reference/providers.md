@@ -324,9 +324,12 @@ wins and the live probe is not consulted.
 | llama.cpp refuses just past 4096 on a 32k GGUF | Window is `meta.n_ctx` (what `-c` loaded), not `n_ctx_train`. |
 | Hard USD cap holds every Ollama/LM Studio success as unpriced | Those three local slugs must resolve to the `localZeroCost` rows. A prefixed model id that was not stripped used to miss both the window and the free cost entry. |
 | Compatible server 404s `/api/show` | Expected for non-Ollama runtimes. The probe is best-effort; a working `/v1/models` window is enough. |
+| Empty local or Gemini answer that is not `context_window_exceeded` | Usually a wire 400 (llama.cpp grammar or Gemini schema) or the **8192** local output ceiling. See [provider-tool-compat.md](../provider-tool-compat.md). |
 
 See [provider-aware token accounting](../design/provider-aware-token-accounting.md)
-for how the resolved window is enforced.
+for how the resolved window is enforced. Grammar-safe schemas, the local
+tool catalog, Qwen3 `/no_think`, and Gemini's function-declaration
+allowlist are documented on that compat page — not here.
 
 ## Wire layer
 
