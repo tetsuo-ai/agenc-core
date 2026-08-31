@@ -40,6 +40,10 @@ function expectCondition(failures, condition, message) {
   }
 }
 
+function normalizeLineEndings(source) {
+  return source.replace(/\r\n?/g, "\n");
+}
+
 const transcriptV2InterfaceNames = [
   "SessionTranscriptV2Message",
   "SessionTranscriptV2ActiveTurn",
@@ -75,7 +79,7 @@ function extractJsonObjectInterface(sourceFile, interfaceName) {
 function renderTranscriptV2Generated(runtimeProtocol) {
   const sourceFile = createSourceFile(
     paths.runtimeProtocol,
-    runtimeProtocol,
+    normalizeLineEndings(runtimeProtocol),
     ScriptTarget.Latest,
     true,
   );
@@ -251,7 +255,7 @@ async function main() {
   const expectedTranscriptV2 = renderTranscriptV2Generated(runtimeProtocol);
   expectCondition(
     failures,
-    packageTranscriptV2 === expectedTranscriptV2,
+    normalizeLineEndings(packageTranscriptV2) === expectedTranscriptV2,
     `${paths.packageTranscriptV2} is not the exact generated transcript.v2 mirror; regenerate it from ${paths.runtimeProtocol}`,
   );
 
