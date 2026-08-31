@@ -1,10 +1,12 @@
 /**
- * Hand-mirrored subset of the AgenC daemon JSON-RPC protocol
+ * Standalone subset of the AgenC daemon JSON-RPC protocol
  * (`runtime/src/app-server/protocol/index.ts`).
  *
  * This package deliberately does NOT import runtime internals; the shapes
- * here are a standalone mirror of the daemon's public control surface.
- * Drift is guarded by `runtime/tests/sdk-package/protocol-drift.contract.test.ts`,
+ * here mirror the daemon's public control surface. Generated zero-dependency
+ * slices are re-exported from this module and checked by
+ * `runtime/scripts/check-sdk-generated-types.mjs`. Handwritten method-list
+ * drift is guarded by `runtime/tests/sdk-package/protocol-drift.contract.test.ts`,
  * which compares {@link AGENC_SDK_DAEMON_METHODS} and
  * {@link AGENC_SDK_DAEMON_NOTIFICATION_METHODS} against the runtime's
  * `AGENC_DAEMON_METHODS` / `AGENC_DAEMON_NOTIFICATION_METHODS` arrays,
@@ -19,6 +21,14 @@ import type {
   CsvJobReviewShowParams,
   CsvJobReviewShowResult,
 } from "./csv-jobs.js";
+import type { SessionTranscriptV2Result } from "./transcript-v2.generated.js";
+
+export type {
+  SessionTranscriptV2ActiveTurn,
+  SessionTranscriptV2Message,
+  SessionTranscriptV2Result,
+  SessionTranscriptV2TurnResult,
+} from "./transcript-v2.generated.js";
 
 /** JSON-RPC 2.0 envelope version sent on every request. */
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
@@ -1192,45 +1202,6 @@ export interface SessionTranscriptMessage extends JsonObject {
 export interface SessionTranscriptResult extends JsonObject {
   readonly sessionId: string;
   readonly messages: readonly SessionTranscriptMessage[];
-}
-
-export interface SessionTranscriptV2Message extends JsonObject {
-  readonly messageId: string;
-  readonly commitEventId: string;
-  readonly role: "user" | "assistant";
-  readonly text: string;
-  readonly turnId?: string;
-  readonly clientMessageId?: string;
-  /** Zero only for migrated response_item rows that predate event sequencing. */
-  readonly committedSequence: number;
-}
-
-export interface SessionTranscriptV2ActiveTurn extends JsonObject {
-  readonly turnId: string;
-  readonly clientMessageId?: string;
-}
-
-export interface SessionTranscriptV2TurnResult extends JsonObject {
-  readonly turnId: string;
-  readonly committedSequence: number;
-  readonly outcome: "completed" | "aborted" | "errored";
-  readonly durationMs?: number;
-  readonly inputTokens?: number;
-  readonly outputTokens?: number;
-  readonly totalTokens?: number;
-  readonly model?: string;
-  readonly provider?: string;
-}
-
-export interface SessionTranscriptV2Result extends JsonObject {
-  readonly schemaVersion: 2;
-  readonly sessionId: string;
-  readonly runId: string;
-  readonly historyEpoch: string;
-  readonly asOfSequence: number;
-  readonly messages: readonly SessionTranscriptV2Message[];
-  readonly activeTurn?: SessionTranscriptV2ActiveTurn;
-  readonly turnResults?: readonly SessionTranscriptV2TurnResult[];
 }
 
 export interface SessionCancelTurnResult extends JsonObject {

@@ -17,9 +17,9 @@ const runtimeProtocolPath = resolve(
   testDirectory,
   "../../src/app-server/protocol/index.ts",
 );
-const sdkProtocolPath = resolve(
+const sdkTranscriptV2Path = resolve(
   testDirectory,
-  "../../../packages/agenc-sdk/src/protocol.ts",
+  "../../../packages/agenc-sdk/src/transcript-v2.generated.ts",
 );
 
 const turnResults = [
@@ -92,21 +92,23 @@ function interfaceProperties(
   interfaceName: string,
 ): readonly (readonly [name: string, type: string])[] {
   const match = new RegExp(
-    `export\\s+interface\\s+${interfaceName}\\s+extends\\s+JsonObject\\s*\\{([\\s\\S]*?)\\n\\}`,
+    `export\\s+interface\\s+${interfaceName}\\s+extends\\s+(?:JsonObject|TranscriptV2JsonObject)\\s*\\{([\\s\\S]*?)\\n\\}`,
   ).exec(source);
   if (match === null) throw new Error(`missing interface: ${interfaceName}`);
-  return [...match[1]!.matchAll(
-    /^\s*readonly\s+([A-Za-z_$][\w$]*\??)\s*:\s*([^;]+);/gm,
-  )].map((property) => [
-    property[1]!,
-    property[2]!.replace(/\s+/g, " ").trim(),
-  ] as const);
+  return [
+    ...match[1]!.matchAll(
+      /^\s*readonly\s+([A-Za-z_$][\w$]*\??)\s*:\s*([^;]+);/gm,
+    ),
+  ].map(
+    (property) =>
+      [property[1]!, property[2]!.replace(/\s+/g, " ").trim()] as const,
+  );
 }
 
 describe("agenc-sdk session.transcript.v2 contract", () => {
   it("keeps the SDK transcript result shapes aligned with the daemon", () => {
     const runtimeProtocol = readFileSync(runtimeProtocolPath, "utf8");
-    const sdkProtocol = readFileSync(sdkProtocolPath, "utf8");
+    const sdkProtocol = readFileSync(sdkTranscriptV2Path, "utf8");
 
     for (const interfaceName of [
       "SessionTranscriptV2TurnResult",
