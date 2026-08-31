@@ -157,10 +157,9 @@ the live session total. Historical per-turn duration and usage after attach
 or restore come from `session.transcript.v2` `turnResults` (see
 [daemon.md](reference/daemon.md#closed-turn-results)). Raw daemon snapshot
 responses may carry an additive `contextBreakdown` object, but the current
-public SDK type does not expose a named field. The current
-`SessionTranscriptV2Result` likewise does not name `turnResults`;
-`transcriptV2()` still returns the daemon JSON. `prompt()` copies only token
-usage.
+public SDK type does not expose a named field. `SessionTranscriptV2Result`
+does name optional `turnResults`, with each row typed as
+`SessionTranscriptV2TurnResult`. `prompt()` copies only token usage.
 
 Prompt admission is reserved synchronously per session, before attach or send,
 so a second local `prompt()` throws `AgencPromptRunInProgressError`. Every SDK

@@ -317,7 +317,7 @@ Constraints:
   `messageSubmission.turnId` is set. The persisted fallback does not
   invent one. A `turn_started` with no terminal leaves no result row
   (a later `turn_started` replaces the dangling accumulator).
-- A terminal whose `turnId` does not match the open turn is skipped —
+- A terminal whose `turnId` does not match the open turn is skipped. This is
   the same mismatched-terminal guard the message scan already applies.
 - `durationMs` is not emitted for aborted or errored turns.
 - A `token_count` with no finite non-negative token field is ignored,
@@ -354,15 +354,15 @@ After reopen or restart, rebuild markers from `turnResults` and
 }
 ```
 
-The public SDK `SessionTranscriptV2Result` in
-`packages/agenc-sdk/src/protocol.ts` does not yet name `turnResults`.
-`transcriptV2()` still returns the daemon JSON; read the field from the
-raw object until the mirror is updated. `session.snapshot.tokenUsage` is
-the live session aggregate, not this per-turn history.
+The public SDK names the optional field on `SessionTranscriptV2Result` and
+exports `SessionTranscriptV2TurnResult` from
+`packages/agenc-sdk/src/protocol.ts`. Daemons that predate the field omit it.
+`session.snapshot.tokenUsage` is the live session aggregate, not this per-turn
+history.
 
 | Symptom | What to check |
 | --- | --- |
-| No `turnResults` after attach | No durable terminal yet, or the SDK type hid the field. Inspect the raw result. |
+| No `turnResults` after attach | No durable terminal exists after the current history boundary, or the connected daemon predates the field. |
 | Markers missing after compact or rewind | Expected. Rows exist only for turns that closed after the current `historyEpoch`. |
 | Duration missing on a completed turn | The terminal lacked `durationMs` and a usable `completedAt - startedAt` pair. |
 | Tokens or model missing | No enclosed `token_count` carried a finite non-negative token field. |

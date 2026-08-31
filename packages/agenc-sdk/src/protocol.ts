@@ -1210,6 +1210,18 @@ export interface SessionTranscriptV2ActiveTurn extends JsonObject {
   readonly clientMessageId?: string;
 }
 
+export interface SessionTranscriptV2TurnResult extends JsonObject {
+  readonly turnId: string;
+  readonly committedSequence: number;
+  readonly outcome: "completed" | "aborted" | "errored";
+  readonly durationMs?: number;
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+  readonly totalTokens?: number;
+  readonly model?: string;
+  readonly provider?: string;
+}
+
 export interface SessionTranscriptV2Result extends JsonObject {
   readonly schemaVersion: 2;
   readonly sessionId: string;
@@ -1218,6 +1230,7 @@ export interface SessionTranscriptV2Result extends JsonObject {
   readonly asOfSequence: number;
   readonly messages: readonly SessionTranscriptV2Message[];
   readonly activeTurn?: SessionTranscriptV2ActiveTurn;
+  readonly turnResults?: readonly SessionTranscriptV2TurnResult[];
 }
 
 export interface SessionCancelTurnResult extends JsonObject {
