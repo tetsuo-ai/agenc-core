@@ -107,6 +107,67 @@ describe("spawn_agent isolation", () => {
     mockDelegate.mockReset();
   });
 
+  it.each([
+    ["review-patch", "review_patch"],
+    ["Review Patch", "review_patch"],
+    ["plan#1", "plan_1"],
+  ])(
+    "normalizes task_name %j before public spawn dispatch",
+    async (input, expected) => {
+      const session = makeSession();
+      const tool = createSpawnAgentTool(makeOptions(session));
+      mockDelegate.mockResolvedValueOnce({
+        kind: "async_launched",
+        thread: fakeThread(false, { agentPath: `/root/${expected}` }) as never,
+      });
+
+      const result = await tool.execute({
+        message: "review the change",
+        task_name: input,
+        __callId: `spawn-${expected}`,
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(mockDelegate).toHaveBeenCalledOnce();
+      expect(mockDelegate.mock.calls[0]?.[0]).toEqual(
+        expect.objectContaining({ agentName: expected }),
+      );
+    },
+  );
+
+  it.each([
+    ["root", "agent_name `root` is reserved"],
+    [".", "agent_name `.` is reserved"],
+    ["..", "agent_name `..` is reserved"],
+    ["", "task_name is required"],
+    [" \t\n ", "task_name is required"],
+    [
+      "---",
+      "agent_name must use only lowercase letters, digits, and underscores",
+    ],
+    ["/", "agent_name must not contain `/`"],
+    [
+      "مرحبا",
+      "agent_name must use only lowercase letters, digits, and underscores",
+    ],
+  ])(
+    "rejects task_name %j with its public validation error",
+    async (input, error) => {
+      const session = makeSession();
+      const tool = createSpawnAgentTool(makeOptions(session));
+
+      const result = await tool.execute({
+        message: "review the change",
+        task_name: input,
+        __callId: "spawn-invalid-name",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(String(result.content))).toEqual({ error });
+      expect(mockDelegate).not.toHaveBeenCalled();
+    },
+  );
+
   it("exposes the isolation enum in the input schema", () => {
     const session = makeSession();
     const tool = createSpawnAgentTool(makeOptions(session));

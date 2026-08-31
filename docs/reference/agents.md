@@ -205,12 +205,14 @@ worktree isolation changes their execution cwd.
 
 ### `spawn_agent` task names
 
-`task_name` becomes the child path segment. `normalizeSpawnTaskName` in
-`runtime/src/agents/v2/spawn.ts` lowercases the value, changes runs of spaces
-or hyphens and other characters outside `[a-z0-9_]` to `_`, collapses repeated
-`_` characters, and removes `_` from both ends. If that result is empty,
-the function keeps the trimmed input so `assertValidAgentName` in
-`runtime/src/agents/registry.ts` can return the relevant validation error.
+`task_name` becomes the child path segment. The public tool first trims a
+nonempty string with `stringValue`; empty or whitespace-only input becomes a
+missing value. `normalizeSpawnTaskName` in `runtime/src/agents/v2/spawn.ts`
+then lowercases the value, changes runs of spaces or hyphens and other
+characters outside `[a-z0-9_]` to `_`, collapses repeated `_` characters, and
+removes `_` from both ends. If a nonempty input folds to an empty string, the
+function keeps the trimmed input so `assertValidAgentName` in
+`runtime/src/agents/registry.ts` can return the specific validation error.
 
 | Input | Path segment |
 | --- | --- |
@@ -218,7 +220,8 @@ the function keeps the trimmed input so `assertValidAgentName` in
 | `plan#1` | `plan_1` |
 | `root`, `.`, `..` | rejected (`agent_name` reserved) |
 | empty / whitespace-only | rejected (`task_name is required`) |
-| `---` or punctuation-only | rejected (fold is empty; original fails the charset check) |
+| `---` or a Unicode-only name | rejected (`agent_name` charset check) |
+| `/` | rejected (slash validation) |
 
 After the fold the name must be nonempty `[a-z0-9_]+` and must not
 contain `/`. Worktree isolation uses that same segment in the derived
@@ -229,8 +232,10 @@ names are derived in [workflows.md](workflows.md#child-identity).
 
 | Symptom | What to check |
 | --- | --- |
-| `agent_name must use only lowercase letters, digits, and underscores` | The folded `task_name` still has a banned character, or the fold was empty and the original string was kept. |
-| `agent_name 'root' is reserved` | `task_name` folded to `root`. Pick another name. |
+| `agent_name must use only lowercase letters, digits, and underscores` | The fold was empty and the original nonempty string was kept for validation, as with `---` or a Unicode-only name. |
+| ``agent_name `root` is reserved`` | `task_name` folded to `root`. Pick another name. |
+| ``agent_name `.` is reserved`` / ``agent_name `..` is reserved`` | The fold was empty and the original `.` or `..` was kept for reserved-name validation. |
+| `` agent_name must not contain `/` `` | The fold was empty and the original slash-only name was kept for slash validation. |
 
 ### `spawn_agent` discipline (summary)
 

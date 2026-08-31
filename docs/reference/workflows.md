@@ -80,7 +80,10 @@ does not expose the logical id.
 Group handoff producers use `safeGroupIdentity`:
 `group_<index>_<12-hex>` from
 `agenc.workflow.group-artifact.v1\0<runId>\0<index>\0<logicalName>`.
-That string is an artifact id, not a spawned agent.
+That string is the group handoff owner's `producer_step_id`, not an
+`artifact_id` or a spawned agent. `WorkflowHandoffArtifactStore` derives the
+separate `artifact_id` as `wh_<48-hex>` from the complete owner tuple and the
+`group:<index>` idempotency key.
 
 The M5 `agenc run start` path derives child names with
 `workflowChildAgentName` in [cli.md](cli.md#run). It does not use this digest

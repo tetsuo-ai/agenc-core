@@ -370,6 +370,30 @@ describe("runAgentWorkflowV2", () => {
     });
   });
 
+  it("keeps group producer identity distinct from artifact identity", async () => {
+    const harness = delegateHarness(async () => ({
+      outcome: "completed",
+      finalMessage: "member output",
+    }));
+    const store = artifactStore();
+    const run = await runAgentWorkflowV2(
+      options(
+        manifest([{ id: "member", message: "member", group: "reviewers" }]),
+        harness,
+        store,
+      ),
+    );
+
+    expect(store.publish).toHaveBeenCalledOnce();
+    const published = store.publish.mock.calls[0]![0];
+    expect(published.owner.producer_step_id).toMatch(
+      /^group_0_[a-f0-9]{12}$/u,
+    );
+    const artifactId = run.groups[0]?.handoff?.artifact_id;
+    expect(artifactId).toMatch(/^wh_[a-f0-9]{48}$/u);
+    expect(artifactId).not.toBe(published.owner.producer_step_id);
+  });
+
   it("requires one complete Unicode code point per nonempty long-id group member", async () => {
     const memberId = `member-${"i".repeat(500)}`;
     const groupName = `group-${"g".repeat(300)}`;
