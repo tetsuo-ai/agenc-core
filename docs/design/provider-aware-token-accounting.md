@@ -142,6 +142,15 @@ and abandoned results are never cached as zero.
 - The durable model-call admission boundary accounts before reservation,
   persists a denial reason for uncertainty or context overflow, and passes the
   admitted input count to provider-side final fitting.
+- Model-call admission records a context overflow as
+  `context_window_exceeded`. The live TUI renders that reason and suggests
+  `/compact`; it does not currently show the input count, output reserve, or
+  window. Compaction paths use a detailed error containing those values.
+- Local servers may reply with a vendor-prefixed or differently cased model
+  id (`unsloth/qwen3.8-27b` vs `qwen3.8-27b`). Admission treats those as the
+  same model (`isSameModelIdentity` in `admitted-model-call.ts`). A raw
+  string compare used to book a fallback against a spent step and drop the
+  streamed answer (`AdmissionStepConflictError`, empty `lastAgentMessage`).
 - Auto-compaction includes system, tools, tool choice, framing, and reserved
   output through the same accounting representation. Uncertain content forces
   compaction rather than being treated as free.
@@ -151,7 +160,35 @@ and abandoned results are never cached as zero.
   cannot be proven below the cap.
 - Historical rough estimators remain only for display, local file sizing, and
   other non-admission compatibility surfaces. They share the UTF-8 primitive
-  and do not authorize inference.
+  and do not authorize inference. `execution_admission` is a canonical event
+  and carries denied model-turn reasons. `warning` is forwarded as a separate
+  canonical event type.
+
+## Session context estimate
+
+`session.snapshot` may include `contextBreakdown`, a best-effort diagnostic
+estimate built from current daemon session state. It does not reproduce the
+provider request and must not be used for admission or exact percentages. A
+top-level failure omits the field; unreadable memory files and unserializable
+history items are skipped.
+
+| Field | Source |
+| --- | --- |
+| `windowTokens` | Resolved model context window from configuration, a probe, the catalog, or a fallback |
+| `systemPromptTokens` | Rough estimate of session instructions |
+| `messageTokens` | Rough estimate of serializable conversation history |
+| `systemToolTokens` / `systemToolCount` | Rough estimate and count of resident non-MCP tool schemas |
+| `mcpToolTokens` / `mcpToolCount` | Rough estimate and count of resident schemas in the `mcp.*` namespace |
+| `deferredToolTokens` / `deferredToolCount` | Rough estimate and count of registered schemas that are not resident or already discovered |
+| `memoryFileTokens` / `memoryFileCount` | Rough estimate and count of readable top-level memory Markdown files; paths are not deduplicated and this is not bound to sent attachments |
+
+These categories do not form an authoritative used-token total. Admission
+still uses the structured token-accounting result above. The raw daemon
+protocol types the optional field; the public SDK's `SessionSnapshotResult`
+does not currently expose it. Sources:
+`runtime/src/app-server/background-agent-runner.ts`
+(`#sessionContextBreakdown`) and
+`SessionSnapshotResult` in `runtime/src/app-server/protocol/index.ts`.
 
 ## Observability and privacy
 

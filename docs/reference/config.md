@@ -314,6 +314,12 @@ provider silence indefinitely; set the timeout to `0` to explicitly disable
 it as well. `[budget]`, `[heartbeat]`, `[browser]`, and
 `[transaction_guard]` apply their documented subsystem defaults when absent.
 
+On a keep-alive (interactive) session, hitting `max_turns`,
+`max_budget_usd`, or the no-progress backstop ends that **turn** only.
+Send another prompt; the session stays running. One-shot
+(`--print` / `--no-tui`) agents still fail the run. See
+[daemon.md](daemon.md#interactive-session-survival).
+
 ## Similar names that are not duplicate authorities
 
 | Paths | Difference |

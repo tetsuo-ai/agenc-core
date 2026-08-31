@@ -6,8 +6,8 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 
 | Doc                                                                              | Scope                                                                        |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| [`reference/daemon.md`](reference/daemon.md)                                     | Daemon process, socket, protocol, lifecycle, deferred first message          |
-| [`reference/providers.md`](reference/providers.md)                               | Built-in providers, defaults, credentials, local context-window probes       |
+| [`reference/daemon.md`](reference/daemon.md)                                     | Daemon lifecycle, deferred first messages, bypass consent, bounded-stop survival |
+| [`reference/providers.md`](reference/providers.md)                               | Built-in providers, defaults, credentials, local context-window probes, Responses continuation |
 | [`reference/autonomy.md`](reference/autonomy.md)                                 | Budget, heartbeat, cron delivery (pinned webhook destinations), hooks HTTP   |
 | [`reference/mcp.md`](reference/mcp.md)                                           | Outbound/inbound MCP, plugin-declared servers, Landlock stdio failures       |
 | [`design/execution-admission-kernel.md`](design/execution-admission-kernel.md)   | Live durable budget/admission design                                         |
@@ -71,10 +71,10 @@ Everything past the launcher lives in the single runtime workspace
 | `app-server-client/`                                                     | In-process / client helpers for talking to the daemon                                                                                                                                                                                          |
 | `app-server-protocol/`                                                   | Shared protocol constants (e.g. portal default local endpoint)                                                                                                                                                                                 |
 | `session/`                                                               | Session engine: turn loop, transcript, canonical append-only rollout journal + `index.json`, persist-before-publish events, resume, cost, autonomous mode                                                                                      |
-| `agents/`                                                                | Background-agent state, registry, roles, mailbox, worktree isolation, multi-agent v2 tools, CSV jobs (`agents/jobs/`), `WorkflowTool` DAG (`agents/workflow-*.ts`), delegate/fork                                                                 |
+| `agents/`                                                                | Background-agent state, registry, roles, mailbox, worktree isolation, multi-agent v2 tools, CSV jobs (`agents/jobs/`), `WorkflowTool` DAG (`agents/workflow-*.ts`), delegate/fork. Fork interrupt and tool-abort stay turn-scoped: [agents.md](reference/agents.md#turn-abort-containment). |
 | `workflow/`                                                              | M5 verified-change pipeline (`agenc run start`). Session bootstrap, child names, review repair, and `refs/agenc/runs/<runId>` are documented in [design/verified-change-workflow-m5.md](design/verified-change-workflow-m5.md). Not the `WorkflowTool` DAG. |
 | `auth/`                                                                  | Local and remote auth backends, native secure storage credential namespaces, BYOK precedence, provider auth selection, session auth metadata                                                                                                                                                   |
-| `llm/`                                                                   | Provider-neutral client/request shaping, provider-aware complete-request [token accounting](design/provider-aware-token-accounting.md), model catalog, retries, streaming, wire adapters, OAuth refresh                                                                                                       |
+| `llm/`                                                                   | Provider-neutral client/request shaping, provider-aware complete-request [token accounting](design/provider-aware-token-accounting.md), model catalog, retries, streaming, wire adapters, OAuth refresh. Grammar-safe, Gemini, and LM Studio/openai-compatible ceiling shaping: [provider-tool-compat.md](provider-tool-compat.md). |
 | `tools/`                                                                 | Built-in model tools (Bash, File read/write/edit, `apply_patch`, Web fetch/search, LSP, MCP, Agent/subagent, Task*, …)                                                                                                                         |
 | `tool-registry.ts` / `tools.ts`                                          | Tool registration and assembly entry points                                                                                                                                                                                                    |
 | `permissions/`                                                           | Trust, approval policy, rules, modes, sandbox policy, unattended policy, guardian/classifier, audit log                                                                                                                                        |
@@ -83,7 +83,7 @@ Everything past the launcher lives in the single runtime workspace
 | `gateway/`                                                               | Channel gateway as a **daemon client**: Telegram, Discord, Slack, WebChat, stdio; pairing, bindings, approvals, session routing, untrusted framing, hooks HTTP, cron delivery, optional media/onchain helpers. See [`gateway.md`](gateway.md). |
 | `heartbeat/`                                                             | Proactive ticks: policy, `HEARTBEAT.md` reader, runner, scheduler, gateway/budget wire. See [`reference/autonomy.md`](reference/autonomy.md).                                                                                                  |
 | `budget/`                                                                | Daemon-owned execution admission, hierarchical budgets, concurrency, cancellation, and durable reconciliation. See [`design/execution-admission-kernel.md`](design/execution-admission-kernel.md).                                             |
-| `phases/`                                                                | Turn phases: stream model, execute tools, commit, stop hooks, post-sample recovery, continuation nudge                                                                                                                                         |
+| `phases/`                                                                | Turn phases: stream model, execute tools, commit, stop hooks, post-sample recovery, continuation nudge. Tool aborts escalate to the active turn, not `session.abortController`.                                                                 |
 | `hooks/`                                                                 | Configured lifecycle hooks (PreToolUse / PostToolUse / Stop / …) and hook engine                                                                                                                                                               |
 | `elicitation/`                                                           | Structured user-input / MCP elicitation request-response                                                                                                                                                                                       |
 | `memory/` / `memdir/`                                                    | Project/session memory extraction, storage, aging, retrieval; full-corpus FTS index (`derived-indexes/memory-v1.sqlite`); team memory paths. See [memory.md](reference/memory.md).                                                             |
@@ -94,7 +94,7 @@ Everything past the launcher lives in the single runtime workspace
 | `transaction-guard/`                                                     | Opt-in local SLM guard for Solana-like mutating tool calls                                                                                                                                                                                     |
 | `unified-exec/` / `pty/` / `shell-command/`                              | Process execution, PTY helpers, shell parsing/safety                                                                                                                                                                                           |
 | `commands/`                                                              | Slash-command registry and TUI/headless command implementations                                                                                                                                                                                |
-| `plugins/` / `skills/` / `outputStyles/`                                 | Plugin manifests/marketplace/registration; skill loading; output styles. Plugin MCP live path and repository-controlled install strip: [skills-plugins.md](reference/skills-plugins.md).                                                        |
+| `plugins/` / `skills/` / `outputStyles/`                                 | Plugin manifests/marketplace/registration; skill loading; headless `agenc skills list` inventory; output styles. Plugin MCP live path and repository-controlled install strip: [skills-plugins.md](reference/skills-plugins.md).                                                        |
 | `prompts/`                                                               | System prompt assembly, sections, attachments                                                                                                                                                                                                  |
 | `cost/`                                                                  | Session cost tracker + hook                                                                                                                                                                                                                    |
 | `coordinator/`                                                           | Coordinator mode (orchestrate via spawned agents)                                                                                                                                                                                              |
@@ -193,11 +193,20 @@ Effects add `effect_intent` before physical dispatch, followed by a proven
 contract is explicitly `idempotent` carry an idempotency key or qualify for
 replay. Side-effecting and interactive work never receives an arbitrary
 exactly-once claim. Terminal results are immutable within a lifecycle epoch;
-an explicit reopen creates the next epoch and keeps prior results. The final
-automatic execution event is `run_terminal`; a stopped-session operator may
-later take the exclusive rollout lease to append review evidence without
-resuming execution. The terminal result's `lastSequence` remains that terminal
-snapshot coordinate even when the audit-journal tail advances.
+an explicit reopen creates the next epoch and keeps prior results. Pending
+unknown-outcome reviews do not block reopen of a `completed`, `failed`, or
+`cancelled` epoch. `/resolve` then runs in the live session while dependent
+mutations stay gated. A dangling intent (no settlement at all) refuses reopen
+and cannot be settled by the review command. The public resume path also
+refuses an `unknown_outcome` terminal even after its projected effect reviews
+are resolved. A stopped-session operator may append review evidence for a
+recorded unknown-outcome effect, but that audit action does not make the same
+terminal session resumable. A clean suspended epoch resumes in place when its
+canonical and durable projections match and no effects remain unresolved. The
+final automatic execution event is `run_terminal`; the terminal result's
+`lastSequence` remains that snapshot coordinate even when later review evidence
+advances the audit-journal tail. See
+[`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md#resume-and-effect-review).
 
 Admitted child and review runs have their own canonical journals. A failure
 after spawn dispatch but before child construction seals a minimal failed or
@@ -317,7 +326,9 @@ intact. `--dangerously-bypass-approvals-and-sandbox` selects bypass mode and
 The TUI requires `/permissions accept-bypass` before switching to
 `bypassPermissions`. AgenC stores that consent against the workspace's
 canonical path and directory identity. A configured bypass default does not
-grant consent by itself.
+grant consent by itself. A live client may instead send
+`session.setPermissionMode` with `bypassAuthority: "operator_tool_approval"`
+for the same exact-cwd gate.
 
 The `read_only` and `workspace_write` runtime profiles retain a full-disk read
 baseline, matching the live policy's empty allow-read semantics. Explicit
@@ -406,6 +417,9 @@ and cost assumptions: [`reference/providers.md`](reference/providers.md).
 There are **16 built-in provider slugs**. Full table, env vars, base URLs,
 and how local servers publish a context window:
 [`reference/providers.md`](reference/providers.md).
+`session.snapshot.contextBreakdown` gives a rough category estimate for the
+effective window, tools, MCP schemas, memory files, and history; see
+[`design/provider-aware-token-accounting.md`](design/provider-aware-token-accounting.md#session-context-estimate).
 `runtime/src/llm/registry/provider-info.ts` contains one authored definition
 row per slug. That row owns its display name, default model and base URL,
 onboarding classification, and ordered API-key/base-URL environment names;

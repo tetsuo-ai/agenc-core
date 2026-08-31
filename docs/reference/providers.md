@@ -150,6 +150,9 @@ stores credential values.
   retired native `agenc` credential field are explicit one-way migration
   inputs only. Reads, refreshes, and clears stay bound to the client's captured
   `HomeContext`, and refresh compare-and-swap preserves a newer login.
+  List reachable models with `agenc openai-models --json`
+  (`{ok, models, authMode}`; tokens never in the output). See
+  [cli.md](cli.md#openai-models).
 - **Provider-native tokens** — GitHub Models, xAI OAuth, and AgenC AI
   subscription OAuth persist only in the home-scoped native `githubModels`,
   `xaiOauth`, and `agencAiOauth` namespaces. Their production APIs require an
@@ -318,15 +321,44 @@ wins and the live probe is not consulted.
 
 | Symptom | What to check |
 | --- | --- |
-| Local turn denied `context_window_exceeded` or the server refuses a short prompt | Session likely planned against 128k. Confirm the model is pulled, the endpoint env matches the session host, and `/api/show` or `/v1/models` reports a positive integer window. |
+| Local turn denied `context_window_exceeded` or the server refuses a short prompt | The live TUI shows the reason code and suggests `/compact`; it does not show the accounting values. Confirm the model is pulled, the endpoint env matches the session host, and `/api/show` or `/v1/models` reports a positive integer window. If diagnostics resolve to 128000 and neither configuration nor selected-model metadata declares it, the OpenAI-compatible fallback may have been used. A configured output reserve can consume a large share of a small window, so inspect `providers.<slug>.max_output_tokens` too. |
+| Streamed answer vanished; `AdmissionStepConflictError` / empty `lastAgentMessage` | Admission compares model ids case-insensitively and ignores path segments before the final slash. If the conflict remains, inspect the requested and reported execution identities and the other persisted step data. |
 | `OLLAMA_BASE_URL` sessions still look at localhost for the window | Metadata used to ignore the env and probe the built-in default. Current code uses the same ingress alias as the provider factory. |
 | Picker shows 128k, session later uses 32k | Picker is `resolveSync`. The admitted window comes from the async live probe at session start. |
 | llama.cpp refuses just past 4096 on a 32k GGUF | Window is `meta.n_ctx` (what `-c` loaded), not `n_ctx_train`. |
 | Hard USD cap holds every Ollama/LM Studio success as unpriced | Those three local slugs must resolve to the `localZeroCost` rows. A prefixed model id that was not stripped used to miss both the window and the free cost entry. |
 | Compatible server 404s `/api/show` | Expected for non-Ollama runtimes. The probe is best-effort; a working `/v1/models` window is enough. |
+| Empty LM Studio/openai-compatible or Gemini answer that is not `context_window_exceeded` | Check for a wire 400 (llama.cpp grammar or Gemini schema) or the **8192** grammar-constrained-provider output ceiling. See [provider-tool-compat.md](../provider-tool-compat.md). |
+| A later ChatGPT subscription request fails with `Unsupported parameter: previous_response_id` | Subscription requests are `store: false`. The continuation optimizer never attaches `previous_response_id` from an unstored response. The prompt-cache key is kept; the incremental delta is skipped. |
+| ChatGPT / Responses refuses to continue after an interrupted tool turn | An unmatched `function_call` in history is closed with a synthetic `function_call_output` marked `interrupted`. The session stays usable; the model must not wait on that call id. |
+| ChatGPT subscription 400s on `max_output_tokens` | Uncapped calls no longer require a provider-enforced output ceiling. Hard token or USD caps still demand a real ceiling and authoritative usage. |
 
 See [provider-aware token accounting](../design/provider-aware-token-accounting.md)
-for how the resolved window is enforced.
+for how the resolved window is enforced. Grammar-safe schemas, the local
+tool catalog, Qwen3 `/no_think`, and Gemini's function-declaration
+allowlist are documented on that compatibility page.
+
+## Responses history and continuation
+
+OpenAI-compatible Responses backends treat an unmatched `function_call`
+as unresolved session state. `closeDanglingFunctionCalls`
+(`runtime/src/llm/wire/responses-openai.ts`) inserts a synthetic
+`function_call_output` immediately after every unmatched call so history
+always pairs. The output text is an interrupted marker, not a fake
+success.
+
+`previous_response_id` can only reference a **stored** response. When
+the request snapshot has `store: false` (ChatGPT subscription is always
+stateless), the continuation optimizer keeps `prompt_cache_key` and
+skips the incremental delta. Chaining an unstored id used to reject
+every later request of a subscription conversation once tools or
+history made it an extension.
+
+Under a hard aggregate token or USD cap, admission still requires a
+provider-enforced `max_output_tokens` and authoritative usage. Without
+that cap, providers that reject an output ceiling (ChatGPT
+subscription) admit without one. Reported, priced provider usage is reconciled;
+missing usage or pricing is held unknown after dispatch.
 
 ## Wire layer
 
@@ -335,6 +367,8 @@ for how the resolved window is enforced.
 | Registry / provider metadata | `runtime/src/llm/registry/provider-info.ts` |
 | Model catalog | `runtime/src/llm/registry/model-catalog.ts` |
 | Context-window resolver | `runtime/src/llm/model-metadata.ts` |
+| Responses continuation / `store: false` | `runtime/src/llm/shape-request.ts` |
+| Dangling function-call pairing | `runtime/src/llm/wire/responses-openai.ts` |
 | Provider-neutral HTTP client / retry loop | `runtime/src/llm/client.ts`, `client-session.ts` |
 | Stream idle deadline | `runtime/src/llm/stream-watchdog.ts` |
 | Per-provider modules | `runtime/src/llm/providers/*` |
@@ -376,18 +410,14 @@ Grok server tools (`web_search`, `x_search`, `code_interpreter`, `file_search`,
 MCP) cannot be counted before the turn. Admission reserves the **full context
 window** for those tools so later usage does not trip `provider_overrun`.
 
-## Local openai-compat wire
+## OpenAI-compatible chat-completions wire
 
-Two ways a local turn used to look empty: the chat-completions parser
-promoting hidden chain-of-thought into (or instead of) the answer, and a
-4096-token output cap that truncated a real reply and then discarded the
-remainder as `max_output_tokens`.
-
-This section is the **OpenAI chat-completions adapter** and its subclasses
-(`lmstudio`, `openai-compatible`, Groq, DeepSeek, Mistral, NVIDIA NIM,
-GitHub, MiniMax, OpenRouter). Native `ollama` uses the Ollama SDK and does
-**not** take these gates. Pointing `openai-compatible` at an Ollama HTTP
-port does.
+This section describes request and response shaping on the chat-completions
+path. A provider identity does not guarantee this transport: some providers,
+including GitHub for qualifying models, can use Responses instead. Native
+`ollama` uses the Ollama SDK. The `lmstudio` and `openai-compatible` slugs take
+the grammar, reduced-catalog, output-ceiling, and Qwen3 paths described below;
+pointing `openai-compatible` at an Ollama HTTP port still selects those paths.
 
 Source: `runtime/src/llm/wire/think-tags.ts`, `capability-gating.ts`,
 `chat-completions.ts`; streaming split in
@@ -399,8 +429,9 @@ Reasoning models disagree about where chain-of-thought goes.
 
 | Source | What AgenC does |
 | --- | --- |
-| `delta.reasoning_content` / `message.reasoning_content` | Hidden thinking channel. Never becomes canonical assistant text. |
-| Leading `<think>…</think>` or `◁think▷…◁/think▷` in `content` | First leading block (whitespace before the opener allowed) moves to thinking. Text after the closer is the answer. |
+| Streaming `delta.reasoning_content` | Emits hidden thinking events and stays out of visible assistant text. |
+| Non-streaming `message.reasoning_content` | Becomes visible assistant content only when `message.content` is absent, null, or otherwise not text/content blocks. A string `content`, including an empty string, takes precedence. |
+| Leading `<think>...</think>` or `◁think▷...◁/think▷` in `content` | First leading block (whitespace before the opener allowed) moves to thinking. Text after the closer is the answer. |
 | Literal `<think>` later in the answer | Left visible. Only a marker that opens at the start of the assistant message starts a block. |
 | Opener with no closer | Remainder is thinking. The generation died mid-thought; it is not an answer. |
 
@@ -408,9 +439,9 @@ Reasoning models disagree about where chain-of-thought goes.
 neither channel retracts text it already emitted. `flush()` at stream end
 drains the buffer to the channel the state says it belongs to.
 
-An explicit empty `content` string is kept empty. The non-streaming parser
-must not promote leftover `reasoning_content` into the transcript
-(`parseChatCompletionsResponse`).
+The non-streaming fallback is implemented by
+`parseChatCompletionsResponse`; it differs deliberately from streaming
+channel separation.
 
 ### Capability field strip
 
@@ -422,7 +453,7 @@ rejects or silently ignores. An undefined `acceptsX` flag still means
 | --- | --- |
 | `reasoning_effort` | OpenAI reasoning-family slugs (`gpt-5`, `o1`, `o3`, `o4`, `codex`, `chatgpt-5`). Grok 4.3 / 4.5 / 4.6, `grok-4-20-multi-agent` / `grok-4.20-multi-agent`, and `grok-build-latest`. NVIDIA NIM families below, and only values in that family's enum. Everyone else: stripped. `/effort` on a local model is a no-op on the wire. |
 | `service_tier` | `openai` and `azure-openai` only |
-| `stream_options.include_usage` | Default **on**. `STREAM_USAGE_INCOMPATIBLE_PROVIDERS` is empty until a real install reproduces a tear-down. There is no operator config to strip it; an adapter can pass `acceptsStreamUsage: false` on that instance. |
+| `stream_options.include_usage` | Default **on**. `STREAM_USAGE_INCOMPATIBLE_PROVIDERS` is currently empty, and no operator or per-instance override is wired. |
 
 NVIDIA NIM `reasoning_effort` enums (hosted schemas, 2026-08):
 
@@ -443,16 +474,16 @@ For `lmstudio` and `openai-compatible` only
 (`GRAMMAR_CONSTRAINED_TOOL_PROVIDERS`):
 
 - **Output ceiling 8192** (`outputTokensCeiling`). The request
-  `max_tokens` / `max_output_tokens` is `min(requested, 8192)`. The
-  runtime default remains `DEFAULT_MAX_OUTPUT_TOKENS` (**32_000**); this
-  ceiling only clamps those two slugs. 4096 used to clip legitimate
-  long answers and the executor dropped the withheld tail — the turn
-  looked empty. 8192 still bounds runaway think-traces on consumer GPUs.
+  wire field is `max_tokens`, set to `min(requested, 8192)`. The internal
+  `maxOutputTokens` option and `max_output_tokens` setting supply the requested
+  value. Non-local OpenAI chat-completions requests use
+  `max_completion_tokens`. The runtime default remains
+  `DEFAULT_MAX_OUTPUT_TOKENS` (**32_000**); this ceiling applies only to the
+  two grammar-constrained slugs.
 - **`/no_think` system suffix** when the model slug matches `qwen3` /
   `qwen-3`. Qwen3 hybrid thinking honors that line. LM Studio ignores
-  `chat_template_kwargs.enable_thinking`, so the prompt switch is the
-  control that works on llama.cpp-served Qwen. Turns that spent 16–24s
-  thinking drop to 1–3s on the same hardware.
+  `chat_template_kwargs.enable_thinking`, so this path uses the prompt
+  switch for llama.cpp-served Qwen.
 
 Native `ollama` gets neither the ceiling nor `/no_think`.
 
@@ -463,11 +494,11 @@ Grammar-safe tool schemas and the reduced local catalog:
 
 | Symptom | Cause | What to do |
 | --- | --- | --- |
-| Transcript shows `<think>…</think>` | Native `ollama` adapter, or the marker was not at the start of the assistant message | Use `lmstudio` / `openai-compatible` for leading-tag split. A mid-answer `<think>` is left visible on purpose |
-| Local turn is empty after a long generation | Pre-#1772: 4096 ceiling or think-block swallowed the answer | Current ceiling is 8192 on `lmstudio` / `openai-compatible`. An unclosed leading think block is still thinking, not an answer |
+| Transcript shows `<think>...</think>` | The request did not use this chat-completions shaping, or the marker was not at the start of the assistant message | Use `lmstudio` / `openai-compatible` for the local chat-completions path. A mid-answer `<think>` is left visible on purpose |
+| LM Studio/openai-compatible turn ends after a long generation | The fixed 8192 output ceiling may have ended generation, or an unclosed leading think block remained in the thinking channel | Inspect the finish reason and provider diagnostics; an unclosed leading block is not visible answer text |
 | `/effort` on Ollama / LM Studio / compatible does nothing | `reasoning_effort` is stripped for those slugs | Expected. Pin a model that documents the field, or use the `/no_think` Qwen3 switch |
 | `failed to parse grammar` on the first tool turn | llama.cpp rejected a tool-schema keyword | `lmstudio` / `openai-compatible` now sanitize to the GBNF-safe subset. A leftover 400 is a keyword those servers still reject |
-| Local model never calls tools | Frontier catalog (~20 + orchestration) drowns 7–32B models | `lmstudio` / `openai-compatible` advertise the local profile only. Discover MCP via `system.searchTools`. Native `ollama` still gets the full catalog |
+| LM Studio/openai-compatible model cannot call a team, task, or MCP tool | The reduced local profile does not include that tool | `system.searchTools` cannot bypass the local allowlist. Use another provider slug when the full catalog is required |
 | Compatible-to-Ollama session looks different from `ollama:` | Same HTTP server, different adapter and gates | Native `ollama` is the SDK path. `openai-compatible` pointing at Ollama is the gated chat-completions path |
 
 ## Related docs

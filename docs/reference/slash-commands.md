@@ -25,7 +25,7 @@ Order matches `buildDefaultRegistry`.
 | `/whoami` | `account` | Show the signed-in AgenC account |
 | `/subscription` | `billing` | Show your AgenC plan and billing URL |
 | `/usage` | | Show hosted model usage for your AgenC plan |
-| `/grok-login` | `xai-login` | Sign in with X for Grok subscription access (optional `device` flow) |
+| `/grok-login` | `xai-login` | Sign in with X for Grok subscription access (optional `device` flow). Headless: `agenc grok-login` |
 | `/grok-logout` | `xai-logout` | Sign out of the xAI / Grok OAuth session |
 | `/openai-login` | `chatgpt-login` | Sign in with ChatGPT for OpenAI subscription access |
 | `/openai-logout` | `chatgpt-logout` | Sign out of the OpenAI / ChatGPT OAuth session |
@@ -33,7 +33,7 @@ Order matches `buildDefaultRegistry`.
 | `/model` | | Switch the model (picker or pass a name) |
 | `/provider` | | Switch the LLM provider for subsequent turns |
 | `/effort` | | Show or set reasoning effort for the current model (`low` / `medium` / `high` / `xhigh` when the catalog allows it; `default` restores the model default) |
-| `/resolve` | `resolve-effects` | Resolve a blocked unknown-outcome tool effect through the live daemon (`<call-id> <disposition> <evidence-ref> <evidence-sha256>`) |
+| `/resolve` | `resolve-effects` | Resolve a blocked unknown-outcome tool effect in the **live** session (`<call-id> <disposition> <evidence-ref> <evidence-sha256>`). Resume a settled terminal first. |
 | `/swarm` | | Show or set conservative adaptive routing (`on`, `off`, `status`) |
 | `/ledger` | `wallet` | Ledger wallet CLI: `status`, `install`, `session`, `discover`, `balances`, `operations`, `receive`, `send`, `swap`, `earn`, `ring`, `help` |
 | `/permissions` | `approvals`, `allowed-tools` | Manage permission mode and rules |
@@ -119,6 +119,30 @@ consent is stored in permission-owned runtime state and is loaded by later
 sessions for that same workspace. It does not apply to another path or to a
 replacement directory at the same path. Managed policy may disable bypass
 mode.
+
+## `/resolve`
+
+`/resolve` settles one `unknown_outcome` tool effect **inside a live
+session**. It is the same daemon path as `session.resolveToolCall`.
+
+```text
+/resolve <call-id> <confirmed_committed|confirmed_no_effect|remains_unknown> \
+  <evidence-ref> <evidence-sha256>
+```
+
+Resume first (`--resume` / `/resume`) when the previous epoch ended as
+`completed`, `failed`, or `cancelled`. Pending reviews do not block those
+settled terminals from reopening. Side-effecting tools stay gated until the
+review lands. An `unknown_outcome` terminal remains non-resumable through the
+public agent path. After stopping the session, the offline
+`agenc state resolve-tool-call` command can append review evidence for a
+projected unknown-outcome effect, but it does not make that terminal resumable.
+A dangling intent has no settlement record and cannot be resolved by either
+review command.
+
+The command never reruns the tool or rewrites the physical outcome as
+success. Full reopen table:
+[durable-runs-effects-events.md](../design/durable-runs-effects-events.md#resume-and-effect-review).
 
 ---
 

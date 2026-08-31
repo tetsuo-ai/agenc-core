@@ -3,6 +3,7 @@
 Live help: `agenc help` and `agenc help <topic>`. Sources:
 `runtime/src/bin/*-cli.ts`, `runtime/src/app-server/{daemon,agent}-cli.ts`,
 `runtime/src/plugins/cli/pluginCliCommands.ts`,
+`runtime/src/skills/skills-cli.ts`,
 `runtime/src/permissions/permission-cli.ts`, and top-level
 `formatCliHelpText()` in `runtime/src/bin/agenc-main.ts`.
 Top-level help is a command index; `agenc help <topic>` contains each
@@ -68,6 +69,8 @@ agenc --no-tui "run the tests and report failures"
 agenc --print --output-format stream-json "summarize this repository"
 agenc --resume <session-id>
 agenc help permissions
+agenc help skills
+agenc skills list --json
 ```
 
 ### Compaction operator commands
@@ -421,12 +424,46 @@ accounts store an exchanged API key; ChatGPT-only accounts store subscription
 authentication. Both use the single home-scoped native `openAiOauth` record.
 The stored sign-in wins over `OPENAI_API_KEY` only when `openai` is selected
 and is restricted to the first-party endpoint. `openai-logout` deletes that
-record; `openai-auth-status` reports whether it exists. `--json` emits
-machine-readable progress and results for desktop or scripted callers.
-`-h` or `--help` prints command help without starting login or changing the
-stored credential; other arguments are rejected.
+record; `openai-auth-status` reports whether it exists and, when known,
+`authMode` (`chatgpt` or `apiKey`). `--json` emits machine-readable progress
+and results for desktop or scripted callers. Tokens never appear in the
+output. `-h` or `--help` prints command help without starting login or
+changing the stored credential; other arguments are rejected.
 
 Aliases: `chatgpt-login`, `chatgpt-logout`, and `chatgpt-auth-status`.
+
+### `openai-models`
+
+```text
+agenc openai-models [--json]
+```
+
+Lists the models the stored credential can actually reach. A ChatGPT
+subscription sign-in queries the ChatGPT backend (`/models` with a
+`client_version` query). A platform key (stored or `OPENAI_API_KEY`)
+queries `https://api.openai.com/v1/models`. `--json` ends with
+`{ok, models, authMode}` or `{ok:false, error}`. Tokens never appear.
+Accepts only `--json`, `--help`, or `-h`.
+
+---
+
+## Grok auth: `grok-login` | `grok-logout` | `grok-auth-status`
+
+```text
+agenc grok-login [device] [--json]
+agenc grok-logout [--json]
+agenc grok-auth-status [--json]
+```
+
+Headless X / xAI subscription sign-in. Browser PKCE with a loopback
+callback is the default; pass `device` to select the RFC 8628 device-code
+flow. A failed browser callback also falls back to that flow. `--json` emits one NDJSON record per
+stage (`authorize`, `callback_received`, `exchanging_code`,
+`device_fallback`, `device_authorize`) plus a result. Tokens never
+appear. A stored sign-in wins over `XAI_API_KEY` / `GROK_API_KEY` while
+the selected provider is `grok`. See [grok-oauth.md](../grok-oauth.md).
+
+Aliases: `xai-login`, `xai-logout`, `xai-auth-status`.
 
 ---
 
@@ -439,7 +476,9 @@ agenc providers [--json] [--no-local-check]
 Provider readiness: credential status, local server health, and AgenC
 subscription tier. `--json` reports `credentialStatus` and, when an exact
 source won, redacted `credentialProvenance`; credential values are never
-included.
+included. Every API-key credential kind also carries `keyEnvVar`, the canonical
+BYOK environment name (for example, `XAI_API_KEY` or `OPENAI_API_KEY`). Alias
+order stays private; keyless providers omit the field.
 
 | Option | Meaning |
 | --- | --- |
@@ -542,12 +581,48 @@ agenc plugin <command> [options]
 | `marketplace add <path\|git\|url\|github> [--name <name>]` | Add marketplace |
 | `marketplace remove <name>` | Remove a marketplace |
 | `marketplace upgrade [name]` | Refresh git or local marketplaces |
+| `marketplace catalog [--product <id>] [--json]` | List installable plugins per marketplace |
+| `marketplace install <plugin@marketplace> [--product <id>] [--scope user\|project] [--force] [--json]` | Install a catalog plugin |
 
 Install options: `--name`, `--force`, `--keep-data`. Marketplace options:
-`--ref`, `--sparse`.
+`--ref`, `--sparse`. `marketplace catalog` / `marketplace install` are
+the desktop enumeration and qualified-install surface; see
+[skills-plugins.md](skills-plugins.md#marketplace).
 
 A canonical plugin ID can be installed in one managed scope at a time. Remove
 the existing copy before installing that ID in another scope.
+
+---
+
+## `skills`
+
+```text
+agenc skills list
+agenc skills list --json
+```
+
+Skill inventory for the current cwd and `AGENC_HOME`. Desktop clients can use
+this instead of opening a session to read `/skills`. It does not install
+content or print skill bodies. Normal runtime initialization can still create
+runtime directories or migrate legacy plugin-data directories.
+
+```bash
+agenc skills list --json
+```
+
+`--json` emits `{ schemaVersion: 1, kind: "agenc.skills.inventory", skills, errors }`.
+Text mode prints `[origin] name — description`. After an inventory is emitted,
+both modes exit 0; inspect `errors[]` (or stderr in text mode) for
+config/registry failures.
+
+Only `list` plus optional `--json` is a skills command. `agenc skills` or
+`agenc skills --help` is **not** help: the parser rejects it and the default
+route treats those tokens as a prompt. Use `agenc help skills`. Top-level
+`agenc help` does not list this command.
+
+This is not `agenc plugin`. Details, JSON fields, and differences from
+`/skills`:
+[skills-plugins.md](skills-plugins.md#agenc-skills-list-cli).
 
 ---
 
@@ -606,8 +681,15 @@ agenc state recovery quarantine list --state active --json
 agenc state recovery deferred show <block-id> --json
 ```
 
-Run `resolve-tool-call` from the affected session's project directory after
-stopping the live session. For an M4 effect, it appends and fsyncs a canonical
+For a `completed`, `failed`, or `cancelled` terminal, prefer the live session:
+resume first, then use `/resolve` (or `session.resolveToolCall`). Pending
+reviews on those settled terminals do not block reopen. Run the offline
+`resolve-tool-call` from the affected session's project directory after
+stopping the live session. It can review a projected `unknown_outcome` effect,
+including one under an `unknown_outcome` terminal, but it cannot settle a raw
+dangling intent. Reviewing an `unknown_outcome` terminal also does not make the
+same terminal session resumable through `agent.create`. For an M4 effect,
+either review path appends and fsyncs a canonical
 `effect_review_resolved` event before advancing the SQLite review projection;
 it never reruns the tool or rewrites `unknown_outcome` as success. Valid
 dispositions are `confirmed_committed`, `confirmed_no_effect`, and

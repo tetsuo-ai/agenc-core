@@ -2,12 +2,34 @@
 
 The first-run model-access step can sign you into xAI directly; choose
 **Sign in with X / xAI** without entering a slash command. The same flow is
-available later through `/grok-login`. It uses an eligible **SuperGrok or
-X Premium subscription** for Grok inference, including `grok-4.6`, instead
-of a metered `XAI_API_KEY`. There is no `agenc grok-login` CLI; use the TUI
-`/grok-login` or `/grok-login device`.
+available later through `/grok-login` or the headless CLI
+`agenc grok-login`. It uses an eligible **SuperGrok or X Premium
+subscription** for Grok inference, including `grok-4.6`, instead of a
+metered `XAI_API_KEY`.
 
 ## Usage
+
+Headless CLI (desktop Sign in with Grok, scripts, SSH):
+
+```text
+agenc grok-login [device] [--json]
+agenc grok-logout [--json]
+agenc grok-auth-status [--json]
+```
+
+`--json` emits one NDJSON progress record per OAuth stage, then a result
+record and exit code. Tokens never appear in the output. Stages:
+
+| Stage | When |
+| --- | --- |
+| `authorize` | Browser PKCE URL opened |
+| `callback_received` | Loopback callback accepted |
+| `exchanging_code` | Authorization code → tokens |
+| `device_fallback` | Browser callback flow failed; switching to device code |
+| `device_authorize` | Device-code URL + user code shown |
+
+Aliases: `xai-login`, `xai-logout`, `xai-auth-status`. Other arguments
+are rejected. `-h` / `--help` prints usage without changing credentials.
 
 Inside the TUI:
 
