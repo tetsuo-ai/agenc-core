@@ -315,10 +315,11 @@ A committed attempt is `compact-${randomUUID()}` (UUID v4). After
 
 The TUI prints an ID only when the marker is `version: 1`, `kind: "boundary"`,
 `summary_sha256` is 64 hex characters, and `attempt_id` matches UUID v4
-`compact-...`. Auto-compact writes the same authenticated marker, so its
+`compact-...`. Auto-compact writes the same validated marker, so its
 boundary also shows the ID. Reconstructed legacy rows use
-`legacy-compacted:<sha256>` and stay hidden. A compact that never produced a
-`transaction` (no durable adapter) has no rollback ID.
+`legacy-compacted:<sha256>` and stay hidden. Current compaction fails when the
+canonical rollout owner or transaction adapter is unavailable. It does not
+commit replacement history without a rollback ID.
 
 ### Troubleshooting
 
@@ -329,7 +330,7 @@ boundary also shows the ID. Reconstructed legacy rows use
 | A summary call includes a client or provider-native tool | This violates the summary-call contract. Summary calls must send an empty client catalog and an empty native-tool routing allowlist. Admission must account the same selected native catalog as the wire. |
 | History vanished after a failed compact | Only a flushed `compaction_committed` may replace active history. Any earlier replacement is a transaction bug and must not be treated as a commit. |
 | `/compact` says durable adapter unavailable | Compaction requires the canonical rollout owner (`readCompactionTransactionAdapter`). There is no character-extract fallback. |
-| Compacted, but no rollback attempt ID in the TUI | Confirm a flushed `compaction_committed`. The TUI only prints UUID v4 `compact-...` IDs from an authenticated `kind: "boundary"` marker. Legacy `legacy-compacted:` reconstructions stay hidden. Recheck the `/compact` result text or the daemon `attemptId` field. |
+| Compacted, but no rollback attempt ID in the TUI | Confirm a flushed `compaction_committed`. The TUI only prints UUID v4 `compact-...` IDs from a validated `kind: "boundary"` marker. Legacy `legacy-compacted:` reconstructions stay hidden. Recheck the `/compact` result text or the daemon `attemptId` field. |
 
 Operator command syntax also lives in [cli.md](../../reference/cli.md#compaction-operator-commands).
 Threshold vs admission accounting: [provider-aware-token-accounting.md](../provider-aware-token-accounting.md).
