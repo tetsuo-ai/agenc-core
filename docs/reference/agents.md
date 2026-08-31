@@ -377,6 +377,32 @@ agent in its place.
 See [workspace-scoped agent-role identity](../design/workspace-scoped-agent-roles.md)
 for the boundary and compatibility contract.
 
+## Turn abort containment
+
+A session's `abortController` is **one-shot for the session lifetime**.
+Burning it on a child interrupt or a mid-turn tool abort left every later
+turn born aborted: the session stayed listed as live and silently dropped
+each following message.
+
+| Surface | What is aborted | Source |
+| --- | --- | --- |
+| Fork / conversation interrupt | Only the fork turn's `activeTurnAbort` scope | `runtime/src/conversation/thread-manager.ts` (`ForkedConversationThread.submit`) |
+| Mid-turn tool abort | The **active turn** task controller (`session.activeTurn.abortController`) | `runtime/src/phases/execute-tools.ts` |
+| Process / stdin / permission-authority death | `session.abortTerminal(...)`; still ends the session | `session.ts`, daemon / CLI signal paths |
+
+Fork interrupt used to call `sourceSession.abortTerminal()`. That cut through
+the turn lock but aborted the shared parent terminal controller. An interrupt
+while a spawned child was open then poisoned the parent. Interrupt now aborts
+exactly that fork turn and skips the queue; the next turn gets a fresh signal.
+
+Tool-use context builders must not alias `session.abortController` as the
+context controller. The agent/tool runtime aborts that handle to cancel work;
+if it is the session controller, one Stop during `wait_agent` consumes the
+session. Session-wide abort still cascades into the child scope.
+
+Sibling-tool cancellation emits a live `warning` (`sibling_tool_abort`). It
+does not abort the session.
+
 ## Related slash commands
 
 - `/agents` interactive agent listing / management menu
