@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 
 import { createTokenAccountingRequest } from "../../token-accounting.js";
-import type { LLMMessage, LLMTool } from "../../types.js";
+import type { LLMChatOptions, LLMMessage, LLMTool } from "../../types.js";
 import { createGeminiEndpointPlan } from "./endpoint-plan.js";
 import { GeminiProvider } from "./index.js";
 import {
@@ -110,33 +110,37 @@ function providerWithFetch(fetchImpl: typeof fetch): GeminiProvider {
 
 type GeminiToolOperation = "chat" | "stream" | "count";
 
-function invokeGeminiWithTools(
+function invokeGeminiWithOptions(
   provider: GeminiProvider,
   operation: GeminiToolOperation,
-  tools: readonly LLMTool[],
+  options: LLMChatOptions,
 ): Promise<unknown> {
-  const options = { tools: [...tools] };
+  const messages = [{ role: "user" as const, content: "run tool" }];
   switch (operation) {
     case "chat":
-      return provider.chat([{ role: "user", content: "run tool" }], options);
+      return provider.chat(messages, options);
     case "stream":
-      return provider.chatStream(
-        [{ role: "user", content: "run tool" }],
-        () => {},
-        options,
-      );
+      return provider.chatStream(messages, () => {}, options);
     case "count":
       return provider.tokenCountCapability.countTokens(
         createTokenAccountingRequest({
           provider: provider.name,
           model: "gemini-2.5-pro",
-          messages: [{ role: "user", content: "run tool" }],
+          messages,
           options,
           reservedOutputTokens: 0,
         }),
         new AbortController().signal,
       );
   }
+}
+
+function invokeGeminiWithTools(
+  provider: GeminiProvider,
+  operation: GeminiToolOperation,
+  tools: readonly LLMTool[],
+): Promise<unknown> {
+  return invokeGeminiWithOptions(provider, operation, { tools: [...tools] });
 }
 
 async function dispatchGeminiToolSchema(
@@ -191,6 +195,28 @@ async function expectGeminiToolSchemaRejected(
       },
     },
   ]);
+
+  await expect(invocation).rejects.toThrow(expectedPath);
+  expect(fetchImpl).not.toHaveBeenCalled();
+}
+
+async function expectGeminiResponseSchemaRejected(
+  operation: GeminiToolOperation,
+  schema: Record<string, unknown>,
+  expectedPath: string,
+): Promise<void> {
+  const fetchImpl = vi.fn<typeof fetch>();
+  const provider = providerWithFetch(fetchImpl);
+  const invocation = invokeGeminiWithOptions(provider, operation, {
+    structuredOutput: {
+      enabled: true,
+      schema: {
+        type: "json_schema",
+        name: "answer",
+        schema,
+      },
+    },
+  });
 
   await expect(invocation).rejects.toThrow(expectedPath);
   expect(fetchImpl).not.toHaveBeenCalled();
@@ -1072,6 +1098,103 @@ describe("GeminiProvider", () => {
     },
   );
 
+  test.each(["chat", "stream", "count"] as const)(
+    "rejects a sparse tool type array before %s dispatch",
+    async (operation) => {
+      const types = new Array<string>(2);
+      types[1] = "object";
+      await expectGeminiToolSchemaRejected(
+        operation,
+        { type: types },
+        {
+          name: "sparse_root",
+          expectedPath: 'tools["sparse_root"].parameters.type[0]',
+        },
+      );
+    },
+  );
+
+  test("rejects an inherited tool schema array entry", async () => {
+    const types = new Array<string>(1);
+    Object.setPrototypeOf(types, { 0: "object" });
+
+    await expectGeminiToolSchemaRejected(
+      "chat",
+      { type: types },
+      {
+        name: "inherited_root",
+        expectedPath: 'tools["inherited_root"].parameters.type[0]',
+      },
+    );
+  });
+
+  test.each(["chat", "stream", "count"] as const)(
+    "rejects disjoint finite tool literals before %s dispatch",
+    async (operation) => {
+      await expectGeminiToolSchemaRejected(operation, {
+        type: "object",
+        const: { outer: [1, { value: "left" }] },
+        enum: [{ outer: [1, { value: "right" }] }],
+      });
+    },
+  );
+
+  test.each(["chat", "stream", "count"] as const)(
+    "rejects disjoint finite literals reached through ref and allOf before %s dispatch",
+    async (operation) => {
+      await expectGeminiToolSchemaRejected(operation, {
+        type: "object",
+        allOf: [{ $ref: "#/$defs/Fixed" }, { enum: [{ value: "right" }] }],
+        $defs: { Fixed: { const: { value: "left" } } },
+      });
+    },
+  );
+
+  test.each([
+    {
+      label: "direct const and enum objects with different key order",
+      schema: {
+        type: "object",
+        const: { first: 1, nested: { left: true, right: false } },
+        enum: [{ nested: { right: false, left: true }, first: 1 }],
+      },
+    },
+    {
+      label: "matching finite literals reached through ref and allOf",
+      schema: {
+        type: "object",
+        allOf: [{ $ref: "#/$defs/Fixed" }, { enum: [{ second: 2, first: 1 }] }],
+        $defs: { Fixed: { const: { first: 1, second: 2 } } },
+      },
+    },
+    {
+      label: "a contradiction hidden inside an unanalyzed anyOf",
+      schema: {
+        type: "object",
+        const: { value: 3 },
+        allOf: [
+          {
+            anyOf: [{ const: { value: 1 } }, { const: { value: 2 } }],
+          },
+        ],
+      },
+    },
+    {
+      label: "an enum beyond the finite analysis bound",
+      schema: {
+        type: "object",
+        const: { value: -1 },
+        enum: Array.from({ length: 257 }, (_, value) => ({ value })),
+      },
+    },
+  ])("preserves $label", async ({ schema }) => {
+    const declaration = await dispatchGeminiToolSchema(schema);
+    expect(declaration.parametersJsonSchema).toEqual(schema);
+    expect(JSON.stringify(declaration.parametersJsonSchema)).toBe(
+      JSON.stringify(schema),
+    );
+  });
+
   test("snapshots a tool schema accessor exactly once", async () => {
     const fetchImpl = successfulGeminiFetch();
     const provider = providerWithFetch(fetchImpl);
@@ -1809,6 +1932,102 @@ describe("GeminiProvider", () => {
       expect(fetchImpl).not.toHaveBeenCalled();
     },
   );
+
+  test.each(["chat", "stream", "count"] as const)(
+    "rejects a sparse response anyOf before %s dispatch",
+    async (operation) => {
+      await expectGeminiResponseSchemaRejected(
+        operation,
+        { type: "object", anyOf: new Array<Record<string, unknown>>(1) },
+        'structuredOutput["answer"].schema.anyOf[0]',
+      );
+    },
+  );
+
+  test("reads a dense response schema array entry once", async () => {
+    const fetchImpl = successfulGeminiFetch('{"answer":"ok"}');
+    const provider = providerWithFetch(fetchImpl);
+    let reads = 0;
+    const branches = new Array<Record<string, unknown>>(1);
+    Object.defineProperty(branches, 0, {
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return { type: "object" };
+      },
+    });
+
+    await provider.chat([{ role: "user", content: "answer" }], {
+      structuredOutput: {
+        enabled: true,
+        schema: {
+          type: "json_schema",
+          name: "answer",
+          schema: { type: "object", anyOf: branches },
+        },
+      },
+    });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const requestBody = JSON.parse(String(init?.body)) as {
+      readonly generationConfig: { readonly responseJsonSchema: unknown };
+    };
+    expect(reads).toBe(1);
+    expect(requestBody.generationConfig.responseJsonSchema).toEqual({
+      type: "object",
+      anyOf: [{ type: "object" }],
+    });
+  });
+
+  test("preserves permitted dense empty arrays in both schema contracts", async () => {
+    const fetchImpl = successfulGeminiFetch('{"answer":"ok"}');
+    const provider = providerWithFetch(fetchImpl);
+    const toolSchema = { type: "object", required: [] };
+    const responseSchema = {
+      type: "object",
+      properties: { answer: { type: "string" } },
+      required: [],
+    };
+
+    await provider.chat([{ role: "user", content: "answer" }], {
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "dense_arrays",
+            description: "Exercise dense empty arrays",
+            parameters: toolSchema,
+          },
+        },
+      ],
+      structuredOutput: {
+        enabled: true,
+        schema: {
+          type: "json_schema",
+          name: "answer",
+          schema: responseSchema,
+        },
+      },
+    });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const requestBody = JSON.parse(String(init?.body)) as {
+      readonly tools: readonly [
+        {
+          readonly functionDeclarations: readonly [
+            { readonly parametersJsonSchema: unknown },
+          ];
+        },
+      ];
+      readonly generationConfig: { readonly responseJsonSchema: unknown };
+    };
+    expect(
+      requestBody.tools[0].functionDeclarations[0].parametersJsonSchema,
+    ).toEqual(toolSchema);
+    expect(requestBody.generationConfig.responseJsonSchema).toEqual(
+      responseSchema,
+    );
+  });
 
   test.each([
     { label: "Developer v1beta", endpointPlan: developerEndpointPlan },

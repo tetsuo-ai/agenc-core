@@ -129,9 +129,14 @@ model-facing size and annotation sanitization.
 
 Gemini requires tool parameters to describe a JSON object. AgenC checks that
 root before dispatch without changing the accepted schema. An explicit object,
-a local `$ref` to an object schema, or a union whose every branch is object-only
-is accepted. Scalar, array, nullable, unconstrained, mixed-union, contradictory,
+a local `$ref` to an object schema, or a union whose analyzed root domain is
+exactly object can pass. Scalar, array, nullable, unconstrained, mixed-union,
 and unresolved roots fail on chat, streaming, and admission token counting.
+The root check is not a general JSON Schema satisfiability solver. It rejects an
+empty root-type domain and an empty finite `const`/`enum` intersection reached
+directly or through local `$ref` and `allOf`. It does not infer finite-literal
+contradictions inside `anyOf`, `oneOf`, `not`, properties, or an enum with more
+than 256 values.
 
 Response schemas are checked against Google's documented common subset before
 the request is built. AgenC accepts these keywords:
@@ -206,7 +211,7 @@ but `builtTools` applies the local-profile filter afterward.
 | LM Studio/openai-compatible empty turn after a long answer                          | Check whether the fixed 8192 output ceiling ended generation                                                                                                                                                                     |
 | LM Studio/openai-compatible session does not call team/task tools                   | Those tools are outside the reduced catalog; use another provider slug when they are required                                                                                                                                    |
 | Qwen3 think-trace burns minutes                                                     | `/no_think` only attaches on `lmstudio` / `openai-compatible` + qwen3                                                                                                                                                            |
-| Gemini tool schema fails locally at `tools["name"].parameters`                      | The root can accept a non-object value, is unconstrained or contradictory, or contains a root reference that does not resolve locally                                                                                            |
+| Gemini tool schema fails locally at `tools["name"].parameters`                      | The analyzed root is not object-only, a finite `const`/`enum` intersection reached through local `$ref` or `allOf` is empty, or a root reference does not resolve locally                                                        |
 | Gemini response schema fails locally with `Gemini cannot preserve schema at <path>` | Structured output used an unsupported keyword, a lossy `oneOf`, an invalid or remote `$ref`, a non-`$` sibling beside `$ref`, or a required reference cycle. Follow the path in the error and use the documented response subset |
 | Custom Gemini endpoint rejects `parametersJsonSchema` or `responseJsonSchema`       | `GEMINI_BASE_URL` must expose the current native Gemini request shape. Update the proxy or use the official Developer API or Vertex endpoint                                                                                     |
 | NIM ignores or 400s `reasoning_effort`                                              | Family has no documented enum, or the value is outside it                                                                                                                                                                        |

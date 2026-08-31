@@ -589,14 +589,26 @@ function cloneGeminiSchemaValueForValidation(
   state.ancestors.add(value);
   try {
     if (Array.isArray(value)) {
-      return value.map((entry, index) =>
-        cloneGeminiSchemaValueForValidation(
-          entry,
-          `${path}[${index}]`,
-          depth + 1,
-          state,
-        ),
-      );
+      const snapshot: unknown[] = [];
+      for (let index = 0; index < value.length; index += 1) {
+        const entryPath = `${path}[${index}]`;
+        if (!Object.hasOwn(value, index)) {
+          geminiSchemaError(
+            entryPath,
+            "sparse schema arrays are not supported",
+          );
+        }
+        const entry = value[index];
+        snapshot.push(
+          cloneGeminiSchemaValueForValidation(
+            entry,
+            entryPath,
+            depth + 1,
+            state,
+          ),
+        );
+      }
+      return snapshot;
     }
     return Object.fromEntries(
       Object.entries(value).map(([key, entry]) => [
@@ -1512,6 +1524,248 @@ function geminiToolSchemaLiteralDomain(
   return domain;
 }
 
+const GEMINI_TOOL_LITERAL_DOMAIN_MAX_VALUES = 256;
+const GEMINI_TOOL_LITERAL_EQUALITY_MAX_NODES =
+  GEMINI_SCHEMA_VALIDATION_MAX_NODES;
+
+type GeminiToolLiteralConstraintDomain =
+  | Readonly<{ kind: "unknown" }>
+  | Readonly<{ kind: "finite"; values: readonly unknown[] }>;
+
+type GeminiToolJsonEquality = "equal" | "different" | "unknown";
+
+interface GeminiToolLiteralAnalysisState {
+  equalityNodesRemaining: number;
+  readonly visiting: Set<Record<string, unknown>>;
+}
+
+const GEMINI_TOOL_UNKNOWN_LITERAL_DOMAIN: GeminiToolLiteralConstraintDomain = {
+  kind: "unknown",
+};
+
+function geminiToolJsonArraysEqual(
+  left: readonly unknown[],
+  right: readonly unknown[],
+  analysis: GeminiToolLiteralAnalysisState,
+): GeminiToolJsonEquality {
+  if (left.length !== right.length) return "different";
+  for (let index = 0; index < left.length; index += 1) {
+    const equality = geminiToolJsonValuesEqual(
+      left[index],
+      right[index],
+      analysis,
+    );
+    if (equality !== "equal") return equality;
+  }
+  return "equal";
+}
+
+function geminiToolJsonObjectsEqual(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+  analysis: GeminiToolLiteralAnalysisState,
+): GeminiToolJsonEquality {
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) return "different";
+  for (const key of leftKeys) {
+    if (!Object.hasOwn(right, key)) return "different";
+    const equality = geminiToolJsonValuesEqual(left[key], right[key], analysis);
+    if (equality !== "equal") return equality;
+  }
+  return "equal";
+}
+
+function geminiToolJsonValuesEqual(
+  left: unknown,
+  right: unknown,
+  analysis: GeminiToolLiteralAnalysisState,
+): GeminiToolJsonEquality {
+  if (analysis.equalityNodesRemaining === 0) return "unknown";
+  analysis.equalityNodesRemaining -= 1;
+
+  if (left === right) return "equal";
+  if (
+    left === null ||
+    right === null ||
+    typeof left !== "object" ||
+    typeof right !== "object"
+  ) {
+    return "different";
+  }
+  if (Array.isArray(left)) {
+    return Array.isArray(right)
+      ? geminiToolJsonArraysEqual(left, right, analysis)
+      : "different";
+  }
+  if (Array.isArray(right)) return "different";
+  return geminiToolJsonObjectsEqual(
+    left as Record<string, unknown>,
+    right as Record<string, unknown>,
+    analysis,
+  );
+}
+
+function intersectGeminiToolLiteralDomains(
+  left: GeminiToolLiteralConstraintDomain,
+  right: GeminiToolLiteralConstraintDomain,
+  analysis: GeminiToolLiteralAnalysisState,
+): GeminiToolLiteralConstraintDomain {
+  if (left.kind === "unknown") return right;
+  if (right.kind === "unknown") return left;
+
+  const values: unknown[] = [];
+  for (const leftValue of left.values) {
+    for (const rightValue of right.values) {
+      const equality = geminiToolJsonValuesEqual(
+        leftValue,
+        rightValue,
+        analysis,
+      );
+      if (equality === "unknown") return GEMINI_TOOL_UNKNOWN_LITERAL_DOMAIN;
+      if (equality === "equal") {
+        values.push(leftValue);
+        break;
+      }
+    }
+  }
+  return { kind: "finite", values };
+}
+
+function geminiToolOwnLiteralDomain(
+  schema: Record<string, unknown>,
+  analysis: GeminiToolLiteralAnalysisState,
+): GeminiToolLiteralConstraintDomain {
+  let domain = GEMINI_TOOL_UNKNOWN_LITERAL_DOMAIN;
+  if (Object.hasOwn(schema, "const")) {
+    domain = { kind: "finite", values: [schema.const] };
+  }
+  if (Object.hasOwn(schema, "enum")) {
+    let enumDomain: GeminiToolLiteralConstraintDomain;
+    if (!Array.isArray(schema.enum)) {
+      enumDomain = { kind: "finite", values: [] };
+    } else if (schema.enum.length > GEMINI_TOOL_LITERAL_DOMAIN_MAX_VALUES) {
+      enumDomain = GEMINI_TOOL_UNKNOWN_LITERAL_DOMAIN;
+    } else {
+      enumDomain = { kind: "finite", values: schema.enum };
+    }
+    domain = intersectGeminiToolLiteralDomains(domain, enumDomain, analysis);
+  }
+  return domain;
+}
+
+function geminiToolLiteralBranchDomain(
+  branch: unknown,
+  path: string,
+  state: GeminiSchemaValidationState,
+  analysis: GeminiToolLiteralAnalysisState,
+): GeminiToolLiteralConstraintDomain {
+  if (branch === true) return GEMINI_TOOL_UNKNOWN_LITERAL_DOMAIN;
+  if (branch === false || !isPlainSchemaObject(branch)) {
+    return { kind: "finite", values: [] };
+  }
+  const resource = state.nodeResources.get(branch);
+  return resource === undefined
+    ? { kind: "finite", values: [] }
+    : geminiToolSchemaFiniteLiteralDomain(
+        branch,
+        path,
+        resource,
+        state,
+        analysis,
+      );
+}
+
+function geminiToolLiteralReferenceDomain(
+  schema: Record<string, unknown>,
+  path: string,
+  resource: GeminiSchemaResource,
+  state: GeminiSchemaValidationState,
+  analysis: GeminiToolLiteralAnalysisState,
+): GeminiToolLiteralConstraintDomain {
+  if (!Object.hasOwn(schema, "$ref")) {
+    return GEMINI_TOOL_UNKNOWN_LITERAL_DOMAIN;
+  }
+  const referencePath = geminiSchemaChildPath(path, "$ref");
+  if (typeof schema.$ref !== "string" || schema.$ref.trim() === "") {
+    geminiSchemaError(referencePath, "expected a non-empty string");
+  }
+  const resolved = resolveGeminiSchemaReference(
+    schema.$ref,
+    referencePath,
+    resource,
+    state,
+    "tool-root",
+  );
+  return resolved === undefined
+    ? { kind: "finite", values: [] }
+    : geminiToolSchemaFiniteLiteralDomain(
+        resolved.schema,
+        state.nodePaths.get(resolved.schema) ?? referencePath,
+        resolved.resource,
+        state,
+        analysis,
+      );
+}
+
+function geminiToolLiteralAllOfDomain(
+  value: unknown,
+  path: string,
+  state: GeminiSchemaValidationState,
+  analysis: GeminiToolLiteralAnalysisState,
+): GeminiToolLiteralConstraintDomain {
+  if (value === undefined) return GEMINI_TOOL_UNKNOWN_LITERAL_DOMAIN;
+  if (!Array.isArray(value) || value.length === 0) {
+    return { kind: "finite", values: [] };
+  }
+  let domain = GEMINI_TOOL_UNKNOWN_LITERAL_DOMAIN;
+  for (let index = 0; index < value.length; index += 1) {
+    domain = intersectGeminiToolLiteralDomains(
+      domain,
+      geminiToolLiteralBranchDomain(
+        value[index],
+        `${path}[${index}]`,
+        state,
+        analysis,
+      ),
+      analysis,
+    );
+  }
+  return domain;
+}
+
+function geminiToolSchemaFiniteLiteralDomain(
+  schema: Record<string, unknown>,
+  path: string,
+  resource: GeminiSchemaResource,
+  state: GeminiSchemaValidationState,
+  analysis: GeminiToolLiteralAnalysisState,
+): GeminiToolLiteralConstraintDomain {
+  if (analysis.visiting.has(schema)) {
+    return GEMINI_TOOL_UNKNOWN_LITERAL_DOMAIN;
+  }
+  analysis.visiting.add(schema);
+  try {
+    let domain = geminiToolOwnLiteralDomain(schema, analysis);
+    domain = intersectGeminiToolLiteralDomains(
+      domain,
+      geminiToolLiteralReferenceDomain(schema, path, resource, state, analysis),
+      analysis,
+    );
+    return intersectGeminiToolLiteralDomains(
+      domain,
+      geminiToolLiteralAllOfDomain(
+        schema.allOf,
+        geminiSchemaChildPath(path, "allOf"),
+        state,
+        analysis,
+      ),
+      analysis,
+    );
+  } finally {
+    analysis.visiting.delete(schema);
+  }
+}
+
 const GEMINI_TOOL_NON_VALIDATING_SCHEMA_KEYS: ReadonlySet<string> = new Set([
   "$anchor",
   "$comment",
@@ -1669,9 +1923,9 @@ function geminiToolOneOfAlwaysAcceptsType(
   const alwaysIndex = branches.findIndex((branch) => branch.always.has(type));
   if (alwaysIndex === -1) return false;
   if (
-    branches.findIndex(
+    branches.some(
       (branch, index) => index > alwaysIndex && branch.always.has(type),
-    ) !== -1
+    )
   ) {
     return false;
   }
@@ -2001,6 +2255,19 @@ function validateGeminiToolSchemaRoot(
   const state = createGeminiSchemaValidationState(capabilities);
   indexGeminiSchemaResources(root, path, state);
   const resource = state.nodeResources.get(root);
+  const literalDomain =
+    resource === undefined
+      ? { kind: "finite" as const, values: [] }
+      : geminiToolSchemaFiniteLiteralDomain(root, path, resource, state, {
+          equalityNodesRemaining: GEMINI_TOOL_LITERAL_EQUALITY_MAX_NODES,
+          visiting: new Set(),
+        });
+  if (literalDomain.kind === "finite" && literalDomain.values.length === 0) {
+    geminiSchemaError(
+      path,
+      "tool parametersJsonSchema has contradictory finite const/enum constraints at the root",
+    );
+  }
   const rootDomain =
     resource === undefined
       ? new Set<string>()
