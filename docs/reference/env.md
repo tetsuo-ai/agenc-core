@@ -152,6 +152,41 @@ startup environment or accepts arbitrary environment names over the protocol.
 Grok OAuth: [grok-oauth.md](../grok-oauth.md). Provider map:
 [providers.md](providers.md).
 
+### Provider credential isolation
+
+The selected provider is decided **before** any credential-storage access
+(`selectedProviderUsesExternalAuth` in `runtime/src/utils/auth.ts`). Slugs
+other than `anthropic` and `agenc` never read:
+
+- `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`
+- Anthropic native secure-storage fields (`primaryApiKey`, `agencAiOauth`,
+  OAuth account metadata)
+- the `agenc ssh` auth-proxy path (`ANTHROPIC_UNIX_SOCKET` plus a placeholder
+  `AGENC_OAUTH_TOKEN`)
+
+Grok, OpenAI, openai-compatible, Gemini, and the other BYOK slugs use only
+the aliases in the table above plus that provider's own native sign-in
+namespace. Setting `ANTHROPIC_API_KEY` does not authenticate a grok session.
+Those slugs also skip the Anthropic secure-storage read that would otherwise
+run on first TUI paint (Windows DPAPI / macOS Keychain).
+
+The TUI footer "Not logged in · Run `/login`" is gated by
+`usesAnthropicAccountFlow` (`runtime/src/utils/model/providers.ts`). That
+helper is first-party only: `anthropic` and `amazon-bedrock`. A working grok
+or openai-compatible BYOK session is not "logged out". Anthropic-scoped
+startup notices (`getActiveNotices` with `authScope: "anthropic"`) stay
+empty for every external slug.
+
+`agenc` is grouped with `anthropic` for this gate so managed-account lookup
+still works. `amazon-bedrock` uses AWS SigV4 aliases and does not read
+`ANTHROPIC_*`, but it remains first-party for the login-notice helper.
+
+| Symptom | Cause |
+| --- | --- |
+| Grok or openai-compatible reports missing credentials while `ANTHROPIC_API_KEY` is set | That env is Anthropic-only. Use `XAI_API_KEY` / `GROK_API_KEY`, or `OPENAI_COMPATIBLE_API_KEY` |
+| TUI says "Not logged in" on a working grok session | The footer is first-party only. Use `/grok-login` or a grok BYOK key; `/login` is the AgenC account, not xAI |
+| `ANTHROPIC_UNIX_SOCKET` is set but grok ignores the ssh proxy | The proxy path is Anthropic-only; provider identity is decided first |
+
 ## Daemon
 
 | Var | Effect |

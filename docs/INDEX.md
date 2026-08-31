@@ -55,7 +55,7 @@ history; the linked pages below are current product truth.
 | --- | --- |
 | [reference/cli.md](reference/cli.md) | Full CLI, including M5 `run start`, Grok auth, OpenAI model discovery, and `agenc skills list` |
 | [reference/config.md](reference/config.md) | `config.toml` sections, env overrides, `agenc config` |
-| [reference/env.md](reference/env.md) | Operator `AGENC_*` / provider key environment variables |
+| [reference/env.md](reference/env.md) | Operator `AGENC_*` / provider key environment variables, and provider credential isolation |
 | [reference/daemon.md](reference/daemon.md) | Daemon lifecycle, socket auth, deferred first messages, bypass consent, and bounded-stop survival |
 | [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes, Responses continuation, and overflow diagnostics |
 | [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics |

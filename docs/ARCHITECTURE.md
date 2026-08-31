@@ -168,7 +168,10 @@ enumerates Security.framework generic-password matches and mutates only one
 verified persistent reference; ambiguity fails closed. Credential bytes cross
 that helper boundary only through stdin/stdout, never process arguments,
 successful writes are byte-verified, and records at or above 16 MiB are
-rejected before a write.
+rejected before a write. Provider identity is decided before any of those
+reads: slugs other than `anthropic` and `agenc` never consult `ANTHROPIC_*`
+or Anthropic native storage. See
+[env.md](reference/env.md#provider-credential-isolation).
 
 Optional trajectory export writes redacted rollout items via
 `AGENC_TRAJECTORY_EXPORT_PATH` or `AGENC_TRAJECTORY_EXPORT_DIR`.
