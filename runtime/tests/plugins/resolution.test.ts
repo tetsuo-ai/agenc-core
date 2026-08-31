@@ -126,29 +126,9 @@ describe("plugin source resolution", () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
       const calls: string[] = [];
-      const runProcess: PluginProcessRunner = async (command, args) => {
+      const runProcess = npmPluginRunner("demo", "demo-1.0.0.tgz", (command, args) => {
         calls.push(`${command} ${args.join(" ")}`);
-        if (command === "npm") {
-          const packDir = String(args[args.indexOf("--pack-destination") + 1]);
-          await writeFile(join(packDir, "demo-1.0.0.tgz"), "fixture");
-          return {
-            stdout: JSON.stringify([{ filename: "demo-1.0.0.tgz" }]),
-            stderr: "",
-          };
-        }
-        if (command === "tar") {
-          if (args[0] === "-tzf") {
-            return { stdout: safeTarListing("package"), stderr: "" };
-          }
-          if (args[0] === "-tvzf") {
-            return { stdout: safeTarVerboseListing("package"), stderr: "" };
-          }
-          const extractRoot = String(args[args.indexOf("-C") + 1]);
-          await writePlugin(join(extractRoot, "package"), "demo");
-          return { stdout: "", stderr: "" };
-        }
-        throw new Error(`unexpected process: ${command}`);
-      };
+      });
 
       const resolved = await resolvePluginSource("@tetsuo-ai/demo-plugin", {
         agencHome,
@@ -173,24 +153,11 @@ describe("plugin source resolution", () => {
       await mkdir(pluginStorageRoot, { recursive: true });
       await mkdir(sessionTempRoot, { recursive: true });
       let observedPackRoot = "";
-      const runProcess: PluginProcessRunner = async (command, args) => {
+      const runProcess = npmPluginRunner("isolated", "isolated-1.0.0.tgz", (command, args) => {
         if (command === "npm") {
           observedPackRoot = String(args[args.indexOf("--pack-destination") + 1]);
-          await writeFile(join(observedPackRoot, "isolated-1.0.0.tgz"), "fixture");
-          return {
-            stdout: JSON.stringify([{ filename: "isolated-1.0.0.tgz" }]),
-            stderr: "",
-          };
         }
-        if (command === "tar") {
-          if (args[0] === "-tzf") return { stdout: safeTarListing("package"), stderr: "" };
-          if (args[0] === "-tvzf") return { stdout: safeTarVerboseListing("package"), stderr: "" };
-          const extractRoot = String(args[args.indexOf("-C") + 1]);
-          await writePlugin(join(extractRoot, "package"), "isolated");
-          return { stdout: "", stderr: "" };
-        }
-        throw new Error(`unexpected process: ${command}`);
-      };
+      });
 
       const resolved = await resolvePluginSourceWithAuthority("isolated@1.0.0", {
         agencHome,
@@ -235,7 +202,7 @@ describe("plugin source resolution", () => {
 
   test("direct resolver requires a trusted signature for remote sources by default", async () => {
     await withTempDir(async (root) => {
-      const runProcess = unsignedNpmPluginRunner("unsigned-demo");
+      const runProcess = npmPluginRunner("unsigned-demo");
 
       await expect(
         resolvePluginSource("@tetsuo-ai/unsigned-plugin", {
@@ -251,29 +218,11 @@ describe("plugin source resolution", () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
       let npmPacks = 0;
-      const runProcess: PluginProcessRunner = async (command, args) => {
+      const runProcess = npmPluginRunner("remote-demo", "remote-1.0.0.tgz", (command) => {
         if (command === "npm") {
           npmPacks += 1;
-          const packDir = String(args[args.indexOf("--pack-destination") + 1]);
-          await writeFile(join(packDir, "remote-1.0.0.tgz"), "fixture");
-          return {
-            stdout: JSON.stringify([{ filename: "remote-1.0.0.tgz" }]),
-            stderr: "",
-          };
         }
-        if (command === "tar") {
-          if (args[0] === "-tzf") {
-            return { stdout: safeTarListing("package"), stderr: "" };
-          }
-          if (args[0] === "-tvzf") {
-            return { stdout: safeTarVerboseListing("package"), stderr: "" };
-          }
-          const extractRoot = String(args[args.indexOf("-C") + 1]);
-          await writePlugin(join(extractRoot, "package"), "remote-demo");
-          return { stdout: "", stderr: "" };
-        }
-        throw new Error(`unexpected process: ${command}`);
-      };
+      });
 
       const installed = await installPluginOp({
         source: "@tetsuo-ai/remote-demo",
@@ -494,7 +443,7 @@ describe("plugin source resolution", () => {
 
   test("install operation requires a trusted signature for remote sources by default", async () => {
     await withTempDir(async (root) => {
-      const runProcess = unsignedNpmPluginRunner("unsigned-demo");
+      const runProcess = npmPluginRunner("unsigned-demo");
 
       await expect(
         installPluginOp({
@@ -520,7 +469,7 @@ describe("plugin source resolution", () => {
       expect(installed.resolutionKind).toBe("local");
       expect(installed.signatureVerified).toBe(false);
 
-      const runProcess = unsignedNpmPluginRunner("unsigned-remote");
+      const runProcess = npmPluginRunner("unsigned-remote");
 
       await expect(
         updatePluginOp({
@@ -583,7 +532,7 @@ describe("plugin source resolution", () => {
         agencHome,
         workspaceRoot: root,
       });
-      const runProcess = unsignedNpmPluginRunner("unsigned-remote");
+      const runProcess = npmPluginRunner("unsigned-remote");
 
       const updated = await updatePluginOp({
         pluginId: installed.plugin.id,
@@ -1722,13 +1671,18 @@ function safeTarVerboseListing(root: string): string {
   ].join("\n");
 }
 
-function unsignedNpmPluginRunner(pluginName: string): PluginProcessRunner {
+function npmPluginRunner(
+  pluginName: string,
+  archiveName = "unsigned-1.0.0.tgz",
+  observe?: (command: string, args: readonly string[]) => void,
+): PluginProcessRunner {
   return async (command, args) => {
+    observe?.(command, args);
     if (command === "npm") {
       const packDir = String(args[args.indexOf("--pack-destination") + 1]);
-      await writeFile(join(packDir, "unsigned-1.0.0.tgz"), "fixture");
+      await writeFile(join(packDir, archiveName), "fixture");
       return {
-        stdout: JSON.stringify([{ filename: "unsigned-1.0.0.tgz" }]),
+        stdout: JSON.stringify([{ filename: archiveName }]),
         stderr: "",
       };
     }
