@@ -548,13 +548,27 @@ interface GeminiSchemaCloneState {
   readonly ancestors: Set<object>;
 }
 
+function isGeminiSchemaJsonPrimitive(
+  value: unknown,
+): value is null | string | number | boolean {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  );
+}
+
 function cloneGeminiSchemaValueForValidation(
   value: unknown,
   path: string,
   depth: number,
   state: GeminiSchemaCloneState,
 ): unknown {
-  if (value === null || typeof value !== "object") return value;
+  if (isGeminiSchemaJsonPrimitive(value)) return value;
+  if (typeof value !== "object") {
+    geminiSchemaError(path, "expected a JSON-compatible schema value");
+  }
   if (depth > GEMINI_SCHEMA_VALIDATION_MAX_DEPTH) {
     geminiSchemaError(
       path,
@@ -1409,13 +1423,12 @@ function compileGeminiSchema(
   path: string,
   capabilities: GeminiResponseJsonSchemaCapabilities,
 ): Record<string, unknown> {
-  const originalRoot = geminiSchemaObject(value, path);
-  const root = cloneGeminiSchemaForValidation(originalRoot, path);
+  const root = cloneGeminiSchemaForValidation(value, path);
   const state = createGeminiSchemaValidationState(capabilities);
   validateGeminiJsonSchemaAt(root, path, GEMINI_NO_PROPERTY_CONTEXT, state);
   indexGeminiSchemaResources(root, path, state);
   validateGeminiSchemaReferences(state);
-  return originalRoot;
+  return root;
 }
 
 const GEMINI_TOOL_ROOT_TYPES: ReadonlySet<string> = new Set([
@@ -1518,7 +1531,9 @@ const GEMINI_TOOL_NON_VALIDATING_SCHEMA_KEYS: ReadonlySet<string> = new Set([
 function complementGeminiToolRootTypes(
   domain: ReadonlySet<string>,
 ): Set<string> {
-  return new Set([...GEMINI_TOOL_ROOT_TYPES].filter((type) => !domain.has(type)));
+  return new Set(
+    [...GEMINI_TOOL_ROOT_TYPES].filter((type) => !domain.has(type)),
+  );
 }
 
 function geminiToolSchemaAlwaysAcceptedBranchDomain(
@@ -1643,13 +1658,7 @@ function geminiToolSchemaOneOfBranchDomains(
     possible:
       resource === undefined
         ? new Set()
-        : geminiToolSchemaRootDomain(
-            branch,
-            path,
-            resource,
-            state,
-            visiting,
-          ),
+        : geminiToolSchemaRootDomain(branch, path, resource, state, visiting),
   };
 }
 
@@ -1690,6 +1699,37 @@ function geminiToolSchemaAlwaysAcceptedOneOfDomain(
   return new Set(
     [...GEMINI_TOOL_ROOT_TYPES].filter((type) =>
       geminiToolOneOfAlwaysAcceptsType(branches, type),
+    ),
+  );
+}
+
+function geminiToolOneOfCanAcceptType(
+  branches: readonly GeminiToolOneOfBranchDomains[],
+  type: string,
+): boolean {
+  if (!branches.some((branch) => branch.possible.has(type))) return false;
+  return branches.filter((branch) => branch.always.has(type)).length < 2;
+}
+
+function geminiToolSchemaOneOfDomain(
+  value: unknown,
+  path: string,
+  state: GeminiSchemaValidationState,
+  visiting: Set<Record<string, unknown>>,
+): ReadonlySet<string> | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) return new Set();
+  const branches = value.map((branch, index) =>
+    geminiToolSchemaOneOfBranchDomains(
+      branch,
+      `${path}[${index}]`,
+      state,
+      visiting,
+    ),
+  );
+  return new Set(
+    [...GEMINI_TOOL_ROOT_TYPES].filter((type) =>
+      geminiToolOneOfCanAcceptType(branches, type),
     ),
   );
 }
@@ -1922,7 +1962,7 @@ function geminiToolSchemaRootDomain(
       visiting,
     );
     domain = constrainGeminiToolRootDomain(domain, anyOf);
-    const oneOf = geminiToolSchemaUnionDomain(
+    const oneOf = geminiToolSchemaOneOfDomain(
       schema.oneOf,
       geminiSchemaChildPath(path, "oneOf"),
       state,
@@ -1948,8 +1988,7 @@ function validateGeminiToolSchemaRoot(
   path: string,
   capabilities: GeminiResponseJsonSchemaCapabilities,
 ): Record<string, unknown> {
-  const originalRoot = geminiSchemaObject(value, path);
-  const root = cloneGeminiSchemaForValidation(originalRoot, path);
+  const root = cloneGeminiSchemaForValidation(value, path);
   const state = createGeminiSchemaValidationState(capabilities);
   indexGeminiSchemaResources(root, path, state);
   const resource = state.nodeResources.get(root);
@@ -1963,7 +2002,7 @@ function validateGeminiToolSchemaRoot(
       "tool parametersJsonSchema must describe an object at the root",
     );
   }
-  return originalRoot;
+  return root;
 }
 
 function geminiTools(
@@ -2234,7 +2273,7 @@ function requestMetrics(args: {
     imageParts: 0,
     toolCount: args.tools.length,
     toolNames: args.tools.map((tool) => tool.function.name),
-    toolSchemaChars: JSON.stringify(args.tools).length,
+    toolSchemaChars: JSON.stringify(args.body.tools ?? []).length,
     serializedChars: JSON.stringify(args.body).length,
     toolsAttached: args.tools.length > 0,
     stream: args.stream,

@@ -107,6 +107,37 @@ function providerWithFetch(fetchImpl: typeof fetch): GeminiProvider {
   });
 }
 
+type GeminiToolOperation = "chat" | "stream" | "count";
+
+function invokeGeminiWithTools(
+  provider: GeminiProvider,
+  operation: GeminiToolOperation,
+  tools: readonly LLMTool[],
+): Promise<unknown> {
+  const options = { tools: [...tools] };
+  switch (operation) {
+    case "chat":
+      return provider.chat([{ role: "user", content: "run tool" }], options);
+    case "stream":
+      return provider.chatStream(
+        [{ role: "user", content: "run tool" }],
+        () => {},
+        options,
+      );
+    case "count":
+      return provider.tokenCountCapability.countTokens(
+        createTokenAccountingRequest({
+          provider: provider.name,
+          model: "gemini-2.5-pro",
+          messages: [{ role: "user", content: "run tool" }],
+          options,
+          reservedOutputTokens: 0,
+        }),
+        new AbortController().signal,
+      );
+  }
+}
+
 describe("GeminiProvider", () => {
   test("reports the exact missing credential selected at ingress", async () => {
     const canonical = new GeminiProvider({
@@ -944,6 +975,31 @@ describe("GeminiProvider", () => {
       },
     },
     {
+      label: "duplicate true branches in an object oneOf",
+      schema: { type: "object", oneOf: [true, true] },
+    },
+    {
+      label: "duplicate empty branches in an object oneOf",
+      schema: { type: "object", oneOf: [{}, {}] },
+    },
+    {
+      label: "duplicate local-reference branches in a oneOf",
+      schema: {
+        oneOf: [{ $ref: "#/$defs/Args" }, { $ref: "#/$defs/Args" }],
+        $defs: { Args: { type: "object" } },
+      },
+    },
+    {
+      label: "duplicate embedded-resource branches in a oneOf",
+      schema: {
+        $id: "https://example.test/tool-root.json",
+        oneOf: [{ $ref: "args.json" }, { $ref: "args.json" }],
+        $defs: {
+          Args: { $id: "args.json", type: "object" },
+        },
+      },
+    },
+    {
       label: "an object type with a scalar enum",
       schema: { type: "object", enum: ["not-an-object"] },
     },
@@ -1006,36 +1062,7 @@ describe("GeminiProvider", () => {
           },
         },
       ];
-      const options = { tools };
-
-      let invocation: Promise<unknown>;
-      switch (operation) {
-        case "chat":
-          invocation = provider.chat(
-            [{ role: "user", content: "run tool" }],
-            options,
-          );
-          break;
-        case "stream":
-          invocation = provider.chatStream(
-            [{ role: "user", content: "run tool" }],
-            () => {},
-            options,
-          );
-          break;
-        case "count":
-          invocation = provider.tokenCountCapability.countTokens(
-            createTokenAccountingRequest({
-              provider: provider.name,
-              model: "gemini-2.5-pro",
-              messages: [{ role: "user", content: "run tool" }],
-              options,
-              reservedOutputTokens: 0,
-            }),
-            new AbortController().signal,
-          );
-          break;
-      }
+      const invocation = invokeGeminiWithTools(provider, operation, tools);
 
       await expect(invocation).rejects.toThrow(
         'tools["invalid_root"].parameters',
@@ -1043,6 +1070,119 @@ describe("GeminiProvider", () => {
       expect(fetchImpl).not.toHaveBeenCalled();
     },
   );
+
+  test.each(["chat", "stream", "count"] as const)(
+    "rejects an exclusive oneOf with duplicate object branches before %s dispatch",
+    async (operation) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const provider = providerWithFetch(fetchImpl);
+      const tools: LLMTool[] = [
+        {
+          type: "function",
+          function: {
+            name: "invalid_root",
+            description: "Invalid root",
+            parameters: {
+              oneOf: [{ type: "object" }, { type: "object" }],
+            },
+          },
+        },
+      ];
+      const invocation = invokeGeminiWithTools(provider, operation, tools);
+
+      await expect(invocation).rejects.toThrow(
+        'tools["invalid_root"].parameters',
+      );
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(["chat", "stream", "count"] as const)(
+    "rejects a tool schema whose serialized root changes before %s dispatch",
+    async (operation) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const provider = providerWithFetch(fetchImpl);
+      const tools: LLMTool[] = [
+        {
+          type: "function",
+          function: {
+            name: "invalid_serialized_root",
+            description: "Invalid serialized root",
+            parameters: {
+              type: "object",
+              toJSON: () => ({ type: "string" }),
+            },
+          },
+        },
+      ];
+      const invocation = invokeGeminiWithTools(provider, operation, tools);
+
+      await expect(invocation).rejects.toThrow(
+        'tools["invalid_serialized_root"].parameters.toJSON',
+      );
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  test("snapshots a tool schema accessor exactly once", async () => {
+    const fetchImpl = successfulGeminiFetch();
+    const provider = providerWithFetch(fetchImpl);
+    let reads = 0;
+    const parameters: Record<string, unknown> = {};
+    Object.defineProperty(parameters, "type", {
+      enumerable: true,
+      get: () => (++reads === 1 ? "object" : "string"),
+    });
+
+    await provider.chat([{ role: "user", content: "run tool" }], {
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "snapshot_root",
+            description: "Snapshot the root schema",
+            parameters,
+          },
+        },
+      ],
+    });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const body = JSON.parse(String(init?.body)) as {
+      readonly tools: readonly [
+        {
+          readonly functionDeclarations: readonly [
+            { readonly parametersJsonSchema: unknown },
+          ];
+        },
+      ];
+    };
+    expect(reads).toBe(1);
+    expect(body.tools[0].functionDeclarations[0].parametersJsonSchema).toEqual({
+      type: "object",
+    });
+  });
+
+  test("rejects a non-JSON tool schema value at its path", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = providerWithFetch(fetchImpl);
+
+    await expect(
+      provider.chat([{ role: "user", content: "run tool" }], {
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "invalid_value",
+              description: "Invalid schema value",
+              parameters: { type: "object", annotation: undefined },
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow('tools["invalid_value"].parameters.annotation');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 
   test("resolves reused tool schema values in their resource occurrence", async () => {
     const shared = { $ref: "#/$defs/Args" };
@@ -1145,11 +1285,51 @@ describe("GeminiProvider", () => {
     expect(declaration?.parametersJsonSchema).toEqual(
       echoTool.function.parameters,
     );
+    expect(JSON.stringify(declaration?.parametersJsonSchema)).toBe(
+      JSON.stringify(echoTool.function.parameters),
+    );
     expect(declaration).not.toHaveProperty("parameters");
     expect(requestBody.generationConfig.responseJsonSchema).toEqual(
       responseSchema,
     );
+    expect(
+      JSON.stringify(requestBody.generationConfig.responseJsonSchema),
+    ).toBe(JSON.stringify(responseSchema));
     expect(requestBody.generationConfig).not.toHaveProperty("responseSchema");
+  });
+
+  test("sends the validated response schema snapshot instead of invoking toJSON", async () => {
+    const fetchImpl = successfulGeminiFetch('{"answer":"ok"}');
+    const provider = providerWithFetch(fetchImpl);
+    const responseSchema: Record<string, unknown> = {
+      type: "object",
+      properties: { answer: { type: "string" } },
+      required: ["answer"],
+    };
+    Object.defineProperty(responseSchema, "toJSON", {
+      value: () => ({ type: "object", oneOf: [{}, {}] }),
+    });
+
+    await provider.chat([{ role: "user", content: "answer" }], {
+      structuredOutput: {
+        enabled: true,
+        schema: {
+          type: "json_schema",
+          name: "answer",
+          schema: responseSchema,
+        },
+      },
+    });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const requestBody = JSON.parse(String(init?.body)) as {
+      readonly generationConfig: Record<string, unknown>;
+    };
+    expect(requestBody.generationConfig.responseJsonSchema).toEqual({
+      type: "object",
+      properties: { answer: { type: "string" } },
+      required: ["answer"],
+    });
   });
 
   test("rejects a response $ref sibling instead of shallow-merging it", async () => {
