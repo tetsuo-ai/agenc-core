@@ -1795,6 +1795,41 @@ describe("plugin source resolution", () => {
       ).resolves.toBe("local");
     });
   });
+
+  test.each([
+    {
+      label: "ordinary repository",
+      source: "https://github.com/tetsuo-ai/plugin",
+      expected: "git",
+    },
+    {
+      label: "mcpb pathname with query and fragment",
+      source: "https://github.com/tetsuo-ai/plugin.mcpb?download=1#release",
+      expected: "mcpb",
+    },
+    {
+      label: "tgz pathname with query and fragment",
+      source: "https://gitlab.com/tetsuo-ai/plugin.tgz?download=1#release",
+      expected: "tarball",
+    },
+    {
+      label: "gz pathname",
+      source: "https://bitbucket.org/tetsuo-ai/plugin.gz",
+      expected: "tarball",
+    },
+    {
+      label: "tar pathname",
+      source: "https://codeberg.org/tetsuo-ai/plugin.tar",
+      expected: "tarball",
+    },
+  ] as const)(
+    "gives known-host $label classification the documented suffix precedence",
+    async ({ source, expected }) => {
+      await expect(
+        classifyPluginSource(source, process.cwd()),
+      ).resolves.toBe(expected);
+    },
+  );
 });
 
 function loadedPlugin(

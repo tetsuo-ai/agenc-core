@@ -419,14 +419,15 @@ still accepts an explicit scope so old duplicate copies can be removed safely.
 
 `classifyPluginSource` in `runtime/src/plugins/resolution.ts` picks a
 resolution kind from specifier syntax. Workspace contents are never consulted,
-so a planted directory cannot shadow npm, git, tarball, or mcpb.
+so a planted directory cannot shadow npm, git, tarball, or mcpb. Archive and
+bundle suffixes take priority over known-host Git matching.
 
 | Specifier | Kind |
 | --- | --- |
 | Absolute path; `.` / `..`; `./<path>` / `../<path>`; Windows `.\<path>` / `..\<path>` | `local`, except an explicit path that ends in `.mcpb` is `mcpb` |
-| `git+<url>`, `git@<host>:<owner>/<repo>`, `ssh://<host>/<owner>/<repo>`, or `http(s)://` on `github.com`, `gitlab.com`, `bitbucket.org`, `codeberg.org`, or `dev.azure.com` with an owner/repo path | `git` |
 | `http(s)://` URL whose path ends in `.tgz`, `.gz`, or `.tar` | `tarball` |
 | `http(s)://` URL whose path ends in `.mcpb` | `mcpb` |
+| `git+<url>`, `git@<host>:<owner>/<repo>`, `ssh://<host>/<owner>/<repo>`, or `http(s)://` on `github.com`, `gitlab.com`, `bitbucket.org`, `codeberg.org`, or `dev.azure.com` with an owner/repo path and none of the archive or bundle suffixes above | `git` |
 | Everything else, including `name`, `@scope/name`, `plugin.mcpb`, and `package-like.git` | `npm` |
 
 ```bash
