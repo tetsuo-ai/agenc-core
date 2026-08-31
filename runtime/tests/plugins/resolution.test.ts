@@ -1047,6 +1047,31 @@ describe("plugin source resolution", () => {
     });
   });
 
+  test("requires a signature for an explicit local mcpb source by default", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const zipPath = join(root, "unsigned.mcpb");
+      await writeFile(zipPath, pluginZipBytes("unsigned-local-bundle"));
+
+      await expect(
+        resolvePluginSource("./unsigned.mcpb", {
+          agencHome,
+          workspaceRoot: root,
+        }),
+      ).rejects.toThrow(/plugin signature is required/u);
+
+      const waived = await resolvePluginSource("./unsigned.mcpb", {
+        agencHome,
+        workspaceRoot: root,
+        refreshCache: true,
+        requireSignature: false,
+      });
+      expect(waived.kind).toBe("mcpb");
+      expect(waived.signatureVerified).toBeUndefined();
+      await waived.cleanup();
+    });
+  });
+
   test("rejects zip symlink entries before extraction", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");

@@ -423,22 +423,26 @@ so a planted directory cannot shadow npm, git, tarball, or mcpb.
 
 | Specifier | Kind |
 | --- | --- |
-| Absolute path; `.` / `..`; `./…` / `../…`; Windows `.\…` / `..\…` | `local`, except an explicit path that ends in `.mcpb` is `mcpb` |
-| `git+…`, `git@…`, `ssh://…`, or `http(s)://` on `github.com`, `gitlab.com`, `bitbucket.org`, `codeberg.org`, or `dev.azure.com` with an owner/repo path | `git` |
+| Absolute path; `.` / `..`; `./<path>` / `../<path>`; Windows `.\<path>` / `..\<path>` | `local`, except an explicit path that ends in `.mcpb` is `mcpb` |
+| `git+<url>`, `git@<host>:<owner>/<repo>`, `ssh://<host>/<owner>/<repo>`, or `http(s)://` on `github.com`, `gitlab.com`, `bitbucket.org`, `codeberg.org`, or `dev.azure.com` with an owner/repo path | `git` |
 | `http(s)://` URL whose path ends in `.tgz`, `.gz`, or `.tar` | `tarball` |
 | `http(s)://` URL whose path ends in `.mcpb` | `mcpb` |
 | Everything else, including `name`, `@scope/name`, `plugin.mcpb`, and `package-like.git` | `npm` |
 
 ```bash
 agenc plugin install ./my-plugin
-agenc plugin install .\@scope\local-plugin
 agenc plugin install @scope/published-plugin
 ```
 
-The first two stay local. The third is npm even when `@scope/published-plugin/`
-exists in the workspace. Prefix a local tree with `./` (or pass an absolute
-path). A missing explicit path fails with `plugin source not found` and does
-not fall through to npm.
+```powershell
+agenc plugin install .\@scope\local-plugin
+```
+
+The first Bash command and the PowerShell command stay local. The scoped
+package in the Bash block is npm even when `@scope/published-plugin/` exists in
+the workspace. Prefix a local tree with `./` (or pass an absolute path). A
+missing explicit path fails with `plugin source not found` and does not fall
+through to npm.
 
 `plugin update --source` uses the same classifier. After a source is local, the
 update rejects the installed plugin root and any descendant
@@ -446,7 +450,10 @@ update rejects the installed plugin root and any descendant
 Point `--source` at a different tree or a remote specifier. A bare name that
 happens to exist under the install directory still goes to the remote resolver.
 
-Remote kinds require a publisher signature by default. See
+The signature default follows the resolution kind. Local directories use the
+local-directory waiver. An explicit `.mcpb` path has kind `mcpb`, so it still
+requires a publisher signature by default, just like npm, git, tarball, and
+remote mcpb sources. The shipped CLI has no signature-waiver option. See
 [Publisher signatures](#publisher-signatures).
 
 ### Marketplace
