@@ -7620,24 +7620,18 @@ export function phaseEventToProgressEvent(
       // (status: error)" and could never prompt again after one bad
       // turn. The turn ends honestly with its message; the session
       // stays available for the next prompt, exactly like "completed".
-      if (
-        event.stopReason === "max_turns" ||
-        event.stopReason === "max_budget_usd" ||
-        event.stopReason === "no_progress"
-      ) {
-        const message =
-          event.content.length > 0
-            ? event.content
-            : event.stopReason === "max_turns"
-              ? "Turn stopped: the agent exceeded maxTurns."
-              : event.stopReason === "max_budget_usd"
-                ? "Turn stopped: the canonical session cost cap was reached."
-                : "Turn stopped by the no-progress backstop (semantic non-termination).";
+      const boundedStopFallback: Partial<Record<string, string>> = {
+        max_turns: "Turn capped: iteration limit hit; send a new prompt to continue.",
+        max_budget_usd: "Turn capped: cost ceiling hit; send a new prompt to continue.",
+        no_progress: "Turn halted by the progress backstop; send a new prompt to continue.",
+      };
+      const boundedFallback = boundedStopFallback[event.stopReason];
+      if (boundedFallback !== undefined) {
         return {
           kind: "turn_complete",
           turnId,
           toolCallCount: 0,
-          finalMessage: message,
+          finalMessage: event.content.length > 0 ? event.content : boundedFallback,
         };
       }
       // "completed" | "empty_response" — a per-turn completion. Emit

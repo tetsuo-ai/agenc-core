@@ -8,45 +8,48 @@ const base = {
 } as never;
 
 describe("stale-agent grace window", () => {
-  test("a transient null snapshot never reaps a live agent", () => {
-    expect(
-      isStaleAgent(
-        { ...base, runtimeUnavailableSince: "2026-08-31T10:00:00.000Z" } as never,
-        "2026-08-31T10:00:05.000Z",
-      ),
-    ).toBe(false);
-  });
+  const cases: readonly {
+    readonly name: string;
+    readonly agent: Record<string, unknown>;
+    readonly at: string;
+    readonly stale: boolean;
+  }[] = [
+    {
+      name: "a transient null snapshot never reaps a live agent",
+      agent: { runtimeUnavailableSince: "2026-08-31T10:00:00.000Z" },
+      at: "2026-08-31T10:00:05.000Z",
+      stale: false,
+    },
+    {
+      name: "unavailability without a start stamp is not reapable",
+      agent: {},
+      at: "2026-08-31T10:10:00.000Z",
+      stale: false,
+    },
+    {
+      name: "persistent unavailability past the grace window is reapable",
+      agent: { runtimeUnavailableSince: "2026-08-31T10:00:00.000Z" },
+      at: "2026-08-31T10:01:30.000Z",
+      stale: true,
+    },
+    {
+      name: "a recovery without runtime stays immediately reapable",
+      agent: { recovered: true },
+      at: "2026-08-31T10:00:00.500Z",
+      stale: true,
+    },
+    {
+      name: "an available runtime is never stale",
+      agent: { runtimeAvailable: true },
+      at: "2026-08-31T10:10:00.000Z",
+      stale: false,
+    },
+  ];
 
-  test("unavailability without a start stamp is not reapable", () => {
-    expect(isStaleAgent({ ...base } as never, "2026-08-31T10:10:00.000Z")).toBe(
-      false,
-    );
-  });
-
-  test("persistent unavailability past the grace window is reapable", () => {
-    expect(
-      isStaleAgent(
-        { ...base, runtimeUnavailableSince: "2026-08-31T10:00:00.000Z" } as never,
-        "2026-08-31T10:01:30.000Z",
-      ),
-    ).toBe(true);
-  });
-
-  test("a recovery without runtime stays immediately reapable", () => {
-    expect(
-      isStaleAgent(
-        { ...base, recovered: true } as never,
-        "2026-08-31T10:00:00.500Z",
-      ),
-    ).toBe(true);
-  });
-
-  test("an available runtime is never stale", () => {
-    expect(
-      isStaleAgent(
-        { ...base, runtimeAvailable: true } as never,
-        "2026-08-31T10:10:00.000Z",
-      ),
-    ).toBe(false);
-  });
+  for (const item of cases) {
+    test(item.name, () => {
+      const agent = { ...(base as object), ...item.agent } as never;
+      expect(isStaleAgent(agent, item.at)).toBe(item.stale);
+    });
+  }
 });
