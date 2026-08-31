@@ -38,7 +38,20 @@ Existing directories only (missing roots skipped). Project walk: cwd up to home.
 
 The runtime command catalog and `/skills` use this same discovery result.
 `/skills` can list roots and manage project skills; bundled skills are tagged
-`[bundled]`.
+`[bundled]`. Inventory rows (CLI and desktop) carry `whenToUse` and
+`argumentHint` for every origin, including inline built-ins that have no
+`SKILL.md` a client could open.
+
+A plugin manifest may declare a skill root that **is** the skill
+(`skills: ["./skills/flash-board"]` with `SKILL.md` in that directory).
+Discovery looks for child skill dirs first; an empty scan falls back to
+the root's own `SKILL.md`. Without that fallback the inventory reports
+"no such skill".
+
+Plugin-shipped skill bodies substitute `${AGENC_PLUGIN_ROOT}` to the
+owning plugin root (same rendering pass as `${AGENC_SKILL_DIR}` and
+`${AGENC_SESSION_ID}`). A sibling script path that still contains the
+literal placeholder was not rendered from a plugin root.
 
 ### Bundled skills
 
@@ -78,7 +91,13 @@ Author under e.g. `.agenc/skills/my-skill/SKILL.md` in the project or
 
 ### Defaults
 
-- `[plugins] enabled = false` in `defaultConfig()`
+- `[plugins] enabled = false` in `defaultConfig()`. Turn it on to activate
+  plugins. `plugins.enabled` is the feature gate for configured entries and
+  repository-controlled auto-discovery. User-scope / marketplace installs
+  under the plugin storage root are the operator trust decision (install
+  is the consent); they are not also gated by the forgeable-repo
+  auto-discovery flag that applies to `.agents/plugins` and workspace
+  `plugins/` trees.
 - User-scoped installs, acquisition cache, marketplace inventory, and private
   data share one plugin storage root. The default is `$AGENC_HOME/plugins`.
   `AGENC_PLUGIN_CACHE_DIR` replaces that root as one unit. Project-scoped
@@ -221,6 +240,8 @@ agenc plugin enable <name> [--path <path>]
 agenc plugin disable <name>
 agenc plugin disable-all
 agenc plugin marketplace list|add|remove|upgrade …
+agenc plugin marketplace catalog [--product <id>] [--json]
+agenc plugin marketplace install <plugin@marketplace> [--product <id>] [--scope user|project] [--force] [--json]
 ```
 
 Dispatch accepts `agenc plugin` only. `agenc plugins` is a **help topic**,
@@ -259,6 +280,47 @@ transactions are serialized by plugin root and committed with a durable atomic
 rename. Duplicate JSON keys, unknown fields, relative paths, or policy matchers
 fail closed. Ordinary reads never refresh a source, probe another cache path,
 or migrate an old entry.
+
+### Catalog and qualified install
+
+`plugin marketplace list` reports configured marketplaces, not the plugins
+inside them. Desktop and scripts use:
+
+```bash
+agenc plugin marketplace catalog --product desktop --json
+agenc plugin marketplace install flash-board@agenc-plugins --product desktop --json
+```
+
+`catalog` serializes every configured marketplace's installable plugins
+(product-filtered; `NOT_AVAILABLE` excluded) into one schema-versioned
+JSON document (`kind: agenc.plugin.marketplace.catalog`). A broken
+marketplace becomes an `errors[]` entry; partial success is still a
+usable catalog. Exit status 1 only when every marketplace failed.
+
+A fresh profile has no marketplaces. The first catalog request registers
+the official `agenc-plugins` marketplace
+(`https://agenc.tech/plugins/marketplace.json`) unless
+`AGENC_SKIP_OFFICIAL_MARKETPLACE=1`. An offline first run still returns
+an empty catalog rather than failing the CLI.
+
+Each catalog row carries the absolute marketplace `root` plus a
+`logoPath` proven (`realpath`) to sit inside that root. Clients serve
+artwork under their own trusted scheme; they must not guess paths.
+Card prefetch for SHA-pinned `github.com` git sources reads the plugin
+manifest at the pinned commit and caches logo / display name /
+description / version / bounded interface copy / skill and command rows
+under the marketplace store. Only `github.com` + an explicit `sha`
+qualify. Relative paths containing `..` are rejected. A missing logo is
+a generic card, never a broken catalog.
+
+`install` resolves `plugin@marketplace` (last-`@` split). A bare name is
+accepted only when exactly one configured marketplace offers that plugin
+to the requested product; ambiguity is an error. Non-local marketplaces
+require a publisher signature (`signatureVerified` on the JSON verdict).
+`--scope` is `user` or `project` (not `local`). Installed summaries
+carry the manifest interface (logo stripped; artwork already travels as
+a verified path), command rows, and skill rows from each skill dir's
+`SKILL.md` frontmatter.
 
 ---
 

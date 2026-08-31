@@ -6,8 +6,8 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 
 | Doc                                                                              | Scope                                                                        |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| [`reference/daemon.md`](reference/daemon.md)                                     | Daemon process, socket, protocol, lifecycle                                  |
-| [`reference/providers.md`](reference/providers.md)                               | Built-in providers, defaults, credentials, local context-window probes       |
+| [`reference/daemon.md`](reference/daemon.md)                                     | Daemon process, socket, protocol, lifecycle, bounded-stop session survival   |
+| [`reference/providers.md`](reference/providers.md)                               | Built-in providers, defaults, credentials, local context-window probes, Responses continuation |
 | [`reference/autonomy.md`](reference/autonomy.md)                                 | Budget, heartbeat, cron delivery, hooks HTTP                                 |
 | [`design/execution-admission-kernel.md`](design/execution-admission-kernel.md)   | Live durable budget/admission design                                         |
 | [`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md) | Canonical run journal, effects, terminal results, replay, and crash recovery |
@@ -316,7 +316,9 @@ intact. `--dangerously-bypass-approvals-and-sandbox` selects bypass mode and
 The TUI requires `/permissions accept-bypass` before switching to
 `bypassPermissions`. AgenC stores that consent against the workspace's
 canonical path and directory identity. A configured bypass default does not
-grant consent by itself.
+grant consent by itself. A live client may instead send
+`session.setPermissionMode` with `bypassAuthority: "operator_tool_approval"`
+for the same exact-cwd gate.
 
 The `read_only` and `workspace_write` runtime profiles retain a full-disk read
 baseline, matching the live policy's empty allow-read semantics. Explicit

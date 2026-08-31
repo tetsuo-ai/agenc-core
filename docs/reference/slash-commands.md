@@ -25,7 +25,7 @@ Order matches `buildDefaultRegistry`.
 | `/whoami` | `account` | Show the signed-in AgenC account |
 | `/subscription` | `billing` | Show your AgenC plan and billing URL |
 | `/usage` | | Show hosted model usage for your AgenC plan |
-| `/grok-login` | `xai-login` | Sign in with X for Grok subscription access (optional `device` flow) |
+| `/grok-login` | `xai-login` | Sign in with X for Grok subscription access (optional `device` flow). Headless: `agenc grok-login` |
 | `/grok-logout` | `xai-logout` | Sign out of the xAI / Grok OAuth session |
 | `/openai-login` | `chatgpt-login` | Sign in with ChatGPT for OpenAI subscription access |
 | `/openai-logout` | `chatgpt-logout` | Sign out of the OpenAI / ChatGPT OAuth session |

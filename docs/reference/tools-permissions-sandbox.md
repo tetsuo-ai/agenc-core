@@ -221,7 +221,7 @@ workflow.
 
 | Name | Notes |
 | --- | --- |
-| `TaskCreate` | Durable project task board; **deferred** |
+| `TaskCreate` | Durable project task board; **deferred**. `description` is optional and defaults to `subject` |
 | `TaskGet` | Durable project task board; **deferred** |
 | `TaskUpdate` | Durable project task board; **deferred** |
 | `TaskList` | Durable project task board; **deferred** |
@@ -335,6 +335,13 @@ bypassPermissions` refuses the transition until the operator runs
 runtime state for the exact canonical workspace path and directory identity.
 It does not authorize another path or a replacement directory at the same
 path. Managed policy can disable bypass mode entirely.
+
+A live daemon client can carry the same consent on
+`session.setPermissionMode` as `bypassAuthority: "operator_tool_approval"`
+(the only accepted value). The field is still checked against the exact
+canonical cwd; it is not a remote or cross-workspace waiver. Without it,
+the RPC is refused with "requires explicit consent for this exact cwd"
+unless stored accept-bypass consent already matches.
 
 `--permission-mode bypassPermissions` is an explicit startup opt-in for the
 current session and workspace; it does not write durable consent. The

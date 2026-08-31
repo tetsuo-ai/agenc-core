@@ -406,12 +406,46 @@ accounts store an exchanged API key; ChatGPT-only accounts store subscription
 authentication. Both use the single home-scoped native `openAiOauth` record.
 The stored sign-in wins over `OPENAI_API_KEY` only when `openai` is selected
 and is restricted to the first-party endpoint. `openai-logout` deletes that
-record; `openai-auth-status` reports whether it exists. `--json` emits
-machine-readable progress and results for desktop or scripted callers.
-`-h` or `--help` prints command help without starting login or changing the
-stored credential; other arguments are rejected.
+record; `openai-auth-status` reports whether it exists and, when known,
+`authMode` (`chatgpt` or `apiKey`). `--json` emits machine-readable progress
+and results for desktop or scripted callers. Tokens never appear in the
+output. `-h` or `--help` prints command help without starting login or
+changing the stored credential; other arguments are rejected.
 
 Aliases: `chatgpt-login`, `chatgpt-logout`, and `chatgpt-auth-status`.
+
+### `openai-models`
+
+```text
+agenc openai-models [--json]
+```
+
+Lists the models the stored credential can actually reach. A ChatGPT
+subscription sign-in queries the ChatGPT backend (`/models` with a
+`client_version` query). A platform key (stored or `OPENAI_API_KEY`)
+queries `https://api.openai.com/v1/models`. `--json` ends with
+`{ok, models, authMode}` or `{ok:false, error}`. Tokens never appear.
+Accepts only `--json` or `--help`.
+
+---
+
+## Grok auth: `grok-login` | `grok-logout` | `grok-auth-status`
+
+```text
+agenc grok-login [device] [--json]
+agenc grok-logout [--json]
+agenc grok-auth-status [--json]
+```
+
+Headless X / xAI subscription sign-in. Browser PKCE with a loopback
+callback is the default; pass `device` (or lose the loopback port) for
+the RFC 8628 device-code flow. `--json` emits one NDJSON record per
+stage (`authorize`, `callback_received`, `exchanging_code`,
+`device_fallback`, `device_authorize`) plus a result. Tokens never
+appear. A stored sign-in wins over `XAI_API_KEY` / `GROK_API_KEY` while
+the selected provider is `grok`. See [grok-oauth.md](../grok-oauth.md).
+
+Aliases: `xai-login`, `xai-logout`, `xai-auth-status`.
 
 ---
 
@@ -424,7 +458,9 @@ agenc providers [--json] [--no-local-check]
 Provider readiness: credential status, local server health, and AgenC
 subscription tier. `--json` reports `credentialStatus` and, when an exact
 source won, redacted `credentialProvenance`; credential values are never
-included.
+included. Each usable cloud provider also carries `keyEnvVar` — the
+canonical BYOK environment name (`XAI_API_KEY`, `OPENAI_API_KEY`, …).
+Alias order stays private; keyless providers omit the field.
 
 | Option | Meaning |
 | --- | --- |
@@ -527,9 +563,13 @@ agenc plugin <command> [options]
 | `marketplace add <path\|git\|url\|github> [--name <name>]` | Add marketplace |
 | `marketplace remove <name>` | Remove a marketplace |
 | `marketplace upgrade [name]` | Refresh git or local marketplaces |
+| `marketplace catalog [--product <id>] [--json]` | List installable plugins per marketplace |
+| `marketplace install <plugin@marketplace> [--product <id>] [--scope user\|project] [--force] [--json]` | Install a catalog plugin |
 
 Install options: `--name`, `--force`, `--keep-data`. Marketplace options:
-`--ref`, `--sparse`.
+`--ref`, `--sparse`. `marketplace catalog` / `marketplace install` are
+the desktop enumeration and qualified-install surface; see
+[skills-plugins.md](skills-plugins.md#marketplace).
 
 A canonical plugin ID can be installed in one managed scope at a time. Remove
 the existing copy before installing that ID in another scope.

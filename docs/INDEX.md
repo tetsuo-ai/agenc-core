@@ -29,7 +29,7 @@ history; the linked pages below are current product truth.
 | [gateway.md](gateway.md) | Channel gateway: Telegram, Discord, Slack, WebChat, stdio; pairing; heartbeat/hooks |
 | [remote-control.md](remote-control.md) | Pair host with AgenC phone app (`agenc remote`) |
 | [managed-openrouter.md](managed-openrouter.md) | Hosted OpenRouter / managed keys via remote auth |
-| [grok-oauth.md](grok-oauth.md) | Sign in with X — Grok subscription access without an API key |
+| [grok-oauth.md](grok-oauth.md) | Sign in with X — Grok subscription access without an API key (`agenc grok-login` + TUI) |
 | [deploy/vps.md](deploy/vps.md) | Run the daemon on a VPS (installer or Docker) |
 | [migrate-from-openclaw.md](migrate-from-openclaw.md) | Surface map from OpenClaw |
 | [migrate-from-hermes.md](migrate-from-hermes.md) | Surface map from Hermes Agent |
@@ -53,20 +53,20 @@ history; the linked pages below are current product truth.
 
 | Doc | Summary |
 | --- | --- |
-| [reference/cli.md](reference/cli.md) | Full CLI: top-level flags, all subcommands |
+| [reference/cli.md](reference/cli.md) | Full CLI: top-level flags, all subcommands, including grok-login and openai-models |
 | [reference/config.md](reference/config.md) | `config.toml` sections, env overrides, `agenc config` |
 | [reference/env.md](reference/env.md) | Operator `AGENC_*` / provider key environment variables |
-| [reference/daemon.md](reference/daemon.md) | Daemon process model, socket auth, lifecycle |
-| [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes |
+| [reference/daemon.md](reference/daemon.md) | Daemon process model, socket auth, lifecycle, bounded-stop session survival |
+| [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes, Responses continuation |
 | [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics |
 | [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery + hooks HTTP |
 | [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, correlated outcomes, and worktree evidence |
 | [reference/workflows.md](reference/workflows.md) | Version-2 agent DAG manifests, scheduling, handoff artifacts, limits, and result outcomes |
 | [reference/memory.md](reference/memory.md) | Persona, AGENC.md, auto-memory paths, full-corpus index, privacy |
 | [reference/mcp.md](reference/mcp.md) | MCP client and server, including plugin MCP merge and Landlock stdio |
-| [reference/skills-plugins.md](reference/skills-plugins.md) | Skills load paths, plugin CLI, registration surfaces, project-scope hook/MCP stripping |
+| [reference/skills-plugins.md](reference/skills-plugins.md) | Skills load paths, plugin CLI, marketplace catalog/install, project-scope hook/MCP stripping |
 | [reference/hooks.md](reference/hooks.md) | Session lifecycle hooks vs gateway HTTP hooks |
-| [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, OS sandbox, home-workspace remediation, launcher contract, and plugin MCP confinement |
+| [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, live bypass consent, OS sandbox, home-workspace remediation, launcher contract, and plugin MCP confinement |
 | [reference/tui-workbench.md](reference/tui-workbench.md) | TUI shell, workbench layout, BUFFER operator shortcuts, and safety prompts |
 
 ## Explanation

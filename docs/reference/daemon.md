@@ -394,10 +394,48 @@ control messages keep their existing overload-control semantics.
 back if settlement fails or the request disappeared. Without the flag,
 session scope remains the narrower equivalent-rule cache.
 
+`session.setPermissionMode` accepts optional
+`bypassAuthority: "operator_tool_approval"` (the only legal value; the
+dispatcher rejects any other string). The runner treats that as explicit
+consent to enter `bypassPermissions` in the session's **exact**
+canonical cwd. Without the field, a live switch still requires a prior
+`/permissions accept-bypass` (or equivalent stored consent) for that
+same path and directory identity. Startup `--permission-mode
+bypassPermissions` does not write durable consent. Managed policy can
+disable bypass entirely. See
+[tools-permissions-sandbox.md](tools-permissions-sandbox.md#permission-modes).
+
 `event.user_input_request.clientAction` and
 `elicitation.respond.clientResult` carry typed client-only interactions. The
 current Ledger action is documented in
 [`../security/mobile-ledger-transfer.md`](../security/mobile-ledger-transfer.md).
+
+## Interactive session survival
+
+A keep-alive (interactive / desktop) session must stay promptable after
+a capped turn. Bounded stops — `no_progress`, `max_turns`,
+`max_budget_usd` — complete the **turn** with an honest message and
+leave the run available. The daemon mapper used to promote those stops
+to `run_error`, after which every later prompt answered
+`no longer running (status: error)` while the durable run might still
+be healthy underneath.
+
+One-shot / `--print` / `--no-tui` agents still fail the run on a
+bounded stop: nobody is left to continue them.
+
+`TaskCreate` accepts a subject-only call. `description` defaults to the
+subject instead of failing validation. A model that retried a missing
+description used to walk into the no-progress backstop and brick the
+session.
+
+The lifecycle refresh path may briefly report `runtimeAvailable=false`
+(registration race, post-turn snapshot gap). The reaper waits
+**60 seconds** (`RUNTIME_UNAVAILABLE_GRACE_MS`) of continuous
+unavailability before treating a live agent as stale. Any successful
+snapshot clears the stamp. A daemon-restart recovery that restored the
+record without an attached runtime (`recovered === true` and no
+runtime) is immediately reapable — that agent cannot come back on its
+own.
 
 ## What the daemon owns
 
