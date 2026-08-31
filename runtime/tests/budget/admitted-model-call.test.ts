@@ -342,6 +342,98 @@ describe("runAdmittedModelCall", () => {
     );
   });
 
+  test("omits provider-native tools suppressed by an empty allowlist", async () => {
+    const state = harness({});
+    Object.assign(state.provider, {
+      config: {
+        model: "grok-4.5",
+        webSearch: true,
+        remoteMcp: {
+          enabled: true,
+          servers: [
+            {
+              serverLabel: "remote",
+              serverUrl: "https://mcp.example",
+            },
+          ],
+        },
+      },
+    });
+    const invoke = vi.fn(async () => response());
+
+    await expect(
+      callOptions(
+        state,
+        {
+          maxOutputTokens: 200,
+          toolRouting: { allowedToolNames: [] },
+        },
+        invoke,
+      ),
+    ).resolves.toBeDefined();
+
+    expect(invoke).toHaveBeenCalledOnce();
+  });
+
+  test("accounts for only the allowlisted provider-native tools", async () => {
+    const state = harness({});
+    Object.assign(state.provider, {
+      config: {
+        model: "grok-4.5",
+        webSearch: true,
+        xSearch: true,
+        remoteMcp: {
+          enabled: true,
+          servers: [
+            {
+              serverLabel: "remote",
+              serverUrl: "https://mcp.example",
+            },
+          ],
+        },
+      },
+    });
+    const countTokens = vi.fn(async (request) => {
+      expect(request.providerNativeTools).toEqual([
+        expect.objectContaining({
+          name: "x_search",
+          toolType: "x_search",
+        }),
+      ]);
+      return {
+        inputTokens: 23,
+        complete: true as const,
+        confidence: "exact" as const,
+        countedComponents: [
+          "messages" as const,
+          "tools" as const,
+          "provider_framing" as const,
+        ],
+      };
+    });
+    Object.assign(state.provider, {
+      tokenCountCapability: {
+        capabilityVersion: "native-tools-count-v1",
+        adapterRevision: "native-tools-adapter-v1",
+        configurationRevision: "native-tools-config-v1",
+        countTokens,
+      } satisfies ProviderTokenCountCapability,
+    });
+
+    await callOptions(
+      state,
+      {
+        maxOutputTokens: 200,
+        toolRouting: {
+          allowedToolNames: ["x_search", "unknown_tool"],
+        },
+      },
+      async () => response(),
+    );
+
+    expect(countTokens).toHaveBeenCalledOnce();
+  });
+
   test("denies an expanded remote MCP catalog without a complete native count", async () => {
     const state = harness({});
     Object.assign(state.provider, {

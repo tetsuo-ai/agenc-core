@@ -107,9 +107,10 @@ function providerNativeToolsForAccounting(
   providerName: string,
   model: string,
   extra: ProviderRuntimeExtra,
+  options: LLMChatOptions,
 ): readonly Readonly<Record<string, unknown>>[] {
   if (provider.name !== "grok" && providerName !== "grok") return [];
-  return getProviderNativeToolDefinitions({
+  const definitions = getProviderNativeToolDefinitions({
     provider: "grok",
     model,
     ...(extra.webSearch !== undefined ? { webSearch: extra.webSearch } : {}),
@@ -130,7 +131,26 @@ function providerNativeToolsForAccounting(
     ...(extra.remoteMcp !== undefined
       ? { remoteMcp: extra.remoteMcp as never }
       : {}),
-  }).map(({ name, toolType, payload }) => ({ name, toolType, payload }));
+  });
+  const allowedToolNames = options.toolRouting?.allowedToolNames;
+  const selectedDefinitions =
+    allowedToolNames === undefined
+      ? options.toolChoice === "none"
+        ? []
+        : definitions
+      : (() => {
+          const allowed = new Set(
+            allowedToolNames
+              .map((name) => name.trim())
+              .filter((name) => name.length > 0),
+          );
+          return definitions.filter(({ name }) => allowed.has(name));
+        })();
+  return selectedDefinitions.map(({ name, toolType, payload }) => ({
+    name,
+    toolType,
+    payload,
+  }));
 }
 
 /**
@@ -453,6 +473,7 @@ export async function runAdmittedModelCall(
     effectiveProvider,
     effectiveModel,
     providerFactoryOptions.extra ?? {},
+    accountingOptions,
   );
   const accountingRequest = createTokenAccountingRequest({
     provider: effectiveProvider,

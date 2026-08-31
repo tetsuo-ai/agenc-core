@@ -378,7 +378,17 @@ describe("transactional compaction production path", () => {
           },
         },
       ];
-      const provider = compactionProvider({}, undefined, factoryTools);
+      const provider = compactionProvider({}, undefined, factoryTools, {
+        remoteMcp: {
+          enabled: true,
+          servers: [
+            {
+              serverLabel: "remote",
+              serverUrl: "https://mcp.example",
+            },
+          ],
+        },
+      });
       const source = appendSourceMessages(store, 8, 4_000);
 
       const result = await runRealTransaction(store, source, provider);
@@ -877,6 +887,7 @@ function compactionProvider(
   overrides: Partial<LLMResponse> = {},
   onChat?: () => void,
   factoryTools: readonly LLMTool[] = [],
+  factoryConfig: Readonly<Record<string, unknown>> = {},
 ): LLMProvider & { readonly chat: ReturnType<typeof vi.fn> } {
   const chat = vi.fn(async (messages: LLMMessage[]): Promise<LLMResponse> => {
     onChat?.();
@@ -904,9 +915,13 @@ function compactionProvider(
       ...overrides,
     };
   });
+  const config = {
+    ...factoryConfig,
+    ...(factoryTools.length > 0 ? { tools: factoryTools } : {}),
+  };
   return {
     name: "grok",
-    ...(factoryTools.length > 0 ? { config: { tools: factoryTools } } : {}),
+    ...(Object.keys(config).length > 0 ? { config } : {}),
     getExecutionProfile: async () => ({
       provider: "grok",
       model: "grok-4.5",
