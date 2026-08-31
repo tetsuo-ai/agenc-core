@@ -199,6 +199,49 @@ only a displayed connection state. In daemon mode the menu reads the passive
 status projection and sends mutations back to the daemon; it does not own
 transports or executable MCP clients.
 
+### Compaction summaries stay tool-free
+
+Bootstrap installs the live registry (`registry.toLLMTools()`, including every
+`mcp.<server>.<tool>` schema) on the session provider. Ordinary agent turns
+still inherit that factory catalog when a caller omits `tools`. Transactional
+compaction does not.
+
+`invokeCompactionProvider` (`runtime/src/services/compact/transaction.ts`)
+passes an explicit empty catalog so constructor-scoped client tools and
+provider-native server tools cannot be added after preflight accounting:
+
+```text
+tools: []
+toolRouting: { allowedToolNames: [] }
+```
+
+`accountingOptionsForProvider` copies factory tools only when `options.tools`
+is `undefined`. An empty array is a catalog: the MCP/builtin schemas stay off
+the admitted summary. `providerNativeToolsForAccounting` then filters Grok
+native tools (web search, x_search, code execution, collections, remote MCP)
+by that allowlist. `[]` omits them. When no allowlist is set,
+`toolChoice === "none"` is the other way to omit the native catalog; compact
+uses the empty allowlist instead.
+
+**Why this exists.** Before the empty catalog, omitting `tools` inherited the
+session factory list. Admission counted unused schemas against an already-full
+window and denied `context_window_exceeded`. Auto-compact, `/compact`, and
+mid-turn compact then failed to shrink the window (`mid_turn_compact_failed`).
+
+**What still counts tools**
+
+| Surface | Catalog in token count? |
+| --- | --- |
+| Agent turn / `runAdmittedModelCall` with `tools` omitted | Yes — factory tools merge in. Grok native tools count unless allowlisted or `toolChoice` is `"none"`. Remote MCP without a complete native count still denies `token_accounting_uncertain`. |
+| Auto-compact fire threshold (`estimateMessagesTokens`) | Yes — system, tools, framing, reserved output. A large MCP catalog still makes compact fire earlier. |
+| Compact **summary** (`invokeCompactionProvider`) | No — `tools: []` and an empty allowlist. |
+| `/context` display (`session-compact.ts`) | Yes — reconstructs the next-turn payload, including `toLLMTools()`. |
+
+Pitfall for new admitted callers: omit `tools` to inherit the session catalog;
+pass `tools: []` (and `toolRouting: { allowedToolNames: [] }` when Grok native
+tools must stay off the wire) to keep the call tool-free. Compaction is
+summarization, not an agent turn — it must not advertise tools.
+
 ### CLI
 
 ```bash
@@ -287,10 +330,13 @@ the daemon-owned admission kernel.
 | `[sandbox_landlock_fallback]` from `agenc doctor` | Bubblewrap is unusable (commonly Ubuntu AppArmor userns). Install the generated profile or stay on plugin-scoped MCP / `read-only`. See [install.md](../install.md#ubuntu-apparmor-and-bubblewrap). |
 | `[sandbox_required_unavailable]` saying the Linux helper must sit outside the workspace | A bare `agenc` opened `$HOME`. The helper lives under `~/.agenc` and can never leave a home-sized workspace. Open a project directory. See [tools-permissions-sandbox.md](tools-permissions-sandbox.md). |
 | One plugin server missing, session still starts | A broken plugin source is skipped. A duplicate command/URL is suppressed by an enabled manual server. Check `/plugin` for `mcp-server-suppressed-duplicate`. |
+| `/compact` or auto-compact denied `context_window_exceeded` on the **summary** | Summaries no longer inherit the MCP/builtin factory catalog or Grok native tools. If admission still denies, the transcript + system prompt + reserved output themselves exceed the window. Confirm the live window (not the 128k fallback), shrink `/compact` focus, or compact earlier. `/context` still shows the next-turn catalog size; that is not the summary request. |
+| Mid-turn dies `mid_turn_compact_failed` after adding MCP servers | A huge catalog can still trip the fire threshold and the mid-turn outer gate. The summary itself should admit. Check disable-flag pitfalls and the 2-failure digest guard on [CP-0006](../design/critical-path/0006-compaction-transaction.md), and whether last-sample `promptTokens` disagreed with the compact-module estimate. |
 
 ## Related
 
 - Tools / permissions overview: [`tools-permissions-sandbox.md`](tools-permissions-sandbox.md)
 - Plugin install scopes, manifests, and repository-controlled stripping: [`skills-plugins.md`](skills-plugins.md)
+- Admission token accounting: [`provider-aware-token-accounting.md`](../design/provider-aware-token-accounting.md)
 - Client README: [`../../runtime/src/mcp-client/README.md`](../../runtime/src/mcp-client/README.md)
 - Architecture map: [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
