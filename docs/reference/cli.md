@@ -584,7 +584,10 @@ agenc plugin <command> [options]
 Install options: `--name`, `--force`, `--keep-data`. Marketplace options:
 `--ref`, `--sparse`. `marketplace catalog` / `marketplace install` are
 the desktop enumeration and qualified-install surface; see
-[skills-plugins.md](skills-plugins.md#marketplace).
+[skills-plugins.md](skills-plugins.md#marketplace). Non-local marketplace
+installs request a publisher signature; an in-tree `./path` catalog entry
+still takes the directory install path and reports `signatureVerified: false`.
+See [Publisher signatures](skills-plugins.md#publisher-signatures).
 
 A canonical plugin ID can be installed in one managed scope at a time. Remove
 the existing copy before installing that ID in another scope.
