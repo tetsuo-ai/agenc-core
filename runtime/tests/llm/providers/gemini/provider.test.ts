@@ -538,6 +538,74 @@ describe("GeminiProvider", () => {
     ]);
   });
 
+  test("collapses JSON Schema type arrays so Gemini does not 400 the turn", async () => {
+    const taskUpdateTool: LLMTool = {
+      type: "function",
+      function: {
+        name: "TaskUpdate",
+        description: "Update a durable AgenC task",
+        parameters: {
+          type: "object",
+          properties: {
+            taskId: { type: "string" },
+            owner: { type: ["string", "null"] },
+            note: { type: ["string", "number", "null"] },
+          },
+          required: ["taskId"],
+          additionalProperties: false,
+        },
+      },
+    };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ text: "ok" }],
+            },
+            finishReason: "STOP",
+          },
+        ],
+      }),
+    );
+    const provider = new GeminiProvider({
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini-2.5-pro",
+      fetchImpl,
+    });
+
+    await provider.chat([{ role: "user", content: "update task" }], {
+      tools: [taskUpdateTool],
+    });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    expect(requestBody.tools).toEqual([
+      {
+        functionDeclarations: [
+          {
+            name: "TaskUpdate",
+            description: "Update a durable AgenC task",
+            parameters: {
+              type: "object",
+              properties: {
+                taskId: { type: "string" },
+                owner: { type: "string", nullable: true },
+                note: {
+                  anyOf: [{ type: "string" }, { type: "number" }],
+                  nullable: true,
+                },
+              },
+              required: ["taskId"],
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
   test("streams Gemini text, function calls, and usage from streamGenerateContent", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       sseResponse([

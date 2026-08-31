@@ -403,6 +403,45 @@ const GEMINI_SCHEMA_KEYS = new Set([
   "pattern",
 ]);
 
+const GEMINI_NULL_TYPE = "null";
+
+function isGeminiTypeName(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isGeminiNullType(value: string): boolean {
+  return value.toLowerCase() === GEMINI_NULL_TYPE;
+}
+
+/**
+ * Gemini Schema.type is a single proto enum. A JSON Schema type array
+ * (`["string", "null"]`) is a list on a non-repeating field, so the
+ * request 400s with "Proto field is not repeating, cannot start list"
+ * and the turn looks empty. Collapse onto `type` + `nullable` / `anyOf`.
+ */
+function collapseGeminiTypeArray(schema: Record<string, unknown>): void {
+  const typeValue = schema.type;
+  if (Array.isArray(typeValue)) {
+    const types = Array.from(new Set(typeValue.filter(isGeminiTypeName)));
+    const concreteTypes = types.filter((type) => !isGeminiNullType(type));
+    const nullable = types.some(isGeminiNullType);
+    delete schema.type;
+    if (concreteTypes.length === 1) {
+      schema.type = concreteTypes[0];
+    } else if (concreteTypes.length > 1 && schema.anyOf === undefined) {
+      schema.anyOf = concreteTypes.map((type) => ({ type }));
+    }
+    if (nullable) {
+      schema.nullable = true;
+    }
+    return;
+  }
+  if (isGeminiTypeName(typeValue) && isGeminiNullType(typeValue)) {
+    delete schema.type;
+    schema.nullable = true;
+  }
+}
+
 /** Keys under `properties` are field names, not schema keywords. */
 function sanitizeGeminiSchema(value: unknown, insideProperties = false): unknown {
   if (Array.isArray(value)) {
@@ -415,6 +454,7 @@ function sanitizeGeminiSchema(value: unknown, insideProperties = false): unknown
     out[key] = sanitizeGeminiSchema(entry, !insideProperties && key === "properties");
   }
   if (insideProperties) return out;
+  collapseGeminiTypeArray(out);
   // `required` and `properties` are only legal on an object here; carried
   // onto a branch of an anyOf they fail the request with "only allowed
   // for OBJECT type".
