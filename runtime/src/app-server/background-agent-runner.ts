@@ -5647,14 +5647,9 @@ function messageTerminalFromDaemonEvent(
         : {}),
     };
   }
-  if (event.type === "error") {
-    return {
-      code: 1,
-      ...(typeof event.payload?.message === "string"
-        ? { message: event.payload.message }
-        : {}),
-    };
-  }
+  // `error` is session telemetry, not a turn closer. Stop-hook throws and
+  // similar sites emit it while the turn continues and later writes
+  // turn_complete / turn_aborted.
   return undefined;
 }
 
@@ -5990,16 +5985,10 @@ function messageTerminalFromEvent(
     }
     return { code: 130, message: event.payload.reason };
   }
-  if (event.type === "error") {
-    if (
-      expectedTurnId !== undefined &&
-      event.payload.turnId !== undefined &&
-      event.payload.turnId !== expectedTurnId
-    ) {
-      return undefined;
-    }
-    return { code: 1, message: event.payload.message };
-  }
+  // Same contract as the live bridge: only turn_complete / turn_aborted
+  // close a submission. A mid-turn `error` must not make an idempotent
+  // retry report completed-with-failure while turn_complete is still
+  // ahead in the journal.
   return undefined;
 }
 
@@ -6079,12 +6068,7 @@ function closedTurnResult(
   },
   open: OpenTurnAccumulator,
 ): SessionTranscriptV2TurnResult {
-  const outcome =
-    msg.type === "turn_complete"
-      ? "completed"
-      : msg.type === "turn_aborted"
-        ? "aborted"
-        : "errored";
+  const outcome = msg.type === "turn_aborted" ? "aborted" : "completed";
   let durationMs: number | undefined;
   if (msg.type === "turn_complete") {
     durationMs = nonNegativeFinite(msg.payload.durationMs);
@@ -6301,8 +6285,7 @@ export function sessionTranscriptV2FromRollout(
     }
     if (
       event.msg.type === "turn_complete" ||
-      event.msg.type === "turn_aborted" ||
-      event.msg.type === "error"
+      event.msg.type === "turn_aborted"
     ) {
       const terminalTurnId =
         "turnId" in event.msg.payload &&

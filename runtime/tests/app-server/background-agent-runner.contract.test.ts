@@ -8539,6 +8539,64 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.sendInput).not.toHaveBeenCalled();
   });
 
+  it("[managed-thread] does not treat a mid-turn error as the persisted terminal", async () => {
+    const event = (id: string, seq: number, msg: Record<string, unknown>) => ({
+      type: "event_msg",
+      payload: { id, eventId: id, seq, msg },
+    });
+    const { runner, control } = makeTopLevelRunner({
+      conversationId: "session-error-then-complete",
+      rolloutItems: [
+        event("user-1", 1, {
+          type: "user_message",
+          payload: {
+            message: "retry me",
+            messageId: "error-then-complete",
+            acceptedAt: "2026-08-17T00:00:00.000Z",
+          },
+        }),
+        event("turn-1", 2, {
+          type: "turn_started",
+          payload: { turnId: "turn-1" },
+        }),
+        event("hook-threw", 3, {
+          type: "error",
+          payload: {
+            cause: "stop_hook_threw",
+            message: "lint threw",
+            turnId: "turn-1",
+          },
+        }),
+        event("complete-1", 4, {
+          type: "turn_complete",
+          payload: { turnId: "turn-1", lastAgentMessage: "done" },
+        }),
+      ],
+    });
+    await runner.startAgent({
+      objective: "restored",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    await expect(
+      runner.submitAgentMessage("session-error-then-complete", {
+        sessionId: "session_1",
+        content: "retry me",
+        originalContent: "retry me",
+        messageId: "error-then-complete",
+        streamId: "error-then-complete",
+        acceptedAt: "2026-08-17T01:00:00.000Z",
+      }),
+    ).resolves.toMatchObject({
+      disposition: "duplicate",
+      duplicateState: "completed",
+      turnId: "turn-1",
+      terminal: { code: 0, message: "done" },
+    });
+    expect(control.sendInput).not.toHaveBeenCalled();
+  });
+
   it("[managed-thread] never attributes a later completed turn to a crashed submission", async () => {
     const event = (id: string, seq: number, msg: Record<string, unknown>) => ({
       type: "event_msg",

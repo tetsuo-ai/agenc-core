@@ -305,7 +305,7 @@ Older 1.2 clients ignore the additive field.
 | --- | --- |
 | `turnId` | The open `turn_started` |
 | `committedSequence` | Durable sequence of that turn's terminal event (placement anchor) |
-| `outcome` | `completed` (`turn_complete`), `aborted` (`turn_aborted`), or `errored` (`error`) |
+| `outcome` | `completed` (`turn_complete`) or `aborted` (`turn_aborted`) |
 | `durationMs` | Completed turns only: `turn_complete.durationMs`, else `completedAt - startedAt` when both stamps are finite and ≥ 0 |
 | `inputTokens` / `outputTokens` / `totalTokens` | Sum of enclosed `token_count.promptTokens` / `completionTokens` / `totalTokens` |
 | `model` / `provider` | Last nonempty strings on those same `token_count` events |
@@ -319,7 +319,10 @@ Constraints:
   (a later `turn_started` replaces the dangling accumulator).
 - A terminal whose `turnId` does not match the open turn is skipped. This is
   the same mismatched-terminal guard the message scan already applies.
-- `durationMs` is not emitted for aborted or errored turns.
+- `error` events are telemetry, not terminals. A stop-hook throw or similar
+  mid-turn failure does not close the accumulator; later `token_count` and
+  the real `turn_complete` / `turn_aborted` still belong to that turn.
+- `durationMs` is not emitted for aborted turns.
 - A `token_count` with no finite non-negative token field is ignored,
   including its model/provider. Cache, reasoning, and search counters
   on that event are not copied.
