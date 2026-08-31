@@ -106,13 +106,21 @@ they run only through the Grok Build CLI ACP path. See
 | `openrouter` | OpenRouter | `x-ai/grok-4.5` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL` | `api-key` |
 | `groq` | Groq | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `GROQ_BASE_URL` | `api-key` |
 | `deepseek` | DeepSeek | `deepseek-v4-flash` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL` | `api-key` |
-| `gemini` | Gemini | `gemini-2.5-pro` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `GEMINI_BASE_URL` | `api-key` |
+| `gemini` | Gemini | `gemini-3.1-pro-preview` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `GEMINI_BASE_URL` | `api-key` |
 | `mistral` | Mistral | `mistral-medium-latest` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | `MISTRAL_BASE_URL` | `api-key` |
 | `nvidia-nim` | NVIDIA NIM | `nvidia/llama-3.1-nemotron-70b-instruct` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | `NVIDIA_BASE_URL` | `api-key` |
 | `minimax` | MiniMax | `MiniMax-M2.5` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | `MINIMAX_BASE_URL` | `api-key` |
 | `github` | GitHub Copilot | `gpt-5.3-codex` | `https://api.githubcopilot.com` | `GITHUB_TOKEN`, `GH_TOKEN` | `GITHUB_BASE_URL` | `api-key` |
 | `amazon-bedrock` | Amazon Bedrock | `amazon.nova-pro-v1:0` | `https://bedrock-runtime.us-east-1.amazonaws.com` | access: `AWS_BEDROCK_ACCESS_KEY_ID`, `AWS_ACCESS_KEY_ID`; secret: `AWS_BEDROCK_SECRET_ACCESS_KEY`, `AWS_SECRET_ACCESS_KEY`; optional session: `AWS_BEDROCK_SESSION_TOKEN`, `AWS_SESSION_TOKEN` | `AWS_BEDROCK_BASE_URL` | `environment` |
 | `agenc` | AgenC | `agenc` | `https://id.agenc.ag/v1` | _(managed auth; no BYOK key alias)_ | `AGENC_BASE_URL` | `managed` |
+
+`BUILT_IN_PROVIDER_DEFINITIONS.gemini.defaultModel` is
+`gemini-3.1-pro-preview`. Google retired `gemini-2.5-pro` for **new** API
+keys (those keys 404 and point at the 3.x line). An explicit
+`AGENC_MODEL=gemini-2.5-pro` or a saved `model` still selects that slug;
+only the provider-map fallback moved. Curated Gemini ids:
+`gemini-3.1-pro-preview`, `gemini-3.7-flash`, `gemini-3.5-flash`,
+`gemini-2.5-flash`.
 
 `openrouter` remains an `api-key` first-run route, but a signed-in AgenC
 subscription can supply its managed key access when that feature is enabled.
@@ -329,6 +337,8 @@ wins and the live probe is not consulted.
 | Hard USD cap holds every Ollama/LM Studio success as unpriced | Those three local slugs must resolve to the `localZeroCost` rows. A prefixed model id that was not stripped used to miss both the window and the free cost entry. |
 | Compatible server 404s `/api/show` | Expected for non-Ollama runtimes. The probe is best-effort; a working `/v1/models` window is enough. |
 | Empty LM Studio/openai-compatible or Gemini answer that is not `context_window_exceeded` | Check for a wire 400 (llama.cpp grammar or Gemini schema), a local Gemini compile error (`Gemini cannot represent schema at <path>`), or the **8192** grammar-constrained-provider output ceiling. A built-in-catalog Gemini turn that fails while building the request may be hitting the old `anyOf`-without-`type` compiler. Current code accepts those unions. See [provider-tool-compat.md](../provider-tool-compat.md). |
+| Fresh `gemini` session 404s `gemini-2.5-pro` | The provider-map default is `gemini-3.1-pro-preview`. A saved `model` or `AGENC_MODEL=gemini-2.5-pro` still selects the retired slug. New API keys 404 on 2.5 Pro. |
+| Gemini turn fails locally with `a JSON Schema type is required` only after an MCP server is attached | MCP `$ref` / `$defs` / `definitions` / `oneOf` survive sanitization and are dropped by the Gemini allowlist. Built-in tools compile. See [mcp.md](mcp.md#gemini-compile-of-mcp-tool-schemas). |
 | A later ChatGPT subscription request fails with `Unsupported parameter: previous_response_id` | Subscription requests are `store: false`. The continuation optimizer never attaches `previous_response_id` from an unstored response. The prompt-cache key is kept; the incremental delta is skipped. |
 | ChatGPT / Responses refuses to continue after an interrupted tool turn | An unmatched `function_call` in history is closed with a synthetic `function_call_output` marked `interrupted`. The session stays usable; the model must not wait on that call id. |
 | ChatGPT subscription 400s on `max_output_tokens` | Uncapped calls no longer require a provider-enforced output ceiling. Hard token or USD caps still demand a real ceiling and authoritative usage. |

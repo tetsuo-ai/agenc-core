@@ -57,13 +57,13 @@ history; the linked pages below are current product truth.
 | [reference/config.md](reference/config.md) | `config.toml` sections, env overrides, `agenc config` |
 | [reference/env.md](reference/env.md) | Operator `AGENC_*` / provider key environment variables, and provider credential isolation |
 | [reference/daemon.md](reference/daemon.md) | Daemon lifecycle, socket auth, deferred first messages, bypass consent, bounded-stop survival, and admission step identity |
-| [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes, Responses continuation, and overflow diagnostics |
+| [reference/providers.md](reference/providers.md) | Built-in providers, defaults (Gemini `gemini-3.1-pro-preview`), API key envs, local context-window probes, Responses continuation, and overflow diagnostics |
 | [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics and `/compact` |
 | [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery (pinned webhook destinations) + hooks HTTP |
 | [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, deferred first message, worktree evidence, and turn-scoped abort |
 | [reference/workflows.md](reference/workflows.md) | Version-2 agent DAG manifests, scheduling, handoff artifacts, limits, and result outcomes |
 | [reference/memory.md](reference/memory.md) | Persona, AGENC.md, auto-memory paths, full-corpus index, privacy |
-| [reference/mcp.md](reference/mcp.md) | MCP client and server, plugin-declared server precedence, and Landlock diagnostics |
+| [reference/mcp.md](reference/mcp.md) | MCP client and server, plugin-declared server precedence, Gemini `$ref` compile fail-closed, and Landlock diagnostics |
 | [reference/skills-plugins.md](reference/skills-plugins.md) | Skills, `agenc skills list`, plugin registration, marketplace install, publisher signatures, and repository-controlled scope stripping |
 | [reference/hooks.md](reference/hooks.md) | Session lifecycle hooks vs gateway HTTP hooks |
 | [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, live bypass consent, OS sandbox, home-workspace remediation, launcher contract, and plugin MCP confinement |

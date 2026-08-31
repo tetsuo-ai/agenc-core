@@ -246,6 +246,52 @@ pass `tools: []`. When Grok native tools must also stay off the wire, pass
 `toolRouting: { allowedToolNames: [] }`. Compaction summarizes history and
 must not advertise tools.
 
+### Gemini compile of MCP tool schemas
+
+MCP `inputSchema` is sanitized by `sanitizeMcpInputSchemaForModel`
+(`runtime/src/mcp-client/model-facing-sanitization.ts`) and then advertised
+as `function.parameters`. That sanitizer keeps `$ref`, `$defs`, and
+`definitions`. It does **not** inline pointers.
+
+On a Gemini session, `compileGeminiSchema`
+(`runtime/src/llm/providers/gemini/index.ts`) then copies only the Gemini
+OpenAPI allowlist. `$ref`, `$defs`, `definitions`, `oneOf`, and `allOf` are
+not on that allowlist, so they are dropped. A leftover node with neither
+`type` nor a non-empty `anyOf` throws
+`Gemini cannot represent schema at <path>: a JSON Schema type is required`
+while **building** `generateContent` or `countTokens`. The turn never leaves
+the process. Current built-in tools are fine; they use inline `anyOf`.
+This hits the MCP catalog.
+
+Typical OpenAPI / Pydantic MCP shape:
+
+```jsonc
+{
+  "$ref": "#/$defs/Args",
+  "$defs": {
+    "Args": {
+      "type": "object",
+      "properties": { "q": { "type": "string" } }
+    }
+  }
+}
+```
+
+After the allowlist drop the compiler sees `{}` and fails closed. A
+property-level `$ref` (or `oneOf` that becomes an empty node) fails the
+same way at that property path. Current main does not rewrite `$ref` into
+the target schema. The same compiler still runs on structured-output
+`responseSchema`. Compiler allowlist and built-in `anyOf` unions:
+[provider-tool-compat.md](../provider-tool-compat.md#gemini-function-declaration-compiler).
+
+Constraints:
+
+- Default FileRead / searchTools / exec_command schemas do not use `$ref`.
+- A Gemini session with **no** MCP tools does not take this path.
+- Changing provider away from `gemini` avoids the compiler; it does not
+  change the stored MCP schema.
+- There is no operator flag to skip the compile or keep `$ref` on the wire.
+
 ### CLI
 
 ```bash
@@ -336,6 +382,7 @@ the daemon-owned admission kernel.
 | One plugin server missing, session still starts | A broken plugin source is skipped. A duplicate command/URL is suppressed by an enabled manual server. Check `/plugin` for `mcp-server-suppressed-duplicate`. |
 | `/compact` or auto-compact denied `context_window_exceeded` on the **summary** | Summaries no longer inherit the MCP/builtin factory catalog or Grok native tools. If admission still denies, the transcript + system prompt + reserved output themselves exceed the window. Confirm the live window (not the 128k fallback), shrink `/compact` focus, or compact earlier. `/context` still shows the next-turn catalog size; that is not the summary request. |
 | Mid-turn dies `mid_turn_compact_failed` after adding MCP servers | A large catalog can raise the estimate past the fire threshold and raise provider-reported `promptTokens` past the mid-turn outer gate. The summary request should still pass admission. Check the disable-flag rules and the 2-failure digest guard on [CP-0006](../design/critical-path/0006-compaction-transaction.md), and whether last-sample `promptTokens` disagreed with the compact-module estimate. |
+| Gemini turn is empty / fails locally with `a JSON Schema type is required` after attaching an MCP server | The MCP `inputSchema` used `$ref` / `$defs` / `definitions` / `oneOf`. The Gemini compiler drops those keys, then rejects the leftover untyped node. Built-in tools compile. Disable that server, flatten the schema to inline `type` / `anyOf`, or use another provider. See [Gemini compile of MCP tool schemas](#gemini-compile-of-mcp-tool-schemas). |
 
 ## Related
 
