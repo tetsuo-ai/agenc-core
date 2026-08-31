@@ -76,12 +76,22 @@ agenc skills list --json
 ### Compaction operator commands
 
 `/compact [focus]` runs a manual transactional compaction. It is not gated by
-`AGENC_DISABLE_COMPACT` or `AGENC_DISABLE_AUTO_COMPACT`. Auto-compact (pre-turn
-and mid-turn) uses those flags. Above 13,000 tokens, the threshold is
-`min(window - 13_000, floor(window * 0.75))`. At or below 13,000 tokens, it is
-`min(floor(window * 0.8), floor(window * 0.75))`. Mid-turn context-limit
-compaction is forced after its outer condition is met and does not recheck the
-threshold. See
+`AGENC_DISABLE_COMPACT` or `AGENC_DISABLE_AUTO_COMPACT`. Every automatic path
+calls `autoCompactIfNeeded`, where either flag prevents a compact.
+`AGENC_DISABLE_AUTO_COMPACT` also hides the ordinary pre-turn threshold and
+the mid-turn and post-tool outer gates, including models that set
+`autoCompactTokenLimit`. A model downshift can still reach the dispatcher at
+the new effective window when its model and window checks pass.
+`autoCompactIfNeeded` then returns without changing history. Above 13,000
+tokens, the threshold is `min(window - 13_000, floor(window * 0.75))`. At or
+below 13,000 tokens, it is
+`min(floor(window * 0.8), floor(window * 0.75))`. Mid-turn
+context-limit compaction is forced after its outer condition is met and does
+not recheck the threshold. Three failed automatic attempts skip later autos
+this turn. The failure count is stored on turn state from the first failed
+attempt.
+Switching to a smaller-window model can compact against the previous model's
+context before the next sample. See
 [CP-0006](../design/critical-path/0006-compaction-transaction.md#operator-contract-current-main).
 
 The interactive runtime and daemon-backed TUI also expose recovery

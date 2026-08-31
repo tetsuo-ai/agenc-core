@@ -209,7 +209,8 @@ live operator surface. Sources: `runtime/src/services/compact/autoCompact.ts`,
 | Path | Trigger | If it does not compact |
 | --- | --- | --- |
 | `/compact [focus]` | Manual. `querySource: "compact"`. Not gated by the disable env vars. | Error only. History stays as-is until a durable `compaction_committed`. |
-| Pre-sampling auto | `autoCompactIfNeeded` when estimated tokens ≥ the safety threshold. | Increments `consecutiveFailures`. Three failures skip later autos this turn. User/provider abort does not count. |
+| Model-downshift pre-turn | Next turn after a switch to a smaller-window model (`maybeRunPreviousModelInlineCompact`). The previous slug differs, the old window is larger, and usage is greater than the new pre-sampling limit or at least the new window. Compacts against the **previous** model's context. | No-op continues the turn. Thrown errors propagate (`propagateErrors: true`). |
+| Pre-sampling auto | `autoCompactIfNeeded` when estimated tokens ≥ the safety threshold. | Increments `consecutiveFailures` on turn state even when tracking was never initialized. Three failures skip later autos this turn. User/provider abort does not count. |
 | Mid-turn sampling loop | Last sample `promptTokens` is at least the mid-turn outer limit and the turn still needs follow-up (tools, mailbox, or `needsFollowUp`). | A thrown error or a no-op compact terminates this turn with event cause `mid_turn_compact_failed`. A no-op compact puts `mid_turn_compact_skipped` in the event message. |
 | Post-tool follow-up | Last sample `promptTokens` is at least the same outer limit and tools still require follow-up. | The loop repeats only after a committed compact. A no-op result continues to the commit phase. |
 
@@ -247,13 +248,19 @@ can only make auto-compact run earlier than that default because it is capped
 at the safety threshold.
 
 Pre-sampling uses that threshold unless `modelInfo.autoCompactTokenLimit`
-provides an explicit limit. The mid-turn outer gate also uses
+provides an explicit limit. Mid-turn and post-tool outer gates resolve
+the limit through `getAutoCompactTokenLimit`. The helper uses
 `modelInfo.autoCompactTokenLimit` when set. Otherwise it uses
 `window - 13_000` for windows above 13,000 tokens and `window` for smaller
-windows. Mid-turn compaction passes
-`force: true`, so `autoCompactIfNeeded` does not recheck the threshold after
-the outer condition is met. The outer gate reads the last provider-reported
-`promptTokens`, not cumulative usage.
+windows. Both
+gates pass `force: true`, so `autoCompactIfNeeded` does not recheck the
+threshold after the outer condition is met. They read the last
+provider-reported `promptTokens`, not cumulative usage.
+
+`runAutoCompact` writes `consecutiveFailures` onto turn state even when
+`autoCompactTracking` was never initialized. `autoCompactIfNeeded` skips
+when that count is already **3** (`MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES`).
+The fourth automatic attempt in the same turn is therefore a no-op.
 
 ### Disable flags
 
@@ -261,14 +268,19 @@ Truthy values are `1`, `true`, `yes`, `on` (case-insensitive).
 
 | Var | What it actually gates |
 | --- | --- |
-| `AGENC_DISABLE_AUTO_COMPACT` | Auto-compact and the pre-sampling and mid-turn outer gates. It takes precedence even when `modelInfo.autoCompactTokenLimit` is set. |
-| `AGENC_DISABLE_COMPACT` | `autoCompactIfNeeded` only. The mid-turn outer gate does not consult it. |
+| `AGENC_DISABLE_AUTO_COMPACT` | Auto-compact plus the pre-sampling, mid-turn, and post-tool outer gates (`getPreSamplingAutoCompactTokenLimit` / `getAutoCompactTokenLimit`). It takes precedence even when `modelInfo.autoCompactTokenLimit` is set. |
+| `AGENC_DISABLE_COMPACT` | `autoCompactIfNeeded` only. The mid-turn and post-tool outer gates do not consult it. |
 
 `/compact` ignores both. If only `AGENC_DISABLE_COMPACT` is set, the mid-turn
 outer gate can still require a compact. `autoCompactIfNeeded` then returns
 `wasCompacted: false`. The sampling loop terminates the turn with event cause
 `mid_turn_compact_failed` and a message that starts with
-`mid_turn_compact_skipped`.
+`mid_turn_compact_skipped`. The post-tool checkpoint does not terminate on
+that no-op. It continues to commit.
+
+Model-downshift can still enter the dispatcher when usage is at the new
+window even if `AGENC_DISABLE_AUTO_COMPACT` hid the pre-sampling limit.
+`autoCompactIfNeeded` then returns without compacting, and the turn continues.
 
 ### Admitted summary calls
 
@@ -308,6 +320,7 @@ active turn.
 | --- | --- |
 | Event cause is `mid_turn_compact_failed` and its message starts with `mid_turn_compact_skipped` | The outer condition was met and compact returned no committed result. Check `AGENC_DISABLE_COMPACT`, the 3-strike counter, and the 2-failure digest guard. |
 | Auto never runs, then the next turn is `context_window_exceeded` | Confirm the live window instead of assuming the 128k fallback. Above 13k, the threshold is `min(window-13k, 75%)`. Also check `AGENC_AUTOCOMPACT_PCT_OVERRIDE` and `AGENC_DISABLE_AUTO_COMPACT`. |
+| After switching to a smaller-window model, the first turn overflows | Model-downshift only runs when the previous slug differs, the old window is larger, and usage is greater than the new pre-sampling limit or at least the new window. Three failed automatic attempts skip later ones this turn. `AGENC_DISABLE_AUTO_COMPACT` makes the compact return without changing history. |
 | A summary call includes a client or provider-native tool | This violates the summary-call contract. Summary calls must send an empty client catalog and an empty native-tool routing allowlist. Admission must account the same selected native catalog as the wire. |
 | History vanished after a failed compact | Only a flushed `compaction_committed` may replace active history. Any earlier replacement is a transaction bug and must not be treated as a commit. |
 | `/compact` says durable adapter unavailable | Compaction requires the canonical rollout owner (`readCompactionTransactionAdapter`). There is no character-extract fallback. |

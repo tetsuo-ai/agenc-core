@@ -373,11 +373,14 @@ evaluated from `commit` (and can set `transition` so the outer loop re-enters).
 
 Continue reasons and terminal reasons live on `session/turn-state.ts`
 (`ContinueReason`, `TerminalReason`). Mid-turn compact (in `run-turn.ts`,
-before execute-tools) is also a `continue` without `commit`. Every successful
-nonterminal model response advances a durable sample ordinal, so nudge,
-compact, empty-response, and other follow-up samples receive a new admission
-`stepId`. See
-[execution-admission-kernel.md](design/execution-admission-kernel.md#model-step-identity).
+before execute-tools) is also a `continue` without `commit`. Pre-turn compact
+can use the previous model's context after a model switch when the old window
+is larger and usage is over the new compaction limit or at the new effective
+window. Every successful nonterminal model response advances a durable sample
+ordinal, so nudge, compact, empty-response, and other follow-up samples
+receive a new admission `stepId`. See
+[execution-admission-kernel.md](design/execution-admission-kernel.md#model-step-identity)
+and the [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main).
 
 ## Recovery ladder (`runtime/src/recovery`)
 

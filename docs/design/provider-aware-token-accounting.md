@@ -158,10 +158,13 @@ and abandoned results are never cached as zero.
   13,000 tokens, it is
   `min(floor(window * 0.8), floor(window * 0.75))`. These formulas use
   `AUTOCOMPACT_BUFFER_TOKENS` and `AUTOCOMPACT_MAX_WINDOW_FRACTION`. The
-  mid-turn outer gate uses `modelInfo.autoCompactTokenLimit` when set and the
-  fixed buffer for windows above 13,000 tokens, or the context window for
-  smaller windows. It passes `force: true`, so the compact module does not
-  recheck the threshold after the outer condition is met.
+  mid-turn and post-tool outer gates resolve the limit through
+  `getAutoCompactTokenLimit` (`modelInfo.autoCompactTokenLimit` when set,
+  otherwise the fixed buffer for windows above 13,000 tokens, or the context
+  window for smaller windows). `AGENC_DISABLE_AUTO_COMPACT` makes that helper
+  return undefined, so those gates do not fire even when an explicit limit is
+  set. They pass `force: true`, so the compact module does not recheck the
+  threshold after the outer condition is met.
 - Compact summaries are admitted independently by `runAdmittedModelCall`.
   They carry `tools: []` and `toolRouting.allowedToolNames: []`. Admission
   derives provider-native tool accounting from the same options used by the
