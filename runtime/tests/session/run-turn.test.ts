@@ -59,6 +59,7 @@ import {
 } from "../utils/messageQueueManager.js";
 import type { QueuedCommand } from "../types/textInputTypes.js";
 import { createToolResultIntegrity } from "./tool-result-integrity.js";
+import { buildInitialTurnState } from "./turn-state.js";
 
 function enqueue(command: QueuedCommand): void {
   enqueueCommand({
@@ -6914,6 +6915,174 @@ describe("runTurn — runAutoCompact dispatcher", () => {
         }),
       }),
     );
+  });
+
+  test("persists auto-compact failures and skips the fourth automatic attempt", async () => {
+    const ctx = mkCtx();
+    (ctx.modelInfo as unknown as {
+      contextWindow: number;
+      autoCompactTokenLimit: number;
+      slug: string;
+    }) = {
+      ...(ctx.modelInfo as unknown as Record<string, unknown>),
+      contextWindow: 4_000,
+      autoCompactTokenLimit: 3_000,
+      slug: "new-small-model",
+    } as never;
+    const { session } = mkSession({
+      provider: mkProvider({}),
+      registry: mkRegistry(),
+    });
+    (session as unknown as { state: unknown }).state = {
+      unsafePeek: () => ({
+        history: [],
+        totalTokenUsage: 5_000,
+        previousTurnSettings: {
+          model: "old-big-model",
+          contextWindow: 200_000,
+        },
+      }),
+    };
+    const state = buildInitialTurnState(ctx, {
+      role: "user",
+      content: "keep working",
+    });
+
+    const observedFailureCounts: number[] = [];
+    let actualAttempts = 0;
+    setAutoCompactImplForTests(async (...args) => {
+      const tracking = args[2] as
+        { readonly consecutiveFailures?: number } | undefined;
+      const consecutiveFailures = tracking?.consecutiveFailures ?? 0;
+      observedFailureCounts.push(consecutiveFailures);
+      if (consecutiveFailures >= 3) {
+        return { wasCompacted: false, consecutiveFailures };
+      }
+      actualAttempts += 1;
+      return {
+        wasCompacted: false,
+        consecutiveFailures: consecutiveFailures + 1,
+      };
+    });
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await expect(
+        maybeRunPreviousModelInlineCompact(session, ctx, 5_000, state),
+      ).resolves.toBe(false);
+    }
+
+    expect(observedFailureCounts).toEqual([0, 1, 2, 3]);
+    expect(actualAttempts).toBe(3);
+  });
+
+  test("disable flag blocks an explicit limit at the pre-tool compact checkpoint", async () => {
+    const ctx = mkCtx();
+    (
+      ctx.modelInfo as unknown as { autoCompactTokenLimit: number }
+    ).autoCompactTokenLimit = 1;
+    let samples = 0;
+    const provider = mkProvider({});
+    provider.chatStream = async () => {
+      samples += 1;
+      return {
+        content: "",
+        toolCalls: [
+          {
+            id: "disabled-pre-tool-compact",
+            name: "queue_tool",
+            arguments: "{}",
+          },
+        ],
+        usage: { promptTokens: 10, completionTokens: 1, totalTokens: 11 },
+        model: "test-model",
+        finishReason: "tool_calls",
+      };
+    };
+    const compact = vi.fn<AutoCompactImpl>(async () => ({
+      wasCompacted: false,
+    }));
+    setAutoCompactImplForTests(compact);
+    const { session } = mkSession({
+      provider,
+      registry: mkStaticToolRegistry(),
+      postToolUseHooks: [
+        async () => ({
+          kind: "preventContinuation",
+          stopReason: "test stops before the post-tool checkpoint",
+        }),
+      ],
+      providerEnvironment: {
+        XAI_API_KEY: "test-key",
+        OPENAI_API_KEY: "test-key",
+        AGENC_DISABLE_AUTO_COMPACT: "1",
+      },
+    });
+
+    await drain(session.runTurn("run one tool", { ctx }));
+
+    expect(samples).toBe(1);
+    expect(compact).not.toHaveBeenCalled();
+  });
+
+  test("disable flag blocks an explicit limit at the post-tool compact checkpoint", async () => {
+    const ctx = mkCtx();
+    (
+      ctx.modelInfo as unknown as { autoCompactTokenLimit: number }
+    ).autoCompactTokenLimit = 1_000_000;
+    let samples = 0;
+    const provider = mkProvider({});
+    provider.chatStream = async () => {
+      samples += 1;
+      return samples === 1
+        ? {
+            content: "",
+            toolCalls: [
+              {
+                id: "disabled-post-tool-compact",
+                name: "queue_tool",
+                arguments: "{}",
+              },
+            ],
+            usage: { promptTokens: 10, completionTokens: 1, totalTokens: 11 },
+            model: "test-model",
+            finishReason: "tool_calls",
+          }
+        : {
+            content: "done",
+            toolCalls: [],
+            usage: { promptTokens: 10, completionTokens: 1, totalTokens: 11 },
+            model: "test-model",
+            finishReason: "stop",
+          };
+    };
+    const baseRegistry = mkStaticToolRegistry();
+    const registry: ToolRegistry = {
+      ...baseRegistry,
+      dispatch: async (toolCall) => {
+        (
+          ctx.modelInfo as unknown as { autoCompactTokenLimit: number }
+        ).autoCompactTokenLimit = 1;
+        return await baseRegistry.dispatch(toolCall);
+      },
+    };
+    const compact = vi.fn<AutoCompactImpl>(async () => ({
+      wasCompacted: false,
+    }));
+    setAutoCompactImplForTests(compact);
+    const { session } = mkSession({
+      provider,
+      registry,
+      providerEnvironment: {
+        XAI_API_KEY: "test-key",
+        OPENAI_API_KEY: "test-key",
+        AGENC_DISABLE_AUTO_COMPACT: "1",
+      },
+    });
+
+    await drain(session.runTurn("run one tool", { ctx }));
+
+    expect(samples).toBe(2);
+    expect(compact).not.toHaveBeenCalled();
   });
 
   test("pre-sampling context-limit compact calls autoCompactIfNeeded when threshold is hit", async () => {

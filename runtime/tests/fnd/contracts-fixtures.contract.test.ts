@@ -74,7 +74,8 @@ const EXPECTED_CRITICAL_PATH_ADRS = Object.freeze([
   {
     id: "CP-0006",
     file: "0006-compaction-transaction.md",
-    status: "Accepted target; implementation pending",
+    status:
+      "Shipped (0.14.0+). The [critical-path README](README.md) is authoritative.",
   },
   {
     id: "CP-0007",

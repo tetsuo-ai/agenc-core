@@ -74,7 +74,7 @@ history; the linked pages below are current product truth.
 | Doc | Summary |
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Process model, subsystem map, turn phases, recovery ladder, on-disk state |
-| [design/critical-path/README.md](design/critical-path/README.md) | Critical-path ADRs. Several are shipped (see that README's per-ID status). Remaining target: CP-0008 flattening cutover. CP-0006 operator contract: [0006-compaction-transaction.md](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main) |
+| [design/critical-path/README.md](design/critical-path/README.md) | Critical-path ADRs. Several are shipped (see that README's per-ID status). Remaining target: CP-0008 flattening cutover. The [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main) describes the shipped compaction path. |
 | [design/reproducible-installs-releases.md](design/reproducible-installs-releases.md) | M0 dependency, artifact, Docker, release, and crash-safe lock decisions |
 | [design/release-controller.md](design/release-controller.md) | Proposed one-command resumable release controller and automation safety contract |
 | [design/workspace-scoped-agent-roles.md](design/workspace-scoped-agent-roles.md) | Immutable workspace identity for role lookup, spawn, resume, and worktrees |

@@ -2343,12 +2343,14 @@ async function runAutoCompact(
       return true;
     }
 
-    if (
-      result.consecutiveFailures !== undefined &&
-      state?.autoCompactTracking
-    ) {
+    if (result.consecutiveFailures !== undefined && state) {
+      const previousTracking = state.autoCompactTracking;
       state.autoCompactTracking = {
-        ...state.autoCompactTracking,
+        compacted: previousTracking?.compacted ?? false,
+        turnId:
+          previousTracking?.turnId ??
+          `auto-${reason}-${phase}-${Date.now().toString(36)}`,
+        turnCounter: previousTracking?.turnCounter ?? 0,
         consecutiveFailures: result.consecutiveFailures,
       };
     }
@@ -4856,14 +4858,8 @@ async function* runTurnKernelInner(
       state.toolUseBlocks.length > 0 ||
       pendingAssistantToolCalls > 0 ||
       hasPendingInput;
-    const explicitAutoCompactLimit = finitePositive(
-      (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
-        .autoCompactTokenLimit,
-    );
     const autoCompactLimit =
-      explicitAutoCompactLimit ??
-      getAutoCompactTokenLimit(ctx) ??
-      Number.POSITIVE_INFINITY;
+      getAutoCompactTokenLimit(ctx) ?? Number.POSITIVE_INFINITY;
     // Mirror the donor's `tokenCountWithEstimation` (utils/tokens.ts:418):
     // anchor on the LAST provider-reported prompt size (single sample, not
     // cumulative) and treat that as the projected cost of the NEXT API
@@ -5201,14 +5197,8 @@ async function* runTurnKernelInner(
       yield event;
     }
 
-    const postToolExplicitAutoCompactLimit = finitePositive(
-      (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
-        .autoCompactTokenLimit,
-    );
     const postToolAutoCompactLimit =
-      postToolExplicitAutoCompactLimit ??
-      getAutoCompactTokenLimit(ctx) ??
-      Number.POSITIVE_INFINITY;
+      getAutoCompactTokenLimit(ctx) ?? Number.POSITIVE_INFINITY;
     // Same correctness fix as the mid-turn check above: anchor on the
     // last sample's `promptTokens` (per-sample) rather than the cumulative
     // session counter, so post-tool-loop compaction triggers on the

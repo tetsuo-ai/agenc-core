@@ -153,15 +153,20 @@ and abandoned results are never cached as zero.
   streamed answer (`AdmissionStepConflictError`, empty `lastAgentMessage`).
 - Auto-compaction includes system, tools, tool choice, framing, and reserved
   output through the same accounting representation. Uncertain content forces
-  compaction rather than being treated as free. The fire threshold is
-  `min(window - 13_000, floor(window * 0.75))` (`AUTOCOMPACT_BUFFER_TOKENS` /
-  `AUTOCOMPACT_MAX_WINDOW_FRACTION`) so compact stays ahead of admission's
-  margin-inflated `totalTokens`. The mid-turn outer gate is `window - 13_000`
-  (or `modelInfo.autoCompactTokenLimit`) and then re-checks that estimate.
-- Compact **summaries** are admitted independently (`runAdmittedModelCall`).
-  The current summary request omits `tools`, so constructor-scoped factory
-  tools are merged into accounting. A large catalog can deny the summary
-  itself with `context_window_exceeded`. Operator contract:
+  compaction rather than being treated as free. Above 13,000 tokens, the
+  threshold is `min(window - 13_000, floor(window * 0.75))`. At or below
+  13,000 tokens, it is
+  `min(floor(window * 0.8), floor(window * 0.75))`. These formulas use
+  `AUTOCOMPACT_BUFFER_TOKENS` and `AUTOCOMPACT_MAX_WINDOW_FRACTION`. The
+  mid-turn outer gate uses `modelInfo.autoCompactTokenLimit` when set and the
+  fixed buffer for windows above 13,000 tokens, or the context window for
+  smaller windows. It passes `force: true`, so the compact module does not
+  recheck the threshold after the outer condition is met.
+- Compact summaries are admitted independently by `runAdmittedModelCall`.
+  They carry `tools: []` and `toolRouting.allowedToolNames: []`. Admission
+  derives provider-native tool accounting from the same options used by the
+  wire adapter, so the admitted and transmitted native catalogs match. See the
+  operator contract in
   [CP-0006](critical-path/0006-compaction-transaction.md#operator-contract-current-main).
 - MCP output validation uses the conservative service. Unavailable, unknown,
   remote, or oversized content enters bounded UTF-8 truncation; unsupported
