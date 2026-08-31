@@ -1906,6 +1906,29 @@ describe("FND benchmark harness fault contracts", () => {
     }
   });
 
+  test("resolves the default branch from origin/main without local main", () => {
+    const fixture = createProvenanceFixture();
+    try {
+      const defaultRevision = resolveDefaultBranchRevision(
+        fixture.repositoryRoot,
+      );
+      runGit(fixture.repositoryRoot, ["branch", "-m", "topic"]);
+      runGit(fixture.repositoryRoot, [
+        "update-ref",
+        "refs/remotes/origin/main",
+        defaultRevision,
+      ]);
+      expect(resolveDefaultBranchSelector(fixture.repositoryRoot)).toBe(
+        "refs/remotes/origin/main",
+      );
+      expect(resolveDefaultBranchRevision(fixture.repositoryRoot)).toBe(
+        defaultRevision,
+      );
+    } finally {
+      rmSync(fixture.repositoryRoot, { force: true, recursive: true });
+    }
+  });
+
   test("fresh-clone bundle keeps the default branch and drops dangling commits", () => {
     const fixture = createProvenanceFixture();
     const cloneParent = mkdtempSync(

@@ -4,7 +4,7 @@ This artifact records bounded current and historical-reference observations.
 Every row is informational: no result is a performance threshold or gate.
 Generated inputs are synthetic and created only for the benchmark process.
 
-- JSON SHA-256: `83970a615f4204a7baeef4f7aee2130b6b2102ae8805021ba72f8eed063c5b4f`
+- JSON SHA-256: `eb2b074c7756b4c6e9cd2d49aa005c7671598443d7a1b71d60c4c47eedbbdfc5`
 - Source revision: `1b2c09ab31d42950c58bfff7c310a87bdcd8c216`
 - Production tree: `runtime/src` at Git object `c35847bc328424b6e1b09e105fc695533a851c18`
 - Loaded production closure: `92` module bindings across `2` cases
@@ -18,12 +18,12 @@ Generated inputs are synthetic and created only for the benchmark process.
 
 | Case | Input | Status | Median ms | MAD ms | Worker peak RSS bytes | RSS lower-bound bytes |
 | --- | ---: | --- | ---: | ---: | ---: | ---: |
-| `csv_scheduler_progress_scan` | `rowCount=1000` | `completed` | 135.317 | 1.762 | 194023424 | 194023424 |
-| `csv_scheduler_progress_scan` | `rowCount=2000` | `completed` | 271.259 | 1.241 | 206225408 | 203075584 |
-| `csv_scheduler_progress_scan` | `rowCount=4000` | `completed` | 525.668 | 23.858 | 225206272 | 221401088 |
-| `patch_delete_parser_historical_comparison` | `hunkCount=8000` | `completed` | 4.457 | 0.475 | 96395264 | 96395264 |
-| `patch_delete_parser_historical_comparison` | `hunkCount=16000` | `completed` | 8.861 | 0.234 | 111427584 | 111427584 |
-| `patch_delete_parser_historical_comparison` | `hunkCount=32000` | `completed` | 18.271 | 1.387 | 133046272 | 133046272 |
+| `csv_scheduler_progress_scan` | `rowCount=1000` | `completed` | 125.104 | 1.587 | 193802240 | 193802240 |
+| `csv_scheduler_progress_scan` | `rowCount=2000` | `completed` | 254.527 | 9.162 | 206508032 | 203345920 |
+| `csv_scheduler_progress_scan` | `rowCount=4000` | `completed` | 494.148 | 8.383 | 219787264 | 219787264 |
+| `patch_delete_parser_historical_comparison` | `hunkCount=8000` | `completed` | 4.105 | 0.465 | 96317440 | 96317440 |
+| `patch_delete_parser_historical_comparison` | `hunkCount=16000` | `completed` | 8.740 | 0.318 | 111104000 | 110841856 |
+| `patch_delete_parser_historical_comparison` | `hunkCount=32000` | `completed` | 18.356 | 1.662 | 132501504 | 132501504 |
 
 ## Assessment notes
 

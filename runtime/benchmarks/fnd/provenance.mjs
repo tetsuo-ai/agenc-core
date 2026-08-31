@@ -637,6 +637,8 @@ export function assertCleanBenchmarkWorktree(repositoryRoot) {
 
 const DEFAULT_BRANCH_SELECTORS = Object.freeze([
   "refs/remotes/origin/HEAD",
+  "refs/remotes/origin/main",
+  "refs/remotes/origin/master",
   "refs/heads/main",
   "refs/heads/master",
 ]);

@@ -152,7 +152,8 @@ npm run benchmark:fnd-baseline --workspace=@tetsuo-ai/runtime -- --plan
 ```
 
 `--source-revision` must resolve to an ancestor of both `HEAD` and the
-repository default branch (`origin/HEAD`, else `main` / `master`) whose
+repository default branch (`origin/HEAD`, else `origin/main`, else
+`main` / `master`) whose
 complete `runtime/src` tree exactly matches the checkout. Capture refuses a
 dirty worktree, including staged, unstaged, ignored, and ordinary untracked
 files, before it writes artifacts. Use the default-branch parent when the
