@@ -15,6 +15,8 @@ Sources of truth:
 | Install / update ops | `runtime/src/plugins/cli/pluginOperations.ts` (`installPluginOp`, `updatePluginOp`) |
 | Marketplace | `runtime/src/plugins/marketplace/` |
 | Source classification | `runtime/src/plugins/resolution.ts` (`classifyPluginSource`) |
+| Archive fetch | `runtime/src/plugins/resolution.ts` (`fetchBytesWithRedirectPolicy`) |
+| Recorded source | `runtime/src/plugins/cli/pluginOperations.ts` (`writeInstallMetadata`, `readInstalledPluginSource`) |
 | Publisher signatures | `runtime/src/plugins/resolution.ts` (`verifyResolvedPluginSignature`) |
 | Config | `[plugins]` in [config.md](config.md) |
 
@@ -457,6 +459,46 @@ requires a publisher signature by default, just like npm, git, tarball, and
 remote mcpb sources. The shipped CLI has no signature-waiver option. See
 [Publisher signatures](#publisher-signatures).
 
+### Remote archive fetch and recorded sources
+
+HTTP(S) tarball and remote mcpb installs fetch through
+`fetchBytesWithRedirectPolicy`. Git clone, `npm pack`, and a local
+`./plugin.mcpb` file do not use this path.
+
+| Constraint | Default |
+| --- | --- |
+| Download timeout | 120 s |
+| Download size | 50 MiB (`Content-Length` or the streamed total) |
+| Redirects | Manual follow of 301 / 302 / 303 / 307 / 308, at most 5 hops |
+| Redirect URL | Same `origin` as the previous hop; `http:` / `https:` only; userinfo forbidden |
+
+A cross-origin `Location` fails with
+`plugin archive redirects must stay on <origin>: <redacted-url>` and is not
+fetched. Extraction quotas (depth 32, 4096 files, 200 MiB) stay in
+[Publisher signatures](#publisher-signatures).
+
+Non-local installs write `.agenc-plugin/agenc-install.json` with a possibly
+redacted `source`. `redactPluginSource` replaces URL userinfo with `redacted`
+and any query string with `?redacted=1`, then runs the secret sanitizer. When
+that rewrite changes the string, metadata sets `sourceRedacted: true`.
+`plugin update` without `--source` then fails with
+`plugin <id> has no recorded source; rerun with --source <source>`. Pass the
+original specifier again. A clean URL (no userinfo, no query) is stored as
+given, so a later same-source update can reuse it. Local directory installs
+store the path as given and do not set the flag.
+
+Process errors from git, npm, and fetch use the same redaction, so a failed
+clone does not echo tokens.
+
+```bash
+agenc plugin install 'https://github.com/acme/tool.mcpb?download=1'
+agenc plugin update tool
+agenc plugin update tool --source 'https://github.com/acme/tool.mcpb?download=1'
+```
+
+The bare update fails with `plugin tool has no recorded source; rerun with --source <source>`.
+The third command supplies the original specifier again.
+
 ### Marketplace
 
 Local path, git, URL, or GitHub sources enter only through `marketplace add`.
@@ -638,6 +680,10 @@ payload.
 | `plugin install ./missing` reports `plugin source not found` | Expected. An explicit local path does not fall through to npm when the directory is absent. |
 | `plugin install plugin.mcpb` fetches npm | Bare `*.mcpb` / `*.git` names are npm. Use `./plugin.mcpb` or an `http(s)` URL to take the bundle path. |
 | `plugin update --source <path>` reports `installed plugin root or its descendant` | `--source` resolved to the installed copy or a nested tree. Point it at a different local tree or a remote specifier. |
+| `plugin archive redirects must stay on <origin>` | The tarball or remote mcpb URL redirected to a different origin, or a hop used userinfo or a non-`http(s)` scheme. Host the file on the same origin or use a direct URL. |
+| `plugin archive exceeds maximum download size` | The `Content-Length` or streamed body exceeded 50 MiB. |
+| `plugin archive redirect limit exceeded` | More than five redirect hops. |
+| `plugin <id> has no recorded source; rerun with --source` | Install metadata has `sourceRedacted: true` because the specifier had userinfo, a query string, or another sanitizer rewrite. Re-run with `--source`. A URL without those is recorded and later `plugin update` can reuse it. |
 | `payload digest set does not match` / `digest mismatch` | Extra, missing, or edited regular payload files vs `files`. The manifest, `signature.json`, install metadata, and `.git` / `.hg` / `.svn` directories are excluded as described above. |
 
 ---
