@@ -446,14 +446,15 @@ export async function discoverPluginRoots(
     workspacePluginDirs.push(join(gitRoot, "plugins"));
   }
   roots.push(
+    // Storage-root plugins are operator-installed and signature-verified:
+    // installing one IS the trust decision, exactly like a plugin shipped
+    // in the runtime package. `plugins.enabled` only gates the forgeable
+    // repository-controlled paths below, which any opened repo can carry.
     ...(await discoverRootsUnder(
       pluginStorageRoot,
       "authority-controlled",
       { allowBasePlugin: false },
-    )).map((root) => ({
-      ...root,
-      enabled: root.enabled && autoDiscoveryEnabled,
-    })),
+    )),
     ...(await discoverRootsUnder(
       join(options.workspaceRoot, ".agents", "plugins"),
       "repository-controlled",
