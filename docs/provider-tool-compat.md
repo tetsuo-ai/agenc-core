@@ -3,7 +3,9 @@
 Provider request shaping lives in `runtime/src/llm/wire/`. Execution-side
 validation (`runtime/src/tools/execution.ts`) always sees the original tool
 schema. Only the **wire** copy is rewritten. An empty local or Gemini turn is
-often a 400 on that wire copy, not a model that "did not answer".
+often a 400 on that wire copy, not a model that "did not answer". Gemini
+type-array unions that cannot be lowered now fail in-process with
+`LLMProviderError` instead of reaching `generateContent`.
 
 Local window probes and `context_window_exceeded` text:
 [providers.md](reference/providers.md#local-context-windows).
@@ -106,20 +108,96 @@ that enum (`kimi-k3`, `deepseek-v4-{pro,flash}`, `gpt-oss-<digits>b`,
 `nemotron-3-super`, `nemotron-3-ultra`). Other NIM families strip the field so
 the host default runs. Out-of-enum values are not translated.
 
-## Gemini function-declaration allowlist
+## Gemini function-declaration compiler
 
-Gemini's OpenAPI subset fails the **whole request** on an unknown schema key
-(`Unknown name "additionalProperties"`, then the same for `x-agenc-*`). Every
-LIVE tool carried at least one, so the provider answered 400 and the UI looked
-like an empty reply.
+The legacy Gemini Schema wire used by this adapter fails the **whole request**
+on an unknown schema key
+(`Unknown name "additionalProperties"`, then the same for `x-agenc-*`) **or**
+on a JSON Schema `type` array (`Proto field is not repeating, cannot start
+list`). `Schema.type` is a single proto enum, not a repeating field. Before the
+compiler, the allowlist still forwarded
+`owner: { type: ["string", "null"] }` when `TaskUpdate` was discovered. An MCP
+tool or structured-output schema could send the same shape. Gemini returned a
+400. The UI displayed the failure as an empty reply.
 
-`sanitizeGeminiSchema` in `runtime/src/llm/providers/gemini/index.ts` keeps a
-documented allowlist (`type`, `format`, `title`, `description`, `nullable`,
-`enum`, `items`, `properties`, `required`, `anyOf`, numeric/length bounds,
-`pattern`, and other documented keys). `required` and `properties` stay
-**only** on `type: object` branches; carrying them onto an `anyOf` arm 400s
-with "only allowed for
-OBJECT type".
+`compileGeminiSchema` in `runtime/src/llm/providers/gemini/index.ts` replaced
+`sanitizeGeminiSchema`. It still strips keys outside the documented allowlist
+(`type`, `format`, `title`, `description`, `nullable`, `enum`, `items`,
+`properties`, `required`, `anyOf`, numeric/length bounds, `pattern`, and
+other documented keys). It then walks `properties`, `items`, and `anyOf`
+recursively and **lowers** type arrays before `generateContent`.
+
+The same compiler runs on:
+
+- tool `functionDeclarations[].parameters` (`geminiTools`)
+- the current adapter's legacy `generationConfig.responseSchema` field when
+  structured output is enabled
+
+Execution-side validation still sees the original schema.
+
+### Type-array collapse
+
+| Source `type` | Wire result |
+| --- | --- |
+| `"string"` (or any single allowed name) | unchanged |
+| `["string", "null"]` | `{ type: "string", nullable: true }` |
+| `["array", "null"]` with `items` | `{ type: "array", nullable: true, items: <compiled> }` |
+| `["null"]` or `"null"` | `{ type: "null" }` |
+
+Allowed names: `string`, `number`, `integer`, `boolean`, `array`, `object`,
+`null`. Duplicates in the array are dropped. Whitespace-padded names are
+rejected.
+
+LM Studio / openai-compatible use a separate grammar-safe rewrite. That rewrite
+drops null from a single-concrete union for llama.cpp or converts a
+multi-concrete union to `anyOf`.
+
+The Gemini compiler does not convert a multi-concrete `type` array. Such an
+array fails locally. Declare the alternatives as a nonempty `anyOf` instead.
+Each branch is compiled recursively, and the `anyOf` node may omit a sibling
+`type`.
+
+```jsonc
+// TaskUpdate.owner on the tool definition
+{ "type": ["string", "null"] }
+
+// Gemini wire
+{ "type": "string", "nullable": true }
+```
+
+### Fail-closed before dispatch
+
+`compileGeminiSchema` throws `LLMProviderError` (`provider: "gemini"`) and
+does **not** call `generateContent` when:
+
+- `type` is missing on a node without a nonempty `anyOf`, is not a string or
+  array, is an empty array, or contains an unsupported name
+- the array has **more than one non-null type** (`["object", "string"]`)
+- `required` or `properties` is present and the compiled `type` is not
+  `"object"`
+- `properties` is not a map, `anyOf` is empty or not an array, or a nested
+  value is not a schema object
+
+The error names the path
+(`tools["InvalidSchema"].parameters.properties.value.type` or
+`structuredOutput["answer"].schema.type`).
+
+A nonempty `anyOf` may omit its parent `type`. Put `required` and `properties`
+inside an object branch when that parent has no `type`; those keys still require
+`type: "object"` on the schema node that contains them.
+
+`required` / `properties` on a nullable object stay: `type: ["object", "null"]`
+lowers to `type: "object", nullable: true` first, so those keys remain legal.
+They are no longer silently deleted from a non-object branch (that used to
+hide the Gemini 400 "only allowed for OBJECT type").
+
+```jsonc
+// Rejected before dispatch because the compiler does not rewrite this array
+{ "type": ["object", "string"] }
+
+// Accepted explicit union. The parent type is optional.
+{ "anyOf": [{ "type": "object" }, { "type": "string" }] }
+```
 
 ## When adding tools
 
@@ -127,7 +205,10 @@ Prefer a clean object root with optional fields when the provider surface must
 stay strict-eligible. If a true union is required for execution-side clarity,
 keep the union on the tool definition. The normalizer collapses it for the
 wire and reports `strictEligible: false`. Do not rely on `$ref` or `x-agenc-*`
-reaching LM Studio, openai-compatible, or Gemini.
+reaching LM Studio, openai-compatible, or Gemini. Nullable fields may keep
+`type: ["T", "null"]` on the definition; Gemini lowers that to `type` +
+`nullable`. Use explicit `anyOf` branches for multiple concrete types. The
+Gemini compiler rejects a multi-concrete `type` array before dispatch.
 
 For a tool to remain callable through the LM Studio/openai-compatible profile,
 its registry name must appear in `LOCAL_PROFILE_TOOL_NAMES`, and its wire
@@ -145,6 +226,8 @@ but `builtTools` applies the local-profile filter afterward.
 | LM Studio/openai-compatible session does not call team/task tools | Those tools are outside the reduced catalog; use another provider slug when they are required |
 | Qwen3 think-trace burns minutes | `/no_think` only attaches on `lmstudio` / `openai-compatible` + qwen3 |
 | Gemini 400 `Unknown name "additionalProperties"` / empty reply | Pre-allowlist wire schema; current code strips those keys |
+| Gemini 400 `Proto field is not repeating, cannot start list` / empty reply | Pre-compiler `type` array on the wire; current code lowers `["T","null"]` to `type` + `nullable` |
+| Gemini turn fails locally with `Gemini cannot represent schema at <path>` | Multi-concrete `type` array, missing `type` without a nonempty `anyOf`, empty or invalid `type`, or `required`/`properties` on a non-object. Fix the tool or structured-output schema; the request never left the process |
 | NIM ignores or 400s `reasoning_effort` | Family has no documented enum, or the value is outside it |
 
 There is no operator config for the grammar-safe key set, the 8192 ceiling, or

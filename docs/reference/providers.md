@@ -328,7 +328,7 @@ wins and the live probe is not consulted.
 | llama.cpp refuses just past 4096 on a 32k GGUF | Window is `meta.n_ctx` (what `-c` loaded), not `n_ctx_train`. |
 | Hard USD cap holds every Ollama/LM Studio success as unpriced | Those three local slugs must resolve to the `localZeroCost` rows. A prefixed model id that was not stripped used to miss both the window and the free cost entry. |
 | Compatible server 404s `/api/show` | Expected for non-Ollama runtimes. The probe is best-effort; a working `/v1/models` window is enough. |
-| Empty LM Studio/openai-compatible or Gemini answer that is not `context_window_exceeded` | Check for a wire 400 (llama.cpp grammar or Gemini schema) or the **8192** grammar-constrained-provider output ceiling. See [provider-tool-compat.md](../provider-tool-compat.md). |
+| Empty LM Studio/openai-compatible or Gemini answer that is not `context_window_exceeded` | Check for a wire 400 (llama.cpp grammar or Gemini schema), a local Gemini compile error (`Gemini cannot represent schema at <path>`), or the **8192** grammar-constrained-provider output ceiling. See [provider-tool-compat.md](../provider-tool-compat.md). |
 | A later ChatGPT subscription request fails with `Unsupported parameter: previous_response_id` | Subscription requests are `store: false`. The continuation optimizer never attaches `previous_response_id` from an unstored response. The prompt-cache key is kept; the incremental delta is skipped. |
 | ChatGPT / Responses refuses to continue after an interrupted tool turn | An unmatched `function_call` in history is closed with a synthetic `function_call_output` marked `interrupted`. The session stays usable; the model must not wait on that call id. |
 | ChatGPT subscription 400s on `max_output_tokens` | Uncapped calls no longer require a provider-enforced output ceiling. Hard token or USD caps still demand a real ceiling and authoritative usage. |
@@ -336,7 +336,8 @@ wins and the live probe is not consulted.
 See [provider-aware token accounting](../design/provider-aware-token-accounting.md)
 for how the resolved window is enforced. Grammar-safe schemas, the local
 tool catalog, Qwen3 `/no_think`, and Gemini's function-declaration
-allowlist are documented on that compatibility page.
+compiler (allowlist plus type-array collapse) are documented on that
+compatibility page.
 
 ## Responses history and continuation
 
@@ -503,7 +504,7 @@ Grammar-safe tool schemas and the reduced local catalog:
 
 ## Related docs
 
-- Tool / provider compatibility (object root, grammar-safe schemas, local catalog): [`../provider-tool-compat.md`](../provider-tool-compat.md)
+- Tool / provider compatibility (object root, grammar-safe schemas, Gemini compiler, local catalog): [`../provider-tool-compat.md`](../provider-tool-compat.md)
 - Token admission invariant: [`../design/provider-aware-token-accounting.md`](../design/provider-aware-token-accounting.md)
 - Managed OpenRouter path: [`../managed-openrouter.md`](../managed-openrouter.md)
 - Onboarding: `agenc onboard`
