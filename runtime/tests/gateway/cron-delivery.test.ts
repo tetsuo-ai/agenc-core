@@ -353,6 +353,11 @@ describe("startCronDelivery", () => {
     expect(last).toContain("paused");
     expect(last).toContain("budget_exceeded");
     expect(existsSync(join(home, "budget", "ledger.json"))).toBe(false);
+    // A paused fire is not a delivery. Keep the occurrence so the next
+    // slot (or cooldown retry) can run once admission allows it.
+    const persisted = await readCronTasks(ws);
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]?.lastFiredAt).toBeUndefined();
     await handle.stop();
   });
 
@@ -385,6 +390,73 @@ describe("startCronDelivery", () => {
     // Turn path was entered (session created / prompt attempted).
     expect(client.created).toBeGreaterThan(0);
     expect(existsSync(join(home, "budget", "ledger.json"))).toBe(false);
+    const persisted = await readCronTasks(ws);
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]?.lastFiredAt).toBeUndefined();
+    await handle.stop();
+  });
+
+  test("one-shot: turn failure keeps the task so it can retry", async () => {
+    const startMs = Date.parse("2026-07-09T10:00:30Z");
+    writeTasks([
+      {
+        id: "cronch-oneshot-throw",
+        cron: "* * * * *",
+        prompt: "will explode",
+        createdAt: startMs - 1_000,
+        deliver: { channel: "mem", to: "ops" },
+      },
+    ]);
+    const client = new RecordingClient("unused");
+    client.throwOnPrompt = new Error("turn exploded");
+    const mem = new InMemoryChannelAdapter({ id: "mem" });
+    const { clock, advance } = manualClock(startMs);
+    const handle = startCronDelivery({ ...baseOptions(client, mem), clock });
+
+    await advance(90_000);
+    expect(client.created).toBeGreaterThan(0);
+    expect(mem.sent).toHaveLength(0);
+    const persisted = await readCronTasks(ws);
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]?.id).toBe("cronch-oneshot-throw");
+    expect(persisted[0]?.lastFiredAt).toBeUndefined();
+    await handle.stop();
+  });
+
+  test("one-shot: admission pause keeps the task on disk", async () => {
+    const startMs = Date.parse("2026-07-09T10:00:30Z");
+    writeTasks([
+      {
+        id: "cronch-oneshot-pause",
+        cron: "* * * * *",
+        prompt: "expensive work",
+        createdAt: startMs - 1_000,
+        deliver: { channel: "mem", to: "ops" },
+      },
+    ]);
+    const client = new RecordingClient("should never run");
+    client.throwOnPrompt = new Error(
+      "execution admission deny: budget_exceeded",
+    );
+    const mem = new InMemoryChannelAdapter({ id: "mem" });
+    const { clock, advance } = manualClock(startMs);
+    const handle = startCronDelivery({
+      ...baseOptions(client, mem),
+      config: {
+        budget: { enabled: true, daily_tokens: 1 },
+      } as unknown as AgenCConfig,
+      clock,
+    });
+
+    await advance(90_000);
+    expect(client.created).toBe(1);
+    const last = mem.lastText("ops") ?? "";
+    expect(last).toContain("paused");
+    expect(last).toContain("budget_exceeded");
+    const persisted = await readCronTasks(ws);
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]?.id).toBe("cronch-oneshot-pause");
+    expect(persisted[0]?.lastFiredAt).toBeUndefined();
     await handle.stop();
   });
 

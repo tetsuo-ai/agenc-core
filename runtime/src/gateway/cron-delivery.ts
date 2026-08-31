@@ -9,10 +9,12 @@
  *
  * Scheduling: sleep-until-earliest-due with a scan cap. Every wake re-reads
  * `.agenc/scheduled_tasks.json` (cheap, non-model), fires the due tasks
- * (each past-due schedule coalesces to ONE fire), stamps `lastFiredAt` /
- * deletes one-shots, and re-arms. The scan cap bounds how stale the armed
- * timer can get when tasks are added by another process — the model is still
- * only invoked when a task is concretely due.
+ * (each past-due schedule coalesces to ONE fire), and only after a
+ * successful fire stamps `lastFiredAt` / deletes one-shots. A failed or
+ * admission-paused fire stays on disk and cools down for one scan cap so
+ * the runner cannot busy-loop. The scan cap also bounds how stale the
+ * armed timer can get when tasks are added by another process — the model
+ * is still only invoked when a task is concretely due.
  *
  * Turns reuse the SessionRouter: one persistent daemon session per task
  * (`cron|<id>`), dead-agent retry, and channel streaming for free. Turns are
@@ -49,6 +51,40 @@ import {
 export const CRON_DELIVERY_SCAN_CAP_MS = 5 * 60 * 1000;
 export const CRON_WEBHOOK_TIMEOUT_MS = 15_000;
 export const CRON_WEBHOOK_MAX_REDIRECTS = 5;
+
+function cronFireDueMs(task: CronTask): number | null {
+  return nextCronRunMs(task.cron, task.lastFiredAt ?? task.createdAt);
+}
+
+function isCronFailureCoolingDown(
+  failedAtMs: ReadonlyMap<string, number>,
+  taskId: string,
+  nowMs: number,
+): boolean {
+  const failedAt = failedAtMs.get(taskId);
+  return failedAt !== undefined && nowMs - failedAt < CRON_DELIVERY_SCAN_CAP_MS;
+}
+
+function cronFailureRetryMs(
+  failedAtMs: ReadonlyMap<string, number>,
+  taskId: string,
+): number | undefined {
+  const failedAt = failedAtMs.get(taskId);
+  return failedAt === undefined ? undefined : failedAt + CRON_DELIVERY_SCAN_CAP_MS;
+}
+
+function nextCronDeliveryWakeMs(
+  task: CronTask,
+  nowMs: number,
+  failedAtMs: ReadonlyMap<string, number>,
+): number | null {
+  const due = cronFireDueMs(task);
+  if (due === null) return null;
+  if (isCronFailureCoolingDown(failedAtMs, task.id, nowMs)) {
+    return cronFailureRetryMs(failedAtMs, task.id) ?? due;
+  }
+  return due;
+}
 
 export interface CronDeliveryClock {
   now(): Date;
@@ -383,9 +419,11 @@ export function startCronDelivery(
     return tasks.filter((t) => t.deliver !== undefined);
   };
 
-  const fireTask = async (task: CronTask): Promise<void> => {
+  const failedAtMs = new Map<string, number>();
+
+  const fireTask = async (task: CronTask): Promise<boolean> => {
     const deliver = task.deliver;
-    if (deliver === undefined) return;
+    if (deliver === undefined) return false;
     const adapter =
       deliver.channel !== undefined
         ? adaptersById.get(deliver.channel)
@@ -437,6 +475,7 @@ export function startCronDelivery(
         );
       }
       log(`cron: task ${task.id} delivered (${result.stopReason})`);
+      return true;
     } catch (error) {
       if (!isExecutionAdmissionDenied(error)) throw error;
       const notice =
@@ -450,6 +489,7 @@ export function startCronDelivery(
             log(`cron: notice failed: ${String(noticeError)}`),
           );
       }
+      return false;
     }
   };
 
@@ -464,13 +504,20 @@ export function startCronDelivery(
       for (const task of tasks) {
         // Anchor from the last fire (or creation) — a past-due schedule
         // coalesces to ONE fire regardless of how many slots were missed.
-        const due = nextCronRunMs(task.cron, task.lastFiredAt ?? task.createdAt);
+        const due = cronFireDueMs(task);
         if (due === null || due > now) continue;
+        if (isCronFailureCoolingDown(failedAtMs, task.id, now)) continue;
+        let delivered = false;
         try {
-          await fireTask(task);
+          delivered = await fireTask(task);
         } catch (error) {
           log(`cron: task ${task.id} failed: ${String(error)}`);
         }
+        if (!delivered) {
+          failedAtMs.set(task.id, now);
+          continue;
+        }
+        failedAtMs.delete(task.id);
         if (task.recurring === true) firedRecurring.push(task);
         else firedOneShots.push(task.id);
       }
@@ -497,7 +544,7 @@ export function startCronDelivery(
       const now = clock.now().getTime();
       let earliest: number | null = null;
       for (const task of await deliveredTasks()) {
-        const due = nextCronRunMs(task.cron, task.lastFiredAt ?? task.createdAt);
+        const due = nextCronDeliveryWakeMs(task, now, failedAtMs);
         if (due === null) continue;
         if (earliest === null || due < earliest) earliest = due;
       }
