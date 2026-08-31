@@ -199,12 +199,142 @@ consumed by this direct SigV4 provider. Bedrock model discovery and token
 counting receive the same captured credentials explicitly; they do not invoke
 the AWS SDK profile, shared-file, instance-metadata, or web-identity chains.
 
+## Local context windows
+
+How AgenC learns the token budget for a local or OpenAI-compatible model.
+Admission uses that number as the right-hand side of
+`accounted input + reserved output <= context window`. Planning against the
+128k conservative fallback when the server is actually 2k–32k is how a local
+turn ends in truncation or a refused request.
+
+| Area | Path |
+| --- | --- |
+| Live / config / registry lookup | `runtime/src/llm/model-metadata.ts` (`ModelMetadataResolver`) |
+| Session model info | `runtime/src/llm/model-registry.ts`, `models-manager.ts` |
+| Bootstrap attach | `runtime/src/bin/bootstrap.ts` (`StaticModelsManager.getModelInfo`) |
+| Admission identity + window | `runtime/src/budget/admitted-model-call.ts` |
+| Last-resort static table | `runtime/src/utils/context.ts` (`getContextWindowForModel`) |
+| Fallback constant | `OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW` = **128_000** |
+
+### Resolution order (session start)
+
+`ModelRegistry.resolve` (async, used by `getModelInfo`) walks this chain and
+stops at the first usable window. Each live HTTP probe has a **1s** timeout
+(`DEFAULT_METADATA_TIMEOUT_MS`). A failed or empty probe is ignored, not
+trusted.
+
+1. **Live endpoint, `openai-compatible` only** — when a base URL is configured
+   or present in the environment, the live window wins over
+   `providers.openai-compatible.context_window_tokens`. Explicit
+   `max_output_tokens` still wins.
+2. **Explicit config** — `providers.<slug>.context_window_tokens`. If the
+   model is also in the built-in catalog, the value is capped at the catalog
+   maximum.
+3. **Built-in catalog / name heuristic** — skipped for providers that prefer
+   a live or registry lookup (`ollama`, `lmstudio`, `openai-compatible`,
+   `openrouter`, or any live-metadata provider with a configured/env base
+   URL).
+4. **Live endpoint** — see the probe table below.
+5. **Public registries** — OpenRouter `/api/v1/models` (OpenRouter only),
+   then models.dev, then the LiteLLM price/context map.
+6. **Built-in heuristic** again, if one exists and was skipped earlier.
+7. **Conservative fallback** — **128_000** tokens,
+   `source: "conservative_fallback"`,
+   `usedFallbackModelMetadata: true`.
+
+`resolveSync` (the `/model` picker list) never probes a server. It only sees
+explicit config, the built-in heuristic, or 128k. The admitted session window
+can therefore be smaller than the picker after the live probe returns.
+
+Live metadata providers: `grok`, `openai`, `ollama`, `lmstudio`,
+`openai-compatible`, `groq`, `deepseek`. Grok / OpenAI / Groq / DeepSeek
+are probed only when `providers.<slug>.base_url` or that provider's endpoint
+env is set.
+
+### Local probes (recorded against live servers)
+
+| Runtime | Probe | Field | Notes |
+| --- | --- | --- | --- |
+| Ollama | `POST {origin}/api/show` `{"model":"<slug>"}` | `model_info["<arch>.context_length"]` | Architecture is not derivable from the model name (`qwen2.context_length`, `phi2.context_length`). Suffix match only. Ollama's `/v1/models` is never consulted — it has no window. |
+| llama.cpp | `GET {base}/v1/models` | `meta.n_ctx`, else `meta.n_ctx_train` | **Served** window wins. `llama-server -c 4096` on a 32k model refuses at 4097. |
+| vLLM | `GET {base}/v1/models` | `max_model_len` | Compatible surface already answers; no second probe. |
+| LM Studio | `GET {base}/v1/models` | whatever that surface reports | No dedicated native probe. Does not borrow `OPENAI_BASE_URL` or `OPENAI_API_KEY`. |
+
+`/v1` and `/v1/` collapse onto the same Ollama origin
+(`ollamaShowUrlFromBaseUrl`). `OLLAMA_BASE_URL` is honored on the metadata
+path; a non-default host must not be probed at `localhost` while the session
+talks to another box.
+
+`openai-compatible` and `lmstudio` pointed at an Ollama endpoint try
+`/v1/models` first. If that list has no window, they POST `/api/show`. A
+non-Ollama server that 404s the native endpoint is left on the usual
+fallback chain; the extra POST does not fail the session.
+
+Malformed Ollama lengths (`0`, `-1`, `1.5`, the string `"32768"`, `null`)
+are ignored rather than trusted.
+
+There is no headless LM Studio recording in tree. Users still get whatever
+window the compatible surface reports.
+
+### How admission consumes the number
+
+`runAdmittedModelCall` takes the first positive integer among:
+
+1. Request `contextWindowTokens`
+2. The provider execution profile
+3. `session.modelInfo.contextWindow`, but only when the session slug equals
+   the admitted model
+4. `getContextWindowForModel` (catalog / OpenAI-compatible table / 128k)
+
+Config and recovery often pass `provider:model` (`ollama:qwen3-coder:30b`).
+`providerLocalModelSlug` strips an exact, case-insensitive provider-name
+prefix and leaves later colons alone (`qwen3-coder:30b`,
+`amazon.nova-pro-v1:0`). Without that strip, Ollama rejects the prefixed
+name and the session-window lookup misses `modelInfo`.
+
+`ollama`, `lmstudio`, and `openai-compatible` cost rows are
+`localZeroCost: true` (zero USD). A zero-rate row without that flag still
+counts as unpriced under a hard USD cap
+(`held_unknown(unpriced_provider_response)`).
+
+When the resolver used the 128k fallback,
+`effectiveContextWindowPercent` is **100**. A live or catalog window uses
+**95**.
+
+### Operator override
+
+```toml
+# ~/.agenc/config.toml
+[providers.ollama]
+context_window_tokens = 32768
+# max_output_tokens = 8192
+```
+
+On `openai-compatible`, a live `/v1/models` window overrides
+`context_window_tokens`. On `ollama` and `lmstudio`, the explicit value
+wins and the live probe is not consulted.
+
+### Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| Local turn denied `context_window_exceeded` or the server refuses a short prompt | Session likely planned against 128k. Confirm the model is pulled, the endpoint env matches the session host, and `/api/show` or `/v1/models` reports a positive integer window. |
+| `OLLAMA_BASE_URL` sessions still look at localhost for the window | Metadata used to ignore the env and probe the built-in default. Current code uses the same ingress alias as the provider factory. |
+| Picker shows 128k, session later uses 32k | Picker is `resolveSync`. The admitted window comes from the async live probe at session start. |
+| llama.cpp refuses just past 4096 on a 32k GGUF | Window is `meta.n_ctx` (what `-c` loaded), not `n_ctx_train`. |
+| Hard USD cap holds every Ollama/LM Studio success as unpriced | Those three local slugs must resolve to the `localZeroCost` rows. A prefixed model id that was not stripped used to miss both the window and the free cost entry. |
+| Compatible server 404s `/api/show` | Expected for non-Ollama runtimes. The probe is best-effort; a working `/v1/models` window is enough. |
+
+See [provider-aware token accounting](../design/provider-aware-token-accounting.md)
+for how the resolved window is enforced.
+
 ## Wire layer
 
 | Layer | Path |
 | --- | --- |
 | Registry / provider metadata | `runtime/src/llm/registry/provider-info.ts` |
 | Model catalog | `runtime/src/llm/registry/model-catalog.ts` |
+| Context-window resolver | `runtime/src/llm/model-metadata.ts` |
 | Provider-neutral HTTP client / retry loop | `runtime/src/llm/client.ts`, `client-session.ts` |
 | Stream idle deadline | `runtime/src/llm/stream-watchdog.ts` |
 | Per-provider modules | `runtime/src/llm/providers/*` |
@@ -246,41 +376,9 @@ Grok server tools (`web_search`, `x_search`, `code_interpreter`, `file_search`,
 MCP) cannot be counted before the turn. Admission reserves the **full context
 window** for those tools so later usage does not trip `provider_overrun`.
 
-## Local provider context windows
-
-Planning a turn against the wrong window is how a local session ends in
-truncation or a refused request. Ollama's OpenAI-compatible `/v1/models`
-returns only `{id, object, created, owned_by}` — no context length — so a
-static 128k fallback used to over-plan by as much as 62× (for example
-`qwen2.5-coder:1.5b` at 32,768 and `moondream` at 2,048).
-
-`runtime/src/llm/model-metadata.ts` resolves the served window in this order:
-
-1. **Live OpenAI-compatible `/v1/models`** for `lmstudio` and
-   `openai-compatible`. Nested llama.cpp `meta.n_ctx` wins over
-   `meta.n_ctx_train` and over flat `max_model_len` / `context_length` fields,
-   because `llama-server -c 4096` on a 32k model refuses at 4,097.
-2. **Ollama native `/api/show`** when the compatible surface has no window.
-   The real number lives under an architecture-prefixed `model_info` key
-   (`qwen2.context_length`, `phi2.context_length`). This also runs when
-   `openai-compatible` or `lmstudio` is pointed at an Ollama origin — a
-   common setup. A non-Ollama server 404s and the resolver falls through.
-3. **`providers.<slug>.context_window_tokens`** when no live window is found.
-   On `openai-compatible` a live window still wins over this explicit value.
-4. **Conservative 128k fallback** only after those probes miss.
-
-The native probe collapses `/v1` (and similar) suffixes so
-`OLLAMA_BASE_URL=http://host:11434/v1` and `http://host:11434` hit the same
-`/api/show`. The provider factory already honored a non-default host; metadata
-now uses that same resolved base URL instead of silently probing localhost.
-
-Set `providers.ollama.context_window_tokens` (or the matching slug) when the
-server does not publish a window. Token admission still uses the conservative
-byte estimator for local providers; see
-[provider-aware-token-accounting.md](../design/provider-aware-token-accounting.md).
-
 ## Related docs
 
 - Tool / provider compatibility notes: [`../provider-tool-compat.md`](../provider-tool-compat.md)
+- Token admission invariant: [`../design/provider-aware-token-accounting.md`](../design/provider-aware-token-accounting.md)
 - Managed OpenRouter path: [`../managed-openrouter.md`](../managed-openrouter.md)
 - Onboarding: `agenc onboard`

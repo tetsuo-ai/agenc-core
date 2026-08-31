@@ -1,4 +1,5 @@
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
+import { createChildAbortController } from "../utils/abortController.js";
 import { assertAgentRoleWorkspaceMatches } from "../agents/role-workspace.js";
 import type { LLMProvider, LLMTool } from "../llm/types.js";
 import {
@@ -203,7 +204,15 @@ export function buildAgenCToolUseContext(
   const attachmentState = getAttachmentTrackingState(session);
 
   return {
-    abortController: session.abortController ?? new AbortController(),
+    // A child of the session's controller, never the controller itself.
+    // This context is handed to the tool/agent runtime, which aborts it to
+    // cancel the context's own work; aliasing the session's one-shot root
+    // controller here meant one collab interrupt permanently poisoned the
+    // session — every later turn was born aborted.
+    abortController:
+      session.abortController !== undefined
+        ? createChildAbortController(session.abortController)
+        : new AbortController(),
     agentId: inferAgentId(session, ctx, surface, opts.querySource),
     agentType: surface.agentType,
     sessionId: session.conversationId,

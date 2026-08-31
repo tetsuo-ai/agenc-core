@@ -193,4 +193,38 @@ describe("buildAgenCToolUseContext", () => {
     ]);
     expect(contextB.dynamicSkillDirTriggers.size).toBe(0);
   });
+
+  test("aborting the context never consumes the session's root controller", () => {
+    // The regression this pins: the context aliased session.abortController,
+    // so the agent runtime cancelling its own work aborted the session's
+    // one-shot root controller — and every turn the user sent afterwards was
+    // born aborted. The session looked alive and dropped every message.
+    const sessionAbort = new AbortController();
+    const session = createSession({ abortController: sessionAbort });
+
+    const context = buildAgenCToolUseContext(
+      session as unknown as Session,
+      createTurnContext(),
+      { llmTools: [] },
+    );
+
+    expect(context.abortController).not.toBe(sessionAbort);
+    context.abortController.abort("interrupted");
+    expect(sessionAbort.signal.aborted).toBe(false);
+  });
+
+  test("a session abort still cascades into the context", () => {
+    // Contained is not detached: session teardown must stop context work.
+    const sessionAbort = new AbortController();
+    const session = createSession({ abortController: sessionAbort });
+
+    const context = buildAgenCToolUseContext(
+      session as unknown as Session,
+      createTurnContext(),
+      { llmTools: [] },
+    );
+
+    sessionAbort.abort("session_shutdown");
+    expect(context.abortController.signal.aborted).toBe(true);
+  });
 });

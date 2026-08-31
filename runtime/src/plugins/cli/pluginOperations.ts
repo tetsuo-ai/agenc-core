@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { cp, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { resolveHomeContext } from "../../config/home.js";
 import { loadCanonicalConfig } from "../../config/repository.js";
 import type { PluginEntryConfig } from "../../config/schema.js";
@@ -9,6 +9,7 @@ import { mutateCanonicalUserConfigSync } from "../../config/update-sync.js";
 import { writeDurableAtomicFile } from "../../utils/durable-atomic-file.js";
 import { isRecord } from "../../utils/record.js";
 import { createPluginFromPath, loadPlugins, type LoadedPlugin } from "../loader.js";
+import type { PluginManifestInterface } from "../manifest-schema.js";
 import {
   findPluginManifestPath,
   loadPluginManifest,
@@ -60,6 +61,11 @@ export interface PluginOperationOptions {
   readonly onWarn?: (message: string) => void;
 }
 
+export interface PluginComponentRow {
+  readonly name: string;
+  readonly description?: string;
+}
+
 export interface InstalledPluginSummary {
   readonly id: string;
   readonly name: string;
@@ -68,6 +74,12 @@ export interface InstalledPluginSummary {
   readonly enabled: boolean;
   readonly root: string;
   readonly source: string;
+  /** Absolute path of the plugin's own logo, proven to sit inside root. */
+  readonly logoPath?: string;
+  /** Manifest surface copy (logo stripped; artwork travels as logoPath). */
+  readonly interface?: Omit<PluginManifestInterface, "logo">;
+  readonly commands?: readonly PluginComponentRow[];
+  readonly skills?: readonly PluginComponentRow[];
 }
 
 export interface PluginListResult {
@@ -251,10 +263,17 @@ export async function listInstalledPlugins(
     workspaceRoot,
     config,
   });
+  const plugins = await Promise.all(
+    [...loaded.enabled, ...loaded.disabled].map(async (plugin) => {
+      const summary = summarizeLoadedPlugin(plugin);
+      const skills = await describeSkills(plugin.skillsPaths);
+      return skills.length > 0 ? { ...summary, skills } : summary;
+    }),
+  );
   return {
-    plugins: [...loaded.enabled, ...loaded.disabled]
-      .map(summarizeLoadedPlugin)
-      .sort((a, b) => a.id.localeCompare(b.id) || a.root.localeCompare(b.root)),
+    plugins: plugins.sort(
+      (a, b) => a.id.localeCompare(b.id) || a.root.localeCompare(b.root),
+    ),
     errors: [
       ...warnings,
       ...loaded.errors.map((issue) => `${issue.source}: ${issue.message}`),
@@ -619,6 +638,28 @@ function resolvePath(path: string, base: string): string {
 }
 
 function summarizeLoadedPlugin(plugin: LoadedPlugin): InstalledPluginSummary {
+  // The manifest normalizer resolved declared artwork to an absolute
+  // in-root path; report it so a GUI client can serve the plugin's own
+  // logo instead of falling back to a generic mark. Anything outside the
+  // plugin root is not this plugin's artwork and is dropped.
+  const logo = plugin.manifest.interface?.logo;
+  const logoPath =
+    typeof logo === "string" && logo.length > 0 && isAbsolute(logo) &&
+    logo.startsWith(plugin.root.endsWith(sep) ? plugin.root : plugin.root + sep)
+      ? logo
+      : undefined;
+  const surface = plugin.manifest.interface;
+  let interfaceCopy: Omit<PluginManifestInterface, "logo"> | undefined;
+  if (surface !== undefined) {
+    const { logo: _logo, ...rest } = surface;
+    interfaceCopy = rest;
+  }
+  const commands = plugin.commands.map((command) => ({
+    name: command.name,
+    ...(command.metadata.description !== undefined
+      ? { description: command.metadata.description }
+      : {}),
+  }));
   return {
     id: plugin.id,
     name: plugin.name,
@@ -627,7 +668,77 @@ function summarizeLoadedPlugin(plugin: LoadedPlugin): InstalledPluginSummary {
     enabled: plugin.enabled,
     root: plugin.root,
     source: plugin.source,
+    ...(logoPath !== undefined ? { logoPath } : {}),
+    ...(interfaceCopy !== undefined ? { interface: interfaceCopy } : {}),
+    ...(commands.length > 0 ? { commands } : {}),
   };
+}
+
+/** Bounded frontmatter read: a skill listing must never slurp documents. */
+const SKILL_FRONTMATTER_MAX_BYTES = 8 * 1024;
+
+async function skillDescriptionAt(
+  skillDir: string,
+): Promise<string | undefined> {
+  try {
+    const handle = await open(join(skillDir, "SKILL.md"), "r");
+    try {
+      const buffer = Buffer.alloc(SKILL_FRONTMATTER_MAX_BYTES);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      const head = buffer.subarray(0, bytesRead).toString("utf8");
+      const match = /^description:\s*(.+)$/mu.exec(head);
+      return match?.[1]?.trim().slice(0, 280);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+async function describeSkills(
+  skillsPaths: readonly string[],
+): Promise<readonly PluginComponentRow[]> {
+  // A path is either one skill dir (SKILL.md at its top) or a
+  // conventional `skills/` root whose child dirs are the skills.
+  const rows: PluginComponentRow[] = [];
+  const seen = new Set<string>();
+  const push = (name: string, description: string | undefined): void => {
+    if (name.length === 0 || seen.has(name)) return;
+    seen.add(name);
+    rows.push({ name, ...(description !== undefined ? { description } : {}) });
+  };
+  for (const skillPath of skillsPaths) {
+    const direct = await skillDescriptionAt(skillPath);
+    let directExists = direct !== undefined;
+    if (!directExists) {
+      try {
+        directExists = (await stat(join(skillPath, "SKILL.md"))).isFile();
+      } catch {
+        directExists = false;
+      }
+    }
+    if (directExists) {
+      push(basename(skillPath), direct);
+      continue;
+    }
+    let children: string[];
+    try {
+      children = await readdir(skillPath);
+    } catch {
+      continue;
+    }
+    for (const child of [...children].sort((a, b) => a.localeCompare(b))) {
+      const childDir = join(skillPath, child);
+      try {
+        if (!(await stat(join(childDir, "SKILL.md"))).isFile()) continue;
+      } catch {
+        continue;
+      }
+      push(child, await skillDescriptionAt(childDir));
+    }
+  }
+  return rows;
 }
 
 function formatPluginErrors(errors: readonly string[]): string {

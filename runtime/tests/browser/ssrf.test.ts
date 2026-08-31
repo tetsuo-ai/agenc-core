@@ -24,6 +24,8 @@ describe("isLoopbackAddress", () => {
     expect(isLoopbackAddress("127.0.0.1")).toBe(true);
     expect(isLoopbackAddress("127.9.9.9")).toBe(true);
     expect(isLoopbackAddress("::1")).toBe(true);
+    expect(isLoopbackAddress("::ffff:127.0.0.1")).toBe(true);
+    expect(isLoopbackAddress("::ffff:7f00:1")).toBe(true);
     expect(isLoopbackAddress("8.8.8.8")).toBe(false);
     expect(isLoopbackAddress("10.0.0.1")).toBe(false);
   });
@@ -35,6 +37,7 @@ describe("isDisallowedAddress", () => {
     expect(isDisallowedAddress("169.254.169.254", permissive)).toBe(true);
     expect(isDisallowedAddress("100.100.100.200", permissive)).toBe(true);
     expect(isDisallowedAddress("fd00:ec2::254", permissive)).toBe(true);
+    expect(isDisallowedAddress("fd00:ec2::254%eth0", permissive)).toBe(true);
   });
 
   test("blocks metadata via IPv4-mapped IPv6 even when private is allowed", () => {
@@ -59,9 +62,27 @@ describe("isDisallowedAddress", () => {
     expect(isDisallowedAddress("172.16.0.1", strict)).toBe(true);
   });
 
+  test("blocks non-public special-purpose ranges by default", () => {
+    expect(isDisallowedAddress("192.0.2.1", strict)).toBe(true);
+    expect(isDisallowedAddress("198.18.0.1", strict)).toBe(true);
+    expect(isDisallowedAddress("224.0.0.1", strict)).toBe(true);
+    expect(isDisallowedAddress("2001:db8::1", strict)).toBe(true);
+    expect(isDisallowedAddress("ff02::1", strict)).toBe(true);
+  });
+
+  test("blocks private IPv6 addresses with dotted-decimal tails", () => {
+    expect(isDisallowedAddress("fc00::192.0.2.1", strict)).toBe(true);
+    expect(isDisallowedAddress("fe80::192.0.2.1", strict)).toBe(true);
+    expect(isDisallowedAddress("64:ff9b::192.0.2.1", strict)).toBe(true);
+    expect(
+      isDisallowedAddress("64:ff9b:1:1::10.0.0.1", strict),
+    ).toBe(true);
+  });
+
   test("blocks loopback by default (stricter than the shared hook guard)", () => {
     expect(isDisallowedAddress("127.0.0.1", strict)).toBe(true);
     expect(isDisallowedAddress("::1", strict)).toBe(true);
+    expect(isDisallowedAddress("::1%lo0", strict)).toBe(true);
   });
 
   test("permits private and loopback when explicitly allowed", () => {
@@ -120,6 +141,14 @@ describe("resolveAllowedAddress", () => {
     ).rejects.toBeInstanceOf(BrowserSsrfError);
   });
 
+  test("fails closed when a resolver returns a non-IP value", async () => {
+    await expect(
+      resolveAllowedAddress("invalid.test", strict, async () => [
+        "second-resolution.invalid",
+      ]),
+    ).rejects.toBeInstanceOf(BrowserSsrfError);
+  });
+
   test("rejects when ANY resolved address is disallowed", async () => {
     await expect(
       resolveAllowedAddress("mixed.test", strict, async () => [
@@ -142,6 +171,22 @@ describe("resolveAllowedAddress", () => {
     await expect(
       resolveAllowedAddress("rebind.test", permissive, async () => [
         "::ffff:a9fe:a9fe",
+      ]),
+    ).rejects.toBeInstanceOf(BrowserSsrfError);
+  });
+
+  test("rejects a private IPv6 answer with a dotted-decimal tail", async () => {
+    await expect(
+      resolveAllowedAddress("private.test", strict, async () => [
+        "fc00::192.0.2.1",
+      ]),
+    ).rejects.toBeInstanceOf(BrowserSsrfError);
+  });
+
+  test("rejects a scoped private IPv6 answer", async () => {
+    await expect(
+      resolveAllowedAddress("private.test", strict, async () => [
+        "fe80::1%eth0",
       ]),
     ).rejects.toBeInstanceOf(BrowserSsrfError);
   });

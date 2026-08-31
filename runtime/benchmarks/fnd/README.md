@@ -147,13 +147,23 @@ npm run benchmark:fnd-baseline --workspace=@tetsuo-ai/runtime -- \
   --markdown-output /tmp/agenc-fnd-baseline.v1.md
 
 npm run check:fnd-benchmark-baseline --workspace=@tetsuo-ai/runtime
+npm run check:fnd-benchmark-baseline:fresh-clone --workspace=@tetsuo-ai/runtime
 npm run benchmark:fnd-baseline --workspace=@tetsuo-ai/runtime -- --plan
 ```
 
-`--source-revision` must resolve to an ancestor whose complete `runtime/src`
-tree exactly matches the checkout. Use the topic's parent when the benchmark
-harness and generated artifact are being committed together; this avoids a
-self-reference while still binding every executed production dependency.
+`--source-revision` must resolve to an ancestor of both `HEAD` and the
+repository default branch (`origin/HEAD`, else `origin/main`, else
+`main` / `master`) whose
+complete `runtime/src` tree exactly matches the checkout. Capture refuses a
+dirty worktree, including staged, unstaged, ignored, and ordinary untracked
+files, before it writes artifacts. Use the default-branch parent when the
+benchmark harness and generated artifact are being committed together; this
+avoids a self-reference while still binding every executed production
+dependency to a revision that remains reachable after a squash merge.
+
+The fresh-clone lane bundles named `HEAD` and default-branch refs. Passing
+raw object IDs to `git bundle create` produces an empty bundle, so the
+lane reinstalls `main` and `origin/HEAD` in the clone before `--check`.
 
 Compare runs made on the same pinned runtime and machine state. Review raw
 samples, median absolute deviation, operation counts, and relative scaling.

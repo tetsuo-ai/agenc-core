@@ -20,7 +20,7 @@
  *
  * Invariants wired:
  *   I-34 (worktree force-remove + prune) — `removeAgentWorktree`
- *        runs `git worktree prune --force` after the remove; prune
+ *        runs `git worktree prune` after the remove; prune
  *        failures are swallowed + warned, never propagated.
  *   I-35 (sparse-checkout teardown verify) — `removeAgentWorktree`
  *        reads `.git/info/sparse-checkout`; if it differs from the
@@ -810,8 +810,11 @@ export async function removeAgentWorktree(
     );
 
     // I-34: prune — cleans up stale `.git/worktrees/<slug>/` dirs.
+    // No --force here: `git worktree prune` has never taken that flag
+    // (it belongs to `worktree remove`), and current git answers it
+    // with exit 129, so every cleanup "failed" while doing nothing.
     const prune = await runGitMutation(
-      ["worktree", "prune", "--force"],
+      ["worktree", "prune"],
       opts.gitRoot,
       opts.sandboxExecutionBroker,
       opts.gitRoot,

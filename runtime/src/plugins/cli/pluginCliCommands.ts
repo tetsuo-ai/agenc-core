@@ -20,6 +20,14 @@ import {
   removeMarketplaceOp,
   upgradeMarketplaceOp,
 } from "../marketplace/marketplace.js";
+import {
+  buildMarketplaceCatalog,
+  ensureOfficialMarketplace,
+  installRequiresSignature,
+  resolveMarketplaceInstallTarget,
+  PLUGIN_MARKETPLACE_CATALOG_SCHEMA_VERSION,
+  PLUGIN_MARKETPLACE_INSTALL_KIND,
+} from "../marketplace/catalog-cli.js";
 
 export type AgenCPluginCliCommand =
   | { readonly kind: "list"; readonly json: boolean }
@@ -34,6 +42,15 @@ export type AgenCPluginCliCommand =
   | { readonly kind: "marketplace-add"; readonly source: string; readonly name?: string; readonly ref?: string; readonly sparse?: string; readonly force: boolean }
   | { readonly kind: "marketplace-remove"; readonly name: string }
   | { readonly kind: "marketplace-upgrade"; readonly name?: string }
+  | { readonly kind: "marketplace-catalog"; readonly product?: string; readonly json: boolean }
+  | {
+      readonly kind: "marketplace-install";
+      readonly pluginId: string;
+      readonly product?: string;
+      readonly scope: PluginScope;
+      readonly force: boolean;
+      readonly json: boolean;
+    }
   | { readonly kind: "help"; readonly text: string }
   | { readonly kind: "error"; readonly message: string };
 
@@ -64,6 +81,9 @@ export function formatAgenCPluginCliHelpText(): string {
     "                                                   Add local, git, URL, or GitHub marketplace",
     "  marketplace remove <name>                      Remove a marketplace",
     "  marketplace upgrade [name]                     Refresh git or local marketplaces",
+    "  marketplace catalog [--product <id>] [--json]  List installable plugins per marketplace",
+    "  marketplace install <plugin@marketplace>       Install a catalog plugin",
+    "                     [--product <id>] [--scope user|project] [--force] [--json]",
     "",
     "Install options:",
     "  --name <name>     Set the installed plugin ID or marketplace name",
@@ -288,6 +308,73 @@ export async function runAgenCPluginCli(
           name: command.name,
         });
         io.stdout.write(`Removed marketplace ${result.marketplaceName}\n`);
+        return 0;
+      }
+      case "marketplace-catalog": {
+        // A profile with no marketplaces has nothing installable to report;
+        // register the official one first so a fresh client sees the
+        // shipped plugins instead of an empty shelf.
+        await ensureOfficialMarketplace(options, addMarketplaceOp);
+        const catalog = await buildMarketplaceCatalog(options, command.product);
+        if (command.json) {
+          io.stdout.write(`${JSON.stringify(catalog, null, 2)}\n`);
+          return 0;
+        }
+        if (catalog.marketplaces.length === 0) {
+          io.stdout.write("No AgenC plugin marketplaces configured.\n");
+        }
+        for (const marketplace of catalog.marketplaces) {
+          io.stdout.write(`${marketplace.name} (${marketplace.sourceType}):\n`);
+          for (const plugin of marketplace.plugins) {
+            io.stdout.write(`- ${plugin.id} (${plugin.policy.installation})\n`);
+          }
+        }
+        for (const failure of catalog.errors) {
+          io.stderr.write(`agenc: marketplace ${failure.marketplace}: ${failure.message}\n`);
+        }
+        // A catalog that lists nothing because every marketplace failed is
+        // an error; partial success is still a usable catalog.
+        return catalog.errors.length > 0 && catalog.marketplaces.length === 0 ? 1 : 0;
+      }
+      case "marketplace-install": {
+        const target = await resolveMarketplaceInstallTarget(
+          options,
+          command.pluginId,
+          command.product,
+        );
+        const result = await installPluginOp({
+          ...options,
+          // A local marketplace entry is a plain path source; git entries
+          // carry their pinned coordinates through unchanged.
+          source:
+            target.source.type === "local"
+              ? target.source.path
+              : target.source,
+          scope: command.scope,
+          name: target.pluginName,
+          force: command.force,
+          requireSignature: installRequiresSignature(target.record),
+        });
+        if (command.json) {
+          io.stdout.write(`${JSON.stringify({
+            schemaVersion: PLUGIN_MARKETPLACE_CATALOG_SCHEMA_VERSION,
+            kind: PLUGIN_MARKETPLACE_INSTALL_KIND,
+            ok: true,
+            pluginId: `${target.pluginName}@${target.marketplaceName}`,
+            marketplace: target.marketplaceName,
+            ...(command.product !== undefined ? { product: command.product } : {}),
+            plugin: result.plugin,
+            destination: result.destination,
+            scope: result.scope,
+            resolutionKind: result.resolutionKind,
+            signatureVerified: result.signatureVerified,
+          }, null, 2)}\n`);
+        } else {
+          io.stdout.write(
+            `Installed ${target.pluginName}@${target.marketplaceName} to ${result.destination}` +
+              `${result.signatureVerified ? " (signature verified)" : ""}\n`,
+          );
+        }
         return 0;
       }
       case "marketplace-upgrade": {
@@ -518,6 +605,10 @@ function parseMarketplace(args: readonly string[]): AgenCPluginCliCommand {
       return parseMarketplaceRemove(args.slice(1));
     case "upgrade":
       return parseMarketplaceUpgrade(args.slice(1));
+    case "catalog":
+      return parseMarketplaceCatalog(args.slice(1));
+    case "install":
+      return parseMarketplaceInstall(args.slice(1));
     default:
       return { kind: "error", message: `unknown plugin marketplace command: ${action}` };
   }
@@ -583,6 +674,99 @@ function parseMarketplaceRemove(args: readonly string[]): AgenCPluginCliCommand 
       : { kind: "error", message: "plugin marketplace remove requires exactly one name" };
   }
   return { kind: "marketplace-remove", name: args[0]! };
+}
+
+/** `plugin marketplace catalog [--product <id>] [--json]` */
+function parseMarketplaceCatalog(args: readonly string[]): AgenCPluginCliCommand {
+  let product: string | undefined;
+  let json = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (arg === "--help" || arg === "-h") {
+      return { kind: "help", text: formatAgenCPluginCliHelpText() };
+    }
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg === "--product") {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("-")) {
+        return { kind: "error", message: "plugin marketplace catalog --product requires a value" };
+      }
+      product = value;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--product=")) {
+      product = arg.slice("--product=".length);
+      if (product.length === 0) {
+        return { kind: "error", message: "plugin marketplace catalog --product requires a value" };
+      }
+      continue;
+    }
+    return { kind: "error", message: `plugin marketplace catalog does not accept argument '${arg}'` };
+  }
+  return { kind: "marketplace-catalog", ...(product !== undefined ? { product } : {}), json };
+}
+
+/** `plugin marketplace install <plugin@marketplace> [--product <id>] [--scope <scope>] [--force] [--json]` */
+function parseMarketplaceInstall(args: readonly string[]): AgenCPluginCliCommand {
+  let product: string | undefined;
+  let scope: PluginScope = "user";
+  let force = false;
+  let json = false;
+  const positional: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (arg === "--help" || arg === "-h") {
+      return { kind: "help", text: formatAgenCPluginCliHelpText() };
+    }
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg === "--force") {
+      force = true;
+      continue;
+    }
+    if (arg === "--product" || arg.startsWith("--product=")) {
+      const value = arg.startsWith("--product=")
+        ? arg.slice("--product=".length)
+        : args[++index];
+      if (value === undefined || value.length === 0 || value.startsWith("-")) {
+        return { kind: "error", message: "plugin marketplace install --product requires a value" };
+      }
+      product = value;
+      continue;
+    }
+    if (arg === "--scope" || arg.startsWith("--scope=")) {
+      const value = arg.startsWith("--scope=")
+        ? arg.slice("--scope=".length)
+        : args[++index];
+      if (value !== "user" && value !== "project") {
+        return { kind: "error", message: "plugin marketplace install --scope must be 'user' or 'project'" };
+      }
+      scope = value;
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      return { kind: "error", message: `plugin marketplace install does not accept argument '${arg}'` };
+    }
+    positional.push(arg);
+  }
+  const [pluginId, ...rest] = positional;
+  if (pluginId === undefined || rest.length > 0) {
+    return { kind: "error", message: "plugin marketplace install requires exactly one <plugin@marketplace> argument" };
+  }
+  return {
+    kind: "marketplace-install",
+    pluginId,
+    ...(product !== undefined ? { product } : {}),
+    scope,
+    force,
+    json,
+  };
 }
 
 function parseMarketplaceUpgrade(args: readonly string[]): AgenCPluginCliCommand {

@@ -949,7 +949,16 @@ Linux and Darwin also run the two hosted PTY scenarios with
 `node runtime/scripts/check-tui-e2e/runner.mjs --platform "$AGENC_NEOVIM_SLUG"`
 and expect `2/2 passed`. Do not add those scenarios back to `win-x64`.
 GitHub's hosted Windows ConPTY path has produced nondeterministic synthetic-input
-failures on unrelated changes.
+failures on unrelated changes. The registry
+(`runtime/scripts/check-tui-e2e/platform-scenarios.mjs`) and
+`selectPlatformScenarios()` reject `win-x64`. Reproduce the Unix pair locally
+with `--platform linux-x64` (or `linux-arm64` / `darwin-x64` /
+`darwin-arm64`). `--platform win-x64` fails closed. The full local BUFFER
+PTY set remains
+`npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-buffer-neovim`.
+Windows still runs the 18-test lifecycle suite, the 65-test
+provider/observed-descendant set (including Job Object tree cleanup), and
+post-job leak assertions.
 The `macos-native` job first runs the 66-test red-probe runner contract.
 Never add deadline-only descendant-marker coverage back to that contract. Its
 hard deadline begins before probe readiness, so it races cold bootstrap on

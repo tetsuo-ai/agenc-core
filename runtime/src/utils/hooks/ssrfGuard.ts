@@ -27,12 +27,22 @@ import { isIP } from 'net'
  *   169.254.0.0/16   link-local (cloud metadata)
  *   172.16.0.0/12    private
  *   192.168.0.0/16   private
+ *   192.0.0.0/24     IETF protocol assignments
+ *   192.0.2.0/24     documentation
+ *   192.88.99.0/24   deprecated 6to4 relay anycast
+ *   198.18.0.0/15    benchmarking
+ *   198.51.100.0/24  documentation
+ *   203.0.113.0/24   documentation
+ *   224.0.0.0/4      multicast
+ *   240.0.0.0/4      reserved
  *
  * Blocked IPv6:
  *   ::               unspecified
  *   fc00::/7         unique local
  *   fe80::/10        link-local
  *   ::ffff:<v4>      mapped IPv4 in a blocked range
+ *   IPv4 translation, documentation, benchmarking, multicast, and other
+ *   special-purpose ranges that are not ordinary public destinations
  *
  * Allowed (returns false):
  *   127.0.0.0/8      loopback (local dev hooks)
@@ -81,15 +91,37 @@ function isBlockedV4(address: string): boolean {
   if (a === 100 && b >= 64 && b <= 127) return true
   // 192.168.0.0/16
   if (a === 192 && b === 168) return true
+  // 192.0.0.0/24 — IETF protocol assignments. The small globally reachable
+  // exceptions in this block are infrastructure addresses, not webhook
+  // destinations, so the public-egress policy fails closed on the whole block.
+  if (a === 192 && b === 0 && parts[2] === 0) return true
+  // Documentation and deprecated transition ranges.
+  if (a === 192 && b === 0 && parts[2] === 2) return true
+  if (a === 192 && b === 88 && parts[2] === 99) return true
+  // 198.18.0.0/15 — benchmark networks.
+  if (a === 198 && (b === 18 || b === 19)) return true
+  // Documentation ranges.
+  if (a === 198 && b === 51 && parts[2] === 100) return true
+  if (a === 203 && b === 0 && parts[2] === 113) return true
+  // Multicast and reserved/future-use space, including limited broadcast.
+  if (a >= 224) return true
 
   return false
 }
 
 function isBlockedV6(address: string): boolean {
   const lower = address.toLowerCase()
+  const groups = expandIPv6Groups(lower)
 
-  // ::1 loopback explicitly allowed
-  if (lower === '::1') return false
+  // ::1 loopback explicitly allowed, including its fully expanded spelling.
+  if (
+    lower === '::1' ||
+    (groups !== null &&
+      groups.slice(0, 7).every(group => group === 0) &&
+      groups[7] === 1)
+  ) {
+    return false
+  }
 
   // :: unspecified
   if (lower === '::') return true
@@ -101,6 +133,48 @@ function isBlockedV6(address: string): boolean {
   const mappedV4 = extractMappedIPv4(lower)
   if (mappedV4 !== null) {
     return isBlockedV4(mappedV4)
+  }
+
+  if (groups === null) return false
+
+  const [first, second, third] = groups
+
+  // Deprecated IPv4-compatible addresses (::/96). Unspecified and loopback
+  // were handled above; the remaining forms are not public IPv6 destinations.
+  if (groups.slice(0, 6).every(group => group === 0)) return true
+
+  // IPv4 translation prefixes. Blocking the prefixes avoids using a NAT64
+  // gateway to reach an IPv4 range that was not visible to this process.
+  if (
+    first === 0x0064 &&
+    second === 0xff9b &&
+    ((groups.slice(2, 6).every(group => group === 0)) ||
+      third === 1)
+  ) {
+    return true
+  }
+
+  // 100::/64 — discard-only.
+  if (
+    first === 0x0100 &&
+    second === 0 &&
+    third === 0 &&
+    groups[3] === 0
+  ) {
+    return true
+  }
+
+  // IETF protocol assignments, benchmarking, ORCHID, documentation, and
+  // transition mechanisms. These are not ordinary public webhook targets.
+  if (first === 0x2001 && second !== undefined && second <= 0x01ff) return true
+  if (first === 0x2001 && second === 0x0db8) return true
+  if (first === 0x2002) return true
+  if (
+    first === 0x3fff &&
+    second !== undefined &&
+    (second & 0xf000) === 0
+  ) {
+    return true
   }
 
   // fc00::/7 — unique local addresses (fc00:: through fdff::)
@@ -121,6 +195,18 @@ function isBlockedV6(address: string): boolean {
     return true
   }
 
+  // fec0::/10 — deprecated site-local addresses.
+  if (
+    first !== undefined &&
+    first >= 0xfec0 &&
+    first <= 0xfeff
+  ) {
+    return true
+  }
+
+  // ff00::/8 — multicast.
+  if (first !== undefined && (first & 0xff00) === 0xff00) return true
+
   return false
 }
 
@@ -131,51 +217,64 @@ function isBlockedV6(address: string): boolean {
  * defensive).
  */
 export function expandIPv6Groups(addr: string): number[] | null {
-  // Handle trailing dotted-decimal IPv4 (e.g. ::ffff:169.254.169.254).
-  // Replace it with its two hex groups so the rest of the expansion is uniform.
-  let tailHextets: number[] = []
-  if (addr.includes('.')) {
-    const lastColon = addr.lastIndexOf(':')
-    const v4 = addr.slice(lastColon + 1)
-    addr = addr.slice(0, lastColon)
-    const octets = v4.split('.').map(Number)
+  // Node accepts scoped IPv6 addresses (for example `fe80::1%eth0`) as IP
+  // literals. The zone identifies an interface, not address bits, so classify
+  // the base address while preserving the original string for the socket.
+  const zoneIndex = addr.indexOf('%')
+  if (zoneIndex !== -1) {
     if (
-      octets.length !== 4 ||
-      octets.some(n => !Number.isInteger(n) || n < 0 || n > 255)
+      zoneIndex === 0 ||
+      zoneIndex === addr.length - 1 ||
+      zoneIndex !== addr.lastIndexOf('%')
     ) {
       return null
     }
-    tailHextets = [
-      (octets[0]! << 8) | octets[1]!,
-      (octets[2]! << 8) | octets[3]!,
-    ]
+    addr = addr.slice(0, zoneIndex)
   }
 
-  // Expand `::` (at most one) into the right number of zero groups.
+  // Handle trailing dotted-decimal IPv4 (e.g. ::ffff:169.254.169.254).
+  // Replace it in place with two hex groups. Keeping the separator in the
+  // normalized address preserves a preceding `::` compression marker.
+  if (addr.includes('.')) {
+    const lastColon = addr.lastIndexOf(':')
+    if (lastColon === -1) return null
+    const v4 = addr.slice(lastColon + 1)
+    const octetStrings = v4.split('.')
+    if (
+      octetStrings.length !== 4 ||
+      octetStrings.some(
+        value => !/^(?:0|[1-9]\d{0,2})$/.test(value) || Number(value) > 255,
+      )
+    ) {
+      return null
+    }
+    const octets = octetStrings.map(Number)
+    const high = ((octets[0]! << 8) | octets[1]!).toString(16)
+    const low = ((octets[2]! << 8) | octets[3]!).toString(16)
+    addr = `${addr.slice(0, lastColon + 1)}${high}:${low}`
+  }
+
+  // Expand exactly one optional `::` into one or more zero groups.
   const dbl = addr.indexOf('::')
-  let head: string[]
-  let tail: string[]
+  let hex: string[]
   if (dbl === -1) {
-    head = addr.split(':')
-    tail = []
+    hex = addr.split(':')
+    if (hex.length !== 8) return null
   } else {
+    if (addr.indexOf('::', dbl + 2) !== -1) return null
     const headStr = addr.slice(0, dbl)
     const tailStr = addr.slice(dbl + 2)
-    head = headStr === '' ? [] : headStr.split(':')
-    tail = tailStr === '' ? [] : tailStr.split(':')
+    const head = headStr === '' ? [] : headStr.split(':')
+    const tail = tailStr === '' ? [] : tailStr.split(':')
+    const fill = 8 - head.length - tail.length
+    if (fill < 1) return null
+    hex = [...head, ...new Array<string>(fill).fill('0'), ...tail]
   }
 
-  const target = 8 - tailHextets.length
-  const fill = target - head.length - tail.length
-  if (fill < 0) return null
-
-  const hex = [...head, ...new Array<string>(fill).fill('0'), ...tail]
-  const nums = hex.map(h => parseInt(h, 16))
-  if (nums.some(n => Number.isNaN(n) || n < 0 || n > 0xffff)) {
+  if (hex.some(group => !/^[0-9a-f]{1,4}$/i.test(group))) {
     return null
   }
-  nums.push(...tailHextets)
-  return nums.length === 8 ? nums : null
+  return hex.map(group => parseInt(group, 16))
 }
 
 /**

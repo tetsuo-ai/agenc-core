@@ -252,6 +252,20 @@ export function providerCredentialEnvironmentProvenance(
   });
 }
 
+/**
+ * Canonical API-key alias for BYOK storage and display (the leading alias
+ * of the authored table), or undefined for keyless credential kinds. Alias
+ * order stays a private concern of this module.
+ */
+export function canonicalProviderApiKeyEnvVar(
+  provider: string,
+): string | undefined {
+  const info = resolveProviderInfo(provider);
+  if (info?.credentials.kind !== "api-key") return undefined;
+  const [canonical] = info.credentials.apiKey.envVars;
+  return canonical;
+}
+
 /** Resolve the first non-empty API-key alias in canonical provider order. */
 export function resolveProviderApiKeyEnvironment(
   provider: string,

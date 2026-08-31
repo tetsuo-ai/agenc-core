@@ -208,31 +208,29 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
         type: "object",
         properties: {
           subject: { type: "string" },
-          description: { type: "string" },
+          description: {
+            type: "string",
+            description: "Defaults to the subject when omitted.",
+          },
           activeForm: { type: "string" },
           metadata: { type: "object" },
         },
-        required: ["subject", "description"],
+        required: ["subject"],
         additionalProperties: false,
       },
       execute: async (args) => {
         const strict = taskStrictArgs(args, {
           allowed: new Set(["subject", "description", "activeForm", "metadata"]),
-          required: ["subject", "description"],
+          required: ["subject"],
         });
         if (strict) return strict;
         const subject = stringValue(args.subject);
         if (!subject) {
           return taskTextResult("subject is required", { error: "subject is required" }, true);
         }
-        const description = stringValue(args.description);
-        if (!description) {
-          return taskTextResult(
-            "description is required",
-            { error: "description is required" },
-            true,
-          );
-        }
+        // Models routinely send only a subject — that is how the tool
+        // reads. The description is display copy layered over it.
+        const description = stringValue(args.description) ?? subject;
         const activeForm = stringValue(args.activeForm);
         const parsedMetadata = parseTaskMetadata(args.metadata);
         if (parsedMetadata.error) return parsedMetadata.error;

@@ -44,6 +44,7 @@ import {
   registerProductionModuleTracker,
 } from "./module-closure.mjs";
 import {
+  assertCleanBenchmarkWorktree,
   bindProductionModuleClosures,
   captureBenchmarkProvenance,
   resolveBenchmarkNpmCliPath,
@@ -118,6 +119,7 @@ if (options.mode === "plan") {
 }
 
 async function runSuite() {
+  assertCleanBenchmarkWorktree(repositoryRoot);
   const provenance = captureBenchmarkProvenance({
     evidencePaths: BENCHMARK_EVIDENCE_PATHS,
     productionTreePath: BENCHMARK_PRODUCTION_TREE_PATH,

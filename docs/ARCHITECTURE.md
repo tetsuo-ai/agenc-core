@@ -7,7 +7,7 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 | Doc                                                                              | Scope                                                                        |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | [`reference/daemon.md`](reference/daemon.md)                                     | Daemon process, socket, protocol, lifecycle                                  |
-| [`reference/providers.md`](reference/providers.md)                               | Built-in providers, defaults, credentials                                    |
+| [`reference/providers.md`](reference/providers.md)                               | Built-in providers, defaults, credentials, local context-window probes       |
 | [`reference/autonomy.md`](reference/autonomy.md)                                 | Budget, heartbeat, cron delivery, hooks HTTP                                 |
 | [`design/execution-admission-kernel.md`](design/execution-admission-kernel.md)   | Live durable budget/admission design                                         |
 | [`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md) | Canonical run journal, effects, terminal results, replay, and crash recovery |
@@ -325,7 +325,10 @@ workspace, approved temporary paths, and other explicit write entries; write
 checks run against the canonical permission profile on every resolved target.
 On macOS the profile is enforced by Seatbelt, and on Linux by the configured
 platform helper. This is a read-scope compatibility fix, not full-disk write
-authority.
+authority. On Linux the helper must sit outside the writable workspace; a
+home-directory workspace fails that test and the remediation is to open a
+project directory, not to reinstall. See
+[tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md).
 
 Mutating tools are guarded: file edits enforce read-before-write + mtime-drift
 checks; `apply_patch` applies multi-file patches transactionally.
@@ -399,7 +402,8 @@ output, low/medium/high/xhigh effort with high default); `grok-4.5` remains a
 selectable entry. Model metadata
 and cost assumptions: [`reference/providers.md`](reference/providers.md).
 
-There are **16 built-in provider slugs**. Full table, env vars, and base URLs:
+There are **16 built-in provider slugs**. Full table, env vars, base URLs,
+and how local servers publish a context window:
 [`reference/providers.md`](reference/providers.md).
 `runtime/src/llm/registry/provider-info.ts` contains one authored definition
 row per slug. That row owns its display name, default model and base URL,
@@ -464,8 +468,9 @@ crashing the process.
   contract runs locally. GitHub Actions adds `default-suite` (four Ubuntu
   Vitest shards plus runtime typecheck, no Docker hermetic/red-probe path)
   and capability lanes: Linux-kernel sandbox, PowerShell, Neovim (five
-  OS/arch), macOS native, Windows native. Each PR records the exact locally
-  tested SHA, commands, results, and skips before merge; release verification
+  OS/arch; hosted PTY scenarios are Linux/Darwin only), macOS native,
+  Windows native. Each PR records the exact locally tested SHA,
+  commands, results, and skips before merge; release verification
   repeats the gates at exact current `main` before any release tag exists.
   GitHub remains the branch/PR/merge record. Candidate macOS/Windows
   inventories are in [ci-required-gates.md](ci-required-gates.md), not a

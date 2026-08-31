@@ -679,6 +679,8 @@ export type XaiBrowserLoginResult = {
  */
 export async function runXaiBrowserLogin(params: {
   onAuthorizeUrl: (url: string) => void | Promise<void>
+  /** Post-authorize milestones, for callers that surface live progress. */
+  onStage?: (stage: 'callback_received' | 'exchanging_code') => void | Promise<void>
   timeoutMs?: number
   fetchImpl?: FetchLike
 }): Promise<XaiBrowserLoginResult> {
@@ -699,6 +701,8 @@ export async function runXaiBrowserLogin(params: {
     })
     await params.onAuthorizeUrl(authorizeUrl)
     const { code } = await callback.promise
+    await params.onStage?.('callback_received')
+    await params.onStage?.('exchanging_code')
     const tokens = await exchangeXaiAuthorizationCode({
       tokenEndpoint: endpoints.tokenEndpoint,
       code,

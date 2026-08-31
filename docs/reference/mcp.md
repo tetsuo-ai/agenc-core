@@ -140,7 +140,7 @@ declarations into the live manager:
 - Templates expand `${AGENC_PLUGIN_ROOT}`, `${AGENC_PLUGIN_DATA}`,
   `${AGENC_SESSION_ID}`, `${user_config.<field>}`, and `${NAME}` /
   `${NAME:-default}` from the session environment. Unexpanded required
-  env names drop that server with `Missing environment variables: …`.
+  env names drop that server with `Missing environment variables: <names>`.
 - Stdio children receive `AGENC_PLUGIN_ROOT`, `AGENC_PLUGIN_DATA`,
   `AGENC_PLUGIN_NAME`, `AGENC_PLUGIN_MCP_SERVER`, and
   `AGENC_PLUGIN_SANDBOX`. Working directory must stay inside the plugin
@@ -152,9 +152,9 @@ declarations into the live manager:
   when bubblewrap is blocked. Ordinary workspace-write MCP still fails
   with `[sandbox_policy_unexpressible]` on those hosts.
 - Pre-handshake connect failures attach a bounded tail of child stderr
-  (8 lines, 400 characters each) as `; server stderr: …`. The production
-  manager uses a silent logger, so without that tail a sandbox refusal
-  used to surface only as `MCP error -32000: Connection closed`.
+  (8 lines, 400 characters each) as `; server stderr: <tail>`. The production
+  manager uses a silent logger; without that tail, a sandbox refusal was
+  previously reported only as `MCP error -32000: Connection closed`.
 
 Project- and local-scope installs are repository-controlled: hooks, MCP
 servers, and LSP servers are stripped at load time. `agenc plugin install

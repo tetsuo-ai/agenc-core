@@ -653,3 +653,26 @@ describe("parseOpenAIResponsesResponse", () => {
     });
   });
 });
+
+describe("closeDanglingFunctionCalls", () => {
+  test("pairs every unmatched call with a synthetic interrupted output", async () => {
+    const { closeDanglingFunctionCalls } = await import(
+      "../../../src/llm/wire/responses-openai.js"
+    );
+    const input: Array<Record<string, unknown>> = [
+      { type: "function_call", call_id: "call_a", name: "navigate", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_a", output: "ok" },
+      { type: "function_call", call_id: "call_b", name: "navigate", arguments: "{}" },
+      { type: "message", role: "user", content: [{ type: "input_text", text: "go" }] },
+    ];
+    closeDanglingFunctionCalls(input);
+    expect(input).toHaveLength(5);
+    expect(input[3]).toMatchObject({
+      type: "function_call_output",
+      call_id: "call_b",
+    });
+    expect(String((input[3] as { output?: unknown }).output)).toMatch(/interrupted/iu);
+    // The answered pair stays untouched.
+    expect(input.filter((item) => item.call_id === "call_a")).toHaveLength(2);
+  });
+});

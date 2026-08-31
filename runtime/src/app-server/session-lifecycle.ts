@@ -249,7 +249,24 @@ export class AgenCDaemonSessionManager {
         .filter(
           (session) => agentId === undefined || session.agentId === agentId,
         )
-        .map(toSessionSummary),
+        .map(toSessionSummary)
+        // Most-recent-first. Map order is load order, and a daemon that
+        // restored hundreds of historical sessions at startup put every one
+        // of them ahead of anything created since — a client reading the
+        // first page saw only ancient sessions, so "resume yesterday's chat"
+        // listed nothing from today. Timestamps are ISO strings when
+        // present; anything else sorts last rather than stringifying to
+        // "[object Object]".
+        .sort((left, right) => {
+          const stampOf = (summary: {
+            readonly lastActiveAt?: unknown;
+            readonly createdAt?: unknown;
+          }): string => {
+            const stamp = summary.lastActiveAt ?? summary.createdAt;
+            return typeof stamp === "string" ? stamp : "";
+          };
+          return stampOf(right).localeCompare(stampOf(left));
+        }),
       knownSessionIds: new Set(state.sessions.keys()),
     }));
 

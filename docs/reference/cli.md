@@ -300,11 +300,11 @@ in the daemon. Each pipeline child is registered under
 `workflowChildAgentName(childRunId)`
 (`runtime/src/app-server/workflow/session-adapters.ts`): the child run id
 is lowercased and every character outside `[a-z0-9_]` becomes `_`. Raw ids
-such as `wf-3f78249a-…:plan#1` are rejected as `agent_name must use only
+such as `wf-3f78249a-child:plan#1` are rejected as `agent_name must use only
 lowercase letters, digits, and underscores`.
 
-At least one `--verify "label=script"` command is required —
-`completed` mechanically demands every required command exit 0, an
+At least one `--verify "label=script"` command is required. A `completed`
+result mechanically demands every required command exit 0, an
 adversarial-verification `VERDICT: PASS`, and an independent review with zero
 blockers. The frozen spec's `--permission-mode` and unattended allow/deny
 lists are applied to the run's daemon session, so pipeline children execute

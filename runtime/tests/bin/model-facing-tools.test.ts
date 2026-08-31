@@ -570,7 +570,9 @@ describe("model-facing tools", () => {
     expect(
       registry.tools.find((tool) => tool.name === "TaskCreate")?.inputSchema,
     ).toMatchObject({
-      required: ["subject", "description"],
+      // Subject-only is the canonical contract: description is display
+      // copy that defaults to the subject when omitted.
+      required: ["subject"],
       additionalProperties: false,
     });
     expect(
