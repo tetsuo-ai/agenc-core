@@ -12,6 +12,7 @@ Sources of truth:
 | Manifest | `runtime/src/plugins/manifest.ts`, `manifest-schema.ts` |
 | Registration | `runtime/src/plugins/registration/*` |
 | CLI | `runtime/src/plugins/cli/pluginCliCommands.ts` → `agenc plugin` |
+| Install / update ops | `runtime/src/plugins/cli/pluginOperations.ts` (`installPluginOp`, `updatePluginOp`) |
 | Marketplace | `runtime/src/plugins/marketplace/` |
 | Publisher signatures | `runtime/src/plugins/resolution.ts` (`verifyResolvedPluginSignature`) |
 | Config | `[plugins]` in [config.md](config.md) |
@@ -458,10 +459,11 @@ signature requirement.
 
 | Path | Signature check |
 | --- | --- |
-| `agenc plugin install ./dir` | Never. The CLI does not pass `requireSignature`. |
+| `agenc plugin install ./dir` | Never. The CLI does not pass `requireSignature`. Install metadata records `signatureRequired: false`. |
 | Marketplace install from a **local** marketplace | Not required, even when its catalog row points at a remote source. |
 | Marketplace install from a non-local marketplace (`sourceType` git or url), including a bundled `./path` directory | Required. `installPluginOp` verifies a directory before copying it. A missing `.agenc-plugin/signature.json` fails the install and leaves the configured plugin list unchanged. |
-| Resolver for git / npm / tarball / mcpb outside marketplace install | Required by default unless the caller passes `requireSignature: false`. Structured git using a `file:` URL or absolute filesystem path is local and is not required by that default. |
+| Resolver for git / npm / tarball / mcpb outside marketplace install | Required by default unless the caller passes `requireSignature: false`. Structured git using a `file:` URL or absolute filesystem path is local and is not required by that default. Direct `plugin install <url>` uses that default and records `signatureRequired: true`. |
+| `agenc plugin update` (no `--require-signature`) | Replays the recorded `signatureRequired` flag. A local-dir install, then `--source` git / npm / tarball / URL, keeps the waiver and does **not** apply the remote default. |
 
 Callers must treat `signatureVerified: false` as **unverified**, not as a pass.
 The shipped CLI and `/plugins` marketplace paths require a verified result for
@@ -471,12 +473,25 @@ invariant failure.
 
 Install metadata in `.agenc-plugin/agenc-install.json` records
 `signatureRequired` and `signatureVerified`. `agenc plugin update` has no
-`--require-signature` flag, so it re-applies the recorded requirement. A legacy
-metadata file with `signatureVerified: true` and no `signatureRequired` field
-is also treated as signature-required. An unsigned copy installed before
-directory verification was enforced has neither signal and can update without
-a signature; uninstall and reinstall it from the marketplace to establish the
-current requirement.
+`--require-signature` flag. `updatePluginOp` passes
+`requireSignature: input.requireSignature ?? recordedSource.signatureRequired`
+into `installPluginOp`. The shipped CLI never supplies the override, so the
+recorded boolean wins.
+
+`resolvePluginSource` only applies the remote default
+(`kind !== "local"` and not a `file:` / absolute git path) when
+`requireSignature` is omitted. Passing `false` is an explicit waiver. A
+local `plugin install ./dir` therefore lets a later
+`plugin update --source <git|npm|tarball|url>` materialize unsigned remote
+code. A non-local marketplace install, or a direct remote `plugin install
+<url>` that went through the resolver, records `true` and still requires a
+signature on update.
+
+A legacy metadata file with `signatureVerified: true` and no
+`signatureRequired` field is also treated as signature-required. An unsigned
+copy installed before directory verification was enforced has neither signal
+and can update without a signature; uninstall and reinstall it from a
+non-local marketplace to establish the current requirement.
 
 #### Keyring
 
@@ -534,7 +549,8 @@ payload.
 | `plugin signature is required` | A required install lacks `.agenc-plugin/signature.json`. Direct local `plugin install ./dir` does not take this path. |
 | `plugin publisher is not trusted` | The parsed `$AGENC_HOME/plugin-publishers.json` has no usable key for that publisher. Missing, unreadable, or malformed keyrings report their underlying error instead. |
 | `signatureVerified: false` after marketplace install | Expected only for a local marketplace or a custom caller that disabled the requirement. A successful non-local marketplace install returning false violates the shipped path's invariant. |
-| `plugin update` accepts an unsigned tree | Install metadata has neither `signatureRequired: true` nor the legacy `signatureVerified: true` signal. Reinstall the plugin from its marketplace to establish the current requirement. |
+| `plugin update` accepts an unsigned tree | Install metadata has neither `signatureRequired: true` nor the legacy `signatureVerified: true` signal. Reinstall the plugin from a non-local marketplace to establish the current requirement. |
+| `plugin update --source <url>` after `plugin install ./dir` lands unsigned remote code | Current main: update replays the local install's `signatureRequired: false`, so `resolvePluginSource` never applies the remote default. Uninstall and reinstall from a non-local marketplace (or a direct remote source) so metadata records `true`. |
 | `payload digest set does not match` / `digest mismatch` | Extra, missing, or edited regular payload files vs `files`. The manifest, `signature.json`, install metadata, and `.git` / `.hg` / `.svn` directories are excluded as described above. |
 
 ---
