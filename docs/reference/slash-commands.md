@@ -126,10 +126,10 @@ multi-agent tools. Full routing, receipt, and integration semantics:
 focus instructions, not a keep-count. It refuses while
 `session.activeTurn` is set.
 
-Daemon-backed TUI has no in-process `newDefaultTurnWithSubId`. That path
-calls `session.partialCompactFromMessage` with `messageOrdinal: 0` and
-`direction: "from"` (full forward compact). The daemon emits
-`context_compacted`; the command only prints a short summary.
+The daemon-backed TUI has no in-process `newDefaultTurnWithSubId`. It calls
+`session.partialCompactFromMessage` with `messageOrdinal: 0` and
+`direction: "from"` for a full forward compact. The daemon emits the
+authoritative `history_replaced` event and returns the operator display text.
 
 Neither `AGENC_DISABLE_COMPACT` nor `AGENC_DISABLE_AUTO_COMPACT` disables
 this command. They are not interchangeable on the automatic path: the
@@ -138,10 +138,12 @@ mid-turn outer gate consults only `AGENC_DISABLE_AUTO_COMPACT`. Setting
 `autoCompactIfNeeded` returns `wasCompacted: false`, and the turn ends
 with `mid_turn_compact_skipped`. Env catalog: [env.md](env.md).
 
-`/compact-rollback` and `/compact-retain` need the durable `attempt_id`
-on the `compaction_committed` payload / retention pin. The TUI boundary
-line (`Conversation compacted`) does not print it. Both refuse during an
-active turn (`ACTIVE_TURN`). Syntax:
+Successful transactional compaction reports its durable attempt ID in the
+command result. A replacement-history boundary also displays the ID, so it
+remains available in transcript history. `/compact-rollback` and
+`/compact-retain` accept that ID; it is also recorded on the
+`compaction_committed` payload and retention pin. Both commands refuse during
+an active turn (`ACTIVE_TURN`). Syntax:
 [cli.md](cli.md#compaction-operator-commands).
 
 ## `/permissions`

@@ -140,6 +140,18 @@ describe('compact conversation components', () => {
 
     expect(boundary).toContain('✻ Conversation compacted (ctrl+o for history)')
   })
+
+  test('renders the rollback attempt ID on a transactional boundary', () => {
+    const boundary = renderPlain(
+      <CompactBoundaryMessage
+        attemptId="compact-72d793c1-8f34-4e04-9049-d4bb868c37f3"
+      />,
+    )
+
+    expect(boundary).toContain(
+      'Rollback attempt ID: compact-72d793c1-8f34-4e04-9049-d4bb868c37f3',
+    )
+  })
 })
 
 function compactMessage(input: {

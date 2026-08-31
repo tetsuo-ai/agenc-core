@@ -3720,6 +3720,77 @@ describe("AgenC delegate background-agent runner", () => {
     expect(emitted).toHaveLength(emittedAfterRetirement);
   });
 
+  it("preserves compaction recovery details while broadcasting replacement history", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "session-partial-compact",
+    });
+    const attemptId = "compact-72d793c1-8f34-4e04-9049-d4bb868c37f3";
+    const replacementEvent = {
+      id: "history-replaced-partial-compact",
+      type: "history_replaced" as const,
+      acceptedAt: "2026-08-31T00:00:00.000Z",
+      payload: {
+        reason: "partial_compact" as const,
+        messages: [],
+      },
+    };
+    Object.assign(session, {
+      partialCompactFromMessage: vi.fn(async () => ({
+        ok: true,
+        sessionId: "session-partial-compact",
+        eventAlreadyEmitted: false as const,
+        event: replacementEvent,
+        attemptId,
+        replacementHistory: [],
+        displayText: `Conversation compacted\nRollback attempt ID: ${attemptId}`,
+      })),
+    });
+    const emitted: unknown[] = [];
+    const started = await runner.startAgent({
+      objective: "verify partial compaction replacement",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents(started.agentId, {
+      sessionId: "session-partial-compact",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+    emitted.length = 0;
+
+    await expect(
+      runner.partialCompactFromMessage?.(started.agentId, {
+        sessionId: "session-partial-compact",
+        messageOrdinal: 0,
+        direction: "from",
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      eventAlreadyEmitted: true,
+      event: replacementEvent,
+      attemptId,
+      displayText: `Conversation compacted\nRollback attempt ID: ${attemptId}`,
+    });
+    expect(emitted).toHaveLength(2);
+    expect(emitted[0]).toMatchObject({
+      params: {
+        event: {
+          type: "transcript_epoch",
+          payload: { reason: "partial_compact" },
+        },
+      },
+    });
+    expect(emitted[1]).toMatchObject({
+      params: {
+        event: {
+          type: "history_replaced",
+          payload: { reason: "partial_compact" },
+        },
+      },
+    });
+  });
+
   it("broadcasts a same-session rollback replacement before acknowledging it", async () => {
     const { runner, session } = makeTopLevelRunner({
       conversationId: "session-rollback-replacement",

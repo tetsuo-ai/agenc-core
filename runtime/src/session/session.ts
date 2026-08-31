@@ -71,6 +71,7 @@ import {
 } from "../services/compact/finalize-transaction.js";
 import {
   extendCompactionRetentionForOperator,
+  formatCompactionOperatorDisplay,
   rollbackCompactionForOperator,
 } from "../services/compact/operator.js";
 import { CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
@@ -1673,6 +1674,7 @@ export type SessionPartialCompactFromMessageResult =
       readonly eventAlreadyEmitted: false;
       readonly event: HistoryReplacedEvent;
       readonly replacementHistory: readonly LLMMessage[];
+      readonly attemptId?: string;
       readonly displayText: string;
     }
   | {
@@ -3478,9 +3480,11 @@ export class Session {
         replacementHistory,
         id: `history-replaced-${task.subId}`,
       });
-      const displayText =
-        compactionResult.userDisplayMessage ??
-        compactionMessage(compactionResult);
+      const attemptId = compactionResult.transaction?.attempt_id;
+      const displayText = formatCompactionOperatorDisplay(
+        compactionResult.userDisplayMessage ?? compactionMessage(compactionResult),
+        attemptId,
+      );
 
       const commitFailure = await this.commitPartialCompaction({
         task,
@@ -3497,6 +3501,7 @@ export class Session {
         eventAlreadyEmitted: false,
         event,
         replacementHistory,
+        ...(attemptId !== undefined ? { attemptId } : {}),
         displayText,
       };
     } catch (error) {

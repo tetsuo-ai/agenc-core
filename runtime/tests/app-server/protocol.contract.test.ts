@@ -279,6 +279,9 @@ describe("AgenC daemon protocol surface", () => {
         sessionId: "session_contract",
         ok: true,
         eventAlreadyEmitted: true,
+        attemptId: "compact-72d793c1-8f34-4e04-9049-d4bb868c37f3",
+        displayText:
+          "Conversation compacted\nRollback attempt ID: compact-72d793c1-8f34-4e04-9049-d4bb868c37f3",
       };
     const rewind: AgenCDaemonInternalResultByMethod["session.rewindConversationToMessage"] =
       {

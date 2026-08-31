@@ -263,8 +263,8 @@ Defaults are "feature on unless the disable var is set" unless noted.
 
 | Var | Typical use |
 | --- | --- |
-| `AGENC_DISABLE_AUTO_COMPACT` | Skip automatic compaction **and** the mid-turn/notice outer gate. `/compact` still runs |
-| `AGENC_DISABLE_COMPACT` | Skip `autoCompactIfNeeded` only. Does **not** disable `/compact` and does **not** skip the mid-turn outer gate. Set this without `AGENC_DISABLE_AUTO_COMPACT` and a full turn dies with `mid_turn_compact_skipped` |
+| `AGENC_DISABLE_AUTO_COMPACT` | Skip automatic compaction and its pre-sampling, mid-turn, and notice gates. `/compact` still runs |
+| `AGENC_DISABLE_COMPACT` | Make `autoCompactIfNeeded` return without compacting. This does not disable `/compact` or the mid-turn outer gate; if that gate requires a compact, the turn finishes with event cause `mid_turn_compact_failed` and a message beginning with `mid_turn_compact_skipped` |
 | `AGENC_AUTO_COMPACT_WINDOW` | Positive integer context-window override used by compaction thresholds |
 | `AGENC_AUTOCOMPACT_PCT_OVERRIDE` | Percentage `1` to `100`; can only make automatic compaction fire earlier than the safety default |
 | `AGENC_DISABLE_LSP` | Do not start LSP |

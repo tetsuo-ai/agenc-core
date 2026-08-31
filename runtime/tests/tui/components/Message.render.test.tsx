@@ -213,6 +213,17 @@ describe('Message render dispatch', () => {
         uuid: 'compact-summary',
       },
       { subtype: 'compact_boundary', type: 'system', uuid: 'compact-boundary' },
+      {
+        compactionHistory: {
+          version: 1,
+          kind: 'boundary',
+          attempt_id: 'compact-72d793c1-8f34-4e04-9049-d4bb868c37f3',
+          summary_sha256: 'a'.repeat(64),
+        },
+        subtype: 'informational',
+        type: 'system',
+        uuid: 'transactional-compact-boundary',
+      },
       { content: 'local command', subtype: 'local_command', type: 'system', uuid: 'local-command' },
       { content: 'system text', subtype: 'notice', type: 'system', uuid: 'system-text' },
       {
@@ -250,6 +261,15 @@ describe('Message render dispatch', () => {
       expect(
         harness.calls.find(call => call.name === 'UserToolResultMessage')?.props,
       ).toMatchObject({ width: 7 })
+      expect(
+        harness.calls.find(
+          call =>
+            call.name === 'CompactBoundaryMessage' &&
+            call.props.attemptId !== undefined,
+        )?.props,
+      ).toMatchObject({
+        attemptId: 'compact-72d793c1-8f34-4e04-9049-d4bb868c37f3',
+      })
     } finally {
       await rendered.dispose()
     }

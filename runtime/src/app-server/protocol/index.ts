@@ -3341,6 +3341,8 @@ export interface SessionPartialCompactFromMessageResult extends JsonObject {
   readonly sessionId: string;
   readonly ok: boolean;
   readonly eventAlreadyEmitted: boolean;
+  readonly attemptId?: string;
+  readonly displayText?: string;
   readonly code?: string;
   readonly message?: string;
   readonly event?: JsonObject;

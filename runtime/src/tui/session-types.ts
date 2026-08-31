@@ -186,6 +186,7 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
         readonly sessionId: string;
         readonly eventAlreadyEmitted: boolean;
         readonly event?: HistoryReplacedEvent;
+        readonly attemptId?: string;
         readonly displayText?: string;
       }
     | {

@@ -252,7 +252,18 @@ function MessageImpl({
           if (isFullscreen) {
             return null;
           }
-          return <CompactBoundaryMessage />;
+          return (
+            <CompactBoundaryMessage
+              attemptId={transactionalCompactionAttemptId(message)}
+            />
+          );
+        }
+        const transactionalAttemptId = transactionalCompactionAttemptId(message);
+        if (transactionalAttemptId !== undefined) {
+          if (isFullscreen) {
+            return null;
+          }
+          return <CompactBoundaryMessage attemptId={transactionalAttemptId} />;
         }
         if (message.subtype === "microcompact_boundary") {
           return null;
@@ -322,6 +333,21 @@ function MessageImpl({
       }
   }
   return null;
+}
+
+function transactionalCompactionAttemptId(
+  message: SystemMessage,
+): string | undefined {
+  const marker = message?.compactionHistory;
+  const attemptId = marker?.attempt_id;
+  return marker?.version === 1 &&
+    marker.kind === "boundary" &&
+    typeof marker.summary_sha256 === "string" &&
+    /^[0-9a-f]{64}$/iu.test(marker.summary_sha256) &&
+    typeof attemptId === "string" &&
+    /^compact-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(attemptId)
+    ? attemptId
+    : undefined;
 }
 function UserMessage({
   message,

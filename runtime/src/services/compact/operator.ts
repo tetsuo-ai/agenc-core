@@ -27,6 +27,15 @@ export interface CompactionRollbackOperatorResult {
   readonly sourceHistory: readonly CompactionProjectionMessageV1[];
 }
 
+export function formatCompactionOperatorDisplay(
+  displayText: string,
+  attemptId: string | undefined,
+): string {
+  return attemptId === undefined
+    ? displayText
+    : `${displayText}\nRollback attempt ID: ${attemptId}`;
+}
+
 export function rollbackCompactionForOperator(params: {
   readonly store: CompactionOperatorStore;
   readonly attemptId: string;

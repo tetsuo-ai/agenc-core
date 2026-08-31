@@ -20,6 +20,9 @@ describe("slash /compact contract", () => {
       sessionId: "session_1",
       ok: true,
       eventAlreadyEmitted: true,
+      attemptId: "compact-72d793c1-8f34-4e04-9049-d4bb868c37f3",
+      displayText:
+        "Conversation compacted\nRollback attempt ID: compact-72d793c1-8f34-4e04-9049-d4bb868c37f3",
     }));
     // A daemon bridge session: no in-process turn allocation, but the
     // daemon-forwarder method is present. This mirrors props.session in
@@ -38,7 +41,11 @@ describe("slash /compact contract", () => {
       home: "/tmp",
     });
 
-    expect(result).toEqual({ kind: "compact", text: "Conversation compacted." });
+    expect(result).toEqual({
+      kind: "compact",
+      text:
+        "Conversation compacted\nRollback attempt ID: compact-72d793c1-8f34-4e04-9049-d4bb868c37f3",
+    });
     expect(partialCompactFromMessage).toHaveBeenCalledWith({
       messageOrdinal: 0,
       direction: "from",

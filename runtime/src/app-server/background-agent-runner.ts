@@ -3470,6 +3470,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         sessionId: params.sessionId,
         ok: true,
         eventAlreadyEmitted: true,
+        ...(result.attemptId !== undefined
+          ? { attemptId: result.attemptId }
+          : {}),
+        ...(result.displayText !== undefined
+          ? { displayText: result.displayText }
+          : {}),
         event: result.event as unknown as JsonObject,
       };
     }

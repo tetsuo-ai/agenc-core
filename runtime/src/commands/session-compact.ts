@@ -24,6 +24,7 @@ import {
   CompactionCleanupPendingError,
   finalizeCompactionTransaction,
 } from "../services/compact/finalize-transaction.js";
+import { formatCompactionOperatorDisplay } from "../services/compact/operator.js";
 import type { CompactedItem } from "../session/rollout-item.js";
 import { validateAgentInvocationMessageSequence } from "../contracts/agent-invocation-envelope.js";
 import type { Session } from "../session/session.js";
@@ -108,6 +109,8 @@ function tryAllocateTurnContext(ctx: SlashCommandContext): {
  */
 interface DaemonCompactResult {
   readonly ok: boolean;
+  readonly attemptId?: string;
+  readonly displayText?: string;
   readonly message?: string;
 }
 
@@ -140,8 +143,9 @@ export const compactCommand: SlashCommand = {
         // fully-wired `session.partialCompactFromMessage` RPC. Compact the
         // live session forward from its first active message
         // (messageOrdinal: 0, direction: "from") = a full compaction. The
-        // daemon emits its own `context_compacted` boundary event, already
-        // rendered by the transcript, so we only surface a short summary.
+        // daemon emits the authoritative `history_replaced` event. Surface
+        // the returned operator text as well so the rollback attempt ID is
+        // immediately available to the user.
         const daemonCompact = daemonCompactFn(ctx);
         if (daemonCompact !== null) {
           const feedback = ctx.argsRaw.trim();
@@ -159,7 +163,12 @@ export const compactCommand: SlashCommand = {
           }
           return {
             kind: "compact",
-            text: "Conversation compacted.",
+            text:
+              result.displayText ??
+              formatCompactionOperatorDisplay(
+                "Conversation compacted.",
+                result.attemptId,
+              ),
           };
         }
         const contextText = await buildFallbackContextUsageText(
@@ -820,9 +829,12 @@ async function runManualCompact(params: {
     await cleanup();
   }
   return {
-    displayText: typeof result.displayText === "string"
-      ? result.displayText
-      : compactionResult.message,
+    displayText: formatCompactionOperatorDisplay(
+      typeof result.displayText === "string"
+        ? result.displayText
+        : compactionResult.message,
+      compactionResult.transaction?.attempt_id,
+    ),
     compactionResult,
   };
 }

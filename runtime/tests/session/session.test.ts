@@ -2185,6 +2185,10 @@ describe("Session.partialCompactFromMessage", () => {
 
       expect(result.ok).toBe(true);
       if (!result.ok) throw new Error(result.message);
+      expect(result.attemptId).toMatch(/^compact-/u);
+      expect(result.displayText).toContain(
+        `Rollback attempt ID: ${result.attemptId}`,
+      );
       expect(result.event.type).toBe("history_replaced");
       expect(result.event.payload.messages.length).toBeGreaterThan(0);
       expect(

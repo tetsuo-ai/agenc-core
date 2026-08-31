@@ -97,6 +97,8 @@ active turn.
 ```
 
 - Same-session rollback is allowed only when no newer canonical work exists.
+- A successful transactional `/compact` prints the attempt ID. The
+  replacement-history boundary also shows it in transcript history.
 - `--branch` preserves newer source-session work and materializes the restored
   history as the named reviewed session.
 - `/compact-retain` accepts an absolute future deadline and can only extend,
