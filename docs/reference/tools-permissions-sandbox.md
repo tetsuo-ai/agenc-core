@@ -90,6 +90,26 @@ rejected on Windows. `head_limit: 0` removes user pagination only, not the hard
 record, decoded-output, 32 MiB rendered-output, 100,000 rendered-line/result,
 context, diagnostic, or 120-second process ceilings.
 
+Search children do **not** inherit the session's workspace-write or network
+profile. `Grep`, `Glob`, and `Orient` (`Orient` via `runRipgrepFiles`) call
+`applyReadOnlyRuntimeSandboxToSpawn` (`tools/system/apply-runtime-sandbox.ts`).
+That is a narrowing transform: it never constructs a runtime identity, never
+expands the session's read scope, and never carries filesystem-write or
+network grants into the child. Write entries become `read`; network is
+`disabled`. An `unrestricted` session profile becomes a full-disk-read
+restricted profile. An `external_sandbox` profile is left exact — AgenC cannot
+narrow a host-owned policy. The spawn uses `cwd: "."` and
+`cwdBinding: "inherited_readonly"` so the helper resolves the search root
+through an already-open directory descriptor instead of a live absolute
+pathname.
+
+On Landlock-fallback hosts this is why search still works while shell and
+workspace-write stdio MCP fail. The broker skips workspace-write Landlock
+pre-flight for `inherited_readonly` (that check would refuse the session
+profile, not the narrowed child). The planner then admits inherited-readonly
+cwd only when the **effective** profile has no writable roots. See
+[OS sandbox](#os-sandbox).
+
 ### Filesystem compatibility (`tools/system/filesystem.ts`)
 
 Legacy `system.*` utilities (not the primary edit surface):
@@ -490,6 +510,21 @@ through the canonical permission profile before execution. This preserves the
 agent's ability to inspect dependencies and toolchains outside the checkout
 without granting writes there.
 
+Landlock fallback never grants `/proc` or `/sys`, even under that full-disk
+read baseline (`NEVER_GRANTED_ROOTS` in
+`runtime/src/sandbox/linux-launcher/landlock-exec.ts`). Without a pid
+namespace, host `/proc/<pid>/environ` would expose the daemon's provider
+credentials. `/proc`-dependent commands fail visibly with `EACCES`; they are
+not retried unsandboxed. `mountProc` is a bubblewrap convenience only — the
+fallback simply has no `/proc`.
+
+Search tools (`Grep` / `Glob` / `Orient`) replace the session profile with the
+narrowed read-only child described under
+[Search execution and limits](#search-execution-and-limits). That child has
+no writable roots, so inherited-readonly cwd is expressible on Landlock.
+`exec_command` and ordinary workspace-write MCP keep the session profile and
+still fail when `.git` / `.agenc` carve-outs cannot be expressed.
+
 Related:
 
 - Permission-side sandbox policy glue: `runtime/src/permissions/sandbox.ts`
@@ -517,7 +552,8 @@ Docker sandbox driver and SSH remote exec targets remain roadmap items
 | --- | --- |
 | `[sandbox_required_unavailable]` + helper "outside the writable workspace" after a stock Linux install | The workspace is `$HOME` (or contains it). Open a project directory. Do not reinstall. |
 | `[sandbox_landlock_fallback]` from `agenc doctor` | Bubblewrap is unusable; Linux is ready only via Landlock. On Ubuntu 24.04+ install the AppArmor profile in [install.md](../install.md). Otherwise restore `bwrap` or accept the fallback limits. |
-| `[sandbox_policy_unexpressible]` on shell or workspace-write stdio MCP | Landlock cannot keep `.git` / `.agenc` read-only inside a writable project. Restore bubblewrap, use `sandbox_mode = "read-only"`, or choose `danger-full-access`. Plugin-declared MCP servers keep a tighter, Landlock-expressible profile. |
+| `[sandbox_policy_unexpressible]` on shell or workspace-write stdio MCP | Landlock cannot keep `.git` / `.agenc` read-only inside a writable project. Restore bubblewrap, use `sandbox_mode = "read-only"`, or choose `danger-full-access`. Plugin-declared MCP servers keep a tighter, Landlock-expressible profile. `Grep` / `Glob` / `Orient` use a narrowed read-only child and usually keep working. |
+| `/proc` or `/sys` reads fail with `EACCES` on Landlock fallback | Expected. The fallback never grants those roots, including under full-disk-read. Restore bubblewrap for a private procfs, or avoid `/proc`-dependent commands. |
 | Windows restricted-mode spawn refused | Native restricted-token isolation is unimplemented. Use WSL2, `external_sandbox`, or the deliberate danger-mode escape hatch. |
 
 ## Pre-execute guards

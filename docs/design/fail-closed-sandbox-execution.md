@@ -65,7 +65,11 @@ and adding a boundary regression test.
   a project directory instead of a reinstall. The helper's own argv parser
   (`linux-launcher/cli.ts`) also fails closed: policy cwd is required and
   never inferred, value flags are accepted once, unknown profile fields and
-  NUL bytes are rejected, and `globScanMaxDepth` cannot exceed 128.
+  NUL bytes are rejected, and `globScanMaxDepth` cannot exceed 128. Landlock
+  never grants `/proc` or `/sys` (host `/proc/<pid>/environ` would expose
+  daemon credentials). Grep/Glob/Orient narrow the child to read-only with
+  `inherited_readonly` cwd so those searches stay expressible when
+  workspace-write shell/MCP is refused.
 - macOS requires `/usr/bin/sandbox-exec` and a bounded restricted-process probe.
 - Native Windows restricted-token isolation is not implemented, so restricted
   execution fails closed. Operators can use WSL2, an explicit external sandbox,

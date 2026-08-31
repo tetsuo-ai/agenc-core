@@ -264,9 +264,16 @@ the sandbox. The supported options are installing the AppArmor profile above
 (restores full bubblewrap confinement), `sandbox_mode = "read-only"`, or the
 explicit `danger-full-access` posture. Plugin-declared MCP servers are exempt:
 they run under a tighter profile confined to their plugin data directory,
-which the Landlock fallback can express. `[sandbox].writable_roots` extends the
-workspace-write allowlist, but it cannot weaken protected `.git`, `.agenc`, or
-agent-control paths and therefore does not bypass this fallback limitation.
+which the Landlock fallback can express. `Grep`, `Glob`, and `Orient` are also
+exempt: they spawn a narrowed read-only ripgrep child (`cwdBinding:
+"inherited_readonly"`) with write and network grants stripped, so Landlock can
+express that profile even when the session itself is workspace-write. The
+fallback never grants `/proc` or `/sys`, including under full-disk-read;
+`/proc`-dependent commands fail with `EACCES` rather than seeing the daemon's
+environment. `[sandbox].writable_roots` extends the workspace-write allowlist,
+but it cannot weaken protected `.git`, `.agenc`, or agent-control paths and
+therefore does not bypass this fallback limitation. Details:
+[tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md#search-execution-and-limits).
 
 ## npm launcher
 

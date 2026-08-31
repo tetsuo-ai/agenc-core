@@ -264,7 +264,7 @@ otherwise.
 | `auth.backend` | `remote` |
 | `auth.managedKeys.enabled` | `true` |
 | `plugins.enabled` | `false` |
-| `plugins.allowlist` | `[]` |
+| `plugins.allowlist` | `[]` (empty means no filter; only a non-empty list restricts) |
 | `mcp.server.enabled` | `false` |
 | `mcp.server.transport` | `stdio` |
 | `daemon.autostart` | `true` |
@@ -570,7 +570,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | Paths | Type / meaning |
 | --- | --- |
 | `plugins` | Plugin discovery and registration. |
-| `plugins.dirs`, `plugins.enabled`, `plugins.allowlist` | Search directories, global switch, and allowlist. |
+| `plugins.dirs`, `plugins.enabled`, `plugins.allowlist` | Search directories, global switch, and allowlist. An empty allowlist is “no filter”; a non-empty list matches plugin id or the name before the last `@`. |
 | `plugins.plugins`, `plugins.plugins.<plugin>` | Named plugin map of plugin blocks. |
 | `plugins.plugins.<plugin>.enabled`, `plugins.plugins.<plugin>.path` | Plugin enablement and local path. |
 | `plugins.plugins.<plugin>.mcp_servers`, `plugins.plugins.<plugin>.mcp_servers.<name>` | Plugin-owned MCP server map. |
@@ -648,8 +648,8 @@ keybinding file or watcher.
 | `agent.retention.snapshot_max_count`, `agent.retention.snapshot_max_bytes`, `agent.retention.rollout_days` | Snapshot/rollout retention. |
 | `durableTurns` | Durable-turn block. |
 | `durableTurns.checkpoint`, `durableTurns.checkpoint.enabled`, `durableTurns.checkpoint.minIntervalMs` | Checkpoint switch and throttle. |
-| `durableTurns.resume`, `durableTurns.resume.onRestart` | Resume-on-restart switch. Resume behavior is always fail-closed and is not operator-selectable. |
-| `durableTurns.resume.requireLease`, `durableTurns.resume.buildPinning` | Lease and build determinism guards. |
+| `durableTurns.resume`, `durableTurns.resume.onRestart` | Resume-on-restart switch. Default `true`. The removed `resume.policy` key is stripped on migrate; it is not an operator setting. |
+| `durableTurns.resume.requireLease`, `durableTurns.resume.buildPinning` | Lease and build-pinning guards. Both default `true`. Resume still fail-closes on lease or build-id mismatch; the switches select those guards, not an idempotent replay policy. |
 
 ### Gateway
 
