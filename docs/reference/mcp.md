@@ -154,6 +154,17 @@ refusal text.
 - Optional **supply-chain pin** (SHA-256 over the canonical tool catalog JSON)
   refuses to load if the advertised catalog drifts
 
+`inputSchema` is sanitized for the model
+(`sanitizeMcpInputSchemaForModel`) and then advertised as the tool's
+`inputSchema` / `function.parameters`. The sanitizer keeps `$ref`, `$defs`,
+`definitions`, and `oneOf`; it does not inline local JSON pointers. Gemini's
+function-declaration compiler drops those keys and then fails closed when the
+leftover node has neither `type` nor `anyOf`. Grammar-constrained local
+providers also drop `$ref`. Prefer a concrete `type` or `anyOf` on every
+advertised node if the session provider is Gemini or LM Studio /
+openai-compatible. Details:
+[provider-tool-compat.md](../provider-tool-compat.md#mcp-ref--defs-current-compiler).
+
 Resources (list/read) and prompts (list/render into message pairs) are bridged
 through the same session-owned manager. Resource reads preserve multipart
 content in order, cap each block at 1 MiB and each aggregate read at 5 MiB,
@@ -336,11 +347,13 @@ the daemon-owned admission kernel.
 | One plugin server missing, session still starts | A broken plugin source is skipped. A duplicate command/URL is suppressed by an enabled manual server. Check `/plugin` for `mcp-server-suppressed-duplicate`. |
 | `/compact` or auto-compact denied `context_window_exceeded` on the **summary** | Summaries no longer inherit the MCP/builtin factory catalog or Grok native tools. If admission still denies, the transcript + system prompt + reserved output themselves exceed the window. Confirm the live window (not the 128k fallback), shrink `/compact` focus, or compact earlier. `/context` still shows the next-turn catalog size; that is not the summary request. |
 | Mid-turn dies `mid_turn_compact_failed` after adding MCP servers | A large catalog can raise the estimate past the fire threshold and raise provider-reported `promptTokens` past the mid-turn outer gate. The summary request should still pass admission. Check the disable-flag rules and the 2-failure digest guard on [CP-0006](../design/critical-path/0006-compaction-transaction.md), and whether last-sample `promptTokens` disagreed with the compact-module estimate. |
+| Gemini turn is empty after attaching an MCP server, or only after `system.searchTools` picks one of its tools | `compileGeminiSchema` dropped `$ref` / `$defs` / `definitions` / `oneOf` from that tool's `inputSchema`, then threw `Gemini cannot represent schema at tools["mcp.<server>.<tool>"].parameters…: a JSON Schema type is required`. Built-in tools are fine. Inline the schema on the server, disable that tool, or use another provider. See [provider-tool-compat.md](../provider-tool-compat.md#mcp-ref--defs-current-compiler). |
 
 ## Related
 
 - Tools / permissions overview: [`tools-permissions-sandbox.md`](tools-permissions-sandbox.md)
 - Plugin install scopes, manifests, and repository-controlled stripping: [`skills-plugins.md`](skills-plugins.md)
+- Gemini / local wire-schema constraints for MCP `$ref` tools: [`provider-tool-compat.md`](../provider-tool-compat.md#mcp-ref--defs-current-compiler)
 - Admission token accounting: [`provider-aware-token-accounting.md`](../design/provider-aware-token-accounting.md)
 - Client README: [`../../runtime/src/mcp-client/README.md`](../../runtime/src/mcp-client/README.md)
 - Architecture map: [`../ARCHITECTURE.md`](../ARCHITECTURE.md)

@@ -206,6 +206,53 @@ Constraints:
 - `oneOf`-only nodes lose `oneOf` in the allowlist pass, then fail as
   missing `type`. Prefer `anyOf` if the schema must stay Gemini-callable.
 
+### MCP `$ref` / `$defs` (current compiler)
+
+Gemini's `parameters` Schema proto has no `$ref`. The compiler therefore
+drops `$ref`, `$defs`, `definitions`, and `oneOf` instead of inlining them.
+
+Outbound MCP tools keep those keywords. `sanitizeMcpInputSchemaForModel`
+(`runtime/src/mcp-client/model-facing-sanitization.ts`) strips instruction-like
+annotations and bounds size; it does **not** resolve local pointers.
+`runtime/src/mcp-client/tools.ts` then puts that sanitized JSON Schema on
+`inputSchema`, and `toolToLLMTool` advertises it as
+`function.parameters`. After `system.searchTools` discovery (MCP tools are
+deferred by default), the next `buildGeminiRequest` compiles the discovered
+schema.
+
+A common OpenAPI / Pydantic shape therefore becomes an empty node:
+
+```jsonc
+// MCP inputSchema (also legal as a property-level $ref + definitions)
+{
+  "$defs": {
+    "Item": {
+      "type": "object",
+      "properties": { "id": { "type": "string" } }
+    }
+  },
+  "$ref": "#/$defs/Item"
+}
+
+// After compileGeminiSchema: {}
+// Then: Gemini cannot represent schema at
+// tools["mcp.<server>.<tool>"].parameters.type:
+// a JSON Schema type is required
+```
+
+The turn never reaches `generateContent` or admission `countTokens`. Built-in
+tools are not affected; they do not use `$ref`. A sibling `description` on a
+`$ref` node is kept, but description alone does not satisfy the type/`anyOf`
+rule.
+
+`oneOf` from an MCP server is the same drop-then-fail path as a built-in
+`oneOf`-only node. External or cyclic refs are not a separate Gemini error
+today: they are dropped like any other `$ref`, then fail as a missing type.
+
+Inline the schema in the MCP server (concrete `type` / `anyOf` on every
+advertised node) if the tool must stay Gemini-callable. Passing `$ref`
+through would 400 on Google's Schema proto.
+
 ### Fail-closed before dispatch
 
 `compileGeminiSchema` throws `LLMProviderError` (`provider: "gemini"`) before
@@ -265,8 +312,9 @@ but `builtTools` applies the local-profile filter afterward.
 | Qwen3 think-trace burns minutes | `/no_think` only attaches on `lmstudio` / `openai-compatible` + qwen3 |
 | Gemini 400 `Unknown name "additionalProperties"` / empty reply | Pre-allowlist wire schema; current code strips those keys |
 | Gemini 400 `Proto field is not repeating, cannot start list` / empty reply | Pre-compiler `type` array on the wire. Current code lowers `["T","null"]` to `type` + `nullable` |
-| Gemini compile fails before outbound `generateContent` or `countTokens` with `a JSON Schema type is required` | An older compiler required a sibling `type` on every node. Built-in `FileRead.offset` / `searchTools.select` / `exec_command.sandbox_permissions` use `anyOf` with no parent type. Current code compiles that shape |
-| Gemini turn fails locally with `Gemini cannot represent schema at <path>` | Multi-concrete type union, a node with neither `type` nor `anyOf` (including `oneOf`-only after the allowlist drop), empty `anyOf`, or `required`/`properties` on a non-object. Fix the tool or structured-output schema. The request never left the process |
+| Gemini compile fails before outbound `generateContent` or `countTokens` with `a JSON Schema type is required` | An older compiler required a sibling `type` on every node. Built-in `FileRead.offset` / `searchTools.select` / `exec_command.sandbox_permissions` use `anyOf` with no parent type; current code compiles that shape. The live remainder is usually an MCP tool whose `inputSchema` is `$ref` / `$defs` / `definitions` / `oneOf` only. Those keys are dropped, then the leftover node has neither `type` nor `anyOf` |
+| Gemini turn dies only after `system.searchTools` selects an MCP tool | MCP tools are deferred. The first catalog compile succeeds; discovery then advertises the `$ref` schema and the next generate/countTokens call fails closed |
+| Gemini turn fails locally with `Gemini cannot represent schema at <path>` | Multi-concrete type union, a node with neither `type` nor `anyOf` (including `$ref`/`oneOf`-only after the allowlist drop), empty `anyOf`, or `required`/`properties` on a non-object. Fix the MCP or structured-output schema. The request never left the process |
 | NIM ignores or 400s `reasoning_effort` | Family has no documented enum, or the value is outside it |
 
 There is no operator config for the grammar-safe key set, the 8192 ceiling, or
