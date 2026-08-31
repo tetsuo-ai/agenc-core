@@ -163,6 +163,14 @@ jobs:
               --shard=${{ matrix.shard }}/4 \
               --maxWorkers=2
 
+      - name: Prove FND baseline provenance in a fresh clone
+        if: matrix.shard == 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$AGENC_NODE_EXECUTABLE_PATH" \
+            runtime/scripts/check-fnd-baseline-fresh-clone.mjs
+
       - name: Assert the suite left the checkout clean
         shell: bash
         run: |
@@ -1242,8 +1250,8 @@ jobs:
             numPassedTestSuites: 12,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 94,
-            numPassedTests: 94,
+            numTotalTests: 97,
+            numPassedTests: 97,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1270,7 +1278,7 @@ jobs:
               `macOS-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("macOS FND/native capability lane passed 94 tests in 8 files with zero skipped");
+          console.log("macOS FND/native capability lane passed 97 tests in 8 files with zero skipped");
           NODE
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
 
@@ -1472,8 +1480,8 @@ jobs:
             numPassedTestSuites: 18,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 101,
-            numPassedTests: 101,
+            numTotalTests: 104,
+            numPassedTests: 104,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1496,7 +1504,7 @@ jobs:
               `Windows-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("Windows FND/native capability lane passed 101 tests in 11 files with zero skipped");
+          console.log("Windows FND/native capability lane passed 104 tests in 11 files with zero skipped");
           '@ | node --input-type=module - $results
           if ($LASTEXITCODE -ne 0) { throw "Windows native result contract failed" }
           if (-not [string]::IsNullOrWhiteSpace(

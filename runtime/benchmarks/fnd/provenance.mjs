@@ -33,6 +33,12 @@ const MAX_WINDOWS_GIT_SEARCH_PATH_ENTRY_BYTES = 32_768;
 const WINDOWS_GIT_EXECUTABLE_NAMES = Object.freeze(["git.com", "git.exe"]);
 const WINDOWS_SEARCH_PATH_SEPARATOR = ";";
 const WINDOWS_SEARCH_PATH_QUOTES = Object.freeze(['"', "'"]);
+const FRESH_CLONE_REF_IDENTITY_ARGS = Object.freeze([
+  "-c",
+  "user.name=AgenC Benchmark Harness",
+  "-c",
+  "user.email=benchmark@agenc.invalid",
+]);
 
 export function captureBenchmarkProvenance(options) {
   const validated = validateProvenanceOptions(options);
@@ -55,6 +61,10 @@ export function captureBenchmarkProvenance(options) {
   assertGitRevision(sourceRevision);
   assertRevisionIsCommit(validated.repositoryRoot, sourceRevision);
   assertRevisionIsAncestor(validated.repositoryRoot, sourceRevision);
+  assertRevisionIsAncestorOfDefaultBranch(
+    validated.repositoryRoot,
+    sourceRevision,
+  );
   assertProductionTreeMatchesRevision(
     validated.repositoryRoot,
     sourceRevision,
@@ -144,6 +154,10 @@ export function verifyCheckedBenchmarkProvenance(report, options) {
   assertGitRevision(report.sourceRevision);
   assertRevisionIsCommit(validated.repositoryRoot, report.sourceRevision);
   assertRevisionIsAncestor(validated.repositoryRoot, report.sourceRevision);
+  assertRevisionIsAncestorOfDefaultBranch(
+    validated.repositoryRoot,
+    report.sourceRevision,
+  );
   assertBindingsEqual(
     report.productionTreeBinding,
     collectGitTreeBinding(
@@ -613,6 +627,134 @@ function assertRevisionIsAncestor(repositoryRoot, revision) {
   if (result !== 0) {
     throw new Error("benchmark source revision is not an ancestor of HEAD");
   }
+}
+
+export function assertCleanBenchmarkWorktree(repositoryRoot) {
+  const canonicalRoot = canonicalizeRepositoryRoot(repositoryRoot);
+  const status = gitText(
+    canonicalRoot,
+    ["status", "--porcelain=v1", "--untracked-files=all"],
+    "audit benchmark worktree cleanliness",
+  );
+  if (status.length > 0) {
+    throw new Error("benchmark capture requires a clean worktree");
+  }
+}
+
+const DEFAULT_BRANCH_SELECTORS = Object.freeze([
+  "refs/remotes/origin/HEAD",
+  "refs/remotes/origin/main",
+  "refs/remotes/origin/master",
+  "refs/heads/main",
+  "refs/heads/master",
+]);
+
+export function resolveDefaultBranchSelector(repositoryRoot) {
+  const canonicalRoot = canonicalizeRepositoryRoot(repositoryRoot);
+  for (const selector of DEFAULT_BRANCH_SELECTORS) {
+    if (!hasGitCommitSelector(canonicalRoot, selector)) continue;
+    return selector;
+  }
+  throw new Error("could not resolve the repository default branch");
+}
+
+export function resolveDefaultBranchRevision(repositoryRoot) {
+  const canonicalRoot = canonicalizeRepositoryRoot(repositoryRoot);
+  return resolveGitCommitSelector(
+    canonicalRoot,
+    resolveDefaultBranchSelector(canonicalRoot),
+    "resolve repository default branch",
+  );
+}
+
+export function materializeFreshCloneDefaultBranch(
+  repositoryRoot,
+  defaultRevision,
+) {
+  const canonicalRoot = canonicalizeRepositoryRoot(repositoryRoot);
+  assertGitRevision(defaultRevision);
+  assertRevisionIsCommit(canonicalRoot, defaultRevision);
+  gitText(
+    canonicalRoot,
+    [
+      ...FRESH_CLONE_REF_IDENTITY_ARGS,
+      "update-ref",
+      "refs/heads/main",
+      defaultRevision,
+    ],
+    "install fresh-clone main",
+  );
+  gitText(
+    canonicalRoot,
+    [
+      ...FRESH_CLONE_REF_IDENTITY_ARGS,
+      "update-ref",
+      "refs/remotes/origin/main",
+      defaultRevision,
+    ],
+    "install fresh-clone origin/main",
+  );
+  gitStatus(canonicalRoot, [
+    ...FRESH_CLONE_REF_IDENTITY_ARGS,
+    "update-ref",
+    "-d",
+    "refs/remotes/origin/HEAD",
+  ]);
+  gitText(
+    canonicalRoot,
+    [
+      ...FRESH_CLONE_REF_IDENTITY_ARGS,
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/main",
+    ],
+    "install fresh-clone origin HEAD",
+  );
+}
+
+export function assertRevisionIsAncestorOfDefaultBranch(
+  repositoryRoot,
+  revision,
+) {
+  const defaultRevision = resolveDefaultBranchRevision(repositoryRoot);
+  const result = gitStatus(repositoryRoot, [
+    "merge-base",
+    "--is-ancestor",
+    revision,
+    defaultRevision,
+  ]);
+  if (result !== 0) {
+    throw new Error(
+      "benchmark source revision is not an ancestor of the default branch",
+    );
+  }
+}
+
+function hasGitCommitSelector(repositoryRoot, selector) {
+  return (
+    gitStatus(repositoryRoot, [
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      "--end-of-options",
+      `${selector}^{commit}`,
+    ]) === 0
+  );
+}
+
+function resolveGitCommitSelector(repositoryRoot, selector, label) {
+  const revision = gitText(
+    repositoryRoot,
+    [
+      "rev-parse",
+      "--verify",
+      "--end-of-options",
+      `${selector}^{commit}`,
+    ],
+    label,
+  );
+  assertGitRevision(revision);
+  return revision;
 }
 
 function assertTrackedPathsMatchRevision(repositoryRoot, revision, paths) {

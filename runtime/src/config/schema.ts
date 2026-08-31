@@ -66,7 +66,21 @@ export type PermissionDefaultMode = ApprovalPolicy;
 export type SandboxMode =
   "read-only" | "workspace-write" | "danger-full-access";
 
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "none";
+export type SandboxConfigMode = "off" | "read-only" | "workspace-write";
+
+/**
+ * `none` disables reasoning and `max` sits above `xhigh`; both are
+ * documented values the type used to reject, so a model that offers them
+ * (the gpt-5.6 family tops out at max) could not be driven to its ends.
+ */
+export type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
 
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
 

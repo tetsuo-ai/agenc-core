@@ -4857,7 +4857,9 @@ describe("AgenC background agent lifecycle", () => {
     };
     const agents = new AgenCDaemonAgentManager({
       defaultCwd: () => "/workspace",
-      now: sequence(["2026-05-01T12:00:00.000Z", "2026-05-01T12:00:01.000Z"]),
+      // Two extra ticks: the runner-missing refresh stamps
+      // runtimeUnavailableSince through #now.
+      now: sequence(["2026-05-01T12:00:00.000Z", "2026-05-01T12:00:01.000Z", "2026-05-01T12:00:02.000Z", "2026-05-01T12:00:03.000Z"]),
       runner,
     });
 
@@ -4936,11 +4938,8 @@ describe("AgenC background agent lifecycle", () => {
     };
     const agents = new AgenCDaemonAgentManager({
       defaultCwd: () => "/workspace",
-      now: sequence([
-        "2026-05-01T12:00:00.000Z",
-        "2026-05-01T12:00:01.000Z",
-        "2026-05-01T12:00:02.000Z",
-      ]),
+      // Four extra ticks for the runner-missing refresh stamps.
+      now: sequence(["2026-05-01T12:00:00.000Z", "2026-05-01T12:00:01.000Z", "2026-05-01T12:00:02.000Z", "2026-05-01T12:00:03.000Z", "2026-05-01T12:00:04.000Z", "2026-05-01T12:00:05.000Z", "2026-05-01T12:00:06.000Z"]),
       runner,
     });
 
@@ -5824,7 +5823,7 @@ describe("AgenC background agent lifecycle", () => {
     };
     const agents = new AgenCDaemonAgentManager({
       defaultCwd: () => "/workspace",
-      now: sequence(["2026-05-01T12:00:00.000Z", "2026-05-01T12:00:01.000Z"]),
+      now: sequence(["2026-05-01T12:00:00.000Z", "2026-05-01T12:00:01.000Z", "2026-05-01T12:00:02.125Z", "2026-05-01T12:00:03.875Z"]),
       runner,
     });
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({

@@ -236,6 +236,7 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | `AGENC_SHELL_PREFIX` | Wrap bash/hook command argv (POSIX) |
 | `AGENC_TMPDIR` | Exact session temp root for sandbox and permission paths. Child processes receive the same root as `TMPDIR`, `TEMP`, and `TMP` |
 | `AGENC_PLUGIN_CACHE_DIR` | Explicit sole plugin storage root (the versioned cache remains its `cache/` child). CLI/runtime ingress captures it once; `AgencClient` callers pass `pluginStorageRoot` directly |
+| `AGENC_SKIP_OFFICIAL_MARKETPLACE` | `1` stops the first marketplace catalog on a profile with none configured from auto-registering the official `agenc-plugins` marketplace |
 | `AGENC_ALLOW_UNTRUSTED_HOOKS` | Permit command hook effects in an untrusted workspace; captured once at runtime ingress; see below |
 | `AGENC_ENABLE_TASKS` | TUI task-board pool only. LIVE Task* tools are always registered and deferred |
 | `AGENC_USE_NATIVE_FILE_SEARCH` | Native fuzzy file index path |

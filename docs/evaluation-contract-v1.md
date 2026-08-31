@@ -46,6 +46,15 @@ That command reports `legacy_non_confirmatory` and the missing pins. The legacy
 runner remains useful as a deterministic offline smoke; its score is not TFR and
 cannot support a competitive claim.
 
+`check:eval-contract` (`runtime/src/eval-contract/cli.ts`) reads each document
+as a regular, non-symlink file of at most 64 MiB. The open does not follow a
+symlink and does not block on a FIFO or device; identity (dev/ino/size) is
+checked before and after the read so a swapped or growing file is rejected
+instead of half-read. Options end at the first `--`, so a document whose name
+starts with a dash can still be checked. Any other unknown dash-prefixed
+argument is a usage error (exit 2). `check:eval-suites` likewise treats any
+flag other than `--json` as usage.
+
 ## Document lifecycle
 
 ```text

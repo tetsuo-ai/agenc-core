@@ -141,7 +141,7 @@ function mergeAvailableSkills(
 }
 
 /**
- * Bundled skills registered in the runtime (browser-automation, iot-builder,
+ * Bundled skills registered in the runtime (browser-automation,
  * ...). They are invocable slash commands but not part of the local skill
  * loader, so merge them into the listing with a `bundled` source tag.
  *
@@ -394,7 +394,7 @@ export function formatSkillsSnapshot(
   );
   // The default view is capped at DEFAULT_SKILLS_LIMIT. Bundled skills are
   // always present and sort early alphabetically (agenc-*, batch,
-  // browser-automation, iot-builder, ...), so a straight slice of the sorted
+  // browser-automation, ...), so a straight slice of the sorted
   // list hides exactly what the user is most likely looking for: the skills
   // they wrote in this project. Rank non-bundled first for the capped view
   // only — `/skills all` and `/skills <search>` still show the full

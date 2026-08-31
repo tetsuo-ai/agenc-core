@@ -400,6 +400,29 @@ function defaultModelFor(provider: ProviderName): string {
   return requireBuiltInProviderInfo(provider).defaultModel;
 }
 
+/**
+ * The provider's own convention for its base-URL variable is the host
+ * root (`https://api.anthropic.com`) with the client adding the version
+ * segment. We append the wire path to whatever is configured, so taking
+ * that value verbatim POSTs to `/messages` and every turn 404s with an
+ * empty body — which the app renders as "the model returned nothing".
+ * A base that already carries a path (a proxy, a gateway) is left alone.
+ */
+function withAnthropicVersionSegment(
+  baseURL: string | undefined,
+): string | undefined {
+  if (baseURL === undefined) return undefined;
+  try {
+    const url = new URL(baseURL);
+    const path = url.pathname.replace(/\/+$/, "");
+    if (path.length > 0) return baseURL;
+    url.pathname = "/v1";
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return baseURL;
+  }
+}
+
 function defaultBaseURLFor(provider: ProviderName): string {
   return requireBuiltInProviderInfo(provider).baseURL;
 }
@@ -1766,7 +1789,8 @@ export function createProvider(
         model,
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL:
-          normalizeBaseURL(opts.baseURL) ?? defaultBaseURLFor("anthropic"),
+          withAnthropicVersionSegment(normalizeBaseURL(opts.baseURL)) ??
+            defaultBaseURLFor("anthropic"),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
         ...(extra.anthropicVersion
           ? { anthropicVersion: extra.anthropicVersion }

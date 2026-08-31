@@ -97,7 +97,14 @@ export function isLoopbackAddress(address: string): boolean {
   }
   if (version === 6) {
     const lower = address.toLowerCase();
-    return lower === "::1" || lower === "0:0:0:0:0:0:0:1";
+    const mapped = extractMappedIPv4(lower);
+    if (mapped !== null) return isLoopbackAddress(mapped);
+    const groups = expandIPv6Groups(lower);
+    return (
+      groups !== null &&
+      groups.slice(0, 7).every((group) => group === 0) &&
+      groups[7] === 1
+    );
   }
   return false;
 }
@@ -176,6 +183,11 @@ export async function resolveAllowedAddress(
     throw new BrowserSsrfError(`could not resolve host: ${bare}`);
   }
   for (const address of addresses) {
+    if (isIP(address) === 0) {
+      throw new BrowserSsrfError(
+        `blocked ${bare} — resolver returned a non-IP address`,
+      );
+    }
     if (isDisallowedAddress(address, policy)) {
       throw new BrowserSsrfError(
         `blocked ${bare} — resolves to ${address} (private/loopback/metadata address; set [browser].allow_private_network to permit local targets)`,

@@ -1682,6 +1682,15 @@ export type WorkspaceEditorPredictionFeedbackSessionParams = Pick<
 export interface SessionSetPermissionModeParams extends JsonObject {
   readonly sessionId: string;
   readonly mode: string;
+  /**
+   * Explicit operator consent to run bypassPermissions in this session's
+   * exact workspace. Without it a live session can never switch to
+   * bypass: the transition gate refuses unless the workspace is already
+   * consent-bound, and only creation-time bypass binds it. The runner has
+   * honored this field all along — it was never declared on the wire, so
+   * no client could send it.
+   */
+  readonly bypassAuthority?: "operator_tool_approval";
 }
 
 export type SessionPermissionRuleMutationOperation = "add" | "remove";
@@ -2987,6 +2996,37 @@ export interface SessionSnapshotResult extends JsonObject {
     readonly outputTokens: number;
     readonly totalTokens: number;
     readonly costUsd: number;
+  };
+  /** Cumulative cache metrics across API calls this session. */
+  readonly cacheStats: {
+    readonly requestCount: number;
+    readonly cacheReadInputTokens: number;
+    readonly cacheCreationInputTokens: number;
+    readonly cacheTotalInputTokens: number;
+    readonly hitRate: number | null;
+  };
+  /**
+   * What actually occupies the context window, by source. A client can
+   * only estimate the conversation; the tool schemas, MCP catalog and
+   * memory files are the daemon's own and were invisible from outside,
+   * which is why a UI showing them had to make numbers up.
+   */
+  readonly contextBreakdown?: {
+    /** The model's real window, so shares are against the truth. */
+    readonly windowTokens: number;
+    readonly messageTokens: number;
+    readonly systemPromptTokens: number;
+    /** Always-loaded built-in tool schemas. */
+    readonly systemToolTokens: number;
+    readonly systemToolCount: number;
+    /** Tool schemas served by MCP servers. */
+    readonly mcpToolTokens: number;
+    readonly mcpToolCount: number;
+    /** Schemas the model can search for but that are not resident. */
+    readonly deferredToolTokens: number;
+    readonly deferredToolCount: number;
+    readonly memoryFileTokens: number;
+    readonly memoryFileCount: number;
   };
 }
 

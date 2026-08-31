@@ -32,6 +32,7 @@ const BASELINE_JSON_PATH = join(BENCHMARK_ROOT, "baseline.v1.json");
 const BASELINE_MARKDOWN_PATH = join(BENCHMARK_ROOT, "baseline.v1.md");
 const RUNNER_PATH = join(BENCHMARK_ROOT, "run-baselines.mjs");
 const PLAN_RUNNER_TIMEOUT_MS = 5_000;
+const PROVENANCE_CONTRACT_TIMEOUT_MS = 90_000;
 
 function readBaseline(): Record<string, any> {
   return JSON.parse(readFileSync(BASELINE_JSON_PATH, "utf8")) as Record<
@@ -172,7 +173,7 @@ describe("FND benchmark baseline contract", () => {
     expect(report.productionTreeBinding.gitObjectId).toMatch(
       /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u,
     );
-  });
+  }, PROVENANCE_CONTRACT_TIMEOUT_MS);
 
   test("rejects a missing elapsed metric and additive schema drift", () => {
     const missingMetric = structuredClone(readBaseline());

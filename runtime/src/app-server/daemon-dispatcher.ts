@@ -3446,10 +3446,18 @@ function validateSessionSetPermissionModeParams(
 ): SessionSetPermissionModeParams {
   const validated = validateObjectShape(params, {
     methodName: "session.setPermissionMode",
-    stringFields: ["sessionId", "mode"],
+    stringFields: ["sessionId", "mode", "bypassAuthority"],
   });
   validateRequiredString(validated, "session.setPermissionMode", "sessionId");
   validateRequiredString(validated, "session.setPermissionMode", "mode");
+  if (
+    validated.bypassAuthority !== undefined &&
+    validated.bypassAuthority !== "operator_tool_approval"
+  ) {
+    throw invalidParams(
+      "session.setPermissionMode param 'bypassAuthority' accepts only 'operator_tool_approval'",
+    );
+  }
   return validated as SessionSetPermissionModeParams;
 }
 

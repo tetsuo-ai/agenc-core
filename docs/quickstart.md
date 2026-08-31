@@ -79,6 +79,11 @@ the objective):
 `agenc agent start [--unattended-allow <tools>] [--unattended-deny <tools>] <objective>`.
 Resume with `--continue` / `--resume`.
 
+Run `agenc` from a project directory. A bare start in `$HOME` fails Linux
+sandbox readiness because the helper is installed under `~/.agenc`.
+`agenc doctor` names that home workspace; see
+[install.md](install.md#after-install).
+
 ## 5. Act 2 — make it YOUR agent
 
 ```bash

@@ -6,6 +6,7 @@ import {
 } from "./types.js";
 import React from "react";
 import type { LLMContentPart, LLMMessage, LLMProvider, LLMTool } from "../llm/types.js";
+import { createChildAbortController } from "../utils/abortController.js";
 import {
   cloneLlmContent as cloneContent,
   fromRuntimeMessageContent,
@@ -487,7 +488,13 @@ function buildAgenCToolUseContext(
     )
     .join("\n\n");
   return {
-    abortController: session.abortController ?? new AbortController(),
+    // Child of the session controller — cancelling a compaction must never
+    // consume the session's one-shot root controller (see
+    // agenc-tool-use-context.ts for the incident this prevents).
+    abortController:
+      session.abortController !== undefined
+        ? createChildAbortController(session.abortController)
+        : new AbortController(),
     sessionId: session.conversationId,
     options: {
       mainLoopModel: model.model,

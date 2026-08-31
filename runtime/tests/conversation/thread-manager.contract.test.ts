@@ -887,4 +887,79 @@ describe("ConversationThreadManager", () => {
     expect(snapshot.prewarm).toBe("failed");
     expect(snapshot.prewarmError).toBe("provider unavailable");
   });
+
+  test("interrupting a fork stops only that fork's turn, never the source session", async () => {
+    // The regression this pins: a fork interrupt used to call
+    // sourceSession.abortTerminal(), aborting the parent session's one-shot
+    // terminal controller. Every turn the user sent afterwards was born with
+    // an already-aborted signal and died at turn_started — the session looked
+    // alive and silently dropped every message.
+    const session = makeSession();
+    const signals: (AbortSignal | undefined)[] = [];
+    const forkRunTurn = vi.fn(async function* (
+      input: string | readonly LLMContentPart[],
+      opts: { readonly signal?: AbortSignal },
+    ) {
+      signals.push(opts.signal);
+      // Only the first turn simulates long work; it finishes when aborted.
+      if (input === "long fork turn" && opts.signal !== undefined && !opts.signal.aborted) {
+        await new Promise<void>((resolve) => {
+          opts.signal!.addEventListener("abort", () => resolve(), { once: true });
+        });
+      }
+      yield { type: "turn_complete" } as never;
+    });
+    (
+      session as Session & {
+        runTurn: typeof forkRunTurn;
+        emitPhaseEvent: ReturnType<typeof vi.fn>;
+        rolloutStore?: { readAll: () => RolloutItem[]; rolloutPath: string };
+      }
+    ).runTurn = forkRunTurn;
+    (
+      session as Session & { emitPhaseEvent: ReturnType<typeof vi.fn> }
+    ).emitPhaseEvent = vi.fn();
+    (
+      session as Session & {
+        rolloutStore?: { readAll: () => RolloutItem[]; rolloutPath: string };
+      }
+    ).rolloutStore = {
+      readAll: () => [
+        {
+          type: "response_item",
+          payload: { role: "user", content: "seed" },
+        },
+      ],
+      rolloutPath: "/tmp/root-rollout.jsonl",
+    };
+    const manager = new ConversationThreadManager({ now: () => 45 });
+    await manager.registerConversationRootSession(session, { prewarm: false });
+    const forked = await manager.forkThread(session, {
+      kind: "truncate_before_nth_user_message",
+      n: 1,
+    });
+
+    const running = manager.submitTurn(forked.threadId, {
+      type: "user_input",
+      input: "long fork turn",
+    });
+    await vi.waitFor(() => {
+      expect(forkRunTurn).toHaveBeenCalledTimes(1);
+    });
+
+    // The interrupt must not queue behind the turn it is stopping.
+    await manager.submitTurn(forked.threadId, { type: "interrupt" });
+    await running;
+
+    expect(session.abortTerminal).not.toHaveBeenCalled();
+    expect(signals[0]?.aborted).toBe(true);
+
+    // The fork itself stays usable: a later turn gets a fresh signal.
+    await manager.submitTurn(forked.threadId, {
+      type: "user_input",
+      input: "next fork turn",
+    });
+    expect(forkRunTurn).toHaveBeenCalledTimes(2);
+    expect(signals[1]?.aborted).toBe(false);
+  });
 });

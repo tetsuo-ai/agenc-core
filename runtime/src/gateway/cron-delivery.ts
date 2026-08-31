@@ -21,7 +21,15 @@
  * notice, never silent).
  */
 
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { isIP } from "node:net";
 import type { AgenCConfig } from "../config/schema.js";
+import {
+  BrowserSsrfError,
+  resolveAllowedAddress,
+  type HostLookup,
+} from "../browser/ssrf.js";
 import {
   listAllCronTasks,
   markCronTasksFired,
@@ -39,6 +47,8 @@ import {
 
 /** Upper bound on one sleep so externally-added tasks are noticed. */
 export const CRON_DELIVERY_SCAN_CAP_MS = 5 * 60 * 1000;
+export const CRON_WEBHOOK_TIMEOUT_MS = 15_000;
+export const CRON_WEBHOOK_MAX_REDIRECTS = 5;
 
 export interface CronDeliveryClock {
   now(): Date;
@@ -64,7 +74,7 @@ export interface StartCronDeliveryOptions {
   readonly log?: (line: string) => void;
   /** Test seam: real timers by default. */
   readonly clock?: CronDeliveryClock;
-  /** Test seam: webhook transport (global fetch by default). */
+  /** Test seam: webhook transport (address-pinned HTTP client by default). */
   readonly postWebhook?: (url: string, body: unknown) => Promise<void>;
 }
 
@@ -74,77 +84,270 @@ export interface CronDeliveryHandle {
   stop(): Promise<void>;
 }
 
-/**
- * Fail-closed SSRF gate for cron webhooks (todo-111). Blocks private,
- * loopback, link-local, and metadata destinations after DNS resolve.
- */
-export async function assertCronWebhookUrlSafe(url: string): Promise<void> {
+interface ResolvedCronWebhookTarget {
+  readonly url: URL;
+  readonly address: string;
+}
+
+export interface CronWebhookRequest {
+  readonly url: URL;
+  /** Exact policy-approved address to dial; never resolve `url.hostname` again. */
+  readonly address: string;
+  readonly method: "GET" | "POST";
+  readonly body?: Uint8Array;
+  readonly signal: AbortSignal;
+}
+
+export interface CronWebhookResponse {
+  readonly statusCode: number;
+  readonly location?: string;
+}
+
+export type CronWebhookRequester = (
+  request: CronWebhookRequest,
+) => Promise<CronWebhookResponse>;
+
+export interface PostCronWebhookOptions {
+  /** Test seam: deterministic DNS resolver. */
+  readonly lookup?: HostLookup;
+  /** Test seam: transport that must dial `request.address` directly. */
+  readonly request?: CronWebhookRequester;
+  readonly timeoutMs?: number;
+  readonly maxRedirects?: number;
+}
+
+function stripHostBrackets(host: string): string {
+  return host.startsWith("[") && host.endsWith("]")
+    ? host.slice(1, -1)
+    : host;
+}
+
+async function resolveCronWebhookTarget(
+  rawUrl: string,
+  lookup?: HostLookup,
+): Promise<ResolvedCronWebhookTarget> {
   let parsed: URL;
   try {
-    parsed = new URL(url);
+    parsed = new URL(rawUrl);
   } catch {
     throw new Error("cron webhook: invalid URL");
   }
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     throw new Error("cron webhook: URL must be http(s)");
   }
-  // Prefer https; allow http only for explicit local testing is still gated.
-  const host = parsed.hostname.startsWith("[")
-    ? parsed.hostname.slice(1, -1)
-    : parsed.hostname;
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw new Error("cron webhook: URL credentials are not allowed");
+  }
+
+  const host = stripHostBrackets(parsed.hostname);
+  if (host === "") throw new Error("cron webhook: URL has no host");
   const lower = host.toLowerCase().replace(/\.$/, "");
   if (lower === "localhost" || lower.endsWith(".localhost")) {
     throw new Error("cron webhook: localhost blocked");
   }
-  const { isIP } = await import("node:net");
-  const { lookup } = await import("node:dns/promises");
-  const checkIp = (address: string): void => {
-    const v = isIP(address);
-    if (v === 4) {
-      const parts = address.split(".").map(Number);
-      const [a, b] = parts;
-      if (
-        a === 127 ||
-        a === 0 ||
-        a === 10 ||
-        (a === 169 && b === 254) ||
-        (a === 172 && b !== undefined && b >= 16 && b <= 31) ||
-        (a === 100 && b !== undefined && b >= 64 && b <= 127) ||
-        (a === 192 && b === 168)
-      ) {
-        throw new Error(`cron webhook: private/link-local address blocked (${address})`);
+
+  try {
+    const address =
+      lookup === undefined
+        ? await resolveAllowedAddress(host, { allowPrivateNetwork: false })
+        : await resolveAllowedAddress(
+            host,
+            { allowPrivateNetwork: false },
+            lookup,
+          );
+    parsed.hash = "";
+    return { url: parsed, address };
+  } catch (error) {
+    if (error instanceof BrowserSsrfError) {
+      throw new Error(`cron webhook: ${error.message}`, { cause: error });
+    }
+    throw error;
+  }
+}
+
+/**
+ * Fail-closed SSRF gate for cron webhooks. Every resolved address must be an
+ * ordinary public address. Delivery performs the same check immediately
+ * before opening its socket; this export also supports early configuration
+ * validation without making that preflight the enforcement boundary.
+ */
+export async function assertCronWebhookUrlSafe(
+  url: string,
+  lookup?: HostLookup,
+): Promise<void> {
+  await resolveCronWebhookTarget(url, lookup);
+}
+
+function abortReason(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  return Object.assign(new Error("cron webhook: delivery aborted"), {
+    name: "AbortError",
+  });
+}
+
+function waitForAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(abortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+export async function requestPinnedCronWebhook(
+  input: CronWebhookRequest,
+): Promise<CronWebhookResponse> {
+  const originalHost = stripHostBrackets(input.url.hostname);
+  const headers: Record<string, string | number> = {
+    host: input.url.host,
+    connection: "close",
+  };
+  if (input.body !== undefined) {
+    headers["content-type"] = "application/json";
+    headers["content-length"] = input.body.byteLength;
+  }
+
+  const requestOptions = {
+    protocol: input.url.protocol,
+    hostname: input.address,
+    port:
+      input.url.port === ""
+        ? input.url.protocol === "https:"
+          ? 443
+          : 80
+        : Number(input.url.port),
+    method: input.method,
+    path: `${input.url.pathname}${input.url.search}`,
+    headers,
+    signal: input.signal,
+    agent: false as const,
+    ...(input.url.protocol === "https:" && isIP(originalHost) === 0
+      ? { servername: originalHost }
+      : {}),
+  };
+
+  return new Promise<CronWebhookResponse>((resolve, reject) => {
+    const transport =
+      input.url.protocol === "https:" ? httpsRequest : httpRequest;
+    const request = transport(requestOptions, (response) => {
+      const statusCode = response.statusCode ?? 0;
+      const location = response.headers.location;
+      response.once("error", reject);
+      response.once("aborted", () =>
+        reject(new Error("cron webhook: response aborted")),
+      );
+      response.once("end", () =>
+        resolve({
+          statusCode,
+          ...(location !== undefined ? { location } : {}),
+        }),
+      );
+      response.resume();
+    });
+    request.once("error", reject);
+    request.end(input.body);
+  });
+}
+
+function isRedirectStatus(statusCode: number): boolean {
+  return (
+    statusCode === 301 ||
+    statusCode === 302 ||
+    statusCode === 303 ||
+    statusCode === 307 ||
+    statusCode === 308
+  );
+}
+
+export async function postCronWebhook(
+  url: string,
+  body: unknown,
+  options: PostCronWebhookOptions = {},
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? CRON_WEBHOOK_TIMEOUT_MS;
+  const maxRedirects = options.maxRedirects ?? CRON_WEBHOOK_MAX_REDIRECTS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("cron webhook: timeout must be a positive integer");
+  }
+  if (!Number.isSafeInteger(maxRedirects) || maxRedirects < 0) {
+    throw new Error("cron webhook: max redirects must be a non-negative integer");
+  }
+
+  const requester = options.request ?? requestPinnedCronWebhook;
+  const serializedBody = JSON.stringify(body);
+  const encodedBody =
+    serializedBody === undefined
+      ? undefined
+      : Buffer.from(serializedBody, "utf8");
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new Error("cron webhook: delivery timed out")),
+    timeoutMs,
+  );
+  try {
+    let currentUrl = url;
+    let method: "GET" | "POST" = "POST";
+    let requestBody: Uint8Array | undefined = encodedBody;
+    let redirects = 0;
+
+    for (;;) {
+      const target = await waitForAbort(
+        resolveCronWebhookTarget(currentUrl, options.lookup),
+        controller.signal,
+      );
+      const response = await waitForAbort(
+        requester({
+          url: target.url,
+          address: target.address,
+          method,
+          ...(requestBody !== undefined ? { body: requestBody } : {}),
+          signal: controller.signal,
+        }),
+        controller.signal,
+      );
+      if (!isRedirectStatus(response.statusCode)) return;
+      if (response.location === undefined) {
+        throw new Error("cron webhook: redirect missing Location header");
       }
-    } else if (v === 6) {
-      const l = address.toLowerCase();
-      if (l === "::1" || l === "::" || l.startsWith("fc") || l.startsWith("fd") || l.startsWith("fe80")) {
-        throw new Error(`cron webhook: private/link-local address blocked (${address})`);
+      if (redirects >= maxRedirects) {
+        throw new Error(
+          `cron webhook: too many redirects (maximum ${maxRedirects})`,
+        );
+      }
+
+      let redirectUrl: URL;
+      try {
+        redirectUrl = new URL(response.location, target.url);
+      } catch {
+        throw new Error("cron webhook: invalid redirect URL");
+      }
+      if (redirectUrl.protocol !== target.url.protocol) {
+        throw new Error("cron webhook: redirect protocol changes are not allowed");
+      }
+
+      redirects += 1;
+      currentUrl = redirectUrl.toString();
+      if (response.statusCode !== 307 && response.statusCode !== 308) {
+        method = "GET";
+        requestBody = undefined;
       }
     }
-  };
-  if (isIP(host) !== 0) {
-    checkIp(host);
-    return;
-  }
-  const addresses = await lookup(host, { all: true });
-  for (const { address } of addresses) {
-    checkIp(address);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 async function defaultPostWebhook(url: string, body: unknown): Promise<void> {
-  await assertCronWebhookUrlSafe(url);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15_000);
-  try {
-    await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timer);
-  }
+  await postCronWebhook(url, body);
 }
 
 /** Adapter used when a task delivers to a webhook only — swallows channel output. */

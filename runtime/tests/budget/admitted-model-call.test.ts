@@ -620,8 +620,33 @@ describe("runAdmittedModelCall", () => {
     );
   });
 
-  test("denies an uncapped call when the provider cannot enforce its output bound", async () => {
+  test("admits an uncapped call even when the provider cannot enforce its output bound", async () => {
+    // The ChatGPT subscription backend rejects max_output_tokens by design;
+    // requiring the ceiling on uncapped calls denied every subscription
+    // turn. Without a hard cap the call admits and usage is reconciled
+    // after dispatch; the hard-cap variants below still deny.
     const state = harness({ supportsMaxOutputTokens: false });
+    const invoke = vi.fn(async () => response());
+
+    await expect(
+      callOptions(state, { maxOutputTokens: 200 }, invoke),
+    ).resolves.toBeDefined();
+    expect(state.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({ maxOutputTokens: 200 }),
+      undefined,
+    );
+    const acquired = state.acquire.mock.calls[0]?.[0] as
+      | { denialReason?: string }
+      | undefined;
+    expect(acquired?.denialReason).toBeUndefined();
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  test("denies a hard-capped call when the provider cannot enforce its output bound", async () => {
+    const state = harness({
+      supportsMaxOutputTokens: false,
+      hasHardTokenCap: true,
+    });
     const invoke = vi.fn(async () => response());
 
     await expect(
@@ -630,13 +655,6 @@ describe("runAdmittedModelCall", () => {
       code: "ADMISSION_DENIED",
       reason: "provider_budget_contract_unavailable",
     });
-    expect(state.acquire).toHaveBeenCalledWith(
-      expect.objectContaining({
-        maxOutputTokens: 200,
-        denialReason: "provider_budget_contract_unavailable",
-      }),
-      undefined,
-    );
     expect(invoke).not.toHaveBeenCalled();
   });
 

@@ -151,14 +151,15 @@ user-scoped plugins then appear in `/mcp` as `plugin:<id>:<server>` and
 as model tools `mcp.plugin:<id>:<server>.<tool>`.
 
 Project- and local-scope installs are **repository-controlled**
-(`isRepositoryControlledPlugin`). The loader strips their `mcpServers`
-and hooks so workspace-resident packages cannot become a second MCP or
-hook authority. `agenc plugin install --scope project` (or `local`)
-warns when the manifest ships those surfaces. Reinstall with
-`--scope user` to load them.
+(`isRepositoryControlledPlugin`). The loader strips their `mcpServers`,
+hooks, and `lspServers` so workspace-resident packages cannot become a second
+process authority. Skills, commands, agents, and output styles still load.
+`agenc plugin install --scope project` (or `local`) warns when the manifest
+ships hooks or MCP servers. Reinstall with `--scope user` to load those
+surfaces.
 
 Stdio plugin servers run under a tight sandbox profile (writes confined
-to the plugin data directory). That profile is Landlock-expressible;
+to the plugin data directory). Landlock can express this profile;
 ordinary workspace-write MCP is not. Operator merge rules, templates,
 and failure symptoms: [mcp.md](mcp.md#plugin-declared-servers).
 
@@ -251,10 +252,9 @@ Install roots use the same collision-resistant child key: user
 `<workspace>/plugins/` and git-root `plugins/`. `[plugins] enabled = false`
 in `defaultConfig()`.
 
-Installs that are not `--scope user` stay repository-controlled. If the
-plugin ships hooks or MCP servers, the CLI writes a stderr warning that
-those surfaces will not load. The warning is install-time only; the
-loader still strips them.
+For a non-user install, the CLI writes an install-time stderr warning when the
+plugin ships hooks or MCP servers. The loader enforces the scope restriction
+even if the warning is missed.
 
 A canonical plugin ID can be installed in one managed scope at a time.
 Uninstall it before moving it between user and project/local scope. Uninstall

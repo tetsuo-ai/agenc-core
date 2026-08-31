@@ -478,6 +478,68 @@ All=$ARGUMENTS
     expect(rendered?.content).not.toContain("${AGENC_SKILL_DIR}");
   });
 
+  it("substitutes AGENC_PLUGIN_ROOT for plugin-shipped skills", async () => {
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    const pluginRoot = join(agencHome, "plugins", "demo");
+    writePluginSkill(pluginRoot, "asset-user");
+    const skillDir = join(pluginRoot, "skills", "asset-user");
+    writeFileSync(
+      join(skillDir, "SKILL.md"),
+      "---\ndescription: Uses plugin assets\n---\nRun ${AGENC_PLUGIN_ROOT}/scripts/tool.sh from ${AGENC_SKILL_DIR}.\n",
+    );
+    const services = createLocalSkillsServices({
+      agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot,
+      config: { plugins: { enabled: true } },
+      env: {},
+    });
+
+    const rendered = await services.skillsManager.renderSkill?.({
+      name: "asset-user",
+      args: undefined,
+      sessionId: "session-2",
+    });
+
+    expect(rendered?.content).toContain("/scripts/tool.sh");
+    expect(rendered?.content).not.toContain("${AGENC_PLUGIN_ROOT}");
+    expect(rendered?.content).not.toContain("${AGENC_SKILL_DIR}");
+  });
+
+  it("loads a plugin skill whose declared dir IS the skill (leaf root)", async () => {
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    const pluginRoot = join(agencHome, "plugins", "leafy");
+    mkdirSync(join(pluginRoot, ".agenc-plugin"), { recursive: true });
+    writeFileSync(
+      join(pluginRoot, ".agenc-plugin", "plugin.json"),
+      JSON.stringify({
+        name: "leafy",
+        description: "leaf-declared skills",
+        skills: ["./skills/leaf-skill"],
+      }),
+    );
+    mkdirSync(join(pluginRoot, "skills", "leaf-skill"), { recursive: true });
+    writeFileSync(
+      join(pluginRoot, "skills", "leaf-skill", "SKILL.md"),
+      "---\nname: leaf-skill\ndescription: leaf skill description\n---\n# Leaf\n",
+    );
+
+    const snapshot = await loadLocalSkillsSnapshot({
+      agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot,
+      config: { plugins: { enabled: true } },
+      env: {},
+    });
+
+    const leaf = snapshot.skills.find((skill) => skill.name === "leaf-skill");
+    expect(leaf).toBeDefined();
+    expect(leaf?.loadedFrom).toBe("plugin");
+    expect(leaf?.pluginRoot).toBeDefined();
+  });
+
   it("binds session services and tracks invoked skills separately from available skills", async () => {
     clearInvokedSkills();
     const agencHome = tmpRoot("skills-home");

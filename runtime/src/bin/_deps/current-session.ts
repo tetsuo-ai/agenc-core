@@ -14,6 +14,7 @@
 
 export {
   clearCurrentRuntimeSession,
+  enterCurrentRuntimeSessionScope,
   getCurrentRuntimeSession,
   setCurrentRuntimeSession,
 } from "../../session/current-session.js";

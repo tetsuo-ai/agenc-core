@@ -122,17 +122,19 @@ describe("AgenC daemon session lifecycle", () => {
     await manager.createSession({ agentId: "agent_2", cwd: secondAgentCwd });
     await manager.createSession({ agentId: "agent_1", cwd: thirdAgentCwd });
 
+    // Most-recent-first: a client's first page is the sessions it would
+    // actually resume. Insertion order buried anything created after a
+    // daemon restart behind every restored historical session.
     await expect(
       manager.listSessions({ agentId: "agent_1", limit: 1 }),
     ).resolves.toEqual({
       sessions: [
         {
-          sessionId: "session_1",
+          sessionId: "session_3",
           agentId: "agent_1",
           status: "idle",
-          createdAt: "2026-05-01T10:00:00.000Z",
-          cwd: firstAgentCwd,
-          metadata: { origin: "test" },
+          createdAt: "2026-05-01T10:02:00.000Z",
+          cwd: thirdAgentCwd,
         },
       ],
       nextCursor: "1",
@@ -143,7 +145,7 @@ describe("AgenC daemon session lifecycle", () => {
     ).resolves.toMatchObject({
       sessions: [
         {
-          sessionId: "session_3",
+          sessionId: "session_1",
           agentId: "agent_1",
         },
       ],

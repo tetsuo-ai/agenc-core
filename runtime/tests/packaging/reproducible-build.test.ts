@@ -442,9 +442,9 @@ describe("reproducible install and release contract", () => {
     );
     expect(macosJob).toContain("--config vitest.native.config.ts");
     expect(macosJob).toContain("numTotalTestSuites: 12");
-    expect(macosJob).toContain("numTotalTests: 94");
+    expect(macosJob).toContain("numTotalTests: 97");
     expect(macosJob).toContain(
-      "macOS FND/native capability lane passed 94 tests in 8 files with zero skipped",
+      "macOS FND/native capability lane passed 97 tests in 8 files with zero skipped",
     );
 
     const windowsJob = workflow.slice(workflow.indexOf("\n  windows-native:"));
@@ -511,7 +511,7 @@ describe("reproducible install and release contract", () => {
     );
     expect(windowsJob).toContain("--config vitest.native.config.ts");
     expect(windowsJob).toContain("numTotalTestSuites: 18");
-    expect(windowsJob).toContain("numTotalTests: 101");
+    expect(windowsJob).toContain("numTotalTests: 104");
     expect(windowsJob).toContain(
       "npm.cmd ci --ignore-scripts --no-audit --no-fund",
     );
@@ -521,7 +521,7 @@ describe("reproducible install and release contract", () => {
     );
     expect(windowsJob).not.toContain("npm_config_build_from_source");
     expect(windowsJob).toContain(
-      "Windows FND/native capability lane passed 101 tests in 11 files with zero skipped",
+      "Windows FND/native capability lane passed 104 tests in 11 files with zero skipped",
     );
 
     // Six lanes: default-suite plus the five hosted capability lanes.

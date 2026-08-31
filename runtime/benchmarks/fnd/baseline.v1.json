@@ -22,17 +22,17 @@
           },
           "elapsed": {
             "clock": "performance.now",
-            "madMs": 1.04078,
-            "maxMs": 107.297953,
-            "medianMs": 93.43895,
-            "minMs": 89.624128,
+            "madMs": 0.902121,
+            "maxMs": 87.506922,
+            "medianMs": 80.318582,
+            "minMs": 79.416461,
             "sampleCount": 5,
             "samplesMs": [
-              89.624128,
-              93.43895,
-              107.297953,
-              94.47973,
-              92.684184
+              80.318582,
+              87.506922,
+              83.468798,
+              79.820194,
+              79.416461
             ]
           },
           "fixtureDigest": "0ca9b86d1a9d5bac08bdeb5ded3c9183569ada6b552ba01d662b8e1365cff2fe",
@@ -43,23 +43,23 @@
           "memory": {
             "lowerBound": {
               "limitation": "RSS is sampled at setup and operation endpoints; these observations are retained as a lower-bound diagnostic separate from the process high-water RSS.",
-              "maximumObservedBytes": 178982912,
+              "maximumObservedBytes": 185274368,
               "method": "endpoint_rss_lower_bound",
               "observationsBytes": [
-                119259136,
-                134021120,
-                136642560,
-                136642560,
-                172294144,
-                172294144,
-                174264320,
-                174264320,
-                176885760,
-                176885760,
-                178982912
+                124493824,
+                139661312,
+                142282752,
+                142282752,
+                177934336,
+                177934336,
+                180555776,
+                180555776,
+                182652928,
+                182652928,
+                185274368
               ]
             },
-            "peakRssBytes": 178982912,
+            "peakRssBytes": 185274368,
             "peakRssMethod": "process.resourceUsage.maxRSS_kib_to_bytes"
           },
           "operations": {
@@ -78,17 +78,17 @@
           },
           "elapsed": {
             "clock": "performance.now",
-            "madMs": 1.209177,
-            "maxMs": 198.220782,
-            "medianMs": 178.722428,
-            "minMs": 166.481933,
+            "madMs": 1.179462,
+            "maxMs": 181.986738,
+            "medianMs": 157.160121,
+            "minMs": 154.089205,
             "sampleCount": 5,
             "samplesMs": [
-              179.417903,
-              198.220782,
-              177.513251,
-              178.722428,
-              166.481933
+              181.986738,
+              158.339583,
+              157.160121,
+              156.868538,
+              154.089205
             ]
           },
           "fixtureDigest": "ccbf8b3d5336415b2ded77d1c42203949fafd1496957db250011cf0bd2cd00ce",
@@ -99,23 +99,23 @@
           "memory": {
             "lowerBound": {
               "limitation": "RSS is sampled at setup and operation endpoints; these observations are retained as a lower-bound diagnostic separate from the process high-water RSS.",
-              "maximumObservedBytes": 195817472,
+              "maximumObservedBytes": 220569600,
               "method": "endpoint_rss_lower_bound",
               "observationsBytes": [
-                124534784,
-                138584064,
-                176857088,
-                176857088,
-                180944896,
-                180944896,
-                187760640,
-                187760640,
-                193720320,
-                193720320,
-                195817472
+                124649472,
+                142258176,
+                207794176,
+                207794176,
+                209367040,
+                209367040,
+                212512768,
+                212512768,
+                216375296,
+                216375296,
+                220569600
               ]
             },
-            "peakRssBytes": 200749056,
+            "peakRssBytes": 223948800,
             "peakRssMethod": "process.resourceUsage.maxRSS_kib_to_bytes"
           },
           "operations": {
@@ -134,17 +134,17 @@
           },
           "elapsed": {
             "clock": "performance.now",
-            "madMs": 29.103668,
-            "maxMs": 484.409137,
-            "medianMs": 412.020679,
-            "minMs": 352.541491,
+            "madMs": 8.488076,
+            "maxMs": 336.306582,
+            "medianMs": 318.851345,
+            "minMs": 310.363269,
             "sampleCount": 5,
             "samplesMs": [
-              412.020679,
-              484.409137,
-              352.541491,
-              441.124347,
-              388.820042
+              328.622879,
+              317.001664,
+              310.363269,
+              318.851345,
+              336.306582
             ]
           },
           "fixtureDigest": "0f4385af1bcdc19019e76509840700e8cfd68621daaa29a63ec4c05a4464cfac",
@@ -155,23 +155,23 @@
           "memory": {
             "lowerBound": {
               "limitation": "RSS is sampled at setup and operation endpoints; these observations are retained as a lower-bound diagnostic separate from the process high-water RSS.",
-              "maximumObservedBytes": 209166336,
+              "maximumObservedBytes": 223621120,
               "method": "endpoint_rss_lower_bound",
               "observationsBytes": [
-                127606784,
-                179527680,
-                189747200,
-                189747200,
-                199729152,
-                199729152,
-                207659008,
-                207659008,
-                208642048,
-                208642048,
-                209166336
+                125726720,
+                182075392,
+                192978944,
+                192978944,
+                205336576,
+                205336576,
+                213725184,
+                213725184,
+                222441472,
+                222441472,
+                223621120
               ]
             },
-            "peakRssBytes": 214052864,
+            "peakRssBytes": 225062912,
             "peakRssMethod": "process.resourceUsage.maxRSS_kib_to_bytes"
           },
           "operations": {
@@ -204,17 +204,17 @@
           },
           "elapsed": {
             "clock": "performance.now",
-            "madMs": 0.275989,
-            "maxMs": 4.309363,
-            "medianMs": 2.613739,
-            "minMs": 2.269256,
+            "madMs": 0.15773,
+            "maxMs": 3.78476,
+            "medianMs": 2.768837,
+            "minMs": 2.301326,
             "sampleCount": 5,
             "samplesMs": [
-              4.309363,
-              2.613739,
-              2.889728,
-              2.269256,
-              2.444301
+              3.78476,
+              2.611107,
+              2.792022,
+              2.301326,
+              2.768837
             ]
           },
           "fixtureDigest": "5fdb1381163adfa352201f2446aeeacb8d3f5652fdb4f2d14e34a3ae73f48fe6",
@@ -225,23 +225,23 @@
           "memory": {
             "lowerBound": {
               "limitation": "RSS is sampled at setup and operation endpoints; these observations are retained as a lower-bound diagnostic separate from the process high-water RSS.",
-              "maximumObservedBytes": 87367680,
+              "maximumObservedBytes": 89391104,
               "method": "endpoint_rss_lower_bound",
               "observationsBytes": [
-                78454784,
-                80027648,
-                82124800,
-                82124800,
-                83697664,
-                83697664,
-                84746240,
-                84746240,
-                85794816,
-                85794816,
-                87367680
+                81526784,
+                82051072,
+                84672512,
+                84672512,
+                86245376,
+                86245376,
+                86769664,
+                86769664,
+                88342528,
+                88342528,
+                89391104
               ]
             },
-            "peakRssBytes": 87367680,
+            "peakRssBytes": 89391104,
             "peakRssMethod": "process.resourceUsage.maxRSS_kib_to_bytes"
           },
           "operations": {
@@ -259,17 +259,17 @@
           },
           "elapsed": {
             "clock": "performance.now",
-            "madMs": 0.374559,
-            "maxMs": 6.612499,
-            "medianMs": 5.603829,
-            "minMs": 5.00542,
+            "madMs": 0.501011,
+            "maxMs": 7.393923,
+            "medianMs": 5.593758,
+            "minMs": 4.964643,
             "sampleCount": 5,
             "samplesMs": [
-              6.612499,
-              5.22927,
-              5.609006,
-              5.00542,
-              5.603829
+              7.393923,
+              5.593758,
+              6.017642,
+              4.964643,
+              5.092747
             ]
           },
           "fixtureDigest": "a46028608f2726a48af61c9fb505a7cecce18d6e5f4c570fb9747ed5b9ebf728",
@@ -280,23 +280,23 @@
           "memory": {
             "lowerBound": {
               "limitation": "RSS is sampled at setup and operation endpoints; these observations are retained as a lower-bound diagnostic separate from the process high-water RSS.",
-              "maximumObservedBytes": 103587840,
+              "maximumObservedBytes": 104710144,
               "method": "endpoint_rss_lower_bound",
               "observationsBytes": [
-                82092032,
-                87334912,
-                90480640,
-                90480640,
-                94150656,
-                94150656,
-                96772096,
-                96772096,
-                102014976,
-                102014976,
-                103587840
+                84262912,
+                89505792,
+                92127232,
+                92127232,
+                95797248,
+                95797248,
+                97370112,
+                97370112,
+                102612992,
+                102612992,
+                104710144
               ]
             },
-            "peakRssBytes": 104112128,
+            "peakRssBytes": 104710144,
             "peakRssMethod": "process.resourceUsage.maxRSS_kib_to_bytes"
           },
           "operations": {
@@ -314,17 +314,17 @@
           },
           "elapsed": {
             "clock": "performance.now",
-            "madMs": 1.443662,
-            "maxMs": 17.441552,
-            "medianMs": 13.669996,
-            "minMs": 11.035456,
+            "madMs": 0.33592,
+            "maxMs": 14.874388,
+            "medianMs": 11.514614,
+            "minMs": 9.423457,
             "sampleCount": 5,
             "samplesMs": [
-              13.669996,
-              13.992215,
-              12.226334,
-              11.035456,
-              17.441552
+              11.178694,
+              11.668817,
+              11.514614,
+              9.423457,
+              14.874388
             ]
           },
           "fixtureDigest": "83b961c07a66f67bd9408e666deccce73a7030fa14f72050fa1b042f1df6beb6",
@@ -335,23 +335,23 @@
           "memory": {
             "lowerBound": {
               "limitation": "RSS is sampled at setup and operation endpoints; these observations are retained as a lower-bound diagnostic separate from the process high-water RSS.",
-              "maximumObservedBytes": 119504896,
+              "maximumObservedBytes": 127746048,
               "method": "endpoint_rss_lower_bound",
               "observationsBytes": [
-                84197376,
-                92585984,
-                97828864,
-                97828864,
-                103596032,
-                103596032,
-                109887488,
-                109887488,
-                117227520,
-                117227520,
-                119504896
+                86851584,
+                97337344,
+                103104512,
+                103104512,
+                107298816,
+                107298816,
+                113065984,
+                113065984,
+                120930304,
+                120930304,
+                127746048
               ]
             },
-            "peakRssBytes": 123518976,
+            "peakRssBytes": 127746048,
             "peakRssMethod": "process.resourceUsage.maxRSS_kib_to_bytes"
           },
           "operations": {
@@ -525,12 +525,12 @@
     {
       "normalization": "utf8_lf",
       "path": "runtime/benchmarks/fnd/provenance.mjs",
-      "sha256": "f8fa5e76aacc984afe09e7b8cde3c6abc55436c547c37fb822bb590b1be570d5"
+      "sha256": "be1119d985b833335a42b262f8d8cb60239067450a05ef9054587148cbc23a5b"
     },
     {
       "normalization": "utf8_lf",
       "path": "runtime/benchmarks/fnd/run-baselines.mjs",
-      "sha256": "d13a615fdfa18a3cdc40b6dd554f3a316f5e7148f0d78e6ea57f02af882fdc2b"
+      "sha256": "cda6a699aef5ad8352145cd9a2537f895a37aee2cf22e9f43bb71afcb8bc7024"
     },
     {
       "normalization": "utf8_lf",
@@ -550,7 +550,7 @@
     {
       "normalization": "utf8_lf",
       "path": "runtime/package.json",
-      "sha256": "9b84a70a5e0154fd7c04361be5942cae78ab681cb44b4357741ad5197bcb879b"
+      "sha256": "c408233c2d532c121a996ec82dec5827f2dfbec6ed40f24b6aca4e7cb6e6cd0a"
     }
   ],
   "planDigest": "672538014498283c935efce76c0a5244abd280aadaeb5a03a9d835f041db2ebe",
@@ -604,7 +604,7 @@
         },
         {
           "path": "runtime/src/config/schema.ts",
-          "sha256": "76baf4016d6da02884a71ba59f68775d6e828b6203142e6f31ada9e53a7f9dea"
+          "sha256": "8401d497f1fe4be120cc657dad3bb9eaacaedf6941ada88163f0cc48418859a5"
         },
         {
           "path": "runtime/src/config/strict-schema.ts",
@@ -660,11 +660,11 @@
         },
         {
           "path": "runtime/src/llm/registry/provider-info.ts",
-          "sha256": "30001cd6d4da64230c2d90e767f073daba17f06aa2451b525dff1e79f28eb4d0"
+          "sha256": "2c1f73207d7915bfaf9fe9c99df349ad622c18d38f8ee47c067b2d25819f3ff2"
         },
         {
           "path": "runtime/src/llm/registry/provider-ingress.ts",
-          "sha256": "5a63f4d25a17c0ba0dc9fb5b8bebfcfac3e31d0103eee5e8c2037e301df0cd7f"
+          "sha256": "571523340cbfc6797b8801e74edf71038f8ca101a7bec0cf03359fff5e0e3d65"
         },
         {
           "path": "runtime/src/mcp-client/server-name.ts",
@@ -732,7 +732,7 @@
         },
         {
           "path": "runtime/src/session/current-session.ts",
-          "sha256": "38d4d7eb60ba3e61df14a3a97eeb87e70bff034b2d16cd0c702af66c4340527c"
+          "sha256": "e5a32fc50ca4db0040eeca80584e7288b487661fd492dc2b828fa01b5adc412c"
         },
         {
           "path": "runtime/src/session/degraded-store.ts",
@@ -935,11 +935,11 @@
     }
   ],
   "productionTreeBinding": {
-    "gitObjectId": "543f579905ecd21445d35b1f94a98de33c4f4846",
+    "gitObjectId": "4c24d243c322f05c6ec97d9010375d9ef46147f1",
     "objectType": "tree",
     "path": "runtime/src"
   },
   "schemaVersion": 1,
-  "sourceRevision": "f48e208f016f901a7c80421c7ff7a8d0372dfaa4",
+  "sourceRevision": "4846fe373e16a9beac3e1970b69a49e7622f5ed4",
   "suiteId": "agenc.fnd.algorithm-baseline.v1"
 }
