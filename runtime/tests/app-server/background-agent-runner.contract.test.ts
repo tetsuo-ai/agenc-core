@@ -7761,11 +7761,11 @@ describe("AgenC delegate background-agent runner", () => {
     expect(stub.thread.submit).not.toHaveBeenCalled();
   });
 
-  it("[managed-thread] does not treat a journaled hook-block error as run death", async () => {
+  it("[managed-thread] replays a legacy hook-block error as session-only after attach", async () => {
     const { runner, session } = makeTopLevelRunner({
       conversationId: "session-hook-block-legacy-error",
     });
-    await runner.startAgent({
+    const started = await runner.startAgent({
       objective: "passive hook test",
       initialContent: [],
       unattendedAllow: [],
@@ -7782,11 +7782,44 @@ describe("AgenC delegate background-agent runner", () => {
         },
       },
     });
+    await new Promise((resolve) => setImmediate(resolve));
 
     const snapshot = await runner.getAgentSnapshot(
       "session-hook-block-legacy-error",
     );
     expect(snapshot?.status).not.toBe("error");
+
+    const emitted: JsonObject[] = [];
+    await runner.attachAgentSessionEvents(started.agentId, {
+      sessionId: "session_1",
+      emit: async (notification) => {
+        emitted.push(notification);
+      },
+    });
+    expect(emitted).toContainEqual(
+      expect.objectContaining({
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.session_event",
+        params: expect.objectContaining({
+          sessionId: "session_1",
+          agentId: "session-hook-block-legacy-error",
+          event: expect.objectContaining({
+            id: "legacy-hook-block",
+            type: "error",
+            payload: expect.objectContaining({
+              cause: "user_prompt_submit_hook_blocked",
+              message: "policy denied",
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(emitted).not.toContainEqual(
+      expect.objectContaining({
+        method: "event.agent_status",
+        params: expect.objectContaining({ message: "policy denied" }),
+      }),
+    );
   });
 
   it("[managed-thread] applies owning-session hook context to follow-up model input exactly once", async () => {

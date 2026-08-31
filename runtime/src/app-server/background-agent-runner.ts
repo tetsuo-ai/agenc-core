@@ -4882,7 +4882,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         active.activeToolCallIds.clear();
         return;
       case "error":
-        if (isPerPromptSessionErrorCause(payload?.cause)) return;
         active.status = "error";
         active.activeToolCallIds.clear();
         return;
@@ -5767,9 +5766,9 @@ function isPerPromptSessionErrorCause(cause: unknown): boolean {
 }
 
 /**
- * UserPromptSubmit blockingError is a per-prompt refusal, not a run
- * death. Historical journals still emit it as type "error"; keep that
- * record visible but out of model/run status projection.
+ * Older UserPromptSubmit blockingError records use type "error". The
+ * refusal applies to one prompt, so keep the event visible without changing
+ * the run status seen by the runner or attached clients.
  */
 function projectPerPromptRejectionAsSessionOnly(
   event: BackgroundAgentDaemonEvent,
