@@ -405,6 +405,11 @@ interface MutableAgent {
   status: AgentStatus;
   createdAt: string;
   startedAt: string;
+  /** When the runner first stopped answering for this agent; cleared on
+   *  the next successful snapshot. The reaper only acts once this has
+   *  persisted past the grace window — a transient null (registration
+   *  race, post-turn blip) must never error a live run. */
+  runtimeUnavailableSince?: string;
   lastActiveAt: string;
   cwd?: string;
   stateProjectDir?: string;
@@ -2236,7 +2241,7 @@ export class AgenCDaemonAgentManager {
     const reason = options.reason ?? "stale_runner";
     const candidates = await this.#state.with(async (state) => {
       await this.#refreshAgentsFromRunner(state);
-      return [...state.agents.values()].filter(isStaleAgent);
+      return [...state.agents.values()].filter((agent) => isStaleAgent(agent));
     });
     if (candidates.length === 0) return [];
     const reaped: string[] = [];
@@ -3940,12 +3945,14 @@ export class AgenCDaemonAgentManager {
       // returns a real snapshot (or an explicit stop event) will
       // reconcile.
       agent.runtimeAvailable = false;
+      agent.runtimeUnavailableSince ??= this.#now();
       return;
     }
     const previousStatus = agent.status;
     const sessionIds = [...agent.sessionIds];
     agent.recovered = false;
     agent.runtimeAvailable = true;
+    agent.runtimeUnavailableSince = undefined;
     applyAgentSnapshot(agent, snapshot);
     if (agent.status !== previousStatus) {
       await this.#recordAgentStatusSnapshots(
@@ -5058,9 +5065,22 @@ function isRecoveredRuntimeUnavailable(agent: MutableAgent): boolean {
  * runtime. Either way the agent can no longer make progress and is a
  * reaper target.
  */
-function isStaleAgent(agent: MutableAgent): boolean {
+/** How long the runner must stay silent before an agent is reapable. */
+const RUNTIME_UNAVAILABLE_GRACE_MS = 60_000;
+
+// Exported as a test seam: reap eligibility is load-bearing for live runs.
+export function isStaleAgent(agent: MutableAgent, nowIso?: string): boolean {
   if (!isActiveAgent(agent)) return false;
-  return agent.runtimeAvailable === false;
+  if (agent.runtimeAvailable !== false) return false;
+  // A daemon-restart recovery restored the record without a runtime; it
+  // can never come back on its own, so it is reapable immediately.
+  if (agent.recovered === true) return true;
+  const since = agent.runtimeUnavailableSince;
+  if (since === undefined) return false;
+  const now = nowIso !== undefined ? Date.parse(nowIso) : Date.now();
+  const start = Date.parse(since);
+  if (!Number.isFinite(now) || !Number.isFinite(start)) return true;
+  return now - start >= RUNTIME_UNAVAILABLE_GRACE_MS;
 }
 
 function compareAgentsForList(left: MutableAgent, right: MutableAgent): number {
