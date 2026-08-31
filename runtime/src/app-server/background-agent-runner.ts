@@ -178,6 +178,7 @@ import type {
   SessionSnapshotResult,
   SessionTranscriptResult,
   SessionTranscriptV2Result,
+  SessionTranscriptV2TurnResult,
   SessionHookConfigShape,
   SessionHookValidationIssueShape,
   SessionHookRunDiagnosticShape,
@@ -6016,6 +6017,74 @@ interface MutableTranscriptV2Message extends JsonObject {
   committedSequence: number;
 }
 
+/** Running totals for the turn currently open in the canonical scan. */
+interface OpenTurnAccumulator {
+  startedAt?: number;
+  sawUsage: boolean;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  model?: string;
+  provider?: string;
+}
+
+function nonNegativeFinite(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+/**
+ * A turn's terminal row: timing from the terminal event itself (falling back
+ * to the started/completed stamps for rollouts written before `durationMs`),
+ * usage summed from the token_count events the turn enclosed.
+ */
+function closedTurnResult(
+  turnId: string,
+  sequence: number,
+  msg: {
+    readonly type: string;
+    readonly payload: {
+      readonly turnId?: string;
+      readonly durationMs?: number;
+      readonly completedAt?: number;
+    };
+  },
+  open: OpenTurnAccumulator,
+): SessionTranscriptV2TurnResult {
+  const outcome =
+    msg.type === "turn_complete"
+      ? "completed"
+      : msg.type === "turn_aborted"
+        ? "aborted"
+        : "errored";
+  let durationMs: number | undefined;
+  if (msg.type === "turn_complete") {
+    durationMs = nonNegativeFinite(msg.payload.durationMs);
+    if (durationMs === undefined) {
+      const completedAt = nonNegativeFinite(msg.payload.completedAt);
+      if (completedAt !== undefined && open.startedAt !== undefined) {
+        durationMs = nonNegativeFinite(completedAt - open.startedAt);
+      }
+    }
+  }
+  return {
+    turnId,
+    committedSequence: sequence,
+    outcome,
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(open.sawUsage
+      ? {
+          inputTokens: open.inputTokens,
+          outputTokens: open.outputTokens,
+          totalTokens: open.totalTokens,
+        }
+      : {}),
+    ...(open.model !== undefined ? { model: open.model } : {}),
+    ...(open.provider !== undefined ? { provider: open.provider } : {}),
+  };
+}
+
 export function sessionTranscriptV2FromRollout(
   items: readonly RolloutItem[],
   sessionId: string,
@@ -6039,8 +6108,10 @@ export function sessionTranscriptV2FromRollout(
   }
 
   const messages: MutableTranscriptV2Message[] = [];
+  const turnResults: SessionTranscriptV2TurnResult[] = [];
   let currentTurnId: string | undefined;
   let currentClientMessageId: string | undefined;
+  let openTurn: OpenTurnAccumulator | undefined;
   let pendingUserIndex: number | undefined;
   let pendingClientMessageId: string | undefined;
   const assistantOrdinals = new Map<string, number>();
@@ -6143,6 +6214,37 @@ export function sessionTranscriptV2FromRollout(
       }
       currentClientMessageId = pendingClientMessageId;
       pendingClientMessageId = undefined;
+      // A dangling previous turn has no terminal event and therefore no
+      // result row; the fresh accumulator simply replaces it.
+      const startedAt = nonNegativeFinite(event.msg.payload.startedAt);
+      openTurn = {
+        sawUsage: false,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        ...(startedAt !== undefined ? { startedAt } : {}),
+      };
+      continue;
+    }
+    if (event.msg.type === "token_count") {
+      if (currentTurnId === undefined || openTurn === undefined) continue;
+      const payload = event.msg.payload;
+      const input = nonNegativeFinite(payload.promptTokens);
+      const output = nonNegativeFinite(payload.completionTokens);
+      const total = nonNegativeFinite(payload.totalTokens);
+      if (input === undefined && output === undefined && total === undefined) {
+        continue;
+      }
+      openTurn.sawUsage = true;
+      openTurn.inputTokens += input ?? 0;
+      openTurn.outputTokens += output ?? 0;
+      openTurn.totalTokens += total ?? 0;
+      if (typeof payload.model === "string" && payload.model.length > 0) {
+        openTurn.model = payload.model;
+      }
+      if (typeof payload.provider === "string" && payload.provider.length > 0) {
+        openTurn.provider = payload.provider;
+      }
       continue;
     }
     if (event.msg.type === "agent_message") {
@@ -6188,8 +6290,14 @@ export function sessionTranscriptV2FromRollout(
       ) {
         continue;
       }
+      if (currentTurnId !== undefined && openTurn !== undefined) {
+        turnResults.push(
+          closedTurnResult(currentTurnId, sequence, event.msg, openTurn),
+        );
+      }
       currentTurnId = undefined;
       currentClientMessageId = undefined;
+      openTurn = undefined;
     }
   }
 
@@ -6201,6 +6309,7 @@ export function sessionTranscriptV2FromRollout(
     asOfSequence,
     messages,
     ...(activeTurn !== undefined ? { activeTurn } : {}),
+    ...(turnResults.length > 0 ? { turnResults } : {}),
   };
 }
 

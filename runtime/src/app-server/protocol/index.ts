@@ -3064,6 +3064,25 @@ export interface SessionTranscriptV2ActiveTurn extends JsonObject {
   readonly clientMessageId?: string;
 }
 
+/**
+ * Closed-turn outcome rebuilt from the durable rollout. Timing comes from
+ * the turn's own terminal event and usage from the token_count events it
+ * enclosed, so a reopened or restored session keeps the per-turn rows a
+ * live client would have shown.
+ */
+export interface SessionTranscriptV2TurnResult extends JsonObject {
+  readonly turnId: string;
+  /** Durable sequence of the turn's terminal event; anchors placement. */
+  readonly committedSequence: number;
+  readonly outcome: "completed" | "aborted" | "errored";
+  readonly durationMs?: number;
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+  readonly totalTokens?: number;
+  readonly model?: string;
+  readonly provider?: string;
+}
+
 export interface SessionTranscriptV2Result extends JsonObject {
   readonly schemaVersion: 2;
   readonly sessionId: string;
@@ -3072,6 +3091,7 @@ export interface SessionTranscriptV2Result extends JsonObject {
   readonly asOfSequence: number;
   readonly messages: readonly SessionTranscriptV2Message[];
   readonly activeTurn?: SessionTranscriptV2ActiveTurn;
+  readonly turnResults?: readonly SessionTranscriptV2TurnResult[];
 }
 
 export interface SessionCancelTurnResult extends JsonObject {

@@ -193,4 +193,125 @@ describe("session.transcript.v2 durable projection", () => {
       sessionTranscriptV2FromRollout([...rewound], "session-1", "run-1"),
     ).toEqual(rewindSnapshot);
   });
+
+  it("rebuilds per-turn results with timing and summed usage", () => {
+    const items: RolloutItem[] = [
+      event(10, "user-1", {
+        type: "user_message",
+        payload: { message: "question", messageId: "client-1" },
+      }),
+      event(11, "turn-1", {
+        type: "turn_started",
+        payload: { turnId: "turn-1", startedAt: 1_000 },
+      }),
+      event(12, "tokens-1a", {
+        type: "token_count",
+        payload: {
+          promptTokens: 100,
+          completionTokens: 40,
+          totalTokens: 140,
+          model: "grok-4.6",
+          provider: "grok",
+        },
+      }),
+      event(13, "tokens-1b", {
+        type: "token_count",
+        payload: { promptTokens: 200, completionTokens: 60, totalTokens: 260 },
+      }),
+      event(14, "answer-1", {
+        type: "agent_message",
+        payload: { message: "answer" },
+      }),
+      event(15, "complete-1", {
+        type: "turn_complete",
+        payload: { turnId: "turn-1", durationMs: 4_137 },
+      }),
+      event(16, "user-2", {
+        type: "user_message",
+        payload: { message: "again", messageId: "client-2" },
+      }),
+      event(17, "turn-2", {
+        type: "turn_started",
+        payload: { turnId: "turn-2", startedAt: 10_000 },
+      }),
+      event(18, "abort-2", {
+        type: "turn_aborted",
+        payload: { turnId: "turn-2", reason: "daemon shutdown" },
+      }),
+    ];
+
+    const snapshot = sessionTranscriptV2FromRollout(items, "session-1", "run-1");
+    expect(snapshot.turnResults).toEqual([
+      {
+        turnId: "turn-1",
+        committedSequence: 15,
+        outcome: "completed",
+        durationMs: 4_137,
+        inputTokens: 300,
+        outputTokens: 100,
+        totalTokens: 400,
+        model: "grok-4.6",
+        provider: "grok",
+      },
+      {
+        turnId: "turn-2",
+        committedSequence: 18,
+        outcome: "aborted",
+      },
+    ]);
+  });
+
+  it("falls back to the started/completed stamps and skips mismatched terminals", () => {
+    const items: RolloutItem[] = [
+      event(10, "user-1", {
+        type: "user_message",
+        payload: { message: "question", messageId: "client-1" },
+      }),
+      event(11, "turn-1", {
+        type: "turn_started",
+        payload: { turnId: "turn-1", startedAt: 1_000 },
+      }),
+      // Stale terminal from an unrelated turn must not close this one.
+      event(12, "stale-complete", {
+        type: "turn_complete",
+        payload: { turnId: "turn-0", durationMs: 99 },
+      }),
+      event(13, "complete-1", {
+        type: "turn_complete",
+        payload: { turnId: "turn-1", completedAt: 5_500 },
+      }),
+    ];
+
+    const snapshot = sessionTranscriptV2FromRollout(items, "session-1", "run-1");
+    expect(snapshot.turnResults).toEqual([
+      {
+        turnId: "turn-1",
+        committedSequence: 13,
+        outcome: "completed",
+        durationMs: 4_500,
+      },
+    ]);
+  });
+
+  it("omits turnResults entirely when the rollout closed no turns", () => {
+    const snapshot = sessionTranscriptV2FromRollout(
+      [
+        event(10, "user-1", {
+          type: "user_message",
+          payload: { message: "question", messageId: "client-1" },
+        }),
+        event(11, "turn-1", {
+          type: "turn_started",
+          payload: { turnId: "turn-1", startedAt: 1_000 },
+        }),
+        event(12, "answer-1", {
+          type: "agent_message",
+          payload: { message: "answer" },
+        }),
+      ],
+      "session-1",
+      "run-1",
+    );
+    expect(snapshot.turnResults).toBeUndefined();
+  });
 });
