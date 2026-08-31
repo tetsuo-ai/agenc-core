@@ -129,8 +129,14 @@ first `prompt()` call.
 session hook extension point.
 
 Generated public contracts (do not edit by hand):
-`packages/agenc-sdk/src/workflow-handoff.generated.ts` and
-`workflow-result.generated.ts`. Source schemas live under `runtime/src/agents/`.
+
+- `packages/agenc-sdk/src/transcript-v2.generated.ts` — daemon
+  `SessionTranscriptV2*` result interfaces. Re-exported from `protocol.ts`.
+  Refresh: [Transcript v2 generated mirror](#transcript-v2-generated-mirror).
+- `packages/agenc-sdk/src/workflow-handoff.generated.ts` and
+  `workflow-result.generated.ts`. Source schemas live under `runtime/src/agents/`.
+
+Verify with `npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types`.
 
 Permission requests with no registered handler are **denied** (never granted)
 so an unattended embedder can't hang a turn, mirroring `agenc -p`.
@@ -462,14 +468,66 @@ Use typed helpers when available; fall back to
 
 ## Protocol mirror & drift guard
 
-`packages/agenc-sdk/src/protocol.ts` hand-mirrors the daemon protocol
-(method registry, params/result shapes, notification params).
-`runtime/tests/sdk-package/protocol-drift.contract.test.ts` pins the mirror's
-`AGENC_SDK_DAEMON_METHODS` / `AGENC_SDK_DAEMON_NOTIFICATION_METHODS` to the
-runtime's canonical `AGENC_DAEMON_METHODS` /
-`AGENC_DAEMON_NOTIFICATION_METHODS` (names **and** order) and checks the
-params/result maps declare every method. Change the daemon protocol and
-`vitest` fails until the mirror is updated.
+The SDK does not import runtime internals. Independent guards pin the
+public surface to the daemon:
+
+| Layer | Authority | Guard |
+| --- | --- | --- |
+| Method registry and handwritten params/result maps | `packages/agenc-sdk/src/protocol.ts` | `runtime/tests/sdk-package/protocol-drift.contract.test.ts` compares `AGENC_SDK_DAEMON_METHODS` / `AGENC_SDK_DAEMON_NOTIFICATION_METHODS` to the runtime arrays (names **and** order) and requires a params/result map entry for every method |
+| `session.transcript.v2` result shapes | `runtime/src/app-server/protocol/index.ts` | `check:sdk-generated-types` renders `transcript-v2.generated.ts` and compares the complete committed file after newline normalization |
+| Workflow handoff / result contracts | `runtime/src/agents/` schemas | Same check, marker presence only (not byte-identical) |
+
+Change the daemon protocol and the matching guard fails until the mirror is
+updated. `SessionTranscriptV2Params` stays handwritten (`{ sessionId }`);
+only the four result interfaces are generated.
+
+### Transcript v2 generated mirror
+
+`runtime/scripts/check-sdk-generated-types.mjs` extracts these daemon
+interfaces, which must `extend JsonObject`:
+
+- `SessionTranscriptV2Message`
+- `SessionTranscriptV2ActiveTurn`
+- `SessionTranscriptV2TurnResult`
+- `SessionTranscriptV2Result`
+
+It rewrites the heritage to a local `TranscriptV2JsonObject` so the SDK
+stays zero-dependency, then compares against
+`packages/agenc-sdk/src/transcript-v2.generated.ts`. The checker does **not**
+write the file.
+
+Refresh after a protocol edit:
+
+1. Keep those four interfaces `extends JsonObject`. Any other heritage fails
+   the check.
+2. Replace the committed generated module: keep the three-line `@generated`
+   header and the local `TranscriptV2Json*` aliases; copy the four
+   declarations in that order, changing `extends JsonObject` to
+   `extends TranscriptV2JsonObject`. Preserve property order, comments,
+   optionality, and unions.
+3. Run `npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types`.
+4. `runtime/tests/sdk-package/transcript-v2.contract.test.ts` also compares
+   property names/types of `SessionTranscriptV2TurnResult` and
+   `SessionTranscriptV2Result`, and asserts `transcriptV2()` preserves a
+   typed `turnResults` payload.
+
+Constraints:
+
+- Comparison is exact after a single `CRLF` / bare `CR` → `LF` pass on both
+  the runtime authority and the committed file. Windows checkouts must pass
+  the same content; do not “fix” line endings to satisfy the check.
+- Field, optionality, union, comment, or ordering drift fails until the
+  generated file is refreshed.
+- Closed-turn field semantics (omit-when-empty, token sums, placement)
+  stay in [daemon.md](reference/daemon.md#closed-turn-results). This page
+  only covers how the types stay in sync.
+
+| Symptom | What to check |
+| --- | --- |
+| `is not the exact generated transcript.v2 mirror` | Protocol interfaces changed and the committed file was not refreshed, or a comment/order/optional marker drifted |
+| Same failure on Windows only | The check already normalizes `CRLF` / `CR` to `LF` on both sides. A leftover exact-byte compare is the usual cause; checkout line endings are not |
+| `must extend JsonObject` | A mirrored interface dropped or changed its heritage |
+| `transcriptV2()` type-checks but a new field is only `JsonObject` | The generated file was not refreshed; `protocol.ts` re-exports those interfaces |
 
 Event semantics (streamed text extraction, terminal-status detection) mirror
 the CLI's daemon one-shot path in `runtime/src/bin/agenc-main.ts`
@@ -481,6 +539,8 @@ sees the same output and completion behavior as `agenc -p`.
 `runtime/tests/sdk-package/`:
 
 - `protocol-drift.contract.test.ts` — mirror pinned to the runtime registry.
+- `transcript-v2.contract.test.ts` — generated result shapes vs the daemon
+  protocol, plus `transcriptV2()` preserving typed `turnResults`.
 - `client-inprocess.contract.test.ts` — full connect → createSession →
   prompt event stream and permission round-trips against a fake daemon hosted
   on the **real** in-process transport (real dispatcher, session lifecycle,
