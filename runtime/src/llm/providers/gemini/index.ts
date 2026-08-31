@@ -403,65 +403,135 @@ const GEMINI_SCHEMA_KEYS = new Set([
   "pattern",
 ]);
 
-const GEMINI_NULL_TYPE = "null";
+const GEMINI_SCHEMA_TYPE_NAMES = new Set([
+  "string",
+  "number",
+  "integer",
+  "boolean",
+  "array",
+  "object",
+  "null",
+]);
 
-function isGeminiTypeName(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
+function geminiSchemaError(path: string, detail: string): never {
+  throw new LLMProviderError(
+    "gemini",
+    `Gemini cannot represent schema at ${path}: ${detail}`,
+  );
 }
 
-function isGeminiNullType(value: string): boolean {
-  return value.toLowerCase() === GEMINI_NULL_TYPE;
+function geminiSchemaChildPath(path: string, key: string): string {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(key)
+    ? `${path}.${key}`
+    : `${path}[${JSON.stringify(key)}]`;
 }
 
 /**
- * Gemini Schema.type is a single proto enum. A JSON Schema type array
- * (`["string", "null"]`) is a list on a non-repeating field, so the
- * request 400s with "Proto field is not repeating, cannot start list"
- * and the turn looks empty. Collapse onto `type` + `nullable` / `anyOf`.
+ * Gemini Schema.type is one required proto enum. Preserve a null-only schema,
+ * and lower one concrete JSON Schema type plus null to `type` + `nullable`.
+ * Multiple concrete types cannot be expressed without changing validation
+ * semantics, so reject them before provider dispatch.
  */
-function collapseGeminiTypeArray(schema: Record<string, unknown>): void {
+function normalizeGeminiSchemaType(
+  schema: Record<string, unknown>,
+  path: string,
+): void {
   const typeValue = schema.type;
-  if (Array.isArray(typeValue)) {
-    const types = Array.from(new Set(typeValue.filter(isGeminiTypeName)));
-    const concreteTypes = types.filter((type) => !isGeminiNullType(type));
-    const nullable = types.some(isGeminiNullType);
-    delete schema.type;
-    if (concreteTypes.length === 1) {
-      schema.type = concreteTypes[0];
-    } else if (concreteTypes.length > 1 && schema.anyOf === undefined) {
-      schema.anyOf = concreteTypes.map((type) => ({ type }));
-    }
-    if (nullable) {
-      schema.nullable = true;
+  if (typeof typeValue === "string") {
+    if (!GEMINI_SCHEMA_TYPE_NAMES.has(typeValue)) {
+      geminiSchemaError(
+        `${path}.type`,
+        `unsupported type ${JSON.stringify(typeValue)}`,
+      );
     }
     return;
   }
-  if (isGeminiTypeName(typeValue) && isGeminiNullType(typeValue)) {
-    delete schema.type;
+  if (!Array.isArray(typeValue)) {
+    geminiSchemaError(`${path}.type`, "a JSON Schema type is required");
+  }
+  if (typeValue.length === 0) {
+    geminiSchemaError(`${path}.type`, "the type array is empty");
+  }
+
+  const types: string[] = [];
+  for (const [index, entry] of typeValue.entries()) {
+    if (typeof entry !== "string" || !GEMINI_SCHEMA_TYPE_NAMES.has(entry)) {
+      geminiSchemaError(
+        `${path}.type[${index}]`,
+        `unsupported type ${JSON.stringify(entry)}`,
+      );
+    }
+    if (!types.includes(entry)) types.push(entry);
+  }
+  const concreteTypes = types.filter((type) => type !== "null");
+  if (concreteTypes.length > 1) {
+    geminiSchemaError(
+      `${path}.type`,
+      `multiple non-null types (${concreteTypes.join(", ")}) would lose validation semantics`,
+    );
+  }
+
+  schema.type = concreteTypes[0] ?? "null";
+  if (concreteTypes.length === 1 && types.includes("null")) {
     schema.nullable = true;
   }
 }
 
-/** Keys under `properties` are field names, not schema keywords. */
-function sanitizeGeminiSchema(value: unknown, insideProperties = false): unknown {
-  if (Array.isArray(value)) {
-    return value.map((entry) => sanitizeGeminiSchema(entry, false));
+/** Compile JSON Schema into Gemini's OpenAPI subset without weakening unions. */
+function compileGeminiSchema(
+  value: unknown,
+  path: string,
+): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    geminiSchemaError(path, "expected a schema object");
   }
-  if (value === null || typeof value !== "object") return value;
   const out: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (!insideProperties && !GEMINI_SCHEMA_KEYS.has(key)) continue;
-    out[key] = sanitizeGeminiSchema(entry, !insideProperties && key === "properties");
+    if (!GEMINI_SCHEMA_KEYS.has(key)) continue;
+    const childPath = geminiSchemaChildPath(path, key);
+    if (key === "properties") {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+        geminiSchemaError(childPath, "expected a property map");
+      }
+      out.properties = Object.fromEntries(
+        Object.entries(entry as Record<string, unknown>).map(
+          ([propertyName, propertySchema]) => [
+            propertyName,
+            compileGeminiSchema(
+              propertySchema,
+              geminiSchemaChildPath(childPath, propertyName),
+            ),
+          ],
+        ),
+      );
+      continue;
+    }
+    if (key === "items") {
+      out.items = compileGeminiSchema(entry, childPath);
+      continue;
+    }
+    if (key === "anyOf") {
+      if (!Array.isArray(entry) || entry.length === 0) {
+        geminiSchemaError(childPath, "expected at least one schema branch");
+      }
+      out.anyOf = entry.map((branch, index) =>
+        compileGeminiSchema(branch, `${childPath}[${index}]`),
+      );
+      continue;
+    }
+    out[key] = entry;
   }
-  if (insideProperties) return out;
-  collapseGeminiTypeArray(out);
-  // `required` and `properties` are only legal on an object here; carried
-  // onto a branch of an anyOf they fail the request with "only allowed
-  // for OBJECT type".
-  const type = typeof out.type === "string" ? out.type.toLowerCase() : undefined;
+  normalizeGeminiSchemaType(out, path);
+  const type = out.type;
   if (type !== "object") {
-    delete out.required;
-    delete out.properties;
+    for (const objectKey of ["required", "properties"] as const) {
+      if (objectKey in out) {
+        geminiSchemaError(
+          geminiSchemaChildPath(path, objectKey),
+          `requires type "object", received ${JSON.stringify(type)}`,
+        );
+      }
+    }
   }
   return out;
 }
@@ -473,7 +543,10 @@ function geminiTools(tools: readonly LLMTool[]): readonly Record<string, unknown
       functionDeclarations: tools.map((tool) => ({
         name: tool.function.name,
         description: tool.function.description,
-        parameters: sanitizeGeminiSchema(tool.function.parameters),
+        parameters: compileGeminiSchema(
+          tool.function.parameters,
+          `tools[${JSON.stringify(tool.function.name)}].parameters`,
+        ),
       })),
     },
   ];
@@ -535,7 +608,10 @@ function geminiGenerationConfig(
   if (options?.structuredOutput?.enabled || structuredSchema) {
     config.responseMimeType = "application/json";
     if (structuredSchema) {
-      config.responseSchema = structuredSchema.schema;
+      config.responseSchema = compileGeminiSchema(
+        structuredSchema.schema,
+        `structuredOutput[${JSON.stringify(structuredSchema.name)}].schema`,
+      );
     }
   }
   return config;

@@ -82,6 +82,28 @@ const vertexEndpointPlan = createGeminiEndpointPlan({
   vertex: { project: "project-1", location: "us-central1" },
 });
 
+function successfulGeminiFetch(text = "ok") {
+  return vi.fn<typeof fetch>().mockResolvedValue(
+    jsonResponse({
+      candidates: [
+        {
+          content: { role: "model", parts: [{ text }] },
+          finishReason: "STOP",
+        },
+      ],
+    }),
+  );
+}
+
+function providerWithFetch(fetchImpl: typeof fetch): GeminiProvider {
+  return new GeminiProvider({
+    credentialPlan: apiKeyCredentialPlan(),
+    endpointPlan: developerEndpointPlan,
+    model: "gemini-2.5-pro",
+    fetchImpl,
+  });
+}
+
 describe("GeminiProvider", () => {
   test("reports the exact missing credential selected at ingress", async () => {
     const canonical = new GeminiProvider({
@@ -538,7 +560,7 @@ describe("GeminiProvider", () => {
     ]);
   });
 
-  test("collapses JSON Schema type arrays so Gemini does not 400 the turn", async () => {
+  test("compiles nullable and nested JSON Schema types for Gemini tools", async () => {
     const taskUpdateTool: LLMTool = {
       type: "function",
       function: {
@@ -549,32 +571,37 @@ describe("GeminiProvider", () => {
           properties: {
             taskId: { type: "string" },
             owner: { type: ["string", "null"] },
-            note: { type: ["string", "number", "null"] },
+            deletedValue: { type: ["null"] },
+            explicitNull: { type: "null" },
+            entries: {
+              type: ["array", "null"],
+              items: {
+                type: ["object", "null"],
+                properties: {
+                  label: { type: "string" },
+                },
+                required: ["label"],
+              },
+            },
+            target: {
+              type: ["object", "null"],
+              properties: {
+                kind: { type: "string" },
+              },
+              required: ["kind"],
+              anyOf: [
+                { type: "object", properties: { kind: { type: "string" } } },
+                { type: "object", properties: { id: { type: "integer" } } },
+              ],
+            },
           },
           required: ["taskId"],
           additionalProperties: false,
         },
       },
     };
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse({
-        candidates: [
-          {
-            content: {
-              role: "model",
-              parts: [{ text: "ok" }],
-            },
-            finishReason: "STOP",
-          },
-        ],
-      }),
-    );
-    const provider = new GeminiProvider({
-      credentialPlan: apiKeyCredentialPlan(),
-      endpointPlan: developerEndpointPlan,
-      model: "gemini-2.5-pro",
-      fetchImpl,
-    });
+    const fetchImpl = successfulGeminiFetch();
+    const provider = providerWithFetch(fetchImpl);
 
     await provider.chat([{ role: "user", content: "update task" }], {
       tools: [taskUpdateTool],
@@ -593,9 +620,37 @@ describe("GeminiProvider", () => {
               properties: {
                 taskId: { type: "string" },
                 owner: { type: "string", nullable: true },
-                note: {
-                  anyOf: [{ type: "string" }, { type: "number" }],
+                deletedValue: { type: "null" },
+                explicitNull: { type: "null" },
+                entries: {
+                  type: "array",
                   nullable: true,
+                  items: {
+                    type: "object",
+                    nullable: true,
+                    properties: {
+                      label: { type: "string" },
+                    },
+                    required: ["label"],
+                  },
+                },
+                target: {
+                  type: "object",
+                  nullable: true,
+                  properties: {
+                    kind: { type: "string" },
+                  },
+                  required: ["kind"],
+                  anyOf: [
+                    {
+                      type: "object",
+                      properties: { kind: { type: "string" } },
+                    },
+                    {
+                      type: "object",
+                      properties: { id: { type: "integer" } },
+                    },
+                  ],
                 },
               },
               required: ["taskId"],
@@ -604,6 +659,133 @@ describe("GeminiProvider", () => {
         ],
       },
     ]);
+  });
+
+  test("uses the same Gemini schema compiler for structured output", async () => {
+    const fetchImpl = successfulGeminiFetch('{"answer":null}');
+    const provider = providerWithFetch(fetchImpl);
+
+    await provider.chat([{ role: "user", content: "answer" }], {
+      structuredOutput: {
+        enabled: true,
+        schema: {
+          type: "json_schema",
+          name: "answer",
+          schema: {
+            type: "object",
+            properties: {
+              answer: { type: ["string", "null"] },
+            },
+            required: ["answer"],
+            additionalProperties: false,
+          },
+        },
+      },
+    });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const requestBody = JSON.parse(String(init?.body)) as {
+      readonly generationConfig?: Record<string, unknown>;
+    };
+    expect(requestBody.generationConfig).toMatchObject({
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: "object",
+        properties: {
+          answer: { type: "string", nullable: true },
+        },
+        required: ["answer"],
+      },
+    });
+  });
+
+  test.each([
+    {
+      label: "an empty type array",
+      schema: { type: [] },
+      detail: "the type array is empty",
+    },
+    {
+      label: "a non-string type entry",
+      schema: { type: ["string", 42] },
+      detail: "type[1]",
+    },
+    {
+      label: "a whitespace-padded type",
+      schema: { type: [" string "] },
+      detail: 'unsupported type " string "',
+    },
+    {
+      label: "multiple concrete types",
+      schema: { type: ["object", "string", "null"] },
+      detail: "multiple non-null types (object, string)",
+    },
+    {
+      label: "a missing type",
+      schema: { description: "untyped" },
+      detail: "a JSON Schema type is required",
+    },
+    {
+      label: "object constraints on a scalar",
+      schema: {
+        type: "string",
+        properties: { nested: { type: "string" } },
+      },
+      detail: 'properties: requires type "object"',
+    },
+  ])("rejects $label before Gemini dispatch", async ({ schema, detail }) => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = providerWithFetch(fetchImpl);
+    const invalidTool: LLMTool = {
+      type: "function",
+      function: {
+        name: "InvalidSchema",
+        description: "Exercise local schema validation",
+        parameters: {
+          type: "object",
+          properties: {
+            value: schema,
+          },
+        },
+      },
+    };
+
+    const error = await provider
+      .chat([{ role: "user", content: "validate" }], {
+        tools: [invalidTool],
+      })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    const message = error instanceof Error ? error.message : "";
+    expect(message).toContain(
+      'tools["InvalidSchema"].parameters.properties.value',
+    );
+    expect(message).toContain(detail);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("rejects an unsupported structured-output union with its schema path", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = providerWithFetch(fetchImpl);
+
+    await expect(
+      provider.chat([{ role: "user", content: "answer" }], {
+        structuredOutput: {
+          enabled: true,
+          schema: {
+            type: "json_schema",
+            name: "answer",
+            schema: {
+              type: ["object", "string"],
+              anyOf: [{ type: "object" }, { type: "string" }],
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow(
+      'structuredOutput["answer"].schema.type: multiple non-null types',
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test("streams Gemini text, function calls, and usage from streamGenerateContent", async () => {
