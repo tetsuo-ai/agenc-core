@@ -199,6 +199,22 @@ reimplementing the workbench. Source:
 
 Workbench BUFFER and Neovim behavior: [`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md).
 
+`session.setPermissionMode` mutates the live session permission registry.
+Switching to `bypassPermissions` requires explicit consent for the
+session's exact canonical cwd (`authorizeBypassPermissionsConsent` /
+`loadBypassPermissionsConsent` in
+`runtime/src/app-server/background-agent-runner.ts`). A missing or
+mismatched workspace throws
+`Switching to bypassPermissions requires explicit consent for this exact cwd`
+(or `Switching to bypassPermissions requires explicit consent for a stable
+canonical cwd`). In-process `bypassAuthority:
+"operator_tool_approval"` (Core `tool.approve` with
+`allowAllToolsForSession`) can authorize that cwd for the transition. The
+public JSON result stays `{ applied, previousMode, mode }`; a rollback
+hook is attached only as a non-enumerable property and is not part of the
+wire contract. Persisted bypass authority is refused on restore unless
+consent still matches that exact workspace.
+
 Protocol 1.7 adds `session.permissions.mutateRule` for authenticated Core
 clients. It adds or removes one live session permission rule through the
 daemon's permission registry. It is not a public SDK method.
@@ -225,8 +241,16 @@ part of the public SDK method set.
 with different content is rejected. A retry response reports
 `duplicateState: "completed" | "incomplete"` and never invents success for a
 crash tail without a durable terminal event. Callers that require strict
-single-turn admission pass `ifBusy: "reject"`. Without that flag, the legacy
-FIFO/co-driving behavior is unchanged for 1.0/1.1 clients.
+single-turn admission pass `ifBusy: "reject"`. That flag refuses only an
+in-flight or queued turn (`pendingMessageSubmissionCount`,
+`pendingShellExecutionCount`, or a live `session.activeTurn`). It does
+**not** treat a `pending_init` deferred session as busy. `agent.create`
+with `deferInitialTurn: true` (Editor cold-start, restored agents with no
+initial content) parks the thread in `pending_init` until the first
+accepted message; refusing that message deadlocks the session. The flag
+cannot be combined with `initialContent` or other first-turn metadata
+(`runtime/src/app-server/daemon-dispatcher.ts`). Without `ifBusy`, the
+legacy FIFO/co-driving behavior is unchanged for 1.0/1.1 clients.
 Hidden-user submissions persist a non-rendering `message_submission` marker
 with a SHA-256 content fingerprint, so their idempotency identity also survives
 a process crash without duplicating the hidden prompt in that marker.

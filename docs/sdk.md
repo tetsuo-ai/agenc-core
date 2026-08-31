@@ -268,6 +268,7 @@ node packages/agenc-sdk/examples/one-shot.mjs --transport subprocess "say hello"
 const started = await client.startRun({
   goal: "Fix the flaky retry counter in the sync worker.",
   cwd: "/abs/path/to/repo",
+  model: "grok-4.6",
   reviewerModel: "grok-4.5",
   permissionMode: "acceptEdits",
   requiredVerification: [{ label: "unit", script: "npm test" }],
@@ -276,14 +277,21 @@ const started = await client.startRun({
 ```
 
 `startRun` resolves after the durable intake commit; the fixed pipeline
-continues in the daemon. Follow it by run id with the existing cursor
-contract: `runStatus` adds a `workflow` step projection (stage statuses,
-attempts, verdicts, artifact pointers, stop reason), `runResult` returns the
-durable terminal, and `runEvidence` adds the sealed evidence `bundle`
-(verified-change record digest, ledger path, `cas://sha256/...` artifact
-pointers). The workflow demands at least one required verification command;
-`completed` is refused without passing commands, a `VERDICT: PASS`
-verification agent, and a zero-blocker independent review.
+continues in the daemon. `model` and `provider` ride on the run session
+bootstrap the same way `agenc run start --model` does. Omitting them uses
+the daemon default, including for children that inherit the run's provider.
+Follow the run by id with the existing cursor contract: `runStatus` adds a
+`workflow` step projection (stage statuses, attempts, verdicts, artifact
+pointers, stop reason), `runResult` returns the durable terminal, and
+`runEvidence` adds the sealed evidence `bundle` (verified-change record
+digest, ledger path, `cas://sha256/...` artifact pointers). The workflow
+demands at least one required verification command; `completed` is refused
+without passing commands, a `VERDICT: PASS` verification agent, and a
+zero-blocker independent review. After finalize, the delivered commit is
+`refs/agenc/runs/<runId>` in the repository. Child failures that produce no
+assistant text still carry a bounded `error` in the step `finalMessage`.
+Operator pitfalls:
+[design/verified-change-workflow-m5.md](design/verified-change-workflow-m5.md).
 
 ### Durable run inspection
 

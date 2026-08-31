@@ -279,7 +279,7 @@ Unlike session HTTP hooks, cron webhooks **do not** allow loopback, and
 `[browser].allow_private_network` does not apply.
 
 Full pin table, payload shape, and pitfalls:
-[autonomy.md — Cron delivery](reference/autonomy.md#cron-delivery-runtimesrcgatewaycron-deliveryts).
+[Cron delivery](reference/autonomy.md#cron-delivery-runtimesrcgatewaycron-deliveryts).
 
 ## Security model (non-negotiable)
 

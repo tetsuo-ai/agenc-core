@@ -231,7 +231,7 @@ enforcement boundary.
 | Scheme | `http:` or `https:` only |
 | Credentials | Username/password in the URL are rejected |
 | Local names | `localhost` and `*.localhost` blocked before DNS |
-| Address policy | `resolveAllowedAddress(..., { allowPrivateNetwork: false })` — same classifier as the browser SSRF proxy |
+| Address policy | `resolveAllowedAddress(..., { allowPrivateNetwork: false })`, the same classifier as the browser SSRF proxy |
 | Mixed DNS | **Fail closed** if **any** answer is disallowed (public + `10/8` is rejected) |
 | Loopback / private | Blocked. Unlike session HTTP hooks, **loopback is not allowed** |
 | Cloud metadata | Blocked in every representation (`169.254.169.254`, `100.100.100.200`, AWS IPv6 IMDS, IPv4-mapped and scoped forms) |
@@ -253,7 +253,7 @@ Successful POST body (JSON):
   "taskId": "abc123",
   "cron": "7 * * * *",
   "prompt": "summarize overnight deploys",
-  "finalMessage": "…",
+  "finalMessage": "No failed overnight deploys.",
   "stopReason": "end_turn",
   "firedAt": "2026-08-31T16:00:00.000Z"
 }
@@ -263,13 +263,13 @@ Successful POST body (JSON):
 
 - A webhook that only listens on loopback or a private network will store
   successfully (`https://127.0.0.1:9000/hook` passes CronCreate) and then
-  fail at fire with `cron webhook: … blocked …`.
+  fail at fire with a `cron webhook: blocked` error.
 - A hostname that answers both a public and a private address is rejected
   even if the public address would have been fine.
 - A public URL that **redirects** to a private or metadata host is rejected
   on that hop; the first request already happened.
 - Webhook POST errors do not pause the job or refund the turn. Check
-  gateway logs (`cron: webhook POST failed for task …`).
+  gateway logs (`cron: webhook POST failed for task <task-id>`).
 - Channel delivery still needs a running adapter. An unknown
   `announceChannel` skips channel send for that fire and may still POST
   the webhook via the null adapter.

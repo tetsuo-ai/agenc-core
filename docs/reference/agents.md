@@ -309,6 +309,15 @@ session when the feature is available (`AGENC_COORDINATOR_MODE` /
 | `agent.stop` | Stop an agent |
 | `agent.logs` | Fetch agent logs |
 
+`agent.create` accepts `deferInitialTurn: true` to provision a live session
+without submitting a first model turn (Editor cold-start). Startup hooks
+and Agent side effects stay deferred until the first non-Editor message.
+The flag cannot combine with `initialContent` or other first-turn fields
+(`runtime/src/app-server/daemon-dispatcher.ts`). The thread sits in
+`pending_init`; `ifBusy: "reject"` on `message.send` refuses only an
+in-flight or queued turn, not `pending_init`. Rejecting the first prompt would
+deadlock the session. See [daemon.md](daemon.md).
+
 SDK helpers on `AgencClient`: `spawnAgent`, `listAgents`, `attachAgent`,
 `stopAgent`, `agentLogs`. See [`../sdk.md`](../sdk.md).
 

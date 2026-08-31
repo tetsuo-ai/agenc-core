@@ -148,7 +148,7 @@ path. Model-facing search is `WebSearch` (plus gated `XSearch` when enabled).
 | `ExitPlanMode` | Exit plan mode (approval path) |
 | `VerifyPlanExecution` | Compare plan vs progress summary |
 | `WorkflowTool` | Bounded event-driven agent DAG runner; **deferred**. See [workflows.md](workflows.md) |
-| `CronCreate` / `CronDelete` / `CronList` | Local scheduled prompts (`.agenc/scheduled_tasks.json`); **deferred**. Delivery-routed `webhook` URLs are public-egress only and address-pinned at fire time — see [autonomy.md](autonomy.md#cron-delivery-runtimesrcgatewaycron-deliveryts) |
+| `CronCreate` / `CronDelete` / `CronList` | Local scheduled prompts (`.agenc/scheduled_tasks.json`); **deferred**. Delivery-routed `webhook` URLs are public-egress only and address-pinned at fire time; see [autonomy.md](autonomy.md#cron-delivery-runtimesrcgatewaycron-deliveryts) |
 
 ### Interaction / user input
 
@@ -459,6 +459,21 @@ closed on handoff input that would widen or hide the boundary:
 
 Production sessions never invoke this helper with operator-typed argv. The
 contract matters when diagnosing a spawn refusal or writing a regression.
+
+### Plugin MCP confinement
+
+Stdio MCP uses the same sandbox broker as other child processes. On
+Landlock-fallback hosts, workspace-write policies that need a writable project
+with read-only `.git` or `.agenc` carve-outs fail in pre-flight with
+`[sandbox_policy_unexpressible]`. Plugin-declared stdio servers substitute a
+tighter profile: root read access and writes confined to the plugin data
+directory. Landlock can express this profile, so plugin servers keep working
+when bubblewrap is blocked.
+
+Restricted-network seccomp allows `getsockname`, `getpeername`, and
+`getsockopt`; Node's inherited pipe stdio therefore remains usable. See
+[install.md](../install.md#ubuntu-apparmor-and-bubblewrap) and
+[mcp.md](mcp.md#plugin-declared-servers).
 
 Runtime `read_only` and `workspace_write` profiles use a full-disk read
 baseline. Explicit deny-read entries still override it. `read_only` grants no
