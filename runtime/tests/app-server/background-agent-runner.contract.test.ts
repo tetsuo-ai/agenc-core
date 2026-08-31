@@ -7822,6 +7822,62 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
+  it("[managed-thread] keeps the run alive after a mid-turn compact skip", async () => {
+    const { runner, session, control, stub } = makeTopLevelRunner({
+      conversationId: "session-survives-mid-turn-compact-skip",
+    });
+    await runner.startAgent({
+      objective: "passive compact test",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    session.emit({
+      id: "legacy-mid-turn-compact-skip",
+      msg: {
+        type: "error",
+        payload: {
+          cause: "mid_turn_compact_failed",
+          message:
+            "mid_turn_compact_skipped: lastSamplePromptTokens=200000 limit=180000",
+        },
+      },
+    });
+    session.emitPhaseEvent({
+      type: "turn_complete",
+      content: "need a tool",
+      usage: {
+        promptTokens: 200_000,
+        completionTokens: 10,
+        totalTokens: 200_010,
+      },
+      stopReason: "compact_failed",
+      error: new Error(
+        "mid_turn_compact_skipped: lastSamplePromptTokens=200000 limit=180000",
+      ),
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const snapshot = await runner.getAgentSnapshot(
+      "session-survives-mid-turn-compact-skip",
+    );
+    expect(snapshot?.status).not.toBe("error");
+
+    await expect(
+      runner.submitAgentMessage("session-survives-mid-turn-compact-skip", {
+        sessionId: "session_1",
+        content: "continue after compact skip",
+        originalContent: "continue after compact skip",
+        messageId: "after-compact-skip",
+        streamId: "after-compact-skip-stream",
+        acceptedAt: "2026-08-31T00:00:01.000Z",
+      }),
+    ).resolves.toMatchObject({ disposition: "started" });
+    expect(control.sendInput).toHaveBeenCalledTimes(1);
+    expect(stub.thread.submit).not.toHaveBeenCalled();
+  });
+
   it("[managed-thread] applies owning-session hook context to follow-up model input exactly once", async () => {
     const contextHook = vi.fn(() => ({
       additionalContexts: ["session-owned daemon context"],

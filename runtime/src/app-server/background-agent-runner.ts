@@ -5758,26 +5758,30 @@ function shellEventKey(commandId: string): string {
     .slice(0, 32);
 }
 
-const PER_PROMPT_SESSION_ERROR_CAUSES: ReadonlySet<string> = new Set([
+const SESSION_ONLY_ERROR_CAUSES: ReadonlySet<string> = new Set([
   "user_prompt_submit_hook_blocked",
+  "mid_turn_compact_failed",
+  "pre_sampling_compact_failed",
 ]);
 
-function isPerPromptSessionErrorCause(cause: unknown): boolean {
-  return typeof cause === "string" && PER_PROMPT_SESSION_ERROR_CAUSES.has(cause);
+function isSessionOnlyErrorCause(cause: unknown): boolean {
+  return typeof cause === "string" && SESSION_ONLY_ERROR_CAUSES.has(cause);
 }
 
 /**
  * Older UserPromptSubmit blockingError records use type "error". The
  * refusal applies to one prompt, so keep the event visible without changing
  * the run status seen by the runner or attached clients.
+ *
+ * Mid-turn / pre-sampling compact skip-or-throw used the same `error`
+ * type. Those close one turn (context could not shrink) and must not
+ * flip the daemon agent to `error`, or later prompts die with
+ * "no longer running (status: error)".
  */
 function projectPerPromptRejectionAsSessionOnly(
   event: BackgroundAgentDaemonEvent,
 ): BackgroundAgentDaemonEvent {
-  if (
-    event.type === "error" &&
-    isPerPromptSessionErrorCause(event.payload?.cause)
-  ) {
+  if (event.type === "error" && isSessionOnlyErrorCause(event.payload?.cause)) {
     return { ...event, statusProjection: "session_only" };
   }
   return event;
@@ -7756,24 +7760,35 @@ export function phaseEventToProgressEvent(
           error: event.error?.message ?? "turn errored",
         };
       }
-      // Bounded stops — the backstop, a turn cap, the cost cap — are
-      // per-TURN outcomes, not run deaths. Mapping them to run_error
-      // bricked the whole session: the user saw "no longer running
-      // (status: error)" and could never prompt again after one bad
-      // turn. The turn ends honestly with its message; the session
-      // stays available for the next prompt, exactly like "completed".
+      // Bounded stops — the backstop, a turn cap, the cost cap, and a
+      // compact skip/throw — are per-TURN outcomes, not run deaths.
+      // Mapping them to run_error bricked the whole session: the user
+      // saw "no longer running (status: error)" and could never prompt
+      // again after one bad turn. The turn ends honestly with its
+      // message; the session stays available for the next prompt,
+      // exactly like "completed".
       const boundedStopFallback: Partial<Record<string, string>> = {
         max_turns: "Turn capped: iteration limit hit; send a new prompt to continue.",
         max_budget_usd: "Turn capped: cost ceiling hit; send a new prompt to continue.",
         no_progress: "Turn halted by the progress backstop; send a new prompt to continue.",
+        compact_failed:
+          "Turn stopped: compaction could not shrink the context; send a new prompt to continue.",
       };
       const boundedFallback = boundedStopFallback[event.stopReason];
       if (boundedFallback !== undefined) {
+        const compactMessage =
+          event.stopReason === "compact_failed" &&
+          event.error instanceof Error &&
+          event.error.message.length > 0
+            ? event.error.message
+            : undefined;
         return {
           kind: "turn_complete",
           turnId,
           toolCallCount: 0,
-          finalMessage: event.content.length > 0 ? event.content : boundedFallback,
+          finalMessage:
+            compactMessage ??
+            (event.content.length > 0 ? event.content : boundedFallback),
         };
       }
       // "completed" | "empty_response" — a per-turn completion. Emit
