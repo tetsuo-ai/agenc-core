@@ -25,7 +25,7 @@ record and exit code. Tokens never appear in the output. Stages:
 | `authorize` | Browser PKCE URL opened |
 | `callback_received` | Loopback callback accepted |
 | `exchanging_code` | Authorization code → tokens |
-| `device_fallback` | Loopback unavailable; switching to device code |
+| `device_fallback` | Browser callback flow failed; switching to device code |
 | `device_authorize` | Device-code URL + user code shown |
 
 Aliases: `xai-login`, `xai-logout`, `xai-auth-status`. Other arguments

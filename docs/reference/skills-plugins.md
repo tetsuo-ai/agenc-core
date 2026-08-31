@@ -38,9 +38,10 @@ Existing directories only (missing roots skipped). Project walk: cwd up to home.
 
 The runtime command catalog and `/skills` use this same discovery result.
 `/skills` can list roots and manage project skills; bundled skills are tagged
-`[bundled]`. Inventory rows (CLI and desktop) carry `whenToUse` and
-`argumentHint` for every origin, including inline built-ins that have no
-`SKILL.md` a client could open.
+`[bundled]`. Local-snapshot inventory rows preserve `whenToUse` and
+`argumentHint` when declared, including inline built-ins that have no
+`SKILL.md` a client could open. Registry-only bundled fallback rows currently
+expose their descriptions but not those two optional fields.
 
 A plugin manifest may declare a skill root that **is** the skill
 (`skills: ["./skills/flash-board"]` with `SKILL.md` in that directory).
@@ -91,13 +92,9 @@ Author under e.g. `.agenc/skills/my-skill/SKILL.md` in the project or
 
 ### Defaults
 
-- `[plugins] enabled = false` in `defaultConfig()`. Turn it on to activate
-  plugins. `plugins.enabled` is the feature gate for configured entries and
-  repository-controlled auto-discovery. User-scope / marketplace installs
-  under the plugin storage root are the operator trust decision (install
-  is the consent); they are not also gated by the forgeable-repo
-  auto-discovery flag that applies to `.agents/plugins` and workspace
-  `plugins/` trees.
+- `[plugins] enabled = false` in `defaultConfig()`. It gates configured entries
+  and auto-discovered plugins, including user-scope installs. The install CLI
+  writes an enabled config entry and turns this gate on.
 - User-scoped installs, acquisition cache, marketplace inventory, and private
   data share one plugin storage root. The default is `$AGENC_HOME/plugins`.
   `AGENC_PLUGIN_CACHE_DIR` replaces that root as one unit. Project-scoped
@@ -160,6 +157,27 @@ Load + register: `refreshPluginRegistrations` →
 `loadPluginCommands`, `loadPluginSkills`, `loadPluginAgents`,
 `loadPluginHooks`, `loadPluginMcpServers`, `loadPluginLspServers`,
 `loadPluginOutputStyles`.
+
+### Plugin MCP servers
+
+`loadPluginMcpServers` is not enough by itself. Session startup must also
+merge those registrations into the live `MCPManager`
+(`getAllMcpConfigs` in `runtime/src/services/mcp/config.ts`). Enabled
+user-scoped plugins then appear in `/mcp` as `plugin:<id>:<server>` and
+as model tools `mcp.plugin:<id>:<server>.<tool>`.
+
+Project- and local-scope installs are **repository-controlled**
+(`isRepositoryControlledPlugin`). The loader strips their `mcpServers`,
+hooks, and `lspServers` so workspace-resident packages cannot become a second
+process authority. Skills, commands, agents, and output styles still load.
+`agenc plugin install --scope project` (or `local`) warns when the manifest
+ships hooks or MCP servers. Reinstall with `--scope user` to load those
+surfaces.
+
+Stdio plugin servers run under a tight sandbox profile (writes confined
+to the plugin data directory). Landlock can express this profile;
+ordinary workspace-write MCP is not. Operator merge rules, templates,
+and failure symptoms: [mcp.md](mcp.md#plugin-declared-servers).
 
 ## Shipped plugins
 
@@ -252,18 +270,13 @@ Install roots use the same collision-resistant child key: user
 `<workspace>/plugins/` and git-root `plugins/`. `[plugins] enabled = false`
 in `defaultConfig()`.
 
+For a non-user install, the CLI writes an install-time stderr warning when the
+plugin ships hooks or MCP servers. The loader enforces the scope restriction
+even if the warning is missed.
+
 A canonical plugin ID can be installed in one managed scope at a time.
 Uninstall it before moving it between user and project/local scope. Uninstall
 still accepts an explicit scope so old duplicate copies can be removed safely.
-
-Workspace-resident (`project` / `local`) packages are
-**repository-controlled**. The loader strips `hooks`, `mcpServers`, and
-`lspServers` at load time so a cloned repo cannot inject session-owned
-process children. `agenc plugin install --scope project` (or `local`)
-warns on stderr when the manifest still declares hooks or MCP servers and
-tells you to reinstall with `--scope user`. Skills, commands, agents, and
-output styles from those packages still load. Plugin MCP merge, sandbox
-profile, and connect diagnostics: [mcp.md](mcp.md#plugin-mcp-servers).
 
 ### Marketplace
 
@@ -295,7 +308,9 @@ agenc plugin marketplace install flash-board@agenc-plugins --product desktop --j
 (product-filtered; `NOT_AVAILABLE` excluded) into one schema-versioned
 JSON document (`kind: agenc.plugin.marketplace.catalog`). A broken
 marketplace becomes an `errors[]` entry; partial success is still a
-usable catalog. Exit status 1 only when every marketplace failed.
+usable catalog. JSON mode always exits 0 after emitting a document, so callers
+must inspect `errors[]`; text mode exits 1 when every configured marketplace
+failed.
 
 A fresh profile has no marketplaces. The first catalog request registers
 the official `agenc-plugins` marketplace
@@ -303,9 +318,11 @@ the official `agenc-plugins` marketplace
 `AGENC_SKIP_OFFICIAL_MARKETPLACE=1`. An offline first run still returns
 an empty catalog rather than failing the CLI.
 
-Each catalog row carries the absolute marketplace `root` plus a
-`logoPath` proven (`realpath`) to sit inside that root. Clients serve
-artwork under their own trusted scheme; they must not guess paths.
+Each catalog row carries the absolute marketplace `root`. When artwork is
+available, it also carries `logoPath` and `logoRoot`; `logoPath` is proven with
+`realpath` to sit inside `logoRoot`. Prefetched artwork uses a cache outside the
+marketplace root, so clients must validate against `logoRoot`, not `root`.
+Clients serve artwork under their own trusted scheme; they must not guess paths.
 Card prefetch for SHA-pinned `github.com` git sources reads the plugin
 manifest at the pinned commit and caches logo / display name /
 description / version / bounded interface copy / skill and command rows
@@ -315,12 +332,15 @@ a generic card, never a broken catalog.
 
 `install` resolves `plugin@marketplace` (last-`@` split). A bare name is
 accepted only when exactly one configured marketplace offers that plugin
-to the requested product; ambiguity is an error. Non-local marketplaces
-require a publisher signature (`signatureVerified` on the JSON verdict).
-`--scope` is `user` or `project` (not `local`). Installed summaries
-carry the manifest interface (logo stripped; artwork already travels as
-a verified path), command rows, and skill rows from each skill dir's
-`SKILL.md` frontmatter.
+to the requested product; ambiguity is an error. The JSON result reports
+`signatureVerified`. Remote plugin sources from non-local marketplaces request
+publisher-signature verification, but an in-tree local source follows the local
+directory install path and is not signature-verified; callers must treat a
+false verdict as unverified.
+`--scope` is `user` or `project` (not `local`). The install result carries the
+manifest interface (logo stripped; artwork travels as a verified path) and
+command rows. A subsequent `plugin list --json` also includes skill rows read
+from each skill directory's `SKILL.md` frontmatter.
 
 ---
 

@@ -306,11 +306,26 @@ lowercase letters, digits, and underscores`.
 At least one `--verify "label=script"` command is required. A `completed`
 result mechanically demands every required command exit 0, an
 adversarial-verification `VERDICT: PASS`, and an independent review with zero
-blockers. The frozen spec's `--permission-mode` and unattended allow/deny
-lists are applied to the run's daemon session, so pipeline children execute
-under the declared policy rather than the daemon default. The command returns
-after the durable intake commit (`runId`, `specDigest`, `baseCommit`);
-`--follow` then tails the run journal until the terminal result.
+blockers. The frozen spec's `--permission-mode`, unattended allow/deny
+lists, and `--model` are applied to the run's daemon session
+(`workflowSessionArgv`), so pipeline children execute under the declared
+policy and model rather than the daemon default. The CLI has no
+`--provider` flag; the `run.start` RPC and SDK `startRun` may also pass
+`provider`. A child inherits the run session's **provider**; only the
+model name can be overridden per child. The command returns after the
+durable intake commit (`runId`, `specDigest`, `baseCommit`); `--follow`
+then tails the run journal until the terminal result.
+
+Child agents register under `workflowChildAgentName(childRunId)`: the run id
+is lowercased and every character outside `[a-z0-9_]` is folded to `_`.
+The agent registry rejects a raw id such as `wf-example:plan#1`. A child that
+dies before it speaks records `workflow <kind> child <outcome>: <error>`
+instead of an empty `final_message`. Independent review allows one repair
+turn for unstructured prose, then fails closed with a bounded excerpt.
+Finalize pins the delivered commit at `refs/agenc/runs/<runId>` before
+deleting the worktree branch; a failed pin leaves the worktree in place.
+Design and troubleshooting:
+[`../design/verified-change-workflow-m5.md`](../design/verified-change-workflow-m5.md).
 
 The other commands use the daemon's durable run/admission contract and print
 canonical JSON. `status` includes aggregate admission and budget/hold state;
@@ -425,7 +440,7 @@ subscription sign-in queries the ChatGPT backend (`/models` with a
 `client_version` query). A platform key (stored or `OPENAI_API_KEY`)
 queries `https://api.openai.com/v1/models`. `--json` ends with
 `{ok, models, authMode}` or `{ok:false, error}`. Tokens never appear.
-Accepts only `--json` or `--help`.
+Accepts only `--json`, `--help`, or `-h`.
 
 ---
 
@@ -438,8 +453,8 @@ agenc grok-auth-status [--json]
 ```
 
 Headless X / xAI subscription sign-in. Browser PKCE with a loopback
-callback is the default; pass `device` (or lose the loopback port) for
-the RFC 8628 device-code flow. `--json` emits one NDJSON record per
+callback is the default; pass `device` to select the RFC 8628 device-code
+flow. A failed browser callback also falls back to that flow. `--json` emits one NDJSON record per
 stage (`authorize`, `callback_received`, `exchanging_code`,
 `device_fallback`, `device_authorize`) plus a result. Tokens never
 appear. A stored sign-in wins over `XAI_API_KEY` / `GROK_API_KEY` while
@@ -458,9 +473,9 @@ agenc providers [--json] [--no-local-check]
 Provider readiness: credential status, local server health, and AgenC
 subscription tier. `--json` reports `credentialStatus` and, when an exact
 source won, redacted `credentialProvenance`; credential values are never
-included. Each usable cloud provider also carries `keyEnvVar` — the
-canonical BYOK environment name (`XAI_API_KEY`, `OPENAI_API_KEY`, …).
-Alias order stays private; keyless providers omit the field.
+included. Every API-key credential kind also carries `keyEnvVar`, the canonical
+BYOK environment name (for example, `XAI_API_KEY` or `OPENAI_API_KEY`). Alias
+order stays private; keyless providers omit the field.
 
 | Option | Meaning |
 | --- | --- |

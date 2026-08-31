@@ -87,6 +87,61 @@ SSE autostart also requires an absolute `workspace`; the path is canonicalized
 and must resolve to a directory before the endpoint starts. Foreground
 `agenc mcp serve` scopes tools to the command's working directory.
 
+### Plugin-declared servers
+
+Session startup merges enabled-plugin `mcpServers` into the same outbound
+set as operator `mcp_servers`. The live path is
+`getAllMcpConfigs` → `loadPluginMcpServerRegistrations` → the session
+`MCPManager` (`runtime/src/services/mcp/config.ts`,
+`runtime/src/plugins/registration/mcp-plugin-integration.ts`). A broken
+plugin source is logged, reported on `/mcp`, and skipped; it cannot fail
+session startup. `pluginDefinitionKnowledgeComplete` is false when discovery
+throws or records an issue.
+
+Names are scoped as `plugin:<plugin-id>:<server>`
+(`pluginScopedServerIdentifier`). Overlong generated scopes are compacted
+with a SHA-256 suffix. Tools appear as
+`mcp.plugin:<plugin-id>:<server>.<tool>`.
+
+| Winner | Loses |
+| --- | --- |
+| Operator `mcp_servers` with the same command/URL signature | Plugin server (content-based dedup). A **disabled** manual entry does not suppress a plugin server |
+| Session `addServer` | Plugin or default origin of the same name |
+| Managed MCP policy (`hasManagedMcpAuthority`) | Plugin discovery (not loaded) |
+| First enabled plugin | Later plugin with the same command/URL |
+
+Project- and local-scope installs are **repository-controlled**. The loader
+strips their `mcpServers`, hooks, and `lspServers`. `agenc plugin install
+--scope project` or `--scope local` warns at install time when the manifest
+contains hooks or MCP servers. Use `--scope user` to load those surfaces. See
+[skills-plugins.md](skills-plugins.md).
+
+Stdio plugin servers spawn under a tight `permissionProfileOverride`:
+full-disk read, writes only to the plugin data directory and its `tmp/`
+(`TMPDIR` pointed there). The override applies only when the session is
+`workspace_write`; a surface may tighten the session profile but cannot widen
+it (`SandboxExecutionBroker.prepareSpawn`). The plugin profile has no `.git` /
+`.agenc` carve-outs, so it is Landlock-expressible. Ordinary workspace-write
+stdio MCP still needs bubblewrap; on AppArmor-restricted hosts these
+spawns fail in pre-flight with `[sandbox_policy_unexpressible]` instead of
+a bare `MCP error -32000: Connection closed`. AppArmor remediation and
+the plugin exemption: [install.md](../install.md#ubuntu-apparmor-and-bubblewrap).
+
+Reserved child env (injected by `pluginMcpSandboxEnvironment`, not
+operator-overridable keys): `AGENC_PLUGIN_ROOT`, `AGENC_PLUGIN_DATA`,
+`AGENC_PLUGIN_NAME`, `AGENC_PLUGIN_MCP_SERVER`, `AGENC_PLUGIN_SANDBOX`.
+Manifest strings may template `${AGENC_PLUGIN_ROOT}`, `${AGENC_PLUGIN_DATA}`,
+`${AGENC_SESSION_ID}`, and `${user_config.<field>}` before ordinary
+`${NAME}` / `${NAME:-default}` expansion from the **session** environment.
+A missing required environment variable drops the server. `cwd` must stay
+inside the plugin root (realpath-checked).
+
+Connect failures attach up to **8** recent child stderr lines (400 characters
+each) as `; server stderr: <tail>` (`RECENT_STDERR_MAX_LINES` in
+`runtime/src/mcp-client/transports/stdio.ts`). The production manager uses
+a silent logger. Before stderr retention, the manager discarded the launcher's
+refusal text.
+
 ### Tool bridge
 
 - Namespaced tool names: `mcp.<serverName>.<toolName>`
@@ -122,45 +177,6 @@ reads never use `ToolUseContext.mcpClients` or the TUI preprocessing path; the
 passive status projection contains no executable client. Returned resource
 content keeps the canonical size, normalization, truncation, and untrusted-data
 framing rules above.
-
-### Plugin MCP servers
-
-Enabled user-scoped plugins contribute outbound servers from the manifest
-`mcpServers` field. Session startup
-(`runtime/src/services/mcp/config.ts` +
-`runtime/src/plugins/registration/mcp-plugin-integration.ts`) merges those
-declarations into the live manager:
-
-- Plugin-scoped names (`plugin:<id>:<server>`) never clobber an explicit
-  `mcp_servers` entry. A disabled manual server does not suppress a plugin
-  server that would otherwise connect.
-- A broken plugin source is reported on `/mcp` and cannot fail session
-  startup. `pluginDefinitionKnowledgeComplete` is false when discovery
-  threw or recorded issues.
-- Templates expand `${AGENC_PLUGIN_ROOT}`, `${AGENC_PLUGIN_DATA}`,
-  `${AGENC_SESSION_ID}`, `${user_config.<field>}`, and `${NAME}` /
-  `${NAME:-default}` from the session environment. Unexpanded required
-  env names drop that server with `Missing environment variables: <names>`.
-- Stdio children receive `AGENC_PLUGIN_ROOT`, `AGENC_PLUGIN_DATA`,
-  `AGENC_PLUGIN_NAME`, `AGENC_PLUGIN_MCP_SERVER`, and
-  `AGENC_PLUGIN_SANDBOX`. Working directory must stay inside the plugin
-  root.
-- Under `workspace_write`, plugin stdio uses
-  `pluginMcpPermissionProfile`: root read, writes confined to the plugin
-  data directory (and its `tmp/`). That profile is stricter than the
-  workspace profile and Landlock-expressible, so plugin MCP keeps working
-  when bubblewrap is blocked. Ordinary workspace-write MCP still fails
-  with `[sandbox_policy_unexpressible]` on those hosts.
-- Pre-handshake connect failures attach a bounded tail of child stderr
-  (8 lines, 400 characters each) as `; server stderr: <tail>`. The production
-  manager uses a silent logger; without that tail, a sandbox refusal was
-  previously reported only as `MCP error -32000: Connection closed`.
-
-Project- and local-scope installs are repository-controlled: hooks, MCP
-servers, and LSP servers are stripped at load time. `agenc plugin install
---scope project` (or `local`) warns when the manifest still declares hooks
-or MCP servers. Install with `--scope user` to enable them. Details:
-[skills-plugins.md](skills-plugins.md).
 
 ### Model-facing MCP tools
 
@@ -262,9 +278,19 @@ dispatcher (bypasses native policy), and disabling the entire inbound server
 subset preserves useful local reads while leaving one future re-enable point:
 the daemon-owned admission kernel.
 
+### Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| Plugin tools never appear after `agenc plugin install` | Scope is `project` or `local`? Those installs are repository-controlled and strip MCP. Reinstall with `--scope user`. Confirm `[plugins] enabled` and the plugin entry. Inspect `/mcp`. |
+| `MCP error -32000: Connection closed` with no reason | Look for a `; server stderr:` suffix on the same error. On Linux Landlock fallback, workspace-write MCP is often `[sandbox_policy_unexpressible]`. Run `agenc doctor`. |
+| `[sandbox_landlock_fallback]` from `agenc doctor` | Bubblewrap is unusable (commonly Ubuntu AppArmor userns). Install the generated profile or stay on plugin-scoped MCP / `read-only`. See [install.md](../install.md#ubuntu-apparmor-and-bubblewrap). |
+| `[sandbox_required_unavailable]` saying the Linux helper must sit outside the workspace | A bare `agenc` opened `$HOME`. The helper lives under `~/.agenc` and can never leave a home-sized workspace. Open a project directory. See [tools-permissions-sandbox.md](tools-permissions-sandbox.md). |
+| One plugin server missing, session still starts | A broken plugin source is skipped. A duplicate command/URL is suppressed by an enabled manual server. Check `/plugin` for `mcp-server-suppressed-duplicate`. |
+
 ## Related
 
 - Tools / permissions overview: [`tools-permissions-sandbox.md`](tools-permissions-sandbox.md)
-- Skills / plugins (including project-scope MCP stripping): [`skills-plugins.md`](skills-plugins.md)
+- Plugin install scopes, manifests, and repository-controlled stripping: [`skills-plugins.md`](skills-plugins.md)
 - Client README: [`../../runtime/src/mcp-client/README.md`](../../runtime/src/mcp-client/README.md)
 - Architecture map: [`../ARCHITECTURE.md`](../ARCHITECTURE.md)

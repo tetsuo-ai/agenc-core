@@ -264,9 +264,22 @@ Delivery-routed cron jobs (`announceChannel` / `announceTo` / webhook on
 CronCreate) persist as `deliver.{channel,to,webhook}` in
 `.agenc/scheduled_tasks.json`. They run only while **`agenc gateway run`**
 is up (`startCronDelivery`), not from a daemon restart alone. Isolated session
-key `cron|<id>`. Permissions denied. Scan cap 5 minutes. Webhook POST is
-HTTPS/HTTP only; localhost and private/link-local addresses are blocked after
-DNS. Spend rides the same budget envelope as other autonomous surfaces.
+key `cron|default|<id>`. Permissions denied. Scan cap 5 minutes. Spend rides the same
+budget envelope as other autonomous surfaces.
+
+Webhook POST is **address-pinned**: the gateway resolves the host once, dials
+that exact IP, and keeps the original hostname on `Host` / TLS SNI. http(s)
+only; URL credentials, `localhost` / `*.localhost`, loopback, private,
+link-local, CGNAT, reserved/docs/benchmark/multicast, and cloud-metadata
+addresses are rejected (including IPv4-mapped and scoped IPv6 forms). Mixed
+public+private DNS answers fail closed. Each redirect hop is re-resolved and
+re-pinned (max 5; no scheme change; 15 s budget across DNS and hops).
+`CronCreate` only checks the `http(s)` prefix; the pin runs at delivery.
+Unlike session HTTP hooks, cron webhooks **do not** allow loopback, and
+`[browser].allow_private_network` does not apply.
+
+Full pin table, payload shape, and pitfalls:
+[Cron delivery](reference/autonomy.md#cron-delivery-runtimesrcgatewaycron-deliveryts).
 
 ## Security model (non-negotiable)
 

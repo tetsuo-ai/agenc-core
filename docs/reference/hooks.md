@@ -104,6 +104,15 @@ runtime options, project trust, and hook effect before anything runs.
   workspace.
 - AgenC redacts secrets from configured-hook diagnostics where that path is
   wired (`configured-hooks.ts`).
+- Outbound skill/session **HTTP hooks** resolve through `ssrfGuardedLookup`
+  (`runtime/src/utils/hooks/ssrfGuard.ts`). Private, link-local, CGNAT,
+  reserved/docs/benchmark/multicast, and cloud-metadata addresses are
+  blocked, including IPv4-mapped and scoped IPv6 forms. **Loopback is
+  allowed** for local-dev policy servers. When a process or sandbox proxy
+  is active, that proxy performs DNS and applies its own allowlist instead.
+  Cron delivery webhooks are stricter: they reuse the browser public-egress
+  classifier and **block loopback**. See
+  [autonomy.md](autonomy.md#webhook-destinations-pinned-fail-closed).
 
 `--bare` is an immutable, run-owned hard suppression boundary for **every**
 session hook extension point: configured commands, plugin/SDK callbacks,
@@ -137,6 +146,9 @@ of claiming hooks were enabled.
 | `hooks/user-prompt-submit.ts` | UserPromptSubmit adapter |
 
 Plugin hooks merge via `plugins/registration/load-plugin-hooks.ts`.
+Project- and local-scope installs are repository-controlled and do not
+contribute hooks (same strip as plugin MCP). Use `--scope user`. See
+[skills-plugins.md](skills-plugins.md#plugin-mcp-servers).
 
 ### TUI: `/hooks`
 
@@ -190,3 +202,4 @@ Full request shape, security table, and operator checklist:
 | SDK event enum (wider) | `runtime/src/entrypoints/sdk/coreTypes.ts` |
 | Slash command | `runtime/src/commands/hooks.ts` |
 | Gateway HTTP | `runtime/src/gateway/hooks.ts` |
+| Outbound HTTP-hook SSRF | `runtime/src/utils/hooks/ssrfGuard.ts`, `runtime/src/utils/hooks/execHttpHook.ts` |

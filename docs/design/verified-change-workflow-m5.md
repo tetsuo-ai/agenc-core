@@ -105,13 +105,26 @@ terminates `failed/verification_failed`.
 
 ## Session policy
 
-The frozen spec's `permissionMode` and unattended allow/deny lists govern the
-run's daemon session, applied when the session is bootstrapped for the run —
-the exact background-agent mechanism (`--dangerously-bypass-approvals-and-sandbox`/`--permission-mode` bootstrap
-argv plus the unattended permission-policy install on the session's
-permission-mode registry). Resumed runs re-resolve the same policy from the
-durable intake spec, so a restarted daemon never silently downgrades a run to
-its default policy.
+The frozen spec's `permissionMode`, unattended allow/deny lists, and the
+model/provider the run was started with govern the run's daemon session.
+`workflowSessionArgv` (`runtime/src/app-server/workflow/session-adapters.ts`)
+builds that session the same way the background-agent runner does:
+`--permission-mode`, `--model`, and `--provider` on structured bootstrap argv,
+plus the unattended permission-policy install on the session's
+permission-mode registry. Only the executable and entrypoint come from the
+daemon process; daemon launch flags are never a child-session configuration
+authority.
+
+The CLI exposes `--model` only (`runtime/src/bin/run-cli.ts`). The daemon
+`run.start` RPC and SDK `startRun` also accept `provider`. Without those
+fields reaching bootstrap argv, `agenc run start --model` used to be
+accepted, frozen into the spec, and then ignored; the run session took the
+daemon default, and children inherited that **provider** while only the
+model *name* could be overridden per child. A Grok or OpenRouter model name
+sent to the wrong endpoint then failed at `plan` as `step_retries_exhausted`.
+Resumed runs re-resolve the same policy from the durable intake spec, so a
+restarted daemon never silently downgrades a run to its default policy or
+model.
 
 ## Checkout protection
 
@@ -126,6 +139,21 @@ Base movement is detected against the frozen base commit and classified by a
 real `git apply --3way` in a disposable probe worktree (never the checkout):
 `unmoved`, `rebase_clean`, or `conflict` with the conflicting files —
 surfaced explicitly, never overwritten.
+
+Staging and committing write the worktree's index. A linked worktree keeps
+that index under the main repository's `.git/worktrees/<slug>/`, outside the
+sandbox checkout. `exportPatchArtifacts` therefore uses `runGitMutation`
+(`git add -A` then a snapshot commit) with the git root granted, not the
+read-only git helper. A leftover `Read-only file system` on
+`index.lock` after this landing is a sandbox grant bug, not expected
+workflow behavior.
+
+Cleanup pins the delivered snapshot under `refs/agenc/runs/<runId>`
+(`workflowRunRef`) **before** deleting the worktree branch. The ref lives
+outside `refs/heads`, so it does not clutter branch listings. If the pin
+fails, the worktree stays: a leftover worktree is a nuisance and a lost
+deliverable is not. Operators inspect the product with
+`git rev-parse refs/agenc/runs/<runId>` after a successful finalize.
 
 ## Verification and review are completion, not metadata
 
@@ -148,6 +176,35 @@ machine-readable stop reason from `WORKFLOW_STOP_REASONS`. Non-blocking
 reviewer findings are preserved as a `risk_register` artifact and in the
 terminal message — surfaced honestly, never converted into success text.
 
+The reviewer is invoked once, has no tools, and its reply is taken as final.
+The prompt says so (`buildReviewerMessages` in
+`runtime/src/workflow/independent-review.ts`). An unstructured reply (no
+`ReviewOutput` JSON) earns **one** repair turn
+(`REVIEW_REPAIR_INSTRUCTION`). A second unstructured reply fails the step
+with a bounded excerpt of the invalid reply; it is never treated as approval.
+`step_retries_exhausted` after `workflow.review` with
+`no structured ReviewOutput (N chars): <excerpt>` means the reviewer narrated,
+refused, or was truncated. The failure does not undo implement or verify.
+
+Plan/implement/verify children that die before they speak now record the
+child `outcome` and a bounded `error` in `finalMessage`
+(`workflowChildFailureMessage`). An empty `final_message` is no longer the
+expected signature of a model that could not answer.
+
+Child registry names are derived by `workflowChildAgentName`: the child run
+id is lowercased and every character outside `[a-z0-9_]` becomes `_`.
+`assertValidAgentName` rejects dashes, colons, and `#`, which a raw
+`wf-example:plan#1` id carries. The fold is required. Without it, every spawn
+failed as `agent_name must use only lowercase letters, digits, and
+underscores` and the run ended at `plan` with `step_retries_exhausted`.
+
+The agents-rail `agent_runs.status` is updated in the same transaction as
+`run_terminal_results` for the current epoch (cancel-locked rows keep their
+cancel; child `wf-example:plan#1` ids have no rail row). Reopening a run mirrors
+the rail back to `running` so startup recovery does not treat in-flight
+tool calls as orphans. A finished run that still lists as `running` is a
+pre-#1765 residue, not current behavior.
+
 ## Approvals (M5 semantics, frozen)
 
 The intake step resolves approvals up front: a spec that would require
@@ -161,11 +218,11 @@ explicit future contract change.
 
 - CLI: `agenc run start --goal <text> [--cwd] [--model] [--reviewer-model]
   [--max-cost] [--permission-mode] [--verify "label=script"]... [--json]
-  [--follow]`; `agenc run status` renders the step table; `agenc run
-  evidence` exports the machine-readable bundle. Pipeline children are
-  registered as `workflowChildAgentName(childRunId)` (lowercase, non
-  `[a-z0-9_]` folded to `_`) so the agent registry accepts the derived
-  name. See [cli.md](../reference/cli.md#run).
+  [--follow]`; `--model` reaches the run session on start and resume. The
+  `run.start` RPC also accepts `provider`. `agenc run status` renders the
+  step table; `agenc run evidence` exports the machine-readable bundle.
+  After finalize, the delivered commit is `refs/agenc/runs/<runId>`. See
+  [cli.md](../reference/cli.md#run).
 - SDK: `client.startRun(params)`; attach/replay/result/evidence by run id
   with the existing cursor contract.
 - TUI: the run appears on the agents rail like any daemon-owned run.
@@ -190,3 +247,14 @@ exact CAS bytes, re-derives the review blockers from the
 `independent_review` artifact, and cross-checks the recorded verification
 commands against a `test_result` artifact. Any tampered byte fails loudly
 with a typed error; a summary is never produced from unverified bytes.
+
+## Operator troubleshooting
+
+| Symptom | Cause | What to do |
+| --- | --- | --- |
+| `plan` dies twice as `step_retries_exhausted` with an empty `final_message` | Pre-#1765: child error was dropped. Current code records `workflow plan child errored: <error>` | Read the child's `finalMessage` / `error`; typical causes are the wrong provider for `--model`, or a model that exhausted recovery before emitting a token |
+| `--model` accepted but children hit the daemon default endpoint | Session used to ignore the frozen model/provider | Confirm the CLI `--model` (or SDK `startRun` `model`/`provider`) reached intake; resume re-applies the spec. The CLI has no `--provider` flag |
+| `git add` / `index.lock`: Read-only file system | Linked-worktree index lives under the main `.git/worktrees/<slug>/` | Expected path is `runGitMutation` with the git root granted. If this still appears, the sandbox grant is wrong; do not switch the run to a read-only git helper |
+| `workflow.review` fails with `no structured ReviewOutput (N chars): <excerpt>` | Reviewer narrated, refused, or was truncated after the one repair turn | The excerpt is the actual reply. Pin a reviewer that can emit `ReviewOutput` JSON; implement/verify already passed |
+| Finalize succeeded but `git branch --contains <head>` is empty | The worktree branch is deleted on purpose | The product is `refs/agenc/runs/<runId>`. If that ref is missing, cleanup left the worktree because the pin failed |
+| Spawn rejected: `agent_name must use only lowercase letters...` | Child run ids contain `-`, `:`, `#` | `workflowChildAgentName` must fold those to `_`. A raw id is not a valid registry name |
