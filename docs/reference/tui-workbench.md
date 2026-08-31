@@ -165,8 +165,9 @@ When either `AGENC_DISABLE_AUTO_COMPACT` or `AGENC_DISABLE_COMPACT` is set,
 the compact line becomes `auto-compact: disabled` and the threshold equals
 the hard limit. `/compact` ignores both flags. `AGENC_DISABLE_AUTO_COMPACT`
 disables automatic pre-turn and mid-turn compaction. `AGENC_DISABLE_COMPACT`
-disables the compact operation. A mid-turn threshold crossing can still end
-the turn with cause `mid_turn_compact_failed` and message
+makes `autoCompactIfNeeded` return without compacting. Manual `/compact` and
+the mid-turn outer gate ignore that flag. A mid-turn threshold crossing can
+therefore end the turn with cause `mid_turn_compact_failed` and message
 `mid_turn_compact_skipped`.
 
 A configured `providers.<slug>.context_window_tokens` overrides the
