@@ -606,7 +606,19 @@ async function loadSkillFile(
 }
 
 async function loadSkillsFromRoot(root: SkillRoot): Promise<readonly SkillWithContent[]> {
-  const files = await findSkillFiles(root.path);
+  const files = [...(await findSkillFiles(root.path))];
+  // A root can BE one skill: plugin manifests may declare each skill
+  // dir individually (skills: ["./skills/flash-board"]), so the root
+  // itself carries the SKILL.md instead of holding child skill dirs.
+  if (files.length === 0) {
+    const leaf = join(root.path, SKILL_FILE_NAME);
+    try {
+      const stats = await stat(leaf);
+      if (stats.isFile()) files.push(leaf);
+    } catch {
+      // Genuinely empty root.
+    }
+  }
   const loaded = await Promise.all(files.map((file) => loadSkillFile(file, root)));
   return loaded.filter((entry): entry is SkillWithContent => entry !== null);
 }

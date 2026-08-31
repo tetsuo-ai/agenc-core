@@ -32,6 +32,9 @@ export type SkillInventoryOrigin =
 export interface SkillInventoryRow {
   readonly name: string;
   readonly description?: string;
+  /** When the model should reach for this skill, straight from the source. */
+  readonly whenToUse?: string;
+  readonly argumentHint?: string;
   readonly origin: SkillInventoryOrigin;
   /** Directory of the owning plugin, only for plugin-shipped skills. */
   readonly pluginRoot?: string;
@@ -99,6 +102,12 @@ function rowOf(
     name: skill.name,
     ...(skill.description.length > 0
       ? { description: skill.description }
+      : {}),
+    ...(skill.whenToUse !== undefined && skill.whenToUse.length > 0
+      ? { whenToUse: skill.whenToUse }
+      : {}),
+    ...(skill.argumentHint !== undefined && skill.argumentHint.length > 0
+      ? { argumentHint: skill.argumentHint }
       : {}),
     origin: originOf(skill),
     ...(skill.pluginRoot !== undefined ? { pluginRoot: skill.pluginRoot } : {}),
