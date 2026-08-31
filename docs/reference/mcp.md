@@ -216,31 +216,35 @@ toolRouting: { allowedToolNames: [] }
 ```
 
 `accountingOptionsForProvider` copies factory tools only when `options.tools`
-is `undefined`. An empty array is a catalog: the MCP/builtin schemas stay off
-the admitted summary. `providerNativeToolsForAccounting` then filters Grok
-native tools (web search, x_search, code execution, collections, remote MCP)
-by that allowlist. `[]` omits them. When no allowlist is set,
-`toolChoice === "none"` is the other way to omit the native catalog; compact
-uses the empty allowlist instead.
+is `undefined`. An empty array is an explicit catalog, so the MCP/builtin
+schemas stay off the admitted summary. `providerNativeToolsForAccounting`
+then filters Grok native tools (web search, x_search, code execution,
+collections, remote MCP) by that allowlist. `[]` omits them. When no allowlist
+is set, `toolChoice === "none"` also omits the native catalog. Compact uses the
+empty allowlist instead.
 
-**Why this exists.** Before the empty catalog, omitting `tools` inherited the
+#### Previous failure
+
+Before the empty catalog, omitting `tools` inherited the
 session factory list. Admission counted unused schemas against an already-full
 window and denied `context_window_exceeded`. Auto-compact, `/compact`, and
 mid-turn compact then failed to shrink the window (`mid_turn_compact_failed`).
 
-**What still counts tools**
+#### What still counts tools
 
 | Surface | Catalog in token count? |
 | --- | --- |
-| Agent turn / `runAdmittedModelCall` with `tools` omitted | Yes — factory tools merge in. Grok native tools count unless allowlisted or `toolChoice` is `"none"`. Remote MCP without a complete native count still denies `token_accounting_uncertain`. |
-| Auto-compact fire threshold (`estimateMessagesTokens`) | Yes — system, tools, framing, reserved output. A large MCP catalog still makes compact fire earlier. |
-| Compact **summary** (`invokeCompactionProvider`) | No — `tools: []` and an empty allowlist. |
-| `/context` display (`session-compact.ts`) | Yes — reconstructs the next-turn payload, including `toLLMTools()`. |
+| Agent turn / `runAdmittedModelCall` with `tools` omitted | Yes. Factory tools merge in. Grok native tools count unless allowlisted or `toolChoice` is `"none"`. Remote MCP without a complete native count still denies `token_accounting_uncertain`. |
+| Auto-compact fire threshold (`estimateMessagesTokens`) | Yes. The count includes the system prompt, tools, framing, and reserved output. A large MCP catalog makes compact run earlier. |
+| Compact **summary** (`invokeCompactionProvider`) | No. The call sends `tools: []` and an empty allowlist. |
+| `/context` display (`session-compact.ts`) | Yes. It reconstructs the next-turn payload, including `toLLMTools()`. |
 
-Pitfall for new admitted callers: omit `tools` to inherit the session catalog;
-pass `tools: []` (and `toolRouting: { allowedToolNames: [] }` when Grok native
-tools must stay off the wire) to keep the call tool-free. Compaction is
-summarization, not an agent turn — it must not advertise tools.
+#### Caller rule
+
+Callers that omit `tools` inherit the session catalog. A tool-free call must
+pass `tools: []`. When Grok native tools must also stay off the wire, pass
+`toolRouting: { allowedToolNames: [] }`. Compaction summarizes history and
+must not advertise tools.
 
 ### CLI
 
@@ -331,7 +335,7 @@ the daemon-owned admission kernel.
 | `[sandbox_required_unavailable]` saying the Linux helper must sit outside the workspace | A bare `agenc` opened `$HOME`. The helper lives under `~/.agenc` and can never leave a home-sized workspace. Open a project directory. See [tools-permissions-sandbox.md](tools-permissions-sandbox.md). |
 | One plugin server missing, session still starts | A broken plugin source is skipped. A duplicate command/URL is suppressed by an enabled manual server. Check `/plugin` for `mcp-server-suppressed-duplicate`. |
 | `/compact` or auto-compact denied `context_window_exceeded` on the **summary** | Summaries no longer inherit the MCP/builtin factory catalog or Grok native tools. If admission still denies, the transcript + system prompt + reserved output themselves exceed the window. Confirm the live window (not the 128k fallback), shrink `/compact` focus, or compact earlier. `/context` still shows the next-turn catalog size; that is not the summary request. |
-| Mid-turn dies `mid_turn_compact_failed` after adding MCP servers | A huge catalog can still trip the fire threshold and the mid-turn outer gate. The summary itself should admit. Check disable-flag pitfalls and the 2-failure digest guard on [CP-0006](../design/critical-path/0006-compaction-transaction.md), and whether last-sample `promptTokens` disagreed with the compact-module estimate. |
+| Mid-turn dies `mid_turn_compact_failed` after adding MCP servers | A large catalog can raise the estimate past the fire threshold and raise provider-reported `promptTokens` past the mid-turn outer gate. The summary request should still pass admission. Check the disable-flag rules and the 2-failure digest guard on [CP-0006](../design/critical-path/0006-compaction-transaction.md), and whether last-sample `promptTokens` disagreed with the compact-module estimate. |
 
 ## Related
 

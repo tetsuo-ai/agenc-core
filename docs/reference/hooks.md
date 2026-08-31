@@ -45,12 +45,12 @@ only accepts the table above**.
 
 `PreCompact` / `PostCompact` do not change the admitted summary catalog.
 `invokeCompactionProvider` always sends `tools: []` and
-`toolRouting: { allowedToolNames: [] }` so session MCP/builtin factory tools
-cannot return through a hook. `PreCompact` may return
-`newCustomInstructions`; those merge into the summary focus prompt and **do**
-count against the summary window. A failed or throwing `PreCompact` is
-nonfatal and stays out of provider focus. `PostCompact` runs only after a
-flushed `compaction_committed` and receives `compact_summary`. Details:
+`toolRouting: { allowedToolNames: [] }`, and hook output cannot change those
+options. `PreCompact` may return `newCustomInstructions`; those merge into the
+summary focus prompt and **do** count against the summary window. If
+`PreCompact` fails or throws, compaction continues without its focus text.
+`PostCompact` runs only after a flushed `compaction_committed` and receives
+`compact_summary`. Details:
 [mcp.md](mcp.md#compaction-summaries-stay-tool-free).
 
 ### Config map shape
