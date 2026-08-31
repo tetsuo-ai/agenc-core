@@ -456,39 +456,29 @@ describe("plugin source resolution", () => {
     });
   });
 
-  test("a workspace directory cannot shadow an npm specifier into an unsigned local install", async () => {
-    await withTempDir(async (root) => {
-      const planted = join(root, "@tetsuo-ai", "unsigned-shadow");
-      await writePlugin(planted, "unsigned-shadow");
-      const runProcess = npmPluginRunner("unsigned-shadow");
+  test.each([
+    {
+      source: "@tetsuo-ai/unsigned-shadow",
+      plantedPath: ["@tetsuo-ai", "unsigned-shadow"],
+    },
+    { source: "unsigned-shadow", plantedPath: ["unsigned-shadow"] },
+  ])(
+    "a workspace directory cannot shadow npm source $source",
+    async ({ source, plantedPath }) => {
+      await withTempDir(async (root) => {
+        await writePlugin(join(root, ...plantedPath), "unsigned-shadow");
 
-      await expect(
-        installPluginOp({
-          source: "@tetsuo-ai/unsigned-shadow",
-          agencHome: join(root, "home"),
-          workspaceRoot: root,
-          runResolutionProcess: runProcess,
-        }),
-      ).rejects.toThrow(/plugin signature is required/u);
-    });
-  });
-
-  test("a workspace directory cannot shadow an unscoped npm specifier", async () => {
-    await withTempDir(async (root) => {
-      const planted = join(root, "unsigned-shadow");
-      await writePlugin(planted, "unsigned-shadow");
-      const runProcess = npmPluginRunner("unsigned-shadow");
-
-      await expect(
-        installPluginOp({
-          source: "unsigned-shadow",
-          agencHome: join(root, "home"),
-          workspaceRoot: root,
-          runResolutionProcess: runProcess,
-        }),
-      ).rejects.toThrow(/plugin signature is required/u);
-    });
-  });
+        await expect(
+          installPluginOp({
+            source,
+            agencHome: join(root, "home"),
+            workspaceRoot: root,
+            runResolutionProcess: npmPluginRunner("unsigned-shadow"),
+          }),
+        ).rejects.toThrow(/plugin signature is required/u);
+      });
+    },
+  );
 
   test("an explicit relative scoped path still installs as local", async () => {
     await withTempDir(async (root) => {
@@ -522,7 +512,7 @@ describe("plugin source resolution", () => {
     });
   });
 
-  test("update from a remote source requires a signature even when the original install was local", async () => {
+  test("a workspace directory cannot shadow a signed remote update after a local install", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
       const pluginRoot = join(root, "local-unsigned");
@@ -534,32 +524,11 @@ describe("plugin source resolution", () => {
       });
       expect(installed.resolutionKind).toBe("local");
       expect(installed.signatureVerified).toBe(false);
+      await writePlugin(
+        join(root, "@tetsuo-ai", "unsigned-remote"),
+        "unsigned-remote",
+      );
 
-      const runProcess = npmPluginRunner("unsigned-remote");
-
-      await expect(
-        updatePluginOp({
-          pluginId: installed.plugin.id,
-          source: "@tetsuo-ai/unsigned-remote",
-          agencHome,
-          workspaceRoot: root,
-          runResolutionProcess: runProcess,
-        }),
-      ).rejects.toThrow(/plugin signature is required/u);
-    });
-  });
-
-  test("update --source does not treat a planted workspace directory as the remote replacement", async () => {
-    await withTempDir(async (root) => {
-      const agencHome = join(root, "home");
-      const pluginRoot = join(root, "local-unsigned");
-      await writePlugin(pluginRoot, "local-unsigned");
-      const installed = await installPluginOp({
-        source: pluginRoot,
-        agencHome,
-        workspaceRoot: root,
-      });
-      await writePlugin(join(root, "@tetsuo-ai", "unsigned-remote"), "unsigned-remote");
       const runProcess = npmPluginRunner("unsigned-remote");
 
       await expect(
