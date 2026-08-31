@@ -500,7 +500,29 @@ Before the next admission, the runtime fsyncs a turn checkpoint containing the
 ordinal. Runtime-only nudge and empty-response prompts are named in that
 checkpoint and reconstructed after a crash. A resumed in-flight sample
 therefore uses the exact same id and request, while a new physical sample gets
-a new id.
+a new id. `durableTurns.checkpoint.minIntervalMs` cannot defer that forced
+write. Disabling `durableTurns.checkpoint.enabled` skips the write; restart
+then has `no-checkpoint` and opens a fresh turn.
+
+In-turn resume (`resumeTurnFromCheckpoint`) is separate from epoch reopen.
+Startup continues the orphaned turn only when every gate holds:
+`durableTurns.resume.onRestart`, a readable unterminated checkpoint, build
+pinning, the A3 reader, prefix hash, and the single-writer lease. Any failure
+leaves the existing checkpoint unchanged and appends a fresh turn.
+
+The A3 reader (`CHECKPOINT_SLICE_KEYS` in
+`runtime/src/session/durable-checkpoint-reader.ts`) rejects unknown slice
+keys with `resumableState contains unversioned fields`.
+`toCheckpointSlice` currently writes two fields that are not on that
+allowlist: `editorToolCallsAdmitted` (after any BUFFER / editor-interaction
+tool admission; `resetIterationFields` does not clear it) and
+`pendingAdmissionFallback` (after `recovery/model-fallback.ts` records a
+provider swap, until `stream-model.ts` consumes it). Either key on the last
+checkpoint is `integrity-invalid` and starts a fresh turn.
+`restoreFromCheckpoint` would apply those fields if they reached it. Nudge,
+mid-turn compact, and empty-response retry fields are allowlisted and do not
+cause this reject by themselves. Gate table and writer/reader gap:
+[durable-runs-effects-events.md](../design/durable-runs-effects-events.md#in-turn-checkpoint-resume).
 
 See [execution-admission-kernel.md](../design/execution-admission-kernel.md#model-step-identity).
 
@@ -509,6 +531,9 @@ See [execution-admission-kernel.md](../design/execution-admission-kernel.md#mode
 | `AdmissionStepConflictError` | The same `(runId, stepId)` was acquired with different normalized admission data. Compare the `stepId`, provider, model, token bounds, and budget identity in `agenc run evidence`. |
 | A crash-resumed nudge or empty-response retry conflicts | Verify the latest turn checkpoint contains the expected sample ordinal and resume-prompt kind. |
 | A later model call lacks `sample-<ordinal>` | Check whether the prior response was terminal. Only successful nonterminal responses reserve another physical sample. |
+| Interrupted BUFFER / editor-tool turn starts over | Last checkpoint includes `editorToolCallsAdmitted`. A3 reader → `integrity-invalid`. Expected on current main. |
+| Crash during a pending model fallback starts a fresh turn | Last checkpoint includes `pendingAdmissionFallback` only if a checkpoint was written while that decision was still pending. Same reject. |
+| Resume never continues after `durableTurns.resume.onRestart = false` | `disabled`. Startup always opens a fresh turn. |
 
 ## What the daemon owns
 
@@ -571,6 +596,9 @@ agenc budget status    # configured policy only; usage is agenc run status <run-
 | Model admission step id           | `runtime/src/phases/stream-model.ts`                |
 | Continuation nudge                | `runtime/src/phases/continuation-nudge.ts`          |
 | Mid-turn compact continue         | `runtime/src/session/run-turn.ts`                   |
+| Forced pre-admission checkpoint   | `runtime/src/session/run-turn.ts` (`emitTurnCheckpoint`) |
+| Checkpoint slice / A3 reader      | `runtime/src/session/turn-state.ts`, `runtime/src/session/durable-checkpoint-reader.ts` |
+| In-turn resume gates              | `runtime/src/conversation/thread-manager.ts` (`resumeTurnFromCheckpoint`) |
 | Step uniqueness / conflict        | `runtime/src/state/execution-admission.ts`          |
 | Launcher autostart                | `packages/agenc/src/launcher.mjs`                   |
 | SDK connect                       | `packages/agenc-sdk/src/socket.ts`                  |

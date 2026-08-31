@@ -90,8 +90,12 @@ different ids.
 Before a later sample reaches admission, `run-turn.ts` persists new response
 items and emits a forced, fsync-durable `turn_checkpoint`. The checkpoint stores
 the ordinal and any runtime-only continuation or empty-response prompt. Crash
-recovery restores both, so it reuses the reserved sample id and reconstructs
-the same request instead of creating a different call.
+recovery restores both only when `resumeTurnFromCheckpoint` accepts that
+payload, so it reuses the reserved sample id and reconstructs the same request
+instead of creating a different call. A last checkpoint whose slice includes
+`editorToolCallsAdmitted` or `pendingAdmissionFallback` fails the A3 reader
+(`integrity-invalid`) and starts a fresh turn instead. See
+[durable-runs-effects-events.md](durable-runs-effects-events.md#in-turn-checkpoint-resume).
 
 Production bootstraps set `admissionRequired: true`
 (`bin/bootstrap.ts`). Inspect the machine-readable journal with

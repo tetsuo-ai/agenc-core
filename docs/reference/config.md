@@ -647,9 +647,9 @@ keybinding file or watcher.
 | `agent.retention`, `agent.retention.completed_days`, `agent.retention.failed_days`, `agent.retention.snapshot_days` | Retention days. |
 | `agent.retention.snapshot_max_count`, `agent.retention.snapshot_max_bytes`, `agent.retention.rollout_days` | Snapshot/rollout retention. |
 | `durableTurns` | Durable-turn block. |
-| `durableTurns.checkpoint`, `durableTurns.checkpoint.enabled`, `durableTurns.checkpoint.minIntervalMs` | Checkpoint switch and throttle. |
-| `durableTurns.resume`, `durableTurns.resume.onRestart` | Resume-on-restart switch. Default `true`. The removed `resume.policy` key is stripped on migrate; it is not an operator setting. |
-| `durableTurns.resume.requireLease`, `durableTurns.resume.buildPinning` | Lease and build-pinning guards. Both default `true`. Resume fail-closes when an enabled guard finds a lease or build-id mismatch. The switches enable or disable individual guards. They do not select an idempotent replay policy. |
+| `durableTurns.checkpoint`, `durableTurns.checkpoint.enabled`, `durableTurns.checkpoint.minIntervalMs` | Checkpoint switch and throttle. `enabled` defaults `true`; when false, restart has `no-checkpoint` and opens a fresh turn. `minIntervalMs` throttles ordinary `iteration` / `postAssistant` writes. It does not defer the forced pre-admission checkpoint after `modelSampleOrdinal` advances. |
+| `durableTurns.resume`, `durableTurns.resume.onRestart` | Resume-on-restart switch. Default `true`. When false, startup always opens a fresh turn (`disabled`). The removed `resume.policy` key is stripped on migrate; it is not an operator setting. |
+| `durableTurns.resume.requireLease`, `durableTurns.resume.buildPinning` | Lease and build-pinning guards. Both default `true`. Resume fail-closes when an enabled guard finds a lease or build-id mismatch. The A3 reader also fail-closes on unversioned slice keys. Current writer fields `editorToolCallsAdmitted` and `pendingAdmissionFallback` are not on that allowlist, so those last checkpoints become `integrity-invalid` and start a fresh turn. The switches enable or disable individual guards. They do not select an idempotent replay policy. See [durable-runs-effects-events.md](../design/durable-runs-effects-events.md#in-turn-checkpoint-resume). |
 
 ### Gateway
 

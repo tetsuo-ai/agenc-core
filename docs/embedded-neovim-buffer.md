@@ -557,6 +557,11 @@ Troubleshooting:
   **Use inline** for the current restart, and **Copy details** for reporting.
   Fix the reported init/plugin failure rather than assuming a dead process is
   still an editor.
+- Crash or daemon restart mid-turn after an admitted editor tool: the last
+  `turn_checkpoint` carries `editorToolCallsAdmitted`, which the A3 reader
+  rejects as unversioned. Startup opens a fresh turn. This is not a BUFFER
+  process failure. See
+  [durable-runs-effects-events.md](design/durable-runs-effects-events.md#in-turn-checkpoint-resume).
 
 ## Process lifetime and cleanup
 
