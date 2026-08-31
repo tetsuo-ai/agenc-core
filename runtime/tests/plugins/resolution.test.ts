@@ -108,6 +108,18 @@ async function updatePluginOp(input: UpdateTestInput) {
   });
 }
 
+async function installUnsignedLocalPlugin(root: string) {
+  const agencHome = join(root, "home");
+  const pluginRoot = join(root, "local-unsigned");
+  await writePlugin(pluginRoot, "local-unsigned");
+  const installed = await installPluginOp({
+    source: pluginRoot,
+    agencHome,
+    workspaceRoot: root,
+  });
+  return { agencHome, installed };
+}
+
 type LoaderOptions = Parameters<typeof loadPluginsWithAuthority>[0];
 type LoaderTestOptions = Omit<LoaderOptions, "pluginStorageRoot"> & {
   readonly agencHome: string;
@@ -518,14 +530,7 @@ describe("plugin source resolution", () => {
 
   test("a workspace directory cannot shadow a signed remote update after a local install", async () => {
     await withTempDir(async (root) => {
-      const agencHome = join(root, "home");
-      const pluginRoot = join(root, "local-unsigned");
-      await writePlugin(pluginRoot, "local-unsigned");
-      const installed = await installPluginOp({
-        source: pluginRoot,
-        agencHome,
-        workspaceRoot: root,
-      });
+      const { agencHome, installed } = await installUnsignedLocalPlugin(root);
       expect(installed.resolutionKind).toBe("local");
       expect(installed.signatureVerified).toBe(false);
       await writePlugin(
@@ -549,14 +554,7 @@ describe("plugin source resolution", () => {
 
   test("update --source does not let an unscoped npm specifier resolve inside the installed root", async () => {
     await withTempDir(async (root) => {
-      const agencHome = join(root, "home");
-      const pluginRoot = join(root, "local-unsigned");
-      await writePlugin(pluginRoot, "local-unsigned");
-      const installed = await installPluginOp({
-        source: pluginRoot,
-        agencHome,
-        workspaceRoot: root,
-      });
+      const { agencHome, installed } = await installUnsignedLocalPlugin(root);
       await writePlugin(
         join(installed.destination, "unsigned-remote"),
         "unsigned-remote",
@@ -580,14 +578,7 @@ describe("plugin source resolution", () => {
     { label: "installed-root descendant", nested: true },
   ])("update rejects an explicit local $label", async ({ nested }) => {
     await withTempDir(async (root) => {
-      const agencHome = join(root, "home");
-      const pluginRoot = join(root, "local-unsigned");
-      await writePlugin(pluginRoot, "local-unsigned");
-      const installed = await installPluginOp({
-        source: pluginRoot,
-        agencHome,
-        workspaceRoot: root,
-      });
+      const { agencHome, installed } = await installUnsignedLocalPlugin(root);
       const source = nested
         ? join(installed.destination, "nested-source")
         : installed.destination;
