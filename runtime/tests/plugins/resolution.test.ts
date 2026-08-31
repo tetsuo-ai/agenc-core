@@ -724,6 +724,57 @@ describe("plugin source resolution", () => {
     });
   });
 
+  test("refuses unsigned directory installs when a signature is required", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const pluginRoot = join(root, "bundled");
+      await writePlugin(pluginRoot, "bundled-unsigned");
+
+      await expect(
+        installPluginOp({
+          source: pluginRoot,
+          agencHome,
+          workspaceRoot: root,
+          requireSignature: true,
+        }),
+      ).rejects.toThrow(/signature is required/u);
+
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const publishersPath = join(root, "plugin-publishers.json");
+      await writeJson(publishersPath, {
+        publishers: {
+          tetsuo: {
+            publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+          },
+        },
+      });
+      const files = await pluginPayloadFiles(pluginRoot);
+      const signature = sign(
+        null,
+        pluginSignaturePayloadBytes(
+          await readFile(join(pluginRoot, ".agenc-plugin", "plugin.json")),
+          files,
+        ),
+        privateKey,
+      ).toString("base64");
+      await writeJson(join(pluginRoot, ".agenc-plugin", "signature.json"), {
+        publisher: "tetsuo",
+        signature,
+        files,
+      });
+
+      const installed = await installPluginOp({
+        source: pluginRoot,
+        agencHome,
+        workspaceRoot: root,
+        requireSignature: true,
+        publishersPath,
+      });
+      expect(installed.signatureVerified).toBe(true);
+      expect(installed.resolutionKind).toBe("local");
+    });
+  });
+
   test("resolves registry tarballs and remote bundle archives", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");

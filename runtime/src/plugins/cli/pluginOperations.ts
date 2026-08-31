@@ -37,6 +37,7 @@ import {
   redactPluginInstallSource,
   resolvePluginSource,
   shouldCopyPluginPayloadPath,
+  verifyResolvedPluginSignature,
   type PluginInstallSource,
   type PluginProcessRunner,
   type PluginResolutionKind,
@@ -173,6 +174,18 @@ function resolvePluginWorkspaceRoot(options: PluginOperationOptions): string {
     throw new Error("Plugin operations require an explicit workspace root");
   }
   return resolve(options.workspaceRoot);
+}
+
+async function verifyRequiredDirectorySignature(
+  pluginRoot: string,
+  input: InstallPluginInput,
+): Promise<boolean> {
+  const signature = await verifyResolvedPluginSignature(pluginRoot, {
+    agencHome: resolvePluginAgencHome(input),
+    requireSignature: true,
+    publishersPath: input.publishersPath,
+  });
+  return signature.verified === true;
 }
 
 function pluginScopeRoot(
@@ -385,6 +398,13 @@ export async function installPluginOp(
     source = resolved.pluginRoot;
     resolutionKind = resolved.kind;
     signatureVerified = resolved.signature?.verified === true;
+  } else if (input.requireSignature === true) {
+    // Marketplace install passes bundled plugin dirs as plain paths.
+    // Remote marketplaces still require a publisher signature.
+    signatureVerified = await verifyRequiredDirectorySignature(
+      localSource,
+      input,
+    );
   }
   try {
     await requireDirectory(source, "plugin source");
