@@ -57,6 +57,35 @@ data. They are never used directly as filesystem or agent-path components.
 Input aliases must start with a letter and then contain only letters, digits,
 `_`, or `-`.
 
+### Child identity
+
+The agent registry accepts only `[a-z0-9_]+` path segments
+(`assertValidAgentName`). A logical id such as
+`implementation/arbitrary logical id` would fail that check, so
+`safeStepIdentity` in `runtime/src/agents/workflow-scheduler.ts` creates
+the child name:
+
+```text
+wf_<ordinal>_<12-hex>
+```
+
+The digest is the first 12 hex characters of SHA-256 over
+`agenc.workflow.step-path.v1\0<runId>\0<ordinal>\0<logicalId>`.
+The scheduler passes this value as `agentName`, so `/agents`, the child
+`agentPath`, worktree slugs, background-task `workflow:<name>` descriptions,
+and step-handoff `producer_step_id` values use it. The ordinal prefix and
+committed handoff connect the generated name to the manifest step. The digest
+does not expose the logical id.
+
+Group handoff producers use `safeGroupIdentity`:
+`group_<index>_<12-hex>` from
+`agenc.workflow.group-artifact.v1\0<runId>\0<index>\0<logicalName>`.
+That string is an artifact id, not a spawned agent.
+
+The M5 `agenc run start` path derives child names with
+`workflowChildAgentName` in [cli.md](cli.md#run). It does not use this digest
+format.
+
 The graph is validated completely before any child starts. Duplicate or unknown
 dependencies, self-edges, cycles, duplicate IDs, and step/group name collisions
 are rejected. Ready steps run in stable declaration order, but a successor may

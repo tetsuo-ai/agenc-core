@@ -203,6 +203,35 @@ relative or canonical targets. Agent paths (`/root`,
 paths. Workers inherit cwd from the parent session/Environment section unless
 worktree isolation changes their execution cwd.
 
+### `spawn_agent` task names
+
+`task_name` becomes the child path segment. `normalizeSpawnTaskName` in
+`runtime/src/agents/v2/spawn.ts` lowercases the value, changes runs of spaces
+or hyphens and other characters outside `[a-z0-9_]` to `_`, collapses repeated
+`_` characters, and removes `_` from both ends. If that result is empty,
+the function keeps the trimmed input so `assertValidAgentName` in
+`runtime/src/agents/registry.ts` can return the relevant validation error.
+
+| Input | Path segment |
+| --- | --- |
+| `review-patch` / `Review Patch` | `review_patch` |
+| `plan#1` | `plan_1` |
+| `root`, `.`, `..` | rejected (`agent_name` reserved) |
+| empty / whitespace-only | rejected (`task_name is required`) |
+| `---` or punctuation-only | rejected (fold is empty; original fails the charset check) |
+
+After the fold the name must be nonempty `[a-z0-9_]+` and must not
+contain `/`. Worktree isolation uses that same segment in the derived
+slug; a rejected name never reaches Git.
+
+Version-2 DAG children do not take this `task_name` path. Their registry
+names are derived in [workflows.md](workflows.md#child-identity).
+
+| Symptom | What to check |
+| --- | --- |
+| `agent_name must use only lowercase letters, digits, and underscores` | The folded `task_name` still has a banned character, or the fold was empty and the original string was kept. |
+| `agent_name 'root' is reserved` | `task_name` folded to `root`. Pick another name. |
+
 ### `spawn_agent` discipline (summary)
 
 - Prefer concrete, self-contained sidecar tasks with disjoint write scopes.
