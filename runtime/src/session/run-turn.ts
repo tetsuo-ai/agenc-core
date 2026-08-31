@@ -97,7 +97,10 @@ import {
 import { roughTokenCountEstimationForMessages } from "../llm/token-estimation.js";
 import { startCodeModeTurnWorker } from "../tools/code-mode/turn-host.js";
 import { commit } from "../phases/commit.js";
-import { continuationNudge } from "../phases/continuation-nudge.js";
+import {
+  continuationNudge,
+  injectNudgeMessage,
+} from "../phases/continuation-nudge.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { executeTools } from "../phases/execute-tools.js";
 import { drainPendingExtraction } from "../services/extractMemories/extractMemories.js";
@@ -192,6 +195,7 @@ import { asRecord } from "../utils/record.js";
 import { SLEEP_TOOL_NAME } from "../tools/SleepTool/prompt.js";
 import { FILE_READ_TOOL_NAME } from "../tools/system/file-read.js";
 import {
+  advanceModelSampleOrdinal,
   buildInitialTurnState,
   resetIterationFields,
   restoreFromCheckpoint,
@@ -3677,6 +3681,26 @@ export async function drainInFlight(
   }
 }
 
+const EMPTY_RESPONSE_RETRY_TEXT =
+  "Your previous response contained no visible final answer. " +
+  "Return the final answer now in the assistant output channel.";
+
+function injectEmptyResponseRetryMessage(state: TurnState): void {
+  state.messages.push({
+    role: "user",
+    content: EMPTY_RESPONSE_RETRY_TEXT,
+    runtimeOnly: { excludeFromDurableHistory: true },
+  });
+}
+
+function restoreModelSampleResumePrompt(state: TurnState): void {
+  if (state.modelSampleResumePrompt === "continuation_nudge") {
+    injectNudgeMessage(state);
+  } else if (state.modelSampleResumePrompt === "empty_response") {
+    injectEmptyResponseRetryMessage(state);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Top-level runTurn kernel — agenc runtime `run_turn` (turn.rs:130-665).
 // Session owns the live entrypoint; the exported free function below is
@@ -4035,9 +4059,9 @@ async function* runTurnKernelInner(
   // is already inside the reconstructed prefix), anchor the persist cursor at
   // the checkpoint's count, and restore the resumable TurnState slice so
   // recovery caps / nudge counts / the derived budget hold their pre-crash
-  // values instead of resetting. The loop then makes a fresh sampling
-  // request — a legitimately NEW model call, never a replay of a completed
-  // assistant message (§3.6).
+  // values instead of resetting. A checkpoint reserved for a model resample
+  // restores its exact admission identity and any runtime-only retry prompt,
+  // allowing an in-flight admission row to reattach after restart.
   if (opts.resume !== undefined) {
     state.messages = [...priorFull];
     // The reconstructed prefix is already on disk → anchor the persist
@@ -4063,6 +4087,7 @@ async function* runTurnKernelInner(
       });
     }
     restoreFromCheckpoint(state, opts.resume.restoreSlice);
+    restoreModelSampleResumePrompt(state);
   }
   const rolloutPersistenceSuspended = (): boolean =>
     session.isRolloutPersistenceSuspended?.() === true;
@@ -4189,13 +4214,15 @@ async function* runTurnKernelInner(
   let checkpointSeq = opts.resume?.fromCheckpointSeq ?? 0;
   let iterationIndex = opts.resume?.fromIteration ?? 0;
   let lastCheckpointAtMs = 0;
+  let checkpointedModelSampleOrdinal = state.modelSampleOrdinal;
   const emitTurnCheckpoint = (
     boundary: "iteration" | "postAssistant",
+    options: { readonly force?: boolean } = {},
   ): void => {
     if (!durableTurnsCfg.checkpointEnabled) return;
     if (rolloutPersistenceSuspended()) return;
     if (!session.rolloutStore) return;
-    if (durableTurnsCfg.checkpointMinIntervalMs > 0) {
+    if (options.force !== true && durableTurnsCfg.checkpointMinIntervalMs > 0) {
       const now = Date.now();
       if (
         lastCheckpointAtMs !== 0 &&
@@ -4406,7 +4433,8 @@ async function* runTurnKernelInner(
     provenance: "synthetic",
   };
   let lastContent = "";
-  let emptyResponseRetryCount = 0;
+  let emptyResponseRetryCount =
+    state.modelSampleResumePrompt === "empty_response" ? 1 : 0;
   let editorSamplingIterations = 0;
   const finishEditorInteractionLimit = async (
     limitKind: "sampling_iterations" | "tool_calls",
@@ -4657,6 +4685,16 @@ async function* runTurnKernelInner(
 
     resetIterationFields(state);
 
+    // A deliberate re-sample needs a durable identity before admission is
+    // acquired. The checkpoint event is the fsync barrier for both the
+    // response prefix and the next ordinal; interval throttling cannot defer
+    // this correctness boundary.
+    if (state.modelSampleOrdinal !== checkpointedModelSampleOrdinal) {
+      persistNewResponseItems();
+      emitTurnCheckpoint("iteration", { force: true });
+      checkpointedModelSampleOrdinal = state.modelSampleOrdinal;
+    }
+
     // agenc runtime run_sampling_request — phases 1-4.
     const pending: PhaseEvent[] = [];
     // Hoisted so the mid-turn compaction check after the try/catch can
@@ -4698,6 +4736,11 @@ async function* runTurnKernelInner(
           stopReason: terminalToStopReason(result.terminal.reason),
         };
         return result.terminal;
+      }
+      state.modelSampleResumePrompt = undefined;
+      advanceModelSampleOrdinal(state);
+      if (state.transition?.reason === "continuation_nudge") {
+        state.modelSampleResumePrompt = "continuation_nudge";
       }
     } catch (error) {
       await drainInFlight(state, ctx, session);
@@ -4993,13 +5036,8 @@ async function* runTurnKernelInner(
         emptyResponseRetryCount === 0
       ) {
         emptyResponseRetryCount += 1;
-        state.messages.push({
-          role: "user",
-          content:
-            "Your previous response contained no visible final answer. " +
-            "Return the final answer now in the assistant output channel.",
-          runtimeOnly: { excludeFromDurableHistory: true },
-        });
+        injectEmptyResponseRetryMessage(state);
+        state.modelSampleResumePrompt = "empty_response";
         continue;
       }
       await commit(state, ctx, session, signal, {
@@ -5246,11 +5284,13 @@ export function runTurn(
         signal?: AbortSignal;
         assistantOutputSink?: AssistantOutputStreamSink;
         querySource?: string;
+        skipCacheWrite?: boolean;
         displayUserMessage?: string | null;
         rootHumanTurnText?: string;
         instructionPolicy?: LiveInstructionPolicy;
         systemPromptTrust?: "trusted_internal" | "workspace_role";
         systemPromptReplacesBase?: boolean;
+        resume?: TurnResumeOptions;
       },
     ) => AsyncGenerator<PhaseEvent, Terminal>;
   };
@@ -5264,11 +5304,13 @@ export function runTurn(
       signal: opts.signal,
       assistantOutputSink: opts.assistantOutputSink,
       querySource: opts.querySource,
+      skipCacheWrite: opts.skipCacheWrite,
       displayUserMessage: opts.displayUserMessage,
       rootHumanTurnText: opts.rootHumanTurnText,
       instructionPolicy: opts.instructionPolicy,
       systemPromptTrust: opts.systemPromptTrust,
       systemPromptReplacesBase: opts.systemPromptReplacesBase,
+      resume: opts.resume,
     });
   }
   return runTurnKernel(session, ctx, userMessage, opts);

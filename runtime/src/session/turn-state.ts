@@ -72,6 +72,8 @@ export interface Continue {
   readonly reason: ContinueReason;
 }
 
+export type ModelSampleResumePrompt = "continuation_nudge" | "empty_response";
+
 /**
  * Terminal — why the run-turn generator returned. Mirrors agenc
  * query.ts terminal reasons: 'completed', 'blocking_limit',
@@ -365,6 +367,17 @@ export interface TurnState {
   /** Durable routing evidence consumed by the next admitted model attempt. */
   pendingAdmissionFallback: PendingAdmissionFallback | undefined;
 
+  /**
+   * Monotonic identity for provider samples that share the same turn and
+   * recovery counters. Zero retains the pre-ordinal admission step id so an
+   * in-flight row created by an older build can still be reattached.
+   */
+  modelSampleOrdinal: number;
+
+  /** Runtime-only prompt that must be reconstructed when a reserved sample
+   * is resumed from its pre-dispatch checkpoint. */
+  modelSampleResumePrompt: ModelSampleResumePrompt | undefined;
+
   // ── Phase 4 — continuation nudge (AgenC query.ts:1300-1465) ──
   /** Consecutive continuation-nudge count. Cap at MAX_CONTINUATION_NUDGES=3
    *  (query.ts:163) to prevent infinite nudge loops when the model
@@ -503,6 +516,8 @@ export function buildInitialTurnState(
     maxOutputTokensRecoveryCount: 0,
     recoveryReentryCount: 0,
     pendingAdmissionFallback: undefined,
+    modelSampleOrdinal: 0,
+    modelSampleResumePrompt: undefined,
     // Phase 4
     continuationNudgeCount: 0,
     // Phase 5
@@ -555,6 +570,8 @@ export interface TurnCheckpointSlice {
   readonly planToolRequiredRetryCount?: number;
   readonly editorToolCallsAdmitted?: number;
   readonly pendingAdmissionFallback?: PendingAdmissionFallback;
+  readonly modelSampleOrdinal?: number;
+  readonly modelSampleResumePrompt?: ModelSampleResumePrompt;
   readonly taskBudgetRemaining?: number;
   readonly autoCompactTracking?: AutoCompactTrackingState;
   readonly transition?: { readonly reason: ContinueReason };
@@ -577,6 +594,8 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
     planToolRequiredRetryCount?: number;
     editorToolCallsAdmitted?: number;
     pendingAdmissionFallback?: PendingAdmissionFallback;
+    modelSampleOrdinal?: number;
+    modelSampleResumePrompt?: ModelSampleResumePrompt;
     taskBudgetRemaining?: number;
     autoCompactTracking?: AutoCompactTrackingState;
     transition?: { readonly reason: ContinueReason };
@@ -590,12 +609,16 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
     continuationNudgeCount: state.continuationNudgeCount,
     stopHookBlockingCount: state.stopHookBlockingCount,
     planToolRequiredRetryCount: state.planToolRequiredRetryCount,
+    modelSampleOrdinal: state.modelSampleOrdinal,
   };
   if (state.editorToolCallsAdmitted > 0) {
     slice.editorToolCallsAdmitted = state.editorToolCallsAdmitted;
   }
   if (state.pendingAdmissionFallback !== undefined) {
     slice.pendingAdmissionFallback = { ...state.pendingAdmissionFallback };
+  }
+  if (state.modelSampleResumePrompt !== undefined) {
+    slice.modelSampleResumePrompt = state.modelSampleResumePrompt;
   }
   if (typeof state.taskBudgetRemaining === "number") {
     slice.taskBudgetRemaining = state.taskBudgetRemaining;
@@ -647,6 +670,19 @@ export function restoreFromCheckpoint(
   if (Number.isFinite(slice.turnCount)) state.turnCount = slice.turnCount;
   if (Number.isFinite(slice.recoveryReentryCount)) {
     state.recoveryReentryCount = slice.recoveryReentryCount;
+  }
+  if (
+    slice.modelSampleOrdinal !== undefined &&
+    Number.isSafeInteger(slice.modelSampleOrdinal) &&
+    slice.modelSampleOrdinal >= 0
+  ) {
+    state.modelSampleOrdinal = slice.modelSampleOrdinal;
+  }
+  if (
+    slice.modelSampleResumePrompt === "continuation_nudge" ||
+    slice.modelSampleResumePrompt === "empty_response"
+  ) {
+    state.modelSampleResumePrompt = slice.modelSampleResumePrompt;
   }
   if (Number.isFinite(slice.maxOutputTokensRecoveryCount)) {
     state.maxOutputTokensRecoveryCount = slice.maxOutputTokensRecoveryCount;
@@ -722,6 +758,17 @@ export function restoreFromCheckpoint(
         : { kind: "stop", reason: slice.pendingBudgetDecision.reason };
   }
   return state;
+}
+
+/** Reserve the next physical model-sample identity without wrapping. */
+export function advanceModelSampleOrdinal(state: TurnState): void {
+  if (!Number.isSafeInteger(state.modelSampleOrdinal)) {
+    throw new Error("model sample ordinal is invalid");
+  }
+  if (state.modelSampleOrdinal >= Number.MAX_SAFE_INTEGER) {
+    throw new Error("model sample ordinal is exhausted");
+  }
+  state.modelSampleOrdinal += 1;
 }
 
 /**

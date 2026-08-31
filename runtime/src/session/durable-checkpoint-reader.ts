@@ -47,6 +47,8 @@ const CHECKPOINT_SLICE_KEYS = Object.freeze([
   "autoCompactTracking",
   "continuationNudgeCount",
   "maxOutputTokensRecoveryCount",
+  "modelSampleOrdinal",
+  "modelSampleResumePrompt",
   "pendingBudgetDecision",
   "planToolRequiredRetryCount",
   "recoveryReentryCount",
@@ -660,6 +662,8 @@ function parseCheckpointSlice(value: unknown): TurnCheckpointSliceLine {
     turnCount: number;
     recoveryReentryCount: number;
     maxOutputTokensRecoveryCount: number;
+    modelSampleOrdinal?: number;
+    modelSampleResumePrompt?: "continuation_nudge" | "empty_response";
     continuationNudgeCount: number;
     stopHookBlockingCount: number;
     planToolRequiredRetryCount?: number;
@@ -691,6 +695,21 @@ function parseCheckpointSlice(value: unknown): TurnCheckpointSliceLine {
       value.planToolRequiredRetryCount,
       "resumableState.planToolRequiredRetryCount",
     );
+  }
+  if (value.modelSampleOrdinal !== undefined) {
+    result.modelSampleOrdinal = nonNegativeInteger(
+      value.modelSampleOrdinal,
+      "resumableState.modelSampleOrdinal",
+    );
+  }
+  if (value.modelSampleResumePrompt !== undefined) {
+    if (
+      value.modelSampleResumePrompt !== "continuation_nudge" &&
+      value.modelSampleResumePrompt !== "empty_response"
+    ) {
+      throw malformed("resumableState.modelSampleResumePrompt is invalid");
+    }
+    result.modelSampleResumePrompt = value.modelSampleResumePrompt;
   }
   if (value.taskBudgetRemaining !== undefined) {
     result.taskBudgetRemaining = nonNegativeInteger(

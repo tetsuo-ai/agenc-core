@@ -417,6 +417,8 @@ const isCheckpointSlice = objectShape(
   },
   {
     planToolRequiredRetryCount: isNonNegativeInteger,
+    modelSampleOrdinal: isNonNegativeInteger,
+    modelSampleResumePrompt: oneOf("continuation_nudge", "empty_response"),
     taskBudgetRemaining: isNumber,
     autoCompactTracking: objectShape({
       compacted: isBoolean,

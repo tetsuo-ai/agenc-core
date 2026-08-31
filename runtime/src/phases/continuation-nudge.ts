@@ -32,6 +32,9 @@ import type { TurnState } from "../session/turn-state.js";
 
 const MAX_CONTINUATION_NUDGES = 3;
 
+export const CONTINUATION_NUDGE_TEXT =
+  "Continue with the task. Use the appropriate tools to proceed.";
+
 const CONTINUATION_SIGNALS: RegExp[] = [
   /\bso now (i|let me|we) (need to|have to|should|must|will) (do|create|write|edit|update|fix|implement|add|run|check|make|build|set up)\b/,
   /\bnow i('ll| will) (do|create|write|edit|update|fix|implement|add|run|check|make|build|set up|go|proceed)\b/,
@@ -59,10 +62,10 @@ function matchesContinuationSignal(text: string): boolean {
   return false;
 }
 
-function injectNudgeMessage(state: TurnState): void {
+export function injectNudgeMessage(state: TurnState): void {
   const nudge: LLMMessage = {
     role: "user",
-    content: "Continue with the task. Use the appropriate tools to proceed.",
+    content: CONTINUATION_NUDGE_TEXT,
     // gaphunt3 #34: the continuation nudge is a synthetic, heuristic-driven
     // turn — keep it ephemeral/in-context only so a false-positive match never
     // pollutes the durable rollout/transcript that --resume replays.
