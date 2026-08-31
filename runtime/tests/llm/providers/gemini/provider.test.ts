@@ -905,6 +905,336 @@ describe("GeminiProvider", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  test("preserves the supported response schema surface and optional recursion", async () => {
+    const fetchImpl = successfulGeminiFetch('{"choice":"yes"}');
+    const provider = providerWithFetch(fetchImpl);
+    const responseSchema = {
+      $id: "https://example.test/schemas/answer",
+      $anchor: "Answer",
+      type: "object",
+      title: "Answer envelope",
+      description: "A schema that exercises Gemini's documented subset.",
+      properties: {
+        choice: {
+          anyOf: [
+            { enum: ["yes", "no"] },
+            { type: "number", minimum: 0, maximum: 1 },
+          ],
+        },
+        values: {
+          type: "array",
+          minItems: 1,
+          maxItems: 3,
+          prefixItems: [{ type: "string", format: "date-time" }],
+          items: { type: ["integer", "null"] },
+        },
+        labels: {
+          type: "object",
+          additionalProperties: { type: "string" },
+        },
+        escaped: { $ref: "#/$defs/a~1b~0c" },
+        percentEncoded: { $ref: "#/%24defs/Display%20Name" },
+        anchored: { $ref: "#Answer" },
+        recursive: { $ref: "#/$defs/Node" },
+      },
+      required: ["choice", "values"],
+      propertyOrdering: [
+        "choice",
+        "values",
+        "labels",
+        "escaped",
+        "percentEncoded",
+        "anchored",
+        "recursive",
+      ],
+      additionalProperties: false,
+      $defs: {
+        "a/b~c": { type: "string" },
+        "Display Name": { type: "string" },
+        Node: {
+          type: "object",
+          properties: {
+            child: { $ref: "#/$defs/Node" },
+          },
+        },
+      },
+    };
+
+    await provider.chat([{ role: "user", content: "answer" }], {
+      structuredOutput: {
+        enabled: true,
+        schema: {
+          type: "json_schema",
+          name: "answer",
+          schema: responseSchema,
+        },
+      },
+    });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const requestBody = JSON.parse(String(init?.body)) as {
+      generationConfig: Record<string, unknown>;
+    };
+    expect(requestBody.generationConfig.responseJsonSchema).toEqual(
+      responseSchema,
+    );
+  });
+
+  test.each([
+    { keyword: "allOf", schema: { allOf: [{ type: "string" }] } },
+    {
+      keyword: "definitions",
+      schema: { definitions: { Value: { type: "string" } } },
+    },
+    {
+      keyword: "dependentSchemas",
+      schema: { dependentSchemas: { value: { type: "string" } } },
+    },
+    {
+      keyword: "patternProperties",
+      schema: { patternProperties: { "^value": { type: "string" } } },
+    },
+    { keyword: "contains", schema: { contains: { type: "string" } } },
+    { keyword: "if", schema: { if: { type: "string" } } },
+    { keyword: "then", schema: { then: { type: "string" } } },
+    { keyword: "else", schema: { else: { type: "string" } } },
+    { keyword: "not", schema: { not: { type: "string" } } },
+    {
+      keyword: "propertyNames",
+      schema: { propertyNames: { type: "string" } },
+    },
+    {
+      keyword: "unevaluatedProperties",
+      schema: { unevaluatedProperties: false },
+    },
+    { keyword: "const", schema: { const: "fixed" } },
+    { keyword: "pattern", schema: { type: "string", pattern: "^fixed$" } },
+    { keyword: "minLength", schema: { type: "string", minLength: 1 } },
+  ])(
+    "rejects unsupported response keyword $keyword before dispatch",
+    async ({ keyword, schema }) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const provider = providerWithFetch(fetchImpl);
+
+      await expect(
+        provider.chat([{ role: "user", content: "answer" }], {
+          structuredOutput: {
+            enabled: true,
+            schema: {
+              type: "json_schema",
+              name: "answer",
+              schema,
+            },
+          },
+        }),
+      ).rejects.toThrow(
+        `structuredOutput["answer"].schema.${keyword}: keyword "${keyword}" is not supported`,
+      );
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([
+    {
+      location: "$defs",
+      schema: { $defs: { Value: { const: "fixed" } } },
+      path: "$defs.Value.const",
+    },
+    {
+      location: "properties",
+      schema: { properties: { value: { pattern: "^fixed$" } } },
+      path: "properties.value.pattern",
+    },
+    {
+      location: "items",
+      schema: { type: "array", items: { minLength: 1 } },
+      path: "items.minLength",
+    },
+    {
+      location: "prefixItems",
+      schema: { prefixItems: [{ not: { type: "null" } }] },
+      path: "prefixItems[0].not",
+    },
+    {
+      location: "anyOf",
+      schema: { anyOf: [{ allOf: [{ type: "string" }] }] },
+      path: "anyOf[0].allOf",
+    },
+  ])(
+    "reports the full path for unsupported keywords below $location",
+    async ({ schema, path }) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const provider = providerWithFetch(fetchImpl);
+
+      await expect(
+        provider.chat([{ role: "user", content: "answer" }], {
+          structuredOutput: {
+            enabled: true,
+            schema: {
+              type: "json_schema",
+              name: "answer",
+              schema,
+            },
+          },
+        }),
+      ).rejects.toThrow(`structuredOutput["answer"].schema.${path}`);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  test("rejects a recursive reference inside a required property", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = providerWithFetch(fetchImpl);
+
+    await expect(
+      provider.chat([{ role: "user", content: "answer" }], {
+        structuredOutput: {
+          enabled: true,
+          schema: {
+            type: "json_schema",
+            name: "answer",
+            schema: {
+              $ref: "#/$defs/Node",
+              $defs: {
+                Node: {
+                  type: "object",
+                  properties: {
+                    child: { $ref: "#/$defs/Node" },
+                  },
+                  required: ["child"],
+                },
+              },
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow(
+      'schema.$defs.Node.properties.child.$ref: cyclic $ref is inside required property "child"',
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    {
+      label: "unresolved local pointer",
+      reference: "#/$defs/Missing",
+      message: "does not resolve JSON Pointer",
+    },
+    {
+      label: "schema container pointer",
+      reference: "#/properties",
+      message: "identifies a schema container, not a schema object",
+    },
+    {
+      label: "remote reference",
+      reference: "https://example.test/schema.json#/$defs/Value",
+      message: "remote references are not supported",
+    },
+  ])("rejects $label", async ({ reference, message }) => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = providerWithFetch(fetchImpl);
+
+    await expect(
+      provider.chat([{ role: "user", content: "answer" }], {
+        structuredOutput: {
+          enabled: true,
+          schema: {
+            type: "json_schema",
+            name: "answer",
+            schema: {
+              type: "object",
+              properties: { value: { $ref: reference } },
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow(message);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test.each(["chat", "stream", "count"] as const)(
+    "validates response schemas before %s dispatch",
+    async (operation) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const provider = providerWithFetch(fetchImpl);
+      const options = {
+        structuredOutput: {
+          enabled: true,
+          schema: {
+            type: "json_schema" as const,
+            name: "answer",
+            schema: { type: "string", const: "fixed" },
+          },
+        },
+      };
+
+      const invocation =
+        operation === "chat"
+          ? provider.chat([{ role: "user", content: "answer" }], options)
+          : operation === "stream"
+            ? provider.chatStream(
+                [{ role: "user", content: "answer" }],
+                () => {},
+                options,
+              )
+            : provider.tokenCountCapability.countTokens(
+                createTokenAccountingRequest({
+                  provider: provider.name,
+                  model: "gemini-2.5-pro",
+                  messages: [{ role: "user", content: "answer" }],
+                  options,
+                  reservedOutputTokens: 0,
+                }),
+                new AbortController().signal,
+              );
+
+      await expect(invocation).rejects.toThrow(
+        'structuredOutput["answer"].schema.const',
+      );
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([
+    { label: "Developer v1beta", endpointPlan: developerEndpointPlan },
+    { label: "Vertex v1", endpointPlan: vertexEndpointPlan },
+    { label: "a custom native endpoint", endpointPlan: customEndpointPlan },
+  ])(
+    "uses fail-closed response schema capabilities for $label",
+    async ({ endpointPlan }) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const credentialPlan =
+        endpointPlan.kind === "vertex"
+          ? ({
+              kind: "access-token",
+              credential: "vertex-token",
+              projectId: "project-1",
+              source: "GEMINI_ACCESS_TOKEN",
+            } as const)
+          : apiKeyCredentialPlan();
+      const provider = new GeminiProvider({
+        credentialPlan,
+        endpointPlan,
+        model: "unrecognized-model-family",
+        fetchImpl,
+      });
+
+      await expect(
+        provider.chat([{ role: "user", content: "answer" }], {
+          structuredOutput: {
+            enabled: true,
+            schema: {
+              type: "json_schema",
+              name: "answer",
+              schema: { type: "string", minLength: 1 },
+            },
+          },
+        }),
+      ).rejects.toThrow('structuredOutput["answer"].schema.minLength');
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
   test("streams Gemini text, function calls, and usage from streamGenerateContent", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

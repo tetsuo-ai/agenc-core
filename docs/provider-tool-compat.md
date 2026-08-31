@@ -51,15 +51,15 @@ normalizer's `strictEligible` result or a `strict` field.
 `GRAMMAR_CONSTRAINED_TOOL_PROVIDERS` in
 `runtime/src/llm/wire/capability-gating.ts` is **`lmstudio`** and
 **`openai-compatible` only**. The Ollama slug is not in that set. Pointing
-`openai-compatible` at an Ollama host *does* take this path.
+`openai-compatible` at an Ollama host _does_ take this path.
 
 llama.cpp-family servers compile tool JSON Schema to GBNF at request time and
 400 the whole turn (`failed to parse grammar`) when any tool uses a keyword
 outside their converter. `sanitizeToolSchemaForGrammar` keeps this subset
 **including `required`**:
 
-| Kept | Dropped (examples) |
-| --- | --- |
+| Kept                                                                                                                | Dropped (examples)                                               |
+| ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | `type`, `description`, `properties`, `required`, `items`, `enum`, `const`, `additionalProperties`, `anyOf`, `oneOf` | `$ref`, `$schema`, `minLength`, `pattern`, `format`, `x-agenc-*` |
 
 Nullable `type` arrays collapse to the concrete type (or `anyOf` / `const:
@@ -127,11 +127,30 @@ inlining or keyword rewriting. Repeated and recursive refs do not consume a
 local expansion budget. This also applies to MCP `inputSchema` after its
 model-facing size and annotation sanitization.
 
-Structured output has two provider-specific limits. Google documents that
-`oneOf` is interpreted as `anyOf`, and that a response sub-schema containing
-`$ref` may have only `$`-prefixed siblings. AgenC rejects those two shapes
-before dispatch rather than changing their meaning. The error includes the
-source path, for example:
+Response schemas are checked against Google's documented common subset before
+the request is built. AgenC accepts these keywords:
+
+- `$id`, `$defs`, `$ref`, and `$anchor`
+- `type`, `format`, `title`, `description`, and `enum`
+- `items`, `prefixItems`, `minItems`, and `maxItems`
+- `minimum`, `maximum`, and `anyOf`
+- `properties`, `additionalProperties`, `required`, and `propertyOrdering`
+
+Other keywords fail with their full source path. This includes `allOf`,
+`const`, `pattern`, `minLength`, `not`, and unknown extension keywords. New or
+unrecognized model families use the same common subset until the provider
+capability record is updated.
+
+Google lists `oneOf`, but interprets it as `anyOf`. A response sub-schema that
+contains `$ref` may have only `$`-prefixed siblings. AgenC rejects both shapes
+instead of changing their meaning. Local `$ref` values must resolve through an
+RFC 6901 JSON Pointer or a declared anchor. Remote and unresolved references
+also fail locally. Recursive references are accepted only when the reference
+appears in a non-required property, as required by the Gemini contract.
+
+Successful validation does not rewrite the response schema. Type arrays,
+`$defs` maps, ordering, and optional recursive references reach the provider
+unchanged. An error includes the source path, for example:
 
 ```text
 Gemini cannot preserve schema at structuredOutput["answer"].schema.oneOf:
@@ -140,12 +159,15 @@ Gemini interprets oneOf as anyOf, which would weaken validation
 
 Use `anyOf` only when inclusive-OR behavior is correct. For a response `$ref`,
 move `description` and other non-`$` keywords into the referenced definition.
-Tool parameter schemas are not subject to these local response-schema checks.
+Move a recursive `$ref` out of `required` when omission is valid. Tool
+parameter schemas are not subject to these local response-schema checks and
+remain exact `parametersJsonSchema` values.
 
 Primary API references:
 
 - [Gemini Developer API: `FunctionDeclaration` and `GenerationConfig`](https://ai.google.dev/api/generate-content)
 - [Vertex v1: `FunctionDeclaration`](https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1/FunctionDeclaration)
+- [Vertex v1: `GenerationConfig`](https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1/GenerationConfig)
 - [`@google/genai` function-calling example](https://googleapis.github.io/js-genai/release_docs/index.html#function-calling)
 
 ## When adding tools
@@ -168,16 +190,16 @@ but `builtTools` applies the local-profile filter afterward.
 
 ## Troubleshooting
 
-| Symptom | Cause |
-| --- | --- |
-| Grok/DeepSeek 400 "root must be an object type" | Root `anyOf`/`oneOf` before `normalizeToolParamSchema` |
-| LM Studio/openai-compatible 400 `failed to parse grammar` | Tool schema contains a keyword outside the grammar-safe subset |
-| LM Studio/openai-compatible empty turn after a long answer | Check whether the fixed 8192 output ceiling ended generation |
-| LM Studio/openai-compatible session does not call team/task tools | Those tools are outside the reduced catalog; use another provider slug when they are required |
-| Qwen3 think-trace burns minutes | `/no_think` only attaches on `lmstudio` / `openai-compatible` + qwen3 |
-| Gemini response schema fails locally with `Gemini cannot preserve schema at <path>` | Structured output used `oneOf`, which Gemini treats as `anyOf`, or placed a non-`$` sibling beside `$ref`. Use `anyOf` only for inclusive OR, or move sibling keywords into the referenced definition |
-| Custom Gemini endpoint rejects `parametersJsonSchema` or `responseJsonSchema` | `GEMINI_BASE_URL` must expose the current native Gemini request shape. Update the proxy or use the official Developer API or Vertex endpoint |
-| NIM ignores or 400s `reasoning_effort` | Family has no documented enum, or the value is outside it |
+| Symptom                                                                             | Cause                                                                                                                                                                                                                            |
+| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Grok/DeepSeek 400 "root must be an object type"                                     | Root `anyOf`/`oneOf` before `normalizeToolParamSchema`                                                                                                                                                                           |
+| LM Studio/openai-compatible 400 `failed to parse grammar`                           | Tool schema contains a keyword outside the grammar-safe subset                                                                                                                                                                   |
+| LM Studio/openai-compatible empty turn after a long answer                          | Check whether the fixed 8192 output ceiling ended generation                                                                                                                                                                     |
+| LM Studio/openai-compatible session does not call team/task tools                   | Those tools are outside the reduced catalog; use another provider slug when they are required                                                                                                                                    |
+| Qwen3 think-trace burns minutes                                                     | `/no_think` only attaches on `lmstudio` / `openai-compatible` + qwen3                                                                                                                                                            |
+| Gemini response schema fails locally with `Gemini cannot preserve schema at <path>` | Structured output used an unsupported keyword, a lossy `oneOf`, an invalid or remote `$ref`, a non-`$` sibling beside `$ref`, or a required reference cycle. Follow the path in the error and use the documented response subset |
+| Custom Gemini endpoint rejects `parametersJsonSchema` or `responseJsonSchema`       | `GEMINI_BASE_URL` must expose the current native Gemini request shape. Update the proxy or use the official Developer API or Vertex endpoint                                                                                     |
+| NIM ignores or 400s `reasoning_effort`                                              | Family has no documented enum, or the value is outside it                                                                                                                                                                        |
 
 There is no operator config for the grammar-safe key set, the 8192 ceiling, or
 the local catalog. The configured `max_output_tokens` still wins when it is
