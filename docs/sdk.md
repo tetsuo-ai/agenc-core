@@ -131,13 +131,22 @@ session hook extension point.
 Generated public contracts must stay synchronized with their authorities. Do
 not change their public shapes independently:
 
-- `packages/agenc-sdk/src/transcript-v2.generated.ts` — daemon
-  `SessionTranscriptV2*` result interfaces. Re-exported from `protocol.ts`.
-  Refresh: [Transcript v2 generated mirror](#transcript-v2-generated-mirror).
-- `packages/agenc-sdk/src/workflow-handoff.generated.ts` and
-  `workflow-result.generated.ts`. Source schemas live under `runtime/src/agents/`.
-
-Verify with `npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types`.
+- `packages/agenc-sdk/src/transcript-v2.generated.ts` mirrors the daemon
+  `SessionTranscriptV2*` result interfaces and is re-exported from `protocol.ts`.
+  Verify its exact content with
+  `npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types`. See
+  [Transcript v2 generated mirror](#transcript-v2-generated-mirror) for the
+  manual refresh steps.
+- `packages/agenc-sdk/src/workflow-result.generated.ts` mirrors workflow result
+  contracts whose source schemas live under `runtime/src/agents/`. The same
+  generated-type command checks selected version and outcome markers.
+- `packages/agenc-sdk/src/workflow-handoff.generated.ts` mirrors the workflow
+  handoff schema under `runtime/src/agents/`. Run
+  `npm exec --workspace=@tetsuo-ai/runtime -- vitest run tests/sdk-package/workflow-handoff.contract.test.ts`
+  for selected public constant and validator coverage. The generated-type
+  command checks runtime handoff markers and does not read this public file.
+  No current check proves full structural parity. [#1941](https://github.com/tetsuo-ai/agenc-core/issues/1941)
+  tracks that work.
 
 Permission requests with no registered handler are **denied** (never granted)
 so an unattended embedder can't hang a turn, mirroring `agenc -p`.
@@ -469,18 +478,22 @@ Use typed helpers when available; fall back to
 
 ## Protocol mirror & drift guard
 
-The SDK does not import runtime internals. Independent guards pin the
-public surface to the daemon:
+The SDK does not import runtime internals. These guards cover different parts
+of the public surface:
 
 | Layer | Authority | Guard |
 | --- | --- | --- |
 | Method registry and handwritten params/result maps | `packages/agenc-sdk/src/protocol.ts` | `runtime/tests/sdk-package/protocol-drift.contract.test.ts` compares `AGENC_SDK_DAEMON_METHODS` / `AGENC_SDK_DAEMON_NOTIFICATION_METHODS` to the runtime arrays (names **and** order) and requires a params/result map entry for every method |
 | `session.transcript.v2` result shapes | `runtime/src/app-server/protocol/index.ts` | `check:sdk-generated-types` renders `transcript-v2.generated.ts` and compares the complete committed file after newline normalization |
 | Workflow result contract markers | `runtime/src/entrypoints/sdk/coreSchemas.ts`, `coreTypes.generated.ts`, and `packages/agenc-sdk/src/workflow-result.generated.ts` | The same check requires selected version and outcome markers. It does not compare the complete file |
-| Workflow handoff contract markers | `runtime/src/entrypoints/sdk/coreSchemas.ts` and `coreTypes.generated.ts` | The same check requires selected runtime handoff markers. It does not read `packages/agenc-sdk/src/workflow-handoff.generated.ts` |
+| Workflow handoff contract markers | `runtime/src/entrypoints/sdk/coreSchemas.ts` and `coreTypes.generated.ts` | The same check requires selected runtime handoff markers. It does not read or structurally compare `packages/agenc-sdk/src/workflow-handoff.generated.ts` |
 
-The public workflow-handoff mirror currently has no direct drift check.
-[#1941](https://github.com/tetsuo-ai/agenc-core/issues/1941) tracks adding one.
+`runtime/tests/sdk-package/workflow-handoff.contract.test.ts` supplies separate
+behavioral coverage. It compares selected public constants with runtime values
+and exercises the public validator against runtime and schema validators. No
+current check compares every field, optional marker, union, declaration order,
+or export in the public workflow-handoff mirror. [#1941](https://github.com/tetsuo-ai/agenc-core/issues/1941)
+tracks a generated structural parity check.
 
 Changes covered by these guards fail the check until the mirrored or
 marker-checked content is updated. `SessionTranscriptV2Params` stays
@@ -520,9 +533,9 @@ Refresh after a protocol edit:
 
 Constraints:
 
-- Comparison is exact after a single `CRLF` / bare `CR` → `LF` pass on both
+- Comparison is exact after a single `CRLF` / bare `CR` to `LF` pass on both
   the runtime authority and the committed file. Windows checkouts must pass
-  the same content; do not “fix” line endings to satisfy the check.
+  the same content. Do not change line endings solely to satisfy the check.
 - Changes to fields, optionality, unions, member comments, or ordering inside
   the extracted interface declarations fail until the generated file is
   refreshed. Leading interface JSDoc is outside the extracted declaration
@@ -548,8 +561,8 @@ sees the same output and completion behavior as `agenc -p`.
 `runtime/tests/sdk-package/`:
 
 - `protocol-drift.contract.test.ts` — mirror pinned to the runtime registry.
-- `transcript-v2.contract.test.ts` — generated result shapes vs the daemon
-  protocol, plus `transcriptV2()` preserving typed `turnResults`.
+- `transcript-v2.contract.test.ts` compares generated result shapes with the
+  daemon protocol and checks that `transcriptV2()` preserves typed `turnResults`.
 - `client-inprocess.contract.test.ts` — full connect → createSession →
   prompt event stream and permission round-trips against a fake daemon hosted
   on the **real** in-process transport (real dispatcher, session lifecycle,
