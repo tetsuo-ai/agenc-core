@@ -1067,7 +1067,12 @@ describe("plugin source resolution", () => {
         requireSignature: false,
       });
       expect(waived.kind).toBe("mcpb");
-      expect(waived.signatureVerified).toBeUndefined();
+      expect(waived.signature).toEqual({
+        required: false,
+        present: false,
+        verified: false,
+        reason: "missing",
+      });
       await waived.cleanup();
     });
   });
