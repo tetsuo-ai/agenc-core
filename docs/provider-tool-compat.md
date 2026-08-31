@@ -108,132 +108,45 @@ that enum (`kimi-k3`, `deepseek-v4-{pro,flash}`, `gpt-oss-<digits>b`,
 `nemotron-3-super`, `nemotron-3-ultra`). Other NIM families strip the field so
 the host default runs. Out-of-enum values are not translated.
 
-## Gemini function-declaration compiler
+## Gemini native JSON Schema
 
-Gemini's OpenAPI subset fails the **whole request** on an unknown schema key
-(`Unknown name "additionalProperties"`, then the same for `x-agenc-*`) **or**
-on a JSON Schema `type` array (`Proto field is not repeating, cannot start
-list`). `Schema.type` is a single proto enum, not a repeating field.
+Gemini requests use the provider's JSON Schema fields. AgenC does not convert
+them to the older OpenAPI `Schema` message:
 
-`compileGeminiSchema` in `runtime/src/llm/providers/gemini/index.ts` replaced
-`sanitizeGeminiSchema`. It strips keys outside the documented allowlist
-(`type`, `format`, `title`, `description`, `nullable`, `enum`, `items`,
-`properties`, `required`, `anyOf`, numeric/length bounds, `pattern`, and
-other documented keys). It then walks `properties`, `items`, and `anyOf`
-recursively and **lowers** type arrays before dispatch. `oneOf` / `allOf` /
-`$ref` are not on the allowlist. They are dropped.
+- tool declarations use `functionDeclarations[].parametersJsonSchema`
+- structured output uses `generationConfig.responseJsonSchema`
+- admission `countTokens` rebuilds the same request, including tool schemas
 
-The same compiler runs on:
+This wire shape is used for the Developer API v1beta, Vertex v1, and custom
+native Gemini endpoints. A custom endpoint must accept the same current native
+request fields as `models/*:generateContent`.
 
-- tool `functionDeclarations[].parameters` (`geminiTools`)
-- `generationConfig.responseSchema` when structured output is enabled
-- native `countTokens` / admission, because `countRequestTokens` rebuilds
-  the request through `buildGeminiRequest`
+Tool schemas stay intact. Type arrays, `additionalProperties`, `$defs`, `$ref`,
+URI-fragment pointers, `anyOf`, and `oneOf` reach the provider without local
+inlining or keyword rewriting. Repeated and recursive refs do not consume a
+local expansion budget. This also applies to MCP `inputSchema` after its
+model-facing size and annotation sanitization.
 
-Execution-side validation still sees the original schema.
+Structured output has two provider-specific limits. Google documents that
+`oneOf` is interpreted as `anyOf`, and that a response sub-schema containing
+`$ref` may have only `$`-prefixed siblings. AgenC rejects those two shapes
+before dispatch rather than changing their meaning. The error includes the
+source path, for example:
 
-### Type-array collapse
-
-| Source `type` | Wire result |
-| --- | --- |
-| `"string"` (or any single allowed name) | unchanged |
-| `["string", "null"]` | `{ type: "string", nullable: true }` |
-| `["array", "null"]` with `items` | `{ type: "array", nullable: true, items: <compiled> }` |
-| `["null"]` or `"null"` | `{ type: "null" }` |
-
-Allowed names: `string`, `number`, `integer`, `boolean`, `array`, `object`,
-`null`. Duplicates in the array are dropped. Whitespace-padded names are
-rejected.
-
-This is **not** the grammar-safe rewrite. LM Studio / openai-compatible drop
-null from a single-concrete union for llama.cpp or rewrite a multi-concrete
-union to `anyOf`. The Gemini compiler does not make that rewrite. Moving
-sibling constraints into generated branches would need a separate,
-semantics-preserving transformation, so the compiler rejects the source type
-array instead.
-
-```jsonc
-// TaskUpdate.owner on the tool definition
-{ "type": ["string", "null"] }
-
-// Gemini wire
-{ "type": "string", "nullable": true }
+```text
+Gemini cannot preserve schema at structuredOutput["answer"].schema.oneOf:
+Gemini interprets oneOf as anyOf, which would weaken validation
 ```
 
-### Union-only nodes (`anyOf` without a parent `type`)
+Use `anyOf` only when inclusive-OR behavior is correct. For a response `$ref`,
+move `description` and other non-`$` keywords into the referenced definition.
+Tool parameter schemas are not subject to these local response-schema checks.
 
-The Gemini compiler preserves a non-empty `anyOf` when the node has no sibling
-`type`. Several built-in tool parameters use that shape:
+Primary API references:
 
-| Tool | Field | Union |
-| --- | --- | --- |
-| `FileRead` | `offset`, `limit` | `number` or numeric string (`^[1-9]\\d*$`) |
-| `system.searchTools` | `select` | `string` or `string[]` |
-| `exec_command` | `sandbox_permissions` | enum string or object |
-
-`normalizeGeminiSchemaType` leaves that node unchanged when `anyOf` is a
-non-empty array and `type` is absent. The branches are still compiled
-recursively. The wire copy keeps `anyOf` and does **not** invent a parent
-`type`.
-
-```jsonc
-// FileRead.offset on the tool definition and on the Gemini wire
-{
-  "description": "Optional. Line number to start from (1-indexed). Numeric strings are accepted.",
-  "anyOf": [
-    { "type": "number" },
-    { "type": "string", "pattern": "^[1-9]\\d*$" }
-  ]
-}
-```
-
-An earlier compiler required a sibling `type` on every node. A turn that
-advertised the built-in catalog threw `Gemini cannot represent schema at
-<path>: a JSON Schema type is required` on `FileRead.offset` while building
-the request. This happened before either an outbound `generateContent` call
-or admission `countTokens` call. Current code compiles those unions.
-
-Constraints:
-
-- A node with neither `type` nor a non-empty `anyOf` still throws.
-- An empty or non-array `anyOf` throws (`expected at least one schema
-  branch`) even when `type` is present.
-- `required` / `properties` on an `anyOf`-only parent still throw
-  (`requires type "object"`). Put those keys on object **branches**.
-- A sibling `type` array with more than one non-null entry is still
-  rejected even when `anyOf` is also present
-  (`{ type: ["object", "string"], anyOf: [...] }`).
-- `oneOf`-only nodes lose `oneOf` in the allowlist pass, then fail as
-  missing `type`. Prefer `anyOf` if the schema must stay Gemini-callable.
-
-### Fail-closed before dispatch
-
-`compileGeminiSchema` throws `LLMProviderError` (`provider: "gemini"`) before
-the outbound provider request on both the generate-content and token-counting
-paths when:
-
-- `type` is missing **and** the node has no non-empty `anyOf`
-- `type` is not a string or array, an empty array, or an unsupported name
-- the array has **more than one non-null type** (`["object", "string"]`)
-- `required` or `properties` is present and the compiled `type` is not
-  `"object"` (including an `anyOf`-only node whose compiled `type` is
-  absent)
-- `properties` is not a map, `anyOf` is empty or not an array, or a nested
-  value is not a schema object
-
-The error names the path
-(`tools["InvalidSchema"].parameters.properties.value.type` or
-`structuredOutput["answer"].schema.type`).
-
-`required` / `properties` on a nullable object stay: `type: ["object", "null"]`
-lowers to `type: "object", nullable: true` first, so those keys remain legal.
-They are no longer silently deleted from a non-object branch (that used to
-hide the Gemini 400 "only allowed for OBJECT type").
-
-```jsonc
-// Rejected before dispatch because the compiler does not rewrite this array
-{ "type": ["object", "string"] }
-```
+- [Gemini Developer API: `FunctionDeclaration` and `GenerationConfig`](https://ai.google.dev/api/generate-content)
+- [Vertex v1: `FunctionDeclaration`](https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1/FunctionDeclaration)
+- [`@google/genai` function-calling example](https://googleapis.github.io/js-genai/release_docs/index.html#function-calling)
 
 ## When adding tools
 
@@ -241,12 +154,11 @@ Prefer a clean object root with optional fields when the provider surface must
 stay strict-eligible. If a true union is required for execution-side clarity,
 keep the union on the tool definition. The Grok/DeepSeek normalizer collapses
 a **root** union for those providers and reports `strictEligible: false`.
-Gemini keeps nested `anyOf` (with or without a parent `type`) and fails
-closed on a multi-concrete `type` array. Do not rely on `$ref`, `oneOf`,
-`allOf`, or `x-agenc-*` reaching LM Studio, openai-compatible, or Gemini.
-Nullable fields may keep `type: ["T", "null"]` on the definition. Gemini
-lowers that to `type` + `nullable`. Do not use a multi-concrete `type`
-array if the tool or structured-output schema must stay Gemini-callable.
+Gemini sends tool parameters through `parametersJsonSchema` without local
+keyword rewriting. LM Studio and openai-compatible still use the
+grammar-safe subset, so do not rely on `$ref`, `oneOf`, `allOf`, or
+`x-agenc-*` reaching those providers. Gemini structured output rejects
+`oneOf` because Google treats it as `anyOf` there.
 
 For a tool to remain callable through the LM Studio/openai-compatible profile,
 its registry name must appear in `LOCAL_PROFILE_TOOL_NAMES`, and its wire
@@ -263,10 +175,8 @@ but `builtTools` applies the local-profile filter afterward.
 | LM Studio/openai-compatible empty turn after a long answer | Check whether the fixed 8192 output ceiling ended generation |
 | LM Studio/openai-compatible session does not call team/task tools | Those tools are outside the reduced catalog; use another provider slug when they are required |
 | Qwen3 think-trace burns minutes | `/no_think` only attaches on `lmstudio` / `openai-compatible` + qwen3 |
-| Gemini 400 `Unknown name "additionalProperties"` / empty reply | Pre-allowlist wire schema; current code strips those keys |
-| Gemini 400 `Proto field is not repeating, cannot start list` / empty reply | Pre-compiler `type` array on the wire. Current code lowers `["T","null"]` to `type` + `nullable` |
-| Gemini compile fails before outbound `generateContent` or `countTokens` with `a JSON Schema type is required` | An older compiler required a sibling `type` on every node. Built-in `FileRead.offset` / `searchTools.select` / `exec_command.sandbox_permissions` use `anyOf` with no parent type. Current code compiles that shape |
-| Gemini turn fails locally with `Gemini cannot represent schema at <path>` | Multi-concrete type union, a node with neither `type` nor `anyOf` (including `oneOf`-only after the allowlist drop), empty `anyOf`, or `required`/`properties` on a non-object. Fix the tool or structured-output schema. The request never left the process |
+| Gemini response schema fails locally with `Gemini cannot preserve schema at <path>` | Structured output used `oneOf`, which Gemini treats as `anyOf`, or placed a non-`$` sibling beside `$ref`. Use `anyOf` only for inclusive OR, or move sibling keywords into the referenced definition |
+| Custom Gemini endpoint rejects `parametersJsonSchema` or `responseJsonSchema` | `GEMINI_BASE_URL` must expose the current native Gemini request shape. Update the proxy or use the official Developer API or Vertex endpoint |
 | NIM ignores or 400s `reasoning_effort` | Family has no documented enum, or the value is outside it |
 
 There is no operator config for the grammar-safe key set, the 8192 ceiling, or

@@ -39,9 +39,7 @@ import {
   type TokenAccountingRequest,
 } from "../../token-accounting.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
-import {
-  providerApiKeyEnvironmentLabel,
-} from "../../registry/provider-info.js";
+import { providerApiKeyEnvironmentLabel } from "../../registry/provider-info.js";
 import {
   canonicalGeminiModelName,
   geminiEndpointFor,
@@ -94,24 +92,25 @@ function geminiCountModelResource(model: string): string {
 async function resolveGeminiAuthHeaders(
   config: GeminiProviderConfig,
 ): Promise<Record<string, string>> {
-  const resolved = await materializeGeminiCredentialPlan(
-    config.credentialPlan,
-  );
+  const resolved = await materializeGeminiCredentialPlan(config.credentialPlan);
   const headers = geminiCredentialHeaders(resolved);
   if (headers) return headers;
   if (resolved.kind !== "none") {
-    throw new Error("Gemini credential materialization produced no auth headers");
+    throw new Error(
+      "Gemini credential materialization produced no auth headers",
+    );
   }
 
-  const expectation = resolved.expected === "api-key"
-    ? `set ${providerApiKeyEnvironmentLabel("gemini") ?? "a Gemini API key"}`
-    : resolved.expected === "access-token"
-      ? "set GEMINI_ACCESS_TOKEN"
-      : resolved.expected === "adc"
-        ? resolved.configuredPath === undefined
-          ? "configure Google Application Default Credentials"
-          : `provide the configured Google ADC file at ${resolved.configuredPath}`
-        : `set ${providerApiKeyEnvironmentLabel("gemini") ?? "a Gemini API key"}, GEMINI_ACCESS_TOKEN, or Google Application Default Credentials`;
+  const expectation =
+    resolved.expected === "api-key"
+      ? `set ${providerApiKeyEnvironmentLabel("gemini") ?? "a Gemini API key"}`
+      : resolved.expected === "access-token"
+        ? "set GEMINI_ACCESS_TOKEN"
+        : resolved.expected === "adc"
+          ? resolved.configuredPath === undefined
+            ? "configure Google Application Default Credentials"
+            : `provide the configured Google ADC file at ${resolved.configuredPath}`
+          : `set ${providerApiKeyEnvironmentLabel("gemini") ?? "a Gemini API key"}, GEMINI_ACCESS_TOKEN, or Google Application Default Credentials`;
   throw new LLMProviderError(
     "gemini",
     `Gemini provider requires credentials: ${expectation}`,
@@ -124,11 +123,13 @@ function assertNoGeminiAuthDefaultHeaders(
 ): void {
   const conflicting = Object.keys(headers ?? {}).filter((name) => {
     const normalized = name.trim().toLowerCase();
-    return normalized === "authorization" ||
+    return (
+      normalized === "authorization" ||
       normalized === "x-api-key" ||
       normalized === "api-key" ||
       normalized === "x-goog-api-key" ||
-      normalized === "x-goog-user-project";
+      normalized === "x-goog-user-project"
+    );
   });
   if (conflicting.length > 0) {
     throw new Error(
@@ -198,7 +199,9 @@ function parseDataUrl(
   url: string,
   expectedPrefix: "image" | "application",
 ): { readonly mimeType: string; readonly data: string } | null {
-  const match = /^data:([^;,]+)(?:;[^,]*)?;base64,([\s\S]+)$/iu.exec(url.trim());
+  const match = /^data:([^;,]+)(?:;[^,]*)?;base64,([\s\S]+)$/iu.exec(
+    url.trim(),
+  );
   if (!match) return null;
   const mimeType = (match[1] ?? "").trim().toLowerCase();
   if (!mimeType.startsWith(`${expectedPrefix}/`)) return null;
@@ -264,7 +267,9 @@ function geminiPartsFromContent(
         ) {
           parts.push({
             inlineData: {
-              mimeType: String(source.media_type ?? source.mediaType ?? "application/pdf"),
+              mimeType: String(
+                source.media_type ?? source.mediaType ?? "application/pdf",
+              ),
               data: source.data.replace(/\s+/gu, ""),
             },
           });
@@ -319,14 +324,18 @@ function buildGeminiContents(messages: readonly LLMMessage[]): {
   for (const message of messages) {
     if (message.role === "system" || message.role === "developer") {
       const parts = geminiPartsFromContent(message.content);
-      systemParts.push(...parts.filter((part) => typeof part.text === "string"));
+      systemParts.push(
+        ...parts.filter((part) => typeof part.text === "string"),
+      );
       continue;
     }
 
     if (message.role === "tool") {
       const name =
         nonEmptyString(message.toolName) ??
-        (message.toolCallId ? toolCallNames.get(message.toolCallId) : undefined) ??
+        (message.toolCallId
+          ? toolCallNames.get(message.toolCallId)
+          : undefined) ??
         "tool";
       contents.push({
         role: "user",
@@ -368,55 +377,10 @@ function buildGeminiContents(messages: readonly LLMMessage[]): {
   };
 }
 
-/**
- * The schema keys this provider's function declarations accept.
- *
- * Its dialect is an OpenAPI subset and it fails the WHOLE request on any
- * key outside it — `Unknown name "additionalProperties" … Cannot find
- * field`, then the same for our own `x-agenc-*` extensions. Every tool we
- * advertise carried at least one, so the provider answered 400 to every
- * turn and the app rendered it as an empty reply. An allowlist is the
- * only shape that stays correct as tool schemas grow.
- */
-const GEMINI_SCHEMA_KEYS = new Set([
-  "type",
-  "format",
-  "title",
-  "description",
-  "nullable",
-  "enum",
-  "items",
-  "properties",
-  "required",
-  "anyOf",
-  "propertyOrdering",
-  "default",
-  "example",
-  "minimum",
-  "maximum",
-  "minItems",
-  "maxItems",
-  "minLength",
-  "maxLength",
-  "minProperties",
-  "maxProperties",
-  "pattern",
-]);
-
-const GEMINI_SCHEMA_TYPE_NAMES = new Set([
-  "string",
-  "number",
-  "integer",
-  "boolean",
-  "array",
-  "object",
-  "null",
-]);
-
 function geminiSchemaError(path: string, detail: string): never {
   throw new LLMProviderError(
     "gemini",
-    `Gemini cannot represent schema at ${path}: ${detail}`,
+    `Gemini cannot preserve schema at ${path}: ${detail}`,
   );
 }
 
@@ -426,137 +390,132 @@ function geminiSchemaChildPath(path: string, key: string): string {
     : `${path}[${JSON.stringify(key)}]`;
 }
 
-function geminiSchemaHasAnyOfUnion(schema: Record<string, unknown>): boolean {
-  return Array.isArray(schema.anyOf) && schema.anyOf.length > 0;
+function isPlainSchemaObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/**
- * Gemini Schema.type is one proto enum when present. Preserve a null-only
- * schema, and lower one concrete JSON Schema type plus null to `type` +
- * `nullable`. A parent `anyOf` is Gemini's documented union form and does
- * not carry a sibling type — FileRead.offset/limit, searchTools.select, and
- * exec_command.sandbox_permissions all use that shape. Multiple concrete
- * types in a `type` array cannot be expressed without changing validation
- * semantics, so reject them before provider dispatch.
- */
-function normalizeGeminiSchemaType(
-  schema: Record<string, unknown>,
+const GEMINI_SCHEMA_MAP_KEYWORDS = new Set([
+  "$defs",
+  "definitions",
+  "dependentSchemas",
+  "patternProperties",
+  "properties",
+]);
+
+const GEMINI_SCHEMA_ARRAY_KEYWORDS = new Set(["allOf", "anyOf", "prefixItems"]);
+
+const GEMINI_SCHEMA_SINGLE_KEYWORDS = new Set([
+  "additionalProperties",
+  "contains",
+  "contentSchema",
+  "else",
+  "if",
+  "items",
+  "not",
+  "propertyNames",
+  "then",
+  "unevaluatedItems",
+  "unevaluatedProperties",
+]);
+
+function validateGeminiJsonSchemaAt(
+  value: unknown,
   path: string,
+  ancestors: Set<Record<string, unknown>>,
 ): void {
-  const typeValue = schema.type;
-  if (typeof typeValue === "string") {
-    if (!GEMINI_SCHEMA_TYPE_NAMES.has(typeValue)) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    geminiSchemaError(path, "expected a schema object");
+  }
+  const schema = value as Record<string, unknown>;
+  if (ancestors.has(schema)) {
+    geminiSchemaError(path, "the JavaScript schema object is circular");
+  }
+  ancestors.add(schema);
+  try {
+    if (Object.hasOwn(schema, "oneOf")) {
       geminiSchemaError(
-        `${path}.type`,
-        `unsupported type ${JSON.stringify(typeValue)}`,
+        geminiSchemaChildPath(path, "oneOf"),
+        "Gemini interprets oneOf as anyOf, which would weaken validation",
       );
     }
-    return;
-  }
-  if (typeValue === undefined && geminiSchemaHasAnyOfUnion(schema)) {
-    return;
-  }
-  if (!Array.isArray(typeValue)) {
-    geminiSchemaError(`${path}.type`, "a JSON Schema type is required");
-  }
-  if (typeValue.length === 0) {
-    geminiSchemaError(`${path}.type`, "the type array is empty");
-  }
 
-  const types: string[] = [];
-  for (const [index, entry] of typeValue.entries()) {
-    if (typeof entry !== "string" || !GEMINI_SCHEMA_TYPE_NAMES.has(entry)) {
-      geminiSchemaError(
-        `${path}.type[${index}]`,
-        `unsupported type ${JSON.stringify(entry)}`,
+    if (Object.hasOwn(schema, "$ref")) {
+      if (typeof schema.$ref !== "string" || schema.$ref.trim() === "") {
+        geminiSchemaError(
+          geminiSchemaChildPath(path, "$ref"),
+          "expected a non-empty string",
+        );
+      }
+      const unsupportedSibling = Object.keys(schema).find(
+        (key) => key !== "$ref" && !key.startsWith("$"),
       );
+      if (unsupportedSibling !== undefined) {
+        geminiSchemaError(
+          geminiSchemaChildPath(path, unsupportedSibling),
+          "Gemini does not allow non-$ siblings beside $ref",
+        );
+      }
     }
-    if (!types.includes(entry)) types.push(entry);
-  }
-  const concreteTypes = types.filter((type) => type !== "null");
-  if (concreteTypes.length > 1) {
-    geminiSchemaError(
-      `${path}.type`,
-      `multiple non-null types (${concreteTypes.join(", ")}) would lose validation semantics`,
-    );
-  }
 
-  schema.type = concreteTypes[0] ?? "null";
-  if (concreteTypes.length === 1 && types.includes("null")) {
-    schema.nullable = true;
+    for (const [key, entry] of Object.entries(schema)) {
+      const childPath = geminiSchemaChildPath(path, key);
+      if (GEMINI_SCHEMA_MAP_KEYWORDS.has(key)) {
+        if (!isPlainSchemaObject(entry)) {
+          geminiSchemaError(childPath, "expected a schema map");
+        }
+        for (const [name, child] of Object.entries(entry)) {
+          validateGeminiJsonSchemaAt(
+            child,
+            geminiSchemaChildPath(childPath, name),
+            ancestors,
+          );
+        }
+        continue;
+      }
+      if (GEMINI_SCHEMA_ARRAY_KEYWORDS.has(key)) {
+        if (!Array.isArray(entry)) {
+          geminiSchemaError(childPath, "expected a schema array");
+        }
+        entry.forEach((child, index) => {
+          validateGeminiJsonSchemaAt(
+            child,
+            `${childPath}[${index}]`,
+            ancestors,
+          );
+        });
+        continue;
+      }
+      if (
+        GEMINI_SCHEMA_SINGLE_KEYWORDS.has(key) &&
+        isPlainSchemaObject(entry)
+      ) {
+        validateGeminiJsonSchemaAt(entry, childPath, ancestors);
+      }
+    }
+  } finally {
+    ancestors.delete(schema);
   }
 }
 
-/** Compile JSON Schema into Gemini's OpenAPI subset without weakening unions. */
+/** Validate restrictions documented for Gemini response JSON Schema. */
 function compileGeminiSchema(
   value: unknown,
   path: string,
 ): Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    geminiSchemaError(path, "expected a schema object");
-  }
-  const out: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (!GEMINI_SCHEMA_KEYS.has(key)) continue;
-    const childPath = geminiSchemaChildPath(path, key);
-    if (key === "properties") {
-      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-        geminiSchemaError(childPath, "expected a property map");
-      }
-      out.properties = Object.fromEntries(
-        Object.entries(entry as Record<string, unknown>).map(
-          ([propertyName, propertySchema]) => [
-            propertyName,
-            compileGeminiSchema(
-              propertySchema,
-              geminiSchemaChildPath(childPath, propertyName),
-            ),
-          ],
-        ),
-      );
-      continue;
-    }
-    if (key === "items") {
-      out.items = compileGeminiSchema(entry, childPath);
-      continue;
-    }
-    if (key === "anyOf") {
-      if (!Array.isArray(entry) || entry.length === 0) {
-        geminiSchemaError(childPath, "expected at least one schema branch");
-      }
-      out.anyOf = entry.map((branch, index) =>
-        compileGeminiSchema(branch, `${childPath}[${index}]`),
-      );
-      continue;
-    }
-    out[key] = entry;
-  }
-  normalizeGeminiSchemaType(out, path);
-  const type = out.type;
-  if (type !== "object") {
-    for (const objectKey of ["required", "properties"] as const) {
-      if (objectKey in out) {
-        geminiSchemaError(
-          geminiSchemaChildPath(path, objectKey),
-          `requires type "object", received ${JSON.stringify(type)}`,
-        );
-      }
-    }
-  }
-  return out;
+  validateGeminiJsonSchemaAt(value, path, new Set());
+  return value as Record<string, unknown>;
 }
 
-function geminiTools(tools: readonly LLMTool[]): readonly Record<string, unknown>[] {
+function geminiTools(
+  tools: readonly LLMTool[],
+): readonly Record<string, unknown>[] {
   if (tools.length === 0) return [];
   return [
     {
       functionDeclarations: tools.map((tool) => ({
         name: tool.function.name,
         description: tool.function.description,
-        parameters: compileGeminiSchema(
-          tool.function.parameters,
-          `tools[${JSON.stringify(tool.function.name)}].parameters`,
-        ),
+        parametersJsonSchema: tool.function.parameters,
       })),
     },
   ];
@@ -590,10 +549,16 @@ function geminiGenerationConfig(
     finiteInteger(defaultMaxTokens) ??
     DEFAULT_GEMINI_MAX_OUTPUT_TOKENS;
   const config: Record<string, unknown> = { maxOutputTokens };
-  if (typeof options?.temperature === "number" && Number.isFinite(options.temperature)) {
+  if (
+    typeof options?.temperature === "number" &&
+    Number.isFinite(options.temperature)
+  ) {
     config.temperature = options.temperature;
   }
-  if (options?.stopSequences !== undefined && options.stopSequences.length > 0) {
+  if (
+    options?.stopSequences !== undefined &&
+    options.stopSequences.length > 0
+  ) {
     config.stopSequences = [...options.stopSequences];
   }
   // Thinking depth here is `thinking_level`, not a token budget: the
@@ -618,7 +583,7 @@ function geminiGenerationConfig(
   if (options?.structuredOutput?.enabled || structuredSchema) {
     config.responseMimeType = "application/json";
     if (structuredSchema) {
-      config.responseSchema = compileGeminiSchema(
+      config.responseJsonSchema = compileGeminiSchema(
         structuredSchema.schema,
         `structuredOutput[${JSON.stringify(structuredSchema.name)}].schema`,
       );
@@ -702,7 +667,9 @@ function readCandidateParts(
     ? (response.candidates as readonly unknown[])
     : [];
   const firstCandidate = isRecord(candidates[0]) ? candidates[0] : {};
-  const content = isRecord(firstCandidate.content) ? firstCandidate.content : {};
+  const content = isRecord(firstCandidate.content)
+    ? firstCandidate.content
+    : {};
   return Array.isArray(content.parts)
     ? (content.parts.filter(isRecord) as readonly GeminiPart[])
     : [];
@@ -773,15 +740,24 @@ function requestMetrics(args: {
       ? message.content.length
       : JSON.stringify(message.content).length,
   );
-  const totalContentChars = contentLengths.reduce((sum, value) => sum + value, 0);
+  const totalContentChars = contentLengths.reduce(
+    (sum, value) => sum + value,
+    0,
+  );
   return {
     messageCount: args.messages.length,
-    systemMessages: args.messages.filter((message) => message.role === "system").length,
-    userMessages: args.messages.filter((message) => message.role === "user").length,
-    assistantMessages: args.messages.filter((message) => message.role === "assistant").length,
-    toolMessages: args.messages.filter((message) => message.role === "tool").length,
+    systemMessages: args.messages.filter((message) => message.role === "system")
+      .length,
+    userMessages: args.messages.filter((message) => message.role === "user")
+      .length,
+    assistantMessages: args.messages.filter(
+      (message) => message.role === "assistant",
+    ).length,
+    toolMessages: args.messages.filter((message) => message.role === "tool")
+      .length,
     totalContentChars,
-    maxMessageChars: contentLengths.length > 0 ? Math.max(...contentLengths) : 0,
+    maxMessageChars:
+      contentLengths.length > 0 ? Math.max(...contentLengths) : 0,
     textParts: 0,
     imageParts: 0,
     toolCount: args.tools.length,
@@ -1038,7 +1014,7 @@ export class GeminiProvider implements LLMProvider {
       this.config.model;
     const tools = accountingRequest.options.tools
       ? [...accountingRequest.options.tools]
-      : this.config.tools ?? [];
+      : (this.config.tools ?? []);
     const generateContentRequest = buildGeminiRequest({
       config: this.config,
       model,
@@ -1106,7 +1082,9 @@ export class GeminiProvider implements LLMProvider {
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
     const model = options?.model?.trim() || this.config.model;
-    const tools = options?.tools ? [...options.tools] : this.config.tools ?? [];
+    const tools = options?.tools
+      ? [...options.tools]
+      : (this.config.tools ?? []);
     const body = buildGeminiRequest({
       config: this.config,
       model,
@@ -1144,7 +1122,9 @@ export class GeminiProvider implements LLMProvider {
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
     const model = options?.model?.trim() || this.config.model;
-    const tools = options?.tools ? [...options.tools] : this.config.tools ?? [];
+    const tools = options?.tools
+      ? [...options.tools]
+      : (this.config.tools ?? []);
     const body = buildGeminiRequest({
       config: this.config,
       model,

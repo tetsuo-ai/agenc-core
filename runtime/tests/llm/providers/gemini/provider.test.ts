@@ -81,6 +81,9 @@ const developerEndpointPlan = createGeminiEndpointPlan();
 const vertexEndpointPlan = createGeminiEndpointPlan({
   vertex: { project: "project-1", location: "us-central1" },
 });
+const customEndpointPlan = createGeminiEndpointPlan({
+  baseURL: "http://127.0.0.1:8080/v1beta",
+});
 
 function successfulGeminiFetch(text = "ok") {
   return vi.fn<typeof fetch>().mockResolvedValue(
@@ -176,11 +179,15 @@ describe("GeminiProvider", () => {
       "GEMINI_DATA_MARKER",
     );
     expect(request.contents).toHaveLength(2);
-    expect(JSON.stringify(request.contents?.[0])).toContain("GEMINI_TASK_MARKER");
+    expect(JSON.stringify(request.contents?.[0])).toContain(
+      "GEMINI_TASK_MARKER",
+    );
     expect(JSON.stringify(request.contents?.[0])).not.toContain(
       "GEMINI_DATA_MARKER",
     );
-    expect(JSON.stringify(request.contents?.[1])).toContain("GEMINI_DATA_MARKER");
+    expect(JSON.stringify(request.contents?.[1])).toContain(
+      "GEMINI_DATA_MARKER",
+    );
   });
 
   test("counts the complete generateContent request through countTokens", async () => {
@@ -229,7 +236,10 @@ describe("GeminiProvider", () => {
         tools: [
           {
             functionDeclarations: [
-              expect.objectContaining({ name: "system.echo" }),
+              expect.objectContaining({
+                name: "system.echo",
+                parametersJsonSchema: echoTool.function.parameters,
+              }),
             ],
           },
         ],
@@ -280,7 +290,6 @@ describe("GeminiProvider", () => {
     );
   });
 
-
   test("single-wire chat performs exactly one transport attempt", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ error: { message: "temporarily down" } }), {
@@ -296,10 +305,9 @@ describe("GeminiProvider", () => {
     });
 
     await expect(
-      provider.chat(
-        [{ role: "user", content: "hello" }],
-        { singleWireAttempt: true },
-      ),
+      provider.chat([{ role: "user", content: "hello" }], {
+        singleWireAttempt: true,
+      }),
     ).rejects.toBeDefined();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
@@ -324,11 +332,9 @@ describe("GeminiProvider", () => {
     });
 
     await expect(
-      provider.chatStream(
-        [{ role: "user", content: "hello" }],
-        () => {},
-        { singleWireAttempt: true },
-      ),
+      provider.chatStream([{ role: "user", content: "hello" }], () => {}, {
+        singleWireAttempt: true,
+      }),
     ).rejects.toMatchObject({ name: "FallbackTriggeredError" });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
@@ -373,7 +379,10 @@ describe("GeminiProvider", () => {
     const headers = init?.headers as Headers;
     expect(headers.get("x-goog-api-key")).toBe("gemini-test");
     expect(headers.get("authorization")).toBeNull();
-    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const requestBody = JSON.parse(String(init?.body)) as Record<
+      string,
+      unknown
+    >;
     expect(requestBody).toMatchObject({
       contents: [{ role: "user", parts: [{ text: "hello" }] }],
       generationConfig: {
@@ -527,7 +536,7 @@ describe("GeminiProvider", () => {
 
     expect(response.finishReason).toBe("tool_calls");
     expect(response.toolCalls).toEqual([
-      { id: "gemini_call_0", name: "system.echo", arguments: "{\"text\":\"hi\"}" },
+      { id: "gemini_call_0", name: "system.echo", arguments: '{"text":"hi"}' },
     ]);
     expect(response.usage).toEqual({
       promptTokens: 4,
@@ -537,22 +546,23 @@ describe("GeminiProvider", () => {
       provenance: "provider",
     });
     const [, init] = fetchImpl.mock.calls[0] ?? [];
-    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const requestBody = JSON.parse(String(init?.body)) as Record<
+      string,
+      unknown
+    >;
     expect(requestBody.tools).toEqual([
       {
         functionDeclarations: [
           {
             name: "system.echo",
             description: "Echo text",
-            // The wire schema is sanitized: Gemini's API rejects JSON
-            // Schema keywords like additionalProperties, so they must
-            // not survive into the request.
-            parameters: {
+            parametersJsonSchema: {
               type: "object",
               properties: {
                 text: { type: "string" },
               },
               required: ["text"],
+              additionalProperties: false,
             },
           },
         ],
@@ -560,7 +570,7 @@ describe("GeminiProvider", () => {
     ]);
   });
 
-  test("compiles nullable and nested JSON Schema types for Gemini tools", async () => {
+  test("preserves nullable and nested JSON Schema types for Gemini tools", async () => {
     const taskUpdateTool: LLMTool = {
       type: "function",
       function: {
@@ -608,53 +618,17 @@ describe("GeminiProvider", () => {
     });
 
     const [, init] = fetchImpl.mock.calls[0] ?? [];
-    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const requestBody = JSON.parse(String(init?.body)) as Record<
+      string,
+      unknown
+    >;
     expect(requestBody.tools).toEqual([
       {
         functionDeclarations: [
           {
             name: "TaskUpdate",
             description: "Update a durable AgenC task",
-            parameters: {
-              type: "object",
-              properties: {
-                taskId: { type: "string" },
-                owner: { type: "string", nullable: true },
-                deletedValue: { type: "null" },
-                explicitNull: { type: "null" },
-                entries: {
-                  type: "array",
-                  nullable: true,
-                  items: {
-                    type: "object",
-                    nullable: true,
-                    properties: {
-                      label: { type: "string" },
-                    },
-                    required: ["label"],
-                  },
-                },
-                target: {
-                  type: "object",
-                  nullable: true,
-                  properties: {
-                    kind: { type: "string" },
-                  },
-                  required: ["kind"],
-                  anyOf: [
-                    {
-                      type: "object",
-                      properties: { kind: { type: "string" } },
-                    },
-                    {
-                      type: "object",
-                      properties: { id: { type: "integer" } },
-                    },
-                  ],
-                },
-              },
-              required: ["taskId"],
-            },
+            parametersJsonSchema: taskUpdateTool.function.parameters,
           },
         ],
       },
@@ -715,149 +689,170 @@ describe("GeminiProvider", () => {
     });
 
     const [, init] = fetchImpl.mock.calls[0] ?? [];
-    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const requestBody = JSON.parse(String(init?.body)) as Record<
+      string,
+      unknown
+    >;
     const declarations = (
-      (requestBody.tools as readonly Record<string, unknown>[])[0]
-        ?.functionDeclarations as readonly Record<string, unknown>[]
-    );
+      requestBody.tools as readonly Record<string, unknown>[]
+    )[0]?.functionDeclarations as readonly Record<string, unknown>[];
     const fileRead = declarations.find((tool) => tool.name === "FileRead");
     const searchTools = declarations.find(
       (tool) => tool.name === "system.searchTools",
     );
-    const fileReadParams = fileRead?.parameters as {
+    const fileReadParams = fileRead?.parametersJsonSchema as {
       readonly properties: {
         readonly offset: Record<string, unknown>;
         readonly limit: Record<string, unknown>;
       };
     };
-    const searchParams = searchTools?.parameters as {
+    const searchParams = searchTools?.parametersJsonSchema as {
       readonly properties: { readonly select: Record<string, unknown> };
     };
     expect(fileReadParams.properties.offset).toEqual({
       description: "Optional. Line number to start from.",
-      anyOf: [
-        { type: "number" },
-        { type: "string", pattern: "^[1-9]\\d*$" },
-      ],
+      anyOf: [{ type: "number" }, { type: "string", pattern: "^[1-9]\\d*$" }],
     });
     expect(fileReadParams.properties.limit).toEqual({
-      anyOf: [
-        { type: "number" },
-        { type: "string", pattern: "^[1-9]\\d*$" },
-      ],
+      anyOf: [{ type: "number" }, { type: "string", pattern: "^[1-9]\\d*$" }],
     });
     expect(searchParams.properties.select).toEqual({
-      anyOf: [
-        { type: "string" },
-        { type: "array", items: { type: "string" } },
-      ],
+      anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }],
     });
   });
 
-  test("uses the same Gemini schema compiler for structured output", async () => {
-    const fetchImpl = successfulGeminiFetch('{"answer":null}');
+  test("passes refs and surrounding tool JSON Schema through without rewriting", async () => {
+    const repeated = Object.fromEntries(
+      Array.from({ length: 65 }, (_, index) => [
+        `entry${index}`,
+        { $ref: "#/$defs/Entry" },
+      ]),
+    );
+    const schema = {
+      type: "object",
+      properties: {
+        tuple: {
+          type: "array",
+          prefixItems: [{ type: "string" }],
+        },
+        firstTupleEntry: { $ref: "#/properties/tuple/prefixItems/0" },
+        displayName: { $ref: "#/%24defs/Display%20Name" },
+        recursiveNode: { $ref: "#/$defs/Node" },
+        labeledEntry: {
+          $ref: "#/$defs/Entry",
+          description: "An entry with a conjunctive annotation sibling",
+        },
+        exclusive: {
+          oneOf: [{ type: "number" }, { minimum: 0 }],
+        },
+        ...repeated,
+      },
+      $defs: {
+        Entry: { type: "integer" },
+        "Display Name": { type: "string" },
+        Node: {
+          type: "object",
+          properties: {
+            child: { $ref: "#/$defs/Node" },
+          },
+        },
+      },
+    };
+    const fetchImpl = successfulGeminiFetch();
     const provider = providerWithFetch(fetchImpl);
 
+    await provider.chat([{ role: "user", content: "search" }], {
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "mcp.search",
+            description: "Search a referenced schema",
+            parameters: schema,
+          },
+        },
+      ],
+    });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const requestBody = JSON.parse(String(init?.body)) as {
+      readonly tools: readonly [
+        {
+          readonly functionDeclarations: readonly [Record<string, unknown>];
+        },
+      ];
+    };
+    const declaration = requestBody.tools[0].functionDeclarations[0];
+    expect(declaration?.parametersJsonSchema).toEqual(schema);
+    expect(declaration).not.toHaveProperty("parameters");
+  });
+
+  test.each([
+    { label: "Developer v1beta", endpointPlan: developerEndpointPlan },
+    { label: "Vertex v1", endpointPlan: vertexEndpointPlan },
+    { label: "a custom native endpoint", endpointPlan: customEndpointPlan },
+  ])("uses native JSON Schema fields for $label", async ({ endpointPlan }) => {
+    const fetchImpl = successfulGeminiFetch('{"answer":null}');
+    const credentialPlan =
+      endpointPlan.kind === "vertex"
+        ? ({
+            kind: "access-token",
+            credential: "vertex-token",
+            projectId: "project-1",
+            source: "GEMINI_ACCESS_TOKEN",
+          } as const)
+        : apiKeyCredentialPlan();
+    const provider = new GeminiProvider({
+      credentialPlan,
+      endpointPlan,
+      model: "gemini-2.5-pro",
+      fetchImpl,
+    });
+    const responseSchema = {
+      $ref: "#/$defs/Answer",
+      $defs: {
+        Answer: {
+          type: "object",
+          properties: { answer: { type: ["string", "null"] } },
+          required: ["answer"],
+          additionalProperties: false,
+        },
+      },
+    };
+
     await provider.chat([{ role: "user", content: "answer" }], {
+      tools: [echoTool],
       structuredOutput: {
         enabled: true,
         schema: {
           type: "json_schema",
           name: "answer",
-          schema: {
-            type: "object",
-            properties: {
-              answer: { type: ["string", "null"] },
-            },
-            required: ["answer"],
-            additionalProperties: false,
-          },
+          schema: responseSchema,
         },
       },
     });
 
     const [, init] = fetchImpl.mock.calls[0] ?? [];
     const requestBody = JSON.parse(String(init?.body)) as {
-      readonly generationConfig?: Record<string, unknown>;
-    };
-    expect(requestBody.generationConfig).toMatchObject({
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: "object",
-        properties: {
-          answer: { type: "string", nullable: true },
+      readonly tools: readonly [
+        {
+          readonly functionDeclarations: readonly [Record<string, unknown>];
         },
-        required: ["answer"],
-      },
-    });
-  });
-
-  test.each([
-    {
-      label: "an empty type array",
-      schema: { type: [] },
-      detail: "the type array is empty",
-    },
-    {
-      label: "a non-string type entry",
-      schema: { type: ["string", 42] },
-      detail: "type[1]",
-    },
-    {
-      label: "a whitespace-padded type",
-      schema: { type: [" string "] },
-      detail: 'unsupported type " string "',
-    },
-    {
-      label: "multiple concrete types",
-      schema: { type: ["object", "string", "null"] },
-      detail: "multiple non-null types (object, string)",
-    },
-    {
-      label: "a missing type",
-      schema: { description: "untyped" },
-      detail: "a JSON Schema type is required",
-    },
-    {
-      label: "object constraints on a scalar",
-      schema: {
-        type: "string",
-        properties: { nested: { type: "string" } },
-      },
-      detail: 'properties: requires type "object"',
-    },
-  ])("rejects $label before Gemini dispatch", async ({ schema, detail }) => {
-    const fetchImpl = vi.fn<typeof fetch>();
-    const provider = providerWithFetch(fetchImpl);
-    const invalidTool: LLMTool = {
-      type: "function",
-      function: {
-        name: "InvalidSchema",
-        description: "Exercise local schema validation",
-        parameters: {
-          type: "object",
-          properties: {
-            value: schema,
-          },
-        },
-      },
+      ];
+      readonly generationConfig: Record<string, unknown>;
     };
-
-    const error = await provider
-      .chat([{ role: "user", content: "validate" }], {
-        tools: [invalidTool],
-      })
-      .catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(Error);
-    const message = error instanceof Error ? error.message : "";
-    expect(message).toContain(
-      'tools["InvalidSchema"].parameters.properties.value',
+    const declaration = requestBody.tools[0].functionDeclarations[0];
+    expect(declaration?.parametersJsonSchema).toEqual(
+      echoTool.function.parameters,
     );
-    expect(message).toContain(detail);
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(declaration).not.toHaveProperty("parameters");
+    expect(requestBody.generationConfig.responseJsonSchema).toEqual(
+      responseSchema,
+    );
+    expect(requestBody.generationConfig).not.toHaveProperty("responseSchema");
   });
 
-  test("rejects an unsupported structured-output union with its schema path", async () => {
+  test("rejects a response $ref sibling instead of shallow-merging it", async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const provider = providerWithFetch(fetchImpl);
 
@@ -869,25 +864,56 @@ describe("GeminiProvider", () => {
             type: "json_schema",
             name: "answer",
             schema: {
-              type: ["object", "string"],
-              anyOf: [{ type: "object" }, { type: "string" }],
+              type: "object",
+              properties: {
+                name: {
+                  $ref: "#/$defs/Name",
+                  description: "Display name",
+                },
+              },
+              $defs: { Name: { type: "string" } },
             },
           },
         },
       }),
     ).rejects.toThrow(
-      'structuredOutput["answer"].schema.type: multiple non-null types',
+      'structuredOutput["answer"].schema.properties.name.description: Gemini does not allow non-$ siblings beside $ref',
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("rejects structured-output oneOf before provider dispatch", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = providerWithFetch(fetchImpl);
+
+    await expect(
+      provider.chat([{ role: "user", content: "answer" }], {
+        structuredOutput: {
+          enabled: true,
+          schema: {
+            type: "json_schema",
+            name: "answer",
+            schema: {
+              oneOf: [{ type: "number" }, { minimum: 0 }],
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow(
+      'structuredOutput["answer"].schema.oneOf: Gemini interprets oneOf as anyOf',
     );
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test("streams Gemini text, function calls, and usage from streamGenerateContent", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      sseResponse([
-        'data: {"candidates":[{"content":{"parts":[{"text":"Hi "}]},"finishReason":"STOP"}]}\n\n',
-        'data: {"candidates":[{"content":{"parts":[{"text":"there"},{"functionCall":{"name":"system.echo","args":{"text":"hi"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":4,"totalTokenCount":11}}\n\n',
-      ]),
-    );
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        sseResponse([
+          'data: {"candidates":[{"content":{"parts":[{"text":"Hi "}]},"finishReason":"STOP"}]}\n\n',
+          'data: {"candidates":[{"content":{"parts":[{"text":"there"},{"functionCall":{"name":"system.echo","args":{"text":"hi"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":4,"totalTokenCount":11}}\n\n',
+        ]),
+      );
     const provider = new GeminiProvider({
       credentialPlan: apiKeyCredentialPlan(),
       endpointPlan: developerEndpointPlan,
@@ -925,7 +951,7 @@ describe("GeminiProvider", () => {
         toolInputDelta: {
           callId: "gemini_call_0",
           index: 0,
-          partialJson: "{\"text\":\"hi\"}",
+          partialJson: '{"text":"hi"}',
         },
       },
       {
@@ -935,7 +961,7 @@ describe("GeminiProvider", () => {
           {
             id: "gemini_call_0",
             name: "system.echo",
-            arguments: "{\"text\":\"hi\"}",
+            arguments: '{"text":"hi"}',
           },
         ],
       },
@@ -943,7 +969,7 @@ describe("GeminiProvider", () => {
     expect(response.content).toBe("Hi there");
     expect(response.finishReason).toBe("tool_calls");
     expect(response.toolCalls).toEqual([
-      { id: "gemini_call_0", name: "system.echo", arguments: "{\"text\":\"hi\"}" },
+      { id: "gemini_call_0", name: "system.echo", arguments: '{"text":"hi"}' },
     ]);
     expect(response.usage).toEqual({
       promptTokens: 7,
@@ -960,7 +986,10 @@ describe("GeminiProvider", () => {
     const headers = init?.headers as Headers;
     expect(headers.get("accept")).toBe("text/event-stream");
     expect(headers.get("x-goog-api-key")).toBe("gemini-test");
-    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const requestBody = JSON.parse(String(init?.body)) as Record<
+      string,
+      unknown
+    >;
     expect(requestBody.tools).toBeDefined();
     expect("stream" in requestBody).toBe(false);
     expect("stream_options" in requestBody).toBe(false);
@@ -995,7 +1024,10 @@ describe("GeminiProvider", () => {
 
     expect(response.usage.cachedInputTokens).toBe(16);
     const [, init] = fetchImpl.mock.calls[0] ?? [];
-    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const requestBody = JSON.parse(String(init?.body)) as Record<
+      string,
+      unknown
+    >;
     expect(requestBody.cachedContent).toBe("cachedContents/project-context");
   });
 
@@ -1023,7 +1055,10 @@ describe("GeminiProvider", () => {
     });
 
     const [, init] = fetchImpl.mock.calls[0] ?? [];
-    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const requestBody = JSON.parse(String(init?.body)) as Record<
+      string,
+      unknown
+    >;
     expect(requestBody.cachedContent).toBe("cachedContents/request-context");
   });
 
