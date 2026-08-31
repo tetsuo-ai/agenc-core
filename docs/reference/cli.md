@@ -635,7 +635,11 @@ absolute paths are local (an explicit `*.mcpb` path stays on the bundle path).
 A missing `./dir` fails with `plugin source not found` instead of trying npm.
 `update --source` also rejects an explicit local path that is the installed
 plugin root or a descendant. Classification table and examples:
-[Install sources](skills-plugins.md#install-sources).
+[Install sources](skills-plugins.md#install-sources). HTTP(S) tarball and
+remote mcpb fetches follow same-origin redirects (5 hops, 50 MiB, 120 s). A
+specifier with userinfo or a query string is stored redacted, so later
+`plugin update` needs `--source` again. See
+[Remote archive fetch and recorded sources](skills-plugins.md#remote-archive-fetch-and-recorded-sources).
 
 Failed `plugin install` / `plugin update` resolution rebuilds the thrown
 Error so CLI, `inspect`, and JSON serialization never see URL userinfo,

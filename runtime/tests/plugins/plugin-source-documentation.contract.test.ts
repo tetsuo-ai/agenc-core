@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   classifyPluginSource,
+  pluginSourceNeedsRedaction,
   redactPluginSource,
 } from "../../src/plugins/resolution.js";
 
@@ -44,7 +45,6 @@ describe("plugin source documentation contract", () => {
       classifyPluginSource(bashSources[1]!, REPOSITORY_ROOT),
     ).resolves.toBe("npm");
   });
-
   test("locks native archive fetch error-redaction examples", async () => {
     const section = markdownSection(
       await readFile(PLUGIN_REFERENCE, "utf8"),
@@ -72,6 +72,46 @@ describe("plugin source documentation contract", () => {
     expect(redactPluginSource(unparseable)).toBe(unparseableRedacted);
     expect(section).toContain(parseableRedacted);
     expect(section).toContain(unparseableRedacted);
+  });
+
+  test("records archive-fetch limits and query-string update replay", async () => {
+    const markdown = await readFile(PLUGIN_REFERENCE, "utf8");
+    const section = markdownSection(
+      markdown,
+      "Remote archive fetch and recorded sources",
+    );
+    const fences = parseMarkdownFences(section);
+    const bashSources = installSourcesFromFence(fences, "bash");
+
+    expect(section).toContain("plugin archive redirects must stay on");
+    expect(section).toContain(
+      "has no recorded source; rerun with --source <source>",
+    );
+    expect(section).toContain("sourceRedacted");
+    expect(section).toContain("50 MiB");
+    expect(section).toMatch(/at most 5 hops/u);
+    expect(section).toContain("120 s");
+
+    expect(bashSources).toEqual([
+      "'https://github.com/acme/tool.mcpb?download=1'",
+    ]);
+    expect(section).toContain(
+      "agenc plugin update tool --source 'https://github.com/acme/tool.mcpb?download=1'",
+    );
+
+    const queryUrl = "https://github.com/acme/tool.mcpb?download=1";
+    const cleanUrl = "https://github.com/acme/tool.mcpb";
+    await expect(
+      classifyPluginSource(queryUrl, REPOSITORY_ROOT),
+    ).resolves.toBe("mcpb");
+    await expect(
+      classifyPluginSource(cleanUrl, REPOSITORY_ROOT),
+    ).resolves.toBe("mcpb");
+    expect(pluginSourceNeedsRedaction(queryUrl)).toBe(true);
+    expect(pluginSourceNeedsRedaction(cleanUrl)).toBe(false);
+    expect(
+      pluginSourceNeedsRedaction("https://opaque-token@agenc.tech/plugin.tgz"),
+    ).toBe(true);
   });
 });
 
