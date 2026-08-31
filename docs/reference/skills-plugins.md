@@ -309,12 +309,46 @@ extract those scripts or set `skillRoot`.
 ```toml
 [plugins]
 enabled = true
-allowlist = ["my-plugin"]   # optional restriction
+allowlist = ["my-plugin"]   # optional; empty or omitted applies no filter
 
 [plugins.plugins.my-plugin]
 enabled = true
 path = "./plugins/my-plugin"
 ```
+
+Set `plugins.enabled = true` before a plugin from normal discovery, installed
+storage, `plugins.dirs`, or a path-configured entry can activate. `allowlist`
+is a second gate in `loadPlugins`
+(`pluginAllowedByAllowlist` in `runtime/src/plugins/loader.ts`). An empty
+array, an omitted key, or a list containing only blank strings applies no
+filter. A list with at least one nonblank value keeps only plugins whose
+**canonical identity**, or accepted unqualified form, is listed:
+
+| Plugin origin | Identity the allowlist matches |
+| --- | --- |
+| Discovered / installed (no `plugins.plugins.<key>.path`) | `plugin.id`: a valid `dependencyIdentity` from `.agenc-plugin/agenc-install.json`, or the manifest `name` when that metadata is absent. An installed identity may be an unqualified alias or `name@marketplace`. |
+| Path-configured (`plugins.plugins.<key>.path`) | The manifest `name` only |
+
+For an ID such as `foo@team`, the unqualified `foo` also matches. A different
+qualified ID does not match, so `foo@other` does not enable `foo@team`.
+
+Discovery directory names, absolute plugin paths, `plugins.dirs` entries, and
+`[plugins.plugins.<key>]` map keys are not authorization aliases. Rejected
+plugins stay loaded as `disabled` with commands, skills, hooks, and MCP/LSP
+servers unloaded. `agenc plugin list` prints
+`- <id> (manifest <name>) (disabled) <root>` when `id` and `name` differ.
+For a discovered or installed plugin, allowlist the printed ID. For a
+path-configured plugin, allowlist the parenthesized manifest name because the
+printed ID may be its configuration key.
+
+| Symptom | What to check |
+| --- | --- |
+| `allowlist = []` still loads every plugin | Expected. Only a list containing a nonblank identity restricts. |
+| Path-configured plugin stays `disabled` after allowlisting its folder or config key | Allowlist the manifest `name`. A directory basename, realpath, and `[plugins.plugins.<key>]` do not authorize. |
+| Installed plugin has different ID and manifest name | Allowlist the ID printed by `agenc plugin list`. The parenthesized manifest name may not match an unqualified install alias. |
+| `allowlist = ["foo@other"]` leaves `foo@team` disabled | Qualified ids are exact. Use `foo@team` or the unqualified `foo`. |
+
+Schema defaults: [config.md](config.md).
 
 All plugin enablement entries use `plugins.plugins`; there is no parallel
 enablement map. External plugin and skill command, HTTP, prompt, and agent hook

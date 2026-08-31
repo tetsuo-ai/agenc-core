@@ -570,7 +570,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | Paths | Type / meaning |
 | --- | --- |
 | `plugins` | Plugin discovery and registration. |
-| `plugins.dirs`, `plugins.enabled`, `plugins.allowlist` | Search directories, global switch, and allowlist. An empty allowlist applies no filter. A non-empty list matches the manifest name or an installed `name@marketplace` identity. An unqualified `name` also matches its marketplace-qualified identity. Discovery paths, directory names, and `plugins.plugins` keys are not authorization aliases. |
+| `plugins.dirs`, `plugins.enabled`, `plugins.allowlist` | Search directories, global switch, and allowlist. An empty or blank-only allowlist applies no filter. Discovered and installed plugins match their canonical ID, which may be a manifest name, an unqualified install alias, or `name@marketplace`. Path-configured plugins match the manifest name. The unqualified portion of `name@marketplace` also matches. Discovery paths, directory names, and `plugins.plugins` keys are not authorization aliases. |
 | `plugins.plugins`, `plugins.plugins.<plugin>` | Named plugin map of plugin blocks. |
 | `plugins.plugins.<plugin>.enabled`, `plugins.plugins.<plugin>.path` | Plugin enablement and local path. |
 | `plugins.plugins.<plugin>.mcp_servers`, `plugins.plugins.<plugin>.mcp_servers.<name>` | Plugin-owned MCP server map. |

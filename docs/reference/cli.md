@@ -596,7 +596,7 @@ agenc plugin <command> [options]
 
 | Command | Meaning |
 | --- | --- |
-| `list [--json]` | List installed plugins |
+| `list [--json]` | List discovered, installed, and path-configured plugins, including disabled rows. For discovered or installed plugins, allowlist the printed ID. For path-configured plugins, allowlist the parenthesized manifest name; see [skills-plugins.md](skills-plugins.md#config-enable) |
 | `validate <path> [--marketplace] [--json]` | Validate plugin or marketplace manifest |
 | `install <path> [--scope <user\|project\|local>]` | Install a local plugin directory |
 | `uninstall <name> [--scope …]` | Remove an installed plugin |
