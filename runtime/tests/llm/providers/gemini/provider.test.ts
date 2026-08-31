@@ -914,6 +914,18 @@ describe("GeminiProvider", () => {
       schema: { allOf: [{ type: "object" }, { type: "string" }] },
     },
     {
+      label: "an object rejected by an always-true not schema",
+      schema: { type: "object", not: {} },
+    },
+    {
+      label: "an object type with a scalar enum",
+      schema: { type: "object", enum: ["not-an-object"] },
+    },
+    {
+      label: "an object type with a null const",
+      schema: { type: "object", const: null },
+    },
+    {
       label: "an object sibling beside a scalar root reference",
       schema: {
         type: "object",
@@ -951,7 +963,7 @@ describe("GeminiProvider", () => {
   });
 
   test.each(["chat", "stream", "count"] as const)(
-    "validates tool roots before %s dispatch",
+    "rejects an unsatisfiable tool root before %s dispatch",
     async (operation) => {
       const fetchImpl = vi.fn<typeof fetch>();
       const provider = providerWithFetch(fetchImpl);
@@ -961,7 +973,7 @@ describe("GeminiProvider", () => {
           function: {
             name: "invalid_root",
             description: "Invalid root",
-            parameters: { type: "array", items: { type: "string" } },
+            parameters: { type: "object", not: {} },
           },
         },
       ];
@@ -1002,6 +1014,49 @@ describe("GeminiProvider", () => {
       expect(fetchImpl).not.toHaveBeenCalled();
     },
   );
+
+  test("resolves reused tool schema values in their resource occurrence", async () => {
+    const shared = { $ref: "#/$defs/Args" };
+    const schema = {
+      $id: "https://example.test/tool-root.json",
+      $ref: "a.json",
+      $defs: {
+        A: {
+          $id: "a.json",
+          $ref: "#/$defs/Shared",
+          $defs: {
+            Shared: shared,
+            Args: { type: "string" },
+          },
+        },
+        B: {
+          $id: "b.json",
+          $defs: {
+            Shared: shared,
+            Args: { type: "object" },
+          },
+        },
+      },
+    };
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = providerWithFetch(fetchImpl);
+
+    await expect(
+      provider.chat([{ role: "user", content: "run tool" }], {
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "scoped_root",
+              description: "Exercise resource-scoped root references",
+              parameters: schema,
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow('tools["scoped_root"].parameters');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 
   test.each([
     { label: "Developer v1beta", endpointPlan: developerEndpointPlan },
@@ -1236,6 +1291,90 @@ describe("GeminiProvider", () => {
       responseSchema,
     );
   });
+
+  test("resolves a reused response schema value in each resource occurrence", async () => {
+    const shared = { $ref: "#/$defs/Value" };
+    const responseSchema = {
+      $id: "https://example.test/root.json",
+      type: "object",
+      $defs: {
+        A: {
+          $id: "a.json",
+          type: "object",
+          properties: { value: shared },
+        },
+        B: {
+          $id: "b.json",
+          type: "object",
+          properties: { value: shared },
+          $defs: { Value: { type: "string" } },
+        },
+      },
+    };
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = providerWithFetch(fetchImpl);
+
+    await expect(
+      provider.chat([{ role: "user", content: "answer" }], {
+        structuredOutput: {
+          enabled: true,
+          schema: {
+            type: "json_schema",
+            name: "answer",
+            schema: responseSchema,
+          },
+        },
+      }),
+    ).rejects.toThrow("does not resolve JSON Pointer");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test.each(["_answer", "Answer-1", "answer.value"])(
+    "accepts JSON Schema anchor %s",
+    async (anchor) => {
+      const fetchImpl = successfulGeminiFetch('{"answer":"ok"}');
+      const provider = providerWithFetch(fetchImpl);
+
+      await provider.chat([{ role: "user", content: "answer" }], {
+        structuredOutput: {
+          enabled: true,
+          schema: {
+            type: "json_schema",
+            name: "answer",
+            schema: {
+              $anchor: anchor,
+              type: "object",
+              properties: { self: { $ref: `#${anchor}` } },
+            },
+          },
+        },
+      });
+
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    },
+  );
+
+  test.each(["1answer", "bad:anchor", "bad/anchor", "bad anchor"])(
+    "rejects invalid JSON Schema anchor %s before dispatch",
+    async (anchor) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const provider = providerWithFetch(fetchImpl);
+
+      await expect(
+        provider.chat([{ role: "user", content: "answer" }], {
+          structuredOutput: {
+            enabled: true,
+            schema: {
+              type: "json_schema",
+              name: "answer",
+              schema: { $anchor: anchor, type: "object" },
+            },
+          },
+        }),
+      ).rejects.toThrow("expected a valid JSON Schema anchor name");
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
 
   test("rejects a required cycle inside an embedded schema resource", async () => {
     const fetchImpl = vi.fn<typeof fetch>();
