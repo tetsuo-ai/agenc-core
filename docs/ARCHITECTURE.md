@@ -59,7 +59,7 @@ Everything past the launcher lives in the single runtime workspace
 | Package                                       | Role                                                                   |
 | --------------------------------------------- | ---------------------------------------------------------------------- |
 | `packages/agenc` (`@tetsuo-ai/agenc`)         | Public launcher + postinstall runtime ensure                           |
-| `packages/agenc-sdk` (`@tetsuo-ai/agenc-sdk`) | Zero-dep embedding/control client for the daemon protocol. Transcript v2 result shapes are a generated mirror: [sdk.md](sdk.md#transcript-v2-generated-mirror). |
+| `packages/agenc-sdk` (`@tetsuo-ai/agenc-sdk`) | Zero-dep embedding/control client for the daemon protocol. Transcript v2 result shapes are a generated exact mirror; workflow-result types are marker-checked: [sdk.md](sdk.md#transcript-v2-generated-mirror) / [sdk.md](sdk.md#workflow-result-generated-mirror). |
 | `runtime` (`@tetsuo-ai/runtime`)              | Full runtime: CLI, daemon, TUI, session/agent engine, tools, providers |
 
 ## Runtime subsystems (`runtime/src`)

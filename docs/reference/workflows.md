@@ -123,7 +123,10 @@ boundaries.
 
 ## Failures and results
 
-The tool returns `workflow_result_version: 2`. Step and group outcomes are:
+The tool returns `workflow_result_version: 2`. Public SDK types for this
+contract live in `packages/agenc-sdk/src/workflow-result.generated.ts`;
+see [sdk.md](../sdk.md#workflow-result-generated-mirror) for the
+marker-only generated-type check. Step and group outcomes are:
 
 ```text
 succeeded

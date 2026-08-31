@@ -1,5 +1,15 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
+import { MAX_WORKFLOW_FINAL_RESPONSE_BYTES } from "../../src/agents/workflow-handoff-schema.js";
+import {
+  DEFAULT_WORKFLOW_MAX_CONCURRENCY,
+  DEFAULT_WORKFLOW_MAX_HANDOFF_TOKENS,
+  MAX_WORKFLOW_HANDOFF_TOKENS,
+  MAX_WORKFLOW_MAX_CONCURRENCY,
+} from "../../src/agents/workflow-manifest-schema.js";
 import {
   WORKFLOW_CANCELLATION_CAUSES,
   WORKFLOW_RESULT_VERSION,
@@ -9,12 +19,23 @@ import {
 } from "../../src/agents/workflow-result.js";
 import { WorkflowRunResultV2Schema } from "../../src/entrypoints/sdk/coreSchemas.js";
 import {
+  AGENC_DEFAULT_WORKFLOW_MAX_CONCURRENCY,
+  AGENC_DEFAULT_WORKFLOW_MAX_HANDOFF_TOKENS,
+  AGENC_MAX_WORKFLOW_FINAL_RESPONSE_BYTES,
+  AGENC_MAX_WORKFLOW_HANDOFF_TOKENS,
+  AGENC_MAX_WORKFLOW_MAX_CONCURRENCY,
   AGENC_WORKFLOW_CANCELLATION_CAUSES,
   AGENC_WORKFLOW_RESULT_VERSION,
   AGENC_WORKFLOW_RUN_OUTCOMES_V2,
   AGENC_WORKFLOW_STEP_OUTCOMES_V2,
   type WorkflowRunResultV2 as PackageWorkflowRunResultV2,
 } from "../../../packages/agenc-sdk/src/index.js";
+
+const testDirectory = dirname(fileURLToPath(import.meta.url));
+const generatedTypesCheckPath = resolve(
+  testDirectory,
+  "../../scripts/check-sdk-generated-types.mjs",
+);
 
 const result = Object.freeze({
   workflow_result_version: 2,
@@ -90,5 +111,46 @@ describe("public workflow result contract", () => {
         workflow_result_version: 1,
       }),
     ).toThrow();
+  });
+
+  it("keeps published limit constants aligned with the runtime authorities", () => {
+    expect(AGENC_DEFAULT_WORKFLOW_MAX_CONCURRENCY).toBe(
+      DEFAULT_WORKFLOW_MAX_CONCURRENCY,
+    );
+    expect(AGENC_MAX_WORKFLOW_MAX_CONCURRENCY).toBe(
+      MAX_WORKFLOW_MAX_CONCURRENCY,
+    );
+    expect(AGENC_DEFAULT_WORKFLOW_MAX_HANDOFF_TOKENS).toBe(
+      DEFAULT_WORKFLOW_MAX_HANDOFF_TOKENS,
+    );
+    expect(AGENC_MAX_WORKFLOW_HANDOFF_TOKENS).toBe(MAX_WORKFLOW_HANDOFF_TOKENS);
+    expect(AGENC_MAX_WORKFLOW_FINAL_RESPONSE_BYTES).toBe(
+      MAX_WORKFLOW_FINAL_RESPONSE_BYTES,
+    );
+  });
+
+  it("keeps the generated-type check marker-only for the public result file", () => {
+    const checkSource = readFileSync(generatedTypesCheckPath, "utf8");
+
+    expect(checkSource).toContain(
+      "../packages/agenc-sdk/src/workflow-result.generated.ts",
+    );
+    expect(checkSource).not.toContain(
+      "../packages/agenc-sdk/src/workflow-handoff.generated.ts",
+    );
+    expect(checkSource).not.toMatch(/renderWorkflowResultGenerated/u);
+    expect(checkSource).toContain(
+      "export const AGENC_WORKFLOW_RESULT_VERSION = 2 as const",
+    );
+    expect(checkSource).toContain(
+      "export const AGENC_WORKFLOW_STEP_OUTCOMES_V2",
+    );
+    expect(checkSource).toContain("export const AGENC_WORKFLOW_RUN_OUTCOMES_V2");
+    expect(checkSource).toContain("export interface WorkflowRunResultV2");
+    expect(checkSource).toContain('"blocked_dependency_unknown"');
+    expect(checkSource).toContain('"unknown_outcome"');
+    expect(checkSource).toMatch(
+      /packageWorkflowResult\.includes\(marker\)/u,
+    );
   });
 });
