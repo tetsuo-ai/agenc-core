@@ -522,7 +522,16 @@ describe("GeminiProvider", () => {
           {
             name: "system.echo",
             description: "Echo text",
-            parameters: echoTool.function.parameters,
+            // The wire schema is sanitized: Gemini's API rejects JSON
+            // Schema keywords like additionalProperties, so they must
+            // not survive into the request.
+            parameters: {
+              type: "object",
+              properties: {
+                text: { type: "string" },
+              },
+              required: ["text"],
+            },
           },
         ],
       },

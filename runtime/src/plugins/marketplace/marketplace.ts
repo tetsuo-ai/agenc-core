@@ -1267,7 +1267,7 @@ async function findGitRepoRoot(start: string): Promise<string | undefined> {
   }
 }
 
-function marketplaceRootDir(marketplacePath: string): string {
+export function marketplaceRootDir(marketplacePath: string): string {
   const resolved = resolve(marketplacePath);
   const suffix = MARKETPLACE_MANIFEST_RELATIVE_PATH.split(/[\\/]+/u);
   const pathParts = resolved.split(/[\\/]+/u);

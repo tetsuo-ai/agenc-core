@@ -88,6 +88,37 @@ function normalizeFunctionCallId(toolCallId: string | undefined): {
   };
 }
 
+
+/**
+ * An interrupted turn can leave a `function_call` in history with no
+ * `function_call_output` ever recorded. The Responses backends treat
+ * that as unresolved session state — requests either fail or the model
+ * refuses to continue, citing the dangling call id. Every unmatched
+ * call gets a synthetic output right after it so history always pairs.
+ */
+export function closeDanglingFunctionCalls(
+  responseInput: Array<Record<string, unknown>>,
+): void {
+  const answered = new Set<string>();
+  for (const item of responseInput) {
+    if (item.type === "function_call_output" && typeof item.call_id === "string") {
+      answered.add(item.call_id);
+    }
+  }
+  for (let index = responseInput.length - 1; index >= 0; index -= 1) {
+    const item = responseInput[index]!;
+    if (item.type !== "function_call") continue;
+    const callId = item.call_id;
+    if (typeof callId !== "string" || answered.has(callId)) continue;
+    responseInput.splice(index + 1, 0, {
+      type: "function_call_output",
+      call_id: callId,
+      output:
+        "[interrupted: this call produced no result. Do not wait on it; proceed fresh.]",
+    });
+  }
+}
+
 function toResponsesMessageParts(
   content: LLMMessage["content"],
   role: "user" | "assistant",
@@ -222,6 +253,13 @@ export function buildOpenAIResponsesRequest(
       )
       .map((message) => messageTextContent(message.content))
       .map((text) => text.trim()),
+    // The ChatGPT subscription backend rejects system-role input items
+    // outright ("System messages are not allowed"), so the volatile tail
+    // folds into instructions there: a colder prefix cache beats a turn
+    // that cannot run at all. Platform keys keep the split below.
+    ...(input.chatgptBackend === true && dynamicSystemPrompt !== undefined
+      ? [dynamicSystemPrompt]
+      : []),
   ]
     .filter((text): text is string => typeof text === "string" && text.length > 0)
     .join("\n\n");
@@ -271,6 +309,8 @@ export function buildOpenAIResponsesRequest(
     });
   }
 
+  closeDanglingFunctionCalls(responseInput);
+
   if (responseInput.length === 0) {
     responseInput.push({
       type: "message",
@@ -279,7 +319,7 @@ export function buildOpenAIResponsesRequest(
     });
   }
 
-  if (dynamicSystemPrompt !== undefined) {
+  if (dynamicSystemPrompt !== undefined && input.chatgptBackend !== true) {
     responseInput.push({
       type: "message",
       role: "system",

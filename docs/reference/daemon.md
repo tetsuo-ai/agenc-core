@@ -206,7 +206,8 @@ session's exact canonical cwd (`authorizeBypassPermissionsConsent` /
 `runtime/src/app-server/background-agent-runner.ts`). A missing or
 mismatched workspace throws
 `Switching to bypassPermissions requires explicit consent for this exact cwd`
-(or `… a stable canonical cwd`). In-process `bypassAuthority:
+(or `Switching to bypassPermissions requires explicit consent for a stable
+canonical cwd`). In-process `bypassAuthority:
 "operator_tool_approval"` (Core `tool.approve` with
 `allowAllToolsForSession`) can authorize that cwd for the transition. The
 public JSON result stays `{ applied, previousMode, mode }`; a rollback

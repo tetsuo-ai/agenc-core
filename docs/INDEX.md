@@ -19,7 +19,7 @@ history; the linked pages below are current product truth.
 | Doc | Summary |
 | --- | --- |
 | [quickstart.md](quickstart.md) | Install → onboard → first chat in minutes |
-| [install.md](install.md) | Installer, npm, Docker, Windows, update path, sized download deadlines |
+| [install.md](install.md) | Installer, npm, Docker, Windows, update path, sized download deadlines, AppArmor/Landlock, and home-as-workspace |
 | [onboarding.md](onboarding.md) | First-run wizard + acts (identity, channel, autonomy, recap) |
 
 ## How-to
@@ -63,10 +63,10 @@ history; the linked pages below are current product truth.
 | [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, deferred first message, and worktree evidence |
 | [reference/workflows.md](reference/workflows.md) | Version-2 agent DAG manifests, scheduling, handoff artifacts, limits, and result outcomes |
 | [reference/memory.md](reference/memory.md) | Persona, AGENC.md, auto-memory paths, full-corpus index, privacy |
-| [reference/mcp.md](reference/mcp.md) | MCP client and server |
-| [reference/skills-plugins.md](reference/skills-plugins.md) | Skills load paths, plugin CLI, registration surfaces |
+| [reference/mcp.md](reference/mcp.md) | MCP client and server, plugin-declared server precedence, and Landlock diagnostics |
+| [reference/skills-plugins.md](reference/skills-plugins.md) | Skills load paths, plugin CLI, registration surfaces, and repository-controlled scope stripping |
 | [reference/hooks.md](reference/hooks.md) | Session lifecycle hooks vs gateway HTTP hooks |
-| [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, OS sandbox, home-workspace remediation |
+| [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, OS sandbox, home-workspace remediation, launcher contract, and plugin MCP confinement |
 | [reference/tui-workbench.md](reference/tui-workbench.md) | TUI shell, workbench layout, BUFFER operator shortcuts, and safety prompts |
 
 ## Explanation

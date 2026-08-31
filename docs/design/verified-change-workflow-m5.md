@@ -118,7 +118,7 @@ authority.
 The CLI exposes `--model` only (`runtime/src/bin/run-cli.ts`). The daemon
 `run.start` RPC and SDK `startRun` also accept `provider`. Without those
 fields reaching bootstrap argv, `agenc run start --model` used to be
-accepted, frozen into the spec, and then ignored — the run session took the
+accepted, frozen into the spec, and then ignored; the run session took the
 daemon default, and children inherited that **provider** while only the
 model *name* could be overridden per child. A Grok or OpenRouter model name
 sent to the wrong endpoint then failed at `plan` as `step_retries_exhausted`.
@@ -181,10 +181,10 @@ The prompt says so (`buildReviewerMessages` in
 `runtime/src/workflow/independent-review.ts`). An unstructured reply (no
 `ReviewOutput` JSON) earns **one** repair turn
 (`REVIEW_REPAIR_INSTRUCTION`). A second unstructured reply fails the step
-with a bounded excerpt of what came back; it is never treated as approval.
+with a bounded excerpt of the invalid reply; it is never treated as approval.
 `step_retries_exhausted` after `workflow.review` with
-`no structured ReviewOutput (N chars): …` means the reviewer narrated,
-refused, or was truncated — not that implement/verify were undone.
+`no structured ReviewOutput (N chars): <excerpt>` means the reviewer narrated,
+refused, or was truncated. The failure does not undo implement or verify.
 
 Plan/implement/verify children that die before they speak now record the
 child `outcome` and a bounded `error` in `finalMessage`
@@ -194,13 +194,13 @@ expected signature of a model that could not answer.
 Child registry names are derived by `workflowChildAgentName`: the child run
 id is lowercased and every character outside `[a-z0-9_]` becomes `_`.
 `assertValidAgentName` rejects dashes, colons, and `#`, which a raw
-`wf-…:plan#1` id carries. That fold is load-bearing — without it every
-spawn failed as `agent_name must use only lowercase letters, digits, and
+`wf-example:plan#1` id carries. The fold is required. Without it, every spawn
+failed as `agent_name must use only lowercase letters, digits, and
 underscores` and the run ended at `plan` with `step_retries_exhausted`.
 
 The agents-rail `agent_runs.status` is updated in the same transaction as
 `run_terminal_results` for the current epoch (cancel-locked rows keep their
-cancel; child `wf-…:plan#1` ids have no rail row). Reopening a run mirrors
+cancel; child `wf-example:plan#1` ids have no rail row). Reopening a run mirrors
 the rail back to `running` so startup recovery does not treat in-flight
 tool calls as orphans. A finished run that still lists as `running` is a
 pre-#1765 residue, not current behavior.
@@ -221,7 +221,8 @@ explicit future contract change.
   [--follow]`; `--model` reaches the run session on start and resume. The
   `run.start` RPC also accepts `provider`. `agenc run status` renders the
   step table; `agenc run evidence` exports the machine-readable bundle.
-  After finalize, the delivered commit is `refs/agenc/runs/<runId>`.
+  After finalize, the delivered commit is `refs/agenc/runs/<runId>`. See
+  [cli.md](../reference/cli.md#run).
 - SDK: `client.startRun(params)`; attach/replay/result/evidence by run id
   with the existing cursor contract.
 - TUI: the run appears on the agents rail like any daemon-owned run.
@@ -251,9 +252,9 @@ with a typed error; a summary is never produced from unverified bytes.
 
 | Symptom | Cause | What to do |
 | --- | --- | --- |
-| `plan` dies twice as `step_retries_exhausted` with an empty `final_message` | Pre-#1765: child error was dropped. Current code records `workflow plan child errored: …` | Read the child's `finalMessage` / `error`; typical causes are the wrong provider for `--model`, or a model that exhausted recovery before emitting a token |
+| `plan` dies twice as `step_retries_exhausted` with an empty `final_message` | Pre-#1765: child error was dropped. Current code records `workflow plan child errored: <error>` | Read the child's `finalMessage` / `error`; typical causes are the wrong provider for `--model`, or a model that exhausted recovery before emitting a token |
 | `--model` accepted but children hit the daemon default endpoint | Session used to ignore the frozen model/provider | Confirm the CLI `--model` (or SDK `startRun` `model`/`provider`) reached intake; resume re-applies the spec. The CLI has no `--provider` flag |
-| `git add` / `index.lock`: Read-only file system | Linked-worktree index lives under the main `.git/worktrees/<slug>/` | Expected path is `runGitMutation` with the git root granted. If this still appears, the sandbox grant is wrong — do not switch the run to a read-only git helper |
-| `workflow.review` fails with `no structured ReviewOutput (N chars): …` | Reviewer narrated, refused, or was truncated after the one repair turn | The excerpt is the actual reply. Pin a reviewer that can emit `ReviewOutput` JSON; implement/verify already passed |
+| `git add` / `index.lock`: Read-only file system | Linked-worktree index lives under the main `.git/worktrees/<slug>/` | Expected path is `runGitMutation` with the git root granted. If this still appears, the sandbox grant is wrong; do not switch the run to a read-only git helper |
+| `workflow.review` fails with `no structured ReviewOutput (N chars): <excerpt>` | Reviewer narrated, refused, or was truncated after the one repair turn | The excerpt is the actual reply. Pin a reviewer that can emit `ReviewOutput` JSON; implement/verify already passed |
 | Finalize succeeded but `git branch --contains <head>` is empty | The worktree branch is deleted on purpose | The product is `refs/agenc/runs/<runId>`. If that ref is missing, cleanup left the worktree because the pin failed |
-| Spawn rejected: `agent_name must use only lowercase letters…` | Child run ids contain `-`, `:`, `#` | `workflowChildAgentName` must fold those to `_`. A raw id is not a valid registry name |
+| Spawn rejected: `agent_name must use only lowercase letters...` | Child run ids contain `-`, `:`, `#` | `workflowChildAgentName` must fold those to `_`. A raw id is not a valid registry name |

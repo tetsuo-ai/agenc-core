@@ -296,8 +296,15 @@ agenc run cancel <run-id> [--reason <text>]
 run: intake freezes the spec (goal, base commit, pinned reviewer model,
 permission policy, required verification commands) and the fixed pipeline
 `intake → worktree → plan → implement → verify → review → finalize` continues
-in the daemon. At least one `--verify "label=script"` command is required —
-`completed` mechanically demands every required command exit 0, an
+in the daemon. Each pipeline child is registered under
+`workflowChildAgentName(childRunId)`
+(`runtime/src/app-server/workflow/session-adapters.ts`): the child run id
+is lowercased and every character outside `[a-z0-9_]` becomes `_`. Raw ids
+such as `wf-3f78249a-child:plan#1` are rejected as `agent_name must use only
+lowercase letters, digits, and underscores`.
+
+At least one `--verify "label=script"` command is required. A `completed`
+result mechanically demands every required command exit 0, an
 adversarial-verification `VERDICT: PASS`, and an independent review with zero
 blockers. The frozen spec's `--permission-mode`, unattended allow/deny
 lists, and `--model` are applied to the run's daemon session
@@ -309,9 +316,9 @@ model name can be overridden per child. The command returns after the
 durable intake commit (`runId`, `specDigest`, `baseCommit`); `--follow`
 then tails the run journal until the terminal result.
 
-Child agents register under `workflowChildAgentName(childRunId)` — the run
-id lowercased with every character outside `[a-z0-9_]` folded to `_` —
-because the agent registry rejects the raw `wf-…:plan#1` form. A child that
+Child agents register under `workflowChildAgentName(childRunId)`: the run id
+is lowercased and every character outside `[a-z0-9_]` is folded to `_`.
+The agent registry rejects a raw id such as `wf-example:plan#1`. A child that
 dies before it speaks records `workflow <kind> child <outcome>: <error>`
 instead of an empty `final_message`. Independent review allows one repair
 turn for unstructured prose, then fails closed with a bounded excerpt.

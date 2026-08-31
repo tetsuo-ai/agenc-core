@@ -19,6 +19,7 @@
 
 import { normalize } from "node:path";
 import { LRUCache } from "lru-cache";
+import { createChildAbortController } from "../utils/abortController.js";
 import type {
   LLMChatOptions,
   LLMContentPart,
@@ -722,7 +723,13 @@ function buildAgentRunContext(
   };
   const cwd = ctx.cwd;
   return {
-    abortController: session.abortController ?? new AbortController(),
+    // Child of the session controller — cancelling this context must never
+    // consume the session's one-shot root controller (see
+    // agenc-tool-use-context.ts for the incident this prevents).
+    abortController:
+      session.abortController !== undefined
+        ? createChildAbortController(session.abortController)
+        : new AbortController(),
     sessionId: session.conversationId,
     options: {
       mainLoopModel: model.model,
@@ -3845,12 +3852,16 @@ export async function* runAgent(
         if (merged.signal.aborted) break;
       }
 
-      if (
-        stopReason === "error" ||
+      const boundedStop =
         stopReason === "max_turns" ||
         stopReason === "max_budget_usd" ||
-        stopReason === "no_progress"
-      ) {
+        stopReason === "no_progress";
+      // A bounded stop in a keep-alive (interactive) run is a per-turn
+      // outcome: the backstop's message already reached the transcript,
+      // and the user must be able to keep prompting. Ending the run here
+      // bricked the whole session after one capped turn. One-shot agents
+      // keep failing the run — there is nobody left to continue them.
+      if (stopReason === "error" || (boundedStop && !params.keepAlive)) {
         let message: string;
         if (stopReason === "max_turns") {
           message = `subagent exceeded maxTurns${params.maxTurns !== undefined ? ` (${params.maxTurns})` : ""}`;

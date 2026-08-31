@@ -102,6 +102,7 @@ import {
 import { createCodeModeService } from "../tools/code-mode/service.js";
 import {
   clearCurrentRuntimeSession,
+  enterCurrentRuntimeSessionScope,
   setCurrentRuntimeSession,
 } from "./_deps/current-session.js";
 import { resolveTransportMode } from "../transport/fallback-ladder.js";
@@ -1728,6 +1729,10 @@ async function bootstrapLocalRuntimeSessionScoped(
         agentControlForShutdown = agentControl;
 
         setCurrentRuntimeSession(s);
+        // From here on the bootstrap tail resolves the ambient session;
+        // in a multi-session daemon the module fallback refuses to guess,
+        // so this async chain gets the session bound explicitly.
+        enterCurrentRuntimeSessionScope(s);
         await registerStartupSessionIngress({
           env,
           requestEnvironment: providerEnvironment,

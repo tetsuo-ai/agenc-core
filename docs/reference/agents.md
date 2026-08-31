@@ -315,8 +315,8 @@ and Agent side effects stay deferred until the first non-Editor message.
 The flag cannot combine with `initialContent` or other first-turn fields
 (`runtime/src/app-server/daemon-dispatcher.ts`). The thread sits in
 `pending_init`; `ifBusy: "reject"` on `message.send` refuses only an
-in-flight or queued turn, not that idle state — rejecting the first
-prompt would deadlock the session. See [daemon.md](daemon.md).
+in-flight or queued turn, not `pending_init`. Rejecting the first prompt would
+deadlock the session. See [daemon.md](daemon.md).
 
 SDK helpers on `AgencClient`: `spawnAgent`, `listAgents`, `attachAgent`,
 `stopAgent`, `agentLogs`. See [`../sdk.md`](../sdk.md).

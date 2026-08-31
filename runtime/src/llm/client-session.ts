@@ -414,7 +414,12 @@ function errorMessageFromBody(status: number, body: unknown): string {
         ? record.message
         : typeof record.error === "string"
           ? record.error
-          : undefined;
+          : // The ChatGPT subscription backend reports errors as
+            // {"detail": "..."} — without this arm its refusals surfaced
+            // as a bare "HTTP 400" with the reason discarded.
+            typeof record.detail === "string"
+              ? record.detail
+              : undefined;
     if (direct) return direct;
     if (record.error && typeof record.error === "object") {
       const nested = record.error as Record<string, unknown>;
@@ -641,7 +646,11 @@ function maybeEmitCapabilityDriftWarning(
     return;
   }
   config.onCapabilityDrift({
-    message,
+    // The URL is part of the diagnosis: a bare 404 with no body is
+    // almost always the wrong path, and without it that is unfalsifiable.
+    message: `${config.providerName}${
+      config.model !== undefined ? `/${config.model}` : ""
+    } refused the request (HTTP ${error.status}) at ${error.url}: ${message.slice(0, 600)}`,
     status: error.status,
   });
 }

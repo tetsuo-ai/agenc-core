@@ -125,7 +125,17 @@ afterEach(async () => {
   await Promise.all(
     temporaryPaths
       .splice(0)
-      .map((path) => rm(path, { recursive: true, force: true })),
+      // The coordinator's ledger drains an async queue; a durable write
+      // landing mid-walk turns the inner rmdir into ENOTEMPTY. Retries
+      // absorb in-flight writes without hiding real leaks.
+      .map((path) =>
+        rm(path, {
+          recursive: true,
+          force: true,
+          maxRetries: 10,
+          retryDelay: 100,
+        }),
+      ),
   );
 });
 

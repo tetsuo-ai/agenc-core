@@ -264,7 +264,17 @@ export function validateStrictConfigDocument(
     );
   }
 
-  const unknown = Object.keys(raw).filter((key) => !V2_TOP_LEVEL_KEYS.has(key));
+  const unknown = Object.keys(raw).filter(
+    (key) =>
+      !V2_TOP_LEVEL_KEYS.has(key) &&
+      // Retired pre-v2 spelling of the version key. A pre-v2 CLI still
+      // installed on the machine re-emits it whenever IT writes the
+      // shared config, and that one stray key was bricking every
+      // subsequent daemon start. It is stripped below (the canonical
+      // internal alias overwrites it), so tolerate it here instead of
+      // dying on it.
+      key !== "configVersion",
+  );
   if (unknown.length > 0) {
     throw new ConfigRepositoryError(
       "unknown-key",

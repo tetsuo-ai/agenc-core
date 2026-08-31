@@ -434,7 +434,9 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
   }),
   gemini: providerDefinition({
     name: "Gemini",
-    defaultModel: "gemini-2.5-pro",
+    // gemini-2.5-pro is retired for new keys (404 pointing at the 3.x
+    // line), so the default must live on the current family.
+    defaultModel: "gemini-3.1-pro-preview",
     baseURL: GEMINI_DEVELOPER_NATIVE_BASE_URL,
     credentials: apiKeyCredentials(["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
     baseURLEnvVars: ["GEMINI_BASE_URL"],
@@ -623,7 +625,12 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
     "llama-3.1-8b-instant",
   ]),
   deepseek: Object.freeze(["deepseek-v4-flash", "deepseek-v4-pro"]),
-  gemini: Object.freeze(["gemini-2.5-pro"]),
+  gemini: Object.freeze([
+    "gemini-3.1-pro-preview",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
+    "gemini-2.5-flash",
+  ]),
   mistral: Object.freeze(["mistral-medium-latest"]),
   "nvidia-nim": NVIDIA_PROVIDER_MODEL_IDS,
   minimax: MINIMAX_MODEL_IDS,

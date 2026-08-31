@@ -2800,13 +2800,13 @@ function createSkillInvocationRuntimeTool(opts: ModelFacingToolOptions): Tool {
 
 /**
  * Look up a skill in the runtime's bundled registry (browser-automation,
- * iot-builder, the kit installer).
+ * the kit installer).
  *
  * These ship compiled into the binary as Commands rather than through the
  * local skill loader, so `resolveSkill`/`renderSkill` — which are typed to
  * exclude the `bundled` source — never see them. Without this the model gets
- * `Unknown skill: iot-builder` for a skill the runtime demonstrably has, is
- * listed in `/skills`, and answers to `/iot-builder`.
+ * `Unknown skill` for a skill the runtime demonstrably has, is
+ * listed in `/skills`, and answers to its slash form.
  *
  * Dynamic literal import (esbuild-discoverable) with a catch: registration
  * runs at module load and can throw where the build-time MACRO define is
@@ -2840,10 +2840,10 @@ async function findBundledSkillCommand(name: string): Promise<
       (command) => isRecord(command) && command.name === name,
     );
     if (bundled !== undefined) return bundled;
-    // Skills contributed by plugins shipped in the runtime package (e.g.
-    // zeroday-hunter) register through the built-in plugin registry, not the
-    // bundled-skills array. Without this fallback the Skill tool rejects them
-    // as unknown even though /skills lists them.
+    // Skills contributed by plugins shipped in the runtime package
+    // register through the built-in plugin registry, not the
+    // bundled-skills array. Without this fallback the Skill tool rejects
+    // them as unknown even though /skills lists them.
     const builtin = (await import(
       "../plugins/builtin/index.js"
     )) as unknown as Record<string, unknown>;

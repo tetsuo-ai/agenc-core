@@ -149,6 +149,18 @@ const COST_TIER_O4_MINI = openAiCachedInputTier(1.1, 4.4, 0.275);
 
 // Official DeepSeek API prices retrieved 2026-08-24:
 // https://api-docs.deepseek.com/quick_start/pricing/
+const COST_TIER_GEMINI_3_1_PRO = {
+  inputUsdPer1K: 0.002,
+  outputUsdPer1K: 0.012,
+} as const;
+const COST_TIER_GEMINI_3_FLASH = {
+  inputUsdPer1K: 0.00075,
+  outputUsdPer1K: 0.00375,
+} as const;
+const COST_TIER_GEMINI_3_FLASH_LITE = {
+  inputUsdPer1K: 0.0003,
+  outputUsdPer1K: 0.0025,
+} as const;
 const COST_TIER_DEEPSEEK_V4_FLASH: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.00014,
   outputUsdPer1K: 0.00028,
@@ -394,6 +406,20 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       inputUsdPer1K: 0.00125,
       outputUsdPer1K: 0.01,
     },
+    // Gemini 3.x line, ai.google.dev/gemini-api/docs/pricing (2026-08):
+    // 3.1 Pro preview $2/$12 per M (<=200k-prompt tier); 3.7/3.6/3.5
+    // Flash share $0.75/$3.75 (intro pricing through 2026); Flash-Lite
+    // $0.30/$2.50.
+    "gemini:gemini-3.1-pro-preview": COST_TIER_GEMINI_3_1_PRO,
+    "gemini-3.1-pro-preview": COST_TIER_GEMINI_3_1_PRO,
+    "gemini:gemini-3.7-flash": COST_TIER_GEMINI_3_FLASH,
+    "gemini-3.7-flash": COST_TIER_GEMINI_3_FLASH,
+    "gemini:gemini-3.6-flash": COST_TIER_GEMINI_3_FLASH,
+    "gemini-3.6-flash": COST_TIER_GEMINI_3_FLASH,
+    "gemini:gemini-3.5-flash": COST_TIER_GEMINI_3_FLASH,
+    "gemini-3.5-flash": COST_TIER_GEMINI_3_FLASH,
+    "gemini:gemini-3.5-flash-lite": COST_TIER_GEMINI_3_FLASH_LITE,
+    "gemini-3.5-flash-lite": COST_TIER_GEMINI_3_FLASH_LITE,
     "mistral:mistral-medium-latest": COST_TIER_MISTRAL_MEDIUM_3_5,
     "mistral-medium-latest": COST_TIER_MISTRAL_MEDIUM_3_5,
     "nvidia-nim:nvidia/llama-3.1-nemotron-70b-instruct": DEFAULT_UNKNOWN_MODEL_COST,

@@ -112,10 +112,7 @@ accept `agentId`; use `attachAgent()` for an existing agent. The lower-level
 `spawnAgent()` API requires a complete `runtimeOptions` object. Set
 `allowUntrustedHooks: true` only when the embedding application has vetted the
 workspace and intends to permit command hook effects there. The field never
-permits HTTP, prompt, or agent hook effects. `deferInitialTurn: true`
-provisions the agent without a first model turn; the next `prompt()` /
-`message.send` initializes `pending_init`. `ifBusy: "reject"` does not
-treat that idle state as a conflict. See [reference/daemon.md](reference/daemon.md).
+permits HTTP, prompt, or agent hook effects.
 
 `dangerouslyBypassApprovalsAndSandbox` defaults to `false`. Set it to `true`
 only when the embedding application deliberately grants both approval bypass
@@ -281,7 +278,7 @@ const started = await client.startRun({
 
 `startRun` resolves after the durable intake commit; the fixed pipeline
 continues in the daemon. `model` and `provider` ride on the run session
-bootstrap the same way `agenc run start --model` does — omitting them uses
+bootstrap the same way `agenc run start --model` does. Omitting them uses
 the daemon default, including for children that inherit the run's provider.
 Follow the run by id with the existing cursor contract: `runStatus` adds a
 `workflow` step projection (stage statuses, attempts, verdicts, artifact

@@ -54,15 +54,19 @@ import {
 } from "../../benchmarks/fnd/module-compatibility.mjs";
 import {
   assertBindingsStable,
+  assertCleanBenchmarkWorktree,
   bindProductionModuleClosures,
   captureBenchmarkProvenance,
   collectNormalizedFileBindings,
   createBenchmarkSubprocessEnvironment,
   createSanitizedGitEnvironment,
+  materializeFreshCloneDefaultBranch,
   METADATA_COMMAND_SETTLEMENT_TIMEOUT_MS,
   METADATA_COMMAND_WORKER_OVERHEAD_MS,
   resolveBenchmarkGitExecutable,
   resolveBenchmarkNpmCliPath,
+  resolveDefaultBranchRevision,
+  resolveDefaultBranchSelector,
   runBoundedCommandText,
   verifyBenchmarkCapture,
   verifyCheckedBenchmarkProvenance,
@@ -1854,6 +1858,189 @@ describe("FND benchmark harness fault contracts", () => {
       rmSync(fixture.repositoryRoot, { force: true, recursive: true });
     }
   });
+
+  test("refuses a dirty worktree and a topic-branch source revision", () => {
+    const fixture = createProvenanceFixture();
+    try {
+      const options = provenanceOptions(fixture.repositoryRoot);
+      expect(() =>
+        assertCleanBenchmarkWorktree(fixture.repositoryRoot),
+      ).not.toThrow();
+      const strayPath = join(fixture.repositoryRoot, "stray.txt");
+      writeFileSync(strayPath, "dirty\n", "utf8");
+      expect(() =>
+        assertCleanBenchmarkWorktree(fixture.repositoryRoot),
+      ).toThrow(/clean worktree/u);
+      rmSync(strayPath);
+
+      const defaultRevision = resolveDefaultBranchRevision(
+        fixture.repositoryRoot,
+      );
+      expect(defaultRevision).toBe(
+        readGitText(fixture.repositoryRoot, ["rev-parse", "HEAD"]),
+      );
+      runGit(fixture.repositoryRoot, ["checkout", "-b", "topic"]);
+      runGit(fixture.repositoryRoot, [
+        "-c",
+        "user.name=AgenC Test",
+        "-c",
+        "user.email=test@agenc.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "topic commit",
+      ]);
+      expect(() => captureBenchmarkProvenance(options)).toThrow(
+        /ancestor of the default branch/u,
+      );
+      expect(() =>
+        captureBenchmarkProvenance({
+          ...options,
+          sourceRevision: defaultRevision,
+        }),
+      ).not.toThrow();
+    } finally {
+      rmSync(fixture.repositoryRoot, { force: true, recursive: true });
+    }
+  });
+
+  test("resolves the default branch from origin/main without local main", () => {
+    const fixture = createProvenanceFixture();
+    try {
+      const defaultRevision = resolveDefaultBranchRevision(
+        fixture.repositoryRoot,
+      );
+      runGit(fixture.repositoryRoot, ["branch", "-m", "topic"]);
+      runGit(fixture.repositoryRoot, [
+        "update-ref",
+        "refs/remotes/origin/main",
+        defaultRevision,
+      ]);
+      expect(resolveDefaultBranchSelector(fixture.repositoryRoot)).toBe(
+        "refs/remotes/origin/main",
+      );
+      expect(resolveDefaultBranchRevision(fixture.repositoryRoot)).toBe(
+        defaultRevision,
+      );
+    } finally {
+      rmSync(fixture.repositoryRoot, { force: true, recursive: true });
+    }
+  });
+
+  test("fresh-clone bundle keeps the default branch and drops dangling commits", () => {
+    const fixture = createProvenanceFixture();
+    const cloneParent = mkdtempSync(
+      join(tmpdir(), "agenc-fnd-fresh-clone-test-"),
+    );
+    try {
+      const options = provenanceOptions(fixture.repositoryRoot);
+      const defaultSelector = resolveDefaultBranchSelector(
+        fixture.repositoryRoot,
+      );
+      const defaultRevision = resolveDefaultBranchRevision(
+        fixture.repositoryRoot,
+      );
+      expect(defaultSelector).toMatch(/^refs\/heads\/(?:main|master)$/u);
+
+      writeFileSync(join(fixture.repositoryRoot, "dangling.txt"), "x\n", "utf8");
+      runGit(fixture.repositoryRoot, ["add", "dangling.txt"]);
+      runGit(fixture.repositoryRoot, [
+        "-c",
+        "user.name=AgenC Test",
+        "-c",
+        "user.email=test@agenc.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        "dangling commit",
+      ]);
+      const danglingRevision = readGitText(fixture.repositoryRoot, [
+        "rev-parse",
+        "HEAD",
+      ]);
+      runGit(fixture.repositoryRoot, ["reset", "--hard", defaultRevision]);
+
+      runGit(fixture.repositoryRoot, ["checkout", "-b", "topic"]);
+      runGit(fixture.repositoryRoot, [
+        "-c",
+        "user.name=AgenC Test",
+        "-c",
+        "user.email=test@agenc.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "topic commit",
+      ]);
+      const headRevision = readGitText(fixture.repositoryRoot, [
+        "rev-parse",
+        "HEAD",
+      ]);
+
+      const bundlePath = join(cloneParent, "provenance.bundle");
+      const cloneRoot = join(cloneParent, "clone");
+      expect(() =>
+        runGit(fixture.repositoryRoot, [
+          "bundle",
+          "create",
+          join(cloneParent, "empty.bundle"),
+          defaultRevision,
+          headRevision,
+        ]),
+      ).toThrow();
+      runGit(fixture.repositoryRoot, [
+        "bundle",
+        "create",
+        bundlePath,
+        "HEAD",
+        defaultSelector,
+      ]);
+      runGit(cloneParent, ["clone", "--quiet", bundlePath, cloneRoot]);
+      runGit(cloneRoot, ["checkout", "--quiet", headRevision]);
+      materializeFreshCloneDefaultBranch(cloneRoot, defaultRevision);
+
+      expect(resolveDefaultBranchRevision(cloneRoot)).toBe(defaultRevision);
+      expect(
+        readGitText(cloneRoot, [
+          "log",
+          "-g",
+          "-1",
+          "--format=%gn <%ge>",
+          "refs/heads/main",
+        ]),
+      ).toBe("AgenC Benchmark Harness <benchmark@agenc.invalid>");
+      expect(readGitText(cloneRoot, ["rev-parse", "HEAD"])).toBe(headRevision);
+      expect(
+        spawnSync("git", ["cat-file", "-e", `${danglingRevision}^{commit}`], {
+          cwd: cloneRoot,
+          timeout: FIXTURE_GIT_TIMEOUT_MS,
+          windowsHide: true,
+        }).status,
+      ).not.toBe(0);
+
+      expect(() =>
+        captureBenchmarkProvenance({
+          ...options,
+          repositoryRoot: cloneRoot,
+          sourceRevision: defaultRevision,
+        }),
+      ).not.toThrow();
+      expect(() =>
+        captureBenchmarkProvenance({
+          ...options,
+          repositoryRoot: cloneRoot,
+          sourceRevision: headRevision,
+        }),
+      ).toThrow(/ancestor of the default branch/u);
+    } finally {
+      rmSync(fixture.repositoryRoot, { force: true, recursive: true });
+      rmSync(cloneParent, { force: true, recursive: true });
+    }
+  });
 });
 
 function createCleanRunnerEnvironment(): NodeJS.ProcessEnv {
@@ -1906,6 +2093,7 @@ function createProvenanceFixture(): {
     sourceRelativePath,
     dependencyRelativePath,
     unrelatedRelativePath,
+    evidenceRelativePath,
   ]);
   runGit(repositoryRoot, [
     "-c",

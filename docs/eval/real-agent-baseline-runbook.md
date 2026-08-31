@@ -67,6 +67,15 @@ Default output dirs: `eval-executor-output` (agent) and
   → agent process; it is never on an argv and patches are scanned for it.
 - Resume after an interruption by re-running the same command: tasks with an
   existing `agent-run-report.json` are skipped.
+- `--tasks` accepts a comma-separated list once; repeating the flag is a
+  usage error. Integer options (`--seed-slot`, timeouts) are decimal digits
+  only; `0x10`, `1e3`, and a blank value are rejected instead of coerced.
+- `--provider-host` accepts a hostname or IPv4 literal. An IPv6 literal is
+  refused. A hostname that does not resolve reports the resolver reason.
+- `SIGINT` / `SIGTERM` run `DockerContainerRunner.abortAll()` before exit
+  (130 / 143): new creates are refused, live containers are removed before
+  networks, in-flight creates are waited out, then a second sweep removes
+  resources created by those requests. A second signal exits immediately.
 - Exit code 0 means every task ended with a report (the scorecard is
   complete); any driver-level loss exits 1 and is listed in
   `batch-summary.json`.
