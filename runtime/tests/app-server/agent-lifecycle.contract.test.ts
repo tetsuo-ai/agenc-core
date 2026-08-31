@@ -5838,9 +5838,8 @@ describe("AgenC background agent lifecycle", () => {
       now: sequence([
         "2026-05-01T12:00:00.000Z",
         "2026-05-01T12:00:01.000Z",
-        // The runner-missing refresh stamps runtimeUnavailableSince now.
-        "2026-05-01T12:00:02.000Z",
-        "2026-05-01T12:00:03.000Z",
+        "2026-05-01T12:00:02.125Z",
+        "2026-05-01T12:00:03.875Z",
       ]),
       runner,
     });
