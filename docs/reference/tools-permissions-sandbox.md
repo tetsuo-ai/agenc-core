@@ -97,8 +97,8 @@ That is a narrowing transform: it never constructs a runtime identity, never
 expands the session's read scope, and never carries filesystem-write or
 network grants into the child. Write entries become `read`; network is
 `disabled`. An `unrestricted` session profile becomes a full-disk-read
-restricted profile. An `external_sandbox` profile is left exact — AgenC cannot
-narrow a host-owned policy. The spawn uses `cwd: "."` and
+restricted profile. An `external_sandbox` profile stays unchanged because
+AgenC cannot narrow a host-owned policy. The spawn uses `cwd: "."` and
 `cwdBinding: "inherited_readonly"` so the helper resolves the search root
 through an already-open directory descriptor instead of a live absolute
 pathname.
@@ -515,8 +515,8 @@ read baseline (`NEVER_GRANTED_ROOTS` in
 `runtime/src/sandbox/linux-launcher/landlock-exec.ts`). Without a pid
 namespace, host `/proc/<pid>/environ` would expose the daemon's provider
 credentials. `/proc`-dependent commands fail visibly with `EACCES`; they are
-not retried unsandboxed. `mountProc` is a bubblewrap convenience only — the
-fallback simply has no `/proc`.
+not retried unsandboxed. `mountProc` is available only under bubblewrap. The
+fallback has no readable `/proc`.
 
 Search tools (`Grep` / `Glob` / `Orient`) replace the session profile with the
 narrowed read-only child described under

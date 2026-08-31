@@ -235,17 +235,15 @@ function configuredPluginDirs(
 }
 
 function pluginAllowedByAllowlist(
-  pluginIds: readonly string[],
+  pluginId: string,
   allowlist: ReadonlySet<string> | null,
 ): boolean {
   if (allowlist === null) return true;
-  return pluginIds.some((pluginId) => {
-    const marketplaceSeparator = pluginId.lastIndexOf("@");
-    const pluginName = marketplaceSeparator > 0
-      ? pluginId.slice(0, marketplaceSeparator)
-      : pluginId;
-    return allowlist.has(pluginId) || allowlist.has(pluginName);
-  });
+  const marketplaceSeparator = pluginId.lastIndexOf("@");
+  const pluginName = marketplaceSeparator > 0
+    ? pluginId.slice(0, marketplaceSeparator)
+    : pluginId;
+  return allowlist.has(pluginId) || allowlist.has(pluginName);
 }
 
 function configuredValueForRoot(
@@ -565,8 +563,9 @@ export async function loadPlugins(
         configEntry,
         isEnabled: (manifestName) => configEntryEnabled(configEntry(manifestName)) &&
           pluginAllowedByAllowlist(
-            [root.key, root.source, manifestName, basename(root.path)]
-              .filter((entry): entry is string => typeof entry === "string"),
+            root.key === undefined
+              ? canonicalLoadedPluginId(root.source, manifestName)
+              : manifestName,
             allowlist,
           ),
       });

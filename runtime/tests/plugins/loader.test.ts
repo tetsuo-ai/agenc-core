@@ -1022,7 +1022,7 @@ describe("plugin loader", () => {
     });
   });
 
-  test("applies plugins.allowlist after manifest names are resolved", async () => {
+  test("matches plugins.allowlist against canonical manifest names", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
       const workspaceRoot = join(root, "workspace");
@@ -1041,6 +1041,84 @@ describe("plugin loader", () => {
 
       expect(result.enabled.map((plugin) => plugin.name)).toEqual(["alpha"]);
       expect(result.disabled.map((plugin) => plugin.name)).toEqual(["beta"]);
+
+      const unfiltered = await loadPlugins({
+        pluginStorageRoot: join(agencHome, "plugins"),
+        workspaceRoot,
+        config: { plugins: { enabled: true, allowlist: [] } },
+      });
+
+      expect(unfiltered.enabled.map((plugin) => plugin.name)).toEqual([
+        "alpha",
+        "beta",
+      ]);
+      expect(unfiltered.disabled).toEqual([]);
+    });
+  });
+
+  test("matches marketplace plugin ids and their unqualified names", async () => {
+    await withTempDir(async (root) => {
+      const pluginStorageRoot = join(root, "home", "plugins");
+      const workspaceRoot = join(root, "workspace");
+      const pluginRoot = join(pluginStorageRoot, "installed-foo");
+      await writePluginManifest(pluginRoot, { name: "foo" });
+      await writeJson(
+        join(pluginRoot, ".agenc-plugin", "agenc-install.json"),
+        { dependencyIdentity: "foo@team" },
+      );
+
+      for (const allowedId of ["foo@team", "foo"]) {
+        const result = await loadPlugins({
+          pluginStorageRoot,
+          workspaceRoot,
+          config: { plugins: { enabled: true, allowlist: [allowedId] } },
+        });
+
+        expect(result.enabled.map((plugin) => plugin.id)).toEqual([
+          "foo@team",
+        ]);
+        expect(result.disabled).toEqual([]);
+      }
+    });
+  });
+
+  test("does not authorize plugins through directory, source, or config-key aliases", async () => {
+    await withTempDir(async (root) => {
+      const pluginStorageRoot = join(root, "home", "plugins");
+      const workspaceRoot = join(root, "workspace");
+      const storagePlugin = join(pluginStorageRoot, "directory-alias");
+      const configuredPlugin = join(workspaceRoot, "vendor", "configured");
+      await writePluginManifest(storagePlugin, { name: "storage-manifest" });
+      await writePluginManifest(configuredPlugin, {
+        name: "configured-manifest",
+      });
+
+      const result = await loadPlugins({
+        pluginStorageRoot,
+        workspaceRoot,
+        config: {
+          plugins: {
+            enabled: true,
+            allowlist: [
+              "directory-alias",
+              await realpath(storagePlugin),
+              "configured-alias",
+            ],
+            plugins: {
+              "configured-alias": {
+                enabled: true,
+                path: "vendor/configured",
+              },
+            },
+          },
+        },
+      });
+
+      expect(result.enabled).toEqual([]);
+      expect(result.disabled.map((plugin) => plugin.name).sort()).toEqual([
+        "configured-manifest",
+        "storage-manifest",
+      ]);
     });
   });
 

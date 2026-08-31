@@ -570,7 +570,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | Paths | Type / meaning |
 | --- | --- |
 | `plugins` | Plugin discovery and registration. |
-| `plugins.dirs`, `plugins.enabled`, `plugins.allowlist` | Search directories, global switch, and allowlist. An empty allowlist is “no filter”; a non-empty list matches plugin id or the name before the last `@`. |
+| `plugins.dirs`, `plugins.enabled`, `plugins.allowlist` | Search directories, global switch, and allowlist. An empty allowlist applies no filter. A non-empty list matches the manifest name or an installed `name@marketplace` identity. An unqualified `name` also matches its marketplace-qualified identity. Discovery paths, directory names, and `plugins.plugins` keys are not authorization aliases. |
 | `plugins.plugins`, `plugins.plugins.<plugin>` | Named plugin map of plugin blocks. |
 | `plugins.plugins.<plugin>.enabled`, `plugins.plugins.<plugin>.path` | Plugin enablement and local path. |
 | `plugins.plugins.<plugin>.mcp_servers`, `plugins.plugins.<plugin>.mcp_servers.<name>` | Plugin-owned MCP server map. |
@@ -649,7 +649,7 @@ keybinding file or watcher.
 | `durableTurns` | Durable-turn block. |
 | `durableTurns.checkpoint`, `durableTurns.checkpoint.enabled`, `durableTurns.checkpoint.minIntervalMs` | Checkpoint switch and throttle. |
 | `durableTurns.resume`, `durableTurns.resume.onRestart` | Resume-on-restart switch. Default `true`. The removed `resume.policy` key is stripped on migrate; it is not an operator setting. |
-| `durableTurns.resume.requireLease`, `durableTurns.resume.buildPinning` | Lease and build-pinning guards. Both default `true`. Resume still fail-closes on lease or build-id mismatch; the switches select those guards, not an idempotent replay policy. |
+| `durableTurns.resume.requireLease`, `durableTurns.resume.buildPinning` | Lease and build-pinning guards. Both default `true`. Resume fail-closes when an enabled guard finds a lease or build-id mismatch. The switches enable or disable individual guards. They do not select an idempotent replay policy. |
 
 ### Gateway
 

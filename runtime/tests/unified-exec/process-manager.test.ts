@@ -667,20 +667,35 @@ describe("UnifiedExecProcessManager", () => {
 
       expect(started.process_id).toEqual(expect.any(Number));
       const sessionId = started.process_id!;
+      const sentinel = "agenc-pty-state-ready";
 
       await manager.writeStdin({
         session_id: sessionId,
-        chars: "export AGENC_UNIFIED_EXEC_TEST=ok\n",
+        chars: 'export AGENC_UNIFIED_EXEC_TEST=agenc-pty-"state"-ready\n',
         yield_time_ms: 250,
       });
-      const echoed = await manager.writeStdin({
+      let latest = await manager.writeStdin({
         session_id: sessionId,
         chars: 'printf "$AGENC_UNIFIED_EXEC_TEST\\n"\n',
         yield_time_ms: 250,
       });
+      let transcript = latest.stdout;
+      const deadline = Date.now() + 5_000;
+      while (
+        !transcript.includes(sentinel) &&
+        latest.process_id === sessionId &&
+        Date.now() < deadline
+      ) {
+        latest = await manager.writeStdin({
+          session_id: sessionId,
+          chars: "\n",
+          yield_time_ms: 250,
+        });
+        transcript += latest.stdout;
+      }
 
-      expect(echoed.stdout).toContain("ok");
-      expect(echoed.process_id).toBe(sessionId);
+      expect(transcript).toContain(sentinel);
+      expect(latest.process_id).toBe(sessionId);
     } finally {
       await manager.closeAll("test_cleanup");
     }
