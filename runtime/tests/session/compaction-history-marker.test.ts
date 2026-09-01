@@ -64,6 +64,14 @@ describe("authenticated compaction history markers", () => {
     };
     expect(() => assertCompactionHistoryMarkerV1(valid)).not.toThrow();
     expect(() =>
+      assertCompactionHistoryMarkerV1({
+        summary_sha256: SUMMARY_SHA256,
+        attempt_id: ATTEMPT_ID,
+        kind: "boundary",
+        version: 1,
+      }),
+    ).not.toThrow();
+    expect(() =>
       assertCompactionHistoryMarkerV1({ ...valid, extra: true }),
     ).toThrow(/unknown or missing fields/);
     expect(() =>
@@ -79,6 +87,50 @@ describe("authenticated compaction history markers", () => {
         summary_sha256: "not-a-digest",
       }),
     ).toThrow(/lowercase SHA-256/);
+  });
+
+  it("rejects unsupported marker values and byte-oversized attempt ids", () => {
+    const valid = {
+      version: 1 as const,
+      kind: "boundary" as const,
+      attempt_id: ATTEMPT_ID,
+      summary_sha256: SUMMARY_SHA256,
+    };
+
+    expect(() =>
+      assertCompactionHistoryMarkerV1({ ...valid, version: 2 }),
+    ).toThrow(/unsupported compaction-history marker version/);
+    expect(() =>
+      assertCompactionHistoryMarkerV1({ ...valid, kind: "commit" }),
+    ).toThrow(/unsupported compaction-history marker kind/);
+    expect(() =>
+      assertCompactionHistoryMarkerV1({ ...valid, attempt_id: "" }),
+    ).toThrow(/bounded nonempty string/);
+    expect(() =>
+      assertCompactionHistoryMarkerV1({
+        ...valid,
+        attempt_id: "é".repeat(2_049),
+      }),
+    ).toThrow(/bounded nonempty string/);
+    expect(() =>
+      assertCompactionHistoryMarkerV1({
+        ...valid,
+        summary_sha256: SUMMARY_SHA256.toUpperCase(),
+      }),
+    ).toThrow(/lowercase SHA-256/);
+  });
+
+  it("requires every marker field to be an own property", () => {
+    const inheritedVersion = Object.assign(Object.create({ version: 1 }), {
+      kind: "boundary",
+      attempt_id: ATTEMPT_ID,
+      summary_sha256: SUMMARY_SHA256,
+      unrelated: true,
+    });
+
+    expect(() => assertCompactionHistoryMarkerV1(inheritedVersion)).toThrow(
+      /unknown or missing fields/,
+    );
   });
 });
 

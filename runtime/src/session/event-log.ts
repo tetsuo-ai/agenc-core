@@ -66,10 +66,11 @@ export type {
  * - v2: exact tool-result seals and version-2 durable checkpoints.
  * - v3: transactional compaction intents and commits.
  * - v4: durable checkpoints carry the complete version-3 writer slice.
+ * - v5: checkpoint v4 binds compaction-history markers with prefix hash v3.
  * On open, if rollout.schemaVersion > runtime.ROLLOUT_SCHEMA_VERSION,
  * hard-fail with migration message (I-49).
  */
-export const ROLLOUT_SCHEMA_VERSION = 4;
+export const ROLLOUT_SCHEMA_VERSION = 5;
 
 // ─────────────────────────────────────────────────────────────────────
 // Event envelope: { eventId, id, msg, seq }
@@ -257,8 +258,21 @@ export interface TurnCheckpointV3Event extends TurnCheckpointBase<TurnCheckpoint
   readonly toolResultIntegrityVersion: 1;
 }
 
+/**
+ * Checkpoint shape whose version-3 prefix hash authenticates durable
+ * compaction-history markers in addition to the version-2 prefix surface.
+ */
+export interface TurnCheckpointV4Event extends TurnCheckpointBase<TurnCheckpointSliceLine> {
+  readonly checkpointVersion: 4;
+  readonly toolResultIntegrityVersion: 1;
+  readonly prefixHashVersion: 3;
+}
+
 export type TurnCheckpointEvent =
-  TurnCheckpointV1Event | TurnCheckpointV2Event | TurnCheckpointV3Event;
+  | TurnCheckpointV1Event
+  | TurnCheckpointV2Event
+  | TurnCheckpointV3Event
+  | TurnCheckpointV4Event;
 
 /**
  * GOAL #4b Stage 1 — emitted (fsync-durable) when a turn is resumed from a

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { computePrefixHash } from "./durable-turns.js";
 import { emptyReducedState, reduce } from "./event-log-reducer.js";
-import type { TurnCheckpointV3Event } from "./event-log.js";
+import type { TurnCheckpointV4Event } from "./event-log.js";
 import type {
   RolloutItem,
   ToolResultIntegrityResponseItem,
@@ -9,15 +9,18 @@ import type {
 import {
   DURABLE_CHECKPOINT_READ_VERSION,
   DURABLE_CHECKPOINT_V2,
+  DURABLE_CHECKPOINT_V3,
   DURABLE_ROLLOUT_SCHEMA_V2,
   DURABLE_ROLLOUT_SCHEMA_V3,
+  DURABLE_ROLLOUT_SCHEMA_V4,
   DURABLE_ROLLOUT_SCHEMA_VERSION,
   LEGACY_DURABLE_CHECKPOINT_VERSION,
   DurableCheckpointReadError,
   MAX_CHECKPOINT_PREFIX_MESSAGES,
-  computeCheckpointPrefixHashV2,
+  computeCheckpointPrefixHashV3,
   readTurnCheckpoint,
-  validateCheckpointPrefixV2,
+  validateCheckpointPrefix,
+  validateCheckpointPrefixV3,
   type DurableCheckpointPrefixDeferral,
   type DurableCheckpointPrefixFailure,
 } from "./durable-checkpoint-reader.js";
@@ -36,17 +39,27 @@ import type {
 } from "./tool-pair-validator.js";
 
 const UPGRADE_PROJECTION_ID_DOMAIN = "agenc.checkpoint-upgrade-projection.v1";
-// Current validation visits the prefix for shape, tool-pair, and digest checks.
-const CURRENT_CHECKPOINT_PREFIX_PASSES = 3;
-// Legacy promotion additionally computes the new and legacy prefix digests.
-const LEGACY_CHECKPOINT_PREFIX_PASSES = 5;
+// One prefix validation performs shape, invocation-sequence, tool-pair, and
+// digest work. Count every complete message-array traversal, including the
+// bounded invocation-channel slice/map passes inside sequence validation.
+const CURRENT_CHECKPOINT_PREFIX_PASSES = 13;
+// A legacy promotion checks the source digest (1), computes the v3 digest (6),
+// and validates the generated v4 checkpoint (13).
+const LEGACY_CHECKPOINT_PREFIX_PASSES = 20;
+// A v2/v3 promotion validates the frozen v2 digest (13), computes the v3
+// digest (6), and validates the generated v4 checkpoint (13).
+const INTEGRITY_CHECKPOINT_UPGRADE_PREFIX_PASSES = 32;
 // Canonical rollback reduction can scan the history, scan backward across
 // contextual pre-turn rows, and copy the retained prefix. Reserve all three
 // possible passes before invoking it so adversarial rollback streams cannot
 // escape the aggregate history-derivation work ceiling.
 const ROLLBACK_HISTORY_PASSES = 3;
 export const MAX_CHECKPOINT_UPGRADE_HISTORY_WORK =
-  MAX_CHECKPOINT_PREFIX_MESSAGES * LEGACY_CHECKPOINT_PREFIX_PASSES;
+  MAX_CHECKPOINT_PREFIX_MESSAGES *
+  Math.max(
+    LEGACY_CHECKPOINT_PREFIX_PASSES,
+    INTEGRITY_CHECKPOINT_UPGRADE_PREFIX_PASSES,
+  );
 
 export interface DurableCheckpointUpgradePlan {
   readonly sourceSchemaVersion: number;
@@ -239,7 +252,9 @@ export function planLegacyDurableCheckpointUpgrade(params: {
       const prefixPasses =
         readable.version === 1
           ? LEGACY_CHECKPOINT_PREFIX_PASSES
-          : CURRENT_CHECKPOINT_PREFIX_PASSES;
+          : readable.sourceVersion === DURABLE_CHECKPOINT_READ_VERSION
+            ? CURRENT_CHECKPOINT_PREFIX_PASSES
+            : INTEGRITY_CHECKPOINT_UPGRADE_PREFIX_PASSES;
       const reservedWork = reserveHistoryDerivationWork(
         historyDerivationWork,
         persistedMessageCount,
@@ -259,84 +274,6 @@ export function planLegacyDurableCheckpointUpgrade(params: {
       }
       historyDerivationWork = reservedWork;
 
-      let checkpoint: TurnCheckpointV3Event;
-      if (readable.version === 1) {
-        let prefixHash: string;
-        try {
-          prefixHash = computeCheckpointPrefixHashV2(
-            history,
-            persistedMessageCount,
-          );
-        } catch (error) {
-          const mapped = canonicalizationOutcome(error, itemIndex);
-          if (mapped !== undefined) return mapped;
-          if (error instanceof DurableCheckpointReadError) {
-            return invalid("checkpoint_invalid", itemIndex, error.message);
-          }
-          throw error;
-        }
-        checkpoint = {
-          ...readable.checkpoint,
-          checkpointVersion: DURABLE_CHECKPOINT_READ_VERSION,
-          toolResultIntegrityVersion: 1,
-          prefixHash,
-        };
-        item = {
-          ...item,
-          payload: {
-            ...item.payload,
-            msg: { type: "turn_checkpoint", payload: checkpoint },
-          },
-        };
-        checkpointsUpgraded += 1;
-        changed = true;
-      } else if (readable.sourceVersion !== DURABLE_CHECKPOINT_READ_VERSION) {
-        checkpoint = {
-          ...readable.checkpoint,
-          checkpointVersion: DURABLE_CHECKPOINT_READ_VERSION,
-          toolResultIntegrityVersion: 1,
-        };
-        item = {
-          ...item,
-          payload: {
-            ...item.payload,
-            msg: { type: "turn_checkpoint", payload: checkpoint },
-          },
-        };
-        checkpointsUpgraded += 1;
-        changed = true;
-      } else {
-        checkpoint = readable.checkpoint;
-      }
-
-      const validation = validateCheckpointPrefixV2({
-        checkpoint,
-        expectedRunId: params.runId,
-        messages: history,
-        projection: params.projection,
-        projectionId: checkpointProjectionId(params.projectionId),
-        sourceKey: params.sourceKey,
-      });
-      if (validation.status === "invalid") {
-        return invalid(
-          "checkpoint_invalid",
-          itemIndex,
-          validation.failure.reason,
-          validation.failure,
-        );
-      }
-      if (validation.status === "deferred") {
-        return {
-          status: "deferred",
-          failure: {
-            kind: "operational_deferral",
-            code: "checkpoint_validation_deferred",
-            itemIndex,
-            reason: validation.failure.reason,
-            cause: validation.failure,
-          },
-        };
-      }
       if (readable.version === 1) {
         const legacyPrefixHash = computePrefixHash(
           history,
@@ -354,6 +291,103 @@ export function planLegacyDurableCheckpointUpgrade(params: {
             "legacy checkpoint prefix digest does not match its persisted history",
           );
         }
+      } else {
+        const sourceValidation = validateCheckpointPrefix({
+          checkpoint: readable.checkpoint,
+          expectedRunId: params.runId,
+          messages: history,
+          projection: params.projection,
+          projectionId: checkpointProjectionId(params.projectionId),
+          sourceKey: params.sourceKey,
+        });
+        const sourceFailure = checkpointValidationFailure(
+          sourceValidation,
+          itemIndex,
+        );
+        if (sourceFailure !== undefined) return sourceFailure;
+      }
+
+      let checkpoint: TurnCheckpointV4Event;
+      if (readable.version === 1) {
+        let prefixHash: string;
+        try {
+          prefixHash = computeCheckpointPrefixHashV3(
+            history,
+            persistedMessageCount,
+          );
+        } catch (error) {
+          const mapped = canonicalizationOutcome(error, itemIndex);
+          if (mapped !== undefined) return mapped;
+          if (error instanceof DurableCheckpointReadError) {
+            return invalid("checkpoint_invalid", itemIndex, error.message);
+          }
+          throw error;
+        }
+        checkpoint = {
+          ...readable.checkpoint,
+          checkpointVersion: DURABLE_CHECKPOINT_READ_VERSION,
+          toolResultIntegrityVersion: 1,
+          prefixHashVersion: 3,
+          prefixHash,
+        };
+        item = {
+          ...item,
+          payload: {
+            ...item.payload,
+            msg: { type: "turn_checkpoint", payload: checkpoint },
+          },
+        };
+        checkpointsUpgraded += 1;
+        changed = true;
+      } else if (readable.sourceVersion !== DURABLE_CHECKPOINT_READ_VERSION) {
+        let prefixHash: string;
+        try {
+          prefixHash = computeCheckpointPrefixHashV3(
+            history,
+            persistedMessageCount,
+          );
+        } catch (error) {
+          const mapped = canonicalizationOutcome(error, itemIndex);
+          if (mapped !== undefined) return mapped;
+          if (error instanceof DurableCheckpointReadError) {
+            return invalid("checkpoint_invalid", itemIndex, error.message);
+          }
+          throw error;
+        }
+        checkpoint = {
+          ...readable.checkpoint,
+          checkpointVersion: DURABLE_CHECKPOINT_READ_VERSION,
+          toolResultIntegrityVersion: 1,
+          prefixHashVersion: 3,
+          prefixHash,
+        };
+        item = {
+          ...item,
+          payload: {
+            ...item.payload,
+            msg: { type: "turn_checkpoint", payload: checkpoint },
+          },
+        };
+        checkpointsUpgraded += 1;
+        changed = true;
+      } else {
+        checkpoint = readable.checkpoint;
+      }
+
+      if (readable.sourceVersion !== DURABLE_CHECKPOINT_READ_VERSION) {
+        const validation = validateCheckpointPrefixV3({
+          checkpoint,
+          expectedRunId: params.runId,
+          messages: history,
+          projection: params.projection,
+          projectionId: checkpointProjectionId(params.projectionId),
+          sourceKey: params.sourceKey,
+        });
+        const targetFailure = checkpointValidationFailure(
+          validation,
+          itemIndex,
+        );
+        if (targetFailure !== undefined) return targetFailure;
       }
       checkpointsValidated += 1;
     }
@@ -363,6 +397,7 @@ export function planLegacyDurableCheckpointUpgrade(params: {
       history,
       item,
       itemIndex,
+      runId: params.runId,
       historyDerivationWork,
       maxHistoryDerivationWork,
     });
@@ -405,6 +440,7 @@ function updateUpgradeHistory(params: {
   readonly history: ToolResultIntegrityResponseItem[];
   readonly item: RolloutItem;
   readonly itemIndex: number;
+  readonly runId: string;
   readonly historyDerivationWork: number;
   readonly maxHistoryDerivationWork: number;
 }): UpgradeHistoryOutcome {
@@ -419,6 +455,22 @@ function updateUpgradeHistory(params: {
   ) {
     return updatedHistory(
       Array.from(item.payload.replacementHistory),
+      params.historyDerivationWork,
+    );
+  }
+  if (item.type === "compaction_committed") {
+    return updatedHistory(
+      item.payload.replacement_history.map((message) => ({ ...message })),
+      params.historyDerivationWork,
+    );
+  }
+  if (
+    item.type === "compaction_rollback_committed" &&
+    Array.isArray(item.payload.source_history) &&
+    item.payload.target_session_id === params.runId
+  ) {
+    return updatedHistory(
+      item.payload.source_history.map((message) => ({ ...message })),
       params.historyDerivationWork,
     );
   }
@@ -648,9 +700,7 @@ function findSourceSchemaVersion(items: ReadonlyArray<RolloutItem>): {
       return { version: item.payload.rolloutSchemaVersion, mixed: false };
     }
   }
-  let sawLegacy = false;
-  let sawV2 = false;
-  let sawV3 = false;
+  const checkpointVersions = new Set<number>();
   for (const item of items) {
     if (
       item.type !== "event_msg" ||
@@ -660,20 +710,30 @@ function findSourceSchemaVersion(items: ReadonlyArray<RolloutItem>): {
     }
     const payload = item.payload.msg.payload as { checkpointVersion?: unknown };
     if (payload.checkpointVersion === DURABLE_CHECKPOINT_READ_VERSION) {
-      sawV3 = true;
+      checkpointVersions.add(DURABLE_CHECKPOINT_READ_VERSION);
+    } else if (payload.checkpointVersion === DURABLE_CHECKPOINT_V3) {
+      checkpointVersions.add(DURABLE_CHECKPOINT_V3);
     } else if (payload.checkpointVersion === DURABLE_CHECKPOINT_V2) {
-      sawV2 = true;
+      checkpointVersions.add(DURABLE_CHECKPOINT_V2);
     } else {
-      sawLegacy = true;
+      checkpointVersions.add(LEGACY_DURABLE_CHECKPOINT_VERSION);
     }
   }
-  let version: number = 1;
-  if (sawV3) {
-    version = DURABLE_ROLLOUT_SCHEMA_VERSION;
-  } else if (sawV2) {
-    version = DURABLE_ROLLOUT_SCHEMA_V2;
+  if (checkpointVersions.size > 1) {
+    return { version: 1, mixed: true };
   }
-  return { version, mixed: sawLegacy && (sawV2 || sawV3) };
+  const [checkpointVersion = LEGACY_DURABLE_CHECKPOINT_VERSION] =
+    checkpointVersions;
+  if (checkpointVersion === DURABLE_CHECKPOINT_READ_VERSION) {
+    return { version: DURABLE_ROLLOUT_SCHEMA_VERSION, mixed: false };
+  }
+  if (checkpointVersion === DURABLE_CHECKPOINT_V3) {
+    return { version: DURABLE_ROLLOUT_SCHEMA_V4, mixed: false };
+  }
+  if (checkpointVersion === DURABLE_CHECKPOINT_V2) {
+    return { version: DURABLE_ROLLOUT_SCHEMA_V2, mixed: false };
+  }
+  return { version: 1, mixed: false };
 }
 
 function checkpointMatchesRolloutSchema(
@@ -689,6 +749,9 @@ function checkpointMatchesRolloutSchema(
   if (rolloutSchemaVersion === DURABLE_ROLLOUT_SCHEMA_V3) {
     return checkpointVersion === DURABLE_CHECKPOINT_V2;
   }
+  if (rolloutSchemaVersion === DURABLE_ROLLOUT_SCHEMA_V4) {
+    return checkpointVersion === DURABLE_CHECKPOINT_V3;
+  }
   return (
     rolloutSchemaVersion === DURABLE_ROLLOUT_SCHEMA_VERSION &&
     checkpointVersion === DURABLE_CHECKPOINT_READ_VERSION
@@ -701,6 +764,33 @@ function checkpointProjectionId(base: string): string {
   hash.update("\0");
   hash.update(base);
   return `checkpoint-upgrade:${hash.digest("hex")}`;
+}
+
+function checkpointValidationFailure(
+  validation: ReturnType<typeof validateCheckpointPrefix>,
+  itemIndex: number,
+): DurableCheckpointUpgradeOutcome | undefined {
+  if (validation.status === "invalid") {
+    return invalid(
+      "checkpoint_invalid",
+      itemIndex,
+      validation.failure.reason,
+      validation.failure,
+    );
+  }
+  if (validation.status === "deferred") {
+    return {
+      status: "deferred",
+      failure: {
+        kind: "operational_deferral",
+        code: "checkpoint_validation_deferred",
+        itemIndex,
+        reason: validation.failure.reason,
+        cause: validation.failure,
+      },
+    };
+  }
+  return undefined;
 }
 
 function canonicalizationOutcome(

@@ -12,6 +12,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { RolloutStore } from "../../src/session/rollout-store.js";
+import { computeCheckpointPrefixHashV3 } from "../../src/session/durable-checkpoint-reader.js";
+import { currentBuildId } from "../../src/session/durable-turns.js";
 import {
   COMPACTION_EVENT_FORMAT_VERSION,
   COMPACTION_MINIMUM_READER_RUNTIME,
@@ -184,6 +186,108 @@ describe("RolloutStore transactional compaction", () => {
     }
   });
 
+  it("reopens a marker-authenticated checkpoint after transactional compaction", () => {
+    const sessionId = "checkpoint-after-compaction";
+    const store = openStore(sessionId);
+    const cwd = store.readAll().find((item) => item.type === "session_meta")
+      ?.payload.cwd;
+    if (cwd === undefined) throw new Error("test session metadata is missing");
+    try {
+      commitSmallCompaction(store, "checkpoint-after-compaction-attempt");
+      const committed = store.readAll().findLast(
+        (item) => item.type === "compaction_committed",
+      );
+      if (committed?.type !== "compaction_committed") {
+        throw new Error("hydrated compaction commit is missing");
+      }
+      const replacementHistory = committed.payload.replacement_history;
+      const prefixHash = computeCheckpointPrefixHashV3(
+        replacementHistory,
+        replacementHistory.length,
+      );
+      const nextSequence = store.readAll().reduce(
+        (maximum, item) =>
+          item.type === "event_msg"
+            ? Math.max(maximum, item.payload.seq ?? 0)
+            : maximum,
+        0,
+      ) + 1;
+      const turnId = "orphan-after-compaction";
+      store.append(
+        {
+          id: "checkpoint-after-compaction-start",
+          eventId: "checkpoint-after-compaction-start",
+          seq: nextSequence,
+          msg: {
+            type: "turn_started",
+            payload: { turnId, buildId: currentBuildId() },
+          },
+        },
+        { durable: true },
+      );
+      store.append(
+        {
+          id: "checkpoint-after-compaction-checkpoint",
+          eventId: "checkpoint-after-compaction-checkpoint",
+          seq: nextSequence + 1,
+          msg: {
+            type: "turn_checkpoint",
+            payload: {
+              turnId,
+              iterationIndex: 1,
+              boundary: "iteration",
+              checkpointSeq: 1,
+              persistedMessageCount: replacementHistory.length,
+              prefixHash,
+              checkpointVersion: 4,
+              toolResultIntegrityVersion: 1,
+              prefixHashVersion: 3,
+              resumableState: {
+                turnCount: 1,
+                recoveryReentryCount: 0,
+                maxOutputTokensRecoveryCount: 0,
+                continuationNudgeCount: 0,
+                stopHookBlockingCount: 0,
+              },
+            },
+          },
+        },
+        { durable: true },
+      );
+    } finally {
+      store.close();
+    }
+
+    const reopened = openStore(sessionId, { resume: true }, cwd);
+    try {
+      const committed = reopened.readAll().findLast(
+        (item) => item.type === "compaction_committed",
+      );
+      if (committed?.type !== "compaction_committed") {
+        throw new Error("reopened compaction commit is missing");
+      }
+      const reconstructed = reconstructFromRollout(reopened.readAll(), {
+        checkpointProjection: reopened.checkpointProjectionContext(
+          "compaction-checkpoint-reopen-test",
+        ),
+      });
+      expect(reconstructed.history).toEqual(
+        committed.payload.replacement_history,
+      );
+      expect(reconstructed.resumableTurns).toMatchObject([
+        {
+          turnId: "orphan-after-compaction",
+          buildMatches: true,
+          historyPrefixValid: true,
+          checkpointIntegrityStatus: "valid",
+          lastCheckpoint: { checkpointSeq: 1 },
+        },
+      ]);
+    } finally {
+      reopened.close();
+    }
+  });
+
   for (const damage of ["missing", "duplicate", "commit-before-payload"] as const) {
     it(`fails closed on a ${damage} compaction payload chain`, () => {
       const fixture = committedStructuredFixture(`payload-${damage}`, 1, 8);
@@ -350,6 +454,114 @@ describe("RolloutStore transactional compaction", () => {
       ]);
     } finally {
       store.close();
+    }
+  });
+
+  it("reopens a marker-authenticated checkpoint after same-session rollback", () => {
+    const sessionId = "checkpoint-after-rollback";
+    const store = openStore(sessionId);
+    const cwd = store.readAll().find((item) => item.type === "session_meta")
+      ?.payload.cwd;
+    if (cwd === undefined) throw new Error("test session metadata is missing");
+    try {
+      const transaction = commitSmallCompaction(
+        store,
+        "checkpoint-after-rollback-attempt",
+        undefined,
+        [],
+        true,
+      );
+      store.markProjectionComplete(transaction.intent.attempt_id);
+      store.markCleanupComplete(transaction.intent.attempt_id);
+      appendAutomaticCompactionBoundary(store, "checkpoint-rollback-turn");
+      store.store.reAppendSessionMetadata();
+      const rollback = store.rollbackCompaction({
+        attemptId: transaction.intent.attempt_id,
+        nowMs: transaction.committedAtMs + 1,
+      });
+      const prefixHash = computeCheckpointPrefixHashV3(
+        rollback.source_history,
+        rollback.source_history.length,
+      );
+      const nextSequence = store.readAll().reduce(
+        (maximum, item) =>
+          item.type === "event_msg"
+            ? Math.max(maximum, item.payload.seq ?? 0)
+            : maximum,
+        0,
+      ) + 1;
+      const turnId = "orphan-after-rollback";
+      store.append(
+        {
+          id: "checkpoint-after-rollback-start",
+          eventId: "checkpoint-after-rollback-start",
+          seq: nextSequence,
+          msg: {
+            type: "turn_started",
+            payload: { turnId, buildId: currentBuildId() },
+          },
+        },
+        { durable: true },
+      );
+      store.append(
+        {
+          id: "checkpoint-after-rollback-checkpoint",
+          eventId: "checkpoint-after-rollback-checkpoint",
+          seq: nextSequence + 1,
+          msg: {
+            type: "turn_checkpoint",
+            payload: {
+              turnId,
+              iterationIndex: 1,
+              boundary: "iteration",
+              checkpointSeq: 1,
+              persistedMessageCount: rollback.source_history.length,
+              prefixHash,
+              checkpointVersion: 4,
+              toolResultIntegrityVersion: 1,
+              prefixHashVersion: 3,
+              resumableState: {
+                turnCount: 1,
+                recoveryReentryCount: 0,
+                maxOutputTokensRecoveryCount: 0,
+                continuationNudgeCount: 0,
+                stopHookBlockingCount: 0,
+              },
+            },
+          },
+        },
+        { durable: true },
+      );
+    } finally {
+      store.close();
+    }
+
+    const reopened = openStore(sessionId, { resume: true }, cwd);
+    try {
+      const rollback = reopened.readAll().findLast(
+        (item) =>
+          item.type === "compaction_rollback_committed" &&
+          item.payload.target_session_id === sessionId,
+      );
+      if (rollback?.type !== "compaction_rollback_committed") {
+        throw new Error("reopened same-session rollback is missing");
+      }
+      const reconstructed = reconstructFromRollout(reopened.readAll(), {
+        checkpointProjection: reopened.checkpointProjectionContext(
+          "rollback-checkpoint-reopen-test",
+        ),
+      });
+      expect(reconstructed.history).toEqual(rollback.payload.source_history);
+      expect(reconstructed.resumableTurns).toMatchObject([
+        {
+          turnId: "orphan-after-rollback",
+          buildMatches: true,
+          historyPrefixValid: true,
+          checkpointIntegrityStatus: "valid",
+        },
+      ]);
+    } finally {
+      reopened.close();
     }
   });
 

@@ -28,10 +28,12 @@ export function assertCompactionHistoryMarkerV1(
     throw new Error("compaction-history marker must be an object");
   }
   const record = value as Record<string, unknown>;
-  const keys = Object.keys(record).sort();
+  const keys = Object.keys(record);
   if (
     keys.length !== COMPACTION_HISTORY_MARKER_KEYS.length ||
-    keys.some((key, index) => key !== COMPACTION_HISTORY_MARKER_KEYS[index])
+    COMPACTION_HISTORY_MARKER_KEYS.some(
+      (key) => !Object.prototype.hasOwnProperty.call(record, key),
+    )
   ) {
     throw new Error("compaction-history marker has unknown or missing fields");
   }
