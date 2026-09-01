@@ -168,6 +168,12 @@ describe("runTurn compact contract", () => {
 
     expect(streamCount).toBe(2);
     expect(compactImpl).toHaveBeenCalled();
+    // The dispatcher is offered the session history, never the query
+    // projection with its attachments and microcompacted tool results.
+    const offered = compactImpl.mock.calls[0]?.[0] as LLMMessage[];
+    expect(offered[0]).toEqual(
+      expect.objectContaining({ role: "user", content: "start" }),
+    );
     expect(seen[1]).toEqual([
       { role: "user", content: "mid compact summary" },
     ]);
@@ -321,13 +327,14 @@ describe("runTurn compact contract", () => {
     );
   });
 
-  test("a mid-turn compaction that declines names its reason in the rollout", async () => {
+  test("an in-turn compaction that declines names its reason in the rollout", async () => {
     // Real dispatcher, no test override. This session has no rollout owner,
     // so the durable transaction refuses with `pin_failed`. The turn loop
     // must surface THAT sentence: before the fix the reason was computed in
     // autoCompactIfNeeded and dropped on the way back through
     // runAgenCAutoCompact, so a run that died here left only a bare
-    // `mid_turn_compact_skipped` behind.
+    // `mid_turn_compact_skipped` behind. The model asks for a tool, so the
+    // compaction runs at the post-tool gate, after the result is in.
     let streamCount = 0;
     const provider = mkProvider({});
     provider.chatStream = async (): Promise<LLMResponse> => {

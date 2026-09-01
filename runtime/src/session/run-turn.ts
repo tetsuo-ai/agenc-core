@@ -488,6 +488,8 @@ async function runAgenCAutoCompact(params: {
   readonly session?: Session;
   readonly ctx?: TurnContext;
   readonly state?: TurnState;
+  /** Durable history offered to the transaction (see runAutoCompact). */
+  readonly messages: readonly LLMMessage[];
   readonly querySource?: string;
   readonly reason?: string;
   readonly phase?: string;
@@ -499,11 +501,7 @@ async function runAgenCAutoCompact(params: {
   }
   try {
     const state = params.state;
-    const sourceMessages =
-      state.messagesForQuery.length > 0
-        ? state.messagesForQuery
-        : state.messages;
-    const messages = toAgenCRuntimeMessages(sourceMessages);
+    const messages = toAgenCRuntimeMessages(params.messages);
     const toolUseContext = buildAgenCToolUseContext(
       params.session,
       params.ctx,
@@ -2332,6 +2330,22 @@ export type InitialContextInjection =
 interface RunAutoCompactOptions {
   readonly propagateErrors?: boolean;
   readonly querySource?: string;
+  /**
+   * How many leading `state.messages` the durable rollout already holds.
+   * An in-turn compaction may only offer those to the transaction: it maps
+   * every offered message onto canonical active history, and an assistant
+   * message that has just asked for tools is not canonical yet. Whatever
+   * lies past the count is dropped with the rest of the pre-compaction
+   * history; the loop re-samples from the replacement, as it always did.
+   * Absent, the whole history is offered (pre-turn compaction).
+   */
+  readonly durableMessageCount?: number;
+  /**
+   * Called after a compaction replaced the history, with its new length,
+   * so the caller can move its persist cursor: everything in the
+   * replacement is canonical already and must not be written again.
+   */
+  readonly onDurableHistoryReplaced?: (durableCount: number) => void;
 }
 
 /**
@@ -2411,15 +2425,24 @@ async function runAutoCompact(
   // mid-turn, and post-tool compaction all fail closed together.
   if (ctx.editorInteraction !== undefined) return false;
 
-  // Source-of-truth for the message set depends on when the dispatcher
-  // is called. Pre-sampling compact runs before the phase loop, so
-  // `state.messages` holds the seed history. Inline compact (T13)
-  // called mid-loop would prefer `messagesForQuery`. Prefer the latter
-  // when populated, fall back to `messages`.
-  const messages =
-    state && state.messagesForQuery.length > 0
-      ? state.messagesForQuery
-      : (state?.messages ?? []);
+  // The compaction source is the durable history, never the query
+  // projection. `messagesForQuery` is what the model sees: attachments are
+  // inserted at its head, oversized tool results are swapped for pointers,
+  // old ones are microcompacted. None of that exists in the canonical
+  // rollout, and the durable transaction maps every offered message onto
+  // canonical active history, so a source drawn from the projection failed
+  // that mapping on every mid-turn attempt (observed live: a 1252-byte
+  // attachment at position 1 that the rollout never stored). Offer the
+  // persisted prefix of `state.messages` instead, minus the runtime-only
+  // messages the rollout skips.
+  const history = state?.messages ?? [];
+  const durableCount = Math.max(
+    0,
+    Math.min(options.durableMessageCount ?? history.length, history.length),
+  );
+  const messages = history
+    .slice(0, durableCount)
+    .filter((message) => !excludeFromDurableHistory(message));
   const shouldKeepUnsentImageTurn =
     phase === "pre_turn" &&
     state !== undefined &&
@@ -2446,6 +2469,7 @@ async function runAutoCompact(
           session,
           ctx,
           state,
+          messages,
           querySource,
           reason,
           phase,
@@ -2505,6 +2529,7 @@ async function runAutoCompact(
         if (unsentImageTurn) {
           state.messagesForQuery.push({ ...unsentImageTurn });
         }
+        options.onDurableHistoryReplaced?.(compacted.length);
         // Stamp auto-compact tracking so the commit phase emits the
         // boundary marker (runtime/src/phases/commit.ts).
         state.autoCompactTracking = {
@@ -4369,6 +4394,24 @@ async function* runTurnKernelInner(
   }
   const rolloutPersistenceSuspended = (): boolean =>
     session.isRolloutPersistenceSuspended?.() === true;
+  const rolloutPersistenceActive = (): boolean =>
+    session.rolloutStore !== null &&
+    session.rolloutStore !== undefined &&
+    !rolloutPersistenceSuspended();
+  /**
+   * How much of `state.messages` an in-turn compaction may offer to the
+   * durable transaction. With a live rollout that is the persist cursor:
+   * exactly the messages canonical history already holds. Without one
+   * (none mounted, or persistence suspended for a fork) nothing is canonical
+   * and the cursor never moves, so the whole history is offered as before.
+   */
+  const compactionDurableCount = (): number =>
+    rolloutPersistenceActive()
+      ? Math.min(persistedMessageCount, state.messages.length)
+      : state.messages.length;
+  const onCompactionReplacedHistory = (durableCount: number): void => {
+    if (rolloutPersistenceActive()) persistedMessageCount = durableCount;
+  };
   const persistTurnRolloutBaseline = (): void => {
     if (rolloutPersistenceSuspended()) return;
     session.rolloutStore?.appendRollout({
@@ -5142,6 +5185,18 @@ async function* runTurnKernelInner(
       state.toolUseBlocks.length > 0 ||
       pendingAssistantToolCalls > 0 ||
       hasPendingInput;
+    /*
+     * Tool calls the model just emitted are already running: the streaming
+     * tool executor starts them as their input completes. A compaction begun
+     * here raced them (observed live: the tool's admission and effect records
+     * landed in the rollout while the summary call was in flight, and the
+     * transaction refused to commit over a rollout that "advanced outside
+     * the compaction admission journal"). Tools do not consume model
+     * context; only the next sample does. So when tool work is pending the
+     * post-tool gate compacts instead, once the results are canonical.
+     */
+    const toolWorkPending =
+      state.toolUseBlocks.length > 0 || pendingAssistantToolCalls > 0;
     const autoCompactLimit =
       getPreSamplingAutoCompactTokenLimit(ctx) ?? Number.POSITIVE_INFINITY;
     // Mirror the donor's `tokenCountWithEstimation` (utils/tokens.ts:418):
@@ -5180,7 +5235,8 @@ async function* runTurnKernelInner(
     if (
       ctx.editorInteraction === undefined &&
       tokenLimitReached &&
-      needsFollowUpForCompact
+      needsFollowUpForCompact &&
+      !toolWorkPending
     ) {
       let midTurnCompacted = false;
       try {
@@ -5191,7 +5247,11 @@ async function* runTurnKernelInner(
           "context_limit",
           "in_turn",
           state,
-          { querySource: turnQuerySource },
+          {
+            querySource: turnQuerySource,
+            durableMessageCount: compactionDurableCount(),
+            onDurableHistoryReplaced: onCompactionReplacedHistory,
+          },
         );
       } catch (error) {
         // agenc runtime returns None on mid-turn compact failure. End
@@ -5496,6 +5556,11 @@ async function* runTurnKernelInner(
       postToolTokenLimitReached &&
       (state.needsFollowUp || state.toolResults.length > 0)
     ) {
+      // The results that just came back are the newest context and the
+      // reason the history is over the limit. Make them canonical first so
+      // the transaction can summarize them along with everything else,
+      // instead of finding them unmapped and refusing to compact.
+      persistNewResponseItems();
       const midTurnCompacted = await runAutoCompact(
         session,
         ctx,
@@ -5503,12 +5568,34 @@ async function* runTurnKernelInner(
         "context_limit",
         "in_turn",
         state,
-        { querySource: turnQuerySource },
+        {
+          querySource: turnQuerySource,
+          durableMessageCount: compactionDurableCount(),
+          onDurableHistoryReplaced: onCompactionReplacedHistory,
+        },
       );
       if (midTurnCompacted) {
         session.bindProviderConversation();
         continue;
       }
+      // Same rule as the mid-turn gate: a dispatcher that ran and declined
+      // leaves the state unchanged, so sampling again would only walk into
+      // the admission denial the compaction was meant to prevent. Close the
+      // turn on a compact_failed boundary with the reason already in the
+      // rollout (`auto_compact_failed`, emitted by runAutoCompact).
+      await drainInFlight(state, ctx, session);
+      const postToolUsageTokens = Math.max(
+        state.lastResponseUsage?.promptTokens ?? 0,
+        getActiveContextTokenUsage(session, ctx, state),
+      );
+      const reasonText = `mid_turn_compact_skipped: lastSamplePromptTokens=${postToolUsageTokens} limit=${postToolAutoCompactLimit}`;
+      emitTurnWarning(session, MID_TURN_COMPACT_FAILED_CAUSE, reasonText);
+      await syncSessionState();
+      emitTurnComplete(lastContent);
+      const underlying = new Error(reasonText);
+      const terminal: Terminal = { reason: "completed", error: underlying };
+      yield compactFailedTurnComplete(lastContent, usage, underlying);
+      return terminal;
     }
 
     // Phase 6 — commit iteration. Stop-hook may request re-entry.
