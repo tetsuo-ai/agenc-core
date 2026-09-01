@@ -50,6 +50,8 @@ This is **not** the same as unattended admission policy:
 - Daemon background sessions use an explicit admission-autonomous hint that
   does not turn keepalive ticks on.
 - Plan mode excludes autonomous keepalive.
+- A turn that ends `compact_failed` (or hard `error`) calls
+  `setContextBlocked(true)` and does not schedule another keepalive tick.
 - Gateway operators still use `agenc gateway run --heartbeat` / `--hooks` for
   channel/webhook autonomy with daemon-enforced caps.
 

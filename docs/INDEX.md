@@ -41,11 +41,11 @@ history; the linked pages below are current product truth.
 | [eval/real-agent-baseline-runbook.md](eval/real-agent-baseline-runbook.md) | Operator runbook for reproducible real-agent pilot batches from pinned inputs, including fail-closed CLI parsing |
 | [eval/seed-baseline-2026-07-17.md](eval/seed-baseline-2026-07-17.md) | Dated snapshot: first contained 10-task real-agent scorecard (2026-07-17, runtime 0.6.1). Not a reproduction contract |
 | [ci-required-gates.md](ci-required-gates.md) | Fast `test:fast` classification, typecheck-only native/policy-inventory surfaces, exact-SHA release gates, and the inactive optional GitHub App/ruleset design |
-| [provider-tool-compat.md](provider-tool-compat.md) | Wire-schema shaping: object-root tools, llama.cpp grammar-safe schemas, Gemini native JSON Schema, and the LM Studio/openai-compatible 8192 ceiling |
+| [provider-tool-compat.md](provider-tool-compat.md) | Wire-schema shaping: object-root tools, llama.cpp grammar-safe schemas, Gemini native JSON Schema, Gemini object-applicator roots that omit type, and the LM Studio/openai-compatible 8192 ceiling |
 | [embedded-neovim-buffer.md](embedded-neovim-buffer.md) | Embedded Neovim workspace, multi-buffer safety, recovery, editor/chat handoff, configuration, troubleshooting, and hosted PTY split |
 | [browser.md](browser.md) | Browser tool, Chromium profile, SSRF proxy, `[browser]` config |
 | [imagine.md](imagine.md) | Grok ImagineImage / ImagineVideo tools (direct xAI only) |
-| [sdk.md](sdk.md) | Embed via `@tetsuo-ai/agenc-sdk` (socket + subprocess), including `startRun` model/provider and the generated transcript.v2 protocol slice |
+| [sdk.md](sdk.md) | Embed via `@tetsuo-ai/agenc-sdk` (socket + subprocess), including `startRun` model/provider, the generated transcript.v2 protocol slice, and marker-checked workflow-result types |
 | [security/slm-transaction-guard.md](security/slm-transaction-guard.md) | Opt-in SLM CourtGuard for Solana-like tool calls |
 | [security/mobile-ledger-transfer.md](security/mobile-ledger-transfer.md) | Typed Android `@ledger` SOL handoff: trust boundary, schemas, idempotency, recovery |
 
@@ -56,16 +56,16 @@ history; the linked pages below are current product truth.
 | [reference/cli.md](reference/cli.md) | Full CLI, including M5 `run start`, Grok auth, OpenAI model discovery, `agenc skills list`, and `/compact` operator commands |
 | [reference/config.md](reference/config.md) | `config.toml` sections, env overrides, `agenc config` |
 | [reference/env.md](reference/env.md) | Operator `AGENC_*` / provider key environment variables, and provider credential isolation |
-| [reference/daemon.md](reference/daemon.md) | Daemon lifecycle, socket auth, deferred first messages, bypass consent, bounded-stop and prompt-hook-block survival, telemetry `error` events that do not latch run status, admission step identity, in-turn checkpoint resume gates, checkpoint v3 / schema 4 pairing, additive journal vs fail-closed reader, compaction recovery fields, and rebuilt transcript `turnResults` |
+| [reference/daemon.md](reference/daemon.md) | Daemon lifecycle, socket auth, deferred first messages, bypass consent, bounded-stop, compact-skip, and prompt-hook-block survival, telemetry `error` events that do not latch run status, admission step identity, in-turn checkpoint resume gates, checkpoint v3 / schema 4 pairing, additive journal vs fail-closed reader, compaction recovery fields, and rebuilt transcript `turnResults` |
 | [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes, Responses continuation, and overflow diagnostics |
-| [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics and `/compact` |
-| [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery (pinned webhook destinations) + hooks HTTP |
-| [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, spawn `task_name` normalization, spawn preflight no-effect, deferred first message, worktree evidence, and turn-scoped abort |
-| [reference/workflows.md](reference/workflows.md) | Version-2 agent DAG manifests, derived child agent names, scheduling, handoff artifacts, limits, and result outcomes |
+| [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics, `/compact`, and `/resolve` vs attested agent-validation refusals |
+| [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery (pinned webhook destinations) + hooks HTTP; autonomous keepalive stops after `compact_failed` |
+| [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, spawn `task_name` normalization, spawn preflight no-effect, close/assign/send validation no-effect, deferred first message, worktree evidence, turn-scoped abort, and keep-alive `compact_failed` idle |
+| [reference/workflows.md](reference/workflows.md) | Version-2 agent DAG manifests, derived child agent names, scheduling, handoff artifacts, limits, result outcomes, and public SDK result-type sync |
 | [reference/memory.md](reference/memory.md) | Persona, AGENC.md, auto-memory paths, full-corpus index, privacy |
-| [reference/mcp.md](reference/mcp.md) | MCP client and server, plugin-declared server precedence, model-facing inputSchema sanitization, model-facing tool text, and Landlock diagnostics |
-| [reference/skills-plugins.md](reference/skills-plugins.md) | Skills, `agenc skills list`, plugin registration, marketplace install, publisher signatures, plugin-update signature policy, explicit local install sources, repository-controlled scope stripping, and canonical `plugins.allowlist` identity |
-| [reference/hooks.md](reference/hooks.md) | Session lifecycle hooks vs gateway HTTP hooks, including UserPromptSubmit block/warn, daemon session survival, and PreToolUse allow that cannot skip interactive prompts |
+| [reference/mcp.md](reference/mcp.md) | MCP client and server, plugin-declared server precedence, model-facing inputSchema sanitization, omitted-type object schemas, model-facing tool text, and Landlock diagnostics |
+| [reference/skills-plugins.md](reference/skills-plugins.md) | Skills, `agenc skills list`, plugin registration, marketplace install, publisher signatures, plugin-update signature policy, explicit local install sources, HTTP(S) archive fetch limits, recorded-source and update-success redaction, native archive fetch error redaction, repository-controlled scope stripping, and canonical `plugins.allowlist` identity |
+| [reference/hooks.md](reference/hooks.md) | Session lifecycle hooks vs gateway HTTP hooks, including UserPromptSubmit block/warn, daemon session survival, Stop-hook throw telemetry that does not close a turn, and PreToolUse allow that cannot skip interactive prompts |
 | [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, interactive-tool prompts that survive bypass, live bypass consent, OS sandbox, home-workspace remediation, launcher contract, and plugin MCP confinement |
 | [reference/tui-workbench.md](reference/tui-workbench.md) | TUI shell, workbench layout, BUFFER operator shortcuts, safety prompts, and the AskUserQuestion picker that bypass cannot skip |
 
@@ -74,7 +74,7 @@ history; the linked pages below are current product truth.
 | Doc | Summary |
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Process model, subsystem map, turn phases, recovery ladder, on-disk state |
-| [design/critical-path/README.md](design/critical-path/README.md) | Critical-path ADRs. Several are shipped (see that README's per-ID status). Remaining target: CP-0008 flattening cutover. The [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main) describes the shipped compaction path. |
+| [design/critical-path/README.md](design/critical-path/README.md) | Critical-path ADRs. Several are shipped (see that README's per-ID status). Remaining target: CP-0008 flattening cutover. The [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main) describes the shipped compaction path, including [compact-skip session survival](design/critical-path/0006-compaction-transaction.md#compact-skip-and-session-survival). |
 | [design/reproducible-installs-releases.md](design/reproducible-installs-releases.md) | M0 dependency, artifact, Docker, release, and crash-safe lock decisions |
 | [design/release-controller.md](design/release-controller.md) | Proposed one-command resumable release controller and automation safety contract |
 | [design/workspace-scoped-agent-roles.md](design/workspace-scoped-agent-roles.md) | Immutable workspace identity for role lookup, spawn, resume, and worktrees |
@@ -88,7 +88,7 @@ history; the linked pages below are current product truth.
 | [design/verified-change-workflow-m5.md](design/verified-change-workflow-m5.md) | Verified-change workflow contract, session bootstrap, child names, review repair, run refs, and evidence |
 | [design/eval-pilot-executor.md](design/eval-pilot-executor.md) | Pilot preflight and offline-agent executor. Phase 2b egress shipped. Evidence-ledger binding in eval-executor is still target |
 | [design/eval-pilot-executor-phase2b-egress.md](design/eval-pilot-executor-phase2b-egress.md) | Contained real-provider egress implementation and adversarial proof record |
-| [design/swarm-orchestration.md](design/swarm-orchestration.md) | Enforced initial delegation for parallel routing, spawn preflight no-effect, durable task outcomes, immutable worktree evidence, external research, and local evaluation gate |
+| [design/swarm-orchestration.md](design/swarm-orchestration.md) | Enforced initial delegation for parallel routing, spawn preflight no-effect, close/assign/send validation no-effect, durable task outcomes, immutable worktree evidence, external research, and local evaluation gate |
 | [design/mailbox-metadata-contract.md](design/mailbox-metadata-contract.md) | Bounded mailbox metadata decoder/builder (E3a). Implemented |
 | [design/mailbox-metadata-cutover.md](design/mailbox-metadata-cutover.md) | Mailbox.send admits only authenticated metadata handles (E3b) |
 | [roadmap.md](roadmap.md) | Shipped vs open backlog (current product truth) |

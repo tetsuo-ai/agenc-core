@@ -260,7 +260,10 @@ part of the public SDK method set.
 `clientMessageId`. Reusing it with the same content is idempotent; reusing it
 with different content is rejected. A retry response reports
 `duplicateState: "completed" | "incomplete"` and never invents success for a
-crash tail without a durable terminal event. Callers that require strict
+crash tail without a durable terminal event. Only `turn_complete` (code 0)
+and `turn_aborted` (code 130) are those terminals. A mid-turn `error` is
+session telemetry, not a closer; see [Mid-turn error events](#mid-turn-error-events).
+Callers that require strict
 single-turn admission pass `ifBusy: "reject"`. That flag refuses only an
 in-flight or queued turn (`pendingMessageSubmissionCount`,
 `pendingShellExecutionCount`, or a live `session.activeTurn`). It does
@@ -369,6 +372,73 @@ history.
 | Markers missing after compact or rewind | Expected. Rows exist only for turns that closed after the current `historyEpoch`. |
 | Duration missing on a completed turn | The terminal lacked `durationMs` and a usable `completedAt - startedAt` pair. |
 | Tokens or model missing | No enclosed `token_count` carried a finite non-negative token field. |
+| `outcome: "errored"` or tokens cut off at a mid-turn `error` | The connected daemon closed the accumulator on the first `error`. Current main keeps the turn open until `turn_complete` / `turn_aborted`. See [Mid-turn error events](#mid-turn-error-events). |
+
+#### Mid-turn error events
+
+Raw session `error` events are diagnostic telemetry. Stop-hook throws
+(`cause: "stop_hook_threw"`) and a blank `shouldBlock` reason (same
+cause) emit them while the ladder continues
+(`runtime/src/phases/stop-hooks.ts`). The recursion cap emits
+`stop_hook_loop` and then allows the turn to terminate. In every case
+the submission closer is still `turn_complete` or `turn_aborted`. A real
+run failure is reported separately as `RunAgentProgressEvent.run_error` or a
+canonical `run_terminal` failure.
+
+Three rebuild and retry sites share that contract in
+`runtime/src/app-server/background-agent-runner.ts`:
+
+| Site | Function | Effect |
+| --- | --- | --- |
+| Live event-log bridge | `messageTerminalFromDaemonEvent` | Does not settle `submission.terminal` |
+| Persisted `clientMessageId` retry | `messageTerminalFromEvent` via `findPersistedMessageSubmission` | Does not mark the crash tail complete |
+| `session.transcript.v2` scan | `sessionTranscriptV2FromRollout` | Does not emit a `turnResults` row |
+
+Constraints:
+
+- A retry of the same `clientMessageId` after `error` then `turn_complete`
+  reports `duplicateState: "completed"` and `terminal.code === 0`. The
+  live path does not re-send the prompt.
+- A retry after `error` with no later terminal reports `incomplete`. The
+  SDK throws `AgencDuplicateSubmissionIncompleteError`.
+- A later turn's terminal is never attributed to an earlier crash tail.
+  The next `user_message` or `message_submission` ends the persisted scan.
+- Current writers never emit `turnResults.outcome: "errored"`. The
+  protocol union in `runtime/src/app-server/protocol/index.ts` (and the
+  generated SDK mirror) still lists it so type-sync stays exact and older
+  daemons that closed on the first `error` remain representable.
+- The live event-log bridge passes every raw session `error` through
+  `projectTelemetryErrorAsSessionOnly`. The resulting
+  `statusProjection: "session_only"` keeps the diagnostic visible without
+  changing agent or run status.
+- Terminal run failures use an explicit path. `run_error` and failed
+  `run_terminal` records produce `event.agent_status` with `status: "error"`.
+  The TUI adapter converts that notification to an `error` transcript event
+  with `payload.terminal: true`. Runtime-settings authority failures carry
+  the same marker.
+- An unmarked raw session error remains visible in the transcript, but it does
+  not clear the TUI's active turn or stop the streaming reducer.
+
+```json
+{
+  "disposition": "duplicate",
+  "duplicateState": "completed",
+  "turnId": "turn-1",
+  "terminal": { "code": 0, "message": "done" }
+}
+```
+
+That is the persisted retry after `stop_hook_threw` then `turn_complete`.
+Older daemons that treated `error` as a closer returned the same
+`duplicateState` with `terminal.code === 1` on the first `error`, even
+when `turn_complete` was still ahead in the journal.
+
+| Symptom | What to check |
+| --- | --- |
+| Retry reports `completed` with `terminal.code === 1` after a hook throw | Connected daemon predates the mid-turn error closer. |
+| `AgencDuplicateSubmissionIncompleteError` after an `error` event | Expected until a matching `turn_complete` or `turn_aborted`. |
+| A raw session `error` also emits `event.agent_status: error` | The connected daemon predates the diagnostic-error projection or bypassed the live event bridge. Current writers reserve that status notification for a terminal run failure. |
+| The TUI spinner stops on a diagnostic error | Check that the transcript event lacks `payload.terminal: true`. Only explicit terminal errors clear the active turn. |
 
 `session.resolveToolCall` accepts two strict protocol-1.0 request shapes. The
 earlier `{ sessionId, toolCallId?, reviewer? }` shape can settle only a legacy
@@ -537,33 +607,73 @@ current Ledger action is documented in
 ## Interactive session survival
 
 A keep-alive (interactive / desktop) session must stay promptable after
-a capped turn. Bounded stops (`no_progress`, `max_turns`, and
-`max_budget_usd`) complete the **turn** with an honest message and
-leave the run available. The daemon mapper used to promote those stops
+a capped turn. Bounded stops (`no_progress`, `max_turns`,
+`max_budget_usd`, and `compact_failed`) complete the **turn** with an
+honest message and leave the run available. The daemon mapper used to promote those stops
 to `run_error`, after which every later prompt answered
 `no longer running (status: error)` while the durable run might still
 be healthy underneath.
 
-One-shot / `--print` / `--no-tui` agents still fail the run on a
-bounded stop: nobody is left to continue them.
-
-Mid-turn and pre-sampling compact skip-or-throw used to emit
-canonical `error` (`mid_turn_compact_failed` /
-`pre_sampling_compact_failed`) and yield `stopReason: "error"`. The
-live event-log bridge treated every `error` as run death, and the
-daemon mapper promoted `stopReason: "error"` to `run_error`, so a
-circuit-breaker skip or `AGENC_DISABLE_COMPACT=1` (outer gate still
-on) answered `no longer running (status: error)` after one turn.
-Those paths now emit `warning` with the same cause and yield
-`compact_failed`, which maps like a bounded stop. Legacy `type:
-"error"` records with those causes follow the same
-[`session_only` projection](#telemetry-errors-stay-session-only)
-as every other session `error`.
+The daemon-backed CLI one-shot path currently maps the resulting
+`turn_complete` to exit code 0 without inspecting its bounded `stopReason`.
+The compatibility `runAgent` path with `keepAlive: false` instead reports a
+bounded stop as failure.
 
 `TaskCreate` accepts a subject-only call. `description` defaults to the
 subject instead of failing validation. A model that retried a missing
 description used to walk into the no-progress backstop and brick the
 session.
+
+### Compact skip stays per-turn
+
+Mid-turn and pre-sampling compact skip-or-throw used to emit
+canonical `error` (`mid_turn_compact_failed` /
+`pre_sampling_compact_failed`) and yield `stopReason: "error"`. The
+live event-log bridge treated every `error` as run death
+(`#applyCanonicalEventBookkeeping` sets `active.status = "error"`),
+and `phaseEventToProgressEvent` mapped `stopReason: "error"` to
+`run_error`. A circuit-breaker skip or `AGENC_DISABLE_COMPACT=1`
+(outer gate still on) then answered
+`no longer running (status: error)` after one turn, even when the
+durable run was still healthy.
+
+Those paths now emit `warning` with the same cause and yield
+`stopReason: "compact_failed"`. `warning` is not a status event.
+The daemon mapper treats `compact_failed` like the other bounded
+stops (`no_progress`, `max_turns`, `max_budget_usd`):
+`turn_complete`, not `run_error`. The user-facing message prefers
+the compact error text (for a skip,
+`mid_turn_compact_skipped: lastSamplePromptTokens=<n> limit=<n>`).
+
+| Path | When the turn ends | Event |
+| --- | --- | --- |
+| Mid-turn sampling loop | Thrown compact **or** `autoCompactIfNeeded` returns `wasCompacted: false` after the outer token gate | `warning` cause `mid_turn_compact_failed` |
+| Pre-sampling | Thrown compact only. A no-op continues the turn. | `warning` cause `pre_sampling_compact_failed` |
+| Post-tool checkpoint | A no-op does **not** terminate. The loop continues to commit. | none |
+
+Keep-alive (interactive / desktop / `keepAlive` subagent) sessions
+stay promptable. A later `message.send` can start a new turn. The
+daemon-backed `--print` / `--no-tui` path currently maps this
+`turn_complete` to exit code 0. The compatibility `runAgent` path with
+`keepAlive: false` reports it as failure. `--autonomous` keepalive calls
+`setContextBlocked(true)` after `compact_failed` (same as hard
+`error`) and will not schedule another tick.
+
+Legacy-format `type: "error"` records are diagnostic regardless of cause when
+they cross the live event-log bridge. `projectTelemetryErrorAsSessionOnly` in
+`background-agent-runner.ts` adds `statusProjection: "session_only"`, so they
+skip run-status bookkeeping and do **not** produce `event.agent_status`. This
+is a structural rule, not a cause allowlist. It also covers new diagnostic
+causes without another lifecycle patch. The projection applies to live events
+and the bridge's pre-attach buffer; it does not rewrite persisted rollout rows.
+
+The TUI already lists those compact causes as turn-outcome warnings
+(`USER_VISIBLE_WARNING_CAUSES` in `tui/session-transcript.ts`).
+`turn-compat` and `execAgentHook` surface `compact_failed` as an
+assistant API error / thrown hook error. That is a consumer-facing
+message, not daemon run death.
+
+See the [CP-0006 compact-skip contract](../design/critical-path/0006-compaction-transaction.md#compact-skip-and-session-survival).
 
 ### Telemetry errors stay session-only
 
@@ -616,9 +726,11 @@ that marker clears `activeTurn` and stops the Working spinner
 (`isTerminalDaemonErrorPayload` in `tui/daemon-terminal-error.ts`).
 An unmarked session `error` keeps the turn open.
 
-This projection does not revive a session that already has a
-durable `run_error`. One-shot / `--print` / `--no-tui` agents
-still fail the run on a bounded stop.
+This projection does not revive a session that already has a durable
+`run_error`. It also does not change bounded-stop exit handling: the
+daemon-backed one-shot CLI currently exits 0 on the resulting
+`turn_complete`, while the compatibility `runAgent` path with
+`keepAlive: false` reports failure.
 
 ### Prompt hook blocks stay per-prompt
 
@@ -697,7 +809,9 @@ See [execution-admission-kernel.md](../design/execution-admission-kernel.md#mode
 | Symptom | What to check |
 | --- | --- |
 | `PROMPT_BLOCKED` on `message.send` / `message.stream` | A `UserPromptSubmit` hook refused this prompt. The session should stay promptable. Confirm `agent.status` is not `error`, then send an allowed follow-up. See [hooks.md](hooks.md#userpromptsubmit). |
-| `no longer running (status: error)` right after a hook denial, stop-hook throw, or stream reconnect | Unexpected after the `session_only` projection. Look for a real `event.agent_status` / `run_error`, or a one-shot / `--print` bounded stop. Session `error` events stay visible as `event.session_event` and do not latch the run. See [telemetry errors](#telemetry-errors-stay-session-only). |
+| `no longer running (status: error)` right after a hook denial, stop-hook throw, or stream reconnect | Unexpected after the `session_only` projection. Look for a real `event.agent_status`, `run_error`, or failed `run_terminal`. Session `error` events stay visible as `event.session_event` and do not latch the run. See [telemetry errors](#telemetry-errors-stay-session-only). |
+| `no longer running (status: error)` after a compact skip or compact throw | Unexpected on a keep-alive session. Confirm the event is `warning` with `mid_turn_compact_failed` / `pre_sampling_compact_failed`, or a legacy `error` with `statusProjection: "session_only"`. The daemon-backed one-shot CLI currently exits 0 on the resulting `turn_complete`; the compatibility `runAgent` path fails. Autonomous keepalive ticks stop after `compact_failed` by design. |
+| Follow-up `message.send` after `mid_turn_compact_skipped` | Expected to start a new turn on a keep-alive session. The prior turn closed with `stopReason: "compact_failed"`. |
 | `AdmissionStepConflictError` | The same `(runId, stepId)` was acquired with different normalized admission data. Compare the `stepId`, provider, model, token bounds, and budget identity in `agenc run evidence`. |
 | A crash-resumed nudge or empty-response retry conflicts | Verify the latest turn checkpoint contains the expected sample ordinal and resume-prompt kind. |
 | A later model call lacks `sample-<ordinal>` | Check whether the prior response was terminal. Only successful nonterminal responses reserve another physical sample. |
@@ -764,6 +878,8 @@ agenc budget status    # configured policy only; usage is agenc run status <run-
 | Background runs                   | `runtime/src/app-server/background-agent-runner.ts` |
 | Telemetry `error` projection      | `projectTelemetryErrorAsSessionOnly` in `background-agent-runner.ts`; TUI marker in `tui/daemon-terminal-error.ts` / `transcriptEventFromAgentStatus` |
 | Prompt-hook block emit            | `hooks/user-prompt-ingress.ts` (live refusals are `warning`; legacy `error` uses the telemetry projection) |
+| Compact-skip session survival     | `emitCompactFailureWarning` / `compactFailedTurnComplete` in `session/run-turn.ts`; `phaseEventToProgressEvent` in `background-agent-runner.ts` |
+| Diagnostic errors and terminals   | `projectTelemetryErrorAsSessionOnly`, `messageTerminalFromDaemonEvent`, `messageTerminalFromEvent`, and `sessionTranscriptV2FromRollout` in `background-agent-runner.ts`; `transcriptEventFromAgentStatus` and `isTerminalDaemonErrorPayload` in `tui/` |
 | Local socket / Windows named pipe | `runtime/src/app-server/transport/unix-socket.ts`   |
 | Cookie auth                       | `runtime/src/app-server/transport/auth.ts`          |
 | Health                            | `runtime/src/app-server/health.ts`                  |
