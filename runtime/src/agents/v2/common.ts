@@ -144,13 +144,13 @@ export function strictArgs(
   ]);
   for (const key of Object.keys(args)) {
     if (!allowed.has(key)) {
-      return agentValidationError(`unknown field \`${key}\``);
+      return json({ error: `unknown field \`${key}\`` }, true);
     }
   }
   for (const key of opts.required ?? []) {
     const value = args[key];
     if (typeof value !== "string") {
-      return agentValidationError(`${key} is required`);
+      return json({ error: `${key} is required` }, true);
     }
   }
   return null;
@@ -161,7 +161,7 @@ export function getSessionOrError(
 ): Session | ToolResult {
   const session = opts.getSession();
   if (session === null) {
-    return agentValidationError("tool invoked before session was initialized");
+    return json({ error: "tool invoked before session was initialized" }, true);
   }
   return session;
 }
@@ -227,12 +227,12 @@ export function isCurrentAgentContextError(
 }
 
 function invalidRuntimeIdentity(reason: string): ToolResult {
-  return validationErrorToolResult(
-    AGENT_VALIDATION_EVIDENCE_REF,
-    safeStringify({
+  return json(
+    {
       error: "invalid-runtime-identity",
       reason,
-    }),
+    },
+    true,
   );
 }
 

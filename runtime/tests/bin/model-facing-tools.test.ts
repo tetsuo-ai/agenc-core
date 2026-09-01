@@ -5168,10 +5168,10 @@ describe("model-facing tools", () => {
 
       const result = await close.execute({ target: "/root/failing_close" });
 
-    expect(result.isError).toBe(true);
-    expect(JSON.parse(result.content).error).toBe("close failed");
-    expect(result.effectDisposition).toBeUndefined();
-    expect(unsubscribe).toHaveBeenCalled();
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content).error).toBe("close failed");
+      expect(result.effectDisposition).toBeUndefined();
+      expect(unsubscribe).toHaveBeenCalled();
       expect(emit.mock.calls.map((call) => call[0].msg.type)).toEqual([
         "collab_close_begin",
         "collab_close_end",
