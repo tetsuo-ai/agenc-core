@@ -637,6 +637,11 @@ A missing `./dir` fails with `plugin source not found` instead of trying npm.
 plugin root or a descendant. Classification table and examples:
 [Install sources](skills-plugins.md#install-sources).
 
+Failed `plugin install` / `plugin update` resolution rebuilds the thrown
+Error so CLI, `inspect`, and JSON serialization never see URL userinfo,
+signed query values, or `ERR_INVALID_URL.input`. See
+[Native archive fetch error redaction](skills-plugins.md#native-archive-fetch-error-redaction).
+
 ---
 
 ## `skills`

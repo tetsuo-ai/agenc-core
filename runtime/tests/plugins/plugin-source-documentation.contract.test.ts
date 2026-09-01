@@ -1,7 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
-import { classifyPluginSource } from "../../src/plugins/resolution.js";
+import {
+  classifyPluginSource,
+  redactPluginSource,
+} from "../../src/plugins/resolution.js";
 
 interface MarkdownFence {
   readonly language: string;
@@ -40,6 +43,35 @@ describe("plugin source documentation contract", () => {
     await expect(
       classifyPluginSource(bashSources[1]!, REPOSITORY_ROOT),
     ).resolves.toBe("npm");
+  });
+
+  test("locks native archive fetch error-redaction examples", async () => {
+    const section = markdownSection(
+      await readFile(PLUGIN_REFERENCE, "utf8"),
+      "Native archive fetch error redaction",
+    );
+
+    expect(section).toContain("redactPluginResolutionError");
+    expect(section).toContain("ERR_INVALID_URL.input");
+    expect(section).toContain("Unparseable");
+    expect(section).not.toContain("sourceRedacted");
+    expect(section).not.toContain("50 MiB");
+
+    const parseable =
+      "https://opaque-token@agenc.tech/plugins/private.tgz?access_token=secretvalue";
+    const unparseable =
+      "https://opaque-token@agenc.tech:notaport/plugins/private.tgz?access_token=secretvalue";
+    const parseableRedacted =
+      "https://redacted@agenc.tech/plugins/private.tgz?redacted=1";
+    const unparseableRedacted =
+      "https://redacted@agenc.tech:notaport/plugins/private.tgz?redacted=1";
+
+    expect(section).toContain(parseable);
+    expect(section).toContain(unparseable);
+    expect(redactPluginSource(parseable)).toBe(parseableRedacted);
+    expect(redactPluginSource(unparseable)).toBe(unparseableRedacted);
+    expect(section).toContain(parseableRedacted);
+    expect(section).toContain(unparseableRedacted);
   });
 });
 
