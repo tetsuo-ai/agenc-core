@@ -7822,6 +7822,62 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
+  it("[managed-thread] keeps the run alive after a mid-turn compact skip", async () => {
+    const { runner, session, control, stub } = makeTopLevelRunner({
+      conversationId: "session-survives-mid-turn-compact-skip",
+    });
+    await runner.startAgent({
+      objective: "passive compact test",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    session.emit({
+      id: "legacy-mid-turn-compact-skip",
+      msg: {
+        type: "error",
+        payload: {
+          cause: "mid_turn_compact_failed",
+          message:
+            "mid_turn_compact_skipped: lastSamplePromptTokens=200000 limit=180000",
+        },
+      },
+    });
+    session.emitPhaseEvent({
+      type: "turn_complete",
+      content: "need a tool",
+      usage: {
+        promptTokens: 200_000,
+        completionTokens: 10,
+        totalTokens: 200_010,
+      },
+      stopReason: "compact_failed",
+      error: new Error(
+        "mid_turn_compact_skipped: lastSamplePromptTokens=200000 limit=180000",
+      ),
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const snapshot = await runner.getAgentSnapshot(
+      "session-survives-mid-turn-compact-skip",
+    );
+    expect(snapshot?.status).not.toBe("error");
+
+    await expect(
+      runner.submitAgentMessage("session-survives-mid-turn-compact-skip", {
+        sessionId: "session_1",
+        content: "continue after compact skip",
+        originalContent: "continue after compact skip",
+        messageId: "after-compact-skip",
+        streamId: "after-compact-skip-stream",
+        acceptedAt: "2026-08-31T00:00:01.000Z",
+      }),
+    ).resolves.toMatchObject({ disposition: "started" });
+    expect(control.sendInput).toHaveBeenCalledTimes(1);
+    expect(stub.thread.submit).not.toHaveBeenCalled();
+  });
+
   it("[managed-thread] applies owning-session hook context to follow-up model input exactly once", async () => {
     const contextHook = vi.fn(() => ({
       additionalContexts: ["session-owned daemon context"],
@@ -8535,6 +8591,64 @@ describe("AgenC delegate background-agent runner", () => {
       disposition: "duplicate",
       duplicateState: "incomplete",
       turnId: "crashed-turn",
+    });
+    expect(control.sendInput).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] does not treat a mid-turn error as the persisted terminal", async () => {
+    const event = (id: string, seq: number, msg: Record<string, unknown>) => ({
+      type: "event_msg",
+      payload: { id, eventId: id, seq, msg },
+    });
+    const { runner, control } = makeTopLevelRunner({
+      conversationId: "session-error-then-complete",
+      rolloutItems: [
+        event("user-1", 1, {
+          type: "user_message",
+          payload: {
+            message: "retry me",
+            messageId: "error-then-complete",
+            acceptedAt: "2026-08-17T00:00:00.000Z",
+          },
+        }),
+        event("turn-1", 2, {
+          type: "turn_started",
+          payload: { turnId: "turn-1" },
+        }),
+        event("hook-threw", 3, {
+          type: "error",
+          payload: {
+            cause: "stop_hook_threw",
+            message: "lint threw",
+            turnId: "turn-1",
+          },
+        }),
+        event("complete-1", 4, {
+          type: "turn_complete",
+          payload: { turnId: "turn-1", lastAgentMessage: "done" },
+        }),
+      ],
+    });
+    await runner.startAgent({
+      objective: "restored",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    await expect(
+      runner.submitAgentMessage("session-error-then-complete", {
+        sessionId: "session_1",
+        content: "retry me",
+        originalContent: "retry me",
+        messageId: "error-then-complete",
+        streamId: "error-then-complete",
+        acceptedAt: "2026-08-17T01:00:00.000Z",
+      }),
+    ).resolves.toMatchObject({
+      disposition: "duplicate",
+      duplicateState: "completed",
+      turnId: "turn-1",
+      terminal: { code: 0, message: "done" },
     });
     expect(control.sendInput).not.toHaveBeenCalled();
   });

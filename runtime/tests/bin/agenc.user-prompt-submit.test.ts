@@ -17,7 +17,10 @@ import {
   trustProjectSync,
 } from "../permissions/trust/project-trust.js";
 import type { PhaseEvent } from "../phases/events.js";
-import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
+import {
+  AutonomousKeepaliveScheduler,
+  type SessionEditorInteraction,
+} from "../session/autonomous-mode.js";
 import {
   canonicalizePath,
   clearSessionReadState,
@@ -25,12 +28,10 @@ import {
 } from "../tools/system/filesystem.js";
 
 function fakeSession(cwd: string) {
-  let installed:
-    | {
-        submit(message: string, opts?: unknown): Promise<void>;
-        flushEventLog?(): void;
-      }
-    | null = null;
+  let installed: {
+    submit(message: string, opts?: unknown): Promise<void>;
+    flushEventLog?(): void;
+  } | null = null;
   const events: unknown[] = [];
   const session = {
     abortController: new AbortController(),
@@ -210,6 +211,41 @@ function installOneShotDaemonSpies() {
 }
 
 describe("UserPromptSubmit prompt ingress", () => {
+  it("blocks autonomous keepalive after a compact failure", async () => {
+    const { session } = fakeSession("/workspace");
+    const setContextBlocked = vi.spyOn(
+      AutonomousKeepaliveScheduler.prototype,
+      "setContextBlocked",
+    );
+    const runSingleTurnFn = vi.fn(async function* () {
+      yield {
+        type: "turn_complete",
+        content: "",
+        usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
+        stopReason: "compact_failed",
+        error: new Error("compaction could not shrink the context"),
+      } satisfies PhaseEvent;
+      return { reason: "completed" };
+    });
+    const uninstall = __installTuiSessionContractForTest({
+      session: session as never,
+      configStore: { current: () => defaultConfig },
+      agencHome: "/tmp/agenc",
+      resolvedProvider: "stub",
+      autonomousModeEnabled: true,
+      loadTurnInputsFn: async () => EMPTY_TURN_INPUTS,
+      runSingleTurnFn: runSingleTurnFn as never,
+    });
+
+    try {
+      await session.submit("hello");
+      expect(setContextBlocked).toHaveBeenCalledWith(true);
+    } finally {
+      uninstall();
+      setContextBlocked.mockRestore();
+    }
+  });
+
   it("runs hooks through the installed live submit driver before the turn starts", async () => {
     const { session } = fakeSession("/workspace");
     const inputs: unknown[] = [];
@@ -669,9 +705,7 @@ describe("UserPromptSubmit prompt ingress", () => {
     expect(modelInputs).toEqual(["explain this selection"]);
     expect(turnOptions).toContainEqual(
       expect.objectContaining({
-        systemPrompt: expect.stringContaining(
-          "<editor_interaction_policy>",
-        ),
+        systemPrompt: expect.stringContaining("<editor_interaction_policy>"),
         systemPromptTrust: "trusted_internal",
       }),
     );

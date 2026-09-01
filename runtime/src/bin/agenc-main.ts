@@ -1310,7 +1310,10 @@ function installTuiSessionContract(params: {
         }
         lastTurnToolNames = toolNames;
         completedPromptTurn = true;
-        autonomousKeepalive.setContextBlocked(lastTurnStopReason === "error");
+        autonomousKeepalive.setContextBlocked(
+          lastTurnStopReason === "error" ||
+            lastTurnStopReason === "compact_failed",
+        );
       };
 
       const shouldScheduleNextAutonomousTick = (): boolean => {

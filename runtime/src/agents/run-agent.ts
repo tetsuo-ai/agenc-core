@@ -3684,7 +3684,8 @@ export async function* runAgent(
         | "cancelled"
         | "error"
         | "empty_response"
-        | "no_progress" = "completed";
+        | "no_progress"
+        | "compact_failed" = "completed";
       let terminalError: unknown;
 
       const iter = childSession.runTurn(nextUserMessage, {
@@ -3855,7 +3856,8 @@ export async function* runAgent(
       const boundedStop =
         stopReason === "max_turns" ||
         stopReason === "max_budget_usd" ||
-        stopReason === "no_progress";
+        stopReason === "no_progress" ||
+        stopReason === "compact_failed";
       // A bounded stop in a keep-alive (interactive) run is a per-turn
       // outcome: the backstop's message already reached the transcript,
       // and the user must be able to keep prompting. Ending the run here
@@ -3871,6 +3873,11 @@ export async function* runAgent(
           message =
             assistantText ||
             "subagent stopped by the no-progress backstop (semantic non-termination)";
+        } else if (stopReason === "compact_failed") {
+          message =
+            (terminalError instanceof Error ? terminalError.message : undefined) ||
+            assistantText ||
+            "subagent stopped because compaction could not shrink the context";
         } else if (terminalError instanceof Error) {
           message = terminalError.message;
         } else if (typeof terminalError === "string") {

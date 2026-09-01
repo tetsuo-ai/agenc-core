@@ -51,6 +51,7 @@ export type PhaseEvent =
         | "cancelled"
         | "error"
         | "empty_response"
-        | "no_progress"; // behavioral backstop (semantic non-termination, goal #3)
+        | "no_progress" // behavioral backstop (semantic non-termination, goal #3)
+        | "compact_failed"; // mid-turn / pre-sampling compact skip or throw
       readonly error?: Error;
     };
