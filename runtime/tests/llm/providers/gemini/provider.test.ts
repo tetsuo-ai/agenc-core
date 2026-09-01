@@ -143,6 +143,137 @@ function invokeGeminiWithTools(
   return invokeGeminiWithOptions(provider, operation, { tools: [...tools] });
 }
 
+function successfulGeminiFetchForOperation(operation: GeminiToolOperation) {
+  switch (operation) {
+    case "chat":
+      return successfulGeminiFetch("{}");
+    case "stream":
+      return vi.fn<typeof fetch>().mockResolvedValue(
+        sseResponse([
+          'data: {"candidates":[{"content":{"parts":[{"text":"{}"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}\n\n',
+        ]),
+      );
+    case "count":
+      return vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(jsonResponse({ totalTokens: 2 }));
+  }
+}
+
+async function expectGeminiOptionsAccepted(
+  operation: GeminiToolOperation,
+  options: LLMChatOptions,
+): Promise<void> {
+  const fetchImpl = successfulGeminiFetchForOperation(operation);
+  const provider = providerWithFetch(fetchImpl);
+  await expect(
+    invokeGeminiWithOptions(provider, operation, options),
+  ).resolves.toBeDefined();
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+}
+
+async function expectGeminiOptionsRejected(
+  operation: GeminiToolOperation,
+  options: LLMChatOptions,
+  expectedMessage: string,
+): Promise<void> {
+  const fetchImpl = vi.fn<typeof fetch>();
+  const provider = providerWithFetch(fetchImpl);
+  const invocation = invokeGeminiWithOptions(provider, operation, options);
+  await expect(invocation).rejects.toThrow(expectedMessage);
+  await expect(invocation).rejects.not.toBeInstanceOf(RangeError);
+  expect(fetchImpl).not.toHaveBeenCalled();
+}
+
+function geminiToolOptions(schema: Record<string, unknown>): LLMChatOptions {
+  return {
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "bounded_schema",
+          description: "Exercise the Gemini schema bounds",
+          parameters: schema,
+        },
+      },
+    ],
+  };
+}
+
+function geminiResponseOptions(schema: Record<string, unknown>): LLMChatOptions {
+  return {
+    structuredOutput: {
+      enabled: true,
+      schema: { type: "json_schema", name: "bounded_schema", schema },
+    },
+  };
+}
+
+function geminiValueBoundarySchema(
+  contract: "tool" | "response",
+  values: number,
+) {
+  const enumValues = values - 3;
+  return contract === "tool"
+    ? {
+        type: "object",
+        enum: Array.from({ length: enumValues }, () => ({})),
+      }
+    : { type: "number", enum: Array(enumValues).fill(0) };
+}
+
+function geminiByteBoundarySchema(type: "object" | "string", bytes: number) {
+  const fixedUtf8Bytes = "type".length + type.length + "description".length;
+  return {
+    type,
+    description: "x".repeat(bytes - fixedUtf8Bytes),
+  };
+}
+
+function geminiWidePrimitiveObjectSchema(values: number) {
+  const constant: Record<string, number> = {};
+  for (let index = 0; index < values - 3; index += 1) {
+    constant[index.toString(36)] = 0;
+  }
+  return { type: "object", const: constant };
+}
+
+function geminiDepthBoundarySchema(deepestValueDepth: number) {
+  let nested: Record<string, unknown> = { type: "string" };
+  for (let depth = 3; depth < deepestValueDepth; depth += 1) {
+    nested = { type: "array", items: nested };
+  }
+  return {
+    type: "object",
+    properties: { value: nested },
+  };
+}
+
+function geminiLinearReferenceSchema(
+  definitions: number,
+  terminalType: "object" | "string",
+) {
+  const defs: Record<string, unknown> = {};
+  for (let index = 0; index < definitions; index += 1) {
+    defs[`d${index}`] =
+      index + 1 < definitions
+        ? { $ref: `#/$defs/d${index + 1}` }
+        : { type: terminalType };
+  }
+  return { $ref: "#/$defs/d0", $defs: defs };
+}
+
+function geminiRepeatedReferenceSchema(levels: number) {
+  const defs: Record<string, unknown> = {
+    [`d${levels}`]: { type: "object" },
+  };
+  for (let level = levels - 1; level >= 0; level -= 1) {
+    const ref = { $ref: `#/$defs/d${level + 1}` };
+    defs[`d${level}`] = { allOf: [ref, ref] };
+  }
+  return { $ref: "#/$defs/d0", $defs: defs };
+}
+
 async function dispatchGeminiToolSchema(
   schema: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
@@ -2027,6 +2158,182 @@ describe("GeminiProvider", () => {
     expect(requestBody.generationConfig.responseJsonSchema).toEqual(
       responseSchema,
     );
+  });
+
+  describe("bounds native schema validation work", () => {
+    const operations = ["chat", "stream", "count"] as const;
+    const contracts = [
+      {
+        label: "tool" as const,
+        type: "object" as const,
+        options: geminiToolOptions,
+      },
+      {
+        label: "response" as const,
+        type: "string" as const,
+        options: geminiResponseOptions,
+      },
+    ];
+
+    for (const contract of contracts) {
+      test.each(operations)(
+        `accepts the ${contract.label} schema value limit before %s dispatch`,
+        async (operation) => {
+          await expectGeminiOptionsAccepted(
+            operation,
+            contract.options(
+              geminiValueBoundarySchema(contract.label, 100_000),
+            ),
+          );
+        },
+      );
+
+      test.each(operations)(
+        `rejects the 100,001-value ${contract.label} schema before %s dispatch`,
+        async (operation) => {
+          await expectGeminiOptionsRejected(
+            operation,
+            contract.options(
+              geminiValueBoundarySchema(contract.label, 100_001),
+            ),
+            "schema exceeds the 100000-value validation limit",
+          );
+        },
+      );
+
+      test.each(operations)(
+        `accepts the ${contract.label} schema UTF-8 limit before %s dispatch`,
+        async (operation) => {
+          await expectGeminiOptionsAccepted(
+            operation,
+            contract.options(
+              geminiByteBoundarySchema(contract.type, 1_048_576),
+            ),
+          );
+        },
+      );
+
+      test.each(operations)(
+        `rejects the over-limit ${contract.label} schema string before %s dispatch`,
+        async (operation) => {
+          await expectGeminiOptionsRejected(
+            operation,
+            contract.options(
+              geminiByteBoundarySchema(contract.type, 1_048_577),
+            ),
+            "schema exceeds the 1048576-byte UTF-8 validation limit",
+          );
+        },
+      );
+
+      test.each(operations)(
+        `accepts the ${contract.label} schema depth limit before %s dispatch`,
+        async (operation) => {
+          await expectGeminiOptionsAccepted(
+            operation,
+            contract.options(geminiDepthBoundarySchema(256)),
+          );
+        },
+      );
+
+      test.each(operations)(
+        `rejects the over-limit ${contract.label} schema depth before %s dispatch`,
+        async (operation) => {
+          await expectGeminiOptionsRejected(
+            operation,
+            contract.options(geminiDepthBoundarySchema(257)),
+            "schema exceeds the 256-level validation depth limit",
+          );
+        },
+      );
+    }
+
+    test.each(operations)(
+      "rejects a wide primitive-valued object before %s dispatch",
+      async (operation) => {
+        await expectGeminiOptionsRejected(
+          operation,
+          geminiResponseOptions(geminiWidePrimitiveObjectSchema(100_001)),
+          "schema exceeds the 100000-value validation limit",
+        );
+      },
+    );
+
+    test("charges property names to the UTF-8 limit before chat dispatch", async () => {
+      await expectGeminiOptionsRejected(
+        "chat",
+        geminiResponseOptions({ ["x".repeat(1_048_577)]: true }),
+        "schema exceeds the 1048576-byte UTF-8 validation limit",
+      );
+    });
+
+    test.each(operations)(
+      "accepts the response reference-work limit before %s dispatch",
+      async (operation) => {
+        await expectGeminiOptionsAccepted(
+          operation,
+          geminiResponseOptions(geminiLinearReferenceSchema(3_333, "string")),
+        );
+      },
+    );
+
+    test.each(operations)(
+      "rejects response reference work above the limit before %s dispatch",
+      async (operation) => {
+        await expectGeminiOptionsRejected(
+          operation,
+          geminiResponseOptions(geminiLinearReferenceSchema(3_334, "string")),
+          "schema analysis exceeds the 10000-step work limit",
+        );
+      },
+    );
+
+    test.each(operations)(
+      "accepts bounded repeated tool references before %s dispatch",
+      async (operation) => {
+        await expectGeminiOptionsAccepted(
+          operation,
+          geminiToolOptions(geminiRepeatedReferenceSchema(10)),
+        );
+      },
+    );
+
+    test.each(operations)(
+      "rejects repeated tool reference work above the limit before %s dispatch",
+      async (operation) => {
+        await expectGeminiOptionsRejected(
+          operation,
+          geminiToolOptions(geminiRepeatedReferenceSchema(11)),
+          "schema analysis exceeds the 10000-step work limit",
+        );
+      },
+    );
+
+    for (const contract of [
+      {
+        label: "response",
+        terminalType: "string" as const,
+        options: geminiResponseOptions,
+      },
+      {
+        label: "tool",
+        terminalType: "object" as const,
+        options: geminiToolOptions,
+      },
+    ]) {
+      test.each(operations)(
+        `rejects a 12,000-link ${contract.label} reference chain without stack overflow before %s dispatch`,
+        async (operation) => {
+          await expectGeminiOptionsRejected(
+            operation,
+            contract.options(
+              geminiLinearReferenceSchema(12_000, contract.terminalType),
+            ),
+            "schema analysis exceeds",
+          );
+        },
+      );
+    }
   });
 
   test.each([

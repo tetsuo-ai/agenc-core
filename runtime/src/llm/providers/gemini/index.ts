@@ -4,6 +4,7 @@
  * @module
  */
 
+import { Buffer } from "node:buffer";
 import { ProviderHttpClient } from "../../client.js";
 import {
   ProviderHttpError,
@@ -503,6 +504,8 @@ interface GeminiSchemaValidationState {
     string,
     Readonly<{ schema: Record<string, unknown>; path: string }>
   >;
+  analysisWork: number;
+  analysisDepth: number;
 }
 
 const GEMINI_NO_PROPERTY_CONTEXT: GeminiSchemaPropertyContext = {
@@ -540,12 +543,57 @@ function geminiSchemaObject(
   return value;
 }
 
-const GEMINI_SCHEMA_VALIDATION_MAX_NODES = 100_000;
+const GEMINI_SCHEMA_VALIDATION_MAX_VALUES = 100_000;
+const GEMINI_SCHEMA_VALIDATION_MAX_UTF8_BYTES = 1_048_576;
 const GEMINI_SCHEMA_VALIDATION_MAX_DEPTH = 256;
+const GEMINI_SCHEMA_ANALYSIS_MAX_WORK = 10_000;
+const GEMINI_SCHEMA_ANALYSIS_MAX_DEPTH = 256;
 
 interface GeminiSchemaCloneState {
-  nodes: number;
+  values: number;
+  utf8Bytes: number;
   readonly ancestors: Set<object>;
+}
+
+function chargeGeminiSchemaValue(
+  state: GeminiSchemaCloneState,
+  path: string,
+): void {
+  state.values += 1;
+  if (state.values > GEMINI_SCHEMA_VALIDATION_MAX_VALUES) {
+    geminiSchemaError(
+      path,
+      `schema exceeds the ${GEMINI_SCHEMA_VALIDATION_MAX_VALUES}-value validation limit`,
+    );
+  }
+}
+
+function preflightGeminiSchemaChildValues(
+  count: number,
+  state: GeminiSchemaCloneState,
+  path: string,
+): void {
+  if (count > GEMINI_SCHEMA_VALIDATION_MAX_VALUES - state.values) {
+    geminiSchemaError(
+      path,
+      `schema exceeds the ${GEMINI_SCHEMA_VALIDATION_MAX_VALUES}-value validation limit`,
+    );
+  }
+}
+
+function chargeGeminiSchemaUtf8(
+  value: string,
+  state: GeminiSchemaCloneState,
+  path: string,
+): void {
+  const bytes = Buffer.byteLength(value, "utf8");
+  if (bytes > GEMINI_SCHEMA_VALIDATION_MAX_UTF8_BYTES - state.utf8Bytes) {
+    geminiSchemaError(
+      path,
+      `schema exceeds the ${GEMINI_SCHEMA_VALIDATION_MAX_UTF8_BYTES}-byte UTF-8 validation limit`,
+    );
+  }
+  state.utf8Bytes += bytes;
 }
 
 function isGeminiSchemaJsonPrimitive(
@@ -565,22 +613,21 @@ function cloneGeminiSchemaValueForValidation(
   depth: number,
   state: GeminiSchemaCloneState,
 ): unknown {
-  if (isGeminiSchemaJsonPrimitive(value)) return value;
-  if (typeof value !== "object") {
-    geminiSchemaError(path, "expected a JSON-compatible schema value");
-  }
   if (depth > GEMINI_SCHEMA_VALIDATION_MAX_DEPTH) {
     geminiSchemaError(
       path,
       `schema exceeds the ${GEMINI_SCHEMA_VALIDATION_MAX_DEPTH}-level validation depth limit`,
     );
   }
-  state.nodes += 1;
-  if (state.nodes > GEMINI_SCHEMA_VALIDATION_MAX_NODES) {
-    geminiSchemaError(
-      path,
-      `schema exceeds the ${GEMINI_SCHEMA_VALIDATION_MAX_NODES}-node validation limit`,
-    );
+  chargeGeminiSchemaValue(state, path);
+  if (isGeminiSchemaJsonPrimitive(value)) {
+    if (typeof value === "string") {
+      chargeGeminiSchemaUtf8(value, state, path);
+    }
+    return value;
+  }
+  if (typeof value !== "object") {
+    geminiSchemaError(path, "expected a JSON-compatible schema value");
   }
   if (state.ancestors.has(value)) {
     geminiSchemaError(path, "the JavaScript schema value is circular");
@@ -589,6 +636,7 @@ function cloneGeminiSchemaValueForValidation(
   state.ancestors.add(value);
   try {
     if (Array.isArray(value)) {
+      preflightGeminiSchemaChildValues(value.length, state, path);
       const snapshot: unknown[] = [];
       for (let index = 0; index < value.length; index += 1) {
         const entryPath = `${path}[${index}]`;
@@ -610,8 +658,16 @@ function cloneGeminiSchemaValueForValidation(
       }
       return snapshot;
     }
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [
+    const objectValue = value as Record<string, unknown>;
+    const keys = Object.keys(objectValue);
+    preflightGeminiSchemaChildValues(keys.length, state, path);
+    for (const key of keys) {
+      chargeGeminiSchemaUtf8(key, state, path);
+    }
+    const entries: [string, unknown][] = [];
+    for (const key of keys) {
+      const entry = objectValue[key];
+      entries.push([
         key,
         cloneGeminiSchemaValueForValidation(
           entry,
@@ -619,8 +675,9 @@ function cloneGeminiSchemaValueForValidation(
           depth + 1,
           state,
         ),
-      ]),
-    );
+      ]);
+    }
+    return Object.fromEntries(entries);
   } finally {
     state.ancestors.delete(value);
   }
@@ -632,7 +689,8 @@ function cloneGeminiSchemaForValidation(
 ): Record<string, unknown> {
   return geminiSchemaObject(
     cloneGeminiSchemaValueForValidation(value, path, 0, {
-      nodes: 0,
+      values: 0,
+      utf8Bytes: 0,
       ancestors: new Set(),
     }),
     path,
@@ -1323,6 +1381,43 @@ function resolveGeminiSchemaReference(
   };
 }
 
+function consumeGeminiSchemaAnalysisWork(
+  state: GeminiSchemaValidationState,
+  path: string,
+): void {
+  state.analysisWork += 1;
+  if (state.analysisWork > GEMINI_SCHEMA_ANALYSIS_MAX_WORK) {
+    geminiSchemaError(
+      path,
+      `schema analysis exceeds the ${GEMINI_SCHEMA_ANALYSIS_MAX_WORK}-step work limit`,
+    );
+  }
+}
+
+function enterGeminiSchemaAnalysis(
+  state: GeminiSchemaValidationState,
+  path: string,
+): () => void {
+  consumeGeminiSchemaAnalysisWork(state, path);
+  if (state.analysisDepth >= GEMINI_SCHEMA_ANALYSIS_MAX_DEPTH) {
+    geminiSchemaError(
+      path,
+      `schema analysis exceeds the ${GEMINI_SCHEMA_ANALYSIS_MAX_DEPTH}-level reference and combinator depth limit`,
+    );
+  }
+  state.analysisDepth += 1;
+  return () => {
+    state.analysisDepth -= 1;
+  };
+}
+
+interface GeminiSchemaTraversalFrame {
+  readonly node: Record<string, unknown>;
+  readonly edges: readonly GeminiSchemaGraphEdge[];
+  readonly parent?: Record<string, unknown>;
+  nextEdge: number;
+}
+
 function geminiSchemaComponentIds(
   state: GeminiSchemaValidationState,
 ): Map<Record<string, unknown>, number> {
@@ -1333,41 +1428,80 @@ function geminiSchemaComponentIds(
   const stack: Record<string, unknown>[] = [];
   const onStack = new Set<Record<string, unknown>>();
   const components = new Map<Record<string, unknown>, number>();
+  const graphNodes = new Set<Record<string, unknown>>();
+  for (const [source, edges] of state.edges) {
+    graphNodes.add(source);
+    for (const edge of edges) graphNodes.add(edge.target);
+  }
 
-  const visit = (node: Record<string, unknown>): void => {
+  const enter = (
+    node: Record<string, unknown>,
+    parent?: Record<string, unknown>,
+  ): GeminiSchemaTraversalFrame => {
+    consumeGeminiSchemaAnalysisWork(
+      state,
+      state.nodePaths.get(node) ?? "schema",
+    );
     const index = nextIndex++;
     indexes.set(node, index);
     lowLinks.set(node, index);
     stack.push(node);
     onStack.add(node);
-
-    for (const edge of state.edges.get(node) ?? []) {
-      if (!indexes.has(edge.target)) {
-        visit(edge.target);
-        lowLinks.set(
-          node,
-          Math.min(lowLinks.get(node)!, lowLinks.get(edge.target)!),
-        );
-      } else if (onStack.has(edge.target)) {
-        lowLinks.set(
-          node,
-          Math.min(lowLinks.get(node)!, indexes.get(edge.target)!),
-        );
-      }
-    }
-
-    if (lowLinks.get(node) !== indexes.get(node)) return;
-    for (;;) {
-      const member = stack.pop()!;
-      onStack.delete(member);
-      components.set(member, nextComponent);
-      if (member === node) break;
-    }
-    nextComponent += 1;
+    return {
+      node,
+      edges: state.edges.get(node) ?? [],
+      ...(parent === undefined ? {} : { parent }),
+      nextEdge: 0,
+    };
   };
 
-  for (const node of state.nodes) {
-    if (!indexes.has(node)) visit(node);
+  for (const start of graphNodes) {
+    if (indexes.has(start)) continue;
+    const traversal: GeminiSchemaTraversalFrame[] = [enter(start)];
+    while (traversal.length > 0) {
+      const frame = traversal.at(-1)!;
+      if (frame.nextEdge < frame.edges.length) {
+        const edge = frame.edges[frame.nextEdge]!;
+        frame.nextEdge += 1;
+        consumeGeminiSchemaAnalysisWork(
+          state,
+          state.nodePaths.get(frame.node) ?? "schema",
+        );
+        if (!indexes.has(edge.target)) {
+          traversal.push(enter(edge.target, frame.node));
+          continue;
+        }
+        if (onStack.has(edge.target)) {
+          lowLinks.set(
+            frame.node,
+            Math.min(
+              lowLinks.get(frame.node)!,
+              indexes.get(edge.target)!,
+            ),
+          );
+        }
+        continue;
+      }
+
+      traversal.pop();
+      if (frame.parent !== undefined) {
+        lowLinks.set(
+          frame.parent,
+          Math.min(
+            lowLinks.get(frame.parent)!,
+            lowLinks.get(frame.node)!,
+          ),
+        );
+      }
+      if (lowLinks.get(frame.node) !== indexes.get(frame.node)) continue;
+      for (;;) {
+        const member = stack.pop()!;
+        onStack.delete(member);
+        components.set(member, nextComponent);
+        if (member === frame.node) break;
+      }
+      nextComponent += 1;
+    }
   }
   return components;
 }
@@ -1426,6 +1560,8 @@ function createGeminiSchemaValidationState(
     nodeResources: new Map(),
     resources: new Map(),
     anchors: new Map(),
+    analysisWork: 0,
+    analysisDepth: 0,
   };
 }
 
@@ -1526,7 +1662,7 @@ function geminiToolSchemaLiteralDomain(
 
 const GEMINI_TOOL_LITERAL_DOMAIN_MAX_VALUES = 256;
 const GEMINI_TOOL_LITERAL_EQUALITY_MAX_NODES =
-  GEMINI_SCHEMA_VALIDATION_MAX_NODES;
+  GEMINI_SCHEMA_VALIDATION_MAX_VALUES;
 
 type GeminiToolLiteralConstraintDomain =
   | Readonly<{ kind: "unknown" }>
@@ -1743,6 +1879,7 @@ function geminiToolSchemaFiniteLiteralDomain(
   if (analysis.visiting.has(schema)) {
     return GEMINI_TOOL_UNKNOWN_LITERAL_DOMAIN;
   }
+  const leaveAnalysis = enterGeminiSchemaAnalysis(state, path);
   analysis.visiting.add(schema);
   try {
     let domain = geminiToolOwnLiteralDomain(schema, analysis);
@@ -1763,6 +1900,7 @@ function geminiToolSchemaFiniteLiteralDomain(
     );
   } finally {
     analysis.visiting.delete(schema);
+    leaveAnalysis();
   }
 }
 
@@ -2005,6 +2143,7 @@ function geminiToolSchemaAlwaysAcceptedDomain(
   visiting: Set<Record<string, unknown>>,
 ): ReadonlySet<string> {
   if (visiting.has(schema)) return new Set();
+  const leaveAnalysis = enterGeminiSchemaAnalysis(state, path);
   visiting.add(schema);
   try {
     const validatingKeys = Object.keys(schema).filter(
@@ -2064,6 +2203,7 @@ function geminiToolSchemaAlwaysAcceptedDomain(
     );
   } finally {
     visiting.delete(schema);
+    leaveAnalysis();
   }
 }
 
@@ -2190,6 +2330,7 @@ function geminiToolSchemaRootDomain(
   visiting: Set<Record<string, unknown>>,
 ): ReadonlySet<string> {
   if (visiting.has(schema)) return GEMINI_TOOL_ROOT_TYPES;
+  const leaveAnalysis = enterGeminiSchemaAnalysis(state, path);
   visiting.add(schema);
   try {
     let domain: ReadonlySet<string> = GEMINI_TOOL_ROOT_TYPES;
@@ -2243,6 +2384,7 @@ function geminiToolSchemaRootDomain(
     );
   } finally {
     visiting.delete(schema);
+    leaveAnalysis();
   }
 }
 

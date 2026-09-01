@@ -4,8 +4,9 @@ Provider request shaping lives in `runtime/src/llm/wire/`. Execution-side
 validation (`runtime/src/tools/execution.ts`) always sees the original tool
 schema. Only the **wire** copy is rewritten. An empty local or Gemini turn is
 often a 400 on that wire copy, not a model that "did not answer". Gemini
-schemas that cannot be lowered now fail in-process with `LLMProviderError`
-instead of reaching `generateContent` or `countTokens`.
+schemas that cannot be validated under the native contract and preserved
+exactly now fail in-process with `LLMProviderError` instead of reaching
+`generateContent` or `countTokens`.
 
 Local window probes and `context_window_exceeded` text:
 [providers.md](reference/providers.md#local-context-windows).
@@ -176,11 +177,17 @@ Move a recursive `$ref` out of `required` when omission is valid. Tool
 parameter schemas are not subject to these local response-schema checks and
 remain exact `parametersJsonSchema` values after the object-root check.
 
+One plain-data snapshot is used for validation and the request wire. The
+snapshot accepts at most 100,000 JSON values, 1,048,576 UTF-8 bytes across
+property names and string values, and 256 nested JSON levels. Reference and
+combinator analysis accepts at most 10,000 steps and 256 nested analysis
+levels. These are local safety limits, not Gemini service limits. A schema
+that exceeds one of them fails before chat, streaming, or token counting.
+
 Primary API references:
 
 - [Gemini Developer API: `FunctionDeclaration` and `GenerationConfig`](https://ai.google.dev/api/generate-content)
-- [Vertex v1: `FunctionDeclaration`](https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1/FunctionDeclaration)
-- [Vertex v1: `GenerationConfig`](https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1/GenerationConfig)
+- [Vertex v1 REST discovery schema: `GoogleCloudAiplatformV1FunctionDeclaration` and `GoogleCloudAiplatformV1GenerationConfig`](https://aiplatform.googleapis.com/$discovery/rest?version=v1)
 - [JSON Schema resource and reference rules](https://json-schema.org/draft/2020-12/draft-bhutton-json-schema-01#section-8.2)
 - [`@google/genai` function-calling example](https://googleapis.github.io/js-genai/release_docs/index.html#function-calling)
 
