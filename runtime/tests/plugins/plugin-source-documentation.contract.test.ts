@@ -112,16 +112,36 @@ describe("plugin source documentation contract", () => {
     expect(pluginSourceNeedsRedaction(queryUrl)).toBe(true);
     expect(pluginSourceNeedsRedaction(cleanUrl)).toBe(false);
     expect(pluginSourceNeedsRedaction("https://EXAMPLE.com:443")).toBe(false);
-    expect(pluginSourceNeedsRedaction("ssh://git@github.com/acme/tool.git"))
-      .toBe(false);
+    const sshUsernameUrl = "ssh://git@github.com/acme/tool.git";
+    const sshPasswordUrl = "ssh://git:secret@github.com/acme/tool.git";
+    const malformedSshUsernameUrl =
+      "ssh://git@github.com:notaport/acme/tool.git";
+    const malformedSshPasswordUrl =
+      "ssh://git:secret@github.com:notaport/acme/tool.git";
+    expect(pluginSourceNeedsRedaction(sshUsernameUrl)).toBe(false);
+    expect(redactPluginSource(sshUsernameUrl)).toBe(sshUsernameUrl);
+    expect(pluginSourceNeedsRedaction(malformedSshUsernameUrl)).toBe(false);
+    expect(redactPluginSource(malformedSshUsernameUrl))
+      .toBe(malformedSshUsernameUrl);
     expect(pluginInstallSourceNeedsRedaction({
       type: "git",
-      url: "ssh://git@github.com/acme/tool.git",
+      url: sshUsernameUrl,
     })).toBe(false);
     expect(pluginInstallSourceNeedsRedaction({
       type: "git",
-      url: "ssh://git:secret@github.com/acme/tool.git",
+      url: sshPasswordUrl,
     })).toBe(true);
+    expect(redactPluginInstallSource({
+      type: "git",
+      url: sshPasswordUrl,
+    })).toEqual({
+      type: "git",
+      url: sshUsernameUrl,
+    });
+    expect(pluginSourceNeedsRedaction(malformedSshPasswordUrl)).toBe(true);
+    expect(redactPluginSource(malformedSshPasswordUrl)).toBe(
+      malformedSshUsernameUrl,
+    );
     expect(
       pluginSourceNeedsRedaction("https://opaque-token@agenc.tech/plugin.tgz"),
     ).toBe(true);
