@@ -309,7 +309,7 @@ function marketplaceRecordFromInventory(
   name: string,
   entry: KnownMarketplace,
 ): MarketplaceRecord {
-  const source = installableMarketplaceSource(entry.source);
+  const source = persistedMarketplaceSource(installableMarketplaceSource(entry.source));
   const sparse = source.source === "github" || source.source === "git"
     ? source.path ?? source.sparsePaths?.[0]
     : undefined;
@@ -382,11 +382,7 @@ export async function addMarketplaceOp(
     const sparse = source.source === "git" || source.source === "github"
       ? source.path ?? source.sparsePaths?.[0]
       : undefined;
-    const refreshable = source.source === "url"
-      ? persistedSource.source === "url" &&
-        persistedSource.url === source.url &&
-        !hasMarketplaceUrlHeaders(source)
-      : undefined;
+    const refreshable = marketplaceSourceIsRefreshable(source, persistedSource);
     const marketplace: MarketplaceRecord = {
       name,
       source: displayMarketplaceSource(persistedSource),
@@ -1350,20 +1346,44 @@ function displayMarketplaceSource(source: MarketplaceSource): string {
       return source.repo;
     case "git":
     case "url":
-      return source.url;
+      return redactMarketplaceUrl(source.url);
     case "directory":
     case "file":
       return source.path;
+    default: {
+      const exhaustive: never = source;
+      throw new Error(`unhandled marketplace source: ${JSON.stringify(exhaustive)}`);
+    }
   }
 }
 
 function persistedMarketplaceSource(source: MarketplaceSource): MarketplaceSource {
-  if (source.source !== "url") return source;
-  const url = redactSensitiveText(source.url);
-  return {
-    source: "url",
-    url,
-  };
+  if (source.source === "url") {
+    return {
+      source: "url",
+      url: redactMarketplaceUrl(source.url),
+    };
+  }
+  if (source.source === "git") {
+    const url = redactMarketplaceUrl(source.url);
+    return url === source.url ? source : { ...source, url };
+  }
+  return source;
+}
+
+function marketplaceSourceIsRefreshable(
+  source: MarketplaceSource,
+  persisted: MarketplaceSource,
+): boolean | undefined {
+  if (source.source === "url") {
+    return persisted.source === "url" &&
+      persisted.url === source.url &&
+      !hasMarketplaceUrlHeaders(source);
+  }
+  if (source.source === "git") {
+    return persisted.source === "git" && persisted.url === source.url;
+  }
+  return undefined;
 }
 
 function hasMarketplaceUrlHeaders(
@@ -1374,9 +1394,13 @@ function hasMarketplaceUrlHeaders(
 
 function marketplaceUpgradeSkipReason(record: MarketplaceRecord): string | undefined {
   const source = record.sourceDescriptor;
-  if (source.source !== "url") return undefined;
-  if (record.refreshable === false || source.url.includes("<redacted>") || hasMarketplaceUrlHeaders(source)) {
-    return "URL marketplace source requires credentials that are not stored; re-add the marketplace with fresh credentials to refresh it";
+  if (source.source !== "url" && source.source !== "git") return undefined;
+  if (
+    record.refreshable === false ||
+    marketplaceUrlLooksRedacted(source.url) ||
+    (source.source === "url" && hasMarketplaceUrlHeaders(source))
+  ) {
+    return "Marketplace source requires credentials that are not stored; re-add the marketplace with fresh credentials to refresh it";
   }
   return undefined;
 }
@@ -1460,11 +1484,21 @@ function redactProcessArgs(args: readonly string[]): string[] {
   return args.map((arg) => redactSensitiveText(arg));
 }
 
+const MARKETPLACE_REDACTED_MARKER = "<redacted>";
+
+function redactMarketplaceUrl(url: string): string {
+  return redactSensitiveText(url);
+}
+
+function marketplaceUrlLooksRedacted(url: string): boolean {
+  return url.includes(MARKETPLACE_REDACTED_MARKER);
+}
+
 function redactSensitiveText(value: string): string {
   return value
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)([^@\s/]+)@/giu, "$1<redacted>@")
-    .replace(/([?&](?:token|access_token|password|apikey|api_key)=)[^&\s]+/giu, "$1<redacted>")
-    .replace(/((?:token|access_token|password|apikey|api_key)=)[^&\s]+/giu, "$1<redacted>");
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)([^@\s/]+)@/giu, `$1${MARKETPLACE_REDACTED_MARKER}@`)
+    .replace(/([?&](?:token|access_token|password|apikey|api_key)=)[^&\s]+/giu, `$1${MARKETPLACE_REDACTED_MARKER}`)
+    .replace(/((?:token|access_token|password|apikey|api_key)=)[^&\s]+/giu, `$1${MARKETPLACE_REDACTED_MARKER}`);
 }
 
 

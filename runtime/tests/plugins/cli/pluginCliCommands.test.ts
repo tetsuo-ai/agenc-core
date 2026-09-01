@@ -522,6 +522,52 @@ describe("agenc plugin CLI", () => {
     expect(cloneCalls[0]![repositorySeparator + 1]).toBe("https://github.com/agenc-org/plugins.git");
   });
 
+  it("redacts credential-bearing git marketplace sources from list output", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+    const credentialUrl =
+      "https://opaque-token@agenc.tech/private/marketplace.git";
+    const addIo = createIo();
+    const addExit = await runAgenCPluginCli({
+      kind: "marketplace-add",
+      source: credentialUrl,
+      name: "private-git",
+      force: false,
+    }, {
+      ...options(agencHome, workspaceRoot, addIo),
+      runProcess: async (_command, args) => {
+        if (args.includes("clone")) {
+          const target = args.at(-1);
+          if (target === undefined) throw new Error("missing clone target");
+          await mkdir(join(target, ".agenc-plugin"), { recursive: true });
+          await writeFile(
+            join(target, ".agenc-plugin", "marketplace.json"),
+            JSON.stringify({ metadata: { name: "private-git" }, plugins: [] }),
+          );
+        }
+        if (args.includes("rev-parse")) return { stdout: "abc123\n", stderr: "" };
+        return { stdout: "", stderr: "" };
+      },
+    });
+    expect(addExit).toBe(0);
+    expect(addIo.stdoutText()).not.toContain("opaque-token");
+    const listIo = createIo();
+    const listExit = await runAgenCPluginCli({
+      kind: "marketplace-list",
+      json: false,
+    }, options(agencHome, workspaceRoot, listIo));
+    expect(listExit).toBe(0);
+    expect(listIo.stdoutText()).toContain("private-git");
+    expect(listIo.stdoutText()).toContain("<redacted>");
+    expect(listIo.stdoutText()).not.toContain("opaque-token");
+
+    const jsonIo = createIo();
+    await runAgenCPluginCli({
+      kind: "marketplace-list",
+      json: true,
+    }, options(agencHome, workspaceRoot, jsonIo));
+    expect(jsonIo.stdoutText()).not.toContain("opaque-token");
+  });
+
   it("refuses unsigned bundled plugins from a git marketplace", async () => {
     const { agencHome, workspaceRoot } = await tempRuntime();
     const addIo = createIo();
