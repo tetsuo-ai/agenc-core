@@ -25,10 +25,32 @@ import type {
   ToolResult,
 } from "../../tools/types.js";
 import { safeStringify } from "../../tools/types.js";
+import { validationErrorToolResult } from "../../tools/results.js";
 
 export const MIN_WAIT_TIMEOUT_MS = 10_000;
 export const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 export const MAX_WAIT_TIMEOUT_MS = 3_600_000;
+
+/**
+ * Shared evidence ref for agent-tool argument/identity refusals produced
+ * before any child, mailbox, or shutdown mutation. Callers must not use the
+ * helpers below after delegate()/assignTask()/send/shutdown can have run.
+ */
+export const AGENT_VALIDATION_EVIDENCE_REF = "tool:agents.v2:validation";
+
+export function agentValidationError(reason: string): ToolResult {
+  return validationErrorToolResult(
+    AGENT_VALIDATION_EVIDENCE_REF,
+    safeStringify({ error: reason }),
+  );
+}
+
+export function confirmedNoAgentEffect(result: ToolResult): ToolResult {
+  return validationErrorToolResult(
+    AGENT_VALIDATION_EVIDENCE_REF,
+    result.content,
+  );
+}
 
 const LOCAL_ZERO_ADMISSION_ESTIMATE = Object.freeze({
   maxInputTokens: 0,
@@ -122,13 +144,13 @@ export function strictArgs(
   ]);
   for (const key of Object.keys(args)) {
     if (!allowed.has(key)) {
-      return json({ error: `unknown field \`${key}\`` }, true);
+      return agentValidationError(`unknown field \`${key}\``);
     }
   }
   for (const key of opts.required ?? []) {
     const value = args[key];
     if (typeof value !== "string") {
-      return json({ error: `${key} is required` }, true);
+      return agentValidationError(`${key} is required`);
     }
   }
   return null;
@@ -139,7 +161,7 @@ export function getSessionOrError(
 ): Session | ToolResult {
   const session = opts.getSession();
   if (session === null) {
-    return json({ error: "tool invoked before session was initialized" }, true);
+    return agentValidationError("tool invoked before session was initialized");
   }
   return session;
 }
@@ -205,12 +227,12 @@ export function isCurrentAgentContextError(
 }
 
 function invalidRuntimeIdentity(reason: string): ToolResult {
-  return json(
-    {
+  return validationErrorToolResult(
+    AGENT_VALIDATION_EVIDENCE_REF,
+    safeStringify({
       error: "invalid-runtime-identity",
       reason,
-    },
-    true,
+    }),
   );
 }
 

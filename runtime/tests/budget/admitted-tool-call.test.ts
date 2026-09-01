@@ -723,6 +723,59 @@ describe("runAdmittedToolCall", () => {
     });
   });
 
+  it("does not brick later mutations after a confirmed no-effect agent refusal", async () => {
+    const state = toolHarness();
+    const closeAgent = {
+      name: "close_agent",
+      recoveryCategory: "side-effecting",
+      admissionEstimate: () => ({
+        maxInputTokens: 0,
+        maxOutputTokens: 0,
+        maxCostUsd: 0,
+      }),
+    } as unknown as Tool;
+
+    await expect(
+      runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-1",
+        callId: "call-close-root",
+        tool: closeAgent,
+        args: {},
+        invoke: async ({ crossEffectBoundary }) => {
+          crossEffectBoundary();
+          return {
+            content: '{"error":"root is not a spawned agent"}',
+            isError: true,
+            effectDisposition: {
+              disposition: "confirmed_no_effect",
+              evidenceKind: "boundary_not_crossed",
+              evidenceRef: "tool:agents.v2:validation",
+              evidenceSha256: "c".repeat(64),
+            },
+          };
+        },
+      }),
+    ).resolves.toMatchObject({ isError: true });
+
+    await expect(
+      runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-1",
+        callId: "call-write-after-close-refusal",
+        tool: {
+          ...closeAgent,
+          name: "write.follow-up",
+        } as unknown as Tool,
+        args: {},
+        invoke: async ({ crossEffectBoundary }) => {
+          crossEffectBoundary();
+          return { content: "ok" };
+        },
+      }),
+    ).resolves.toMatchObject({ content: "ok" });
+  });
+
   it("records a sandbox denial as a determinate failed outcome, not unknown", async () => {
     const state = toolHarness();
     const tool = {

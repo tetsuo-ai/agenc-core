@@ -1,5 +1,6 @@
 import type { Tool } from "../../tools/types.js";
 import {
+  confirmedNoAgentEffect,
   localZeroAdmissionEstimate,
   strictArgs,
   toolMetadata,
@@ -39,7 +40,7 @@ export function createSendMessageTool(opts: MultiAgentV2Options): Tool {
         allowed: new Set(["target", "message"]),
         required: ["target", "message"],
       });
-      if (strict) return Promise.resolve(strict);
+      if (strict) return Promise.resolve(confirmedNoAgentEffect(strict));
       return handleMessageStringTool(args, opts, "queue_only");
     },
   };
