@@ -635,6 +635,12 @@ A missing `./dir` fails with `plugin source not found` instead of trying npm.
 plugin root or a descendant. Classification table and examples:
 [Install sources](skills-plugins.md#install-sources).
 
+Successful `plugin update` prints `Updated plugin <id> from <source>:
+<destination>`. `<source>` is `updatePluginOp`'s result after
+`redactPluginInstallSource`, so userinfo and query values are not echoed.
+Install text mode never prints the specifier. See
+[Update success source redaction](skills-plugins.md#update-success-source-redaction).
+
 ---
 
 ## `skills`

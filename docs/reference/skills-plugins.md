@@ -15,6 +15,7 @@ Sources of truth:
 | Install / update ops | `runtime/src/plugins/cli/pluginOperations.ts` (`installPluginOp`, `updatePluginOp`) |
 | Marketplace | `runtime/src/plugins/marketplace/` |
 | Source classification | `runtime/src/plugins/resolution.ts` (`classifyPluginSource`) |
+| Update success source | `updatePluginOp` + `formatPluginUpdateSource` via `redactPluginInstallSource` |
 | Publisher signatures | `runtime/src/plugins/resolution.ts` (`verifyResolvedPluginSignature`) |
 | Config | `[plugins]` in [config.md](config.md) |
 
@@ -459,6 +460,43 @@ local-directory waiver. An explicit `.mcpb` path has kind `mcpb`, so it still
 requires a publisher signature by default, just like npm, git, tarball, and
 remote mcpb sources. The shipped CLI has no signature-waiver option. See
 [Publisher signatures](#publisher-signatures).
+
+### Update success source redaction
+
+`installPluginOp` does not return the specifier. Text-mode `plugin install`
+prints only id, scope, and destination.
+
+`updatePluginOp` in `runtime/src/plugins/cli/pluginOperations.ts` returns
+`source: redactPluginInstallSource(source)` after a successful refresh.
+Text-mode `plugin update` then formats that field through
+`formatPluginUpdateSource` in `pluginCliCommands.ts`:
+
+```text
+Updated plugin <id> from <source>: <destination>
+```
+
+`redactPluginInstallSource` in `runtime/src/plugins/resolution.ts` rewrites
+string sources with `redactPluginSource` (credential-URL rewrite, then
+`redactSecrets`). Structured git sources keep `path` / `ref` / `sha` and
+rewrite only `url`. The CLI prints the string, or that `url`. Userinfo and
+query values are not echoed.
+
+```bash
+agenc plugin update private-demo --source 'https://opaque-token@agenc.tech/plugins/private.tgz?access_token=secretvalue'
+```
+
+```text
+Updated plugin private-demo from https://redacted@agenc.tech/plugins/private.tgz?redacted=1: <destination>
+```
+
+The printed specifier is not a replayable `--source`. Local paths and
+credential-free URLs stay unchanged. This page covers the success payload
+and stdout line only.
+
+| Symptom | What to check |
+| --- | --- |
+| Success line shows `https://redacted@host/…?redacted=1` | Expected when `--source` (or a recorded non-redacted source) had userinfo or a query string. Keep the original specifier for the next update. |
+| In-process `result.source` still contains a token | Read `updatePluginOp`'s returned `source`, not the input passed in. |
 
 ### Marketplace
 

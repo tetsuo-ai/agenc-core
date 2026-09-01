@@ -1,7 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
-import { classifyPluginSource } from "../../src/plugins/resolution.js";
+import {
+  classifyPluginSource,
+  redactPluginInstallSource,
+} from "../../src/plugins/resolution.js";
 
 interface MarkdownFence {
   readonly language: string;
@@ -40,6 +43,34 @@ describe("plugin source documentation contract", () => {
     await expect(
       classifyPluginSource(bashSources[1]!, REPOSITORY_ROOT),
     ).resolves.toBe("npm");
+  });
+
+  test("locks the update-success redaction example against redactPluginInstallSource", async () => {
+    const markdown = await readFile(PLUGIN_REFERENCE, "utf8");
+    const section = markdownSection(markdown, "Update success source redaction");
+
+    expect(section).toContain("updatePluginOp");
+    expect(section).toContain("formatPluginUpdateSource");
+    expect(section).toContain("redactPluginInstallSource");
+    expect(section).not.toContain("sourceRedacted");
+    expect(section).not.toContain("50 MiB");
+    expect(section).not.toContain("redactPluginResolutionError");
+
+    const rawSource = /--source '([^']+)'/u.exec(section)?.[1];
+    const printedFence = parseMarkdownFences(section).find((fence) => {
+      return fence.language === "text" && fence.body.includes("redacted@");
+    });
+    const printedSource = /from (https:\/\/redacted@[^:\s]+):/u
+      .exec(printedFence?.body ?? "")?.[1];
+    expect(rawSource).toBe(
+      "https://opaque-token@agenc.tech/plugins/private.tgz?access_token=secretvalue",
+    );
+    expect(printedSource).toBe(
+      "https://redacted@agenc.tech/plugins/private.tgz?redacted=1",
+    );
+    expect(redactPluginInstallSource(rawSource!)).toBe(printedSource);
+    expect(printedSource).not.toContain("opaque-token");
+    expect(printedSource).not.toContain("secretvalue");
   });
 });
 
