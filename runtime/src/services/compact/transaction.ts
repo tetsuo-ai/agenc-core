@@ -1464,11 +1464,12 @@ function describeProjectionMismatch(
       typeof content === "string" ? content : JSON.stringify(content),
       "utf8",
     );
-    const tool = message.toolName !== undefined
-      ? ` tool=${message.toolName}`
-      : message.toolCalls !== undefined
-        ? ` toolCalls=${message.toolCalls.length}`
-        : "";
+    let tool = "";
+    if (message.toolName !== undefined) {
+      tool = ` tool=${message.toolName}`;
+    } else if (message.toolCalls !== undefined) {
+      tool = ` toolCalls=${message.toolCalls.length}`;
+    }
     return `${role}${tool} ${bytes}B`;
   };
   const failing = callerComplete[callerIndex]!;
