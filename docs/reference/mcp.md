@@ -244,7 +244,9 @@ survives into the provider catalog:
 
 Failure is fail-open for the catalog: the model sees
 `{ "type": "object", "properties": {} }` so the tool remains callable.
-`too_large` and `unsafe_key` log a warning. `invalid_root` does not.
+For `too_large` and `unsafe_key`, the session tool bridge logs a warning and
+the compatibility client logs at MCP debug level. `invalid_root` does not log
+a diagnostic.
 Gemini's later object-root check accepts that fallback, so an empty
 parameter list is not a Gemini schema error. Local `$ref` values that
 survive sanitization are sent intact through native
@@ -389,7 +391,7 @@ the daemon-owned admission kernel.
 | One plugin server missing, session still starts | A broken plugin source is skipped. A duplicate command/URL is suppressed by an enabled manual server. Check `/plugin` for `mcp-server-suppressed-duplicate`. |
 | `/compact` or auto-compact denied `context_window_exceeded` on the **summary** | Summaries no longer inherit the MCP/builtin factory catalog or Grok native tools. If admission still denies, the transcript + system prompt + reserved output themselves exceed the window. Confirm the live window (not the 128k fallback), shrink `/compact` focus, or compact earlier. `/context` still shows the next-turn catalog size; that is not the summary request. |
 | Mid-turn dies `mid_turn_compact_failed` after adding MCP servers | A large catalog can raise the estimate past the fire threshold and raise provider-reported `promptTokens` past the mid-turn outer gate. The summary request should still pass admission. Check the disable-flag rules and the 2-failure digest guard on [CP-0006](../design/critical-path/0006-compaction-transaction.md), and whether last-sample `promptTokens` disagreed with the compact-module estimate. |
-| Gemini or another provider advertises an MCP tool with empty `properties` | Model-facing sanitization replaced the schema with an open object (`too_large`, `unsafe_key`, or silent `invalid_root`). Check MCP server logs for the byte-limit or unsafe-key warning. Fix the advertised `inputSchema`; do not expect Gemini to reject the fallback. |
+| Gemini or another provider unexpectedly advertises an argument-taking MCP tool with empty `properties` | Sanitization may have replaced the schema with an open object (`too_large`, `unsafe_key`, or silent `invalid_root`). A legitimate no-argument schema can have the same shape and pass through unchanged. Compare the server's original `inputSchema`; check session-bridge warnings or compatibility-client MCP debug logs for the first two issue codes. Fix an invalid advertised schema; do not expect Gemini to reject the fallback. |
 | Gemini fails locally at `tools["mcp.<server>.<tool>"].parameters` | The sanitized schema reached native `parametersJsonSchema` and failed the object-root proof (scalar/array/nullable root, unresolved `$ref`, or an empty finite `const`/`enum` intersection). See [provider-tool-compat.md](../provider-tool-compat.md#gemini-native-json-schema). |
 
 ## Related
