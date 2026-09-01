@@ -54,7 +54,6 @@ import {
   isCommandMetadata,
 } from "../../utils/suggestions/commandSuggestions.js";
 import {
-  getDirectoryCompletions,
   getPathCompletions,
   isPathLikeToken,
 } from "../../utils/suggestions/directoryCompletion.js";
@@ -485,7 +484,6 @@ export function useTypeahead({
   // Track the latest path token to discard stale results from path completion
   const latestPathTokenRef = useRef<string | null>(null);
   // Track command-argument async lookups to discard stale results.
-  const latestCommandDirectoryArgsRef = useRef<string | null>(null);
   const latestResumeTitleArgsRef = useRef<string | null>(null);
   // Track the latest bash input to discard stale results from history completion
   const latestBashInputRef = useRef("");
@@ -703,9 +701,6 @@ export function useTypeahead({
         mode === "prompt" && isCommandInput(value)
           ? extractCommandNameAndArgs(value)
           : null;
-      if (parsedCommandForInvalidation?.commandName !== "add-dir") {
-        latestCommandDirectoryArgsRef.current = null;
-      }
       if (parsedCommandForInvalidation?.commandName !== "resume") {
         latestResumeTitleArgsRef.current = null;
       }
@@ -880,63 +875,12 @@ export function useTypeahead({
         value.length > 0 &&
         value[effectiveCursorOffset - 1] === " ";
 
-      // Handle directory completion for commands
       if (
         mode === "prompt" &&
         isCommandInput(value) &&
         effectiveCursorOffset > 0
       ) {
         const parsedCommand = extractCommandNameAndArgs(value);
-        if (
-          parsedCommand &&
-          parsedCommand.commandName === "add-dir" &&
-          parsedCommand.args
-        ) {
-          const { args } = parsedCommand;
-
-          // Clear suggestions if args end with whitespace (user is done with path)
-          if (args.match(/\s+$/)) {
-            latestCommandDirectoryArgsRef.current = null;
-            debouncedFetchFileSuggestions.cancel();
-            clearSuggestions();
-            return;
-          }
-          latestCommandDirectoryArgsRef.current = args;
-          let dirSuggestions: SuggestionItem[];
-          try {
-            dirSuggestions = await getDirectoryCompletions(args);
-          } catch (error) {
-            if (latestCommandDirectoryArgsRef.current !== args) {
-              return;
-            }
-            logError(error);
-            debouncedFetchFileSuggestions.cancel();
-            clearSuggestions();
-            return;
-          }
-          if (latestCommandDirectoryArgsRef.current !== args) {
-            return;
-          }
-          if (dirSuggestions.length > 0) {
-            setSuggestionsState((prev) => ({
-              suggestions: dirSuggestions,
-              selectedSuggestion: getPreservedSelection(
-                prev.suggestions,
-                prev.selectedSuggestion,
-                dirSuggestions,
-              ),
-              commandArgumentHint: undefined,
-            }));
-            setSuggestionType("directory");
-            return;
-          }
-
-          // No suggestions found - clear and return
-          debouncedFetchFileSuggestions.cancel();
-          clearSuggestions();
-          return;
-        }
-
         // Handle custom title completion for /resume command
         if (
           parsedCommand &&
@@ -1384,7 +1328,6 @@ export function useTypeahead({
       }
       if (
         suggestionType === "directory" &&
-        !isCommandInput(input) &&
         !getActiveDirectoryCompletionToken()
       ) {
         debouncedFetchFileSuggestions.cancel();
@@ -1447,68 +1390,37 @@ export function useTypeahead({
       } else if (suggestionType === "directory" && suggestions.length > 0) {
         const suggestion = suggestions[index];
         if (suggestion) {
-          // Check if this is a command context (e.g., /add-dir) or general path completion
-          const isInCommandContext = isCommandInput(input);
-          let newInput: string;
-          if (isInCommandContext) {
-            // Command context: replace just the argument portion
-            const spaceIndex = input.indexOf(" ");
-            const commandPart = input.slice(0, spaceIndex + 1); // Include the space
-            const cmdSuffix =
+          // General path completion: replace the path token in input with @-prefixed path
+          // Try to get token with @ prefix first to check if already prefixed
+          const completionToken = getActiveDirectoryCompletionToken();
+          if (completionToken) {
+            const isDir =
               isPathMetadata(suggestion.metadata) &&
-              suggestion.metadata.type === "directory"
-                ? "/"
-                : " ";
-            newInput = commandPart + suggestion.id + cmdSuffix;
-            onInputChange(newInput);
-            setCursorOffset(newInput.length);
-            if (
-              isPathMetadata(suggestion.metadata) &&
-              suggestion.metadata.type === "directory"
-            ) {
+              suggestion.metadata.type === "directory";
+            const result = applyDirectorySuggestion(
+              input,
+              suggestion.id,
+              completionToken.startPos,
+              completionToken.token.length,
+              isDir,
+            );
+            onInputChange(result.newInput);
+            setCursorOffset(result.cursorPos);
+            if (isDir) {
               // For directories, fetch new suggestions for the updated path
               setSuggestionsState((prev) => ({
                 ...prev,
                 commandArgumentHint: undefined,
               }));
-              void updateSuggestions(newInput, newInput.length);
+              void updateSuggestions(result.newInput, result.cursorPos);
             } else {
+              // For files, clear suggestions
               clearSuggestions();
             }
           } else {
-            // General path completion: replace the path token in input with @-prefixed path
-            // Try to get token with @ prefix first to check if already prefixed
-            const completionToken = getActiveDirectoryCompletionToken();
-            if (completionToken) {
-              const isDir =
-                isPathMetadata(suggestion.metadata) &&
-                suggestion.metadata.type === "directory";
-              const result = applyDirectorySuggestion(
-                input,
-                suggestion.id,
-                completionToken.startPos,
-                completionToken.token.length,
-                isDir,
-              );
-              newInput = result.newInput;
-              onInputChange(newInput);
-              setCursorOffset(result.cursorPos);
-              if (isDir) {
-                // For directories, fetch new suggestions for the updated path
-                setSuggestionsState((prev) => ({
-                  ...prev,
-                  commandArgumentHint: undefined,
-                }));
-                void updateSuggestions(newInput, result.cursorPos);
-              } else {
-                // For files, clear suggestions
-                clearSuggestions();
-              }
-            } else {
-              // No completion token found (e.g., cursor after space) - just clear suggestions
-              // without modifying input to avoid data loss
-              clearSuggestions();
-            }
+            // No completion token found (e.g., cursor after space) - just clear suggestions
+            // without modifying input to avoid data loss
+            clearSuggestions();
           }
         }
       } else if (suggestionType === "shell" && suggestions.length > 0) {
@@ -1918,16 +1830,6 @@ export function useTypeahead({
       selectedSuggestion < suggestions.length
     ) {
       if (suggestion) {
-        // In command context (e.g., /add-dir), Enter submits the command
-        // rather than applying the directory suggestion. Autocomplete already
-        // consumed Enter, so submit explicitly after clearing the picker.
-        if (isCommandInput(input)) {
-          debouncedFetchFileSuggestions.cancel();
-          clearSuggestions();
-          onSubmit(input, /* isSubmittingSlashCommand */ true);
-          return;
-        }
-
         // General path completion: replace the path token
         const completionToken = getActiveDirectoryCompletionToken();
         if (completionToken) {

@@ -106,7 +106,7 @@ const TIP_MATCHERS: TipMatcher[] = [
       ctx.code === 'invalid_type',
     tip: {
       suggestion:
-        'Must be an array of directory paths. Example: ["~/projects", "/tmp/workspace"]. You can also use --add-dir flag or /add-dir command',
+        'Must be an array of directory paths. Example: ["~/projects", "/tmp/workspace"]. You can also use the --add-dir flag.',
     },
   },
 ]

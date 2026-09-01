@@ -296,7 +296,7 @@ export function convertToSandboxRuntimeConfig(
     allowWrite.push(worktreeMainRepoPath)
   }
 
-  // Include directories added via --add-dir CLI flag or /add-dir command.
+  // Include directories added via the --add-dir CLI flag.
   // These must be in allowWrite so that Bash commands (which run inside the
   // sandbox) can access them — not just file tools, which check permissions
   // at the app level via pathInAllowedWorkingPath().

@@ -150,12 +150,6 @@ vi.mock("../../utils/sessionStorage.js", () => ({
 }));
 
 vi.mock("../../utils/suggestions/directoryCompletion.js", () => ({
-  getDirectoryCompletions: vi.fn(async (query: string) => {
-    if (harness.directoryCompletionResponses.has(query)) {
-      return await harness.directoryCompletionResponses.get(query);
-    }
-    return harness.directorySuggestions;
-  }),
   getPathCompletions: vi.fn(async (query: string) => {
     if (harness.directoryCompletionResponses.has(query)) {
       return await harness.directoryCompletionResponses.get(query);
@@ -221,10 +215,7 @@ import { useTypeahead } from "./useTypeahead.js";
 import { startBackgroundCacheRefresh } from "./fileSuggestions";
 import { generateUnifiedSuggestions } from "./unifiedSuggestions";
 import { getShellCompletions } from "../../utils/bash/shellCompletion.js";
-import {
-  getDirectoryCompletions,
-  getPathCompletions,
-} from "../../utils/suggestions/directoryCompletion.js";
+import { getPathCompletions } from "../../utils/suggestions/directoryCompletion.js";
 import { getShellHistoryCompletion } from "../../utils/suggestions/shellHistoryCompletion.js";
 import { getSlackChannelSuggestions } from "../../utils/suggestions/slackChannelSuggestions.js";
 import { searchSessionsByCustomTitle } from "../../utils/sessionStorage.js";
@@ -256,7 +247,6 @@ const startBackgroundCacheRefreshMock = vi.mocked(
 );
 const getShellCompletionsMock = vi.mocked(getShellCompletions);
 const getShellHistoryCompletionMock = vi.mocked(getShellHistoryCompletion);
-const getDirectoryCompletionsMock = vi.mocked(getDirectoryCompletions);
 const getPathCompletionsMock = vi.mocked(getPathCompletions);
 const getSlackChannelSuggestionsMock = vi.mocked(getSlackChannelSuggestions);
 const searchSessionsByCustomTitleMock = vi.mocked(searchSessionsByCustomTitle);
@@ -445,7 +435,6 @@ describe("useTypeahead hook paths", () => {
     startBackgroundCacheRefreshMock.mockClear();
     getShellCompletionsMock.mockClear();
     getShellHistoryCompletionMock.mockClear();
-    getDirectoryCompletionsMock.mockClear();
     searchSessionsByCustomTitleMock.mockClear();
     getSlackChannelSuggestionsMock.mockClear();
   });
@@ -1051,51 +1040,26 @@ describe("useTypeahead hook paths", () => {
     }
   });
 
-  test("handles directory command completion and resume title execution", async () => {
-    harness.directorySuggestions = [
+  test("executes resume title suggestions", async () => {
+    harness.sessionTitleMatches = [
       {
-        displayText: "src",
-        id: "src",
-        metadata: { type: "directory" },
+        customTitle: "Sprint planning",
+        messageCount: 12,
+        modified: new Date("2026-05-20T00:00:00.000Z"),
+        sessionId: "session-42",
       },
     ];
     const onInputChange = vi.fn();
     const onSubmit = vi.fn();
     const setCursorOffset = vi.fn();
     const rendered = await renderHookHarness({
-      input: "/add-dir s",
+      input: "/resume Sprint",
       onInputChange,
       onSubmit,
       setCursorOffset,
     });
 
     try {
-      await waitFor(
-        () => rendered.getSnapshot().suggestionType === "directory",
-        "directory suggestions",
-      );
-
-      harness.keybindings["autocomplete:accept"]?.();
-      await waitFor(
-        () =>
-          onInputChange.mock.calls.some((call) => call[0] === "/add-dir src/"),
-        "directory suggestion applied",
-      );
-      expect(setCursorOffset).toHaveBeenCalledWith("/add-dir src/".length);
-
-      harness.directorySuggestions = [];
-      harness.sessionTitleMatches = [
-        {
-          customTitle: "Sprint planning",
-          messageCount: 12,
-          modified: new Date("2026-05-20T00:00:00.000Z"),
-          sessionId: "session-42",
-        },
-      ];
-      rendered.rerender({
-        input: "/resume Sprint",
-        cursorOffset: "/resume Sprint".length,
-      });
       await waitFor(
         () => rendered.getSnapshot().suggestionType === "custom-title",
         "custom title suggestions",
@@ -1105,141 +1069,6 @@ describe("useTypeahead hook paths", () => {
       expect(onInputChange).toHaveBeenCalledWith("/resume session-42");
       expect(setCursorOffset).toHaveBeenCalledWith("/resume session-42".length);
       expect(onSubmit).toHaveBeenCalledWith("/resume session-42", true);
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("submits add-dir commands on enter while directory suggestions are visible", async () => {
-    harness.directorySuggestions = [
-      {
-        displayText: "src",
-        id: "src",
-        metadata: { type: "directory" },
-      },
-    ];
-    const onSubmit = vi.fn();
-    const rendered = await renderHookHarness({
-      input: "/add-dir s",
-      onSubmit,
-    });
-
-    try {
-      await waitFor(
-        () => rendered.getSnapshot().suggestionType === "directory",
-        "directory suggestions",
-      );
-
-      const enter = createKey("return");
-      rendered.getSnapshot().handleKeyDown(enter);
-
-      expect(enter.defaultPrevented).toBe(true);
-      expect(onSubmit).toHaveBeenCalledWith("/add-dir s", true);
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("ignores stale /add-dir directory completions that resolve out of order", async () => {
-    let resolveSlowCompletion: (items: unknown[]) => void = () => {};
-    harness.directoryCompletionResponses.set(
-      "s",
-      new Promise((resolve) => {
-        resolveSlowCompletion = resolve;
-      }),
-    );
-    harness.directoryCompletionResponses.set("lib", [
-      {
-        displayText: "lib",
-        id: "lib",
-        metadata: { type: "directory" },
-      },
-    ]);
-    const rendered = await renderHookHarness({
-      input: "/add-dir s",
-      cursorOffset: "/add-dir s".length,
-    });
-
-    try {
-      await waitFor(
-        () =>
-          getDirectoryCompletionsMock.mock.calls.some(
-            (call) => call[0] === "s",
-          ),
-        "initial delayed directory completion request",
-      );
-
-      rendered.rerender({
-        input: "/add-dir lib",
-        cursorOffset: "/add-dir lib".length,
-      });
-      await waitFor(
-        () =>
-          rendered.getSnapshot().suggestionType === "directory" &&
-          rendered.getSnapshot().suggestions[0]?.id === "lib",
-        "newer directory completion result",
-      );
-
-      resolveSlowCompletion([
-        {
-          displayText: "src",
-          id: "src",
-          metadata: { type: "directory" },
-        },
-      ]);
-      await sleep(50);
-
-      expect(rendered.getSnapshot().suggestionType).toBe("directory");
-      expect(rendered.getSnapshot().suggestions).toEqual([
-        {
-          displayText: "lib",
-          id: "lib",
-          metadata: { type: "directory" },
-        },
-      ]);
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("drops /add-dir directory completions after the mode changes", async () => {
-    let resolveSlowCompletion: (items: unknown[]) => void = () => {};
-    harness.directoryCompletionResponses.set(
-      "s",
-      new Promise((resolve) => {
-        resolveSlowCompletion = resolve;
-      }),
-    );
-    const rendered = await renderHookHarness({
-      input: "/add-dir s",
-      cursorOffset: "/add-dir s".length,
-    });
-
-    try {
-      await waitFor(
-        () =>
-          getDirectoryCompletionsMock.mock.calls.some(
-            (call) => call[0] === "s",
-          ),
-        "delayed directory completion request",
-      );
-
-      rendered.rerender({
-        input: "/add-dir s",
-        cursorOffset: "/add-dir s".length,
-        mode: "bash",
-      });
-      resolveSlowCompletion([
-        {
-          displayText: "src",
-          id: "src",
-          metadata: { type: "directory" },
-        },
-      ]);
-      await sleep(50);
-
-      expect(rendered.getSnapshot().suggestionType).toBe("none");
-      expect(rendered.getSnapshot().suggestions).toEqual([]);
     } finally {
       await rendered.dispose();
     }
@@ -2368,44 +2197,23 @@ describe("useTypeahead hook paths", () => {
     }
   });
 
-  test("tab handles directory suggestions in command and general path contexts", async () => {
+  test("tab handles directory suggestions in general path contexts", async () => {
     harness.directorySuggestions = [
       {
-        displayText: "README.md",
-        id: "README.md",
-        metadata: { type: "file" },
+        displayText: "/tmp/project",
+        id: "/tmp/project",
+        metadata: { type: "directory" },
       },
     ];
     const onInputChange = vi.fn();
     const setCursorOffset = vi.fn();
     const rendered = await renderHookHarness({
-      input: "/add-dir R",
+      input: "@/tm",
       onInputChange,
       setCursorOffset,
     });
 
     try {
-      await waitFor(
-        () => rendered.getSnapshot().suggestionType === "directory",
-        "command file suggestion",
-      );
-
-      harness.keybindings["autocomplete:accept"]?.();
-      expect(onInputChange).toHaveBeenCalledWith("/add-dir README.md ");
-      expect(setCursorOffset).toHaveBeenCalledWith(
-        "/add-dir README.md ".length,
-      );
-
-      onInputChange.mockClear();
-      setCursorOffset.mockClear();
-      harness.directorySuggestions = [
-        {
-          displayText: "/tmp/project",
-          id: "/tmp/project",
-          metadata: { type: "directory" },
-        },
-      ];
-      rendered.rerender({ input: "@/tm", cursorOffset: "@/tm".length });
       await waitFor(
         () => rendered.getSnapshot().suggestionType === "directory",
         "general path directory suggestion",
@@ -2414,21 +2222,6 @@ describe("useTypeahead hook paths", () => {
       harness.keybindings["autocomplete:accept"]?.();
       expect(onInputChange).toHaveBeenCalledWith("@/tmp/project/");
       expect(setCursorOffset).toHaveBeenCalledWith("@/tmp/project/".length);
-
-      onInputChange.mockClear();
-      setCursorOffset.mockClear();
-      rendered.rerender({
-        input: "/add-dir /tmp",
-        cursorOffset: "/add-dir /tmp".length,
-      });
-      await waitFor(
-        () => rendered.getSnapshot().suggestionType === "directory",
-        "enter clears command directory suggestion",
-      );
-
-      rendered.getSnapshot().handleKeyDown(createKey("return"));
-      expect(onInputChange).not.toHaveBeenCalled();
-      expect(setCursorOffset).not.toHaveBeenCalled();
     } finally {
       await rendered.dispose();
     }

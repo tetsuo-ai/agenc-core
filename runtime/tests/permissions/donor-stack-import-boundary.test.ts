@@ -22,7 +22,6 @@ import { describe, expect, it } from "vitest";
 // Frozen snapshot of files under src/ (excluding tests) that import from
 // `utils/permissions/`, captured at the start of the consolidation effort.
 const BASELINE: readonly string[] = [
-  "commands/add-dir/validation.ts",
   "memory/agencmd.ts",
   "permissions/dangerous-patterns.ts",
   "permissions/path-validation.ts",
