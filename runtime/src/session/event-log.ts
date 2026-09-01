@@ -47,6 +47,14 @@ import type {
   McpElicitationRequestEvent,
   RequestUserInputEvent,
 } from "../elicitation/types.js";
+import type {
+  LegacyTurnCheckpointSliceLine,
+  TurnCheckpointSliceLine,
+} from "./turn-checkpoint-slice.js";
+export type {
+  LegacyTurnCheckpointSliceLine,
+  TurnCheckpointSliceLine,
+} from "./turn-checkpoint-slice.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Schema version — I-49
@@ -56,10 +64,12 @@ import type {
  * Incremented on any breaking change to the rollout JSONL format.
  * - v1: initial T6 shape (18 event variants, 6 rollout wrappers).
  * - v2: exact tool-result seals and version-2 durable checkpoints.
+ * - v3: transactional compaction intents and commits.
+ * - v4: durable checkpoints carry the complete version-3 writer slice.
  * On open, if rollout.schemaVersion > runtime.ROLLOUT_SCHEMA_VERSION,
  * hard-fail with migration message (I-49).
  */
-export const ROLLOUT_SCHEMA_VERSION = 3;
+export const ROLLOUT_SCHEMA_VERSION = 4;
 
 // ─────────────────────────────────────────────────────────────────────
 // Event envelope: { eventId, id, msg, seq }
@@ -204,7 +214,7 @@ export interface TurnAbortedEvent {
  * DERIVED budget, never a raw turn-start clock — restoring a stale clock
  * would silently corrupt budget accounting on resume.
  */
-interface TurnCheckpointBase {
+interface TurnCheckpointBase<Slice> {
   readonly turnId: string;
   /** Monotonic per-turn iteration index this checkpoint closes. */
   readonly iterationIndex: number;
@@ -221,11 +231,11 @@ interface TurnCheckpointBase {
    */
   readonly prefixHash: string;
   /** The TurnState subset that is lost today and must survive a crash. */
-  readonly resumableState: TurnCheckpointSliceLine;
+  readonly resumableState: Slice;
 }
 
 /** Existing checkpoint shape. A missing discriminator is legacy version 1. */
-export interface TurnCheckpointV1Event extends TurnCheckpointBase {
+export interface TurnCheckpointV1Event extends TurnCheckpointBase<LegacyTurnCheckpointSliceLine> {
   readonly checkpointVersion?: 1;
 }
 
@@ -233,39 +243,22 @@ export interface TurnCheckpointV1Event extends TurnCheckpointBase {
  * A3 checkpoint shape whose prefix hash authenticates every persisted tool
  * result body through `ResponseItem.toolResultIntegrity`.
  */
-export interface TurnCheckpointV2Event extends TurnCheckpointBase {
+export interface TurnCheckpointV2Event extends TurnCheckpointBase<LegacyTurnCheckpointSliceLine> {
   readonly checkpointVersion: 2;
   readonly toolResultIntegrityVersion: 1;
 }
 
-export type TurnCheckpointEvent = TurnCheckpointV1Event | TurnCheckpointV2Event;
-
 /**
- * Serialized, JSON-safe projection of the resumable `TurnState` counters.
- * The authoritative shape + (de)serialization live in `turn-state.ts`
- * (`toCheckpointSlice` / `restoreFromCheckpoint`). Declared structurally
- * here so the rollout line is self-describing without importing TurnState
- * into the event-log module.
+ * Checkpoint shape that persists the complete resumable writer projection.
+ * Version 3 keeps the version-2 prefix integrity algorithm unchanged.
  */
-export interface TurnCheckpointSliceLine {
-  readonly turnCount: number;
-  readonly recoveryReentryCount: number;
-  readonly maxOutputTokensRecoveryCount: number;
-  readonly continuationNudgeCount: number;
-  readonly stopHookBlockingCount: number;
-  readonly planToolRequiredRetryCount?: number;
-  readonly taskBudgetRemaining?: number;
-  readonly autoCompactTracking?: {
-    readonly compacted: boolean;
-    readonly turnId: string;
-    readonly turnCounter: number;
-    readonly consecutiveFailures: number;
-  };
-  readonly transition?: { readonly reason: string };
-  readonly pendingBudgetDecision?:
-    | { readonly kind: "continue"; readonly remaining: number }
-    | { readonly kind: "stop"; readonly reason: string };
+export interface TurnCheckpointV3Event extends TurnCheckpointBase<TurnCheckpointSliceLine> {
+  readonly checkpointVersion: 3;
+  readonly toolResultIntegrityVersion: 1;
 }
+
+export type TurnCheckpointEvent =
+  TurnCheckpointV1Event | TurnCheckpointV2Event | TurnCheckpointV3Event;
 
 /**
  * GOAL #4b Stage 1 — emitted (fsync-durable) when a turn is resumed from a

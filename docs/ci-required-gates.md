@@ -137,9 +137,11 @@ so deleting those files does not fail with
 
 The policy flag is not the required-gate inventory in
 [`scripts/required-gate-contract.mjs`](../scripts/required-gate-contract.mjs).
-Only `.github/workflows/**`, `.githooks/**`, root `scripts/**`, root or runtime
-`package.json` / `package-lock.json` / `release-toolchain.json`, and runtime
-`tsconfig*.json` / `vitest.*` / `build.config.ts` set it. Changing
+Only `.github/workflows/**`, `.githooks/**`, root `scripts/**`, root
+`package.json` / `package-lock.json` / `release-toolchain.json`, runtime
+`package.json`, and runtime `tsconfig*.json` / `vitest.*` / `build.config.ts`
+set it. Runtime `package-lock.json` and `release-toolchain.json` do not.
+Changing
 `runtime/scripts/run-hermetic-vitest.mjs` or
 `runtime/src/utils/supervisedProcess.ts` runs Vitest `related`, not
 `npm run test:required-gates`.

@@ -31,6 +31,7 @@ import {
   getProjectDir,
   I4_FSYNC_RETRY_MS,
   MAX_SESSION_INDEX_ENTRIES,
+  assertRolloutSchemaVersionSupported,
   readIndexSnapshot,
   rewriteAtomically,
   SchemaMismatchError,
@@ -214,6 +215,18 @@ describe("session-store", () => {
         agencVersion: "0.2.0",
       }),
     ).toThrowError(/please use \/fork to migrate or upgrade/i);
+  });
+
+  test("a schema-v3 runtime rejects the schema-v4 checkpoint boundary", () => {
+    expect(ROLLOUT_SCHEMA_VERSION).toBe(4);
+    expect(() =>
+      assertRolloutSchemaVersionSupported(ROLLOUT_SCHEMA_VERSION, 3),
+    ).toThrowError(
+      expect.objectContaining<SchemaMismatchError>({
+        rolloutVersion: 4,
+        runtimeVersion: 3,
+      }),
+    );
   });
 
   test("explicit resume rejects a hard-linked canonical rollout", () => {

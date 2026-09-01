@@ -310,6 +310,28 @@ export class SessionProviderService {
     this.#binding = prepared.binding;
     return this.#binding;
   }
+
+  restoreAfterFailedCommit(
+    committed: ProviderBinding,
+    previous: ProviderBinding,
+  ): ProviderBinding {
+    if (this.#binding !== committed) {
+      throw new Error(
+        "provider rollback rejected because the live binding changed after commit",
+      );
+    }
+    if (previous.revision + 1 !== committed.revision) {
+      throw new Error(
+        "provider rollback rejected because the previous binding does not match the committed revision",
+      );
+    }
+    const restored = Object.freeze({
+      ...previous,
+      revision: committed.revision + 1,
+    });
+    this.#binding = restored;
+    return restored;
+  }
 }
 
 export function assertBuiltInProviderBinding(

@@ -260,3 +260,15 @@ test("required-gate inventory outside the policy selector typechecks only", () =
     assert.deepEqual(commandsForPlan(plan).map((command) => command.args), [["run", "typecheck"]], file);
   }
 });
+
+test("runtime lock and toolchain files do not select policy tests", () => {
+  for (const file of [
+    "runtime/package-lock.json",
+    "runtime/release-toolchain.json",
+  ]) {
+    const plan = classifyChangedFiles([file]);
+    assert.equal(plan.policy, false, file);
+    assert.equal(plan.typecheck, true, file);
+    assert.deepEqual(commandsForPlan(plan).map((command) => command.args), [["run", "typecheck"]], file);
+  }
+});

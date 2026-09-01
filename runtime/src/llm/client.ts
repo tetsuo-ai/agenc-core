@@ -19,6 +19,19 @@ import {
 export interface ProviderHttpClientConfig
   extends ProviderHttpClientSessionConfig {}
 
+export interface ProviderHttpContinuationSnapshot {
+  readonly conversationId?: string;
+  readonly lastRequest?: Readonly<Record<string, unknown>>;
+  readonly lastResponseId?: string;
+  readonly lastResponseOutput?: readonly Readonly<Record<string, unknown>>[];
+}
+
+function cloneContinuationState(
+  state: Readonly<ResponsesContinuationState>,
+): ResponsesContinuationState {
+  return structuredClone(state);
+}
+
 function mergeRecords(
   base?: Readonly<Record<string, string>>,
   override?: Readonly<Record<string, string>>,
@@ -66,6 +79,24 @@ export class ProviderHttpClient {
 
   resetResponsesContinuation(): void {
     resetResponsesContinuationState(this.responsesContinuationState);
+  }
+
+  snapshotResponsesContinuation(): ProviderHttpContinuationSnapshot {
+    return Object.freeze(
+      cloneContinuationState(this.responsesContinuationState),
+    );
+  }
+
+  restoreResponsesContinuation(
+    snapshot: ProviderHttpContinuationSnapshot,
+  ): void {
+    const restored = cloneContinuationState(snapshot);
+    for (const key of Object.keys(this.responsesContinuationState)) {
+      delete this.responsesContinuationState[
+        key as keyof ResponsesContinuationState
+      ];
+    }
+    Object.assign(this.responsesContinuationState, restored);
   }
 
   createTurnSession(

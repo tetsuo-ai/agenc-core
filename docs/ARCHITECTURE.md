@@ -378,9 +378,20 @@ can use the previous model's context after a model switch when the old window
 is larger and usage is over the new compaction limit or at the new effective
 window. Every successful nonterminal model response advances a durable sample
 ordinal, so nudge, compact, empty-response, and other follow-up samples
-receive a new admission `stepId`. See
-[execution-admission-kernel.md](design/execution-admission-kernel.md#model-step-identity)
-and the [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main).
+receive a new admission `stepId`. Before the next admission, `run-turn.ts`
+force-emits a `turn_checkpoint`; interval throttling cannot defer that
+barrier. In-turn resume (`resumeTurnFromCheckpoint`) is separate from epoch
+reopen. Startup continues an orphaned turn only when the last checkpoint
+passes config, reader, prefix hash, build pinning, and lease checks. Startup
+may open a fresh turn after a clean rejection. If provider publication began,
+the original route, config, model metadata, and client continuation state must
+be proven restored first. An unproven rollback halts startup and fences the
+session from new turns. The rejected checkpoint remains on disk. See the
+[resume outcome table](design/durable-runs-effects-events.md#resume-outcomes),
+[execution-admission-kernel.md](design/execution-admission-kernel.md#model-step-identity),
+the [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main),
+and
+[durable-runs-effects-events.md](design/durable-runs-effects-events.md#in-turn-checkpoint-resume).
 
 ## Recovery ladder (`runtime/src/recovery`)
 
