@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   classifyChangedFiles,
@@ -11,6 +14,8 @@ import {
   readChangedFiles,
   runCommand,
 } from "./run-fast-checks.mjs";
+
+const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 test("documentation paths skip code checks", () => {
   const plan = classifyChangedFiles(["README.md", "docs/ci-required-gates.md", "todo.txt"]);
@@ -202,4 +207,14 @@ test("child command failures retain their exit status", () => {
     () => runCommand(process.execPath, ["-e", "process.exit(23)"], { stdio: "pipe" }),
     (error) => error.exitCode === 23,
   );
+});
+
+test("ci-required-gates documents the skip set and fail-closed deletion", () => {
+  const docs = readFileSync(path.join(repositoryRoot, "docs/ci-required-gates.md"), "utf8");
+  assert.match(docs, /memory_todo\.md/u);
+  assert.match(docs, /todo\.txt/u);
+  assert.match(docs, /deleted runtime inputs have no bounded test mapping/u);
+  assert.match(docs, /--base/u);
+  assert.match(docs, /packages\/agenc-sdk/u);
+  assert.match(docs, /#fast-testfast-checks/u);
 });

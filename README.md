@@ -307,7 +307,7 @@ From the repo root:
 npm ci
 npm run build              # esbuild + declarations → runtime/dist + VERSION
 npm run typecheck          # tsc --noEmit (0 errors)
-npm run test:fast          # typecheck + Vitest tests affected by the branch
+npm run test:fast          # classify the branch; typecheck + affected tests
 npm test                   # full hermetic suite for releases and high-risk changes
 npm --workspace=@tetsuo-ai/runtime run test:host-functional
                            # fast host-only check; not an egress authority
@@ -396,12 +396,13 @@ runtime and asks Vitest to run tests related to files changed from `main`.
 Launcher, SDK, and gate-policy checks run only when files in those areas change.
 Documentation-only PRs do not start a hosted workflow. Run a focused regression test
 locally when a change needs coverage that Vitest cannot infer from imports.
+Classification, `--base`, and fail-closed deletion mapping are in
+[`docs/ci-required-gates.md`](docs/ci-required-gates.md#fast-testfast-checks).
 
 The full platform matrix is manual. Run it for release candidates or when a
 change depends on Linux kernel sandboxing, PowerShell, Neovim, macOS, or Windows
 behavior. Releases still run the full local and hosted verification at exact
-current `main`. Details live in
-[`docs/ci-required-gates.md`](docs/ci-required-gates.md).
+current `main`.
 
 Doc index: [`docs/INDEX.md`](docs/INDEX.md). Local contributor notes may live in a gitignored `AGENTS.md`.
 

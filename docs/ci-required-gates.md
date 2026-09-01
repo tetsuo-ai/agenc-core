@@ -7,8 +7,10 @@ Operating policy update: 2026-08-31
 Ordinary pull requests use `.github/workflows/pr-fast.yml`. One Ubuntu job
 classifies the changed paths, runs runtime typecheck, and selects exact changed
 tests or tests related to changed runtime inputs. Launcher, SDK, and gate policy
-tests run only when a PR changes those paths. Changes limited to `docs/` or the
-three root planning documents do not start GitHub Actions.
+tests run only when a PR changes those paths. Changes limited to `docs/**`,
+`README.md`, `memory_todo.md`, and `todo.txt` do not start GitHub Actions. The
+classifier, command plan, and local pitfalls are in
+[Fast `test:fast` checks](#fast-testfast-checks).
 
 `.github/workflows/platform-tests.yml` is manual. It retains the four full-suite
 shards and the Linux kernel, PowerShell, Neovim, macOS, and Windows jobs for
@@ -34,15 +36,102 @@ Use the smallest check that covers the change:
 npm run test:fast
 ```
 
-`test:fast` runs typecheck and tests related to branch changes from
-`origin/main`. Run the exact test file while developing a bug fix. Use a
-subsystem smoke only when the changed behavior needs it. Examples include the
-PTY startup check for startup or terminal work and a native platform job for
+`test:fast` is [`scripts/run-fast-checks.mjs`](../scripts/run-fast-checks.mjs).
+It prints a JSON classification plan, then runs only the commands that plan
+selects. Run the exact test file while developing a bug fix. Use a subsystem
+smoke only when the changed behavior needs it. Examples include the PTY startup
+check for startup or terminal work and a native platform job for
 platform-specific code.
 
 Run `npm test` for a release, a broad runtime refactor, a test-infrastructure
-change, or when the affected-test result looks too narrow. Ordinary PRs do not
-need the full suite after every amended commit.
+change, or when the printed plan looks too narrow. Ordinary PRs do not need the
+full suite after every amended commit.
+
+## Fast `test:fast` checks
+
+### Command
+
+```bash
+npm run test:fast
+npm run test:fast -- --base <git-ref>
+```
+
+The default base is `origin/main`. Hosted CI passes the pull-request base SHA.
+`--base` must be a non-option Git ref that resolves to one 40-character commit.
+A value that looks like a Git option, such as `--relative=runtime`, fails
+before any test selection.
+
+The hosted job is `pr-fast` / `affected-tests` on `ubuntu-24.04` with Node
+26.5.0, npm 11.17.0, a 15-minute timeout, and `fetch-depth: 0`. It first
+requires `git cat-file -e "${BASE_SHA}^{commit}"` and
+`git diff --check "$BASE_SHA"...HEAD`, then runs
+`npm run test:fast -- --base "$BASE_SHA"`. Workflow `paths-ignore` uses the
+same four documentation roots as the classifier.
+
+### Change set
+
+The classifier unions four NUL-delimited Git name lists:
+
+1. `git diff --name-only -z <base>...HEAD`
+2. unstaged `git diff --name-only -z`
+3. staged `git diff --name-only -z --cached`
+4. untracked files from `git ls-files --others --exclude-standard -z`
+
+CI usually has a clean tree, so only the merge-base triple-dot list matters.
+Invalid UTF-8 or an unterminated name list fails closed.
+
+Before classification the script also runs `git diff --check` on
+`<base>...HEAD`, the unstaged diff, and the index. The pre-commit hook in
+`.githooks/` runs only `git diff --cached --check`.
+
+### Classification
+
+If every changed path is `docs/**`, `README.md`, `memory_todo.md`, or
+`todo.txt`, or if the change set is empty, the script prints the plan and
+exits without typecheck or tests. A mix of those files and any other path
+still runs.
+
+Otherwise runtime typecheck is on, and these selectors apply independently:
+
+| Change | Command |
+| --- | --- |
+| `runtime/tests/**` or `runtime/platform-tests/**` matching `*.{test,spec}.{js,cjs,mjs,ts,tsx,…}` | hermetic Vitest `run` of those files |
+| `runtime/scripts/**/*.test.mjs` | `node --test` of those files |
+| existing runtime `.js`/`.ts`/`.tsx` inputs under `src`, `tests`, `scripts`, `plugins`, `native`, and `platform-tests` | hermetic Vitest `related` |
+| existing `runtime/vitest.*` or `runtime/build.config.ts` | hermetic Vitest `related` **and** policy tests |
+| `runtime/src/conversation/realtime/prompts/{backend_prompt,realtime_start,realtime_end}.md` | exact `tests/conversation/realtime/prompt.contract.test.ts` |
+| `packages/agenc/**` | `npm test --workspace=@tetsuo-ai/agenc` |
+| `packages/agenc-sdk/**` | SDK `typecheck` only |
+| `.github/workflows/**`, `.githooks/**`, `scripts/**`, root or runtime `package.json` / `package-lock.json` / `release-toolchain.json`, or runtime `tsconfig*.json` | `npm run test:required-gates` |
+
+Runtime `package.json` and `tsconfig*.json` are policy, not Vitest `related`
+inputs. Other runtime Markdown does not enter `related` mode. A runtime README
+or an unmapped `.md` file still typechecks.
+
+Deleted runtime inputs do not use `related`. The script maps
+`runtime/src/<area>/…` to `runtime/tests/<area>` (directory or
+`<area>.{test,spec}.{ts,tsx}`), and maps a deleted hermetic runner, `vitest.*`,
+or `build.config.ts` to their contract tests. An uncovered deletion fails with
+`deleted runtime inputs have no bounded test mapping` instead of passing on
+typecheck alone. A mapped prompt contract that is missing also fails.
+
+Hermetic Vitest invocations use `--passWithNoTests --maxWorkers=2 --bail=1
+--allowOnly=false`. They do not pass `--require-zero-skips`.
+
+### Local extras the hosted job does not infer
+
+`test:fast` does not run PTY startup, the full hermetic suite, or the platform
+matrix. Add those when the change needs them.
+
+### Common pitfalls
+
+- An untracked source file is in the local plan even if it is not committed.
+- SDK changes do not run the SDK test suite.
+- `runtime/package.json` and `runtime/tsconfig*.json` select policy tests, not
+  `related`.
+- Deleting `runtime/scripts/removed-runner.mjs` with no fallback target fails
+  closed. Add an explicit mapping or run the full suite and record the review.
+- Do not use `--base` values that look like Git options.
 
 ## Current local release evidence protocol
 
@@ -1161,6 +1250,8 @@ not rollback.
 ## Current operating evidence
 
 Ordinary PRs use the fast affected-test workflow and targeted local checks.
+Classification, `--base`, and fail-closed deletion mapping are in
+[Fast `test:fast` checks](#fast-testfast-checks).
 Release records use the full local evidence path and immutable-tag protocol.
 No dedicated GitHub App or active App-bound ruleset is required. The manual
 platform workflow retains `default-suite` plus the five capability families

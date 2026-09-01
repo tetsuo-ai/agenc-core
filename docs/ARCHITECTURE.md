@@ -493,6 +493,8 @@ crashing the process.
 - Ordinary code changes run runtime typecheck and
   Vitest tests related to the branch diff. Launcher, SDK, and gate-policy tests
   run when files in those areas change. Documentation-only PRs skip hosted checks.
+  Classification and fail-closed deletion mapping are in
+  [ci-required-gates.md](ci-required-gates.md#fast-testfast-checks).
 - Releases use the complete local suite and the manual hosted matrix from
   exact current `main`. The matrix covers Linux kernel
   sandboxing, PowerShell, Neovim, macOS, and Windows. The optional GitHub App
