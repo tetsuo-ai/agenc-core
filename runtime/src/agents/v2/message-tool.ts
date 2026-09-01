@@ -1,4 +1,8 @@
 import type { ToolResult } from "../../tools/types.js";
+import {
+  AgentAssignmentRejectedError,
+  type AgentAssignmentRejectionCode,
+} from "../control.js";
 import { createMailboxMetadataRecord } from "../mailbox.js";
 import type { ThreadId } from "../registry.js";
 import {
@@ -17,6 +21,24 @@ import {
 } from "./common.js";
 
 export type MessageDeliveryMode = "queue_only" | "trigger_turn";
+
+const ASSIGN_TASK_ADMISSION_REJECTION_CODES: ReadonlySet<AgentAssignmentRejectionCode> =
+  new Set([
+    "self_target",
+    "sender_not_ancestor",
+    "worker_not_idle",
+    "assignment_outstanding",
+  ]);
+
+function assignTaskAdmissionReason(error: unknown): string | undefined {
+  if (
+    !(error instanceof AgentAssignmentRejectedError) ||
+    !ASSIGN_TASK_ADMISSION_REJECTION_CODES.has(error.code)
+  ) {
+    return undefined;
+  }
+  return error.message;
+}
 
 export const MAX_INTER_AGENT_MESSAGE_CHARACTERS = 65_536;
 export const MAX_INTER_AGENT_MESSAGE_BYTES = 65_536;
@@ -119,6 +141,10 @@ export async function handleMessageStringTool(
     },
   });
   if (deliveryError !== undefined) {
+    const admissionReason = assignTaskAdmissionReason(deliveryError);
+    if (admissionReason !== undefined) {
+      return agentValidationError(admissionReason);
+    }
     return json(
       {
         error:
