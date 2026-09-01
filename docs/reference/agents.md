@@ -144,6 +144,78 @@ assignment; non-ancestor peer prose is framed as untrusted data.
 
 The worker always drains a triggering assignment before another provider call.
 This prevents a wake notification from replaying stale input.
+Admission-only refusals from `assignTask()` stay off the mutation gate:
+[`assign_task` admission refusals](#assign_task-admission-refusals).
+
+### `assign_task` admission refusals
+
+`assignTask()` in `runtime/src/agents/control.ts` runs every eligibility
+check and installs the outstanding-assignment marker **before** mailbox
+projection. Four `AgentAssignmentRejectedError` codes fire before that
+marker:
+
+| Code | Typical message |
+| --- | --- |
+| `self_target` | `an agent cannot assign a task to itself` |
+| `sender_not_ancestor` | `task sender … must be a strict ancestor of …` |
+| `worker_not_idle` | `agent … is not an idle reusable worker` |
+| `assignment_outstanding` | `agent … already has an outstanding assignment` |
+
+`handleMessageStringTool` in `runtime/src/agents/v2/message-tool.ts` maps
+only those codes through `assignTaskAdmissionReason` and wraps them with
+`agentValidationError`. The live dispatcher (`executePhysical` in
+`runtime/src/tools/execution.ts`) calls `onEffectBoundaryCrossed()`
+**before** `tool.execute()`, so a bare `isError` from `assign_task` would
+poison later `FileWrite` / `Bash` / `spawn_agent` until `/resolve`.
+
+| Field | Evidence |
+| --- | --- |
+| `disposition` | `confirmed_no_effect` |
+| `evidenceKind` | `boundary_not_crossed` |
+| `evidenceRef` | `tool:agents.v2:validation` |
+
+`collab_agent_interaction_begin` / `collab_agent_interaction_end` still
+emit around the `assignTask()` attempt. Those events are telemetry. They
+do not install the assignment marker or enqueue a trigger.
+
+`mailbox_backpressure` is thrown **after** the marker is installed (the
+failed send then clears that same marker). That code is not in
+`ASSIGN_TASK_ADMISSION_REJECTION_CODES` and stays ordinary `isError`.
+A closed mailbox during that send is rewritten as `ThreadNotFoundError`
+and is also unknown-effect. `send_message` failures from
+`sendInterAgentCommunication()` and `close_agent` failures from
+`shutdown()` stay unknown-effect. Do not use `agentValidationError`
+after a marker, mailbox send, or shutdown can have run.
+
+Argument, identity, empty-message, byte-cap, and root-target refusals
+happen **before** `assignTask()` and use the same helper. This section
+is the in-`assignTask()` remainder: busy, outstanding, non-ancestor, and
+self-target admission throws.
+
+```json
+{
+  "target": "/root/worker",
+  "message": "first assignment"
+}
+```
+
+When `/root/worker` is still `pending_init` or `running`, that
+`assign_task` returns `agent /root/worker is not an idle reusable
+worker` with `confirmed_no_effect` / `boundary_not_crossed`.
+`child.assignment` stays unset. A later `FileWrite` in the same session
+is not gated. Retry after the worker is `idle` with no outstanding
+assignment; do not `/resolve`.
+
+| Symptom | What to check |
+| --- | --- |
+| `confirmed_no_effect` / `tool:agents.v2:validation` plus not-idle, outstanding, not-ancestor, or self-target | `assignTask()` refused before the marker. No trigger was enqueued. Wait for `idle`, pick an ancestor sender, and retry. Do not `/resolve`. |
+| `agent … mailbox cannot safely accept the assignment trigger` / `thread … not found` without that disposition | Mailbox send after the marker (`mailbox_backpressure` or `MailboxClosedError` → `ThreadNotFoundError`). Inspect the worker mailbox. Later FileWrite / Bash / spawn stay blocked until `/resolve`. |
+| Ordinary `isError` on `send_message` after `collab_agent_interaction_begin` | Delivery path, not the admission allowlist. Inspect the mailbox before retrying. |
+| Ordinary `isError` on `close_agent` after `collab_close_begin` | `shutdown()` was entered. Inspect the worker before retrying. |
+
+`spawn_agent` preflight stays on `tool:agents.spawn-agent:validation`:
+[spawn preflight](#spawn_agent-preflight). Do not reuse that table for
+these admission codes.
 
 ### Task outcomes and mailbox delivery
 

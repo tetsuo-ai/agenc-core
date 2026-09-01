@@ -60,7 +60,7 @@ history; the linked pages below are current product truth.
 | [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes, Responses continuation, and overflow diagnostics |
 | [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics and `/compact` |
 | [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery (pinned webhook destinations) + hooks HTTP |
-| [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, spawn `task_name` normalization, spawn preflight no-effect, deferred first message, worktree evidence, and turn-scoped abort |
+| [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, spawn `task_name` normalization, spawn preflight no-effect, `assign_task` admission refusals that stay off the mutation gate, deferred first message, worktree evidence, and turn-scoped abort |
 | [reference/workflows.md](reference/workflows.md) | Version-2 agent DAG manifests, derived child agent names, scheduling, handoff artifacts, limits, and result outcomes |
 | [reference/memory.md](reference/memory.md) | Persona, AGENC.md, auto-memory paths, full-corpus index, privacy |
 | [reference/mcp.md](reference/mcp.md) | MCP client and server, plugin-declared server precedence, model-facing inputSchema sanitization, model-facing tool text, and Landlock diagnostics |

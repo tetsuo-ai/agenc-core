@@ -331,6 +331,8 @@ Broader suites and env knobs for design-state smoke are listed in
 
 - Architecture: [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
 - Embedded Neovim BUFFER: [`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md)
-- Agents rail / multi-agent: [`agents.md`](agents.md)
+- Agents rail / multi-agent: [`agents.md`](agents.md). Busy or outstanding
+  `assign_task` refusals stay off the mutation gate:
+  [`assign_task` admission refusals](agents.md#assign_task-admission-refusals)
 - `/context` occupancy: [Context usage](#context-usage-context)
 - Daemon telemetry vs terminal errors: [`daemon.md`](daemon.md#telemetry-errors-stay-session-only)

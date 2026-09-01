@@ -194,5 +194,6 @@ success. Full reopen table:
 | `/provider` vs config | Slash name `/provider`; persisted field `model_provider` |
 | Help groups | Presentation metadata in `runtime/src/commands/help-groups.ts` |
 | Plugin-added commands | Plugins can register additional commands outside this minimal registry (see [skills-plugins.md](skills-plugins.md)) |
+| `/resolve` vs `assign_task` admission | Busy, outstanding, non-ancestor, and self-target refusals already attest `confirmed_no_effect`. Do not `/resolve` those. `mailbox_backpressure` after the marker still needs review: [agents.md](agents.md#assign_task-admission-refusals) |
 
 Related: [cli.md](cli.md) (top-level `agenc` subcommands), [tui-workbench.md](tui-workbench.md).
