@@ -487,8 +487,9 @@ attaches a line-grid UI, renders that native grid into the measured center
 pane, routes terminal input, and owns process and file-safety boundaries.
 Loaded and hidden Neovim buffers form one safety unit: navigation reuses the
 session, dirty state is aggregated across the buffer manifest, and a workbench
-transition cannot abandon edits in a non-active buffer. See
-[`embedded-neovim-buffer.md`](embedded-neovim-buffer.md).
+transition cannot abandon edits in a non-active buffer. Request-scoped
+Editor turns cap sampling, tool calls, and query tokens; see
+[editor request bounds](embedded-neovim-buffer.md#editor-request-bounds).
 
 A throwing frame is contained; the next frame full-repaints rather than
 crashing the process.

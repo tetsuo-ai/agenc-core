@@ -109,6 +109,25 @@ describe("embedded Neovim BUFFER docs and config", () => {
     expect(text).toContain("vitest.neovim-platform.config.ts");
   });
 
+  it("documents request-scoped Editor turn bounds", async () => {
+    const text = await readFile("../docs/embedded-neovim-buffer.md", "utf8");
+
+    expect(text).toContain("### Editor request bounds");
+    expect(text).toContain("EDITOR_INTERACTION_MAX_SAMPLING_ITERATIONS");
+    expect(text).toContain("`12`");
+    expect(text).toContain("EDITOR_INTERACTION_MAX_TOOL_CALLS");
+    expect(text).toContain("`32`");
+    expect(text).toContain("EDITOR_INTERACTION_MAX_QUERY_TOKENS");
+    expect(text).toContain("`128000`");
+    expect(text).toContain("getTrustedEditorInteractionTool");
+    expect(text).toContain("editor_proposal_missing");
+    expect(text).toContain("editor_interaction_limit");
+    expect(text).toContain("editor_interaction_recovery_blocked");
+    expect(text).toContain("editor_interaction_context_limit");
+    expect(text).toContain("FileRead");
+    expect(text).toContain("EditorProposal");
+  });
+
   it("keeps the operator shortcut summary aligned", async () => {
     const text = await readFile("../docs/reference/tui-workbench.md", "utf8");
 

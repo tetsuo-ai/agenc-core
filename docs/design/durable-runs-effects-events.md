@@ -402,7 +402,8 @@ additive; the resume reader is not. See
 - `editorToolCallsAdmitted` is omitted when `0`. When present it is a
   non-negative safe integer. The live editor cap is
   `EDITOR_INTERACTION_MAX_TOOL_CALLS` (`32` in
-  `runtime/src/session/editor-interaction.ts`).
+  `runtime/src/session/editor-interaction.ts`). Operator bounds:
+  [editor request bounds](../embedded-neovim-buffer.md#editor-request-bounds).
 - `pendingAdmissionFallback` requires `fromModel`, `toModel`, and `reason`.
   `fromProvider` and `toProvider` are optional. Each string is non-empty and
   at most `4096` UTF-8 bytes (`MAX_CHECKPOINT_FALLBACK_TEXT_BYTES`). Extra

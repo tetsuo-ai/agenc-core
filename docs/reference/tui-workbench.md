@@ -274,9 +274,9 @@ daemon session without creating a conversation turn; the first real Editor or
 Agent submission reuses it, and closing first tears it down. Agent-only startup
 facilities remain staged until the first normal submission outside an Editor
 read-only/proposal policy. The exact
-allowed side effects, local-only attachment rules, proposal validation, and
-shutdown behavior are documented in
-[`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md).
+allowed side effects, local-only attachment rules, proposal validation,
+sampling / tool / query bounds, and shutdown behavior are documented in
+[`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md#editor-request-bounds).
 
 If a transition would abandon one or more modified loaded buffers—including a
 hidden Neovim buffer—the workbench stops it and offers **Save All**, **Discard

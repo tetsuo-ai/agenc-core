@@ -341,6 +341,64 @@ acceptance fails as stale instead of applying to newer work. Accepted edits
 join into one Neovim undo step and leave the buffer modified but unsaved;
 rejection only clears the shadow proposal.
 
+### Editor request bounds
+
+Editor turns are a closed loop: trusted reads (and at most one
+`EditorProposal` on proposal-only), then either a user-visible answer or a
+fail-closed stop. Agent recovery that would compact, rewrite history, inject
+a continuation nudge, or switch the shared route does not run. The
+no-progress behavioral backstop is also skipped. Same-model transport
+reconnect still replays the already-snapshotted request.
+
+Implementation: `editor-interaction.ts`, `projectEditorQueryMessagesToFit` /
+`finishEditorInteractionLimit` in `session/run-turn.ts`, and
+`queueStreamingToolCall` in `phases/execute-tools.ts`.
+
+| Bound | Value | At the limit |
+| --- | --- | --- |
+| Sampling iterations | `EDITOR_INTERACTION_MAX_SAMPLING_ITERATIONS` (`12`) | The next loop iteration stops before another sample. |
+| Admitted tool calls | `EDITOR_INTERACTION_MAX_TOOL_CALLS` (`32`) | The 33rd call is not queued. Already-admitted calls finish; then the turn stops. |
+| Query tokens | `EDITOR_INTERACTION_MAX_QUERY_TOKENS` (`128000`) | Oldest complete user-turn segments are dropped. If the latest user segment plus the system/developer prefix still exceeds the fit limit, the request fails before the provider is contacted. |
+
+When the model advertises a context window, the query fit limit is
+`min(128000, max(1024, window - reserve))`. Reserve is
+`min(16000, max(1024, floor(window / 4)))`. Without a window the ceiling
+is `128000`.
+
+History projection clones the snapshot. It does **not** persist truncated
+tool results, mutate `ContentReplacementState`, or run Agent
+microcompaction. System/developer framing before the first user turn is
+kept. The latest user segment is never partially rewritten.
+
+The model sees only the production-registry objects for `FileRead`,
+`Glob`, `Grep`, `Orient`, and (proposal-only) `EditorProposal`.
+Authorization requires the exact trusted builtin
+(`getTrustedEditorInteractionTool`): `metadata.source === "builtin"`,
+`mutating === false`, no `serverId`, `isReadOnly === true`, and
+`recoveryCategory === "idempotent"`. MCP `readOnlyHint` and plugin
+metadata never authorize a tool. A name collision cannot replace the
+reserved spec.
+
+`EditorProposal` is advertised on proposal-only turns even when the
+ordinary visible set hid it. A second `EditorProposal` in the same
+executor is not queued. Read-only turns reject `EditorProposal`.
+
+A proposal-only turn that finishes without a validated `EditorProposal`
+stops with cause `editor_proposal_missing` and the message that no buffer
+changes were made. Sampling and tool caps emit `editor_interaction_limit`
+and drain unpaired model tool calls so the transcript stays structurally
+valid. A withheld 413 (`context_window`), oversized media
+(`media_too_large`), or max-output-tokens (`max_output_tokens`) outcome
+skips Agent recovery and fails closed as
+`editor_interaction_recovery_blocked`.
+
+| Symptom | What to check |
+| --- | --- |
+| Explain stops after many `FileRead` hops | Twelve samples or 32 admitted tools. Narrow the range or ask a smaller question. |
+| Edit returns prose and no shadow proposal | The model never returned a validated `EditorProposal`. Retry with a smaller hunk. |
+| Prompt is too long / media too large | Editor does not compact or downshift. Shrink the capture (64 KiB / 2,000 lines) or extra `FileRead` context. |
+| `editor_interaction_context_limit` | The latest user segment alone exceeds the fit bound. Drop attachments or select a smaller range. |
+
 ## Multi-buffer save and leave safety
 
 The active file is not the safety boundary. AgenC asks Neovim for a manifest of
