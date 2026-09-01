@@ -211,7 +211,37 @@ function installOneShotDaemonSpies() {
 }
 
 describe("UserPromptSubmit prompt ingress", () => {
-  it("blocks autonomous keepalive after a compact failure", async () => {
+  it.each([
+    {
+      label: "a compact failure",
+      content: "",
+      stopReason: "compact_failed",
+      errorMessage: "compaction could not shrink the context",
+      prompt: "hello",
+      editorInteraction: undefined,
+    },
+    {
+      label: "a request-scoped Editor failure",
+      content: "Editor interaction stopped at its request-scoped limit.",
+      stopReason: "editor_request_failed",
+      errorMessage: "editor_interaction_limit: request cap reached",
+      prompt: "explain this selection",
+      editorInteraction: {
+        interactionId: "editor-request-failed",
+        policy: "read_only",
+        bufferHandle: 1,
+        changedtick: 1,
+        contentSha256: "a".repeat(64),
+        range: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 },
+      },
+    },
+  ] as const)("blocks autonomous keepalive after $label", async ({
+    content,
+    stopReason,
+    errorMessage,
+    prompt,
+    editorInteraction,
+  }) => {
     const { session } = fakeSession("/workspace");
     const setContextBlocked = vi.spyOn(
       AutonomousKeepaliveScheduler.prototype,
@@ -220,10 +250,10 @@ describe("UserPromptSubmit prompt ingress", () => {
     const runSingleTurnFn = vi.fn(async function* () {
       yield {
         type: "turn_complete",
-        content: "",
+        content,
         usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
-        stopReason: "compact_failed",
-        error: new Error("compaction could not shrink the context"),
+        stopReason,
+        error: new Error(errorMessage),
       } satisfies PhaseEvent;
       return { reason: "completed" };
     });
@@ -238,51 +268,10 @@ describe("UserPromptSubmit prompt ingress", () => {
     });
 
     try {
-      await session.submit("hello");
-      expect(setContextBlocked).toHaveBeenCalledWith(true);
-    } finally {
-      uninstall();
-      setContextBlocked.mockRestore();
-    }
-  });
-
-  it("blocks autonomous keepalive after a request-scoped Editor failure", async () => {
-    const { session } = fakeSession("/workspace");
-    const setContextBlocked = vi.spyOn(
-      AutonomousKeepaliveScheduler.prototype,
-      "setContextBlocked",
-    );
-    const runSingleTurnFn = vi.fn(async function* () {
-      yield {
-        type: "turn_complete",
-        content: "Editor interaction stopped at its request-scoped limit.",
-        usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
-        stopReason: "editor_request_failed",
-        error: new Error("editor_interaction_limit: request cap reached"),
-      } satisfies PhaseEvent;
-      return { reason: "completed" };
-    });
-    const uninstall = __installTuiSessionContractForTest({
-      session: session as never,
-      configStore: { current: () => defaultConfig },
-      agencHome: "/tmp/agenc",
-      resolvedProvider: "stub",
-      autonomousModeEnabled: true,
-      loadTurnInputsFn: async () => EMPTY_TURN_INPUTS,
-      runSingleTurnFn: runSingleTurnFn as never,
-    });
-
-    try {
-      await session.submit("explain this selection", {
-        editorInteraction: {
-          interactionId: "editor-request-failed",
-          policy: "read_only",
-          bufferHandle: 1,
-          changedtick: 1,
-          contentSha256: "a".repeat(64),
-          range: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 },
-        },
-      });
+      await session.submit(
+        prompt,
+        editorInteraction === undefined ? undefined : { editorInteraction },
+      );
       expect(setContextBlocked).toHaveBeenCalledWith(true);
     } finally {
       uninstall();

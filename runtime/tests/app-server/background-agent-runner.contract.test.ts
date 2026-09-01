@@ -7949,109 +7949,95 @@ describe("AgenC delegate background-agent runner", () => {
     ).resolves.toMatchObject({ status: expect.not.stringMatching(/^error$/u) });
   });
 
-  it("[managed-thread] keeps the run alive after a mid-turn compact skip", async () => {
-    const { runner, session, control, stub } = makeTopLevelRunner({
+  it.each([
+    {
+      label: "a mid-turn compact skip",
       conversationId: "session-survives-mid-turn-compact-skip",
-    });
-    await runner.startAgent({
       objective: "passive compact test",
-      initialContent: [],
-      unattendedAllow: [],
-      unattendedDeny: [],
-    });
-
-    session.emit({
-      id: "legacy-mid-turn-compact-skip",
-      msg: {
-        type: "error",
-        payload: {
-          cause: "mid_turn_compact_failed",
-          message:
-            "mid_turn_compact_skipped: lastSamplePromptTokens=200000 limit=180000",
-        },
-      },
-    });
-    session.emitPhaseEvent({
-      type: "turn_complete",
+      diagnosticId: "legacy-mid-turn-compact-skip",
+      diagnosticType: "error",
+      diagnosticCause: "mid_turn_compact_failed",
+      message: "mid_turn_compact_skipped: lastSamplePromptTokens=200000 limit=180000",
       content: "need a tool",
-      usage: {
-        promptTokens: 200_000,
-        completionTokens: 10,
-        totalTokens: 200_010,
-      },
+      completionTokens: 10,
       stopReason: "compact_failed",
-      error: new Error(
-        "mid_turn_compact_skipped: lastSamplePromptTokens=200000 limit=180000",
-      ),
-    });
-    await new Promise((resolve) => setImmediate(resolve));
-
-    const snapshot = await runner.getAgentSnapshot(
-      "session-survives-mid-turn-compact-skip",
-    );
-    expect(snapshot?.status).not.toBe("error");
-
-    await expect(
-      runner.submitAgentMessage("session-survives-mid-turn-compact-skip", {
-        sessionId: "session_1",
-        content: "continue after compact skip",
-        originalContent: "continue after compact skip",
-        messageId: "after-compact-skip",
-        streamId: "after-compact-skip-stream",
-        acceptedAt: "2026-08-31T00:00:01.000Z",
-      }),
-    ).resolves.toMatchObject({ disposition: "started" });
-    expect(control.sendInput).toHaveBeenCalledTimes(1);
-    expect(stub.thread.submit).not.toHaveBeenCalled();
-  });
-
-  it("[managed-thread] keeps the run alive after an editor recovery block", async () => {
-    const { runner, session, control, stub } = makeTopLevelRunner({
+      followup: "continue after compact skip",
+      followupId: "after-compact-skip",
+      acceptedAt: "2026-08-31T00:00:01.000Z",
+    },
+    {
+      label: "an editor recovery block",
       conversationId: "session-survives-editor-recovery-block",
+      objective: "passive editor recovery test",
+      diagnosticId: "legacy-editor-recovery-blocked",
+      diagnosticType: "warning",
+      diagnosticCause: "editor_interaction_recovery_blocked",
+      message: "editor_interaction_recovery_blocked: context_window",
+      content: "Prompt is too long: 200000 tokens > 128000",
+      completionTokens: 0,
+      stopReason: "editor_request_failed",
+      followup: "continue after editor 413",
+      followupId: "after-editor-recovery-block",
+      acceptedAt: "2026-09-01T00:00:01.000Z",
+    },
+  ] as const)("[managed-thread] keeps the run alive after $label", async ({
+    conversationId,
+    objective,
+    diagnosticId,
+    diagnosticType,
+    diagnosticCause,
+    message,
+    content,
+    completionTokens,
+    stopReason,
+    followup,
+    followupId,
+    acceptedAt,
+  }) => {
+    const { runner, session, control, stub } = makeTopLevelRunner({
+      conversationId,
     });
     await runner.startAgent({
-      objective: "passive editor recovery test",
+      objective,
       initialContent: [],
       unattendedAllow: [],
       unattendedDeny: [],
     });
 
     session.emit({
-      id: "legacy-editor-recovery-blocked",
+      id: diagnosticId,
       msg: {
-        type: "warning",
+        type: diagnosticType,
         payload: {
-          cause: "editor_interaction_recovery_blocked",
-          message: "editor_interaction_recovery_blocked: context_window",
+          cause: diagnosticCause,
+          message,
         },
       },
     });
     session.emitPhaseEvent({
       type: "turn_complete",
-      content: "Prompt is too long: 200000 tokens > 128000",
+      content,
       usage: {
         promptTokens: 200_000,
-        completionTokens: 0,
-        totalTokens: 200_000,
+        completionTokens,
+        totalTokens: 200_000 + completionTokens,
       },
-      stopReason: "editor_request_failed",
-      error: new Error("editor_interaction_recovery_blocked: context_window"),
+      stopReason,
+      error: new Error(message),
     });
     await new Promise((resolve) => setImmediate(resolve));
 
-    const snapshot = await runner.getAgentSnapshot(
-      "session-survives-editor-recovery-block",
-    );
+    const snapshot = await runner.getAgentSnapshot(conversationId);
     expect(snapshot?.status).not.toBe("error");
 
     await expect(
-      runner.submitAgentMessage("session-survives-editor-recovery-block", {
+      runner.submitAgentMessage(conversationId, {
         sessionId: "session_1",
-        content: "continue after editor 413",
-        originalContent: "continue after editor 413",
-        messageId: "after-editor-recovery-block",
-        streamId: "after-editor-recovery-block-stream",
-        acceptedAt: "2026-09-01T00:00:01.000Z",
+        content: followup,
+        originalContent: followup,
+        messageId: followupId,
+        streamId: `${followupId}-stream`,
+        acceptedAt,
       }),
     ).resolves.toMatchObject({ disposition: "started" });
     expect(control.sendInput).toHaveBeenCalledTimes(1);

@@ -2073,49 +2073,28 @@ describe("AgenC TUI session transcript", () => {
       // Pins the user-visible side of the policy: a sample of causes
       // the user can act on or that explain a turn-level outcome MUST
       // still render so the user understands what they're seeing.
-      const transcript = adaptTranscriptEvents([
-        {
-          id: "warn-1",
-          msg: {
-            type: "warning",
-            payload: {
-              cause: "mcp_auth_required",
-              message: "MCP server X requires auth",
-            },
-          },
-        },
-        {
-          id: "warn-2",
-          msg: {
-            type: "warning",
-            payload: {
-              cause: "mid_turn_compact_failed",
-              message: "mid_turn_compact_skipped: tokens=200000 limit=180000",
-            },
-          },
-        },
-        {
-          id: "warn-3",
-          msg: {
-            type: "warning",
-            payload: {
-              cause: "file_mention_attachment_dropped",
-              message: "Dropped @file/path because it doesn't exist",
-            },
-          },
-        },
-        {
-          id: "warn-4",
-          msg: {
-            type: "warning",
-            payload: {
-              cause: "editor_proposal_missing",
-              message: "The Editor request returned no valid proposal",
-            },
-          },
-        },
-      ]);
-      expect(transcript.messages).toHaveLength(4);
+      const warnings = [
+        ["mcp_auth_required", "MCP server X requires auth"],
+        [
+          "mid_turn_compact_failed",
+          "mid_turn_compact_skipped: tokens=200000 limit=180000",
+        ],
+        [
+          "file_mention_attachment_dropped",
+          "Dropped @file/path because it doesn't exist",
+        ],
+        [
+          "editor_proposal_missing",
+          "The Editor request returned no valid proposal",
+        ],
+      ] as const;
+      const transcript = adaptTranscriptEvents(
+        warnings.map(([cause, message], index) => ({
+          id: `warn-${index + 1}`,
+          msg: { type: "warning" as const, payload: { cause, message } },
+        })),
+      );
+      expect(transcript.messages).toHaveLength(warnings.length);
       const allText = JSON.stringify(transcript.messages);
       expect(allText).toContain("MCP server X requires auth");
       expect(allText).toContain("mid_turn_compact_skipped");
