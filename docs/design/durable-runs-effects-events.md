@@ -388,9 +388,9 @@ not reuse schema 3 for checkpoint v3. Unknown versions and unknown keys fail
 closed. The writer, reader, event types, and recovery journal share
 `runtime/src/session/turn-checkpoint-slice.ts`.
 
-`restoreFromCheckpoint` is not the integrity gate. It applies an already
-accepted slice and ignores unknown or malformed fields. `readTurnCheckpoint`
-is the fail-closed reader.
+`restoreFromCheckpoint` assumes the slice has already passed
+`readTurnCheckpoint`; it does not enforce the wire-integrity contract.
+`readTurnCheckpoint` is the fail-closed reader.
 
 #### Slice constraints
 
