@@ -186,6 +186,14 @@ The command never reruns the tool or rewrites the physical outcome as
 success. Full reopen table:
 [durable-runs-effects-events.md](../design/durable-runs-effects-events.md#resume-and-effect-review).
 
+Current `close_agent` / `assign_task` / `send_message` argument and identity
+refusals already attest `confirmed_no_effect` and should not appear as
+pending reviews. The same applies to `assign_task`'s four typed pre-marker
+admission rejections. If a later FileWrite / Bash / spawn is still gated
+after one of those messages, the call reached shutdown, mailbox delivery, or
+an unclassified path, or the journal predates that attestation. Operator detail:
+[agents.md](agents.md#agent-validation-refusals).
+
 ---
 
 ## Notes

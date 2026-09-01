@@ -276,6 +276,16 @@ checks. A bare `isError` from a non-idempotent tool still poisons the mutation
 gate. ExitPlanMode deliberately keeps a bare error after a possible plan-file
 write so a genuine mid-flight failure remains `unknown_outcome`.
 
+The live dispatcher marks the effect boundary before `tool.execute()`, so
+`close_agent`, `assign_task`, and `send_message` attest the same
+`confirmed_no_effect` / `boundary_not_crossed` disposition on argument and
+identity refusals (`tool:agents.v2:validation`). `assign_task` also attests
+the four typed admission rejections that occur before its assignment marker.
+Mailbox backpressure and unclassified failures from `shutdown()`,
+`assignTask()`, or `sendInterAgentCommunication()` stay unknown-effect.
+Operator detail:
+[agents.md](../reference/agents.md#agent-validation-refusals).
+
 ### Troubleshooting
 
 | Symptom | What to check |
@@ -285,6 +295,7 @@ write so a genuine mid-flight failure remains `unknown_outcome`.
 | `/resolve` says there is no live session | Resume first only for a settled `completed`, `failed`, or `cancelled` terminal. For an `unknown_outcome` terminal, use the offline command to record review evidence; that does not make the same session resumable. |
 | Offline `resolve-tool-call` reports `not_found` for a dangling intent | Expected. A raw intent has no `unknown_outcome` settlement to review and needs recovery classification or evidence repair rather than a review disposition. |
 | "You are not in plan mode" blocked later mutations | Fixed: that refusal now attests `confirmed_no_effect`. A leftover poison is an older journal. |
+| `close_agent` / `assign_task` / `send_message` argument or identity refusal blocked later FileWrite / Bash / spawn | Current pre-dispatch refusals and the four typed `assign_task` admission guards attest `tool:agents.v2:validation`. A leftover poison is an older journal or an unclassified shutdown, assignment, or mailbox-delivery path. |
 | Retained session refuses with a createdAt mismatch of a few milliseconds | Current code allows 5s. A larger gap, or a model/provider/objective mismatch, is still a hard refuse. |
 | Interrupted turn starts over instead of continuing from its last checkpoint | See [In-turn checkpoint resume](#in-turn-checkpoint-resume) and check the recorded resume-gate failure reason. |
 | Open reports `durable checkpoint upgrade blocked` | Integrity, mixed-version, or work-limit failure. Resume stays disabled. Preserve the rollout; restore intact source bytes from backup or start a new session. See [Upgrade and downgrade](#upgrade-and-downgrade). |
@@ -667,7 +678,7 @@ they remain the evidence needed for a later v15-aware reconciliation.
 | Journal projection and cursor pages         | `runtime/src/app-server/run-journal-replay.ts`, `runtime/src/app-server/run-inspection.ts`         |
 | Terminal lifecycle commit                   | `runtime/src/app-server/background-agent-runner.ts`, `runtime/src/app-server/daemon-cli.ts`        |
 | Operator effect-review evidence             | `runtime/src/state/effect-review.ts`, `runtime/src/commands/resolve.ts`, `runtime/src/bin/state-cli.ts` |
-| Pre-effect validation (no mutation poison)  | `runtime/src/tools/results.ts` (`validationErrorToolResult`)                                       |
+| Pre-effect validation (no mutation poison)  | `runtime/src/tools/results.ts` (`validationErrorToolResult`); agent v2 helpers in `runtime/src/agents/v2/common.ts` (`AGENT_VALIDATION_EVIDENCE_REF`) |
 | Replay-safe SDK client                      | `packages/agenc-sdk/src/client.ts`, `packages/agenc-sdk/src/protocol.ts`                           |
 | Immutable artifact publication              | `runtime/src/durability/atomic-artifact.ts`                                                        |
 | Crash injection                             | `runtime/src/durability/failpoints.ts`                                                             |
