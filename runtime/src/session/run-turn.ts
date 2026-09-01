@@ -378,6 +378,8 @@ interface AgenCAutoCompactResult {
     readonly transaction?: CompactionResult["transaction"];
   };
   readonly consecutiveFailures?: number;
+  /** Why an attempt declined to compact; surfaced to the turn. */
+  readonly skippedReason?: string;
 }
 
 type AgenCMessageRole = "system" | "developer" | "user" | "assistant" | "tool";
@@ -2336,6 +2338,7 @@ export interface AutoCompactResult {
   readonly wasCompacted: boolean;
   readonly compactionResult?: AgenCAutoCompactResult["compactionResult"];
   readonly consecutiveFailures?: number;
+  readonly skippedReason?: string;
 }
 export type AutoCompactImpl = (
   ...args: unknown[]
@@ -2545,6 +2548,25 @@ async function runAutoCompact(
       };
     }
 
+    /*
+     * A dispatcher that ran and declined still owes an explanation. Its
+     * failure path catches the error, counts a strike and answers with a
+     * bare "did not compact", so the turn loop could only report
+     * `mid_turn_compact_skipped` — the reason was computed and then
+     * dropped, leaving a turn that ended mid-plan with nothing to act on.
+     */
+    if (result.wasCompacted !== true && result.skippedReason !== undefined) {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "auto_compact_failed",
+            message: `${reason}/${phase}: ${result.skippedReason}`,
+          },
+        },
+      });
+    }
     return result.wasCompacted === true;
   } catch (error) {
     // Never silently swallow compact failures. Emit a structured

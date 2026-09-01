@@ -230,7 +230,12 @@ describe("auto compact", () => {
       await expect(autoCompactIfNeeded(
         [message("x".repeat(10_000))],
         { options: { contextWindowTokens: 100 } },
-      )).resolves.toEqual({ wasCompacted: false });
+      )).resolves.toEqual({
+        wasCompacted: false,
+        // The switch is now named in the answer, so a disabled subsystem
+        // is distinguishable from an attempt that ran and declined.
+        skippedReason: "auto-compaction is disabled",
+      });
     });
   });
 });
