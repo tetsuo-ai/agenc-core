@@ -435,6 +435,10 @@ Native helpers:
 | `agenc-process-broker` | `runtime/native/agenc-process-broker.c` | Linux **lifecycle** subreaper (`PR_SET_CHILD_SUBREAPER`). Not filesystem isolation. Preferred tree-kill path is cgroup-v2; this is the fallback. |
 | `agenc-process-job-broker.exe` | `runtime/native/agenc-process-job-broker.cs` | Windows **lifecycle** Job Object (`KILL_ON_JOB_CLOSE`). Not a restricted-token sandbox. |
 
+`npm run test:fast` typechecks these C/C# sources only. Use the kernel or
+hosted native lanes in
+[ci-required-gates.md](../ci-required-gates.md#fast-testfast-checks).
+
 `AGENC_DISABLE_LANDLOCK_FALLBACK=1` restores bwrap-or-die. `agenc doctor`
 warns `[sandbox_landlock_fallback]` when Linux is ready only via Landlock.
 `[sandbox].allow_gpu` is the macOS Metal opt-in ([config.md](config.md)).
