@@ -608,8 +608,8 @@ current Ledger action is documented in
 
 A keep-alive (interactive / desktop) session must stay promptable after
 a capped turn. Bounded stops (`no_progress`, `max_turns`,
-`max_budget_usd`, and `compact_failed`) complete the **turn** with an
-honest message and leave the run available. The daemon mapper used to promote those stops
+`max_budget_usd`, `compact_failed`, and `editor_request_failed`) complete
+the **turn** with an honest message and leave the run available. The daemon mapper used to promote those stops
 to `run_error`, after which every later prompt answered
 `no longer running (status: error)` while the durable run might still
 be healthy underneath.
@@ -674,6 +674,21 @@ assistant API error / thrown hook error. That is a consumer-facing
 message, not daemon run death.
 
 See the [CP-0006 compact-skip contract](../design/critical-path/0006-compaction-transaction.md#compact-skip-and-session-survival).
+
+### Editor request failure stays per-turn
+
+Editor Explain and Edit requests can stop for three request-scoped reasons.
+The request may reach its sampling or tool limit, an Edit may finish without
+a valid `EditorProposal`, or the provider may return a context, media, or
+output limit that Editor mode cannot recover from. These paths emit a
+`warning` with their specific cause and yield
+`stopReason: "editor_request_failed"`.
+
+The daemon maps `editor_request_failed` to `turn_complete`, so the next
+`message.send` can start a new turn. The TUI displays the warning and blocks
+autonomous keepalive until the user sends another prompt. Child-agent turns
+cannot carry an Editor interaction. If the stop reason reaches `runAgent`
+despite that contract, `runAgent` fails the child run.
 
 ### Telemetry errors stay session-only
 
