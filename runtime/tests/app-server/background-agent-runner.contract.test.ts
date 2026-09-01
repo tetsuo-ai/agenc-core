@@ -7822,6 +7822,133 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
+  it("[managed-thread] does not latch run status on a mid-turn stream_disconnected error", async () => {
+    const { runner, session, control } = makeTopLevelRunner({
+      conversationId: "session-stream-disconnected-telemetry",
+    });
+    const started = await runner.startAgent({
+      objective: "keep-alive after reconnect",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    const emitted: JsonObject[] = [];
+    await runner.attachAgentSessionEvents(started.agentId, {
+      sessionId: "session_1",
+      emit: async (notification) => {
+        emitted.push(notification);
+      },
+    });
+
+    session.emit({
+      id: "stream-retry",
+      msg: {
+        type: "error",
+        payload: {
+          cause: "stream_disconnected",
+          message: "Reconnecting after stream interruption (attempt 1): socket hang up",
+          streamError: true,
+        },
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const reconnectSnapshot = await runner.getAgentSnapshot(
+      "session-stream-disconnected-telemetry",
+    );
+    expect(reconnectSnapshot?.status).not.toBe("error");
+    expect(emitted).not.toContainEqual(
+      expect.objectContaining({
+        method: "event.agent_status",
+        params: expect.objectContaining({
+          status: "error",
+          message: expect.stringContaining("Reconnecting after stream interruption"),
+        }),
+      }),
+    );
+
+    await expect(
+      runner.submitAgentMessage("session-stream-disconnected-telemetry", {
+        sessionId: "session_1",
+        content: "continue after reconnect",
+        originalContent: "continue after reconnect",
+        messageId: "message-after-reconnect",
+        streamId: "stream-after-reconnect",
+        acceptedAt: "2026-09-01T00:00:01.000Z",
+      }),
+    ).resolves.toMatchObject({ disposition: "started" });
+    expect(control.sendInput).toHaveBeenCalled();
+  });
+
+  it("[managed-thread] does not latch run status on a mid-turn stop_hook_threw error", async () => {
+    const { runner, session, control } = makeTopLevelRunner({
+      conversationId: "session-stop-hook-threw-telemetry",
+    });
+    await runner.startAgent({
+      objective: "keep-alive after stop hook throw",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    session.emit({
+      id: "stop-hook-threw",
+      msg: {
+        type: "error",
+        payload: {
+          cause: "stop_hook_threw",
+          message: "lint threw",
+        },
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const hookSnapshot = await runner.getAgentSnapshot(
+      "session-stop-hook-threw-telemetry",
+    );
+    expect(hookSnapshot?.status).not.toBe("error");
+
+    await expect(
+      runner.submitAgentMessage("session-stop-hook-threw-telemetry", {
+        sessionId: "session_1",
+        content: "continue after stop hook throw",
+        originalContent: "continue after stop hook throw",
+        messageId: "message-after-stop-hook-throw",
+        streamId: "stream-after-stop-hook-throw",
+        acceptedAt: "2026-09-01T00:00:02.000Z",
+      }),
+    ).resolves.toMatchObject({ disposition: "started" });
+    expect(control.sendInput).toHaveBeenCalled();
+  });
+
+  it("[managed-thread] treats new session error causes as diagnostics", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "session-future-error-diagnostic",
+    });
+    await runner.startAgent({
+      objective: "keep-alive after a diagnostic",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    session.emit({
+      id: "future-diagnostic",
+      msg: {
+        type: "error",
+        payload: {
+          cause: "future_mid_turn_diagnostic",
+          message: "diagnostic event",
+        },
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await expect(
+      runner.getAgentSnapshot("session-future-error-diagnostic"),
+    ).resolves.toMatchObject({ status: expect.not.stringMatching(/^error$/u) });
+  });
+
   it("[managed-thread] keeps the run alive after a mid-turn compact skip", async () => {
     const { runner, session, control, stub } = makeTopLevelRunner({
       conversationId: "session-survives-mid-turn-compact-skip",
@@ -8905,7 +9032,7 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
-  it("[managed-thread] reports canonical max-turn errors with replay identity", async () => {
+  it("[managed-thread] keeps legacy max-turn error records session-only", async () => {
     const { runner, session } = makeTopLevelRunner({
       conversationId: "session-max-turns",
     });
@@ -8944,17 +9071,30 @@ describe("AgenC delegate background-agent runner", () => {
     await vi.waitFor(() => {
       expect(emitted).toContainEqual(
         expect.objectContaining({
-          method: "event.agent_status",
+          method: "event.session_event",
           params: expect.objectContaining({
-            status: "error",
-            runStatus: "errored",
-            message: "Agent exceeded maxTurns",
             eventId: "max-turn-error",
             sequence: expect.any(Number),
+            event: expect.objectContaining({
+              type: "error",
+              payload: expect.objectContaining({
+                cause: "max_turns",
+                message: "Agent exceeded maxTurns",
+              }),
+            }),
           }),
         }),
       );
     });
+    expect(emitted).not.toContainEqual(
+      expect.objectContaining({
+        method: "event.agent_status",
+        params: expect.objectContaining({ eventId: "max-turn-error" }),
+      }),
+    );
+    await expect(
+      runner.getAgentSnapshot("session-max-turns"),
+    ).resolves.toMatchObject({ status: expect.not.stringMatching(/^error$/u) });
   });
 
   it("[managed-thread] keeps interrupted status internal and publishes canonical abort", async () => {

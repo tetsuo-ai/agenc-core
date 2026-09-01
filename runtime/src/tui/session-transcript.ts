@@ -21,6 +21,7 @@ import {
   isPermissionDeniedToolResult,
   PERMISSION_DENIED_TOOL_RESULT_MESSAGE,
 } from "./tool-result-denial.js";
+import { isTerminalDaemonErrorPayload } from "./daemon-terminal-error.js";
 import { escapeXml } from "../utils/xml.js";
 
 /**
@@ -2653,14 +2654,14 @@ export function adaptTranscriptEvents(
       case "error":
       case "stream_error":
         out.push(makeSystemMessage(stringResult(payload.message), "error", nextUuid()));
-        // Terminal for the turn. An error-terminated daemon turn never
-        // arrives as `turn_complete`: run-turn's turn_complete(stopReason:
-        // "error") is remapped to run_error → agent_status:error → this
-        // `error` event. Without clearing the streaming state here,
-        // `isStreaming` latches true and the "Working…" spinner never stops
-        // (audit finding #13) — noteDaemonActivity already treats
-        // `error` as turn-ending; this mirrors it in the reducer. Preserve
-        // any partial text like `turn_aborted` does.
+        // Raw session errors are diagnostic events. Agent-status run failures
+        // carry an explicit terminal marker from the daemon adapter.
+        if (
+          event.type === "error" &&
+          !isTerminalDaemonErrorPayload(payload)
+        ) {
+          break;
+        }
         persistAssistantText(streamingText, nextUuid);
         streamingText = "";
         streamingThinking = null;

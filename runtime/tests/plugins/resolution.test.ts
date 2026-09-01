@@ -439,6 +439,21 @@ describe("plugin source resolution", () => {
           "plugin private-demo has no recorded source; rerun with --source <source>",
       });
 
+      const updated = await updatePluginOp({
+        pluginId: "private-demo",
+        source: credentialSource,
+        agencHome,
+        workspaceRoot: root,
+        runResolutionProcess: runProcess,
+        fetchResolutionBytes: async () => Buffer.from("fixture"),
+        requireSignature: false,
+      });
+      expect(updated.source).toBe(
+        "https://redacted@agenc.tech/plugins/private.tgz?redacted=1",
+      );
+      expect(updated.source).not.toContain("opaque-token");
+      expect(updated.source).not.toContain("secretvalue");
+
       let errorMessage = "";
       try {
         await resolvePluginSource("git+https://opaque-token@agenc.tech/private/repo.git?access_token=secretvalue", {

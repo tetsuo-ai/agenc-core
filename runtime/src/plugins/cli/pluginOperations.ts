@@ -604,7 +604,7 @@ export async function updatePluginOp(
   return {
     ...installed,
     previousRoot,
-    source,
+    source: redactPluginInstallSource(source),
   };
 }
 

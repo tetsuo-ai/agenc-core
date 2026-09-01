@@ -2,7 +2,9 @@ import type { ToolResult } from "../../tools/types.js";
 import { createMailboxMetadataRecord } from "../mailbox.js";
 import type { ThreadId } from "../registry.js";
 import {
+  agentValidationError,
   callIdFromArgs,
+  confirmedNoAgentEffect,
   currentAgentContext,
   emit,
   getSessionOrError,
@@ -27,48 +29,48 @@ export async function handleMessageStringTool(
   const target = stringValue(args.target);
   const message = typeof args.message === "string" ? args.message : undefined;
   if (!target || !message) {
-    return json({ error: "target and message are required" }, true);
+    return agentValidationError("target and message are required");
   }
   if (message.trim().length === 0) {
-    return json({ error: "Empty message can't be sent to an agent" }, true);
+    return agentValidationError("Empty message can't be sent to an agent");
   }
   if (
     message.length > MAX_INTER_AGENT_MESSAGE_CHARACTERS ||
     Buffer.byteLength(message, "utf8") > MAX_INTER_AGENT_MESSAGE_BYTES
   ) {
-    return json(
-      {
-        error: `message exceeds the ${MAX_INTER_AGENT_MESSAGE_BYTES}-byte inter-agent limit`,
-      },
-      true,
+    return agentValidationError(
+      `message exceeds the ${MAX_INTER_AGENT_MESSAGE_BYTES}-byte inter-agent limit`,
     );
   }
   const sessionOrError = getSessionOrError(opts);
-  if (!("conversationId" in sessionOrError)) return sessionOrError;
+  if (!("conversationId" in sessionOrError)) {
+    return confirmedNoAgentEffect(sessionOrError);
+  }
   const { control } = opts.ensureAgentControl(sessionOrError);
   const current = currentAgentContext(sessionOrError, args, opts);
-  if (isCurrentAgentContextError(current)) return current;
+  if (isCurrentAgentContextError(current)) {
+    return confirmedNoAgentEffect(current);
+  }
   let agentId: ThreadId;
   try {
     agentId = resolveAgentId(sessionOrError, target, current.agentPath, opts);
   } catch (error) {
-    return json(
-      { error: error instanceof Error ? error.message : String(error) },
-      true,
+    return agentValidationError(
+      error instanceof Error ? error.message : String(error),
     );
   }
   if (agentId === current.threadId) {
-    return json({ error: "an agent cannot message itself" }, true);
+    return agentValidationError("an agent cannot message itself");
   }
   if (mode === "trigger_turn" && agentId === sessionOrError.conversationId) {
-    return json({ error: "Tasks can't be assigned to the root agent" }, true);
+    return agentValidationError("Tasks can't be assigned to the root agent");
   }
   const callId = callIdFromArgs(args, "message");
   const live = control.getLive(agentId);
   const metadata = control.getAgentMetadata(agentId);
   const receiverAgentPath = metadata?.agentPath ?? live?.agentPath;
   if (!receiverAgentPath) {
-    return json({ error: "target agent is missing an agent_path" }, true);
+    return agentValidationError("target agent is missing an agent_path");
   }
   emit(sessionOrError, {
     type: "collab_agent_interaction_begin",
