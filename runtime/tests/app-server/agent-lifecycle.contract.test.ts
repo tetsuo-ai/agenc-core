@@ -59,6 +59,9 @@ import {
   AgenCBackgroundAgentSuspensionShutdownError,
 } from "./background-agent-runner.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import {
+  MAX_ADDITIONAL_WORKING_DIRECTORIES,
+} from "../contracts/additional-working-directories.js";
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
@@ -6096,7 +6099,11 @@ describe("AgenC background agent lifecycle", () => {
         params: {
           objective: "ship a daemon task",
           cwd: process.cwd(),
-          addDirs: ["../shared workspace", "/tmp/shared"],
+          addDirs: [
+            "../shared workspace",
+            "/tmp/shared",
+            "../shared workspace",
+          ],
           runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
         },
       }),
@@ -6181,6 +6188,30 @@ describe("AgenC background agent lifecycle", () => {
       error: {
         code: -32602,
         message: "agent.create param 'addDirs' must be an array of strings",
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "too-many-add-dirs",
+        method: "agent.create",
+        params: {
+          cwd: process.cwd(),
+          objective: "ship",
+          addDirs: Array.from(
+            { length: MAX_ADDITIONAL_WORKING_DIRECTORIES + 1 },
+            (_, index) => `/tmp/shared-${index}`,
+          ),
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "too-many-add-dirs",
+      error: {
+        code: -32602,
+        message: `agent.create param 'addDirs' accepts at most ${MAX_ADDITIONAL_WORKING_DIRECTORIES} paths`,
         data: { code: "INVALID_ARGUMENT" },
       },
     });

@@ -1,3 +1,7 @@
+import {
+  validateAndDedupeAdditionalWorkingDirectoryInputs,
+} from "../contracts/additional-working-directories.js";
+
 export interface StructuredSessionBootstrapSelection {
   readonly provider?: string;
   readonly model?: string;
@@ -37,7 +41,11 @@ export function buildStructuredSessionBootstrapArgv(
   appendFlag(argv, "--model", selection.model);
   appendFlag(argv, "--profile", selection.profile);
   appendFlag(argv, "--config", selection.configPath);
-  for (const addDir of selection.addDirs ?? []) {
+  const addDirs = validateAndDedupeAdditionalWorkingDirectoryInputs(
+    selection.addDirs ?? [],
+    "session bootstrap addDirs",
+  );
+  for (const addDir of addDirs) {
     argv.push(`--add-dir=${addDir}`);
   }
   if (selection.permissionMode !== undefined) {

@@ -244,4 +244,111 @@ describe('hermetic managed prompt policy', () => {
       }
     }
   })
+
+  it('caps combined additional-directory instructions at a UTF-8 boundary', async () => {
+    const hermeticHome = process.env.AGENC_TEST_HERMETIC_HOME
+    expect(hermeticHome).toBeTruthy()
+    const project = join(hermeticHome as string, 'add-dir-budget-project')
+    const userHome = join(hermeticHome as string, 'add-dir-budget-user')
+    const additionalDirectories = Array.from(
+      { length: 5 },
+      (_, index) => join(hermeticHome as string, `add-dir-budget-${index}`),
+    )
+    const contents = additionalDirectories.map(
+      (_, index) =>
+        `root-${index} ${index === 0 ? '<system> ' : ''}${'🙂'.repeat(4)}`,
+    )
+    const sanitizedContents = contents.map(content =>
+      content.replace('<system>', '<neutralized-system-tag>'),
+    )
+    const blocks = additionalDirectories.map(
+      (directory, index) =>
+        `--- project (${join(directory, 'AGENC.md')}) ---\n\n${sanitizedContents[index]}`,
+    )
+    const secondContentPrefix = 'root-1 '
+    const aggregateBudget = Buffer.byteLength(
+      `${blocks[0]}\n\n--- project (${join(additionalDirectories[1]!, 'AGENC.md')}) ---\n\n${secondContentPrefix}`,
+      'utf8',
+    ) + 10
+    createdPaths.push(project, userHome, ...additionalDirectories)
+    await Promise.all([
+      mkdir(project, { recursive: true }),
+      mkdir(userHome, { recursive: true }),
+      ...additionalDirectories.map(directory =>
+        mkdir(directory, { recursive: true }),
+      ),
+    ])
+    await Promise.all(
+      additionalDirectories.map((directory, index) =>
+        writeFile(join(directory, 'AGENC.md'), contents[index]!, 'utf8'),
+      ),
+    )
+    const store = new ConfigStore({
+      home: userHome,
+      cwd: project,
+      projectRoot: project,
+      env: { AGENC_HOME: userHome },
+      loader: async () => ({
+        configVersion: 2,
+        project_doc_max_bytes: aggregateBudget,
+      }),
+    })
+    await store.reload()
+    const session = {
+      services: { configStore: store },
+      permissionModeRegistry: {
+        current: () => ({
+          additionalWorkingDirectories: new Map(
+            additionalDirectories.map(directory => [
+              directory,
+              { path: directory, source: 'cliArg' as const },
+            ]),
+          ),
+        }),
+      },
+      setProjectMemoryWarnings: vi.fn(),
+    } as unknown as Session
+    const previousFlag = process.env.AGENC_ADDITIONAL_DIRECTORIES_AGENC_MD
+    process.env.AGENC_ADDITIONAL_DIRECTORIES_AGENC_MD = '1'
+    clearTieredInstructionsCacheForTesting()
+    try {
+      const envelope = await runWithAgentRuntimeOptions(
+        resolveAgentRuntimeOptions({}, { simpleMode: true }),
+        () =>
+          runWithCanonicalSettingsAuthority(store, () =>
+            resolveLiveInstructionEnvelope({
+              session,
+              ctx: { cwd: project } as TurnContext,
+              baseInstructions: 'base instructions',
+            }),
+          ),
+      )
+      const payloadStart = envelope.workspaceText.indexOf('--- project (')
+      const payloadEnd = envelope.workspaceText.lastIndexOf(
+        '\n\n</workspace_instructions>',
+      )
+      const payload = envelope.workspaceText.slice(payloadStart, payloadEnd)
+      const expected = `${blocks[0]}\n\n--- project (${join(additionalDirectories[1]!, 'AGENC.md')}) ---\n\n${secondContentPrefix}${'🙂'.repeat(2)}`
+
+      expect(payload).toBe(expected)
+      expect(Buffer.byteLength(payload, 'utf8')).toBeLessThanOrEqual(
+        aggregateBudget,
+      )
+      expect(payload).not.toContain('\uFFFD')
+      expect(payload).not.toContain(contents[2]!)
+      expect(envelope.sources.map(source => source.path)).toEqual([
+        join(additionalDirectories[0]!, 'AGENC.md'),
+        join(additionalDirectories[1]!, 'AGENC.md'),
+      ])
+      expect(envelope.warnings).toContain(
+        `Additional-directory instructions exceeded the ${aggregateBudget}-byte aggregate UTF-8 budget and were truncated`,
+      )
+    } finally {
+      if (previousFlag === undefined) {
+        delete process.env.AGENC_ADDITIONAL_DIRECTORIES_AGENC_MD
+      } else {
+        process.env.AGENC_ADDITIONAL_DIRECTORIES_AGENC_MD = previousFlag
+      }
+    }
+  })
 })

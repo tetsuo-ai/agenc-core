@@ -3,6 +3,12 @@ import Ajv from "ajv";
 import { describe, expect, it } from "vitest";
 import { sourceUrl } from "../helpers/source-path.ts";
 import {
+  AGENC_MAX_AGENT_CREATE_ADD_DIRS,
+} from "../../../packages/agenc-sdk/src/protocol.js";
+import {
+  MAX_ADDITIONAL_WORKING_DIRECTORIES,
+} from "../../src/contracts/additional-working-directories.js";
+import {
   AGENC_DAEMON_PROTOCOL_PACKAGE_NAME,
   AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET,
   AGENC_DAEMON_PROTOCOL_SCHEMA_EXPORT,
@@ -354,6 +360,28 @@ describe("AgenC daemon protocol surface", () => {
     // External installed/sibling protocol copies are release artifacts, not
     // build inputs for agenc-core. Exact method drift remains pinned above
     // against this repository's canonical TypeScript registry and schema.
+  });
+
+  it("keeps the additional-directory ingress limit aligned", () => {
+    const schema = readProtocolSchema();
+    const agentCreate = schema.definitions.AgentCreateParams as {
+      readonly properties: {
+        readonly addDirs: {
+          readonly type: "array";
+          readonly maxItems: number;
+          readonly uniqueItems?: boolean;
+        };
+      };
+    };
+
+    expect(agentCreate.properties.addDirs).toMatchObject({
+      type: "array",
+      maxItems: MAX_ADDITIONAL_WORKING_DIRECTORIES,
+    });
+    expect(agentCreate.properties.addDirs.uniqueItems).toBeUndefined();
+    expect(AGENC_MAX_AGENT_CREATE_ADD_DIRS).toBe(
+      MAX_ADDITIONAL_WORKING_DIRECTORIES,
+    );
   });
 
   it("keeps the published protocol-1.0 tool-resolution request compatible", () => {

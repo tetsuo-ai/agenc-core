@@ -83,6 +83,9 @@ import {
   registerSandboxExecutionLifecycleParticipant,
   transitionSandboxExecutionBroker,
 } from "../sandbox/execution-lifecycle.js";
+import {
+  MAX_ADDITIONAL_WORKING_DIRECTORIES,
+} from "../contracts/additional-working-directories.js";
 
 const backgroundAgentRunnerSourcePath = new URL(
   "../../src/app-server/background-agent-runner.ts",
@@ -4992,7 +4995,11 @@ describe("AgenC delegate background-agent runner", () => {
       model: "gpt-5",
       profile: "fast",
       configPath: "/workspace/explicit-config.toml",
-      addDirs: ["../shared workspace", "/tmp/shared"],
+      addDirs: [
+        "../shared workspace",
+        "/tmp/shared",
+        "../shared workspace",
+      ],
       permissionMode: "plan",
       unattendedAllow: [],
       unattendedDeny: [],
@@ -5051,6 +5058,27 @@ describe("AgenC delegate background-agent runner", () => {
         resumeConversation: true,
       }),
     );
+  });
+
+  it("rejects additional-directory overflow before launching bootstrap", async () => {
+    const { runner, bootstrap } = makeTopLevelRunner({
+      conversationId: "add-dir-overflow-session",
+    });
+
+    await expect(
+      runner.startAgent({
+        objective: "compile the daemon",
+        addDirs: Array.from(
+          { length: MAX_ADDITIONAL_WORKING_DIRECTORIES + 1 },
+          (_, index) => `/tmp/shared-${index}`,
+        ),
+        unattendedAllow: [],
+        unattendedDeny: [],
+      }),
+    ).rejects.toThrow(
+      `session bootstrap addDirs accepts at most ${MAX_ADDITIONAL_WORKING_DIRECTORIES} paths`,
+    );
+    expect(bootstrap).not.toHaveBeenCalled();
   });
 
   it("keeps ordinary bypass out of the combined dangerous startup flag", async () => {

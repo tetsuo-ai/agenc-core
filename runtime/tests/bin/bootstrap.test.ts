@@ -42,6 +42,9 @@ import {
   createSessionTranscriptStateForTesting,
 } from "../tui/session-transcript.js";
 import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "../prompts/system-prompt-boundary.js";
+import {
+  MAX_ADDITIONAL_WORKING_DIRECTORIES,
+} from "../contracts/additional-working-directories.js";
 
 function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), {
@@ -150,6 +153,7 @@ describe("readStartupCliFlags", () => {
         "--add-dir",
         "../shared workspace",
         "--add-dir=/tmp/shared",
+        "--add-dir=/tmp/shared",
         "--add-dir=-third",
         "build",
         "the app",
@@ -157,6 +161,28 @@ describe("readStartupCliFlags", () => {
     ).toMatchObject({
       addDirs: ["../shared workspace", "/tmp/shared", "-third"],
     });
+  });
+
+  it("rejects raw additional-directory overflow before duplicate collapse and bootstrap work", async () => {
+    const addDirArgs = Array.from(
+      { length: MAX_ADDITIONAL_WORKING_DIRECTORIES + 1 },
+      () => "--add-dir=/tmp/repeated",
+    );
+
+    expect(() =>
+      readStartupCliFlags(["node", "agenc", ...addDirArgs]),
+    ).toThrow(
+      `agenc --add-dir accepts at most ${MAX_ADDITIONAL_WORKING_DIRECTORIES} paths`,
+    );
+    await expect(
+      bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        cwd: process.cwd(),
+        argv: ["node", "agenc", ...addDirArgs],
+      }),
+    ).rejects.toThrow(
+      `agenc --add-dir accepts at most ${MAX_ADDITIONAL_WORKING_DIRECTORIES} paths`,
+    );
   });
 
   it("rejects internal modes at the startup permission surface", () => {
@@ -186,8 +212,10 @@ describe("bootstrapLocalRuntimeSession", () => {
     const secondAdditional = await mkdtemp(
       join(tmpdir(), "agenc-bootstrap-add-dir-external-"),
     );
+    const regularFile = join(workspace, "not-a-directory.txt");
     await mkdir(join(workspace, ".git"));
     await mkdir(firstAdditional);
+    await writeFile(regularFile, "not a directory", "utf8");
     trustWorkspaceForTest(home, workspace);
 
     await installBootstrapProviderStub();
@@ -203,7 +231,10 @@ describe("bootstrapLocalRuntimeSession", () => {
           "agenc",
           "--add-dir",
           "shared workspace",
+          "--add-dir=shared workspace",
           `--add-dir=${secondAdditional}`,
+          "--add-dir",
+          regularFile,
         ],
         env: {
           ...process.env,
@@ -224,6 +255,11 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(
         boot.configuredExecutionAuthority.fileSystemSandboxPolicy.allowWrite,
       ).toEqual([workspace, firstAdditional, secondAdditional]);
+      expect(
+        boot.session.permissionModeRegistry
+          .current()
+          .additionalWorkingDirectories.has(regularFile),
+      ).toBe(false);
       expect(
         boot.session.services.sandboxExecutionBroker?.mode,
       ).toBe("workspace_write");

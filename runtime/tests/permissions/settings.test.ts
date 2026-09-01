@@ -2,8 +2,10 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,6 +53,9 @@ import {
   loadBypassPermissionsConsent,
   recordBypassPermissionsConsent,
 } from "../../src/permissions/bypass-consent-state.js";
+import {
+  MAX_ADDITIONAL_WORKING_DIRECTORIES,
+} from "../../src/contracts/additional-working-directories.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -708,6 +713,51 @@ describe("permission CLI/mode helpers", () => {
       .toEqual([{ path: "/managed-extra", source: "policySettings" }]);
     expect(warnings).toContain(
       "Ignored --add-dir because managed policy allows only managed permission rules",
+    );
+  });
+
+  test("admits only canonical directories and deduplicates aliases", async () => {
+    const env = await canonicalEnv();
+    const directory = join(env.cwd!, "shared");
+    const directoryLink = join(env.cwd!, "shared-link");
+    const regularFile = join(env.cwd!, "regular.txt");
+    mkdirSync(directory);
+    writeFileSync(regularFile, "not a directory", "utf8");
+    symlinkSync(
+      directory,
+      directoryLink,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    const { toolPermissionContext, warnings } =
+      await initializeToolPermissionContext({
+        env,
+        addDirs: [
+          "shared",
+          "shared",
+          directory,
+          directoryLink,
+          regularFile,
+        ],
+      });
+
+    expect([...toolPermissionContext.additionalWorkingDirectories.values()])
+      .toEqual([{ path: realpathSync(directory), source: "cliArg" }]);
+    expect(warnings).toContain(
+      `--add-dir path is not a directory: ${regularFile}`,
+    );
+  });
+
+  test("rejects too many additional directories before path resolution", async () => {
+    const addDirs = Array.from(
+      { length: MAX_ADDITIONAL_WORKING_DIRECTORIES + 1 },
+      (_, index) => `/not-probed/additional-${index}`,
+    );
+
+    await expect(
+      initializeToolPermissionContext({ addDirs }),
+    ).rejects.toThrow(
+      `initializeToolPermissionContext addDirs accepts at most ${MAX_ADDITIONAL_WORKING_DIRECTORIES} paths`,
     );
   });
 

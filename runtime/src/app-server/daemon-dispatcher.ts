@@ -71,6 +71,9 @@ import { normalizeDaemonClientEnvOverrides } from "./client-env-snapshot.js";
 import { MAX_SESSION_PERMISSION_RULE_UTF8_BYTES } from "../permissions/session-rule-buckets.js";
 import { PermissionRuleMutationPrecommitError } from "../permissions/permission-updates.js";
 import {
+  validateAndDedupeAdditionalWorkingDirectoryInputs,
+} from "../contracts/additional-working-directories.js";
+import {
   requireAbsoluteWorkspaceCwd,
   WorkspaceCwdError,
 } from "./workspace-cwd.js";
@@ -2390,6 +2393,19 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "initialDisplayUserMessage",
     ],
   });
+  let addDirs: readonly string[] | undefined;
+  if (validated.addDirs !== undefined) {
+    try {
+      addDirs = validateAndDedupeAdditionalWorkingDirectoryInputs(
+        validated.addDirs as readonly string[],
+        "agent.create param 'addDirs'",
+      );
+    } catch (error) {
+      throw invalidParams(
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
   // DAE-02: absolute existing directory required (no daemon-side invent).
   let cwd: string;
   try {
@@ -2578,6 +2594,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
     cwd,
     envOverrides,
     runtimeOptions,
+    ...(addDirs !== undefined ? { addDirs } : {}),
     ...(initialEditorInteraction !== undefined
       ? { initialEditorInteraction }
       : {}),

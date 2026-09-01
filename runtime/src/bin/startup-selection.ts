@@ -23,6 +23,9 @@ import {
   isModelAllowed,
   ModelNotAllowedError,
 } from "../utils/model/modelAllowlist.js";
+import {
+  validateAndDedupeAdditionalWorkingDirectoryInputs,
+} from "../contracts/additional-working-directories.js";
 
 export interface StartupCliFlags {
   readonly provider?: string;
@@ -53,7 +56,10 @@ export function readStartupCliFlags(
   const model = extractFlagValue(optionArgs, "--model") ?? undefined;
   const profile = extractFlagValue(optionArgs, "--profile") ?? undefined;
   const configPath = extractFlagValue(optionArgs, "--config") ?? undefined;
-  const addDirs = extractFlagValues(optionArgs, "--add-dir");
+  const addDirs = validateAndDedupeAdditionalWorkingDirectoryInputs(
+    extractFlagValues(optionArgs, "--add-dir"),
+    "agenc --add-dir",
+  );
   const rawPermissionMode =
     extractFlagValue(optionArgs, "--permission-mode") ?? undefined;
   // Distinguish "flag absent" from "flag present but invalid". An invalid

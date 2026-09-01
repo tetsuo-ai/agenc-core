@@ -63,6 +63,9 @@ import {
   RUN_RUNTIME_SERVICE_TIERS,
   type RunRuntimeSettingsSnapshot,
 } from "../contracts/run-contracts.js";
+import {
+  validateAndDedupeAdditionalWorkingDirectoryInputs,
+} from "../contracts/additional-working-directories.js";
 import { canonicalizeBypassPermissionsCwd } from "../permissions/bypass-consent-state.js";
 import type { SessionConfiguration } from "../session/turn-context.js";
 
@@ -135,6 +138,18 @@ export interface ResumeAgenCDaemonPromptAgentOptions {
     | "auto";
 }
 
+function additionalDirectoryCreateParams(
+  addDirs: readonly string[] | undefined,
+): { readonly addDirs?: readonly string[] } {
+  if (addDirs === undefined) return {};
+  return {
+    addDirs: validateAndDedupeAdditionalWorkingDirectoryInputs(
+      addDirs,
+      "daemon client addDirs",
+    ),
+  };
+}
+
 export async function startAgenCDaemonPromptAgent(
   options: AgenCDaemonPromptAgentOptions,
 ): Promise<AgentCreateResult> {
@@ -160,9 +175,7 @@ export async function startAgenCDaemonPromptAgent(
     ...(options.configPath !== undefined
       ? { configPath: resolvePath(cwd, options.configPath) }
       : {}),
-    ...(options.addDirs !== undefined
-      ? { addDirs: [...options.addDirs] }
-      : {}),
+    ...additionalDirectoryCreateParams(options.addDirs),
     ...(options.initialContent !== undefined
       ? { initialContent: options.initialContent }
       : {}),
@@ -217,9 +230,7 @@ export async function resumeAgenCDaemonPromptAgent(
     ...(options.configPath !== undefined
       ? { configPath: resolvePath(cwd, options.configPath) }
       : {}),
-    ...(options.addDirs !== undefined
-      ? { addDirs: [...options.addDirs] }
-      : {}),
+    ...additionalDirectoryCreateParams(options.addDirs),
     ...(options.permissionMode !== undefined
       ? { permissionMode: options.permissionMode }
       : {}),

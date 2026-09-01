@@ -49,6 +49,8 @@ function createListClient(
 }
 
 describe("app-server-client daemon helpers", () => {
+  const additionalDirectories = ["../shared workspace", "/tmp/shared"];
+
   it("collects daemon agent pages until the cursor ends", async () => {
     const client = createListClient([
       {
@@ -315,7 +317,7 @@ describe("app-server-client daemon helpers", () => {
         cwd: "/workspace",
         model: "grok-4.3",
         provider: "grok",
-        addDirs: ["../shared workspace", "/tmp/shared"],
+        addDirs: [...additionalDirectories, additionalDirectories[0]!],
         permissionMode: "acceptEdits",
         env: { AGENC_ALLOW_UNTRUSTED_HOOKS: "true" },
       });
@@ -327,7 +329,7 @@ describe("app-server-client daemon helpers", () => {
           cwd: "/workspace",
           model: "grok-4.3",
           provider: "grok",
-          addDirs: ["../shared workspace", "/tmp/shared"],
+          addDirs: additionalDirectories,
           permissionMode: "acceptEdits",
           runtimeOptions: expect.objectContaining({
             simpleMode: false,
@@ -382,7 +384,7 @@ describe("app-server-client daemon helpers", () => {
         model: "grok-4.3",
         profile: "fast",
         configPath: "operator.toml",
-        addDirs: ["../shared workspace", "/tmp/shared"],
+        addDirs: [...additionalDirectories, additionalDirectories[0]!],
         initialContent: [
           { type: "text", text: "describe this" },
           {
@@ -420,7 +422,7 @@ describe("app-server-client daemon helpers", () => {
           model: "grok-4.3",
           profile: "fast",
           configPath: "/workspace/operator.toml",
-          addDirs: ["../shared workspace", "/tmp/shared"],
+          addDirs: additionalDirectories,
           initialContent: [
             { type: "text", text: "describe this" },
             {

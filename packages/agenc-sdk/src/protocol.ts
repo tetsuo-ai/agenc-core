@@ -171,6 +171,9 @@ export interface DaemonShutdownParams extends JsonObject {
 export type PermissionMode =
   "default" | "plan" | "acceptEdits" | "bypassPermissions";
 
+/** Maximum raw `AgentCreateParams.addDirs` entries accepted by the daemon. */
+export const AGENC_MAX_AGENT_CREATE_ADD_DIRS = 32;
+
 export type MessageContentBlock =
   | (JsonObject & { readonly type: "text"; readonly text: string })
   | (JsonObject & {
@@ -214,7 +217,11 @@ export interface AgentCreateParams extends JsonObject {
   readonly profile?: string;
   /** Absolute explicit config layer selected by the invoking client. */
   readonly configPath?: string;
-  /** Additional working directories selected for this runtime session. */
+  /**
+   * Additional working directories selected for this runtime session.
+   * Raw entries are limited by {@link AGENC_MAX_AGENT_CREATE_ADD_DIRS}; exact
+   * duplicates are accepted and collapse in first-seen order.
+   */
   readonly addDirs?: readonly string[];
   readonly instructions?: string;
   readonly initialContent?: MessageContent;

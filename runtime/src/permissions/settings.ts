@@ -1,6 +1,6 @@
 /** Canonical permission projection and persistence over layered config.toml. */
 
-import { existsSync } from "node:fs";
+import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import {
   ConfigStore,
@@ -60,6 +60,10 @@ import {
   loadBypassPermissionsConsent,
   recordBypassPermissionsConsent,
 } from "./bypass-consent-state.js";
+import {
+  validateAndDedupeAdditionalWorkingDirectoryInputs,
+} from "../contracts/additional-working-directories.js";
+import { getErrnoCode } from "../utils/errors.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Re-exports so callers can `import { SETTING_SOURCES, EDITABLE_SOURCES } from "./settings.js"`
@@ -840,6 +844,10 @@ export interface InitializeToolPermissionContextResult {
 export async function initializeToolPermissionContext(
   opts: InitializeToolPermissionContextOpts = {},
 ): Promise<InitializeToolPermissionContextResult> {
+  const addDirs = validateAndDedupeAdditionalWorkingDirectoryInputs(
+    opts.addDirs ?? [],
+    "initializeToolPermissionContext addDirs",
+  );
   const canonicalEnv = await withCanonicalStore(opts.env);
   const warnings: string[] = [];
   const untrustedProject = opts.projectTrust === "untrusted";
@@ -932,20 +940,46 @@ export async function initializeToolPermissionContext(
   ctx = applyPermissionRulesSnapshot(ctx, permissionSnapshot);
 
   // Add --add-dir directories.
-  if (permissionSnapshot.managedOnly && (opts.addDirs?.length ?? 0) > 0) {
+  if (permissionSnapshot.managedOnly && addDirs.length > 0) {
     warnings.push(
       "Ignored --add-dir because managed policy allows only managed permission rules",
     );
-  } else if (opts.addDirs && opts.addDirs.length > 0) {
+  } else if (addDirs.length > 0) {
     const cwd = canonicalEnv.cwd ?? process.cwd();
     const absoluteDirs: string[] = [];
-    for (const d of opts.addDirs) {
-      const abs = isAbsolute(d) ? d : resolve(cwd, d);
-      if (!existsSync(abs)) {
-        warnings.push(`--add-dir path does not exist: ${abs}`);
+    const normalizedInputs = new Map<string, string>();
+    for (const directory of addDirs) {
+      const absolute = isAbsolute(directory)
+        ? resolve(directory)
+        : resolve(cwd, directory);
+      const key =
+        process.platform === "win32" ? absolute.toLowerCase() : absolute;
+      if (!normalizedInputs.has(key)) normalizedInputs.set(key, absolute);
+    }
+    const canonicalPaths = new Set<string>();
+    for (const absolute of normalizedInputs.values()) {
+      let canonical: string;
+      try {
+        canonical = await realpath(absolute);
+        const metadata = await stat(canonical);
+        if (!metadata.isDirectory()) {
+          warnings.push(`--add-dir path is not a directory: ${absolute}`);
+          continue;
+        }
+      } catch (error) {
+        const code = getErrnoCode(error);
+        warnings.push(
+          code === "ENOENT" || code === "ENOTDIR"
+            ? `--add-dir path does not exist: ${absolute}`
+            : `--add-dir path is not accessible: ${absolute}`,
+        );
         continue;
       }
-      absoluteDirs.push(abs);
+      const canonicalKey =
+        process.platform === "win32" ? canonical.toLowerCase() : canonical;
+      if (canonicalPaths.has(canonicalKey)) continue;
+      canonicalPaths.add(canonicalKey);
+      absoluteDirs.push(canonical);
     }
     if (absoluteDirs.length > 0) {
       ctx = applyPermissionUpdate(ctx, {
