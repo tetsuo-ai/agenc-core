@@ -106,6 +106,26 @@ function options(
   };
 }
 
+function marketplaceGitRunner(
+  manifestName: string,
+  cloneCalls?: string[][],
+): NonNullable<AgenCPluginCliOptions["runProcess"]> {
+  return async (_command, args) => {
+    if (args.includes("clone")) {
+      cloneCalls?.push([...args]);
+      const target = args.at(-1);
+      if (target === undefined) throw new Error("missing clone target");
+      await mkdir(join(target, ".agenc-plugin"), { recursive: true });
+      await writeFile(
+        join(target, ".agenc-plugin", "marketplace.json"),
+        JSON.stringify({ metadata: { name: manifestName }, plugins: [] }),
+      );
+    }
+    if (args.includes("rev-parse")) return { stdout: "abc123\n", stderr: "" };
+    return { stdout: "", stderr: "" };
+  };
+}
+
 describe("agenc plugin CLI", () => {
   it("documents marketplace and plugin source forms in help text", () => {
     const help = formatAgenCPluginCliHelpText();
@@ -499,20 +519,7 @@ describe("agenc plugin CLI", () => {
       force: false,
     }, {
       ...options(agencHome, workspaceRoot, gitIo),
-      runProcess: async (_command, args) => {
-        if (args.includes("clone")) {
-          cloneCalls.push([...args]);
-          const target = args.at(-1);
-          if (target === undefined) throw new Error("missing clone target");
-          await mkdir(join(target, ".agenc-plugin"), { recursive: true });
-          await writeFile(
-            join(target, ".agenc-plugin", "marketplace.json"),
-            JSON.stringify({ metadata: { name: "github-team" }, plugins: [] }),
-          );
-        }
-        if (args.includes("rev-parse")) return { stdout: "abc123\n", stderr: "" };
-        return { stdout: "", stderr: "" };
-      },
+      runProcess: marketplaceGitRunner("github-team", cloneCalls),
     });
     expect(gitExit).toBe(0);
     expect(cloneCalls[0]).toContain("https://github.com/agenc-org/plugins.git");
@@ -534,19 +541,7 @@ describe("agenc plugin CLI", () => {
       force: false,
     }, {
       ...options(agencHome, workspaceRoot, addIo),
-      runProcess: async (_command, args) => {
-        if (args.includes("clone")) {
-          const target = args.at(-1);
-          if (target === undefined) throw new Error("missing clone target");
-          await mkdir(join(target, ".agenc-plugin"), { recursive: true });
-          await writeFile(
-            join(target, ".agenc-plugin", "marketplace.json"),
-            JSON.stringify({ metadata: { name: "private-git" }, plugins: [] }),
-          );
-        }
-        if (args.includes("rev-parse")) return { stdout: "abc123\n", stderr: "" };
-        return { stdout: "", stderr: "" };
-      },
+      runProcess: marketplaceGitRunner("private-git"),
     });
     expect(addExit).toBe(0);
     expect(addIo.stdoutText()).not.toContain("opaque-token");
