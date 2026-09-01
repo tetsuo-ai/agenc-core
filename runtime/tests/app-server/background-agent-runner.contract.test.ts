@@ -7822,6 +7822,105 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
+  it("[managed-thread] does not latch run status on a mid-turn stream_disconnected error", async () => {
+    const { runner, session, control } = makeTopLevelRunner({
+      conversationId: "session-stream-disconnected-telemetry",
+    });
+    const started = await runner.startAgent({
+      objective: "keep-alive after reconnect",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    const emitted: JsonObject[] = [];
+    await runner.attachAgentSessionEvents(started.agentId, {
+      sessionId: "session_1",
+      emit: async (notification) => {
+        emitted.push(notification);
+      },
+    });
+
+    session.emit({
+      id: "stream-retry",
+      msg: {
+        type: "error",
+        payload: {
+          cause: "stream_disconnected",
+          message: "Reconnecting after stream interruption (attempt 1): socket hang up",
+          streamError: true,
+        },
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const reconnectSnapshot = await runner.getAgentSnapshot(
+      "session-stream-disconnected-telemetry",
+    );
+    expect(reconnectSnapshot?.status).not.toBe("error");
+    expect(emitted).not.toContainEqual(
+      expect.objectContaining({
+        method: "event.agent_status",
+        params: expect.objectContaining({
+          status: "error",
+          message: expect.stringContaining("Reconnecting after stream interruption"),
+        }),
+      }),
+    );
+
+    await expect(
+      runner.submitAgentMessage("session-stream-disconnected-telemetry", {
+        sessionId: "session_1",
+        content: "continue after reconnect",
+        originalContent: "continue after reconnect",
+        messageId: "message-after-reconnect",
+        streamId: "stream-after-reconnect",
+        acceptedAt: "2026-09-01T00:00:01.000Z",
+      }),
+    ).resolves.toMatchObject({ disposition: "started" });
+    expect(control.sendInput).toHaveBeenCalled();
+  });
+
+  it("[managed-thread] does not latch run status on a mid-turn stop_hook_threw error", async () => {
+    const { runner, session, control } = makeTopLevelRunner({
+      conversationId: "session-stop-hook-threw-telemetry",
+    });
+    await runner.startAgent({
+      objective: "keep-alive after stop hook throw",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    session.emit({
+      id: "stop-hook-threw",
+      msg: {
+        type: "error",
+        payload: {
+          cause: "stop_hook_threw",
+          message: "lint threw",
+        },
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const hookSnapshot = await runner.getAgentSnapshot(
+      "session-stop-hook-threw-telemetry",
+    );
+    expect(hookSnapshot?.status).not.toBe("error");
+
+    await expect(
+      runner.submitAgentMessage("session-stop-hook-threw-telemetry", {
+        sessionId: "session_1",
+        content: "continue after stop hook throw",
+        originalContent: "continue after stop hook throw",
+        messageId: "message-after-stop-hook-throw",
+        streamId: "stream-after-stop-hook-throw",
+        acceptedAt: "2026-09-01T00:00:02.000Z",
+      }),
+    ).resolves.toMatchObject({ disposition: "started" });
+    expect(control.sendInput).toHaveBeenCalled();
+  });
+
   it("[managed-thread] applies owning-session hook context to follow-up model input exactly once", async () => {
     const contextHook = vi.fn(() => ({
       additionalContexts: ["session-owned daemon context"],

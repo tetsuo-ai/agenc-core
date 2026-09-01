@@ -8,6 +8,7 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { AgenCDaemonResponseError } from "../app-server/agent-cli.js";
+import { isSessionTelemetryErrorPayload } from "../app-server/session-telemetry-errors.js";
 import type {
   AgentAttachParams,
   AgenCDaemonMethod,
@@ -844,6 +845,14 @@ export function createDaemonTuiSession<
       typeof eventType === "string" &&
       TERMINAL_DAEMON_TRANSCRIPT_EVENTS.has(eventType)
     ) {
+      if (
+        eventType === "error" &&
+        isSessionTelemetryErrorPayload(
+          (event as { readonly payload?: unknown }).payload,
+        )
+      ) {
+        return;
+      }
       activeTurnSnapshot = null;
       terminalDaemonTurnObserved = true;
       return;

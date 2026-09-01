@@ -48,6 +48,28 @@ describe("error events end the streaming turn", () => {
     expect(transcript.isStreaming).toBe(false);
   });
 
+  test("`error` with stream_disconnected cause keeps the turn streaming", () => {
+    const transcript = adaptTranscriptEvents([
+      turnStart,
+      {
+        type: "assistant_text",
+        payload: { content: "partial answ" },
+      } as never,
+      {
+        type: "error",
+        payload: {
+          cause: "stream_disconnected",
+          message: "Reconnecting after stream interruption (attempt 1)",
+        },
+      } as never,
+    ]);
+
+    expect(transcript.isStreaming).toBe(true);
+    expect(JSON.stringify(transcript.messages)).toContain(
+      "Reconnecting after stream interruption",
+    );
+  });
+
   test("turns still stream while no terminal event has arrived", () => {
     const transcript = adaptTranscriptEvents([
       turnStart,
