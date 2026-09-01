@@ -278,7 +278,7 @@ outer gate can still require a compact. `autoCompactIfNeeded` then returns
 `wasCompacted: false`. The sampling loop terminates the turn with event cause
 `mid_turn_compact_failed` and a message that starts with
 `mid_turn_compact_skipped`. That close is a `warning` plus `compact_failed`,
-not run death — [compact skip and session survival](#compact-skip-session-survival).
+not run death. See [compact skip and session survival](#compact-skip-and-session-survival).
 The post-tool checkpoint does not terminate on that no-op. It continues to
 commit.
 
@@ -291,18 +291,21 @@ window even if `AGENC_DISABLE_AUTO_COMPACT` hid the pre-sampling limit.
 Mid-turn skip-or-throw and pre-sampling throw emit a session `warning`
 (causes `mid_turn_compact_failed` / `pre_sampling_compact_failed`) and
 close the turn with `stopReason: "compact_failed"`. They do not emit
-canonical `error`. Keep-alive daemon sessions stay promptable. One-shot
-/ `--print` / `--no-tui` still fail the run. `--autonomous` keepalive
+canonical `error`. Keep-alive daemon sessions stay promptable. The
+daemon-backed `--print` / `--no-tui` path currently maps the resulting
+`turn_complete` to exit code 0; the compatibility `runAgent` path with
+`keepAlive: false` reports failure. `--autonomous` keepalive
 blocks further ticks after `compact_failed` (same as hard `error`).
 
 Pre-sampling no-op (`wasCompacted: false`) continues the turn. Mid-turn
-no-op after the outer gate is met does not — that is the skip path
+no-op after the outer gate is met does not; that is the skip path
 above. Post-tool no-op still continues to commit.
 
-Legacy live `type: "error"` records with those two compact causes are
-projected `statusProjection: "session_only"`
-(`SESSION_ONLY_ERROR_CAUSES` in `background-agent-runner.ts`). Operator
-mapping: [daemon.md](../../reference/daemon.md#compact-skip-stays-per-turn).
+Legacy live `type: "error"` records are diagnostic regardless of cause.
+`projectTelemetryErrorAsSessionOnly` in `background-agent-runner.ts` projects
+them with `statusProjection: "session_only"`, so future diagnostic causes
+cannot accidentally become lifecycle terminals. Operator mapping:
+[daemon.md](../../reference/daemon.md#compact-skip-stays-per-turn).
 
 ### Admitted summary calls
 
@@ -358,7 +361,7 @@ commit replacement history without a rollback ID.
 | Symptom | What to check |
 | --- | --- |
 | Event cause is `mid_turn_compact_failed` and its message starts with `mid_turn_compact_skipped` | The outer condition was met and compact returned no committed result. Check `AGENC_DISABLE_COMPACT`, the 3-strike counter, and the 2-failure digest guard. The event is a `warning`; the turn stop is `compact_failed`. |
-| Keep-alive session answers `no longer running (status: error)` after that warning | Unexpected after the warning remap. Confirm the event is `warning` (or a legacy `error` with `statusProjection: "session_only"`). One-shot / `--print` still fails the run. Autonomous keepalive ticks stop after `compact_failed` by design. See [daemon.md](../../reference/daemon.md#compact-skip-stays-per-turn). |
+| Keep-alive session answers `no longer running (status: error)` after that warning | Unexpected after the warning remap. Confirm the event is `warning` (or a legacy `error` with `statusProjection: "session_only"`). The daemon-backed one-shot CLI exits 0 on the resulting `turn_complete`; the compatibility `runAgent` path fails. Autonomous keepalive ticks stop after `compact_failed` by design. See [daemon.md](../../reference/daemon.md#compact-skip-stays-per-turn). |
 | Auto never runs, then the next turn is `context_window_exceeded` | Confirm the live window instead of assuming the 128k fallback. Above 13k, the threshold is `min(window-13k, 75%)`. Also check `AGENC_AUTOCOMPACT_PCT_OVERRIDE` and `AGENC_DISABLE_AUTO_COMPACT`. |
 | After switching to a smaller-window model, the first turn overflows | Model-downshift only runs when the previous slug differs, the old window is larger, and usage is greater than the new pre-sampling limit or at least the new window. Three failed automatic attempts skip later ones this turn. `AGENC_DISABLE_AUTO_COMPACT` makes the compact return without changing history. |
 | A summary call includes a client or provider-native tool | This violates the summary-call contract. Summary calls must send an empty client catalog and an empty native-tool routing allowlist. Admission must account the same selected native catalog as the wire. |

@@ -243,9 +243,9 @@ never refuses the prompt.
 
 A blocked follow-up is a **per-prompt** refusal. The runner keeps
 `agent.status` off `error`, so a later allowed `message.send` can
-start a turn. If a legacy-format `type: "error"` with
-`cause: "user_prompt_submit_hook_blocked"` crosses the live event-log
-bridge, the daemon applies `statusProjection: "session_only"`.
+start a turn. If a legacy-format `type: "error"` crosses the live event-log
+bridge, the daemon applies `statusProjection: "session_only"` regardless of
+cause.
 An event received before attach stays in the runner's in-memory buffer.
 Attach later delivers it as `event.session_event`. The bridge does not
 emit `event.agent_status` or change run status. The rule applies to live

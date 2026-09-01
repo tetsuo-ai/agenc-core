@@ -196,9 +196,12 @@ on an older daemon because it could hit a later turn.
 The SDK distinguishes `text` deltas from `message_committed`, reconciles the
 final result with committed text, and exposes `history_reset` for clear,
 compaction, rewind, and rollback. A duplicate without durable terminal proof
-fails with `AgencDuplicateSubmissionIncompleteError`. A mid-turn `error`
-(stop-hook throw and similar) is not that proof; only `turn_complete` or
-`turn_aborted` settles the submission. Initialization retries
+fails with `AgencDuplicateSubmissionIncompleteError`. In the durable retry
+record, only `turn_complete` or `turn_aborted` proves that the submission
+settled. The live SDK event adapter currently treats any nested session
+`error` as terminal code 1, including diagnostic mid-turn errors. This matches
+the CLI daemon one-shot adapter but can finish the local `prompt()` before the
+durable turn closer arrives. Initialization retries
 against daemons running protocol 1.0 through 1.8 at the reported version and
 retains negotiated version and capability information for safe feature
 fallback.
@@ -549,8 +552,8 @@ Constraints:
   refreshed. Leading interface JSDoc is outside the extracted declaration
   text and is not mirrored or checked.
 - Closed-turn field semantics (omit-when-empty, token sums, placement)
-  stay in [daemon.md](reference/daemon.md#closed-turn-results). Mid-turn
-  `error` is not a closer:
+  stay in [daemon.md](reference/daemon.md#closed-turn-results). A raw session
+  `error` is diagnostic, not a closer:
   [daemon.md](reference/daemon.md#mid-turn-error-events). This page
   only covers how the types stay in sync.
 
@@ -630,7 +633,9 @@ Constraints:
 Event semantics (streamed text extraction, terminal-status detection) mirror
 the CLI's daemon one-shot path in `runtime/src/bin/agenc-main.ts`
 (`daemonOneShotMessageChunk` / `daemonOneShotFinalStatus`), so an embedder
-sees the same output and completion behavior as `agenc -p`.
+sees the same output and completion behavior as `agenc -p`. Both adapters
+currently map any nested session `error` to terminal code 1, even when the
+daemon projects it as diagnostic with `statusProjection: "session_only"`.
 
 ## Tests
 
@@ -667,7 +672,7 @@ Thrown by `connect()`, `AgencClient`, and `promptViaSubprocess`
 | `AgencRpcError` | JSON-RPC error object from the daemon. Fields: `code`, `data`, `method`, `requestId` |
 | `AgencMalformedResponseError` | Response body is not a valid result for the method. Field: `response` |
 | `AgencPromptRunInProgressError` | Second `prompt()` on a session that already has an active run (`ifBusy: "reject"` or equivalent). Fields: `sessionId`, `clientMessageId` |
-| `AgencDuplicateSubmissionIncompleteError` | Reused `clientMessageId` whose prior submit has no durable `turn_complete` / `turn_aborted`. A mid-turn `error` is not a terminal. |
+| `AgencDuplicateSubmissionIncompleteError` | Reused `clientMessageId` whose prior submit has no durable `turn_complete` / `turn_aborted`. This durable retry rule is stricter than the live SDK adapter, which currently finishes on any nested session `error`. |
 | `AgencCapabilityUnavailableError` | Caller asked for a protocol 1.2 (or later) guarantee the negotiated daemon does not have |
 | `AgencRunReplayGapError` | Replay cursor hit an explicit `event_gap` / `cursor_ahead` / retention gap. Do not skip it |
 | `AgencRunReplayProtocolError` | Replay page would hide loss or corruption |

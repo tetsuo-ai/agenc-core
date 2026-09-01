@@ -472,7 +472,7 @@ Git clone and `npm pack` already rebuilt process failures through
 `redactPluginSource`. Native `fetch()` and `new URL` did not: they rethrew
 with the raw message plus leaky fields such as `ERR_INVALID_URL.input` and
 undici `cause`. `resolvePluginSource` and `fetchBytes` now catch every
-failure — including an injected `options.fetchBytes` hook — and rebuild it
+failure, including an injected `options.fetchBytes` hook, and rebuild it
 with `redactPluginResolutionError`.
 
 The rebuilt `Error` keeps `name` and a redacted `message` only. It does not
@@ -483,7 +483,7 @@ sanitizer:
 
 | URL shape | Rewrite |
 | --- | --- |
-| Parseable `http(s)://`, `ssh://`, or `git+` of those | Userinfo becomes `redacted` (password cleared). Any query string becomes `?redacted=1`. Fragment is left as-is. |
+| Parseable `http(s)://`, `ssh://`, or `git+` of those | Userinfo becomes `redacted` (password cleared). Any query string becomes `?redacted=1`. The credential-URL stage leaves the fragment as-is. The later secret sanitizer can still rewrite secret-shaped text in the path or fragment. |
 | Unparseable (`https://host:notaport/…`, and similar) | First `@` userinfo becomes `redacted@`. From the first `?` or `#` onward becomes `?redacted=1`. |
 | No `http(s)` / `ssh` scheme | Left unchanged here. The secret sanitizer may still rewrite the string. |
 
@@ -529,9 +529,10 @@ and any query string with `?redacted=1`, then runs the secret sanitizer. When
 that rewrite changes the string, metadata sets `sourceRedacted: true`.
 `plugin update` without `--source` then fails with
 `plugin <id> has no recorded source; rerun with --source <source>`. Pass the
-original specifier again. A clean URL (no userinfo, no query) is stored as
-given, so a later same-source update can reuse it. Local directory installs
-store the path as given and do not set the flag.
+original specifier again. A URL without userinfo or a query is reusable only
+when the full redaction function leaves it byte-for-byte unchanged. A
+secret-shaped path or fragment is sanitized and sets `sourceRedacted: true`.
+Local directory installs store the path as given and do not set the flag.
 
 Process errors from git, npm, and fetch use the same redaction, so a failed
 clone does not echo tokens.

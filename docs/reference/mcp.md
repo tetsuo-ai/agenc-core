@@ -270,7 +270,7 @@ just under the limit can therefore become `too_large`.
 {}
 ```
 
-becomes `{ "type": "object" }` — no `properties` key. That is not the
+becomes `{ "type": "object" }` with no `properties` key. That is not the
 fail-open fallback `{ "type": "object", "properties": {} }`.
 
 ```json
@@ -297,9 +297,12 @@ already treated a `properties` root with no `type` as a clean object
 | MCP catalog (`withMcpObjectRootType`) | Writes `type: "object"` on a typeless **root**. Model-facing copy only. |
 | Gemini proof (`geminiToolObjectApplicatorDomain`) | Accepts a typeless root that already carries an object applicator (`properties`, `required`, `additionalProperties`, …) **without** rewriting it. Applies to every Gemini tool, not only MCP. |
 
-An unconstrained non-MCP `{}` still fails Gemini. An explicit
-`type: "string"`, `type: ["object", "null"]`, or mixed `anyOf` is not
-rewritten and still fails the object-root proof. See
+An unconstrained non-MCP `{}` still fails Gemini. MCP normalization adds
+`type: "object"` to every typeless root, including a root built from mixed
+`anyOf` branches or an unresolved `$ref`; the new root type intersects and can
+narrow that advertised schema. A root with an explicit `type: "string"` or
+`type: ["object", "null"]` is preserved and still fails Gemini's object-root
+proof. See
 [provider-tool-compat.md](../provider-tool-compat.md#gemini-object-applicator-tool-roots).
 
 ### Model-facing tool text
@@ -516,7 +519,7 @@ the daemon-owned admission kernel.
 | Mid-turn ends `mid_turn_compact_failed` after adding MCP servers | A large catalog can raise the estimate past the fire threshold and raise provider-reported `promptTokens` past the mid-turn outer gate. The summary request should still pass admission. Check the disable-flag rules and the 2-failure digest guard on [CP-0006](../design/critical-path/0006-compaction-transaction.md), and whether last-sample `promptTokens` disagreed with the compact-module estimate. The event is a `warning` and `stopReason: "compact_failed"`; a keep-alive session stays promptable. See [daemon.md](daemon.md#compact-skip-stays-per-turn). |
 | Gemini or another provider unexpectedly advertises an argument-taking MCP tool with empty `properties` | Sanitization may have replaced the schema with an open object (`too_large`, `unsafe_key`, or silent `invalid_root`). A legitimate no-argument schema can have the same shape and pass through unchanged. Compare the server's original `inputSchema`; check session-bridge warnings or compatibility-client MCP debug logs for the first two issue codes. Fix an invalid advertised schema; do not expect Gemini to reject the fallback. |
 | MCP no-arg tool advertises `{ "type": "object" }` with no `properties` | Expected default for a server `{}`. Distinct from the fail-open `{ "type": "object", "properties": {} }`. See [MCP object schemas that omit type](#mcp-object-schemas-that-omit-type). |
-| Gemini session dies after connecting an MCP server whose tools omit `type` | No longer expected for `{}` or `properties` / `required` / `additionalProperties` roots. If chat still fails at `tools["mcp…"].parameters`, the advertised root is a non-object explicit type, a mixed union, or an unresolved `$ref`. See [omit-type](#mcp-object-schemas-that-omit-type) and [Gemini object applicators](../provider-tool-compat.md#gemini-object-applicator-tool-roots). |
+| Gemini session dies after connecting an MCP server whose tools omit `type` | No longer expected at the object-root proof: MCP normalization adds `type: "object"` even to mixed `anyOf` or `$ref` roots. Those shapes can still be narrowed by the intersection or fail later if a reference is unresolved. An explicit non-object root remains unchanged. See [omit-type](#mcp-object-schemas-that-omit-type) and [Gemini object applicators](../provider-tool-compat.md#gemini-object-applicator-tool-roots). |
 | Model description starts with `Untrusted MCP server-provided description: MCP tool: <name>` | The advertised description was empty, non-text, or sanitized to empty (bidi / zero-width / control-only). Hidden-only text is dropped, not preserved. See [model-facing tool text](#model-facing-tool-text). |
 | `<system-reminder>` from an MCP description appears as `<neutralized-system-reminder-tag>` | Expected. The tag is neutralized before the model sees it; it is not a live system reminder. |
 | Skill listing shows `[untrusted MCP metadata]` instead of the tool-description prefix | MCP skill listings use `local-loader.ts`, not `buildModelFacingMcpToolDescription`. |

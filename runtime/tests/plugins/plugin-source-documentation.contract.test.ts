@@ -112,6 +112,18 @@ describe("plugin source documentation contract", () => {
     expect(
       pluginSourceNeedsRedaction("https://opaque-token@agenc.tech/plugin.tgz"),
     ).toBe(true);
+    const secretPath =
+      "https://agenc.tech/plugins/sk-proj-abcdefghijklmnopqrstuvwxyz123456/tool.tgz";
+    const secretFragment =
+      "https://agenc.tech/plugins/tool.tgz#sk-proj-abcdefghijklmnopqrstuvwxyz123456";
+    expect(pluginSourceNeedsRedaction(secretPath)).toBe(true);
+    expect(pluginSourceNeedsRedaction(secretFragment)).toBe(true);
+    expect(redactPluginSource(secretPath)).not.toContain(
+      "sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+    );
+    expect(redactPluginSource(secretFragment)).not.toContain(
+      "sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+    );
   });
 });
 
