@@ -13,6 +13,7 @@ import {
   readCompactionRolloutPayload,
   type CompactionRolloutType,
 } from "../session/compaction-event-reader.js";
+import { validatePendingAdmissionFallbackSlice } from "../session/turn-checkpoint-slice.js";
 
 type KnownRolloutItem = Exclude<RolloutItem, { readonly type: "unknown" }>;
 type KnownRolloutType = KnownRolloutItem["type"];
@@ -407,6 +408,16 @@ const isPendingBudgetDecision: Validator<PendingBudgetDecision> = (
   ((value.kind === "continue" && isNumber(value.remaining)) ||
     (value.kind === "stop" && isString(value.reason)));
 
+type PendingAdmissionFallback = NonNullable<
+  EventPayload<"turn_checkpoint">["resumableState"]["pendingAdmissionFallback"]
+>;
+const isPendingAdmissionFallback: Validator<PendingAdmissionFallback> = (
+  value,
+): value is PendingAdmissionFallback =>
+  validatePendingAdmissionFallbackSlice(value, "pendingAdmissionFallback", {
+    allowUnknownFields: true,
+  }).ok;
+
 const isCheckpointSlice = objectShape(
   {
     turnCount: isNonNegativeInteger,
@@ -417,6 +428,8 @@ const isCheckpointSlice = objectShape(
   },
   {
     planToolRequiredRetryCount: isNonNegativeInteger,
+    editorToolCallsAdmitted: isNonNegativeInteger,
+    pendingAdmissionFallback: isPendingAdmissionFallback,
     modelSampleOrdinal: isNonNegativeInteger,
     modelSampleResumePrompt: oneOf("continuation_nudge", "empty_response"),
     taskBudgetRemaining: isNumber,

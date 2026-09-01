@@ -145,4 +145,47 @@ describe("ProviderHttpClient", () => {
     expect(thirdBody.prompt_cache_key).toBe("conv-123");
     expect(thirdBody.previous_response_id).toBeUndefined();
   });
+
+  test("continuation snapshots restore an isolated copy of every state field", () => {
+    const client = new ProviderHttpClient({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+    });
+    const internal = (
+      client as unknown as {
+        readonly responsesContinuationState: {
+          conversationId?: string;
+          lastRequest?: Record<string, unknown>;
+          lastResponseId?: string;
+          lastResponseOutput?: readonly Record<string, unknown>[];
+        };
+      }
+    ).responsesContinuationState;
+    Object.assign(internal, {
+      conversationId: "conv-before",
+      lastRequest: { input: [{ role: "user", content: "before" }] },
+      lastResponseId: "resp-before",
+      lastResponseOutput: [{ role: "assistant", content: "before" }],
+    });
+    const snapshot = client.snapshotResponsesContinuation();
+
+    client.bindConversationId("conv-after");
+    client.resetResponsesContinuation();
+    client.restoreResponsesContinuation(snapshot);
+    internal.lastRequest!.input = [{ role: "user", content: "mutated" }];
+
+    expect(client.snapshotResponsesContinuation()).toEqual({
+      conversationId: "conv-before",
+      lastRequest: { input: [{ role: "user", content: "mutated" }] },
+      lastResponseId: "resp-before",
+      lastResponseOutput: [{ role: "assistant", content: "before" }],
+    });
+    expect(snapshot).toEqual({
+      conversationId: "conv-before",
+      lastRequest: { input: [{ role: "user", content: "before" }] },
+      lastResponseId: "resp-before",
+      lastResponseOutput: [{ role: "assistant", content: "before" }],
+    });
+  });
 });

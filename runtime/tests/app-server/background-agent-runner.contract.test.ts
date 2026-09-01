@@ -7822,6 +7822,189 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
+  it("[managed-thread] does not latch run status on a mid-turn stream_disconnected error", async () => {
+    const { runner, session, control } = makeTopLevelRunner({
+      conversationId: "session-stream-disconnected-telemetry",
+    });
+    const started = await runner.startAgent({
+      objective: "keep-alive after reconnect",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    const emitted: JsonObject[] = [];
+    await runner.attachAgentSessionEvents(started.agentId, {
+      sessionId: "session_1",
+      emit: async (notification) => {
+        emitted.push(notification);
+      },
+    });
+
+    session.emit({
+      id: "stream-retry",
+      msg: {
+        type: "error",
+        payload: {
+          cause: "stream_disconnected",
+          message: "Reconnecting after stream interruption (attempt 1): socket hang up",
+          streamError: true,
+        },
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const reconnectSnapshot = await runner.getAgentSnapshot(
+      "session-stream-disconnected-telemetry",
+    );
+    expect(reconnectSnapshot?.status).not.toBe("error");
+    expect(emitted).not.toContainEqual(
+      expect.objectContaining({
+        method: "event.agent_status",
+        params: expect.objectContaining({
+          status: "error",
+          message: expect.stringContaining("Reconnecting after stream interruption"),
+        }),
+      }),
+    );
+
+    await expect(
+      runner.submitAgentMessage("session-stream-disconnected-telemetry", {
+        sessionId: "session_1",
+        content: "continue after reconnect",
+        originalContent: "continue after reconnect",
+        messageId: "message-after-reconnect",
+        streamId: "stream-after-reconnect",
+        acceptedAt: "2026-09-01T00:00:01.000Z",
+      }),
+    ).resolves.toMatchObject({ disposition: "started" });
+    expect(control.sendInput).toHaveBeenCalled();
+  });
+
+  it("[managed-thread] does not latch run status on a mid-turn stop_hook_threw error", async () => {
+    const { runner, session, control } = makeTopLevelRunner({
+      conversationId: "session-stop-hook-threw-telemetry",
+    });
+    await runner.startAgent({
+      objective: "keep-alive after stop hook throw",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    session.emit({
+      id: "stop-hook-threw",
+      msg: {
+        type: "error",
+        payload: {
+          cause: "stop_hook_threw",
+          message: "lint threw",
+        },
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const hookSnapshot = await runner.getAgentSnapshot(
+      "session-stop-hook-threw-telemetry",
+    );
+    expect(hookSnapshot?.status).not.toBe("error");
+
+    await expect(
+      runner.submitAgentMessage("session-stop-hook-threw-telemetry", {
+        sessionId: "session_1",
+        content: "continue after stop hook throw",
+        originalContent: "continue after stop hook throw",
+        messageId: "message-after-stop-hook-throw",
+        streamId: "stream-after-stop-hook-throw",
+        acceptedAt: "2026-09-01T00:00:02.000Z",
+      }),
+    ).resolves.toMatchObject({ disposition: "started" });
+    expect(control.sendInput).toHaveBeenCalled();
+  });
+
+  it("[managed-thread] treats new session error causes as diagnostics", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "session-future-error-diagnostic",
+    });
+    await runner.startAgent({
+      objective: "keep-alive after a diagnostic",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    session.emit({
+      id: "future-diagnostic",
+      msg: {
+        type: "error",
+        payload: {
+          cause: "future_mid_turn_diagnostic",
+          message: "diagnostic event",
+        },
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await expect(
+      runner.getAgentSnapshot("session-future-error-diagnostic"),
+    ).resolves.toMatchObject({ status: expect.not.stringMatching(/^error$/u) });
+  });
+
+  it("[managed-thread] keeps the run alive after a mid-turn compact skip", async () => {
+    const { runner, session, control, stub } = makeTopLevelRunner({
+      conversationId: "session-survives-mid-turn-compact-skip",
+    });
+    await runner.startAgent({
+      objective: "passive compact test",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    session.emit({
+      id: "legacy-mid-turn-compact-skip",
+      msg: {
+        type: "error",
+        payload: {
+          cause: "mid_turn_compact_failed",
+          message:
+            "mid_turn_compact_skipped: lastSamplePromptTokens=200000 limit=180000",
+        },
+      },
+    });
+    session.emitPhaseEvent({
+      type: "turn_complete",
+      content: "need a tool",
+      usage: {
+        promptTokens: 200_000,
+        completionTokens: 10,
+        totalTokens: 200_010,
+      },
+      stopReason: "compact_failed",
+      error: new Error(
+        "mid_turn_compact_skipped: lastSamplePromptTokens=200000 limit=180000",
+      ),
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const snapshot = await runner.getAgentSnapshot(
+      "session-survives-mid-turn-compact-skip",
+    );
+    expect(snapshot?.status).not.toBe("error");
+
+    await expect(
+      runner.submitAgentMessage("session-survives-mid-turn-compact-skip", {
+        sessionId: "session_1",
+        content: "continue after compact skip",
+        originalContent: "continue after compact skip",
+        messageId: "after-compact-skip",
+        streamId: "after-compact-skip-stream",
+        acceptedAt: "2026-08-31T00:00:01.000Z",
+      }),
+    ).resolves.toMatchObject({ disposition: "started" });
+    expect(control.sendInput).toHaveBeenCalledTimes(1);
+    expect(stub.thread.submit).not.toHaveBeenCalled();
+  });
+
   it("[managed-thread] applies owning-session hook context to follow-up model input exactly once", async () => {
     const contextHook = vi.fn(() => ({
       additionalContexts: ["session-owned daemon context"],
@@ -8539,6 +8722,64 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.sendInput).not.toHaveBeenCalled();
   });
 
+  it("[managed-thread] does not treat a mid-turn error as the persisted terminal", async () => {
+    const event = (id: string, seq: number, msg: Record<string, unknown>) => ({
+      type: "event_msg",
+      payload: { id, eventId: id, seq, msg },
+    });
+    const { runner, control } = makeTopLevelRunner({
+      conversationId: "session-error-then-complete",
+      rolloutItems: [
+        event("user-1", 1, {
+          type: "user_message",
+          payload: {
+            message: "retry me",
+            messageId: "error-then-complete",
+            acceptedAt: "2026-08-17T00:00:00.000Z",
+          },
+        }),
+        event("turn-1", 2, {
+          type: "turn_started",
+          payload: { turnId: "turn-1" },
+        }),
+        event("hook-threw", 3, {
+          type: "error",
+          payload: {
+            cause: "stop_hook_threw",
+            message: "lint threw",
+            turnId: "turn-1",
+          },
+        }),
+        event("complete-1", 4, {
+          type: "turn_complete",
+          payload: { turnId: "turn-1", lastAgentMessage: "done" },
+        }),
+      ],
+    });
+    await runner.startAgent({
+      objective: "restored",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    await expect(
+      runner.submitAgentMessage("session-error-then-complete", {
+        sessionId: "session_1",
+        content: "retry me",
+        originalContent: "retry me",
+        messageId: "error-then-complete",
+        streamId: "error-then-complete",
+        acceptedAt: "2026-08-17T01:00:00.000Z",
+      }),
+    ).resolves.toMatchObject({
+      disposition: "duplicate",
+      duplicateState: "completed",
+      turnId: "turn-1",
+      terminal: { code: 0, message: "done" },
+    });
+    expect(control.sendInput).not.toHaveBeenCalled();
+  });
+
   it("[managed-thread] never attributes a later completed turn to a crashed submission", async () => {
     const event = (id: string, seq: number, msg: Record<string, unknown>) => ({
       type: "event_msg",
@@ -8791,7 +9032,7 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
-  it("[managed-thread] reports canonical max-turn errors with replay identity", async () => {
+  it("[managed-thread] keeps legacy max-turn error records session-only", async () => {
     const { runner, session } = makeTopLevelRunner({
       conversationId: "session-max-turns",
     });
@@ -8830,17 +9071,30 @@ describe("AgenC delegate background-agent runner", () => {
     await vi.waitFor(() => {
       expect(emitted).toContainEqual(
         expect.objectContaining({
-          method: "event.agent_status",
+          method: "event.session_event",
           params: expect.objectContaining({
-            status: "error",
-            runStatus: "errored",
-            message: "Agent exceeded maxTurns",
             eventId: "max-turn-error",
             sequence: expect.any(Number),
+            event: expect.objectContaining({
+              type: "error",
+              payload: expect.objectContaining({
+                cause: "max_turns",
+                message: "Agent exceeded maxTurns",
+              }),
+            }),
           }),
         }),
       );
     });
+    expect(emitted).not.toContainEqual(
+      expect.objectContaining({
+        method: "event.agent_status",
+        params: expect.objectContaining({ eventId: "max-turn-error" }),
+      }),
+    );
+    await expect(
+      runner.getAgentSnapshot("session-max-turns"),
+    ).resolves.toMatchObject({ status: expect.not.stringMatching(/^error$/u) });
   });
 
   it("[managed-thread] keeps interrupted status internal and publishes canonical abort", async () => {

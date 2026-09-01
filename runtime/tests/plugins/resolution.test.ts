@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { promisify } from "node:util";
+import { inspect, promisify } from "node:util";
 import { describe, expect, test, vi } from "vitest";
 import { strToU8, zipSync } from "fflate";
 
@@ -439,6 +439,21 @@ describe("plugin source resolution", () => {
           "plugin private-demo has no recorded source; rerun with --source <source>",
       });
 
+      const updated = await updatePluginOp({
+        pluginId: "private-demo",
+        source: credentialSource,
+        agencHome,
+        workspaceRoot: root,
+        runResolutionProcess: runProcess,
+        fetchResolutionBytes: async () => Buffer.from("fixture"),
+        requireSignature: false,
+      });
+      expect(updated.source).toBe(
+        "https://redacted@agenc.tech/plugins/private.tgz?redacted=1",
+      );
+      expect(updated.source).not.toContain("opaque-token");
+      expect(updated.source).not.toContain("secretvalue");
+
       let errorMessage = "";
       try {
         await resolvePluginSource("git+https://opaque-token@agenc.tech/private/repo.git?access_token=secretvalue", {
@@ -454,6 +469,35 @@ describe("plugin source resolution", () => {
       expect(errorMessage).toContain("https://redacted@agenc.tech/private/repo.git?redacted=1");
       expect(errorMessage).not.toContain("opaque-token");
       expect(errorMessage).not.toContain("secretvalue");
+    });
+  });
+
+  test("redacts credentials from native archive fetch failures", async () => {
+    await withTempDir(async (root) => {
+      const credentialSource =
+        "https://opaque-token@127.0.0.1:1/plugins/private.tgz?access_token=secretvalue";
+      const invalidSource =
+        "https://opaque-token@agenc.tech:notaport/plugins/private.tgz?access_token=secretvalue";
+
+      const fetchSurface = await resolutionErrorSurface(credentialSource, {
+        agencHome: join(root, "home-fetch"),
+        workspaceRoot: root,
+        requireSignature: false,
+      });
+      expectNativeFetchCredentialLeak(fetchSurface, credentialSource);
+      expect(fetchSurface).toContain(
+        "https://redacted@127.0.0.1:1/plugins/private.tgz?redacted=1",
+      );
+
+      const urlSurface = await resolutionErrorSurface(invalidSource, {
+        agencHome: join(root, "home-url"),
+        workspaceRoot: root,
+        requireSignature: false,
+      });
+      expectNativeFetchCredentialLeak(urlSurface, invalidSource);
+      expect(urlSurface).toContain(
+        "https://redacted@agenc.tech:notaport/plugins/private.tgz?redacted=1",
+      );
     });
   });
 
@@ -2065,4 +2109,36 @@ async function withTempDir(fn: (root: string) => Promise<void>): Promise<void> {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+}
+
+async function resolutionErrorSurface(
+  source: string,
+  options: ResolverTestOptions,
+): Promise<string> {
+  try {
+    await resolvePluginSource(source, options);
+    throw new Error("expected plugin resolution to fail");
+  } catch (error) {
+    return serializedResolutionError(error);
+  }
+}
+
+function serializedResolutionError(error: unknown): string {
+  const json = error instanceof Error
+    ? JSON.stringify(error, Object.getOwnPropertyNames(error))
+    : JSON.stringify(error);
+  return [
+    String(error),
+    inspect(error, { depth: 8, getters: true, showHidden: true }),
+    json,
+  ].join("\n");
+}
+
+function expectNativeFetchCredentialLeak(
+  surface: string,
+  source: string,
+): void {
+  expect(surface).not.toContain("opaque-token");
+  expect(surface).not.toContain("secretvalue");
+  expect(surface).not.toContain(source);
 }

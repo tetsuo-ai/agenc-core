@@ -7539,7 +7539,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     };
     setAutoCompactImplForTests(fakeImpl);
 
-    await drain(session.runTurn("hello", { ctx }));
+    const yielded = await drain(session.runTurn("hello", { ctx }));
 
     const warnings = events.filter(
       (e) =>
@@ -7553,10 +7553,16 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     }
     const errors = events.filter(
       (e) =>
-        e.msg.type === "error" &&
+        e.msg.type === "warning" &&
         e.msg.payload.cause === "pre_sampling_compact_failed",
     );
     expect(errors.length).toBeGreaterThanOrEqual(1);
+    expect(yielded).toContainEqual(
+      expect.objectContaining({
+        type: "turn_complete",
+        stopReason: "compact_failed",
+      }),
+    );
     expect(provider.chat).not.toHaveBeenCalled();
     expect(provider.chatStream).not.toHaveBeenCalled();
   });
@@ -7891,7 +7897,7 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
     // Non-per-iteration counters hold their EXACT restored pre-crash values.
     expect(cp.recoveryReentryCount).toBe(3);
     expect(cp.taskBudgetRemaining).toBe(9999);
-    expect(cp.checkpointVersion).toBe(2);
+    expect(cp.checkpointVersion).toBe(3);
     expect(cp.toolResultIntegrityVersion).toBe(1);
     expect(
       appendRollout.mock.calls

@@ -305,7 +305,7 @@ Older 1.2 clients ignore the additive field.
 | --- | --- |
 | `turnId` | The open `turn_started` |
 | `committedSequence` | Durable sequence of that turn's terminal event (placement anchor) |
-| `outcome` | `completed` (`turn_complete`), `aborted` (`turn_aborted`), or `errored` (`error`) |
+| `outcome` | `completed` (`turn_complete`) or `aborted` (`turn_aborted`) |
 | `durationMs` | Completed turns only: `turn_complete.durationMs`, else `completedAt - startedAt` when both stamps are finite and ≥ 0 |
 | `inputTokens` / `outputTokens` / `totalTokens` | Sum of enclosed `token_count.promptTokens` / `completionTokens` / `totalTokens` |
 | `model` / `provider` | Last nonempty strings on those same `token_count` events |
@@ -319,7 +319,10 @@ Constraints:
   (a later `turn_started` replaces the dangling accumulator).
 - A terminal whose `turnId` does not match the open turn is skipped. This is
   the same mismatched-terminal guard the message scan already applies.
-- `durationMs` is not emitted for aborted or errored turns.
+- `error` events are telemetry, not terminals. A stop-hook throw or similar
+  mid-turn failure does not close the accumulator; later `token_count` and
+  the real `turn_complete` / `turn_aborted` still belong to that turn.
+- `durationMs` is not emitted for aborted turns.
 - A `token_count` with no finite non-negative token field is ignored,
   including its model/provider. Cache, reasoning, and search counters
   on that event are not copied.
@@ -544,10 +547,78 @@ be healthy underneath.
 One-shot / `--print` / `--no-tui` agents still fail the run on a
 bounded stop: nobody is left to continue them.
 
+Mid-turn and pre-sampling compact skip-or-throw used to emit
+canonical `error` (`mid_turn_compact_failed` /
+`pre_sampling_compact_failed`) and yield `stopReason: "error"`. The
+live event-log bridge treated every `error` as run death, and the
+daemon mapper promoted `stopReason: "error"` to `run_error`, so a
+circuit-breaker skip or `AGENC_DISABLE_COMPACT=1` (outer gate still
+on) answered `no longer running (status: error)` after one turn.
+Those paths now emit `warning` with the same cause and yield
+`compact_failed`, which maps like a bounded stop. Legacy `type:
+"error"` records with those causes follow the same
+[`session_only` projection](#telemetry-errors-stay-session-only)
+as every other session `error`.
+
 `TaskCreate` accepts a subject-only call. `description` defaults to the
 subject instead of failing validation. A model that retried a missing
 description used to walk into the no-progress backstop and brick the
 session.
+
+### Telemetry errors stay session-only
+
+Session `error` records are diagnostics, not lifecycle boundaries.
+The live event-log bridge (`projectTelemetryErrorAsSessionOnly` in
+`background-agent-runner.ts`) stamps every `type: "error"` with
+`statusProjection: "session_only"`. There is no cause allowlist.
+Unknown future causes stay session-only too.
+
+`session_only` does two things:
+
+- `#applyCanonicalEventBookkeeping` returns before it can set
+  `active.status = "error"`.
+- The notification mapper emits `event.session_event` and does
+  **not** emit `event.agent_status`.
+
+A keep-alive refresh (`#refreshAgentFromRunner` →
+`applyAgentSnapshot`) therefore cannot copy `error` into the
+lifecycle record. Later `message.send` / `message.stream` can
+start a turn. Before this projection, `stop_hook_threw` and a
+`type: "error"` `stream_disconnected` flipped the runner; the
+next refresh latched `agent.status = "error"`; the next prompt
+answered `no longer running (status: error)`.
+
+The event stays visible. An event received before attach stays in
+the runner's in-memory buffer. Attach later delivers
+`event.session_event` with the stored type and payload. The rule
+applies to live events and the pre-attach buffer. Events seeded
+from an older persisted rollout remain outside the live bridge
+and its in-memory attach replay.
+
+| Cause | Typical emitter |
+| --- | --- |
+| `stop_hook_threw` | `phases/stop-hooks.ts` (hook throw, or `shouldBlock` with a blank reason) |
+| `stream_disconnected` | Stream reconnect in `session/run-turn.ts`. Live `emitError({ streamError: true })` is typed `stream_error` (never a bookkeeping status event). A `type: "error"` record with this cause used to latch. |
+| `max_turns` | Legacy journal `error` records (bounded stops now complete the turn) |
+| `user_prompt_submit_hook_blocked` | Legacy prompt-hook `error` records |
+| `mid_turn_compact_failed` / `pre_sampling_compact_failed` | Legacy compact-skip `error` records |
+
+Terminal run failures do **not** use this path. They arrive as
+`RunAgentProgressEvent.run_error`. `#applyProgressStatus` sets
+`active.status = "error"`. `eventFromProgress` emits
+`type: "agent_status"` → `event.agent_status`. The TUI adapter
+`transcriptEventFromAgentStatus` then marks that transcript
+`error` with `terminal: true` and `terminalSource:
+"agent_status"`. Runtime-settings authority failures use the same
+`terminal` flag with `terminalSource:
+"runtime_settings_authority"`. Among `error` events, only an error carrying
+that marker clears `activeTurn` and stops the Working spinner
+(`isTerminalDaemonErrorPayload` in `tui/daemon-terminal-error.ts`).
+An unmarked session `error` keeps the turn open.
+
+This projection does not revive a session that already has a
+durable `run_error`. One-shot / `--print` / `--no-tui` agents
+still fail the run on a bounded stop.
 
 ### Prompt hook blocks stay per-prompt
 
@@ -567,18 +638,9 @@ event. The runner still throws `PROMPT_BLOCKED` for that
 `message.send` / `message.stream` (JSON-RPC `-32602`); it does not
 mark the run `error`. A later allowed prompt can start a turn.
 
-Legacy-format `type: "error"` events with that blocked cause are
-remapped when they cross the live event-log bridge
-(`projectPerPromptRejectionAsSessionOnly` in
-`background-agent-runner.ts`). An event received before attach stays
-in the runner's in-memory buffer. Attach later delivers
-`event.session_event` with the stored type and payload. The daemon event
-gets `statusProjection: "session_only"`, so it skips run-status
-bookkeeping and does **not** produce `event.agent_status`. The rule
-applies to live events and the pre-attach buffer. Events seeded from an
-older persisted rollout remain outside the live bridge and its in-memory
-attach replay. The allowlist is only `user_prompt_submit_hook_blocked`;
-throw and stop were already warnings.
+Legacy-format `type: "error"` events with that blocked cause follow
+the same [`session_only` projection](#telemetry-errors-stay-session-only)
+as every other session `error`. Throw and stop were already warnings.
 
 `agent.create` first-content blocks follow startup failure semantics.
 Start throws `PROMPT_BLOCKED`, shuts down the unpublished bootstrap,
@@ -615,17 +677,35 @@ Before the next admission, the runtime fsyncs a turn checkpoint containing the
 ordinal. Runtime-only nudge and empty-response prompts are named in that
 checkpoint and reconstructed after a crash. A resumed in-flight sample
 therefore uses the exact same id and request, while a new physical sample gets
-a new id.
+a new id. `durableTurns.checkpoint.minIntervalMs` cannot defer that forced
+write. Disabling `durableTurns.checkpoint.enabled` skips the write. Restart
+then reports `no-checkpoint` and opens a fresh turn.
+
+In-turn resume (`resumeTurnFromCheckpoint`) is separate from epoch reopen.
+Startup continues the orphaned turn only when every gate passes: resume is
+enabled, the checkpoint is readable and unterminated, the build pin matches,
+the prefix hash matches, the single-writer lease is valid, and any pending
+fallback provider/model route can be restored as one binding. A clean
+rejection may start a fresh turn only after the original provider state is
+proven intact or restored. An unproven partial publication halts startup and
+fences the session from new turns. The existing checkpoint remains unchanged.
+See the canonical
+[resume outcome table](../design/durable-runs-effects-events.md#resume-outcomes).
 
 See [execution-admission-kernel.md](../design/execution-admission-kernel.md#model-step-identity).
 
 | Symptom | What to check |
 | --- | --- |
 | `PROMPT_BLOCKED` on `message.send` / `message.stream` | A `UserPromptSubmit` hook refused this prompt. The session should stay promptable. Confirm `agent.status` is not `error`, then send an allowed follow-up. See [hooks.md](hooks.md#userpromptsubmit). |
-| `no longer running (status: error)` right after a hook denial | Unexpected after the warning remap. Look for a real `type: "error"` without `cause: "user_prompt_submit_hook_blocked"`, or a one-shot / `--print` bounded stop. |
+| `no longer running (status: error)` right after a hook denial, stop-hook throw, or stream reconnect | Unexpected after the `session_only` projection. Look for a real `event.agent_status` / `run_error`, or a one-shot / `--print` bounded stop. Session `error` events stay visible as `event.session_event` and do not latch the run. See [telemetry errors](#telemetry-errors-stay-session-only). |
 | `AdmissionStepConflictError` | The same `(runId, stepId)` was acquired with different normalized admission data. Compare the `stepId`, provider, model, token bounds, and budget identity in `agenc run evidence`. |
 | A crash-resumed nudge or empty-response retry conflicts | Verify the latest turn checkpoint contains the expected sample ordinal and resume-prompt kind. |
 | A later model call lacks `sample-<ordinal>` | Check whether the prior response was terminal. Only successful nonterminal responses reserve another physical sample. |
+| Resume never continues after `durableTurns.resume.onRestart = false` | This is expected. Startup reports `disabled` and opens a fresh turn. |
+| Resume reports `provider-restore-failed` | Check that `pendingAdmissionFallback` records both the target provider and model, and that the target provider can be prepared. Then check the [resume outcome](../design/durable-runs-effects-events.md#resume-outcomes): clean rejection permits a fresh turn only after proven restoration; terminal failure fences the session and halts startup. |
+| Open reports `durable checkpoint upgrade blocked` | Prefix, tool-pair, mixed-version, or work-limit failure. Resume stays disabled. Preserve the rollout; restore intact source from backup or start a new session. See [checkpoint slice versions](../design/durable-runs-effects-events.md#checkpoint-slice-versions). |
+| Open reports `resumableState contains unversioned fields` | The checkpoint carries a key outside the versioned slice. New fields need a new checkpoint version and rollout schema. A recovery-journal accept does not prove the resume reader will. See [recovery journal vs checkpoint reader](../design/durable-runs-effects-events.md#recovery-journal-vs-checkpoint-reader). |
+| Older binary refuses `rollout schema v4` | Expected. Schema 4 is newer than a schema-3 runtime. Upgrade the runtime; do not rewrite the header by hand. |
 
 ## What the daemon owns
 
@@ -682,13 +762,19 @@ agenc budget status    # configured policy only; usage is agenc run status <run-
 | Session lifecycle                 | `runtime/src/app-server/session-lifecycle.ts`       |
 | Agent lifecycle                   | `runtime/src/app-server/agent-lifecycle.ts`         |
 | Background runs                   | `runtime/src/app-server/background-agent-runner.ts` |
-| Prompt-hook block projection      | `projectPerPromptRejectionAsSessionOnly` in `background-agent-runner.ts`; emit in `hooks/user-prompt-ingress.ts` |
+| Telemetry `error` projection      | `projectTelemetryErrorAsSessionOnly` in `background-agent-runner.ts`; TUI marker in `tui/daemon-terminal-error.ts` / `transcriptEventFromAgentStatus` |
+| Prompt-hook block emit            | `hooks/user-prompt-ingress.ts` (live refusals are `warning`; legacy `error` uses the telemetry projection) |
 | Local socket / Windows named pipe | `runtime/src/app-server/transport/unix-socket.ts`   |
 | Cookie auth                       | `runtime/src/app-server/transport/auth.ts`          |
 | Health                            | `runtime/src/app-server/health.ts`                  |
 | Model admission step id           | `runtime/src/phases/stream-model.ts`                |
 | Continuation nudge                | `runtime/src/phases/continuation-nudge.ts`          |
 | Mid-turn compact continue         | `runtime/src/session/run-turn.ts`                   |
+| Forced pre-admission checkpoint   | `runtime/src/session/run-turn.ts` (`emitTurnCheckpoint`) |
+| Checkpoint slice and reader       | `runtime/src/session/turn-checkpoint-slice.ts`, `runtime/src/session/turn-state.ts`, `runtime/src/session/durable-checkpoint-reader.ts` |
+| Additive recovery-journal shape   | `runtime/src/state/recovery-journal-schema.ts` (`isTurnCheckpointShape`, `objectShape`) |
+| Rollout schema upgrade            | `runtime/src/session/durable-checkpoint-upgrade.ts`, `runtime/src/session/rollout-store.ts` (`promoteDurableCheckpointSchema`) |
+| In-turn resume gates              | `runtime/src/conversation/thread-manager.ts` (`resumeTurnFromCheckpoint`) |
 | Step uniqueness / conflict        | `runtime/src/state/execution-admission.ts`          |
 | Launcher autostart                | `packages/agenc/src/launcher.mjs`                   |
 | SDK connect                       | `packages/agenc-sdk/src/socket.ts`                  |

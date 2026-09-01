@@ -27,6 +27,10 @@ import {
   type ContentReplacementState,
 } from "./_deps/tool-result-storage.js";
 import type { ProgressTrip, StepRecord } from "./behavioral-backstop.js";
+import {
+  validatePendingAdmissionFallbackSlice,
+  type TurnCheckpointSliceLine,
+} from "./turn-checkpoint-slice.js";
 
 /**
  * Continue — the 8 recovery re-entry reasons captured at each
@@ -561,24 +565,13 @@ export function buildInitialTurnState(
 // fields. `taskBudgetRemaining` is the DERIVED budget, never a raw clock.
 // ─────────────────────────────────────────────────────────────────────
 
-export interface TurnCheckpointSlice {
-  readonly turnCount: number;
-  readonly recoveryReentryCount: number;
-  readonly maxOutputTokensRecoveryCount: number;
-  readonly continuationNudgeCount: number;
-  readonly stopHookBlockingCount: number;
-  readonly planToolRequiredRetryCount?: number;
-  readonly editorToolCallsAdmitted?: number;
+export type TurnCheckpointSlice = Omit<
+  TurnCheckpointSliceLine,
+  "pendingAdmissionFallback" | "transition"
+> & {
   readonly pendingAdmissionFallback?: PendingAdmissionFallback;
-  readonly modelSampleOrdinal?: number;
-  readonly modelSampleResumePrompt?: ModelSampleResumePrompt;
-  readonly taskBudgetRemaining?: number;
-  readonly autoCompactTracking?: AutoCompactTrackingState;
   readonly transition?: { readonly reason: ContinueReason };
-  readonly pendingBudgetDecision?:
-    | { readonly kind: "continue"; readonly remaining: number }
-    | { readonly kind: "stop"; readonly reason: string };
-}
+};
 
 /**
  * Project the resumable counters out of a live TurnState into a JSON-safe
@@ -615,7 +608,14 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
     slice.editorToolCallsAdmitted = state.editorToolCallsAdmitted;
   }
   if (state.pendingAdmissionFallback !== undefined) {
-    slice.pendingAdmissionFallback = { ...state.pendingAdmissionFallback };
+    const fallback = validatePendingAdmissionFallbackSlice(
+      state.pendingAdmissionFallback,
+      "pendingAdmissionFallback",
+    );
+    if (!fallback.ok) {
+      throw new Error(`cannot serialize turn checkpoint: ${fallback.reason}`);
+    }
+    slice.pendingAdmissionFallback = fallback.value;
   }
   if (state.modelSampleResumePrompt !== undefined) {
     slice.modelSampleResumePrompt = state.modelSampleResumePrompt;

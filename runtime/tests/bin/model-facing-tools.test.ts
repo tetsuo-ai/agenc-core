@@ -3060,6 +3060,10 @@ describe("model-facing tools", () => {
     expect(JSON.parse(send.content).error).toContain(
       "unknown field `interrupt`",
     );
+    expect(send.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+    });
 
     const assign = await byName.get("assign_task")!.execute({
       target: "/root/task_1",
@@ -3068,6 +3072,10 @@ describe("model-facing tools", () => {
     });
     expect(assign.isError).toBe(true);
     expect(JSON.parse(assign.content).error).toContain("unknown field `items`");
+    expect(assign.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+    });
 
     // followup_task (the deferred assign_task alias) no longer exists.
     expect(byName.has("followup_task")).toBe(false);
@@ -3095,6 +3103,20 @@ describe("model-facing tools", () => {
     expect(JSON.parse(forkContext.content).error).toContain(
       "fork_context is not supported",
     );
+
+    const invalidReasoningEffort = await spawnAgent.execute({
+      message: "inspect",
+      task_name: "task_1",
+      reasoning_effort: "maximum",
+    });
+    expect(invalidReasoningEffort.isError).toBe(true);
+    expect(JSON.parse(invalidReasoningEffort.content).error).toBe(
+      "invalid reasoning_effort",
+    );
+    expect(invalidReasoningEffort.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+    });
 
     const wait = tools.find((tool) => tool.name === "wait_agent")!;
     const zeroTimeout = await wait.execute({ timeout_ms: 0 });
@@ -3172,7 +3194,7 @@ describe("model-facing tools", () => {
     );
   });
 
-  it("uses a clean fork by default for plain spawn_agent calls", async () => {
+  it("treats blank optional spawn_agent fields as omitted", async () => {
     const session = fakeSession();
     delegateMock.mockResolvedValue({
       kind: "async_launched",
@@ -3208,6 +3230,12 @@ describe("model-facing tools", () => {
       .execute({
         message: "review game.py",
         task_name: "reviewer",
+        agent_type: "",
+        model: "",
+        reasoning_effort: "",
+        service_tier: "",
+        fork_turns: "",
+        isolation: "",
       });
 
     expect(result.isError).not.toBe(true);
@@ -3222,8 +3250,47 @@ describe("model-facing tools", () => {
         keepAlive: true,
       }),
     );
-    // Clean fork by default: no full-history forkMode is passed.
-    expect(delegateMock.mock.calls.at(-1)?.[0]).not.toHaveProperty("forkMode");
+    const delegated = delegateMock.mock.calls.at(-1)?.[0];
+    expect(delegated).not.toHaveProperty("role");
+    expect(delegated).not.toHaveProperty("model");
+    expect(delegated).not.toHaveProperty("reasoningEffort");
+    expect(delegated).not.toHaveProperty("serviceTier");
+    expect(delegated).not.toHaveProperty("forkMode");
+    expect(delegated).not.toHaveProperty("isolation");
+  });
+
+  it("confirms no effect when spawn_agent model preflight rejects", async () => {
+    const session = fakeSession();
+    const modelsManager = (
+      session.services as unknown as {
+        modelsManager: {
+          tryListModels: () => readonly unknown[] | null;
+          listModels: () => Promise<readonly unknown[]>;
+        };
+      }
+    ).modelsManager;
+    modelsManager.tryListModels = () => null;
+    modelsManager.listModels = async () => {
+      throw new Error("model list unavailable");
+    };
+
+    const spawn = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    }).find((tool) => tool.name === "spawn_agent")!;
+    const result = await spawn.execute({
+      message: "inspect",
+      task_name: "list_failure",
+      model: "remote-model",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toBe("model list unavailable");
+    expect(result.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+    });
+    expect(delegateMock).not.toHaveBeenCalled();
   });
 
   it("normalizes common hyphenated spawn_agent task names", async () => {
@@ -4273,6 +4340,10 @@ describe("model-facing tools", () => {
     expect(JSON.parse(result.content).error).toBe(
       "Empty message can't be sent to an agent",
     );
+    expect(result.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+    });
   });
 
   it("enforces the inter-agent byte cap when execute is called directly", async () => {
@@ -4291,6 +4362,10 @@ describe("model-facing tools", () => {
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content)).toEqual({
       error: "message exceeds the 65536-byte inter-agent limit",
+    });
+    expect(result.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
     });
     expect(
       (
@@ -4316,6 +4391,10 @@ describe("model-facing tools", () => {
     expect(JSON.parse(result.content).error).toContain(
       "agent reference cannot be resolved",
     );
+    expect(result.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+    });
   });
 
   it("send_message emits the interaction end event after delivery failure", async () => {
@@ -4374,6 +4453,7 @@ describe("model-facing tools", () => {
       expect(JSON.parse(result.content).error).toBe(
         "agent with id agent-1 is closed",
       );
+      expect(result.effectDisposition).toBeUndefined();
       expect(
         emitted.map((event) => (event as { msg: { type: string } }).msg.type),
       ).toEqual([
@@ -4709,6 +4789,74 @@ describe("model-facing tools", () => {
     }
   });
 
+  it("assign_task admission refusals stay off the mutation gate", async () => {
+    const session = fakeSession();
+    const mailboxSend = vi.fn(() => 1);
+    (
+      session as unknown as {
+        mailbox: { hasPending: () => boolean; send: typeof mailboxSend };
+      }
+    ).mailbox = {
+      hasPending: () => false,
+      send: mailboxSend,
+    };
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const child = await control.spawn({
+      parentPath: "/root",
+      threadId: "agent-worker",
+      agentName: "worker",
+    });
+    _setAgentControlForTesting(session, { control, registry });
+    try {
+      const assign = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "assign_task")!;
+
+      const busy = await assign.execute({
+        target: child.agentPath,
+        message: "first assignment",
+      });
+      expect(busy.isError).toBe(true);
+      expect(JSON.parse(busy.content).error).toBe(
+        "agent /root/worker is not an idle reusable worker",
+      );
+      expect(busy.effectDisposition).toMatchObject({
+        disposition: "confirmed_no_effect",
+        evidenceKind: "boundary_not_crossed",
+      });
+      expect(child.assignment).toBeUndefined();
+
+      child.status.markRunning("initial-turn");
+      child.status.markIdle("initial-turn");
+      const accepted = await assign.execute({
+        target: child.agentPath,
+        message: "first assignment",
+      });
+      expect(accepted.isError).toBeUndefined();
+      expect(child.assignment).toMatchObject({
+        state: "accepted",
+        author: "/root",
+      });
+
+      const outstanding = await assign.execute({
+        target: child.agentPath,
+        message: "second assignment",
+      });
+      expect(outstanding.isError).toBe(true);
+      expect(JSON.parse(outstanding.content).error).toBe(
+        "agent /root/worker already has an outstanding assignment",
+      );
+      expect(outstanding.effectDisposition).toMatchObject({
+        disposition: "confirmed_no_effect",
+        evidenceKind: "boundary_not_crossed",
+      });
+    } finally {
+      _clearAgentControlCacheForTesting(session);
+    }
+  });
+
   it("list_agents returns AgenC V2 snake_case entries only", async () => {
     const session = fakeSession();
     const control = {
@@ -4917,6 +5065,10 @@ describe("model-facing tools", () => {
       expect(JSON.parse(result.content).error).toBe(
         "Tasks can't be assigned to the root agent",
       );
+      expect(result.effectDisposition).toMatchObject({
+        disposition: "confirmed_no_effect",
+        evidenceKind: "boundary_not_crossed",
+      });
       expect(mailboxSend).not.toHaveBeenCalled();
     } finally {
       _clearAgentControlCacheForTesting(session);
@@ -4940,6 +5092,10 @@ describe("model-facing tools", () => {
       expect(JSON.parse(result.content).error).toBe(
         "root is not a spawned agent",
       );
+      expect(result.effectDisposition).toMatchObject({
+        disposition: "confirmed_no_effect",
+        evidenceKind: "boundary_not_crossed",
+      });
     } finally {
       _clearAgentControlCacheForTesting(session);
     }
@@ -4958,6 +5114,10 @@ describe("model-facing tools", () => {
     expect(JSON.parse(result.content).error).toBe(
       "root is not a spawned agent",
     );
+    expect(result.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+    });
   });
 
   it("close_agent emits receiver nickname and role metadata", async () => {
@@ -5078,6 +5238,7 @@ describe("model-facing tools", () => {
 
       expect(result.isError).toBe(true);
       expect(JSON.parse(result.content).error).toBe("close failed");
+      expect(result.effectDisposition).toBeUndefined();
       expect(unsubscribe).toHaveBeenCalled();
       expect(emit.mock.calls.map((call) => call[0].msg.type)).toEqual([
         "collab_close_begin",

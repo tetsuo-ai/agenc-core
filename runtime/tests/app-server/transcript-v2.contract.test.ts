@@ -293,6 +293,70 @@ describe("session.transcript.v2 durable projection", () => {
     ]);
   });
 
+  it("keeps the turn open across a mid-turn error until the real terminal", () => {
+    const items: RolloutItem[] = [
+      event(10, "user-1", {
+        type: "user_message",
+        payload: { message: "question", messageId: "client-1" },
+      }),
+      event(11, "turn-1", {
+        type: "turn_started",
+        payload: { turnId: "turn-1", startedAt: 1_000 },
+      }),
+      event(12, "tokens-before", {
+        type: "token_count",
+        payload: {
+          promptTokens: 100,
+          completionTokens: 40,
+          totalTokens: 140,
+          model: "grok-4.6",
+          provider: "grok",
+        },
+      }),
+      event(13, "stop-hook-threw", {
+        type: "error",
+        payload: {
+          cause: "stop_hook_threw",
+          message: "lint threw",
+          turnId: "turn-1",
+        },
+      }),
+      event(14, "tokens-after", {
+        type: "token_count",
+        payload: { promptTokens: 200, completionTokens: 60, totalTokens: 260 },
+      }),
+      event(15, "answer-1", {
+        type: "agent_message",
+        payload: { message: "answer after hook throw" },
+      }),
+      event(16, "complete-1", {
+        type: "turn_complete",
+        payload: { turnId: "turn-1", durationMs: 4_137 },
+      }),
+    ];
+
+    const snapshot = sessionTranscriptV2FromRollout(items, "session-1", "run-1");
+    expect(snapshot.turnResults).toEqual([
+      {
+        turnId: "turn-1",
+        committedSequence: 16,
+        outcome: "completed",
+        durationMs: 4_137,
+        inputTokens: 300,
+        outputTokens: 100,
+        totalTokens: 400,
+        model: "grok-4.6",
+        provider: "grok",
+      },
+    ]);
+    expect(snapshot.messages.at(-1)).toMatchObject({
+      role: "assistant",
+      text: "answer after hook throw",
+      turnId: "turn-1",
+      committedSequence: 15,
+    });
+  });
+
   it("omits turnResults entirely when the rollout closed no turns", () => {
     const snapshot = sessionTranscriptV2FromRollout(
       [

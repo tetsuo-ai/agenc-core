@@ -220,7 +220,7 @@ export async function resolvePluginSource(
     if (tempRoot !== undefined) {
       await rm(tempRoot, { recursive: true, force: true });
     }
-    throw error;
+    throw redactPluginResolutionError(error);
   }
 }
 
@@ -1368,14 +1368,18 @@ async function fetchBytes(
   options: PluginResolverOptions,
 ): Promise<Uint8Array> {
   const maxBytes = options.maxDownloadBytes ?? DEFAULT_MAX_DOWNLOAD_BYTES;
-  if (options.fetchBytes) {
-    const data = await options.fetchBytes(source);
-    if (data.byteLength > maxBytes) {
-      throw new Error(`plugin archive exceeds maximum download size: ${data.byteLength} > ${maxBytes}`);
+  try {
+    if (options.fetchBytes) {
+      const data = await options.fetchBytes(source);
+      if (data.byteLength > maxBytes) {
+        throw new Error(`plugin archive exceeds maximum download size: ${data.byteLength} > ${maxBytes}`);
+      }
+      return data;
     }
-    return data;
+    return await fetchBytesWithRedirectPolicy(source, options, maxBytes);
+  } catch (error) {
+    throw redactPluginResolutionError(error);
   }
-  return fetchBytesWithRedirectPolicy(source, options, maxBytes);
 }
 
 async function fetchBytesWithRedirectPolicy(
@@ -1612,6 +1616,15 @@ function sha256Hex(data: Uint8Array | string): string {
 }
 
 function redactPluginProcessError(error: unknown): Error {
+  return redactPluginResolutionError(error);
+}
+
+/**
+ * Rebuild a resolution failure without leaky URL fields (`input`, `cause`,
+ * raw `fetch` messages). Git/npm already used this boundary; native archive
+ * fetch must too so CLI/logs never see userinfo or signed query values.
+ */
+function redactPluginResolutionError(error: unknown): Error {
   if (error instanceof Error) {
     const redacted = new Error(redactPluginSource(error.message));
     redacted.name = error.name;
@@ -1668,9 +1681,27 @@ function redactCredentialUrls(input: string): string {
       if (url.search) url.search = "?redacted=1";
       return `${prefix}${url.toString()}`;
     } catch {
-      return raw;
+      return redactUnparseableCredentialUrl(raw);
     }
   });
+}
+
+function redactUnparseableCredentialUrl(raw: string): string {
+  const prefix = raw.startsWith("git+") ? "git+" : "";
+  const urlText = prefix ? raw.slice("git+".length) : raw;
+  const schemeMatch = /^(https?|ssh):\/\//iu.exec(urlText);
+  if (schemeMatch === null) return raw;
+  const scheme = schemeMatch[0];
+  let rest = urlText.slice(scheme.length);
+  const userinfoEnd = rest.indexOf("@");
+  if (userinfoEnd !== -1) {
+    rest = `redacted@${rest.slice(userinfoEnd + 1)}`;
+  }
+  const queryIndex = rest.search(/[?#]/u);
+  if (queryIndex !== -1) {
+    rest = `${rest.slice(0, queryIndex)}?redacted=1`;
+  }
+  return `${prefix}${scheme}${rest}`;
 }
 
 function assertSafeNpmPackageSource(source: string): void {

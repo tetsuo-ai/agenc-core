@@ -381,6 +381,51 @@ function consumePendingProviderSwitch(session: Session) {
   );
 }
 
+function consumePendingProviderSwitchTransaction(session: Session) {
+  return runWithCurrentRuntimeSession(session, () =>
+    runWithCanonicalSettingsAuthority(session.services.configStore, () =>
+      session.consumePendingProviderSwitchTransaction(),
+    ),
+  );
+}
+
+function prepareProviderSwitch(
+  session: Session,
+  pending: PendingProviderSwitch,
+) {
+  return runWithCurrentRuntimeSession(session, () =>
+    runWithCanonicalSettingsAuthority(session.services.configStore, () =>
+      session.prepareProviderSwitch(pending),
+    ),
+  );
+}
+
+function providerHttpClient(binding: { readonly instance: LLMProvider }) {
+  const candidate = (binding.instance as { readonly client?: unknown }).client;
+  return candidate instanceof ProviderHttpClient ? candidate : undefined;
+}
+
+function buildProviderSwitchTestSession(): Session {
+  return buildSession({
+    services: {
+      provider: createProvider("grok", {
+        apiKey: "test-key",
+        model: "grok-4",
+      }),
+    },
+  });
+}
+
+async function stageProviderSwitchForTest(
+  session: Session,
+  model = "grok-4.3",
+) {
+  const pending = Object.freeze({ provider: "grok", model });
+  const prepared = await prepareProviderSwitch(session, pending);
+  session.stagePreparedProviderSwitch(prepared, null);
+  return { pending, prepared };
+}
+
 function ctxWithPermissionMode(mode: PermissionMode): ToolPermissionContext {
   return {
     ...createEmptyToolPermissionContext(),
@@ -822,6 +867,171 @@ describe("Session rollout persistence suspension", () => {
 });
 
 describe("Session.consumePendingProviderSwitch", () => {
+  it("clears a staged switch without publishing when provider commit rejects", async () => {
+    const session = buildProviderSwitchTestSession();
+    await stageProviderSwitchForTest(session);
+    const before = {
+      binding: session.providerBinding,
+      sessionConfiguration: session.state.unsafePeek().sessionConfiguration,
+      config: session.config,
+      modelInfo: session.modelInfo,
+    };
+    vi.spyOn(session.providerService, "commit").mockImplementation(() => {
+      throw new Error("failpoint before provider commit");
+    });
+
+    await expect(
+      consumePendingProviderSwitchTransaction(session),
+    ).resolves.toEqual({
+      status: "clean-rejection",
+      reason: "failpoint before provider commit",
+    });
+    expect(session.providerBinding).toBe(before.binding);
+    expect(session.state.unsafePeek().sessionConfiguration).toBe(
+      before.sessionConfiguration,
+    );
+    expect(session.config).toBe(before.config);
+    expect(session.modelInfo).toBe(before.modelInfo);
+    expect(session.pendingProviderSwitch).toBeNull();
+
+    const freshTurn = session.newDefaultTurn();
+    expect(freshTurn.providerBinding).toMatchObject({
+      provider: "grok",
+      model: "grok-4",
+    });
+  });
+
+  it("restores the complete snapshot when commit throws after publication", async () => {
+    const session = buildProviderSwitchTestSession();
+    const { prepared } = await stageProviderSwitchForTest(session);
+    const before = {
+      binding: session.providerBinding,
+      sessionConfiguration: session.state.unsafePeek().sessionConfiguration,
+      config: session.config,
+      modelInfo: session.modelInfo,
+      previousContinuation: providerHttpClient(
+        session.providerBinding,
+      )?.snapshotResponsesContinuation(),
+      nextContinuation: providerHttpClient(
+        prepared.provider.binding,
+      )?.snapshotResponsesContinuation(),
+    };
+    const commit = session.providerService.commit.bind(session.providerService);
+    vi.spyOn(session.providerService, "commit").mockImplementation(
+      (candidate) => {
+        commit(candidate);
+        throw new Error("failpoint immediately after provider commit");
+      },
+    );
+
+    await expect(
+      consumePendingProviderSwitchTransaction(session),
+    ).resolves.toEqual({
+      status: "clean-rejection",
+      reason: "failpoint immediately after provider commit",
+    });
+    expect(session.providerBinding).toMatchObject({
+      provider: before.binding.provider,
+      model: before.binding.model,
+      instance: before.binding.instance,
+      factoryOptions: before.binding.factoryOptions,
+      revision: prepared.provider.binding.revision + 1,
+    });
+    expect(session.state.unsafePeek().sessionConfiguration).toBe(
+      before.sessionConfiguration,
+    );
+    expect(session.config).toBe(before.config);
+    expect(session.modelInfo).toBe(before.modelInfo);
+    expect(
+      providerHttpClient(before.binding)?.snapshotResponsesContinuation(),
+    ).toEqual(before.previousContinuation);
+    expect(
+      providerHttpClient(
+        prepared.provider.binding,
+      )?.snapshotResponsesContinuation(),
+    ).toEqual(before.nextContinuation);
+    expect(session.pendingProviderSwitch).toBeNull();
+  });
+
+  it("rolls back a completed state publication and preserves a concurrent switch", async () => {
+    const session = buildProviderSwitchTestSession();
+    const concurrentPending = Object.freeze({
+      provider: "grok",
+      model: "grok-4.6",
+    });
+    await stageProviderSwitchForTest(session);
+    const before = {
+      binding: session.providerBinding,
+      sessionConfiguration: session.state.unsafePeek().sessionConfiguration,
+      config: session.config,
+      modelInfo: session.modelInfo,
+    };
+    const withState = session.state.with.bind(session.state);
+    let failPublication = true;
+    vi.spyOn(session.state, "with").mockImplementation(async (operation) => {
+      const result = await withState(operation);
+      if (failPublication) {
+        failPublication = false;
+        session.setPendingProviderSwitch(concurrentPending);
+        throw new Error("failpoint after session state publication");
+      }
+      return result;
+    });
+
+    await expect(
+      consumePendingProviderSwitchTransaction(session),
+    ).resolves.toEqual({
+      status: "clean-rejection",
+      reason: "failpoint after session state publication",
+    });
+    expect(session.providerBinding).toMatchObject({
+      provider: before.binding.provider,
+      model: before.binding.model,
+      instance: before.binding.instance,
+    });
+    expect(session.state.unsafePeek().sessionConfiguration).toBe(
+      before.sessionConfiguration,
+    );
+    expect(session.config).toBe(before.config);
+    expect(session.modelInfo).toBe(before.modelInfo);
+    expect(session.pendingProviderSwitch).toBe(concurrentPending);
+  });
+
+  it("terminal-fences every turn path when provider rollback fails", async () => {
+    const session = buildProviderSwitchTestSession();
+    await stageProviderSwitchForTest(session);
+    const commit = session.providerService.commit.bind(session.providerService);
+    vi.spyOn(session.providerService, "commit").mockImplementation(
+      (candidate) => {
+        commit(candidate);
+        throw new Error("failpoint after provider commit");
+      },
+    );
+    vi.spyOn(
+      session.providerService,
+      "restoreAfterFailedCommit",
+    ).mockImplementation(() => {
+      throw new Error("failpoint during provider rollback");
+    });
+
+    const outcome = await consumePendingProviderSwitchTransaction(session);
+
+    expect(outcome).toMatchObject({
+      status: "terminal-failure",
+      reason: expect.stringContaining("failpoint during provider rollback"),
+    });
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(() => session.newDefaultTurn()).toThrow(
+      "session is fenced after an incomplete provider switch transaction",
+    );
+    expect(() => session.newTurnWithSubId("fenced-turn")).toThrow(
+      "session is fenced after an incomplete provider switch transaction",
+    );
+    await expect(session.runTurn("must not dispatch").next()).rejects.toThrow(
+      "session is fenced after an incomplete provider switch transaction",
+    );
+  });
+
   it("does not commit a prepared switch after a newer selection supersedes it", async () => {
     const session = buildSession({
       services: {

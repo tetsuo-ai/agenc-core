@@ -90,7 +90,7 @@ import {
   type DurableCheckpointUpgradeFailure,
 } from "./durable-checkpoint-upgrade.js";
 import { StateToolPairProjection } from "../state/tool-pair-projection.js";
-import { DURABLE_ROLLOUT_SCHEMA_V2 } from "./durable-checkpoint-reader.js";
+import { DURABLE_ROLLOUT_SCHEMA_VERSION } from "./durable-checkpoint-reader.js";
 import {
   StreamingToolPairValidator,
   validateToolPairSequence,
@@ -174,7 +174,7 @@ export interface RolloutStoreOpts extends SessionStoreOpts {
   readonly flushIntervalMs?: number;
   /** Whether to auto-start the background flush scheduler. Default true. */
   readonly autoStartScheduler?: boolean;
-  /** Test-only crash seam immediately before the atomic v2 inode swap. */
+  /** Test-only crash seam immediately before the atomic checkpoint inode swap. */
   readonly beforeCheckpointUpgradePublishForTestingOnly?: () => void;
   /** Test-only crash seam after the compaction commit fsync, before projection. */
   readonly afterCompactionCommitAppendForTestingOnly?: () => void;
@@ -3328,13 +3328,6 @@ export class RolloutStore {
     meta: Parameters<SessionStore["open"]>[0],
   ): void {
     const items = this.store.readAll();
-    const sessionMeta = items.find((item) => item.type === "session_meta");
-    if (
-      sessionMeta?.type === "session_meta" &&
-      sessionMeta.payload.rolloutSchemaVersion > DURABLE_ROLLOUT_SCHEMA_V2
-    ) {
-      return;
-    }
     const projectionContext = this.checkpointProjectionContext("upgrade");
     const outcome = planLegacyDurableCheckpointUpgrade({
       items,
@@ -3380,7 +3373,7 @@ export class RolloutStore {
             type: "session_meta" as const,
             payload: {
               ...meta,
-              rolloutSchemaVersion: DURABLE_ROLLOUT_SCHEMA_V2,
+              rolloutSchemaVersion: DURABLE_ROLLOUT_SCHEMA_VERSION,
             },
           },
           ...plan.upgradedItems,
@@ -3755,12 +3748,10 @@ export class RolloutStore {
     // block side-effecting dispatch until each effect is resolved. An intent
     // with NO settlement record is an evidence gap, not a review queue, and
     // still refuses the reopen.
-    const pendingReviews = this.runDurabilityRepo.listPendingEffectReviews(
-      runId,
-    );
-    const danglingIntents = this.runDurabilityRepo.listUnsettledEffectIntents(
-      runId,
-    );
+    const pendingReviews =
+      this.runDurabilityRepo.listPendingEffectReviews(runId);
+    const danglingIntents =
+      this.runDurabilityRepo.listUnsettledEffectIntents(runId);
     if (danglingIntents.length > 0) {
       throw new Error(
         `cannot resume run ${runId}: ${danglingIntents.length} unknown-outcome effect(s) require review`,

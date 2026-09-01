@@ -432,7 +432,7 @@ Server→client notifications (`AGENC_SDK_DAEMON_NOTIFICATION_METHODS`, 18 names
 | --- | --- |
 | Exec | `commandExec.outputDelta` |
 | Turn / tools | `event.message_chunk`, `event.tool_request`, `event.permission_request`, `event.user_input_request`, `event.mcp_elicitation_request` |
-| Status | `event.agent_status`, `event.session_event`, `event.mcp_status_changed` |
+| Status | `event.agent_status`, `event.session_event`, `event.mcp_status_changed`. Session `error` events stay on `event.session_event` and do not latch `agent.status`; terminal run failures arrive as `event.agent_status`. See [daemon telemetry errors](reference/daemon.md#telemetry-errors-stay-session-only). |
 | Sync | `event.event_gap` (do not skip; resync from the durable cursor) |
 | Realtime | `thread/realtime/started`, `itemAdded`, `transcript/delta`, `transcript/done`, `outputAudio/delta`, `sdp`, `error`, `closed` |
 

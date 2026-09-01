@@ -822,6 +822,18 @@ export async function* runTurnCompat(
           next = requestNext();
           continue;
         }
+        if (event.stopReason === "compact_failed") {
+          yield {
+            type: "message",
+            message: createAssistantAPIErrorMessage({
+              content:
+                event.error?.message ??
+                "Turn stopped: compaction could not shrink the context",
+            }),
+          };
+          next = requestNext();
+          continue;
+        }
         if (
           event.content.length > 0 &&
           event.content !== flushedToolAssistantText

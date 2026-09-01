@@ -1,14 +1,18 @@
 import { createHash } from "node:crypto";
 import { computePrefixHash } from "./durable-turns.js";
 import { emptyReducedState, reduce } from "./event-log-reducer.js";
-import type { TurnCheckpointV2Event } from "./event-log.js";
+import type { TurnCheckpointV3Event } from "./event-log.js";
 import type {
   RolloutItem,
   ToolResultIntegrityResponseItem,
 } from "./rollout-item.js";
 import {
   DURABLE_CHECKPOINT_READ_VERSION,
+  DURABLE_CHECKPOINT_V2,
   DURABLE_ROLLOUT_SCHEMA_V2,
+  DURABLE_ROLLOUT_SCHEMA_V3,
+  DURABLE_ROLLOUT_SCHEMA_VERSION,
+  LEGACY_DURABLE_CHECKPOINT_VERSION,
   DurableCheckpointReadError,
   MAX_CHECKPOINT_PREFIX_MESSAGES,
   computeCheckpointPrefixHashV2,
@@ -32,8 +36,8 @@ import type {
 } from "./tool-pair-validator.js";
 
 const UPGRADE_PROJECTION_ID_DOMAIN = "agenc.checkpoint-upgrade-projection.v1";
-// V2 validation visits the prefix for shape, tool-pair, and digest checks.
-const V2_CHECKPOINT_PREFIX_PASSES = 3;
+// Current validation visits the prefix for shape, tool-pair, and digest checks.
+const CURRENT_CHECKPOINT_PREFIX_PASSES = 3;
 // Legacy promotion additionally computes the new and legacy prefix digests.
 const LEGACY_CHECKPOINT_PREFIX_PASSES = 5;
 // Canonical rollback reduction can scan the history, scan backward across
@@ -46,7 +50,7 @@ export const MAX_CHECKPOINT_UPGRADE_HISTORY_WORK =
 
 export interface DurableCheckpointUpgradePlan {
   readonly sourceSchemaVersion: number;
-  readonly targetSchemaVersion: typeof DURABLE_ROLLOUT_SCHEMA_V2;
+  readonly targetSchemaVersion: typeof DURABLE_ROLLOUT_SCHEMA_VERSION;
   readonly sessionMetaPromotionRequired: boolean;
   readonly changed: boolean;
   readonly toolResultsSealed: number;
@@ -98,8 +102,8 @@ export type DurableCheckpointUpgradeOutcome =
     };
 
 /**
- * Build (but never apply) an atomic legacy-to-v2 rollout transformation.
- * The caller owns publication in A3b. Running the planner over its own output
+ * Build (but never apply) an atomic rollout transformation to the current
+ * checkpoint schema. The caller owns publication. Running the planner over its own output
  * is deterministic and yields `changed: false`.
  */
 export function planLegacyDurableCheckpointUpgrade(params: {
@@ -118,15 +122,15 @@ export function planLegacyDurableCheckpointUpgrade(params: {
     return invalid(
       "rollout_schema_mixed",
       null,
-      "rollout without session metadata mixes legacy and v2 checkpoints",
+      "rollout without session metadata mixes incompatible checkpoint versions",
     );
   }
   const sourceSchema = sourceSchemaInfo.version;
-  if (sourceSchema > DURABLE_ROLLOUT_SCHEMA_V2 || sourceSchema < 1) {
+  if (sourceSchema > DURABLE_ROLLOUT_SCHEMA_VERSION || sourceSchema < 1) {
     return invalid(
       "rollout_schema_unsupported",
       null,
-      `rollout schema ${sourceSchema} cannot be upgraded to ${DURABLE_ROLLOUT_SCHEMA_V2}`,
+      `rollout schema ${sourceSchema} cannot be upgraded to ${DURABLE_ROLLOUT_SCHEMA_VERSION}`,
     );
   }
 
@@ -154,12 +158,12 @@ export function planLegacyDurableCheckpointUpgrade(params: {
           `rollout metadata mixes schema ${sourceSchema} and ${schema}`,
         );
       }
-      if (schema === 1) {
+      if (schema < DURABLE_ROLLOUT_SCHEMA_VERSION) {
         item = {
           ...item,
           payload: {
             ...item.payload,
-            rolloutSchemaVersion: DURABLE_ROLLOUT_SCHEMA_V2,
+            rolloutSchemaVersion: DURABLE_ROLLOUT_SCHEMA_VERSION,
           },
         };
         changed = true;
@@ -215,14 +219,12 @@ export function planLegacyDurableCheckpointUpgrade(params: {
         );
       }
       if (
-        (sourceSchema === 1 && readable.version !== 1) ||
-        (sourceSchema === DURABLE_ROLLOUT_SCHEMA_V2 &&
-          readable.version !== DURABLE_CHECKPOINT_READ_VERSION)
+        !checkpointMatchesRolloutSchema(sourceSchema, readable.sourceVersion)
       ) {
         return invalid(
           "rollout_schema_mixed",
           itemIndex,
-          `rollout schema ${sourceSchema} contains checkpoint version ${readable.version}`,
+          `rollout schema ${sourceSchema} contains checkpoint version ${readable.sourceVersion}`,
         );
       }
 
@@ -237,7 +239,7 @@ export function planLegacyDurableCheckpointUpgrade(params: {
       const prefixPasses =
         readable.version === 1
           ? LEGACY_CHECKPOINT_PREFIX_PASSES
-          : V2_CHECKPOINT_PREFIX_PASSES;
+          : CURRENT_CHECKPOINT_PREFIX_PASSES;
       const reservedWork = reserveHistoryDerivationWork(
         historyDerivationWork,
         persistedMessageCount,
@@ -257,7 +259,7 @@ export function planLegacyDurableCheckpointUpgrade(params: {
       }
       historyDerivationWork = reservedWork;
 
-      let checkpoint: TurnCheckpointV2Event;
+      let checkpoint: TurnCheckpointV3Event;
       if (readable.version === 1) {
         let prefixHash: string;
         try {
@@ -278,6 +280,21 @@ export function planLegacyDurableCheckpointUpgrade(params: {
           checkpointVersion: DURABLE_CHECKPOINT_READ_VERSION,
           toolResultIntegrityVersion: 1,
           prefixHash,
+        };
+        item = {
+          ...item,
+          payload: {
+            ...item.payload,
+            msg: { type: "turn_checkpoint", payload: checkpoint },
+          },
+        };
+        checkpointsUpgraded += 1;
+        changed = true;
+      } else if (readable.sourceVersion !== DURABLE_CHECKPOINT_READ_VERSION) {
+        checkpoint = {
+          ...readable.checkpoint,
+          checkpointVersion: DURABLE_CHECKPOINT_READ_VERSION,
+          toolResultIntegrityVersion: 1,
         };
         item = {
           ...item,
@@ -358,7 +375,7 @@ export function planLegacyDurableCheckpointUpgrade(params: {
     status: "planned",
     plan: {
       sourceSchemaVersion: sourceSchema,
-      targetSchemaVersion: DURABLE_ROLLOUT_SCHEMA_V2,
+      targetSchemaVersion: DURABLE_ROLLOUT_SCHEMA_VERSION,
       sessionMetaPromotionRequired: !sawSessionMeta,
       changed,
       toolResultsSealed,
@@ -570,7 +587,7 @@ function sealResponseItem(
       failure: {
         kind: "integrity_failure",
         code: "tool_result_integrity_invalid",
-        reason: "schema-v2 tool result is missing integrity metadata",
+        reason: "durable rollout tool result is missing integrity metadata",
       },
     };
   }
@@ -633,6 +650,7 @@ function findSourceSchemaVersion(items: ReadonlyArray<RolloutItem>): {
   }
   let sawLegacy = false;
   let sawV2 = false;
+  let sawV3 = false;
   for (const item of items) {
     if (
       item.type !== "event_msg" ||
@@ -642,15 +660,39 @@ function findSourceSchemaVersion(items: ReadonlyArray<RolloutItem>): {
     }
     const payload = item.payload.msg.payload as { checkpointVersion?: unknown };
     if (payload.checkpointVersion === DURABLE_CHECKPOINT_READ_VERSION) {
+      sawV3 = true;
+    } else if (payload.checkpointVersion === DURABLE_CHECKPOINT_V2) {
       sawV2 = true;
     } else {
       sawLegacy = true;
     }
   }
-  return {
-    version: sawV2 && !sawLegacy ? DURABLE_ROLLOUT_SCHEMA_V2 : 1,
-    mixed: sawV2 && sawLegacy,
-  };
+  let version: number = 1;
+  if (sawV3) {
+    version = DURABLE_ROLLOUT_SCHEMA_VERSION;
+  } else if (sawV2) {
+    version = DURABLE_ROLLOUT_SCHEMA_V2;
+  }
+  return { version, mixed: sawLegacy && (sawV2 || sawV3) };
+}
+
+function checkpointMatchesRolloutSchema(
+  rolloutSchemaVersion: number,
+  checkpointVersion: number,
+): boolean {
+  if (rolloutSchemaVersion === 1) {
+    return checkpointVersion === LEGACY_DURABLE_CHECKPOINT_VERSION;
+  }
+  if (rolloutSchemaVersion === DURABLE_ROLLOUT_SCHEMA_V2) {
+    return checkpointVersion === DURABLE_CHECKPOINT_V2;
+  }
+  if (rolloutSchemaVersion === DURABLE_ROLLOUT_SCHEMA_V3) {
+    return checkpointVersion === DURABLE_CHECKPOINT_V2;
+  }
+  return (
+    rolloutSchemaVersion === DURABLE_ROLLOUT_SCHEMA_VERSION &&
+    checkpointVersion === DURABLE_CHECKPOINT_READ_VERSION
+  );
 }
 
 function checkpointProjectionId(base: string): string {

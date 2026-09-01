@@ -140,7 +140,26 @@ describe("canonical model-facing MCP metadata sanitization", () => {
     });
     expect(result.issue).toBeUndefined();
     expect(result.schema).toEqual({
+      type: "object",
       [mapKey]: { description: { type: "string" } },
+    });
+  });
+
+  test("defaults a missing root type to object so Gemini can advertise the tool", () => {
+    expect(sanitizeMcpInputSchemaForModel({})).toEqual({
+      schema: { type: "object" },
+    });
+    expect(
+      sanitizeMcpInputSchemaForModel({
+        properties: { query: { type: "string" } },
+        required: ["query"],
+      }),
+    ).toEqual({
+      schema: {
+        type: "object",
+        properties: { query: { type: "string" } },
+        required: ["query"],
+      },
     });
   });
 

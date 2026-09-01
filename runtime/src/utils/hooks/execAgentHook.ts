@@ -293,6 +293,12 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
               'Agent hook stopped by the no-progress backstop (semantic non-termination)',
             )
           }
+          if (event.stopReason === 'compact_failed') {
+            throw new Error(
+              event.error?.message ??
+                'Agent hook stopped because compaction could not shrink the context',
+            )
+          }
         }
       }
 

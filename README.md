@@ -396,7 +396,8 @@ runtime and asks Vitest to run tests related to files changed from `main`.
 Launcher, SDK, and gate-policy checks run only when files in those areas change.
 Documentation-only PRs do not start a hosted workflow. Run a focused regression test
 locally when a change needs coverage that Vitest cannot infer from imports.
-Classification, `--base`, and fail-closed deletion mapping are in
+Classification, `--base`, fail-closed deletion mapping, and typecheck-only
+native / policy-inventory surfaces are in
 [`docs/ci-required-gates.md`](docs/ci-required-gates.md#fast-testfast-checks).
 
 The full platform matrix is manual. Run it for release candidates or when a

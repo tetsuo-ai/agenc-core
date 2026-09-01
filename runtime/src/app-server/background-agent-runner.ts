@@ -4833,7 +4833,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     return eventLog.subscribe((event) => {
       const uncorrelated = daemonEventFromUnboundSessionEvent(event);
       if (uncorrelated === null) return;
-      const daemonEvent = projectPerPromptRejectionAsSessionOnly(
+      const daemonEvent = projectTelemetryErrorAsSessionOnly(
         scopeDirectShellDaemonEvent(
           active,
           correlateDaemonEvent(active, uncorrelated),
@@ -5647,14 +5647,9 @@ function messageTerminalFromDaemonEvent(
         : {}),
     };
   }
-  if (event.type === "error") {
-    return {
-      code: 1,
-      ...(typeof event.payload?.message === "string"
-        ? { message: event.payload.message }
-        : {}),
-    };
-  }
+  // `error` is session telemetry, not a turn closer. Stop-hook throws and
+  // similar sites emit it while the turn continues and later writes
+  // turn_complete / turn_aborted.
   return undefined;
 }
 
@@ -5758,26 +5753,16 @@ function shellEventKey(commandId: string): string {
     .slice(0, 32);
 }
 
-const PER_PROMPT_SESSION_ERROR_CAUSES: ReadonlySet<string> = new Set([
-  "user_prompt_submit_hook_blocked",
-]);
-
-function isPerPromptSessionErrorCause(cause: unknown): boolean {
-  return typeof cause === "string" && PER_PROMPT_SESSION_ERROR_CAUSES.has(cause);
-}
-
 /**
- * Older UserPromptSubmit blockingError records use type "error". The
- * refusal applies to one prompt, so keep the event visible without changing
- * the run status seen by the runner or attached clients.
+ * Session `error` records are diagnostic events, not lifecycle boundaries.
+ * Terminal run failures arrive through RunAgentProgressEvent.run_error and
+ * update the lifecycle status there. Keep the diagnostic event visible
+ * without letting it poison the keep-alive session first.
  */
-function projectPerPromptRejectionAsSessionOnly(
+function projectTelemetryErrorAsSessionOnly(
   event: BackgroundAgentDaemonEvent,
 ): BackgroundAgentDaemonEvent {
-  if (
-    event.type === "error" &&
-    isPerPromptSessionErrorCause(event.payload?.cause)
-  ) {
+  if (event.type === "error") {
     return { ...event, statusProjection: "session_only" };
   }
   return event;
@@ -5990,16 +5975,10 @@ function messageTerminalFromEvent(
     }
     return { code: 130, message: event.payload.reason };
   }
-  if (event.type === "error") {
-    if (
-      expectedTurnId !== undefined &&
-      event.payload.turnId !== undefined &&
-      event.payload.turnId !== expectedTurnId
-    ) {
-      return undefined;
-    }
-    return { code: 1, message: event.payload.message };
-  }
+  // Same contract as the live bridge: only turn_complete / turn_aborted
+  // close a submission. A mid-turn `error` must not make an idempotent
+  // retry report completed-with-failure while turn_complete is still
+  // ahead in the journal.
   return undefined;
 }
 
@@ -6079,12 +6058,7 @@ function closedTurnResult(
   },
   open: OpenTurnAccumulator,
 ): SessionTranscriptV2TurnResult {
-  const outcome =
-    msg.type === "turn_complete"
-      ? "completed"
-      : msg.type === "turn_aborted"
-        ? "aborted"
-        : "errored";
+  const outcome = msg.type === "turn_aborted" ? "aborted" : "completed";
   let durationMs: number | undefined;
   if (msg.type === "turn_complete") {
     durationMs = nonNegativeFinite(msg.payload.durationMs);
@@ -6301,8 +6275,7 @@ export function sessionTranscriptV2FromRollout(
     }
     if (
       event.msg.type === "turn_complete" ||
-      event.msg.type === "turn_aborted" ||
-      event.msg.type === "error"
+      event.msg.type === "turn_aborted"
     ) {
       const terminalTurnId =
         "turnId" in event.msg.payload &&
@@ -7756,24 +7729,35 @@ export function phaseEventToProgressEvent(
           error: event.error?.message ?? "turn errored",
         };
       }
-      // Bounded stops — the backstop, a turn cap, the cost cap — are
-      // per-TURN outcomes, not run deaths. Mapping them to run_error
-      // bricked the whole session: the user saw "no longer running
-      // (status: error)" and could never prompt again after one bad
-      // turn. The turn ends honestly with its message; the session
-      // stays available for the next prompt, exactly like "completed".
+      // Bounded stops — the backstop, a turn cap, the cost cap, and a
+      // compact skip/throw — are per-TURN outcomes, not run deaths.
+      // Mapping them to run_error bricked the whole session: the user
+      // saw "no longer running (status: error)" and could never prompt
+      // again after one bad turn. The turn ends honestly with its
+      // message; the session stays available for the next prompt,
+      // exactly like "completed".
       const boundedStopFallback: Partial<Record<string, string>> = {
         max_turns: "Turn capped: iteration limit hit; send a new prompt to continue.",
         max_budget_usd: "Turn capped: cost ceiling hit; send a new prompt to continue.",
         no_progress: "Turn halted by the progress backstop; send a new prompt to continue.",
+        compact_failed:
+          "Turn stopped: compaction could not shrink the context; send a new prompt to continue.",
       };
       const boundedFallback = boundedStopFallback[event.stopReason];
       if (boundedFallback !== undefined) {
+        const compactMessage =
+          event.stopReason === "compact_failed" &&
+          event.error instanceof Error &&
+          event.error.message.length > 0
+            ? event.error.message
+            : undefined;
         return {
           kind: "turn_complete",
           turnId,
           toolCallCount: 0,
-          finalMessage: event.content.length > 0 ? event.content : boundedFallback,
+          finalMessage:
+            compactMessage ??
+            (event.content.length > 0 ? event.content : boundedFallback),
         };
       }
       // "completed" | "empty_response" — a per-turn completion. Emit

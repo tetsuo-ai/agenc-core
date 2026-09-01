@@ -61,9 +61,18 @@ is no inert operator layout setting.
 - **`AskUserQuestion` picker** — numbered options, arrows, free-text Other;
   answers are recorded client-side and shipped with the `tool.approve` RPC
   (`askUserQuestionInput`) so the daemon-side tool resumes with them.
+  Bypass, allowlists, hook allow, automatic review, and the session
+  approval cache cannot skip this picker; see
+  [tools-permissions-sandbox.md](tools-permissions-sandbox.md#interactive-tool-prompts).
+  Execute without a recorded `__callId` answer is confirmed no-effect.
 - **Turn lifecycle** — `esc` always clears busy latches immediately
   (`handleTurnCancel`). A 20s submit-ack watchdog (`SUBMIT_ACK_WATCHDOG_MS`)
   recovers turns the daemon never acknowledged. There is no 60s stall timer.
+  An unmarked daemon `error` is a diagnostic: the Working spinner and
+  `activeTurn` stay up. Among `error` events, only one with
+  `payload.terminal === true` (from `event.agent_status` or a runtime-settings
+  authority failure) ends the turn. See
+  [daemon telemetry errors](daemon.md#telemetry-errors-stay-session-only).
 - **`/effort`** — show or set reasoning effort (`low` / `medium` / `high` /
   `xhigh` when the model catalog lists it) for the current model;
   `/effort default` restores the model default.
@@ -324,3 +333,4 @@ Broader suites and env knobs for design-state smoke are listed in
 - Embedded Neovim BUFFER: [`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md)
 - Agents rail / multi-agent: [`agents.md`](agents.md)
 - `/context` occupancy: [Context usage](#context-usage-context)
+- Daemon telemetry vs terminal errors: [`daemon.md`](daemon.md#telemetry-errors-stay-session-only)

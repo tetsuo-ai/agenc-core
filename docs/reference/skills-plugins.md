@@ -27,6 +27,9 @@ Sources of truth:
 A skill is a directory containing **`SKILL.md`**: YAML frontmatter + markdown
 body. On invocation the body is rendered (argument substitution); listing uses
 frontmatter only (name, description, when-to-use) for token budget.
+MCP-sourced skill lines prefix a non-empty listing description with
+`[untrusted MCP metadata]`. That is not the tool-catalog prefix in
+[mcp.md](mcp.md#model-facing-tool-text).
 
 ### Load paths (`discoverSkillRoots`)
 

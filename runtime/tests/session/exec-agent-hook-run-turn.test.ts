@@ -29,10 +29,17 @@ import {
 } from "../session/current-session.js";
 import { Session, type SessionServices } from "../session/session.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import {
+  setAutoCompactImplForTests,
+  type AutoCompactImpl,
+} from "../session/run-turn.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { runTurnCompat } from "../session/turn-compat.js";
 import { startBackgroundSession } from "../tasks/LocalMainSessionTask.js";
-import { enqueue, resetCommandQueueForTesting } from "../utils/messageQueueManager.js";
+import {
+  enqueue,
+  resetCommandQueueForTesting,
+} from "../utils/messageQueueManager.js";
 import { execAgentHook } from "../utils/hooks/execAgentHook.js";
 import type { Tool, ToolUseContext } from "../tools/Tool.js";
 import type { Message } from "../types/message.js";
@@ -60,6 +67,7 @@ afterEach(async () => {
   }
   clearCurrentRuntimeSession();
   resetCommandQueueForTesting();
+  setAutoCompactImplForTests(null);
 });
 
 describe("execAgentHook run-turn integration", () => {
@@ -396,6 +404,53 @@ describe("execAgentHook run-turn integration", () => {
 
     expect(result.outcome).toBe("non_blocking_error");
     expect(result.message?.attachment.stderr).toContain("provider exploded");
+  });
+
+  test("surfaces compact failures from hook agents as non-blocking errors", async () => {
+    const provider = providerWithResponses([
+      {
+        content: "checking",
+        toolCalls: [
+          {
+            id: "tool-compact",
+            name: "Echo",
+            arguments: JSON.stringify({ value: "ok" }),
+          },
+        ],
+        usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
+        model: "test-model",
+        finishReason: "tool_calls",
+      },
+    ]);
+    const parent = createParentSession(provider);
+    Object.assign(parent.modelInfo, { autoCompactTokenLimit: 1 });
+    setCurrentRuntimeSession(parent);
+    setAutoCompactImplForTests(
+      vi.fn<AutoCompactImpl>(async () => ({ wasCompacted: false })),
+    );
+
+    const result = await execAgentHook(
+      {
+        type: "agent",
+        prompt: "verify",
+      } as never,
+      "Stop",
+      "Stop" as never,
+      "{}",
+      new AbortController().signal,
+      createToolUseContext({
+        roleWorkspace: parent.roleWorkspace,
+        tools: [echoTool()],
+      }),
+      undefined,
+      [],
+    );
+
+    expect(provider.chatStream).toHaveBeenCalledTimes(1);
+    expect(result.outcome).toBe("non_blocking_error");
+    expect(result.message?.attachment.stderr).toContain(
+      "mid_turn_compact_skipped",
+    );
   });
 
   test("surfaces a runaway hook (identical call+result every turn) as a non-blocking error", async () => {
@@ -1223,6 +1278,65 @@ describe("execAgentHook run-turn integration", () => {
       type: "text",
       text: "provider exploded",
     });
+  });
+
+  test("projects compact failures into legacy assistant error messages", async () => {
+    const provider = providerWithResponses([
+      {
+        content: "checking",
+        toolCalls: [
+          {
+            id: "tool-compact",
+            name: "Echo",
+            arguments: JSON.stringify({ value: "ok" }),
+          },
+        ],
+        usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
+        model: "test-model",
+        finishReason: "tool_calls",
+      },
+    ]);
+    const parent = createParentSession(provider);
+    Object.assign(parent.modelInfo, { autoCompactTokenLimit: 1 });
+    setAutoCompactImplForTests(
+      vi.fn<AutoCompactImpl>(async () => ({ wasCompacted: false })),
+    );
+
+    const events = [];
+    for await (const event of runTurnCompat(parent, {
+      messages: [createUserMessage({ content: "start" })],
+      systemPrompt: asSystemPrompt(["system"]),
+      userContext: {},
+      systemContext: {},
+      canUseTool: vi.fn(async () => ({ behavior: "allow" as const })),
+      toolUseContext: createToolUseContext({
+        roleWorkspace: parent.roleWorkspace,
+        tools: [echoTool()],
+      }),
+      querySource: "hook_agent",
+      maxTurns: 2,
+    })) {
+      events.push(event);
+    }
+
+    expect(provider.chatStream).toHaveBeenCalledTimes(1);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "message",
+        message: expect.objectContaining({
+          type: "assistant",
+          isApiErrorMessage: true,
+          message: expect.objectContaining({
+            content: [
+              expect.objectContaining({
+                type: "text",
+                text: expect.stringContaining("mid_turn_compact_skipped"),
+              }),
+            ],
+          }),
+        }),
+      }),
+    );
   });
 
   test("returns max-turn terminal state as a graceful max_turns event without an API-error message", async () => {
