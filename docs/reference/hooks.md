@@ -261,6 +261,23 @@ is shut down, and no agent is published.
 See [daemon prompt-block behavior](daemon.md#prompt-hook-blocks-stay-per-prompt)
 for operator details.
 
+### Stop
+
+Configured `Stop` hooks run from commit (`runtime/src/phases/stop-hooks.ts`).
+They can allow the stop, block it with a continuation prompt, or throw.
+A throw or a `shouldBlock` without a non-empty `blockReason` emits
+`error` with `cause: "stop_hook_threw"` and the ladder continues. That
+event is telemetry, not a turn closer: later `token_count` and the real
+`turn_complete` / `turn_aborted` still belong to the open submission.
+See [mid-turn error events](daemon.md#mid-turn-error-events).
+
+The recursion cap is `MAX_STOP_HOOK_BLOCKS` (3). Hitting it emits
+`error` with `cause: "stop_hook_loop"` and returns a non-blocking allow
+so the turn can terminate. Editor interactions skip the ladder.
+
+This is distinct from `UserPromptSubmit` throws, which emit a
+`warning` and never flip run status.
+
 ### TUI: `/hooks`
 
 ```text
@@ -309,6 +326,7 @@ Full request shape, security table, and operator checklist:
 | --- | --- |
 | Config events + validation | `runtime/src/config/schema.ts` (`HOOK_EVENT_NAMES`, `validateHooksConfig`) |
 | Session hook runtime | `runtime/src/hooks/` |
+| Stop-hook ladder | `runtime/src/phases/stop-hooks.ts` |
 | UserPromptSubmit ingress | `runtime/src/hooks/user-prompt-ingress.ts`, `user-prompt-submit.ts` |
 | Stop hook throw emit | `runtime/src/phases/stop-hooks.ts` (`stop_hook_threw`); daemon projection in [daemon.md](daemon.md#telemetry-errors-stay-session-only) |
 | Settings hook Zod | `runtime/src/schemas/hooks.ts` |

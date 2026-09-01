@@ -4,12 +4,14 @@ import {
   type TurnCheckpointV1Event,
   type TurnCheckpointV2Event,
   type TurnCheckpointV3Event,
+  type TurnCheckpointV4Event,
 } from "./event-log.js";
 import type { ToolResultIntegrityResponseItem } from "./rollout-item.js";
 import {
   assertAgentInvocationChannelMessage,
   validateAgentInvocationMessageSequence,
 } from "../contracts/agent-invocation-envelope.js";
+import { assertCompactionHistoryMarkerV1 } from "./compaction-history-marker.js";
 import {
   CanonicalSha256Writer,
   TOOL_RESULT_DIGEST_PREFIX,
@@ -36,14 +38,17 @@ import {
 
 export const LEGACY_DURABLE_CHECKPOINT_VERSION = 1 as const;
 export const DURABLE_CHECKPOINT_V2 = 2 as const;
-export const DURABLE_CHECKPOINT_READ_VERSION = 3 as const;
+export const DURABLE_CHECKPOINT_V3 = 3 as const;
+export const DURABLE_CHECKPOINT_READ_VERSION = 4 as const;
 export const DURABLE_CHECKPOINT_WRITE_VERSION = DURABLE_CHECKPOINT_READ_VERSION;
 export const DURABLE_ROLLOUT_SCHEMA_V2 = 2 as const;
 export const DURABLE_ROLLOUT_SCHEMA_V3 = 3 as const;
+export const DURABLE_ROLLOUT_SCHEMA_V4 = 4 as const;
 export { ROLLOUT_SCHEMA_VERSION as DURABLE_ROLLOUT_SCHEMA_VERSION } from "./event-log.js";
 export const MAX_CHECKPOINT_PREFIX_MESSAGES = 2_000_000;
 
-const CHECKPOINT_PREFIX_DIGEST_DOMAIN = "agenc.checkpoint-prefix.v2";
+const CHECKPOINT_PREFIX_V2_DIGEST_DOMAIN = "agenc.checkpoint-prefix.v2";
+const CHECKPOINT_PREFIX_V3_DIGEST_DOMAIN = "agenc.checkpoint-prefix.v3";
 const MAX_CHECKPOINT_TURN_ID_BYTES = 4_096;
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
 const CHECKPOINT_BASE_KEYS = Object.freeze([
@@ -57,6 +62,7 @@ const CHECKPOINT_BASE_KEYS = Object.freeze([
 ]);
 const RESPONSE_ITEM_KEYS = Object.freeze([
   "agentInvocation",
+  "compactionHistory",
   "content",
   "endTurn",
   "id",
@@ -81,15 +87,21 @@ export type ReadableTurnCheckpoint =
       readonly checkpoint: TurnCheckpointV2Event;
     }
   | {
-      readonly version: typeof DURABLE_CHECKPOINT_READ_VERSION;
+      readonly version: typeof DURABLE_CHECKPOINT_V3;
       readonly sourceVersion:
-        typeof DURABLE_CHECKPOINT_V2 | typeof DURABLE_CHECKPOINT_READ_VERSION;
+        typeof DURABLE_CHECKPOINT_V2 | typeof DURABLE_CHECKPOINT_V3;
       readonly checkpoint: TurnCheckpointV3Event;
+    }
+  | {
+      readonly version: typeof DURABLE_CHECKPOINT_READ_VERSION;
+      readonly sourceVersion: typeof DURABLE_CHECKPOINT_READ_VERSION;
+      readonly checkpoint: TurnCheckpointV4Event;
     };
 
 type ReadableCheckpointVersion =
   | typeof LEGACY_DURABLE_CHECKPOINT_VERSION
   | typeof DURABLE_CHECKPOINT_V2
+  | typeof DURABLE_CHECKPOINT_V3
   | typeof DURABLE_CHECKPOINT_READ_VERSION;
 
 export type DurableCheckpointReadFailureCode =
@@ -176,6 +188,7 @@ function readCheckpointVersion(payload: Record<string, unknown>): {
   if (
     version !== LEGACY_DURABLE_CHECKPOINT_VERSION &&
     version !== DURABLE_CHECKPOINT_V2 &&
+    version !== DURABLE_CHECKPOINT_V3 &&
     version !== DURABLE_CHECKPOINT_READ_VERSION
   ) {
     throw new DurableCheckpointReadError(
@@ -191,11 +204,14 @@ function checkpointEnvelopeKeys(
   rawVersion: unknown,
 ): readonly string[] {
   if (version !== LEGACY_DURABLE_CHECKPOINT_VERSION) {
-    return [
+    const keys = [
       ...CHECKPOINT_BASE_KEYS,
       "checkpointVersion",
       "toolResultIntegrityVersion",
     ];
+    return version === DURABLE_CHECKPOINT_READ_VERSION
+      ? [...keys, "prefixHashVersion"]
+      : keys;
   }
   if (rawVersion === undefined) return CHECKPOINT_BASE_KEYS;
   return [...CHECKPOINT_BASE_KEYS, "checkpointVersion"];
@@ -227,7 +243,9 @@ function readLegacyTurnCheckpoint(
 function readIntegrityTurnCheckpoint(
   payload: Record<string, unknown>,
   version:
-    typeof DURABLE_CHECKPOINT_V2 | typeof DURABLE_CHECKPOINT_READ_VERSION,
+    | typeof DURABLE_CHECKPOINT_V2
+    | typeof DURABLE_CHECKPOINT_V3
+    | typeof DURABLE_CHECKPOINT_READ_VERSION,
 ): Exclude<
   ReadableTurnCheckpoint,
   { readonly version: typeof LEGACY_DURABLE_CHECKPOINT_VERSION }
@@ -236,6 +254,23 @@ function readIntegrityTurnCheckpoint(
     throw malformed(
       `checkpoint v${version} requires toolResultIntegrityVersion 1`,
     );
+  }
+  if (version === DURABLE_CHECKPOINT_READ_VERSION) {
+    if (payload.prefixHashVersion !== 3) {
+      throw malformed(
+        `checkpoint v${version} requires prefixHashVersion 3`,
+      );
+    }
+    return {
+      version,
+      sourceVersion: version,
+      checkpoint: {
+        ...parseCheckpointBase(payload, "current"),
+        checkpointVersion: version,
+        toolResultIntegrityVersion: 1,
+        prefixHashVersion: 3,
+      },
+    };
   }
   const hasWriterExtensions = checkpointSliceHasWriterExtensions(
     payload.resumableState,
@@ -253,11 +288,11 @@ function readIntegrityTurnCheckpoint(
     };
   }
   return {
-    version: DURABLE_CHECKPOINT_READ_VERSION,
+    version: DURABLE_CHECKPOINT_V3,
     sourceVersion: version,
     checkpoint: {
       ...parseCheckpointBase(payload, "current"),
-      checkpointVersion: DURABLE_CHECKPOINT_READ_VERSION,
+      checkpointVersion: DURABLE_CHECKPOINT_V3,
       toolResultIntegrityVersion: 1,
     },
   };
@@ -271,18 +306,45 @@ export function computeCheckpointPrefixHashV2(
   messages: ReadonlyArray<ToolResultIntegrityResponseItem>,
   count: number,
 ): string {
+  return computeCheckpointPrefixHash(
+    messages,
+    count,
+    CHECKPOINT_PREFIX_V2_DIGEST_DOMAIN,
+    false,
+  );
+}
+
+/** Compute the v3 prefix digest, including durable compaction markers. */
+export function computeCheckpointPrefixHashV3(
+  messages: ReadonlyArray<ToolResultIntegrityResponseItem>,
+  count: number,
+): string {
+  return computeCheckpointPrefixHash(
+    messages,
+    count,
+    CHECKPOINT_PREFIX_V3_DIGEST_DOMAIN,
+    true,
+  );
+}
+
+function computeCheckpointPrefixHash(
+  messages: ReadonlyArray<ToolResultIntegrityResponseItem>,
+  count: number,
+  digestDomain: string,
+  authenticateCompactionHistory: boolean,
+): string {
   if (!Number.isSafeInteger(count) || count < 0 || count > messages.length) {
     throw new Error("checkpoint prefix count is outside the available history");
   }
   validateAgentInvocationResponseSequence(messages.slice(0, count));
-  const writer = new CanonicalSha256Writer(CHECKPOINT_PREFIX_DIGEST_DOMAIN);
+  const writer = new CanonicalSha256Writer(digestDomain);
   writer.writeCount("message-count", count);
   for (let index = 0; index < count; index += 1) {
     const message = messages[index];
     if (message === undefined) {
       throw new Error(`checkpoint prefix message ${index} is missing`);
     }
-    assertResponseItemShape(message, index);
+    assertResponseItemShape(message, index, authenticateCompactionHistory);
     writer.writeCount("message-index", index);
     writer.writeString("role", message.role);
     const integrity = message.toolResultIntegrity;
@@ -381,6 +443,29 @@ export function computeCheckpointPrefixHashV2(
         agentInvocation.contentByteLength,
       );
     }
+
+    if (authenticateCompactionHistory) {
+      const compactionHistory = message.compactionHistory;
+      writer.writeString(
+        "compaction-history-present",
+        String(compactionHistory !== undefined),
+      );
+      if (compactionHistory !== undefined) {
+        writer.writeCount(
+          "compaction-history-version",
+          compactionHistory.version,
+        );
+        writer.writeString("compaction-history-kind", compactionHistory.kind);
+        writer.writeString(
+          "compaction-history-attempt-id",
+          compactionHistory.attempt_id,
+        );
+        writer.writeString(
+          "compaction-history-summary-sha256",
+          compactionHistory.summary_sha256,
+        );
+      }
+    }
   }
   return writer.digest().slice(TOOL_RESULT_DIGEST_PREFIX.length);
 }
@@ -390,15 +475,67 @@ export function computeCheckpointPrefixHashV2(
  * Only `status: "valid"` is executable; invalid and deferred outcomes fail
  * closed for the A3b resume gate.
  */
-export function validateCheckpointPrefixV2(params: {
-  readonly checkpoint: TurnCheckpointV2Event | TurnCheckpointV3Event;
+interface CheckpointPrefixValidationParams<Checkpoint> {
+  readonly checkpoint: Checkpoint;
   readonly expectedRunId: string;
   readonly messages: ReadonlyArray<ToolResultIntegrityResponseItem>;
   readonly projection: ToolPairProjection;
   readonly projectionId: string;
   readonly sourceKey: string;
   readonly maxPrefixMessages?: number;
-}): DurableCheckpointPrefixValidation {
+}
+
+type IntegrityTurnCheckpoint =
+  | TurnCheckpointV2Event
+  | TurnCheckpointV3Event
+  | TurnCheckpointV4Event;
+
+export function validateCheckpointPrefixV2(
+  params: CheckpointPrefixValidationParams<
+    TurnCheckpointV2Event | TurnCheckpointV3Event
+  >,
+): DurableCheckpointPrefixValidation {
+  return validateCheckpointPrefixWithHasher(
+    params,
+    computeCheckpointPrefixHashV2,
+    false,
+  );
+}
+
+export function validateCheckpointPrefixV3(
+  params: CheckpointPrefixValidationParams<TurnCheckpointV4Event>,
+): DurableCheckpointPrefixValidation {
+  return validateCheckpointPrefixWithHasher(
+    params,
+    computeCheckpointPrefixHashV3,
+    true,
+  );
+}
+
+/** Strictly bind each checkpoint version to its one prefix-hash algorithm. */
+export function validateCheckpointPrefix(
+  params: CheckpointPrefixValidationParams<IntegrityTurnCheckpoint>,
+): DurableCheckpointPrefixValidation {
+  if (params.checkpoint.checkpointVersion === DURABLE_CHECKPOINT_READ_VERSION) {
+    return validateCheckpointPrefixV3({
+      ...params,
+      checkpoint: params.checkpoint,
+    });
+  }
+  return validateCheckpointPrefixV2({
+    ...params,
+    checkpoint: params.checkpoint,
+  });
+}
+
+function validateCheckpointPrefixWithHasher(
+  params: CheckpointPrefixValidationParams<IntegrityTurnCheckpoint>,
+  computePrefixHash: (
+    messages: ReadonlyArray<ToolResultIntegrityResponseItem>,
+    count: number,
+  ) => string,
+  authenticateCompactionHistory: boolean,
+): DurableCheckpointPrefixValidation {
   const count = params.checkpoint.persistedMessageCount;
   if (count > params.messages.length) {
     return {
@@ -431,7 +568,11 @@ export function validateCheckpointPrefixV2(params: {
     const message = params.messages[index];
     if (message !== undefined) {
       try {
-        assertResponseItemShape(message, index);
+        assertResponseItemShape(
+          message,
+          index,
+          authenticateCompactionHistory,
+        );
       } catch (error) {
         if (error instanceof DurableCheckpointReadError) {
           return {
@@ -501,7 +642,7 @@ export function validateCheckpointPrefixV2(params: {
 
   let prefixHash: string;
   try {
-    prefixHash = computeCheckpointPrefixHashV2(params.messages, count);
+    prefixHash = computePrefixHash(params.messages, count);
   } catch (error) {
     if (error instanceof DurableCheckpointReadError) {
       return {
@@ -629,6 +770,7 @@ function parseCheckpointBase(
 function assertResponseItemShape(
   item: ToolResultIntegrityResponseItem,
   index: number,
+  authenticateCompactionHistory: boolean,
 ): void {
   if (!isRecord(item) || !hasOnlyKnownKeys(item, RESPONSE_ITEM_KEYS)) {
     throw malformed(
@@ -707,6 +849,20 @@ function assertResponseItemShape(
     } catch (error) {
       throw malformed(
         `checkpoint response item ${index} has invalid agent invocation metadata: ${errorMessage(error)}`,
+      );
+    }
+  }
+  if (item.compactionHistory !== undefined) {
+    if (!authenticateCompactionHistory) {
+      throw malformed(
+        `checkpoint response item ${index} compactionHistory requires prefix hash version 3`,
+      );
+    }
+    try {
+      assertCompactionHistoryMarkerV1(item.compactionHistory);
+    } catch (error) {
+      throw malformed(
+        `checkpoint response item ${index} has invalid compaction-history metadata: ${errorMessage(error)}`,
       );
     }
   }

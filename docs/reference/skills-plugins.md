@@ -15,6 +15,10 @@ Sources of truth:
 | Install / update ops | `runtime/src/plugins/cli/pluginOperations.ts` (`installPluginOp`, `updatePluginOp`) |
 | Marketplace | `runtime/src/plugins/marketplace/` |
 | Source classification | `runtime/src/plugins/resolution.ts` (`classifyPluginSource`) |
+| Resolution errors | `runtime/src/plugins/resolution.ts` (`redactPluginResolutionError`) |
+| Archive fetch | `runtime/src/plugins/resolution.ts` (`fetchBytesWithRedirectPolicy`) |
+| Recorded source | `runtime/src/plugins/cli/pluginOperations.ts` (`writeInstallMetadata`, `readInstalledPluginSource`) |
+| Update success source | `updatePluginOp` + `formatPluginUpdateSource` via `redactPluginInstallSource` |
 | Publisher signatures | `runtime/src/plugins/resolution.ts` (`verifyResolvedPluginSignature`) |
 | Config | `[plugins]` in [config.md](config.md) |
 
@@ -460,6 +464,130 @@ requires a publisher signature by default, just like npm, git, tarball, and
 remote mcpb sources. The shipped CLI has no signature-waiver option. See
 [Publisher signatures](#publisher-signatures).
 
+### Native archive fetch error redaction
+
+Intent: a failed remote install must not echo URL userinfo or signed query
+values into CLI output, logs, `inspect()`, or `JSON.stringify`.
+
+Git clone and `npm pack` already rebuilt process failures through
+`redactPluginSource`. Native `fetch()` and `new URL` did not: they rethrew
+with the raw message plus leaky fields such as `ERR_INVALID_URL.input` and
+undici `cause`. `resolvePluginSource` and `fetchBytes` now catch every
+failure, including an injected `options.fetchBytes` hook, and rebuild it
+with `redactPluginResolutionError`.
+
+The rebuilt `Error` keeps `name` and a redacted `message` only. It does not
+copy `cause`, `input`, `code`, or other own properties.
+
+`redactPluginSource` runs `redactCredentialUrls` and then the secret
+sanitizer:
+
+| URL shape | Rewrite |
+| --- | --- |
+| Parseable `http(s)://`, `ssh://`, or `git+` of those | Userinfo becomes `redacted` (password cleared). Any query string becomes `?redacted=1`. The credential-URL stage leaves the fragment as-is. The later secret sanitizer can still rewrite secret-shaped text in the path or fragment. |
+| Unparseable (`https://host:notaport/…`, and similar) | First `@` userinfo becomes `redacted@`. From the first `?` or `#` onward becomes `?redacted=1`. |
+| No `http(s)` / `ssh` scheme | Left unchanged here. The secret sanitizer may still rewrite the string. |
+
+```text
+https://opaque-token@agenc.tech/plugins/private.tgz?access_token=secretvalue
+→ https://redacted@agenc.tech/plugins/private.tgz?redacted=1
+
+https://opaque-token@agenc.tech:notaport/plugins/private.tgz?access_token=secretvalue
+→ https://redacted@agenc.tech:notaport/plugins/private.tgz?redacted=1
+```
+
+Cross-origin archive redirect messages already embed
+`redactPluginSource(next.toString())`. Install metadata uses the same
+rewrite; whether a later `plugin update` can reuse that string is a
+recorded-source concern, not this error-object rebuild.
+
+| Symptom | What to check |
+| --- | --- |
+| `TypeError: Invalid URL` or `failed to fetch plugin archive` shows `redacted@` / `?redacted=1` | Expected. The thrown Error is a rebuild; `input` and `cause` are not attached. |
+| A log still prints the raw token | The leak is outside `resolvePluginSource` (for example a custom `fetchBytes` hook that logs the URL before throwing). The thrown Error itself is redacted. |
+
+### Remote archive fetch and recorded sources
+
+HTTP(S) tarball and remote mcpb installs fetch through
+`fetchBytesWithRedirectPolicy`. Git clone, `npm pack`, and a local
+`./plugin.mcpb` file do not use this path.
+
+| Constraint | Default |
+| --- | --- |
+| Download timeout | 120 s |
+| Download size | 50 MiB (`Content-Length` or the streamed total) |
+| Redirects | Manual follow of 301 / 302 / 303 / 307 / 308, at most 5 hops |
+| Redirect URL | Same `origin` as the previous hop; `http:` / `https:` only; userinfo forbidden |
+
+A cross-origin `Location` fails with
+`plugin archive redirects must stay on <origin>: <redacted-url>` and is not
+fetched. Extraction quotas (depth 32, 4096 files, 200 MiB) stay in
+[Publisher signatures](#publisher-signatures).
+
+Non-local installs write `.agenc-plugin/agenc-install.json` with a possibly
+redacted `source`. `redactPluginSource` replaces URL userinfo with `redacted`
+and any query string with `?redacted=1`, then runs the secret sanitizer. When
+that rewrite changes the string, metadata sets `sourceRedacted: true`.
+`plugin update` without `--source` then fails with
+`plugin <id> has no recorded source; rerun with --source <source>`. Pass the
+original specifier again. A URL without userinfo or a query is reusable only
+when the full redaction function leaves it byte-for-byte unchanged. A
+secret-shaped path or fragment is sanitized and sets `sourceRedacted: true`.
+Local directory installs store the path as given and do not set the flag.
+
+Process errors from git, npm, and fetch use the same redaction, so a failed
+clone does not echo tokens.
+
+```bash
+agenc plugin install 'https://github.com/acme/tool.mcpb?download=1'
+agenc plugin update tool
+agenc plugin update tool --source 'https://github.com/acme/tool.mcpb?download=1'
+```
+
+The bare update fails with `plugin tool has no recorded source; rerun with --source <source>`.
+The third command supplies the original specifier again.
+
+### Update success source redaction
+
+`installPluginOp` does not return the specifier. Text-mode `plugin install`
+prints only id, scope, and destination.
+
+`updatePluginOp` in `runtime/src/plugins/cli/pluginOperations.ts` returns
+`source: redactPluginInstallSource(source)` after a successful refresh.
+Text-mode `plugin update` then formats that field through
+`formatPluginUpdateSource` in `pluginCliCommands.ts`:
+
+```text
+Updated plugin <id> from <source>: <destination>
+```
+
+`redactPluginInstallSource` in `runtime/src/plugins/resolution.ts` rewrites
+string sources with `redactPluginSource` (credential-URL rewrite, then
+`redactSecrets`). Structured git sources keep `path` / `ref` / `sha` and
+rewrite only `url`. The CLI prints the string, or that `url`. URL userinfo is
+removed and the entire query is replaced, regardless of parameter names.
+Secret-shaped text in a path or fragment is handled by the later secret
+sanitizer.
+
+```bash
+agenc plugin update private-demo --source 'https://opaque-token@agenc.tech/plugins/private.tgz?access_token=secretvalue'
+```
+
+```text
+Updated plugin private-demo from https://redacted@agenc.tech/plugins/private.tgz?redacted=1: <destination>
+```
+
+The printed specifier is display text. It remains replayable only when the
+full redaction function returns the source byte-for-byte unchanged. Plain
+local paths and URLs can meet that condition. A query string always changes,
+URL parsing can normalize a value, and generic secret redaction can change a
+path or fragment. This page covers the success payload and stdout line only.
+
+| Symptom | What to check |
+| --- | --- |
+| Success line shows a redacted userinfo or query marker | Expected when `--source` (or a recorded non-redacted source) had userinfo or a query string. Keep the original specifier for the next update. |
+| In-process `result.source` still contains a token | Read `updatePluginOp`'s returned `source`, not the input passed in. |
+
 ### Marketplace
 
 Local path, git, URL, or GitHub sources enter only through `marketplace add`.
@@ -641,6 +769,10 @@ payload.
 | `plugin install ./missing` reports `plugin source not found` | Expected. An explicit local path does not fall through to npm when the directory is absent. |
 | `plugin install plugin.mcpb` fetches npm | Bare `*.mcpb` / `*.git` names are npm. Use `./plugin.mcpb` or an `http(s)` URL to take the bundle path. |
 | `plugin update --source <path>` reports `installed plugin root or its descendant` | `--source` resolved to the installed copy or a nested tree. Point it at a different local tree or a remote specifier. |
+| `plugin archive redirects must stay on <origin>` | The tarball or remote mcpb URL redirected to a different origin, or a hop used userinfo or a non-`http(s)` scheme. Host the file on the same origin or use a direct URL. |
+| `plugin archive exceeds maximum download size` | The `Content-Length` or streamed body exceeded 50 MiB. |
+| `plugin archive redirect limit exceeded` | More than five redirect hops. |
+| `plugin <id> has no recorded source; rerun with --source` | Install metadata has `sourceRedacted: true` because the specifier had userinfo, a query string, or another sanitizer rewrite. Re-run with `--source`. A URL without those is recorded and later `plugin update` can reuse it. |
 | `payload digest set does not match` / `digest mismatch` | Extra, missing, or edited regular payload files vs `files`. The manifest, `signature.json`, install metadata, and `.git` / `.hg` / `.svn` directories are excluded as described above. |
 
 ---

@@ -136,7 +136,10 @@ this command. They are not interchangeable on the automatic path: the
 mid-turn outer gate consults only `AGENC_DISABLE_AUTO_COMPACT`. Setting
 `AGENC_DISABLE_COMPACT` alone still trips that gate, then
 `autoCompactIfNeeded` returns `wasCompacted: false`, and the turn ends
-with `mid_turn_compact_skipped`. Env catalog: [env.md](env.md).
+with `mid_turn_compact_skipped` (`warning` cause `mid_turn_compact_failed`,
+`stopReason: "compact_failed"`). Keep-alive sessions stay promptable.
+Env catalog: [env.md](env.md). Session survival:
+[daemon.md](daemon.md#compact-skip-stays-per-turn).
 
 Successful transactional compaction reports its durable attempt ID in the
 command result. A replacement-history boundary also displays the ID, so it
@@ -182,6 +185,14 @@ review command.
 The command never reruns the tool or rewrites the physical outcome as
 success. Full reopen table:
 [durable-runs-effects-events.md](../design/durable-runs-effects-events.md#resume-and-effect-review).
+
+Current `close_agent` / `assign_task` / `send_message` argument and identity
+refusals already attest `confirmed_no_effect` and should not appear as
+pending reviews. The same applies to `assign_task`'s four typed pre-marker
+admission rejections. If a later FileWrite / Bash / spawn is still gated
+after one of those messages, the call reached shutdown, mailbox delivery, or
+an unclassified path, or the journal predates that attestation. Operator detail:
+[agents.md](agents.md#agent-validation-refusals).
 
 ---
 

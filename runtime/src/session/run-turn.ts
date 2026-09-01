@@ -212,7 +212,7 @@ import {
 } from "./durable-turns.js";
 import {
   DURABLE_CHECKPOINT_WRITE_VERSION,
-  computeCheckpointPrefixHashV2,
+  computeCheckpointPrefixHashV3,
 } from "./durable-checkpoint-reader.js";
 import {
   createToolResultIntegrity,
@@ -4337,7 +4337,7 @@ async function* runTurnKernelInner(
       .filter((message) => !excludeFromDurableHistory(message))
       .map((message) => llmMessageToCheckpointResponseItem(message));
     for (const message of durablePrefix) requireSealedToolResult(message);
-    const prefixHash = computeCheckpointPrefixHashV2(
+    const prefixHash = computeCheckpointPrefixHashV3(
       durablePrefix,
       durablePrefix.length,
     );
@@ -4354,6 +4354,7 @@ async function* runTurnKernelInner(
           prefixHash,
           checkpointVersion: DURABLE_CHECKPOINT_WRITE_VERSION,
           toolResultIntegrityVersion: 1,
+          prefixHashVersion: 3,
           resumableState: toCheckpointSlice(state),
         },
       },

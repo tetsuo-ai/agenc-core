@@ -254,6 +254,57 @@ survive sanitization are sent intact through native
 compiler. See
 [provider-tool-compat.md](../provider-tool-compat.md#gemini-native-json-schema).
 
+### MCP object schemas that omit type
+
+MCP `inputSchema` is an object schema. Many servers omit `type`: an empty
+no-arg `{}`, or `properties` / `required` only. After the annotation visit,
+`withMcpObjectRootType` (`MCP_INPUT_SCHEMA_ROOT_TYPE`) writes `type:
+"object"` onto the **root** when that key is absent. Nested schemas are
+not defaulted. An explicit `type` is left untouched so unions and `$ref`
+intersections stay intact.
+
+The 32 KiB bound is measured **after** this insertion. A schema that was
+just under the limit can therefore become `too_large`.
+
+```json
+{}
+```
+
+becomes `{ "type": "object" }` with no `properties` key. That is not the
+fail-open fallback `{ "type": "object", "properties": {} }`.
+
+```json
+{
+  "properties": { "query": { "type": "string" } },
+  "required": ["query"]
+}
+```
+
+keeps those fields and gains `"type": "object"`.
+
+#### Previous failure
+
+Gemini's object-root proof treated a missing `type` as any JSON value
+and aborted chat, streaming, and `countTokens` for the **whole**
+request. One untyped catalog entry bricked the session. Grok / DeepSeek
+already treated a `properties` root with no `type` as a clean object
+(`normalizeToolParamSchema`).
+
+#### Two layers
+
+| Layer | What it does |
+| --- | --- |
+| MCP catalog (`withMcpObjectRootType`) | Writes `type: "object"` on a typeless **root**. Model-facing copy only. |
+| Gemini proof (`geminiToolObjectApplicatorDomain`) | Accepts a typeless root that already carries an object applicator (`properties`, `required`, `additionalProperties`, …) **without** rewriting it. Applies to every Gemini tool, not only MCP. |
+
+An unconstrained non-MCP `{}` still fails Gemini. MCP normalization adds
+`type: "object"` to every typeless root, including a root built from mixed
+`anyOf` branches or an unresolved `$ref`; the new root type intersects and can
+narrow that advertised schema. A root with an explicit `type: "string"` or
+`type: ["object", "null"]` is preserved and still fails Gemini's object-root
+proof. See
+[provider-tool-compat.md](../provider-tool-compat.md#gemini-object-applicator-tool-roots).
+
 ### Model-facing tool text
 
 The same module also frames names, descriptions, titles, and search
@@ -465,8 +516,10 @@ the daemon-owned admission kernel.
 | `[sandbox_required_unavailable]` saying the Linux helper must sit outside the workspace | A bare `agenc` opened `$HOME`. The helper lives under `~/.agenc` and can never leave a home-sized workspace. Open a project directory. See [tools-permissions-sandbox.md](tools-permissions-sandbox.md). |
 | One plugin server missing, session still starts | A broken plugin source is skipped. A duplicate command/URL is suppressed by an enabled manual server. Check `/plugin` for `mcp-server-suppressed-duplicate`. |
 | `/compact` or auto-compact denied `context_window_exceeded` on the **summary** | Summaries no longer inherit the MCP/builtin factory catalog or Grok native tools. If admission still denies, the transcript + system prompt + reserved output themselves exceed the window. Confirm the live window (not the 128k fallback), shrink `/compact` focus, or compact earlier. `/context` still shows the next-turn catalog size; that is not the summary request. |
-| Mid-turn dies `mid_turn_compact_failed` after adding MCP servers | A large catalog can raise the estimate past the fire threshold and raise provider-reported `promptTokens` past the mid-turn outer gate. The summary request should still pass admission. Check the disable-flag rules and the 2-failure digest guard on [CP-0006](../design/critical-path/0006-compaction-transaction.md), and whether last-sample `promptTokens` disagreed with the compact-module estimate. |
+| Mid-turn ends `mid_turn_compact_failed` after adding MCP servers | A large catalog can raise the estimate past the fire threshold and raise provider-reported `promptTokens` past the mid-turn outer gate. The summary request should still pass admission. Check the disable-flag rules and the 2-failure digest guard on [CP-0006](../design/critical-path/0006-compaction-transaction.md), and whether last-sample `promptTokens` disagreed with the compact-module estimate. The event is a `warning` and `stopReason: "compact_failed"`; a keep-alive session stays promptable. See [daemon.md](daemon.md#compact-skip-stays-per-turn). |
 | Gemini or another provider unexpectedly advertises an argument-taking MCP tool with empty `properties` | Sanitization may have replaced the schema with an open object (`too_large`, `unsafe_key`, or silent `invalid_root`). A legitimate no-argument schema can have the same shape and pass through unchanged. Compare the server's original `inputSchema`; check session-bridge warnings or compatibility-client MCP debug logs for the first two issue codes. Fix an invalid advertised schema; do not expect Gemini to reject the fallback. |
+| MCP no-arg tool advertises `{ "type": "object" }` with no `properties` | Expected default for a server `{}`. Distinct from the fail-open `{ "type": "object", "properties": {} }`. See [MCP object schemas that omit type](#mcp-object-schemas-that-omit-type). |
+| Gemini session dies after connecting an MCP server whose tools omit `type` | No longer expected at the object-root proof: MCP normalization adds `type: "object"` even to mixed `anyOf` or `$ref` roots. Those shapes can still be narrowed by the intersection or fail later if a reference is unresolved. An explicit non-object root remains unchanged. See [omit-type](#mcp-object-schemas-that-omit-type) and [Gemini object applicators](../provider-tool-compat.md#gemini-object-applicator-tool-roots). |
 | Model description starts with `Untrusted MCP server-provided description: MCP tool: <name>` | The advertised description was empty, non-text, or sanitized to empty (bidi / zero-width / control-only). Hidden-only text is dropped, not preserved. See [model-facing tool text](#model-facing-tool-text). |
 | `<system-reminder>` from an MCP description appears as `<neutralized-system-reminder-tag>` | Expected. The tag is neutralized before the model sees it; it is not a live system reminder. |
 | Skill listing shows `[untrusted MCP metadata]` instead of the tool-description prefix | MCP skill listings use `local-loader.ts`, not `buildModelFacingMcpToolDescription`. |
@@ -478,6 +531,7 @@ the daemon-owned admission kernel.
 - Tools / permissions overview: [`tools-permissions-sandbox.md`](tools-permissions-sandbox.md)
 - Plugin install scopes, manifests, and repository-controlled stripping: [`skills-plugins.md`](skills-plugins.md)
 - Gemini native JSON Schema and object-root proof: [`provider-tool-compat.md`](../provider-tool-compat.md#gemini-native-json-schema)
+- Gemini typeless object-applicator roots: [`provider-tool-compat.md`](../provider-tool-compat.md#gemini-object-applicator-tool-roots)
 - Admission token accounting: [`provider-aware-token-accounting.md`](../design/provider-aware-token-accounting.md)
 - Client README: [`../../runtime/src/mcp-client/README.md`](../../runtime/src/mcp-client/README.md)
 - Architecture map: [`../ARCHITECTURE.md`](../ARCHITECTURE.md)

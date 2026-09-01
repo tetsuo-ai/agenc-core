@@ -13,7 +13,14 @@ import { afterEach, describe, expect, test } from "vitest";
 import { reconstructFromRollout } from "./rollout-reconstruction.js";
 import type { RolloutItem, ResponseItem } from "./rollout-item.js";
 import { resetBuildIdForTestingOnly } from "./durable-turns.js";
-import { computeCheckpointPrefixHashV2 } from "./durable-checkpoint-reader.js";
+import {
+  computeCheckpointPrefixHashV2,
+  computeCheckpointPrefixHashV3,
+} from "./durable-checkpoint-reader.js";
+import type {
+  TurnCheckpointV2Event,
+  TurnCheckpointV4Event,
+} from "./event-log.js";
 import type {
   ToolPairIntegrityFailure,
   ToolPairOperationalDeferral,
@@ -85,6 +92,7 @@ interface CheckpointArgs {
   readonly buildId?: string;
   readonly prefix: ResponseItem[];
   readonly prefixHash?: string; // override to force a mismatch
+  readonly checkpointVersion?: 2 | 4;
   readonly iterationIndex?: number;
   readonly checkpointSeq?: number;
   readonly boundary?: "iteration" | "postAssistant";
@@ -92,6 +100,39 @@ interface CheckpointArgs {
 
 /** Build a started-but-not-terminated turn with a trailing checkpoint. */
 function orphanWithCheckpoint(args: CheckpointArgs): RolloutItem[] {
+  const checkpointVersion = args.checkpointVersion ?? 2;
+  const commonCheckpoint = {
+    turnId: args.turnId,
+    iterationIndex: args.iterationIndex ?? 1,
+    boundary: args.boundary ?? "iteration",
+    checkpointSeq: args.checkpointSeq ?? 1,
+    persistedMessageCount: args.prefix.length,
+    prefixHash:
+      args.prefixHash ??
+      (checkpointVersion === 4
+        ? computeCheckpointPrefixHashV3(args.prefix, args.prefix.length)
+        : computeCheckpointPrefixHashV2(args.prefix, args.prefix.length)),
+    toolResultIntegrityVersion: 1,
+    resumableState: {
+      turnCount: 2,
+      recoveryReentryCount: 1,
+      maxOutputTokensRecoveryCount: 0,
+      continuationNudgeCount: 0,
+      stopHookBlockingCount: 0,
+      taskBudgetRemaining: 4242,
+    },
+  } as const;
+  const checkpoint: TurnCheckpointV2Event | TurnCheckpointV4Event =
+    checkpointVersion === 4
+      ? {
+          ...commonCheckpoint,
+          checkpointVersion: 4,
+          prefixHashVersion: 3,
+        }
+      : {
+          ...commonCheckpoint,
+          checkpointVersion: 2,
+        };
   const items: RolloutItem[] = [
     {
       type: "event_msg",
@@ -118,26 +159,7 @@ function orphanWithCheckpoint(args: CheckpointArgs): RolloutItem[] {
       seq: 2,
       msg: {
         type: "turn_checkpoint",
-        payload: {
-          turnId: args.turnId,
-          iterationIndex: args.iterationIndex ?? 1,
-          boundary: args.boundary ?? "iteration",
-          checkpointSeq: args.checkpointSeq ?? 1,
-          persistedMessageCount: args.prefix.length,
-          prefixHash:
-            args.prefixHash ??
-            computeCheckpointPrefixHashV2(args.prefix, args.prefix.length),
-          checkpointVersion: 2,
-          toolResultIntegrityVersion: 1,
-          resumableState: {
-            turnCount: 2,
-            recoveryReentryCount: 1,
-            maxOutputTokensRecoveryCount: 0,
-            continuationNudgeCount: 0,
-            stopHookBlockingCount: 0,
-            taskBudgetRemaining: 4242,
-          },
-        },
+        payload: checkpoint,
       },
     },
   });
@@ -182,6 +204,115 @@ describe("reconstruction durable resume descriptors", () => {
     );
     expect(r.resumableTurns).toHaveLength(1);
     expect(r.resumableTurns[0]!.historyPrefixValid).toBe(false);
+  });
+
+  test("checkpoint v4 authenticates marker-bearing compaction history", () => {
+    const buildId = pinBuild("build-A");
+    const summarySha256 = "a".repeat(64);
+    const prefix: ResponseItem[] = [
+      {
+        role: "developer",
+        content: "compaction boundary",
+        compactionHistory: {
+          version: 1,
+          kind: "boundary",
+          attempt_id: "compact-attempt",
+          summary_sha256: summarySha256,
+        },
+      },
+      {
+        role: "user",
+        content: "compaction summary",
+        compactionHistory: {
+          version: 1,
+          kind: "summary",
+          attempt_id: "compact-attempt",
+          summary_sha256: summarySha256,
+        },
+      },
+      { role: "user", content: "continue after compaction" },
+    ];
+
+    const r = reconstruct(
+      orphanWithCheckpoint({
+        turnId: "t-v4",
+        buildId,
+        prefix,
+        checkpointVersion: 4,
+      }),
+    );
+
+    expect(r.resumableTurns).toHaveLength(1);
+    expect(r.resumableTurns[0]).toMatchObject({
+      turnId: "t-v4",
+      buildMatches: true,
+      historyPrefixValid: true,
+      checkpointIntegrityStatus: "valid",
+    });
+  });
+
+  test("checkpoint v4 rejects tampered compaction-history metadata", () => {
+    const buildId = pinBuild("build-A");
+    const summarySha256 = "b".repeat(64);
+    const authenticatedPrefix: ResponseItem[] = [
+      {
+        role: "developer",
+        content: "compaction boundary",
+        compactionHistory: {
+          version: 1,
+          kind: "boundary",
+          attempt_id: "compact-attempt",
+          summary_sha256: summarySha256,
+        },
+      },
+      {
+        role: "user",
+        content: "compaction summary",
+        compactionHistory: {
+          version: 1,
+          kind: "summary",
+          attempt_id: "compact-attempt",
+          summary_sha256: summarySha256,
+        },
+      },
+    ];
+    const authenticatedHash = computeCheckpointPrefixHashV3(
+      authenticatedPrefix,
+      authenticatedPrefix.length,
+    );
+    const tamperedPrefix: ResponseItem[] = authenticatedPrefix.map(
+      (message, index) =>
+        index === 0 && message.compactionHistory !== undefined
+          ? {
+              ...message,
+              compactionHistory: {
+                ...message.compactionHistory,
+                attempt_id: "tampered-attempt",
+              },
+            }
+          : message,
+    );
+
+    const r = reconstruct(
+      orphanWithCheckpoint({
+        turnId: "t-v4-tampered",
+        buildId,
+        prefix: tamperedPrefix,
+        prefixHash: authenticatedHash,
+        checkpointVersion: 4,
+      }),
+    );
+
+    expect(r.resumableTurns).toHaveLength(1);
+    expect(r.resumableTurns[0]).toMatchObject({
+      turnId: "t-v4-tampered",
+      buildMatches: true,
+      historyPrefixValid: false,
+      checkpointIntegrityStatus: "invalid",
+      checkpointIntegrityReason:
+        "checkpoint prefix digest does not match persisted history",
+      danglingToolUses: [],
+    });
   });
 
   test("build-pin mismatch → buildMatches=false (refuses cross-build resume)", () => {

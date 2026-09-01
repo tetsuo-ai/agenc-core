@@ -19,7 +19,10 @@ import {
   streamModel,
   type StreamModelRequestContract,
 } from "../../src/phases/stream-model.js";
-import { readTurnCheckpoint } from "../../src/session/durable-checkpoint-reader.js";
+import {
+  DURABLE_CHECKPOINT_WRITE_VERSION,
+  readTurnCheckpoint,
+} from "../../src/session/durable-checkpoint-reader.js";
 import type { RolloutReconstruction } from "../../src/session/rollout-reconstruction.js";
 import { runTurn } from "../../src/session/run-turn.js";
 import type {
@@ -394,7 +397,7 @@ describe("admitted model sample identity", () => {
               .modelSampleOrdinal === 1,
         );
         expect(readTurnCheckpoint(modelSampleCheckpoint)).toMatchObject({
-          version: 3,
+          version: DURABLE_CHECKPOINT_WRITE_VERSION,
           checkpoint: {
             boundary: "iteration",
             resumableState: {

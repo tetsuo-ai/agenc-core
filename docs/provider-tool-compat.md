@@ -202,6 +202,39 @@ Primary API references:
 - [JSON Schema resource and reference rules](https://json-schema.org/draft/2020-12/draft-bhutton-json-schema-01#section-8.2)
 - [`@google/genai` function-calling example](https://googleapis.github.io/js-genai/release_docs/index.html#function-calling)
 
+## Gemini object-applicator tool roots
+
+Gemini still requires the analyzed tool-parameter root to be exactly
+`object`. A missing `type` used to mean "any JSON value" and failed
+chat, streaming, and `countTokens`.
+
+`geminiToolSchemaRootDomain` now intersects
+`geminiToolObjectApplicatorDomain` after an explicit `type` (if any).
+If the schema own-has any of these keys, the domain is `{ object }`:
+
+`additionalProperties`, `dependentRequired`, `dependentSchemas`,
+`maxProperties`, `minProperties`, `patternProperties`, `properties`,
+`propertyNames`, `required`, `unevaluatedProperties`.
+
+The accepted schema is **not** rewritten. These roots are preserved
+verbatim:
+
+```json
+{ "properties": { "value": { "type": "string" } }, "required": ["value"] }
+```
+
+```json
+{ "additionalProperties": true }
+```
+
+An unconstrained `{}` still fails (`tool parametersJsonSchema must
+describe an object at the root`). This check applies to every Gemini
+tool, not only MCP. MCP catalogs usually already have `type` from
+`withMcpObjectRootType`; see
+[mcp.md](reference/mcp.md#mcp-object-schemas-that-omit-type).
+
+Response-schema validation is unchanged.
+
 ## When adding tools
 
 Prefer a clean object root with optional fields when the provider surface must
@@ -233,6 +266,8 @@ but `builtTools` applies the local-profile filter afterward.
 | Gemini response schema fails locally with `Gemini cannot preserve schema at <path>` | Structured output used an unsupported keyword, a lossy `oneOf`, an invalid or remote `$ref`, a non-`$` sibling beside `$ref`, or a required reference cycle. Follow the path in the error and use the documented response subset |
 | Custom Gemini endpoint rejects `parametersJsonSchema` or `responseJsonSchema`       | `GEMINI_BASE_URL` must expose the current native Gemini request shape. Update the proxy or use the official Developer API or Vertex endpoint                                                                                     |
 | Gemini unexpectedly advertises an argument-taking MCP tool with empty `properties` | Model-facing sanitization may have replaced the schema with `{ type: "object", properties: {} }`; a legitimate no-argument schema can have the same shape unchanged. Compare the server's original schema and see [mcp.md](reference/mcp.md#model-facing-inputschema-sanitization). |
+| Gemini fails locally on an unconstrained `{}` tool root | Missing `type` and no object applicator. MCP `{}` is defaulted to `{ "type": "object" }` before this check. A built-in or other non-MCP `{}` still fails. See [mcp.md](reference/mcp.md#mcp-object-schemas-that-omit-type) and [object-applicator roots](#gemini-object-applicator-tool-roots). |
+| Gemini accepts a tool root that has `properties` / `required` / `additionalProperties` but no `type` | Object-applicator domain. The schema is sent unchanged. |
 | Gemini fails locally with `sparse schema arrays are not supported`                  | A schema array has a hole at the reported index. Dense arrays, including permitted empty arrays, keep their order. Accessor-backed holes fail before chat, streaming, or token counting                                           |
 | NIM ignores or 400s `reasoning_effort`                                              | Family has no documented enum, or the value is outside it                                                                                                                                                                        |
 
