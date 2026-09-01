@@ -7539,7 +7539,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     };
     setAutoCompactImplForTests(fakeImpl);
 
-    await drain(session.runTurn("hello", { ctx }));
+    const yielded = await drain(session.runTurn("hello", { ctx }));
 
     const warnings = events.filter(
       (e) =>
@@ -7553,10 +7553,16 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     }
     const errors = events.filter(
       (e) =>
-        e.msg.type === "error" &&
+        e.msg.type === "warning" &&
         e.msg.payload.cause === "pre_sampling_compact_failed",
     );
     expect(errors.length).toBeGreaterThanOrEqual(1);
+    expect(yielded).toContainEqual(
+      expect.objectContaining({
+        type: "turn_complete",
+        stopReason: "compact_failed",
+      }),
+    );
     expect(provider.chat).not.toHaveBeenCalled();
     expect(provider.chatStream).not.toHaveBeenCalled();
   });

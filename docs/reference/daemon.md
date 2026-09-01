@@ -547,6 +547,18 @@ be healthy underneath.
 One-shot / `--print` / `--no-tui` agents still fail the run on a
 bounded stop: nobody is left to continue them.
 
+Mid-turn and pre-sampling compact skip-or-throw used to emit
+canonical `error` (`mid_turn_compact_failed` /
+`pre_sampling_compact_failed`) and yield `stopReason: "error"`. The
+live event-log bridge treated every `error` as run death, and the
+daemon mapper promoted `stopReason: "error"` to `run_error`, so a
+circuit-breaker skip or `AGENC_DISABLE_COMPACT=1` (outer gate still
+on) answered `no longer running (status: error)` after one turn.
+Those paths now emit `warning` with the same cause and yield
+`compact_failed`, which maps like a bounded stop. Legacy `type:
+"error"` records with those causes are remapped
+`statusProjection: "session_only"` on the live bridge.
+
 `TaskCreate` accepts a subject-only call. `description` defaults to the
 subject instead of failing validation. A model that retried a missing
 description used to walk into the no-progress backstop and brick the

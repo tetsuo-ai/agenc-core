@@ -599,6 +599,7 @@ describe("agenc plugin CLI", () => {
       scope: "user",
     }, options(agencHome, workspaceRoot, updateIo));
     expect(updateExit).toBe(0);
+    expect(updateIo.stdoutText()).toContain(`Updated plugin alpha from ${source}:`);
 
     const listIo = createIo();
     await runAgenCPluginCli({

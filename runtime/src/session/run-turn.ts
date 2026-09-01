@@ -2018,6 +2018,54 @@ function terminalToStopReason(
   }
 }
 
+const PRE_SAMPLING_COMPACT_FAILED_CAUSE = "pre_sampling_compact_failed";
+const MID_TURN_COMPACT_FAILED_CAUSE = "mid_turn_compact_failed";
+
+const EMPTY_SYNTHETIC_USAGE: LLMUsage = {
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+  availability: "unknown",
+  provenance: "synthetic",
+};
+
+function compactFailureError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function emitCompactFailureWarning(
+  session: Session,
+  cause:
+    | typeof PRE_SAMPLING_COMPACT_FAILED_CAUSE
+    | typeof MID_TURN_COMPACT_FAILED_CAUSE,
+  message: string,
+): void {
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "warning",
+      payload: {
+        cause,
+        message,
+      },
+    },
+  });
+}
+
+function compactFailedTurnComplete(
+  content: string,
+  usage: LLMUsage,
+  error: Error,
+): Extract<PhaseEvent, { type: "turn_complete" }> {
+  return {
+    type: "turn_complete",
+    content,
+    usage,
+    stopReason: "compact_failed",
+    error,
+  };
+}
+
 function sessionQuerySourceForPostSampling(session: Session): string {
   const raw =
     typeof session.services.querySource === "string" &&
@@ -4379,33 +4427,18 @@ async function* runTurnKernelInner(
   try {
     await runPreSamplingCompact(session, ctx, turnQuerySource, state);
   } catch (error) {
-    session.emit({
-      id: session.nextInternalSubId(),
-      msg: {
-        type: "error",
-        payload: {
-          cause: "pre_sampling_compact_failed",
-          message: error instanceof Error ? error.message : String(error),
-        },
-      },
-    });
-    // agenc runtime: "return None" on pre-compact failure.
+    const underlying = compactFailureError(error);
+    emitCompactFailureWarning(
+      session,
+      PRE_SAMPLING_COMPACT_FAILED_CAUSE,
+      underlying.message,
+    );
+    // agenc runtime: "return None" on pre-compact failure. The turn
+    // ends; the daemon session must stay promptable.
     await syncSessionState();
     emitTurnComplete("");
-    const terminal: Terminal = { reason: "completed" };
-    yield {
-      type: "turn_complete",
-      content: "",
-      usage: {
-        promptTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
-        availability: "unknown",
-        provenance: "synthetic",
-      },
-      stopReason: "error",
-      error: error instanceof Error ? error : new Error(String(error)),
-    };
+    const terminal: Terminal = { reason: "completed", error: underlying };
+    yield compactFailedTurnComplete("", EMPTY_SYNTHETIC_USAGE, underlying);
     return terminal;
   }
 
@@ -4898,34 +4931,20 @@ async function* runTurnKernelInner(
           { querySource: turnQuerySource },
         );
       } catch (error) {
-        // agenc runtime returns None on mid-turn compact failure. AgenC's
-        // analogue is to terminate the turn cleanly with an error
-        // event so rollout reducers see a closed turn boundary.
-        // Matches the failure handling pattern used by
-        // `pre_sampling_compact_failed` at the top of runTurnKernel.
+        // agenc runtime returns None on mid-turn compact failure. End
+        // the turn with a warning plus compact_failed so rollout
+        // reducers see a closed boundary without killing the run.
         await drainInFlight(state, ctx, session);
-        session.emit({
-          id: session.nextInternalSubId(),
-          msg: {
-            type: "error",
-            payload: {
-              cause: "mid_turn_compact_failed",
-              message: error instanceof Error ? error.message : String(error),
-            },
-          },
-        });
+        const underlying = compactFailureError(error);
+        emitCompactFailureWarning(
+          session,
+          MID_TURN_COMPACT_FAILED_CAUSE,
+          underlying.message,
+        );
         await syncSessionState();
         emitTurnComplete(lastContent);
-        const underlying =
-          error instanceof Error ? error : new Error(String(error));
         const terminal: Terminal = { reason: "completed", error: underlying };
-        yield {
-          type: "turn_complete",
-          content: lastContent,
-          usage,
-          stopReason: "error",
-          error: underlying,
-        };
+        yield compactFailedTurnComplete(lastContent, usage, underlying);
         return terminal;
       }
 
@@ -4935,31 +4954,20 @@ async function* runTurnKernelInner(
         // breaker tripped, feature disabled, or threshold logic inside
         // the compact module disagreed with our outer check), we do NOT
         // loop — that would spin forever with unchanged state. Surface
-        // the token-limit condition as a terminal error matching the
-        // semantics of agenc runtime's `return None`.
+        // the token-limit condition as a per-turn compact_failed matching
+        // the semantics of agenc runtime's `return None`.
         await drainInFlight(state, ctx, session);
         const reasonText = `mid_turn_compact_skipped: lastSamplePromptTokens=${totalUsageTokens} limit=${autoCompactLimit}`;
-        session.emit({
-          id: session.nextInternalSubId(),
-          msg: {
-            type: "error",
-            payload: {
-              cause: "mid_turn_compact_failed",
-              message: reasonText,
-            },
-          },
-        });
+        emitCompactFailureWarning(
+          session,
+          MID_TURN_COMPACT_FAILED_CAUSE,
+          reasonText,
+        );
         await syncSessionState();
         emitTurnComplete(lastContent);
         const underlying = new Error(reasonText);
         const terminal: Terminal = { reason: "completed", error: underlying };
-        yield {
-          type: "turn_complete",
-          content: lastContent,
-          usage,
-          stopReason: "error",
-          error: underlying,
-        };
+        yield compactFailedTurnComplete(lastContent, usage, underlying);
         return terminal;
       }
 

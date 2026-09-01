@@ -231,4 +231,64 @@ describe("runTurn compact contract", () => {
       { role: "user", content: "forced mid compact summary" },
     ]);
   });
+
+  test("mid-turn compact skip ends the turn without a run-fatal error event", async () => {
+    let streamCount = 0;
+    const provider = mkProvider({});
+    provider.chatStream = async (): Promise<LLMResponse> => {
+      streamCount += 1;
+      return {
+        content: "need a tool",
+        toolCalls: [{ id: "toolu_skip", name: "Read", arguments: "{}" }],
+        usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
+        model: "test-model",
+        finishReason: "tool_calls",
+      };
+    };
+    const compactImpl = vi.fn<AutoCompactImpl>(async () => ({
+      wasCompacted: false,
+    }));
+    setAutoCompactImplForTests(compactImpl);
+    const { session, events } = mkSession({
+      provider,
+      modelInfo: { autoCompactTokenLimit: 1 } as never,
+    });
+
+    const yielded: Array<{ type?: string; stopReason?: string }> = [];
+    for await (const event of runTurn(
+      session,
+      mkCtx({
+        modelInfo: {
+          ...mkCtx().modelInfo,
+          autoCompactTokenLimit: 1,
+        } as never,
+      }),
+      "start",
+    )) {
+      yielded.push(event);
+    }
+
+    expect(streamCount).toBe(1);
+    expect(compactImpl).toHaveBeenCalled();
+    expect(
+      events.some(
+        (event) =>
+          event.msg.type === "warning" &&
+          event.msg.payload.cause === "mid_turn_compact_failed",
+      ),
+    ).toBe(true);
+    expect(
+      events.some(
+        (event) =>
+          event.msg.type === "error" &&
+          event.msg.payload.cause === "mid_turn_compact_failed",
+      ),
+    ).toBe(false);
+    expect(yielded).toContainEqual(
+      expect.objectContaining({
+        type: "turn_complete",
+        stopReason: "compact_failed",
+      }),
+    );
+  });
 });

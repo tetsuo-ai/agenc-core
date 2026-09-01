@@ -28,6 +28,10 @@ import {
   PLUGIN_MARKETPLACE_CATALOG_SCHEMA_VERSION,
   PLUGIN_MARKETPLACE_INSTALL_KIND,
 } from "../marketplace/catalog-cli.js";
+import {
+  redactPluginInstallSource,
+  type PluginInstallSource,
+} from "../resolution.js";
 
 export type AgenCPluginCliCommand =
   | { readonly kind: "list"; readonly json: boolean }
@@ -243,7 +247,7 @@ export async function runAgenCPluginCli(
           ...(command.source !== undefined ? { source: command.source } : {}),
         });
         io.stdout.write(
-          `Updated plugin ${result.plugin.id} from ${result.source}: ${result.destination}\n`,
+          `Updated plugin ${result.plugin.id} from ${formatPluginUpdateSource(result.source)}: ${result.destination}\n`,
         );
         return 0;
       }
@@ -802,6 +806,11 @@ function parseValueOption(
 
 function parseScope(value: string): PluginScope | null {
   return value === "user" || value === "project" || value === "local" ? value : null;
+}
+
+function formatPluginUpdateSource(source: PluginInstallSource): string {
+  const redacted = redactPluginInstallSource(source);
+  return typeof redacted === "string" ? redacted : redacted.url;
 }
 
 function formatValidationResult(result: ValidationResult): string {

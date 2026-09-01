@@ -25,10 +25,32 @@ import type {
   ToolResult,
 } from "../../tools/types.js";
 import { safeStringify } from "../../tools/types.js";
+import { validationErrorToolResult } from "../../tools/results.js";
 
 export const MIN_WAIT_TIMEOUT_MS = 10_000;
 export const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 export const MAX_WAIT_TIMEOUT_MS = 3_600_000;
+
+/**
+ * Shared evidence ref for agent-tool argument/identity refusals produced
+ * before any child, mailbox, or shutdown mutation. Callers must not use the
+ * helpers below after delegate()/assignTask()/send/shutdown can have run.
+ */
+export const AGENT_VALIDATION_EVIDENCE_REF = "tool:agents.v2:validation";
+
+export function agentValidationError(reason: string): ToolResult {
+  return validationErrorToolResult(
+    AGENT_VALIDATION_EVIDENCE_REF,
+    safeStringify({ error: reason }),
+  );
+}
+
+export function confirmedNoAgentEffect(result: ToolResult): ToolResult {
+  return validationErrorToolResult(
+    AGENT_VALIDATION_EVIDENCE_REF,
+    result.content,
+  );
+}
 
 const LOCAL_ZERO_ADMISSION_ESTIMATE = Object.freeze({
   maxInputTokens: 0,
