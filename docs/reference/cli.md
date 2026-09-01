@@ -627,6 +627,14 @@ replacements fail closed without a signature. The CLI has no
 A canonical plugin ID can be installed in one managed scope at a time. Remove
 the existing copy before installing that ID in another scope.
 
+`install` and `update --source` classify the specifier from syntax, not from
+workspace contents. Only `./`, `../`, Windows `.\` / `..\`, `.` / `..`, and
+absolute paths are local (an explicit `*.mcpb` path stays on the bundle path).
+A missing `./dir` fails with `plugin source not found` instead of trying npm.
+`update --source` also rejects an explicit local path that is the installed
+plugin root or a descendant. Classification table and examples:
+[Install sources](skills-plugins.md#install-sources).
+
 ---
 
 ## `skills`

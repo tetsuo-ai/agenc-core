@@ -174,7 +174,7 @@ path. Model-facing search is `WebSearch` (plus gated `XSearch` when enabled).
 
 | Name | Notes |
 | --- | --- |
-| `AskUserQuestion` | Multi-choice questions (TUI picker); **visible by default** |
+| `AskUserQuestion` | Multi-choice questions (TUI picker); **visible by default**. `requiresUserInteraction()` is true, so bypass/allowlist/hooks cannot skip the picker. Malformed or unanswered calls are confirmed no-effect. |
 | `request_user_input` | Elicitation / free-form user input |
 | `request_ledger_transfer` | Built-in typed Android/Ledger SOL transfer handoff; exact active root-turn `@ledger` authorization only |
 | `ledger_wallet_cli_status` | Read-only Ledger Wallet CLI / device status |
@@ -349,7 +349,9 @@ Source of truth: `runtime/src/permissions/types.ts` (and
 | `auto` | Classifier-assisted auto decisions |
 
 `bypassPermissions` is restricted. It skips approval prompts down to the deny
-floor, but it does not disable the OS sandbox. `/permissions mode
+floor, but it does not disable the OS sandbox and it does not skip tools
+that set `requiresUserInteraction()` — see
+[Interactive tool prompts](#interactive-tool-prompts). `/permissions mode
 bypassPermissions` refuses the transition until the operator runs
 `/permissions accept-bypass`. That confirmation is stored in permission-owned
 runtime state for the exact canonical workspace path and directory identity.
@@ -378,6 +380,50 @@ escape hatch for bypassed prompts and `danger-full-access`.
 The daemon permission overlay classifies low / medium / destructive requests.
 Destructive requests require typed confirmation; low/medium use engine
 allow/reject callbacks and `confirm:yes` keybinding shortcuts.
+
+### Interactive tool prompts
+
+Some tools collect a human answer as part of the call. They set
+`requiresUserInteraction()` (`AskUserQuestion`, `request_user_input`,
+`install_ledger_wallet_cli`, and `ExitPlanMode` on a non-teammate
+session). The prompt is the input path, not an ordinary approval that
+an allowlist or bypass can grant.
+
+`classifyToolApproval` in `runtime/src/permissions/guardian/arbiter.ts`
+returns `needs_approval` for those tools **before** it consults the
+session allowlist or `bypassPermissions`. The orchestrator forwards
+`requiresUserInteraction: true` into `requestApproval`. Automatic
+denials still win; automatic allows do not.
+
+| Skip path | Interactive tool |
+| --- | --- |
+| `bypassPermissions` / `--dangerously-bypass-approvals-and-sandbox` | Still asks (`reasonCode` `evaluator_asked`) |
+| Tool allowlist, including the tool's own name | Still `needs_approval` |
+| `PreToolUse` / permission-decision **allow** | Still asks (`reasonCode` `interactive_tool`) |
+| Automatic guardian reviewer | Skipped; the answer-bearing resolver runs |
+| Session approval cache | Disabled; a prior allow is not replayed |
+| Hook / permission-decision **deny** | Honored; resolver is not called |
+| Evaluator **deny** | Honored |
+
+`AskUserQuestion` additionally attests two execute-time refusals as
+`confirmed_no_effect` / `boundary_not_crossed` so they do not poison the
+mutation gate:
+
+| Evidence ref | When |
+| --- | --- |
+| `tool:ask-user-question:invalid-input` | Parser rejected the payload (for example `questions must contain 1-4 items`) |
+| `tool:ask-user-question:missing-response` | No TUI-recorded answers for this `__callId` (`User did not provide answers.`) |
+
+Model-supplied `answers` on the execute args are ignored. The TUI records
+the picker result and ships it with `tool.approve` (`askUserQuestionInput`).
+A deliberate picker skip (`metadata.skipped`) is **not** an error: the
+model is told to proceed and not re-ask the same questions.
+
+| Symptom | What to check |
+| --- | --- |
+| Picker still appears under bypass or an allowlist | Expected. The tool needs a user answer, not a permission grant. |
+| `User did not provide answers.` with `confirmed_no_effect` | The call ran without a TUI-recorded `__callId` answer. Use the picker or skip; do not inject `answers` in the model payload. |
+| Hook allowed `AskUserQuestion` but the picker still opened | Expected. Only a hook/evaluator **deny** short-circuits the prompt. |
 
 ### Mobile session-wide approval
 
@@ -434,6 +480,10 @@ Native helpers:
 | `agenc-landlock-run` | `runtime/native/agenc-landlock-run.c` | Self-restrict then exec. `--ro` / `--rw` / `--probe` / `--seccomp <fd>`. Exit 125 on failure. Same seccomp network filter as bwrap. Cannot express deny-inside-allow (writable project with read-only `.git`). |
 | `agenc-process-broker` | `runtime/native/agenc-process-broker.c` | Linux **lifecycle** subreaper (`PR_SET_CHILD_SUBREAPER`). Not filesystem isolation. Preferred tree-kill path is cgroup-v2; this is the fallback. |
 | `agenc-process-job-broker.exe` | `runtime/native/agenc-process-job-broker.cs` | Windows **lifecycle** Job Object (`KILL_ON_JOB_CLOSE`). Not a restricted-token sandbox. |
+
+`npm run test:fast` typechecks these C/C# sources only. Use the kernel or
+hosted native lanes in
+[ci-required-gates.md](../ci-required-gates.md#fast-testfast-checks).
 
 `AGENC_DISABLE_LANDLOCK_FALLBACK=1` restores bwrap-or-die. `agenc doctor`
 warns `[sandbox_landlock_fallback]` when Linux is ready only via Landlock.
@@ -581,7 +631,9 @@ and still be denied before dispatch.
 ## Multi-agent tools
 
 See [`agents.md`](agents.md) for `spawn_agent` / `wait_agent` / `close_agent` /
-`assign_task` / `send_message` / `list_agents`.
+`assign_task` / `send_message` / `list_agents`. Spawn validation before
+`delegate()` is confirmed no-effect:
+[agents.md#spawn_agent-preflight](agents.md#spawn_agent-preflight).
 
 ## Related CLI / TUI
 

@@ -95,6 +95,10 @@ node packages/agenc-sdk/examples/one-shot.mjs --transport subprocess "say hello"
 
 Protocol drift is pinned by `runtime/tests/sdk-package/protocol-drift.contract.test.ts`
 against the runtime's canonical method registry.
+`session.transcript.v2` result shapes are generated from the daemon protocol
+into `src/transcript-v2.generated.ts` and checked by
+`npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types`
+(see [`docs/sdk.md`](../../docs/sdk.md#transcript-v2-generated-mirror)).
 
 ## Durable reconnect
 

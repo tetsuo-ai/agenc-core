@@ -19,7 +19,7 @@ in `runtime/src/bin/model-facing-tools.ts`, not inside `v2/index.ts`.
 
 | Tool | Role |
 | --- | --- |
-| `spawn_agent` | Spawn a reusable worker and its initial bounded task. Required `message` + `task_name`. Optional `agent_type`, `model`, `reasoning_effort`, `service_tier`, `fork_turns`, `isolation` (`none` \| `worktree`). `fork_context` is accepted then rejected (`use fork_turns instead`). |
+| `spawn_agent` | Spawn a reusable worker and its initial bounded task. Required `message` + `task_name`. Optional `agent_type`, `model`, `reasoning_effort`, `service_tier`, `fork_turns`, `isolation` (`none` \| `worktree`). Blank optional strings are omitted. `fork_context` is accepted then rejected (`use fork_turns instead`). Preflight failures before `delegate()` are confirmed no-effect: [spawn preflight](#spawn_agent-preflight). |
 | `wait_agent` | Wait for, then drain, all delivered mailbox updates. `timeout_ms` only (default 30s, min 10s, max 1h). No target filter. |
 | `close_agent` | Terminally close a worker and its descendants |
 | `assign_task` | Admit one new task to an idle reusable worker (**triggers a turn**) |
@@ -236,6 +236,62 @@ names are derived in [workflows.md](workflows.md#child-identity).
 | ``agent_name `root` is reserved`` | `task_name` folded to `root`. Pick another name. |
 | ``agent_name `.` is reserved`` / ``agent_name `..` is reserved`` | The fold was empty and the original `.` or `..` was kept for reserved-name validation. |
 | `` agent_name must not contain `/` `` | The fold was empty and the original slash-only name was kept for slash validation. |
+
+### `spawn_agent` preflight
+
+`createSpawnAgentTool` in `runtime/src/agents/v2/spawn.ts` validates the
+call, then calls `delegate()`. A child thread or worktree can exist only
+after that boundary. Failures **before** `delegate()` use
+`validationErrorToolResult` so the admitted-mutation gate does not treat
+the refusal as an unknown-outcome effect.
+
+| Field | Evidence |
+| --- | --- |
+| `disposition` | `confirmed_no_effect` |
+| `evidenceKind` | `boundary_not_crossed` |
+| `evidenceRef` | `tool:agents.spawn-agent:validation` |
+
+Blank optional strings are omitted. `stringValue` in
+`runtime/src/agents/v2/common.ts` keeps a trimmed nonempty string and
+drops `""`, whitespace-only strings, and non-strings. That applies to
+`agent_type`, `model`, `reasoning_effort`, `service_tier`, `fork_turns`,
+and `isolation`. The same helper also reads `message` and `task_name`;
+those two remain required after the trim.
+
+```json
+{
+  "message": "review game.py",
+  "task_name": "reviewer",
+  "agent_type": "",
+  "model": "",
+  "reasoning_effort": "",
+  "service_tier": "",
+  "fork_turns": "",
+  "isolation": ""
+}
+```
+
+That call is a clean-fork inherit spawn: no role, model, effort, tier,
+fork window, or worktree is forwarded to `delegate()`.
+
+Preflight covers missing session, extra/unknown args, non-string fields,
+empty `message`, rejected `fork_context`, role-workspace mismatch, the
+current-agent context, invalid `reasoning_effort`, full-history plus
+override, invalid `isolation`, unknown `agent_type`, model/effort/tier
+override lookup (including a thrown model list), and `task_name`
+validation. `delegate()` is not called on those paths.
+
+Failures **at or after** `delegate()` stay ordinary `isError` results
+without `confirmed_no_effect`. Child or worktree creation may have
+started, so the gate must not claim the call touched nothing.
+
+| Symptom | What to check |
+| --- | --- |
+| `confirmed_no_effect` / `boundary_not_crossed` on spawn | Preflight rejected the args or override lookup. No child or worktree was created. Fix the field and retry. |
+| Ordinary `isError` spawn without that disposition | `delegate()` was entered. Inspect the child registry and any derived worktree before retrying. |
+| Blank `model` / `reasoning_effort` / `isolation` still inherited the parent | Expected. Empty optional strings are omitted, not rejected. |
+| `invalid reasoning_effort` | Nonempty value was not `low` / `medium` / `high` / `xhigh` / `none`. |
+| `isolation must be \`none\` or \`worktree\`` | Nonempty `isolation` was something else. Use `""` to omit. |
 
 ### `spawn_agent` discipline (summary)
 

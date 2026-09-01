@@ -5,8 +5,20 @@ import { join } from "node:path";
 import { AsyncLock } from "../utils/async-lock.js";
 import type { LLMContentPart } from "../llm/types.js";
 import type { RolloutItem } from "../session/rollout-item.js";
-import type { Session, SessionState } from "../session/session.js";
+import type {
+  ProviderSwitchTransactionOutcome,
+  Session,
+  SessionState,
+} from "../session/session.js";
 import { SessionStartupPrewarmStore } from "../session/startup-prewarm.js";
+import { computeCheckpointPrefixHashV2 } from "../session/durable-checkpoint-reader.js";
+import type {
+  ToolPairIntegrityFailure,
+  ToolPairOperationalDeferral,
+  ToolPairProjection,
+  ToolPairProjectionRecord,
+  ToolPairProjectionSummary,
+} from "../session/tool-pair-validator.js";
 import { AgentControl, type LiveAgent } from "../agents/control.js";
 import { AgenCThread } from "../agents/thread-manager.js";
 import { Mailbox, readMailboxMetadata } from "../agents/mailbox.js";
@@ -17,6 +29,35 @@ import { AgentStatusTracker } from "../agents/status.js";
 import { ConversationThreadManager } from "./thread-manager.js";
 
 const ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd());
+
+class EmptyToolPairProjection implements ToolPairProjection {
+  runAtomically<T>(operation: () => T): T {
+    return operation();
+  }
+  reset(): void {}
+  find(
+    _projectionId: string,
+    _callId: string,
+  ): ToolPairProjectionRecord | undefined {
+    return undefined;
+  }
+  insertCall(
+    _projectionId: string,
+    _record: ToolPairProjectionRecord,
+  ): boolean {
+    return true;
+  }
+  resolveCall(): "resolved" {
+    return "resolved";
+  }
+  complete(): void {}
+  completeDangling(): void {}
+  fail(
+    _projectionId: string,
+    _summary: ToolPairProjectionSummary,
+    _failure: ToolPairIntegrityFailure | ToolPairOperationalDeferral,
+  ): void {}
+}
 
 function makeSession(conversationId = "root-thread") {
   const state = new AsyncLock<SessionState>({
@@ -74,6 +115,99 @@ function makeSession(conversationId = "root-thread") {
     readonly isRolloutPersistenceSuspended: ReturnType<typeof vi.fn>;
     readonly withRolloutPersistenceSuspended: ReturnType<typeof vi.fn>;
   };
+}
+
+function checkpointProviderRestoreRollout(): RolloutItem[] {
+  return [
+    {
+      type: "event_msg",
+      payload: {
+        id: "provider-restore-started",
+        seq: 1,
+        msg: {
+          type: "turn_started",
+          payload: { turnId: "provider-restore-turn" },
+        },
+      },
+    },
+    {
+      type: "event_msg",
+      payload: {
+        id: "provider-restore-checkpoint",
+        seq: 2,
+        msg: {
+          type: "turn_checkpoint",
+          payload: {
+            turnId: "provider-restore-turn",
+            iterationIndex: 0,
+            boundary: "iteration",
+            checkpointSeq: 1,
+            persistedMessageCount: 0,
+            prefixHash: computeCheckpointPrefixHashV2([], 0),
+            checkpointVersion: 2,
+            toolResultIntegrityVersion: 1,
+            resumableState: {
+              turnCount: 1,
+              recoveryReentryCount: 0,
+              maxOutputTokensRecoveryCount: 0,
+              continuationNudgeCount: 0,
+              stopHookBlockingCount: 0,
+              pendingAdmissionFallback: {
+                fromProvider: "grok",
+                fromModel: "grok-4.5",
+                toProvider: "openai",
+                toModel: "gpt-5",
+                reason: "provider_fallback_ladder",
+              },
+            },
+          },
+        },
+      },
+    },
+  ];
+}
+
+function configureCheckpointProviderRestore(
+  session: ReturnType<typeof makeSession>,
+  consume: () => Promise<ProviderSwitchTransactionOutcome>,
+): void {
+  Object.assign(session, {
+    config: {
+      durableTurns: {
+        resume: {
+          onRestart: true,
+          requireLease: false,
+          buildPinning: false,
+        },
+      },
+    },
+    pendingProviderSwitch: null,
+    providerBinding: {
+      provider: "grok",
+      model: "grok-4.5",
+    },
+    prepareProviderSwitch: vi.fn(
+      async (pending: {
+        readonly provider: string;
+        readonly model: string;
+      }) => ({
+        pending,
+      }),
+    ),
+    stagePreparedProviderSwitch: vi.fn(),
+    consumePendingProviderSwitchTransaction: vi.fn(consume),
+    rolloutStore: {
+      acknowledgeCompactionReconstruction: vi.fn(),
+      recordProjectionFailure: vi.fn(),
+      checkpointProjectionContext: () => ({
+        projection: new EmptyToolPairProjection(),
+        projectionId: "provider-restore-projection",
+        sourceKey: "provider-restore-rollout",
+        expectedRunId: "provider-restore-run",
+      }),
+    },
+  });
+  Object.assign(session.services, { registry: { tools: [] } });
 }
 
 function makeLive(): LiveAgent {
@@ -763,6 +897,53 @@ describe("ConversationThreadManager", () => {
     expect(state).toBe("ready");
     expect(session.newDefaultTurn).toHaveBeenCalledTimes(1);
     expect(manager.snapshot("root-thread").prewarm).toBe("ready");
+  });
+
+  test("does not build a fresh turn after terminal checkpoint provider restoration", async () => {
+    const session = makeSession();
+    configureCheckpointProviderRestore(session, async () => ({
+      status: "terminal-failure" as const,
+      reason: "rollback could not restore the provider authority",
+    }));
+    const manager = new ConversationThreadManager();
+    await manager.replayRolloutIntoSession(
+      session,
+      checkpointProviderRestoreRollout(),
+    );
+
+    const state = await manager.runStartupPrewarm(session);
+
+    expect(state).toBe("failed");
+    expect(session.newDefaultTurn).not.toHaveBeenCalled();
+    expect(manager.snapshot("root-thread").prewarmError).toContain(
+      "startup halted after an incomplete checkpoint provider restore",
+    );
+  });
+
+  test("builds a fresh turn on the original route after clean provider rejection", async () => {
+    const session = makeSession();
+    configureCheckpointProviderRestore(session, async () => {
+      Object.assign(session, { pendingProviderSwitch: null });
+      return {
+        status: "clean-rejection" as const,
+        reason: "failpoint before provider commit",
+      };
+    });
+    const manager = new ConversationThreadManager();
+    await manager.replayRolloutIntoSession(
+      session,
+      checkpointProviderRestoreRollout(),
+    );
+
+    const state = await manager.runStartupPrewarm(session);
+
+    expect(state).toBe("ready");
+    expect(session.newDefaultTurn).toHaveBeenCalledTimes(1);
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(session.providerBinding).toEqual({
+      provider: "grok",
+      model: "grok-4.5",
+    });
   });
 
   test("runs provider startup prewarm when the session provider supports it", async () => {

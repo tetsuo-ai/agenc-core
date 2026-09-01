@@ -9,9 +9,9 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 | [`reference/daemon.md`](reference/daemon.md)                                     | Daemon lifecycle, deferred first messages, bypass consent, bounded-stop and prompt-hook-block survival, admission step identity |
 | [`reference/providers.md`](reference/providers.md)                               | Built-in providers, defaults, credentials, local context-window probes, Responses continuation |
 | [`reference/autonomy.md`](reference/autonomy.md)                                 | Budget, heartbeat, cron delivery (pinned webhook destinations), hooks HTTP   |
-| [`reference/mcp.md`](reference/mcp.md)                                           | Outbound/inbound MCP, plugin-declared servers, Landlock stdio failures       |
+| [`reference/mcp.md`](reference/mcp.md)                                           | Outbound/inbound MCP, plugin-declared servers, model-facing inputSchema sanitization, Landlock stdio failures |
 | [`design/execution-admission-kernel.md`](design/execution-admission-kernel.md)   | Live durable budget/admission design, model step identity                    |
-| [`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md) | Canonical run journal, effects, terminal results, replay, and crash recovery |
+| [`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md) | Canonical run journal, effects, terminal results, replay, crash recovery, checkpoint v3 / schema 4 pairing, and additive journal vs fail-closed reader |
 | [`gateway.md`](gateway.md)                                                       | Channel gateway operator guide                                               |
 | [`sdk.md`](sdk.md)                                                               | `@tetsuo-ai/agenc-sdk` embedding API                                         |
 
@@ -59,7 +59,7 @@ Everything past the launcher lives in the single runtime workspace
 | Package                                       | Role                                                                   |
 | --------------------------------------------- | ---------------------------------------------------------------------- |
 | `packages/agenc` (`@tetsuo-ai/agenc`)         | Public launcher + postinstall runtime ensure                           |
-| `packages/agenc-sdk` (`@tetsuo-ai/agenc-sdk`) | Zero-dep embedding/control client for the daemon protocol              |
+| `packages/agenc-sdk` (`@tetsuo-ai/agenc-sdk`) | Zero-dep embedding/control client for the daemon protocol. Transcript v2 result shapes are a generated mirror: [sdk.md](sdk.md#transcript-v2-generated-mirror). |
 | `runtime` (`@tetsuo-ai/runtime`)              | Full runtime: CLI, daemon, TUI, session/agent engine, tools, providers |
 
 ## Runtime subsystems (`runtime/src`)
@@ -71,15 +71,15 @@ Everything past the launcher lives in the single runtime workspace
 | `app-server-client/`                                                     | In-process / client helpers for talking to the daemon                                                                                                                                                                                          |
 | `app-server-protocol/`                                                   | Shared protocol constants (e.g. portal default local endpoint)                                                                                                                                                                                 |
 | `session/`                                                               | Session engine: turn loop, transcript, canonical append-only rollout journal + `index.json`, persist-before-publish events, resume, cost, autonomous mode. `session.transcript.v2` rebuilds closed-turn results from that rollout: [daemon.md](reference/daemon.md#closed-turn-results). |
-| `agents/`                                                                | Background-agent state, registry, roles, mailbox, worktree isolation, multi-agent v2 tools, CSV jobs (`agents/jobs/`), `WorkflowTool` DAG (`agents/workflow-*.ts`), delegate/fork. Fork interrupt and tool-abort stay turn-scoped: [agents.md](reference/agents.md#turn-abort-containment). |
+| `agents/`                                                                | Background-agent state, registry, roles, mailbox, worktree isolation, multi-agent v2 tools, CSV jobs (`agents/jobs/`), `WorkflowTool` DAG (`agents/workflow-*.ts`), delegate/fork. Spawn preflight is confirmed no-effect only before `delegate()`: [agents.md](reference/agents.md#spawn_agent-preflight). Fork interrupt and tool-abort stay turn-scoped: [agents.md](reference/agents.md#turn-abort-containment). |
 | `workflow/`                                                              | M5 verified-change pipeline (`agenc run start`). Session bootstrap, child names, review repair, and `refs/agenc/runs/<runId>` are documented in [design/verified-change-workflow-m5.md](design/verified-change-workflow-m5.md). Not the `WorkflowTool` DAG. |
 | `auth/`                                                                  | Local and remote auth backends, native secure storage credential namespaces, BYOK precedence, provider auth selection, session auth metadata                                                                                                                                                   |
 | `llm/`                                                                   | Provider-neutral client/request shaping, provider-aware complete-request [token accounting](design/provider-aware-token-accounting.md), model catalog, retries, streaming, wire adapters, OAuth refresh. Grammar-safe, Gemini, and LM Studio/openai-compatible ceiling shaping: [provider-tool-compat.md](provider-tool-compat.md). |
 | `tools/`                                                                 | Built-in model tools (Bash, File read/write/edit, `apply_patch`, Web fetch/search, LSP, MCP, Agent/subagent, Task*, …)                                                                                                                         |
 | `tool-registry.ts` / `tools.ts`                                          | Tool registration and assembly entry points                                                                                                                                                                                                    |
-| `permissions/`                                                           | Trust, approval policy, rules, modes, sandbox policy, unattended policy, guardian/classifier, audit log                                                                                                                                        |
+| `permissions/`                                                           | Trust, approval policy, rules, modes, sandbox policy, unattended policy, guardian/classifier, audit log. Tools with `requiresUserInteraction()` keep the user-input prompt under bypass, allowlists, hook allow, automatic review, and approval cache: [tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md#interactive-tool-prompts). |
 | `sandbox/`                                                               | OS sandbox: Linux `bwrap` via `agenc-linux-sandbox` with `agenc-landlock-run` fallback; macOS in-tree Seatbelt (`engine/seatbelt.ts` + `/usr/bin/sandbox-exec`); Windows restricted-token fail-closed. Lifecycle brokers are separate (`agenc-process-broker`, `agenc-process-job-broker.exe`). Home-as-workspace helper refusal and Landlock MCP preflight: [tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md). |
-| `mcp-client/` / `mcp-server/` / `mcp/`                                   | Outbound MCP client, server framework, and serve bootstrap. Plugin merge, stderr retention, and Landlock stdio failures: [mcp.md](reference/mcp.md).                                                                                            |
+| `mcp-client/` / `mcp-server/` / `mcp/`                                   | Outbound MCP client, server framework, and serve bootstrap. Plugin merge, model-facing inputSchema sanitization, model-facing tool text, stderr retention, and Landlock stdio failures: [mcp.md](reference/mcp.md#model-facing-tool-text).                                                                                            |
 | `gateway/`                                                               | Channel gateway as a **daemon client**: Telegram, Discord, Slack, WebChat, stdio; pairing, bindings, approvals, session routing, untrusted framing, hooks HTTP, cron delivery, optional media/onchain helpers. See [`gateway.md`](gateway.md). |
 | `heartbeat/`                                                             | Proactive ticks: policy, `HEARTBEAT.md` reader, runner, scheduler, gateway/budget wire. See [`reference/autonomy.md`](reference/autonomy.md).                                                                                                  |
 | `budget/`                                                                | Daemon-owned execution admission, hierarchical budgets, concurrency, cancellation, and durable reconciliation. See [`design/execution-admission-kernel.md`](design/execution-admission-kernel.md).                                             |
@@ -94,7 +94,7 @@ Everything past the launcher lives in the single runtime workspace
 | `transaction-guard/`                                                     | Opt-in local SLM guard for Solana-like mutating tool calls                                                                                                                                                                                     |
 | `unified-exec/` / `pty/` / `shell-command/`                              | Process execution, PTY helpers, shell parsing/safety                                                                                                                                                                                           |
 | `commands/`                                                              | Slash-command registry and TUI/headless command implementations                                                                                                                                                                                |
-| `plugins/` / `skills/` / `outputStyles/`                                 | Plugin manifests, marketplace registration and publisher signatures; skill loading and headless `agenc skills list`; output styles. Plugin MCP and repository-controlled install rules: [skills-plugins.md](reference/skills-plugins.md). |
+| `plugins/` / `skills/` / `outputStyles/`                                 | Plugin manifests, marketplace registration and publisher signatures; skill loading and headless `agenc skills list`; output styles. Explicit local install sources, plugin MCP, and repository-controlled install rules: [skills-plugins.md](reference/skills-plugins.md). |
 | `prompts/`                                                               | System prompt assembly, sections, attachments                                                                                                                                                                                                  |
 | `cost/`                                                                  | Session cost tracker + hook                                                                                                                                                                                                                    |
 | `coordinator/`                                                           | Coordinator mode (orchestrate via spawned agents)                                                                                                                                                                                              |
@@ -323,7 +323,10 @@ layer resolves an approval decision from the active mode and rule set.
 
 When enabled, the OS sandbox confines shell execution at the kernel level.
 `bypassPermissions` waives approval prompts and leaves the configured sandbox
-intact. `--dangerously-bypass-approvals-and-sandbox` selects bypass mode and
+intact. Tools that set `requiresUserInteraction()` still prompt: the bypass
+cannot synthesize the user's answer. See
+[tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md#interactive-tool-prompts).
+`--dangerously-bypass-approvals-and-sandbox` selects bypass mode and
 `danger-full-access` together.
 
 The TUI requires `/permissions accept-bypass` before switching to
@@ -378,9 +381,22 @@ can use the previous model's context after a model switch when the old window
 is larger and usage is over the new compaction limit or at the new effective
 window. Every successful nonterminal model response advances a durable sample
 ordinal, so nudge, compact, empty-response, and other follow-up samples
-receive a new admission `stepId`. See
-[execution-admission-kernel.md](design/execution-admission-kernel.md#model-step-identity)
-and the [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main).
+receive a new admission `stepId`. Before the next admission, `run-turn.ts`
+force-emits a `turn_checkpoint`; interval throttling cannot defer that
+barrier. In-turn resume (`resumeTurnFromCheckpoint`) is separate from epoch
+reopen. Startup continues an orphaned turn only when the last checkpoint
+passes config, reader, prefix hash, build pinning, and lease checks. Startup
+may open a fresh turn after a clean rejection. If provider publication began,
+the original route, config, model metadata, and client continuation state must
+be proven restored first. An unproven rollback halts startup and fences the
+session from new turns. The rejected checkpoint remains on disk. See the
+[resume outcome table](design/durable-runs-effects-events.md#resume-outcomes),
+[checkpoint slice versions](design/durable-runs-effects-events.md#checkpoint-slice-versions),
+[recovery journal vs checkpoint reader](design/durable-runs-effects-events.md#recovery-journal-vs-checkpoint-reader),
+[execution-admission-kernel.md](design/execution-admission-kernel.md#model-step-identity),
+the [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main),
+and
+[durable-runs-effects-events.md](design/durable-runs-effects-events.md#in-turn-checkpoint-resume).
 
 ## Recovery ladder (`runtime/src/recovery`)
 
@@ -490,21 +506,16 @@ crashing the process.
   installs and package builds under different umasks, then uses two additional
   pristine checkouts to prove byte-identical recursive OCI layouts with an
   exact Buildx client and digest-pinned BuildKit daemon.
-- **Local required verification** — the complete platform-independent stable
-  contract runs locally. GitHub Actions adds `default-suite` (four Ubuntu
-  Vitest shards plus runtime typecheck, no Docker hermetic/red-probe path)
-  and capability lanes: Linux-kernel sandbox, PowerShell, Neovim (five
-  OS/arch; hosted PTY scenarios are Linux/Darwin only), macOS native,
-  Windows native. Each PR records the exact locally tested SHA,
-  commands, results, and skips before merge; release verification
-  repeats the gates at exact current `main` before any release tag exists.
-  GitHub remains the branch/PR/merge record. Candidate macOS/Windows
-  inventories are in [ci-required-gates.md](ci-required-gates.md), not a
-  one-probe summary. Those hosted jobs do not replace the local test plan.
-  The repository-scoped App/ruleset
-  implementation is retained as
-  an inactive optional design, not a current merge requirement. Reproduction
-  and trust boundaries are documented in
+- Ordinary code changes run runtime typecheck and
+  Vitest tests related to the branch diff. Launcher, SDK, and gate-policy tests
+  run when files in those areas change. Documentation-only PRs skip hosted checks.
+  Classification, fail-closed deletion mapping, and typecheck-only native
+  / policy-inventory surfaces are in
+  [ci-required-gates.md](ci-required-gates.md#fast-testfast-checks).
+- Releases use the complete local suite and the manual hosted matrix from
+  exact current `main`. The matrix covers Linux kernel
+  sandboxing, PowerShell, Neovim, macOS, and Windows. The optional GitHub App
+  and ruleset design remains inactive. See
   [`ci-required-gates.md`](ci-required-gates.md).
 
 Root development loop (from repo root):
@@ -513,6 +524,7 @@ Root development loop (from repo root):
 npm ci
 npm run build
 npm run typecheck
+npm run test:fast
 npm test
 npm run check:required-gates
 npm run validate:runtime

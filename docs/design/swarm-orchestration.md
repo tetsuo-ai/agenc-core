@@ -99,9 +99,12 @@ in force.
 
 `spawn_agent` requires a non-empty self-contained `message` and `task_name`.
 It validates the requested role against the immutable role workspace and
-validates any model, reasoning-effort, and service-tier overrides. Omitting
-`fork_turns` creates a clean fork; explicit full-history forks inherit the
-parent role/model/effort and reject those overrides.
+validates any model, reasoning-effort, and service-tier overrides. Blank
+optional strings are omitted (`stringValue`). Omitting `fork_turns` creates
+a clean fork; explicit full-history forks inherit the parent role/model/effort
+and reject those overrides. Validation failures before `delegate()` are
+`confirmed_no_effect`; failures after that call are not. Operator detail:
+[agents.md](../reference/agents.md#spawn_agent-preflight).
 
 Worktree isolation also requires a valid task name, a Git repository, and an
 available child sandbox execution boundary. A spawn result identifies the

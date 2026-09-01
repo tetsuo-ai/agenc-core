@@ -210,7 +210,10 @@ import {
   resolveDurableTurnsConfig,
   sideEffectHaltMessage,
 } from "./durable-turns.js";
-import { computeCheckpointPrefixHashV2 } from "./durable-checkpoint-reader.js";
+import {
+  DURABLE_CHECKPOINT_WRITE_VERSION,
+  computeCheckpointPrefixHashV2,
+} from "./durable-checkpoint-reader.js";
 import {
   createToolResultIntegrity,
   verifyToolResultIntegrity,
@@ -4265,7 +4268,7 @@ async function* runTurnKernelInner(
           checkpointSeq,
           persistedMessageCount: durablePrefix.length,
           prefixHash,
-          checkpointVersion: 2,
+          checkpointVersion: DURABLE_CHECKPOINT_WRITE_VERSION,
           toolResultIntegrityVersion: 1,
           resumableState: toCheckpointSlice(state),
         },

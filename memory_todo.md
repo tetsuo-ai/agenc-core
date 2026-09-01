@@ -1450,7 +1450,7 @@ Split these further when a PR cannot be reviewed, tested, and rolled back indepe
 - no `@ts-nocheck`, unsafe broad cast, hidden policy bypass, or model-only safety control;
 - source/license/security review for a new dependency or benchmark artifact.
 
-### Before merging a phase
+### Before a release or broad phase integration
 
 Run from the repository root:
 

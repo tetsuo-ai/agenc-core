@@ -14,6 +14,7 @@ Sources of truth:
 | CLI | `runtime/src/plugins/cli/pluginCliCommands.ts` → `agenc plugin` |
 | Install / update ops | `runtime/src/plugins/cli/pluginOperations.ts` (`installPluginOp`, `updatePluginOp`) |
 | Marketplace | `runtime/src/plugins/marketplace/` |
+| Source classification | `runtime/src/plugins/resolution.ts` (`classifyPluginSource`) |
 | Publisher signatures | `runtime/src/plugins/resolution.ts` (`verifyResolvedPluginSignature`) |
 | Config | `[plugins]` in [config.md](config.md) |
 
@@ -26,6 +27,9 @@ Sources of truth:
 A skill is a directory containing **`SKILL.md`**: YAML frontmatter + markdown
 body. On invocation the body is rendered (argument substitution); listing uses
 frontmatter only (name, description, when-to-use) for token budget.
+MCP-sourced skill lines prefix a non-empty listing description with
+`[untrusted MCP metadata]`. That is not the tool-catalog prefix in
+[mcp.md](mcp.md#model-facing-tool-text).
 
 ### Load paths (`discoverSkillRoots`)
 
@@ -414,6 +418,48 @@ A canonical plugin ID can be installed in one managed scope at a time.
 Uninstall it before moving it between user and project/local scope. Uninstall
 still accepts an explicit scope so old duplicate copies can be removed safely.
 
+### Install sources
+
+`classifyPluginSource` in `runtime/src/plugins/resolution.ts` picks a
+resolution kind from specifier syntax. Workspace contents are never consulted,
+so a planted directory cannot shadow npm, git, tarball, or mcpb. Archive and
+bundle suffixes take priority over known-host Git matching.
+
+| Specifier | Kind |
+| --- | --- |
+| Absolute path; `.` / `..`; `./<path>` / `../<path>`; Windows `.\<path>` / `..\<path>` | `local`, except an explicit path that ends in `.mcpb` is `mcpb` |
+| `http(s)://` URL whose path ends in `.tgz`, `.gz`, or `.tar` | `tarball` |
+| `http(s)://` URL whose path ends in `.mcpb` | `mcpb` |
+| `git+<url>`, `git@<host>:<owner>/<repo>`, `ssh://<host>/<owner>/<repo>`, or `http(s)://` on `github.com`, `gitlab.com`, `bitbucket.org`, `codeberg.org`, or `dev.azure.com` with an owner/repo path and none of the archive or bundle suffixes above | `git` |
+| Everything else, including `name`, `@scope/name`, `plugin.mcpb`, and `package-like.git` | `npm` |
+
+```bash
+agenc plugin install ./my-plugin
+agenc plugin install @scope/published-plugin
+```
+
+```powershell
+agenc plugin install .\@scope\local-plugin
+```
+
+The first Bash command and the PowerShell command stay local. The scoped
+package in the Bash block is npm even when `@scope/published-plugin/` exists in
+the workspace. Prefix a local tree with `./` (or pass an absolute path). A
+missing explicit path fails with `plugin source not found` and does not fall
+through to npm.
+
+`plugin update --source` uses the same classifier. After a source is local, the
+update rejects the installed plugin root and any descendant
+(`plugin update source cannot be the installed plugin root or its descendant`).
+Point `--source` at a different tree or a remote specifier. A bare name that
+happens to exist under the install directory still goes to the remote resolver.
+
+The signature default follows the resolution kind. Local directories use the
+local-directory waiver. An explicit `.mcpb` path has kind `mcpb`, so it still
+requires a publisher signature by default, just like npm, git, tarball, and
+remote mcpb sources. The shipped CLI has no signature-waiver option. See
+[Publisher signatures](#publisher-signatures).
+
 ### Marketplace
 
 Local path, git, URL, or GitHub sources enter only through `marketplace add`.
@@ -592,6 +638,9 @@ payload.
 | `plugin update` without `--source` accepts an unsigned tree | Install metadata records a waiver or has neither `signatureRequired: true` nor the legacy `signatureVerified: true` signal. Reinstall the plugin from its marketplace to establish the current requirement. |
 | `plugin update --source <remote>` rejects an unsigned tree after a local install | The replacement source uses the remote resolver default. Sign the replacement or keep using a local source. |
 | `plugin install package-name` fetches npm even though `package-name/` exists in the workspace | Expected. Bare specifiers are not shadowed by workspace contents. Prefix the path with `./` to install that local tree. |
+| `plugin install ./missing` reports `plugin source not found` | Expected. An explicit local path does not fall through to npm when the directory is absent. |
+| `plugin install plugin.mcpb` fetches npm | Bare `*.mcpb` / `*.git` names are npm. Use `./plugin.mcpb` or an `http(s)` URL to take the bundle path. |
+| `plugin update --source <path>` reports `installed plugin root or its descendant` | `--source` resolved to the installed copy or a nested tree. Point it at a different local tree or a remote specifier. |
 | `payload digest set does not match` / `digest mismatch` | Extra, missing, or edited regular payload files vs `files`. The manifest, `signature.json`, install metadata, and `.git` / `.hg` / `.svn` directories are excluded as described above. |
 
 ---
