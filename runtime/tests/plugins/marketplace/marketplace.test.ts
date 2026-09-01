@@ -537,6 +537,39 @@ describe("plugin marketplace runtime", () => {
     expect(index["url-team"]?.refreshable).toBe(false);
   });
 
+  it("keeps canonicalized safe URLs refreshable", async () => {
+    const { pluginStorageRoot, workspaceRoot } = await tempRuntime();
+    const sourceUrl = "https://EXAMPLE.com:443";
+
+    const added = await addMarketplaceOp({
+      pluginStorageRoot,
+      workspaceRoot,
+      source: { source: "url", url: sourceUrl },
+      fetcher: async () => jsonResponse({
+        metadata: { name: "safe-url-team" },
+        plugins: [],
+      }),
+    });
+
+    expect(added.marketplace.sourceDescriptor).toEqual({
+      source: "url",
+      url: sourceUrl,
+    });
+    expect(added.marketplace.refreshable).toBeUndefined();
+    const index = JSON.parse(await readFile(
+      marketplaceIndexPath({ pluginStorageRoot }),
+      "utf8",
+    )) as Record<string, {
+      source?: { source?: string; url?: string };
+      refreshable?: boolean;
+    }>;
+    expect(index["safe-url-team"]?.source).toEqual({
+      source: "url",
+      url: "https://example.com",
+    });
+    expect(index["safe-url-team"]?.refreshable).toBeUndefined();
+  });
+
   it("skips credential-bearing URL marketplace upgrades instead of fetching redacted URLs", async () => {
     const { pluginStorageRoot, workspaceRoot } = await tempRuntime();
 

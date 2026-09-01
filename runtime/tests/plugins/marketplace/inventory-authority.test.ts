@@ -119,6 +119,38 @@ describe("marketplace inventory authority", () => {
     expect(persisted).not.toContain("Authorization");
   });
 
+  test("keeps safe legacy source URLs refreshable", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-marketplace-safe-source-"));
+    const authority = { pluginsDirectory: join(root, "plugins") };
+    const gitEntry = entry(authority.pluginsDirectory, "safe-git");
+    const urlEntry = entry(authority.pluginsDirectory, "safe-url");
+    await materializeEntry(gitEntry);
+    await materializeEntry(urlEntry);
+    const gitUrl = "ssh://git@github.com/acme/marketplace.git";
+    const url = "https://EXAMPLE.com:443";
+    await writeInventory(authority, {
+      "safe-git": {
+        ...gitEntry,
+        source: { source: "git", url: gitUrl },
+        refreshable: true,
+      },
+      "safe-url": {
+        ...urlEntry,
+        source: { source: "url", url, headers: {} },
+        refreshable: true,
+      },
+    });
+
+    const loaded = await loadKnownMarketplacesConfig(authority);
+    expect(loaded["safe-git"]?.source).toEqual({ source: "git", url: gitUrl });
+    expect(loaded["safe-git"]?.refreshable).toBe(true);
+    expect(loaded["safe-url"]?.source).toEqual({
+      source: "url",
+      url: "https://example.com",
+    });
+    expect(loaded["safe-url"]?.refreshable).toBe(true);
+  });
+
   test("serializes same-root updates and isolates explicit plugin storage roots", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-marketplace-inventory-"));
     const pluginStorageRootA = join(root, "plugin-storage-a");

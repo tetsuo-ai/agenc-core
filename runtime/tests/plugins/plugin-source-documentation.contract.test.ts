@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   classifyPluginSource,
+  pluginInstallSourceNeedsRedaction,
   pluginSourceNeedsRedaction,
   redactPluginInstallSource,
   redactPluginSource,
@@ -110,6 +111,17 @@ describe("plugin source documentation contract", () => {
     ).resolves.toBe("mcpb");
     expect(pluginSourceNeedsRedaction(queryUrl)).toBe(true);
     expect(pluginSourceNeedsRedaction(cleanUrl)).toBe(false);
+    expect(pluginSourceNeedsRedaction("https://EXAMPLE.com:443")).toBe(false);
+    expect(pluginSourceNeedsRedaction("ssh://git@github.com/acme/tool.git"))
+      .toBe(false);
+    expect(pluginInstallSourceNeedsRedaction({
+      type: "git",
+      url: "ssh://git@github.com/acme/tool.git",
+    })).toBe(false);
+    expect(pluginInstallSourceNeedsRedaction({
+      type: "git",
+      url: "ssh://git:secret@github.com/acme/tool.git",
+    })).toBe(true);
     expect(
       pluginSourceNeedsRedaction("https://opaque-token@agenc.tech/plugin.tgz"),
     ).toBe(true);

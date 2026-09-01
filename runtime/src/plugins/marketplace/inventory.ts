@@ -129,14 +129,17 @@ function sanitizeMarketplaceInventory(
     }
 
     changed = true;
+    const persistedUrl = urlNeedsRedaction
+      ? redactPluginSource(source.url)
+      : source.url;
     const sanitizedSource = source.source === "url"
       ? {
           source: "url" as const,
-          url: redactPluginSource(source.url),
+          url: persistedUrl,
         }
       : {
           ...source,
-          url: redactPluginSource(source.url),
+          url: persistedUrl,
         };
     return [name, {
       ...entry,

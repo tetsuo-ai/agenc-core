@@ -312,7 +312,7 @@ export function redactPluginSource(source: string): string {
 }
 
 export function pluginSourceNeedsRedaction(source: string): boolean {
-  return redactPluginSource(source) !== source;
+  return redactSecrets(source) !== source || credentialUrlNeedsRedaction(source);
 }
 
 export function redactPluginInstallSource(
@@ -331,7 +331,7 @@ export function pluginInstallSourceNeedsRedaction(
 ): boolean {
   return typeof source === "string"
     ? pluginSourceNeedsRedaction(source)
-    : redactPluginSource(source.url) !== source.url;
+    : pluginSourceNeedsRedaction(source.url);
 }
 
 export function parsePluginInstallSource(
@@ -1685,6 +1685,44 @@ function redactCredentialUrls(input: string): string {
       return redactUnparseableCredentialUrl(raw);
     }
   });
+}
+
+function credentialUrlNeedsRedaction(input: string): boolean {
+  for (
+    const match of input.matchAll(
+      /\b(?:git\+)?(?:https?|ssh):\/\/[^\s"'<>]+/giu,
+    )
+  ) {
+    const raw = match[0];
+    const urlText = /^git\+/iu.test(raw) ? raw.slice("git+".length) : raw;
+    try {
+      const url = new URL(urlText);
+      const sshUsername = url.protocol.toLowerCase() === "ssh:";
+      if (
+        url.password.length > 0 ||
+        (!sshUsername && url.username.length > 0) ||
+        url.search.length > 0 ||
+        url.hash.length > 0
+      ) {
+        return true;
+      }
+    } catch {
+      if (unparseableCredentialUrlNeedsRedaction(raw)) return true;
+    }
+  }
+  return false;
+}
+
+function unparseableCredentialUrlNeedsRedaction(raw: string): boolean {
+  const urlText = /^git\+/iu.test(raw) ? raw.slice("git+".length) : raw;
+  const schemeMatch = /^(https?|ssh):\/\//iu.exec(urlText);
+  if (schemeMatch === null) return false;
+  const rest = urlText.slice(schemeMatch[0].length);
+  if (rest.search(/[?#]/u) !== -1) return true;
+  const userinfoEnd = rest.indexOf("@");
+  if (userinfoEnd === -1) return false;
+  const scheme = schemeMatch[1]?.toLowerCase();
+  return scheme !== "ssh" || rest.slice(0, userinfoEnd).includes(":");
 }
 
 function redactUnparseableCredentialUrl(raw: string): string {

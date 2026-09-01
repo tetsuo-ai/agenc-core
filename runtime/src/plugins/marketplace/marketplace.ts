@@ -29,7 +29,10 @@ import type {
 import { pluginMarketplaceRootPath } from "../directories.js";
 import { loadPluginManifest } from "../manifest.js";
 import type { PluginManifest, PluginManifestInterface } from "../manifest-schema.js";
-import { redactPluginSource } from "../resolution.js";
+import {
+  pluginSourceNeedsRedaction,
+  redactPluginSource,
+} from "../resolution.js";
 import {
   assertHttpsOrLoopbackUrl,
   fetchWithTimeout as fetchWithTimeoutGuard,
@@ -383,7 +386,7 @@ export async function addMarketplaceOp(
     const sparse = source.source === "git" || source.source === "github"
       ? source.path ?? source.sparsePaths?.[0]
       : undefined;
-    const refreshable = marketplaceSourceIsRefreshable(source, persistedSource);
+    const refreshable = marketplaceSourceIsRefreshable(source);
     const marketplace: MarketplaceRecord = {
       name,
       source: displayMarketplaceSource(persistedSource),
@@ -1360,29 +1363,32 @@ function displayMarketplaceSource(source: MarketplaceSource): string {
 
 function persistedMarketplaceSource(source: MarketplaceSource): MarketplaceSource {
   if (source.source === "url") {
+    const url = pluginSourceNeedsRedaction(source.url)
+      ? redactPluginSource(source.url)
+      : source.url;
+    if (url === source.url && source.headers === undefined) return source;
     return {
       source: "url",
-      url: redactPluginSource(source.url),
+      url,
     };
   }
   if (source.source === "git") {
-    const url = redactPluginSource(source.url);
-    return url === source.url ? source : { ...source, url };
+    return pluginSourceNeedsRedaction(source.url)
+      ? { ...source, url: redactPluginSource(source.url) }
+      : source;
   }
   return source;
 }
 
 function marketplaceSourceIsRefreshable(
   source: MarketplaceSource,
-  persisted: MarketplaceSource,
 ): boolean | undefined {
   if (source.source === "url") {
-    return persisted.source === "url" &&
-      persisted.url === source.url &&
+    return !pluginSourceNeedsRedaction(source.url) &&
       !hasMarketplaceUrlHeaders(source);
   }
   if (source.source === "git") {
-    return persisted.source === "git" && persisted.url === source.url;
+    return !pluginSourceNeedsRedaction(source.url);
   }
   return undefined;
 }
