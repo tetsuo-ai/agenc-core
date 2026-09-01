@@ -183,6 +183,12 @@ The command never reruns the tool or rewrites the physical outcome as
 success. Full reopen table:
 [durable-runs-effects-events.md](../design/durable-runs-effects-events.md#resume-and-effect-review).
 
+Busy, outstanding, self-target, and non-ancestor `assign_task` refusals
+already attest `confirmed_no_effect` after interaction begin (the assignment
+marker was never installed). Do not `/resolve` those. Mailbox backpressure
+and other delivery failures stay unknown-effect. Operator detail:
+[agents.md](agents.md#assign_task-admission-refusals).
+
 ---
 
 ## Notes

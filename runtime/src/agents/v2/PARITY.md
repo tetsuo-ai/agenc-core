@@ -27,6 +27,11 @@ transcript's collab-tool suppression set.
 - `assign_task` atomically admits one correlated task only when its target is
   an idle reusable worker and its authenticated sender is a strict ancestor;
   busy, self-targeted, peer, and outstanding-assignment requests are rejected.
+  Those admission-only `assignTask()` codes attest `confirmed_no_effect` /
+  `tool:agents.v2:validation` before the assignment marker. Mailbox
+  backpressure and closed-worker delivery stay unknown-effect. Operator
+  detail:
+  [agents.md](../../../docs/reference/agents.md#assign_task-admission-refusals).
   `send_message` remains passive and does not trigger a turn.
 - `assign_task` rejects assigning work to the root agent and does not enqueue
   root mail on that failure.

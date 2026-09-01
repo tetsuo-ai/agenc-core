@@ -123,6 +123,11 @@ Admission allocates the assignment's `taskId` and fresh `turnId`, installs the
 outstanding-assignment marker, and projects the triggering mailbox item as one
 synchronous operation. A rejected assignment enqueues no task. The successful
 tool result returns both IDs; that result means “accepted,” not “completed.”
+Admission-only `assignTask()` throws (`self_target`, `sender_not_ancestor`,
+`worker_not_idle`, `assignment_outstanding`) attest `confirmed_no_effect`
+before that marker exists. Mailbox backpressure and closed-worker delivery
+failures stay unknown-effect. Operator detail:
+[agents.md](../reference/agents.md#assign_task-admission-refusals).
 
 `send_message` is different. It is passive, does not allocate a task turn, and
 does not call the provider. The runtime retains the authenticated author;

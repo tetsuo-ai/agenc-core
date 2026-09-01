@@ -276,6 +276,13 @@ checks. A bare `isError` from a non-idempotent tool still poisons the mutation
 gate. ExitPlanMode deliberately keeps a bare error after a possible plan-file
 write so a genuine mid-flight failure remains `unknown_outcome`.
 
+`assign_task` also attests that disposition for admission-only
+`AgentAssignmentRejectedError` codes thrown by `assignTask()` before the
+outstanding-assignment marker exists (`self_target`, `sender_not_ancestor`,
+`worker_not_idle`, `assignment_outstanding`). Mailbox backpressure and
+closed-worker delivery after the marker stay unknown-effect. Operator
+detail: [agents.md](../reference/agents.md#assign_task-admission-refusals).
+
 ### Troubleshooting
 
 | Symptom | What to check |
@@ -285,6 +292,7 @@ write so a genuine mid-flight failure remains `unknown_outcome`.
 | `/resolve` says there is no live session | Resume first only for a settled `completed`, `failed`, or `cancelled` terminal. For an `unknown_outcome` terminal, use the offline command to record review evidence; that does not make the same session resumable. |
 | Offline `resolve-tool-call` reports `not_found` for a dangling intent | Expected. A raw intent has no `unknown_outcome` settlement to review and needs recovery classification or evidence repair rather than a review disposition. |
 | "You are not in plan mode" blocked later mutations | Fixed: that refusal now attests `confirmed_no_effect`. A leftover poison is an older journal. |
+| `assign_task` not-idle / outstanding / not-ancestor / self-assign blocked later FileWrite / Bash / spawn | Current admission refusals attest `tool:agents.v2:validation` before the assignment marker. A leftover poison is an older journal, or the call reached mailbox delivery (`mailbox_backpressure` / closed worker). |
 | Retained session refuses with a createdAt mismatch of a few milliseconds | Current code allows 5s. A larger gap, or a model/provider/objective mismatch, is still a hard refuse. |
 | Interrupted turn starts over instead of continuing from its last checkpoint | See [In-turn checkpoint resume](#in-turn-checkpoint-resume) and check the recorded resume-gate failure reason. |
 | Open reports `durable checkpoint upgrade blocked` | Integrity, mixed-version, or work-limit failure. Resume stays disabled. Preserve the rollout; restore intact source bytes from backup or start a new session. See [Upgrade and downgrade](#upgrade-and-downgrade). |
@@ -668,6 +676,7 @@ they remain the evidence needed for a later v15-aware reconciliation.
 | Terminal lifecycle commit                   | `runtime/src/app-server/background-agent-runner.ts`, `runtime/src/app-server/daemon-cli.ts`        |
 | Operator effect-review evidence             | `runtime/src/state/effect-review.ts`, `runtime/src/commands/resolve.ts`, `runtime/src/bin/state-cli.ts` |
 | Pre-effect validation (no mutation poison)  | `runtime/src/tools/results.ts` (`validationErrorToolResult`)                                       |
+| `assign_task` admission refusals (pre-marker) | `runtime/src/agents/v2/message-tool.ts` (`ASSIGN_TASK_ADMISSION_REJECTION_CODES`, `assignTaskAdmissionReason`) |
 | Replay-safe SDK client                      | `packages/agenc-sdk/src/client.ts`, `packages/agenc-sdk/src/protocol.ts`                           |
 | Immutable artifact publication              | `runtime/src/durability/atomic-artifact.ts`                                                        |
 | Crash injection                             | `runtime/src/durability/failpoints.ts`                                                             |

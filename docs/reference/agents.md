@@ -22,7 +22,7 @@ in `runtime/src/bin/model-facing-tools.ts`, not inside `v2/index.ts`.
 | `spawn_agent` | Spawn a reusable worker and its initial bounded task. Required `message` + `task_name`. Optional `agent_type`, `model`, `reasoning_effort`, `service_tier`, `fork_turns`, `isolation` (`none` \| `worktree`). Blank optional strings are omitted. `fork_context` is accepted then rejected (`use fork_turns instead`). Preflight failures before `delegate()` are confirmed no-effect: [spawn preflight](#spawn_agent-preflight). |
 | `wait_agent` | Wait for, then drain, all delivered mailbox updates. `timeout_ms` only (default 30s, min 10s, max 1h). No target filter. |
 | `close_agent` | Terminally close a worker and its descendants |
-| `assign_task` | Admit one new task to an idle reusable worker (**triggers a turn**) |
+| `assign_task` | Admit one new task to an idle reusable worker (**triggers a turn**). Busy, outstanding, self, and non-ancestor refusals inside `assignTask()` stay confirmed no-effect: [assign_task admission refusals](#assign_task-admission-refusals). |
 | `send_message` | Queue passive context (**does not** trigger a turn) |
 | `list_agents` | Read the live agent tree and current statuses. Optional `path_prefix`. |
 | `spawn_agents_on_csv` | Fan out workers from CSV rows (job orchestrator) |
@@ -133,7 +133,10 @@ failed run). Interactive session survival:
 The runtime checks those conditions, allocates `task_id` + `turn_id`, marks the
 assignment outstanding, and enqueues the trigger atomically. A rejected
 assignment enqueues nothing. A successful tool response reports acceptance and
-the two IDs; completion arrives later as a correlated receipt.
+the two IDs; completion arrives later as a correlated receipt. The four
+admission-only `assignTask()` throws attest `confirmed_no_effect` so they do
+not poison later mutations:
+[assign_task admission refusals](#assign_task-admission-refusals).
 
 `send_message` shares strict non-empty `target` and `message` validation but is
 passive. It neither allocates a task nor starts a provider turn. Authenticated
@@ -144,6 +147,72 @@ assignment; non-ancestor peer prose is framed as untrusted data.
 
 The worker always drains a triggering assignment before another provider call.
 This prevents a wake notification from replaying stale input.
+
+### `assign_task` admission refusals
+
+`assign_task` shares `handleMessageStringTool` with `send_message`. After
+argument and identity checks, the tool emits
+`collab_agent_interaction_begin` and then calls
+`AgentControl.assignTask()`. That method can still refuse before it
+installs `agent.assignment`. A bare `isError` from those throws used to
+poison the live mutation gate even though no marker or mailbox item
+existed.
+
+`assignTaskAdmissionReason` in `runtime/src/agents/v2/message-tool.ts`
+maps only these `AgentAssignmentRejectedError` codes to
+`agentValidationError`:
+
+| Code | Typical message | Marker installed? |
+| --- | --- | --- |
+| `self_target` | `an agent cannot assign a task to itself` | No |
+| `sender_not_ancestor` | `task sender … must be a strict ancestor of …` | No |
+| `worker_not_idle` | `agent … is not an idle reusable worker` | No |
+| `assignment_outstanding` | `agent … already has an outstanding assignment` | No |
+
+The evidence is the same helper as other v2 pre-mutation refusals
+(`runtime/src/agents/v2/common.ts`):
+
+| Field | Evidence |
+| --- | --- |
+| `disposition` | `confirmed_no_effect` |
+| `evidenceKind` | `boundary_not_crossed` |
+| `evidenceRef` | `tool:agents.v2:validation` |
+
+`assignTask()` installs the outstanding-assignment marker only after those
+four checks pass. JavaScript run-to-completion makes the idle check and
+reservation atomic with competing `assign_task` calls
+(`runtime/src/agents/control.ts`). `collab_agent_interaction_begin` and
+`collab_agent_interaction_end` still fire; they are not the mutation.
+
+Do **not** attest mailbox or delivery failures. After the marker exists,
+`downInbox.send()` can return `dropped` (`mailbox_backpressure`) or throw
+(`MailboxClosedError` → `ThreadNotFoundError`). Those paths clear the
+marker and return ordinary `isError` without `confirmed_no_effect`.
+`send_message` uses `sendInterAgentCommunication()` and does not take this
+admission allowlist. Argument and identity refusals before `assignTask()`
+already use the same helper; this section is the in-`assignTask()`
+remainder.
+
+```json
+{
+  "target": "/root/worker",
+  "message": "first assignment"
+}
+```
+
+If `/root/worker` is still `pending_init` or `running`, the tool returns
+`agent /root/worker is not an idle reusable worker` with
+`confirmed_no_effect`. `assignment` stays unset. After the worker is
+`idle` and one assignment is accepted, a second call returns
+`agent /root/worker already has an outstanding assignment` with the same
+disposition. A later `FileWrite` in the same session is not gated.
+
+| Symptom | What to check |
+| --- | --- |
+| `confirmed_no_effect` / `tool:agents.v2:validation` plus not-idle / outstanding / not-ancestor / self-assign | Admission refused before the marker. Fix the target or wait for `idle` with no outstanding assignment. Do not `/resolve`. |
+| Ordinary `isError` after `assign_task` mentioning mailbox / closed worker | Delivery ran after the marker. Inspect the worker mailbox. Later FileWrite / Bash / spawn stay blocked until `/resolve`. |
+| Begin/end collab events but no `task_id` / `turn_id` | Expected on an admission refusal. Events are not acceptance. |
+| `send_message` still unknown-effect on a similar error | Expected. Passive delivery does not use `ASSIGN_TASK_ADMISSION_REJECTION_CODES`. |
 
 ### Task outcomes and mailbox delivery
 

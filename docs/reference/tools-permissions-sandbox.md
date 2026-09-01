@@ -634,6 +634,8 @@ See [`agents.md`](agents.md) for `spawn_agent` / `wait_agent` / `close_agent` /
 `assign_task` / `send_message` / `list_agents`. Spawn validation before
 `delegate()` is confirmed no-effect:
 [agents.md#spawn_agent-preflight](agents.md#spawn_agent-preflight).
+`assign_task` admission-only `assignTask()` throws stay confirmed no-effect:
+[agents.md#assign_task-admission-refusals](agents.md#assign_task-admission-refusals).
 
 ## Related CLI / TUI
 
