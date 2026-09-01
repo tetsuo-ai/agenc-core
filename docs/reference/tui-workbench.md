@@ -176,8 +176,10 @@ the hard limit. `/compact` ignores both flags. `AGENC_DISABLE_AUTO_COMPACT`
 disables automatic pre-turn and mid-turn compaction. `AGENC_DISABLE_COMPACT`
 makes `autoCompactIfNeeded` return without compacting. Manual `/compact` and
 the mid-turn outer gate ignore that flag. A mid-turn threshold crossing can
-therefore end the turn with cause `mid_turn_compact_failed` and message
-`mid_turn_compact_skipped`.
+therefore end the turn with `warning` cause `mid_turn_compact_failed` and
+message `mid_turn_compact_skipped`. The turn stop is `compact_failed`.
+Keep-alive sessions stay promptable; see
+[daemon.md](daemon.md#compact-skip-stays-per-turn).
 
 A configured `providers.<slug>.context_window_tokens` overrides the
 model-string table for the hard-limit line. Free headroom clamps to **0**

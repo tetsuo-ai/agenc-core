@@ -7782,6 +7782,7 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
       taskBudgetRemaining?: number;
       checkpointVersion?: number;
       toolResultIntegrityVersion?: number;
+      prefixHashVersion?: number;
     }> = [];
     const append = vi.fn((event: unknown) => {
       const ev = event as { msg?: { type?: string; payload?: unknown } };
@@ -7802,6 +7803,9 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
             toolResultIntegrityVersion: (
               ev.msg.payload as { toolResultIntegrityVersion?: number }
             ).toolResultIntegrityVersion,
+            prefixHashVersion: (
+              ev.msg.payload as { prefixHashVersion?: number }
+            ).prefixHashVersion,
           });
         }
       }
@@ -7897,8 +7901,9 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
     // Non-per-iteration counters hold their EXACT restored pre-crash values.
     expect(cp.recoveryReentryCount).toBe(3);
     expect(cp.taskBudgetRemaining).toBe(9999);
-    expect(cp.checkpointVersion).toBe(3);
+    expect(cp.checkpointVersion).toBe(4);
     expect(cp.toolResultIntegrityVersion).toBe(1);
+    expect(cp.prefixHashVersion).toBe(3);
     expect(
       appendRollout.mock.calls
         .map((call) => call[0])

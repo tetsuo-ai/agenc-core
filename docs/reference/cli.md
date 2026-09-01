@@ -115,9 +115,13 @@ active turn.
   never shorten, the durable rollback-retention window.
 - Setting `AGENC_DISABLE_COMPACT` without `AGENC_DISABLE_AUTO_COMPACT` does
   not skip mid-turn compact. The outer condition can still be met, auto returns
-  `wasCompacted: false`, and the sampling loop emits event cause
+  `wasCompacted: false`, and the sampling loop emits `warning` cause
   `mid_turn_compact_failed`. Its message starts with
-  `mid_turn_compact_skipped`.
+  `mid_turn_compact_skipped`. The turn stop is `compact_failed`. Keep-alive
+  sessions stay promptable; daemon-backed `--print` reports the terminal
+  `turn_complete` and exits 0. The compatibility `runAgent` surface with
+  `keepAlive: false` still reports failure. See
+  [daemon.md](daemon.md#compact-skip-stays-per-turn).
 
 ---
 
@@ -633,7 +637,23 @@ absolute paths are local (an explicit `*.mcpb` path stays on the bundle path).
 A missing `./dir` fails with `plugin source not found` instead of trying npm.
 `update --source` also rejects an explicit local path that is the installed
 plugin root or a descendant. Classification table and examples:
-[Install sources](skills-plugins.md#install-sources).
+[Install sources](skills-plugins.md#install-sources). HTTP(S) tarball and
+remote mcpb fetches follow same-origin redirects (5 hops, 50 MiB, 120 s). A
+specifier with userinfo or a query string is stored redacted, so later
+`plugin update` needs `--source` again. See
+[Remote archive fetch and recorded sources](skills-plugins.md#remote-archive-fetch-and-recorded-sources).
+
+Failed `plugin install` / `plugin update` resolution rebuilds the thrown
+Error so CLI, `inspect`, and JSON serialization never see URL userinfo,
+signed query values, or `ERR_INVALID_URL.input`. See
+[Native archive fetch error redaction](skills-plugins.md#native-archive-fetch-error-redaction).
+
+Successful `plugin update` prints `Updated plugin <id> from <source>:
+<destination>`. `<source>` is `updatePluginOp`'s result after
+`redactPluginInstallSource`, so URL userinfo, the entire query, and
+secret-shaped text are not echoed.
+Install text mode never prints the specifier. See
+[Update success source redaction](skills-plugins.md#update-success-source-redaction).
 
 ---
 

@@ -611,6 +611,37 @@ describe("agenc plugin CLI", () => {
     });
   });
 
+  it("redacts secret-shaped source paths from successful update output", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const firstSecret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456";
+    const secondSecret = "sk-ant-abcdefghijklmnopqrstuvwxyz123456";
+    const source = await writePlugin(
+      join(root, firstSecret, secondSecret),
+      "alpha",
+    );
+    const installIo = createIo();
+    const installExit = await runAgenCPluginCli({
+      kind: "install",
+      source,
+      scope: "user",
+      force: false,
+    }, options(agencHome, workspaceRoot, installIo));
+    expect(installExit).toBe(0);
+
+    const updateIo = createIo();
+    const updateExit = await runAgenCPluginCli({
+      kind: "update",
+      pluginId: "alpha",
+      scope: "user",
+    }, options(agencHome, workspaceRoot, updateIo));
+
+    expect(updateExit).toBe(0);
+    expect(updateIo.stdoutText()).toContain("Updated plugin alpha from ");
+    expect(updateIo.stdoutText()).toContain("[REDACTED_SECRET]");
+    expect(updateIo.stdoutText()).not.toContain(firstSecret);
+    expect(updateIo.stdoutText()).not.toContain(secondSecret);
+  });
+
   it("rejects unsafe marketplace names and sparse paths before mutating", async () => {
     const { agencHome, workspaceRoot, root } = await tempRuntime();
     const marketplaceRoot = join(root, "marketplace");

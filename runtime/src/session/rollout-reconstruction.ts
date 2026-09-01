@@ -63,7 +63,7 @@ import {
 } from "../context/personality-spec-instructions.js";
 import {
   readTurnCheckpoint,
-  validateCheckpointPrefixV2,
+  validateCheckpointPrefix,
 } from "./durable-checkpoint-reader.js";
 import type {
   ToolPairDanglingUse,
@@ -227,7 +227,7 @@ function validateRawCheckpointBeforeReplay(params: {
       reason: "exact tool-pair projection is unavailable",
     };
   }
-  const validation = validateCheckpointPrefixV2({
+  const validation = validateCheckpointPrefix({
     checkpoint: readable.checkpoint,
     messages: params.messages,
     projection: params.projection.projection,
