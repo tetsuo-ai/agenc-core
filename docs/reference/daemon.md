@@ -611,8 +611,8 @@ Terminal run failures do **not** use this path. They arrive as
 `error` with `terminal: true` and `terminalSource:
 "agent_status"`. Runtime-settings authority failures use the same
 `terminal` flag with `terminalSource:
-"runtime_settings_authority"`. Only that marker clears
-`activeTurn` and stops the Working spinner
+"runtime_settings_authority"`. Among `error` events, only an error carrying
+that marker clears `activeTurn` and stops the Working spinner
 (`isTerminalDaemonErrorPayload` in `tui/daemon-terminal-error.ts`).
 An unmarked session `error` keeps the turn open.
 
