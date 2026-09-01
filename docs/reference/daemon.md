@@ -260,7 +260,10 @@ part of the public SDK method set.
 `clientMessageId`. Reusing it with the same content is idempotent; reusing it
 with different content is rejected. A retry response reports
 `duplicateState: "completed" | "incomplete"` and never invents success for a
-crash tail without a durable terminal event. Callers that require strict
+crash tail without a durable terminal event. Only `turn_complete` (code 0)
+and `turn_aborted` (code 130) are those terminals. A mid-turn `error` is
+session telemetry, not a closer; see [Mid-turn error events](#mid-turn-error-events).
+Callers that require strict
 single-turn admission pass `ifBusy: "reject"`. That flag refuses only an
 in-flight or queued turn (`pendingMessageSubmissionCount`,
 `pendingShellExecutionCount`, or a live `session.activeTurn`). It does
@@ -369,6 +372,65 @@ history.
 | Markers missing after compact or rewind | Expected. Rows exist only for turns that closed after the current `historyEpoch`. |
 | Duration missing on a completed turn | The terminal lacked `durationMs` and a usable `completedAt - startedAt` pair. |
 | Tokens or model missing | No enclosed `token_count` carried a finite non-negative token field. |
+| `outcome: "errored"` or tokens cut off at a mid-turn `error` | The connected daemon closed the accumulator on the first `error`. Current main keeps the turn open until `turn_complete` / `turn_aborted`. See [Mid-turn error events](#mid-turn-error-events). |
+
+#### Mid-turn error events
+
+`error` events are session telemetry. Stop-hook throws
+(`cause: "stop_hook_threw"`) and a blank `shouldBlock` reason (same
+cause) emit them while the ladder continues
+(`runtime/src/phases/stop-hooks.ts`). The recursion cap emits
+`stop_hook_loop` and then allows the turn to terminate. In every case
+the closer is still `turn_complete` or `turn_aborted`.
+
+Three rebuild and retry sites share that contract in
+`runtime/src/app-server/background-agent-runner.ts`:
+
+| Site | Function | Effect |
+| --- | --- | --- |
+| Live event-log bridge | `messageTerminalFromDaemonEvent` | Does not settle `submission.terminal` |
+| Persisted `clientMessageId` retry | `messageTerminalFromEvent` via `findPersistedMessageSubmission` | Does not mark the crash tail complete |
+| `session.transcript.v2` scan | `sessionTranscriptV2FromRollout` | Does not emit a `turnResults` row |
+
+Constraints:
+
+- A retry of the same `clientMessageId` after `error` then `turn_complete`
+  reports `duplicateState: "completed"` and `terminal.code === 0`. The
+  live path does not re-send the prompt.
+- A retry after `error` with no later terminal reports `incomplete`. The
+  SDK throws `AgencDuplicateSubmissionIncompleteError`.
+- A later turn's terminal is never attributed to an earlier crash tail.
+  The next `user_message` or `message_submission` ends the persisted scan.
+- Current writers never emit `turnResults.outcome: "errored"`. The
+  protocol union in `runtime/src/app-server/protocol/index.ts` (and the
+  generated SDK mirror) still lists it so type-sync stays exact and older
+  daemons that closed on the first `error` remain representable.
+- Run-status bookkeeping is separate. `#applyCanonicalEventBookkeeping`
+  still maps `error` → `active.status = "error"` except the
+  UserPromptSubmit blocked remap (`statusProjection: "session_only"`).
+  A later `turn_complete` / `turn_aborted` returns the agent to `idle`.
+  A mid-turn `event.agent_status` with `status: "error"` is not proof
+  the submission settled.
+
+```json
+{
+  "disposition": "duplicate",
+  "duplicateState": "completed",
+  "turnId": "turn-1",
+  "terminal": { "code": 0, "message": "done" }
+}
+```
+
+That is the persisted retry after `stop_hook_threw` then `turn_complete`.
+Older daemons that treated `error` as a closer returned the same
+`duplicateState` with `terminal.code === 1` on the first `error`, even
+when `turn_complete` was still ahead in the journal.
+
+| Symptom | What to check |
+| --- | --- |
+| Retry reports `completed` with `terminal.code === 1` after a hook throw | Connected daemon predates the mid-turn error closer. |
+| `AgencDuplicateSubmissionIncompleteError` after an `error` event | Expected until a matching `turn_complete` or `turn_aborted`. |
+| `agent.status` is `error` while the turn is still running | Expected for `stop_hook_threw` until the real terminal. Distinct from the UserPromptSubmit blocked remap. |
 
 `session.resolveToolCall` accepts two strict protocol-1.0 request shapes. The
 earlier `{ sessionId, toolCallId?, reviewer? }` shape can settle only a legacy
@@ -760,7 +822,8 @@ agenc budget status    # configured policy only; usage is agenc run status <run-
 | Agent lifecycle                   | `runtime/src/app-server/agent-lifecycle.ts`         |
 | Background runs                   | `runtime/src/app-server/background-agent-runner.ts` |
 | Prompt-hook block projection      | `projectPerPromptRejectionAsSessionOnly` in `background-agent-runner.ts`; emit in `hooks/user-prompt-ingress.ts` |
-| Compact-skip session survival     | `emitCompactFailureWarning` / `compactFailedTurnComplete` in `session/run-turn.ts`; `SESSION_ONLY_ERROR_CAUSES` + `phaseEventToProgressEvent` in `background-agent-runner.ts` |
+| Compact-skip session survival     | `emitCompactFailureWarning` / `compactFailedTurnComplete` in `session/run-turn.ts`; `phaseEventToProgressEvent` in `background-agent-runner.ts` |
+| Diagnostic errors and terminals   | `projectTelemetryErrorAsSessionOnly`, `messageTerminalFromDaemonEvent`, `messageTerminalFromEvent`, and `sessionTranscriptV2FromRollout` in `background-agent-runner.ts`; `transcriptEventFromAgentStatus` and `isTerminalDaemonErrorPayload` in `tui/` |
 | Local socket / Windows named pipe | `runtime/src/app-server/transport/unix-socket.ts`   |
 | Cookie auth                       | `runtime/src/app-server/transport/auth.ts`          |
 | Health                            | `runtime/src/app-server/health.ts`                  |

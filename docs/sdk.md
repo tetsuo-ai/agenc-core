@@ -176,7 +176,12 @@ or restore come from `session.transcript.v2` `turnResults` (see
 responses may carry an additive `contextBreakdown` object, but the current
 public SDK type does not expose a named field. `SessionTranscriptV2Result`
 does name optional `turnResults`, with each row typed as
-`SessionTranscriptV2TurnResult`. `prompt()` copies only token usage.
+`SessionTranscriptV2TurnResult`. Current writers emit only
+`completed` or `aborted`. The generated `outcome` union still includes
+`errored` so it stays an exact mirror of the daemon protocol type;
+older daemons that closed a turn on the first `error` may still return
+it. See [mid-turn error events](reference/daemon.md#mid-turn-error-events).
+`prompt()` copies only token usage.
 
 Prompt admission is reserved synchronously per session, before attach or send,
 so a second local `prompt()` throws `AgencPromptRunInProgressError`. Every SDK
@@ -191,7 +196,9 @@ on an older daemon because it could hit a later turn.
 The SDK distinguishes `text` deltas from `message_committed`, reconciles the
 final result with committed text, and exposes `history_reset` for clear,
 compaction, rewind, and rollback. A duplicate without durable terminal proof
-fails with `AgencDuplicateSubmissionIncompleteError`. Initialization retries
+fails with `AgencDuplicateSubmissionIncompleteError`. A mid-turn `error`
+(stop-hook throw and similar) is not that proof; only `turn_complete` or
+`turn_aborted` settles the submission. Initialization retries
 against daemons running protocol 1.0 through 1.8 at the reported version and
 retains negotiated version and capability information for safe feature
 fallback.
@@ -542,7 +549,9 @@ Constraints:
   refreshed. Leading interface JSDoc is outside the extracted declaration
   text and is not mirrored or checked.
 - Closed-turn field semantics (omit-when-empty, token sums, placement)
-  stay in [daemon.md](reference/daemon.md#closed-turn-results). This page
+  stay in [daemon.md](reference/daemon.md#closed-turn-results). Mid-turn
+  `error` is not a closer:
+  [daemon.md](reference/daemon.md#mid-turn-error-events). This page
   only covers how the types stay in sync.
 
 | Symptom | What to check |
@@ -658,7 +667,7 @@ Thrown by `connect()`, `AgencClient`, and `promptViaSubprocess`
 | `AgencRpcError` | JSON-RPC error object from the daemon. Fields: `code`, `data`, `method`, `requestId` |
 | `AgencMalformedResponseError` | Response body is not a valid result for the method. Field: `response` |
 | `AgencPromptRunInProgressError` | Second `prompt()` on a session that already has an active run (`ifBusy: "reject"` or equivalent). Fields: `sessionId`, `clientMessageId` |
-| `AgencDuplicateSubmissionIncompleteError` | Reused `clientMessageId` whose prior submit has no durable terminal outcome |
+| `AgencDuplicateSubmissionIncompleteError` | Reused `clientMessageId` whose prior submit has no durable `turn_complete` / `turn_aborted`. A mid-turn `error` is not a terminal. |
 | `AgencCapabilityUnavailableError` | Caller asked for a protocol 1.2 (or later) guarantee the negotiated daemon does not have |
 | `AgencRunReplayGapError` | Replay cursor hit an explicit `event_gap` / `cursor_ahead` / retention gap. Do not skip it |
 | `AgencRunReplayProtocolError` | Replay page would hide loss or corruption |
