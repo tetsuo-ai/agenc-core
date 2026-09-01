@@ -19,7 +19,6 @@ import {
   type PreparedConfiguredExecutionAuthority,
 } from "../bin/bootstrap.js";
 import { buildStructuredSessionBootstrapArgv } from "./session-bootstrap-argv.js";
-import { isSessionTelemetryErrorCause } from "./session-telemetry-errors.js";
 import { ensureAgentControl } from "../bin/delegate-tool.js";
 import { clearSession } from "../commands/clear.js";
 import type { AgentControl } from "../agents/control.js";
@@ -5755,18 +5754,15 @@ function shellEventKey(commandId: string): string {
 }
 
 /**
- * Mid-turn telemetry `error` records (stop-hook throw, stream reconnect,
- * leftover prompt-hook blocks) must stay visible without flipping
- * `agent.status`. Lifecycle refresh latches `error` and then refuses
- * later `message.send`.
+ * Session `error` records are diagnostic events, not lifecycle boundaries.
+ * Terminal run failures arrive through RunAgentProgressEvent.run_error and
+ * update the lifecycle status there. Keep the diagnostic event visible
+ * without letting it poison the keep-alive session first.
  */
 function projectTelemetryErrorAsSessionOnly(
   event: BackgroundAgentDaemonEvent,
 ): BackgroundAgentDaemonEvent {
-  if (
-    event.type === "error" &&
-    isSessionTelemetryErrorCause(event.payload?.cause)
-  ) {
+  if (event.type === "error") {
     return { ...event, statusProjection: "session_only" };
   }
   return event;

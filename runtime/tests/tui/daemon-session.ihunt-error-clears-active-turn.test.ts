@@ -204,7 +204,7 @@ describe("daemon session activeTurn error handling (ihunt)", () => {
     unsubscribe();
   });
 
-  it("keeps activeTurn across a mid-turn stream_disconnected telemetry error", async () => {
+  it("keeps activeTurn across an unmarked session error", async () => {
     const client = createClient();
     const session = createDaemonTuiSession({
       baseSession: createBaseSession(),
@@ -233,8 +233,8 @@ describe("daemon session activeTurn error handling (ihunt)", () => {
           id: "stream-retry",
           type: "error",
           payload: {
-            cause: "stream_disconnected",
-            message: "Reconnecting after stream interruption (attempt 1)",
+            cause: "future_mid_turn_diagnostic",
+            message: "diagnostic event",
           },
         },
       },

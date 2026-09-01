@@ -21,8 +21,8 @@ import {
   isPermissionDeniedToolResult,
   PERMISSION_DENIED_TOOL_RESULT_MESSAGE,
 } from "./tool-result-denial.js";
+import { isTerminalDaemonErrorPayload } from "./daemon-terminal-error.js";
 import { escapeXml } from "../utils/xml.js";
-import { isSessionTelemetryErrorPayload } from "../app-server/session-telemetry-errors.js";
 
 /**
  * Hardcoded copy of `FILE_EDIT_TOOL_NAME` from
@@ -2654,12 +2654,11 @@ export function adaptTranscriptEvents(
       case "error":
       case "stream_error":
         out.push(makeSystemMessage(stringResult(payload.message), "error", nextUuid()));
-        // Mid-turn telemetry (stream reconnect, stop-hook throw) must not
-        // close the streaming turn. Agent-status run deaths still arrive
-        // as `error` without those causes and keep the audit #13 closer.
+        // Raw session errors are diagnostic events. Agent-status run failures
+        // carry an explicit terminal marker from the daemon adapter.
         if (
           event.type === "error" &&
-          isSessionTelemetryErrorPayload(payload)
+          !isTerminalDaemonErrorPayload(payload)
         ) {
           break;
         }

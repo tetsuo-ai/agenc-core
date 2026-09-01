@@ -7921,6 +7921,34 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.sendInput).toHaveBeenCalled();
   });
 
+  it("[managed-thread] treats new session error causes as diagnostics", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "session-future-error-diagnostic",
+    });
+    await runner.startAgent({
+      objective: "keep-alive after a diagnostic",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    session.emit({
+      id: "future-diagnostic",
+      msg: {
+        type: "error",
+        payload: {
+          cause: "future_mid_turn_diagnostic",
+          message: "diagnostic event",
+        },
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await expect(
+      runner.getAgentSnapshot("session-future-error-diagnostic"),
+    ).resolves.toMatchObject({ status: expect.not.stringMatching(/^error$/u) });
+  });
+
   it("[managed-thread] applies owning-session hook context to follow-up model input exactly once", async () => {
     const contextHook = vi.fn(() => ({
       additionalContexts: ["session-owned daemon context"],
@@ -8948,7 +8976,7 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
-  it("[managed-thread] reports canonical max-turn errors with replay identity", async () => {
+  it("[managed-thread] keeps legacy max-turn error records session-only", async () => {
     const { runner, session } = makeTopLevelRunner({
       conversationId: "session-max-turns",
     });
@@ -8987,17 +9015,30 @@ describe("AgenC delegate background-agent runner", () => {
     await vi.waitFor(() => {
       expect(emitted).toContainEqual(
         expect.objectContaining({
-          method: "event.agent_status",
+          method: "event.session_event",
           params: expect.objectContaining({
-            status: "error",
-            runStatus: "errored",
-            message: "Agent exceeded maxTurns",
             eventId: "max-turn-error",
             sequence: expect.any(Number),
+            event: expect.objectContaining({
+              type: "error",
+              payload: expect.objectContaining({
+                cause: "max_turns",
+                message: "Agent exceeded maxTurns",
+              }),
+            }),
           }),
         }),
       );
     });
+    expect(emitted).not.toContainEqual(
+      expect.objectContaining({
+        method: "event.agent_status",
+        params: expect.objectContaining({ eventId: "max-turn-error" }),
+      }),
+    );
+    await expect(
+      runner.getAgentSnapshot("session-max-turns"),
+    ).resolves.toMatchObject({ status: expect.not.stringMatching(/^error$/u) });
   });
 
   it("[managed-thread] keeps interrupted status internal and publishes canonical abort", async () => {
