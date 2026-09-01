@@ -320,4 +320,85 @@ describe("runTurn compact contract", () => {
       }),
     );
   });
+
+  test("a mid-turn compaction that declines names its reason in the rollout", async () => {
+    // Real dispatcher, no test override. This session has no rollout owner,
+    // so the durable transaction refuses with `pin_failed`. The turn loop
+    // must surface THAT sentence: before the fix the reason was computed in
+    // autoCompactIfNeeded and dropped on the way back through
+    // runAgenCAutoCompact, so a run that died here left only a bare
+    // `mid_turn_compact_skipped` behind.
+    let streamCount = 0;
+    const provider = mkProvider({});
+    provider.chatStream = async (): Promise<LLMResponse> => {
+      streamCount += 1;
+      if (streamCount === 1) {
+        return {
+          content: "need a tool",
+          toolCalls: [{ id: "toolu_reason", name: "Read", arguments: "{}" }],
+          usage: {
+            promptTokens: 18_130,
+            completionTokens: 10,
+            totalTokens: 18_140,
+          },
+          model: "test-model",
+          finishReason: "tool_calls",
+        };
+      }
+      return {
+        content: "must not be reached",
+        toolCalls: [],
+        usage: { promptTokens: 5, completionTokens: 5, totalTokens: 10 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    };
+    const { session, events } = mkSession({
+      provider,
+      modelInfo: { autoCompactTokenLimit: 18_129 } as never,
+    });
+
+    const yielded: unknown[] = [];
+    for await (const event of runTurn(
+      session,
+      mkCtx({
+        modelInfo: {
+          ...mkCtx().modelInfo,
+          autoCompactTokenLimit: 18_129,
+        } as never,
+      }),
+      "start",
+    )) {
+      yielded.push(event);
+    }
+
+    expect(streamCount).toBe(1);
+    const declined = events.filter(
+      (event) =>
+        event.msg.type === "warning" &&
+        event.msg.payload.cause === "auto_compact_failed",
+    );
+    expect(declined).toHaveLength(1);
+    const first = declined[0];
+    if (first?.msg.type === "warning") {
+      expect(first.msg.payload.message).toBe(
+        "context_limit/in_turn: durable compaction is unavailable without a canonical rollout owner; history was not changed",
+      );
+    }
+    expect(
+      events.some(
+        (event) =>
+          event.msg.type === "warning" &&
+          event.msg.payload.cause === "mid_turn_compact_failed" &&
+          typeof event.msg.payload.message === "string" &&
+          event.msg.payload.message.startsWith("mid_turn_compact_skipped:"),
+      ),
+    ).toBe(true);
+    expect(yielded).toContainEqual(
+      expect.objectContaining({
+        type: "turn_complete",
+        stopReason: "compact_failed",
+      }),
+    );
+  });
 });
