@@ -122,18 +122,29 @@ describe("AskUserQuestion tool", () => {
   test("requires TUI-recorded answers before returning model-facing result", async () => {
     const tool = createAskUserQuestionTool();
 
-    await expect(
-      tool.execute({
-        ...BASE_INPUT,
-        answers: {
-          "Which implementation path should AgenC take?":
-            "Use AgenC picker (Recommended)",
-        },
-      }),
-    ).resolves.toEqual({
+    const result = await tool.execute({
+      ...BASE_INPUT,
+      answers: {
+        "Which implementation path should AgenC take?":
+          "Use AgenC picker (Recommended)",
+      },
+    });
+
+    expect(result).toMatchObject({
       content: "User did not provide answers.",
       isError: true,
     });
+    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+  });
+
+  test("attests malformed input as confirmed no-effect", async () => {
+    const result = await createAskUserQuestionTool().execute({ questions: [] });
+
+    expect(result).toMatchObject({
+      content: "questions must contain 1-4 items",
+      isError: true,
+    });
+    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
   });
 
   test("does not expose internal answer fields in the model schema", () => {
@@ -188,7 +199,7 @@ describe("AskUserQuestion tool", () => {
     expect(first.isError).toBeUndefined();
     await expect(
       tool.execute({ ...BASE_INPUT, __callId: "call-once" }),
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       content: "User did not provide answers.",
       isError: true,
     });
@@ -206,7 +217,7 @@ describe("AskUserQuestion tool", () => {
 
     await expect(
       tool.execute({ ...BASE_INPUT, __callId: "other-call" }),
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       content: "User did not provide answers.",
       isError: true,
     });

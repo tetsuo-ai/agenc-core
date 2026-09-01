@@ -3096,6 +3096,20 @@ describe("model-facing tools", () => {
       "fork_context is not supported",
     );
 
+    const invalidReasoningEffort = await spawnAgent.execute({
+      message: "inspect",
+      task_name: "task_1",
+      reasoning_effort: "maximum",
+    });
+    expect(invalidReasoningEffort.isError).toBe(true);
+    expect(JSON.parse(invalidReasoningEffort.content).error).toBe(
+      "invalid reasoning_effort",
+    );
+    expect(invalidReasoningEffort.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+    });
+
     const wait = tools.find((tool) => tool.name === "wait_agent")!;
     const zeroTimeout = await wait.execute({ timeout_ms: 0 });
     expect(zeroTimeout.isError).toBe(true);
@@ -3172,7 +3186,7 @@ describe("model-facing tools", () => {
     );
   });
 
-  it("uses a clean fork by default for plain spawn_agent calls", async () => {
+  it("treats blank optional spawn_agent fields as omitted", async () => {
     const session = fakeSession();
     delegateMock.mockResolvedValue({
       kind: "async_launched",
@@ -3208,6 +3222,12 @@ describe("model-facing tools", () => {
       .execute({
         message: "review game.py",
         task_name: "reviewer",
+        agent_type: "",
+        model: "",
+        reasoning_effort: "",
+        service_tier: "",
+        fork_turns: "",
+        isolation: "",
       });
 
     expect(result.isError).not.toBe(true);
@@ -3222,8 +3242,47 @@ describe("model-facing tools", () => {
         keepAlive: true,
       }),
     );
-    // Clean fork by default: no full-history forkMode is passed.
-    expect(delegateMock.mock.calls.at(-1)?.[0]).not.toHaveProperty("forkMode");
+    const delegated = delegateMock.mock.calls.at(-1)?.[0];
+    expect(delegated).not.toHaveProperty("role");
+    expect(delegated).not.toHaveProperty("model");
+    expect(delegated).not.toHaveProperty("reasoningEffort");
+    expect(delegated).not.toHaveProperty("serviceTier");
+    expect(delegated).not.toHaveProperty("forkMode");
+    expect(delegated).not.toHaveProperty("isolation");
+  });
+
+  it("confirms no effect when spawn_agent model preflight rejects", async () => {
+    const session = fakeSession();
+    const modelsManager = (
+      session.services as unknown as {
+        modelsManager: {
+          tryListModels: () => readonly unknown[] | null;
+          listModels: () => Promise<readonly unknown[]>;
+        };
+      }
+    ).modelsManager;
+    modelsManager.tryListModels = () => null;
+    modelsManager.listModels = async () => {
+      throw new Error("model list unavailable");
+    };
+
+    const spawn = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    }).find((tool) => tool.name === "spawn_agent")!;
+    const result = await spawn.execute({
+      message: "inspect",
+      task_name: "list_failure",
+      model: "remote-model",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toBe("model list unavailable");
+    expect(result.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+    });
+    expect(delegateMock).not.toHaveBeenCalled();
   });
 
   it("normalizes common hyphenated spawn_agent task names", async () => {

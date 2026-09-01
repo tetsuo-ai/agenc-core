@@ -1,4 +1,9 @@
-import type { Tool, ToolResult } from "../../tools/types.js";
+import {
+  safeStringify,
+  type Tool,
+  type ToolResult,
+} from "../../tools/types.js";
+import { validationErrorToolResult } from "../../tools/results.js";
 import type { Session } from "../../session/session.js";
 import type { ModelInfo, ReasoningEffort } from "../../session/turn-context.js";
 import { delegate } from "../delegate.js";
@@ -114,6 +119,27 @@ function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
   return undefined;
 }
 
+const SPAWN_VALIDATION_EVIDENCE_REF = "tool:agents.spawn-agent:validation";
+
+/**
+ * Return a rejected spawn preflight without poisoning the admitted mutation
+ * gate. Callers must use this only before delegate() can create a child or a
+ * worktree; failures at or beyond that boundary remain unknown-effect errors.
+ */
+function spawnValidationError(reason: string): ToolResult {
+  return validationErrorToolResult(
+    SPAWN_VALIDATION_EVIDENCE_REF,
+    safeStringify({ error: reason }),
+  );
+}
+
+function confirmedNoSpawn(result: ToolResult): ToolResult {
+  return validationErrorToolResult(
+    SPAWN_VALIDATION_EVIDENCE_REF,
+    result.content,
+  );
+}
+
 function parseForkTurns(value: unknown): ToolResult | ForkMode | undefined {
   // Default (omitted/empty): clean fork — the child starts fresh with only the
   // task directive, NOT the full parent conversation. This keeps an N-agent
@@ -131,9 +157,8 @@ function parseForkTurns(value: unknown): ToolResult | ForkMode | undefined {
       return { kind: "last_n_turns", n: parsed };
     }
   }
-  return json(
-    { error: "fork_turns must be `none`, `all`, or a positive integer string" },
-    true,
+  return spawnValidationError(
+    "fork_turns must be `none`, `all`, or a positive integer string",
   );
 }
 
@@ -393,7 +418,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     args: Record<string, unknown>,
   ): Promise<ToolResult> => {
     const sessionOrError = getSessionOrError(opts);
-    if (!("conversationId" in sessionOrError)) return sessionOrError;
+    if (!("conversationId" in sessionOrError)) {
+      return confirmedNoSpawn(sessionOrError);
+    }
     const session = sessionOrError;
     const strict = strictArgs(args, {
       allowed: new Set([
@@ -409,7 +436,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       ]),
       required: ["message", "task_name"],
     });
-    if (strict) return strict;
+    if (strict) return confirmedNoSpawn(strict);
     for (const key of [
       "message",
       "task_name",
@@ -421,23 +448,22 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       "isolation",
     ]) {
       if (args[key] !== undefined && typeof args[key] !== "string") {
-        return json({ error: `${key} must be a string` }, true);
+        return spawnValidationError(`${key} must be a string`);
       }
     }
     if (
       args.fork_context !== undefined &&
       typeof args.fork_context !== "boolean"
     ) {
-      return json({ error: "fork_context must be a boolean" }, true);
+      return spawnValidationError("fork_context must be a boolean");
     }
     const prompt = stringValue(args.message);
     if (!prompt || prompt.trim().length === 0) {
-      return json({ error: "message is required" }, true);
+      return spawnValidationError("message is required");
     }
     if (args.fork_context !== undefined) {
-      return json(
-        { error: "fork_context is not supported in MultiAgentV2; use fork_turns instead" },
-        true,
+      return spawnValidationError(
+        "fork_context is not supported in MultiAgentV2; use fork_turns instead",
       );
     }
     try {
@@ -446,32 +472,30 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         opts.workspace.id,
       );
     } catch (error) {
-      return json(
-        { error: error instanceof Error ? error.message : String(error) },
-        true,
+      return spawnValidationError(
+        error instanceof Error ? error.message : String(error),
       );
     }
     const { control, registry } = opts.ensureAgentControl(session);
     try {
       control.assertRoleWorkspace(opts.workspace);
     } catch (error) {
-      return json(
-        { error: error instanceof Error ? error.message : String(error) },
-        true,
+      return spawnValidationError(
+        error instanceof Error ? error.message : String(error),
       );
     }
     const current = currentAgentContext(session, args, opts);
-    if (isCurrentAgentContextError(current)) return current;
+    if (isCurrentAgentContextError(current)) return confirmedNoSpawn(current);
     const rawRole = stringValue(args.agent_type);
     // The session catalog performs exact-name lookup before public alias
     // fallback. Canonicalizing here would make an executable plugin/workspace
     // definition whose exact name is also a built-in alias disappear.
     const role = rawRole;
     const model = stringValue(args.model);
-    const rawReasoningEffort = args.reasoning_effort;
+    const rawReasoningEffort = stringValue(args.reasoning_effort);
     const reasoningEffort = parseReasoningEffort(rawReasoningEffort);
     if (rawReasoningEffort !== undefined && reasoningEffort === undefined) {
-      return json({ error: "invalid reasoning_effort" }, true);
+      return spawnValidationError("invalid reasoning_effort");
     }
     const rawTaskName = stringValue(args.task_name);
     const taskName = normalizeSpawnTaskName(rawTaskName);
@@ -481,30 +505,22 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       forkMode?.kind === "full_history" &&
       (role !== undefined || model !== undefined || reasoningEffort !== undefined)
     ) {
-      return json(
-        {
-          error:
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.",
-        },
-        true,
+      return spawnValidationError(
+        "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.",
       );
     }
     const rawIsolation = stringValue(args.isolation);
     if (
-      args.isolation !== undefined &&
+      rawIsolation !== undefined &&
       rawIsolation !== "none" &&
       rawIsolation !== "worktree"
     ) {
-      return json({ error: "isolation must be `none` or `worktree`" }, true);
+      return spawnValidationError("isolation must be `none` or `worktree`");
     }
     const isolation = rawIsolation === "worktree" ? ("worktree" as const) : undefined;
     if (isolation !== undefined && (!taskName || taskName.length === 0)) {
-      return json(
-        {
-          error:
-            "worktree isolation requires a non-empty task_name (it identifies the agent worktree)",
-        },
-        true,
+      return spawnValidationError(
+        "worktree isolation requires a non-empty task_name (it identifies the agent worktree)",
       );
     }
     const requestedServiceTier = stringValue(args.service_tier);
@@ -549,7 +565,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     };
     const failSpawn = (reason: string): ToolResult => {
       emitSpawnFailureEnd(reason);
-      return json({ error: reason }, true);
+      return spawnValidationError(reason);
     };
     let resolvedRole: AgentRole | undefined;
     try {
@@ -559,11 +575,16 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     } catch (error) {
       return failSpawn(error instanceof Error ? error.message : String(error));
     }
-    const overrideError = await validateSpawnModelOverrides({
-      session,
-      ...(model !== undefined ? { model } : {}),
-      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-    });
+    let overrideError: ToolResult | null;
+    try {
+      overrideError = await validateSpawnModelOverrides({
+        session,
+        ...(model !== undefined ? { model } : {}),
+        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      });
+    } catch (error) {
+      return failSpawn(error instanceof Error ? error.message : String(error));
+    }
     if (overrideError) {
       const overrideReason =
         typeof overrideError.content === "string"
@@ -581,7 +602,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
             })()
           : "spawn_agent override validation failed";
       emitSpawnFailureEnd(overrideReason);
-      return overrideError;
+      return confirmedNoSpawn(overrideError);
     }
     const roleConfiguredModel = roleModel(resolvedRole);
     const roleConfiguredReasoningEffort = roleReasoningEffort(resolvedRole);
@@ -589,17 +610,25 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const effectiveModel = roleConfiguredModel ?? model;
     const effectiveReasoningEffort =
       roleConfiguredReasoningEffort ?? reasoningEffort;
-    const roleOverrideError =
+    let roleOverrideError: ToolResult | null = null;
+    if (
       roleConfiguredModel !== undefined ||
       roleConfiguredReasoningEffort !== undefined
-        ? await validateSpawnModelOverrides({
-            session,
-            ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
-            ...(effectiveReasoningEffort !== undefined
-              ? { reasoningEffort: effectiveReasoningEffort }
-              : {}),
-          })
-        : null;
+    ) {
+      try {
+        roleOverrideError = await validateSpawnModelOverrides({
+          session,
+          ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
+          ...(effectiveReasoningEffort !== undefined
+            ? { reasoningEffort: effectiveReasoningEffort }
+            : {}),
+        });
+      } catch (error) {
+        return failSpawn(
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
     if (roleOverrideError) {
       const overrideReason =
         typeof roleOverrideError.content === "string"
@@ -617,18 +646,25 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
             })()
           : "spawn_agent role override validation failed";
       emitSpawnFailureEnd(overrideReason);
-      return roleOverrideError;
+      return confirmedNoSpawn(roleOverrideError);
     }
-    const serviceTierResult = await resolveSpawnServiceTier({
-      session,
-      ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
-      ...(requestedServiceTier !== undefined
-        ? { requestedServiceTier }
-        : {}),
-      ...(roleConfiguredServiceTier !== undefined
-        ? { roleServiceTier: roleConfiguredServiceTier }
-        : {}),
-    });
+    let serviceTierResult: Awaited<
+      ReturnType<typeof resolveSpawnServiceTier>
+    >;
+    try {
+      serviceTierResult = await resolveSpawnServiceTier({
+        session,
+        ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
+        ...(requestedServiceTier !== undefined
+          ? { requestedServiceTier }
+          : {}),
+        ...(roleConfiguredServiceTier !== undefined
+          ? { roleServiceTier: roleConfiguredServiceTier }
+          : {}),
+      });
+    } catch (error) {
+      return failSpawn(error instanceof Error ? error.message : String(error));
+    }
     if ("content" in serviceTierResult) {
       const overrideReason =
         typeof serviceTierResult.content === "string"
@@ -646,7 +682,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
             })()
           : "spawn_agent service tier validation failed";
       emitSpawnFailureEnd(overrideReason);
-      return serviceTierResult;
+      return confirmedNoSpawn(serviceTierResult);
     }
     if (!taskName) {
       return failSpawn("task_name is required");

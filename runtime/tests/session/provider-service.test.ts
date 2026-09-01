@@ -551,4 +551,56 @@ describe("SessionProviderService", () => {
     ).toThrow('unknown bound provider "unknown-provider"');
     expect(service.current()).toBe(before);
   });
+
+  test("restores a failed commit with a new revision that invalidates stale work", async () => {
+    const service = new SessionProviderService({
+      initialProvider: initialProvider("initial"),
+    });
+    const before = service.current();
+    const stale = await service.prepare(
+      { provider: "openai-compatible", model: "stale" },
+      {},
+    );
+    const committed = await service.prepare(
+      { provider: "openai-compatible", model: "replacement" },
+      {},
+    );
+    service.commit(committed);
+
+    const restored = service.restoreAfterFailedCommit(
+      committed.binding,
+      before,
+    );
+
+    expect(restored).toMatchObject({
+      provider: before.provider,
+      model: before.model,
+      instance: before.instance,
+      factoryOptions: before.factoryOptions,
+      revision: committed.binding.revision + 1,
+    });
+    expect(() => service.commit(stale)).toThrow(/changed while.*prepared/i);
+  });
+
+  test("never overwrites a newer provider revision during rollback", async () => {
+    const service = new SessionProviderService({
+      initialProvider: initialProvider("initial"),
+    });
+    const before = service.current();
+    const first = await service.prepare(
+      { provider: "openai-compatible", model: "first" },
+      {},
+    );
+    service.commit(first);
+    const newer = await service.prepare(
+      { provider: "openai-compatible", model: "newer" },
+      {},
+    );
+    service.commit(newer);
+
+    expect(() =>
+      service.restoreAfterFailedCommit(first.binding, before),
+    ).toThrow("live binding changed after commit");
+    expect(service.current()).toBe(newer.binding);
+  });
 });

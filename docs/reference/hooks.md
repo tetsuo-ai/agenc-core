@@ -38,6 +38,12 @@ configured-hook engine (`runtime/src/hooks/engine/discovery.ts`):
 
 CamelCase and lowerCamel aliases normalize (e.g. `preToolUse` → `PreToolUse`).
 
+A `PreToolUse` **allow** does not skip tools that set
+`requiresUserInteraction()` (`AskUserQuestion` and the other input
+prompts). Those calls still reach the answer-bearing resolver. A hook
+**deny** still wins. See
+[tools-permissions-sandbox.md](tools-permissions-sandbox.md#interactive-tool-prompts).
+
 The SDK type list in `entrypoints/sdk/coreTypes.ts` (`HOOK_EVENTS`) is **wider**
 (e.g. `SubagentStart`, `Setup`, `ConfigChange`, `InstructionsLoaded`, …). Those
 extra names are for the broader runtime/SDK surface; **TOML `hooks` validation

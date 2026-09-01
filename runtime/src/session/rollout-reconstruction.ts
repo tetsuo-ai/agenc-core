@@ -217,7 +217,8 @@ function validateRawCheckpointBeforeReplay(params: {
   if (readable.version === 1) {
     return {
       status: "deferred",
-      reason: "legacy checkpoint requires an atomic schema-v2 upgrade",
+      reason:
+        "legacy checkpoint requires an atomic checkpoint upgrade before replay",
     };
   }
   if (params.projection === undefined) {

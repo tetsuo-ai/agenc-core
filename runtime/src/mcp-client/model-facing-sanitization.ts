@@ -35,6 +35,7 @@ const MCP_SCHEMA_MAP_KEYS = new Set([
   "definitions",
   "dependentSchemas",
 ]);
+const MCP_INPUT_SCHEMA_ROOT_TYPE = "object";
 
 export interface ModelFacingMcpToolDescriptionOptions {
   readonly modelFacingName: string;
@@ -63,7 +64,36 @@ export interface McpInputSchemaSanitizationResult {
 }
 
 function openObjectSchema(): Record<string, unknown> {
-  return { type: "object", properties: {} };
+  return { type: MCP_INPUT_SCHEMA_ROOT_TYPE, properties: {} };
+}
+
+/**
+ * MCP tool inputSchema is an object schema. Servers often omit `type`
+ * (empty no-arg `{}`, or `properties` / `required` only). Leave an
+ * explicit type untouched so unions and $ref intersections stay intact.
+ */
+function withMcpObjectRootType(
+  schema: Record<string, unknown>,
+): Record<string, unknown> {
+  if (Object.hasOwn(schema, "type")) {
+    return schema;
+  }
+  const output: Record<string, unknown> = {};
+  for (const key of Object.keys(schema)) {
+    Object.defineProperty(output, key, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: schema[key],
+    });
+  }
+  Object.defineProperty(output, "type", {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: MCP_INPUT_SCHEMA_ROOT_TYPE,
+  });
+  return output;
 }
 
 function plainRecord(value: unknown): Record<string, unknown> | undefined {
@@ -260,7 +290,8 @@ export function sanitizeMcpInputSchemaForModel(
     return { schema: openObjectSchema(), issue: { code: "invalid_root" } };
   }
 
-  const actualBytes = Buffer.byteLength(JSON.stringify(schema), "utf8");
+  const normalized = withMcpObjectRootType(schema);
+  const actualBytes = Buffer.byteLength(JSON.stringify(normalized), "utf8");
   if (actualBytes > MCP_MODEL_FACING_METADATA_LIMITS.schemaJsonBytes) {
     return {
       schema: openObjectSchema(),
@@ -271,5 +302,5 @@ export function sanitizeMcpInputSchemaForModel(
       },
     };
   }
-  return { schema };
+  return { schema: normalized };
 }
