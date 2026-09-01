@@ -18,6 +18,7 @@ Sources of truth:
 | Resolution errors | `runtime/src/plugins/resolution.ts` (`redactPluginResolutionError`) |
 | Archive fetch | `runtime/src/plugins/resolution.ts` (`fetchBytesWithRedirectPolicy`) |
 | Recorded source | `runtime/src/plugins/cli/pluginOperations.ts` (`writeInstallMetadata`, `readInstalledPluginSource`) |
+| Update success source | `updatePluginOp` + `formatPluginUpdateSource` via `redactPluginInstallSource` |
 | Publisher signatures | `runtime/src/plugins/resolution.ts` (`verifyResolvedPluginSignature`) |
 | Config | `[plugins]` in [config.md](config.md) |
 
@@ -545,6 +546,47 @@ agenc plugin update tool --source 'https://github.com/acme/tool.mcpb?download=1'
 
 The bare update fails with `plugin tool has no recorded source; rerun with --source <source>`.
 The third command supplies the original specifier again.
+
+### Update success source redaction
+
+`installPluginOp` does not return the specifier. Text-mode `plugin install`
+prints only id, scope, and destination.
+
+`updatePluginOp` in `runtime/src/plugins/cli/pluginOperations.ts` returns
+`source: redactPluginInstallSource(source)` after a successful refresh.
+Text-mode `plugin update` then formats that field through
+`formatPluginUpdateSource` in `pluginCliCommands.ts`:
+
+```text
+Updated plugin <id> from <source>: <destination>
+```
+
+`redactPluginInstallSource` in `runtime/src/plugins/resolution.ts` rewrites
+string sources with `redactPluginSource` (credential-URL rewrite, then
+`redactSecrets`). Structured git sources keep `path` / `ref` / `sha` and
+rewrite only `url`. The CLI prints the string, or that `url`. URL userinfo is
+removed and the entire query is replaced, regardless of parameter names.
+Secret-shaped text in a path or fragment is handled by the later secret
+sanitizer.
+
+```bash
+agenc plugin update private-demo --source 'https://opaque-token@agenc.tech/plugins/private.tgz?access_token=secretvalue'
+```
+
+```text
+Updated plugin private-demo from https://redacted@agenc.tech/plugins/private.tgz?redacted=1: <destination>
+```
+
+The printed specifier is display text. It remains replayable only when the
+full redaction function returns the source byte-for-byte unchanged. Plain
+local paths and URLs can meet that condition. A query string always changes,
+URL parsing can normalize a value, and generic secret redaction can change a
+path or fragment. This page covers the success payload and stdout line only.
+
+| Symptom | What to check |
+| --- | --- |
+| Success line shows a redacted userinfo or query marker | Expected when `--source` (or a recorded non-redacted source) had userinfo or a query string. Keep the original specifier for the next update. |
+| In-process `result.source` still contains a token | Read `updatePluginOp`'s returned `source`, not the input passed in. |
 
 ### Marketplace
 

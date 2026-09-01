@@ -646,6 +646,13 @@ Error so CLI, `inspect`, and JSON serialization never see URL userinfo,
 signed query values, or `ERR_INVALID_URL.input`. See
 [Native archive fetch error redaction](skills-plugins.md#native-archive-fetch-error-redaction).
 
+Successful `plugin update` prints `Updated plugin <id> from <source>:
+<destination>`. `<source>` is `updatePluginOp`'s result after
+`redactPluginInstallSource`, so URL userinfo, the entire query, and
+secret-shaped text are not echoed.
+Install text mode never prints the specifier. See
+[Update success source redaction](skills-plugins.md#update-success-source-redaction).
+
 ---
 
 ## `skills`
