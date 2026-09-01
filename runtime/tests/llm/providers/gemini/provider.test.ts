@@ -1096,6 +1096,17 @@ describe("GeminiProvider", () => {
       label: "an object preserved by an overlapping oneOf under not",
       schema: { type: "object", not: { oneOf: [{}, {}] } },
     },
+    {
+      label: "an object applicator root without an explicit type",
+      schema: {
+        properties: { value: { type: "string" } },
+        required: ["value"],
+      },
+    },
+    {
+      label: "an additionalProperties object root without an explicit type",
+      schema: { additionalProperties: true },
+    },
   ])("preserves $label tool root", async ({ schema }) => {
     const declaration = await dispatchGeminiToolSchema(schema);
     expect(declaration.parametersJsonSchema).toEqual(schema);

@@ -1920,6 +1920,30 @@ const GEMINI_TOOL_NON_VALIDATING_SCHEMA_KEYS: ReadonlySet<string> = new Set([
   "writeOnly",
 ]);
 
+const GEMINI_TOOL_OBJECT_APPLICATOR_KEYS: ReadonlySet<string> = new Set([
+  "additionalProperties",
+  "dependentRequired",
+  "dependentSchemas",
+  "maxProperties",
+  "minProperties",
+  "patternProperties",
+  "properties",
+  "propertyNames",
+  "required",
+  "unevaluatedProperties",
+]);
+
+function geminiToolObjectApplicatorDomain(
+  schema: Record<string, unknown>,
+): ReadonlySet<string> | undefined {
+  for (const key of GEMINI_TOOL_OBJECT_APPLICATOR_KEYS) {
+    if (Object.hasOwn(schema, key)) {
+      return new Set(["object"]);
+    }
+  }
+  return undefined;
+}
+
 function complementGeminiToolRootTypes(
   domain: ReadonlySet<string>,
 ): Set<string> {
@@ -2340,6 +2364,10 @@ function geminiToolSchemaRootDomain(
         geminiToolExplicitTypeDomain(schema.type),
       );
     }
+    domain = constrainGeminiToolRootDomain(
+      domain,
+      geminiToolObjectApplicatorDomain(schema),
+    );
     domain = constrainGeminiToolRootDomain(
       domain,
       geminiToolSchemaLiteralDomain(schema),
