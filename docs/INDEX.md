@@ -63,7 +63,7 @@ history; the linked pages below are current product truth.
 | [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, spawn `task_name` normalization, deferred first message, worktree evidence, and turn-scoped abort |
 | [reference/workflows.md](reference/workflows.md) | Version-2 agent DAG manifests, derived child agent names, scheduling, handoff artifacts, limits, and result outcomes |
 | [reference/memory.md](reference/memory.md) | Persona, AGENC.md, auto-memory paths, full-corpus index, privacy |
-| [reference/mcp.md](reference/mcp.md) | MCP client and server, plugin-declared server precedence, and Landlock diagnostics |
+| [reference/mcp.md](reference/mcp.md) | MCP client and server, plugin-declared server precedence, model-facing inputSchema sanitization, and Landlock diagnostics |
 | [reference/skills-plugins.md](reference/skills-plugins.md) | Skills, `agenc skills list`, plugin registration, marketplace install, publisher signatures, plugin-update signature policy, explicit local install sources, repository-controlled scope stripping, and canonical `plugins.allowlist` identity |
 | [reference/hooks.md](reference/hooks.md) | Session lifecycle hooks vs gateway HTTP hooks, including UserPromptSubmit block/warn and daemon session survival |
 | [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, live bypass consent, OS sandbox, home-workspace remediation, launcher contract, and plugin MCP confinement |

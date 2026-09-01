@@ -126,7 +126,10 @@ Tool schemas stay intact. Type arrays, `additionalProperties`, `$defs`, `$ref`,
 URI-fragment pointers, `anyOf`, and `oneOf` reach the provider without local
 inlining or keyword rewriting. Repeated and recursive refs do not consume a
 local expansion budget. This also applies to MCP `inputSchema` after its
-model-facing size and annotation sanitization.
+model-facing size and annotation sanitization. That sanitizer can replace
+an invalid or oversized schema with an open object before this Gemini
+check runs; see
+[mcp.md](reference/mcp.md#model-facing-inputschema-sanitization).
 
 Gemini requires tool parameters to describe a JSON object. AgenC checks that
 root before dispatch without changing the accepted schema. An explicit object,
@@ -184,6 +187,14 @@ combinator analysis accepts at most 10,000 steps and 256 nested analysis
 levels. These are local safety limits, not Gemini service limits. A schema
 that exceeds one of them fails before chat, streaming, or token counting.
 
+The snapshot walks enumerable own properties once. It does not call
+`toJSON`. Non-enumerable fields are ignored. `undefined`, functions, and
+non-finite numbers fail as non-JSON values. Holes in arrays fail at the
+missing index (`sparse schema arrays are not supported`) before keyword
+policy runs. `$anchor` must match the JSON Schema 2020-12 grammar
+`[A-Za-z_][-A-Za-z0-9._]*`. `$id` must not contain a non-empty fragment.
+Duplicate resource identities or resource-scoped anchors fail locally.
+
 Primary API references:
 
 - [Gemini Developer API: `FunctionDeclaration` and `GenerationConfig`](https://ai.google.dev/api/generate-content)
@@ -221,6 +232,8 @@ but `builtTools` applies the local-profile filter afterward.
 | Gemini tool schema fails locally at `tools["name"].parameters`                      | The analyzed root is not object-only, a finite `const`/`enum` intersection reached through local `$ref` or `allOf` is empty, or a root reference does not resolve locally                                                        |
 | Gemini response schema fails locally with `Gemini cannot preserve schema at <path>` | Structured output used an unsupported keyword, a lossy `oneOf`, an invalid or remote `$ref`, a non-`$` sibling beside `$ref`, or a required reference cycle. Follow the path in the error and use the documented response subset |
 | Custom Gemini endpoint rejects `parametersJsonSchema` or `responseJsonSchema`       | `GEMINI_BASE_URL` must expose the current native Gemini request shape. Update the proxy or use the official Developer API or Vertex endpoint                                                                                     |
+| Gemini MCP tool advertises empty `properties`                                       | Model-facing sanitization already replaced the schema with `{ type: "object", properties: {} }`. The object-root check then passes. See [mcp.md](reference/mcp.md#model-facing-inputschema-sanitization)                        |
+| Gemini fails locally with `sparse schema arrays are not supported`                  | A schema array has a hole at the reported index. Dense arrays, including permitted empty arrays, keep their order. Accessor-backed holes fail before chat, streaming, or token counting                                           |
 | NIM ignores or 400s `reasoning_effort`                                              | Family has no documented enum, or the value is outside it                                                                                                                                                                        |
 
 There is no operator config for the grammar-safe key set, the 8192 ceiling, or

@@ -199,6 +199,59 @@ only a displayed connection state. In daemon mode the menu reads the passive
 status projection and sends mutations back to the daemon; it does not own
 transports or executable MCP clients.
 
+### Model-facing inputSchema sanitization
+
+Outbound MCP `inputSchema` is sanitized before any provider sees it
+(`sanitizeMcpInputSchemaForModel` in
+`runtime/src/mcp-client/model-facing-sanitization.ts`). The session tool
+bridge (`runtime/src/mcp-client/tools.ts`) and the compatibility client
+(`runtime/src/services/mcp/client.ts`) share that helper. Only the
+model-facing catalog copy is rewritten. The MCP server still receives the
+model's arguments over the protocol.
+
+Intent: treat server metadata as untrusted capability description, not
+instructions, and keep property names byte-identical so generated
+arguments still match the server.
+
+The sanitizer:
+
+- Keeps structural keywords, including `$ref`, `$defs`, `definitions`,
+  `properties`, `patternProperties`, and `dependentSchemas`
+- Drops instruction-like annotations **outside** those schema maps:
+  `description`, `title`, `examples`, `default`, `$comment`,
+  `markdownDescription`, `deprecated`, `readOnly`, `writeOnly`
+- Never rewrites keys. A Unicode lookalike or NFKC collision is
+  `unsafe_key`, not a silent rename
+- Bounds schema strings to **1,024** UTF-8 bytes, arrays to **64** items,
+  and nesting to **16** levels
+  (`MCP_MODEL_FACING_METADATA_LIMITS`). The finished JSON must be at most
+  **32 KiB**
+- Drops non-finite numbers and non-JSON values. Cycles, non-object
+  roots, and accessor-only properties are `invalid_root`
+
+A `$ref` that names a local `$defs` / `definitions` entry therefore
+survives into the provider catalog:
+
+```json
+{
+  "type": "object",
+  "$defs": {
+    "item": { "type": "object", "properties": { "id": { "type": "string" } } }
+  },
+  "properties": { "item": { "$ref": "#/$defs/item" } }
+}
+```
+
+Failure is fail-open for the catalog: the model sees
+`{ "type": "object", "properties": {} }` so the tool remains callable.
+`too_large` and `unsafe_key` log a warning. `invalid_root` does not.
+Gemini's later object-root check accepts that fallback, so an empty
+parameter list is not a Gemini schema error. Local `$ref` values that
+survive sanitization are sent intact through native
+`parametersJsonSchema`; they are no longer dropped by a local OpenAPI
+compiler. See
+[provider-tool-compat.md](../provider-tool-compat.md#gemini-native-json-schema).
+
 ### Compaction summaries stay tool-free
 
 Bootstrap installs the live registry (`registry.toLLMTools()`, including every
@@ -336,11 +389,14 @@ the daemon-owned admission kernel.
 | One plugin server missing, session still starts | A broken plugin source is skipped. A duplicate command/URL is suppressed by an enabled manual server. Check `/plugin` for `mcp-server-suppressed-duplicate`. |
 | `/compact` or auto-compact denied `context_window_exceeded` on the **summary** | Summaries no longer inherit the MCP/builtin factory catalog or Grok native tools. If admission still denies, the transcript + system prompt + reserved output themselves exceed the window. Confirm the live window (not the 128k fallback), shrink `/compact` focus, or compact earlier. `/context` still shows the next-turn catalog size; that is not the summary request. |
 | Mid-turn dies `mid_turn_compact_failed` after adding MCP servers | A large catalog can raise the estimate past the fire threshold and raise provider-reported `promptTokens` past the mid-turn outer gate. The summary request should still pass admission. Check the disable-flag rules and the 2-failure digest guard on [CP-0006](../design/critical-path/0006-compaction-transaction.md), and whether last-sample `promptTokens` disagreed with the compact-module estimate. |
+| Gemini or another provider advertises an MCP tool with empty `properties` | Model-facing sanitization replaced the schema with an open object (`too_large`, `unsafe_key`, or silent `invalid_root`). Check MCP server logs for the byte-limit or unsafe-key warning. Fix the advertised `inputSchema`; do not expect Gemini to reject the fallback. |
+| Gemini fails locally at `tools["mcp.<server>.<tool>"].parameters` | The sanitized schema reached native `parametersJsonSchema` and failed the object-root proof (scalar/array/nullable root, unresolved `$ref`, or an empty finite `const`/`enum` intersection). See [provider-tool-compat.md](../provider-tool-compat.md#gemini-native-json-schema). |
 
 ## Related
 
 - Tools / permissions overview: [`tools-permissions-sandbox.md`](tools-permissions-sandbox.md)
 - Plugin install scopes, manifests, and repository-controlled stripping: [`skills-plugins.md`](skills-plugins.md)
+- Gemini native JSON Schema and object-root proof: [`provider-tool-compat.md`](../provider-tool-compat.md#gemini-native-json-schema)
 - Admission token accounting: [`provider-aware-token-accounting.md`](../design/provider-aware-token-accounting.md)
 - Client README: [`../../runtime/src/mcp-client/README.md`](../../runtime/src/mcp-client/README.md)
 - Architecture map: [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
