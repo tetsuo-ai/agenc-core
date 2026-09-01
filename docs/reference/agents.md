@@ -21,9 +21,9 @@ in `runtime/src/bin/model-facing-tools.ts`, not inside `v2/index.ts`.
 | --- | --- |
 | `spawn_agent` | Spawn a reusable worker and its initial bounded task. Required `message` + `task_name`. Optional `agent_type`, `model`, `reasoning_effort`, `service_tier`, `fork_turns`, `isolation` (`none` \| `worktree`). Blank optional strings are omitted. `fork_context` is accepted then rejected (`use fork_turns instead`). Preflight failures before `delegate()` are confirmed no-effect: [spawn preflight](#spawn_agent-preflight). |
 | `wait_agent` | Wait for, then drain, all delivered mailbox updates. `timeout_ms` only (default 30s, min 10s, max 1h). No target filter. |
-| `close_agent` | Terminally close a worker and its descendants |
-| `assign_task` | Admit one new task to an idle reusable worker (**triggers a turn**) |
-| `send_message` | Queue passive context (**does not** trigger a turn) |
+| `close_agent` | Terminally close a worker and its descendants. Argument and identity refusals before `shutdown()` are confirmed no-effect: [agent validation refusals](#agent-validation-refusals). |
+| `assign_task` | Admit one new task to an idle reusable worker (**triggers a turn**). Argument, identity, and target-resolution refusals before `assignTask()` are confirmed no-effect: [agent validation refusals](#agent-validation-refusals). |
+| `send_message` | Queue passive context (**does not** trigger a turn). The same pre-delivery refusals as `assign_task` are confirmed no-effect: [agent validation refusals](#agent-validation-refusals). |
 | `list_agents` | Read the live agent tree and current statuses. Optional `path_prefix`. |
 | `spawn_agents_on_csv` | Fan out workers from CSV rows (job orchestrator) |
 | `report_agent_job_result` | Report a CSV/job worker result back to the orchestrator |
@@ -134,6 +134,13 @@ The runtime checks those conditions, allocates `task_id` + `turn_id`, marks the
 assignment outstanding, and enqueues the trigger atomically. A rejected
 assignment enqueues nothing. A successful tool response reports acceptance and
 the two IDs; completion arrives later as a correlated receipt.
+
+Argument, identity, target-resolution, empty-message, and byte-cap refusals
+happen before `assignTask()` / `sendInterAgentCommunication()` and attest
+`confirmed_no_effect`. Admission throws from inside `assignTask()` (not idle,
+sender not an ancestor, outstanding assignment, mailbox backpressure) stay
+ordinary `isError`. Detail:
+[agent validation refusals](#agent-validation-refusals).
 
 `send_message` shares strict non-empty `target` and `message` validation but is
 passive. It neither allocates a task nor starts a provider turn. Authenticated
@@ -292,6 +299,63 @@ started, so the gate must not claim the call touched nothing.
 | Blank `model` / `reasoning_effort` / `isolation` still inherited the parent | Expected. Empty optional strings are omitted, not rejected. |
 | `invalid reasoning_effort` | Nonempty value was not `low` / `medium` / `high` / `xhigh` / `none`. |
 | `isolation must be \`none\` or \`worktree\`` | Nonempty `isolation` was something else. Use `""` to omit. |
+
+`close_agent`, `assign_task`, and `send_message` use a sibling helper and a
+different evidence ref:
+[agent validation refusals](#agent-validation-refusals).
+
+### Agent validation refusals
+
+`close_agent`, `assign_task`, and `send_message` are `side-effecting`. The
+live dispatcher (`executePhysical` in `runtime/src/tools/execution.ts`)
+calls `onEffectBoundaryCrossed()` **before** `tool.execute()`. A bare
+`isError` from those tools therefore poisons the session's unknown-outcome
+mutation gate and blocks later `FileWrite` / `Bash` / `spawn_agent` until
+`/resolve`, even when execute never mutated a child, mailbox, or shutdown
+path.
+
+Shared helpers in `runtime/src/agents/v2/common.ts`
+(`agentValidationError`, `confirmedNoAgentEffect`) wrap those pre-mutation
+refusals with `validationErrorToolResult`. Callers must not use them after
+`assignTask()`, `sendInterAgentCommunication()`, or `shutdown()` can have
+run.
+
+| Field | Evidence |
+| --- | --- |
+| `disposition` | `confirmed_no_effect` |
+| `evidenceKind` | `boundary_not_crossed` |
+| `evidenceRef` | `tool:agents.v2:validation` |
+
+`spawn_agent` keeps its own ref (`tool:agents.spawn-agent:validation`):
+[spawn preflight](#spawn_agent-preflight).
+
+| Tool | Attested before | Still unknown-effect after |
+| --- | --- | --- |
+| `close_agent` | Extra/unknown args, missing `target`, missing session, invalid runtime identity, unresolved target, `root is not a spawned agent` | `control.shutdown()` throw (`close failed`, …). `collab_close_begin` has already been emitted. |
+| `assign_task` / `send_message` | Extra/unknown args, missing `target` / `message`, empty or whitespace-only message, 65,536-byte cap, missing session, invalid runtime identity, unresolved target, self-message, `assign_task` targeting root, missing `agent_path` | Throws from `assignTask()` or `sendInterAgentCommunication()` (not idle, sender not an ancestor, outstanding assignment, mailbox backpressure, closed worker). `collab_agent_interaction_begin` has already been emitted. |
+
+```json
+{
+  "target": "/root",
+  "message": "run this"
+}
+```
+
+That `assign_task` call returns
+`Tasks can't be assigned to the root agent` with
+`confirmed_no_effect` / `boundary_not_crossed`. No mailbox item is
+enqueued. The same `/root` target on `close_agent` returns
+`root is not a spawned agent` with the same disposition. A later
+`FileWrite` in the same session is not gated.
+
+| Symptom | What to check |
+| --- | --- |
+| `confirmed_no_effect` / `tool:agents.v2:validation` on close / assign / send | Pre-mutation refusal. No child shutdown, assignment marker, or mailbox send ran. Fix the field or target and retry. Do not `/resolve`. |
+| Ordinary `isError` without that disposition after close / assign / send | `shutdown()`, `assignTask()`, or `sendInterAgentCommunication()` was entered. Inspect the worker and mailbox before retrying. Later FileWrite / Bash / spawn stay blocked until `/resolve`. |
+| `unknown field \`interrupt\`` / `unknown field \`items\`` with `confirmed_no_effect` | Extra args. `send_message` has no `interrupt`; `assign_task` has no `items`. |
+| `Empty message can't be sent to an agent` / `message exceeds the 65536-byte inter-agent limit` | Message refused before delivery. Whitespace-only strings and UTF-8 over the byte cap are both attested no-effect. |
+| `agent reference cannot be resolved` / `invalid-runtime-identity` | Target or signed session identity failed before delivery. |
+| `agent … is not an idle reusable worker` / `must be a strict ancestor` / `already has an outstanding assignment` | `assignTask()` threw after the begin event. This is unknown-effect, not the validation helper. |
 
 ### `spawn_agent` discipline (summary)
 

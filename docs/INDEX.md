@@ -58,9 +58,9 @@ history; the linked pages below are current product truth.
 | [reference/env.md](reference/env.md) | Operator `AGENC_*` / provider key environment variables, and provider credential isolation |
 | [reference/daemon.md](reference/daemon.md) | Daemon lifecycle, socket auth, deferred first messages, bypass consent, bounded-stop and prompt-hook-block survival, admission step identity, in-turn checkpoint resume gates, checkpoint v3 / schema 4 pairing, additive journal vs fail-closed reader, compaction recovery fields, and rebuilt transcript `turnResults` |
 | [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes, Responses continuation, and overflow diagnostics |
-| [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics and `/compact` |
+| [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics, `/compact`, and `/resolve` vs attested agent-validation refusals |
 | [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery (pinned webhook destinations) + hooks HTTP |
-| [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, spawn `task_name` normalization, spawn preflight no-effect, deferred first message, worktree evidence, and turn-scoped abort |
+| [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, spawn `task_name` normalization, spawn preflight no-effect, close/assign/send validation no-effect, deferred first message, worktree evidence, and turn-scoped abort |
 | [reference/workflows.md](reference/workflows.md) | Version-2 agent DAG manifests, derived child agent names, scheduling, handoff artifacts, limits, and result outcomes |
 | [reference/memory.md](reference/memory.md) | Persona, AGENC.md, auto-memory paths, full-corpus index, privacy |
 | [reference/mcp.md](reference/mcp.md) | MCP client and server, plugin-declared server precedence, model-facing inputSchema sanitization, model-facing tool text, and Landlock diagnostics |
@@ -88,7 +88,7 @@ history; the linked pages below are current product truth.
 | [design/verified-change-workflow-m5.md](design/verified-change-workflow-m5.md) | Verified-change workflow contract, session bootstrap, child names, review repair, run refs, and evidence |
 | [design/eval-pilot-executor.md](design/eval-pilot-executor.md) | Pilot preflight and offline-agent executor. Phase 2b egress shipped. Evidence-ledger binding in eval-executor is still target |
 | [design/eval-pilot-executor-phase2b-egress.md](design/eval-pilot-executor-phase2b-egress.md) | Contained real-provider egress implementation and adversarial proof record |
-| [design/swarm-orchestration.md](design/swarm-orchestration.md) | Enforced initial delegation for parallel routing, spawn preflight no-effect, durable task outcomes, immutable worktree evidence, external research, and local evaluation gate |
+| [design/swarm-orchestration.md](design/swarm-orchestration.md) | Enforced initial delegation for parallel routing, spawn preflight no-effect, close/assign/send validation no-effect, durable task outcomes, immutable worktree evidence, external research, and local evaluation gate |
 | [design/mailbox-metadata-contract.md](design/mailbox-metadata-contract.md) | Bounded mailbox metadata decoder/builder (E3a). Implemented |
 | [design/mailbox-metadata-cutover.md](design/mailbox-metadata-cutover.md) | Mailbox.send admits only authenticated metadata handles (E3b) |
 | [roadmap.md](roadmap.md) | Shipped vs open backlog (current product truth) |
