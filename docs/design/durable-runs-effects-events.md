@@ -288,7 +288,7 @@ write so a genuine mid-flight failure remains `unknown_outcome`.
 | Retained session refuses with a createdAt mismatch of a few milliseconds | Current code allows 5s. A larger gap, or a model/provider/objective mismatch, is still a hard refuse. |
 | Interrupted turn starts over instead of continuing from its last checkpoint | See [In-turn checkpoint resume](#in-turn-checkpoint-resume) and check the recorded resume-gate failure reason. |
 | Open reports `durable checkpoint upgrade blocked` | Integrity, mixed-version, or work-limit failure. Resume stays disabled. Preserve the rollout; restore intact source bytes from backup or start a new session. See [Upgrade and downgrade](#upgrade-and-downgrade). |
-| Open reports `resumableState contains unversioned fields` | The checkpoint carries a key outside the versioned slice. New fields need a new checkpoint version and rollout schema. See [Checkpoint slice versions](#checkpoint-slice-versions). |
+| Open reports `resumableState contains unversioned fields` | The checkpoint carries a key outside the versioned slice. New fields need a new checkpoint version and rollout schema. A recovery-journal accept does not prove the resume reader will. See [Checkpoint slice versions](#checkpoint-slice-versions) and [Recovery journal vs checkpoint reader](#recovery-journal-vs-checkpoint-reader). |
 | Older binary refuses `rollout schema v4` | Expected. Schema 4 is newer than a schema-3 runtime. Upgrade the runtime; do not rewrite the header by hand. |
 
 ## In-turn checkpoint resume
@@ -386,7 +386,9 @@ Adding a serialized `resumableState` field requires a new checkpoint version
 **and** a new rollout schema. Do not extend the version-2 allowlist, and do
 not reuse schema 3 for checkpoint v3. Unknown versions and unknown keys fail
 closed. The writer, reader, event types, and recovery journal share
-`runtime/src/session/turn-checkpoint-slice.ts`.
+`runtime/src/session/turn-checkpoint-slice.ts`. The journal validator is
+additive; the resume reader is not. See
+[Recovery journal vs checkpoint reader](#recovery-journal-vs-checkpoint-reader).
 
 `restoreFromCheckpoint` assumes the slice has already passed
 `readTurnCheckpoint`; it does not enforce the wire-integrity contract.
@@ -433,6 +435,28 @@ header before replay or append (`SchemaMismatchError`: `rollout schema v4
 is newer than runtime v3 — please use /fork to migrate or upgrade
 @tetsuo-ai/runtime`). Prefer upgrading the runtime. Do not rewrite the
 header by hand.
+
+### Recovery journal vs checkpoint reader
+
+`isCanonicalEventPayload` / `objectShape` in
+`recovery-journal-schema.ts` are **additive**. Unknown fields written by
+a newer runtime stay replayable; every field this runtime knows is
+validated. The `turn_checkpoint` envelope treats `checkpointVersion` and
+`toolResultIntegrityVersion` as optional unknowns. The slice accepts
+`editorToolCallsAdmitted` and `pendingAdmissionFallback` as optional.
+`pendingAdmissionFallback` is checked with
+`validatePendingAdmissionFallbackSlice(..., { allowUnknownFields: true })`.
+
+`readTurnCheckpoint` is **fail-closed**. Extra envelope keys, extra
+slice keys, and extra fallback keys throw
+`contains unversioned fields`. A journal that accepted the line is not
+proof the resume reader will. The journal comment states the split:
+additive at the recovery-envelope layer; the durable checkpoint reader
+performs strict version dispatch and shape validation.
+
+Journal acceptance of extra keys is not a license to skip a new
+checkpoint version. Current writes still need a versioned slice and
+rollout schema. Do not treat journal acceptance as the integrity gate.
 
 ## Persist before publish
 
@@ -638,6 +662,7 @@ they remain the evidence needed for a later v15-aware reconciliation.
 | Resume reopen + pending-review gate         | `runtime/src/session/rollout-store.ts` (`reopenTerminalEpoch`), `runtime/src/app-server/agent-lifecycle.ts` (`RETAINED_CREATED_AT_TOLERANCE_MS`) |
 | In-turn checkpoint resume                   | `runtime/src/session/run-turn.ts` (`emitTurnCheckpoint`), `runtime/src/session/turn-state.ts` (`toCheckpointSlice`), `runtime/src/session/durable-checkpoint-reader.ts`, `runtime/src/conversation/thread-manager.ts` (`resumeTurnFromCheckpoint`) |
 | Shared checkpoint slice contract            | `runtime/src/session/turn-checkpoint-slice.ts` (`TURN_CHECKPOINT_SLICE_KEYS`, `validatePendingAdmissionFallbackSlice`) |
+| Additive recovery-journal checkpoint shape  | `runtime/src/state/recovery-journal-schema.ts` (`isTurnCheckpointShape`, `isCheckpointSlice`, `objectShape`) |
 | Rollout schema pairing and upgrade planner  | `runtime/src/session/event-log.ts` (`ROLLOUT_SCHEMA_VERSION`), `runtime/src/session/durable-checkpoint-upgrade.ts` (`planLegacyDurableCheckpointUpgrade`), `runtime/src/session/rollout-store.ts` (`promoteDurableCheckpointSchema`, `DurableCheckpointUpgradeBlockedError`) |
 | Journal projection and cursor pages         | `runtime/src/app-server/run-journal-replay.ts`, `runtime/src/app-server/run-inspection.ts`         |
 | Terminal lifecycle commit                   | `runtime/src/app-server/background-agent-runner.ts`, `runtime/src/app-server/daemon-cli.ts`        |

@@ -642,7 +642,7 @@ See [execution-admission-kernel.md](../design/execution-admission-kernel.md#mode
 | Resume never continues after `durableTurns.resume.onRestart = false` | This is expected. Startup reports `disabled` and opens a fresh turn. |
 | Resume reports `provider-restore-failed` | Check that `pendingAdmissionFallback` records both the target provider and model, and that the target provider can be prepared. Then check the [resume outcome](../design/durable-runs-effects-events.md#resume-outcomes): clean rejection permits a fresh turn only after proven restoration; terminal failure fences the session and halts startup. |
 | Open reports `durable checkpoint upgrade blocked` | Prefix, tool-pair, mixed-version, or work-limit failure. Resume stays disabled. Preserve the rollout; restore intact source from backup or start a new session. See [checkpoint slice versions](../design/durable-runs-effects-events.md#checkpoint-slice-versions). |
-| Open reports `resumableState contains unversioned fields` | The checkpoint carries a key outside the versioned slice. New fields need a new checkpoint version and rollout schema. |
+| Open reports `resumableState contains unversioned fields` | The checkpoint carries a key outside the versioned slice. New fields need a new checkpoint version and rollout schema. A recovery-journal accept does not prove the resume reader will. See [recovery journal vs checkpoint reader](../design/durable-runs-effects-events.md#recovery-journal-vs-checkpoint-reader). |
 | Older binary refuses `rollout schema v4` | Expected. Schema 4 is newer than a schema-3 runtime. Upgrade the runtime; do not rewrite the header by hand. |
 
 ## What the daemon owns
@@ -709,6 +709,7 @@ agenc budget status    # configured policy only; usage is agenc run status <run-
 | Mid-turn compact continue         | `runtime/src/session/run-turn.ts`                   |
 | Forced pre-admission checkpoint   | `runtime/src/session/run-turn.ts` (`emitTurnCheckpoint`) |
 | Checkpoint slice and reader       | `runtime/src/session/turn-checkpoint-slice.ts`, `runtime/src/session/turn-state.ts`, `runtime/src/session/durable-checkpoint-reader.ts` |
+| Additive recovery-journal shape   | `runtime/src/state/recovery-journal-schema.ts` (`isTurnCheckpointShape`, `objectShape`) |
 | Rollout schema upgrade            | `runtime/src/session/durable-checkpoint-upgrade.ts`, `runtime/src/session/rollout-store.ts` (`promoteDurableCheckpointSchema`) |
 | In-turn resume gates              | `runtime/src/conversation/thread-manager.ts` (`resumeTurnFromCheckpoint`) |
 | Step uniqueness / conflict        | `runtime/src/state/execution-admission.ts`          |

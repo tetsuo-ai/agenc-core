@@ -97,6 +97,11 @@ The normal CLI installs the mutation adapter. Startup, on-demand inspection,
 stale-tool restoration, final recoverable-run loading, and admission-journal
 convergence all consume the same durable exclusion predicate.
 
+`turn_checkpoint` journal validation is additive (`objectShape` in
+`recovery-journal-schema.ts`). In-turn resume still uses the fail-closed
+reader. See
+[recovery journal vs checkpoint reader](../durable-runs-effects-events.md#recovery-journal-vs-checkpoint-reader).
+
 ## Migration and rollout
 
 The order is fixed: A2a types/schema/readers, E1a bounded two-pass mechanism and

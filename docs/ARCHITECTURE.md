@@ -11,7 +11,7 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 | [`reference/autonomy.md`](reference/autonomy.md)                                 | Budget, heartbeat, cron delivery (pinned webhook destinations), hooks HTTP   |
 | [`reference/mcp.md`](reference/mcp.md)                                           | Outbound/inbound MCP, plugin-declared servers, Landlock stdio failures       |
 | [`design/execution-admission-kernel.md`](design/execution-admission-kernel.md)   | Live durable budget/admission design, model step identity                    |
-| [`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md) | Canonical run journal, effects, terminal results, replay, crash recovery, and checkpoint v3 / schema 4 pairing |
+| [`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md) | Canonical run journal, effects, terminal results, replay, crash recovery, checkpoint v3 / schema 4 pairing, and additive journal vs fail-closed reader |
 | [`gateway.md`](gateway.md)                                                       | Channel gateway operator guide                                               |
 | [`sdk.md`](sdk.md)                                                               | `@tetsuo-ai/agenc-sdk` embedding API                                         |
 
@@ -389,6 +389,7 @@ be proven restored first. An unproven rollback halts startup and fences the
 session from new turns. The rejected checkpoint remains on disk. See the
 [resume outcome table](design/durable-runs-effects-events.md#resume-outcomes),
 [checkpoint slice versions](design/durable-runs-effects-events.md#checkpoint-slice-versions),
+[recovery journal vs checkpoint reader](design/durable-runs-effects-events.md#recovery-journal-vs-checkpoint-reader),
 [execution-admission-kernel.md](design/execution-admission-kernel.md#model-step-identity),
 the [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main),
 and
