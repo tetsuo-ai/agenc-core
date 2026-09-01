@@ -56,7 +56,7 @@ history; the linked pages below are current product truth.
 | [reference/cli.md](reference/cli.md) | Full CLI, including M5 `run start`, Grok auth, OpenAI model discovery, `agenc skills list`, and `/compact` operator commands |
 | [reference/config.md](reference/config.md) | `config.toml` sections, env overrides, `agenc config` |
 | [reference/env.md](reference/env.md) | Operator `AGENC_*` / provider key environment variables, and provider credential isolation |
-| [reference/daemon.md](reference/daemon.md) | Daemon lifecycle, socket auth, deferred first messages, bypass consent, bounded-stop and prompt-hook-block survival, admission step identity, in-turn checkpoint resume gates, checkpoint v3 / schema 4 pairing, additive journal vs fail-closed reader, compaction recovery fields, and rebuilt transcript `turnResults` |
+| [reference/daemon.md](reference/daemon.md) | Daemon lifecycle, socket auth, deferred first messages, bypass consent, bounded-stop and prompt-hook-block survival, telemetry `error` events that do not latch run status, admission step identity, in-turn checkpoint resume gates, checkpoint v3 / schema 4 pairing, additive journal vs fail-closed reader, compaction recovery fields, and rebuilt transcript `turnResults` |
 | [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes, Responses continuation, and overflow diagnostics |
 | [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics and `/compact` |
 | [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery (pinned webhook destinations) + hooks HTTP |

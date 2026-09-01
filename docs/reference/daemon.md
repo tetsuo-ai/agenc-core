@@ -556,13 +556,69 @@ circuit-breaker skip or `AGENC_DISABLE_COMPACT=1` (outer gate still
 on) answered `no longer running (status: error)` after one turn.
 Those paths now emit `warning` with the same cause and yield
 `compact_failed`, which maps like a bounded stop. Legacy `type:
-"error"` records with those causes are remapped
-`statusProjection: "session_only"` on the live bridge.
+"error"` records with those causes follow the same
+[`session_only` projection](#telemetry-errors-stay-session-only)
+as every other session `error`.
 
 `TaskCreate` accepts a subject-only call. `description` defaults to the
 subject instead of failing validation. A model that retried a missing
 description used to walk into the no-progress backstop and brick the
 session.
+
+### Telemetry errors stay session-only
+
+Session `error` records are diagnostics, not lifecycle boundaries.
+The live event-log bridge (`projectTelemetryErrorAsSessionOnly` in
+`background-agent-runner.ts`) stamps every `type: "error"` with
+`statusProjection: "session_only"`. There is no cause allowlist.
+Unknown future causes stay session-only too.
+
+`session_only` does two things:
+
+- `#applyCanonicalEventBookkeeping` returns before it can set
+  `active.status = "error"`.
+- The notification mapper emits `event.session_event` and does
+  **not** emit `event.agent_status`.
+
+A keep-alive refresh (`#refreshAgentFromRunner` →
+`applyAgentSnapshot`) therefore cannot copy `error` into the
+lifecycle record. Later `message.send` / `message.stream` can
+start a turn. Before this projection, `stop_hook_threw` and a
+`type: "error"` `stream_disconnected` flipped the runner; the
+next refresh latched `agent.status = "error"`; the next prompt
+answered `no longer running (status: error)`.
+
+The event stays visible. An event received before attach stays in
+the runner's in-memory buffer. Attach later delivers
+`event.session_event` with the stored type and payload. The rule
+applies to live events and the pre-attach buffer. Events seeded
+from an older persisted rollout remain outside the live bridge
+and its in-memory attach replay.
+
+| Cause | Typical emitter |
+| --- | --- |
+| `stop_hook_threw` | `phases/stop-hooks.ts` (hook throw, or `shouldBlock` with a blank reason) |
+| `stream_disconnected` | Stream reconnect in `session/run-turn.ts`. Live `emitError({ streamError: true })` is typed `stream_error` (never a bookkeeping status event). A `type: "error"` record with this cause used to latch. |
+| `max_turns` | Legacy journal `error` records (bounded stops now complete the turn) |
+| `user_prompt_submit_hook_blocked` | Legacy prompt-hook `error` records |
+| `mid_turn_compact_failed` / `pre_sampling_compact_failed` | Legacy compact-skip `error` records |
+
+Terminal run failures do **not** use this path. They arrive as
+`RunAgentProgressEvent.run_error`. `#applyProgressStatus` sets
+`active.status = "error"`. `eventFromProgress` emits
+`type: "agent_status"` → `event.agent_status`. The TUI adapter
+`transcriptEventFromAgentStatus` then marks that transcript
+`error` with `terminal: true` and `terminalSource:
+"agent_status"`. Runtime-settings authority failures use the same
+`terminal` flag with `terminalSource:
+"runtime_settings_authority"`. Only that marker clears
+`activeTurn` and stops the Working spinner
+(`isTerminalDaemonErrorPayload` in `tui/daemon-terminal-error.ts`).
+An unmarked session `error` keeps the turn open.
+
+This projection does not revive a session that already has a
+durable `run_error`. One-shot / `--print` / `--no-tui` agents
+still fail the run on a bounded stop.
 
 ### Prompt hook blocks stay per-prompt
 
@@ -582,18 +638,9 @@ event. The runner still throws `PROMPT_BLOCKED` for that
 `message.send` / `message.stream` (JSON-RPC `-32602`); it does not
 mark the run `error`. A later allowed prompt can start a turn.
 
-Legacy-format `type: "error"` events with that blocked cause are
-remapped when they cross the live event-log bridge
-(`projectPerPromptRejectionAsSessionOnly` in
-`background-agent-runner.ts`). An event received before attach stays
-in the runner's in-memory buffer. Attach later delivers
-`event.session_event` with the stored type and payload. The daemon event
-gets `statusProjection: "session_only"`, so it skips run-status
-bookkeeping and does **not** produce `event.agent_status`. The rule
-applies to live events and the pre-attach buffer. Events seeded from an
-older persisted rollout remain outside the live bridge and its in-memory
-attach replay. The allowlist is only `user_prompt_submit_hook_blocked`;
-throw and stop were already warnings.
+Legacy-format `type: "error"` events with that blocked cause follow
+the same [`session_only` projection](#telemetry-errors-stay-session-only)
+as every other session `error`. Throw and stop were already warnings.
 
 `agent.create` first-content blocks follow startup failure semantics.
 Start throws `PROMPT_BLOCKED`, shuts down the unpublished bootstrap,
@@ -650,7 +697,7 @@ See [execution-admission-kernel.md](../design/execution-admission-kernel.md#mode
 | Symptom | What to check |
 | --- | --- |
 | `PROMPT_BLOCKED` on `message.send` / `message.stream` | A `UserPromptSubmit` hook refused this prompt. The session should stay promptable. Confirm `agent.status` is not `error`, then send an allowed follow-up. See [hooks.md](hooks.md#userpromptsubmit). |
-| `no longer running (status: error)` right after a hook denial | Unexpected after the warning remap. Look for a real `type: "error"` without `cause: "user_prompt_submit_hook_blocked"`, or a one-shot / `--print` bounded stop. |
+| `no longer running (status: error)` right after a hook denial, stop-hook throw, or stream reconnect | Unexpected after the `session_only` projection. Look for a real `event.agent_status` / `run_error`, or a one-shot / `--print` bounded stop. Session `error` events stay visible as `event.session_event` and do not latch the run. See [telemetry errors](#telemetry-errors-stay-session-only). |
 | `AdmissionStepConflictError` | The same `(runId, stepId)` was acquired with different normalized admission data. Compare the `stepId`, provider, model, token bounds, and budget identity in `agenc run evidence`. |
 | A crash-resumed nudge or empty-response retry conflicts | Verify the latest turn checkpoint contains the expected sample ordinal and resume-prompt kind. |
 | A later model call lacks `sample-<ordinal>` | Check whether the prior response was terminal. Only successful nonterminal responses reserve another physical sample. |
@@ -715,7 +762,8 @@ agenc budget status    # configured policy only; usage is agenc run status <run-
 | Session lifecycle                 | `runtime/src/app-server/session-lifecycle.ts`       |
 | Agent lifecycle                   | `runtime/src/app-server/agent-lifecycle.ts`         |
 | Background runs                   | `runtime/src/app-server/background-agent-runner.ts` |
-| Prompt-hook block projection      | `projectPerPromptRejectionAsSessionOnly` in `background-agent-runner.ts`; emit in `hooks/user-prompt-ingress.ts` |
+| Telemetry `error` projection      | `projectTelemetryErrorAsSessionOnly` in `background-agent-runner.ts`; TUI marker in `tui/daemon-terminal-error.ts` / `transcriptEventFromAgentStatus` |
+| Prompt-hook block emit            | `hooks/user-prompt-ingress.ts` (live refusals are `warning`; legacy `error` uses the telemetry projection) |
 | Local socket / Windows named pipe | `runtime/src/app-server/transport/unix-socket.ts`   |
 | Cookie auth                       | `runtime/src/app-server/transport/auth.ts`          |
 | Health                            | `runtime/src/app-server/health.ts`                  |

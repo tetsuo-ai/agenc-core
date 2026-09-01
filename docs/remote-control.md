@@ -158,7 +158,9 @@ The daemon registers capability clients during initialize, before any
 `session.attach`. Logical registrations on one physical socket share a delivery
 key, preventing duplicate status notifications. Status replay comes from each
 session's ordinary bounded buffer and contains status frames only; joining chat
-history still requires `session.attach`/`session.transcript`.
+history still requires `session.attach`/`session.transcript`. Session `error`
+events stay on `event.session_event` and do not appear on this observer feed.
+See [daemon telemetry errors](reference/daemon.md#telemetry-errors-stay-session-only).
 
 Ledger actions use a separate one-consumer replay buffer so two capable phones
 cannot both receive the same signing request. See

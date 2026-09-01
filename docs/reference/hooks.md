@@ -243,14 +243,16 @@ never refuses the prompt.
 
 A blocked follow-up is a **per-prompt** refusal. The runner keeps
 `agent.status` off `error`, so a later allowed `message.send` can
-start a turn. If a legacy-format `type: "error"` with
-`cause: "user_prompt_submit_hook_blocked"` crosses the live event-log
-bridge, the daemon applies `statusProjection: "session_only"`.
-An event received before attach stays in the runner's in-memory buffer.
-Attach later delivers it as `event.session_event`. The bridge does not
-emit `event.agent_status` or change run status. The rule applies to live
+start a turn. If a legacy-format `type: "error"` (blocked cause or
+any other) crosses the live event-log bridge, the daemon applies
+`statusProjection: "session_only"` to every session `error`, not
+an allowlist. An event received before attach stays in the
+runner's in-memory buffer. Attach later delivers it as
+`event.session_event`. The bridge does not emit
+`event.agent_status` or change run status. The rule applies to live
 events and the pre-attach buffer. Events seeded from an older persisted
 rollout remain outside this bridge and its in-memory attach replay.
+See [daemon telemetry errors](daemon.md#telemetry-errors-stay-session-only).
 
 `agent.create` with blocked **first** content follows startup failure
 semantics. Start fails with `PROMPT_BLOCKED`, the unpublished bootstrap
@@ -308,6 +310,7 @@ Full request shape, security table, and operator checklist:
 | Config events + validation | `runtime/src/config/schema.ts` (`HOOK_EVENT_NAMES`, `validateHooksConfig`) |
 | Session hook runtime | `runtime/src/hooks/` |
 | UserPromptSubmit ingress | `runtime/src/hooks/user-prompt-ingress.ts`, `user-prompt-submit.ts` |
+| Stop hook throw emit | `runtime/src/phases/stop-hooks.ts` (`stop_hook_threw`); daemon projection in [daemon.md](daemon.md#telemetry-errors-stay-session-only) |
 | Settings hook Zod | `runtime/src/schemas/hooks.ts` |
 | SDK event enum (wider) | `runtime/src/entrypoints/sdk/coreTypes.ts` |
 | Slash command | `runtime/src/commands/hooks.ts` |
