@@ -5116,7 +5116,7 @@ async function* runTurnKernelInner(
       pendingAssistantToolCalls > 0 ||
       hasPendingInput;
     const autoCompactLimit =
-      getAutoCompactTokenLimit(ctx) ?? Number.POSITIVE_INFINITY;
+      getPreSamplingAutoCompactTokenLimit(ctx) ?? Number.POSITIVE_INFINITY;
     // Mirror the donor's `tokenCountWithEstimation` (utils/tokens.ts:418):
     // anchor on the LAST provider-reported prompt size (single sample, not
     // cumulative) and treat that as the projected cost of the NEXT API
@@ -5132,7 +5132,22 @@ async function* runTurnKernelInner(
     // `promptTokens` (input-side, what the model just received as
     // context); on turn 0 with no prior response, fall back to 0 so the
     // first sample is always allowed through.
-    const totalUsageTokens = state.lastResponseUsage?.promptTokens ?? 0;
+    /*
+     * Measure what admission measures. Admission compares the token
+     * ACCOUNTING estimate (bytes-derived for any provider without a native
+     * tokenizer, plus margin and reserved output) against the window, while
+     * this gate used the provider's reported prompt size. On grok-4.6 the
+     * estimate ran 2.12x the reported number, so admission's real ceiling
+     * was ~224k while this gate waited for 462k of provider tokens: an
+     * observed 306-iteration turn died on `context_window_exceeded` having
+     * never once called auto-compaction. Reading the same scale here makes
+     * the safety net reachable; it crossed the threshold 91 iterations
+     * before that run was killed.
+     */
+    const totalUsageTokens = Math.max(
+      state.lastResponseUsage?.promptTokens ?? 0,
+      getActiveContextTokenUsage(session, ctx, state),
+    );
     const tokenLimitReached = totalUsageTokens >= autoCompactLimit;
 
     if (
@@ -5438,13 +5453,17 @@ async function* runTurnKernelInner(
     }
 
     const postToolAutoCompactLimit =
-      getAutoCompactTokenLimit(ctx) ?? Number.POSITIVE_INFINITY;
+      getPreSamplingAutoCompactTokenLimit(ctx) ?? Number.POSITIVE_INFINITY;
     // Same correctness fix as the mid-turn check above: anchor on the
     // last sample's `promptTokens` (per-sample) rather than the cumulative
     // session counter, so post-tool-loop compaction triggers on the
-    // projected next-sample prompt size, not on summed throughput.
+    // projected next-sample prompt size, not on summed throughput — and on
+    // admission's own scale, so the net sits ahead of the trap.
     const postToolTokenLimitReached =
-      (state.lastResponseUsage?.promptTokens ?? 0) >= postToolAutoCompactLimit;
+      Math.max(
+        state.lastResponseUsage?.promptTokens ?? 0,
+        getActiveContextTokenUsage(session, ctx, state),
+      ) >= postToolAutoCompactLimit;
     if (
       ctx.editorInteraction === undefined &&
       postToolTokenLimitReached &&

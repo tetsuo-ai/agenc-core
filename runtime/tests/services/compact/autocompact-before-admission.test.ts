@@ -50,4 +50,30 @@ describe("auto-compaction fires before admission denies the turn", () => {
       } as never),
     ).toBe(7_000);
   });
+
+  /*
+   * Third kill, measured end to end on grok-4.6 (catalogued 500k, effective
+   * 475k after the 95% factor). Admission compares the ACCOUNTING ESTIMATE,
+   * which ran 2.118x the provider's reported prompt size across all 306
+   * samples of the run: the last admitted reservation was 474,423 against a
+   * real 223,988, and the next step was denied. The turn loop's own gate was
+   * comparing the provider number against `window - 13_000` = 462,000, a
+   * threshold the real conversation could never reach because admission caps
+   * it near 224k. Auto-compaction was therefore never called once in 306
+   * iterations. The threshold has to sit below the observed denial point on
+   * the SAME scale admission uses.
+   */
+  it("fires before the measured grok-4.6 denial on admission's own scale", () => {
+    const EFFECTIVE_WINDOW = 475_000; // 500k catalogued x 95%
+    const LAST_ADMITTED_RESERVATION = 474_423;
+    const threshold = getAutoCompactThreshold({
+      options: { contextWindowTokens: EFFECTIVE_WINDOW },
+    } as never);
+
+    expect(threshold).toBeLessThan(LAST_ADMITTED_RESERVATION);
+    // It also has to beat the stale in-loop formula that let the run die.
+    expect(threshold).toBeLessThan(EFFECTIVE_WINDOW - 13_000);
+    // Measured: the run's estimate crossed this 91 iterations before death.
+    expect(threshold).toBeLessThanOrEqual(360_000);
+  });
 });
