@@ -1,86 +1,48 @@
-# Local required gates and optional GitHub App attestation
+# Pull request and release checks
 
 Decision record: 2026-07-15
 
-Operating policy update: 2026-07-16
+Operating policy update: 2026-08-31
 
-The current merge policy keeps the complete platform-independent suite
-**local-only**. GitHub Actions does **not** replace that local evidence.
-`platform-tests.yml` currently runs six job families: `default-suite` (four
-Ubuntu shards of hermetic Vitest plus runtime typecheck, **without** the
-Docker hermetic/red-probe boundary), plus Linux-kernel sandbox, PowerShell,
-Neovim (five OS/arch targets), macOS native, and Windows native. Merge does
-not require a GitHub App Check Run or an App-bound ruleset. Before
-merge, the PR must record the exact locally tested
-SHA, commands, results, and every skip. Release verification repeats the
-required gates locally at exact current `main` before the release tag exists.
-GitHub remains the branch/PR/merge record for that broad verification. The
-dispatch-only untagged candidate first runs three hosted-toolchain preflight
-jobs (macOS arm64, macOS x64, and Windows x64). Every artifact builder depends
-on that complete matrix, so it is a barrier: no Linux, Darwin, or Windows
-artifact construction starts unless all three runner images and native
-toolchains match reviewed profiles. The candidate then builds all five native
-artifacts. Its macOS and Windows jobs first run the shared 45-test FND contract
-set, then add one Seatbelt and one volume-sensitive pathname-identity test on
-macOS or three Windows atomic-publication/`.cmd` tests and two bound-helper
-transport tests. The tagged workflow
-later promotes and
-re-attests those exact candidate bytes without rebuilding them. These probes
-gate their artifacts but do not authorize merge or replace the local evidence.
-Release workflows must not be invoked merely to verify a change.
+Ordinary pull requests use `.github/workflows/pr-fast.yml`. One Ubuntu job
+classifies the changed paths, runs runtime typecheck, and selects exact changed
+tests or tests related to changed runtime inputs. Launcher, SDK, and gate policy
+tests run only when a PR changes those paths. Changes limited to `docs/` or the
+three root planning documents do not start GitHub Actions.
+
+`.github/workflows/platform-tests.yml` is manual. It retains the four full-suite
+shards and the Linux kernel, PowerShell, Neovim, macOS, and Windows jobs for
+release candidates and changes that depend on those platforms. A normal PR does
+not need a full-suite receipt, a GitHub App check, or a platform-matrix run.
+
+The release policy is unchanged. Release verification runs from exact current
+`main` before the release tag exists. The untagged candidate verifies the hosted
+toolchains and builds all native artifacts. The tagged workflow promotes those
+candidate bytes without rebuilding them. Do not run a release workflow as a PR
+test.
 
 The sections explicitly labeled **Inactive optional** retain the reviewed App,
 dedicated-host, and ruleset deployment design. That design is not part of
 current completion and must not be provisioned or invoked unless an operator
 explicitly adopts it in a later policy change.
 
-## Current local PR evidence protocol
+## Pull request check policy
 
-Run the required gates from a clean checkout at the final PR-head commit, after
-the last source-changing commit. The PR description is the authoritative
-evidence record. It must contain:
+Use the smallest check that covers the change:
 
 ```bash
-npm test
-npm run build
-npm run build --workspace=@tetsuo-ai/agenc-sdk
-npm run typecheck --workspace=@tetsuo-ai/agenc-sdk
-npm run check:agent-surface-contract
-npm run sbom
-npm run check:sbom
-npm run check:tui-runtime-startup --workspace=@tetsuo-ai/runtime
+npm run test:fast
 ```
 
-Root `npm test` first runs policy tests, agent-surface checker tests, and
-launcher tests. The runtime workspace then runs hermetic typecheck, the
-expected-red probe audit, and the stable Vitest suite (`run-hermetic-test-boundary.mjs`).
-The final startup command exercises the built TUI/daemon path in real PTYs. Run
-additional task-specific regression tests before this complete final-head
-sequence.
+`test:fast` runs typecheck and tests related to branch changes from
+`origin/main`. Run the exact test file while developing a bug fix. Use a
+subsystem smoke only when the changed behavior needs it. Examples include the
+PTY startup check for startup or terminal work and a native platform job for
+platform-specific code.
 
-The evidence must contain:
-
-- the full 40-character tested commit SHA and a clean-tree assertion;
-- Node.js and npm versions;
-- each command in execution order, its exit status, and pass/fail result;
-- every skipped gate with its reason (write `none` when there are no skips);
-- start and finish timestamps; and
-- the independent review result and any unresolved risk.
-
-A later push invalidates the record. Immediately before merge, reread the live
-head and compare it to the recorded SHA:
-
-```bash
-tested_sha=<40-character SHA recorded in the PR>
-current_sha="$(gh pr view "$PR" --json headRefOid --jq .headRefOid)"
-test "$current_sha" = "$tested_sha"
-test "$(git rev-parse HEAD)" = "$tested_sha"
-test -z "$(git status --porcelain=v1 --untracked-files=all)"
-```
-
-If any comparison fails, stop, test the new final head in full, and replace the
-stale evidence before merging. A GitHub status, workflow, or check run is not a
-substitute for this exact-SHA reread.
+Run `npm test` for a release, a broad runtime refactor, a test-infrastructure
+change, or when the affected-test result looks too narrow. Ordinary PRs do not
+need the full suite after every amended commit.
 
 ## Current local release evidence protocol
 
@@ -908,7 +870,7 @@ squash-merged commit.
 
 ## Hosted capability lanes
 
-[`platform-tests.yml`](../.github/workflows/platform-tests.yml) also has
+The manual [`platform-tests.yml`](../.github/workflows/platform-tests.yml) has
 `default-suite`: four `ubuntu-24.04` shards that typecheck the runtime and run
 `run-hermetic-vitest.mjs --require-zero-skips --shard=N/4 --maxWorkers=2`.
 That is **not** the Docker hermetic/red-probe path used locally.
@@ -1176,9 +1138,8 @@ npm rebuild better-sqlite3 esbuild node-pty
 npm run check:required-gates
 ```
 
-That direct command is a developer reproduction. The current authoritative PR
-record is the exact-SHA evidence in the PR description. Run the focused
-optional-policy suite with:
+That direct command reproduces the full release gate. Ordinary PRs use the fast
+workflow and targeted local checks. Run the focused optional-policy suite with:
 
 ```bash
 npm run test:required-gates
@@ -1199,15 +1160,12 @@ not rollback.
 
 ## Current operating evidence
 
-The repository policy tests, stable suite, builds, contracts, SBOM check, and
-PTY supervisor run locally. PR descriptions are the human-reviewed evidence
-record and must follow the exact-SHA protocol above. Release records use the
-defined local evidence path and immutable-tag protocol. No dedicated GitHub
-App or active App-bound ruleset is claimed or required in local-only mode.
-The hosted platform workflow supplements PRs with `default-suite` plus the
-five capability families above (six job families / 13 checks). The same native
-probes also run while the untagged candidate artifacts are built. The optional multi-UID systemd/App design has not been
-activated.
+Ordinary PRs use the fast affected-test workflow and targeted local checks.
+Release records use the full local evidence path and immutable-tag protocol.
+No dedicated GitHub App or active App-bound ruleset is required. The manual
+platform workflow retains `default-suite` plus the five capability families
+above. The same native probes run while untagged candidate artifacts are built.
+The optional multi-UID systemd/App design has not been activated.
 
 ## Primary sources
 

@@ -307,7 +307,8 @@ From the repo root:
 npm ci
 npm run build              # esbuild + declarations → runtime/dist + VERSION
 npm run typecheck          # tsc --noEmit (0 errors)
-npm test                   # typecheck + authoritative hermetic stable suite
+npm run test:fast          # typecheck + Vitest tests affected by the branch
+npm test                   # full hermetic suite for releases and high-risk changes
 npm --workspace=@tetsuo-ai/runtime run test:host-functional
                            # fast host-only check; not an egress authority
 npm run test:cross-repo    # explicit contracts for separately checked-out repos
@@ -315,7 +316,7 @@ npm run test:live          # explicit provider/browser/devnet tests (may incur c
 npm run test:bun           # isolated Bun suite
 npm run validate:runtime   # typecheck + build + PTY startup smoke
 npm run check:agent-surface-contract
-npm run check:required-gates # exact local attestation contract; clean Linux checkout
+npm run check:required-gates # release attestation contract; clean Linux checkout
 npm run check:clean-build  # two installs + byte-identical OCI builds + hardened smoke
 ```
 
@@ -338,7 +339,7 @@ check:e2e-all
 check:unused                # knip (informational)
 ```
 
-The required `npm test` gate runs on a Linux Docker host in a pinned Node 26.5.0
+The full `npm test` release gate runs on a Linux Docker host in a pinned Node 26.5.0
 image with no external network interface (private loopback only), a recursively
 read-only checkout, private IPC/tmpfs state, and a seccomp/ptrace process-tree
 supervisor. Before repository code executes, both the client and a trusted
@@ -390,22 +391,17 @@ The optional design-audit browser is likewise an explicit external process:
 it receives background-network suppression flags, but only `npm test` provides
 the authoritative OS egress boundary.
 
-**Required checks:** the complete platform-independent suite runs locally.
-GitHub Actions carries only exact, narrow Linux-kernel sandbox, PowerShell,
-Neovim, macOS, and Windows capability lanes. Before merge, the PR records the
-exact locally
-tested SHA, commands, results, and skips. Release verification repeats the same
-local gates at exact current `main` before any release tag exists and retains
-the defined local evidence record. The untagged runtime candidate first uses
-three hosted-toolchain jobs as a complete barrier for every artifact builder,
-then builds all five native artifacts; its macOS and Windows jobs additionally
-require one Seatbelt probe or three atomic-artifact/`.cmd` probes in two files
-to pass with zero skips. After the source tag is created, the tagged workflow
-promotes and re-attests those exact candidate bytes without rebuilding them.
-Those native probes do not replace the local test plan. The
-repository retains an optional GitHub App/ruleset design, but it is inactive
-and not required by the current local-only operating policy. Contract and
-reproduction details live in [`docs/ci-required-gates.md`](docs/ci-required-gates.md).
+Ordinary pull requests run one Ubuntu job. It typechecks the
+runtime and asks Vitest to run tests related to files changed from `main`.
+Launcher, SDK, and gate-policy checks run only when files in those areas change.
+Documentation-only PRs do not start a hosted workflow. Run a focused regression test
+locally when a change needs coverage that Vitest cannot infer from imports.
+
+The full platform matrix is manual. Run it for release candidates or when a
+change depends on Linux kernel sandboxing, PowerShell, Neovim, macOS, or Windows
+behavior. Releases still run the full local and hosted verification at exact
+current `main`. Details live in
+[`docs/ci-required-gates.md`](docs/ci-required-gates.md).
 
 Doc index: [`docs/INDEX.md`](docs/INDEX.md). Local contributor notes may live in a gitignored `AGENTS.md`.
 
@@ -434,12 +430,13 @@ SBOM: `npm run sbom`, `npm run check:sbom`.
 
 1. Branch off `main` (never commit directly).
 2. Prefer revert-sensitive regression tests for bug fixes.
-3. Verify locally: `npm run typecheck`, `npm test`, and for TUI/daemon paths
-   `npm run check:tui-runtime-startup --workspace=@tetsuo-ai/runtime`.
+3. Run `npm run test:fast` for an ordinary code change, then add the focused
+   package or subsystem check that covers the changed behavior. Use `npm test`
+   and the platform matrix for releases and broad or platform-specific changes.
 4. Conventional commits (`fix(runtime): …`); squash-merge PRs. Do not bypass
    hooks (`--no-verify`).
 
-Pre-commit hook in `.githooks/` (build + PTY startup smoke):
+The pre-commit hook in `.githooks/` checks the staged diff for whitespace errors:
 
 ```bash
 git config core.hooksPath .githooks

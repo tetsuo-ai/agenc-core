@@ -40,7 +40,7 @@ history; the linked pages below are current product truth.
 | [evaluation-pilot-v1.md](evaluation-pilot-v1.md) | Frozen 30-task public pilot candidates, qualification boundary, and powered-holdout design |
 | [eval/real-agent-baseline-runbook.md](eval/real-agent-baseline-runbook.md) | Operator runbook for reproducible real-agent pilot batches from pinned inputs, including fail-closed CLI parsing |
 | [eval/seed-baseline-2026-07-17.md](eval/seed-baseline-2026-07-17.md) | Dated snapshot: first contained 10-task real-agent scorecard (2026-07-17, runtime 0.6.1). Not a reproduction contract |
-| [ci-required-gates.md](ci-required-gates.md) | Local exact-SHA gates and the inactive optional GitHub App/ruleset design |
+| [ci-required-gates.md](ci-required-gates.md) | Fast pull request checks, exact-SHA release gates, and the inactive optional GitHub App/ruleset design |
 | [provider-tool-compat.md](provider-tool-compat.md) | Wire-schema shaping: object-root tools, llama.cpp grammar-safe schemas, Gemini allowlist, nullable types, and union-only `anyOf`, LM Studio/openai-compatible 8192 ceiling |
 | [embedded-neovim-buffer.md](embedded-neovim-buffer.md) | Embedded Neovim workspace, multi-buffer safety, recovery, editor/chat handoff, configuration, troubleshooting, and hosted PTY split |
 | [browser.md](browser.md) | Browser tool, Chromium profile, SSRF proxy, `[browser]` config |

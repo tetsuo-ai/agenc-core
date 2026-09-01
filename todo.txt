@@ -142,13 +142,11 @@ and required results are not bound to the exact reviewed SHA.
     - Prove a clean clone can build the runtime, launcher, SDK, declarations,
       and Docker image without developer-local state.
 
-[x] Run required PR and release verification locally.
-    - Run locally for every PR: typecheck, stable Vitest suite, build, SDK build
-      and typecheck, agent-surface contract, SBOM check, and PTY/TUI startup
-      smoke.
-    - GitHub runs no tests and no App/ruleset attestation is required. Record
-      the exact tested SHA, commands, results, and every skip in the PR before
-      merge; GitHub is only the branch/PR/merge record.
+[x] Split alpha PR checks from release verification.
+    - Ordinary PRs run typecheck and affected tests. Add a package or subsystem
+      check only when the changed paths need it.
+    - The hosted platform matrix is manual. GitHub has no required App check or
+      ruleset for ordinary merges.
     - Before release, repeat the required gates locally against the immutable
       release-tag commit, retain the reviewed evidence record defined in
       `docs/ci-required-gates.md`, and bind its SHA-256 plus the tested commit to
@@ -593,7 +591,7 @@ regression.
     - Do not use feature tables as evidence that AgenC performs better.
 
 [ ] Turn stable evidence into release gates.
-    - Keep the hermetic subset blocking on every PR.
+    - Keep the hermetic subset blocking for releases and high-risk changes.
     - Once the real-agent suite has enough repeated runs to establish normal
       variance, block releases on statistically meaningful TFR, policy,
       recovery, event-loss, cost, or latency regressions.
@@ -656,14 +654,14 @@ A checkbox is not done merely because code was generated.
 [ ] The smallest coherent change was made on a branch from `main`.
 [ ] New behavior has a targeted, revert-sensitive test.
 [ ] `npm run typecheck` is clean with zero `@ts-nocheck` additions.
-[ ] The stable full Vitest suite is green.
-[ ] `npm run build` and relevant SDK/contract/SBOM/TUI gates are green.
+[ ] Tests related to the changed behavior are green.
+[ ] Typecheck and the package or subsystem checks needed by the change are green.
 [ ] User-facing CLI, SDK, protocol, or operational behavior is documented.
 [ ] Failure, restart, cancellation, and partial-result behavior is tested where
     the change touches durable execution.
 [ ] No secrets, private run artifacts, or predecessor branding leak into shipped
     identifiers, logs, fixtures, or generated files.
-[ ] The evidence and exact verification commands are recorded in the PR.
+[ ] The PR records the targeted commands that were run.
 
 
 NOT MUST-DO NOW
