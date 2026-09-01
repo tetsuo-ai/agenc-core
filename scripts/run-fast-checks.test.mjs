@@ -217,4 +217,58 @@ test("ci-required-gates documents the skip set and fail-closed deletion", () => 
   assert.match(docs, /--base/u);
   assert.match(docs, /packages\/agenc-sdk/u);
   assert.match(docs, /#fast-testfast-checks/u);
+  assert.match(docs, /typecheck only/u);
+  assert.match(docs, /agenc-landlock-run\.c/u);
+  assert.match(docs, /--passWithNoTests/u);
+  assert.match(docs, /required-gate inventory/u);
+});
+
+test("native C and C# sources typecheck only", () => {
+  for (const file of [
+    "runtime/native/agenc-landlock-run.c",
+    "runtime/native/agenc-process-broker.c",
+    "runtime/native/agenc-process-job-broker.cs",
+    "runtime/native/agenc-keychain-helper.c",
+    "runtime/native/agenc-secret-service-helper.c",
+  ]) {
+    const plan = classifyChangedFiles([file]);
+    assert.equal(plan.typecheck, true, file);
+    assert.deepEqual(plan.runtimeInputs, [], file);
+    assert.equal(plan.policy, false, file);
+    assert.deepEqual(commandsForPlan(plan).map((command) => command.args), [["run", "typecheck"]], file);
+  }
+});
+
+test("deleted native C does not use the JS/TS fail-closed mapping", () => {
+  const plan = classifyChangedFiles(["runtime/native/agenc-landlock-run.c"]);
+  const commands = commandsForPlan(plan, {
+    fileExists: () => false,
+    isDirectory: () => false,
+  });
+  assert.deepEqual(commands.map((command) => command.args), [["run", "typecheck"]]);
+});
+
+test("required-gate inventory outside the policy selector typechecks only", () => {
+  for (const file of [
+    ".npmrc",
+    "packaging/systemd/agenc-local-gatekeeper.config.example.json",
+    "parity/agent-surface-contract.json",
+  ]) {
+    const plan = classifyChangedFiles([file]);
+    assert.equal(plan.policy, false, file);
+    assert.equal(plan.typecheck, true, file);
+    assert.deepEqual(commandsForPlan(plan).map((command) => command.args), [["run", "typecheck"]], file);
+  }
+});
+
+test("runtime lock and toolchain files do not select policy tests", () => {
+  for (const file of [
+    "runtime/package-lock.json",
+    "runtime/release-toolchain.json",
+  ]) {
+    const plan = classifyChangedFiles([file]);
+    assert.equal(plan.policy, false, file);
+    assert.equal(plan.typecheck, true, file);
+    assert.deepEqual(commandsForPlan(plan).map((command) => command.args), [["run", "typecheck"]], file);
+  }
 });

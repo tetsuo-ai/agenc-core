@@ -11,7 +11,7 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 | [`reference/autonomy.md`](reference/autonomy.md)                                 | Budget, heartbeat, cron delivery (pinned webhook destinations), hooks HTTP   |
 | [`reference/mcp.md`](reference/mcp.md)                                           | Outbound/inbound MCP, plugin-declared servers, model-facing inputSchema sanitization, Landlock stdio failures |
 | [`design/execution-admission-kernel.md`](design/execution-admission-kernel.md)   | Live durable budget/admission design, model step identity                    |
-| [`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md) | Canonical run journal, effects, terminal results, replay, and crash recovery |
+| [`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md) | Canonical run journal, effects, terminal results, replay, crash recovery, and checkpoint v3 / schema 4 pairing |
 | [`gateway.md`](gateway.md)                                                       | Channel gateway operator guide                                               |
 | [`sdk.md`](sdk.md)                                                               | `@tetsuo-ai/agenc-sdk` embedding API                                         |
 
@@ -388,6 +388,7 @@ the original route, config, model metadata, and client continuation state must
 be proven restored first. An unproven rollback halts startup and fences the
 session from new turns. The rejected checkpoint remains on disk. See the
 [resume outcome table](design/durable-runs-effects-events.md#resume-outcomes),
+[checkpoint slice versions](design/durable-runs-effects-events.md#checkpoint-slice-versions),
 [execution-admission-kernel.md](design/execution-admission-kernel.md#model-step-identity),
 the [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main),
 and
@@ -504,7 +505,8 @@ crashing the process.
 - Ordinary code changes run runtime typecheck and
   Vitest tests related to the branch diff. Launcher, SDK, and gate-policy tests
   run when files in those areas change. Documentation-only PRs skip hosted checks.
-  Classification and fail-closed deletion mapping are in
+  Classification, fail-closed deletion mapping, and typecheck-only native
+  / policy-inventory surfaces are in
   [ci-required-gates.md](ci-required-gates.md#fast-testfast-checks).
 - Releases use the complete local suite and the manual hosted matrix from
   exact current `main`. The matrix covers Linux kernel

@@ -118,6 +118,41 @@ typecheck alone. A mapped prompt contract that is missing also fails.
 Hermetic Vitest invocations use `--passWithNoTests --maxWorkers=2 --bail=1
 --allowOnly=false`. They do not pass `--require-zero-skips`.
 
+### Typecheck-only surfaces
+
+`test:fast` turns on runtime typecheck for every non-documentation change.
+These paths select no Vitest, launcher, SDK, or policy command:
+
+| Change | What `test:fast` runs |
+| --- | --- |
+| `runtime/native/agenc-landlock-run.c`, `agenc-process-broker.c`, `agenc-process-job-broker.cs`, `agenc-keychain-helper.c`, `agenc-secret-service-helper.c` | typecheck only |
+| `runtime/bin/agenc`, `runtime/bin/agenc-linux-sandbox` | typecheck only |
+| `.npmrc`, `packaging/**` gate units, `parity/agent-surface-contract.json` | typecheck only |
+| other non-JS/TS runtime files (assets, JSON fixtures, `runtime/scripts/hermetic-network-boundary.c`) | typecheck only |
+
+Related mode only accepts `.[cm]?[jt]sx?` under `src`, `tests`, `scripts`,
+`plugins`, `native`, and `platform-tests`. Native C/C# is not a runtime input,
+so deleting those files does not fail with
+`deleted runtime inputs have no bounded test mapping`.
+
+The policy flag is not the required-gate inventory in
+[`scripts/required-gate-contract.mjs`](../scripts/required-gate-contract.mjs).
+Only `.github/workflows/**`, `.githooks/**`, root `scripts/**`, root
+`package.json` / `package-lock.json` / `release-toolchain.json`, runtime
+`package.json`, and runtime `tsconfig*.json` / `vitest.*` / `build.config.ts`
+set it. Runtime `package-lock.json` and `release-toolchain.json` do not.
+Changing
+`runtime/scripts/run-hermetic-vitest.mjs` or
+`runtime/src/utils/supervisedProcess.ts` runs Vitest `related`, not
+`npm run test:required-gates`.
+
+For Landlock or Linux broker work, add
+`npm --workspace=@tetsuo-ai/runtime run test:kernel` or the hosted
+`linux-kernel-sandbox` lane. For macOS keychain or Windows Job Object work, add
+the hosted `macos-native` / `windows-native` lanes. See
+[Hosted capability lanes](#hosted-capability-lanes). For a required-gate
+inventory file that did not set `policy`, run `npm run test:required-gates`.
+
 ### Local extras the hosted job does not infer
 
 `test:fast` does not run PTY startup, the full hermetic suite, or the platform
@@ -131,6 +166,11 @@ matrix. Add those when the change needs them.
   `related`.
 - Deleting `runtime/scripts/removed-runner.mjs` with no fallback target fails
   closed. Add an explicit mapping or run the full suite and record the review.
+- `--passWithNoTests` plus `related` can pass when a new JS/TS file has no
+  related tests.
+- Native C/C# changes typecheck only. Deleting them does not fail closed.
+- A file listed in the required-gate inventory can still skip
+  `test:required-gates`.
 - Do not use `--base` values that look like Git options.
 
 ## Current local release evidence protocol
@@ -1250,7 +1290,8 @@ not rollback.
 ## Current operating evidence
 
 Ordinary PRs use the fast affected-test workflow and targeted local checks.
-Classification, `--base`, and fail-closed deletion mapping are in
+Classification, `--base`, fail-closed deletion mapping, and typecheck-only
+surfaces are in
 [Fast `test:fast` checks](#fast-testfast-checks).
 Release records use the full local evidence path and immutable-tag protocol.
 No dedicated GitHub App or active App-bound ruleset is required. The manual

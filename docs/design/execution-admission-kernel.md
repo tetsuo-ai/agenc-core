@@ -93,7 +93,9 @@ the ordinal and any runtime-only continuation or empty-response prompt. Crash
 recovery restores both when `resumeTurnFromCheckpoint` accepts the payload.
 The resumed turn reuses the reserved sample id and reconstructs the same
 request instead of creating a different call. See
-[durable-runs-effects-events.md](durable-runs-effects-events.md#in-turn-checkpoint-resume).
+[durable-runs-effects-events.md](durable-runs-effects-events.md#in-turn-checkpoint-resume)
+and the [checkpoint slice versions](durable-runs-effects-events.md#checkpoint-slice-versions)
+pairing table.
 
 Production bootstraps set `admissionRequired: true`
 (`bin/bootstrap.ts`). Inspect the machine-readable journal with

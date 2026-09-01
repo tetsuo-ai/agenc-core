@@ -287,6 +287,9 @@ write so a genuine mid-flight failure remains `unknown_outcome`.
 | "You are not in plan mode" blocked later mutations | Fixed: that refusal now attests `confirmed_no_effect`. A leftover poison is an older journal. |
 | Retained session refuses with a createdAt mismatch of a few milliseconds | Current code allows 5s. A larger gap, or a model/provider/objective mismatch, is still a hard refuse. |
 | Interrupted turn starts over instead of continuing from its last checkpoint | See [In-turn checkpoint resume](#in-turn-checkpoint-resume) and check the recorded resume-gate failure reason. |
+| Open reports `durable checkpoint upgrade blocked` | Integrity, mixed-version, or work-limit failure. Resume stays disabled. Preserve the rollout; restore intact source bytes from backup or start a new session. See [Upgrade and downgrade](#upgrade-and-downgrade). |
+| Open reports `resumableState contains unversioned fields` | The checkpoint carries a key outside the versioned slice. New fields need a new checkpoint version and rollout schema. See [Checkpoint slice versions](#checkpoint-slice-versions). |
+| Older binary refuses `rollout schema v4` | Expected. Schema 4 is newer than a schema-3 runtime. Upgrade the runtime; do not rewrite the header by hand. |
 
 ## In-turn checkpoint resume
 
@@ -363,6 +366,73 @@ schema 4 requires checkpoint-version-3 rows. The rewrite preserves compaction
 records and publishes the new header with the upgraded checkpoints as one
 operation. A rejected checkpoint is not rewritten, and a runtime whose maximum
 rollout schema is 3 refuses a schema-4 header before replay or append.
+
+### Checkpoint slice versions
+
+Current writes use checkpoint version 3 in rollout schema 4. The prefix
+digest stays on the version-2 algorithm (`agenc.checkpoint-prefix.v2`).
+[CP-0003](critical-path/0003-versioned-durable-checkpoints.md) shipped the
+version-2 integrity contract; this pairing is the successor write format,
+not a rewrite of that ADR.
+
+| Rollout schema | Checkpoint version | Role |
+| --- | --- | --- |
+| 1 | 1 | Legacy prefix hash |
+| 2 | 2 | Tool-result integrity checkpoints |
+| 3 | 2 | Transactional compaction. Schema 3 does **not** mean checkpoint v3 |
+| 4 | 3 | Current writer slice, including editor admission and pending fallback |
+
+Adding a serialized `resumableState` field requires a new checkpoint version
+**and** a new rollout schema. Do not extend the version-2 allowlist, and do
+not reuse schema 3 for checkpoint v3. Unknown versions and unknown keys fail
+closed. The writer, reader, event types, and recovery journal share
+`runtime/src/session/turn-checkpoint-slice.ts`.
+
+`restoreFromCheckpoint` assumes the slice has already passed
+`readTurnCheckpoint`; it does not enforce the wire-integrity contract.
+`readTurnCheckpoint` is the fail-closed reader.
+
+#### Slice constraints
+
+- Required counters are non-negative safe integers: `turnCount`,
+  `recoveryReentryCount`, `maxOutputTokensRecoveryCount`,
+  `continuationNudgeCount`, and `stopHookBlockingCount`.
+- `editorToolCallsAdmitted` is omitted when `0`. When present it is a
+  non-negative safe integer. The live editor cap is
+  `EDITOR_INTERACTION_MAX_TOOL_CALLS` (`32` in
+  `runtime/src/session/editor-interaction.ts`).
+- `pendingAdmissionFallback` requires `fromModel`, `toModel`, and `reason`.
+  `fromProvider` and `toProvider` are optional. Each string is non-empty and
+  at most `4096` UTF-8 bytes (`MAX_CHECKPOINT_FALLBACK_TEXT_BYTES`). Extra
+  keys fail closed (`contains unversioned fields`).
+- `modelSampleResumePrompt` is only `continuation_nudge` or
+  `empty_response`.
+- Nested objects (`pendingBudgetDecision`, `autoCompactTracking`,
+  `transition`) use exact keys.
+
+The writer validates the fallback envelope before persist
+(`validatePendingAdmissionFallbackSlice`). A failed serialize throws
+`cannot serialize turn checkpoint: …` and does not write a partial row.
+
+#### Upgrade and downgrade
+
+`planLegacyDurableCheckpointUpgrade` builds an atomic rewrite and never
+publishes. `RolloutStore.promoteDurableCheckpointSchema` applies the plan
+with `rewriteRolloutItemsAtomically` only after prefix, tool-pair, bounds,
+and checkpoint-version checks pass. Re-planning the published output is
+deterministic and reports `changed: false`.
+
+A blocked upgrade throws `DurableCheckpointUpgradeBlockedError`. Resume
+stays disabled. Preserve the rollout bytes; restore intact source from
+backup or start a new session. The planner does not rewrite a rejected
+checkpoint. Mixed versions in one rollout fail `rollout_schema_mixed`
+without rewriting source bytes.
+
+An older runtime whose maximum rollout schema is 3 refuses a schema-4
+header before replay or append (`SchemaMismatchError`: `rollout schema v4
+is newer than runtime v3 — please use /fork to migrate or upgrade
+@tetsuo-ai/runtime`). Prefer upgrading the runtime. Do not rewrite the
+header by hand.
 
 ## Persist before publish
 
@@ -567,6 +637,8 @@ they remain the evidence needed for a later v15-aware reconciliation.
 | v15 state and projection rules              | `runtime/src/state/run-durability.ts` (`reopenRun`), `runtime/src/state/migrations/015_run_durability_schema.ts` |
 | Resume reopen + pending-review gate         | `runtime/src/session/rollout-store.ts` (`reopenTerminalEpoch`), `runtime/src/app-server/agent-lifecycle.ts` (`RETAINED_CREATED_AT_TOLERANCE_MS`) |
 | In-turn checkpoint resume                   | `runtime/src/session/run-turn.ts` (`emitTurnCheckpoint`), `runtime/src/session/turn-state.ts` (`toCheckpointSlice`), `runtime/src/session/durable-checkpoint-reader.ts`, `runtime/src/conversation/thread-manager.ts` (`resumeTurnFromCheckpoint`) |
+| Shared checkpoint slice contract            | `runtime/src/session/turn-checkpoint-slice.ts` (`TURN_CHECKPOINT_SLICE_KEYS`, `validatePendingAdmissionFallbackSlice`) |
+| Rollout schema pairing and upgrade planner  | `runtime/src/session/event-log.ts` (`ROLLOUT_SCHEMA_VERSION`), `runtime/src/session/durable-checkpoint-upgrade.ts` (`planLegacyDurableCheckpointUpgrade`), `runtime/src/session/rollout-store.ts` (`promoteDurableCheckpointSchema`, `DurableCheckpointUpgradeBlockedError`) |
 | Journal projection and cursor pages         | `runtime/src/app-server/run-journal-replay.ts`, `runtime/src/app-server/run-inspection.ts`         |
 | Terminal lifecycle commit                   | `runtime/src/app-server/background-agent-runner.ts`, `runtime/src/app-server/daemon-cli.ts`        |
 | Operator effect-review evidence             | `runtime/src/state/effect-review.ts`, `runtime/src/commands/resolve.ts`, `runtime/src/bin/state-cli.ts` |
