@@ -378,4 +378,22 @@ describe("spawn_agent isolation", () => {
     );
     expect(mockDelegate).not.toHaveBeenCalled();
   });
+
+  it("does not claim no effect after delegate crosses the spawn boundary", async () => {
+    const session = makeSession();
+    const tool = createSpawnAgentTool(makeOptions(session));
+    mockDelegate.mockResolvedValueOnce({
+      kind: "rejected",
+      reason: "worktree cleanup uncertain",
+    });
+
+    const result = await tool.execute({
+      message: "do it",
+      task_name: "worker",
+      isolation: "worktree",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.effectDisposition).toBeUndefined();
+  });
 });
