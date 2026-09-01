@@ -1312,7 +1312,8 @@ function installTuiSessionContract(params: {
         completedPromptTurn = true;
         autonomousKeepalive.setContextBlocked(
           lastTurnStopReason === "error" ||
-            lastTurnStopReason === "compact_failed",
+            lastTurnStopReason === "compact_failed" ||
+            lastTurnStopReason === "editor_recovery_blocked",
         );
       };
 

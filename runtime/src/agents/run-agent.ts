@@ -3685,7 +3685,8 @@ export async function* runAgent(
         | "error"
         | "empty_response"
         | "no_progress"
-        | "compact_failed" = "completed";
+        | "compact_failed"
+        | "editor_recovery_blocked" = "completed";
       let terminalError: unknown;
 
       const iter = childSession.runTurn(nextUserMessage, {
@@ -3857,7 +3858,8 @@ export async function* runAgent(
         stopReason === "max_turns" ||
         stopReason === "max_budget_usd" ||
         stopReason === "no_progress" ||
-        stopReason === "compact_failed";
+        stopReason === "compact_failed" ||
+        stopReason === "editor_recovery_blocked";
       // A bounded stop in a keep-alive (interactive) run is a per-turn
       // outcome: the backstop's message already reached the transcript,
       // and the user must be able to keep prompting. Ending the run here
@@ -3878,6 +3880,11 @@ export async function* runAgent(
             (terminalError instanceof Error ? terminalError.message : undefined) ||
             assistantText ||
             "subagent stopped because compaction could not shrink the context";
+        } else if (stopReason === "editor_recovery_blocked") {
+          message =
+            (terminalError instanceof Error ? terminalError.message : undefined) ||
+            assistantText ||
+            "subagent stopped because the editor request blocked recovery";
         } else if (terminalError instanceof Error) {
           message = terminalError.message;
         } else if (typeof terminalError === "string") {

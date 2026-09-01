@@ -8005,6 +8005,59 @@ describe("AgenC delegate background-agent runner", () => {
     expect(stub.thread.submit).not.toHaveBeenCalled();
   });
 
+  it("[managed-thread] keeps the run alive after an editor recovery block", async () => {
+    const { runner, session, control, stub } = makeTopLevelRunner({
+      conversationId: "session-survives-editor-recovery-block",
+    });
+    await runner.startAgent({
+      objective: "passive editor recovery test",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    session.emit({
+      id: "legacy-editor-recovery-blocked",
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "editor_interaction_recovery_blocked",
+          message: "editor_interaction_recovery_blocked: context_window",
+        },
+      },
+    });
+    session.emitPhaseEvent({
+      type: "turn_complete",
+      content: "Prompt is too long: 200000 tokens > 128000",
+      usage: {
+        promptTokens: 200_000,
+        completionTokens: 0,
+        totalTokens: 200_000,
+      },
+      stopReason: "editor_recovery_blocked",
+      error: new Error("editor_interaction_recovery_blocked: context_window"),
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const snapshot = await runner.getAgentSnapshot(
+      "session-survives-editor-recovery-block",
+    );
+    expect(snapshot?.status).not.toBe("error");
+
+    await expect(
+      runner.submitAgentMessage("session-survives-editor-recovery-block", {
+        sessionId: "session_1",
+        content: "continue after editor 413",
+        originalContent: "continue after editor 413",
+        messageId: "after-editor-recovery-block",
+        streamId: "after-editor-recovery-block-stream",
+        acceptedAt: "2026-09-01T00:00:01.000Z",
+      }),
+    ).resolves.toMatchObject({ disposition: "started" });
+    expect(control.sendInput).toHaveBeenCalledTimes(1);
+    expect(stub.thread.submit).not.toHaveBeenCalled();
+  });
+
   it("[managed-thread] applies owning-session hook context to follow-up model input exactly once", async () => {
     const contextHook = vi.fn(() => ({
       additionalContexts: ["session-owned daemon context"],

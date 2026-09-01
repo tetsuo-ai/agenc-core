@@ -2066,6 +2066,42 @@ function compactFailedTurnComplete(
   };
 }
 
+const EDITOR_RECOVERY_BLOCKED_CAUSE = "editor_interaction_recovery_blocked";
+
+function isEditorRecoveryBlockedError(error: Error): boolean {
+  return error.message.startsWith(`${EDITOR_RECOVERY_BLOCKED_CAUSE}:`);
+}
+
+function emitEditorRecoveryBlockedWarning(
+  session: Session,
+  message: string,
+): void {
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "warning",
+      payload: {
+        cause: EDITOR_RECOVERY_BLOCKED_CAUSE,
+        message,
+      },
+    },
+  });
+}
+
+function editorRecoveryBlockedTurnComplete(
+  content: string,
+  usage: LLMUsage,
+  error: Error,
+): Extract<PhaseEvent, { type: "turn_complete" }> {
+  return {
+    type: "turn_complete",
+    content,
+    usage,
+    stopReason: "editor_recovery_blocked",
+    error,
+  };
+}
+
 function sessionQuerySourceForPostSampling(session: Session): string {
   const raw =
     typeof session.services.querySource === "string" &&
@@ -4808,6 +4844,23 @@ async function* runTurnKernelInner(
           stopReason: "cancelled",
           error: underlying,
         };
+        return terminal;
+      }
+      // Editor turns refuse Agent recovery (compact / resample / route
+      // switch). A withheld 413, oversized media, or max-output-tokens
+      // result is request-scoped: the Explain/Edit ends, but mapping
+      // that to stopReason "error" latched keep-alive daemon runs.
+      if (
+        ctx.editorInteraction !== undefined &&
+        isEditorRecoveryBlockedError(underlying)
+      ) {
+        const content =
+          lastContent.length > 0 ? lastContent : underlying.message;
+        emitEditorRecoveryBlockedWarning(session, underlying.message);
+        await syncSessionState();
+        emitTurnComplete(content);
+        const terminal: Terminal = { reason: "completed", error: underlying };
+        yield editorRecoveryBlockedTurnComplete(content, usage, underlying);
         return terminal;
       }
       // T6 gap #119: error-terminated turn still completes the turn

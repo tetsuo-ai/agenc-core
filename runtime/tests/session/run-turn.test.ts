@@ -6907,12 +6907,23 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     expect(yielded).toContainEqual(
       expect.objectContaining({
         type: "turn_complete",
-        stopReason: "error",
+        stopReason: "editor_recovery_blocked",
         error: expect.objectContaining({
           message: expect.stringContaining(
             "editor_interaction_recovery_blocked: context_window",
           ),
         }),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "warning",
+          payload: expect.objectContaining({
+            cause: "editor_interaction_recovery_blocked",
+            message: expect.stringContaining("context_window"),
+          }),
+        },
       }),
     );
   });

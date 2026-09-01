@@ -7729,24 +7729,27 @@ export function phaseEventToProgressEvent(
           error: event.error?.message ?? "turn errored",
         };
       }
-      // Bounded stops — the backstop, a turn cap, the cost cap, and a
-      // compact skip/throw — are per-TURN outcomes, not run deaths.
-      // Mapping them to run_error bricked the whole session: the user
-      // saw "no longer running (status: error)" and could never prompt
-      // again after one bad turn. The turn ends honestly with its
-      // message; the session stays available for the next prompt,
-      // exactly like "completed".
+      // Bounded stops — the backstop, a turn cap, the cost cap, a
+      // compact skip/throw, and an editor recovery block — are
+      // per-TURN outcomes, not run deaths. Mapping them to run_error
+      // bricked the whole session: the user saw "no longer running
+      // (status: error)" and could never prompt again after one bad
+      // turn. The turn ends honestly with its message; the session
+      // stays available for the next prompt, exactly like "completed".
       const boundedStopFallback: Partial<Record<string, string>> = {
         max_turns: "Turn capped: iteration limit hit; send a new prompt to continue.",
         max_budget_usd: "Turn capped: cost ceiling hit; send a new prompt to continue.",
         no_progress: "Turn halted by the progress backstop; send a new prompt to continue.",
         compact_failed:
           "Turn stopped: compaction could not shrink the context; send a new prompt to continue.",
+        editor_recovery_blocked:
+          "Turn stopped: the editor request blocked recovery; send a new prompt to continue.",
       };
       const boundedFallback = boundedStopFallback[event.stopReason];
       if (boundedFallback !== undefined) {
         const compactMessage =
-          event.stopReason === "compact_failed" &&
+          (event.stopReason === "compact_failed" ||
+            event.stopReason === "editor_recovery_blocked") &&
           event.error instanceof Error &&
           event.error.message.length > 0
             ? event.error.message
