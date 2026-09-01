@@ -317,7 +317,9 @@ it as well. `[budget]`, `[heartbeat]`, `[browser]`, and
 On a keep-alive (interactive) session, hitting `max_turns`,
 `max_budget_usd`, the no-progress backstop, or `compact_failed` ends
 that **turn** only. Send another prompt; the session stays running.
-One-shot (`--print` / `--no-tui`) agents still fail the run. See
+Daemon-backed one-shot agents (`--print` / `--no-tui`) report the terminal
+`turn_complete` and exit 0. The compatibility `runAgent` surface with
+`keepAlive: false` still reports failure. See
 [daemon.md](daemon.md#interactive-session-survival). Compact skip:
 [daemon.md](daemon.md#compact-skip-stays-per-turn).
 

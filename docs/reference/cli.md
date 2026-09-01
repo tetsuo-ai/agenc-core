@@ -118,7 +118,9 @@ active turn.
   `wasCompacted: false`, and the sampling loop emits `warning` cause
   `mid_turn_compact_failed`. Its message starts with
   `mid_turn_compact_skipped`. The turn stop is `compact_failed`. Keep-alive
-  sessions stay promptable; one-shot / `--print` still fail the run. See
+  sessions stay promptable; daemon-backed `--print` reports the terminal
+  `turn_complete` and exits 0. The compatibility `runAgent` surface with
+  `keepAlive: false` still reports failure. See
   [daemon.md](daemon.md#compact-skip-stays-per-turn).
 
 ---

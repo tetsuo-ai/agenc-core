@@ -51,4 +51,4 @@ transcript's collab-tool suppression set.
   Mailbox backpressure and unclassified failures from `shutdown()`,
   `assignTask()`, or `sendInterAgentCommunication()` stay unknown-effect.
   Operator detail:
-  [agents.md](../../../docs/reference/agents.md#agent-validation-refusals).
+  [agents.md](../../../../docs/reference/agents.md#agent-validation-refusals).
