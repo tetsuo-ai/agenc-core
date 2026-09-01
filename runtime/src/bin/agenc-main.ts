@@ -1313,7 +1313,7 @@ function installTuiSessionContract(params: {
         autonomousKeepalive.setContextBlocked(
           lastTurnStopReason === "error" ||
             lastTurnStopReason === "compact_failed" ||
-            lastTurnStopReason === "editor_recovery_blocked",
+            lastTurnStopReason === "editor_request_failed",
         );
       };
 

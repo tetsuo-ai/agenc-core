@@ -2237,7 +2237,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(yielded).toContainEqual(
       expect.objectContaining({
         type: "turn_complete",
-        stopReason: "error",
+        stopReason: "editor_request_failed",
         error: expect.objectContaining({
           message: expect.stringContaining("editor_interaction_limit"),
         }),
@@ -2246,7 +2246,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(events).toContainEqual(
       expect.objectContaining({
         msg: {
-          type: "error",
+          type: "warning",
           payload: expect.objectContaining({
             cause: "editor_interaction_limit",
             message: expect.stringContaining("sampling_iterations"),
@@ -2279,7 +2279,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(yielded).toContainEqual(
       expect.objectContaining({
         type: "turn_complete",
-        stopReason: "error",
+        stopReason: "editor_request_failed",
         error: expect.objectContaining({
           message: expect.stringContaining("editor_interaction_limit"),
         }),
@@ -2337,7 +2337,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(yielded).toContainEqual(
       expect.objectContaining({
         type: "turn_complete",
-        stopReason: "error",
+        stopReason: "editor_request_failed",
         error: expect.objectContaining({
           message: expect.stringContaining("editor_interaction_limit"),
         }),
@@ -2630,7 +2630,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       expect.objectContaining({
         type: "turn_complete",
         content: expect.stringContaining("Editor edit request incomplete"),
-        stopReason: "error",
+        stopReason: "editor_request_failed",
         error: expect.objectContaining({
           message: expect.stringContaining("editor_proposal_missing"),
         }),
@@ -2639,7 +2639,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(events).toContainEqual(
       expect.objectContaining({
         msg: {
-          type: "error",
+          type: "warning",
           payload: expect.objectContaining({
             cause: "editor_proposal_missing",
             message: expect.stringContaining("No buffer changes were made"),
@@ -6907,7 +6907,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     expect(yielded).toContainEqual(
       expect.objectContaining({
         type: "turn_complete",
-        stopReason: "editor_recovery_blocked",
+        stopReason: "editor_request_failed",
         error: expect.objectContaining({
           message: expect.stringContaining(
             "editor_interaction_recovery_blocked: context_window",

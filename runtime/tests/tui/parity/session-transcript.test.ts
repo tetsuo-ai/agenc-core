@@ -2104,12 +2104,23 @@ describe("AgenC TUI session transcript", () => {
             },
           },
         },
+        {
+          id: "warn-4",
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "editor_proposal_missing",
+              message: "The Editor request returned no valid proposal",
+            },
+          },
+        },
       ]);
-      expect(transcript.messages).toHaveLength(3);
+      expect(transcript.messages).toHaveLength(4);
       const allText = JSON.stringify(transcript.messages);
       expect(allText).toContain("MCP server X requires auth");
       expect(allText).toContain("mid_turn_compact_skipped");
       expect(allText).toContain("Dropped @file/path");
+      expect(allText).toContain("returned no valid proposal");
     });
   });
 });

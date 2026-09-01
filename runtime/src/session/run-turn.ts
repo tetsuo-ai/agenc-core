@@ -2066,14 +2066,22 @@ function compactFailedTurnComplete(
   };
 }
 
+const EDITOR_INTERACTION_LIMIT_CAUSE = "editor_interaction_limit";
+const EDITOR_PROPOSAL_MISSING_CAUSE = "editor_proposal_missing";
 const EDITOR_RECOVERY_BLOCKED_CAUSE = "editor_interaction_recovery_blocked";
+
+type EditorRequestFailureCause =
+  | typeof EDITOR_INTERACTION_LIMIT_CAUSE
+  | typeof EDITOR_PROPOSAL_MISSING_CAUSE
+  | typeof EDITOR_RECOVERY_BLOCKED_CAUSE;
 
 function isEditorRecoveryBlockedError(error: Error): boolean {
   return error.message.startsWith(`${EDITOR_RECOVERY_BLOCKED_CAUSE}:`);
 }
 
-function emitEditorRecoveryBlockedWarning(
+function emitEditorRequestFailureWarning(
   session: Session,
+  cause: EditorRequestFailureCause,
   message: string,
 ): void {
   session.emit({
@@ -2081,14 +2089,14 @@ function emitEditorRecoveryBlockedWarning(
     msg: {
       type: "warning",
       payload: {
-        cause: EDITOR_RECOVERY_BLOCKED_CAUSE,
+        cause,
         message,
       },
     },
   });
 }
 
-function editorRecoveryBlockedTurnComplete(
+function editorRequestFailedTurnComplete(
   content: string,
   usage: LLMUsage,
   error: Error,
@@ -2097,7 +2105,7 @@ function editorRecoveryBlockedTurnComplete(
     type: "turn_complete",
     content,
     usage,
-    stopReason: "editor_recovery_blocked",
+    stopReason: "editor_request_failed",
     error,
   };
 }
@@ -4522,30 +4530,18 @@ async function* runTurnKernelInner(
     // Pair any model-emitted tool calls without dispatching them so the
     // transcript remains structurally valid at the fail-closed boundary.
     await drainInFlight(state, ctx, session);
-    const cause = "editor_interaction_limit";
+    const cause = EDITOR_INTERACTION_LIMIT_CAUSE;
     const message =
       `Editor interaction stopped at the request-scoped ${limitKind} ` +
       `limit (${limit}; observed ${observed}). No additional tools ran and ` +
       "no buffer changes were applied.";
     const error = new Error(`${cause}: ${message}`);
-    session.emit({
-      id: session.nextInternalSubId(),
-      msg: {
-        type: "error",
-        payload: { cause, message },
-      },
-    });
+    emitEditorRequestFailureWarning(session, cause, message);
     await syncSessionState();
     emitTurnComplete(message);
     return {
       terminal: { reason: "completed", error },
-      event: {
-        type: "turn_complete",
-        content: message,
-        usage,
-        stopReason: "error",
-        error,
-      },
+      event: editorRequestFailedTurnComplete(message, usage, error),
     };
   };
   const finishCancelledIfAborted = async (): Promise<{
@@ -4857,11 +4853,15 @@ async function* runTurnKernelInner(
       ) {
         const content =
           lastContent.length > 0 ? lastContent : underlying.message;
-        emitEditorRecoveryBlockedWarning(session, underlying.message);
+        emitEditorRequestFailureWarning(
+          session,
+          EDITOR_RECOVERY_BLOCKED_CAUSE,
+          underlying.message,
+        );
         await syncSessionState();
         emitTurnComplete(content);
         const terminal: Terminal = { reason: "completed", error: underlying };
-        yield editorRecoveryBlockedTurnComplete(content, usage, underlying);
+        yield editorRequestFailedTurnComplete(content, usage, underlying);
         return terminal;
       }
       // T6 gap #119: error-terminated turn still completes the turn
@@ -5058,31 +5058,16 @@ async function* runTurnKernelInner(
         ctx.editorInteraction?.policy === "proposal_only" &&
         !hasValidatedEditorProposal
       ) {
-        const cause = "editor_proposal_missing";
+        const cause = EDITOR_PROPOSAL_MISSING_CAUSE;
         lastContent =
           "Editor edit request incomplete: the model did not return a valid " +
           "EditorProposal. No buffer changes were made.";
         const error = new Error(`${cause}: ${lastContent}`);
-        session.emit({
-          id: session.nextInternalSubId(),
-          msg: {
-            type: "error",
-            payload: {
-              cause,
-              message: lastContent,
-            },
-          },
-        });
+        emitEditorRequestFailureWarning(session, cause, lastContent);
         await syncSessionState();
         emitTurnComplete(lastContent);
         const terminal: Terminal = { reason: "completed", error };
-        yield {
-          type: "turn_complete",
-          content: lastContent,
-          usage,
-          stopReason: "error",
-          error,
-        };
+        yield editorRequestFailedTurnComplete(lastContent, usage, error);
         return terminal;
       }
       // Reasoning providers can occasionally complete a response after

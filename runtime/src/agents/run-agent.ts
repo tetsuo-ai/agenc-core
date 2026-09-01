@@ -3685,8 +3685,7 @@ export async function* runAgent(
         | "error"
         | "empty_response"
         | "no_progress"
-        | "compact_failed"
-        | "editor_recovery_blocked" = "completed";
+        | "compact_failed" = "completed";
       let terminalError: unknown;
 
       const iter = childSession.runTurn(nextUserMessage, {
@@ -3824,7 +3823,12 @@ export async function* runAgent(
 
         if (event.type === "turn_complete") {
           turnAssistantText = event.content;
-          stopReason = event.stopReason;
+          // Child-agent turns do not carry an Editor interaction. Fail closed
+          // if that invariant is ever violated instead of making a worker
+          // session silently recoverable on a root-only stop reason.
+          stopReason = event.stopReason === "editor_request_failed"
+            ? "error"
+            : event.stopReason;
           turnUsage = event.usage;
         }
       }
@@ -3858,8 +3862,7 @@ export async function* runAgent(
         stopReason === "max_turns" ||
         stopReason === "max_budget_usd" ||
         stopReason === "no_progress" ||
-        stopReason === "compact_failed" ||
-        stopReason === "editor_recovery_blocked";
+        stopReason === "compact_failed";
       // A bounded stop in a keep-alive (interactive) run is a per-turn
       // outcome: the backstop's message already reached the transcript,
       // and the user must be able to keep prompting. Ending the run here
@@ -3880,11 +3883,6 @@ export async function* runAgent(
             (terminalError instanceof Error ? terminalError.message : undefined) ||
             assistantText ||
             "subagent stopped because compaction could not shrink the context";
-        } else if (stopReason === "editor_recovery_blocked") {
-          message =
-            (terminalError instanceof Error ? terminalError.message : undefined) ||
-            assistantText ||
-            "subagent stopped because the editor request blocked recovery";
         } else if (terminalError instanceof Error) {
           message = terminalError.message;
         } else if (typeof terminalError === "string") {

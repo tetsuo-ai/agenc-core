@@ -8034,7 +8034,7 @@ describe("AgenC delegate background-agent runner", () => {
         completionTokens: 0,
         totalTokens: 200_000,
       },
-      stopReason: "editor_recovery_blocked",
+      stopReason: "editor_request_failed",
       error: new Error("editor_interaction_recovery_blocked: context_window"),
     });
     await new Promise((resolve) => setImmediate(resolve));

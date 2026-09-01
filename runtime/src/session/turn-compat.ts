@@ -834,18 +834,6 @@ export async function* runTurnCompat(
           next = requestNext();
           continue;
         }
-        if (event.stopReason === "editor_recovery_blocked") {
-          yield {
-            type: "message",
-            message: createAssistantAPIErrorMessage({
-              content:
-                event.error?.message ??
-                "Turn stopped: the editor request blocked recovery",
-            }),
-          };
-          next = requestNext();
-          continue;
-        }
         if (
           event.content.length > 0 &&
           event.content !== flushedToolAssistantText

@@ -7730,7 +7730,7 @@ export function phaseEventToProgressEvent(
         };
       }
       // Bounded stops — the backstop, a turn cap, the cost cap, a
-      // compact skip/throw, and an editor recovery block — are
+      // compact skip/throw, and a request-scoped Editor failure — are
       // per-TURN outcomes, not run deaths. Mapping them to run_error
       // bricked the whole session: the user saw "no longer running
       // (status: error)" and could never prompt again after one bad
@@ -7742,14 +7742,14 @@ export function phaseEventToProgressEvent(
         no_progress: "Turn halted by the progress backstop; send a new prompt to continue.",
         compact_failed:
           "Turn stopped: compaction could not shrink the context; send a new prompt to continue.",
-        editor_recovery_blocked:
-          "Turn stopped: the editor request blocked recovery; send a new prompt to continue.",
+        editor_request_failed:
+          "Editor request stopped safely; send a new prompt to continue.",
       };
       const boundedFallback = boundedStopFallback[event.stopReason];
       if (boundedFallback !== undefined) {
-        const compactMessage =
+        const preferredMessage =
           (event.stopReason === "compact_failed" ||
-            event.stopReason === "editor_recovery_blocked") &&
+            event.stopReason === "editor_request_failed") &&
           event.error instanceof Error &&
           event.error.message.length > 0
             ? event.error.message
@@ -7759,7 +7759,7 @@ export function phaseEventToProgressEvent(
           turnId,
           toolCallCount: 0,
           finalMessage:
-            compactMessage ??
+            preferredMessage ??
             (event.content.length > 0 ? event.content : boundedFallback),
         };
       }

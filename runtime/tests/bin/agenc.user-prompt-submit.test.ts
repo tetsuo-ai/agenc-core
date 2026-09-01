@@ -246,6 +246,50 @@ describe("UserPromptSubmit prompt ingress", () => {
     }
   });
 
+  it("blocks autonomous keepalive after a request-scoped Editor failure", async () => {
+    const { session } = fakeSession("/workspace");
+    const setContextBlocked = vi.spyOn(
+      AutonomousKeepaliveScheduler.prototype,
+      "setContextBlocked",
+    );
+    const runSingleTurnFn = vi.fn(async function* () {
+      yield {
+        type: "turn_complete",
+        content: "Editor interaction stopped at its request-scoped limit.",
+        usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
+        stopReason: "editor_request_failed",
+        error: new Error("editor_interaction_limit: request cap reached"),
+      } satisfies PhaseEvent;
+      return { reason: "completed" };
+    });
+    const uninstall = __installTuiSessionContractForTest({
+      session: session as never,
+      configStore: { current: () => defaultConfig },
+      agencHome: "/tmp/agenc",
+      resolvedProvider: "stub",
+      autonomousModeEnabled: true,
+      loadTurnInputsFn: async () => EMPTY_TURN_INPUTS,
+      runSingleTurnFn: runSingleTurnFn as never,
+    });
+
+    try {
+      await session.submit("explain this selection", {
+        editorInteraction: {
+          interactionId: "editor-request-failed",
+          policy: "read_only",
+          bufferHandle: 1,
+          changedtick: 1,
+          contentSha256: "a".repeat(64),
+          range: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 },
+        },
+      });
+      expect(setContextBlocked).toHaveBeenCalledWith(true);
+    } finally {
+      uninstall();
+      setContextBlocked.mockRestore();
+    }
+  });
+
   it("runs hooks through the installed live submit driver before the turn starts", async () => {
     const { session } = fakeSession("/workspace");
     const inputs: unknown[] = [];
