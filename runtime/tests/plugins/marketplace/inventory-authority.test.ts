@@ -1,6 +1,7 @@
 import {
   mkdtemp,
   mkdir,
+  readFile,
   readdir,
   symlink,
   writeFile,
@@ -66,6 +67,58 @@ async function writeInventory(
 }
 
 describe("marketplace inventory authority", () => {
+  test("atomically scrubs credentials from legacy inventory before returning it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-marketplace-credential-repair-"));
+    const authority = { pluginsDirectory: join(root, "plugins") };
+    const gitEntry = entry(authority.pluginsDirectory, "private-git");
+    const urlEntry = entry(authority.pluginsDirectory, "private-url");
+    await materializeEntry(gitEntry);
+    await materializeEntry(urlEntry);
+    await writeInventory(authority, {
+      "private-git": {
+        ...gitEntry,
+        source: {
+          source: "git",
+          url:
+            "https://opaque-token@agenc.tech/private/marketplace.git?X-Amz-Signature=opaque-signature#opaque-fragment",
+        },
+        refreshable: true,
+      },
+      "private-url": {
+        ...urlEntry,
+        source: {
+          source: "url",
+          url: "https://agenc.tech/private/marketplace.json?download=1#view",
+          headers: { Authorization: "Bearer opaque-header" },
+        },
+        refreshable: true,
+      },
+    });
+
+    const loaded = await loadKnownMarketplacesConfig(authority);
+    expect(loaded["private-git"]?.source).toEqual({
+      source: "git",
+      url:
+        "https://redacted@agenc.tech/private/marketplace.git?redacted=1#redacted",
+    });
+    expect(loaded["private-git"]?.refreshable).toBe(false);
+    expect(loaded["private-url"]?.source).toEqual({
+      source: "url",
+      url: "https://agenc.tech/private/marketplace.json?redacted=1#redacted",
+    });
+    expect(loaded["private-url"]?.refreshable).toBe(false);
+
+    const persisted = await readFile(
+      getKnownMarketplacesFilePath(authority),
+      "utf8",
+    );
+    expect(persisted).not.toContain("opaque-token");
+    expect(persisted).not.toContain("opaque-signature");
+    expect(persisted).not.toContain("opaque-fragment");
+    expect(persisted).not.toContain("opaque-header");
+    expect(persisted).not.toContain("Authorization");
+  });
+
   test("serializes same-root updates and isolates explicit plugin storage roots", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-marketplace-inventory-"));
     const pluginStorageRootA = join(root, "plugin-storage-a");

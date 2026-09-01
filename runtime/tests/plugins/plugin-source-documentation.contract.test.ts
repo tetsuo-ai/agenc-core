@@ -117,6 +117,8 @@ describe("plugin source documentation contract", () => {
       "https://agenc.tech/plugins/sk-proj-abcdefghijklmnopqrstuvwxyz123456/tool.tgz";
     const secretFragment =
       "https://agenc.tech/plugins/tool.tgz#sk-proj-abcdefghijklmnopqrstuvwxyz123456";
+    const opaqueFragment =
+      "https://agenc.tech/plugins/tool.tgz#opaque-credential-material";
     expect(pluginSourceNeedsRedaction(secretPath)).toBe(true);
     expect(pluginSourceNeedsRedaction(secretFragment)).toBe(true);
     expect(redactPluginSource(secretPath)).not.toContain(
@@ -124,6 +126,9 @@ describe("plugin source documentation contract", () => {
     );
     expect(redactPluginSource(secretFragment)).not.toContain(
       "sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+    );
+    expect(redactPluginSource(opaqueFragment)).toBe(
+      "https://agenc.tech/plugins/tool.tgz#redacted",
     );
   });
 

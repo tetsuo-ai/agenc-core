@@ -29,6 +29,7 @@ import type {
 import { pluginMarketplaceRootPath } from "../directories.js";
 import { loadPluginManifest } from "../manifest.js";
 import type { PluginManifest, PluginManifestInterface } from "../manifest-schema.js";
+import { redactPluginSource } from "../resolution.js";
 import {
   assertHttpsOrLoopbackUrl,
   fetchWithTimeout as fetchWithTimeoutGuard,
@@ -1346,7 +1347,7 @@ function displayMarketplaceSource(source: MarketplaceSource): string {
       return source.repo;
     case "git":
     case "url":
-      return redactMarketplaceUrl(source.url);
+      return redactPluginSource(source.url);
     case "directory":
     case "file":
       return source.path;
@@ -1361,11 +1362,11 @@ function persistedMarketplaceSource(source: MarketplaceSource): MarketplaceSourc
   if (source.source === "url") {
     return {
       source: "url",
-      url: redactMarketplaceUrl(source.url),
+      url: redactPluginSource(source.url),
     };
   }
   if (source.source === "git") {
-    const url = redactMarketplaceUrl(source.url);
+    const url = redactPluginSource(source.url);
     return url === source.url ? source : { ...source, url };
   }
   return source;
@@ -1397,7 +1398,6 @@ function marketplaceUpgradeSkipReason(record: MarketplaceRecord): string | undef
   if (source.source !== "url" && source.source !== "git") return undefined;
   if (
     record.refreshable === false ||
-    marketplaceUrlLooksRedacted(source.url) ||
     (source.source === "url" && hasMarketplaceUrlHeaders(source))
   ) {
     return "Marketplace source requires credentials that are not stored; re-add the marketplace with fresh credentials to refresh it";
@@ -1481,24 +1481,11 @@ function appendBoundedOutput(
 }
 
 function redactProcessArgs(args: readonly string[]): string[] {
-  return args.map((arg) => redactSensitiveText(arg));
-}
-
-const MARKETPLACE_REDACTED_MARKER = "<redacted>";
-
-function redactMarketplaceUrl(url: string): string {
-  return redactSensitiveText(url);
-}
-
-function marketplaceUrlLooksRedacted(url: string): boolean {
-  return url.includes(MARKETPLACE_REDACTED_MARKER);
+  return args.map((arg) => redactPluginSource(arg));
 }
 
 function redactSensitiveText(value: string): string {
-  return value
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)([^@\s/]+)@/giu, `$1${MARKETPLACE_REDACTED_MARKER}@`)
-    .replace(/([?&](?:token|access_token|password|apikey|api_key)=)[^&\s]+/giu, `$1${MARKETPLACE_REDACTED_MARKER}`)
-    .replace(/((?:token|access_token|password|apikey|api_key)=)[^&\s]+/giu, `$1${MARKETPLACE_REDACTED_MARKER}`);
+  return redactPluginSource(value);
 }
 
 

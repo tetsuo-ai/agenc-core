@@ -33,6 +33,10 @@ import {
   type PluginStorageAuthority,
 } from "../directories.js";
 import { isCanonicalMarketplaceName } from "../identifier.js";
+import {
+  pluginSourceNeedsRedaction,
+  redactPluginSource,
+} from "../resolution.js";
 import { MarketplaceSourceSchema } from "../../utils/plugins/schemas.js";
 
 const KnownMarketplaceSchema = z.object({
@@ -96,6 +100,54 @@ export interface MarketplaceInventoryAuthority {
 export interface MarketplaceInventoryMutationAuthority {
   /** Exact plugin storage root selected at an ingress boundary. */
   readonly pluginsDirectory: string;
+}
+
+interface SanitizedMarketplaceInventory {
+  readonly inventory: MarketplaceInventory;
+  readonly changed: boolean;
+}
+
+function sanitizeMarketplaceInventory(
+  inventory: MarketplaceInventory,
+): SanitizedMarketplaceInventory {
+  let changed = false;
+  const entries = Object.entries(inventory).map(([name, entry]) => {
+    const source = entry.source;
+    if (source.source !== "url" && source.source !== "git") {
+      return [name, entry] as const;
+    }
+
+    const urlNeedsRedaction = pluginSourceNeedsRedaction(source.url);
+    const hasHeaders = source.source === "url" &&
+      source.headers !== undefined &&
+      Object.keys(source.headers).length > 0;
+    const hasEmptyHeaders = source.source === "url" &&
+      source.headers !== undefined &&
+      Object.keys(source.headers).length === 0;
+    if (!urlNeedsRedaction && !hasHeaders && !hasEmptyHeaders) {
+      return [name, entry] as const;
+    }
+
+    changed = true;
+    const sanitizedSource = source.source === "url"
+      ? {
+          source: "url" as const,
+          url: redactPluginSource(source.url),
+        }
+      : {
+          ...source,
+          url: redactPluginSource(source.url),
+        };
+    return [name, {
+      ...entry,
+      source: sanitizedSource,
+      ...((urlNeedsRedaction || hasHeaders) ? { refreshable: false } : {}),
+    }] as const;
+  });
+  return {
+    inventory: changed ? Object.fromEntries(entries) : inventory,
+    changed,
+  };
 }
 
 /** Normalize a user-facing marketplace name without changing its identity. */
@@ -396,13 +448,10 @@ function parseMarketplaceInventoryText(
   }
 }
 
-export async function loadKnownMarketplacesConfig(
-  authority: MarketplaceInventoryAuthority = {},
+async function loadKnownMarketplacesConfigUnlocked(
+  storageAuthority: PluginStorageAuthority,
+  filePath: string,
 ): Promise<MarketplaceInventory> {
-  const storageAuthority = resolvePluginStorageAuthority(
-    authority.pluginsDirectory,
-  );
-  const filePath = pluginInventoryPath(storageAuthority);
   try {
     const content = await getFsImplementation().readFile(filePath, {
       encoding: "utf-8",
@@ -419,6 +468,33 @@ export async function loadKnownMarketplacesConfig(
       `Failed to load marketplace inventory at ${filePath}: ${errorMessage(error)}`,
     );
   }
+}
+
+export async function loadKnownMarketplacesConfig(
+  authority: MarketplaceInventoryAuthority = {},
+): Promise<MarketplaceInventory> {
+  const storageAuthority = resolvePluginStorageAuthority(
+    authority.pluginsDirectory,
+  );
+  const filePath = pluginInventoryPath(storageAuthority);
+  const loaded = await loadKnownMarketplacesConfigUnlocked(
+    storageAuthority,
+    filePath,
+  );
+  const sanitized = sanitizeMarketplaceInventory(loaded);
+  if (!sanitized.changed) return sanitized.inventory;
+
+  return withMarketplaceInventoryLock(filePath, async () => {
+    const latest = await loadKnownMarketplacesConfigUnlocked(
+      storageAuthority,
+      filePath,
+    );
+    const repair = sanitizeMarketplaceInventory(latest);
+    if (repair.changed) {
+      await writeMarketplaceInventory(filePath, repair.inventory);
+    }
+    return repair.inventory;
+  });
 }
 
 export interface MarketplaceInventoryMutation<R> {
@@ -454,15 +530,18 @@ export async function updateMarketplaceInventory<R>(
   );
   const filePath = pluginInventoryPath(storageAuthority);
   return withMarketplaceInventoryLock(filePath, async () => {
-    const current = await loadKnownMarketplacesConfig({
-      pluginsDirectory: storageAuthority.pluginStorageRoot,
-    });
+    const loaded = await loadKnownMarketplacesConfigUnlocked(
+      storageAuthority,
+      filePath,
+    );
+    const current = sanitizeMarketplaceInventory(loaded).inventory;
     const mutation = await operation(current);
-    const inventory = parseMarketplaceInventory(
+    const parsed = parseMarketplaceInventory(
       mutation.inventory,
       filePath,
       storageAuthority,
     );
+    const inventory = sanitizeMarketplaceInventory(parsed).inventory;
     await writeMarketplaceInventory(filePath, inventory);
     return mutation.result;
   });

@@ -557,7 +557,7 @@ describe("agenc plugin CLI", () => {
     }, options(agencHome, workspaceRoot, listIo));
     expect(listExit).toBe(0);
     expect(listIo.stdoutText()).toContain("private-git");
-    expect(listIo.stdoutText()).toContain("<redacted>");
+    expect(listIo.stdoutText()).toContain("redacted");
     expect(listIo.stdoutText()).not.toContain("opaque-token");
 
     const jsonIo = createIo();
@@ -820,6 +820,6 @@ describe("agenc plugin CLI", () => {
       timeoutMs: 1_000,
       maxOutputBytes: 512,
       environment: Object.freeze({ ...process.env }),
-    })).rejects.toThrow("https://<redacted>@agenc.tech/repo?token=<redacted>");
+    })).rejects.toThrow("https://redacted@agenc.tech/repo?redacted=1");
   });
 });

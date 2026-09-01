@@ -1679,6 +1679,7 @@ function redactCredentialUrls(input: string): string {
         url.password = "";
       }
       if (url.search) url.search = "?redacted=1";
+      if (url.hash) url.hash = "#redacted";
       return `${prefix}${url.toString()}`;
     } catch {
       return redactUnparseableCredentialUrl(raw);
@@ -1699,7 +1700,8 @@ function redactUnparseableCredentialUrl(raw: string): string {
   }
   const queryIndex = rest.search(/[?#]/u);
   if (queryIndex !== -1) {
-    rest = `${rest.slice(0, queryIndex)}?redacted=1`;
+    const delimiter = rest[queryIndex] === "#" ? "#redacted" : "?redacted=1";
+    rest = `${rest.slice(0, queryIndex)}${delimiter}`;
   }
   return `${prefix}${scheme}${rest}`;
 }

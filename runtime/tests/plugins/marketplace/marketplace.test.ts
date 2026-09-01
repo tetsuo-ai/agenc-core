@@ -532,7 +532,7 @@ describe("plugin marketplace runtime", () => {
     }>;
     expect(index["url-team"]?.source).toEqual({
       source: "url",
-      url: "https://agenc.tech/marketplace.json?token=%3Credacted%3E",
+      url: "https://agenc.tech/marketplace.json?redacted=1",
     });
     expect(index["url-team"]?.refreshable).toBe(false);
   });
@@ -575,14 +575,14 @@ describe("plugin marketplace runtime", () => {
   it("does not persist or list credentials from git marketplace sources", async () => {
     const { pluginStorageRoot, workspaceRoot } = await tempRuntime();
     const credentialUrl =
-      "https://opaque-token@agenc.tech/private/marketplace.git";
+      "https://opaque-token@agenc.tech/private/marketplace.git?X-Amz-Signature=opaque-signature#opaque-fragment";
     const cloneUrls: string[] = [];
 
     const added = await addMarketplaceOp({
       pluginStorageRoot,
       workspaceRoot,
       env: {},
-      source: credentialUrl,
+      source: { source: "git", url: credentialUrl },
       runProcess: async (_command, args) => {
         if (args.includes("clone")) {
           const repositorySeparator = args.indexOf("--");
@@ -606,7 +606,8 @@ describe("plugin marketplace runtime", () => {
     expect(added.marketplace.source).not.toContain("opaque-token");
     expect(added.marketplace.sourceDescriptor).toEqual({
       source: "git",
-      url: "https://<redacted>@agenc.tech/private/marketplace.git",
+      url:
+        "https://redacted@agenc.tech/private/marketplace.git?redacted=1#redacted",
     });
     expect(added.marketplace.refreshable).toBe(false);
 
@@ -615,6 +616,8 @@ describe("plugin marketplace runtime", () => {
       "utf8",
     );
     expect(rawIndex).not.toContain("opaque-token");
+    expect(rawIndex).not.toContain("opaque-signature");
+    expect(rawIndex).not.toContain("opaque-fragment");
     const listed = await readMarketplaceIndex({
       pluginStorageRoot,
       workspaceRoot,
@@ -622,7 +625,8 @@ describe("plugin marketplace runtime", () => {
     expect(listed.marketplaces["git-team"]?.source).not.toContain("opaque-token");
     expect(listed.marketplaces["git-team"]?.sourceDescriptor).toEqual({
       source: "git",
-      url: "https://<redacted>@agenc.tech/private/marketplace.git",
+      url:
+        "https://redacted@agenc.tech/private/marketplace.git?redacted=1#redacted",
     });
 
     const upgraded = await upgradeMarketplaceOp({
