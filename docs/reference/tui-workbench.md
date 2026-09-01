@@ -68,6 +68,11 @@ is no inert operator layout setting.
 - **Turn lifecycle** — `esc` always clears busy latches immediately
   (`handleTurnCancel`). A 20s submit-ack watchdog (`SUBMIT_ACK_WATCHDOG_MS`)
   recovers turns the daemon never acknowledged. There is no 60s stall timer.
+  An unmarked daemon `error` is a diagnostic: the Working spinner and
+  `activeTurn` stay up. Among `error` events, only one with
+  `payload.terminal === true` (from `event.agent_status` or a runtime-settings
+  authority failure) ends the turn. See
+  [daemon telemetry errors](daemon.md#telemetry-errors-stay-session-only).
 - **`/effort`** — show or set reasoning effort (`low` / `medium` / `high` /
   `xhigh` when the model catalog lists it) for the current model;
   `/effort default` restores the model default.
@@ -330,3 +335,4 @@ Broader suites and env knobs for design-state smoke are listed in
 - Embedded Neovim BUFFER: [`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md)
 - Agents rail / multi-agent: [`agents.md`](agents.md)
 - `/context` occupancy: [Context usage](#context-usage-context)
+- Daemon telemetry vs terminal errors: [`daemon.md`](daemon.md#telemetry-errors-stay-session-only)

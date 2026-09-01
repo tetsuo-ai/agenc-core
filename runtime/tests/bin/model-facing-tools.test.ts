@@ -4789,6 +4789,74 @@ describe("model-facing tools", () => {
     }
   });
 
+  it("assign_task admission refusals stay off the mutation gate", async () => {
+    const session = fakeSession();
+    const mailboxSend = vi.fn(() => 1);
+    (
+      session as unknown as {
+        mailbox: { hasPending: () => boolean; send: typeof mailboxSend };
+      }
+    ).mailbox = {
+      hasPending: () => false,
+      send: mailboxSend,
+    };
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const child = await control.spawn({
+      parentPath: "/root",
+      threadId: "agent-worker",
+      agentName: "worker",
+    });
+    _setAgentControlForTesting(session, { control, registry });
+    try {
+      const assign = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "assign_task")!;
+
+      const busy = await assign.execute({
+        target: child.agentPath,
+        message: "first assignment",
+      });
+      expect(busy.isError).toBe(true);
+      expect(JSON.parse(busy.content).error).toBe(
+        "agent /root/worker is not an idle reusable worker",
+      );
+      expect(busy.effectDisposition).toMatchObject({
+        disposition: "confirmed_no_effect",
+        evidenceKind: "boundary_not_crossed",
+      });
+      expect(child.assignment).toBeUndefined();
+
+      child.status.markRunning("initial-turn");
+      child.status.markIdle("initial-turn");
+      const accepted = await assign.execute({
+        target: child.agentPath,
+        message: "first assignment",
+      });
+      expect(accepted.isError).toBeUndefined();
+      expect(child.assignment).toMatchObject({
+        state: "accepted",
+        author: "/root",
+      });
+
+      const outstanding = await assign.execute({
+        target: child.agentPath,
+        message: "second assignment",
+      });
+      expect(outstanding.isError).toBe(true);
+      expect(JSON.parse(outstanding.content).error).toBe(
+        "agent /root/worker already has an outstanding assignment",
+      );
+      expect(outstanding.effectDisposition).toMatchObject({
+        disposition: "confirmed_no_effect",
+        evidenceKind: "boundary_not_crossed",
+      });
+    } finally {
+      _clearAgentControlCacheForTesting(session);
+    }
+  });
+
   it("list_agents returns AgenC V2 snake_case entries only", async () => {
     const session = fakeSession();
     const control = {

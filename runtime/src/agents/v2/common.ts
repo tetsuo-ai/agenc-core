@@ -34,7 +34,10 @@ export const MAX_WAIT_TIMEOUT_MS = 3_600_000;
 /**
  * Shared evidence ref for agent-tool argument/identity refusals produced
  * before any child, mailbox, or shutdown mutation. Callers must not use the
- * helpers below after delegate()/assignTask()/send/shutdown can have run.
+ * helpers below after delegate()/send/shutdown, or after assignTask() has
+ * installed an assignment marker. Admission-only assignTask throws
+ * (worker_not_idle, assignment_outstanding, sender_not_ancestor, self_target)
+ * happen before that marker and remain pre-mutation.
  */
 export const AGENT_VALIDATION_EVIDENCE_REF = "tool:agents.v2:validation";
 
