@@ -8,6 +8,7 @@ import {
   assertAgentInvocationChannelMessage,
   validateAgentInvocationMessageSequence,
 } from "../contracts/agent-invocation-envelope.js";
+import { assertCompactionHistoryMarkerV1 } from "./compaction-history-marker.js";
 import {
   CanonicalSha256Writer,
   TOOL_RESULT_DIGEST_PREFIX,
@@ -59,6 +60,7 @@ const CHECKPOINT_SLICE_KEYS = Object.freeze([
 ]);
 const RESPONSE_ITEM_KEYS = Object.freeze([
   "agentInvocation",
+  "compactionHistory",
   "content",
   "endTurn",
   "id",
@@ -318,6 +320,24 @@ export function computeCheckpointPrefixHashV2(
       writer.writeCount(
         "agent-invocation-content-byte-length",
         agentInvocation.contentByteLength,
+      );
+    }
+
+    const compactionHistory = message.compactionHistory;
+    writer.writeString(
+      "compaction-history-present",
+      String(compactionHistory !== undefined),
+    );
+    if (compactionHistory !== undefined) {
+      writer.writeCount("compaction-history-version", compactionHistory.version);
+      writer.writeString("compaction-history-kind", compactionHistory.kind);
+      writer.writeString(
+        "compaction-history-attempt-id",
+        compactionHistory.attempt_id,
+      );
+      writer.writeString(
+        "compaction-history-summary-sha256",
+        compactionHistory.summary_sha256,
       );
     }
   }
@@ -626,6 +646,15 @@ function assertResponseItemShape(
     } catch (error) {
       throw malformed(
         `checkpoint response item ${index} has invalid agent invocation metadata: ${errorMessage(error)}`,
+      );
+    }
+  }
+  if (item.compactionHistory !== undefined) {
+    try {
+      assertCompactionHistoryMarkerV1(item.compactionHistory);
+    } catch (error) {
+      throw malformed(
+        `checkpoint response item ${index} has invalid compaction-history metadata: ${errorMessage(error)}`,
       );
     }
   }

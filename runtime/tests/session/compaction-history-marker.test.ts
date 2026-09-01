@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { LLMMessage } from "../../src/llm/types.js";
+import { assertCompactionHistoryMarkerV1 } from "../../src/session/compaction-history-marker.js";
 import {
   isCompactBoundaryMessage,
   isTransactionalCompactSummaryMessage,
@@ -52,6 +53,32 @@ describe("authenticated compaction history markers", () => {
     expect(split.activeHistory).toEqual([latestSummary]);
     expect(isCompactBoundaryMessage(latestBoundary)).toBe(true);
     expect(isTransactionalCompactSummaryMessage(latestSummary)).toBe(true);
+  });
+
+  it("accepts exact v1 markers and rejects extras or missing fields", () => {
+    const valid = {
+      version: 1 as const,
+      kind: "boundary" as const,
+      attempt_id: ATTEMPT_ID,
+      summary_sha256: SUMMARY_SHA256,
+    };
+    expect(() => assertCompactionHistoryMarkerV1(valid)).not.toThrow();
+    expect(() =>
+      assertCompactionHistoryMarkerV1({ ...valid, extra: true }),
+    ).toThrow(/unknown or missing fields/);
+    expect(() =>
+      assertCompactionHistoryMarkerV1({
+        version: 1,
+        kind: "boundary",
+        attempt_id: ATTEMPT_ID,
+      }),
+    ).toThrow(/unknown or missing fields/);
+    expect(() =>
+      assertCompactionHistoryMarkerV1({
+        ...valid,
+        summary_sha256: "not-a-digest",
+      }),
+    ).toThrow(/lowercase SHA-256/);
   });
 });
 

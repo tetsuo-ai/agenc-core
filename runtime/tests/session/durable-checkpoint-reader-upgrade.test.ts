@@ -31,7 +31,10 @@ import {
   createCsvAgentInvocationEnvelope,
   materializeAgentInvocationMessages,
 } from "../../src/contracts/agent-invocation-envelope.js";
-import { llmMessageToResponseItem } from "../../src/session/message-history-conversion.js";
+import {
+  llmMessageToCheckpointResponseItem,
+  llmMessageToResponseItem,
+} from "../../src/session/message-history-conversion.js";
 import {
   openStateDatabases,
   type StateSqliteDriver,
@@ -404,6 +407,121 @@ describe("durable checkpoint v2 reader", () => {
         projection,
         projectionId: "validate-unversioned-call",
         sourceKey: "fixture-unversioned-call",
+      }),
+    ).toMatchObject({
+      status: "invalid",
+      failure: { code: "checkpoint_response_shape_invalid" },
+    });
+  });
+
+  it("accepts writer-shaped compactionHistory markers and rejects extras", () => {
+    const summarySha256 = "a".repeat(64);
+    const boundary = llmMessageToCheckpointResponseItem({
+      role: "developer",
+      content: "compaction boundary",
+      runtimeOnly: {
+        compactionHistory: {
+          version: 1,
+          kind: "boundary",
+          attempt_id: "compact-attempt",
+          summary_sha256: summarySha256,
+        },
+      },
+    });
+    const summary = llmMessageToCheckpointResponseItem({
+      role: "user",
+      content: "compaction summary",
+      runtimeOnly: {
+        compactionHistory: {
+          version: 1,
+          kind: "summary",
+          attempt_id: "compact-attempt",
+          summary_sha256: summarySha256,
+        },
+      },
+    });
+    const kept = llmMessageToCheckpointResponseItem({
+      role: "user",
+      content: "next prompt",
+    });
+    const history = [boundary, summary, kept];
+    const checkpoint = checkpointForHistory(history);
+
+    expect(
+      validateCheckpointPrefixV2({
+        checkpoint,
+        expectedRunId: "compaction-marker-run",
+        messages: history,
+        projection,
+        projectionId: "validate-compaction-history",
+        sourceKey: "compaction-history-writer-shaped",
+      }),
+    ).toMatchObject({ status: "valid" });
+
+    const bitFlipped = history.map((message, index) =>
+      index === 0
+        ? {
+            ...message,
+            compactionHistory: message.compactionHistory === undefined
+              ? undefined
+              : {
+                  ...message.compactionHistory,
+                  attempt_id: "tampered-attempt",
+                },
+          }
+        : message,
+    );
+    expect(
+      validateCheckpointPrefixV2({
+        checkpoint,
+        expectedRunId: "compaction-marker-run",
+        messages: bitFlipped,
+        projection,
+        projectionId: "validate-compaction-history-tamper",
+        sourceKey: "compaction-history-tamper",
+      }),
+    ).toMatchObject({
+      status: "invalid",
+      failure: { code: "checkpoint_prefix_digest_mismatch" },
+    });
+
+    const malformedMarker = history.map((message, index) =>
+      index === 0
+        ? {
+            ...message,
+            compactionHistory: {
+              version: 1,
+              kind: "boundary",
+              attempt_id: "compact-attempt",
+            },
+          }
+        : message,
+    );
+    expect(
+      validateCheckpointPrefixV2({
+        checkpoint,
+        expectedRunId: "compaction-marker-run",
+        messages: malformedMarker as ResponseItem[],
+        projection,
+        projectionId: "validate-compaction-history-malformed",
+        sourceKey: "compaction-history-malformed",
+      }),
+    ).toMatchObject({
+      status: "invalid",
+      failure: { code: "checkpoint_response_shape_invalid" },
+    });
+
+    const withExtra = history.map((message, index) =>
+      index === 0 ? { ...message, futureField: true } : message,
+    );
+    expect(
+      validateCheckpointPrefixV2({
+        checkpoint,
+        expectedRunId: "compaction-marker-run",
+        messages: withExtra as ResponseItem[],
+        projection,
+        projectionId: "validate-compaction-history-extra",
+        sourceKey: "compaction-history-extra",
       }),
     ).toMatchObject({
       status: "invalid",
