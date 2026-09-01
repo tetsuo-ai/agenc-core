@@ -382,8 +382,12 @@ receive a new admission `stepId`. Before the next admission, `run-turn.ts`
 force-emits a `turn_checkpoint`; interval throttling cannot defer that
 barrier. In-turn resume (`resumeTurnFromCheckpoint`) is separate from epoch
 reopen. Startup continues an orphaned turn only when the last checkpoint
-passes config, reader, prefix hash, build pinning, and lease checks. A failed
-gate starts a fresh turn and leaves the rejected checkpoint on disk. See
+passes config, reader, prefix hash, build pinning, and lease checks. Startup
+may open a fresh turn after a clean rejection. If provider publication began,
+the original route, config, model metadata, and client continuation state must
+be proven restored first. An unproven rollback halts startup and fences the
+session from new turns. The rejected checkpoint remains on disk. See the
+[resume outcome table](design/durable-runs-effects-events.md#resume-outcomes),
 [execution-admission-kernel.md](design/execution-admission-kernel.md#model-step-identity),
 the [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main),
 and

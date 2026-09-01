@@ -316,15 +316,28 @@ sample step ID from the checkpointed ordinal. See
 [execution-admission-kernel.md](execution-admission-kernel.md#model-step-identity).
 
 `resumeTurnFromCheckpoint` (`runtime/src/conversation/thread-manager.ts`)
-continues that turn only when every gate holds. If any gate fails, startup
-opens a fresh turn. The existing checkpoint remains unchanged, and normal
-fresh-turn events append afterward.
+continues that turn only when every gate holds. A gate rejection may open a
+fresh turn only when no provider state changed or compensation proved that the
+original state was restored. The existing checkpoint remains unchanged.
 
 When the checkpoint carries `pendingAdmissionFallback`, resume first prepares
-and commits that fallback's provider and model as one route. The resumed turn
-context, admission evidence, and provider call are created only after the
-session binding matches both values. If the complete route cannot be restored,
-resume returns `provider-restore-failed` without dispatching a provider call.
+that fallback's provider and model as one route. Publication covers the
+provider binding, session configuration, model metadata, runtime config,
+provider client continuation state, and checkpoint-owned pending switch. The
+resumed turn context, admission evidence, and provider call are created only
+after the session binding matches both route values.
+
+### Resume outcomes
+
+| Outcome | State requirement | Startup behavior |
+| --- | --- | --- |
+| Resumed | Every gate passed and any pending provider route was published completely. | Continue the orphaned turn. Do not create a fresh turn. |
+| Clean rejection | Provider publication never began, or compensation proved that the original route, config, model metadata, and client continuation state were restored. Provider rollback advances the revision so stale prepared work cannot commit. | A fresh turn is permitted. Fresh-turn events append after the unchanged checkpoint. |
+| Terminal failure | Provider publication changed live state and complete compensation could not be proved. | Halt startup and fence the session. Turn construction and `runTurn` reject further work; no fresh turn is created or dispatched. |
+
+`provider-restore-failed` can report either rejection class. The structured
+resume result distinguishes them. Only terminal failure sets
+`freshTurnAllowed` to `false` and carries the rollback failure detail.
 
 | Gate | Default | Failure reason |
 | --- | --- | --- |
@@ -334,7 +347,7 @@ resume returns `provider-restore-failed` without dispatching a provider call.
 | Checkpoint reader accepts the payload (`readTurnCheckpoint`) | n/a | `integrity-invalid` or `integrity-deferred` |
 | History prefix hash matches | n/a | `prefix-mismatch` |
 | Single-writer resume lease (`durableTurns.resume.requireLease`) | `true` | `lease-unavailable` |
-| Pending fallback provider and model are restored together | n/a | `provider-restore-failed` |
+| Pending fallback provider and model are restored together | n/a | `provider-restore-failed`; apply the outcome table above |
 
 The writer, event types, and strict reader share the slice contract in
 `runtime/src/session/turn-checkpoint-slice.ts`. The reader accepts legacy

@@ -623,9 +623,12 @@ In-turn resume (`resumeTurnFromCheckpoint`) is separate from epoch reopen.
 Startup continues the orphaned turn only when every gate passes: resume is
 enabled, the checkpoint is readable and unterminated, the build pin matches,
 the prefix hash matches, the single-writer lease is valid, and any pending
-fallback provider/model route can be restored as one binding. A failed gate
-leaves the existing checkpoint unchanged and starts a fresh turn. See
-[durable-runs-effects-events.md](../design/durable-runs-effects-events.md#in-turn-checkpoint-resume).
+fallback provider/model route can be restored as one binding. A clean
+rejection may start a fresh turn only after the original provider state is
+proven intact or restored. An unproven partial publication halts startup and
+fences the session from new turns. The existing checkpoint remains unchanged.
+See the canonical
+[resume outcome table](../design/durable-runs-effects-events.md#resume-outcomes).
 
 See [execution-admission-kernel.md](../design/execution-admission-kernel.md#model-step-identity).
 
@@ -637,7 +640,7 @@ See [execution-admission-kernel.md](../design/execution-admission-kernel.md#mode
 | A crash-resumed nudge or empty-response retry conflicts | Verify the latest turn checkpoint contains the expected sample ordinal and resume-prompt kind. |
 | A later model call lacks `sample-<ordinal>` | Check whether the prior response was terminal. Only successful nonterminal responses reserve another physical sample. |
 | Resume never continues after `durableTurns.resume.onRestart = false` | This is expected. Startup reports `disabled` and opens a fresh turn. |
-| Resume reports `provider-restore-failed` | Check that `pendingAdmissionFallback` records both the target provider and model, and that the target provider can be prepared. The runtime will not send the target model through the previous provider. |
+| Resume reports `provider-restore-failed` | Check that `pendingAdmissionFallback` records both the target provider and model, and that the target provider can be prepared. Then check the [resume outcome](../design/durable-runs-effects-events.md#resume-outcomes): clean rejection permits a fresh turn only after proven restoration; terminal failure fences the session and halts startup. |
 
 ## What the daemon owns
 
