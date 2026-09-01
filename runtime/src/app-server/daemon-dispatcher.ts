@@ -2376,7 +2376,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "instructions",
       "permissionMode",
     ],
-    stringArrayFields: ["unattendedAllow", "unattendedDeny"],
+    stringArrayFields: ["addDirs", "unattendedAllow", "unattendedDeny"],
     objectFields: [
       "metadata",
       "envOverrides",

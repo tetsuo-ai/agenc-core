@@ -228,9 +228,10 @@ export async function resolveLiveInstructionEnvelope(input: {
     );
   }
   const config = configStore.current();
-  const discoveryDisabled =
-    isEnvTruthy(process.env.AGENC_DISABLE_AGENC_MDS) ||
-    isBareMode();
+  const discoveryDisabledByEnvironment = isEnvTruthy(
+    process.env.AGENC_DISABLE_AGENC_MDS,
+  );
+  const discoveryDisabled = discoveryDisabledByEnvironment || isBareMode();
   const enabledTiers: InstructionTier[] = discoveryDisabled
     ? []
     : [
@@ -301,15 +302,62 @@ export async function resolveLiveInstructionEnvelope(input: {
       };
     }
   }
+  const additionalTierSets: TieredInstructions[] = [];
+  if (
+    !discoveryDisabledByEnvironment &&
+    isEnvTruthy(process.env.AGENC_ADDITIONAL_DIRECTORIES_AGENC_MD)
+  ) {
+    const seenDirectories = new Set([
+      process.platform === "win32"
+        ? resolve(input.ctx.cwd).toLowerCase()
+        : resolve(input.ctx.cwd),
+    ]);
+    for (const directory of input.session.permissionModeRegistry
+      .current()
+      .additionalWorkingDirectories.values()) {
+      if (directory.source !== "cliArg") continue;
+      const canonicalDirectory = resolve(directory.path);
+      const comparisonKey =
+        process.platform === "win32"
+          ? canonicalDirectory.toLowerCase()
+          : canonicalDirectory;
+      if (seenDirectories.has(comparisonKey)) continue;
+      seenDirectories.add(comparisonKey);
+      additionalTierSets.push(
+        await loadTieredInstructions({
+          cwd: canonicalDirectory,
+          configHomeDir: configStore.homeContext.path,
+          managedPath: configStore.managedPaths.instructions,
+          enabledTiers: ["project"],
+          projectRootMarkers: [],
+          ...(input.session.services.externalInstructionApprovals !== undefined
+            ? {
+                externalApprovals:
+                  input.session.services.externalInstructionApprovals,
+              }
+            : {}),
+          ...(config?.project_doc_max_bytes !== undefined
+            ? { projectDocMaxBytes: config.project_doc_max_bytes }
+            : {}),
+        }),
+      );
+    }
+  }
+  const tierSets = [tiers, ...additionalTierSets];
   const workspaceText = frameWorkspaceGuidance(
-    assembleTieredInstructions(tiers),
+    tierSets
+      .map((tierSet) => assembleTieredInstructions(tierSet))
+      .filter((text) => text.trim().length > 0)
+      .join("\n\n"),
+  );
+  const warnings = tierSets.flatMap((tierSet) =>
+    formatTieredInstructionWarnings(tierSet),
   );
   const memoryText = await loadMemoryEntrypointsText();
-  const warnings = formatTieredInstructionWarnings(tiers);
   input.session.setProjectMemoryWarnings(warnings);
-  const sources = sourcesFromTiers({
-    tiers,
-  });
+  const sources = tierSets.flatMap((tierSet) =>
+    sourcesFromTiers({ tiers: tierSet }),
+  );
 
   // The trusted role/base prompt is last and therefore cannot be textually
   // shadowed by lower-authority repository guidance or by persisted memory.

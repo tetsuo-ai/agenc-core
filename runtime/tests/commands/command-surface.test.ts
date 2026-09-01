@@ -1,4 +1,3 @@
-import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -6,7 +5,6 @@ import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { ConfigStore } from "../../src/config/store.js";
-import { extractFlagValues } from "../../src/bin/route.js";
 import { createLocalSkillsServices } from "../../src/skills/local-loader.js";
 import {
   runWithCanonicalSettingsAuthority,
@@ -187,49 +185,10 @@ describe("AgenC command surface compatibility", () => {
     expect(names.has("install-github-app")).toBe(false);
     expect(names.has("onboard-github")).toBe(false);
     expect(names.has("terminal-setup")).toBe(false);
+    expect(names.has("add-dir")).toBe(false);
     expect(names.has("brief")).toBe(false);
     expect(names.has("export")).toBe(false);
     expect(names.has("sandbox")).toBe(false);
-  });
-
-  it("keeps additional-directory support on the CLI-only surface", () => {
-    expect(buildDefaultRegistry().has("add-dir")).toBe(false);
-    expect(builtInCommandNames().has("add-dir")).toBe(false);
-    expect(
-      extractFlagValues(
-        ["--add-dir", "../shared", "--add-dir=/tmp/shared"],
-        "--add-dir",
-      ),
-    ).toEqual(["../shared", "/tmp/shared"]);
-
-    const validator = new URL(
-      "../../src/commands/add-dir/validation.ts",
-      import.meta.url,
-    );
-    const staleScenario = new URL(
-      "../../scripts/check-tui-e2e/scenarios/74-slash-add-dir.mjs",
-      import.meta.url,
-    );
-    expect(existsSync(validator)).toBe(false);
-    expect(existsSync(staleScenario)).toBe(false);
-
-    const typeaheadSource = readFileSync(
-      new URL("../../src/tui/hooks/useTypeahead.tsx", import.meta.url),
-      "utf8",
-    );
-    expect(typeaheadSource).not.toContain("add-dir");
-
-    for (const sourcePath of [
-      "../../src/utils/settings/validationTips.ts",
-      "../../src/utils/sandbox/sandbox-runtime.ts",
-    ]) {
-      expect(readFileSync(new URL(sourcePath, import.meta.url), "utf8")).not.toContain(
-        "/add-dir",
-      );
-    }
-    expect(
-      readFileSync(new URL("../../tsconfig.json", import.meta.url), "utf8"),
-    ).not.toContain("commands/add-dir");
   });
 
   it("projects Ledger aliases and its subcommand hint into the TUI", () => {

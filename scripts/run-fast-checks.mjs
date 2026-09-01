@@ -212,6 +212,21 @@ export function deletedRuntimeFallbackPlan(runtimeInputs, {
         { kind: "file", repoPath: "runtime/tests/utils/buildConfig.test.ts" },
       );
     }
+    if (
+      file ===
+      "runtime/scripts/check-tui-e2e/scenarios/74-slash-add-dir.mjs"
+    ) {
+      candidates.push(
+        {
+          kind: "file",
+          repoPath: "runtime/tests/bin/agenc.cli-branch.test.ts",
+        },
+        {
+          kind: "file",
+          repoPath: "runtime/tests/commands/command-surface.test.ts",
+        },
+      );
+    }
 
     for (const candidate of candidates) {
       const exists = candidate.kind === "directory"

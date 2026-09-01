@@ -9,6 +9,10 @@ import {
   loadTieredInstructions,
 } from '../src/prompts/agenc-md.js'
 import { resolveLiveInstructionEnvelope } from '../src/prompts/live-instructions.js'
+import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from '../src/session/runtime-options.js'
 import type { Session } from '../src/session/session.js'
 import type { TurnContext } from '../src/session/turn-context.js'
 import { runWithCanonicalSettingsAuthority } from '../src/utils/settings/canonicalAuthority.js'
@@ -142,6 +146,101 @@ describe('hermetic managed prompt policy', () => {
         delete process.env.AGENC_MANAGED_INSTRUCTIONS
       } else {
         process.env.AGENC_MANAGED_INSTRUCTIONS = previousAmbient
+      }
+    }
+  })
+
+  it('loads explicit additional-directory instructions in bare sessions', async () => {
+    const hermeticHome = process.env.AGENC_TEST_HERMETIC_HOME
+    expect(hermeticHome).toBeTruthy()
+    const project = join(hermeticHome as string, 'add-dir-live-project')
+    const userHome = join(hermeticHome as string, 'add-dir-live-user')
+    const additionalParent = join(
+      hermeticHome as string,
+      'add-dir-live-parent',
+    )
+    const additionalDirectory = join(additionalParent, 'selected')
+    createdPaths.push(project, userHome, additionalParent)
+    await Promise.all([
+      mkdir(project, { recursive: true }),
+      mkdir(userHome, { recursive: true }),
+      mkdir(join(additionalDirectory, '.agenc'), { recursive: true }),
+    ])
+    await Promise.all([
+      writeFile(
+        join(additionalParent, 'AGENC.md'),
+        'ancestor instructions must stay out\n',
+        'utf8',
+      ),
+      writeFile(
+        join(additionalDirectory, 'AGENC.md'),
+        'selected additional root instructions\n',
+        'utf8',
+      ),
+      writeFile(
+        join(additionalDirectory, '.agenc', 'AGENC.md'),
+        'selected additional dot instructions\n',
+        'utf8',
+      ),
+    ])
+    const store = new ConfigStore({
+      home: userHome,
+      cwd: project,
+      projectRoot: project,
+      env: { AGENC_HOME: userHome },
+      loader: async () => ({ configVersion: 2 }),
+    })
+    await store.reload()
+    const session = {
+      services: { configStore: store },
+      permissionModeRegistry: {
+        current: () => ({
+          additionalWorkingDirectories: new Map([
+            [
+              additionalDirectory,
+              { path: additionalDirectory, source: 'cliArg' },
+            ],
+          ]),
+        }),
+      },
+      setProjectMemoryWarnings: vi.fn(),
+    } as unknown as Session
+    const previousFlag = process.env.AGENC_ADDITIONAL_DIRECTORIES_AGENC_MD
+    process.env.AGENC_ADDITIONAL_DIRECTORIES_AGENC_MD = '1'
+    clearTieredInstructionsCacheForTesting()
+    try {
+      const envelope = await runWithAgentRuntimeOptions(
+        resolveAgentRuntimeOptions({}, { simpleMode: true }),
+        () =>
+          runWithCanonicalSettingsAuthority(store, () =>
+            resolveLiveInstructionEnvelope({
+              session,
+              ctx: { cwd: project } as TurnContext,
+              baseInstructions: 'base instructions',
+            }),
+          ),
+      )
+
+      expect(envelope.workspaceText).toContain(
+        'selected additional root instructions',
+      )
+      expect(envelope.workspaceText).toContain(
+        'selected additional dot instructions',
+      )
+      expect(envelope.workspaceText).not.toContain(
+        'ancestor instructions must stay out',
+      )
+      expect(envelope.sources.map(source => source.path)).toEqual(
+        expect.arrayContaining([
+          join(additionalDirectory, 'AGENC.md'),
+          join(additionalDirectory, '.agenc', 'AGENC.md'),
+        ]),
+      )
+    } finally {
+      if (previousFlag === undefined) {
+        delete process.env.AGENC_ADDITIONAL_DIRECTORIES_AGENC_MD
+      } else {
+        process.env.AGENC_ADDITIONAL_DIRECTORIES_AGENC_MD = previousFlag
       }
     }
   })

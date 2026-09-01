@@ -136,6 +136,26 @@ test("deleted hermetic Vitest runner selects its discovery contract", () => {
   });
 });
 
+test("deleted slash add-dir scenario selects CLI and command contracts", () => {
+  const plan = deletedRuntimeFallbackPlan(
+    ["runtime/scripts/check-tui-e2e/scenarios/74-slash-add-dir.mjs"],
+    {
+      fileExists: (file) => new Set([
+        "runtime/tests/bin/agenc.cli-branch.test.ts",
+        "runtime/tests/commands/command-surface.test.ts",
+      ]).has(file),
+      isDirectory: () => false,
+    },
+  );
+  assert.deepEqual(plan, {
+    targets: [
+      "tests/bin/agenc.cli-branch.test.ts",
+      "tests/commands/command-surface.test.ts",
+    ],
+    uncovered: [],
+  });
+});
+
 test("runtime JSON configuration uses policy tests, not Vitest related mode", () => {
   for (const file of ["runtime/package.json", "runtime/tsconfig.bundle.json"]) {
     const plan = classifyChangedFiles([file]);

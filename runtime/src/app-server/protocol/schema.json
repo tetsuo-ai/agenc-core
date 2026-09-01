@@ -250,6 +250,13 @@
         "instructions": {
           "type": "string"
         },
+        "addDirs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
         "unattendedAllow": {
           "type": "array",
           "items": {

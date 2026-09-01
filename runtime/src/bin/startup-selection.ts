@@ -13,7 +13,7 @@ import {
 import { resolveProfileName } from "../config/env.js";
 import type { AgenCConfig } from "../config/schema.js";
 import { tokenizeCliOptionRegion } from "./cli-option-region.js";
-import { extractFlagValue } from "./route.js";
+import { extractFlagValue, extractFlagValues } from "./route.js";
 import {
   assertNoRetiredStartupFlags,
   AUTONOMOUS_FLAG,
@@ -29,6 +29,7 @@ export interface StartupCliFlags {
   readonly model?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly addDirs?: readonly string[];
   readonly permissionMode?: PermissionMode;
   readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
   readonly autonomousMode?: boolean;
@@ -52,6 +53,7 @@ export function readStartupCliFlags(
   const model = extractFlagValue(optionArgs, "--model") ?? undefined;
   const profile = extractFlagValue(optionArgs, "--profile") ?? undefined;
   const configPath = extractFlagValue(optionArgs, "--config") ?? undefined;
+  const addDirs = extractFlagValues(optionArgs, "--add-dir");
   const rawPermissionMode =
     extractFlagValue(optionArgs, "--permission-mode") ?? undefined;
   // Distinguish "flag absent" from "flag present but invalid". An invalid
@@ -69,6 +71,7 @@ export function readStartupCliFlags(
     ...(model ? { model } : {}),
     ...(profile ? { profile } : {}),
     ...(configPath ? { configPath } : {}),
+    ...(addDirs.length > 0 ? { addDirs: Object.freeze(addDirs) } : {}),
     ...(permissionMode ? { permissionMode } : {}),
     ...(dangerouslyBypassApprovalsAndSandbox
       ? { dangerouslyBypassApprovalsAndSandbox: true }

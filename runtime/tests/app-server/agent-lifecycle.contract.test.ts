@@ -2506,6 +2506,7 @@ describe("AgenC background agent lifecycle", () => {
       createTestAgent(agents, {
         cwd: process.cwd(),
         objective: "  build the parser  ",
+        addDirs: ["../shared workspace", "/tmp/shared"],
         metadata: { ticket: "F-06a" },
       }),
     ).resolves.toEqual({
@@ -2530,6 +2531,7 @@ describe("AgenC background agent lifecycle", () => {
       {
         objective: "build the parser",
         cwd: process.cwd(),
+        addDirs: ["../shared workspace", "/tmp/shared"],
         metadata: {
           ticket: "F-06a",
           unattendedAllow: [],
@@ -2870,6 +2872,7 @@ describe("AgenC background agent lifecycle", () => {
         cwd: fixture.cwd,
         model: "grok-4.3",
         provider: "grok",
+        addDirs: ["../shared workspace", "/tmp/shared"],
         permissionMode: "acceptEdits",
         envOverrides: { AGENC_MODEL: "grok-4.3" },
       }),
@@ -2912,6 +2915,7 @@ describe("AgenC background agent lifecycle", () => {
       explicitColdResume: true,
       model: "grok-4.3",
       provider: "grok",
+      addDirs: ["../shared workspace", "/tmp/shared"],
       permissionMode: "acceptEdits",
       envOverrides: { AGENC_MODEL: "grok-4.3" },
       runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
@@ -6092,6 +6096,7 @@ describe("AgenC background agent lifecycle", () => {
         params: {
           objective: "ship a daemon task",
           cwd: process.cwd(),
+          addDirs: ["../shared workspace", "/tmp/shared"],
           runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
         },
       }),
@@ -6125,6 +6130,10 @@ describe("AgenC background agent lifecycle", () => {
       FIRECRAWL_API_KEY: "",
       WEB_SEARCH_PROVIDER: "",
     });
+    expect(rawCreateParams?.addDirs).toEqual([
+      "../shared workspace",
+      "/tmp/shared",
+    ]);
 
     await expect(
       connection.dispatch({
@@ -6153,6 +6162,26 @@ describe("AgenC background agent lifecycle", () => {
             },
           },
         ],
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "bad-add-dirs",
+        method: "agent.create",
+        params: {
+          cwd: process.cwd(),
+          objective: "ship",
+          addDirs: ["/tmp/shared", 42],
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "bad-add-dirs",
+      error: {
+        code: -32602,
+        message: "agent.create param 'addDirs' must be an array of strings",
+        data: { code: "INVALID_ARGUMENT" },
       },
     });
 

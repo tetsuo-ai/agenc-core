@@ -2824,15 +2824,19 @@ describe("main() smoke", () => {
 
     try {
       trustWorkspaceForTest(tmpHome, tmpCwd);
-      const code = await bootTUIEntry({
-        initialPrompt: "describe this",
-        startupImages: ["http://127.0.0.1/cat.png"],
-      });
+      const code = await bootTUIEntry(
+        {
+          initialPrompt: "describe this",
+          startupImages: ["http://127.0.0.1/cat.png"],
+        },
+        { addDirs: ["../shared workspace", "/tmp/shared"] },
+      );
       expect(code).toBe(0);
       expect(daemon.startPromptAgent).toHaveBeenCalledWith(
         expect.objectContaining({
           prompt: "describe this",
           cwd: tmpCwd,
+          addDirs: ["../shared workspace", "/tmp/shared"],
           initialContent: [
             { type: "text", text: "describe this" },
             {
@@ -2932,6 +2936,7 @@ describe("main() smoke", () => {
         {
           provider: "grok",
           model: "grok-4.3",
+          addDirs: ["../shared workspace", "/tmp/shared"],
           permissionMode: "plan",
         },
       )).resolves.toBe(0);
@@ -2949,6 +2954,7 @@ describe("main() smoke", () => {
           cwd: tmpCwd,
           provider: "grok",
           model: "grok-4.3",
+          addDirs: ["../shared workspace", "/tmp/shared"],
           permissionMode: "plan",
         }),
       );
@@ -3542,9 +3548,11 @@ describe("main() smoke", () => {
 
     try {
       trustWorkspaceForTest(tmpHome, tmpCwd);
-      const code = await oneShotCLI("describe this", [
-        "http://127.0.0.1/cat.png",
-      ]);
+      const code = await oneShotCLI(
+        "describe this",
+        ["http://127.0.0.1/cat.png"],
+        { addDirs: ["../shared workspace", "/tmp/shared"] },
+      );
       expect(code).toBe(0);
       expect(daemon.requests[0]).toEqual({
         method: "agent.create",
@@ -3552,6 +3560,7 @@ describe("main() smoke", () => {
           objective: "describe this",
           instructions: "describe this",
           cwd: tmpCwd,
+          addDirs: ["../shared workspace", "/tmp/shared"],
           initialContent: [
             { type: "text", text: "describe this" },
             {

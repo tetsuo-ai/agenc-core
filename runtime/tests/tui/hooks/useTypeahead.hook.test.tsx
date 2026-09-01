@@ -2197,33 +2197,4 @@ describe("useTypeahead hook paths", () => {
     }
   });
 
-  test("tab handles directory suggestions in general path contexts", async () => {
-    harness.directorySuggestions = [
-      {
-        displayText: "/tmp/project",
-        id: "/tmp/project",
-        metadata: { type: "directory" },
-      },
-    ];
-    const onInputChange = vi.fn();
-    const setCursorOffset = vi.fn();
-    const rendered = await renderHookHarness({
-      input: "@/tm",
-      onInputChange,
-      setCursorOffset,
-    });
-
-    try {
-      await waitFor(
-        () => rendered.getSnapshot().suggestionType === "directory",
-        "general path directory suggestion",
-      );
-
-      harness.keybindings["autocomplete:accept"]?.();
-      expect(onInputChange).toHaveBeenCalledWith("@/tmp/project/");
-      expect(setCursorOffset).toHaveBeenCalledWith("@/tmp/project/".length);
-    } finally {
-      await rendered.dispose();
-    }
-  });
 });

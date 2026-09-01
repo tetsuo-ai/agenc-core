@@ -4992,6 +4992,7 @@ describe("AgenC delegate background-agent runner", () => {
       model: "gpt-5",
       profile: "fast",
       configPath: "/workspace/explicit-config.toml",
+      addDirs: ["../shared workspace", "/tmp/shared"],
       permissionMode: "plan",
       unattendedAllow: [],
       unattendedDeny: [],
@@ -5010,9 +5011,44 @@ describe("AgenC delegate background-agent runner", () => {
           "fast",
           "--config",
           "/workspace/explicit-config.toml",
+          "--add-dir=../shared workspace",
+          "--add-dir=/tmp/shared",
           "--permission-mode",
           "plan",
         ],
+      }),
+    );
+  });
+
+  it("rebuilds repeated additional-directory flags for a cold restore", async () => {
+    const { runner, bootstrap } = makeTopLevelRunner({
+      conversationId: "add-dir-cold-restore-session",
+    });
+
+    await expect(
+      runner.restoreAgent({
+        agentId: "add-dir-cold-restore-session",
+        objective: "resume the daemon",
+        provider: "openai",
+        model: "gpt-5",
+        addDirs: ["../shared workspace", "/tmp/shared"],
+        explicitColdResume: true,
+      }),
+    ).resolves.toBe(true);
+
+    expect(bootstrap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        argv: [
+          process.execPath,
+          process.argv[1] ?? "agenc",
+          "--provider",
+          "openai",
+          "--model",
+          "gpt-5",
+          "--add-dir=../shared workspace",
+          "--add-dir=/tmp/shared",
+        ],
+        resumeConversation: true,
       }),
     );
   });

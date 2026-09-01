@@ -315,6 +315,7 @@ describe("app-server-client daemon helpers", () => {
         cwd: "/workspace",
         model: "grok-4.3",
         provider: "grok",
+        addDirs: ["../shared workspace", "/tmp/shared"],
         permissionMode: "acceptEdits",
         env: { AGENC_ALLOW_UNTRUSTED_HOOKS: "true" },
       });
@@ -326,6 +327,7 @@ describe("app-server-client daemon helpers", () => {
           cwd: "/workspace",
           model: "grok-4.3",
           provider: "grok",
+          addDirs: ["../shared workspace", "/tmp/shared"],
           permissionMode: "acceptEdits",
           runtimeOptions: expect.objectContaining({
             simpleMode: false,
@@ -380,6 +382,7 @@ describe("app-server-client daemon helpers", () => {
         model: "grok-4.3",
         profile: "fast",
         configPath: "operator.toml",
+        addDirs: ["../shared workspace", "/tmp/shared"],
         initialContent: [
           { type: "text", text: "describe this" },
           {
@@ -417,6 +420,7 @@ describe("app-server-client daemon helpers", () => {
           model: "grok-4.3",
           profile: "fast",
           configPath: "/workspace/operator.toml",
+          addDirs: ["../shared workspace", "/tmp/shared"],
           initialContent: [
             { type: "text", text: "describe this" },
             {

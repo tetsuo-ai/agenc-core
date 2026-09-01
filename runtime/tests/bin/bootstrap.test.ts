@@ -56,6 +56,19 @@ function offlineFetchFixture(): typeof fetch {
     .mockRejectedValue(new Error("offline bootstrap fixture"));
 }
 
+async function installBootstrapProviderStub(): Promise<void> {
+  const providerModule = await import("../llm/provider.js");
+  const chat = vi.fn().mockResolvedValue({
+    content: "ok",
+    toolCalls: [],
+    usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+  });
+  vi.spyOn(providerModule, "createProvider").mockReturnValue({
+    name: "stub",
+    chat,
+  } as never);
+}
+
 function clearProcessEnv(keys: readonly string[]): () => void {
   const previous = new Map<string, string | undefined>();
   for (const key of keys) {
@@ -129,6 +142,23 @@ describe("readStartupCliFlags", () => {
     });
   });
 
+  it("preserves spaced, equals, and repeated additional-directory flags", () => {
+    expect(
+      readStartupCliFlags([
+        "node",
+        "agenc",
+        "--add-dir",
+        "../shared workspace",
+        "--add-dir=/tmp/shared",
+        "--add-dir=-third",
+        "build",
+        "the app",
+      ]),
+    ).toMatchObject({
+      addDirs: ["../shared workspace", "/tmp/shared", "-third"],
+    });
+  });
+
   it("rejects internal modes at the startup permission surface", () => {
     expect(() =>
       readStartupCliFlags([
@@ -145,6 +175,64 @@ describe("bootstrapLocalRuntimeSession", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     _resetAgentRolesForTesting();
+  });
+
+  it("projects CLI additional directories into permissions and the sandbox authority", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-add-dir-home-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "agenc-bootstrap-add-dir-ws-"),
+    );
+    const firstAdditional = join(workspace, "shared workspace");
+    const secondAdditional = await mkdtemp(
+      join(tmpdir(), "agenc-bootstrap-add-dir-external-"),
+    );
+    await mkdir(join(workspace, ".git"));
+    await mkdir(firstAdditional);
+    trustWorkspaceForTest(home, workspace);
+
+    await installBootstrapProviderStub();
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        cwd: workspace,
+        argv: [
+          "node",
+          "agenc",
+          "--add-dir",
+          "shared workspace",
+          `--add-dir=${secondAdditional}`,
+        ],
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+      const additionalDirectories = [
+        ...boot.session.permissionModeRegistry
+          .current()
+          .additionalWorkingDirectories.values(),
+      ];
+      expect(additionalDirectories).toEqual([
+        { path: firstAdditional, source: "cliArg" },
+        { path: secondAdditional, source: "cliArg" },
+      ]);
+      expect(
+        boot.configuredExecutionAuthority.fileSystemSandboxPolicy.allowWrite,
+      ).toEqual([workspace, firstAdditional, secondAdditional]);
+      expect(
+        boot.session.services.sandboxExecutionBroker?.mode,
+      ).toBe("workspace_write");
+    } finally {
+      await shutdown?.().catch(() => {});
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+      await rm(secondAdditional, { recursive: true, force: true });
+    }
   });
 
   it("resolves mode, trust, and reloaded-config authority from the live broker cwd after rebase", async () => {

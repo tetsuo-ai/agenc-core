@@ -85,6 +85,7 @@ export interface AgenCDaemonPromptAgentOptions {
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly addDirs?: readonly string[];
   readonly initialContent?: string | readonly MessageContentBlock[];
   readonly deferInitialTurn?: boolean;
   readonly initialDisplayUserMessage?: string | null;
@@ -124,6 +125,7 @@ export interface ResumeAgenCDaemonPromptAgentOptions {
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly addDirs?: readonly string[];
   readonly permissionMode?:
     | "default"
     | "plan"
@@ -157,6 +159,9 @@ export async function startAgenCDaemonPromptAgent(
     ...(options.profile !== undefined ? { profile: options.profile } : {}),
     ...(options.configPath !== undefined
       ? { configPath: resolvePath(cwd, options.configPath) }
+      : {}),
+    ...(options.addDirs !== undefined
+      ? { addDirs: [...options.addDirs] }
       : {}),
     ...(options.initialContent !== undefined
       ? { initialContent: options.initialContent }
@@ -211,6 +216,9 @@ export async function resumeAgenCDaemonPromptAgent(
     ...(options.profile !== undefined ? { profile: options.profile } : {}),
     ...(options.configPath !== undefined
       ? { configPath: resolvePath(cwd, options.configPath) }
+      : {}),
+    ...(options.addDirs !== undefined
+      ? { addDirs: [...options.addDirs] }
       : {}),
     ...(options.permissionMode !== undefined
       ? { permissionMode: options.permissionMode }

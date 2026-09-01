@@ -903,14 +903,38 @@ async function bootstrapLocalRuntimeSessionScoped(
     projectRootMarkers: config.project_root_markers,
   });
   let configuredExecutionConfig = startup.config;
+  let additionalWorkingDirectoryAllowWrite: readonly string[] = [];
+  const withAdditionalWorkingDirectories = (
+    authority: SessionExecutionAuthority,
+  ): SessionExecutionAuthority => {
+    if (
+      authority.sandboxPolicy.value !== "workspace_write" ||
+      additionalWorkingDirectoryAllowWrite.length === 0
+    ) {
+      return authority;
+    }
+    return Object.freeze({
+      ...authority,
+      fileSystemSandboxPolicy: Object.freeze({
+        ...authority.fileSystemSandboxPolicy,
+        allowWrite: Object.freeze([
+          ...new Set([
+            ...authority.fileSystemSandboxPolicy.allowWrite,
+            ...additionalWorkingDirectoryAllowWrite,
+          ]),
+        ]),
+      }),
+    });
+  };
   let configuredExecutionAuthorityCwd = workspaceRoot;
   let configuredExecutionAuthorityProjectTrust = projectTrust;
-  let configuredExecutionAuthority =
+  let configuredExecutionAuthority = withAdditionalWorkingDirectories(
     sessionExecutionAuthorityFromAgenCConfig({
       config: configuredExecutionConfig,
       workspaceRoot: configuredExecutionAuthorityCwd,
       projectTrust,
-    });
+    }),
+  );
   const currentConfiguredExecutionAuthority = (): SessionExecutionAuthority => {
     const currentCwd = sandboxExecutionBroker.cwd;
     const currentProjectTrust = executionProjectTrust(
@@ -923,11 +947,13 @@ async function bootstrapLocalRuntimeSessionScoped(
     ) {
       return configuredExecutionAuthority;
     }
-    configuredExecutionAuthority = sessionExecutionAuthorityFromAgenCConfig({
-      config: configuredExecutionConfig,
-      workspaceRoot: currentCwd,
-      projectTrust: currentProjectTrust,
-    });
+    configuredExecutionAuthority = withAdditionalWorkingDirectories(
+      sessionExecutionAuthorityFromAgenCConfig({
+        config: configuredExecutionConfig,
+        workspaceRoot: currentCwd,
+        projectTrust: currentProjectTrust,
+      }),
+    );
     configuredExecutionAuthorityCwd = currentCwd;
     configuredExecutionAuthorityProjectTrust = currentProjectTrust;
     return configuredExecutionAuthority;
@@ -943,11 +969,13 @@ async function bootstrapLocalRuntimeSessionScoped(
       canonicalConfig,
       preparedCwd,
     );
-    const authority = sessionExecutionAuthorityFromAgenCConfig({
-      config: canonicalConfig,
-      workspaceRoot: preparedCwd,
-      projectTrust: preparedProjectTrust,
-    });
+    const authority = withAdditionalWorkingDirectories(
+      sessionExecutionAuthorityFromAgenCConfig({
+        config: canonicalConfig,
+        workspaceRoot: preparedCwd,
+        projectTrust: preparedProjectTrust,
+      }),
+    );
     let committed = false;
     return Object.freeze({
       authority,
@@ -994,11 +1022,13 @@ async function bootstrapLocalRuntimeSessionScoped(
           currentCwd === preparedCwd &&
             currentProjectTrust === previousProjectTrust
             ? previous
-            : sessionExecutionAuthorityFromAgenCConfig({
-                config: previousConfig,
-                workspaceRoot: currentCwd,
-                projectTrust: currentProjectTrust,
-              });
+            : withAdditionalWorkingDirectories(
+                sessionExecutionAuthorityFromAgenCConfig({
+                  config: previousConfig,
+                  workspaceRoot: currentCwd,
+                  projectTrust: currentProjectTrust,
+                }),
+              );
         configuredExecutionAuthorityCwd = currentCwd;
         configuredExecutionAuthorityProjectTrust = currentProjectTrust;
         committed = false;
@@ -1012,12 +1042,23 @@ async function bootstrapLocalRuntimeSessionScoped(
       configStore,
     },
     providerEnvironment,
+    ...(cli.addDirs !== undefined ? { addDirs: cli.addDirs } : {}),
     ...(cli.permissionMode ? { permissionMode: cli.permissionMode } : {}),
     ...(runtimeOptions.dangerouslyBypassApprovalsAndSandbox
       ? { allowDangerouslySkipPermissions: true }
       : {}),
     projectTrust,
   });
+  additionalWorkingDirectoryAllowWrite = Object.freeze(
+    [
+      ...permissionInit.toolPermissionContext.additionalWorkingDirectories.values(),
+    ]
+      .filter((directory) => directory.source === "cliArg")
+      .map((directory) => directory.path),
+  );
+  configuredExecutionAuthority = withAdditionalWorkingDirectories(
+    configuredExecutionAuthority,
+  );
   const autoModeEnabled =
     permissionInit.toolPermissionContext.isAutoModeAvailable === true &&
     isAutoModeGateEnabled(providerEnvironment);

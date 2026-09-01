@@ -158,6 +158,7 @@ const STARTUP_SELECTION_VALUE_FLAGS = Object.freeze([
   "--model",
   "--profile",
   "--config",
+  "--add-dir",
   "--image",
 ] as const);
 
@@ -171,6 +172,7 @@ const STARTUP_SELECTION_FLAG_USAGE: Readonly<
   "--model": "agenc --model requires a value (usage: agenc --model <id|provider:id>)",
   "--profile": "agenc --profile requires a value (usage: agenc --profile <name>)",
   "--config": "agenc --config requires a value (usage: agenc --config <path>)",
+  "--add-dir": "agenc --add-dir requires a value (usage: agenc --add-dir <path>)",
   "--image": "agenc --image requires a value (usage: agenc --image <path|url>)",
 });
 

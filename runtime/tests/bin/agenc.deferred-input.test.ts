@@ -919,6 +919,7 @@ describe("deferred daemon input ownership", () => {
       env: {},
       cwd: process.cwd(),
       clientId: "deferred-prediction-close-test",
+      addDirs: ["../shared workspace", "/tmp/shared"],
     });
     const session = deferred.session as DeferredInputSession;
 
@@ -938,6 +939,7 @@ describe("deferred daemon input ownership", () => {
       expect.objectContaining({
         prompt: "AgenC Editor workspace",
         deferInitialTurn: true,
+        addDirs: ["../shared workspace", "/tmp/shared"],
       }),
     );
 

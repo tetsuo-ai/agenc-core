@@ -449,6 +449,31 @@ describe("classifyCLI", () => {
     });
   });
 
+  it("routes repeated additional-directory flags without turning paths into prompt text", () => {
+    const leadingFlags = [
+      "--add-dir",
+      "../shared workspace",
+      "--add-dir=/tmp/shared",
+    ];
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, ...leadingFlags, "build", "a", "game"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({
+      kind: "bootTUI",
+      args: { initialPrompt: "build a game" },
+    });
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "--no-tui", ...leadingFlags, "ship", "it"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({ kind: "oneShotCLI", userMessage: "ship it" });
+  });
+
   it("treats every option-looking token after the prompt begins as literal text", () => {
     const promptTokens = [
       "explain",
@@ -461,6 +486,8 @@ describe("classifyCLI", () => {
       "gpt-5",
       "--image",
       "/tmp/prompt.png",
+      "--add-dir",
+      "/tmp/prompt-directory",
       "-p",
       "--no-tui",
       "--continue",
@@ -554,6 +581,10 @@ describe("classifyCLI startup selection value-flag missing-value guard", () => {
     [
       "--config",
       "agenc --config requires a value (usage: agenc --config <path>)",
+    ],
+    [
+      "--add-dir",
+      "agenc --add-dir requires a value (usage: agenc --add-dir <path>)",
     ],
     ["--image", "agenc --image requires a value (usage: agenc --image <path|url>)"],
   ] as const;

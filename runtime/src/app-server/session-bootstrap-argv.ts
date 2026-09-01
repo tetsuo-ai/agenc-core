@@ -3,6 +3,7 @@ export interface StructuredSessionBootstrapSelection {
   readonly model?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly addDirs?: readonly string[];
   readonly permissionMode?:
     | "default"
     | "plan"
@@ -36,6 +37,9 @@ export function buildStructuredSessionBootstrapArgv(
   appendFlag(argv, "--model", selection.model);
   appendFlag(argv, "--profile", selection.profile);
   appendFlag(argv, "--config", selection.configPath);
+  for (const addDir of selection.addDirs ?? []) {
+    argv.push(`--add-dir=${addDir}`);
+  }
   if (selection.permissionMode !== undefined) {
     argv.push("--permission-mode", selection.permissionMode);
   }
