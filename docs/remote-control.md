@@ -140,6 +140,9 @@ never calls `process.exit` (that would kill the session).
   store keyed by a live session UUID. After reopen or restart the snapshot is
   the source of truth. See
   [daemon.md](reference/daemon.md#closed-turn-results).
+  A mid-turn `error` is not a closer; do not treat `event.agent_status`
+  `error` as proof the submission settled. See
+  [mid-turn error events](reference/daemon.md#mid-turn-error-events).
   When no live agent is attached, it falls back to the persisted thread store
   (read-only). A still-running terminal holds an exclusive rollout lock, so
   those `conv-` sessions stay read-only until the terminal exits.
