@@ -12,10 +12,10 @@ Reviewed against commit `d2b228e87ea63bd6a5d93e6f599f36bce88d672b` on
 | --- | --- | --- |
 | CP-0001 | [Separate caller, admission, and physical-effect outcomes](0001-effect-outcome-separation.md) | Shipped (schema v17) |
 | CP-0002 | [Use strict canonical recovery with quarantine](0002-strict-recovery-quarantine.md) | Shipped. `turn_checkpoint` journal shape is additive; resume uses the fail-closed reader — [recovery journal vs checkpoint reader](../durable-runs-effects-events.md#recovery-journal-vs-checkpoint-reader) |
-| CP-0003 | [Version durable checkpoints and bind complete tool results](0003-versioned-durable-checkpoints.md) | Shipped. Current writes are checkpoint v3 / rollout schema 4; see [checkpoint slice versions](../durable-runs-effects-events.md#checkpoint-slice-versions) |
+| CP-0003 | [Version durable checkpoints and bind complete tool results](0003-versioned-durable-checkpoints.md) | Shipped. Current writes are checkpoint v4 / rollout schema 5; see [checkpoint slice versions](../durable-runs-effects-events.md#checkpoint-slice-versions) |
 | CP-0004 | [Separate CSV source, item, and path identities](0004-csv-identity-and-replay.md) | Shipped |
 | CP-0005 | [Publish only complete derived-index generations](0005-derived-index-freshness.md) | Shipped |
-| CP-0006 | [Make compaction a rollback-capable transaction](0006-compaction-transaction.md) | Shipped. Mid-turn skip/throw is a per-turn `compact_failed` warning. See [compact skip and session survival](0006-compaction-transaction.md#compact-skip-and-session-survival). |
+| CP-0006 | [Make compaction a rollback-capable transaction](0006-compaction-transaction.md) | Shipped. Mid-turn skip/throw is a per-turn `compact_failed` warning, and checkpoint v4 authenticates post-compact history. See [compact skip and session survival](0006-compaction-transaction.md#compact-skip-and-session-survival). |
 | CP-0007 | [Govern workflow handoff artifacts](0007-workflow-handoff-artifact.md) | Shipped |
 | CP-0008 | [Preserve trusted instructions and untrusted data end to end](0008-agent-invocation-envelope.md) | Mixed. Envelope types exist; fork still concatenates `Task: ${input.taskPrompt}` |
 

@@ -819,7 +819,8 @@ See [execution-admission-kernel.md](../design/execution-admission-kernel.md#mode
 | Resume reports `provider-restore-failed` | Check that `pendingAdmissionFallback` records both the target provider and model, and that the target provider can be prepared. Then check the [resume outcome](../design/durable-runs-effects-events.md#resume-outcomes): clean rejection permits a fresh turn only after proven restoration; terminal failure fences the session and halts startup. |
 | Open reports `durable checkpoint upgrade blocked` | Prefix, tool-pair, mixed-version, or work-limit failure. Resume stays disabled. Preserve the rollout; restore intact source from backup or start a new session. See [checkpoint slice versions](../design/durable-runs-effects-events.md#checkpoint-slice-versions). |
 | Open reports `resumableState contains unversioned fields` | The checkpoint carries a key outside the versioned slice. New fields need a new checkpoint version and rollout schema. A recovery-journal accept does not prove the resume reader will. See [recovery journal vs checkpoint reader](../design/durable-runs-effects-events.md#recovery-journal-vs-checkpoint-reader). |
-| Older binary refuses `rollout schema v4` | Expected. Schema 4 is newer than a schema-3 runtime. Upgrade the runtime; do not rewrite the header by hand. |
+| Post-compact checkpoint reports `compactionHistory requires prefix hash version 3` | The rollout pairs marker-bearing replacement history with checkpoint v2/v3. Preserve the rollout and let the atomic upgrader validate it; do not change checkpoint or hash versions by hand. See [checkpoint prefix items](../design/durable-runs-effects-events.md#checkpoint-prefix-items). |
+| Older binary refuses `rollout schema v5` | Expected. Schema 5 is newer than a schema-4 runtime. Upgrade the runtime; do not rewrite the header by hand. |
 
 ## What the daemon owns
 

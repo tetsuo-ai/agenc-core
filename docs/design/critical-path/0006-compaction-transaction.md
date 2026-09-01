@@ -356,6 +356,15 @@ boundary also shows the ID. Reconstructed legacy rows use
 canonical rollout owner or transaction adapter is unavailable. It does not
 commit replacement history without a rollback ID.
 
+### Checkpoint prefix after compact
+
+Transactional compact persists a typed `compactionHistory` marker on each
+replacement-history boundary and summary. Checkpoint v4 includes those markers
+in the prefix hash under `agenc.checkpoint-prefix.v3`, so the next forced or
+interval checkpoint can cover the post-compact history. Rollout reopen and
+same-session rollback use the same replacement history when validating that
+checkpoint. See [checkpoint prefix items](../durable-runs-effects-events.md#checkpoint-prefix-items).
+
 ### Troubleshooting
 
 | Symptom | What to check |
@@ -363,6 +372,7 @@ commit replacement history without a rollback ID.
 | Event cause is `mid_turn_compact_failed` and its message starts with `mid_turn_compact_skipped` | The outer condition was met and compact returned no committed result. Check `AGENC_DISABLE_COMPACT`, the 3-strike counter, and the 2-failure digest guard. The event is a `warning`; the turn stop is `compact_failed`. |
 | Keep-alive session answers `no longer running (status: error)` after that warning | Unexpected after the warning remap. Confirm the event is `warning` (or a legacy `error` with `statusProjection: "session_only"`). The daemon-backed one-shot CLI exits 0 on the resulting `turn_complete`; the compatibility `runAgent` path fails. Autonomous keepalive ticks stop after `compact_failed` by design. See [daemon.md](../../reference/daemon.md#compact-skip-stays-per-turn). |
 | Auto never runs, then the next turn is `context_window_exceeded` | Confirm the live window instead of assuming the 128k fallback. Above 13k, the threshold is `min(window-13k, 75%)`. Also check `AGENC_AUTOCOMPACT_PCT_OVERRIDE` and `AGENC_DISABLE_AUTO_COMPACT`. |
+| A post-compact checkpoint reports `compactionHistory requires prefix hash version 3` | The rollout pairs marker-bearing history with an old checkpoint or hash version. Preserve the rollout and let the schema upgrader validate the old checkpoint before rewriting it; do not edit the version fields by hand. |
 | After switching to a smaller-window model, the first turn overflows | Model-downshift only runs when the previous slug differs, the old window is larger, and usage is greater than the new pre-sampling limit or at least the new window. Three failed automatic attempts skip later ones this turn. `AGENC_DISABLE_AUTO_COMPACT` makes the compact return without changing history. |
 | A summary call includes a client or provider-native tool | This violates the summary-call contract. Summary calls must send an empty client catalog and an empty native-tool routing allowlist. Admission must account the same selected native catalog as the wire. |
 | History vanished after a failed compact | Only a flushed `compaction_committed` may replace active history. Any earlier replacement is a transaction bug and must not be treated as a commit. |

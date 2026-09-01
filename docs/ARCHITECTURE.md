@@ -11,7 +11,7 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 | [`reference/autonomy.md`](reference/autonomy.md)                                 | Budget, heartbeat, cron delivery (pinned webhook destinations), hooks HTTP   |
 | [`reference/mcp.md`](reference/mcp.md)                                           | Outbound/inbound MCP, plugin-declared servers, model-facing inputSchema sanitization, omitted-type object schemas, Landlock stdio failures |
 | [`design/execution-admission-kernel.md`](design/execution-admission-kernel.md)   | Live durable budget/admission design, model step identity                    |
-| [`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md) | Canonical run journal, effects, terminal results, replay, crash recovery, checkpoint v3 / schema 4 pairing, and additive journal vs fail-closed reader |
+| [`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md) | Canonical run journal, effects, terminal results, replay, crash recovery, checkpoint v4 / schema 5 pairing, and additive journal vs fail-closed reader |
 | [`gateway.md`](gateway.md)                                                       | Channel gateway operator guide                                               |
 | [`sdk.md`](sdk.md)                                                               | `@tetsuo-ai/agenc-sdk` embedding API                                         |
 
@@ -400,6 +400,7 @@ session from new turns. The rejected checkpoint remains on disk. See the
 the [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main)
 (mid-turn skip/throw is a per-turn `compact_failed` warning;
 [compact skip stays per-turn](reference/daemon.md#compact-skip-stays-per-turn)),
+[checkpoint prefix items](design/durable-runs-effects-events.md#checkpoint-prefix-items),
 and
 [durable-runs-effects-events.md](design/durable-runs-effects-events.md#in-turn-checkpoint-resume).
 
