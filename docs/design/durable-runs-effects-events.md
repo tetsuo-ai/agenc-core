@@ -301,6 +301,7 @@ cannot defer that barrier. The checkpoint-version-3 event, stored in rollout
 schema 4, fsyncs:
 
 - the durable response prefix and its version-2 `prefixHash` algorithm
+  (closed prefix-item key set; see [Checkpoint prefix items](#checkpoint-prefix-items))
 - `resumableState` from `toCheckpointSlice(state)`
 
 The slice always carries `turnCount`, `recoveryReentryCount`,
@@ -390,6 +391,61 @@ Live notification buffers use the same honesty rule. If byte or count limits
 evict sequenced events, the multiplexer inserts an `event_gap` marker with the
 run, prior cursor, and first available sequence. It does not splice the buffer
 silently.
+
+## Checkpoint prefix items
+
+`emitTurnCheckpoint` hashes the durable-history projection, not live
+`state.messages`. The writer maps each kept message through
+`llmMessageToCheckpointResponseItem` and then calls
+`computeCheckpointPrefixHashV2`. The digest domain is
+`agenc.checkpoint-prefix.v2`. This is the prefix integrity gate; it is
+separate from the `resumableState` slice allowlist.
+
+Prefix items are a closed key set (`RESPONSE_ITEM_KEYS` in
+`durable-checkpoint-reader.ts`):
+
+| Allowed key | In the v2 digest |
+| --- | --- |
+| `role` | yes |
+| `content` | yes, as canonical digest + payload byte length. Tool results with integrity use `toolResultIntegrity.persisted` |
+| `toolCalls` | yes (`id`, `name`, optional `arguments`; extra call keys fail closed) |
+| `toolCallId`, `toolName`, `id`, `phase` | yes when present |
+| `endTurn` | yes (presence flag, then the boolean) |
+| `toolResultIntegrity` | yes when present; illegal on a non-tool role |
+| `agentInvocation` | yes when present (version, kind, ids, envelope/content digests, authority, channel) |
+
+Any other key fails closed with
+`checkpoint response item N contains unversioned fields`
+(`DurableCheckpointReadError`, code `checkpoint_shape_invalid`). On write,
+`emitTurnCheckpoint` throws before `Session.emit`, so no new
+`turn_checkpoint` is persisted. On resume,
+`validateCheckpointPrefixV2` maps the same throw to
+`checkpoint_response_shape_invalid` and the in-turn resume gate treats that
+as an integrity failure.
+
+The digest does **not** include `compactionHistory`. The durable-history
+writer still copies that field: `llmMessageToResponseItem` forwards a
+version-1 marker (`kind: "boundary" | "summary"`, `attempt_id`,
+`summary_sha256`) when transactional compact attached it. After a committed
+compact, replacement-history items therefore carry a key outside the prefix
+allowlist. The next forced or interval checkpoint throws. Default
+`durableTurns.checkpoint.enabled` is on, so auto-compact then the next
+`modelSampleOrdinal` barrier hits this path.
+
+A crash after that throw cannot continue the orphaned turn from a
+post-compact prefix. The last readable checkpoint is pre-compact or
+missing, so resume reports a prefix/integrity failure and a clean
+rejection may open a fresh turn. In-flight post-compact work is not
+checkpointed. This is distinct from
+`resumableState contains unversioned fields`, which is the slice-key
+gate.
+
+### Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| Next `turn_checkpoint` after compact throws `checkpoint response item N contains unversioned fields` | Replacement-history items carry `compactionHistory`. That key is not in `RESPONSE_ITEM_KEYS`. The write never emits. Crash-resume cannot continue post-compact work. |
+| Resume reports `checkpoint_response_shape_invalid` after compact | Same closed prefix-item set. Inspect the durable prefix for extra keys; do not hand-edit the checkpoint. |
 
 ## Immutable artifact publication
 
@@ -574,6 +630,7 @@ they remain the evidence needed for a later v15-aware reconciliation.
 | Replay-safe SDK client                      | `packages/agenc-sdk/src/client.ts`, `packages/agenc-sdk/src/protocol.ts`                           |
 | Immutable artifact publication              | `runtime/src/durability/atomic-artifact.ts`                                                        |
 | Crash injection                             | `runtime/src/durability/failpoints.ts`                                                             |
+| Checkpoint prefix-item allowlist            | `runtime/src/session/durable-checkpoint-reader.ts` (`RESPONSE_ITEM_KEYS`, `computeCheckpointPrefixHashV2`), `runtime/src/session/message-history-conversion.ts` (`llmMessageToCheckpointResponseItem`) |
 
 Related contracts:
 

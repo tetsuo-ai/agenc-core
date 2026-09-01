@@ -333,6 +333,15 @@ boundary also shows the ID. Reconstructed legacy rows use
 canonical rollout owner or transaction adapter is unavailable. It does not
 commit replacement history without a rollback ID.
 
+### Checkpoint prefix after compact
+
+Transactional compact persists `compactionHistory` on replacement-history
+items. The next `turn_checkpoint` hashes those items through
+`llmMessageToCheckpointResponseItem`. The prefix-item allowlist does not
+include `compactionHistory`, so the write throws
+`checkpoint response item N contains unversioned fields` and never emits.
+See [checkpoint prefix items](../durable-runs-effects-events.md#checkpoint-prefix-items).
+
 ### Troubleshooting
 
 | Symptom | What to check |
@@ -344,6 +353,7 @@ commit replacement history without a rollback ID.
 | History vanished after a failed compact | Only a flushed `compaction_committed` may replace active history. Any earlier replacement is a transaction bug and must not be treated as a commit. |
 | `/compact` says durable adapter unavailable | Compaction requires the canonical rollout owner (`readCompactionTransactionAdapter`). There is no character-extract fallback. |
 | Compacted, but no rollback attempt ID in the TUI | Confirm a flushed `compaction_committed`. The TUI only prints UUID v4 `compact-...` IDs from a validated `kind: "boundary"` marker. Legacy `legacy-compacted:` reconstructions stay hidden. Recheck the `/compact` result text or the daemon `attemptId` field. |
+| Next `turn_checkpoint` after a committed compact throws `checkpoint response item N contains unversioned fields` | Expected on current main. Replacement-history items carry `compactionHistory`; the prefix hasher rejects that key. No post-compact checkpoint is written. Crash-resume cannot continue in-flight post-compact work. |
 
 Operator command syntax also lives in [cli.md](../../reference/cli.md#compaction-operator-commands).
 Threshold vs admission accounting: [provider-aware-token-accounting.md](../provider-aware-token-accounting.md).

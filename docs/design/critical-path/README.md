@@ -15,7 +15,7 @@ Reviewed against commit `d2b228e87ea63bd6a5d93e6f599f36bce88d672b` on
 | CP-0003 | [Version durable checkpoints and bind complete tool results](0003-versioned-durable-checkpoints.md) | Shipped |
 | CP-0004 | [Separate CSV source, item, and path identities](0004-csv-identity-and-replay.md) | Shipped |
 | CP-0005 | [Publish only complete derived-index generations](0005-derived-index-freshness.md) | Shipped |
-| CP-0006 | [Make compaction a rollback-capable transaction](0006-compaction-transaction.md) | Shipped |
+| CP-0006 | [Make compaction a rollback-capable transaction](0006-compaction-transaction.md) | Shipped. Post-compact checkpoints fail closed on `compactionHistory`; see [checkpoint prefix after compact](0006-compaction-transaction.md#checkpoint-prefix-after-compact) |
 | CP-0007 | [Govern workflow handoff artifacts](0007-workflow-handoff-artifact.md) | Shipped |
 | CP-0008 | [Preserve trusted instructions and untrusted data end to end](0008-agent-invocation-envelope.md) | Mixed. Envelope types exist; fork still concatenates `Task: ${input.taskPrompt}` |
 

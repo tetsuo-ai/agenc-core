@@ -639,6 +639,7 @@ See [execution-admission-kernel.md](../design/execution-admission-kernel.md#mode
 | `AdmissionStepConflictError` | The same `(runId, stepId)` was acquired with different normalized admission data. Compare the `stepId`, provider, model, token bounds, and budget identity in `agenc run evidence`. |
 | A crash-resumed nudge or empty-response retry conflicts | Verify the latest turn checkpoint contains the expected sample ordinal and resume-prompt kind. |
 | A later model call lacks `sample-<ordinal>` | Check whether the prior response was terminal. Only successful nonterminal responses reserve another physical sample. |
+| Next `turn_checkpoint` after compact throws `checkpoint response item N contains unversioned fields` | Replacement-history items carry `compactionHistory`, which is outside the prefix-item allowlist. The write never emits. Crash-resume cannot continue post-compact work. See [checkpoint prefix items](../design/durable-runs-effects-events.md#checkpoint-prefix-items). |
 | Resume never continues after `durableTurns.resume.onRestart = false` | This is expected. Startup reports `disabled` and opens a fresh turn. |
 | Resume reports `provider-restore-failed` | Check that `pendingAdmissionFallback` records both the target provider and model, and that the target provider can be prepared. Then check the [resume outcome](../design/durable-runs-effects-events.md#resume-outcomes): clean rejection permits a fresh turn only after proven restoration; terminal failure fences the session and halts startup. |
 
@@ -704,6 +705,7 @@ agenc budget status    # configured policy only; usage is agenc run status <run-
 | Model admission step id           | `runtime/src/phases/stream-model.ts`                |
 | Continuation nudge                | `runtime/src/phases/continuation-nudge.ts`          |
 | Mid-turn compact continue         | `runtime/src/session/run-turn.ts`                   |
+| Checkpoint prefix-item allowlist  | `runtime/src/session/durable-checkpoint-reader.ts` (`RESPONSE_ITEM_KEYS`), `runtime/src/session/message-history-conversion.ts` |
 | Forced pre-admission checkpoint   | `runtime/src/session/run-turn.ts` (`emitTurnCheckpoint`) |
 | Checkpoint slice and reader       | `runtime/src/session/turn-state.ts`, `runtime/src/session/durable-checkpoint-reader.ts` |
 | In-turn resume gates              | `runtime/src/conversation/thread-manager.ts` (`resumeTurnFromCheckpoint`) |
