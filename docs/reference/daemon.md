@@ -369,6 +369,36 @@ history.
 | Markers missing after compact or rewind | Expected. Rows exist only for turns that closed after the current `historyEpoch`. |
 | Duration missing on a completed turn | The terminal lacked `durationMs` and a usable `completedAt - startedAt` pair. |
 | Tokens or model missing | No enclosed `token_count` carried a finite non-negative token field. |
+| `turnResults.outcome` is `errored`, or a retry reports completed-with-failure after `stop_hook_threw` | Older daemons treated mid-turn `error` as a closer. Current writers never emit `errored`. See [mid-turn error events](#mid-turn-error-events). |
+
+#### Mid-turn error events
+
+`error` events are session telemetry (`stop_hook_threw` and similar). They
+are not turn closers. Only `turn_complete` (duplicate terminal code `0`)
+and `turn_aborted` (code `130`) settle a submission.
+
+Two helpers share that contract in
+`runtime/src/app-server/background-agent-runner.ts`:
+
+| Path | Helper | When it runs |
+| --- | --- | --- |
+| Live daemon events | `messageTerminalFromDaemonEvent` | While the submission is in flight |
+| Persisted journal scan | `messageTerminalFromEvent` | Idempotent `clientMessageId` retry after reopen |
+
+`sessionTranscriptV2FromRollout` uses the same closer set. A mid-turn
+`error` does not emit a `turnResults` row. Later `token_count` events and
+the real `turn_complete` / `turn_aborted` still belong to that turn. An
+`error` with no later closer is the same as a crash tail: no result row,
+and a retry reports `duplicateState: "incomplete"`.
+
+A retry after `error` then `turn_complete` reports `duplicate` /
+`completed` with `terminal.code: 0` and the complete event's
+`lastAgentMessage`. It does not report completed-with-failure from the
+hook throw.
+
+The protocol union on `SessionTranscriptV2TurnResult.outcome` still lists
+`errored` (generated SDK mirror included). Current writers do not produce
+that value. Do not treat the leftover union member as a live closer.
 
 `session.resolveToolCall` accepts two strict protocol-1.0 request shapes. The
 earlier `{ sessionId, toolCallId?, reviewer? }` shape can settle only a legacy
@@ -703,6 +733,7 @@ agenc budget status    # configured policy only; usage is agenc run status <run-
 | Session lifecycle                 | `runtime/src/app-server/session-lifecycle.ts`       |
 | Agent lifecycle                   | `runtime/src/app-server/agent-lifecycle.ts`         |
 | Background runs                   | `runtime/src/app-server/background-agent-runner.ts` |
+| Mid-turn `error` is not a closer  | `messageTerminalFromDaemonEvent` / `messageTerminalFromEvent` / `sessionTranscriptV2FromRollout` in `background-agent-runner.ts` |
 | Prompt-hook block projection      | `projectPerPromptRejectionAsSessionOnly` in `background-agent-runner.ts`; emit in `hooks/user-prompt-ingress.ts` |
 | Local socket / Windows named pipe | `runtime/src/app-server/transport/unix-socket.ts`   |
 | Cookie auth                       | `runtime/src/app-server/transport/auth.ts`          |
