@@ -60,14 +60,14 @@ history; the linked pages below are current product truth.
 | [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes, Responses continuation, and overflow diagnostics |
 | [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics and `/compact` |
 | [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery (pinned webhook destinations) + hooks HTTP |
-| [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, spawn `task_name` normalization, deferred first message, worktree evidence, and turn-scoped abort |
+| [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, spawn `task_name` normalization, spawn preflight no-effect, deferred first message, worktree evidence, and turn-scoped abort |
 | [reference/workflows.md](reference/workflows.md) | Version-2 agent DAG manifests, derived child agent names, scheduling, handoff artifacts, limits, and result outcomes |
 | [reference/memory.md](reference/memory.md) | Persona, AGENC.md, auto-memory paths, full-corpus index, privacy |
 | [reference/mcp.md](reference/mcp.md) | MCP client and server, plugin-declared server precedence, model-facing inputSchema sanitization, and Landlock diagnostics |
 | [reference/skills-plugins.md](reference/skills-plugins.md) | Skills, `agenc skills list`, plugin registration, marketplace install, publisher signatures, plugin-update signature policy, explicit local install sources, repository-controlled scope stripping, and canonical `plugins.allowlist` identity |
-| [reference/hooks.md](reference/hooks.md) | Session lifecycle hooks vs gateway HTTP hooks, including UserPromptSubmit block/warn and daemon session survival |
-| [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, live bypass consent, OS sandbox, home-workspace remediation, launcher contract, and plugin MCP confinement |
-| [reference/tui-workbench.md](reference/tui-workbench.md) | TUI shell, workbench layout, BUFFER operator shortcuts, and safety prompts |
+| [reference/hooks.md](reference/hooks.md) | Session lifecycle hooks vs gateway HTTP hooks, including UserPromptSubmit block/warn, daemon session survival, and PreToolUse allow that cannot skip interactive prompts |
+| [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, interactive-tool prompts that survive bypass, live bypass consent, OS sandbox, home-workspace remediation, launcher contract, and plugin MCP confinement |
+| [reference/tui-workbench.md](reference/tui-workbench.md) | TUI shell, workbench layout, BUFFER operator shortcuts, safety prompts, and the AskUserQuestion picker that bypass cannot skip |
 
 ## Explanation
 
@@ -88,7 +88,7 @@ history; the linked pages below are current product truth.
 | [design/verified-change-workflow-m5.md](design/verified-change-workflow-m5.md) | Verified-change workflow contract, session bootstrap, child names, review repair, run refs, and evidence |
 | [design/eval-pilot-executor.md](design/eval-pilot-executor.md) | Pilot preflight and offline-agent executor. Phase 2b egress shipped. Evidence-ledger binding in eval-executor is still target |
 | [design/eval-pilot-executor-phase2b-egress.md](design/eval-pilot-executor-phase2b-egress.md) | Contained real-provider egress implementation and adversarial proof record |
-| [design/swarm-orchestration.md](design/swarm-orchestration.md) | Enforced initial delegation for parallel routing, durable task outcomes, immutable worktree evidence, external research, and local evaluation gate |
+| [design/swarm-orchestration.md](design/swarm-orchestration.md) | Enforced initial delegation for parallel routing, spawn preflight no-effect, durable task outcomes, immutable worktree evidence, external research, and local evaluation gate |
 | [design/mailbox-metadata-contract.md](design/mailbox-metadata-contract.md) | Bounded mailbox metadata decoder/builder (E3a). Implemented |
 | [design/mailbox-metadata-cutover.md](design/mailbox-metadata-cutover.md) | Mailbox.send admits only authenticated metadata handles (E3b) |
 | [roadmap.md](roadmap.md) | Shipped vs open backlog (current product truth) |

@@ -61,6 +61,10 @@ is no inert operator layout setting.
 - **`AskUserQuestion` picker** — numbered options, arrows, free-text Other;
   answers are recorded client-side and shipped with the `tool.approve` RPC
   (`askUserQuestionInput`) so the daemon-side tool resumes with them.
+  Bypass, allowlists, hook allow, automatic review, and the session
+  approval cache cannot skip this picker; see
+  [tools-permissions-sandbox.md](tools-permissions-sandbox.md#interactive-tool-prompts).
+  Execute without a recorded `__callId` answer is confirmed no-effect.
 - **Turn lifecycle** — `esc` always clears busy latches immediately
   (`handleTurnCancel`). A 20s submit-ack watchdog (`SUBMIT_ACK_WATCHDOG_MS`)
   recovers turns the daemon never acknowledged. There is no 60s stall timer.
