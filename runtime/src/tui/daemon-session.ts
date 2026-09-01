@@ -8,6 +8,7 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { AgenCDaemonResponseError } from "../app-server/agent-cli.js";
+import { isTerminalDaemonErrorPayload } from "./daemon-terminal-error.js";
 import type {
   AgentAttachParams,
   AgenCDaemonMethod,
@@ -835,15 +836,20 @@ export function createDaemonTuiSession<
       return;
     }
     const eventType = (event as { readonly type?: unknown }).type;
-    // A daemon agent/turn error arrives as a transcript event with type
-    // "error" (see transcriptEventFromAgentStatus), not as a
-    // "background_agent_status" status update. Treat it as turn-ending so the
-    // active turn is cleared and conversation actions (/rewind, /compact) are
-    // not left permanently blocked after a failed turn.
+    // Raw session errors are diagnostic events. A terminal agent-status error
+    // carries an explicit marker added by transcriptEventFromAgentStatus.
     if (
       typeof eventType === "string" &&
       TERMINAL_DAEMON_TRANSCRIPT_EVENTS.has(eventType)
     ) {
+      if (
+        eventType === "error" &&
+        !isTerminalDaemonErrorPayload(
+          (event as { readonly payload?: unknown }).payload,
+        )
+      ) {
+        return;
+      }
       activeTurnSnapshot = null;
       terminalDaemonTurnObserved = true;
       return;
@@ -946,6 +952,8 @@ export function createDaemonTuiSession<
         payload: {
           cause: "runtime_settings_authority_gap",
           message: error.message,
+          terminal: true,
+          terminalSource: "runtime_settings_authority",
         },
       });
       const abortTerminal = (
@@ -980,6 +988,8 @@ export function createDaemonTuiSession<
         payload: {
           cause: failureCause,
           message: error.message,
+          terminal: true,
+          terminalSource: "runtime_settings_authority",
         },
       });
     } catch {
@@ -3077,6 +3087,11 @@ function transcriptEventFromAgentStatus(params: JsonObject): JsonObject {
         turnId,
         message:
           typeof params.message === "string" ? params.message : "agent error",
+        terminal: true,
+        terminalSource: "agent_status",
+        ...(typeof params.runStatus === "string"
+          ? { runStatus: params.runStatus }
+          : {}),
       },
     };
   }

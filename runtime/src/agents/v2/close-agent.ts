@@ -1,7 +1,9 @@
 import type { Tool, ToolResult } from "../../tools/types.js";
 import type { AgentStatus } from "../status.js";
 import {
+  agentValidationError,
   callIdFromArgs,
+  confirmedNoAgentEffect,
   currentAgentContext,
   emit,
   getSessionOrError,
@@ -25,25 +27,28 @@ export function createCloseAgentTool(opts: MultiAgentV2Options): Tool {
       allowed: new Set(["target"]),
       required: ["target"],
     });
-    if (strict) return strict;
+    if (strict) return confirmedNoAgentEffect(strict);
     const target = stringValue(args.target);
-    if (!target) return json({ error: "target is required" }, true);
+    if (!target) return agentValidationError("target is required");
     const sessionOrError = getSessionOrError(opts);
-    if (!("conversationId" in sessionOrError)) return sessionOrError;
+    if (!("conversationId" in sessionOrError)) {
+      return confirmedNoAgentEffect(sessionOrError);
+    }
     const { control } = opts.ensureAgentControl(sessionOrError);
     const current = currentAgentContext(sessionOrError, args, opts);
-    if (isCurrentAgentContextError(current)) return current;
+    if (isCurrentAgentContextError(current)) {
+      return confirmedNoAgentEffect(current);
+    }
     let agentId;
     try {
       agentId = resolveAgentId(sessionOrError, target, current.agentPath, opts);
     } catch (error) {
-      return json(
-        { error: error instanceof Error ? error.message : String(error) },
-        true,
+      return agentValidationError(
+        error instanceof Error ? error.message : String(error),
       );
     }
     if (agentId === sessionOrError.conversationId) {
-      return json({ error: "root is not a spawned agent" }, true);
+      return agentValidationError("root is not a spawned agent");
     }
     const callId = callIdFromArgs(args, "close");
     const receiverMetadata = receiverMetadataFor(sessionOrError, agentId, opts);

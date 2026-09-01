@@ -130,6 +130,14 @@ messages from peers outside the target's ancestor chain are explicitly framed
 as untrusted data. Passive messages stay within normal mailbox bounds and are
 folded into the next admitted assignment.
 
+Argument, identity, and target-resolution refusals on `close_agent`,
+`assign_task`, and `send_message` attest `confirmed_no_effect` before
+shutdown or delivery. `assign_task` also attests its four typed pre-marker
+admission rejections. Mailbox backpressure and unclassified throws from
+`assignTask()`, `sendInterAgentCommunication()`, or `shutdown()` do not.
+Operator detail:
+[agents.md](../reference/agents.md#agent-validation-refusals).
+
 ## Worker and turn lifecycles
 
 A reusable worker and one assignment are different lifecycles:

@@ -217,14 +217,14 @@ describe("session-store", () => {
     ).toThrowError(/please use \/fork to migrate or upgrade/i);
   });
 
-  test("a schema-v3 runtime rejects the schema-v4 checkpoint boundary", () => {
-    expect(ROLLOUT_SCHEMA_VERSION).toBe(4);
+  test("a schema-v4 runtime rejects the schema-v5 checkpoint boundary", () => {
+    expect(ROLLOUT_SCHEMA_VERSION).toBe(5);
     expect(() =>
-      assertRolloutSchemaVersionSupported(ROLLOUT_SCHEMA_VERSION, 3),
+      assertRolloutSchemaVersionSupported(ROLLOUT_SCHEMA_VERSION, 4),
     ).toThrowError(
       expect.objectContaining<SchemaMismatchError>({
-        rolloutVersion: 4,
-        runtimeVersion: 3,
+        rolloutVersion: 5,
+        runtimeVersion: 4,
       }),
     );
   });

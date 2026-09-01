@@ -43,3 +43,12 @@ transcript's collab-tool suppression set.
   Missing halves, forged/mismatched signatures, and unknown signed sessions
   return `invalid-runtime-identity`; root fallback is allowed only when both
   internal fields are absent.
+- Argument and identity refusals on `close_agent`, `assign_task`, and
+  `send_message` attest `confirmed_no_effect` /
+  `tool:agents.v2:validation` before shutdown or delivery. The typed
+  `self_target`, `sender_not_ancestor`, `worker_not_idle`, and
+  `assignment_outstanding` admission rejections are also pre-mutation.
+  Mailbox backpressure and unclassified failures from `shutdown()`,
+  `assignTask()`, or `sendInterAgentCommunication()` stay unknown-effect.
+  Operator detail:
+  [agents.md](../../../../docs/reference/agents.md#agent-validation-refusals).

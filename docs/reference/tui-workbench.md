@@ -68,6 +68,11 @@ is no inert operator layout setting.
 - **Turn lifecycle** — `esc` always clears busy latches immediately
   (`handleTurnCancel`). A 20s submit-ack watchdog (`SUBMIT_ACK_WATCHDOG_MS`)
   recovers turns the daemon never acknowledged. There is no 60s stall timer.
+  An unmarked daemon `error` is a diagnostic: the Working spinner and
+  `activeTurn` stay up. Among `error` events, only one with
+  `payload.terminal === true` (from `event.agent_status` or a runtime-settings
+  authority failure) ends the turn. See
+  [daemon telemetry errors](daemon.md#telemetry-errors-stay-session-only).
 - **`/effort`** — show or set reasoning effort (`low` / `medium` / `high` /
   `xhigh` when the model catalog lists it) for the current model;
   `/effort default` restores the model default.
@@ -171,8 +176,10 @@ the hard limit. `/compact` ignores both flags. `AGENC_DISABLE_AUTO_COMPACT`
 disables automatic pre-turn and mid-turn compaction. `AGENC_DISABLE_COMPACT`
 makes `autoCompactIfNeeded` return without compacting. Manual `/compact` and
 the mid-turn outer gate ignore that flag. A mid-turn threshold crossing can
-therefore end the turn with cause `mid_turn_compact_failed` and message
-`mid_turn_compact_skipped`.
+therefore end the turn with `warning` cause `mid_turn_compact_failed` and
+message `mid_turn_compact_skipped`. The turn stop is `compact_failed`.
+Keep-alive sessions stay promptable; see
+[daemon.md](daemon.md#compact-skip-stays-per-turn).
 
 A configured `providers.<slug>.context_window_tokens` overrides the
 model-string table for the hard-limit line. Free headroom clamps to **0**
@@ -328,3 +335,4 @@ Broader suites and env knobs for design-state smoke are listed in
 - Embedded Neovim BUFFER: [`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md)
 - Agents rail / multi-agent: [`agents.md`](agents.md)
 - `/context` occupancy: [Context usage](#context-usage-context)
+- Daemon telemetry vs terminal errors: [`daemon.md`](daemon.md#telemetry-errors-stay-session-only)

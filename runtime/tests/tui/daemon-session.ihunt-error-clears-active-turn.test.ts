@@ -203,4 +203,44 @@ describe("daemon session activeTurn error handling (ihunt)", () => {
     expect(session.activeTurn?.unsafePeek()).toBeNull();
     unsubscribe();
   });
+
+  it("keeps activeTurn across an unmarked session error", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const unsubscribe = session.subscribeToEvents(() => undefined);
+
+    await session.submit("run the tool");
+    client.emit("session_1", {
+      method: "event.agent_status",
+      params: {
+        eventId: "status_1",
+        turnId: "turn_1",
+        status: "running",
+      },
+    });
+    expect(session.activeTurn?.unsafePeek()).toEqual({ turnId: "turn_1" });
+
+    client.emit("session_1", {
+      method: "event.session_event",
+      params: {
+        eventId: "stream-retry",
+        event: {
+          id: "stream-retry",
+          type: "error",
+          payload: {
+            cause: "future_mid_turn_diagnostic",
+            message: "diagnostic event",
+          },
+        },
+      },
+    });
+
+    expect(session.activeTurn?.unsafePeek()).toEqual({ turnId: "turn_1" });
+    unsubscribe();
+  });
 });

@@ -264,7 +264,7 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | Var | Typical use |
 | --- | --- |
 | `AGENC_DISABLE_AUTO_COMPACT` | Skip automatic compaction and its pre-sampling, mid-turn, and notice gates. `/compact` still runs |
-| `AGENC_DISABLE_COMPACT` | Make `autoCompactIfNeeded` return without compacting. This does not disable `/compact` or the mid-turn outer gate; if that gate requires a compact, the turn finishes with event cause `mid_turn_compact_failed` and a message beginning with `mid_turn_compact_skipped` |
+| `AGENC_DISABLE_COMPACT` | Make `autoCompactIfNeeded` return without compacting. This does not disable `/compact` or the mid-turn outer gate; if that gate requires a compact, the turn finishes with `warning` cause `mid_turn_compact_failed`, message beginning with `mid_turn_compact_skipped`, and `stopReason: "compact_failed"`. Keep-alive sessions stay promptable. The daemon-backed one-shot CLI currently exits 0 on the resulting `turn_complete`; the compatibility `runAgent` path fails. See [daemon.md](daemon.md#compact-skip-stays-per-turn) |
 | `AGENC_AUTO_COMPACT_WINDOW` | Positive integer context-window override used by compaction thresholds |
 | `AGENC_AUTOCOMPACT_PCT_OVERRIDE` | Percentage `1` to `100`; can only make automatic compaction fire earlier than the safety default |
 | `AGENC_DISABLE_LSP` | Do not start LSP |

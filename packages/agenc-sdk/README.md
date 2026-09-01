@@ -99,6 +99,9 @@ against the runtime's canonical method registry.
 into `src/transcript-v2.generated.ts` and checked by
 `npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types`
 (see [`docs/sdk.md`](../../docs/sdk.md#transcript-v2-generated-mirror)).
+Workflow-result types in `src/workflow-result.generated.ts` are marker-checked
+by the same command, not an exact file compare
+(see [`docs/sdk.md`](../../docs/sdk.md#workflow-result-generated-mirror)).
 
 ## Durable reconnect
 

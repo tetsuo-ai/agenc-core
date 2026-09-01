@@ -1,5 +1,6 @@
 import type { Tool } from "../../tools/types.js";
 import {
+  confirmedNoAgentEffect,
   localZeroAdmissionEstimate,
   strictArgs,
   toolMetadata,
@@ -47,7 +48,7 @@ export function createTriggerTurnTaskTool(
         allowed: new Set(["target", "message"]),
         required: ["target", "message"],
       });
-      if (strict) return Promise.resolve(strict);
+      if (strict) return Promise.resolve(confirmedNoAgentEffect(strict));
       return handleMessageStringTool(args, opts, "trigger_turn");
     },
   };

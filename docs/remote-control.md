@@ -140,6 +140,10 @@ never calls `process.exit` (that would kill the session).
   store keyed by a live session UUID. After reopen or restart the snapshot is
   the source of truth. See
   [daemon.md](reference/daemon.md#closed-turn-results).
+  A raw session `error` is diagnostic and does not close the submission.
+  `event.agent_status` with `status: "error"` is the separate terminal run
+  signal. See
+  [mid-turn error events](reference/daemon.md#mid-turn-error-events).
   When no live agent is attached, it falls back to the persisted thread store
   (read-only). A still-running terminal holds an exclusive rollout lock, so
   those `conv-` sessions stay read-only until the terminal exits.
@@ -158,7 +162,9 @@ The daemon registers capability clients during initialize, before any
 `session.attach`. Logical registrations on one physical socket share a delivery
 key, preventing duplicate status notifications. Status replay comes from each
 session's ordinary bounded buffer and contains status frames only; joining chat
-history still requires `session.attach`/`session.transcript`.
+history still requires `session.attach`/`session.transcript`. Session `error`
+events stay on `event.session_event` and do not appear on this observer feed.
+See [daemon telemetry errors](reference/daemon.md#telemetry-errors-stay-session-only).
 
 Ledger actions use a separate one-consumer replay buffer so two capable phones
 cannot both receive the same signing request. See

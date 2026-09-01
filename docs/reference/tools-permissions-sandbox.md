@@ -634,6 +634,9 @@ See [`agents.md`](agents.md) for `spawn_agent` / `wait_agent` / `close_agent` /
 `assign_task` / `send_message` / `list_agents`. Spawn validation before
 `delegate()` is confirmed no-effect:
 [agents.md#spawn_agent-preflight](agents.md#spawn_agent-preflight).
+Close/assign/send argument and identity refusals use
+`tool:agents.v2:validation`:
+[agents.md#agent-validation-refusals](agents.md#agent-validation-refusals).
 
 ## Related CLI / TUI
 

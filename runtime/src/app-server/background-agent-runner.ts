@@ -4833,7 +4833,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     return eventLog.subscribe((event) => {
       const uncorrelated = daemonEventFromUnboundSessionEvent(event);
       if (uncorrelated === null) return;
-      const daemonEvent = projectPerPromptRejectionAsSessionOnly(
+      const daemonEvent = projectTelemetryErrorAsSessionOnly(
         scopeDirectShellDaemonEvent(
           active,
           correlateDaemonEvent(active, uncorrelated),
@@ -5753,30 +5753,16 @@ function shellEventKey(commandId: string): string {
     .slice(0, 32);
 }
 
-const SESSION_ONLY_ERROR_CAUSES: ReadonlySet<string> = new Set([
-  "user_prompt_submit_hook_blocked",
-  "mid_turn_compact_failed",
-  "pre_sampling_compact_failed",
-]);
-
-function isSessionOnlyErrorCause(cause: unknown): boolean {
-  return typeof cause === "string" && SESSION_ONLY_ERROR_CAUSES.has(cause);
-}
-
 /**
- * Older UserPromptSubmit blockingError records use type "error". The
- * refusal applies to one prompt, so keep the event visible without changing
- * the run status seen by the runner or attached clients.
- *
- * Mid-turn / pre-sampling compact skip-or-throw used the same `error`
- * type. Those close one turn (context could not shrink) and must not
- * flip the daemon agent to `error`, or later prompts die with
- * "no longer running (status: error)".
+ * Session `error` records are diagnostic events, not lifecycle boundaries.
+ * Terminal run failures arrive through RunAgentProgressEvent.run_error and
+ * update the lifecycle status there. Keep the diagnostic event visible
+ * without letting it poison the keep-alive session first.
  */
-function projectPerPromptRejectionAsSessionOnly(
+function projectTelemetryErrorAsSessionOnly(
   event: BackgroundAgentDaemonEvent,
 ): BackgroundAgentDaemonEvent {
-  if (event.type === "error" && isSessionOnlyErrorCause(event.payload?.cause)) {
+  if (event.type === "error") {
     return { ...event, statusProjection: "session_only" };
   }
   return event;
