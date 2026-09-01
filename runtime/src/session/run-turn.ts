@@ -2033,11 +2033,12 @@ function compactFailureError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-function emitCompactFailureWarning(
+function emitTurnWarning(
   session: Session,
   cause:
     | typeof PRE_SAMPLING_COMPACT_FAILED_CAUSE
-    | typeof MID_TURN_COMPACT_FAILED_CAUSE,
+    | typeof MID_TURN_COMPACT_FAILED_CAUSE
+    | EditorRequestFailureCause,
   message: string,
 ): void {
   session.emit({
@@ -2077,23 +2078,6 @@ type EditorRequestFailureCause =
 
 function isEditorRecoveryBlockedError(error: Error): boolean {
   return error.message.startsWith(`${EDITOR_RECOVERY_BLOCKED_CAUSE}:`);
-}
-
-function emitEditorRequestFailureWarning(
-  session: Session,
-  cause: EditorRequestFailureCause,
-  message: string,
-): void {
-  session.emit({
-    id: session.nextInternalSubId(),
-    msg: {
-      type: "warning",
-      payload: {
-        cause,
-        message,
-      },
-    },
-  });
 }
 
 function editorRequestFailedTurnComplete(
@@ -4473,7 +4457,7 @@ async function* runTurnKernelInner(
     await runPreSamplingCompact(session, ctx, turnQuerySource, state);
   } catch (error) {
     const underlying = compactFailureError(error);
-    emitCompactFailureWarning(
+    emitTurnWarning(
       session,
       PRE_SAMPLING_COMPACT_FAILED_CAUSE,
       underlying.message,
@@ -4536,7 +4520,7 @@ async function* runTurnKernelInner(
       `limit (${limit}; observed ${observed}). No additional tools ran and ` +
       "no buffer changes were applied.";
     const error = new Error(`${cause}: ${message}`);
-    emitEditorRequestFailureWarning(session, cause, message);
+    emitTurnWarning(session, cause, message);
     await syncSessionState();
     emitTurnComplete(message);
     return {
@@ -4853,7 +4837,7 @@ async function* runTurnKernelInner(
       ) {
         const content =
           lastContent.length > 0 ? lastContent : underlying.message;
-        emitEditorRequestFailureWarning(
+        emitTurnWarning(
           session,
           EDITOR_RECOVERY_BLOCKED_CAUSE,
           underlying.message,
@@ -4990,7 +4974,7 @@ async function* runTurnKernelInner(
         // reducers see a closed boundary without killing the run.
         await drainInFlight(state, ctx, session);
         const underlying = compactFailureError(error);
-        emitCompactFailureWarning(
+        emitTurnWarning(
           session,
           MID_TURN_COMPACT_FAILED_CAUSE,
           underlying.message,
@@ -5012,7 +4996,7 @@ async function* runTurnKernelInner(
         // the semantics of agenc runtime's `return None`.
         await drainInFlight(state, ctx, session);
         const reasonText = `mid_turn_compact_skipped: lastSamplePromptTokens=${totalUsageTokens} limit=${autoCompactLimit}`;
-        emitCompactFailureWarning(
+        emitTurnWarning(
           session,
           MID_TURN_COMPACT_FAILED_CAUSE,
           reasonText,
@@ -5063,7 +5047,7 @@ async function* runTurnKernelInner(
           "Editor edit request incomplete: the model did not return a valid " +
           "EditorProposal. No buffer changes were made.";
         const error = new Error(`${cause}: ${lastContent}`);
-        emitEditorRequestFailureWarning(session, cause, lastContent);
+        emitTurnWarning(session, cause, lastContent);
         await syncSessionState();
         emitTurnComplete(lastContent);
         const terminal: Terminal = { reason: "completed", error };
