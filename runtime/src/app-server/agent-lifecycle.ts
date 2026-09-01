@@ -4368,6 +4368,22 @@ export function retainedCreatedAtMatchesRollout(
   return Math.abs(retained - rollout) <= RETAINED_CREATED_AT_TOLERANCE_MS;
 }
 
+/**
+ * Keep the validator's reason instead of throwing it away.
+ *
+ * Both call sites used to answer every rejection with the same opaque
+ * sentence, so an operator staring at "failed strict canonical validation"
+ * had no way to tell a truncated prefix from a bad checksum from a sequence
+ * gap — the actual reason existed, was computed, and was discarded. One such
+ * rollout took a validator run against the file by hand to learn it said
+ * "canonical journal event sequence is not contiguous".
+ */
+export function canonicalValidationFailure(error: unknown): string {
+  const detail = error instanceof Error ? error.message.trim() : "";
+  const base = "agent.create resume rollout failed strict canonical validation";
+  return detail.length > 0 ? `${base}: ${detail}` : base;
+}
+
 function assertAuthoritativeResumeSource(params: {
   readonly agencHome: string;
   readonly sessionId: string;
@@ -4786,10 +4802,8 @@ function readCanonicalResumeSource(
       let journal;
       try {
         journal = validator.finish();
-      } catch {
-        return fail(
-          "agent.create resume rollout failed strict canonical validation",
-        );
+      } catch (error) {
+        return fail(canonicalValidationFailure(error));
       }
       return {
         meta,
@@ -4826,10 +4840,8 @@ function readCanonicalResumeSource(
     position += bytesRead;
     try {
       validator.push(chunk.subarray(0, bytesRead));
-    } catch {
-      return fail(
-        "agent.create resume rollout failed strict canonical validation",
-      );
+    } catch (error) {
+      return fail(canonicalValidationFailure(error));
     }
     if (objective !== undefined) continue;
     objectiveScanBytes += bytesRead;
