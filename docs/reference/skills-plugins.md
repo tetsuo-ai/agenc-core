@@ -15,6 +15,7 @@ Sources of truth:
 | Install / update ops | `runtime/src/plugins/cli/pluginOperations.ts` (`installPluginOp`, `updatePluginOp`) |
 | Marketplace | `runtime/src/plugins/marketplace/` |
 | Source classification | `runtime/src/plugins/resolution.ts` (`classifyPluginSource`) |
+| Resolution errors | `runtime/src/plugins/resolution.ts` (`redactPluginResolutionError`) |
 | Publisher signatures | `runtime/src/plugins/resolution.ts` (`verifyResolvedPluginSignature`) |
 | Config | `[plugins]` in [config.md](config.md) |
 
@@ -456,6 +457,48 @@ local-directory waiver. An explicit `.mcpb` path has kind `mcpb`, so it still
 requires a publisher signature by default, just like npm, git, tarball, and
 remote mcpb sources. The shipped CLI has no signature-waiver option. See
 [Publisher signatures](#publisher-signatures).
+
+### Native archive fetch error redaction
+
+Intent: a failed remote install must not echo URL userinfo or signed query
+values into CLI output, logs, `inspect()`, or `JSON.stringify`.
+
+Git clone and `npm pack` already rebuilt process failures through
+`redactPluginSource`. Native `fetch()` and `new URL` did not: they rethrew
+with the raw message plus leaky fields such as `ERR_INVALID_URL.input` and
+undici `cause`. `resolvePluginSource` and `fetchBytes` now catch every
+failure — including an injected `options.fetchBytes` hook — and rebuild it
+with `redactPluginResolutionError`.
+
+The rebuilt `Error` keeps `name` and a redacted `message` only. It does not
+copy `cause`, `input`, `code`, or other own properties.
+
+`redactPluginSource` runs `redactCredentialUrls` and then the secret
+sanitizer:
+
+| URL shape | Rewrite |
+| --- | --- |
+| Parseable `http(s)://`, `ssh://`, or `git+` of those | Userinfo becomes `redacted` (password cleared). Any query string becomes `?redacted=1`. Fragment is left as-is. |
+| Unparseable (`https://host:notaport/…`, and similar) | First `@` userinfo becomes `redacted@`. From the first `?` or `#` onward becomes `?redacted=1`. |
+| No `http(s)` / `ssh` scheme | Left unchanged here. The secret sanitizer may still rewrite the string. |
+
+```text
+https://opaque-token@agenc.tech/plugins/private.tgz?access_token=secretvalue
+→ https://redacted@agenc.tech/plugins/private.tgz?redacted=1
+
+https://opaque-token@agenc.tech:notaport/plugins/private.tgz?access_token=secretvalue
+→ https://redacted@agenc.tech:notaport/plugins/private.tgz?redacted=1
+```
+
+Cross-origin archive redirect messages already embed
+`redactPluginSource(next.toString())`. Install metadata uses the same
+rewrite; whether a later `plugin update` can reuse that string is a
+recorded-source concern, not this error-object rebuild.
+
+| Symptom | What to check |
+| --- | --- |
+| `TypeError: Invalid URL` or `failed to fetch plugin archive` shows `redacted@` / `?redacted=1` | Expected. The thrown Error is a rebuild; `input` and `cause` are not attached. |
+| A log still prints the raw token | The leak is outside `resolvePluginSource` (for example a custom `fetchBytes` hook that logs the URL before throwing). The thrown Error itself is redacted. |
 
 ### Marketplace
 
