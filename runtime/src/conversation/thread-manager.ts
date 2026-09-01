@@ -703,9 +703,14 @@ export interface DurableResumeAttempt {
     | "prefix-mismatch"
     | "integrity-invalid"
     | "integrity-deferred"
+    | "provider-restore-failed"
     | "lease-unavailable";
   /** Tool names the safe policy halted on (surfaced, not retried). */
   readonly halted?: ReadonlyArray<string>;
+  /** False when provider restoration could not prove an exact rollback. */
+  readonly freshTurnAllowed?: false;
+  /** Operator-facing detail for a terminal provider restoration failure. */
+  readonly failureDetail?: string;
 }
 
 /**
@@ -742,15 +747,233 @@ function selectResumableTurn(
   return { turn };
 }
 
+function emitProviderRestoreFailure(
+  session: Session,
+  turnId: string,
+  reason: string,
+): void {
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "warning",
+      payload: {
+        cause: "durable_resume_provider_restore_failed",
+        message: `durable resume for turn ${turnId} could not restore its provider route: ${reason}`,
+      },
+    },
+  });
+}
+
+function providerRouteMatches(
+  expected: { readonly provider: string; readonly model: string },
+  actual: { readonly provider: string; readonly model: string },
+): boolean {
+  return (
+    actual.provider === expected.provider && actual.model === expected.model
+  );
+}
+
+type CheckpointProviderRestoreOutcome =
+  | { readonly status: "restored" }
+  | {
+      readonly status: "clean-rejection" | "terminal-failure";
+      readonly reason: string;
+    };
+
+function rejectCheckpointProviderRestore(
+  session: Session,
+  turn: ResumableTurn,
+  reason: string,
+  status: "clean-rejection" | "terminal-failure" = "clean-rejection",
+): CheckpointProviderRestoreOutcome {
+  try {
+    emitProviderRestoreFailure(session, turn.turnId, reason);
+  } catch {
+    // The structured outcome remains authoritative if warning persistence fails.
+  }
+  return { status, reason };
+}
+
+async function restoreCheckpointProviderRoute(
+  session: Session,
+  turn: ResumableTurn,
+): Promise<CheckpointProviderRestoreOutcome> {
+  const fallback = turn.lastCheckpoint.resumableState.pendingAdmissionFallback;
+  if (fallback === undefined) return { status: "restored" };
+  if (fallback.toProvider === undefined) {
+    return rejectCheckpointProviderRestore(
+      session,
+      turn,
+      "the checkpoint does not identify the target provider",
+    );
+  }
+
+  const target = {
+    provider: fallback.toProvider,
+    model: fallback.toModel,
+  };
+  const pending = session.pendingProviderSwitch;
+  if (pending !== null) {
+    return rejectCheckpointProviderRestore(
+      session,
+      turn,
+      "another provider switch is already pending",
+    );
+  }
+
+  const active = session.providerBinding;
+  if (providerRouteMatches(target, active)) {
+    return { status: "restored" };
+  }
+
+  try {
+    const prepared = await session.prepareProviderSwitch(target);
+    if (!providerRouteMatches(target, prepared.pending)) {
+      return rejectCheckpointProviderRestore(
+        session,
+        turn,
+        "the resolved provider route does not match the checkpoint",
+      );
+    }
+    session.stagePreparedProviderSwitch(prepared, null);
+
+    const outcome = await session.consumePendingProviderSwitchTransaction();
+    if (outcome.status === "terminal-failure") {
+      return rejectCheckpointProviderRestore(
+        session,
+        turn,
+        outcome.reason,
+        "terminal-failure",
+      );
+    }
+    if (outcome.status === "clean-rejection") {
+      return rejectCheckpointProviderRestore(session, turn, outcome.reason);
+    }
+    return { status: "restored" };
+  } catch (error) {
+    const reason =
+      error instanceof Error && error.message.length > 0
+        ? error.message
+        : "provider restoration failed";
+    return rejectCheckpointProviderRestore(session, turn, reason);
+  }
+}
+
+interface DurableResumeLeaseAttempt {
+  readonly lease?: SessionLock;
+  readonly reason?: "lease-unavailable";
+}
+
+function acquireDurableResumeLease(
+  session: Session,
+  turn: ResumableTurn,
+  requireLease: boolean,
+): DurableResumeLeaseAttempt {
+  if (!requireLease) return {};
+  const rolloutPath = session.rolloutStore?.rolloutPath;
+  if (rolloutPath === undefined) return {};
+
+  const lease = new SessionLock(`${rolloutPath}.resume-${turn.turnId}.lock`);
+  try {
+    lease.acquire();
+    return { lease };
+  } catch {
+    return { reason: "lease-unavailable" };
+  }
+}
+
+interface DurableResumePlan {
+  readonly haltedSideEffectingTools: ReadonlyArray<string>;
+  readonly danglingPairings: ReadonlyArray<{
+    readonly callId: string;
+    readonly toolName: string;
+    readonly halt: boolean;
+  }>;
+}
+
+function planDanglingToolResume(
+  session: Session,
+  turn: ResumableTurn,
+): DurableResumePlan {
+  const toolByName = new Map(
+    session.services.registry.tools.map((tool) => [tool.name, tool] as const),
+  );
+  const classification = classifyDanglingToolUses(
+    turn.danglingToolUses,
+    (toolName) => {
+      const tool = toolByName.get(toolName);
+      return (
+        tool !== undefined &&
+        isResumeReplaySafe(tool as Parameters<typeof isResumeReplaySafe>[0])
+      );
+    },
+  );
+  return {
+    haltedSideEffectingTools: [
+      ...new Set(classification.mustHalt.map((tool) => tool.toolName)),
+    ],
+    danglingPairings: [
+      ...classification.mustHalt.map((tool) => ({
+        callId: tool.callId,
+        toolName: tool.toolName,
+        halt: true,
+      })),
+      ...classification.replaySafe.map((tool) => ({
+        callId: tool.callId,
+        toolName: tool.toolName,
+        halt: false,
+      })),
+    ],
+  };
+}
+
+async function driveResumedTurn(
+  session: Session,
+  reconstruction: RolloutReconstruction,
+  turn: ResumableTurn,
+  plan: DurableResumePlan,
+): Promise<void> {
+  const reconstructedPrefix = reconstruction.history.slice(
+    0,
+    turn.lastCheckpoint.persistedMessageCount,
+  );
+  const history = reconstructedPrefix.map((item) =>
+    responseItemToLlmMessage(item),
+  );
+  const iter = session.runTurn("", {
+    subId: turn.turnId,
+    history,
+    displayUserMessage: null,
+    resume: {
+      turnId: turn.turnId,
+      fromIteration: turn.lastCheckpoint.iterationIndex,
+      fromCheckpointSeq: turn.lastCheckpoint.checkpointSeq,
+      persistedMessageCount: turn.lastCheckpoint.persistedMessageCount,
+      restoreSlice: turn.lastCheckpoint
+        .resumableState as unknown as import("../session/turn-state.js").TurnCheckpointSlice,
+      ...(plan.haltedSideEffectingTools.length > 0
+        ? { haltedSideEffectingTools: plan.haltedSideEffectingTools }
+        : {}),
+      ...(plan.danglingPairings.length > 0
+        ? { danglingPairings: plan.danglingPairings }
+        : {}),
+    },
+  });
+  while (!(await iter.next()).done) {
+    // Drain the resumed turn to its terminal event.
+  }
+}
+
 /**
  * Attempt to resume-CONTINUE an interrupted turn from its last durable
  * checkpoint instead of discarding it and starting fresh.
  *
- * Safety gates (ALL must hold; any failure → caller falls back to today's
- * fresh turn): config enables resume, the build pin matches (§3.6), the raw
- * persisted checkpoint passes the A3 integrity gate, and the single-writer
- * resume lease is acquired (§3.5). Dangling `tool_use` blocks are classified by the
- * EXISTING `recoveryCategory` via `isResumeReplaySafe`: side-effecting /
+ * Safety gates (ALL must hold): config enables resume, the build pin matches
+ * (§3.6), the raw persisted checkpoint passes the A3 integrity gate, and the
+ * single-writer resume lease is acquired (§3.5). A clean rejection may fall
+ * back to a fresh turn. An incomplete provider rollback fences the session.
+ * Dangling `tool_use` blocks are classified by the EXISTING
+ * `recoveryCategory` via `isResumeReplaySafe`: side-effecting /
  * interactive dangling tools HALT and surface (never auto-re-dispatch) —
  * the on-chain-safety property — while read-only ones re-run on the fresh
  * sampling request.
@@ -769,92 +992,39 @@ export async function resumeTurnFromCheckpoint(
     return reason !== undefined ? { resumed: false, reason } : { resumed: false };
   }
 
-  // Single-writer resume lease — reuse the SessionLock flock keyed per
-  // turnId so two concurrent resumers cannot both re-drive the turn. The
-  // lease path is distinct from the session-store rollout lock and from the
-  // /resume cold-rollout handoff (a session-id slot), so it composes with
-  // both rather than fighting them.
-  let lease: SessionLock | undefined;
-  if (cfg.requireLease) {
-    const rolloutPath = session.rolloutStore?.rolloutPath;
-    if (rolloutPath !== undefined) {
-      lease = new SessionLock(`${rolloutPath}.resume-${turn.turnId}.lock`);
-      try {
-        lease.acquire();
-      } catch {
-        return { resumed: false, reason: "lease-unavailable" };
-      }
-    }
+  const leaseAttempt = acquireDurableResumeLease(
+    session,
+    turn,
+    cfg.requireLease,
+  );
+  if (leaseAttempt.reason !== undefined) {
+    return { resumed: false, reason: leaseAttempt.reason };
   }
 
   try {
-    // Classify dangling tool_use blocks (no persisted result) under the
-    // safe-by-default policy. Over-halt is acceptable; under-halt is NOT.
-    const toolByName = new Map(
-      session.services.registry.tools.map((t) => [t.name, t] as const),
-    );
-    const { replaySafe, mustHalt } = classifyDanglingToolUses(
-      turn.danglingToolUses,
-      (toolName) => {
-        const tool = toolByName.get(toolName);
-        if (tool === undefined) return false; // unknown → side-effecting → halt
-        return isResumeReplaySafe(tool as Parameters<typeof isResumeReplaySafe>[0]);
-      },
-    );
-    const haltedSideEffectingTools = [
-      ...new Set(mustHalt.map((d) => d.toolName)),
-    ];
-    const danglingPairings = [
-      ...mustHalt.map((d) => ({
-        callId: d.callId,
-        toolName: d.toolName,
-        halt: true,
-      })),
-      ...replaySafe.map((d) => ({
-        callId: d.callId,
-        toolName: d.toolName,
-        halt: false,
-      })),
-    ];
-
-    const reconstructedPrefix = reconstruction.history.slice(
-      0,
-      turn.lastCheckpoint.persistedMessageCount,
-    );
-    const history = reconstructedPrefix.map((item) =>
-      responseItemToLlmMessage(item),
-    );
-
-    const iter = session.runTurn("", {
-      subId: turn.turnId,
-      history,
-      displayUserMessage: null,
-      resume: {
-        turnId: turn.turnId,
-        fromIteration: turn.lastCheckpoint.iterationIndex,
-        fromCheckpointSeq: turn.lastCheckpoint.checkpointSeq,
-        persistedMessageCount: turn.lastCheckpoint.persistedMessageCount,
-        restoreSlice: turn.lastCheckpoint
-          .resumableState as unknown as import("../session/turn-state.js").TurnCheckpointSlice,
-        ...(haltedSideEffectingTools.length > 0
-          ? { haltedSideEffectingTools }
+    const providerRestore = await restoreCheckpointProviderRoute(session, turn);
+    if (providerRestore.status !== "restored") {
+      return {
+        resumed: false,
+        reason: "provider-restore-failed",
+        ...(providerRestore.status === "terminal-failure"
+          ? {
+              freshTurnAllowed: false as const,
+              failureDetail: providerRestore.reason,
+            }
           : {}),
-        ...(danglingPairings.length > 0 ? { danglingPairings } : {}),
-      },
-    });
-    // Drive the resumed turn to completion.
-    while (true) {
-      const next = await iter.next();
-      if (next.done) break;
+      };
     }
+    const plan = planDanglingToolResume(session, turn);
+    await driveResumedTurn(session, reconstruction, turn, plan);
     return {
       resumed: true,
-      ...(haltedSideEffectingTools.length > 0
-        ? { halted: haltedSideEffectingTools }
+      ...(plan.haltedSideEffectingTools.length > 0
+        ? { halted: plan.haltedSideEffectingTools }
         : {}),
     };
   } finally {
-    lease?.release();
+    leaseAttempt.lease?.release();
   }
 }
 
@@ -865,19 +1035,28 @@ async function defaultStartupPrewarm({
   // GOAL #4b Stage 1 — if reconstruction surfaced an orphaned in-flight turn
   // with a valid durable checkpoint (and the build/prefix/lease gates pass),
   // resume-CONTINUE it instead of discarding it for a fresh default turn.
-  // Any failure or absence falls through to EXACTLY today's behavior —
-  // byte-identical for sessions with no checkpoint (backward compat).
+  // Absence and clean rejection retain the existing fresh-turn behavior.
+  // An incomplete provider rollback stops startup before a fresh context can
+  // use state whose authority is no longer provable.
   const reconstruction = lastReconstructionBySession.get(session);
   if (reconstruction !== undefined) {
+    let attempt: DurableResumeAttempt | undefined;
     try {
-      const attempt = await resumeTurnFromCheckpoint(session, reconstruction);
-      if (attempt.resumed) {
-        await scheduleProviderStartupPrewarm(session, threadId);
-        return;
-      }
+      attempt = await resumeTurnFromCheckpoint(session, reconstruction);
     } catch {
       // Resume is strictly best-effort; never let it block boot. Fall
       // through to the legacy fresh-turn prewarm.
+    }
+    if (attempt?.resumed === true) {
+      await scheduleProviderStartupPrewarm(session, threadId);
+      return;
+    }
+    if (attempt?.freshTurnAllowed === false) {
+      throw new Error(
+        `startup halted after an incomplete checkpoint provider restore: ${
+          attempt.failureDetail ?? "provider state could not be restored"
+        }`,
+      );
     }
   }
   session.newDefaultTurn();

@@ -378,9 +378,20 @@ can use the previous model's context after a model switch when the old window
 is larger and usage is over the new compaction limit or at the new effective
 window. Every successful nonterminal model response advances a durable sample
 ordinal, so nudge, compact, empty-response, and other follow-up samples
-receive a new admission `stepId`. See
-[execution-admission-kernel.md](design/execution-admission-kernel.md#model-step-identity)
-and the [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main).
+receive a new admission `stepId`. Before the next admission, `run-turn.ts`
+force-emits a `turn_checkpoint`; interval throttling cannot defer that
+barrier. In-turn resume (`resumeTurnFromCheckpoint`) is separate from epoch
+reopen. Startup continues an orphaned turn only when the last checkpoint
+passes config, reader, prefix hash, build pinning, and lease checks. Startup
+may open a fresh turn after a clean rejection. If provider publication began,
+the original route, config, model metadata, and client continuation state must
+be proven restored first. An unproven rollback halts startup and fences the
+session from new turns. The rejected checkpoint remains on disk. See the
+[resume outcome table](design/durable-runs-effects-events.md#resume-outcomes),
+[execution-admission-kernel.md](design/execution-admission-kernel.md#model-step-identity),
+the [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main),
+and
+[durable-runs-effects-events.md](design/durable-runs-effects-events.md#in-turn-checkpoint-resume).
 
 ## Recovery ladder (`runtime/src/recovery`)
 
@@ -490,21 +501,15 @@ crashing the process.
   installs and package builds under different umasks, then uses two additional
   pristine checkouts to prove byte-identical recursive OCI layouts with an
   exact Buildx client and digest-pinned BuildKit daemon.
-- **Local required verification** — the complete platform-independent stable
-  contract runs locally. GitHub Actions adds `default-suite` (four Ubuntu
-  Vitest shards plus runtime typecheck, no Docker hermetic/red-probe path)
-  and capability lanes: Linux-kernel sandbox, PowerShell, Neovim (five
-  OS/arch; hosted PTY scenarios are Linux/Darwin only), macOS native,
-  Windows native. Each PR records the exact locally tested SHA,
-  commands, results, and skips before merge; release verification
-  repeats the gates at exact current `main` before any release tag exists.
-  GitHub remains the branch/PR/merge record. Candidate macOS/Windows
-  inventories are in [ci-required-gates.md](ci-required-gates.md), not a
-  one-probe summary. Those hosted jobs do not replace the local test plan.
-  The repository-scoped App/ruleset
-  implementation is retained as
-  an inactive optional design, not a current merge requirement. Reproduction
-  and trust boundaries are documented in
+- Ordinary code changes run runtime typecheck and
+  Vitest tests related to the branch diff. Launcher, SDK, and gate-policy tests
+  run when files in those areas change. Documentation-only PRs skip hosted checks.
+  Classification and fail-closed deletion mapping are in
+  [ci-required-gates.md](ci-required-gates.md#fast-testfast-checks).
+- Releases use the complete local suite and the manual hosted matrix from
+  exact current `main`. The matrix covers Linux kernel
+  sandboxing, PowerShell, Neovim, macOS, and Windows. The optional GitHub App
+  and ruleset design remains inactive. See
   [`ci-required-gates.md`](ci-required-gates.md).
 
 Root development loop (from repo root):
@@ -513,6 +518,7 @@ Root development loop (from repo root):
 npm ci
 npm run build
 npm run typecheck
+npm run test:fast
 npm test
 npm run check:required-gates
 npm run validate:runtime

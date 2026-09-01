@@ -375,9 +375,9 @@ There are two authorized lanes:
 ### Full release
 
 1. Prepare the version, landing copy, release notes, and source changes on a
-   branch. Run the ordinary required PR checks, commit with hooks enabled,
-   create the PR, and squash-merge it. Do **not** run the full clean-build
-   acceptance before the final merge commit exists.
+   branch. Run the fast PR checks and any targeted release-package tests,
+   commit with hooks enabled, create the PR, and squash-merge it. Do **not** run
+   the full clean-build acceptance before the final merge commit exists.
 2. Fetch `origin/main`, switch to its clean exact commit, and run the complete
    verification plan once:
 

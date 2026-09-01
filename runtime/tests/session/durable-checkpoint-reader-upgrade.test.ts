@@ -19,7 +19,9 @@ import {
   ROLLOUT_SCHEMA_VERSION,
   type TurnCheckpointEvent,
   type TurnCheckpointV2Event,
+  type TurnCheckpointV3Event,
 } from "../../src/session/event-log.js";
+import { MAX_CHECKPOINT_FALLBACK_TEXT_BYTES } from "../../src/session/turn-checkpoint-slice.js";
 import {
   parseRolloutLine,
   type ResponseItem,
@@ -27,6 +29,11 @@ import {
   type ToolResultIntegrityResponseItem,
 } from "../../src/session/rollout-item.js";
 import { createToolResultIntegrity } from "../../src/session/tool-result-integrity.js";
+import {
+  buildInitialTurnState,
+  restoreFromCheckpoint,
+  toCheckpointSlice,
+} from "../../src/session/turn-state.js";
 import {
   createCsvAgentInvocationEnvelope,
   materializeAgentInvocationMessages,
@@ -41,6 +48,7 @@ import {
   isCanonicalEventPayload,
   isCanonicalRolloutPayload,
 } from "../../src/state/recovery-journal-schema.js";
+import { mkCtx } from "../fixtures.js";
 
 const FIXTURE_ROOT = fileURLToPath(
   new URL("../fnd/fixtures/checkpoints/", import.meta.url),
@@ -65,7 +73,7 @@ afterEach(() => {
   rmSync(cwd, { recursive: true, force: true });
 });
 
-describe("durable checkpoint v2 reader", () => {
+describe("durable checkpoint reader", () => {
   it("layers strict checkpoint validation over the additive recovery envelope", () => {
     const checkpoint = {
       ...legacyCheckpoint("a".repeat(64)),
@@ -97,7 +105,7 @@ describe("durable checkpoint v2 reader", () => {
     );
   });
 
-  it("strictly dispatches legacy and v2 checkpoints and rejects unknown versions", () => {
+  it("strictly dispatches v1, v2, and v3 checkpoints and rejects unknown versions", () => {
     const legacy = legacyCheckpoint("a".repeat(64));
     expect(readTurnCheckpoint(legacy)).toMatchObject({ version: 1 });
     expect(
@@ -112,8 +120,15 @@ describe("durable checkpoint v2 reader", () => {
         toolResultIntegrityVersion: 1,
       }),
     ).toMatchObject({ version: 2 });
+    expect(
+      readTurnCheckpoint({
+        ...legacy,
+        checkpointVersion: 3,
+        toolResultIntegrityVersion: 1,
+      }),
+    ).toMatchObject({ version: 3, sourceVersion: 3 });
     expect(() =>
-      readTurnCheckpoint({ ...legacy, checkpointVersion: 3 }),
+      readTurnCheckpoint({ ...legacy, checkpointVersion: 4 }),
     ).toThrowError(
       expect.objectContaining<DurableCheckpointReadError>({
         code: "checkpoint_version_unsupported",
@@ -148,6 +163,198 @@ describe("durable checkpoint v2 reader", () => {
     expect(() =>
       readTurnCheckpoint({ ...legacy, unversionedField: true }),
     ).toThrowError(/unversioned fields/);
+    expect(() =>
+      readTurnCheckpoint({
+        ...legacy,
+        resumableState: {
+          ...(legacy.resumableState as Record<string, unknown>),
+          editorToolCallsAdmitted: 1,
+        },
+      }),
+    ).toThrowError(/unversioned fields/);
+  });
+
+  it("reads editor-quota and admission-fallback slice fields that the writer persists", () => {
+    const legacy = legacyCheckpoint("a".repeat(64));
+    const resumableState = {
+      ...(legacy.resumableState as Record<string, unknown>),
+      editorToolCallsAdmitted: 3,
+      pendingAdmissionFallback: {
+        fromModel: "gemini-3.1-pro",
+        toModel: "gemini-flash",
+        toProvider: "gemini",
+        reason: "provider_fallback_ladder",
+      },
+    };
+    const checkpoint = {
+      ...legacy,
+      checkpointVersion: 2,
+      toolResultIntegrityVersion: 1,
+      resumableState,
+    };
+
+    expect(isCanonicalEventPayload("turn_checkpoint", checkpoint)).toBe(true);
+    expect(readTurnCheckpoint(checkpoint)).toMatchObject({
+      version: 3,
+      sourceVersion: 2,
+      checkpoint: {
+        checkpointVersion: 3,
+        resumableState: {
+          editorToolCallsAdmitted: 3,
+          pendingAdmissionFallback: {
+            fromModel: "gemini-3.1-pro",
+            toModel: "gemini-flash",
+            toProvider: "gemini",
+            reason: "provider_fallback_ladder",
+          },
+        },
+      },
+    });
+    expect(() =>
+      readTurnCheckpoint({
+        ...checkpoint,
+        resumableState: {
+          ...resumableState,
+          pendingAdmissionFallback: {
+            fromModel: "gemini-3.1-pro",
+            toModel: "gemini-flash",
+            reason: "provider_fallback_ladder",
+            extra: true,
+          },
+        },
+      }),
+    ).toThrowError(/unversioned fields/);
+    expect(() =>
+      readTurnCheckpoint({
+        ...checkpoint,
+        resumableState: {
+          ...resumableState,
+          unknownSliceField: true,
+        },
+      }),
+    ).toThrowError(/unversioned fields/);
+    expect(() =>
+      readTurnCheckpoint({
+        ...checkpoint,
+        resumableState: {
+          ...resumableState,
+          pendingAdmissionFallback: {
+            fromModel: "x".repeat(MAX_CHECKPOINT_FALLBACK_TEXT_BYTES + 1),
+            toModel: "gemini-flash",
+            reason: "provider_fallback_ladder",
+          },
+        },
+      }),
+    ).toThrowError(/exceeds 4096 UTF-8 bytes/);
+  });
+
+  it("round-trips the current writer slice through the event reader and restore", () => {
+    const source = buildInitialTurnState(mkCtx(), {
+      role: "user",
+      content: "resume this turn",
+    });
+    source.editorToolCallsAdmitted = 3;
+    source.pendingAdmissionFallback = {
+      fromModel: "grok-4.5",
+      toModel: "gemini-3.1-pro",
+      fromProvider: "grok",
+      toProvider: "gemini",
+      reason: "provider_fallback_ladder",
+    };
+    const event: TurnCheckpointEvent = {
+      ...legacyCheckpoint("a".repeat(64)),
+      checkpointVersion: 3,
+      toolResultIntegrityVersion: 1,
+      resumableState: toCheckpointSlice(source),
+    } as TurnCheckpointEvent;
+
+    const wirePayload: unknown = JSON.parse(JSON.stringify(event));
+    const readable = readTurnCheckpoint(wirePayload);
+    expect(readable).toMatchObject({ version: 3, sourceVersion: 3 });
+    if (readable.version !== 3) throw new Error("checkpoint is not v3");
+
+    const restored = buildInitialTurnState(mkCtx(), {
+      role: "user",
+      content: "resume this turn",
+    });
+    restoreFromCheckpoint(restored, readable.checkpoint.resumableState);
+    expect(restored.editorToolCallsAdmitted).toBe(3);
+    expect(restored.pendingAdmissionFallback).toEqual(
+      source.pendingAdmissionFallback,
+    );
+  });
+
+  it("keeps each checkpoint-slice parser strict after decomposition", () => {
+    const legacy = legacyCheckpoint("a".repeat(64));
+    const resumableState = legacy.resumableState as Record<string, unknown>;
+    const invalidStates: Array<{
+      readonly state: Record<string, unknown>;
+      readonly reason: RegExp;
+    }> = [
+      {
+        state: { ...resumableState, turnCount: -1 },
+        reason: /turnCount must be a non-negative safe integer/,
+      },
+      {
+        state: { ...resumableState, planToolRequiredRetryCount: -1 },
+        reason:
+          /planToolRequiredRetryCount must be a non-negative safe integer/,
+      },
+      {
+        state: { ...resumableState, editorToolCallsAdmitted: -1 },
+        reason: /editorToolCallsAdmitted must be a non-negative safe integer/,
+      },
+      {
+        state: { ...resumableState, modelSampleResumePrompt: "retry_anyway" },
+        reason: /modelSampleResumePrompt is invalid/,
+      },
+      {
+        state: { ...resumableState, taskBudgetRemaining: -1 },
+        reason: /taskBudgetRemaining must be a non-negative safe integer/,
+      },
+      {
+        state: {
+          ...resumableState,
+          pendingBudgetDecision: {
+            kind: "continue",
+            remaining: 1,
+            extra: true,
+          },
+        },
+        reason: /pendingBudgetDecision contains unversioned fields/,
+      },
+      {
+        state: {
+          ...resumableState,
+          autoCompactTracking: {
+            compacted: false,
+            consecutiveFailures: 0,
+            turnCounter: 1,
+            turnId: "turn-1",
+            extra: true,
+          },
+        },
+        reason: /autoCompactTracking contains unversioned fields/,
+      },
+      {
+        state: {
+          ...resumableState,
+          transition: { reason: "resume", extra: true },
+        },
+        reason: /transition contains unversioned fields/,
+      },
+    ];
+
+    for (const invalid of invalidStates) {
+      expect(() =>
+        readTurnCheckpoint({
+          ...legacy,
+          checkpointVersion: 3,
+          toolResultIntegrityVersion: 1,
+          resumableState: invalid.state,
+        }),
+      ).toThrowError(invalid.reason);
+    }
   });
 
   it("rejects checkpoint sequence zero for every readable version", () => {
@@ -174,7 +381,7 @@ describe("durable checkpoint v2 reader", () => {
       "upgrade-alpha",
     );
     const history = responseHistory(upgraded);
-    const checkpoint = v2Checkpoint(upgraded);
+    const checkpoint = v3Checkpoint(upgraded);
     expect(
       validateCheckpointPrefixV2({
         checkpoint,
@@ -214,7 +421,7 @@ describe("durable checkpoint v2 reader", () => {
     );
     expect(
       validateCheckpointPrefixV2({
-        checkpoint: v2Checkpoint(upgraded),
+        checkpoint: v3Checkpoint(upgraded),
         expectedRunId: "checkpoint-pair-v1",
         messages: responseHistory(upgraded),
         projection,
@@ -240,7 +447,7 @@ describe("durable checkpoint v2 reader", () => {
 
     expect(
       validateCheckpointPrefixV2({
-        checkpoint: v2Checkpoint(upgraded),
+        checkpoint: v3Checkpoint(upgraded),
         expectedRunId: "checkpoint-pair-v1",
         messages: malformed as unknown as ResponseItem[],
         projection,
@@ -269,7 +476,10 @@ describe("durable checkpoint v2 reader", () => {
       history.every((item) => isCanonicalRolloutPayload("response_item", item)),
     ).toBe(true);
     const checkpoint = checkpointForHistory(history);
-    const validate = (messages: readonly ResponseItem[], projectionId: string) =>
+    const validate = (
+      messages: readonly ResponseItem[],
+      projectionId: string,
+    ) =>
       validateCheckpointPrefixV2({
         checkpoint,
         expectedRunId: "checkpoint-authority-run",
@@ -287,7 +497,9 @@ describe("durable checkpoint v2 reader", () => {
     const unsupportedMetadata = unsupportedReader[0]!
       .agentInvocation as unknown as Record<string, unknown>;
     unsupportedMetadata.minimumReaderVersion = 2;
-    expect(validate(unsupportedReader, "authority-future-reader")).toMatchObject({
+    expect(
+      validate(unsupportedReader, "authority-future-reader"),
+    ).toMatchObject({
       status: "invalid",
       failure: { code: "checkpoint_response_shape_invalid" },
     });
@@ -300,8 +512,11 @@ describe("durable checkpoint v2 reader", () => {
     });
 
     const metadataStripped = structuredClone(history);
-    delete (metadataStripped[2] as { agentInvocation?: unknown }).agentInvocation;
-    expect(validate(metadataStripped, "authority-metadata-stripped")).toMatchObject({
+    delete (metadataStripped[2] as { agentInvocation?: unknown })
+      .agentInvocation;
+    expect(
+      validate(metadataStripped, "authority-metadata-stripped"),
+    ).toMatchObject({
       status: "invalid",
       failure: { code: "agent_invocation_integrity_failure" },
     });
@@ -311,7 +526,9 @@ describe("durable checkpoint v2 reader", () => {
       ...contentBitFlip[2]!,
       content: `${String(contentBitFlip[2]!.content)} `,
     };
-    expect(validate(contentBitFlip, "authority-content-bit-flip")).toMatchObject({
+    expect(
+      validate(contentBitFlip, "authority-content-bit-flip"),
+    ).toMatchObject({
       status: "invalid",
       failure: { code: "checkpoint_response_shape_invalid" },
     });
@@ -373,7 +590,7 @@ describe("durable checkpoint v2 reader", () => {
     );
     expect(
       validateCheckpointPrefixV2({
-        checkpoint: v2Checkpoint(upgraded),
+        checkpoint: v3Checkpoint(upgraded),
         expectedRunId: "checkpoint-pair-v1",
         messages: withResponseExtension as ResponseItem[],
         projection,
@@ -398,7 +615,7 @@ describe("durable checkpoint v2 reader", () => {
     );
     expect(
       validateCheckpointPrefixV2({
-        checkpoint: v2Checkpoint(upgraded),
+        checkpoint: v3Checkpoint(upgraded),
         expectedRunId: "checkpoint-pair-v1",
         messages: withCallExtension as ResponseItem[],
         projection,
@@ -505,8 +722,217 @@ describe("durable checkpoint v2 reader", () => {
 });
 
 describe("legacy durable checkpoint upgrade planner", () => {
-  it("cuts the live rollout writer over to schema v3", () => {
-    expect(ROLLOUT_SCHEMA_VERSION).toBe(3);
+  it("cuts the live rollout writer over to schema v4", () => {
+    expect(ROLLOUT_SCHEMA_VERSION).toBe(4);
+  });
+
+  it("promotes the known version-2 writer extension to checkpoint v3 in rollout schema v4", () => {
+    const source: RolloutItem[] = [
+      {
+        type: "session_meta",
+        payload: {
+          sessionId: "extended-v2-run",
+          timestamp: "2026-08-31T00:00:00.000Z",
+          cwd: "/workspace",
+          originator: "test",
+          agencVersion: "0.17.0",
+          rolloutSchemaVersion: 2,
+        },
+      },
+      checkpointItem({
+        ...legacyCheckpoint(computeCheckpointPrefixHashV2([], 0)),
+        checkpointVersion: 2,
+        toolResultIntegrityVersion: 1,
+        resumableState: {
+          turnCount: 1,
+          recoveryReentryCount: 0,
+          maxOutputTokensRecoveryCount: 0,
+          continuationNudgeCount: 0,
+          stopHookBlockingCount: 0,
+          editorToolCallsAdmitted: 2,
+          pendingAdmissionFallback: {
+            fromModel: "grok-4.5",
+            toModel: "gemini-3.1-pro",
+            reason: "provider_fallback_ladder",
+          },
+        },
+      } as unknown as TurnCheckpointEvent),
+    ];
+    const before = JSON.stringify(source);
+
+    const outcome = planLegacyDurableCheckpointUpgrade({
+      items: source,
+      runId: "extended-v2-run",
+      projection,
+      projectionId: "extended-v2-plan",
+      sourceKey: "extended-v2",
+    });
+
+    expect(outcome).toMatchObject({
+      status: "planned",
+      plan: {
+        sourceSchemaVersion: 2,
+        targetSchemaVersion: 4,
+        checkpointsUpgraded: 1,
+        checkpointsValidated: 1,
+        changed: true,
+      },
+    });
+    if (outcome.status !== "planned") throw new Error("upgrade failed");
+    expect(v3Checkpoint(outcome.plan.upgradedItems)).toMatchObject({
+      checkpointVersion: 3,
+      resumableState: {
+        editorToolCallsAdmitted: 2,
+        pendingAdmissionFallback: {
+          fromModel: "grok-4.5",
+          toModel: "gemini-3.1-pro",
+        },
+      },
+    });
+    expect(JSON.stringify(source)).toBe(before);
+  });
+
+  it("atomically plans schema-v3 compaction history and extended-v2 checkpoints for schema v4", () => {
+    const history: ToolResultIntegrityResponseItem[] = [
+      { role: "user", content: "preserve this prefix" },
+    ];
+    const checkpoint = checkpointForHistory(history);
+    const extendedCheckpoint = {
+      ...checkpoint,
+      resumableState: {
+        ...checkpoint.resumableState,
+        editorToolCallsAdmitted: 2,
+        pendingAdmissionFallback: {
+          fromModel: "grok-4.5",
+          toModel: "gemini-3.1-pro",
+          fromProvider: "grok",
+          toProvider: "gemini",
+          reason: "provider_fallback_ladder",
+        },
+      },
+    } as unknown as TurnCheckpointEvent;
+    const compactionFailure: RolloutItem = {
+      type: "compaction_failed",
+      payload: {
+        format_version: 1,
+        minimum_reader_runtime: "0.14.0",
+        attempt_id: "schema3-compaction-attempt",
+        recorded_at_ms: 1_785_451_200_000,
+        source_sha256: "1".repeat(64),
+        history_digest: "2".repeat(64),
+        reason: "provider_timeout",
+        detail_digest: "3".repeat(64),
+      },
+    };
+    const source: RolloutItem[] = [
+      {
+        type: "session_meta",
+        payload: {
+          sessionId: "schema3-run",
+          timestamp: "2026-08-31T00:00:00.000Z",
+          cwd: "/workspace",
+          originator: "test",
+          agencVersion: "0.17.0",
+          rolloutSchemaVersion: 3,
+        },
+      },
+      { type: "response_item", payload: history[0]! },
+      checkpointItem(extendedCheckpoint),
+      compactionFailure,
+    ];
+    const sourceBefore = JSON.stringify(source);
+
+    const outcome = planLegacyDurableCheckpointUpgrade({
+      items: source,
+      runId: "schema3-run",
+      projection,
+      projectionId: "schema3-plan",
+      sourceKey: "schema3-rollout",
+    });
+
+    expect(outcome).toMatchObject({
+      status: "planned",
+      plan: {
+        sourceSchemaVersion: 3,
+        targetSchemaVersion: 4,
+        changed: true,
+        checkpointsUpgraded: 1,
+        checkpointsValidated: 1,
+      },
+    });
+    if (outcome.status !== "planned") throw new Error("upgrade failed");
+    expect(outcome.plan.upgradedItems[0]).toMatchObject({
+      type: "session_meta",
+      payload: { rolloutSchemaVersion: 4 },
+    });
+    expect(v3Checkpoint(outcome.plan.upgradedItems)).toMatchObject({
+      checkpointVersion: 3,
+      resumableState: {
+        editorToolCallsAdmitted: 2,
+        pendingAdmissionFallback: {
+          fromProvider: "grok",
+          toProvider: "gemini",
+        },
+      },
+    });
+    expect(outcome.plan.upgradedItems[3]).toEqual(compactionFailure);
+    expect(JSON.stringify(source)).toBe(sourceBefore);
+  });
+
+  it("keeps rollout schema and checkpoint versions one-to-one", () => {
+    const v2Checkpoint = checkpointForHistory([]);
+    const v3Checkpoint = currentCheckpointForHistory([]);
+    const metadata = (rolloutSchemaVersion: number): RolloutItem => ({
+      type: "session_meta",
+      payload: {
+        sessionId: "version-pair-run",
+        timestamp: "2026-08-31T00:00:00.000Z",
+        cwd: "/workspace",
+        originator: "test",
+        agencVersion: "0.17.0",
+        rolloutSchemaVersion,
+      },
+    });
+    const plan = (items: RolloutItem[], projectionId: string) =>
+      planLegacyDurableCheckpointUpgrade({
+        items,
+        runId: "version-pair-run",
+        projection,
+        projectionId,
+        sourceKey: projectionId,
+      });
+
+    expect(
+      plan(
+        [metadata(3), checkpointItem(v3Checkpoint)],
+        "schema3-checkpoint3",
+      ),
+    ).toMatchObject({
+      status: "invalid",
+      failure: { code: "rollout_schema_mixed", itemIndex: 1 },
+    });
+    expect(
+      plan(
+        [metadata(4), checkpointItem(v2Checkpoint)],
+        "schema4-checkpoint2",
+      ),
+    ).toMatchObject({
+      status: "invalid",
+      failure: { code: "rollout_schema_mixed", itemIndex: 1 },
+    });
+    expect(
+      plan(
+        [
+          metadata(4),
+          checkpointItem(v3Checkpoint),
+          checkpointItem(v2Checkpoint),
+        ],
+        "schema4-mixed-checkpoints",
+      ),
+    ).toMatchObject({
+      status: "invalid",
+      failure: { code: "rollout_schema_mixed", itemIndex: 2 },
+    });
   });
 
   it("makes equal-length fixture substitutions produce distinct v2 identities", () => {
@@ -546,8 +972,8 @@ describe("legacy durable checkpoint upgrade planner", () => {
     expect(alphaTool?.toolResultIntegrity?.original.digest).not.toBe(
       omegaTool?.toolResultIntegrity?.original.digest,
     );
-    expect(v2Checkpoint(alpha.plan.upgradedItems).prefixHash).not.toBe(
-      v2Checkpoint(omega.plan.upgradedItems).prefixHash,
+    expect(v3Checkpoint(alpha.plan.upgradedItems).prefixHash).not.toBe(
+      v3Checkpoint(omega.plan.upgradedItems).prefixHash,
     );
     expect(alpha.plan).toMatchObject({
       changed: true,
@@ -613,7 +1039,7 @@ describe("legacy durable checkpoint upgrade planner", () => {
     expect(planned.plan.sessionMetaPromotionRequired).toBe(false);
     expect(planned.plan.upgradedItems[0]).toMatchObject({
       type: "session_meta",
-      payload: { rolloutSchemaVersion: 2 },
+      payload: { rolloutSchemaVersion: 4 },
     });
     expect(source[0]).toMatchObject({
       type: "session_meta",
@@ -1127,16 +1553,16 @@ function responseHistory(
   );
 }
 
-function v2Checkpoint(
+function v3Checkpoint(
   items: ReadonlyArray<RolloutItem>,
-): TurnCheckpointV2Event {
+): TurnCheckpointV3Event {
   for (const item of items) {
     if (
       item.type === "event_msg" &&
       item.payload.msg.type === "turn_checkpoint"
     ) {
       const readable = readTurnCheckpoint(item.payload.msg.payload);
-      if (readable.version !== 2) throw new Error("checkpoint is not v2");
+      if (readable.version !== 3) throw new Error("checkpoint is not v3");
       return readable.checkpoint;
     }
   }
@@ -1153,6 +1579,24 @@ function checkpointForHistory(
     persistedMessageCount: history.length,
   });
   if (readable.version !== 2) throw new Error("checkpoint is not v2");
+  return readable.checkpoint;
+}
+
+function currentCheckpointForHistory(
+  history: ReadonlyArray<ToolResultIntegrityResponseItem>,
+): TurnCheckpointV3Event {
+  const state = buildInitialTurnState(mkCtx(), {
+    role: "user",
+    content: "resume this turn",
+  });
+  const readable = readTurnCheckpoint({
+    ...legacyCheckpoint(computeCheckpointPrefixHashV2(history, history.length)),
+    checkpointVersion: 3,
+    toolResultIntegrityVersion: 1,
+    persistedMessageCount: history.length,
+    resumableState: toCheckpointSlice(state),
+  });
+  if (readable.version !== 3) throw new Error("checkpoint is not v3");
   return readable.checkpoint;
 }
 

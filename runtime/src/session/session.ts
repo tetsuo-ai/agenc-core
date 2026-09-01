@@ -34,6 +34,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   AsyncLock,
   AsyncQueue,
@@ -47,7 +48,10 @@ import {
   type McpManagerLike,
 } from "../mcp-client/tui-connections.js";
 import type { MCPServerConnection } from "../services/mcp/types.js";
-import { ProviderHttpClient } from "../llm/client.js";
+import {
+  ProviderHttpClient,
+  type ProviderHttpContinuationSnapshot,
+} from "../llm/client.js";
 import { isFactoryProvider } from "../llm/provider.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type { LLMProvider } from "../llm/types.js";
@@ -1519,6 +1523,52 @@ export interface AppliedProviderSwitchResult {
   readonly reason?: string;
 }
 
+export type ProviderSwitchTransactionOutcome =
+  | {
+      readonly status: "applied";
+      readonly provider: string;
+      readonly model: string;
+    }
+  | {
+      readonly status: "clean-rejection";
+      readonly reason: string;
+    }
+  | {
+      readonly status: "terminal-failure";
+      readonly reason: string;
+    };
+
+interface ProviderClientContinuationSnapshot {
+  readonly client: ProviderHttpClient;
+  readonly continuation: ProviderHttpContinuationSnapshot;
+}
+
+interface ProviderSwitchPublicationSnapshot {
+  readonly binding: ProviderBinding;
+  readonly sessionConfiguration: SessionConfiguration;
+  readonly config: Config;
+  readonly modelInfo: ModelInfo;
+  readonly clientContinuations: readonly ProviderClientContinuationSnapshot[];
+}
+
+function providerBindingRestoresSnapshot(
+  current: ProviderBinding,
+  expected: ProviderBinding,
+): boolean {
+  return (
+    current.provider === expected.provider &&
+    current.model === expected.model &&
+    current.instance === expected.instance &&
+    isDeepStrictEqual(current.factoryOptions, expected.factoryOptions)
+  );
+}
+
+function providerSwitchFailureReason(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message.length > 0
+    ? error.message
+    : fallback;
+}
+
 function capManagedOpenRouterModelInfo(modelInfo: ModelInfo): ModelInfo {
   return {
     ...modelInfo,
@@ -2338,6 +2388,7 @@ export class Session {
   pendingProviderSwitch: PendingProviderSwitch | null = null;
   private preparedPendingProviderSwitch: PreparedSessionProviderSwitch | null =
     null;
+  private providerSwitchTerminalFenceReason: string | null = null;
 
   /**
    * T11 W3: active worktree binding for the slash-command adapters.
@@ -2858,6 +2909,7 @@ export class Session {
   }
 
   newDefaultTurnWithSubId(subId: string): TurnContext {
+    this.assertProviderSwitchTransactionHealthy();
     return buildDefaultTurnWithSubId(this, subId);
   }
 
@@ -2869,32 +2921,312 @@ export class Session {
     subId: string,
     configOverrides?: Partial<Config>,
   ): TurnContext {
+    this.assertProviderSwitchTransactionHealthy();
     return buildTurnWithSubId(this, subId, configOverrides);
   }
 
-  async consumePendingProviderSwitch(): Promise<AppliedProviderSwitchResult> {
-    const pending = this.pendingProviderSwitch;
-    if (!pending) {
-      return { applied: false, reason: "no pending provider switch" };
+  private assertProviderSwitchTransactionHealthy(): void {
+    if (this.providerSwitchTerminalFenceReason === null) return;
+    throw new Error(
+      `session is fenced after an incomplete provider switch transaction: ${this.providerSwitchTerminalFenceReason}`,
+    );
+  }
+
+  private clearOwnedProviderSwitch(pending: PendingProviderSwitch): void {
+    if (this.pendingProviderSwitch !== pending) return;
+    this.pendingProviderSwitch = null;
+    this.preparedPendingProviderSwitch = null;
+  }
+
+  private emitProviderSwitchRejection(reason: string): void {
+    this.emit({
+      id: this.nextInternalSubId(),
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "provider_switch_rejected",
+          message: `provider switch rejected: ${reason}`,
+        },
+      },
+    });
+  }
+
+  private terminalFenceProviderSwitch(reason: string): void {
+    this.providerSwitchTerminalFenceReason ??= reason;
+    try {
+      this.emit({
+        id: this.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "provider_switch_terminal_fence",
+            message: `session fenced after provider switch rollback failed: ${reason}`,
+          },
+        },
+      });
+    } catch {
+      // The in-memory fence is authoritative even if warning persistence fails.
+    }
+  }
+
+  private captureProviderSwitchPublicationSnapshot(
+    liveBinding: ProviderBinding,
+    prepared: PreparedSessionProviderSwitch,
+    state: SessionState,
+  ): ProviderSwitchPublicationSnapshot {
+    const clients = new Set<ProviderHttpClient>();
+    const previousClient = readProviderHttpClient(liveBinding.instance);
+    const nextClient = readProviderHttpClient(
+      prepared.provider.binding.instance,
+    );
+    if (previousClient !== undefined) clients.add(previousClient);
+    if (nextClient !== undefined) clients.add(nextClient);
+    return {
+      binding: liveBinding,
+      sessionConfiguration: state.sessionConfiguration,
+      config: this.config,
+      modelInfo: this.modelInfo,
+      clientContinuations: [...clients].map((client) => ({
+        client,
+        continuation: client.snapshotResponsesContinuation(),
+      })),
+    };
+  }
+
+  private providerSwitchSnapshotIsRestored(
+    snapshot: ProviderSwitchPublicationSnapshot,
+    pending: PendingProviderSwitch,
+  ): boolean {
+    return (
+      providerBindingRestoresSnapshot(
+        this.providerService.current(),
+        snapshot.binding,
+      ) &&
+      this.state.unsafePeek().sessionConfiguration ===
+        snapshot.sessionConfiguration &&
+      this.config === snapshot.config &&
+      this.modelInfo === snapshot.modelInfo &&
+      this.pendingProviderSwitch !== pending &&
+      snapshot.clientContinuations.every(({ client, continuation }) =>
+        isDeepStrictEqual(client.snapshotResponsesContinuation(), continuation),
+      )
+    );
+  }
+
+  private async compensateProviderSwitchPublication(
+    pending: PendingProviderSwitch,
+    prepared: PreparedSessionProviderSwitch,
+    snapshot: ProviderSwitchPublicationSnapshot,
+  ): Promise<string | null> {
+    const rollbackErrors: string[] = [];
+    try {
+      await this.state.with((state) => {
+        const currentBinding = this.providerService.current();
+        if (
+          currentBinding !== prepared.provider.binding &&
+          currentBinding !== snapshot.binding
+        ) {
+          rollbackErrors.push(
+            "the live provider changed before rollback could acquire session state",
+          );
+          return;
+        }
+        if (currentBinding === prepared.provider.binding) {
+          try {
+            this.providerService.restoreAfterFailedCommit(
+              prepared.provider.binding,
+              snapshot.binding,
+            );
+          } catch (error) {
+            rollbackErrors.push(
+              providerSwitchFailureReason(error, "provider rollback failed"),
+            );
+          }
+        }
+        try {
+          state.sessionConfiguration = snapshot.sessionConfiguration;
+        } catch (error) {
+          rollbackErrors.push(
+            providerSwitchFailureReason(
+              error,
+              "session configuration rollback failed",
+            ),
+          );
+        }
+        try {
+          (this as { modelInfo: ModelInfo }).modelInfo = snapshot.modelInfo;
+          (this as { config: Config }).config = snapshot.config;
+        } catch (error) {
+          rollbackErrors.push(
+            providerSwitchFailureReason(error, "turn metadata rollback failed"),
+          );
+        }
+        for (const { client, continuation } of snapshot.clientContinuations) {
+          try {
+            client.restoreResponsesContinuation(continuation);
+          } catch (error) {
+            rollbackErrors.push(
+              providerSwitchFailureReason(
+                error,
+                "provider continuation rollback failed",
+              ),
+            );
+          }
+        }
+      });
+    } catch (error) {
+      rollbackErrors.push(
+        providerSwitchFailureReason(error, "provider rollback lock failed"),
+      );
+    }
+    this.clearOwnedProviderSwitch(pending);
+    if (rollbackErrors.length === 0) {
+      try {
+        if (this.providerSwitchSnapshotIsRestored(snapshot, pending)) {
+          return null;
+        }
+      } catch (error) {
+        rollbackErrors.push(
+          providerSwitchFailureReason(
+            error,
+            "provider rollback verification failed",
+          ),
+        );
+      }
+    }
+    if (rollbackErrors.length === 0) {
+      rollbackErrors.push(
+        "the restored provider state did not match its snapshot",
+      );
+    }
+    return rollbackErrors.join("; ");
+  }
+
+  private async publishPreparedProviderSwitch(
+    pending: PendingProviderSwitch,
+    prepared: PreparedSessionProviderSwitch,
+  ): Promise<ProviderSwitchTransactionOutcome> {
+    const providerService = this.providerService;
+    let snapshot: ProviderSwitchPublicationSnapshot | undefined;
+    let committedBinding: ProviderBinding | undefined;
+    try {
+      await this.state.with((state) => {
+        if (this.pendingProviderSwitch !== pending) {
+          throw new Error("provider switch superseded");
+        }
+        const liveBinding = providerService.current();
+        if (prepared.provider.expectedRevision !== liveBinding.revision) {
+          throw new Error(
+            "provider switch rejected because the session provider changed while the switch was being prepared",
+          );
+        }
+        const publicationSnapshot =
+          this.captureProviderSwitchPublicationSnapshot(
+            liveBinding,
+            prepared,
+            state,
+          );
+        snapshot = publicationSnapshot;
+        committedBinding = providerService.commit(prepared.provider);
+        state.sessionConfiguration = {
+          ...publicationSnapshot.sessionConfiguration,
+          provider: { slug: prepared.provider.binding.provider },
+          collaborationMode: {
+            ...publicationSnapshot.sessionConfiguration.collaborationMode,
+            model: prepared.provider.binding.model,
+          },
+          baseInstructions: prepared.baseInstructions,
+        } as unknown as SessionConfiguration;
+        (this as { modelInfo: ModelInfo }).modelInfo = prepared.modelInfo;
+        (this as { config: Config }).config = {
+          ...publicationSnapshot.config,
+          model: prepared.provider.binding.model,
+        };
+        const previousClient = readProviderHttpClient(
+          publicationSnapshot.binding.instance,
+        );
+        const nextClient = readProviderHttpClient(
+          prepared.provider.binding.instance,
+        );
+        previousClient?.resetResponsesContinuation();
+        nextClient?.bindConversationId(this.conversationId);
+        nextClient?.resetResponsesContinuation();
+        this.clearOwnedProviderSwitch(pending);
+      });
+    } catch (error) {
+      const reason = providerSwitchFailureReason(
+        error,
+        "provider switch publication failed",
+      );
+      const publicationObserved =
+        snapshot !== undefined &&
+        (committedBinding !== undefined ||
+          providerService.current() !== snapshot.binding ||
+          this.state.unsafePeek().sessionConfiguration !==
+            snapshot.sessionConfiguration ||
+          this.config !== snapshot.config ||
+          this.modelInfo !== snapshot.modelInfo);
+      if (!publicationObserved || snapshot === undefined) {
+        this.clearOwnedProviderSwitch(pending);
+        this.emitProviderSwitchRejection(reason);
+        return { status: "clean-rejection", reason };
+      }
+      const rollbackFailure = await this.compensateProviderSwitchPublication(
+        pending,
+        prepared,
+        snapshot,
+      );
+      if (rollbackFailure === null) {
+        this.emitProviderSwitchRejection(reason);
+        return { status: "clean-rejection", reason };
+      }
+      const terminalReason = `${reason}; rollback failed: ${rollbackFailure}`;
+      this.terminalFenceProviderSwitch(terminalReason);
+      return { status: "terminal-failure", reason: terminalReason };
     }
 
-    const peeked = this.state.unsafePeek() as {
-      sessionConfiguration?: {
-        provider?: { slug?: string };
-        collaborationMode?: { model?: string };
-      };
+    if (snapshot === undefined) {
+      const reason = "provider switch publication completed without a snapshot";
+      this.terminalFenceProviderSwitch(reason);
+      return { status: "terminal-failure", reason };
+    }
+    try {
+      this.emit({
+        id: this.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "provider_switched",
+            message: `provider ${snapshot.binding.provider} -> ${prepared.provider.binding.provider}; model ${snapshot.binding.model} -> ${prepared.provider.binding.model}; previous_response_id reset${
+              pending.profile ? `; profile ${pending.profile}` : ""
+            }`,
+          },
+        },
+      });
+    } catch {
+      // The committed transaction remains authoritative if warning persistence fails.
+    }
+    return {
+      status: "applied",
+      provider: prepared.provider.binding.provider,
+      model: prepared.provider.binding.model,
     };
-    const providerService = this.providerService;
-    const liveBinding = providerService.current();
-    const liveProvider = liveBinding.instance;
-    const beforeModel =
-      liveBinding.model ??
-      peeked.sessionConfiguration?.collaborationMode?.model ??
-      "unknown";
-    const beforeProvider =
-      liveBinding.provider ??
-      peeked.sessionConfiguration?.provider?.slug ??
-      "unknown";
+  }
+
+  async consumePendingProviderSwitchTransaction(): Promise<ProviderSwitchTransactionOutcome> {
+    if (this.providerSwitchTerminalFenceReason !== null) {
+      return {
+        status: "terminal-failure",
+        reason: this.providerSwitchTerminalFenceReason,
+      };
+    }
+    const pending = this.pendingProviderSwitch;
+    if (!pending) {
+      return {
+        status: "clean-rejection",
+        reason: "no pending provider switch",
+      };
+    }
 
     let prepared: PreparedSessionProviderSwitch;
     try {
@@ -2904,88 +3236,43 @@ export class Session {
           ? retained
           : await this.prepareProviderSwitch(pending);
     } catch (error) {
-      const reason =
-        error instanceof Error && error.message.length > 0
-          ? error.message
-          : "provider rebuild failed";
-      if (this.pendingProviderSwitch === pending) {
-        this.setPendingProviderSwitch(null);
-      }
-      this.emit({
-        id: this.nextInternalSubId(),
-        msg: {
-          type: "warning",
-          payload: {
-            cause: "provider_switch_rejected",
-            message: `provider switch rejected: ${reason}`,
-          },
-        },
-      });
-      return { applied: false, reason };
+      const reason = providerSwitchFailureReason(
+        error,
+        "provider rebuild failed",
+      );
+      this.clearOwnedProviderSwitch(pending);
+      this.emitProviderSwitchRejection(reason);
+      return { status: "clean-rejection", reason };
     }
     if (this.pendingProviderSwitch !== pending) {
-      return { applied: false, reason: "provider switch superseded" };
-    }
-    const preparedSwitch = prepared.provider;
-    const previousClient = readProviderHttpClient(liveProvider);
-    const nextClient = readProviderHttpClient(preparedSwitch.binding.instance);
-
-    providerService.commit(preparedSwitch);
-    await this.state.with((state) => {
-      const cfg = (
-        state as {
-          sessionConfiguration?: {
-            provider?: unknown;
-            collaborationMode?: { model?: string };
-            baseInstructions?: string;
-          };
-        }
-      ).sessionConfiguration;
-      if (!cfg) return;
-      cfg.provider = { slug: preparedSwitch.binding.provider };
-      cfg.collaborationMode = {
-        ...(cfg.collaborationMode ?? {}),
-        model: preparedSwitch.binding.model,
+      return {
+        status: "clean-rejection",
+        reason: "provider switch superseded",
       };
-      cfg.baseInstructions = prepared.baseInstructions;
-    });
-
-    (this as { modelInfo: ModelInfo }).modelInfo = prepared.modelInfo;
-    (this as { config: Config }).config = {
-      ...this.config,
-      model: preparedSwitch.binding.model,
-    };
-    previousClient?.resetResponsesContinuation();
-    nextClient?.bindConversationId(this.conversationId);
-    nextClient?.resetResponsesContinuation();
-
-    if (this.pendingProviderSwitch === pending) {
-      this.setPendingProviderSwitch(null);
     }
+    return this.publishPreparedProviderSwitch(pending, prepared);
+  }
 
-    this.emit({
-      id: this.nextInternalSubId(),
-      msg: {
-        type: "warning",
-        payload: {
-          cause: "provider_switched",
-          message: `provider ${beforeProvider} -> ${preparedSwitch.binding.provider}; model ${beforeModel} -> ${preparedSwitch.binding.model}; previous_response_id reset${
-            pending.profile ? `; profile ${pending.profile}` : ""
-          }`,
-        },
-      },
-    });
-    return {
-      applied: true,
-      provider: preparedSwitch.binding.provider,
-      model: preparedSwitch.binding.model,
-    };
+  async consumePendingProviderSwitch(): Promise<AppliedProviderSwitchResult> {
+    const outcome = await this.consumePendingProviderSwitchTransaction();
+    if (outcome.status === "applied") {
+      return {
+        applied: true,
+        provider: outcome.provider,
+        model: outcome.model,
+      };
+    }
+    if (outcome.status === "terminal-failure") {
+      this.assertProviderSwitchTransactionHealthy();
+    }
+    return { applied: false, reason: outcome.reason };
   }
 
   async *runTurn(
     userMessage: string | readonly LLMContentPart[],
     opts: SessionRunTurnOptions = {},
   ): AsyncGenerator<PhaseEvent, Terminal> {
+    this.assertProviderSwitchTransactionHealthy();
     this.rolloutStore?.assertCompactionProjectionReady();
     if (
       opts.ctx !== undefined &&

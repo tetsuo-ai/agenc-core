@@ -12,9 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeMessagesForAPI } from "../../src/llm/messages.js";
 import type { LLMMessage } from "../../src/llm/types.js";
 import { resumeTurnFromCheckpoint } from "../../src/conversation/thread-manager.js";
-import {
-  computeCheckpointPrefixHashV2,
-} from "../../src/session/durable-checkpoint-reader.js";
+import { computeCheckpointPrefixHashV2 } from "../../src/session/durable-checkpoint-reader.js";
 import {
   currentBuildId,
   resetBuildIdForTestingOnly,
@@ -39,7 +37,10 @@ import {
   type ResponseItem,
   type RolloutItem,
 } from "../../src/session/rollout-item.js";
-import { rewriteAtomically } from "../../src/session/session-store.js";
+import {
+  rewriteAtomically,
+  SessionLock,
+} from "../../src/session/session-store.js";
 import {
   createToolResultIntegrity,
   verifyToolResultIntegrity,
@@ -185,7 +186,8 @@ describe("A3b history and provider boundary", () => {
     });
     const parsed = parseRolloutLine(serialized);
     expect(parsed?.type).toBe("response_item");
-    if (parsed?.type !== "response_item") throw new Error("response item missing");
+    if (parsed?.type !== "response_item")
+      throw new Error("response item missing");
     expect(
       verifyToolResultIntegrity({
         integrity: parsed.payload.toolResultIntegrity,
@@ -289,6 +291,122 @@ describe("A3b raw checkpoint validation", () => {
       reason: "integrity-deferred",
     });
     expect(runTurn).not.toHaveBeenCalled();
+  });
+
+  it("keeps legacy replay deferred with a version-neutral upgrade reason", async () => {
+    const legacyRollout = v2OrphanRollout("legacy-turn", []).map((item) => {
+      if (
+        item.type !== "event_msg" ||
+        item.payload.msg.type !== "turn_checkpoint"
+      ) {
+        return item;
+      }
+      const {
+        checkpointVersion: _checkpointVersion,
+        toolResultIntegrityVersion: _toolResultIntegrityVersion,
+        ...legacyPayload
+      } = item.payload.msg.payload;
+      return {
+        ...item,
+        payload: {
+          ...item.payload,
+          msg: { type: "turn_checkpoint" as const, payload: legacyPayload },
+        },
+      };
+    });
+    const reconstruction = reconstructFromRollout(legacyRollout);
+    expect(reconstruction.resumableTurns[0]).toMatchObject({
+      checkpointIntegrityStatus: "deferred",
+      checkpointIntegrityReason:
+        "legacy checkpoint requires an atomic checkpoint upgrade before replay",
+    });
+
+    const runTurn = vi.fn();
+    const session = {
+      config: { durableTurns: { resume: { onRestart: true } } },
+      runTurn,
+    } as unknown as Session;
+    await expect(
+      resumeTurnFromCheckpoint(session, reconstruction),
+    ).resolves.toEqual({ resumed: false, reason: "integrity-deferred" });
+    expect(runTurn).not.toHaveBeenCalled();
+  });
+
+  it("releases the resume lease after success, provider failure, and a thrown resumed turn", async () => {
+    const successPath = join(cwd, "resume-success.jsonl");
+    const successTurnId = "lease-success-turn";
+    const successRunTurn = vi.fn(async function* () {
+      return { reason: "completed" as const };
+    });
+    const successSession = {
+      config: durableResumeConfig(),
+      rolloutStore: { rolloutPath: successPath },
+      services: { registry: { tools: [] } },
+      runTurn: successRunTurn,
+    } as unknown as Session;
+
+    await expect(
+      resumeTurnFromCheckpoint(
+        successSession,
+        validOrphanReconstruction(successTurnId),
+      ),
+    ).resolves.toEqual({ resumed: true });
+    expectResumeLeaseAvailable(successPath, successTurnId);
+
+    const failurePath = join(cwd, "resume-provider-failure.jsonl");
+    const failureTurnId = "lease-provider-failure-turn";
+    const failureRunTurn = vi.fn();
+    const failureSession = {
+      config: durableResumeConfig(),
+      rolloutStore: { rolloutPath: failurePath },
+      pendingProviderSwitch: null,
+      providerBinding: { provider: "grok", model: "grok-4.5" },
+      prepareProviderSwitch: vi
+        .fn()
+        .mockRejectedValue(new Error("provider unavailable")),
+      stagePreparedProviderSwitch: vi.fn(),
+      consumePendingProviderSwitch: vi.fn(),
+      emit: vi.fn(),
+      nextInternalSubId: () => "lease-provider-failure",
+      services: { registry: { tools: [] } },
+      runTurn: failureRunTurn,
+    } as unknown as Session;
+
+    await expect(
+      resumeTurnFromCheckpoint(
+        failureSession,
+        validOrphanReconstruction(failureTurnId, {
+          fromModel: "grok-4.5",
+          toModel: "gpt-5",
+          toProvider: "openai",
+          reason: "provider_fallback_ladder",
+        }),
+      ),
+    ).resolves.toEqual({
+      resumed: false,
+      reason: "provider-restore-failed",
+    });
+    expect(failureRunTurn).not.toHaveBeenCalled();
+    expectResumeLeaseAvailable(failurePath, failureTurnId);
+
+    const thrownPath = join(cwd, "resume-thrown.jsonl");
+    const thrownTurnId = "lease-thrown-turn";
+    const thrownSession = {
+      config: durableResumeConfig(),
+      rolloutStore: { rolloutPath: thrownPath },
+      services: { registry: { tools: [] } },
+      runTurn: vi.fn(async function* () {
+        throw new Error("resumed turn failed");
+      }),
+    } as unknown as Session;
+
+    await expect(
+      resumeTurnFromCheckpoint(
+        thrownSession,
+        validOrphanReconstruction(thrownTurnId),
+      ),
+    ).rejects.toThrow("resumed turn failed");
+    expectResumeLeaseAvailable(thrownPath, thrownTurnId);
   });
 });
 
@@ -396,7 +514,9 @@ describe("A3b shared ID-paired validator cutover", () => {
       expect.objectContaining<ToolPairHistoryBlockedError>({
         outcome: expect.objectContaining({
           status: "invalid",
-          failure: expect.objectContaining({ code: "tool_result_without_call" }),
+          failure: expect.objectContaining({
+            code: "tool_result_without_call",
+          }),
         }),
       }),
     );
@@ -420,7 +540,9 @@ describe("A3b shared ID-paired validator cutover", () => {
     const nextAssistant: ResponseItem = {
       role: "assistant",
       content: "",
-      toolCalls: [{ id: "ordered-call-next", name: "FileRead", arguments: "{}" }],
+      toolCalls: [
+        { id: "ordered-call-next", name: "FileRead", arguments: "{}" },
+      ],
     };
     const nextTool: ResponseItem = {
       role: "tool",
@@ -434,7 +556,10 @@ describe("A3b shared ID-paired validator cutover", () => {
       }),
     };
     expect(() => {
-      restarted.appendRollout({ type: "response_item", payload: nextAssistant });
+      restarted.appendRollout({
+        type: "response_item",
+        payload: nextAssistant,
+      });
       restarted.appendRollout({ type: "response_item", payload: nextTool });
     }).not.toThrow();
     expect(() =>
@@ -497,7 +622,7 @@ describe("A3b atomic legacy publication", () => {
     expect(
       upgradedItems
         .filter((item) => item.type === "session_meta")
-        .every((item) => item.payload.rolloutSchemaVersion === 2),
+        .every((item) => item.payload.rolloutSchemaVersion === 4),
     ).toBe(true);
     expect(
       upgradedItems.find(
@@ -509,7 +634,7 @@ describe("A3b atomic legacy publication", () => {
       payload: {
         msg: {
           payload: {
-            checkpointVersion: 2,
+            checkpointVersion: 3,
             toolResultIntegrityVersion: 1,
           },
         },
@@ -539,7 +664,131 @@ describe("A3b atomic legacy publication", () => {
     restarted.close();
   });
 
-  it("fails a malformed legacy sequence closed without publishing v2", () => {
+  it("leaves schema v3 byte-identical on a pre-publish crash and publishes schema v4 once", () => {
+    const sessionId = "atomic-schema3-upgrade-session";
+    const meta = {
+      sessionId,
+      timestamp: "2026-08-31T00:00:00.000Z",
+      cwd,
+      originator: "a3b-test",
+      agencVersion: "0.17.0",
+    } as const;
+    const seed = openRollout({ sessionId, meta });
+    const rolloutPath = seed.rolloutPath;
+    seed.close();
+
+    const schema3Items: RolloutItem[] = [
+      {
+        type: "session_meta",
+        payload: { ...meta, rolloutSchemaVersion: 3 },
+      },
+      ...v2OrphanRollout("schema3-turn", []).map((item) =>
+        item.type === "event_msg"
+          ? {
+              ...item,
+              payload: {
+                ...item.payload,
+                eventId: `event:${item.payload.seq}`,
+              },
+            }
+          : item,
+      ),
+    ];
+    const schema3Bytes = schema3Items.map(serializeRolloutItem).join("");
+    rewriteAtomically(rolloutPath, schema3Bytes);
+
+    const crashed = new RolloutStore({
+      cwd,
+      sessionId,
+      agencVersion: "0.17.0",
+      sessionTempRoot: tmpdir(),
+      resume: true,
+      autoStartScheduler: false,
+      beforeCheckpointUpgradePublishForTestingOnly: () => {
+        throw new Error("simulated schema3 upgrade crash");
+      },
+    });
+    expect(() => crashed.open(meta)).toThrow("simulated schema3 upgrade crash");
+    expect(readFileSync(rolloutPath, "utf8")).toBe(schema3Bytes);
+    expect(existsSync(`${rolloutPath}.tmp`)).toBe(false);
+
+    const upgraded = openRollout({ sessionId, meta, resume: true });
+    expect(upgraded.readAll()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "session_meta",
+          payload: expect.objectContaining({ rolloutSchemaVersion: 4 }),
+        }),
+        expect.objectContaining({
+          type: "event_msg",
+          payload: expect.objectContaining({
+            msg: expect.objectContaining({
+              type: "turn_checkpoint",
+              payload: expect.objectContaining({ checkpointVersion: 3 }),
+            }),
+          }),
+        }),
+      ]),
+    );
+    const upgradedBytes = readFileSync(rolloutPath, "utf8");
+    upgraded.close();
+
+    const restarted = openRollout({ sessionId, meta, resume: true });
+    expect(readFileSync(rolloutPath, "utf8")).toBe(upgradedBytes);
+    restarted.close();
+  });
+
+  it("rejects checkpoint v2 inside rollout schema v4 without rewriting it", () => {
+    const sessionId = "mixed-schema4-session";
+    const meta = {
+      sessionId,
+      timestamp: "2026-08-31T00:00:00.000Z",
+      cwd,
+      originator: "a3b-test",
+      agencVersion: "0.17.0",
+    } as const;
+    const seed = openRollout({ sessionId, meta });
+    const rolloutPath = seed.rolloutPath;
+    seed.close();
+    const mixedItems: RolloutItem[] = [
+      {
+        type: "session_meta",
+        payload: { ...meta, rolloutSchemaVersion: 4 },
+      },
+      ...v2OrphanRollout("mixed-schema4-turn", []).map((item) =>
+        item.type === "event_msg"
+          ? {
+              ...item,
+              payload: {
+                ...item.payload,
+                eventId: `event:${item.payload.seq}`,
+              },
+            }
+          : item,
+      ),
+    ];
+    const mixedBytes = mixedItems.map(serializeRolloutItem).join("");
+    rewriteAtomically(rolloutPath, mixedBytes);
+
+    const mixed = new RolloutStore({
+      cwd,
+      sessionId,
+      agencVersion: "0.17.0",
+      sessionTempRoot: tmpdir(),
+      resume: true,
+      autoStartScheduler: false,
+    });
+    expect(() => mixed.open(meta)).toThrowError(
+      expect.objectContaining<DurableCheckpointUpgradeBlockedError>({
+        outcome: expect.objectContaining({
+          code: "rollout_schema_mixed",
+        }),
+      }),
+    );
+    expect(readFileSync(rolloutPath, "utf8")).toBe(mixedBytes);
+  });
+
+  it("fails a malformed legacy sequence closed without publishing an upgrade", () => {
     const sessionId = "invalid-upgrade-session";
     const meta = {
       sessionId,
@@ -557,7 +806,8 @@ describe("A3b atomic legacy publication", () => {
         item.payload.msg.type !== "turn_checkpoint",
     );
     const assistantIndex = fixture.findIndex(
-      (item) => item.type === "response_item" && item.payload.role === "assistant",
+      (item) =>
+        item.type === "response_item" && item.payload.role === "assistant",
     );
     const resultIndex = fixture.findIndex(
       (item) => item.type === "response_item" && item.payload.role === "tool",
@@ -646,6 +896,68 @@ function v2OrphanRollout(
       },
     },
   ];
+}
+
+function durableResumeConfig(): Record<string, unknown> {
+  return {
+    durableTurns: {
+      resume: {
+        onRestart: true,
+        requireLease: true,
+        buildPinning: false,
+      },
+    },
+  };
+}
+
+function validOrphanReconstruction(
+  turnId: string,
+  pendingAdmissionFallback?: {
+    readonly fromModel: string;
+    readonly toModel: string;
+    readonly toProvider: string;
+    readonly reason: "provider_fallback_ladder";
+  },
+): ReturnType<typeof reconstructFromRollout> {
+  const items = v2OrphanRollout(turnId, []).map((item) => {
+    if (
+      pendingAdmissionFallback === undefined ||
+      item.type !== "event_msg" ||
+      item.payload.msg.type !== "turn_checkpoint"
+    ) {
+      return item;
+    }
+    return {
+      ...item,
+      payload: {
+        ...item.payload,
+        msg: {
+          type: "turn_checkpoint" as const,
+          payload: {
+            ...item.payload.msg.payload,
+            resumableState: {
+              ...item.payload.msg.payload.resumableState,
+              pendingAdmissionFallback,
+            },
+          },
+        },
+      },
+    };
+  });
+  return reconstructFromRollout(items, {
+    checkpointProjection: {
+      projection: new StateToolPairProjection(driver),
+      projectionId: `lease-${turnId}`,
+      sourceKey: `lease-${turnId}`,
+      expectedRunId: "lease-run",
+    },
+  });
+}
+
+function expectResumeLeaseAvailable(rolloutPath: string, turnId: string): void {
+  const lease = new SessionLock(`${rolloutPath}.resume-${turnId}.lock`);
+  expect(() => lease.acquire()).not.toThrow();
+  lease.release();
 }
 
 function openRollout(params: {

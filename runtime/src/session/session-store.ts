@@ -348,6 +348,15 @@ export class SchemaMismatchError extends Error {
   }
 }
 
+export function assertRolloutSchemaVersionSupported(
+  actualVersion: number,
+  supportedVersion: number,
+): void {
+  if (actualVersion > supportedVersion) {
+    throw new SchemaMismatchError(actualVersion, supportedVersion);
+  }
+}
+
 /**
  * Validate the first line of a rollout file is a well-formed
  * SessionMetaLine and its schemaVersion ≤ runtime version. Returns
@@ -394,12 +403,10 @@ export function readAndValidateSchemaVersionFd(
     return null;
   }
   const meta = parsed.payload;
-  if (meta.rolloutSchemaVersion > ROLLOUT_SCHEMA_VERSION) {
-    throw new SchemaMismatchError(
-      meta.rolloutSchemaVersion,
-      ROLLOUT_SCHEMA_VERSION,
-    );
-  }
+  assertRolloutSchemaVersionSupported(
+    meta.rolloutSchemaVersion,
+    ROLLOUT_SCHEMA_VERSION,
+  );
   return meta;
 }
 
@@ -3062,8 +3069,9 @@ export class SessionStore {
   /**
    * Upgrade the legacy-visible first session_meta gate under this store's
    * lifetime-exclusive rollout lease. Older runtimes inspect this first row
-   * before parsing any later item, so a C2 writer must publish schema 3 here
-   * before it can append a compaction intent.
+   * before parsing any later item. The complete migration publishes its
+   * header and transformed rows together; compaction may use this narrower
+   * gate only after the durable-checkpoint migration has completed.
    */
   upgradeCanonicalSchemaHeader(targetVersion: number): void {
     if (

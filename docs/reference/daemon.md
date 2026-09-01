@@ -615,7 +615,20 @@ Before the next admission, the runtime fsyncs a turn checkpoint containing the
 ordinal. Runtime-only nudge and empty-response prompts are named in that
 checkpoint and reconstructed after a crash. A resumed in-flight sample
 therefore uses the exact same id and request, while a new physical sample gets
-a new id.
+a new id. `durableTurns.checkpoint.minIntervalMs` cannot defer that forced
+write. Disabling `durableTurns.checkpoint.enabled` skips the write. Restart
+then reports `no-checkpoint` and opens a fresh turn.
+
+In-turn resume (`resumeTurnFromCheckpoint`) is separate from epoch reopen.
+Startup continues the orphaned turn only when every gate passes: resume is
+enabled, the checkpoint is readable and unterminated, the build pin matches,
+the prefix hash matches, the single-writer lease is valid, and any pending
+fallback provider/model route can be restored as one binding. A clean
+rejection may start a fresh turn only after the original provider state is
+proven intact or restored. An unproven partial publication halts startup and
+fences the session from new turns. The existing checkpoint remains unchanged.
+See the canonical
+[resume outcome table](../design/durable-runs-effects-events.md#resume-outcomes).
 
 See [execution-admission-kernel.md](../design/execution-admission-kernel.md#model-step-identity).
 
@@ -626,6 +639,8 @@ See [execution-admission-kernel.md](../design/execution-admission-kernel.md#mode
 | `AdmissionStepConflictError` | The same `(runId, stepId)` was acquired with different normalized admission data. Compare the `stepId`, provider, model, token bounds, and budget identity in `agenc run evidence`. |
 | A crash-resumed nudge or empty-response retry conflicts | Verify the latest turn checkpoint contains the expected sample ordinal and resume-prompt kind. |
 | A later model call lacks `sample-<ordinal>` | Check whether the prior response was terminal. Only successful nonterminal responses reserve another physical sample. |
+| Resume never continues after `durableTurns.resume.onRestart = false` | This is expected. Startup reports `disabled` and opens a fresh turn. |
+| Resume reports `provider-restore-failed` | Check that `pendingAdmissionFallback` records both the target provider and model, and that the target provider can be prepared. Then check the [resume outcome](../design/durable-runs-effects-events.md#resume-outcomes): clean rejection permits a fresh turn only after proven restoration; terminal failure fences the session and halts startup. |
 
 ## What the daemon owns
 
@@ -689,6 +704,9 @@ agenc budget status    # configured policy only; usage is agenc run status <run-
 | Model admission step id           | `runtime/src/phases/stream-model.ts`                |
 | Continuation nudge                | `runtime/src/phases/continuation-nudge.ts`          |
 | Mid-turn compact continue         | `runtime/src/session/run-turn.ts`                   |
+| Forced pre-admission checkpoint   | `runtime/src/session/run-turn.ts` (`emitTurnCheckpoint`) |
+| Checkpoint slice and reader       | `runtime/src/session/turn-state.ts`, `runtime/src/session/durable-checkpoint-reader.ts` |
+| In-turn resume gates              | `runtime/src/conversation/thread-manager.ts` (`resumeTurnFromCheckpoint`) |
 | Step uniqueness / conflict        | `runtime/src/state/execution-admission.ts`          |
 | Launcher autostart                | `packages/agenc/src/launcher.mjs`                   |
 | SDK connect                       | `packages/agenc-sdk/src/socket.ts`                  |

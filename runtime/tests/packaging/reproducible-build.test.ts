@@ -247,6 +247,13 @@ describe("reproducible install and release contract", () => {
       join(REPO_ROOT, ".github/workflows/platform-tests.yml"),
       "utf8",
     );
+    const prWorkflow = readFileSync(
+      join(REPO_ROOT, ".github/workflows/pr-fast.yml"),
+      "utf8",
+    );
+    const rootPackage = JSON.parse(
+      readFileSync(join(REPO_ROOT, "package.json"), "utf8"),
+    ) as { scripts?: Record<string, string> };
     const ciRequiredGates = readFileSync(
       join(REPO_ROOT, "docs/ci-required-gates.md"),
       "utf8",
@@ -268,7 +275,18 @@ describe("reproducible install and release contract", () => {
     expect(normalizedCiRequiredGates).not.toContain(
       "three passing Windows tests in two files",
     );
-    expect(workflow).toContain("\n  pull_request:");
+    expect(workflow).not.toContain("\n  pull_request:");
+    expect(workflow).toContain("\n  workflow_dispatch:");
+    expect(prWorkflow).toContain("\n  pull_request:");
+    expect(prWorkflow).toContain('      - "docs/**"');
+    expect(prWorkflow).toContain('      - "README.md"');
+    expect(prWorkflow).not.toContain('      - "**/*.md"');
+    expect(prWorkflow).toContain('npm run test:fast -- --base "$BASE_SHA"');
+    expect(rootPackage.scripts?.["test:fast"]).toBe(
+      "node scripts/run-fast-checks.mjs",
+    );
+    expect(prWorkflow).not.toContain("linux-kernel-sandbox");
+    expect(prWorkflow).not.toContain("check:tui-runtime-startup");
     expect(workflow).toContain("\n  linux-kernel-sandbox:");
     expect(workflow).toContain("\n  powershell:");
     expect(workflow).toContain("\n  neovim:");
