@@ -31,7 +31,7 @@ configured-hook engine (`runtime/src/hooks/engine/discovery.ts`):
 | `SubagentStop` | Spawned agent finished; matcher `agent_type` |
 | `SessionEnd` | Session shutdown (fire-and-forget) |
 | `Notification` | Waiting on user (e.g. permission); fire-and-forget |
-| `Stop` | Before concluding the response |
+| `Stop` | Before concluding the response. A throw emits `error` (`stop_hook_threw`) and does not close the turn; see [daemon.md](daemon.md#mid-turn-error-events) |
 | `StopFailure` | Turn ended on API error |
 | `PreCompact` | Before context compaction. Can add focus instructions; cannot restore tools. |
 | `PostCompact` | After a durable `compaction_committed`. Observes the replacement; cannot change the catalog. |

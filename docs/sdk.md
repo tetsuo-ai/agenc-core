@@ -171,7 +171,10 @@ Usage/cost: after the turn ends the SDK fetches `session.snapshot` and puts
 `tokenUsage` on the result (`includeUsage: false` to skip). That aggregate is
 the live session total. Historical per-turn duration and usage after attach
 or restore come from `session.transcript.v2` `turnResults` (see
-[daemon.md](reference/daemon.md#closed-turn-results)). Raw daemon snapshot
+[daemon.md](reference/daemon.md#closed-turn-results)). Current rebuilds
+emit only `completed` / `aborted`; a mid-turn `error` does not close
+the turn ([mid-turn error events](reference/daemon.md#mid-turn-error-events)).
+Raw daemon snapshot
 responses may carry an additive `contextBreakdown` object, but the current
 public SDK type does not expose a named field. `SessionTranscriptV2Result`
 does name optional `turnResults`, with each row typed as

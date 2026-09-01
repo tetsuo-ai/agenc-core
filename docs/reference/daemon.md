@@ -322,6 +322,7 @@ Constraints:
 - `error` events are telemetry, not terminals. A stop-hook throw or similar
   mid-turn failure does not close the accumulator; later `token_count` and
   the real `turn_complete` / `turn_aborted` still belong to that turn.
+  Operator contract: [mid-turn error events](#mid-turn-error-events).
 - `durationMs` is not emitted for aborted turns.
 - A `token_count` with no finite non-negative token field is ignored,
   including its model/provider. Cache, reasoning, and search counters
@@ -369,6 +370,41 @@ history.
 | Markers missing after compact or rewind | Expected. Rows exist only for turns that closed after the current `historyEpoch`. |
 | Duration missing on a completed turn | The terminal lacked `durationMs` and a usable `completedAt - startedAt` pair. |
 | Tokens or model missing | No enclosed `token_count` carried a finite non-negative token field. |
+| `turnResults` shows `outcome: "errored"` with truncated tokens | Current rebuilds never emit `errored`. A mid-turn `error` is telemetry. If you still see that row, the connected daemon predates this contract. See [mid-turn error events](#mid-turn-error-events). |
+| Idempotent retry returns `duplicateState: "completed"` with `terminal.code = 1` while `turn_complete` is still in the journal | Same cause. Current `messageTerminalFromEvent` waits for `turn_complete` (`code: 0`) or `turn_aborted` (`code: 130`). |
+
+#### Mid-turn error events
+
+`error` is session telemetry, not a turn closer. Three sites share that
+contract in `runtime/src/app-server/background-agent-runner.ts`:
+
+| Site | Role |
+| --- | --- |
+| `sessionTranscriptV2FromRollout` | Rebuilds `turnResults` for attach and restore |
+| `messageTerminalFromEvent` | Persisted-thread idempotent retry after crash |
+| `messageTerminalFromDaemonEvent` | Live submission terminal on the daemon bridge |
+
+Only `turn_complete` and `turn_aborted` close the open turn. A Stop hook
+throw (`cause: "stop_hook_threw"`) and similar mid-turn `error` events
+leave the accumulator open. Later `token_count` and `agent_message`
+events still belong to that turn. The real terminal then writes
+`outcome: "completed"` or `"aborted"` with the summed usage.
+
+Example: `error` at sequence 13, more tokens at 14, assistant text at
+15, `turn_complete` at 16. The rebuilt row is `completed` at
+`committedSequence: 16`, not an early `errored` cut at 13.
+
+A persisted retry of the same `clientMessageId` / `messageId` after
+reopen reports `disposition: "duplicate"`, `duplicateState: "completed"`,
+and `terminal: { code: 0, message: <lastAgentMessage> }` when
+`turn_complete` is still ahead in the journal. Before this contract,
+that retry used the first `error` and returned `terminal.code = 1`
+while the turn had actually finished.
+
+The protocol union on `SessionTranscriptV2TurnResult.outcome` still
+lists `"errored"` (`runtime/src/app-server/protocol/index.ts` and the
+generated SDK mirror). Current writers never emit it. Treat `errored`
+as a historical / older-daemon value, not as a live closer.
 
 `session.resolveToolCall` accepts two strict protocol-1.0 request shapes. The
 earlier `{ sessionId, toolCallId?, reviewer? }` shape can settle only a legacy
