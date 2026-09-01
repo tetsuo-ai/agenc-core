@@ -315,10 +315,11 @@ it as well. `[budget]`, `[heartbeat]`, `[browser]`, and
 `[transaction_guard]` apply their documented subsystem defaults when absent.
 
 On a keep-alive (interactive) session, hitting `max_turns`,
-`max_budget_usd`, or the no-progress backstop ends that **turn** only.
-Send another prompt; the session stays running. One-shot
-(`--print` / `--no-tui`) agents still fail the run. See
-[daemon.md](daemon.md#interactive-session-survival).
+`max_budget_usd`, the no-progress backstop, or `compact_failed` ends
+that **turn** only. Send another prompt; the session stays running.
+One-shot (`--print` / `--no-tui`) agents still fail the run. See
+[daemon.md](daemon.md#interactive-session-survival). Compact skip:
+[daemon.md](daemon.md#compact-skip-stays-per-turn).
 
 ## Similar names that are not duplicate authorities
 

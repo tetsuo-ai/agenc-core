@@ -114,11 +114,12 @@ fresh model-turn/run context, timeout controller, `turn_id`, and per-turn tool
 count; a tool-using task may make multiple provider calls. The originating
 `task_id` is the spawn/assignment call correlation ID.
 
-A keep-alive worker that hits `max_turns`, `max_budget_usd`, or the
-no-progress backstop returns to `idle` after that turn. The same bounded
-stop on a one-shot / compatibility agent is terminal (`errored` /
-failed run). Interactive session survival:
-[daemon.md](daemon.md#interactive-session-survival).
+A keep-alive worker that hits `max_turns`, `max_budget_usd`, the
+no-progress backstop, or `compact_failed` returns to `idle` after that
+turn. The same bounded stop on a one-shot / compatibility agent is
+terminal (`errored` / failed run). Interactive session survival:
+[daemon.md](daemon.md#interactive-session-survival). Compact skip:
+[daemon.md](daemon.md#compact-skip-stays-per-turn).
 
 ### Assignment admission and passive messages
 

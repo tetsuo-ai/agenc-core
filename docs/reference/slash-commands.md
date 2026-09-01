@@ -136,7 +136,10 @@ this command. They are not interchangeable on the automatic path: the
 mid-turn outer gate consults only `AGENC_DISABLE_AUTO_COMPACT`. Setting
 `AGENC_DISABLE_COMPACT` alone still trips that gate, then
 `autoCompactIfNeeded` returns `wasCompacted: false`, and the turn ends
-with `mid_turn_compact_skipped`. Env catalog: [env.md](env.md).
+with `mid_turn_compact_skipped` (`warning` cause `mid_turn_compact_failed`,
+`stopReason: "compact_failed"`). Keep-alive sessions stay promptable.
+Env catalog: [env.md](env.md). Session survival:
+[daemon.md](daemon.md#compact-skip-stays-per-turn).
 
 Successful transactional compaction reports its durable attempt ID in the
 command result. A replacement-history boundary also displays the ID, so it

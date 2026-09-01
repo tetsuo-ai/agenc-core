@@ -115,9 +115,11 @@ active turn.
   never shorten, the durable rollback-retention window.
 - Setting `AGENC_DISABLE_COMPACT` without `AGENC_DISABLE_AUTO_COMPACT` does
   not skip mid-turn compact. The outer condition can still be met, auto returns
-  `wasCompacted: false`, and the sampling loop emits event cause
+  `wasCompacted: false`, and the sampling loop emits `warning` cause
   `mid_turn_compact_failed`. Its message starts with
-  `mid_turn_compact_skipped`.
+  `mid_turn_compact_skipped`. The turn stop is `compact_failed`. Keep-alive
+  sessions stay promptable; one-shot / `--print` still fail the run. See
+  [daemon.md](daemon.md#compact-skip-stays-per-turn).
 
 ---
 

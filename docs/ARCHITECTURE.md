@@ -6,7 +6,7 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 
 | Doc                                                                              | Scope                                                                        |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| [`reference/daemon.md`](reference/daemon.md)                                     | Daemon lifecycle, deferred first messages, bypass consent, bounded-stop and prompt-hook-block survival, admission step identity |
+| [`reference/daemon.md`](reference/daemon.md)                                     | Daemon lifecycle, deferred first messages, bypass consent, bounded-stop, compact-skip, and prompt-hook-block survival, admission step identity |
 | [`reference/providers.md`](reference/providers.md)                               | Built-in providers, defaults, credentials, local context-window probes, Responses continuation |
 | [`reference/autonomy.md`](reference/autonomy.md)                                 | Budget, heartbeat, cron delivery (pinned webhook destinations), hooks HTTP   |
 | [`reference/mcp.md`](reference/mcp.md)                                           | Outbound/inbound MCP, plugin-declared servers, model-facing inputSchema sanitization, Landlock stdio failures |
@@ -103,7 +103,7 @@ Everything past the launcher lives in the single runtime workspace
 | `tasks/`                                                                 | Task UI / task store surface for agent work items                                                                                                                                                                                              |
 | `file-watcher/`                                                          | Workspace file-watch helpers                                                                                                                                                                                                                   |
 | `transport/`                                                             | Transport fallback ladder                                                                                                                                                                                                                      |
-| `services/`                                                              | Wire-layer helpers the turn loop and daemon call: LLM API adapters (`api/`), compaction (`compact/`), LSP, Ledger wallet CLI, code prediction, MCP transport glue, memory extraction, autoFix post-tool hook, heap watchdog. [CP-0006](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main) documents compact thresholds, disable flags, and admitted summary calls. Most of these are not separate CLIs.                                                                                                                                                                                |
+| `services/`                                                              | Wire-layer helpers the turn loop and daemon call: LLM API adapters (`api/`), compaction (`compact/`), LSP, Ledger wallet CLI, code prediction, MCP transport glue, memory extraction, autoFix post-tool hook, heap watchdog. [CP-0006](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main) documents compact thresholds, disable flags, admitted summary calls, and [compact-skip session survival](design/critical-path/0006-compaction-transaction.md#compact-skip-session-survival). Most of these are not separate CLIs.                                                                                                                                                                                |
 | `search/`                                                                | Persistent fuzzy file index used by `fs.fuzzy_search`                                                                                                                                                                                          |
 | `workspace/`                                                             | Editor mutation leases and topology fences for BUFFER (`workspace.editor.*`)                                                                                                                                                                   |
 | `contracts/`                                                             | Frozen run/admission/CSV/invocation types shared by daemon, SDK, and tests                                                                                                                                                                     |
@@ -394,7 +394,9 @@ session from new turns. The rejected checkpoint remains on disk. See the
 [checkpoint slice versions](design/durable-runs-effects-events.md#checkpoint-slice-versions),
 [recovery journal vs checkpoint reader](design/durable-runs-effects-events.md#recovery-journal-vs-checkpoint-reader),
 [execution-admission-kernel.md](design/execution-admission-kernel.md#model-step-identity),
-the [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main),
+the [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main)
+(mid-turn skip/throw is a per-turn `compact_failed` warning;
+[compact skip stays per-turn](reference/daemon.md#compact-skip-stays-per-turn)),
 and
 [durable-runs-effects-events.md](design/durable-runs-effects-events.md#in-turn-checkpoint-resume).
 

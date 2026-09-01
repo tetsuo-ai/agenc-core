@@ -537,9 +537,9 @@ current Ledger action is documented in
 ## Interactive session survival
 
 A keep-alive (interactive / desktop) session must stay promptable after
-a capped turn. Bounded stops (`no_progress`, `max_turns`, and
-`max_budget_usd`) complete the **turn** with an honest message and
-leave the run available. The daemon mapper used to promote those stops
+a capped turn. Bounded stops (`no_progress`, `max_turns`,
+`max_budget_usd`, and `compact_failed`) complete the **turn** with an
+honest message and leave the run available. The daemon mapper used to promote those stops
 to `run_error`, after which every later prompt answered
 `no longer running (status: error)` while the durable run might still
 be healthy underneath.
@@ -547,22 +547,63 @@ be healthy underneath.
 One-shot / `--print` / `--no-tui` agents still fail the run on a
 bounded stop: nobody is left to continue them.
 
-Mid-turn and pre-sampling compact skip-or-throw used to emit
-canonical `error` (`mid_turn_compact_failed` /
-`pre_sampling_compact_failed`) and yield `stopReason: "error"`. The
-live event-log bridge treated every `error` as run death, and the
-daemon mapper promoted `stopReason: "error"` to `run_error`, so a
-circuit-breaker skip or `AGENC_DISABLE_COMPACT=1` (outer gate still
-on) answered `no longer running (status: error)` after one turn.
-Those paths now emit `warning` with the same cause and yield
-`compact_failed`, which maps like a bounded stop. Legacy `type:
-"error"` records with those causes are remapped
-`statusProjection: "session_only"` on the live bridge.
-
 `TaskCreate` accepts a subject-only call. `description` defaults to the
 subject instead of failing validation. A model that retried a missing
 description used to walk into the no-progress backstop and brick the
 session.
+
+### Compact skip stays per-turn
+
+Mid-turn and pre-sampling compact skip-or-throw used to emit
+canonical `error` (`mid_turn_compact_failed` /
+`pre_sampling_compact_failed`) and yield `stopReason: "error"`. The
+live event-log bridge treated every `error` as run death
+(`#applyCanonicalEventBookkeeping` sets `active.status = "error"`),
+and `phaseEventToProgressEvent` mapped `stopReason: "error"` to
+`run_error`. A circuit-breaker skip or `AGENC_DISABLE_COMPACT=1`
+(outer gate still on) then answered
+`no longer running (status: error)` after one turn, even when the
+durable run was still healthy.
+
+Those paths now emit `warning` with the same cause and yield
+`stopReason: "compact_failed"`. `warning` is not a status event.
+The daemon mapper treats `compact_failed` like the other bounded
+stops (`no_progress`, `max_turns`, `max_budget_usd`):
+`turn_complete`, not `run_error`. The user-facing message prefers
+the compact error text (for a skip,
+`mid_turn_compact_skipped: lastSamplePromptTokens=<n> limit=<n>`).
+
+| Path | When the turn ends | Event |
+| --- | --- | --- |
+| Mid-turn sampling loop | Thrown compact **or** `autoCompactIfNeeded` returns `wasCompacted: false` after the outer token gate | `warning` cause `mid_turn_compact_failed` |
+| Pre-sampling | Thrown compact only. A no-op continues the turn. | `warning` cause `pre_sampling_compact_failed` |
+| Post-tool checkpoint | A no-op does **not** terminate. The loop continues to commit. | none |
+
+Keep-alive (interactive / desktop / `keepAlive` subagent) sessions
+stay promptable. A later `message.send` can start a new turn. One-shot
+/ `--print` / `--no-tui` agents still fail the run: nobody is left to
+continue them. `--autonomous` keepalive calls
+`setContextBlocked(true)` after `compact_failed` (same as hard
+`error`) and will not schedule another tick.
+
+Legacy-format `type: "error"` records with those two compact causes
+are remapped when they cross the live event-log bridge
+(`projectPerPromptRejectionAsSessionOnly` in
+`background-agent-runner.ts`). The daemon event gets
+`statusProjection: "session_only"`, so it skips run-status
+bookkeeping and does **not** produce `event.agent_status`. The
+allowlist is `SESSION_ONLY_ERROR_CAUSES`:
+`user_prompt_submit_hook_blocked`, `mid_turn_compact_failed`, and
+`pre_sampling_compact_failed`. Events seeded from an older persisted
+rollout remain outside the live bridge.
+
+The TUI already lists those compact causes as turn-outcome warnings
+(`USER_VISIBLE_WARNING_CAUSES` in `tui/session-transcript.ts`).
+`turn-compat` and `execAgentHook` surface `compact_failed` as an
+assistant API error / thrown hook error. That is a consumer-facing
+message, not daemon run death.
+
+See the [CP-0006 compact-skip contract](../design/critical-path/0006-compaction-transaction.md#compact-skip-session-survival).
 
 ### Prompt hook blocks stay per-prompt
 
@@ -592,8 +633,9 @@ gets `statusProjection: "session_only"`, so it skips run-status
 bookkeeping and does **not** produce `event.agent_status`. The rule
 applies to live events and the pre-attach buffer. Events seeded from an
 older persisted rollout remain outside the live bridge and its in-memory
-attach replay. The allowlist is only `user_prompt_submit_hook_blocked`;
-throw and stop were already warnings.
+attach replay. Hook throw and stop were already warnings. The same
+allowlist now also projects the compact-skip causes documented in
+[compact skip stays per-turn](#compact-skip-stays-per-turn).
 
 `agent.create` first-content blocks follow startup failure semantics.
 Start throws `PROMPT_BLOCKED`, shuts down the unpublished bootstrap,
@@ -651,6 +693,8 @@ See [execution-admission-kernel.md](../design/execution-admission-kernel.md#mode
 | --- | --- |
 | `PROMPT_BLOCKED` on `message.send` / `message.stream` | A `UserPromptSubmit` hook refused this prompt. The session should stay promptable. Confirm `agent.status` is not `error`, then send an allowed follow-up. See [hooks.md](hooks.md#userpromptsubmit). |
 | `no longer running (status: error)` right after a hook denial | Unexpected after the warning remap. Look for a real `type: "error"` without `cause: "user_prompt_submit_hook_blocked"`, or a one-shot / `--print` bounded stop. |
+| `no longer running (status: error)` after a compact skip or compact throw | Unexpected on a keep-alive session. Confirm the event is `warning` with `mid_turn_compact_failed` / `pre_sampling_compact_failed`, or a legacy `error` with `statusProjection: "session_only"`. One-shot / `--print` still fails the run. Autonomous keepalive ticks stop after `compact_failed` by design. |
+| Follow-up `message.send` after `mid_turn_compact_skipped` | Expected to start a new turn on a keep-alive session. The prior turn closed with `stopReason: "compact_failed"`. |
 | `AdmissionStepConflictError` | The same `(runId, stepId)` was acquired with different normalized admission data. Compare the `stepId`, provider, model, token bounds, and budget identity in `agenc run evidence`. |
 | A crash-resumed nudge or empty-response retry conflicts | Verify the latest turn checkpoint contains the expected sample ordinal and resume-prompt kind. |
 | A later model call lacks `sample-<ordinal>` | Check whether the prior response was terminal. Only successful nonterminal responses reserve another physical sample. |
@@ -716,6 +760,7 @@ agenc budget status    # configured policy only; usage is agenc run status <run-
 | Agent lifecycle                   | `runtime/src/app-server/agent-lifecycle.ts`         |
 | Background runs                   | `runtime/src/app-server/background-agent-runner.ts` |
 | Prompt-hook block projection      | `projectPerPromptRejectionAsSessionOnly` in `background-agent-runner.ts`; emit in `hooks/user-prompt-ingress.ts` |
+| Compact-skip session survival     | `emitCompactFailureWarning` / `compactFailedTurnComplete` in `session/run-turn.ts`; `SESSION_ONLY_ERROR_CAUSES` + `phaseEventToProgressEvent` in `background-agent-runner.ts` |
 | Local socket / Windows named pipe | `runtime/src/app-server/transport/unix-socket.ts`   |
 | Cookie auth                       | `runtime/src/app-server/transport/auth.ts`          |
 | Health                            | `runtime/src/app-server/health.ts`                  |
