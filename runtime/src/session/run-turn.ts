@@ -5018,10 +5018,23 @@ async function* runTurnKernelInner(
         yield editorRequestFailedTurnComplete(content, usage, underlying);
         return terminal;
       }
-      // T6 gap #119: error-terminated turn still completes the turn
-      // boundary for rollout reducers.
+      /*
+       * T6 gap #119: an error-terminated turn still closes the turn
+       * boundary for rollout reducers — but it must close it as what it
+       * is. Writing the success-shaped `turn_complete` made the durable
+       * record indistinguishable from a turn that finished, so a run
+       * killed by, say, `execution admission deny: context_window_exceeded`
+       * was replayed to clients as a completed turn whose final answer was
+       * the model's previous intent sentence. `turn_aborted` is the same
+       * boundary for every reducer that consumes one and carries the
+       * reason with it.
+       */
       await syncSessionState();
-      emitTurnComplete(lastContent);
+      emitTurnAborted(
+        underlying instanceof Error && underlying.message.trim().length > 0
+          ? underlying.message
+          : "turn failed",
+      );
       const terminal: Terminal = { reason: "completed", error: underlying };
       yield {
         type: "turn_complete",
