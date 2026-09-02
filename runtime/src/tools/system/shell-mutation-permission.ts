@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { resolveHomeContext } from "../../config/home.js";
 
 import {
   readToolRuntimeContext,
@@ -92,9 +93,20 @@ export function shellDeletionProtectedRoots(
   } catch {
     // A store without a resolvable home contributes nothing.
   }
-  const envHome = process.env.AGENC_HOME;
-  if (typeof envHome === "string" && envHome.trim().length > 0) {
-    roots.add(resolve(envHome.trim()));
+  // Without a session there is still a home to protect, and it is not always
+  // the one AGENC_HOME names: when the variable is unset the home is the
+  // platform default, which a raw env read leaves unguarded entirely. Resolve
+  // it through the canonical authority so this guard protects the same
+  // directory the rest of the runtime treats as home, rather than keeping a
+  // second interpretation of the variable here.
+  try {
+    const ambient = resolveHomeContext().path;
+    if (typeof ambient === "string" && ambient.trim().length > 0) {
+      roots.add(resolve(ambient.trim()));
+    }
+  } catch {
+    // A refused or unresolvable ambient home contributes nothing; the session
+    // root above still stands.
   }
   return [...roots];
 }
