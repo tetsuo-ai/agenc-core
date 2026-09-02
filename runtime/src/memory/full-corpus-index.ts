@@ -1209,7 +1209,22 @@ export class PersistentMemoryIndex {
   }
 
   #scheduleBackgroundRefresh(root: BoundRoot): void {
-    if (this.#closed || this.#backgroundRefreshes.has(root.rootId)) return;
+    // A watcher event is the other way in here, and it used to bypass the
+    // constructor's `backgroundRefresh` choice entirely: an index built with
+    // `backgroundRefresh: false` still started a background refresh loop the
+    // moment a file under one of its roots changed. That loop takes the same
+    // builder lease as a foreground writer, and `query()` correctly refuses a
+    // generation whose lease is held, so a caller that asked for no background
+    // work could still have a read answered with zero candidates. The option
+    // is checked here, at the single place background work is started, rather
+    // than only at the one call site in `refresh()`.
+    if (
+      this.#closed ||
+      !this.#backgroundRefreshEnabled ||
+      this.#backgroundRefreshes.has(root.rootId)
+    ) {
+      return;
+    }
     const controller = new AbortController();
     this.#backgroundRefreshes.set(root.rootId, controller);
     void this.#continueBackgroundRefresh(root, controller).finally(() => {
