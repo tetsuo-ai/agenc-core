@@ -185,14 +185,23 @@ describe("getPermissionsSection", () => {
     expect(out).toContain("Network access is enabled.");
   });
 
-  test("bypassPermissions mode → appends the autonomy note so the agent does not pause for approval", () => {
+  test("bypassPermissions mode → appends the autonomy note that waives tool prompts but not care", () => {
     const out = permissionsSection("bypassPermissions");
     expect(out).not.toBeNull();
-    expect(out).toContain("pre-authorized every action");
-    expect(out).toContain("do not pause to ask for confirmation");
+    expect(out).toContain("tool calls are pre-approved");
+    expect(out).toContain(
+      "do not pause for confirmation of local, reversible work",
+    );
+    // The note must not contradict the static "Executing actions with care"
+    // section or push the model past the end of a task.
+    expect(out).toContain("The rules in 'Executing actions with care' still apply");
+    expect(out).toContain("still need the user's explicit request");
+    expect(out).toContain("stop and report");
+    expect(out).not.toContain("do not stop to wait for the user");
+    expect(out).not.toContain("drive the task to completion");
     // Only bypass gets the autonomy note — other modes must not.
     expect(permissionsSection("default")).not.toContain(
-      "pre-authorized every action",
+      "tool calls are pre-approved",
     );
   });
 

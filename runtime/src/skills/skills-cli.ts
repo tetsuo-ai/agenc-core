@@ -160,6 +160,14 @@ export async function buildSkillsInventory(
     const key = `${row.origin}:${row.name}`;
     if (!rows.has(key)) rows.set(key, row);
   }
+  for (const truncated of snapshot.truncatedRoots) {
+    errors.push(
+      `${truncated.droppedCount} SKILL.md files under ${truncated.root} were not loaded: the per-root cap was reached after ${truncated.loadedCount}`,
+    );
+  }
+  for (const warning of snapshot.warnings) {
+    errors.push(`${warning.path}: ${warning.reason}`);
+  }
   try {
     const { getBundledSkills } = await import("./bundledSkills.js");
     for (const command of getBundledSkills()) {

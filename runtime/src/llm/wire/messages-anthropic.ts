@@ -121,48 +121,96 @@ function buildAnthropicStructuredOutputTool(
 export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER } from "./shared.js";
 import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER } from "./shared.js";
 
+interface SplitOptionSystemPrompt {
+  readonly staticHead: string;
+  readonly dynamicTail?: string;
+}
+
 /**
- * Build the Anthropic `system` block(s) for the option-supplied system prompt.
- *
  * gaphunt3 #5/#33: the assembled system prompt embeds
  * {@link SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER} between its static
  * (cross-turn-stable) head and its volatile tail (env timestamp, git branch,
- * MCP servers, …). Previously the whole string was emitted as one
- * `cache_control: ephemeral` block, so the per-turn timestamp in the tail
- * changed the cached prefix and busted the prompt cache on every turn. We now
- * split on the marker and place the cache breakpoint on the static head ONLY,
- * with the volatile tail as a separate uncached block. When the marker is
- * absent (most callers / system-role messages), behaviour is unchanged: a
- * single block, cached iff `applyCacheControl`.
+ * MCP servers, …). When the marker is absent (most callers), the whole prompt
+ * is the static head.
  */
-function buildOptionSystemBlocks(
+function splitOptionSystemPrompt(
   optionSystemPrompt: string,
-  applyCacheControl: boolean,
-): Array<Record<string, unknown>> {
-  const cacheControl = applyCacheControl
-    ? { cache_control: { type: "ephemeral" } }
-    : {};
+): SplitOptionSystemPrompt {
   const markerIndex = optionSystemPrompt.indexOf(
     SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER,
   );
-  if (markerIndex === -1) {
-    return [{ type: "text", text: optionSystemPrompt, ...cacheControl }];
-  }
+  if (markerIndex === -1) return { staticHead: optionSystemPrompt };
   const staticHead = optionSystemPrompt.slice(0, markerIndex).trimEnd();
   const dynamicTail = optionSystemPrompt
     .slice(markerIndex + SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER.length)
     .trimStart();
+  return {
+    staticHead,
+    ...(dynamicTail.length > 0 ? { dynamicTail } : {}),
+  };
+}
+
+/**
+ * Build the Anthropic `system` block(s) for the option-supplied system prompt.
+ *
+ * The cache breakpoint sits on the static head ONLY. Prompt caching matches
+ * byte prefixes, so the volatile tail must not sit anywhere before the
+ * conversation: as a second `system` block it invalidated every
+ * message-level breakpoint on each new turn, and the whole history was
+ * re-written to the cache instead of read from it. The tail therefore rides
+ * at the end of the request (see {@link buildAnthropicMessagesRequest}) and
+ * is emitted here, uncached, only when the request has no final user
+ * message to carry it (an assistant prefill), the placement the OpenAI and
+ * xAI wires already use.
+ */
+function buildOptionSystemBlocks(
+  split: SplitOptionSystemPrompt,
+  applyCacheControl: boolean,
+  tailInSystem: boolean,
+): Array<Record<string, unknown>> {
+  const cacheControl = applyCacheControl
+    ? { cache_control: { type: "ephemeral" } }
+    : {};
   const blocks: Array<Record<string, unknown>> = [];
-  if (staticHead.length > 0) {
-    blocks.push({ type: "text", text: staticHead, ...cacheControl });
+  if (split.staticHead.length > 0) {
+    blocks.push({ type: "text", text: split.staticHead, ...cacheControl });
   }
-  if (dynamicTail.length > 0) {
-    blocks.push({ type: "text", text: dynamicTail });
+  if (tailInSystem && split.dynamicTail !== undefined) {
+    blocks.push({ type: "text", text: split.dynamicTail });
   }
   if (blocks.length === 0) {
     blocks.push({ type: "text", text: "", ...cacheControl });
   }
   return blocks;
+}
+
+/**
+ * Append the volatile system-prompt tail to the final user message as a
+ * trailing `<system-reminder>` text block. The message's own blocks (and
+ * any cache breakpoint on its last one) stay where they are, so the tail
+ * lands after every breakpoint and never enters a cached prefix. Tool
+ * results keep their leading position, which the Messages API requires.
+ */
+function contentBlocksOf(content: unknown): Array<Record<string, unknown>> {
+  if (typeof content === "string") {
+    return content.length > 0 ? [{ type: "text", text: content }] : [];
+  }
+  if (Array.isArray(content)) {
+    return [...(content as Array<Record<string, unknown>>)];
+  }
+  return [];
+}
+
+function appendDynamicTailBlock(
+  message: Record<string, unknown>,
+  dynamicTail: string,
+): void {
+  const blocks = contentBlocksOf(message.content);
+  blocks.push({
+    type: "text",
+    text: `<system-reminder>\n${dynamicTail}\n</system-reminder>`,
+  });
+  message.content = blocks;
 }
 
 export function buildAnthropicMessagesRequest(
@@ -173,38 +221,12 @@ export function buildAnthropicMessagesRequest(
     message.role === "system" || message.role === "developer"
   );
   const optionSystemPrompt = input.options?.systemPrompt?.trim();
+  const optionSplit = optionSystemPrompt
+    ? splitOptionSystemPrompt(optionSystemPrompt)
+    : undefined;
   const systemMessageHasCacheControl = systemMessages.some((message) =>
     hasEphemeralCacheControl(message)
   );
-  const systemBlocks = [
-    ...(optionSystemPrompt
-      ? buildOptionSystemBlocks(
-        optionSystemPrompt,
-        !systemMessageHasCacheControl,
-      )
-      : []),
-    ...systemMessages.flatMap((message) => {
-      const normalized = normalizeAnthropicMessageContent(message);
-      if (typeof normalized === "string") {
-        return normalized.length > 0
-          ? [{
-            type: "text",
-            text: normalized,
-          }]
-          : [];
-      }
-      return normalized.filter((block) => block.type === "text");
-    }),
-  ];
-  const systemHasCacheControl = systemBlocks.some((block) =>
-    Object.prototype.hasOwnProperty.call(block, "cache_control")
-  );
-  const system =
-    systemBlocks.length === 0
-      ? ""
-      : systemHasCacheControl
-      ? systemBlocks
-      : systemBlocks.map((block) => String(block.text ?? "")).join("\n\n");
 
   const body: Record<string, unknown> = {
     model: input.model,
@@ -282,6 +304,47 @@ export function buildAnthropicMessagesRequest(
     max_tokens: input.maxTokens ?? 4096,
   };
 
+  const wireMessages = body.messages as Array<Record<string, unknown>>;
+  const lastWireMessage = wireMessages.at(-1);
+  const dynamicTail = optionSplit?.dynamicTail;
+  const tailOnLastUserMessage =
+    dynamicTail !== undefined && lastWireMessage?.role === "user";
+  if (tailOnLastUserMessage) {
+    appendDynamicTailBlock(lastWireMessage, dynamicTail);
+  }
+
+  const systemBlocks = [
+    ...(optionSplit
+      ? buildOptionSystemBlocks(
+        optionSplit,
+        !systemMessageHasCacheControl,
+        !tailOnLastUserMessage,
+      )
+      : []),
+    ...systemMessages.flatMap((message) => {
+      const normalized = normalizeAnthropicMessageContent(message);
+      if (typeof normalized === "string") {
+        return normalized.length > 0
+          ? [{
+            type: "text",
+            text: normalized,
+          }]
+          : [];
+      }
+      return normalized.filter((block) => block.type === "text");
+    }),
+  ];
+  const systemHasCacheControl = systemBlocks.some((block) =>
+    Object.prototype.hasOwnProperty.call(block, "cache_control")
+  );
+  let system: string | Array<Record<string, unknown>> = "";
+  if (systemHasCacheControl) {
+    system = systemBlocks;
+  } else if (systemBlocks.length > 0) {
+    system = systemBlocks
+      .map((block) => (typeof block.text === "string" ? block.text : ""))
+      .join("\n\n");
+  }
   if (system.length > 0) body.system = system;
   // Task 28: the Fable/Mythos 5 family removed sampling parameters —
   // sending `temperature` returns a 400 (provider docs, verified

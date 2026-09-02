@@ -3154,6 +3154,16 @@ async function prepareSamplingRequestBoundary(
       : {}),
     sessionKey: session,
     admittedMemorySelector: createAdmittedMemorySelector(session),
+    // Producers hold only an opaque session key, so what they decide is
+    // invisible to an operator unless they can report it. Routed to the
+    // session log, not to the chat: these causes are outside the TUI's
+    // user-visible allow-list.
+    emitDiagnostic: ({ cause, message }) => {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: { type: "warning", payload: { cause, message } },
+      });
+    },
     turnProvenance: {
       turnId: ctx.subId,
       rootHumanTurn,

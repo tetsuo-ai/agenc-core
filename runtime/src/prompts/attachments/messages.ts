@@ -326,13 +326,19 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
     case "skill_listing": {
       const content = sanitizeSystemReminderContent(attachment.content);
       return userContextMessage(
-        wrapSystemReminder(
-          `The following skills are available for use with the Skill tool. If a skill matches the user's request, invoke the Skill tool before responding.\n\n${content}`,
-        ),
+        wrapSystemReminder(`${SKILL_LISTING_REMINDER_HEADER}\n\n${content}`),
       );
     }
   }
 }
+
+/**
+ * Opening sentence of the rendered `skill_listing` reminder. The producer
+ * scans the projected history for it to decide whether the listing is
+ * already in front of the model on this request.
+ */
+export const SKILL_LISTING_REMINDER_HEADER =
+  "The following skills are available for use with the Skill tool. If a skill matches the user's request, invoke the Skill tool before responding.";
 
 function userContextMessage(text: string): LLMMessage {
   return {

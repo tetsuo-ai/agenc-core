@@ -73,8 +73,6 @@ export interface AttachmentTrackingState {
   lastMcpInstructionsHash?: string;
   /** Exact root-human turn whose MCP resource mentions were consumed. */
   lastMcpResourceMentionTurnId?: string;
-  /** Hash of the skill listing last announced to the model. */
-  lastSkillListingHash?: string;
   /**
    * Map of MCP server name → instruction block last announced. Same
    * rationale as `lastDeferredToolsSet`. MCP instructions are immutable

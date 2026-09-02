@@ -114,11 +114,28 @@ export interface InvokedSkillRecord {
   readonly sessionId?: string;
 }
 
+/** A skill root holding more SKILL.md files than the loader reads per root. */
+export interface SkillRootTruncation {
+  readonly root: string;
+  /** SKILL.md files loaded from this root before the cap was reached. */
+  readonly loadedCount: number;
+  /** SKILL.md files found past the cap and left unloaded. */
+  readonly droppedCount: number;
+}
+
+/** A SKILL.md that loaded (or was skipped) with a problem its author should see. */
+export interface SkillLoadWarning {
+  readonly path: string;
+  readonly reason: string;
+}
+
 export interface LocalSkillsSnapshot {
   readonly skills: readonly LocalSkillMetadata[];
   readonly skillRoots: readonly string[];
   readonly pluginSkillRoots: readonly string[];
   readonly conditionalSkills: readonly LocalSkillMetadata[];
+  readonly truncatedRoots: readonly SkillRootTruncation[];
+  readonly warnings: readonly SkillLoadWarning[];
 }
 
 export interface LocalSkillsServiceOptions {
@@ -159,6 +176,8 @@ interface SkillWithContent {
 interface SplitFrontmatter {
   readonly frontmatter: Record<string, unknown>;
   readonly markdown: string;
+  /** Why the frontmatter fields were ignored, when they were. */
+  readonly warning?: string;
 }
 
 interface BundledSkillDefinition {
@@ -178,8 +197,39 @@ interface BundledSkillDefinition {
 }
 
 const SKILL_FILE_NAME = "SKILL.md";
-const MAX_SKILL_FILES = 500;
+/**
+ * Per-root ceiling on skills loaded from disk. The walk keeps counting past
+ * it (`droppedCount`) so the snapshot can say what it skipped, but a dropped
+ * skill is invisible to the listing, to ranking and to the Skill tool.
+ *
+ * 500 was set when a catalog meant a handful of hand-written skills. A shared
+ * catalog is now the normal case: the machine this was measured on holds
+ * 1,820 skills in `~/.agents/skills`, so 1,320 of them — including three of
+ * the four that matched the work in a live 15-turn run — were dropped before
+ * any ranking or budget logic could see them, in readdir order. The ceiling
+ * stays, because it is what stops a pathological directory from being walked
+ * forever, but it is now above a real installation rather than inside one.
+ * The cost of the higher bound is a cold scan reading the frontmatter of each
+ * file once (7.7 MB across those 1,820), behind the snapshot's change
+ * detector; the listing budget, not this cap, is what bounds what the model
+ * is shown.
+ *
+ * Overridable with `AGENC_MAX_SKILL_FILES_PER_ROOT` so an operator with an
+ * unusual catalog can tune it, and so tests can exercise truncation without
+ * writing thousands of files.
+ */
+const DEFAULT_MAX_SKILL_FILES = 5_000;
+
+export function maxSkillFilesPerRoot(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = Number(env.AGENC_MAX_SKILL_FILES_PER_ROOT);
+  return Number.isFinite(raw) && raw > 0
+    ? Math.floor(raw)
+    : DEFAULT_MAX_SKILL_FILES;
+}
 const MAX_SCAN_DEPTH = 12;
+const MAX_ACTIVE_PATHS = 256;
 const INVOKED_MAIN_AGENT_ID = "__main__";
 const SKILL_LISTING_DEFAULT_CHAR_BUDGET = 8_000;
 const SKILL_LISTING_DESC_MAX_CHARS = 250;
@@ -402,47 +452,90 @@ async function isDirectoryEntry(path: string, isSymlink: boolean): Promise<boole
   }
 }
 
-async function findSkillFiles(root: string): Promise<readonly string[]> {
-  const out: string[] = [];
-  const topLevelEntries = await readDirEntries(root);
-  const queue: Array<{ path: string; depth: number }> = [];
+interface SkillFileScan {
+  readonly files: readonly string[];
+  readonly droppedCount: number;
+}
 
-  for (const entry of topLevelEntries) {
-    if (out.length >= MAX_SKILL_FILES) break;
+interface MutableSkillFileScan {
+  readonly files: string[];
+  droppedCount: number;
+  readonly maxFiles: number;
+}
+
+interface ScanFrame {
+  readonly path: string;
+  readonly depth: number;
+}
+
+type DirEntry = Awaited<ReturnType<typeof readDirEntries>>[number];
+
+async function isScannableDir(entry: DirEntry, path: string): Promise<boolean> {
+  if (!entry.isDirectory() && !entry.isSymbolicLink()) return false;
+  if (SKIP_DIRS.has(entry.name)) return false;
+  return isDirectoryEntry(path, entry.isSymbolicLink());
+}
+
+async function topLevelScanFrames(root: string): Promise<ScanFrame[]> {
+  const frames: ScanFrame[] = [];
+  for (const entry of await readDirEntries(root)) {
     const next = join(root, entry.name);
-    if (
-      (entry.isDirectory() || entry.isSymbolicLink()) &&
-      !SKIP_DIRS.has(entry.name) &&
-      (await isDirectoryEntry(next, entry.isSymbolicLink()))
-    ) {
-      queue.push({ path: next, depth: 1 });
-    }
+    if (await isScannableDir(entry, next)) frames.push({ path: next, depth: 1 });
   }
+  return frames;
+}
 
-  const visitedDirs = new Set<string>();
-  while (queue.length > 0 && out.length < MAX_SKILL_FILES) {
-    const frame = queue.shift()!;
-    const dirId = await getFileIdentity(frame.path);
-    if (dirId && visitedDirs.has(dirId)) continue;
-    if (dirId) visitedDirs.add(dirId);
+/** Returns false when the directory (by real path) was already scanned. */
+async function markVisited(path: string, visited: Set<string>): Promise<boolean> {
+  const dirId = await getFileIdentity(path);
+  if (dirId === null) return true;
+  if (visited.has(dirId)) return false;
+  visited.add(dirId);
+  return true;
+}
 
-    const entries = await readDirEntries(frame.path);
-    for (const entry of entries) {
-      if (out.length >= MAX_SKILL_FILES) break;
-      const next = join(frame.path, entry.name);
-      if (entry.isFile() && isSkillFile(next)) {
-        out.push(next);
-        continue;
-      }
-      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-      if (SKIP_DIRS.has(entry.name)) continue;
-      if (frame.depth + 1 > MAX_SCAN_DEPTH) continue;
-      if (!(await isDirectoryEntry(next, entry.isSymbolicLink()))) continue;
+function recordSkillFile(scan: MutableSkillFileScan, file: string): void {
+  // Past the cap the walk keeps going but only counts, so the snapshot can
+  // say how many skills this root holds that were never loaded.
+  if (scan.files.length >= scan.maxFiles) scan.droppedCount += 1;
+  else scan.files.push(file);
+}
+
+async function scanSkillDir(
+  frame: ScanFrame,
+  scan: MutableSkillFileScan,
+  queue: ScanFrame[],
+): Promise<void> {
+  for (const entry of await readDirEntries(frame.path)) {
+    const next = join(frame.path, entry.name);
+    if (entry.isFile()) {
+      if (isSkillFile(next)) recordSkillFile(scan, next);
+      continue;
+    }
+    if (frame.depth < MAX_SCAN_DEPTH && (await isScannableDir(entry, next))) {
       queue.push({ path: next, depth: frame.depth + 1 });
     }
   }
+}
 
-  return out.sort((a, b) => a.localeCompare(b));
+async function findSkillFiles(root: string): Promise<SkillFileScan> {
+  const scan: MutableSkillFileScan = {
+    files: [],
+    droppedCount: 0,
+    maxFiles: maxSkillFilesPerRoot(),
+  };
+  const queue = await topLevelScanFrames(root);
+  const visitedDirs = new Set<string>();
+  while (queue.length > 0) {
+    const frame = queue.shift()!;
+    if (await markVisited(frame.path, visitedDirs)) {
+      await scanSkillDir(frame, scan, queue);
+    }
+  }
+  return {
+    files: scan.files.toSorted((a, b) => a.localeCompare(b)),
+    droppedCount: scan.droppedCount,
+  };
 }
 
 function isSkillFile(filePath: string): boolean {
@@ -481,15 +574,29 @@ function splitFrontmatter(raw: string): SplitFrontmatter {
   if (!match) return { frontmatter: {}, markdown: raw };
   try {
     const parsed = loadYaml(match[1] ?? "");
+    if (parsed === null || parsed === undefined) {
+      return { frontmatter: {}, markdown: match[2] ?? "" };
+    }
+    if (typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {
+        frontmatter: {},
+        markdown: match[2] ?? "",
+        warning: "frontmatter is not a YAML mapping; its fields were ignored",
+      };
+    }
     return {
-      frontmatter:
-        parsed && typeof parsed === "object" && !Array.isArray(parsed)
-          ? (parsed as Record<string, unknown>)
-          : {},
+      frontmatter: parsed as Record<string, unknown>,
       markdown: match[2] ?? "",
     };
-  } catch {
-    return { frontmatter: {}, markdown: match[2] ?? raw };
+  } catch (error) {
+    const detail =
+      (error instanceof Error ? error.message : String(error)).split("\n")[0] ??
+      "";
+    return {
+      frontmatter: {},
+      markdown: match[2] ?? raw,
+      warning: `frontmatter is not valid YAML (${detail}); its fields were ignored`,
+    };
   }
 }
 
@@ -534,16 +641,22 @@ function escapeRegExp(value: string): string {
 async function loadSkillFile(
   filePath: string,
   root: SkillRoot,
+  warnings: SkillLoadWarning[],
 ): Promise<SkillWithContent | null> {
   if (!(await pathIsFile(filePath))) return null;
   let raw: string;
   try {
     raw = await readFile(filePath, "utf8");
-  } catch {
+  } catch (error) {
+    warnings.push({
+      path: filePath,
+      reason: `unreadable: ${error instanceof Error ? error.message : String(error)}`,
+    });
     return null;
   }
 
-  const { frontmatter, markdown } = splitFrontmatter(raw);
+  const { frontmatter, markdown, warning } = splitFrontmatter(raw);
+  if (warning !== undefined) warnings.push({ path: filePath, reason: warning });
   const skillName = skillNameForSkillFile(filePath, root.path);
   if (skillName.length === 0) return null;
   const canonicalFields = parseCanonicalSkillFrontmatterFields(
@@ -605,8 +718,15 @@ async function loadSkillFile(
   return { skill, content: markdown, filePath };
 }
 
-async function loadSkillsFromRoot(root: SkillRoot): Promise<readonly SkillWithContent[]> {
-  const files = [...(await findSkillFiles(root.path))];
+interface LoadedSkillRoot {
+  readonly skills: readonly SkillWithContent[];
+  readonly droppedCount: number;
+  readonly warnings: readonly SkillLoadWarning[];
+}
+
+async function loadSkillsFromRoot(root: SkillRoot): Promise<LoadedSkillRoot> {
+  const scan = await findSkillFiles(root.path);
+  const files = [...scan.files];
   // A root can BE one skill: plugin manifests may declare each skill
   // dir individually (skills: ["./skills/flash-board"]), so the root
   // itself carries the SKILL.md instead of holding child skill dirs.
@@ -619,8 +739,15 @@ async function loadSkillsFromRoot(root: SkillRoot): Promise<readonly SkillWithCo
       // Genuinely empty root.
     }
   }
-  const loaded = await Promise.all(files.map((file) => loadSkillFile(file, root)));
-  return loaded.filter((entry): entry is SkillWithContent => entry !== null);
+  const warnings: SkillLoadWarning[] = [];
+  const loaded = await Promise.all(
+    files.map((file) => loadSkillFile(file, root, warnings)),
+  );
+  return {
+    skills: loaded.filter((entry): entry is SkillWithContent => entry !== null),
+    droppedCount: scan.droppedCount,
+    warnings,
+  };
 }
 
 async function dedupeSkillsByRealPath(
@@ -714,7 +841,19 @@ export async function loadLocalSkillsSnapshot(
 ): Promise<LocalSkillsSnapshot> {
   const roots = await discoverSkillRoots(options, discoveredSkillRoots);
   const loadedNested = await Promise.all(roots.map(loadSkillsFromRoot));
-  const deduped = await dedupeSkillsByRealPath(loadedNested.flat());
+  const deduped = await dedupeSkillsByRealPath(
+    loadedNested.flatMap((loaded) => loaded.skills),
+  );
+  const truncatedRoots = loadedNested.flatMap((loaded, index) =>
+    loaded.droppedCount > 0
+      ? [{
+        root: roots[index]!.path,
+        loadedCount: loaded.skills.length,
+        droppedCount: loaded.droppedCount,
+      }]
+      : [],
+  );
+  const warnings = loadedNested.flatMap((loaded) => loaded.warnings);
 
   const allFileSkills = deduped.map((entry) => entry.skill);
   const unconditional: LocalSkillMetadata[] = [];
@@ -750,6 +889,8 @@ export async function loadLocalSkillsSnapshot(
     pluginSkillRoots: unique(
       roots.filter((root) => root.scope === "plugin").map((root) => root.path),
     ).sort((a, b) => a.localeCompare(b)),
+    truncatedRoots,
+    warnings,
   };
 }
 
@@ -843,58 +984,215 @@ function snapshotFindSkill(
   );
 }
 
+export interface SkillListingEntry {
+  readonly name: string;
+  readonly description?: string;
+  readonly whenToUse?: string;
+  readonly disableModelInvocation?: boolean;
+  readonly loadedFrom?: string;
+  readonly scope?: string;
+  readonly root?: string;
+}
+
+const SKILL_LISTING_SCOPE_RANK: Readonly<Record<string, number>> = {
+  project: 0,
+  managed: 1,
+  user: 2,
+  plugin: 3,
+  mcp: 4,
+};
+const SHARED_AGENTS_SKILLS_SUFFIX = `${sep}${join(".agents", "skills")}`;
+
+/**
+ * Order in which skills compete for the listing budget: the workspace's own
+ * skills first, then managed and user skills, then plugins. Within the user
+ * scope, `~/.agents/skills` is the catalog installed for every agent on the
+ * machine and can hold thousands of entries, so the user's AgenC-specific
+ * skills under $AGENC_HOME/skills go first.
+ */
+function skillListingRank(skill: SkillListingEntry): number {
+  const scopeRank = SKILL_LISTING_SCOPE_RANK[skill.scope ?? ""] ?? 5;
+  const sharedCatalog =
+    skill.scope === "user" &&
+    skill.root?.endsWith(SHARED_AGENTS_SKILLS_SUFFIX) === true;
+  return scopeRank * 2 + (sharedCatalog ? 1 : 0);
+}
+
+function formatHiddenSkillsLine(count: number): string {
+  return `- ...and ${count} more skill${count === 1 ? "" : "s"} not shown; ask the user to run /skills <search> to find one`;
+}
+
+/**
+ * Words too common to say anything about which skill fits a request.
+ */
+const SKILL_MATCH_STOPWORDS: ReadonlySet<string> = new Set([
+  "the", "and", "for", "with", "that", "this", "you", "your", "are", "was",
+  "not", "but", "all", "any", "can", "has", "have", "how", "its", "let",
+  "make", "made", "new", "now", "one", "out", "run", "see", "use", "using",
+  "add", "into", "from", "when", "what", "where", "which", "will", "would",
+  "please", "should", "then", "them", "they", "there", "here", "just", "like",
+  "file", "files", "code", "line", "lines",
+]);
+
+/** Content words of the current request, lowercased and de-duplicated. */
+function requestMatchTokens(request: string | null | undefined): readonly string[] {
+  if (typeof request !== "string" || request.length === 0) return [];
+  const tokens = new Set<string>();
+  for (const raw of request.toLowerCase().split(/[^a-z0-9+#.]+/u)) {
+    const token = raw.replace(/^[.]+|[.]+$/gu, "");
+    if (token.length < 3) continue;
+    if (SKILL_MATCH_STOPWORDS.has(token)) continue;
+    tokens.add(token);
+  }
+  return [...tokens];
+}
+
+/** Cap so one long description cannot outweigh a real name match. */
+const SKILL_DESCRIPTION_MATCH_CAP = 6;
+
+/**
+ * How well a skill answers the current request. A name match counts most: a
+ * skill called `generating-unit-tests` is what "write unit tests" wants, and
+ * its description only corroborates that.
+ */
+function skillRelevance(
+  skill: SkillListingEntry,
+  tokens: readonly string[],
+): number {
+  if (tokens.length === 0) return 0;
+  const nameParts = new Set(skill.name.toLowerCase().split(/[^a-z0-9]+/u));
+  const name = skill.name.toLowerCase();
+  const description = `${skill.description ?? ""} ${skill.whenToUse ?? ""}`.toLowerCase();
+  let score = 0;
+  let fromDescription = 0;
+  for (const token of tokens) {
+    if (nameParts.has(token)) {
+      score += 4;
+    } else if (name.includes(token)) {
+      score += 2;
+    }
+    if (fromDescription < SKILL_DESCRIPTION_MATCH_CAP && description.includes(token)) {
+      score += 1;
+      fromDescription += 1;
+    }
+  }
+  return score;
+}
+
+/** What a listing pass decided, for the operator-facing diagnostic. */
+export interface SkillListingStats {
+  /** Skills offered to the listing (already excludes non-invocable ones). */
+  readonly invocable: number;
+  /** Skills whose full line fit the budget. */
+  readonly listed: number;
+  /** Skills the budget had no room for. */
+  readonly hidden: number;
+  readonly budgetChars: number;
+  readonly usedChars: number;
+  /** True when the request reordered the listing. */
+  readonly ranked: boolean;
+}
+
 export function formatSkillListingWithinBudget(
-  skills: readonly {
-    readonly name: string;
-    readonly description?: string;
-    readonly whenToUse?: string;
-    readonly disableModelInvocation?: boolean;
-    readonly loadedFrom?: string;
-  }[],
+  skills: readonly SkillListingEntry[],
   contextWindowTokens?: number,
+  request?: string | null,
 ): string {
+  return buildSkillListingWithinBudget(skills, contextWindowTokens, request)
+    .listing;
+}
+
+export function buildSkillListingWithinBudget(
+  skills: readonly SkillListingEntry[],
+  contextWindowTokens?: number,
+  request?: string | null,
+): { readonly listing: string; readonly stats: SkillListingStats } {
   const commands = skills.filter((skill) => !skill.disableModelInvocation);
-  if (commands.length === 0) return "";
+  const tokensForStats = requestMatchTokens(request);
+  const emptyStats = (budgetChars: number): SkillListingStats => ({
+    invocable: commands.length,
+    listed: 0,
+    hidden: commands.length,
+    budgetChars,
+    usedChars: 0,
+    ranked: false,
+  });
+  if (commands.length === 0) {
+    return { listing: "", stats: emptyStats(getListingCharBudget(contextWindowTokens)) };
+  }
   const budget = getListingCharBudget(contextWindowTokens);
-  const fullEntries = commands.map((skill) => ({
-    skill,
-    full: formatSkillListingLine(skill),
-  }));
+  const fullLines = commands.map(formatSkillListingLine);
   const fullTotal =
-    fullEntries.reduce((sum, entry) => sum + entry.full.length, 0) +
-    fullEntries.length -
-    1;
+    fullLines.reduce((sum, line) => sum + line.length, 0) + fullLines.length - 1;
   if (fullTotal <= budget) {
-    return fullEntries.map((entry) => entry.full).join("\n");
+    return {
+      listing: fullLines.join("\n"),
+      stats: {
+        invocable: commands.length,
+        listed: commands.length,
+        hidden: 0,
+        budgetChars: budget,
+        usedChars: fullTotal,
+        ranked: false,
+      },
+    };
   }
 
-  const bundledNames = new Set(
-    commands.filter((skill) => skill.loadedFrom === "bundled").map((skill) => skill.name),
-  );
-  const bundledChars = fullEntries.reduce(
-    (sum, entry) => sum + (bundledNames.has(entry.skill.name) ? entry.full.length + 1 : 0),
-    0,
-  );
-  const rest = commands.filter((skill) => !bundledNames.has(skill.name));
-  if (rest.length === 0) return fullEntries.map((entry) => entry.full).join("\n");
-  const remaining = Math.max(0, budget - bundledChars);
-  const overhead =
-    rest.reduce((sum, skill) => sum + skill.name.length + 4, 0) + rest.length - 1;
-  const maxDescLength = Math.floor((remaining - overhead) / rest.length);
-  if (maxDescLength < 20) {
-    return commands
-      .map((skill) =>
-        bundledNames.has(skill.name) ? formatSkillListingLine(skill) : `- ${skill.name}`,
-      )
-      .join("\n");
+  // Over budget: bundled skills always stay (they describe the runtime's own
+  // surfaces), then full lines in rank order until the budget is spent. A
+  // description the model can match to a task beats a bare name it cannot,
+  // so the skills that do not fit are counted in one closing line instead
+  // of being listed by name.
+  const bundled = commands.filter((skill) => skill.loadedFrom === "bundled");
+  // Over budget, insertion order inside a scope is alphabetical, so a large
+  // shared catalog fills the whole listing with whatever sorts first. Live
+  // measurement on a machine with 1,823 installed skills: 101 fit, the list
+  // stopped at "apollo-core-workflow-a", and every skill matching the work at
+  // hand — canvas-design, frontend-design, generating-unit-tests,
+  // javascript-typescript — was never shown, which is why 15 turns of exactly
+  // that work produced zero Skill invocations. What the request is about now
+  // decides who gets the space; scope rank breaks ties, as before.
+  const tokens = tokensForStats;
+  const rest = commands
+    .map((skill, index) => ({
+      skill,
+      index,
+      rank: skillListingRank(skill),
+      relevance: skillRelevance(skill, tokens),
+    }))
+    .filter((entry) => entry.skill.loadedFrom !== "bundled")
+    .sort(
+      (a, b) =>
+        b.relevance - a.relevance || a.rank - b.rank || a.index - b.index,
+    )
+    .map((entry) => entry.skill);
+  const lines = bundled.map(formatSkillListingLine);
+  let used = lines.reduce((sum, line) => sum + line.length + 1, 0);
+  const reserve = formatHiddenSkillsLine(rest.length).length + 1;
+  let shown = 0;
+  for (const skill of rest) {
+    const line = formatSkillListingLine(skill);
+    // The first ranked skill is always listed, even under a budget smaller
+    // than one line, so the listing never degrades to a bare count.
+    if (shown > 0 && used + line.length + reserve > budget) break;
+    lines.push(line);
+    used += line.length + 1;
+    shown += 1;
   }
-  return commands
-    .map((skill) => {
-      if (bundledNames.has(skill.name)) return formatSkillListingLine(skill);
-      const description = getSkillListingDescription(skill);
-      return `- ${skill.name}: ${truncate(description, maxDescLength)}`;
-    })
-    .join("\n");
+  const hidden = rest.length - shown;
+  if (hidden > 0) lines.push(formatHiddenSkillsLine(hidden));
+  const listing = lines.join("\n");
+  return {
+    listing,
+    stats: {
+      invocable: commands.length,
+      listed: bundled.length + shown,
+      hidden,
+      budgetChars: budget,
+      usedChars: listing.length,
+      ranked: tokensForStats.length > 0,
+    },
+  };
 }
 
 function getListingCharBudget(contextWindowTokens?: number): number {
@@ -1048,9 +1346,22 @@ export function createLocalSkillsServices(
   let lastPluginConfig: Pick<AgenCConfig, "plugins"> | undefined =
     options.config;
   let watchedPluginConfigKey = JSON.stringify(options.config ?? null);
-  let activePaths = new Set<string>();
-  let discoveredSkillRoots = new Set<string>();
+  const activePaths = new Set<string>();
+  const discoveredSkillRoots = new Set<string>();
   let watcherStarted = false;
+  // Touched paths only feed `paths:`-gated skills and are part of the
+  // snapshot cache key, so the set is bounded: once full, the oldest path
+  // makes room for the newest.
+  const rememberActivePath = (path: string): boolean => {
+    if (activePaths.has(path)) return false;
+    activePaths.add(path);
+    while (activePaths.size > MAX_ACTIVE_PATHS) {
+      const oldest = activePaths.values().next().value;
+      if (oldest === undefined) break;
+      activePaths.delete(oldest);
+    }
+    return true;
+  };
   // Session scoping for invoked-skill tracking. Records stamped with an
   // explicit sessionId (the Skill tool stamps the conversation id) land in
   // that session's scope; unstamped records use this instance's default
@@ -1113,6 +1424,14 @@ export function createLocalSkillsServices(
   const clear = () => {
     cache = null;
   };
+  const snapshotHasConditionalSkills = async (): Promise<boolean> => {
+    if (cache === null) return true;
+    try {
+      return (await cache.value).conditionalSkills.length > 0;
+    } catch {
+      return true;
+    }
+  };
   const startWatcher = () => {
     if (watcherStarted) return Promise.resolve();
     watcherStarted = true;
@@ -1155,7 +1474,7 @@ export function createLocalSkillsServices(
       fsArg: unknown,
     ): Promise<SkillLoadOutcome> {
       for (const path of extractActivePaths(input, fsArg)) {
-        activePaths.add(path);
+        rememberActivePath(path);
       }
       const nextPluginConfig = pluginConfigView(input);
       if (nextPluginConfig !== undefined) {
@@ -1166,6 +1485,12 @@ export function createLocalSkillsServices(
       return {
         invokedSkills: [...getInvokedSkillsForAgent().keys()],
         availableSkills: snapshot.skills,
+        ...(snapshot.truncatedRoots.length > 0
+          ? { truncatedSkillRoots: snapshot.truncatedRoots }
+          : {}),
+        ...(snapshot.warnings.length > 0
+          ? { skillLoadWarnings: snapshot.warnings }
+          : {}),
       };
     },
     async resolveSkill(name: string): Promise<LocalSkillMetadata | null> {
@@ -1202,15 +1527,19 @@ export function createLocalSkillsServices(
         options.workspaceRoot,
       );
       let changed = false;
-      for (const path of touchedPaths) {
-        if (activePaths.has(path)) continue;
-        activePaths.add(path);
-        changed = true;
-      }
       for (const dir of dirs) {
         if (discoveredSkillRoots.has(dir)) continue;
         discoveredSkillRoots.add(dir);
         changed = true;
+      }
+      // Touched paths can only activate `paths:`-gated skills. Recording
+      // one invalidates the snapshot, and the reload walks every skill root
+      // again before the next model request, so record them only while such
+      // skills exist (or before the first load, which happens anyway).
+      if (await snapshotHasConditionalSkills()) {
+        for (const path of touchedPaths) {
+          if (rememberActivePath(path)) changed = true;
+        }
       }
       if (changed) clear();
       return dirs;
@@ -1461,7 +1790,7 @@ Use \`unbind\` for explicit removals because TOML has no null value. The canonic
 function buildBrowserPrompt(args: string): string {
   return `# AgenC Browser Automation
 
-Use browser automation to inspect, test, or debug a web UI.
+Inspect, test, or debug a web UI with the runtime's Browser tool.
 
 ## User Request
 
@@ -1469,12 +1798,12 @@ ${args || "No specific URL or flow was supplied. Ask the user for the URL or app
 
 ## Workflow
 
-1. Start or locate the local dev server.
-2. Use Playwright/browser tooling to navigate the target flow.
-3. Capture screenshots for visual regressions when useful.
+1. The Browser tool is deferred: load it with system.searchTools and the query \`select:Browser\`, then load the browser-automation skill with the Skill tool; it explains the snapshot, act, re-snapshot loop the tool expects.
+2. Start or locate the local dev server. Private and loopback addresses are blocked by the Browser tool's SSRF policy unless \`[browser].allow_private_network\` is enabled.
+3. Navigate the target flow by ref from the latest snapshot. Capture screenshots for visual regressions when useful.
 4. Report exact failures, console errors, network errors, and UI mismatches.
 
-Do not rely on a visual guess when a DOM assertion, screenshot, or browser console check can verify the result.`;
+Do not rely on a visual guess when a snapshot, screenshot, or browser console check can verify the result.`;
 }
 
 function buildSchedulePrompt(args: string): string {
@@ -1596,7 +1925,8 @@ const BUNDLED_SKILLS: readonly BundledSkillDefinition[] = [
   },
   {
     name: "agenc-in-browser",
-    description: "Use browser automation to inspect, test, or debug a web UI.",
+    description:
+      "Inspect, test, or debug a web UI with the runtime's Browser tool.",
     argumentHint: "[url or flow]",
     getPrompt: (args) => buildBrowserPrompt(args),
   },

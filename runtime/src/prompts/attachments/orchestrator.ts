@@ -85,6 +85,17 @@ export interface GetAttachmentsOptions {
       readonly text: string;
     } | null;
   };
+  /**
+   * Optional sink for a producer's diagnostics. Producers are pure functions
+   * of their options and hold only an opaque `sessionKey`, so a producer that
+   * has something an operator needs to see — what it decided and on what —
+   * reports it here and the caller routes it to the session's event log.
+   * Absent in tests and in callers that do not care.
+   */
+  readonly emitDiagnostic?: (diagnostic: {
+    readonly cause: string;
+    readonly message: string;
+  }) => void;
   /** Most recent user-channel message text, if any. */
   readonly userInput: string | null;
   /**
@@ -138,6 +149,13 @@ export interface GetAttachmentsOptions {
         readonly whenToUse?: string;
         readonly disableModelInvocation?: boolean;
         readonly loadedFrom?: string;
+        readonly scope?: string;
+        readonly root?: string;
+      }>;
+      /** Roots holding more skills than the per-root cap loaded. */
+      readonly truncatedSkillRoots?: ReadonlyArray<{
+        readonly root: string;
+        readonly droppedCount: number;
       }>;
     }>;
   };

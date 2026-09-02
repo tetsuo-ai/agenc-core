@@ -36,6 +36,17 @@ export interface SkillsSnapshot {
     readonly aliases?: readonly string[];
   }>;
   readonly effectiveSkillRoots: ReadonlyArray<string>;
+  /** Skill roots holding more SKILL.md files than the loader reads per root. */
+  readonly truncatedRoots?: ReadonlyArray<{
+    readonly root: string;
+    readonly loadedCount: number;
+    readonly droppedCount: number;
+  }>;
+  /** SKILL.md files that loaded with ignored frontmatter or could not be read. */
+  readonly warnings?: ReadonlyArray<{
+    readonly path: string;
+    readonly reason: string;
+  }>;
 }
 
 type AvailableSkillSnapshot = SkillsSnapshot["availableSkills"][number];
@@ -381,17 +392,22 @@ export async function collectSkillsSnapshot(
     effectiveSkillRoots: normalizeRoots(pluginView.effectiveSkillRoots()).sort(
       (a, b) => a.localeCompare(b),
     ),
+    ...(outcome.truncatedSkillRoots !== undefined &&
+      outcome.truncatedSkillRoots.length > 0
+      ? { truncatedRoots: outcome.truncatedSkillRoots }
+      : {}),
+    ...(outcome.skillLoadWarnings !== undefined &&
+      outcome.skillLoadWarnings.length > 0
+      ? { warnings: outcome.skillLoadWarnings }
+      : {}),
   };
 }
 
-export function formatSkillsSnapshot(
-  snapshot: SkillsSnapshot,
-  options: SkillsFormatOptions = {},
-): string {
-  const limit = options.limit ?? DEFAULT_SKILLS_LIMIT;
-  const matchedSkills = snapshot.availableSkills.filter((skill) =>
-    skillMatchesQuery(skill, options.query),
-  );
+function selectShownSkills(
+  matchedSkills: readonly AvailableSkillSnapshot[],
+  options: SkillsFormatOptions,
+): readonly AvailableSkillSnapshot[] {
+  if (options.showAll) return matchedSkills;
   // The default view is capped at DEFAULT_SKILLS_LIMIT. Bundled skills are
   // always present and sort early alphabetically (agenc-*, batch,
   // browser-automation, ...), so a straight slice of the sorted
@@ -399,57 +415,86 @@ export function formatSkillsSnapshot(
   // they wrote in this project. Rank non-bundled first for the capped view
   // only — `/skills all` and `/skills <search>` still show the full
   // alphabetical list, and ordering within each group is untouched.
-  const shownSkills = options.showAll
-    ? matchedSkills
-    : [
-        ...matchedSkills.filter((skill) => skill.loadedFrom !== "bundled"),
-        ...matchedSkills.filter((skill) => skill.loadedFrom === "bundled"),
-      ].slice(0, limit);
+  return [
+    ...matchedSkills.filter((skill) => skill.loadedFrom !== "bundled"),
+    ...matchedSkills.filter((skill) => skill.loadedFrom === "bundled"),
+  ].slice(0, options.limit ?? DEFAULT_SKILLS_LIMIT);
+}
+
+function formatAvailableLines(
+  snapshot: SkillsSnapshot,
+  matchedSkills: readonly AvailableSkillSnapshot[],
+  shownSkills: readonly AvailableSkillSnapshot[],
+): string[] {
+  if (snapshot.availableSkills.length === 0) return ["  available: none"];
+  if (matchedSkills.length === 0) return ["  available: no matches"];
   const hiddenCount = Math.max(0, matchedSkills.length - shownSkills.length);
-  const lines: string[] = ["Skills:"];
-  lines.push(
-    "  use: $skill-name [args] (slash commands use /, file mentions use @)",
-  );
-  if (options.query !== undefined && options.query.trim().length > 0) {
-    lines.push(`  filter: ${options.query.trim()}`);
-  }
-  if (snapshot.availableSkills.length === 0) {
-    lines.push("  available: none");
-  } else if (matchedSkills.length === 0) {
-    lines.push("  available: no matches");
-  } else {
-    const count =
-      hiddenCount > 0
-        ? `showing ${shownSkills.length} of ${matchedSkills.length}`
-        : `${matchedSkills.length}`;
-    lines.push(`  available: ${count}`);
-    lines.push(...shownSkills.map(formatAvailableSkill));
-    if (hiddenCount > 0) {
-      lines.push(
-        `  more: ${hiddenCount} hidden; use /skills all or /skills <search>`,
-      );
-    }
-  }
-
-  if (snapshot.invokedSkills.length === 0) {
-    lines.push("  invoked: none");
-  } else {
-    const skillsByName = new Map(
-      snapshot.availableSkills.map((skill) => [skill.name, skill]),
-    );
+  const count =
+    hiddenCount > 0
+      ? `showing ${shownSkills.length} of ${matchedSkills.length}`
+      : `${matchedSkills.length}`;
+  const lines = [
+    `  available: ${count}`,
+    ...shownSkills.map(formatAvailableSkill),
+  ];
+  if (hiddenCount > 0) {
     lines.push(
-      `  invoked: ${snapshot.invokedSkills.map((name) => {
-        return formatSkillReference(skillsByName.get(name) ?? name);
-      }).join(", ")}`,
+      `  more: ${hiddenCount} hidden; use /skills all or /skills <search>`,
     );
   }
+  return lines;
+}
 
-  if (snapshot.effectiveSkillRoots.length === 0) {
-    lines.push("  plugin roots: none");
-  } else {
-    lines.push(`  plugin roots: ${snapshot.effectiveSkillRoots.join(", ")}`);
+function formatLoaderNotices(snapshot: SkillsSnapshot): string[] {
+  const lines = (snapshot.truncatedRoots ?? []).map(
+    (truncated) =>
+      `  not loaded: ${truncated.droppedCount} SKILL.md files under ${truncated.root} (per-root cap reached after ${truncated.loadedCount})`,
+  );
+  const warnings = snapshot.warnings ?? [];
+  if (warnings.length > 0) {
+    lines.push(
+      `  warnings: ${warnings.length}`,
+      ...warnings.map((warning) => `    ${warning.path}: ${warning.reason}`),
+    );
   }
-  return lines.join("\n");
+  return lines;
+}
+
+function formatInvokedLine(snapshot: SkillsSnapshot): string {
+  if (snapshot.invokedSkills.length === 0) return "  invoked: none";
+  const skillsByName = new Map(
+    snapshot.availableSkills.map((skill) => [skill.name, skill]),
+  );
+  const invoked = snapshot.invokedSkills.map((name) =>
+    formatSkillReference(skillsByName.get(name) ?? name),
+  );
+  return `  invoked: ${invoked.join(", ")}`;
+}
+
+function formatPluginRootsLine(snapshot: SkillsSnapshot): string {
+  return snapshot.effectiveSkillRoots.length === 0
+    ? "  plugin roots: none"
+    : `  plugin roots: ${snapshot.effectiveSkillRoots.join(", ")}`;
+}
+
+export function formatSkillsSnapshot(
+  snapshot: SkillsSnapshot,
+  options: SkillsFormatOptions = {},
+): string {
+  const matchedSkills = snapshot.availableSkills.filter((skill) =>
+    skillMatchesQuery(skill, options.query),
+  );
+  const shownSkills = selectShownSkills(matchedSkills, options);
+  const filter = options.query?.trim();
+  return [
+    "Skills:",
+    "  use: $skill-name [args] (slash commands use /, file mentions use @)",
+    ...(filter ? [`  filter: ${filter}`] : []),
+    ...formatAvailableLines(snapshot, matchedSkills, shownSkills),
+    ...formatLoaderNotices(snapshot),
+    formatInvokedLine(snapshot),
+    formatPluginRootsLine(snapshot),
+  ].join("\n");
 }
 
 export const skillsCommand: SlashCommand = {
