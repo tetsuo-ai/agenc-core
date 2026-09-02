@@ -20,11 +20,13 @@ import {
   HERMETIC_PROVIDER_CREDENTIAL_ENV_VARS,
   HERMETIC_RUNTIME_AUTH_ENV_VARS,
   HERMETIC_STRIPPED_ENV_VARS,
+  MEMORY_EXTRACTION_FENCE_ENV_VAR,
   sanitizeHermeticEnv,
 } from "./helpers/hermetic-env.mjs";
 import { BUILT_IN_PROVIDER_DEFINITIONS } from "../src/llm/registry/provider-info.js";
 import { SUBPROCESS_SECRET_ENV } from "../src/utils/subprocessEnv.js";
 import { AGENC_PROXY_SOCKET_DIR_PREFIX } from "../src/sandbox/linux-launcher/config.js";
+import { isMemoryExtractionDisabledByEnv } from "../src/memory/extraction-triggers.js";
 
 const HERMETIC_ENV_CONTRACT = JSON.parse(
   readFileSync(
@@ -175,6 +177,18 @@ describe("suite-level hermetic env (vitest.setup.ts)", () => {
 
   it("pins the auth backend env override to local (no id.agenc.ag logins)", () => {
     expect(process.env.AGENC_AUTH_BACKEND).toBe("local");
+  });
+
+  it("pins the turn-end memory-extraction fork off (no background sampling)", () => {
+    // The fork is detached (`void executeExtractMemories(...)` in
+    // src/phases/commit.ts) and its child samples the session's own provider,
+    // which in a test is the test's mock. Without this pin the child fires on
+    // the third eligible turn of whichever test the shared cadence counter
+    // reaches, and its samples land against wall clock. Deleting the pin makes
+    // this assertion fail before it makes some unrelated call-counting test
+    // fail intermittently.
+    expect(process.env[MEMORY_EXTRACTION_FENCE_ENV_VAR]).toBe("1");
+    expect(isMemoryExtractionDisabledByEnv(process.env)).toBe(true);
   });
 
   it("uses the canonical prelauncher environment instead of ambient behavior knobs", () => {

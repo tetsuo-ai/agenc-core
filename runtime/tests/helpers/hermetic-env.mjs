@@ -456,6 +456,55 @@ export const HERMETIC_HARNESS_INPUT_ENV_VARS = Object.freeze([
   'AGENC_TEST_ZERO_SKIP_REPORT',
 ])
 
+/**
+ * The turn-end memory-extraction fork, pinned OFF for the whole suite.
+ *
+ * The fork used to be fenced inside the turn: runTurn awaited
+ * `drainPendingExtraction()` before returning its terminal. Those two awaits
+ * were deliberately removed so extraction stops blocking a user's turn, which
+ * left a detached child agent that
+ *   - samples the SESSION'S OWN provider (src/agents/run-agent.ts ->
+ *     src/phases/stream-model.ts), i.e. the test's own mock, whose call
+ *     counter many tests assert on;
+ *   - runs on a lane keyed by conversation id, on a cadence of every third
+ *     eligible terminating turn (DEFAULT_MIN_ELIGIBLE_TURNS);
+ *   - is started with `void executeExtractMemories(...)` in
+ *     src/phases/commit.ts, so whether its samples land before an assertion
+ *     reads that counter is wall clock, not program order.
+ *
+ * Any test that drives three or more terminating turns and counts model calls
+ * or post-sampling launches is therefore intermittently wrong, and the failure
+ * lands in whichever test happened to be running when the counter reached the
+ * cadence -- not in the test that caused it. Two files had already been
+ * patched one at a time for exactly this (a retry test that counted three
+ * sampling attempts instead of two; a six-turn back-off test that counted 14,
+ * 12 or 16 depending on the scheduler), each time by stubbing this same
+ * variable for one file. Pinning it once here closes the class instead of
+ * waiting for the next file to go red.
+ *
+ * This is the documented production kill switch
+ * (src/memory/extraction-triggers.ts `isMemoryExtractionDisabledByEnv`), used
+ * the same way this file already pins AGENC_AUTH_BACKEND away from a live
+ * login: a default for ambient behavior no test asked for, not a claim that
+ * extraction is broken.
+ *
+ * It does NOT disable the tests that own extraction. The service reads its
+ * env from an injected dependency, so every caller of
+ * `initExtractMemories({ env })` -- all of
+ * tests/services/extractMemories/extractMemories.test.ts and
+ * tests/session/lifecycle.test.ts -- passes its own `env: {}` and never
+ * consults process.env; tests/memory/extraction-triggers.test.ts likewise
+ * calls `isMemoryExtractionDisabledByEnv` with an explicit object. A test that
+ * genuinely wants the process.env path live opts in with
+ * `vi.stubEnv(MEMORY_EXTRACTION_FENCE_ENV_VAR, "0")`, which runs after this
+ * pin (setup-file hooks are registered first) and wins.
+ *
+ * tests/session/background-extraction-fence.test.ts holds both halves: that
+ * the pin keeps the fork out of a turn-counting test, and that removing it
+ * puts the child's samples back on the same mock.
+ */
+export const MEMORY_EXTRACTION_FENCE_ENV_VAR = 'AGENC_DISABLE_EXTRACT_MEMORIES'
+
 /** OS launch inputs that cannot be synthesized portably. */
 export const HERMETIC_LAUNCH_PASSTHROUGH_ENV_VARS = Object.freeze([
   'COMSPEC',
@@ -538,6 +587,7 @@ export function createHermeticLaunchEnv(source, runRoot, options = {}) {
 
   const tempRoot = join(runRoot, 'tmp')
   mkdirSync(tempRoot, { mode: 0o700, recursive: true })
+  env[MEMORY_EXTRACTION_FENCE_ENV_VAR] = '1'
   env.FORCE_COLOR = '0'
   applyHermeticGitEnv(env, runRoot)
   env.LANG = 'C.UTF-8'
@@ -644,6 +694,9 @@ export function getOrCreateHermeticTestHome() {
  *   synthetic host env objects (daemon-cli contract tests) still pin
  *   `[auth] backend = "local"` in their own config.toml — see the
  *   task-27 breadcrumbs in tests/app-server/daemon-cli.contract.test.ts.
+ * - Forces MEMORY_EXTRACTION_FENCE_ENV_VAR=1 so the detached turn-end memory
+ *   extraction child never samples a test's provider mock behind its back.
+ *   See the constant's own comment for the failure class and the opt-in.
  */
 export function sanitizeHermeticEnv(env, agencHome, options = {}) {
   const marker = lockedHermeticRuntimeMarker()
@@ -667,6 +720,7 @@ export function sanitizeHermeticEnv(env, agencHome, options = {}) {
   env.AGENC_HOME = agencHome
   env.AGENC_MANAGED_HOME = join(agencHome, 'managed-home')
   env.AGENC_AUTH_BACKEND = 'local'
+  env[MEMORY_EXTRACTION_FENCE_ENV_VAR] = '1'
   env.HOME = agencHome
   env.USERPROFILE = agencHome
   env.APPDATA = join(agencHome, 'appdata')
