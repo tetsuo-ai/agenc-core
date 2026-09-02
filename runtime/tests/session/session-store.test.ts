@@ -50,6 +50,10 @@ import {
   AGENC_TRAJECTORY_EXPORT_PATH_ENV,
   TRAJECTORY_EXPORT_SCHEMA_VERSION,
 } from "./trajectory-export.js";
+import {
+  SLOW_STORE_OP_THRESHOLD_MS,
+  setSlowStoreOpReporter,
+} from "../utils/slow-store-op.js";
 
 describe("session-store", () => {
   let home = "";
@@ -2024,6 +2028,73 @@ describe("session-store", () => {
       store.setFsyncImplForTest(fsyncSync);
       store.close();
     }
+  });
+
+  test("a slow flush reports its timing without appending to the rollout", () => {
+    const store = new SessionStore({
+      cwd: "/home/test-slow-flush",
+      sessionId: "sess-slow-flush",
+      agencVersion: "0.2.0",
+    });
+    store.open({
+      sessionId: "sess-slow-flush",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-slow-flush",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+
+    // A mounted session turns every store diagnostic into `session.emit`,
+    // which appends a live-sequenced event to the rollout being flushed. If a
+    // slow flush went down that channel, the journal's contents would depend
+    // on how long one fsync took, and the appended warning would itself be
+    // flushed durably — so the slower the disk, the more it writes.
+    const diagnostics: string[] = [];
+    store.setDiagnosticListener((d) => {
+      diagnostics.push(d.cause);
+    });
+    const slowOps: string[] = [];
+    setSlowStoreOpReporter((warning) => {
+      slowOps.push(warning.label);
+    });
+    store.setFsyncImplForTest((fd: number) => {
+      const until = performance.now() + SLOW_STORE_OP_THRESHOLD_MS + 10;
+      while (performance.now() < until) {
+        // busy wait: the guard measures synchronous work on the event loop
+      }
+      return fsyncSync(fd);
+    });
+
+    try {
+      store.append(
+        {
+          id: "durable-slow",
+          seq: 1,
+          msg: { type: "turn_complete", payload: { turnId: "turn-slow" } },
+        },
+        { durable: true },
+      );
+    } finally {
+      store.setFsyncImplForTest(fsyncSync);
+      setSlowStoreOpReporter(undefined);
+    }
+
+    expect(diagnostics).not.toContain("slow_store_op");
+    expect(slowOps).toContain("rollout_flush_durable");
+    const eventTypes = readFileSync(store.rolloutPath, "utf8")
+      .trim()
+      .split("\n")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            readonly type?: string;
+            readonly payload?: { readonly msg?: { readonly type?: string } };
+          },
+      )
+      .filter((item) => item.type === "event_msg")
+      .map((item) => item.payload?.msg?.type);
+    expect(eventTypes).toEqual(["turn_complete"]);
+    store.close();
   });
 
   test("appendRollout inherits durable flushing for terminal event_msg rows", () => {

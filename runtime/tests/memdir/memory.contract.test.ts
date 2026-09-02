@@ -22,21 +22,22 @@ describe("memory subsystem contract", () => {
   });
 
   it("keeps only allowed production files in the old memdir boundary", () => {
+    // teamMemPrompts.ts left the boundary with the trimmed memory prompt: the
+    // combined team prompt described a sync this runtime does not implement
+    // and had no caller once loadMemoryPrompt stopped building it.
     for (const rel of [
       "runtime/src/memdir/memory-types.ts",
-      "runtime/src/memdir/teamMemPrompts.ts",
       "runtime/src/memdir/teamMemPaths.ts",
     ]) {
       expect(existsSync(resolve(root, rel)), rel).toBe(true);
     }
+    expect(
+      existsSync(resolve(root, "runtime/src/memdir/teamMemPrompts.ts")),
+    ).toBe(false);
     const productionFiles = readdirSync(resolve(root, "runtime/src/memdir"))
       .filter((entry) => entry.endsWith(".ts"))
       .filter((entry) => !entry.endsWith(".test.ts"))
       .sort();
-    expect(productionFiles).toEqual([
-      "memory-types.ts",
-      "teamMemPaths.ts",
-      "teamMemPrompts.ts",
-    ]);
+    expect(productionFiles).toEqual(["memory-types.ts", "teamMemPaths.ts"]);
   });
 });

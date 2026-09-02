@@ -323,6 +323,7 @@ export class PersistentMemoryIndex {
   readonly #beforeAuditReadForTesting?: () => void | Promise<void>;
   readonly #builderOwner = randomUUID();
   #ownerHeartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  #unusedRootsCleaned = false;
   #closed = false;
 
   constructor(options: PersistentMemoryIndexOptions) {
@@ -575,7 +576,13 @@ export class PersistentMemoryIndex {
           }
         }
       }
-      this.cleanupUnusedRoots();
+      // Idle-root garbage collection is a scan plus deletes over the whole
+      // roots table; once per index instance (one per database per process)
+      // is enough, not once per turn.
+      if (!this.#unusedRootsCleaned) {
+        this.#unusedRootsCleaned = true;
+        this.cleanupUnusedRoots();
+      }
       if (
         statuses.every(
           (status) =>

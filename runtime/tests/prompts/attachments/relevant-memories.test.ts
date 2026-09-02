@@ -2,7 +2,7 @@
  * Tests for the relevant durable-memory attachment producer.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -20,19 +20,32 @@ vi.mock("../../utils/settings/settings.js", async (importOriginal) => {
   };
 });
 
-import { getAttachmentTrackingState } from "../../session/attachment-state.js";
+import { getProjectRoot, setProjectRoot } from "../../bootstrap/state.js";
+import { ConfigStore } from "../../config/store.js";
+import {
+  getAttachmentTrackingState,
+  resetRelevantMemoryBudget,
+} from "../../session/attachment-state.js";
 import type {
   AdmittedMemorySelector,
   MemorySelectorRequest,
 } from "../../memory/recall-contract.js";
 import { closeFullCorpusMemoryIndexes } from "../../memory/find-relevant.js";
+import { getProjectMemoryPath } from "../../memory/paths.js";
+import {
+  enterCanonicalSettingsAuthority,
+  resetCanonicalSettingsAuthorityForTesting,
+} from "../../utils/settings/canonicalAuthority.js";
 import type { GetAttachmentsOptions } from "./orchestrator.js";
 import { relevantMemoriesProducer } from "./relevant-memories.js";
 
 let root: string;
 let cwd: string;
 let agencHome: string;
+/** Project memory root shared with the prompt and the extraction child. */
+let projectMemoryDir: string;
 let savedAgencHome: string | undefined;
+let savedProjectRoot = "";
 let selectedMemoryTitle = "";
 const selectorCall = vi.fn(async (request: MemorySelectorRequest) => ({
   kind: "selected" as const,
@@ -45,13 +58,18 @@ const admittedMemorySelector: AdmittedMemorySelector = {
 };
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "agenc-relevant-memory-"));
+  root = mkdtempSync(join(realpathSync(tmpdir()), "agenc-relevant-memory-"));
   cwd = join(root, "repo");
   agencHome = join(root, "home");
   mkdirSync(join(agencHome, "memory"), { recursive: true });
-  mkdirSync(join(cwd, ".agenc", "memory"), { recursive: true });
+  mkdirSync(cwd, { recursive: true });
   savedAgencHome = process.env.AGENC_HOME;
+  savedProjectRoot = getProjectRoot();
   process.env.AGENC_HOME = agencHome;
+  setProjectRoot(cwd);
+  installMemoryAuthority();
+  projectMemoryDir = getProjectMemoryPath();
+  mkdirSync(projectMemoryDir, { recursive: true });
   memoryAuthority.enabled = true;
   selectedMemoryTitle = "";
   selectorCall.mockClear();
@@ -59,6 +77,9 @@ beforeEach(() => {
 
 afterEach(() => {
   closeFullCorpusMemoryIndexes();
+  setProjectRoot(savedProjectRoot);
+  resetCanonicalSettingsAuthorityForTesting();
+  getProjectMemoryPath.cache?.clear?.();
   if (savedAgencHome === undefined) {
     delete process.env.AGENC_HOME;
   } else {
@@ -66,6 +87,22 @@ afterEach(() => {
   }
   rmSync(root, { recursive: true, force: true });
 });
+
+/**
+ * The canonical settings authority is AsyncLocalStorage-scoped, so it has to
+ * be entered inside each test body as well as in `beforeEach` (the vitest
+ * setup harness re-enters its own hermetic authority around hooks).
+ */
+function installMemoryAuthority(): void {
+  enterCanonicalSettingsAuthority(
+    new ConfigStore({
+      home: agencHome,
+      env: { ...process.env, AGENC_HOME: agencHome },
+      cwd,
+    }),
+  );
+  getProjectMemoryPath.cache?.clear?.();
+}
 
 function makeOpts(
   partial?: Partial<GetAttachmentsOptions>,
@@ -111,8 +148,25 @@ function selectMemory(name: string): void {
   selectedMemoryTitle = name.replace(/\.md$/u, "");
 }
 
+/**
+ * Enough extra matches to exceed MAX_RELEVANT_MEMORIES so the model-based
+ * selector is consulted; below that bound recall stays lexical and skips the
+ * main-model round trip.
+ */
+function writeFillerMemories(dir: string, term: string, count = 5): void {
+  for (let index = 0; index < count; index += 1) {
+    writeMemory(
+      dir,
+      `filler-${index}.md`,
+      `${term} filler ${index}`,
+      `Filler ${index} for ${term}.`,
+    );
+  }
+}
+
 describe("relevantMemoriesProducer", () => {
   test("skips without an AgenC home", async () => {
+    installMemoryAuthority();
     const trackingState = getAttachmentTrackingState({});
     const out = await relevantMemoriesProducer(
       makeOpts({ agencHome: undefined }),
@@ -122,13 +176,40 @@ describe("relevantMemoriesProducer", () => {
     expect(selectorCall).not.toHaveBeenCalled();
   });
 
-  test("recalls a matching memory for a one-word prompt", async () => {
+  test("recalls a matching memory for a one-word prompt without a selector round trip", async () => {
+    installMemoryAuthority();
     const memoryPath = writeMemory(
       join(agencHome, "memory"),
       "browser.md",
       "Browser guidance",
       "Use the browser workflow.",
     );
+    selectMemory("browser.md");
+    const trackingState = getAttachmentTrackingState({});
+    const out = await relevantMemoriesProducer(
+      makeOpts({ userInput: "browser" }),
+      trackingState,
+    );
+    // One candidate already fits the attachment limit: no main-model call.
+    expect(out).toMatchObject([
+      {
+        kind: "relevant_memories",
+        memories: [{ path: memoryPath, selectionSource: "lexical" }],
+      },
+    ]);
+    expect(selectorCall).not.toHaveBeenCalled();
+  });
+
+  test("reranks through the selector only when more than five candidates match", async () => {
+    installMemoryAuthority();
+    const memoryDir = join(agencHome, "memory");
+    const memoryPath = writeMemory(
+      memoryDir,
+      "browser.md",
+      "Browser guidance",
+      "Use the browser workflow.",
+    );
+    writeFillerMemories(memoryDir, "browser");
     selectMemory("browser.md");
     const trackingState = getAttachmentTrackingState({});
     const out = await relevantMemoriesProducer(
@@ -142,9 +223,11 @@ describe("relevantMemoriesProducer", () => {
       },
     ]);
     expect(selectorCall).toHaveBeenCalledTimes(1);
+    expect(selectorCall.mock.calls[0]?.[0].candidates).toHaveLength(6);
   });
 
   test("skips when auto-memory is disabled", async () => {
+    installMemoryAuthority();
     memoryAuthority.enabled = false;
     const trackingState = getAttachmentTrackingState({});
     const out = await relevantMemoriesProducer(makeOpts(), trackingState);
@@ -153,6 +236,7 @@ describe("relevantMemoriesProducer", () => {
   });
 
   test("surfaces selected durable memory with bounded content and citation metadata", async () => {
+    installMemoryAuthority();
     const memoryDir = join(agencHome, "memory");
     const memoryPath = writeMemory(
       memoryDir,
@@ -160,6 +244,7 @@ describe("relevantMemoriesProducer", () => {
       "Browser automation guidance",
       "Use the browser automation workflow.",
     );
+    writeFillerMemories(memoryDir, "browser automation");
     selectMemory("browser.md");
     const trackingState = getAttachmentTrackingState({});
 
@@ -197,7 +282,8 @@ describe("relevantMemoriesProducer", () => {
     expect(selectorCall.mock.calls[0]?.[0].recentTools).toEqual(["browser"]);
   });
 
-  test("dedupes memories already surfaced in the session", async () => {
+  test("surfaces a matching memory again on the next request", async () => {
+    installMemoryAuthority();
     const memoryDir = join(agencHome, "memory");
     const memoryPath = writeMemory(
       memoryDir,
@@ -207,17 +293,47 @@ describe("relevantMemoriesProducer", () => {
     );
     selectMemory("browser.md");
     const trackingState = getAttachmentTrackingState({});
-    trackingState.surfacedRelevantMemoryPaths.add(memoryPath);
 
+    // Attachments live only in the request projection, so a memory that
+    // matched the previous request must be shown again, not blocked for the
+    // rest of the session.
+    const first = await relevantMemoriesProducer(makeOpts(), trackingState);
+    const second = await relevantMemoriesProducer(makeOpts(), trackingState);
+
+    for (const out of [first, second]) {
+      expect(out).toMatchObject([
+        { kind: "relevant_memories", memories: [{ path: memoryPath }] },
+      ]);
+    }
+    expect(trackingState.surfacedRelevantMemoryPaths).toEqual(new Set([memoryPath]));
+    expect(trackingState.surfacedRelevantMemoryBytes).toBeGreaterThan(0);
+  });
+
+  test("compaction resets the cumulative recall budget", async () => {
+    installMemoryAuthority();
+    const memoryDir = join(agencHome, "memory");
+    writeMemory(
+      memoryDir,
+      "browser.md",
+      "Browser automation guidance",
+      "Use the browser automation workflow.",
+    );
+    selectMemory("browser.md");
+    const sessionKey = {};
+    const trackingState = getAttachmentTrackingState(sessionKey);
+    trackingState.surfacedRelevantMemoryBytes = 60 * 1_024;
+
+    expect(await relevantMemoriesProducer(makeOpts(), trackingState)).toEqual([]);
+
+    resetRelevantMemoryBudget(sessionKey);
+    expect(trackingState.surfacedRelevantMemoryBytes).toBe(0);
     const out = await relevantMemoriesProducer(makeOpts(), trackingState);
-
-    expect(out).toEqual([]);
-    expect(selectorCall).not.toHaveBeenCalled();
+    expect(out).toHaveLength(1);
   });
 
   test("injects project/CWD-keyed memories on the first turn without a user query", async () => {
-    const projectMemoryDir = join(cwd, ".agenc", "memory");
-    const globalMemoryDir = join(agencHome, "memory");
+    installMemoryAuthority();
+        const globalMemoryDir = join(agencHome, "memory");
     const projectPath = writeMemory(
       projectMemoryDir,
       "build-notes.md",
@@ -266,8 +382,8 @@ describe("relevantMemoriesProducer", () => {
   });
 
   test("session-start recall fires only on the first producer run", async () => {
-    const projectMemoryDir = join(cwd, ".agenc", "memory");
-    writeMemory(
+    installMemoryAuthority();
+        writeMemory(
       projectMemoryDir,
       "build-notes.md",
       "Build pipeline notes",
@@ -298,8 +414,9 @@ describe("relevantMemoriesProducer", () => {
   });
 
   test("skips session-start recall for subagents", async () => {
+    installMemoryAuthority();
     writeMemory(
-      join(cwd, ".agenc", "memory"),
+      projectMemoryDir,
       "build-notes.md",
       "Build pipeline notes",
       "Run the runtime build twice.",
@@ -314,6 +431,7 @@ describe("relevantMemoriesProducer", () => {
   });
 
   test("does not double-inject when the first prompt is a real query", async () => {
+    installMemoryAuthority();
     const globalMemoryDir = join(agencHome, "memory");
     const browserPath = writeMemory(
       globalMemoryDir,
@@ -322,7 +440,7 @@ describe("relevantMemoriesProducer", () => {
       "Use the browser automation workflow.",
     );
     writeMemory(
-      join(cwd, ".agenc", "memory"),
+      projectMemoryDir,
       "build-notes.md",
       "Build pipeline notes",
       "Run the runtime build twice.",
@@ -347,7 +465,29 @@ describe("relevantMemoriesProducer", () => {
     expect(second).toEqual([]);
   });
 
+  test("redacts secrets in recalled memory content", async () => {
+    installMemoryAuthority();
+    const token = `ghp_${"A".repeat(36)}`;
+    writeMemory(
+      join(agencHome, "memory"),
+      "browser.md",
+      "Browser automation guidance",
+      `Use the browser workflow with token=${token} for the staging bot.`,
+    );
+    const trackingState = getAttachmentTrackingState({});
+
+    const out = await relevantMemoriesProducer(makeOpts(), trackingState);
+
+    expect(out[0]?.kind).toBe("relevant_memories");
+    if (out[0]?.kind !== "relevant_memories") {
+      throw new Error("expected relevant_memories");
+    }
+    expect(out[0].memories[0]?.content).toContain("token=[REDACTED]");
+    expect(out[0].memories[0]?.content).not.toContain(token);
+  });
+
   test("truncates large selected memories before attachment emission", async () => {
+    installMemoryAuthority();
     const memoryDir = join(agencHome, "memory");
     writeMemory(
       memoryDir,
@@ -376,6 +516,7 @@ describe("relevantMemoriesProducer", () => {
   });
 
   test("never crosses the cumulative session byte budget with truncation metadata", async () => {
+    installMemoryAuthority();
     const memoryDir = join(agencHome, "memory");
     writeMemory(
       memoryDir,

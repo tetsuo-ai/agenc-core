@@ -80,12 +80,15 @@ export {
 } from './scan.js'
 
 export {
+  buildProjectMemoryDirectory,
   getAutoMemEntrypoint,
   getAutoMemDailyLogPath,
   getAutoMemPath,
+  getDurableMemoryRoots,
   getGlobalMemoryEntrypoint,
   getGlobalMemoryPath,
   getMemoryBaseDir,
+  getMemoryProjectRoot,
   getProjectInstructionPath,
   getProjectMemoryEntrypoint,
   getProjectMemoryPath,
@@ -105,6 +108,7 @@ export {
 export {
   detectSessionFileType,
   detectSessionPatternType,
+  checkMemorySecrets,
   checkTeamMemSecrets,
   getSecretLabel,
   isAutoManagedMemoryFile,

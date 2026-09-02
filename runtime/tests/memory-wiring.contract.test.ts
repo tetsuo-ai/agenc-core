@@ -66,16 +66,34 @@ describe("memory wiring contract", () => {
     expect(projectMemory).toContain("getProjectMemoryPathForSelector");
     expect(projectMemory).toContain("MEMORY_MENTION_SYNTAX");
     expect(projectMemory).toContain("./privacy.js");
-    expect(fileWriteTool).toContain("../../memory/index.js");
+    // Names the defining module, not the index: a tool importing the memory
+    // barrel closes a cycle back through utils/attachments. See the allowlist
+    // comment in the import test below.
+    expect(fileWriteTool).toContain("../../memory/privacy.js");
     expect(attachments).toContain("getDurableMemorySearchDirs");
     expect(attachments).toContain("getGlobalMemoryPath");
     expect(filesystem).toContain("isGlobalMemoryPath");
   });
 
   it("routes runtime tool and code memory access through the public index", () => {
+    // The rule is that code outside runtime/src/memory reaches memory through
+    // the public index. These files cannot: memory/index.js re-exports
+    // memory/agencmd.ts, which imports utils/hooks.ts -> utils/attachments.ts
+    // -> tools/system/filesystem.ts, so a tool importing the index closes a
+    // cycle. Under that cycle a module can be evaluated before its
+    // dependencies finish initializing, which took down the filesystem suite
+    // (envDynamic calling a not-yet-defined stat at import time on Linux) and
+    // the in-process teammate compaction suite (its rollout store was never
+    // created). Each of these needs one pure function, so each names the
+    // module that defines it.
     const directImportAllowlist = new Set([
       "runtime/src/memdir/teamMemPaths.ts",
       "runtime/src/memdir/teamMemPrompts.ts",
+      "runtime/src/tools/system/filesystem.ts",
+      "runtime/src/tools/system/file-edit.ts",
+      "runtime/src/tools/system/file-write.ts",
+      "runtime/src/tools/FileWriteTool/FileWriteTool.ts",
+      "runtime/src/services/extractMemories/memory-paths.ts",
     ]);
     const directMemoryModuleImport =
       /(?:from\s+|import\s*\(\s*)["'][^"']*memory\/(?:project-memory|agencmd|find-relevant|scan|age|paths|detection|privacy)\.js["']/g;

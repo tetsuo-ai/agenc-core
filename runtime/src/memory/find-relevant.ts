@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+
 import {
   MAX_RELEVANT_MEMORIES,
   buildMemorySelectorRequest,
@@ -99,9 +101,13 @@ export async function findRelevantMemories(
   if (ranked.length === 0) return [];
 
   const lexicalFallback = selectLexicalFallback(ranked);
+  // The selector can only drop candidates. When every ranked candidate
+  // already fits the attachment limit there is nothing for a rerank to
+  // change, so skip the extra main-model round trip on the request path.
   if (
     options.admittedMemorySelector === undefined ||
-    options.mode === "session_start"
+    options.mode === "session_start" ||
+    ranked.length <= MAX_RELEVANT_MEMORIES
   ) {
     return lexicalFallback;
   }
@@ -209,6 +215,12 @@ async function tryFullCorpusRanking(
   }
   const normalizedQuery = normalizeMemoryQuery(options.query);
   if (normalizedQuery.terms.length === 0) return [];
+  // With no memory directory on disk there is nothing to index. Skip the
+  // open/refresh (root upsert, watcher setup, fsync'd WAL traffic) that would
+  // otherwise run on every turn and let the bounded scan report nothing.
+  if (!options.memoryDirs.some((directory) => existsSync(directory))) {
+    return null;
+  }
   const index = getFullCorpusIndex(options.memoryIndexDatabasePath);
   const roots: MemoryIndexRootSpec[] = options.memoryDirs.map((path, rootIndex) => ({
     path,

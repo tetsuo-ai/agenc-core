@@ -627,19 +627,30 @@ async function waitForCondition(
   throw new Error(`timed out waiting for ${description}`);
 }
 
-async function waitForSnapshotCount(
+/**
+ * Resolve with the newest snapshot_at of the session once a row newer than
+ * `after` exists. Restart recovery writes each recovered session once, at
+ * hydration, with the daemon's real clock; under the default snapshot_days
+ * retention that write also prunes a seeded row that is older than the
+ * window, so a row count cannot serve as the evidence that recovery wrote.
+ */
+async function waitForSnapshotAfter(
   agencHome: string,
   cwd: string,
   sessionId: string,
-  minimum: number,
-): Promise<number> {
+  after: string,
+): Promise<string> {
   const startedAt = Date.now();
+  let newest: string | undefined;
   while (Date.now() - startedAt < 2_000) {
-    const count = snapshotCount(agencHome, cwd, sessionId);
-    if (count >= minimum) return count;
+    const times = readSnapshotTimes(agencHome, cwd, sessionId);
+    newest = times[times.length - 1];
+    if (newest !== undefined && newest > after) return newest;
     await delay(10);
   }
-  throw new Error(`timed out waiting for snapshots for ${sessionId}`);
+  throw new Error(
+    `timed out waiting for a snapshot of ${sessionId} newer than ${after}; newest: ${newest ?? "none"}`,
+  );
 }
 
 async function waitForRecoveredToolStatus(
@@ -4656,12 +4667,24 @@ snapshot_max_bytes = 64
       { host, io, signalProcess, runner, snapshotPeriodicIntervalMs: 10 },
     );
     await expect(waitForPid(pidPath)).resolves.toBe(4100);
-    await expect(
-      waitForSnapshotCount(agencHome, process.cwd(), "session-restart", 2),
-    ).resolves.toBeGreaterThanOrEqual(2);
-    await expect(
-      waitForSnapshotCount(agencHome, otherCwd, "session-other", 2),
-    ).resolves.toBeGreaterThanOrEqual(2);
+    // Each recovered session is re-written once at hydration, before the
+    // daemon advertises readiness. That write replaces the seeded row (it is
+    // older than the default snapshot_days window and is pruned on the same
+    // write), so the evidence is a row newer than the seed, not a row count.
+    const restartSnapshotAt = await waitForSnapshotAfter(
+      agencHome,
+      process.cwd(),
+      "session-restart",
+      SEEDED_RECOVERY_SNAPSHOT_AT,
+    );
+    expect(restartSnapshotAt > SEEDED_RECOVERY_SNAPSHOT_AT).toBe(true);
+    const otherSnapshotAt = await waitForSnapshotAfter(
+      agencHome,
+      otherCwd,
+      "session-other",
+      SEEDED_RECOVERY_SNAPSHOT_AT,
+    );
+    expect(otherSnapshotAt > SEEDED_RECOVERY_SNAPSHOT_AT).toBe(true);
     expect(
       latestSnapshotToolState(agencHome, otherCwd, "session-other"),
     ).toMatchObject({
@@ -6017,6 +6040,22 @@ snapshot_max_bytes = 64
     if (sessionId === undefined) throw new Error("session id missing");
     expect(binding?.sessionId).toBe(sessionId);
     expect(snapshotCount(agencHome, process.cwd(), sessionId)).toBe(0);
+    // agent.create writes the running status first; the attach-time tool
+    // event lands inside the one-second coalescing window and is written by
+    // the trailing timer, so wait for it before reading the routed row.
+    await waitForCondition(() => {
+      try {
+        const toolState = latestSnapshotToolState(
+          agencHome,
+          otherCwd,
+          sessionId,
+        ) as { readonly inFlight?: Record<string, unknown> };
+        return toolState.inFlight?.["tool-early-route"] !== undefined;
+      } catch {
+        return false;
+      }
+    }, "the attach-time tool event in the non-default project snapshot");
+    expect(snapshotCount(agencHome, process.cwd(), sessionId)).toBe(0);
     expect(
       latestSnapshotToolState(agencHome, otherCwd, sessionId),
     ).toMatchObject({
@@ -6061,6 +6100,9 @@ snapshot_max_bytes = 64
   });
 });
 
+/** snapshot_at of the recovered row seeded by seedRecoverableDaemonState. */
+const SEEDED_RECOVERY_SNAPSHOT_AT = "2026-05-01T00:06:00.000Z";
+
 function seedRecoverableDaemonState(
   agencHome: string,
   params: {
@@ -6103,7 +6145,7 @@ function seedRecoverableDaemonState(
         "2026-05-01T00:05:00.000Z",
         params.sessionId,
         "client-1",
-        "2026-05-01T00:06:00.000Z",
+        SEEDED_RECOVERY_SNAPSHOT_AT,
         JSON.stringify({
           agentPath: `/root/${params.runId.replaceAll("-", "_")}`,
           ...(params.includeRuntimeOptions === false
@@ -6123,7 +6165,7 @@ function seedRecoverableDaemonState(
       )
       .run(
         params.sessionId,
-        "2026-05-01T00:06:00.000Z",
+        SEEDED_RECOVERY_SNAPSHOT_AT,
         JSON.stringify([{ role: "assistant", content: "state" }]),
         JSON.stringify({
           pending: params.toolCallId === undefined ? [] : [params.toolCallId],

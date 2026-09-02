@@ -54,6 +54,7 @@ import {
   SESSION_ID_ARG,
   type SessionReadViewKind,
 } from "./filesystem.js";
+import { checkMemorySecrets } from "../../memory/privacy.js";
 import {
   agentNamespacePathHint,
   denyAgentNamespacePath,
@@ -392,6 +393,13 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
         );
       }
       const absolutePath = safe.resolved;
+
+      // Durable memory is plain text under $AGENC_HOME that re-enters later
+      // prompts: never persist a secret there.
+      const secretError = checkMemorySecrets(absolutePath, content);
+      if (secretError !== null) {
+        return preMutationErrorResult(secretError);
+      }
 
       const sessionId =
         typeof args[SESSION_ID_ARG] === "string" &&

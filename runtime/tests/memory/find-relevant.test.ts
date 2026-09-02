@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +18,29 @@ afterEach(async () => {
     temporaryRoot = "";
   }
 });
+
+/**
+ * Enough extra matches to exceed MAX_RELEVANT_MEMORIES, so the selector is
+ * consulted; below that bound recall stays lexical.
+ */
+async function fillerMemories(
+  root: string,
+  term: string,
+  count = 5,
+): Promise<string[]> {
+  const paths: string[] = [];
+  for (let index = 0; index < count; index += 1) {
+    paths.push(
+      await memory(
+        root,
+        `filler-${index}.md`,
+        `Filler ${index}`,
+        `${term} filler ${index}`,
+      ),
+    );
+  }
+  return paths;
+}
 
 async function memory(
   root: string,
@@ -60,6 +84,29 @@ describe("C3a relevant memory selection", () => {
     expect(result.map((entry) => entry.path)).toEqual([matching]);
   });
 
+  it("skips the selector when the lexical ranking already fits the attachment limit", async () => {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3a-find-"));
+    const alpha = await memory(temporaryRoot, "alpha.md", "Alpha browser", "Browser notes");
+    const beta = await memory(temporaryRoot, "beta.md", "Beta browser", "Browser warning");
+    const select = vi.fn(async () => ({
+      kind: "selected" as const,
+      candidateIds: ["candidate-2"],
+    }));
+
+    const result = await findRelevantMemories({
+      query: "browser",
+      memoryDirs: [temporaryRoot],
+      signal: new AbortController().signal,
+      admittedMemorySelector: { select },
+    });
+
+    // Two candidates cannot be narrowed below the five-memory limit, so the
+    // main-model round trip is skipped and both stay in lexical order.
+    expect(select).not.toHaveBeenCalled();
+    expect(new Set(result.map((entry) => entry.path))).toEqual(new Set([alpha, beta]));
+    expect(result.every((entry) => entry.selectionSource === "lexical")).toBe(true);
+  });
+
   it("passes only opaque candidates and accepts a validated selector subset", async () => {
     temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3a-find-"));
     await memory(temporaryRoot, "alpha.md", "Alpha browser", "Browser notes");
@@ -69,6 +116,7 @@ describe("C3a relevant memory selection", () => {
       "Beta browser",
       "Browser warning",
     );
+    await fillerMemories(temporaryRoot, "browser");
     let observed: MemorySelectorRequest | undefined;
     const selector: AdmittedMemorySelector = {
       select: vi.fn(async (request) => {
@@ -94,7 +142,7 @@ describe("C3a relevant memory selection", () => {
     expect(observed?.policy).toBe("agenc.memory-selector.v1");
     expect(
       observed?.candidates.map((candidate) => candidate.id).sort(),
-    ).toEqual(["candidate-1", "candidate-2"]);
+    ).toEqual(Array.from({ length: 7 }, (_, index) => `candidate-${index + 1}`));
     expect(JSON.stringify(observed)).not.toContain(temporaryRoot);
   });
 
@@ -107,6 +155,7 @@ describe("C3a relevant memory selection", () => {
       "Preferred",
     );
     await memory(temporaryRoot, "other.md", "browser", "Secondary");
+    await fillerMemories(temporaryRoot, "browser");
     const outcomes = [
       { kind: "selected", candidateIds: ["invented"] } as const,
       { kind: "selected", candidateIds: ["candidate-1", "candidate-1"] } as const,
@@ -135,6 +184,12 @@ describe("C3a relevant memory selection", () => {
       "Recent",
       "Session context",
     );
+    // Session-start recall is recency ranked: age the fillers so `recent`
+    // stays inside the five-memory window while six candidates exist.
+    const oldTime = new Date("2020-01-01T00:00:00.000Z");
+    for (const filler of await fillerMemories(temporaryRoot, "session")) {
+      await utimes(filler, oldTime, oldTime);
+    }
     const select = vi.fn(async () => ({
       kind: "selected" as const,
       candidateIds: [],
@@ -156,13 +211,15 @@ describe("C3a relevant memory selection", () => {
       signal: new AbortController().signal,
       admittedMemorySelector: selector,
     });
-    expect(sessionStart.map((entry) => entry.path)).toEqual([recent]);
+    expect(sessionStart).toHaveLength(5);
+    expect(sessionStart.map((entry) => entry.path)).toContain(recent);
     expect(select).toHaveBeenCalledTimes(1);
   });
 
   it("propagates the original abort reason across the selector layer", async () => {
     temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3a-find-"));
     await memory(temporaryRoot, "browser.md", "Browser", "Browser notes");
+    await fillerMemories(temporaryRoot, "browser");
     const controller = new AbortController();
     const reason = new Error("stop selector");
     const selector: AdmittedMemorySelector = {
@@ -180,6 +237,22 @@ describe("C3a relevant memory selection", () => {
         admittedMemorySelector: selector,
       }),
     ).rejects.toBe(reason);
+  });
+
+  it("does not open the full-corpus index when no memory directory exists", async () => {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3a-find-"));
+    const databasePath = join(temporaryRoot, "state", "memory-v1.sqlite");
+    await mkdir(join(temporaryRoot, "state"));
+
+    const result = await findRelevantMemories({
+      query: "browser",
+      memoryDirs: [join(temporaryRoot, "missing-global"), join(temporaryRoot, "missing-project")],
+      signal: new AbortController().signal,
+      memoryIndexDatabasePath: databasePath,
+    });
+
+    expect(result).toEqual([]);
+    expect(existsSync(databasePath)).toBe(false);
   });
 
   it("clamps both lexical and selector paths to five memories", async () => {

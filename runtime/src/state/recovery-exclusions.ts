@@ -142,6 +142,27 @@ export function storageUnavailableRecoveryExclusion(
   });
 }
 
+/**
+ * In-memory (never persisted) exclusion for an on-demand read that found the
+ * canonical source owned by a live writer. The caller keeps serving the
+ * current projection; nothing durable is recorded against the run.
+ */
+export function liveSourceRecoveryExclusion(
+  runId: string,
+  sourcePath: string,
+): RecoveryRunExclusion {
+  return Object.freeze({
+    runId,
+    kind: "deferred",
+    sourceKind: "run_journal",
+    sourcePath,
+    reasonCode: "source_not_quiescent",
+    safeDetail:
+      "canonical recovery source is live; the current projection was served",
+    permanent: false,
+  });
+}
+
 function assertSqlColumnExpression(expression: string, label: string): void {
   if (!/^[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?$/u.test(expression)) {
     throw new TypeError(`recovery ${label} SQL expression is invalid`);

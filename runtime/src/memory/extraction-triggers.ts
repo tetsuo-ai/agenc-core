@@ -110,23 +110,46 @@ export function isMemoryExtractionDisabledByEnv(
   return isEnvTruthy((env ?? process.env).AGENC_DISABLE_EXTRACT_MEMORIES);
 }
 
+/**
+ * Eligible terminating turns between extraction runs. One full-history child
+ * per turn is the most expensive thing the runtime does in the background, so
+ * by default the child runs on every third eligible turn; a trailing run that
+ * coalesced newer context never waits.
+ */
+export const DEFAULT_MIN_ELIGIBLE_TURNS = 3;
+
 function resolveMinEligibleTurns(value: number | undefined): number {
-  return Math.max(1, Math.trunc(value ?? 1));
+  return Math.max(1, Math.trunc(value ?? DEFAULT_MIN_ELIGIBLE_TURNS));
 }
 
+/**
+ * Whether to hold this extraction back for the cadence.
+ *
+ * The counter is process-local: it lives in the in-process lane map, so a
+ * daemon restart begins the wait again while the conversation it is pacing
+ * stays on disk. That gap is tracked separately; the cadence state belongs in
+ * persisted session state, and until it is there a restart costs at most one
+ * further cadence before memory is written again.
+ *
+ * An earlier version tried to close that gap by letting the first decision in
+ * a process read the unprocessed backlog instead of the counter, on the theory
+ * that a large backlog means the process inherited a conversation it did not
+ * build. One turn with tool calls and attachments produces more messages than
+ * any threshold that heuristic could use, so it fired on the first turn of a
+ * new session and launched a full-history child there. Message counts cannot
+ * tell "inherited a conversation" from "just built one", so it is gone rather
+ * than retuned.
+ */
 export function shouldDeferForEligibleTurnCadence(params: {
   readonly state: MemoryExtractionTriggerState;
   readonly minEligibleTurns: number | undefined;
   readonly isTrailingRun: boolean;
-}): boolean {
-  if (params.isTrailingRun) return false;
+}): { readonly defer: boolean; readonly waiting: number } {
+  if (params.isTrailingRun) return { defer: false, waiting: 0 };
   params.state.turnsSinceLastExtraction += 1;
-  if (
-    params.state.turnsSinceLastExtraction <
-    resolveMinEligibleTurns(params.minEligibleTurns)
-  ) {
-    return true;
-  }
+  const minimum = resolveMinEligibleTurns(params.minEligibleTurns);
+  const waiting = params.state.turnsSinceLastExtraction;
+  if (waiting < minimum) return { defer: true, waiting };
   params.state.turnsSinceLastExtraction = 0;
-  return false;
+  return { defer: false, waiting: minimum };
 }

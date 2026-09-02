@@ -28,7 +28,7 @@ The sole home authority is `AGENC_HOME`, defaulting to `$HOME/.agenc`
 | --- | --- | --- |
 | Config home / memory base | `$AGENC_HOME` | Override base with `AGENC_REMOTE_MEMORY_DIR` |
 | Global durable memory | `$AGENC_HOME/memory/` | Entrypoint `MEMORY.md` |
-| Project auto-memory | `<projectRoot>/.agenc/memory/` | Entrypoint `MEMORY.md` |
+| Project auto-memory | `$AGENC_HOME/projects/<sanitized-git-root>/memory/` | Entrypoint `MEMORY.md`; shared by the prompt, recall and extraction |
 | Project instructions | `<projectRoot>/AGENC.md` | Preferred root instruction file |
 | User instructions | `$AGENC_HOME/AGENC.md` | Private global |
 | Daily auto-mem logs | `<autoMemPath>/logs/YYYY/MM/YYYY-MM-DD.md` | Distilled later by dream/extract flows when enabled |
@@ -39,8 +39,9 @@ The sole home authority is `AGENC_HOME`, defaulting to `$HOME/.agenc`
 
 1. `AGENC_COWORK_MEMORY_PATH_OVERRIDE` (absolute full-path override)
 2. The trusted canonical auto-memory directory preference (managed/user; never a committed project value)
-3. If `AGENC_REMOTE_MEMORY_DIR` is set: `$base/projects/<sanitized-git-root>/memory/`
-4. Else: `<projectRoot>/.agenc/memory/`
+3. `$base/projects/<sanitized-git-root>/memory/`, where `$base` is
+   `AGENC_REMOTE_MEMORY_DIR` when set and `$AGENC_HOME` otherwise
+   (`buildProjectMemoryDirectory`). Memory never lands inside the repository.
 
 Git worktrees of the same repo share one auto-memory directory when a
 canonical git root is found.
@@ -80,6 +81,37 @@ Recommended soft cap: `MAX_MEMORY_CHARACTER_COUNT` (40_000). Entrypoint
 `MEMORY.md` also line/byte truncated for prompt injection
 (`MAX_ENTRYPOINT_LINES` 200, `MAX_ENTRYPOINT_BYTES` 25_000).
 
+### Memory prompt
+
+When auto memory is enabled, `loadMemoryPrompt()` (`memory/memdir.ts`)
+returns two pieces that the system prompt assembler places separately:
+
+- `instructions`: path-free guidance (when to save, where, the
+  one-fact-per-file frontmatter format, the `MEMORY.md` index, how to recall)
+  rendered under `# auto memory` in the cacheable static head.
+- `directories`: the `# Memory directories` block with the global and project
+  paths (and any host-injected per-session guidance) rendered in the dynamic
+  tail.
+
+`prepareTurnRuntimeInputs`, `assembleBaseInstructionsForModel` and the
+`/context` estimate all go through `resolveMemoryPromptInputs()`, and the
+loader creates both memory directories so the model can write to them
+without checking first. The block is about 700 tokens in total.
+
+Each live turn also appends the global and project `MEMORY.md` indexes to
+the instruction envelope (`prompts/live-instructions.ts`), truncated by
+`truncateEntrypointContent` and framed as untrusted
+`<persistent_memory_context type="AutoMem">` blocks ahead of the trusted
+base prompt.
+
+The file tools (`FileRead`, `Glob`, `Grep`, `Write`, `Edit`, `MultiEdit`)
+admit both memory roots regardless of the workspace boundary
+(`resolveToolAllowedPaths` folds in `getDurableMemoryRoots()`), so the model
+can read and write where the prompt points. Only those two directories are
+admitted: sibling state under `$AGENC_HOME` such as
+`projects/<slug>/sessions/`, `config.toml` or `auth.json` stays denied, and
+memory writes through these tools are screened by `checkMemorySecrets`.
+
 ---
 
 ## Persona files (workspace root)
@@ -116,6 +148,20 @@ dirs; extract/background helpers may run on interactive sessions (also gated by
 build features such as `EXTRACT_MEMORIES`). Session memory lives in conversation
 state, not a separate durable path contract.
 
+The session-notes subagent (`memory/session`, writes `summary.md`) is **off by
+default**: nothing reads the notes yet and compaction already summarizes the
+same material, so it only runs when `AGENC_SESSION_MEMORY_ENABLED=1` is set
+(`AGENC_DISABLE_SESSION_MEMORY=1` still wins). Failures surface as the
+`session_memory_update_failed` warning.
+
+The extraction child (`services/extractMemories`) forks the full history on
+every third eligible terminating turn by default (`DEFAULT_MIN_ELIGIBLE_TURNS`),
+sees only the file read/write tools (`MEMORY_EXTRACTION_TOOL_ALLOWLIST`) inside
+the memory directory, and never blocks a turn: in-flight runs are drained at
+session shutdown. Every gate that stops a run and every failed run emits a
+`warning` event with cause `memory_extraction_skipped` or
+`memory_extraction_failed` (session log only; not shown in the transcript).
+
 Query-time recall of those files uses the full-corpus index below when a
 resolved `AGENC_HOME` is available. Session-start recall never uses the index.
 
@@ -143,13 +189,13 @@ generations are never queryable.
 `disabled`, under the 60 KiB session-surface budget) calls
 `findRelevantMemories` with:
 
-1. Global root `$AGENC_HOME/memory/` (`role: "global"`)
-2. Project root `<cwd>/.agenc/memory/` (`role: "project"`)
+1. Global root `getGlobalMemoryPath()` (`$AGENC_HOME/memory/`, `role: "global"`)
+2. Project root `getProjectMemoryPath()` (`role: "project"`)
 
-Those two directories are the attachment's search set. They do **not**
-follow `getProjectMemoryPath` (remote override, worktree-shared canonical
-root). Writes that landed only under an override path are invisible to
-index recall until they also exist in one of the two roots above.
+Those two directories are the attachment's search set. They are the same
+resolvers the memory prompt and the permission carve-outs use, so recall
+follows remote bases, trusted overrides and worktree-shared canonical roots
+and searches exactly where the model and the extraction child write.
 
 On a non-empty user query (`mode: "query"`):
 
@@ -161,9 +207,12 @@ On a non-empty user query (`mode: "query"`):
 3. If the index is missing, closed, FTS-less, or
    `query_resource_limited` / `unavailable`, recall falls back to a bounded
    filesystem scan (`scanMemoryRoots` + `rankMemoryHeaders`).
-4. An optional admitted memory selector may rerank; failure returns the
-   lexical top `MAX_RELEVANT_MEMORIES` (5). Each surfaced file is then
-   truncated to 200 lines / 4 KiB for the prompt.
+4. An optional admitted memory selector may rerank, but only when more than
+   `MAX_RELEVANT_MEMORIES` (5) candidates ranked: with five or fewer there is
+   nothing to drop, so the main-model round trip is skipped. The selector has
+   a 5 s deadline (`MAX_MEMORY_SELECTOR_MS`); failure or timeout returns the
+   lexical top 5. Each surfaced file is then truncated to 200 lines / 4 KiB
+   for the prompt.
 
 `mode: "session_start"` (first empty-query turn, not a subagent) always
 scans. It never opens the index.
@@ -291,6 +340,12 @@ Related mentions: memory mention aliases / `@` syntax from project-memory helper
 - Classifies paths as personal auto-memory vs team (feature `TEAMMEM`) vs session transcript / session-memory under config home
 - Secret scanning / redaction before write or sync paths (`scanForSecrets`, `redactSecrets`, `checkTeamMemSecrets`)
 - Auto-managed memory files are distinct from operator instruction files such as `AGENC.md`
+
+Durable memory writes are screened for secrets: `checkMemorySecrets` denies a
+`Write` into any global or project memory file whose content matches a secret
+rule, and the extraction child's tool policy denies `Write`/`Edit`/`MultiEdit`
+content the same way. Recalled memory content and the loaded `MEMORY.md`
+indexes pass through `redactSecrets` before they reach the prompt.
 
 Persistent memory in the prompt is labeled untrusted: stale or model-authored
 content must not override current user instructions, permission gates, or live

@@ -16,25 +16,23 @@ afterEach(() => {
 });
 
 describe("memory prompt feature branches", () => {
-  it("keeps D-13 layers and save destinations when TEAMMEM is enabled", async () => {
+  it("keeps the trimmed auto-memory prompt when TEAMMEM is enabled", async () => {
     const { memory, paths } = await loadMemoryHarness({
       features: ["TEAMMEM"],
     });
 
     const prompt = await memory.loadMemoryPrompt();
 
-    expect(prompt).toContain("Global memory");
-    expect(prompt).toContain("Project memory");
-    expect(prompt).toContain("Session memory");
-    expect(prompt).toContain("Team memory");
-    expect(prompt).toContain(paths.getGlobalMemoryPath());
-    expect(prompt).toContain(paths.getProjectMemoryPath());
-    expect(prompt).toContain("Save user-level memories");
-    expect(prompt).toContain("Save project-level memories");
-    expect(prompt).toContain("Save shared team memories");
-    expect(prompt).toContain("Search topic files in your durable memory directories");
-    expect(prompt).toContain(`path="${paths.getGlobalMemoryPath()}"`);
-    expect(prompt).toContain(`path="${paths.getProjectMemoryPath()}"`);
+    // There is no team sync transport, so the model is never told about a
+    // synced team directory; team files stay ordinary project memory.
+    expect(prompt?.instructions).toContain("# auto memory");
+    expect(prompt?.instructions).not.toContain("Team memory");
+    expect(prompt?.directories).toContain("Global memory");
+    expect(prompt?.directories).toContain("Project memory");
+    expect(prompt?.directories).toContain("Session memory");
+    expect(prompt?.directories).not.toContain("team memory");
+    expect(prompt?.directories).toContain(paths.getGlobalMemoryPath());
+    expect(prompt?.directories).toContain(paths.getProjectMemoryPath());
   });
 
   it("renders team memory as untrusted persistent context when TEAMMEM is enabled", async () => {
@@ -78,28 +76,33 @@ describe("memory prompt feature branches", () => {
 
     const prompt = await memory.loadMemoryPrompt();
 
-    expect(prompt).toContain("Global memory");
-    expect(prompt).toContain("Project memory");
-    expect(prompt).toContain("Session memory");
-    expect(prompt).toContain(
+    // The daily-log prompt is self-contained, so it travels whole in the
+    // dynamic tail and no second set of save instructions is emitted.
+    expect(prompt?.instructions).toBe("");
+    expect(prompt?.directories).toContain("Global memory");
+    expect(prompt?.directories).toContain("Project memory");
+    expect(prompt?.directories).toContain("Session memory");
+    expect(prompt?.directories).toContain(
       `Save user-level memories (preferences, corrections, cross-project facts) in global memory at \`${paths.getGlobalMemoryPath()}\``,
     );
-    expect(prompt).toContain("project daily log");
-    expect(prompt).toContain("save it to global memory instead of the project daily log");
-    expect(prompt).toContain(`path="${paths.getGlobalMemoryPath()}"`);
-    expect(prompt).toContain(`path="${paths.getProjectMemoryPath()}"`);
+    expect(prompt?.directories).toContain("project daily log");
+    expect(prompt?.directories).toContain("save it to global memory instead of the project daily log");
+    expect(prompt?.directories).toContain(`path="${paths.getGlobalMemoryPath()}"`);
+    expect(prompt?.directories).toContain(`path="${paths.getProjectMemoryPath()}"`);
   });
 
-  it("includes global and project durable roots in manual search guidance", async () => {
+  it("lists both durable roots in the directory block and a path-free search hint in the instructions", async () => {
     const { memory, paths } = await loadMemoryHarness();
 
-    const prompt = memory
-      .buildMemoryLines("auto memory", paths.getProjectMemoryPath())
+    const directories = memory
+      .buildMemoryDirectoryLines(paths.getProjectMemoryPath())
       .join("\n");
+    const instructions = memory.buildMemoryInstructionLines().join("\n");
 
-    expect(prompt).toContain("Search topic files in your durable memory directories");
-    expect(prompt).toContain(`path="${paths.getGlobalMemoryPath()}"`);
-    expect(prompt).toContain(`path="${paths.getProjectMemoryPath()}"`);
+    expect(directories).toContain(paths.getGlobalMemoryPath());
+    expect(directories).toContain(paths.getProjectMemoryPath());
+    expect(instructions).toContain('path="<memory directory>" glob="*.md"');
+    expect(instructions).not.toContain(paths.getGlobalMemoryPath());
   });
 });
 

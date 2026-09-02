@@ -138,15 +138,17 @@ export interface AttachmentTrackingState {
    */
   sessionStartMemoryRecallChecked: boolean;
   /**
-   * Paths of learned memory files surfaced by `relevant_memories` in this
-   * session. Relevant-memory recall is allowed to reset after compaction
-   * in future, but a stable set prevents rapid same-session repeats today.
+   * Paths of learned memory files surfaced by `relevant_memories` in the
+   * current request. The producer clears it at the start of every run:
+   * attachments never enter durable history, so a memory must be surfaced
+   * again on every request it matches.
    */
   surfacedRelevantMemoryPaths: Set<string>;
   /**
    * Approximate bytes of learned memory content surfaced by
-   * `relevant_memories` in this session. Bounds cumulative recall context
-   * even when many distinct memory files match a long conversation.
+   * `relevant_memories` since the last compaction. Bounds cumulative recall
+   * context even when many distinct memory files match a long conversation;
+   * `resetRelevantMemoryBudget` zeroes it when compaction replaces history.
    */
   surfacedRelevantMemoryBytes: number;
   /**
@@ -198,6 +200,18 @@ export function getAttachmentTrackingState(
     sessionAttachmentState.set(sessionKey, state);
   }
   return state;
+}
+
+/**
+ * Reset the cumulative relevant-memory byte budget. Called when compaction
+ * replaces the conversation history: everything surfaced so far left the
+ * model's context with it, so the budget starts over for the new history.
+ */
+export function resetRelevantMemoryBudget(sessionKey: object): void {
+  const state = sessionAttachmentState.get(sessionKey);
+  if (state === undefined) return;
+  state.surfacedRelevantMemoryBytes = 0;
+  state.surfacedRelevantMemoryPaths.clear();
 }
 
 /** Clears all tracking state for a session. Test-only. */

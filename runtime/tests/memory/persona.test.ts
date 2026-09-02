@@ -9,6 +9,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -64,7 +65,7 @@ beforeAll(async () => {
 }, 30_000);
 
 beforeEach(() => {
-  tempRoot = mkdtempSync(join(tmpdir(), "agenc-persona-"));
+  tempRoot = mkdtempSync(join(realpathSync(tmpdir()), "agenc-persona-"));
   oldProjectRoot = getProjectRoot();
   oldOriginalCwd = getOriginalCwd();
   oldAgencHome = process.env.AGENC_HOME;

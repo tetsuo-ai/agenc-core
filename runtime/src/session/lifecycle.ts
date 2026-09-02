@@ -26,12 +26,22 @@
 
 import type { AgentControl } from "../agents/control.js";
 import type { MCPManager } from "../mcp-client/manager.js";
+import { drainPendingExtraction } from "../services/extractMemories/extractMemories.js";
 import { monotonicMs } from "./_deps/utils.js";
 import { emitWarning } from "./event-log.js";
 import type { Session } from "./session.js";
 
 /** Outer monotonic budget for the full lifecycle teardown (ms). */
 export const SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS = 5_000;
+
+/**
+ * How long shutdown waits for an in-flight memory-extraction child before the
+ * session controller is aborted. Extraction used to be drained at the end of
+ * every turn (up to 60 s per turn); it now only delays shutdown, and only when
+ * a child is mid-flight. Kept separate from the lifecycle budget so a slow
+ * child cannot starve the teardown steps that follow.
+ */
+export const MEMORY_EXTRACTION_SHUTDOWN_DRAIN_MS = 5_000;
 
 export interface SessionLifecycleOpts {
   readonly session: Session;
@@ -43,6 +53,9 @@ export interface SessionLifecycleOpts {
 
 /**
  * Orderly session shutdown:
+ *   0. Let an in-flight memory-extraction child finish (bounded by
+ *      `MEMORY_EXTRACTION_SHUTDOWN_DRAIN_MS`) while the provider is still
+ *      usable; the abort in step 1 would otherwise discard its writes.
  *   1. Quiesce the top-level abort controller (I-7) with a benign
  *      reason so phases see a shutdown signal.
  *   2. Abort and drain the root session's active task while its journal is open.
@@ -63,6 +76,17 @@ export async function shutdownSessionLifecycle(
 ): Promise<void> {
   const budgetMs =
     opts.shutdownBudgetMs ?? SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS;
+
+  // Step 0: memory extraction is fire-and-forget at turn end and must not
+  // block turn completion, so shutdown is the one place that waits for it.
+  // A no-op when nothing is in flight; bounded by its own budget otherwise.
+  await raceBudget(
+    drainPendingExtraction(MEMORY_EXTRACTION_SHUTDOWN_DRAIN_MS),
+    monotonicMs() + MEMORY_EXTRACTION_SHUTDOWN_DRAIN_MS,
+    "memory_extraction_drain",
+    opts.session,
+  );
+
   const deadlineMs = monotonicMs() + budgetMs;
 
   // Step 1: synchronously close startup admission and cancel MCP startup
