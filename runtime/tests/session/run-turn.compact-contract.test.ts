@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { LLMMessage, LLMResponse } from "../llm/types.js";
 import {
   runTurn,
@@ -17,7 +17,21 @@ const originalEnv = {
   AGENC_AUTOCOMPACT_PCT_OVERRIDE: process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE,
 };
 
+// Every session in this file shares the conversation id "conv-test", so they
+// share one memory-extraction lane and its eligible-turn counter. Since the
+// turn no longer awaits `drainPendingExtraction`, the child that fires when
+// that counter reaches the cadence samples on the test's own provider AFTER
+// the turn it belongs to has returned -- so its calls land in whichever later
+// turn happens to be running, or not at all, depending on wall clock. The
+// back-off test below counts model calls exactly across six turns, so the
+// extraction fork is switched off for the file rather than being absorbed
+// into each expectation. Same reasoning, same switch, as run-turn.test.ts.
+beforeEach(() => {
+  vi.stubEnv("AGENC_DISABLE_EXTRACT_MEMORIES", "1");
+});
+
 afterEach(() => {
+  vi.unstubAllEnvs();
   setAutoCompactImplForTests(null);
   for (const [key, value] of Object.entries(originalEnv)) {
     if (value === undefined) {
