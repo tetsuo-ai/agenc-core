@@ -25,6 +25,7 @@ import {
 } from "./plan.js";
 import {
   accumulateCompactionOutputBudget,
+  conservativeOutputTokenEstimate,
   compactionOutputTokenUpperBound,
   compactionWallTimeExceeded,
 } from "./transaction-limits.js";
@@ -848,7 +849,13 @@ async function runSummaryTree(params: {
     }
     const allowedIds = new Set(sourceRefs.map((ref) => ref.ref_id));
     const validated = parseCompactionBodyV1(response.content, allowedIds);
-    assertExactToolPairs(validated.body.tool_pairs, expectedToolPairs);
+    // The runtime knows every tool call/result pair of the span and pins
+    // them into the summary itself. A model that echoes them anyway must
+    // match exactly; one that leaves them out has done nothing wrong.
+    if (validated.body.tool_pairs.length > 0) {
+      assertExactToolPairs(validated.body.tool_pairs, expectedToolPairs);
+    }
+    const body = { ...validated.body, tool_pairs: expectedToolPairs };
     totals = accumulateCompactionOutputBudget(totals, validated.budget);
     const summary = createCompactionSummaryV1({
       stage,
@@ -856,7 +863,7 @@ async function runSummaryTree(params: {
       policyDigest: params.policyDigest,
       accountingRef: params.accountingRef,
       sourceRefs,
-      body: validated.body,
+      body,
     });
     const ref: CompactionSummaryRefV1 = {
       kind: "compaction_summary",
@@ -1247,7 +1254,7 @@ async function countCompactionProviderOutput(params: {
   const withContent = await count(params.content);
   if (withContent.source === "conservative_fallback") {
     return {
-      tokens: Buffer.byteLength(params.content, "utf8"),
+      tokens: conservativeOutputTokenEstimate(params.content),
       source: "conservative_fallback",
       exact: false,
     };
@@ -1258,7 +1265,7 @@ async function countCompactionProviderOutput(params: {
     emptyEnvelope.source !== withContent.source
   ) {
     return {
-      tokens: Buffer.byteLength(params.content, "utf8"),
+      tokens: conservativeOutputTokenEstimate(params.content),
       source: "conservative_fallback",
       exact: false,
     };
