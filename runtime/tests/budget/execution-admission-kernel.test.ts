@@ -256,7 +256,15 @@ describe("ExecutionAdmissionKernel recovery", () => {
 
   it("wakes a recovered row when its durable availability time arrives", async () => {
     await leaveDetachedQueue("delayed-run");
-    const availableAt = new Date(Date.now() + 100).toISOString();
+    // The kernel gates dispatch on its own clock, so this test drives that
+    // clock instead of racing the real one. Pinning the availability a fixed
+    // wall-clock distance ahead made the assertion below depend on how long
+    // the restart underneath it took: on a loaded machine the reopen, the
+    // hydration scan and the bind can outlast that distance, the row becomes
+    // available before the acquire is even measured, and the kernel is right
+    // to admit it.
+    let clock = new Date();
+    const availableAt = new Date(clock.getTime() + 100).toISOString();
     const driver = openStateDatabases({ cwd, agencHome: home });
     driver
       .prepareState<[string, string]>(
@@ -271,6 +279,7 @@ describe("ExecutionAdmissionKernel recovery", () => {
       limits: LIMITS,
       ownerId: "delayed-restart",
       ownerPid: process.pid,
+      now: () => clock,
     });
     kernels.add(value);
     expect(value.initializeExistingState()).toMatchObject({
@@ -282,6 +291,10 @@ describe("ExecutionAdmissionKernel recovery", () => {
     expect(value.activeCount).toBe(0);
     expect(value.queuedCount).toBe(1);
 
+    // Availability arrives. The wake timer the kernel armed re-reads this
+    // clock, so the row is dispatched from the durable queue, not from the
+    // test having waited long enough.
+    clock = new Date(Date.parse(availableAt) + 1);
     const lease = await pending;
     expect(lease.request.step.runId).toBe("delayed-run");
     client.reconcile(lease.reservation.reservationId, {
