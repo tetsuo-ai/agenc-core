@@ -65,4 +65,21 @@ describe("kill_process tool", () => {
     const result = await tool.execute({});
     expect(result.isError).toBe(true);
   });
+
+  it("is audited as performing no filesystem write so the sandbox admits it", () => {
+    // The sandbox classifies a mutating tool with no resolvable write target
+    // as indeterminate and denies it. kill_process only signals a process,
+    // and its schema carries no path the model could steer, so it declares
+    // the audited exemption instead of being denied everywhere.
+    const tool = createKillProcessTool({ unifiedExecManager: fakeManager(true) });
+    expect(tool.metadata?.virtualNoFsWrites).toBe(true);
+    expect(tool.inputSchema).toMatchObject({
+      properties: { session_id: { type: "number" } },
+      required: ["session_id"],
+      additionalProperties: false,
+    });
+    expect(Object.keys((tool.inputSchema as { properties: object }).properties)).toEqual([
+      "session_id",
+    ]);
+  });
 });

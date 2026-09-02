@@ -153,13 +153,20 @@ export function resolveSessionMemoryPath(
   return join(resolveSessionMemoryDirectory(options), "summary.md");
 }
 
+/**
+ * Whether the session-notes subagent (`summary.md`) runs. Off by default:
+ * nothing in the runtime reads the notes yet (compaction summarizes the same
+ * material itself), so running a full-history child every ~5k tokens would
+ * only double the background model calls. Opt in with
+ * `AGENC_SESSION_MEMORY_ENABLED=1`; the disable switches still win.
+ */
 export function isSessionMemoryEnabled(
   env: SessionMemoryEnv | undefined = undefined,
 ): boolean {
   const source = effectiveEnv(env);
   if (isEnvTruthy(source.AGENC_DISABLE_SESSION_MEMORY)) return false;
   if (isEnvDefinedFalsy(source.AGENC_SESSION_MEMORY_ENABLED)) return false;
-  if (isEnvTruthy(source.AGENC_SESSION_MEMORY_ENABLED)) return true;
+  if (!isEnvTruthy(source.AGENC_SESSION_MEMORY_ENABLED)) return false;
   if (isBareMode()) return false;
   const runtimeOptions = getActiveAgentRuntimeOptions();
   if (runtimeOptions?.remoteMode && !runtimeOptions.remoteMemoryRoot) {

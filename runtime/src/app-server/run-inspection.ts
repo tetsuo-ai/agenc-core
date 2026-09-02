@@ -1296,7 +1296,14 @@ function refreshRunJournalProjection(
 ): void {
   const driver = openStateDatabasePaths(paths);
   try {
-    recoverCanonicalRunJournalForRun(driver, runId);
+    // run.status/run.replay on a run this daemon is executing find the rollout
+    // lease held by the live writer. That is not a recovery failure: serve
+    // the projection as it stands and persist no deferral, since an active
+    // run_recovery_deferred row would exclude the run from recovery at the
+    // next daemon start ("pending operator recovery action").
+    recoverCanonicalRunJournalForRun(driver, runId, {
+      strict: { liveSourceDeferral: "skip" },
+    });
   } finally {
     driver.close();
   }

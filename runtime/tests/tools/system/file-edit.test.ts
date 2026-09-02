@@ -62,6 +62,40 @@ import { workspaceMutationCoordinators } from "../../workspace/mutation-coordina
 
 const SESSION_ID = "edit-tool-test-session";
 
+/** Write a file and record a full session read of it, as the model would. */
+async function seedReadFile(
+  dir: string,
+  name: string,
+  content: string,
+): Promise<string> {
+  const file = join(dir, name);
+  await writeFile(file, content, "utf8");
+  const fileStats = await stat(file);
+  recordSessionRead(SESSION_ID, file, {
+    content,
+    timestamp: fileStats.mtimeMs,
+    viewKind: "full",
+  });
+  return file;
+}
+
+/**
+ * A refusal issued before the write boundary must settle as a confirmed
+ * no-effect failure, or the settlement supervisor poisons the session.
+ */
+function expectPreMutationNoEffect(
+  result: { readonly effectDisposition?: unknown },
+  toolName?: string,
+): void {
+  expect(result.effectDisposition).toMatchObject({
+    disposition: "confirmed_no_effect",
+    evidenceKind: "boundary_not_crossed",
+    ...(toolName !== undefined
+      ? { evidenceRef: `tool:${toolName}:pre-mutation` }
+      : {}),
+  });
+}
+
 describe("Edit tool", () => {
   let root = "";
 
@@ -304,6 +338,7 @@ describe("Edit tool", () => {
     expect(result.content).toContain(
       "matches of the string to replace, but replace_all is false",
     );
+    expectPreMutationNoEffect(result);
     // File untouched.
     await expect(readFile(file, "utf8")).resolves.toBe("foo\nbar\nfoo\n");
   });
@@ -362,6 +397,29 @@ describe("Edit tool", () => {
     expect(result.content).toBe(
       "No changes to make: old_string and new_string are exactly the same.",
     );
+    expectPreMutationNoEffect(result);
+  });
+
+  test("a stale old_string is a confirmed no-effect failure, not an unknown outcome", async () => {
+    // Regression: this was returned as a bare error result. The settlement
+    // supervisor treats an errored side-effecting call without a
+    // disposition as an unknown outcome and blocks every later Write and
+    // shell call for the rest of the session, even though the file was
+    // never touched.
+    const file = await seedReadFile(root, "stale.txt", "current text\n");
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "text that is not there",
+      new_string: "replacement",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("String to replace not found in file.");
+    expectPreMutationNoEffect(result, FILE_EDIT_TOOL_NAME);
+    await expect(readFile(file, "utf8")).resolves.toBe("current text\n");
   });
 
   test("empty old_string on a nonexistent file creates the file", async () => {
@@ -1276,6 +1334,7 @@ describe("Edit tool", () => {
     expect(result.content).toContain("Edits 1..1 validated");
     expect(result.content).toContain("file was NOT written");
     expect(result.content).toContain("Re-emit the full edit list");
+    expectPreMutationNoEffect(result, FILE_MULTI_EDIT_TOOL_NAME);
     await expect(readFile(file, "utf8")).resolves.toBe(original);
   });
 

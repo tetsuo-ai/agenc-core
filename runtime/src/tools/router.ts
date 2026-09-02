@@ -69,6 +69,7 @@ import {
   type GranularApprovalConfig,
   orchestrateToolCall,
   ApprovalRejectedError,
+  approvalDenialEndsTurn,
 } from "./orchestrator.js";
 import {
   executeToolDispatch,
@@ -1900,6 +1901,10 @@ function toolDispatchErrorResult(err: unknown): ToolDispatchResult {
     return {
       content: JSON.stringify({ error: err.message }),
       isError: true,
+      // A resolver denial ends the turn after this batch so the model
+      // cannot re-issue the same call (observed: 8 identical retries until
+      // the no-progress backstop).
+      ...(approvalDenialEndsTurn(err) ? { preventContinuation: true } : {}),
     };
   }
   return {

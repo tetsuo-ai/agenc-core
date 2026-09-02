@@ -15,6 +15,7 @@ import {
   discoverSkillRoots,
   formatSkillListingWithinBudget,
   loadLocalSkillsSnapshot,
+  maxSkillFilesPerRoot,
 } from "./local-loader.js";
 import { substituteArguments } from "../tui/slash/argument-substitution.js";
 
@@ -53,6 +54,112 @@ async function flushPromises(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
 }
+
+describe("per-root skill scan cap", () => {
+  it("defaults above a real shared catalog and honors an operator override", () => {
+    // Measured: 1,820 skills in ~/.agents/skills. The old 500 dropped 1,320
+    // of them in readdir order, before any ranking could see them.
+    expect(maxSkillFilesPerRoot({})).toBeGreaterThan(1_820);
+    expect(maxSkillFilesPerRoot({ AGENC_MAX_SKILL_FILES_PER_ROOT: "10" })).toBe(10);
+    // Nonsense falls back to the default rather than disabling the guard.
+    for (const raw of ["0", "-5", "abc", ""]) {
+      expect(
+        maxSkillFilesPerRoot({ AGENC_MAX_SKILL_FILES_PER_ROOT: raw }),
+      ).toBe(maxSkillFilesPerRoot({}));
+    }
+  });
+});
+
+describe("skill listing relevance", () => {
+  // Live measurement on the reviewer's machine (1,823 skills installed under
+  // ~/.agents/skills, 500k context window): the 20,000-char budget fit 101 of
+  // them, the list stopped at "apollo-core-workflow-a", and every skill that
+  // matched the work at hand was never shown. Fifteen turns of exactly that
+  // work produced zero Skill invocations.
+  const catalog = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      name: `a-filler-${String(i).padStart(4, "0")}`,
+      description: "filler skill that matches nothing in particular",
+      scope: "user" as const,
+      loadedFrom: "skills" as const,
+    }));
+
+  const matching = {
+    name: "generating-unit-tests",
+    description:
+      "Automatically generate comprehensive unit tests from source code. Use when creating test coverage for functions, classes, or modules.",
+    scope: "user" as const,
+    loadedFrom: "skills" as const,
+  };
+
+  const skills = [...catalog(400), matching];
+  // A window whose 1-percent listing budget fits roughly a dozen lines, far
+  // fewer than the catalog — the same shape as the live machine.
+  const BUDGET_TOKENS = 25_000;
+
+  it("lists the skill the request is about, even when it sorts last", () => {
+    const listing = formatSkillListingWithinBudget(
+      skills,
+      BUDGET_TOKENS,
+      "Write unit tests with node:test for the pure logic only",
+    );
+    expect(listing).toContain("- generating-unit-tests");
+    expect(listing).toContain("more skill");
+  });
+
+  it("without the request the same skill never fits", () => {
+    const listing = formatSkillListingWithinBudget(skills, BUDGET_TOKENS);
+    expect(listing).not.toContain("- generating-unit-tests");
+    expect(listing).toContain("- a-filler-0000");
+  });
+
+  it("an unrelated request does not promote it", () => {
+    const listing = formatSkillListingWithinBudget(
+      skills,
+      BUDGET_TOKENS,
+      "rename the deployment pipeline variables",
+    );
+    expect(listing).not.toContain("- generating-unit-tests");
+  });
+
+  it("a name match outranks a description-only match", () => {
+    const descriptionOnly = {
+      name: "z-unrelated-name",
+      description: "helps you write unit tests and coverage reports",
+      scope: "user" as const,
+      loadedFrom: "skills" as const,
+    };
+    const listing = formatSkillListingWithinBudget(
+      [...catalog(400), descriptionOnly, matching],
+      BUDGET_TOKENS,
+      "write unit tests",
+    );
+    const nameFirst = listing.indexOf("- generating-unit-tests");
+    const descriptionSecond = listing.indexOf("- z-unrelated-name");
+    expect(nameFirst).toBeGreaterThanOrEqual(0);
+    expect(descriptionSecond).toBeGreaterThan(nameFirst);
+  });
+
+  it("leaves a listing that already fits completely alone", () => {
+    const few = [matching, ...catalog(2)];
+    const ranked = formatSkillListingWithinBudget(few, 100_000, "write unit tests");
+    const plain = formatSkillListingWithinBudget(few, 100_000);
+    expect(ranked).toBe(plain);
+    expect(ranked.split("\n")).toHaveLength(3);
+  });
+
+  it("keeps bundled skills regardless of the request", () => {
+    const listing = formatSkillListingWithinBudget(
+      [
+        { name: "browser-automation", description: "drive a browser", loadedFrom: "bundled" as const },
+        ...catalog(400),
+      ],
+      BUDGET_TOKENS,
+      "write unit tests",
+    );
+    expect(listing).toContain("- browser-automation");
+  });
+});
 
 describe("local skills loader", () => {
   it("discovers AgenC, agent, user, and plugin skill roots", async () => {
@@ -888,6 +995,111 @@ All=$ARGUMENTS
       10,
     );
     expect(listing).toContain("- long");
+    expect(listing).not.toContain("more skill");
+  });
+
+  it("reports skills beyond the per-root cap and keeps descriptions in the trimmed listing", async () => {
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    const userRoot = join(agencHome, "skills");
+    // The cap is configurable; set it low here instead of writing thousands of
+    // files to reach the default, which is now above a real catalog.
+    const previousCap = process.env.AGENC_MAX_SKILL_FILES_PER_ROOT;
+    process.env.AGENC_MAX_SKILL_FILES_PER_ROOT = "500";
+    let snapshot;
+    try {
+      for (let i = 0; i < 600; i++) {
+        const name = `skill-${String(i).padStart(3, "0")}`;
+        writeSkill(
+          userRoot,
+          name,
+          `---\ndescription: ${name} does a specific job\n---\nBody\n`,
+        );
+      }
+
+      snapshot = await loadLocalSkillsSnapshot({
+        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
+        workspaceRoot,
+        env: {},
+      });
+    } finally {
+      if (previousCap === undefined) delete process.env.AGENC_MAX_SKILL_FILES_PER_ROOT;
+      else process.env.AGENC_MAX_SKILL_FILES_PER_ROOT = previousCap;
+    }
+
+    expect(snapshot.truncatedRoots).toEqual([
+      { root: userRoot, loadedCount: 500, droppedCount: 100 },
+    ]);
+    expect(
+      snapshot.skills.filter((skill) => skill.root === userRoot),
+    ).toHaveLength(500);
+
+    // A 100k-token window gives a 4,000-char budget, far below the ~25k
+    // chars the 500 full lines need.
+    const listing = formatSkillListingWithinBudget(snapshot.skills, 100_000);
+    const lines = listing.split("\n");
+    expect(listing.length).toBeLessThanOrEqual(4_000);
+    expect(lines).toContain("- skill-000: skill-000 does a specific job");
+    const listedUserSkills = lines.filter((line) => line.startsWith("- skill-"));
+    expect(listedUserSkills.length).toBeGreaterThan(1);
+    expect(listedUserSkills.every((line) => line.includes(": skill-"))).toBe(
+      true,
+    );
+    expect(lines.at(-1)).toBe(
+      `- ...and ${500 - listedUserSkills.length} more skills not shown; ask the user to run /skills <search> to find one`,
+    );
+  });
+
+  it("ranks workspace skills first and the shared agents catalog last when trimming", () => {
+    const home = join("/home", "dev");
+    // Descriptions longer than the closing count line, so a budget that
+    // holds two lines plus the count cannot hold all three lines.
+    const describe = (text: string) => text.padEnd(90, ".");
+    const skills = [
+      {
+        name: "shared",
+        description: describe("From the shared catalog"),
+        loadedFrom: "skills",
+        scope: "user",
+        root: join(home, ".agents", "skills"),
+      },
+      {
+        name: "home",
+        description: describe("From the AgenC home"),
+        loadedFrom: "skills",
+        scope: "user",
+        root: join(home, ".agenc", "skills"),
+      },
+      {
+        name: "proj",
+        description: describe("From the workspace"),
+        loadedFrom: "skills",
+        scope: "project",
+        root: join("/work", ".agenc", "skills"),
+      },
+    ];
+
+    // Everything fits: the incoming (name) order is kept.
+    expect(
+      formatSkillListingWithinBudget(skills, 1_000_000).split("\n").map(
+        (line) => line.split(":")[0],
+      ),
+    ).toEqual(["- shared", "- home", "- proj"]);
+
+    // Budget for two full lines plus the closing count (1% of the window in
+    // chars, so 25 tokens per char, plus a little slack for the reserve).
+    const expected = [
+      `- proj: ${describe("From the workspace")}`,
+      `- home: ${describe("From the AgenC home")}`,
+      "- ...and 1 more skill not shown; ask the user to run /skills <search> to find one",
+    ];
+    expect(
+      formatSkillListingWithinBudget(
+        skills,
+        (expected.join("\n").length + 3) * 25,
+      ).split("\n"),
+    ).toEqual(expected);
   });
 
   it("neutralizes system-reminder tags in skill listing metadata", () => {
@@ -936,6 +1148,128 @@ All=$ARGUMENTS
     await expect(
       discoverDynamicSkillDirsForPaths([join(nested, "Button.tsx")], workspaceRoot),
     ).resolves.toEqual([join(nested, ".agenc", "skills")]);
+  });
+
+  it("still loads a skill whose frontmatter is broken and says why the fields were ignored", async () => {
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    const brokenFile = writeSkill(
+      join(workspaceRoot, ".agenc", "skills"),
+      "broken-yaml",
+      "---\nname: [unclosed\ndescription: never parsed\n---\n# Broken skill\nBody\n",
+    );
+    const listFile = writeSkill(
+      join(workspaceRoot, ".agenc", "skills"),
+      "list-frontmatter",
+      "---\n- just\n- a list\n---\nBody\n",
+    );
+    writeSkill(join(workspaceRoot, ".agenc", "skills"), "fine");
+
+    const snapshot = await loadLocalSkillsSnapshot({
+      agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot,
+      env: {},
+    });
+
+    const names = snapshot.skills.map((skill) => skill.name);
+    expect(names).toEqual(
+      expect.arrayContaining(["broken-yaml", "list-frontmatter", "fine"]),
+    );
+    expect(
+      snapshot.skills.find((skill) => skill.name === "broken-yaml")?.description,
+    ).not.toBe("never parsed");
+    expect(snapshot.warnings).toHaveLength(2);
+    expect(snapshot.warnings).toEqual(
+      expect.arrayContaining([
+        {
+          path: brokenFile,
+          reason: expect.stringMatching(/^frontmatter is not valid YAML \(.+\); its fields were ignored$/u),
+        },
+        {
+          path: listFile,
+          reason: "frontmatter is not a YAML mapping; its fields were ignored",
+        },
+      ]),
+    );
+
+    const services = createLocalSkillsServices({
+      agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot,
+      env: {},
+    });
+    const outcome = await services.skillsManager.skillsForConfig({}, null);
+    expect(outcome.skillLoadWarnings?.map((warning) => warning.path)).toEqual(
+      expect.arrayContaining([brokenFile, listFile]),
+    );
+  });
+
+  it("does not rescan skill roots for touched files when no skill is path-gated", async () => {
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    const skillRoot = join(workspaceRoot, ".agenc", "skills");
+    writeSkill(skillRoot, "always-on");
+    const services = createLocalSkillsServices({
+      agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot,
+      env: {},
+    });
+    const names = async () =>
+      (await services.skillsManager.skillsForConfig({}, null)).availableSkills
+        ?.map((skill) => skill.name) ?? [];
+
+    expect(await names()).toContain("always-on");
+    // A skill written after the first load only shows up after a rescan.
+    writeSkill(skillRoot, "late");
+
+    await services.skillsManager.discoverSkillDirsForPaths?.([
+      join(workspaceRoot, "src", "a.ts"),
+    ]);
+    await services.skillsManager.discoverSkillDirsForPaths?.([
+      join(workspaceRoot, "src", "b.ts"),
+    ]);
+    expect(await names()).not.toContain("late");
+
+    services.skillsManager.clearSkillCaches?.();
+    expect(await names()).toContain("late");
+  });
+
+  it("still rescans for touched files while a path-gated skill exists", async () => {
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    const skillRoot = join(workspaceRoot, ".agenc", "skills");
+    writeSkill(skillRoot, "always-on");
+    writeSkill(
+      skillRoot,
+      "docs-helper",
+      "---\ndescription: Docs helper\npaths: docs/**\n---\nBody\n",
+    );
+    const services = createLocalSkillsServices({
+      agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot,
+      env: {},
+    });
+    const names = async () =>
+      (await services.skillsManager.skillsForConfig({}, null)).availableSkills
+        ?.map((skill) => skill.name) ?? [];
+
+    expect(await names()).toContain("always-on");
+    expect(await names()).not.toContain("docs-helper");
+    writeSkill(skillRoot, "late");
+
+    await services.skillsManager.discoverSkillDirsForPaths?.([
+      join(workspaceRoot, "src", "a.ts"),
+    ]);
+    expect(await names()).toContain("late");
+    expect(await names()).not.toContain("docs-helper");
+
+    await services.skillsManager.discoverSkillDirsForPaths?.([
+      join(workspaceRoot, "docs", "intro.md"),
+    ]);
+    expect(await names()).toContain("docs-helper");
   });
 
   it("keeps nested and conditional skill discovery inside the owning service", async () => {

@@ -57,7 +57,11 @@ import type { ToolDispatchResult } from "../tool-registry.js";
 import type { Tool } from "../tools/types.js";
 import { emitError as emitErrorEvent } from "../session/event-log.js";
 import { emitWarning as emitWarningEvent } from "../session/event-log.js";
-import { appendRepeatToolAdvisory } from "./repeat-tool-advisory.js";
+import {
+  appendRepeatToolAdvisory,
+  blockRepeatedFailingCall,
+  repeatedFailingCallStopExplanation,
+} from "./repeat-tool-advisory.js";
 import type { Session } from "../session/session.js";
 import type { GuardianApprovalReviewer } from "../permissions/guardian/reviewer.js";
 import type { PermissionAuditEventInput } from "../permissions/permission-audit-log.js";
@@ -646,6 +650,7 @@ function recordCompletedToolCall(
   session: Session,
   toolCall: LLMToolCall,
   result: ToolDispatchResult,
+  durationMs?: number,
 ): CompletedToolResultRecord {
   const registryTool = session.services.registry.tools.find(
     (tool) => tool.name === toolCall.name,
@@ -683,6 +688,7 @@ function recordCompletedToolCall(
           result: result.content,
           isError: result.isError === true,
           ...(metadata !== undefined ? { metadata } : {}),
+          ...(durationMs !== undefined ? { durationMs } : {}),
         },
       },
     },
@@ -957,6 +963,27 @@ export async function executeTools(
       }
     }
 
+    // Hard stop for a byte-identical call that already failed the same way
+    // three times this turn: refuse it instead of burning another round trip.
+    const blocked = blockRepeatedFailingCall(state, session, call);
+    if (blocked !== null) {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: toolCallStartedEvent(call),
+      });
+      const completed = recordCompletedToolCall(state, ctx, session, call, blocked);
+      completedThisPass.set(completed.callId, completed);
+      if (blocked.preventContinuation === true) {
+        preventContinuation = true;
+        // The refusal is a no-progress stop, not a completed turn: report
+        // it the way the behavioral backstop reports its own.
+        state.noProgressStop ??= {
+          explanation: repeatedFailingCallStopExplanation(call, blocked),
+        };
+      }
+      continue;
+    }
+
     const queued = queueStreamingToolCall(
       executor,
       block,
@@ -986,6 +1013,7 @@ export async function executeTools(
     toolCall,
     result,
     additionalContexts: contexts,
+    durationMs,
   } of executor.getRemainingResults()) {
     const checkedResult =
       ctx.editorInteraction !== undefined &&
@@ -1001,6 +1029,7 @@ export async function executeTools(
       session,
       toolCall,
       checkedResult,
+      durationMs,
     );
     completedThisPass.set(completed.callId, completed);
     additionalContexts.push(...(contexts ?? []));

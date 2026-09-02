@@ -426,6 +426,27 @@ describe("GrokProvider incremental continuation", () => {
     expect(built.params.model).toBe("grok-4-0709");
   });
 
+  function planWithTools(parallelToolCalls?: boolean) {
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+      tools: [TEST_TOOL],
+      ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
+    });
+    return (provider as any).buildRequestPlan(previousMessages);
+  }
+
+  test("sends parallel_tool_calls: true by default when tools are attached", () => {
+    const built = planWithTools();
+
+    expect(built.params.tools).toHaveLength(1);
+    expect(built.params.parallel_tool_calls).toBe(true);
+  });
+
+  test("parallelToolCalls: false still pins one tool call per turn", () => {
+    expect(planWithTools(false).params.parallel_tool_calls).toBe(false);
+  });
+
   test("reuses previous_response_id and retries chat with full history on expiry", async () => {
     const warnings: Array<{ cause: string; message: string }> = [];
     const provider = new GrokProvider({

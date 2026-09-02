@@ -323,6 +323,7 @@ export class PersistentMemoryIndex {
   readonly #beforeAuditReadForTesting?: () => void | Promise<void>;
   readonly #builderOwner = randomUUID();
   #ownerHeartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  #unusedRootsCleaned = false;
   #closed = false;
 
   constructor(options: PersistentMemoryIndexOptions) {
@@ -575,7 +576,13 @@ export class PersistentMemoryIndex {
           }
         }
       }
-      this.cleanupUnusedRoots();
+      // Idle-root garbage collection is a scan plus deletes over the whole
+      // roots table; once per index instance (one per database per process)
+      // is enough, not once per turn.
+      if (!this.#unusedRootsCleaned) {
+        this.#unusedRootsCleaned = true;
+        this.cleanupUnusedRoots();
+      }
       if (
         statuses.every(
           (status) =>
@@ -1209,7 +1216,22 @@ export class PersistentMemoryIndex {
   }
 
   #scheduleBackgroundRefresh(root: BoundRoot): void {
-    if (this.#closed || this.#backgroundRefreshes.has(root.rootId)) return;
+    // A watcher event is the other way in here, and it used to bypass the
+    // constructor's `backgroundRefresh` choice entirely: an index built with
+    // `backgroundRefresh: false` still started a background refresh loop the
+    // moment a file under one of its roots changed. That loop takes the same
+    // builder lease as a foreground writer, and `query()` correctly refuses a
+    // generation whose lease is held, so a caller that asked for no background
+    // work could still have a read answered with zero candidates. The option
+    // is checked here, at the single place background work is started, rather
+    // than only at the one call site in `refresh()`.
+    if (
+      this.#closed ||
+      !this.#backgroundRefreshEnabled ||
+      this.#backgroundRefreshes.has(root.rootId)
+    ) {
+      return;
+    }
     const controller = new AbortController();
     this.#backgroundRefreshes.set(root.rootId, controller);
     void this.#continueBackgroundRefresh(root, controller).finally(() => {

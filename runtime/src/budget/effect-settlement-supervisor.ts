@@ -69,20 +69,26 @@ export class LiveEffectMutationBlockedError extends Error {
   readonly code = "UNKNOWN_OUTCOME_MUTATION_BLOCKED" as const;
 
   constructor(readonly blocking: readonly LiveEffectIdentity[]) {
-    // Name the way out. This message is what the model sees, and without the
-    // remediation it concludes the session is unrecoverable and tells the user
-    // to restart the chat — observed verbatim on a live hardware session that
-    // then lost its whole working context. `/resolve` clears the gate through
-    // the running daemon; the operator never needed a new session.
+    // Name the way out, and who can take it. This message is what the model
+    // sees. Without the remediation it concludes the session is unrecoverable
+    // and tells the user to restart the chat (observed on a live hardware
+    // session that then lost its whole working context). Without the "user
+    // must run it" part it tries to run `/resolve` itself and retries the
+    // blocked tools for the rest of the turn (observed in a 12-minute turn
+    // that ended in the no-progress backstop). `/resolve` is a UI slash
+    // command that clears the gate through the running daemon; only the
+    // operator can issue it.
     super(
       `live effect settlement is unresolved for ${blocking
         .map((effect) => `${effect.callId} (${effect.toolName})`)
         .join(", ")}; side-effecting and interactive dispatch remain blocked. ` +
-        `This is recoverable without restarting: run ` +
+        `This is recoverable without restarting, but only the user can clear it: ` +
+        `ask the user to run ` +
         `\`/resolve ${blocking[0]?.callId ?? "<call-id>"} ` +
         `<confirmed_committed|confirmed_no_effect|remains_unknown> ` +
-        `<evidence-ref> <evidence-sha256>\` to review the unknown outcome and ` +
-        `unblock the session.`,
+        `<evidence-ref> <evidence-sha256>\` in the AgenC UI to review the ` +
+        `unknown outcome and unblock the session. You cannot run /resolve ` +
+        `yourself. Do not retry the blocked tools until the user has run it.`,
     );
     this.name = "LiveEffectMutationBlockedError";
   }

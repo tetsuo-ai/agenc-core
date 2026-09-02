@@ -119,6 +119,58 @@ function testTool(overrides: Partial<Tool> & { name: string }): Tool {
   };
 }
 
+interface DrainedResult {
+  readonly id: string;
+  readonly status: string;
+  readonly content: string;
+  readonly durationMs: number;
+}
+
+/** Drain every remaining result into a flat, easily asserted shape. */
+async function drainResults(
+  exec: StreamingToolExecutor,
+): Promise<DrainedResult[]> {
+  const results: DrainedResult[] = [];
+  for await (const r of exec.getRemainingResults()) {
+    results.push({
+      id: r.toolCall.id,
+      status: r.status,
+      content: String(r.result.content),
+      durationMs: r.durationMs,
+    });
+  }
+  return results;
+}
+
+/**
+ * Executor whose exec_command calls fail with exit 1 and whose other calls
+ * succeed with `read <id>`, recording dispatch order and sibling-abort
+ * warnings. Shared by the sibling-cascade ordering tests.
+ */
+function shellErrorExecutor(): {
+  readonly exec: StreamingToolExecutor;
+  readonly dispatched: string[];
+  readonly siblingReasons: string[];
+} {
+  const dispatched: string[] = [];
+  const siblingReasons: string[] = [];
+  const exec = new StreamingToolExecutor({
+    ...mockGuardedDispatch(async (call) => {
+      dispatched.push(call.id);
+      if (call.name === "exec_command") {
+        return { content: "exit 1", isError: true };
+      }
+      return { content: `read ${call.id}` };
+    }),
+    onSiblingAbort: (reason) => {
+      siblingReasons.push(reason);
+    },
+  });
+  exec.setConcurrencyClassFor("exec_command", EXCLUSIVE);
+  exec.setConcurrencyClassFor("FileRead", SHARED_READ);
+  return { exec, dispatched, siblingReasons };
+}
+
 describe("StreamingToolExecutor (I-65 + I-41)", () => {
   test("completes in submission order (I-65)", async () => {
     const exec = new StreamingToolExecutor({
@@ -223,6 +275,85 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     expect(write).toBeDefined();
     expect(write?.status).toBe("synthetic_error");
     expect(write?.content).toContain(
+      "sibling tool errored; this tool was cancelled",
+    );
+  });
+
+  test("results carry the real execution duration", async () => {
+    const exec = new StreamingToolExecutor({
+      ...mockGuardedDispatch(async (call) => {
+        if (call.id === "slow") {
+          await new Promise<void>((resolve) => setTimeout(resolve, 15));
+        }
+        return { content: `ok-${call.id}` };
+      }),
+    });
+    exec.setConcurrencyClassFor("FileRead", SHARED_READ);
+    exec.addTool(makeBlock("slow", "FileRead"), makeCall("slow", "FileRead"));
+    exec.addTool(makeBlock("fast", "FileRead"), makeCall("fast", "FileRead"));
+    exec.close();
+
+    const durations = new Map(
+      (await drainResults(exec)).map((r) => [r.id, r.durationMs] as const),
+    );
+
+    expect(durations.get("slow")).toBeGreaterThanOrEqual(10);
+    expect(Number.isFinite(durations.get("fast"))).toBe(true);
+    expect(durations.get("fast")).toBeGreaterThanOrEqual(0);
+    // The slow read is not charged for the fast one and vice versa.
+    expect(durations.get("fast")!).toBeLessThan(durations.get("slow")!);
+  });
+
+  test("a single failing Bash call neither warns nor cascades", async () => {
+    const { exec, siblingReasons } = shellErrorExecutor();
+    exec.addTool(
+      makeBlock("shell1", "exec_command"),
+      makeCall("shell1", "exec_command"),
+    );
+    exec.close();
+
+    const results = await drainResults(exec);
+
+    expect(results.map((r) => [r.id, r.status])).toEqual([
+      ["shell1", "completed"],
+    ]);
+    expect(siblingReasons).toEqual([]);
+  });
+
+  test("[FileRead, bash(error)]: a read that already finished is not cancelled", async () => {
+    const { exec, siblingReasons } = shellErrorExecutor();
+    exec.addTool(makeBlock("read1", "FileRead"), makeCall("read1", "FileRead"));
+    exec.addTool(
+      makeBlock("shell1", "exec_command"),
+      makeCall("shell1", "exec_command"),
+    );
+    exec.close();
+
+    const results = await drainResults(exec);
+
+    expect(results.map((r) => [r.id, r.status, r.content])).toEqual([
+      ["read1", "completed", "read read1"],
+      ["shell1", "completed", "exit 1"],
+    ]);
+    expect(siblingReasons).toEqual([]);
+  });
+
+  test("[bash(error), FileRead]: a still-queued read is cancelled and warns once", async () => {
+    const { exec, dispatched, siblingReasons } = shellErrorExecutor();
+    exec.addTool(
+      makeBlock("shell1", "exec_command"),
+      makeCall("shell1", "exec_command"),
+    );
+    exec.addTool(makeBlock("read1", "FileRead"), makeCall("read1", "FileRead"));
+    exec.close();
+
+    const results = await drainResults(exec);
+
+    expect(dispatched).toEqual(["shell1"]);
+    expect(siblingReasons).toEqual(["bash_error:exec_command"]);
+    expect(results[0]).toMatchObject({ id: "shell1", status: "completed" });
+    expect(results[1]).toMatchObject({ id: "read1", status: "synthetic_error" });
+    expect(results[1]?.content).toContain(
       "sibling tool errored; this tool was cancelled",
     );
   });

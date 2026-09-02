@@ -13,6 +13,7 @@ import {
 } from "./recovery-file.js";
 import {
   getRecoveryRunExclusion,
+  liveSourceRecoveryExclusion,
   storageUnavailableRecoveryExclusion,
   type RecoveryRunExclusion,
 } from "./recovery-exclusions.js";
@@ -26,6 +27,16 @@ export interface RecoveryCutoverOptions {
   readonly descriptorBudget?: RecoveryDescriptorBudget;
   readonly nowMilliseconds?: () => number;
   readonly startupBudget?: StartupRecoveryBudget;
+  /**
+   * What a `source_not_quiescent` failure (a live writer holds the rollout
+   * lease) does. "record" (default) persists a retryable deferral, which is
+   * right for startup: nothing in this process owns the source. "skip" is for
+   * on-demand reads of a run this daemon is executing right now: the caller
+   * serves the current SQLite projection and nothing is persisted, because a
+   * durable deferral would exclude the healthy run from recovery at the next
+   * daemon start.
+   */
+  readonly liveSourceDeferral?: "record" | "skip";
 }
 
 /** One aggregate E1a byte/time ceiling shared by every startup entrypoint. */
@@ -87,6 +98,13 @@ export function persistRecoveryFailure(
   const source =
     sources.find(({ rolloutPath }) => rolloutPath === failedPath) ??
     sources[0]!;
+  if (
+    options.liveSourceDeferral === "skip" &&
+    error instanceof RecoveryOperationalError &&
+    error.reasonCode === "source_not_quiescent"
+  ) {
+    return liveSourceRecoveryExclusion(runId, source.rolloutPath);
+  }
   const failedAtMs = (options.nowMilliseconds ?? Date.now)();
   const repository = new StateRecoveryIncidentRepository(driver);
 

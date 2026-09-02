@@ -870,7 +870,7 @@ export class GrokProvider implements LLMProvider {
       model: config.model ?? BUILT_IN_PROVIDER_DEFAULT_MODELS.grok,
       baseURL: config.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS.grok,
       timeoutMs: normalizeTimeoutMs(config.timeoutMs),
-      parallelToolCalls: config.parallelToolCalls ?? false,
+      parallelToolCalls: config.parallelToolCalls ?? true,
     };
 
     // Build client-side function tools plus provider-native tool definitions.

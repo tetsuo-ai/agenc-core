@@ -44,6 +44,7 @@ import {
 } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { collectShellWorkspaceDeletionTargets } from "../llm/shell-write-policy.js";
 import { monotonicMs } from "./_deps/utils.js";
 import { DegradedStore } from "./degraded-store.js";
 import type { Event } from "./event-log.js";
@@ -611,6 +612,13 @@ export interface FileHistorySidecarOpts {
    *  Edit + Write tools. T7 wires per-tool concurrency classes; this
    *  sidecar picks based on tool name prefix match. */
   readonly editToolNames?: ReadonlyArray<string>;
+  /**
+   * Workspace root used to resolve the files a shell command removes or
+   * moves (`rm`, `rmdir`, `unlink`, `mv`), so they are backed up before the
+   * command runs the way Edit and Write targets are. Without it shell
+   * deletions are not tracked.
+   */
+  readonly workspaceRoot?: string;
 }
 
 const DEFAULT_EDIT_TOOL_NAMES: ReadonlyArray<string> = [
@@ -620,6 +628,17 @@ const DEFAULT_EDIT_TOOL_NAMES: ReadonlyArray<string> = [
   "NotebookEdit",
   "apply_patch",
 ];
+
+/**
+ * Shell tools whose command text names the files they delete, and where each
+ * one keeps its command line and working directory in its args.
+ */
+const SHELL_TOOL_ARG_KEYS: Readonly<
+  Record<string, { readonly command: string; readonly cwd: string }>
+> = {
+  exec_command: { command: "cmd", cwd: "workdir" },
+  "system.bash": { command: "command", cwd: "cwd" },
+};
 
 const APPLY_PATCH_FILE_MARKERS = [
   "*** Add File: ",
@@ -660,11 +679,13 @@ export class FileHistorySidecar implements Sidecar {
   readonly name = "file-history";
   private readonly history: FileHistory;
   private readonly editToolNames: ReadonlyArray<string>;
+  private readonly workspaceRoot: string | undefined;
   private lastEditStartedAtMs: number | null = null;
 
   constructor(opts: FileHistorySidecarOpts) {
     this.history = opts.fileHistory;
     this.editToolNames = opts.editToolNames ?? DEFAULT_EDIT_TOOL_NAMES;
+    this.workspaceRoot = opts.workspaceRoot;
   }
 
   async start(): Promise<void> {
@@ -687,6 +708,15 @@ export class FileHistorySidecar implements Sidecar {
         const args = this.tryParseArgs(msg.payload.args);
         for (const filePath of extractEditedFilePaths(args)) {
           void this.history.trackEdit(filePath, event.id);
+        }
+      } else {
+        const deleted = this.shellDeletionPaths(
+          msg.payload.toolName,
+          this.tryParseArgs(msg.payload.args),
+        );
+        if (deleted.length > 0) {
+          this.lastEditStartedAtMs = monotonicMs();
+          void this.trackShellDeletions(deleted, event.id);
         }
       }
     } else if (msg.type === "tool_call_completed") {
@@ -713,6 +743,53 @@ export class FileHistorySidecar implements Sidecar {
       return JSON.parse(raw) as Record<string, unknown>;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Workspace files a shell tool call is about to remove or move. Resolved
+   * against the call's working directory under the sidecar's workspace root;
+   * empty when the root is unknown or the tool is not a shell.
+   */
+  private shellDeletionPaths(
+    toolName: string,
+    args: Record<string, unknown> | null,
+  ): ReadonlyArray<string> {
+    const keys = SHELL_TOOL_ARG_KEYS[toolName];
+    if (keys === undefined || this.workspaceRoot === undefined || args === null) {
+      return [];
+    }
+    const command = args[keys.command];
+    if (typeof command !== "string" || command.trim().length === 0) return [];
+    const cwd = args[keys.cwd];
+    return collectShellWorkspaceDeletionTargets({
+      toolName,
+      args: {
+        command,
+        ...(Array.isArray(args.args) ? { args: args.args } : {}),
+        ...(typeof cwd === "string" ? { cwd } : {}),
+      },
+      workspaceRoot: this.workspaceRoot,
+    });
+  }
+
+  /**
+   * Back up the regular files among `paths` before the shell removes them.
+   * Directories and missing paths have no content to preserve; a later
+   * snapshot records the removal itself, as it does for any tracked file.
+   */
+  private async trackShellDeletions(
+    paths: ReadonlyArray<string>,
+    messageId: string,
+  ): Promise<void> {
+    for (const filePath of paths) {
+      let isFile = false;
+      try {
+        isFile = (await stat(filePath)).isFile();
+      } catch {
+        isFile = false;
+      }
+      if (isFile) await this.history.trackEdit(filePath, messageId);
     }
   }
 

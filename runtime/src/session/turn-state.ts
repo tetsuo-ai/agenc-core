@@ -402,6 +402,15 @@ export interface TurnState {
   /** Tool hook requested keeping the completed result while ending the turn. */
   preventContinuation: boolean;
 
+  /**
+   * Set alongside `preventContinuation` when a tool-phase guard found the
+   * turn going nowhere (the identical-failing-call refusal). The turn then
+   * ends the way the behavioral backstop ends one: the explanation becomes
+   * the last assistant message and the terminal is `no_progress`, not
+   * `completed`, so hooks and subagents see a bounded stop.
+   */
+  noProgressStop?: { readonly explanation: string };
+
   /** Cached token-budget decision captured mid-stream (I-22). Acted on
    *  in commit phase to decide continuation vs terminate. */
   pendingBudgetDecision: TokenBudgetDecision | undefined;
@@ -788,6 +797,7 @@ export function resetIterationFields(state: TurnState): void {
   state.toolResults = [];
   state.needsFollowUp = false;
   state.preventContinuation = false;
+  state.noProgressStop = undefined;
   state.snipTokensFreed = 0;
   state.pendingBudgetDecision = undefined;
   state.lastResponseUsage = undefined;

@@ -66,9 +66,14 @@ describe("HMAC-signed trusted filesystem roots", () => {
   // (a) FORGE: a model-supplied root with NO / a bogus signature must NOT
   // be folded into the resolved allowed paths.
   describe("FORGE — sink ignores unsigned/forged model roots", () => {
+    // The sink also folds in the two durable memory roots, which are
+    // runtime-derived and never model-supplied. Comparing against the result
+    // for the same call with no model roots keeps these assertions exact:
+    // a forged root must change nothing at all, not merely fail to appear.
+    const unforged = (): string[] => resolveToolAllowedPaths(BASE, roundTrip({}));
     it("ignores __agencSessionAllowedRoots with no signature", () => {
       const args = roundTrip({ [SESSION_ALLOWED_ROOTS_ARG]: ["/"] });
-      expect(resolveToolAllowedPaths(BASE, args)).toEqual([...BASE]);
+      expect(resolveToolAllowedPaths(BASE, args)).toEqual(unforged());
     });
 
     it("ignores __agencSessionAllowedRoots with a bogus signature", () => {
@@ -76,7 +81,7 @@ describe("HMAC-signed trusted filesystem roots", () => {
         [SESSION_ALLOWED_ROOTS_ARG]: ["/"],
         [SESSION_ALLOWED_ROOTS_SIG_ARG]: "00".repeat(32),
       });
-      expect(resolveToolAllowedPaths(BASE, args)).toEqual([...BASE]);
+      expect(resolveToolAllowedPaths(BASE, args)).toEqual(unforged());
     });
 
     it("ignores a signature copied from a DIFFERENT root set", () => {
@@ -86,7 +91,7 @@ describe("HMAC-signed trusted filesystem roots", () => {
         [SESSION_ALLOWED_ROOTS_ARG]: ["/"],
         [SESSION_ALLOWED_ROOTS_SIG_ARG]: signAllowedRoots(["/srv/trusted"]),
       });
-      expect(resolveToolAllowedPaths(BASE, args)).toEqual([...BASE]);
+      expect(resolveToolAllowedPaths(BASE, args)).toEqual(unforged());
     });
   });
 

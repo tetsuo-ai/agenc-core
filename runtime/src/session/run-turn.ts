@@ -104,7 +104,6 @@ import {
 } from "../phases/continuation-nudge.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { executeTools } from "../phases/execute-tools.js";
-import { drainPendingExtraction } from "../services/extractMemories/extractMemories.js";
 import { runMagicDocsPostSamplingHook } from "../services/MagicDocs/magicDocs.js";
 import { runSessionMemoryPostSamplingHook } from "../memory/session/sessionMemory.js";
 import { createAdmittedMemorySelector } from "../memory/admitted-selector.js";
@@ -113,7 +112,10 @@ import {
   postSampleRecovery,
 } from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
-import { getAttachmentTrackingState } from "./attachment-state.js";
+import {
+  getAttachmentTrackingState,
+  resetRelevantMemoryBudget,
+} from "./attachment-state.js";
 import { claimRequiredSwarmToolChoice } from "../prompts/attachments/swarm-mode.js";
 import {
   frameWorkspaceAgentRoleGuidance,
@@ -2540,6 +2542,9 @@ async function runAutoCompact(
 }
 
 function cleanupSessionAfterCompaction(session: Session): void {
+  // Compaction dropped every recalled memory along with the history it was
+  // attached to, so the cumulative recall budget starts over.
+  resetRelevantMemoryBudget(session);
   const direct = session as unknown as {
     readonly readFileState?: { clear(): void };
     readonly clearSearchIndexes?: () => void;
@@ -3269,6 +3274,16 @@ async function prepareSamplingRequestBoundary(
       : {}),
     sessionKey: session,
     admittedMemorySelector: createAdmittedMemorySelector(session),
+    // Producers hold only an opaque session key, so what they decide is
+    // invisible to an operator unless they can report it. Routed to the
+    // session log, not to the chat: these causes are outside the TUI's
+    // user-visible allow-list.
+    emitDiagnostic: ({ cause, message }) => {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: { type: "warning", payload: { cause, message } },
+      });
+    },
     turnProvenance: {
       turnId: ctx.subId,
       rootHumanTurn,
@@ -3778,6 +3793,7 @@ export async function drainInFlight(
         metadata?: Record<string, unknown>;
       };
       status: "completed" | "synthetic_error";
+      durationMs?: number;
     }>;
   } | null;
   if (!exec || typeof exec.close !== "function") {
@@ -3815,6 +3831,9 @@ export async function drainInFlight(
                 isError: result.isError === true,
                 ...(result.metadata !== undefined
                   ? { metadata: result.metadata }
+                  : {}),
+                ...(drained.durationMs !== undefined
+                  ? { durationMs: drained.durationMs }
                   : {}),
               },
             },
@@ -5211,7 +5230,6 @@ async function* runTurnKernelInner(
         usage,
         stopReason,
       };
-      await drainPendingExtraction();
       return terminal;
     }
 
@@ -5322,6 +5340,30 @@ async function* runTurnKernelInner(
       await commit(state, ctx, session, signal, {
         querySource: turnQuerySource,
       });
+      // A tool-phase guard that found the turn going nowhere (one call
+      // failing the same way over and over) ends it as the behavioral
+      // backstop would: the explanation goes into the transcript and the
+      // terminal is the bounded `no_progress`, so hooks and subagents do
+      // not mistake the halt for a completed turn.
+      const noProgressStop =
+        state.transition === undefined ? state.noProgressStop : undefined;
+      if (noProgressStop !== undefined) {
+        state.messages.push({
+          role: "assistant",
+          content: noProgressStop.explanation,
+        });
+        lastContent = noProgressStop.explanation;
+        session.emit({
+          id: session.nextInternalSubId(),
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "no_progress_detected",
+              message: noProgressStop.explanation,
+            },
+          },
+        });
+      }
       await syncSessionState();
       if (state.transition !== undefined) {
         state.transition = undefined;
@@ -5329,14 +5371,14 @@ async function* runTurnKernelInner(
       }
       launchTerminalPostSampling(state, session, ctx, turnQuerySource, signal);
       emitTurnComplete(lastContent);
-      const terminal: Terminal = { reason: "completed" };
+      const stopReason = noProgressStop !== undefined ? "no_progress" : "completed";
+      const terminal: Terminal = { reason: stopReason };
       yield {
         type: "turn_complete",
         content: lastContent,
         usage,
-        stopReason: "completed",
+        stopReason,
       };
-      await drainPendingExtraction();
       return terminal;
     }
     const drainedQueuedCommandEvents = drainQueuedCommandsAfterTools({

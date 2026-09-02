@@ -26,6 +26,27 @@ describe("memory extraction prompt", () => {
     expect(prompt).not.toMatch(/https?:\/\//iu);
   });
 
+  it("names the memory directory the child may use", () => {
+    const prompt = buildExtractAutoOnlyPrompt(1, "", false, "/home/u/.agenc/projects/p/memory");
+    expect(prompt).toContain(
+      "Write to this project's memory directory only: /home/u/.agenc/projects/p/memory",
+    );
+    expect(buildExtractAutoOnlyPrompt(1, "")).not.toContain("memory directory only:");
+  });
+
+  it("names the shared root as readable and the project root as the only writable one", () => {
+    const prompt = buildExtractAutoOnlyPrompt(
+      1, "", false, "/home/u/.agenc/projects/p/memory", "/home/u/.agenc/memory",
+    );
+    expect(prompt).toContain("Write to this project's memory directory only: /home/u/.agenc/projects/p/memory");
+    expect(prompt).toContain("READ the shared memory directory /home/u/.agenc/memory");
+    expect(prompt).toContain("cannot write to it");
+    // Without a shared root the sentence is absent entirely.
+    expect(
+      buildExtractAutoOnlyPrompt(1, "", false, "/home/u/.agenc/projects/p/memory"),
+    ).not.toContain("shared memory directory");
+  });
+
   it("omits index instructions when the memory index is disabled", () => {
     const prompt = buildExtractAutoOnlyPrompt(1, "", true);
 

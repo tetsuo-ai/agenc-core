@@ -102,6 +102,25 @@ function expectCompletedExchangeAttempt(
   if (outcome === "kernel_denied") expect(process.platform).toBe("win32");
 }
 
+/**
+ * Enter protected mode for `root` (an editor holds the workspace lease) and
+ * run one Glob query against it.
+ */
+async function runProtectedGlob(
+  root: string,
+  editorInstanceId: string,
+  args: { readonly pattern: string; readonly path: string },
+) {
+  workspaceMutationCoordinators.getOrCreate(root).acquire({
+    workspaceRoot: root,
+    editorInstanceId,
+  });
+  const tool = createGlobTool({ allowedPaths: [root] });
+  const result = await tool.execute(args);
+  expect(result.isError).toBeUndefined();
+  return result;
+}
+
 describe("Glob tool", () => {
   let root = "";
   let previousAgencHome: string | undefined;
@@ -227,17 +246,42 @@ describe("Glob tool", () => {
     expect(clean.content).toContain("sub/visible.ts");
     expect(clean.content).not.toContain("ignored.ts");
 
-    workspaceMutationCoordinators.getOrCreate(root).acquire({
-      workspaceRoot: root,
-      editorInstanceId: "glob-ignore-editor",
-    });
-    const protectedResult = await tool.execute({
+    const protectedResult = await runProtectedGlob(root, "glob-ignore-editor", {
       pattern: "*.ts",
       path: scoped,
     });
-    expect(protectedResult.isError).toBeUndefined();
     expect(protectedResult.content).toContain("sub/visible.ts");
     expect(protectedResult.content).not.toContain("ignored.ts");
+  });
+
+  test("protected-workspace validation keeps every match and the mtime order", async () => {
+    // Matches are validated 16 at a time through the directory helper; the
+    // result must still list every file, newest first, exactly as the
+    // sequential path did.
+    const scoped = join(root, "many");
+    await mkdir(scoped);
+    const names: string[] = [];
+    const base = Date.now() - 60 * 60 * 1000;
+    for (let i = 0; i < 40; i += 1) {
+      const name = `file-${String(i).padStart(2, "0")}.ts`;
+      const file = join(scoped, name);
+      await writeFile(file, `export const v${i} = ${i};\n`, "utf8");
+      const stamp = new Date(base + i * 1000);
+      await utimes(file, stamp, stamp);
+      names.push(name);
+    }
+    const result = await runProtectedGlob(
+      root,
+      "glob-bounded-validation-editor",
+      { pattern: "*.ts", path: scoped },
+    );
+
+    const listed = result.content
+      .split("\n")
+      .filter((line) => line.includes("file-"))
+      .map((line) => line.trim().replace(/^.*\//, ""));
+    expect(listed).toEqual([...names].reverse());
+    expect(result.metadata).toMatchObject({ numFiles: 40, truncated: false });
   });
 
   test.runIf(process.platform !== "win32")(

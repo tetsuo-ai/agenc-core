@@ -81,23 +81,77 @@ export function normalizeSandboxPermissionsRequest(
   return input;
 }
 
-export function sandboxPermissionsFromArgs(
+/** The accepted values of `sandbox_permissions`, for error messages. */
+export const SANDBOX_PERMISSIONS_ACCEPTED_VALUES =
+  '"default", "require_escalated" or "with_additional_permissions"';
+
+/**
+ * Outcome of reading an escalation request off tool arguments. An
+ * unrecognized shape is reported, never silently downgraded: the live
+ * incident's model sent `sandbox_permissions: {"network":"full"}` — a shape
+ * the exec_command schema invites and this parser used to discard — so its
+ * twelve escalation requests were neither honored nor refused, and the
+ * command re-ran under the same sandbox with no sign the request had been
+ * dropped.
+ */
+export type SandboxPermissionsParse =
+  | { readonly kind: "ok"; readonly request: SandboxPermissionsRequest }
+  | { readonly kind: "invalid"; readonly reason: string };
+
+export function parseSandboxPermissionsArgs(
   args: Record<string, unknown>,
-): SandboxPermissionsRequest {
+): SandboxPermissionsParse {
   const raw = args["sandbox_permissions"];
-  const additionalPermissions = isAdditionalSandboxPermissions(
-    args["additional_permissions"],
-  )
-    ? args["additional_permissions"]
+  const rawAdditional = args["additional_permissions"];
+  if (
+    rawAdditional !== undefined &&
+    rawAdditional !== null &&
+    !isAdditionalSandboxPermissions(rawAdditional)
+  ) {
+    return {
+      kind: "invalid",
+      reason:
+        "additional_permissions has an unsupported shape; it must be " +
+        '{"network":{"enabled":true}} and/or ' +
+        '{"file_system":{"read":[...],"write":[...]}}',
+    };
+  }
+  const additionalPermissions = isAdditionalSandboxPermissions(rawAdditional)
+    ? rawAdditional
     : null;
+  if (raw === undefined || raw === null) {
+    return { kind: "ok", request: { kind: "default" } };
+  }
   if (
     raw === "default" ||
     raw === "require_escalated" ||
     raw === "with_additional_permissions"
   ) {
-    return normalizeSandboxPermissionsRequest(raw, additionalPermissions);
+    return {
+      kind: "ok",
+      request: normalizeSandboxPermissionsRequest(raw, additionalPermissions),
+    };
   }
-  return { kind: "default" };
+  return {
+    kind: "invalid",
+    reason:
+      `sandbox_permissions must be one of ${SANDBOX_PERMISSIONS_ACCEPTED_VALUES}; ` +
+      `received ${JSON.stringify(raw)}`,
+  };
+}
+
+/**
+ * Escalation request for the approval layer. Retains the historical
+ * "unknown shape means no request" behavior for callers that have no way to
+ * report a malformed argument; callers that can reject the call should use
+ * {@link parseSandboxPermissionsArgs} so the model learns its request was
+ * not understood.
+ */
+export function sandboxPermissionsFromArgs(
+  args: Record<string, unknown>,
+): SandboxPermissionsRequest {
+  const parsed = parseSandboxPermissionsArgs(args);
+  return parsed.kind === "ok" ? parsed.request : { kind: "default" };
 }
 
 export function hasAdditionalSandboxPermissions(
@@ -238,15 +292,38 @@ export function toolWantsNoSandboxApproval(
   }
 }
 
+/** The only keys `additional_permissions` and its members may carry. */
+const ADDITIONAL_PERMISSION_KEYS: ReadonlySet<string> = new Set([
+  "network",
+  "file_system",
+]);
+const NETWORK_PERMISSION_KEYS: ReadonlySet<string> = new Set(["enabled"]);
+const FILE_SYSTEM_PERMISSION_KEYS: ReadonlySet<string> = new Set([
+  "read",
+  "write",
+]);
+
+function hasOnlyKeys(value: object, allowed: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+/**
+ * Unknown keys are refused rather than ignored, so this agrees with the
+ * exec_command schema instead of quietly honoring half of a request the
+ * schema rejects. Silently dropping part of an escalation request is the
+ * defect this file's parser was fixed for.
+ */
 function isAdditionalSandboxPermissions(
   value: unknown,
 ): value is AdditionalSandboxPermissions {
   if (typeof value !== "object" || value === null) return false;
+  if (!hasOnlyKeys(value, ADDITIONAL_PERMISSION_KEYS)) return false;
   const candidate = value as AdditionalSandboxPermissions;
   if (candidate.network !== undefined) {
     if (typeof candidate.network !== "object" || candidate.network === null) {
       return false;
     }
+    if (!hasOnlyKeys(candidate.network, NETWORK_PERMISSION_KEYS)) return false;
     const enabled = (candidate.network as { readonly enabled?: unknown })
       .enabled;
     if (enabled !== undefined && typeof enabled !== "boolean") {
@@ -264,6 +341,9 @@ function isAdditionalSandboxPermissions(
       readonly read?: unknown;
       readonly write?: unknown;
     };
+    if (!hasOnlyKeys(candidate.file_system, FILE_SYSTEM_PERMISSION_KEYS)) {
+      return false;
+    }
     if (fs.read !== undefined && !isStringArray(fs.read)) return false;
     if (fs.write !== undefined && !isStringArray(fs.write)) return false;
   }

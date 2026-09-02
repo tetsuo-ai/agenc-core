@@ -293,6 +293,7 @@ Assume this tool is able to read all files on the machine. If the User provides 
 Usage:
 - Use workspace-relative paths like 'game.py' unless the user provided a real absolute path. Do not use '/root/...'; '/root' is the agent namespace, not the filesystem.
 - By default, it reads up to ${DEFAULT_LINE_LIMIT} lines starting from the beginning of the file
+- Output is capped at ${DEFAULT_MAX_OUTPUT_TOKENS} tokens; a read that would exceed the cap returns an error instead of content, so for large files pass offset and limit.
 - When you already know which part of the file you need, only read that part. This can be important for larger files.
 - Results are returned using cat -n format, with line numbers starting at 1
 - This tool allows AgenC to read images (eg PNG, JPG, etc). When reading an image file the contents are presented visually because AgenC can inspect multimodal inputs.

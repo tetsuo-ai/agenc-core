@@ -1913,7 +1913,9 @@ async function bootstrapLocalRuntimeSessionScoped(
               at: Date.now(),
             }),
         });
-        sidecarManager.register(new FileHistorySidecar({ fileHistory }));
+        sidecarManager.register(
+          new FileHistorySidecar({ fileHistory, workspaceRoot }),
+        );
         s.attachFileHistory(fileHistory);
 
         sidecarManager.register(

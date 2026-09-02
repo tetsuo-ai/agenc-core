@@ -71,6 +71,7 @@ import {
 } from "../../recovery/terminal-tool-result.js";
 import {
   ApprovalRejectedError,
+  approvalDenialEndsTurn,
   orchestrateToolCall,
   type ApprovalPolicy,
   type ApprovalResolver,
@@ -95,6 +96,7 @@ interface ToolDispatchResultLike {
   readonly codeModeResult?: unknown;
   readonly contentItems?: readonly FunctionCallOutputContentItem[];
   readonly metadata?: Record<string, unknown>;
+  readonly preventContinuation?: boolean;
 }
 
 interface ToolRegistryLike {
@@ -456,6 +458,7 @@ function approvalRejectedResult(err: ApprovalRejectedError): ToolDispatchResultL
       approvalDecision: decision,
     }),
     isError: true,
+    ...(approvalDenialEndsTurn(err) ? { preventContinuation: true } : {}),
   };
 }
 

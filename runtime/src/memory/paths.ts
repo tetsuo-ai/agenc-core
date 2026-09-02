@@ -4,8 +4,13 @@
  *
  * The public `getAutoMem*` names remain as compatibility aliases for existing
  * callers, but the owned shape is now explicit: global memory is under the
- * AgenC memory base, project memory belongs to the current project, and
- * session memory is kept in conversation state rather than a filesystem path.
+ * AgenC memory base, project memory lives under that same base keyed by the
+ * project's canonical git root (`<base>/projects/<sanitized-root>/memory/`),
+ * and session memory is kept in conversation state rather than a filesystem
+ * path. The memory prompt, relevant-memory recall, permissions and the
+ * extraction child all derive the project directory through
+ * `buildProjectMemoryDirectory` so a memory written by one of them is found
+ * by the others.
  */
 import { homedir } from 'os'
 import { isAbsolute, join, normalize, sep } from 'path'
@@ -203,13 +208,40 @@ function getAutoMemBase(): string {
 }
 
 /**
+ * The project root every memory key is built from: the canonical git root
+ * when there is one, otherwise the stable project root. Exported so a caller
+ * that already knows which memory base it wants can build the same project
+ * directory as `getProjectMemoryPath` without re-deriving the root.
+ */
+export function getMemoryProjectRoot(): string {
+  return getAutoMemBase()
+}
+
+/**
+ * Build the project memory directory for one memory base and one project
+ * root: `<baseDir>/projects/<sanitized-project-root>/memory/`. Shared by the
+ * prompt/permission resolver below and by the extraction child's
+ * `resolveAutoMemoryDirectory`, so every entry point that knows a base
+ * directory and a project root lands on the same directory.
+ */
+export function buildProjectMemoryDirectory(
+  baseDir: string,
+  projectRoot: string,
+): string {
+  return (
+    join(baseDir, 'projects', sanitizePath(projectRoot), MEMORY_DIRNAME) + sep
+  ).normalize('NFC')
+}
+
+/**
  * Returns the auto-memory directory path.
  *
  * Resolution order:
  *   1. AGENC_COWORK_MEMORY_PATH_OVERRIDE env var (full-path override, used by Cowork)
  *   2. autoMemoryDirectory in trusted canonical config (policy/flag/user)
- *   3. In remote mode, <memoryBase>/projects/<sanitized-git-root>/memory/
- *   4. Otherwise, <projectRoot>/.agenc/memory/
+ *   3. <memoryBase>/projects/<sanitized-git-root>/memory/, where the base is
+ *      AGENC_REMOTE_MEMORY_DIR in remote mode and $AGENC_HOME otherwise. This
+ *      keeps memory out of the repository and matches the extraction child.
  *
  * Render-path callers invoke this once per tool-use message per Messages
  * re-render, so results are cached. The cache is partitioned by the exact
@@ -224,15 +256,7 @@ function resolveProjectMemoryPath(): string {
   if (override) {
     return override
   }
-  if (getSessionRemoteMemoryRoot() !== undefined) {
-    const projectsDir = join(getMemoryBaseDir(), 'projects')
-    return (
-      join(projectsDir, sanitizePath(getAutoMemBase()), MEMORY_DIRNAME) + sep
-    ).normalize('NFC')
-  }
-  return (
-    join(getProjectRoot(), PROJECT_MEMORY_DIR, MEMORY_DIRNAME) + sep
-  ).normalize('NFC')
+  return buildProjectMemoryDirectory(getMemoryBaseDir(), getAutoMemBase())
 }
 
 function projectMemoryPathCacheKey(): string {
@@ -338,4 +362,19 @@ export function isProjectMemoryPath(absolutePath: string): boolean {
 
 export function isDurableMemoryPath(absolutePath: string): boolean {
   return isGlobalMemoryPath(absolutePath) || isProjectMemoryPath(absolutePath)
+}
+
+/**
+ * The durable memory directories the file tools admit regardless of the
+ * workspace boundary: exactly the global and project roots the memory prompt
+ * advertises, so a Write to the path the prompt names is never refused as
+ * "outside allowed directories". Returns [] when the roots cannot be
+ * resolved so the workspace boundary stays as it was.
+ */
+export function getDurableMemoryRoots(): readonly string[] {
+  try {
+    return Array.from(new Set([getGlobalMemoryPath(), getProjectMemoryPath()]))
+  } catch {
+    return []
+  }
 }

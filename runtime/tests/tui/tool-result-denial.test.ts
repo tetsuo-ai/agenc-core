@@ -19,6 +19,23 @@ describe("isPermissionDeniedToolResult", () => {
     ).toBe(true);
   });
 
+  it("detects the orchestrator's resolver-denial message", () => {
+    expect(
+      isPermissionDeniedToolResult(
+        JSON.stringify({
+          error:
+            "Permission denied: exec_command was denied by this session's approval resolver. Do not retry the same call; choose a different approach or ask the user how to proceed.",
+        }),
+      ),
+    ).toBe(true);
+    // A default denial (no resolver at all) is not a user rejection.
+    expect(
+      isPermissionDeniedToolResult(
+        "Not permitted: exec_command cannot run in this session because no approval resolver is available to allow it.",
+      ),
+    ).toBe(false);
+  });
+
   it("parses JSON strings recursively", () => {
     expect(
       isPermissionDeniedToolResult(

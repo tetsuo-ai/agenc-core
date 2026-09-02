@@ -533,6 +533,8 @@ describe("model-facing tools", () => {
     expect(waitAgentTool?.inputSchema).toMatchObject({
       properties: {
         timeout_ms: {
+          minimum: 10_000,
+          maximum: 3_600_000,
           description: expect.stringContaining(
             "Defaults to 30000, min 10000, max 3600000",
           ),
@@ -3119,16 +3121,6 @@ describe("model-facing tools", () => {
     });
 
     const wait = tools.find((tool) => tool.name === "wait_agent")!;
-    const zeroTimeout = await wait.execute({ timeout_ms: 0 });
-    expect(zeroTimeout.isError).toBe(true);
-    expect(JSON.parse(zeroTimeout.content).error).toBe(
-      "timeout_ms must be at least 10000",
-    );
-    const tooLargeTimeout = await wait.execute({ timeout_ms: 3_600_001 });
-    expect(tooLargeTimeout.isError).toBe(true);
-    expect(JSON.parse(tooLargeTimeout.content).error).toBe(
-      "timeout_ms must be at most 3600000",
-    );
     for (const timeout_ms of ["1000", {}, []]) {
       const invalidTimeout = await wait.execute({ timeout_ms });
       expect(invalidTimeout.isError).toBe(true);
@@ -4537,6 +4529,44 @@ describe("model-facing tools", () => {
     }
   });
 
+  it("wait_agent clamps timeout_ms into the configured range instead of erroring", async () => {
+    const session = fakeSession();
+    (session as unknown as { emit: typeof session.emit }).emit = () => {};
+    const waitForMailboxChange = vi.fn(async () => true);
+    (
+      session as unknown as { waitForMailboxChange: typeof waitForMailboxChange }
+    ).waitForMailboxChange = waitForMailboxChange;
+    _setAgentControlForTesting(session, {
+      control: {
+        listAgents: vi.fn(() => []),
+        getLive: vi.fn(() => undefined),
+        resolveAgentReference: vi.fn(() => "agent-1"),
+        subscribeStatus: vi.fn(),
+      } as never,
+      registry: {} as never,
+    });
+    try {
+      const wait = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "wait_agent")!;
+
+      const tooSmall = await wait.execute({ timeout_ms: 5_000 });
+      expect(tooSmall.isError).toBeUndefined();
+      expect(waitForMailboxChange).toHaveBeenLastCalledWith(10_000);
+
+      const tooLarge = await wait.execute({ timeout_ms: 3_600_001 });
+      expect(tooLarge.isError).toBeUndefined();
+      expect(waitForMailboxChange).toHaveBeenLastCalledWith(3_600_000);
+
+      const inRange = await wait.execute({ timeout_ms: 45_000 });
+      expect(inRange.isError).toBeUndefined();
+      expect(waitForMailboxChange).toHaveBeenLastCalledWith(45_000);
+    } finally {
+      _clearAgentControlCacheForTesting(session);
+    }
+  });
+
   it("wait_agent returns drained mailbox updates for the current turn", async () => {
     const session = fakeSession();
     const emitted: unknown[] = [];
@@ -4671,21 +4701,21 @@ describe("model-facing tools", () => {
 
     const defaulted = await wait.execute({});
     const tooLarge = await wait.execute({ timeout_ms: 2_001 });
+    const tooSmall = await wait.execute({ timeout_ms: 100 });
 
     expect(defaulted.isError).toBeUndefined();
-    expect(waitForMailboxChange).toHaveBeenCalledWith(1_250);
-    expect(JSON.parse(tooLarge.content)).toEqual({
-      error: "timeout_ms must be at most 2000",
+    expect(waitForMailboxChange).toHaveBeenNthCalledWith(1, 1_250);
+    // Out-of-range values clamp to the configured bounds instead of erroring.
+    expect(tooLarge.isError).toBeUndefined();
+    expect(waitForMailboxChange).toHaveBeenNthCalledWith(2, 2_000);
+    expect(tooSmall.isError).toBeUndefined();
+    expect(waitForMailboxChange).toHaveBeenNthCalledWith(3, 500);
+    expect(wait.inputSchema.properties?.timeout_ms).toMatchObject({
+      minimum: 500,
+      maximum: 2_000,
+      description:
+        "Optional timeout in milliseconds. Defaults to 1250, min 500, max 2000; values outside the range are clamped.",
     });
-    expect(tooLarge.isError).toBe(true);
-    expect(
-      wait.inputSchema.properties?.timeout_ms &&
-        "description" in wait.inputSchema.properties.timeout_ms
-        ? wait.inputSchema.properties.timeout_ms.description
-        : undefined,
-    ).toBe(
-      "Optional timeout in milliseconds. Defaults to 1250, min 500, max 2000.",
-    );
   });
 
   it("wait_agent rejects fractional timeout_ms values", async () => {

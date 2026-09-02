@@ -4,6 +4,8 @@ export const PERMISSION_DENIED_TOOL_RESULT_MESSAGE =
   "Permission request denied by user.";
 
 const USER_REJECTION_TEXT = "rejected by user";
+// Prefix of the orchestrator's resolver-denial message.
+const PERMISSION_DENIED_PREFIX = "permission denied:";
 
 function parseJsonText(value: string): unknown {
   try {
@@ -16,7 +18,9 @@ function parseJsonText(value: string): unknown {
 export function isPermissionDeniedToolResult(value: unknown): boolean {
   if (typeof value === "string") {
     const trimmed = value.trim();
-    if (trimmed.toLowerCase() === USER_REJECTION_TEXT) return true;
+    const lowered = trimmed.toLowerCase();
+    if (lowered === USER_REJECTION_TEXT) return true;
+    if (lowered.startsWith(PERMISSION_DENIED_PREFIX)) return true;
     const parsed = parseJsonText(trimmed);
     return parsed !== undefined && isPermissionDeniedToolResult(parsed);
   }

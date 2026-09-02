@@ -786,46 +786,83 @@ function isSafeRelativeRipgrepPathBytes(path: Buffer): boolean {
   return true;
 }
 
+/**
+ * Matches are validated this many at a time. Each validation is an IPC round
+ * trip to the directory helper (which spawns a read worker per path), so
+ * validating sequentially made Glob scale linearly with the match count:
+ * about 30 to 50 ms per file, 0.9 s median and 2.5 s max on a 115-file
+ * workspace. Bounded parallelism keeps helper load predictable while
+ * removing most of that wall time. Output order is preserved.
+ */
+const MATCH_VALIDATION_CONCURRENCY = 16;
+
+async function validateMatch(params: {
+  readonly match: Buffer;
+  readonly target: ResolvedGlobTarget;
+  readonly readCapability?: WorkspaceBoundReadCapability;
+}): Promise<string | undefined> {
+  const normalizedBytes = normalizeRelativeRipgrepPathBytes(params.match);
+  if (!isSafeRelativeRipgrepPathBytes(normalizedBytes)) return undefined;
+  const decoded = decodeRipgrepPathBytes(normalizedBytes);
+  if (params.readCapability !== undefined) {
+    if (decoded === undefined) return undefined;
+    const absolute = resolve(params.target.displayRoot, decoded);
+    const relativeToSearchRoot = relative(params.target.searchRoot, absolute);
+    if (
+      relativeToSearchRoot.length === 0 ||
+      relativeToSearchRoot === ".." ||
+      relativeToSearchRoot.startsWith(`..${sep}`) ||
+      isAbsolute(relativeToSearchRoot)
+    ) {
+      return undefined;
+    }
+    try {
+      await params.readCapability.validateRelativeFile(relativeToSearchRoot);
+    } catch {
+      return undefined;
+    }
+    return renderRipgrepPathBytes(normalizedBytes);
+  }
+  if (decoded === undefined) {
+    return renderRipgrepPathBytes(normalizedBytes);
+  }
+  const absolute = resolve(params.target.displayRoot, decoded);
+  const check = await safePath(absolute, params.target.allowedPaths);
+  if (!check.safe) return undefined;
+  const st = await fs.stat(check.resolved).catch(() => undefined);
+  if (!st || st.isDirectory()) return undefined;
+  return renderRipgrepPathBytes(normalizedBytes);
+}
+
 async function normalizeAndFilterMatches(params: {
   readonly matches: readonly Buffer[];
   readonly target: ResolvedGlobTarget;
   readonly readCapability?: WorkspaceBoundReadCapability;
 }): Promise<readonly string[]> {
   const safeMatches: string[] = [];
-  for (const match of params.matches) {
-    const normalizedBytes = normalizeRelativeRipgrepPathBytes(match);
-    if (!isSafeRelativeRipgrepPathBytes(normalizedBytes)) continue;
-    const decoded = decodeRipgrepPathBytes(normalizedBytes);
-    if (params.readCapability !== undefined) {
-      if (decoded === undefined) continue;
-      const absolute = resolve(params.target.displayRoot, decoded);
-      const relativeToSearchRoot = relative(params.target.searchRoot, absolute);
-      if (
-        relativeToSearchRoot.length === 0 ||
-        relativeToSearchRoot === ".." ||
-        relativeToSearchRoot.startsWith(`..${sep}`) ||
-        isAbsolute(relativeToSearchRoot)
-      ) {
-        continue;
-      }
-      try {
-        await params.readCapability.validateRelativeFile(relativeToSearchRoot);
-      } catch {
-        continue;
-      }
-      safeMatches.push(renderRipgrepPathBytes(normalizedBytes));
-      continue;
+  for (
+    let start = 0;
+    start < params.matches.length;
+    start += MATCH_VALIDATION_CONCURRENCY
+  ) {
+    const chunk = params.matches.slice(
+      start,
+      start + MATCH_VALIDATION_CONCURRENCY,
+    );
+    const validated = await Promise.all(
+      chunk.map((match) =>
+        validateMatch({
+          match,
+          target: params.target,
+          ...(params.readCapability !== undefined
+            ? { readCapability: params.readCapability }
+            : {}),
+        }),
+      ),
+    );
+    for (const rendered of validated) {
+      if (rendered !== undefined) safeMatches.push(rendered);
     }
-    if (decoded === undefined) {
-      safeMatches.push(renderRipgrepPathBytes(normalizedBytes));
-      continue;
-    }
-    const absolute = resolve(params.target.displayRoot, decoded);
-    const check = await safePath(absolute, params.target.allowedPaths);
-    if (!check.safe) continue;
-    const st = await fs.stat(check.resolved).catch(() => undefined);
-    if (!st || st.isDirectory()) continue;
-    safeMatches.push(renderRipgrepPathBytes(normalizedBytes));
   }
   return safeMatches;
 }

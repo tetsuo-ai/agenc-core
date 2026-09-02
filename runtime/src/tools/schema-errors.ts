@@ -126,10 +126,41 @@ const SKILL_TOOL_NAMES: ReadonlySet<string> = new Set([
  * `Skill` tool's missing-`skill` case. Additional overrides can be added here
  * as new tools gain specific bad-input guidance.
  */
+/**
+ * Tools whose `sandbox_permissions` field a model reliably guesses wrong.
+ * Its schema is an enum of three strings, and the default enum prose does
+ * not say what to send instead — the live incident's model sent
+ * `{"network":"full"}` twelve times.
+ */
+const SANDBOX_PERMISSION_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "exec_command",
+]);
+
+const SANDBOX_PERMISSION_VALUES: readonly string[] = [
+  "default",
+  "require_escalated",
+  "with_additional_permissions",
+];
+
 export function getSchemaValidationErrorOverride(
   tool: Tool,
   input: unknown,
 ): string | null {
+  if (SANDBOX_PERMISSION_TOOL_NAMES.has(tool.name) && input && typeof input === "object") {
+    const raw = (input as { sandbox_permissions?: unknown }).sandbox_permissions;
+    if (
+      raw !== undefined &&
+      !(typeof raw === "string" && SANDBOX_PERMISSION_VALUES.includes(raw))
+    ) {
+      return (
+        'sandbox_permissions must be the plain string "default", ' +
+        '"require_escalated" or "with_additional_permissions" — not an object. ' +
+        'Scoped permissions belong in additional_permissions alongside ' +
+        '"with_additional_permissions", for example ' +
+        '{"network":{"enabled":true}}. The command was not run.'
+      );
+    }
+  }
   if (!SKILL_TOOL_NAMES.has(tool.name)) return null;
   if (!input || typeof input !== "object") return null;
   const skill = (input as { skill?: unknown }).skill;

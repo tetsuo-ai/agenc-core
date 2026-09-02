@@ -28,6 +28,7 @@ import {
 import { silentLogger } from "../../utils/logger.js";
 import type { Logger } from "../../utils/logger.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
+import { shellWorkspaceMutationPermission } from "./shell-mutation-permission.js";
 import { bashToolHasPermission } from "../../permissions/bash.js";
 import type { PermissionResult } from "../../permissions/types.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
@@ -1098,6 +1099,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
           ? { command: shellCommand, cwd }
           : { command, args: execArgs, cwd },
         workspaceRoot: cwd,
+        ...shellWorkspaceMutationPermission(rawArgs),
       });
       if (workspaceWriteDecision.blocked) {
         const rejectionMessage =

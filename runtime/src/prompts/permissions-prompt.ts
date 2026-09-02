@@ -56,9 +56,17 @@ export const APPROVAL_POLICY_NEVER =
  * "approval policy: never" narrowly (only about `sandbox_permissions`) and
  * still stops to ask the user before acting — the "yolo still prompts me"
  * complaint.
+ *
+ * The note waives tool prompts, not judgement: the static head's
+ * "Executing actions with care" section keeps its say over destructive,
+ * irreversible, shared-system and externally visible actions, the model may
+ * still ask one question when the request is genuinely ambiguous, and a
+ * finished task ends with a report rather than more work. An earlier wording
+ * ("do not stop to wait for the user ... drive the task to completion")
+ * contradicted that section and pushed the model past the end of a task.
  */
 export const BYPASS_AUTONOMY_NOTE =
-  "Because the approval policy is never, the user has pre-authorized every action and is not present to answer prompts. Operate autonomously: do not pause to ask for confirmation, plan approval, or permission, and do not stop to wait for the user — proceed directly and drive the task to completion.";
+  "Approval policy never means tool calls are pre-approved: do not ask for tool permission or plan approval, and do not pause for confirmation of local, reversible work. The rules in 'Executing actions with care' still apply: destructive, irreversible, shared-system or externally visible actions still need the user's explicit request. If the task is genuinely ambiguous, ask one question with AskUserQuestion; when the requested work is done and verified, stop and report.";
 
 /**
  * Approval policy: unless trusted. Begins with one literal space character.

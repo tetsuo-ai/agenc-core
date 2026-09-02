@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -16,7 +16,9 @@ import {
   resolveAgentRuntimeOptions,
   runWithAgentRuntimeOptions,
 } from "../session/runtime-options.js";
+import { sanitizePath } from "../utils/path.js";
 import {
+  buildProjectMemoryDirectory,
   getAutoMemEntrypoint,
   getAutoMemPath,
   getGlobalMemoryEntrypoint,
@@ -39,7 +41,7 @@ let oldRemoteMemoryDir: string | undefined;
 let oldPathOverride: string | undefined;
 
 beforeEach(() => {
-  tempRoot = mkdtempSync(join(tmpdir(), "agenc-memory-paths-"));
+  tempRoot = mkdtempSync(join(realpathSync(tmpdir()), "agenc-memory-paths-"));
   oldProjectRoot = getProjectRoot();
   oldAgencHome = process.env.AGENC_HOME;
   oldRemoteMemoryDir = process.env.AGENC_REMOTE_MEMORY_DIR;
@@ -77,19 +79,24 @@ describe("memory paths", () => {
     expect(getGlobalMemoryEntrypoint()).toBe(
       join(tempRoot, "home", "memory", "MEMORY.md"),
     );
+    // Project memory lives under the memory base keyed by the project root,
+    // never inside the repository, so the prompt, recall and the extraction
+    // child share one directory.
+    const projectMemoryDir =
+      join(tempRoot, "home", "projects", sanitizePath(join(tempRoot, "repo")), "memory") + sep;
+    expect(getProjectMemoryPath()).toBe(projectMemoryDir);
     expect(getProjectMemoryPath()).toBe(
-      join(tempRoot, "repo", ".agenc", "memory") + sep,
+      buildProjectMemoryDirectory(join(tempRoot, "home"), join(tempRoot, "repo")),
     );
-    expect(getProjectMemoryEntrypoint()).toBe(
-      join(tempRoot, "repo", ".agenc", "memory", "MEMORY.md"),
-    );
+    expect(getProjectMemoryEntrypoint()).toBe(join(projectMemoryDir, "MEMORY.md"));
     expect(getProjectInstructionPath()).toBe(join(tempRoot, "repo", "AGENC.md"));
     expect(getAutoMemPath()).toBe(getProjectMemoryPath());
     expect(getAutoMemEntrypoint()).toBe(getProjectMemoryEntrypoint());
     expect(isGlobalMemoryPath(join(tempRoot, "home", "memory", "note.md"))).toBe(true);
-    expect(isProjectMemoryPath(join(tempRoot, "repo", ".agenc", "memory", "note.md"))).toBe(true);
+    expect(isProjectMemoryPath(join(projectMemoryDir, "note.md"))).toBe(true);
+    expect(isProjectMemoryPath(join(tempRoot, "repo", ".agenc", "memory", "note.md"))).toBe(false);
     expect(isDurableMemoryPath(join(tempRoot, "home", "memory", "note.md"))).toBe(true);
-    expect(isDurableMemoryPath(join(tempRoot, "repo", ".agenc", "memory", "note.md"))).toBe(true);
+    expect(isDurableMemoryPath(join(projectMemoryDir, "note.md"))).toBe(true);
   });
 
   it("uses the remote memory base for project compatibility paths", () => {
@@ -157,7 +164,7 @@ describe("memory paths", () => {
       coworkMemoryPathOverride: override,
     });
     const runtimeB = resolveAgentRuntimeOptions({});
-    const expectedB = join(projectRoot, ".agenc", "memory") + sep;
+    const expectedB = buildProjectMemoryDirectory(home, projectRoot);
 
     const observe = (
       authority: ConfigStore,

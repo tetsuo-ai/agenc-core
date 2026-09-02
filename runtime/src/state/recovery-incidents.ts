@@ -610,6 +610,31 @@ export class StateRecoveryIncidentRepository {
     });
   }
 
+  /**
+   * Resolve active `source_not_quiescent` deferrals whose retry window has
+   * passed. Such a block only records that a live writer held the rollout
+   * lease when a reader looked (a desktop run.status on a running session
+   * did exactly that); once next_retry_ms is behind us it says nothing about
+   * the source now, and leaving it active would exclude a healthy run from
+   * startup recovery as "pending operator recovery action". Every other
+   * reason code stays on the operator retry path.
+   */
+  releaseExpiredLiveSourceDeferrals(nowMs: number): number {
+    const resolvedAtMs = nonNegativeSafeInteger(nowMs, "nowMs");
+    return this.driver
+      .prepareState<[number, number]>(
+        `UPDATE run_recovery_deferred
+         SET state = 'resolved',
+             resolved_at_ms = ?,
+             resolution_actor = 'daemon_startup',
+             resolution_note = 'source_not_quiescent retry window elapsed; startup recovery rescans the source'
+         WHERE state = 'active'
+           AND reason_code = 'source_not_quiescent'
+           AND next_retry_ms <= ?`,
+      )
+      .run(resolvedAtMs, resolvedAtMs).changes;
+  }
+
   retryDeferred(
     params: {
       readonly blockId: string;

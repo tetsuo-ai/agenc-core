@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import {
   ApprovalRejectedError,
+  approvalDenialEndsTurn,
   SandboxDeniedError,
   attemptWithRetry,
   classifyToolApproval,
@@ -1216,6 +1217,55 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     });
     expect(dispatched).not.toHaveBeenCalled();
     expect(guardian.reviewApprovalRequest).toHaveBeenCalledOnce();
+  });
+
+  /** Run the call, expect an ApprovalRejectedError with a denied decision. */
+  async function deniedCall(
+    opts: Partial<Parameters<typeof orchestrateToolCall<string>>[0]>,
+  ): Promise<ApprovalRejectedError> {
+    const rejection = await orchestrateToolCall<string>({
+      tool: mkTool(),
+      approvalCtx: mkCtx(),
+      approvalPolicy: "on_request",
+      sandboxMode: "workspace_write",
+      dispatch: async () => "ok",
+      ...opts,
+    }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(rejection).toBeInstanceOf(ApprovalRejectedError);
+    const error = rejection as ApprovalRejectedError;
+    expect(error.decision).toEqual({ kind: "denied" });
+    return error;
+  }
+
+  test("resolver denial names the tool, forbids a retry, and records its source", async () => {
+    const dispatched = vi.fn(async () => "ok");
+    const error = await deniedCall({
+      tool: mkTool({ requiresApproval: true }),
+      dispatch: dispatched,
+      approvalResolver: { request: async () => ({ kind: "denied" }) },
+    });
+
+    expect(error.source).toBe("resolver");
+    expect(error.message).toBe(
+      "Permission denied: test.cmd was denied by this session's approval resolver. Do not retry the same call; choose a different approach or ask the user how to proceed.",
+    );
+    expect(approvalDenialEndsTurn(error)).toBe(true);
+    expect(dispatched).not.toHaveBeenCalled();
+  });
+
+  test("default denial says the tool is not permitted in this session", async () => {
+    const error = await deniedCall({ approvalPolicy: "untrusted" });
+
+    expect(error.source).toBe("default_deny");
+    expect(error.message).toBe(
+      "Not permitted: test.cmd cannot run in this session because no approval resolver is available to allow it. Do not retry this call; use a different tool or ask the user.",
+    );
+    // No resolver means nobody could ever approve: the model keeps the turn
+    // so it can report the denial instead of being cut off.
+    expect(approvalDenialEndsTurn(error)).toBe(false);
   });
 
   test("needs_approval path: no resolver + no hook → default-deny (ApprovalRejectedError)", async () => {

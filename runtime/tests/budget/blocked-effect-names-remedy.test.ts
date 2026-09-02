@@ -35,6 +35,18 @@ describe("the blocked-effect error names its own remedy", () => {
     expect(error.message).toMatch(/recoverable without restarting/i);
   });
 
+  it("tells the model that only the user can run /resolve and not to retry", () => {
+    const error = new LiveEffectMutationBlockedError([identity]);
+
+    expect(error.message).toContain("only the user can clear it");
+    expect(error.message).toContain("ask the user to run");
+    expect(error.message).toContain("in the AgenC UI");
+    expect(error.message).toContain("You cannot run /resolve yourself.");
+    expect(error.message).toContain(
+      "Do not retry the blocked tools until the user has run it.",
+    );
+  });
+
   it("is thrown for side-effecting dispatch once an effect is poisoned", () => {
     const session = {};
     poisonLiveEffect(session, identity);

@@ -25,13 +25,11 @@ function waitTimeoutMs(
   const supplied = numberValue(args.timeout_ms);
   const { defaultTimeoutMs, minTimeoutMs, maxTimeoutMs } =
     effectiveWaitTimeoutOptions(sessionOrError);
-  if (supplied !== undefined && supplied < minTimeoutMs) {
-    return json({ error: `timeout_ms must be at least ${minTimeoutMs}` }, true);
-  }
-  if (supplied !== undefined && supplied > maxTimeoutMs) {
-    return json({ error: `timeout_ms must be at most ${maxTimeoutMs}` }, true);
-  }
-  return supplied ?? defaultTimeoutMs;
+  if (supplied === undefined) return defaultTimeoutMs;
+  // Clamp instead of erroring: an out-of-range value used to cost a full
+  // model round trip just to learn the bound. The schema also declares
+  // minimum/maximum so the model sees the range up front.
+  return Math.min(maxTimeoutMs, Math.max(minTimeoutMs, supplied));
 }
 
 function configuredTimeoutOption(value: unknown, fallback: number): number {
@@ -228,9 +226,11 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
       properties: {
         timeout_ms: {
           type: "number",
+          minimum: minTimeoutMs,
+          maximum: maxTimeoutMs,
           description:
             `Optional timeout in milliseconds. Defaults to ${defaultTimeoutMs}, ` +
-            `min ${minTimeoutMs}, max ${maxTimeoutMs}.`,
+            `min ${minTimeoutMs}, max ${maxTimeoutMs}; values outside the range are clamped.`,
         },
       },
       additionalProperties: false,

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -28,6 +28,7 @@ import {
   getProjectMemoryPath,
 } from './paths.js'
 import {
+  checkMemorySecrets,
   checkTeamMemSecrets,
   detectSessionFileType,
   detectSessionPatternType,
@@ -50,7 +51,7 @@ let oldPathOverride: string | undefined
 const fakeGitHubPat = `ghp_${'A'.repeat(36)}`
 
 beforeEach(() => {
-  tempRoot = mkdtempSync(join(tmpdir(), 'agenc-memory-privacy-'))
+  tempRoot = mkdtempSync(join(realpathSync(tmpdir()), 'agenc-memory-privacy-'))
   oldProjectRoot = getProjectRoot()
   oldAgencHome = process.env.AGENC_HOME
   oldRemoteMemoryDir = process.env.AGENC_REMOTE_MEMORY_DIR
@@ -131,6 +132,11 @@ describe('memory privacy', () => {
     const projectMemoryFile = join(getProjectMemoryPath(), 'notes.md')
     const projectMemorySibling = `${projectMemoryDir}-evil`
     const projectMemorySiblingFile = join(projectMemorySibling, 'notes.md')
+    // The project memory directory lives inside `$AGENC_HOME/projects/`,
+    // where the whole tree is session state, so a prefix-colliding sibling
+    // of the global memory directory is the negative directory fixture.
+    const globalMemorySibling = `${globalMemoryDir}-evil`
+    const globalMemorySiblingFile = join(globalMemorySibling, 'notes.md')
 
     expect(isMemoryDirectory(projectMemoryDir)).toBe(true)
     expect(isMemoryDirectory(getGlobalMemoryPath())).toBe(true)
@@ -139,10 +145,11 @@ describe('memory privacy', () => {
       true,
     )
     expect(isAutoManagedMemoryFile(projectMemorySiblingFile)).toBe(false)
-    expect(isMemoryDirectory(projectMemorySibling)).toBe(false)
+    expect(isAutoManagedMemoryFile(globalMemorySiblingFile)).toBe(false)
+    expect(isMemoryDirectory(globalMemorySibling)).toBe(false)
     expect(isMemoryDirectory(join(`${agencHome}-evil`, 'memory'))).toBe(false)
     expect(
-      isShellCommandTargetingMemory(`grep token ${projectMemorySiblingFile}`),
+      isShellCommandTargetingMemory(`grep token ${globalMemorySiblingFile}`),
     ).toBe(false)
     expect(isShellCommandTargetingMemory('grep token /tmp/not-memory.txt')).toBe(
       false,
@@ -173,6 +180,27 @@ describe('memory privacy', () => {
     expect(checkTeamMemSecrets(teamMemoryFile, fakeGitHubPat)).toContain(
       'GitHub PAT',
     )
+  })
+
+  it('rejects secret-bearing writes inside any durable memory directory', () => {
+    installMemoryAuthority()
+    const projectMemoryFile = join(getProjectMemoryPath(), 'notes.md')
+    const globalMemoryFile = join(getGlobalMemoryPath(), 'profile.md')
+    const teamMemoryFile = join(getProjectMemoryPath(), 'team', 'shared.md')
+    const repoFile = join(tempRoot, 'repo', 'config.md')
+
+    expect(checkMemorySecrets(projectMemoryFile, 'safe note')).toBeNull()
+    expect(checkMemorySecrets(projectMemoryFile, fakeGitHubPat)).toContain(
+      'cannot be written to memory',
+    )
+    expect(checkMemorySecrets(globalMemoryFile, fakeGitHubPat)).toContain(
+      'GitHub PAT',
+    )
+    expect(checkMemorySecrets(teamMemoryFile, fakeGitHubPat)).toContain(
+      'GitHub PAT',
+    )
+    // Ordinary repository files keep the normal write path.
+    expect(checkMemorySecrets(repoFile, fakeGitHubPat)).toBeNull()
   })
 })
 

@@ -394,6 +394,49 @@ describe("tools/runtimes", () => {
       }),
     ).toThrow(/could not verify write targets/);
 
+    // kill_process signals a process and writes no file; before it was
+    // audited as virtualNoFsWrites the sandbox denied every call with
+    // "could not verify write targets", so a model could not stop a
+    // background process it had started (live incident, 2026-09-02).
+    const killProcessTool: Tool = {
+      name: "kill_process",
+      description: "",
+      inputSchema: { type: "object" },
+      metadata: { mutating: true, virtualNoFsWrites: true },
+      execute: async () => ({ content: "not reached" }),
+    };
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "workspace_write",
+          sandboxMode: "workspace_write",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: killProcessTool,
+        args: { session_id: 10 },
+      }),
+    ).not.toThrow();
+    // Without the audited exemption the same call is denied.
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "workspace_write",
+          sandboxMode: "workspace_write",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: { ...killProcessTool, metadata: { mutating: true } },
+        args: { session_id: 10 },
+      }),
+    ).toThrow(/could not verify write targets/);
+
     const shellTool: Tool = {
       name: "exec_command",
       description: "",

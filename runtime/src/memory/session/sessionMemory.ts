@@ -503,7 +503,7 @@ async function spawnSessionMemoryLiveAgent(
   if (typeof controlWithSpawn.spawn === "function") {
     return controlWithSpawn.spawn({
       parentPath: ROOT_AGENT_PATH,
-      preferredNickname: "session-memory",
+      preferredNickname: "session_memory",
     });
   }
 
@@ -511,7 +511,7 @@ async function spawnSessionMemoryLiveAgent(
   const { control } = ensureAgentControl(session);
   return control.spawn({
     parentPath: ROOT_AGENT_PATH,
-    preferredNickname: "session-memory",
+    preferredNickname: "session_memory",
   });
 }
 

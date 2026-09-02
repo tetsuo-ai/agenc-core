@@ -1106,6 +1106,12 @@ export type EventMsg =
         readonly result: string;
         readonly isError: boolean;
         readonly metadata?: Record<string, unknown>;
+        /**
+         * Wall time the tool spent executing, in milliseconds. Omitted for
+         * results synthesized before dispatch (denials, unknown tools) and
+         * for historical events.
+         */
+        readonly durationMs?: number;
       };
     }
   | {

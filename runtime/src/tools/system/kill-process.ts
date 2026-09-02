@@ -47,6 +47,21 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
       hiddenByDefault: false,
       mutating: true,
       deferred: false,
+      /**
+       * Audited per the ToolMetadata.virtualNoFsWrites contract: execute()
+       * below validates `session_id` as a number, rejects the removed
+       * `process_id` alias, and calls `terminateProcess` — it sends a signal
+       * and writes no file. The schema is `{session_id: number}` with
+       * `additionalProperties: false`, so no path argument exists for the
+       * model to steer, and this tool neither executes shell nor runs
+       * arbitrary code. Without the exemption the sandbox classified it as a
+       * mutating tool with indeterminate write targets and denied every call
+       * ("sandbox workspace_write could not verify write targets for
+       * kill_process"), leaving a model unable to stop a background process
+       * it had started. Which process may be signalled stays enforced where
+       * it belongs, by the ownership check in `terminateProcess`.
+       */
+      virtualNoFsWrites: true,
     },
     // TOOL-02 / TOOL-11: kill is side-effecting and must not opt out of approval.
     requiresApproval: true,

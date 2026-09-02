@@ -1,3 +1,7 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type {
@@ -16,6 +20,13 @@ import { EventLog, type Event } from "../../src/session/event-log.js";
 import type { Session } from "../../src/session/session.js";
 import type { Tool } from "../../src/tools/types.js";
 import { attachPendingPhysicalSettlement } from "../../src/tools/physical-settlement.js";
+import { createFileEditTool } from "../../src/tools/system/file-edit.js";
+
+const zeroAdmissionEstimate = () => ({
+  maxInputTokens: 0,
+  maxOutputTokens: 0,
+  maxCostUsd: 0,
+});
 
 function toolHarness() {
   const leaseController = new AbortController();
@@ -670,6 +681,75 @@ describe("runAdmittedToolCall", () => {
       throw new Error("missing unknown outcome");
     }
     expect(acknowledgement.msg.payload.outcome).toBe("unknown_outcome");
+  });
+
+  it("settles an Edit whose old_string is not found as a determinate failure, not unknown", async () => {
+    // Regression for the poisoned-session rollout: a stale `old_string`
+    // returned a bare error result, the supervisor recorded
+    // `effect_unknown_outcome`, and every later Write / exec_command in
+    // the session was refused with a `/resolve` instruction the model
+    // cannot execute. The file is untouched before the write boundary, so
+    // the Edit tool must settle this as a confirmed no-effect failure.
+    const root = await mkdtemp(join(tmpdir(), "agenc-admitted-edit-"));
+    try {
+      const file = join(root, "target.txt");
+      await writeFile(file, "current text\n", "utf8");
+      const editTool = createFileEditTool({ allowedPaths: [root] });
+      const state = toolHarness();
+
+      const result = await runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-1",
+        callId: "call-edit-miss",
+        tool: {
+          ...editTool,
+          admissionEstimate: zeroAdmissionEstimate,
+        } as unknown as Tool,
+        args: {},
+        invoke: async ({ crossEffectBoundary }) => {
+          crossEffectBoundary();
+          return editTool.execute({
+            file_path: file,
+            old_string: "text that is not there",
+            new_string: "replacement",
+            __testBypassSessionGuard: true,
+          });
+        },
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("String to replace not found in file.");
+      expect(
+        state.effectEvents.some(
+          (event) => event.msg.type === "effect_unknown_outcome",
+        ),
+      ).toBe(false);
+      expect(state.effectEvents.at(-1)?.msg).toMatchObject({
+        type: "effect_result",
+        payload: { outcome: "failed", effectBoundary: "crossed" },
+      });
+
+      // The session is not poisoned: a later side-effecting call still runs.
+      await expect(
+        runAdmittedToolCall({
+          session: state.session,
+          turnId: "turn-1",
+          callId: "call-write-after-edit-miss",
+          tool: {
+            name: "write.follow-up",
+            recoveryCategory: "side-effecting",
+            admissionEstimate: zeroAdmissionEstimate,
+          } as unknown as Tool,
+          args: {},
+          invoke: async ({ crossEffectBoundary }) => {
+            crossEffectBoundary();
+            return { content: "ok" };
+          },
+        }),
+      ).resolves.toMatchObject({ content: "ok" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("accepts typed adapter evidence that a crossed attempt made no effect", async () => {

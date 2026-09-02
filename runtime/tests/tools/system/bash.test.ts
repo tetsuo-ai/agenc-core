@@ -36,6 +36,7 @@ import {
   type SupervisedProcessResult,
 } from "../../../src/utils/supervisedProcess.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
+import { attachToolRuntimeContext } from "../runtimes/context.js";
 import {
   DEFAULT_DENY_LIST,
   DEFAULT_DENY_PREFIXES,
@@ -1889,6 +1890,63 @@ describe("system.bash tool", () => {
           "shell_workspace_file_write_disallowed",
         );
         expect(mockSpawn).not.toHaveBeenCalled();
+      } finally {
+        rmSync(workspaceRoot, { recursive: true, force: true });
+      }
+    });
+
+    it("lets a prompt-free session rm a workspace file but not a protected one", async () => {
+      const workspaceRoot = mkdtempSync(
+        join(tmpdir(), "agenc-bash-shell-delete-"),
+      );
+      const bypassArgs = (command: string): Record<string, unknown> => {
+        const args: Record<string, unknown> = { command };
+        attachToolRuntimeContext(args, {
+          callId: "call-bash-rm",
+          toolName: "system.bash",
+          runtimeKind: "function",
+          classification: "exclusive",
+          supportsParallelToolCalls: false,
+          source: { type: "model" },
+          submittedAtMs: 0,
+          approvalPolicy: "on_request",
+          requestedSandboxMode: "danger_full_access",
+          sandboxMode: "danger_full_access",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation: {
+            session: {
+              permissionModeRegistry: {
+                current: () => ({ mode: "bypassPermissions" }),
+              },
+            },
+            payload: { kind: "function", arguments: "{}" },
+            turn: { subId: "turn-bash-rm", cwd: workspaceRoot },
+          },
+        } as never);
+        return args;
+      };
+
+      try {
+        const tool = createBashTool({ cwd: workspaceRoot });
+        mockSpawnSuccess("");
+
+        const prompting = await tool.execute({ command: "rm notes.txt" });
+        expect(prompting.isError).toBe(true);
+        expect(parseContent(prompting).error).toContain(
+          "shell_workspace_file_delete_requires_approval",
+        );
+
+        const protectedPath = await tool.execute(bypassArgs("rm .git/config"));
+        expect(protectedPath.isError).toBe(true);
+        expect(parseContent(protectedPath).error).toContain(
+          "shell_workspace_file_delete_disallowed",
+        );
+        expect(mockSpawn).not.toHaveBeenCalled();
+
+        const allowed = await tool.execute(bypassArgs("rm notes.txt"));
+        expect(allowed.isError).toBeFalsy();
+        expect(mockSpawn).toHaveBeenCalledTimes(1);
       } finally {
         rmSync(workspaceRoot, { recursive: true, force: true });
       }
