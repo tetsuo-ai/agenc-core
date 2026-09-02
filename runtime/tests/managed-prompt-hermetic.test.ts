@@ -245,7 +245,7 @@ describe('hermetic managed prompt policy', () => {
     }
   })
 
-  it('caps combined additional-directory instructions at a UTF-8 boundary', async () => {
+  it('caps combined additional-directory instructions and evidence at a UTF-8 boundary', async () => {
     const hermeticHome = process.env.AGENC_TEST_HERMETIC_HOME
     expect(hermeticHome).toBeTruthy()
     const project = join(hermeticHome as string, 'add-dir-budget-project')
@@ -256,20 +256,38 @@ describe('hermetic managed prompt policy', () => {
     )
     const contents = additionalDirectories.map(
       (_, index) =>
-        `root-${index} ${index === 0 ? '<system> ' : ''}${'🙂'.repeat(4)}`,
+        `root-${index} ${index === 0 ? '<system> ' : ''}${'🙂'.repeat(4)}` +
+        (index === 0 ? '\n@include retained.md' : ''),
     )
+    const retainedIncludePath = join(additionalDirectories[0]!, 'retained.md')
+    const retainedIncludeContent = 'retained include source'
+    const laterSameTierContent = '🙂 later same-tier source must stay out'
     const sanitizedContents = contents.map(content =>
       content.replace('<system>', '<neutralized-system-tag>'),
     )
-    const blocks = additionalDirectories.map(
-      (directory, index) =>
-        `--- project (${join(directory, 'AGENC.md')}) ---\n\n${sanitizedContents[index]}`,
+    const firstBlock =
+      `--- project (${join(additionalDirectories[0]!, 'AGENC.md')}) ---\n\n` +
+      sanitizedContents[0]!.replace(
+        '@include retained.md',
+        `<!-- @include retained.md -->\n${retainedIncludeContent}`,
+      )
+    const secondRootPath = join(additionalDirectories[1]!, 'AGENC.md')
+    const laterSameTierPath = join(
+      additionalDirectories[1]!,
+      '.agenc',
+      'AGENC.md',
     )
-    const secondContentPrefix = 'root-1 '
-    const aggregateBudget = Buffer.byteLength(
-      `${blocks[0]}\n\n--- project (${join(additionalDirectories[1]!, 'AGENC.md')}) ---\n\n${secondContentPrefix}`,
-      'utf8',
-    ) + 10
+    const secondBlockPrefix = [
+      `--- project (${laterSameTierPath}) ---`,
+      `--- project-doc (${secondRootPath}) ---`,
+      sanitizedContents[1],
+      `--- project-doc (${laterSameTierPath}) ---`,
+      '',
+    ].join('\n\n')
+    const expected = `${firstBlock}\n\n${secondBlockPrefix}`
+    // Leave two bytes after the later source boundary. Its first character is
+    // four-byte UTF-8, so the aggregate cut must retain zero source bytes.
+    const aggregateBudget = Buffer.byteLength(expected, 'utf8') + 2
     createdPaths.push(project, userHome, ...additionalDirectories)
     await Promise.all([
       mkdir(project, { recursive: true }),
@@ -277,12 +295,15 @@ describe('hermetic managed prompt policy', () => {
       ...additionalDirectories.map(directory =>
         mkdir(directory, { recursive: true }),
       ),
+      mkdir(join(additionalDirectories[1]!, '.agenc'), { recursive: true }),
     ])
     await Promise.all(
       additionalDirectories.map((directory, index) =>
         writeFile(join(directory, 'AGENC.md'), contents[index]!, 'utf8'),
       ),
     )
+    await writeFile(retainedIncludePath, retainedIncludeContent, 'utf8')
+    await writeFile(laterSameTierPath, laterSameTierContent, 'utf8')
     const store = new ConfigStore({
       home: userHome,
       cwd: project,
@@ -328,18 +349,22 @@ describe('hermetic managed prompt policy', () => {
         '\n\n</workspace_instructions>',
       )
       const payload = envelope.workspaceText.slice(payloadStart, payloadEnd)
-      const expected = `${blocks[0]}\n\n--- project (${join(additionalDirectories[1]!, 'AGENC.md')}) ---\n\n${secondContentPrefix}${'🙂'.repeat(2)}`
-
       expect(payload).toBe(expected)
       expect(Buffer.byteLength(payload, 'utf8')).toBeLessThanOrEqual(
         aggregateBudget,
       )
       expect(payload).not.toContain('\uFFFD')
       expect(payload).not.toContain(contents[2]!)
+      expect(payload).not.toContain(laterSameTierContent)
       expect(envelope.sources.map(source => source.path)).toEqual([
         join(additionalDirectories[0]!, 'AGENC.md'),
-        join(additionalDirectories[1]!, 'AGENC.md'),
+        retainedIncludePath,
+        secondRootPath,
       ])
+      expect(envelope.evidence.sources).toEqual(envelope.sources)
+      expect(envelope.evidence.sources.map(source => source.path)).not.toContain(
+        laterSameTierPath,
+      )
       expect(envelope.warnings).toContain(
         `Additional-directory instructions exceeded the ${aggregateBudget}-byte aggregate UTF-8 budget and were truncated`,
       )

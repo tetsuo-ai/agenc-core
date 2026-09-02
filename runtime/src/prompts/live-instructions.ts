@@ -1,6 +1,6 @@
 /** Canonical live-request project instruction resolver. */
 import { lstat, readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -187,6 +187,148 @@ async function loadMemoryEntrypointsText(): Promise<string> {
   return [PERSISTENT_MEMORY_CONTEXT_PROMPT, ...blocks].join("\n\n");
 }
 
+function contentStartAfterLastHeader(
+  content: string,
+  header: string,
+): number | null {
+  const sanitizedHeader = sanitizeRepositoryAuthorityMarkup(header);
+  const headerStart = content.lastIndexOf(sanitizedHeader);
+  if (headerStart < 0) return null;
+  const separatorStart = content.indexOf(
+    "\n\n",
+    headerStart + sanitizedHeader.length,
+  );
+  return separatorStart < 0 ? null : separatorStart + 2;
+}
+
+function instructionPathKey(path: string): string {
+  const canonicalPath = resolve(path);
+  return process.platform === "win32"
+    ? canonicalPath.toLowerCase()
+    : canonicalPath;
+}
+
+function sourceHeaderContentStart(
+  assembled: string,
+  tiers: TieredInstructions,
+  source: LiveInstructionSource,
+): number | null {
+  const explicitHeaders = [
+    `--- project-doc (${source.path}) ---`,
+    `--- ${source.tier} rule (${source.path}) ---`,
+  ];
+  let contentStart: number | null = null;
+  for (const header of explicitHeaders) {
+    const candidate = contentStartAfterLastHeader(assembled, header);
+    if (candidate !== null) {
+      contentStart = Math.max(contentStart ?? candidate, candidate);
+    }
+  }
+
+  if (contentStart !== null) return contentStart;
+  const entry = tiers[source.tier];
+  if (
+    entry === null ||
+    instructionPathKey(entry.path) !== instructionPathKey(source.path)
+  ) {
+    return null;
+  }
+  return contentStartAfterLastHeader(
+    assembled,
+    `--- ${source.tier} (${entry.path}) ---`,
+  );
+}
+
+interface IncludeContentBoundary {
+  readonly target: string;
+  readonly contentStart: number;
+}
+
+function includeContentBoundaries(assembled: string): IncludeContentBoundary[] {
+  return [...assembled.matchAll(/^<!-- @include (.+) -->\r?\n/gmu)].map(
+    (match) => ({
+      target: match[1]!,
+      contentStart: match.index + match[0].length,
+    }),
+  );
+}
+
+function matchingIncludeBoundaryIndex(input: {
+  readonly boundaries: readonly IncludeContentBoundary[];
+  readonly candidateBases: readonly string[];
+  readonly source: LiveInstructionSource;
+  readonly used: ReadonlySet<number>;
+}): number | null {
+  const sourceKey = instructionPathKey(input.source.path);
+  for (
+    let index = input.boundaries.length - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    if (input.used.has(index)) continue;
+    const boundary = input.boundaries[index]!;
+    const matchesSource = input.candidateBases.some(
+      (base) =>
+        instructionPathKey(resolve(base, boundary.target)) === sourceKey,
+    );
+    if (matchesSource) return index;
+  }
+  return null;
+}
+
+function sourcesFromRetainedTierPrefix(input: {
+  readonly tiers: TieredInstructions;
+  readonly assembled: string;
+  readonly retained: string;
+}): LiveInstructionSource[] {
+  const sources = sourcesFromTiers({ tiers: input.tiers });
+  if (input.retained === input.assembled) return sources;
+
+  const contentStarts = sources.map((source) =>
+    sourceHeaderContentStart(input.assembled, input.tiers, source),
+  );
+  const includeBoundaries = includeContentBoundaries(input.assembled);
+  const candidateBases = [
+    ...new Set(
+      sources.flatMap((source) => [dirname(source.path), source.scopePath]),
+    ),
+  ];
+  const usedIncludeBoundaries = new Set<number>();
+  for (
+    let sourceIndex = sources.length - 1;
+    sourceIndex >= 0;
+    sourceIndex -= 1
+  ) {
+    const source = sources[sourceIndex]!;
+    const boundaryIndex = matchingIncludeBoundaryIndex({
+      boundaries: includeBoundaries,
+      candidateBases,
+      source,
+      used: usedIncludeBoundaries,
+    });
+    if (boundaryIndex === null) continue;
+    const boundary = includeBoundaries[boundaryIndex]!;
+    contentStarts[sourceIndex] = Math.max(
+      contentStarts[sourceIndex] ?? boundary.contentStart,
+      boundary.contentStart,
+    );
+    usedIncludeBoundaries.add(boundaryIndex);
+  }
+
+  return sources.filter((_source, index) => {
+    const contentStart = contentStarts[index];
+    // A partially retained tier must fail closed when a dependency has no
+    // independently rendered source boundary. Recording only sources whose
+    // content begins inside the retained prefix prevents durable evidence from
+    // claiming a zero-byte contribution.
+    return (
+      contentStart !== null &&
+      contentStart !== undefined &&
+      input.retained.length > contentStart
+    );
+  });
+}
+
 function truncateUtf8ToBudget(content: string, maximumBytes: number): string {
   if (maximumBytes <= 0) return "";
   const encoded = Buffer.from(content, "utf8");
@@ -315,6 +457,7 @@ export async function resolveLiveInstructionEnvelope(input: {
     }
   }
   const additionalTierSets: TieredInstructions[] = [];
+  const additionalSources: LiveInstructionSource[] = [];
   const additionalInstructionParts: string[] = [];
   const additionalInstructionBudget =
     config?.project_doc_max_bytes ?? DEFAULT_PROJECT_DOC_MAX_BYTES;
@@ -377,6 +520,13 @@ export async function resolveLiveInstructionEnvelope(input: {
       const retained = truncateUtf8ToBudget(assembled, remaining);
       if (retained.length > 0) {
         additionalTierSets.push(tierSet);
+        additionalSources.push(
+          ...sourcesFromRetainedTierPrefix({
+            tiers: tierSet,
+            assembled,
+            retained,
+          }),
+        );
         additionalInstructionParts.push(retained);
         additionalInstructionBytes +=
           separatorBytes + Buffer.byteLength(retained, "utf8");
@@ -407,9 +557,10 @@ export async function resolveLiveInstructionEnvelope(input: {
   ];
   const memoryText = await loadMemoryEntrypointsText();
   input.session.setProjectMemoryWarnings(warnings);
-  const sources = tierSets.flatMap((tierSet) =>
-    sourcesFromTiers({ tiers: tierSet }),
-  );
+  const sources = [
+    ...sourcesFromTiers({ tiers }),
+    ...additionalSources,
+  ];
 
   // The trusted role/base prompt is last and therefore cannot be textually
   // shadowed by lower-authority repository guidance or by persisted memory.
