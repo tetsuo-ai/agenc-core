@@ -292,6 +292,12 @@ export interface TurnState {
    *  Reset on every successful compact so `turnsSincePreviousCompact`
    *  reflects the most recent compaction event. */
   autoCompactTracking: AutoCompactTrackingState | undefined;
+  /**
+   * Set once an automatic compaction ran and declined this turn. The gates
+   * then stop asking: the state is unchanged, so a second attempt in the
+   * same turn would only repeat the same answer at the same cost.
+   */
+  autoCompactDeclined?: boolean;
 
   /** task_budget.remaining tracking across compaction boundaries.
    *  Undefined until first compact fires. AgenC query.ts:295, 521.

@@ -111,6 +111,145 @@ describe("recoverDaemonStateOnStartup", () => {
     expect(agentRunStatus("run-admission-cancel-crash")).toBe("cancelled");
   });
 
+  // Review P1-7: desktop run.status/run.replay on a live run hit the writer's
+  // rollout lease, persisted a source_not_quiescent deferral, and that active
+  // row excluded the run from recovery at the next daemon start ("pending
+  // operator recovery action") even though nothing was wrong with the source.
+  describe("source_not_quiescent deferrals", () => {
+    const failedAtMs = Date.parse("2026-05-01T00:10:00.000Z");
+
+    function seedLiveSourceDeferral(
+      runId: string,
+      reasonCode: "source_not_quiescent" | "database_io" = "source_not_quiescent",
+    ): string {
+      insertAgentRun({
+        id: runId,
+        objective: "recover after a stale live-source deferral",
+        status: "running",
+        currentSessionId: runId,
+      });
+      const rolloutPath = writeRuntimeResumeJournal(runId);
+      bindRunJournal(runId, rolloutPath);
+      new StateRecoveryIncidentRepository(driver).recordDeferred({
+        runId,
+        sourceKind: "run_journal",
+        sourcePath: rolloutPath,
+        reasonCode,
+        errorClass: "RECOVERY_SOURCE_LIVE",
+        safeDetail: { message: "canonical recovery source is not quiescent" },
+        failedAtMs,
+        nextRetryMs: failedAtMs + 60_000,
+      });
+      return rolloutPath;
+    }
+
+    function deferredStates(runId: string): readonly string[] {
+      return driver
+        .prepareState<[string], { readonly state: string }>(
+          "SELECT state FROM run_recovery_deferred WHERE run_id = ? ORDER BY block_id",
+        )
+        .all(runId)
+        .map((row) => row.state);
+    }
+
+    it("resolves an expired source_not_quiescent deferral at startup and recovers the run", () => {
+      const runId = "run-stale-live-deferral";
+      const rolloutPath = seedLiveSourceDeferral(runId);
+
+      const report = recoverDaemonStateOnStartup(driver, {
+        now: () => "2026-05-01T00:11:01.000Z",
+      });
+
+      expect(report.recoveryExclusions).toEqual([]);
+      expect(report.recoveredRuns).toEqual([
+        expect.objectContaining({ id: runId, status: "running" }),
+      ]);
+      expect(projectedRolloutRows(rolloutPath)).toBe(1);
+      expect(deferredStates(runId)).toEqual(["resolved"]);
+    });
+
+    it("keeps an unexpired source_not_quiescent deferral in force", () => {
+      const runId = "run-fresh-live-deferral";
+      seedLiveSourceDeferral(runId);
+
+      const report = recoverDaemonStateOnStartup(driver, {
+        now: () => "2026-05-01T00:10:30.000Z",
+      });
+
+      expect(report.recoveredRuns).toEqual([]);
+      expect(report.recoveryExclusions).toEqual([
+        expect.objectContaining({
+          runId,
+          kind: "deferred",
+          reasonCode: "source_not_quiescent",
+        }),
+      ]);
+      expect(deferredStates(runId)).toEqual(["active"]);
+    });
+
+    it("leaves expired deferrals with other reason codes to the operator", () => {
+      const runId = "run-expired-io-deferral";
+      seedLiveSourceDeferral(runId, "database_io");
+
+      const report = recoverDaemonStateOnStartup(driver, {
+        now: () => "2026-05-01T00:11:01.000Z",
+      });
+
+      expect(report.recoveredRuns).toEqual([]);
+      expect(report.recoveryExclusions).toEqual([
+        expect.objectContaining({
+          runId,
+          kind: "deferred",
+          reasonCode: "database_io",
+        }),
+      ]);
+      expect(deferredStates(runId)).toEqual(["active"]);
+    });
+
+    it("serves an on-demand read of a live source without persisting a deferral", () => {
+      const runId = "run-live-on-demand";
+      insertAgentRun({
+        id: runId,
+        objective: "read while running",
+        status: "running",
+        currentSessionId: runId,
+      });
+      const rolloutPath = writeRuntimeResumeJournal(runId);
+      bindRunJournal(runId, rolloutPath);
+      writeFileSync(
+        `${rolloutPath}.lock`,
+        `${JSON.stringify({
+          pid: process.pid,
+          startNs: "live-writer",
+          acquiredAtIso: "2026-05-01T00:00:00.000Z",
+        })}\n`,
+        { mode: 0o600 },
+      );
+
+      const served = recoverCanonicalRunJournalForRun(driver, runId, {
+        strict: { liveSourceDeferral: "skip" },
+      });
+      expect(served.exclusion).toMatchObject({
+        runId,
+        kind: "deferred",
+        reasonCode: "source_not_quiescent",
+        permanent: false,
+      });
+      expect(served.exclusion?.evidenceId).toBeUndefined();
+      expect(deferredStates(runId)).toEqual([]);
+
+      // The default (startup) contract still records the retryable block.
+      const recorded = recoverCanonicalRunJournalForRun(driver, runId);
+      expect(recorded.exclusion).toMatchObject({
+        runId,
+        kind: "deferred",
+        reasonCode: "source_not_quiescent",
+      });
+      expect(recorded.exclusion?.evidenceId).toBeDefined();
+      expect(deferredStates(runId)).toEqual(["active"]);
+    });
+  });
+
   it("keeps a canonically projected run listable when live cwd authority is unavailable", () => {
     const runId = "run-runtime-cwd-unavailable";
     insertAgentRun({

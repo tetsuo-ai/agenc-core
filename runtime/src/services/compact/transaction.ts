@@ -14,7 +14,9 @@ import {
   readProviderFactoryOptions,
   readProviderIdentity,
 } from "../../llm/provider.js";
-import type { LLMChatOptions, LLMMessage } from "../../llm/types.js";
+import type { LLMChatOptions, LLMMessage,
+  LLMResponse,
+} from "../../llm/types.js";
 import type { BaseHookInput } from "../../entrypoints/sdk/coreTypes.js";
 import {
   accountCompactionCall,
@@ -794,13 +796,17 @@ async function runSummaryTree(params: {
         "compaction exceeded its wall-clock budget",
       );
     }
+    const outputReserveTokens =
+      stage === "final"
+        ? params.plan.final_output_reserve_tokens
+        : params.plan.output_reserve_tokens;
     accountCompactionCall({
       messages,
       systemPrompt: params.policyMaterial[stage],
       providerName: params.providerName,
       model: params.model,
       contextWindowTokens: params.plan.context_window_tokens,
-      outputReserveTokens: params.plan.output_reserve_tokens,
+      outputReserveTokens,
     });
     const invocation = await invokeCompactionProvider({
       context: params.context,
@@ -811,7 +817,7 @@ async function runSummaryTree(params: {
       callCount,
       attemptId: params.attemptId,
       contextWindowTokens: params.plan.context_window_tokens,
-      outputReserveTokens: params.plan.output_reserve_tokens,
+      outputReserveTokens,
       remainingInputTokens: MAX_COMPACTION_TOTAL_INPUT_TOKENS - inputTokens,
     });
     inputTokens = safeBudgetSum(
@@ -840,7 +846,7 @@ async function runSummaryTree(params: {
     if (
       Buffer.byteLength(response.content, "utf8") >
         MAX_COMPACTION_OUTPUT_UTF8_BYTES_PER_CALL ||
-      invocation.outputTokenUpperBound > params.plan.output_reserve_tokens
+      invocation.outputTokenUpperBound > outputReserveTokens
     ) {
       throw new CompactionTransactionError(
         "output_limit_exceeded",
@@ -1141,7 +1147,16 @@ async function invokeCompactionProvider(params: {
   const options: LLMChatOptions = {
     model: params.model,
     systemPrompt: params.systemPrompt,
-    maxOutputTokens: params.outputReserveTokens,
+    // The reserve bounds the visible summary. A reasoning model also spends
+    // hidden tokens inside the same output budget, so the wire limit leaves
+    // room for them (bounded by the window so admission still fits), and the
+    // effort asked for is the lowest: summarizing a transcript is not where
+    // deliberation pays.
+    maxOutputTokens: compactionWireOutputLimit(
+      params.outputReserveTokens,
+      params.contextWindowTokens,
+    ),
+    reasoningEffort: "low",
     contextWindowTokens: params.contextWindowTokens,
     // Compaction is a constrained summarization call, not an agent turn. Keep
     // it explicitly tool-free so constructor-scoped client tools and
@@ -1196,7 +1211,7 @@ async function invokeCompactionProvider(params: {
         content: candidate.content,
         signal: admittedOptions.signal,
       });
-      const reported = candidate.usage?.completionTokens;
+      const reported = visibleCompletionTokens(candidate.usage);
       outputTokenUpperBound = outputAccounting.source === "conservative_fallback"
         ? compactionOutputTokenUpperBound(candidate.content, reported)
         : Math.max(reported ?? 0, outputAccounting.tokens);
@@ -1229,6 +1244,44 @@ async function invokeCompactionProvider(params: {
         response.usage?.completionTokens,
       ),
   };
+}
+
+/**
+ * Completion tokens that landed in the body. Reasoning providers (xAI's
+ * Responses API among them) count hidden reasoning inside output_tokens and
+ * report it separately; the reserve bounds the summary, not the thinking.
+ */
+function visibleCompletionTokens(
+  usage: LLMResponse["usage"] | undefined,
+): number | undefined {
+  const completion = usage?.completionTokens;
+  if (
+    completion === undefined ||
+    !Number.isSafeInteger(completion) ||
+    completion < 0
+  ) {
+    return undefined;
+  }
+  const reasoning = usage?.reasoningOutputTokens;
+  if (reasoning === undefined || !Number.isSafeInteger(reasoning) || reasoning < 0) {
+    return completion;
+  }
+  return Math.max(0, completion - reasoning);
+}
+
+/**
+ * Wire-level output limit: the visible-summary reserve plus room for hidden
+ * reasoning, at most one more reserve and at most an eighth of the window.
+ */
+export function compactionWireOutputLimit(
+  outputReserveTokens: number,
+  contextWindowTokens: number,
+): number {
+  const headroom = Math.min(
+    outputReserveTokens,
+    Math.max(0, Math.floor(contextWindowTokens / 8)),
+  );
+  return outputReserveTokens + headroom;
 }
 
 async function countCompactionProviderOutput(params: {
@@ -1387,7 +1440,10 @@ function toProjectionMessage(message: RuntimeMessage): CompactionProjectionMessa
     ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls } : {}),
     ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
-    ...(message.uuid !== undefined ? { id: message.uuid } : {}),
+    // No `id`: the live history holds LLMMessages, which never carry one, and
+    // the durable checkpoint hash covers `response-id`. Persisting the runtime
+    // uuid here made every post-compaction checkpoint unverifiable after a
+    // restart ("checkpoint prefix digest does not match persisted history").
     ...(message.phase !== undefined ? { phase: message.phase } : {}),
     ...(message.runtimeOnly?.toolResultIntegrity !== undefined
       ? {

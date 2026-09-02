@@ -60,6 +60,8 @@ export const MAX_COMPACTION_FAN_IN = 8;
 export const MAX_COMPACTION_PROVIDER_CALLS = 73;
 export const MAX_COMPACTION_TOTAL_INPUT_TOKENS = 4_000_000;
 export const MAX_COMPACTION_INTERMEDIATE_TOKENS = 8_192;
+/** The final summary of a long session may run longer than a map/reduce child. */
+export const MAX_COMPACTION_FINAL_OUTPUT_TOKENS = 16_384;
 export const MAX_COMPACTION_WALL_MS = 300_000;
 export const MAX_COMPACTION_ABORT_QUIESCENCE_MS = 5_000;
 export const MAX_COMPACTION_FOCUS_UTF8_BYTES = 16_384;

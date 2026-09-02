@@ -103,7 +103,6 @@ import {
 } from "../phases/continuation-nudge.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { executeTools } from "../phases/execute-tools.js";
-import { drainPendingExtraction } from "../services/extractMemories/extractMemories.js";
 import { runMagicDocsPostSamplingHook } from "../services/MagicDocs/magicDocs.js";
 import { runSessionMemoryPostSamplingHook } from "../memory/session/sessionMemory.js";
 import { createAdmittedMemorySelector } from "../memory/admitted-selector.js";
@@ -112,7 +111,10 @@ import {
   postSampleRecovery,
 } from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
-import { getAttachmentTrackingState } from "./attachment-state.js";
+import {
+  getAttachmentTrackingState,
+  resetRelevantMemoryBudget,
+} from "./attachment-state.js";
 import { claimRequiredSwarmToolChoice } from "../prompts/attachments/swarm-mode.js";
 import {
   frameWorkspaceAgentRoleGuidance,
@@ -2025,6 +2027,10 @@ function terminalToStopReason(
 
 const PRE_SAMPLING_COMPACT_FAILED_CAUSE = "pre_sampling_compact_failed";
 const MID_TURN_COMPACT_FAILED_CAUSE = "mid_turn_compact_failed";
+/** Declined automatic compactions in a row before the session backs off. */
+const AUTO_COMPACT_BACKOFF_AFTER_DECLINES = 3;
+/** Turns that skip automatic compaction once the back-off trips. */
+const AUTO_COMPACT_BACKOFF_TURNS = 2;
 
 const EMPTY_SYNTHETIC_USAGE: LLMUsage = {
   promptTokens: 0,
@@ -2452,6 +2458,7 @@ async function runAutoCompact(
         applyProjection();
         cleanupSessionAfterCompaction(session);
       }
+      session.autoCompactBackoff = { declines: 0, skipTurnsRemaining: 0 };
       return true;
     }
 
@@ -2475,6 +2482,15 @@ async function runAutoCompact(
      * dropped, leaving a turn that ended mid-plan with nothing to act on.
      */
     if (result.wasCompacted !== true && result.skippedReason !== undefined) {
+      // The dispatcher ran and declined for a reason. That answer holds for
+      // the rest of the turn: the in-turn gates would only repeat the same
+      // attempt against the same history.
+      if (state) state.autoCompactDeclined = true;
+      const backoff = session.autoCompactBackoff;
+      const declines = backoff.declines + 1;
+      session.autoCompactBackoff = declines >= AUTO_COMPACT_BACKOFF_AFTER_DECLINES
+        ? { declines: 0, skipTurnsRemaining: AUTO_COMPACT_BACKOFF_TURNS }
+        : { declines, skipTurnsRemaining: backoff.skipTurnsRemaining };
       session.emit({
         id: session.nextInternalSubId(),
         msg: {
@@ -2515,6 +2531,9 @@ async function runAutoCompact(
 }
 
 function cleanupSessionAfterCompaction(session: Session): void {
+  // Compaction dropped every recalled memory along with the history it was
+  // attached to, so the cumulative recall budget starts over.
+  resetRelevantMemoryBudget(session);
   const direct = session as unknown as {
     readonly readFileState?: { clear(): void };
     readonly clearSearchIndexes?: () => void;
@@ -2696,6 +2715,26 @@ async function runPreSamplingCompact(
     state,
   );
   const autoCompactLimit = getPreSamplingAutoCompactTokenLimit(ctx);
+  if (
+    autoCompactLimit !== undefined &&
+    activeContextTokensBefore >= autoCompactLimit &&
+    session.autoCompactBackoff.skipTurnsRemaining > 0
+  ) {
+    // Three declines in a row bought this turn a pass: say so once and
+    // leave the history alone. Admission still guards the window.
+    const remaining = session.autoCompactBackoff.skipTurnsRemaining - 1;
+    session.autoCompactBackoff = {
+      declines: session.autoCompactBackoff.declines,
+      skipTurnsRemaining: remaining,
+    };
+    emitTurnWarning(
+      session,
+      MID_TURN_COMPACT_FAILED_CAUSE,
+      `auto-compaction skipped this turn after repeated failures (${remaining} more turn${remaining === 1 ? "" : "s"} of back-off)`,
+    );
+    if (state !== undefined) state.autoCompactDeclined = true;
+    return preSamplingCompacted;
+  }
   if (
     autoCompactLimit !== undefined &&
     activeContextTokensBefore >= autoCompactLimit
@@ -5066,7 +5105,8 @@ async function* runTurnKernelInner(
       ctx.editorInteraction === undefined &&
       tokenLimitReached &&
       needsFollowUpForCompact &&
-      !toolWorkPending
+      !toolWorkPending &&
+      state.autoCompactDeclined !== true
     ) {
       let midTurnCompacted = false;
       try {
@@ -5102,43 +5142,36 @@ async function* runTurnKernelInner(
       }
 
       if (!midTurnCompacted) {
-        // agenc runtime's `is_err()` arm fires only on dispatcher failure. If
-        // the dispatcher ran but reported `wasCompacted=false` (circuit
-        // breaker tripped, feature disabled, or threshold logic inside
-        // the compact module disagreed with our outer check), we do NOT
-        // loop — that would spin forever with unchanged state. Surface
-        // the token-limit condition as a per-turn compact_failed matching
-        // the semantics of agenc runtime's `return None`.
-        await drainInFlight(state, ctx, session);
+        // The dispatcher ran and declined; the state is unchanged. The gate
+        // sits at three quarters of the window and admission denies at the
+        // window itself, so there is room left to work in. Ending the turn
+        // here cost a 40-minute session its turn on every decline, mid-plan.
+        // Say why once, stop asking this turn, and keep sampling; admission
+        // remains the hard stop.
         const reasonText = `mid_turn_compact_skipped: lastSamplePromptTokens=${totalUsageTokens} limit=${autoCompactLimit}`;
         emitTurnWarning(
           session,
           MID_TURN_COMPACT_FAILED_CAUSE,
           reasonText,
         );
-        await syncSessionState();
-        emitTurnComplete(lastContent);
-        const underlying = new Error(reasonText);
-        const terminal: Terminal = { reason: "completed", error: underlying };
-        yield compactFailedTurnComplete(lastContent, usage, underlying);
-        return terminal;
+        state.autoCompactDeclined = true;
+      } else {
+        // agenc runtime `client_session.reset_websocket_session()` parity.
+        // `runAutoCompact` → `runPostCompactCleanup` already called
+        // `session.clearProviderResponseId()` via the compact context;
+        // rebind the provider HTTP client to the current conversation
+        // so the next request opens a fresh continuation under the same
+        // conversationId (agenc runtime's websocket session is keyed per
+        // conversation the same way).
+        session.bindProviderConversation();
+        // agenc runtime sets `can_drain_pending_input = !model_needs_follow_up;`
+        // to gate mailbox drain on the outer loop's next iteration. AgenC
+        // does not yet surface a matching gate (the phase machine drains
+        // pending input whenever `prepareContext` decides), so there is
+        // nothing to set here; the session mailbox fires naturally on the
+        // next iteration.
+        continue;
       }
-
-      // agenc runtime `client_session.reset_websocket_session()` parity.
-      // `runAutoCompact` → `runPostCompactCleanup` already called
-      // `session.clearProviderResponseId()` via the compact context;
-      // rebind the provider HTTP client to the current conversation
-      // so the next request opens a fresh continuation under the same
-      // conversationId (agenc runtime's websocket session is keyed per
-      // conversation the same way).
-      session.bindProviderConversation();
-      // agenc runtime sets `can_drain_pending_input = !model_needs_follow_up;`
-      // to gate mailbox drain on the outer loop's next iteration. AgenC
-      // does not yet surface a matching gate (the phase machine drains
-      // pending input whenever `prepareContext` decides), so there is
-      // nothing to set here; the session mailbox fires naturally on the
-      // next iteration.
-      continue;
     }
 
     const lastAssistant = state.assistantMessages.at(-1);
@@ -5207,7 +5240,6 @@ async function* runTurnKernelInner(
         usage,
         stopReason,
       };
-      await drainPendingExtraction();
       return terminal;
     }
 
@@ -5332,7 +5364,6 @@ async function* runTurnKernelInner(
         usage,
         stopReason: "completed",
       };
-      await drainPendingExtraction();
       return terminal;
     }
     const drainedQueuedCommandEvents = drainQueuedCommandsAfterTools({
@@ -5361,7 +5392,8 @@ async function* runTurnKernelInner(
     if (
       ctx.editorInteraction === undefined &&
       postToolTokenLimitReached &&
-      (state.needsFollowUp || state.toolResults.length > 0)
+      (state.needsFollowUp || state.toolResults.length > 0) &&
+      state.autoCompactDeclined !== true
     ) {
       // The results that just came back are the newest context and the
       // reason the history is over the limit. Make them canonical first so
@@ -5385,24 +5417,16 @@ async function* runTurnKernelInner(
         session.bindProviderConversation();
         continue;
       }
-      // Same rule as the mid-turn gate: a dispatcher that ran and declined
-      // leaves the state unchanged, so sampling again would only walk into
-      // the admission denial the compaction was meant to prevent. Close the
-      // turn on a compact_failed boundary with the reason already in the
-      // rollout (`auto_compact_failed`, emitted by runAutoCompact).
-      await drainInFlight(state, ctx, session);
+      // Same rule as the mid-turn gate: the dispatcher ran and declined, the
+      // state is unchanged, and there is still room under the window. Record
+      // the reason once, stop asking this turn, and commit the iteration.
       const postToolUsageTokens = Math.max(
         state.lastResponseUsage?.promptTokens ?? 0,
         getActiveContextTokenUsage(session, ctx, state),
       );
       const reasonText = `mid_turn_compact_skipped: lastSamplePromptTokens=${postToolUsageTokens} limit=${postToolAutoCompactLimit}`;
       emitTurnWarning(session, MID_TURN_COMPACT_FAILED_CAUSE, reasonText);
-      await syncSessionState();
-      emitTurnComplete(lastContent);
-      const underlying = new Error(reasonText);
-      const terminal: Terminal = { reason: "completed", error: underlying };
-      yield compactFailedTurnComplete(lastContent, usage, underlying);
-      return terminal;
+      state.autoCompactDeclined = true;
     }
 
     // Phase 6 — commit iteration. Stop-hook may request re-entry.

@@ -40,6 +40,7 @@ import type {
   RolloutItem,
   TurnContextItem,
 } from "./rollout-item.js";
+import { withoutResponseIds } from "./rollout-item.js";
 import { isAgentInvocationTurnBoundary } from "../contracts/agent-invocation-envelope.js";
 import {
   reduce,
@@ -621,7 +622,9 @@ export function reconstructFromRollout(
           active.baseReplacementHistory === undefined &&
           item.payload.replacementHistory !== undefined
         ) {
-          active.baseReplacementHistory = item.payload.replacementHistory;
+          active.baseReplacementHistory = withoutResponseIds(
+            item.payload.replacementHistory,
+          );
           rolloutSuffix = rolloutItems.slice(idx + 1);
           rolloutSuffixStartIndex = idx + 1;
         }
@@ -634,7 +637,9 @@ export function reconstructFromRollout(
           active.referenceContextItem = { kind: "cleared" };
         }
         if (active.baseReplacementHistory === undefined) {
-          active.baseReplacementHistory = item.payload.replacement_history;
+          active.baseReplacementHistory = withoutResponseIds(
+            item.payload.replacement_history,
+          );
           rolloutSuffix = rolloutItems.slice(idx + 1);
           rolloutSuffixStartIndex = idx + 1;
         }

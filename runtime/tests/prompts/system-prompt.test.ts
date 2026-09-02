@@ -35,6 +35,7 @@ import type { TurnContext } from "../session/turn-context.js";
 import type { Session } from "../session/session.js";
 import { clearSystemPromptSections } from "./sections.js";
 import {
+  assembleBaseInstructionsForModel,
   assembleSystemPrompt,
   assembleSubagentSystemPrompt,
   assembleSystemPromptSnapshot,
@@ -612,6 +613,66 @@ describe("assembleSystemPrompt", () => {
       "# Tone and style",
       "# Output efficiency",
     ]);
+  });
+
+  test("memory instructions ride in the static head and directories in the dynamic tail", async () => {
+    const { sections, staticPrefix, dynamicSuffix } = await assembleSystemPrompt({
+      session: fakeSession,
+      ctx: fakeCtx(),
+      memoryInstructions: "# auto memory\nSave one fact per file.",
+      memoryPrompt: "# Memory directories\n- Global memory: `/home/memory/`",
+      simpleMode: false,
+    });
+
+    const boundaryIdx = sections.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+    expect(sections.slice(0, boundaryIdx).at(-1)).toContain("# auto memory");
+    expect(staticPrefix).toContain("Save one fact per file.");
+    expect(staticPrefix).not.toContain("/home/memory/");
+    expect(dynamicSuffix).toContain("# Memory directories");
+    expect(dynamicSuffix).not.toContain("# auto memory");
+  });
+
+  test("no memory sections when both memory inputs are empty", async () => {
+    const { text } = await assembleSystemPrompt({
+      session: fakeSession,
+      ctx: fakeCtx(),
+      memoryInstructions: "",
+      memoryPrompt: "",
+      simpleMode: false,
+    });
+    expect(text).not.toContain("# auto memory");
+    expect(text).not.toContain("# Memory directories");
+  });
+
+  test("base instructions carry the memory prompt when auto memory is enabled and drop it in simple mode", async () => {
+    const registry = { tools: [{ name: "FileRead" }, { name: "Write" }] };
+    const standard = await assembleBaseInstructionsForModel({
+      session: { services: { runtimeOptions: { simpleMode: false } } },
+      ctx: fakeCtx(),
+      registry,
+      provider: "grok",
+      permissionContext: null,
+      profile: "standard",
+    });
+    expect(standard).toContain("# auto memory");
+    expect(standard).toContain("# Memory directories");
+    expect(standard.indexOf("# auto memory")).toBeLessThan(
+      standard.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY),
+    );
+    expect(standard.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)).toBeLessThan(
+      standard.indexOf("# Memory directories"),
+    );
+
+    const simple = await assembleBaseInstructionsForModel({
+      session: { services: { runtimeOptions: { simpleMode: true } } },
+      ctx: fakeCtx(),
+      registry,
+      provider: "grok",
+      permissionContext: null,
+      profile: "standard",
+    });
+    expect(simple).not.toContain("# auto memory");
+    expect(simple).not.toContain("# Memory directories");
   });
 
   test("typed simple mode → ultra-minimal prompt", async () => {

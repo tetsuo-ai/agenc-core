@@ -698,7 +698,7 @@ function validateBody(
     value !== null &&
     typeof value === "object" &&
     !Array.isArray(value) &&
-    Object.prototype.hasOwnProperty.call(value, "tool_pairs");
+    Object.hasOwn(value, "tool_pairs");
   const body = requireExactObject(
     value,
     hasToolPairs
@@ -759,9 +759,22 @@ function validateRecords(
   if (value.length > maximum) throw limit(`${label} exceeds its record limit`);
   return value.map((candidate, index) => {
     spend(1);
+    // With a single allowed source ref every record cites the same 50-odd
+    // characters; the model may leave source_ref_ids out and the runtime
+    // fills in the one ref there is. With several refs the citation stays
+    // mandatory.
+    const citesExplicitly =
+      candidate !== null &&
+      typeof candidate === "object" &&
+      !Array.isArray(candidate) &&
+      Object.hasOwn(candidate, "source_ref_ids");
+    const impliedRef =
+      !citesExplicitly && allowedSourceRefIds.size === 1
+        ? [...allowedSourceRefIds]
+        : undefined;
     const record = requireExactObject(
       candidate,
-      ["id", "text", "source_ref_ids"],
+      impliedRef === undefined ? ["id", "text", "source_ref_ids"] : ["id", "text"],
       `${label}[${index}]`,
     );
     const id = requireBoundedString(
@@ -776,11 +789,12 @@ function validateRecords(
       MAX_COMPACTION_RECORD_TEXT_UTF8_BYTES,
       `${label}[${index}].text`,
     );
-    if (!Array.isArray(record.source_ref_ids) || record.source_ref_ids.length === 0) {
+    const citedRefs = impliedRef ?? record.source_ref_ids;
+    if (!Array.isArray(citedRefs) || citedRefs.length === 0) {
       throw provenance(`${label}[${index}] must cite at least one source ref`);
     }
     const sourceIds = new Set<string>();
-    const sourceRefIds = record.source_ref_ids.map((sourceId, sourceIndex) => {
+    const sourceRefIds = citedRefs.map((sourceId, sourceIndex) => {
       spend(1);
       const validated = requireBoundedString(
         sourceId,

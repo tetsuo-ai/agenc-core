@@ -19,6 +19,7 @@ import {
   getGlobalMemoryPath,
   getMemoryBaseDir,
   isAutoMemoryEnabled,
+  isDurableMemoryPath,
 } from './paths.js'
 import * as teamMemPathsModule from '../memdir/teamMemPaths.js'
 import { isAnyAgentMemoryPath } from '../tools/AgentTool/agentMemory.js'
@@ -514,6 +515,40 @@ export function redactSecrets(content: string): string {
     )
   }
   return content
+}
+
+/**
+ * Check if a write/edit into any durable auto-memory path (global, project,
+ * or the team subdirectory) contains secrets. Memory files are plain text
+ * under the AgenC home and are re-injected into later prompts, so a leaked
+ * token would persist and resurface; deny the write with the same message
+ * shape the team check uses.
+ */
+export function checkMemorySecrets(
+  filePath: string,
+  content: string,
+): string | null {
+  // Path-only classification: the screen must hold even where no settings
+  // authority is scoped (it is reached from tool input validation), so it
+  // does not consult the auto-memory enabled flag, and a path resolver
+  // failure leaves the write on its ordinary path instead of failing it.
+  let durable: boolean
+  try {
+    durable = isDurableMemoryPath(filePath)
+    if (!durable) return checkTeamMemSecrets(filePath, content)
+  } catch {
+    return null
+  }
+  const matches = scanForSecrets(content)
+  if (matches.length === 0) {
+    return null
+  }
+  const labels = matches.map(m => m.label).join(', ')
+  return (
+    `Content contains potential secrets (${labels}) and cannot be written to memory. ` +
+    'Memory files are stored in plain text and re-injected into later prompts. ' +
+    'Remove the sensitive content and try again.'
+  )
 }
 
 /**

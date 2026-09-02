@@ -4,7 +4,10 @@
  *
  * Why this lives here / shape difference from upstream:
  *   - `runtime/src/memdir/**` is excluded from the strict build, so the
- *     extraction service carries the small path subset it needs locally.
+ *     extraction service carries the small path subset it needs locally. The
+ *     final `<base>/projects/<sanitized-root>/memory/` layout itself comes
+ *     from `runtime/src/memory` so the child writes where the prompt and
+ *     recall look.
  *   - Explicit env/settings overrides fail closed when unsafe instead of
  *     silently falling back to another directory, because the child tool
  *     policy uses this path as its only read/write root.
@@ -23,6 +26,7 @@ import {
   sep,
 } from "node:path";
 import { findGitRoot as findCanonicalGitRoot } from "../../agents/worktree.js";
+import { buildProjectMemoryDirectory } from "../../memory/paths.js";
 import type { AgenCConfig } from "../../config/schema.js";
 import type { ConfigStore } from "../../config/store.js";
 import {
@@ -38,7 +42,6 @@ import {
 } from "../../session/runtime-options.js";
 
 export const AUTO_MEMORY_INDEX_FILE = "MEMORY.md";
-const AUTO_MEMORY_DIRNAME = "memory";
 
 export interface AutoMemoryPathResult {
   readonly enabled: boolean;
@@ -295,10 +298,33 @@ export async function resolveAutoMemoryDirectory(
   const projectRoot = resolveProjectRoot(effectiveCwd(opts));
   return {
     enabled: true,
-    path: normalizeWithTrailingSep(
-      join(baseRoot, "projects", sanitizePathForProjectKey(projectRoot), AUTO_MEMORY_DIRNAME),
-    ),
+    path: buildProjectMemoryDirectory(baseRoot, projectRoot),
   };
+}
+
+/**
+ * The global memory root for these options, or undefined when it cannot be
+ * resolved. Same formula as `src/memory/paths.ts` (`<base>/memory`), computed
+ * here from explicit options rather than ambient session state, which is why
+ * this module keeps its own copy. Deliberately NOT moved by the
+ * project-directory overrides above: a project override redirects that
+ * project's memory, not the machine-wide root the main agent uses.
+ */
+export async function resolveGlobalMemoryDirectory(
+  opts: ResolveAutoMemoryDirectoryOptions = {},
+): Promise<string | undefined> {
+  const runtimeOptions = opts.runtimeOptions ?? getActiveAgentRuntimeOptions();
+  const homeDir = effectiveHome(opts);
+  const remoteMemoryDir = runtimeOptions?.remoteMemoryRoot;
+  const baseRoot =
+    remoteMemoryDir !== undefined && remoteMemoryDir.trim().length > 0
+      ? validateAutoMemoryDirectoryPath(remoteMemoryDir, {
+          expandTilde: false,
+          homeDir,
+        })
+      : normalizeWithTrailingSep(resolveConfigHome(opts));
+  if (!baseRoot) return undefined;
+  return normalizeWithTrailingSep(join(baseRoot, "memory"));
 }
 
 export function isPathInsideMemoryDir(candidate: string, memoryDir: string): boolean {

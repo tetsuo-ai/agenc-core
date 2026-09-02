@@ -4,7 +4,8 @@ import {
   reconstructFromRollout,
 } from "./rollout-reconstruction.js";
 import { DEFAULT_MAX_TOOL_RESULT_BYTES } from "../tools/execution.js";
-import { parseRolloutLine, type RolloutItem } from "./rollout-item.js";
+import { parseRolloutLine, type ResponseItem, type RolloutItem } from "./rollout-item.js";
+import { computeCheckpointPrefixHashV3 } from "./durable-checkpoint-reader.js";
 import type { IndexSnapshot } from "./session-store.js";
 import {
   REALTIME_CONVERSATION_CLOSE_TAG,
@@ -100,6 +101,51 @@ describe("rollout-reconstruction", () => {
       { role: "user", content: "kept tail" },
       { role: "assistant", content: "after compact" },
     ]);
+  });
+
+  test("replacement history loses persisted response ids so checkpoints verify after a restart", () => {
+    // Live shape: a compaction commit persisted the two compaction messages
+    // with the runtime uuid as `id`; live messages never carry one and the
+    // durable checkpoint hash covers `response-id`, so every checkpoint
+    // written after the commit failed to verify on resume.
+    const committed = {
+      type: "compaction_committed",
+      payload: {
+        attempt_id: "compact-1",
+        replacement_history: [
+          { role: "developer", content: "boundary", id: "28194612-f691-4d6e-8b70-948c91454e83" },
+          { role: "user", content: "summary", id: "33621f9f-5d53-4dbe-bf55-ddea87b0f6f3" },
+          { role: "assistant", content: "kept", toolCalls: [{ id: "call-1", name: "exec_command", arguments: "{}" }] },
+        ],
+      },
+    } as unknown as RolloutItem;
+    const items: RolloutItem[] = [
+      { type: "response_item", payload: { role: "user", content: "old" } },
+      committed,
+      { type: "response_item", payload: { role: "tool", content: "ok", toolCallId: "call-1", toolName: "exec_command" } },
+    ];
+    const r = reconstructFromRollout(items);
+    expect(r.history.map((item) => item.id)).toEqual([undefined, undefined, undefined, undefined]);
+    expect(r.history.map((item) => item.role)).toEqual(["developer", "user", "assistant", "tool"]);
+    const liveProjection = [
+      { role: "developer", content: "boundary" },
+      { role: "user", content: "summary" },
+      { role: "assistant", content: "kept", toolCalls: [{ id: "call-1", name: "exec_command", arguments: "{}" }] },
+    ] as ResponseItem[];
+    expect(computeCheckpointPrefixHashV3(r.history, 3)).toBe(
+      computeCheckpointPrefixHashV3(liveProjection, 3),
+    );
+
+    const legacy: RolloutItem[] = [
+      {
+        type: "compacted",
+        payload: {
+          message: "summary",
+          replacementHistory: [{ role: "user", content: "boundary", id: "legacy-uuid" }],
+        },
+      },
+    ];
+    expect(reconstructFromRollout(legacy).history).toEqual([{ role: "user", content: "boundary" }]);
   });
 
   test("newest surviving replacementHistory wins and only the suffix replays", () => {

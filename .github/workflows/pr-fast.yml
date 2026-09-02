@@ -24,13 +24,18 @@ jobs:
     name: affected-tests
     runs-on: ubuntu-24.04
     # `vitest related` walks the import graph, so a change to a widely imported
-    # module (a util, a config loader) selects most of the suite, not a handful
-    # of files. At the runner's two workers that is ~20 minutes of tests, and
-    # the old 15-minute cap cancelled the job mid-run: the gate reported
-    # `cancelled` with zero failures, so a correct change could never go green
-    # and the module was effectively unmergeable. Other jobs in this repo
-    # already allow 30-60 minutes.
-    timeout-minutes: 30
+    # module (a util, a config loader, a schema) selects most of the suite, not
+    # a handful of files. At the runner's two workers that is most of an hour
+    # of tests on the larger branches.
+    #
+    # This cap was 15, which cancelled such a job mid-run: the gate reported
+    # `cancelled` with zero failures, so a correct change could never go green.
+    # Raising it to 30 was still too tight, and measurably so: across the
+    # harness branches the runs that finished took 22, 25, 27, 29, 29 and 29
+    # minutes, while three others were cancelled at exactly 30. A gate that
+    # coin-flips on wall time is not a gate. 60 leaves real headroom and
+    # matches the longest job this repo already allows in platform-tests.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

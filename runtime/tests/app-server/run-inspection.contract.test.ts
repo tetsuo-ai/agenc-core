@@ -93,6 +93,54 @@ function admissionRequest(
   };
 }
 
+/**
+ * Seed the durable runs, open epoch 1 for run-complete and write one canonical
+ * rollout under sessions/run-complete that carries its run_terminal event.
+ * Returns the rollout path.
+ */
+function seedCanonicalTerminalRollout(fileName: string, eventId: string): string {
+  seedDurableRuns();
+  new StateRunDurabilityRepository(driver).ensureInitialEpoch({
+    runId: "run-complete",
+    openedAt: NOW,
+  });
+  const sessionDir = join(paths.projectDir, "sessions", "run-complete");
+  mkdirSync(sessionDir, { recursive: true });
+  const rolloutPath = join(sessionDir, fileName);
+  writeFileSync(
+    rolloutPath,
+    serializeRolloutItem({
+      type: "event_msg",
+      payload: {
+        eventId,
+        id: eventId,
+        seq: 1,
+        msg: {
+          type: "run_terminal",
+          payload: {
+            runId: "run-complete",
+            epoch: 1,
+            status: "completed",
+            exitCode: 0,
+            stopReason: "turn_completed",
+            finalMessage: "Recovered from the journal",
+            usage: {
+              inputTokens: 5,
+              outputTokens: 3,
+              totalTokens: 8,
+              costUsd: 0.001,
+            },
+            lastSequenceBeforeTerminal: null,
+            finishedAt: "2026-07-18T12:05:00.000Z",
+          },
+        },
+      },
+    }),
+    "utf8",
+  );
+  return rolloutPath;
+}
+
 function seedDurableRuns(): readonly number[] {
   const admissions = new ExecutionAdmissionRepository(driver, {
     now: () => new Date(NOW),
@@ -600,45 +648,7 @@ describe("durable run inspection", () => {
   });
 
   it("rebuilds a missing terminal projection from the canonical JSONL event", () => {
-    seedDurableRuns();
-    new StateRunDurabilityRepository(driver).ensureInitialEpoch({
-      runId: "run-complete",
-      openedAt: NOW,
-    });
-    const sessionDir = join(paths.projectDir, "sessions", "run-complete");
-    mkdirSync(sessionDir, { recursive: true });
-    const rolloutPath = join(sessionDir, "rollout-terminal.jsonl");
-    writeFileSync(
-      rolloutPath,
-      serializeRolloutItem({
-        type: "event_msg",
-        payload: {
-          eventId: "terminal-from-jsonl",
-          id: "terminal-from-jsonl",
-          seq: 1,
-          msg: {
-            type: "run_terminal",
-            payload: {
-              runId: "run-complete",
-              epoch: 1,
-              status: "completed",
-              exitCode: 0,
-              stopReason: "turn_completed",
-              finalMessage: "Recovered from the journal",
-              usage: {
-                inputTokens: 5,
-                outputTokens: 3,
-                totalTokens: 8,
-                costUsd: 0.001,
-              },
-              lastSequenceBeforeTerminal: null,
-              finishedAt: "2026-07-18T12:05:00.000Z",
-            },
-          },
-        },
-      }),
-      "utf8",
-    );
+    seedCanonicalTerminalRollout("rollout-terminal.jsonl", "terminal-from-jsonl");
 
     expect(service.result({ runId: "run-complete" })).toMatchObject({
       status: "completed",
@@ -655,6 +665,59 @@ describe("durable run inspection", () => {
         "run-complete",
       ),
     ).toMatchObject({ eventId: "terminal-from-jsonl", lastSequence: 1 });
+  });
+
+  // Review P1-7: an ordinary desktop refresh of a running session turned it
+  // into an "operator action required" run at the next daemon restart.
+  it("serves a live run's current projection without recording a recovery deferral", () => {
+    const rolloutPath = seedCanonicalTerminalRollout(
+      "rollout-live.jsonl",
+      "terminal-from-live-jsonl",
+    );
+    // The live writer's lease, held by this process.
+    const lockPath = `${rolloutPath}.lock`;
+    writeFileSync(
+      lockPath,
+      `${JSON.stringify({
+        pid: process.pid,
+        startNs: "live-writer",
+        acquiredAtIso: NOW,
+      })}\n`,
+      { mode: 0o600 },
+    );
+    const deferredRows = (): number =>
+      driver
+        .prepareState<[], { readonly count: number }>(
+          "SELECT COUNT(*) AS count FROM run_recovery_deferred",
+        )
+        .get()?.count ?? 0;
+
+    for (let i = 0; i < 3; i++) {
+      // The projection is served as it stands: the epoch is open and the
+      // journal's terminal has not been projected because the source is live.
+      expect(service.status({ runId: "run-complete" })).toMatchObject({
+        runId: "run-complete",
+        status: "running",
+        statusSource: "run_lifecycle_epoch",
+        durableRun: { status: "completed" },
+      });
+      expect(service.replay({ runId: "run-complete" })).toMatchObject({
+        runId: "run-complete",
+      });
+    }
+    expect(deferredRows()).toBe(0);
+
+    // Once the writer is gone the next read projects the journal as usual.
+    rmSync(lockPath);
+    expect(service.result({ runId: "run-complete" })).toMatchObject({
+      status: "completed",
+      output: {
+        available: true,
+        finalMessage: "Recovered from the journal",
+        lastSequence: 1,
+      },
+    });
+    expect(deferredRows()).toBe(0);
   });
 
   it("exports bounded hashes and explicitly excludes workflow evidence", () => {

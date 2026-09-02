@@ -42,6 +42,7 @@ import {
 } from "./sessionMemory.js";
 import {
   createSessionMemoryState,
+  isSessionMemoryEnabled,
   resolveSessionMemoryPath,
 } from "./sessionMemoryUtils.js";
 
@@ -86,7 +87,8 @@ beforeEach(async () => {
   previousDisableAutoCompact = process.env.AGENC_DISABLE_AUTO_COMPACT;
   process.env.AGENC_HOME = tempRoot;
   delete process.env.AGENC_DISABLE_SESSION_MEMORY;
-  delete process.env.AGENC_SESSION_MEMORY_ENABLED;
+  // The notes subagent is opt-in; these tests exercise the enabled path.
+  process.env.AGENC_SESSION_MEMORY_ENABLED = "1";
   delete process.env.AGENC_REMOTE;
   delete process.env.AGENC_REMOTE_MEMORY_DIR;
   delete process.env.AGENC_DISABLE_AUTO_COMPACT;
@@ -678,6 +680,26 @@ describe("session memory runtime", () => {
     });
 
     expect(runAgentMockState.calls).toHaveLength(0);
+  });
+
+  it("stays off until a reader exists unless explicitly enabled", async () => {
+    // Nothing consumes summary.md yet, so the full-history notes child must
+    // not run by default; AGENC_SESSION_MEMORY_ENABLED=1 opts in.
+    delete process.env.AGENC_SESSION_MEMORY_ENABLED;
+    expect(isSessionMemoryEnabled()).toBe(false);
+    const session = makeSession("session-default-off");
+
+    await runSessionMemoryPostSamplingHook({
+      messages: idleMessages,
+      querySource: "repl_main_thread",
+      session,
+    });
+    expect(runAgentMockState.calls).toHaveLength(0);
+
+    process.env.AGENC_SESSION_MEMORY_ENABLED = "1";
+    expect(isSessionMemoryEnabled()).toBe(true);
+    process.env.AGENC_SESSION_MEMORY_ENABLED = "0";
+    expect(isSessionMemoryEnabled()).toBe(false);
   });
 
   it("manually extracts memory and reports empty conversations", async () => {

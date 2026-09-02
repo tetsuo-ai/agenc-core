@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { LLMMessage, LLMResponse } from "../llm/types.js";
 import {
   runTurn,
@@ -17,7 +17,21 @@ const originalEnv = {
   AGENC_AUTOCOMPACT_PCT_OVERRIDE: process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE,
 };
 
+// Every session in this file shares the conversation id "conv-test", so they
+// share one memory-extraction lane and its eligible-turn counter. Since the
+// turn no longer awaits `drainPendingExtraction`, the child that fires when
+// that counter reaches the cadence samples on the test's own provider AFTER
+// the turn it belongs to has returned -- so its calls land in whichever later
+// turn happens to be running, or not at all, depending on wall clock. The
+// back-off test below counts model calls exactly across six turns, so the
+// extraction fork is switched off for the file rather than being absorbed
+// into each expectation. Same reasoning, same switch, as run-turn.test.ts.
+beforeEach(() => {
+  vi.stubEnv("AGENC_DISABLE_EXTRACT_MEMORIES", "1");
+});
+
 afterEach(() => {
+  vi.unstubAllEnvs();
   setAutoCompactImplForTests(null);
   for (const [key, value] of Object.entries(originalEnv)) {
     if (value === undefined) {
@@ -238,17 +252,30 @@ describe("runTurn compact contract", () => {
     ]);
   });
 
-  test("mid-turn compact skip ends the turn without a run-fatal error event", async () => {
+  test("a mid-turn compact decline is reported once and the turn keeps working", async () => {
+    // The gate sits at three quarters of the window and admission denies at
+    // the window itself, so a dispatcher that ran and declined leaves room
+    // to keep sampling. Ending the turn here cost a live session its turn on
+    // every decline, mid-plan.
     let streamCount = 0;
     const provider = mkProvider({});
     provider.chatStream = async (): Promise<LLMResponse> => {
       streamCount += 1;
+      if (streamCount === 1) {
+        return {
+          content: "need a tool",
+          toolCalls: [{ id: "toolu_skip", name: "Read", arguments: "{}" }],
+          usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
+          model: "test-model",
+          finishReason: "tool_calls",
+        };
+      }
       return {
-        content: "need a tool",
-        toolCalls: [{ id: "toolu_skip", name: "Read", arguments: "{}" }],
-        usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
+        content: "done after the decline",
+        toolCalls: [],
+        usage: { promptTokens: 120, completionTokens: 5, totalTokens: 125 },
         model: "test-model",
-        finishReason: "tool_calls",
+        finishReason: "stop",
       };
     };
     const compactImpl = vi.fn<AutoCompactImpl>(async () => ({
@@ -274,15 +301,19 @@ describe("runTurn compact contract", () => {
       yielded.push(event);
     }
 
-    expect(streamCount).toBe(1);
-    expect(compactImpl).toHaveBeenCalled();
+    // The model sampled again after the decline and finished its work.
+    expect(streamCount).toBe(2);
+    // The pre-turn attempt answered "not compacted" without a reason, so the
+    // in-turn gate asked once more; that decline is remembered for the rest
+    // of the turn and no third attempt follows.
+    expect(compactImpl).toHaveBeenCalledTimes(2);
     expect(
-      events.some(
+      events.filter(
         (event) =>
           event.msg.type === "warning" &&
           event.msg.payload.cause === "mid_turn_compact_failed",
       ),
-    ).toBe(true);
+    ).toHaveLength(1);
     expect(
       events.some(
         (event) =>
@@ -290,11 +321,9 @@ describe("runTurn compact contract", () => {
           event.msg.payload.cause === "mid_turn_compact_failed",
       ),
     ).toBe(false);
-    expect(yielded).toContainEqual(
-      expect.objectContaining({
-        type: "turn_complete",
-        stopReason: "compact_failed",
-      }),
+    expect(yielded.some((event) => event.type === "turn_complete")).toBe(true);
+    expect(yielded).not.toContainEqual(
+      expect.objectContaining({ stopReason: "compact_failed" }),
     );
   });
 
@@ -324,7 +353,7 @@ describe("runTurn compact contract", () => {
         };
       }
       return {
-        content: "must not be reached",
+        content: "finished after the declined compaction",
         toolCalls: [],
         usage: { promptTokens: 5, completionTokens: 5, totalTokens: 10 },
         model: "test-model",
@@ -350,7 +379,8 @@ describe("runTurn compact contract", () => {
       yielded.push(event);
     }
 
-    expect(streamCount).toBe(1);
+    // The decline did not end the turn: the model answered afterwards.
+    expect(streamCount).toBe(2);
     const declined = events.filter(
       (event) =>
         event.msg.type === "warning" &&
@@ -372,11 +402,68 @@ describe("runTurn compact contract", () => {
           event.msg.payload.message.startsWith("mid_turn_compact_skipped:"),
       ),
     ).toBe(true);
-    expect(yielded).toContainEqual(
-      expect.objectContaining({
-        type: "turn_complete",
-        stopReason: "compact_failed",
-      }),
+    expect(yielded).not.toContainEqual(
+      expect.objectContaining({ stopReason: "compact_failed" }),
     );
+  });
+
+  test("three declined turns in a row buy two turns of back-off, then one more try", async () => {
+    // Before: a session past the threshold paid a full failed attempt,
+    // minutes long, at the start of every turn. Now the session backs off.
+    let streamCount = 0;
+    const provider = mkProvider({});
+    provider.chatStream = async (): Promise<LLMResponse> => {
+      streamCount += 1;
+      if (streamCount % 2 === 1) {
+        return {
+          content: "need a tool",
+          toolCalls: [{ id: `toolu_backoff_${streamCount}`, name: "Read", arguments: "{}" }],
+          usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
+          model: "test-model",
+          finishReason: "tool_calls",
+        };
+      }
+      return {
+        content: "turn done",
+        toolCalls: [],
+        usage: { promptTokens: 120, completionTokens: 5, totalTokens: 125 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    };
+    const compactImpl = vi.fn<AutoCompactImpl>(async () => ({
+      wasCompacted: false,
+      skippedReason: "test decline",
+    }));
+    setAutoCompactImplForTests(compactImpl);
+    const { session, events } = mkSession({
+      provider,
+      modelInfo: { autoCompactTokenLimit: 1 } as never,
+    });
+    const ctx = mkCtx({
+      modelInfo: { ...mkCtx().modelInfo, autoCompactTokenLimit: 1 } as never,
+    });
+    const attemptsAfterTurn: number[] = [];
+    for (let turn = 0; turn < 6; turn += 1) {
+      for await (const _event of runTurn(session, ctx, `prompt ${turn}`)) {
+        // drain
+      }
+      attemptsAfterTurn.push(compactImpl.mock.calls.length);
+    }
+    // Turns 1-3 each attempt once (pre-turn or in-turn) and decline; turns
+    // 4 and 5 are skipped; turn 6 tries again.
+    expect(attemptsAfterTurn[2]).toBeGreaterThanOrEqual(3);
+    expect(attemptsAfterTurn[3]).toBe(attemptsAfterTurn[2]);
+    expect(attemptsAfterTurn[4]).toBe(attemptsAfterTurn[2]);
+    expect(attemptsAfterTurn[5]).toBeGreaterThan(attemptsAfterTurn[4]);
+    const backoffNotes = events.filter(
+      (event) =>
+        event.msg.type === "warning" &&
+        typeof event.msg.payload.message === "string" &&
+        event.msg.payload.message.includes("back-off"),
+    );
+    expect(backoffNotes.length).toBeGreaterThanOrEqual(2);
+    // Every turn finished normally.
+    expect(streamCount).toBe(12);
   });
 });

@@ -12,6 +12,7 @@ import {
   COMPACTION_SOURCE_DIGEST_DOMAIN,
   MAX_COMPACTION_CHUNKS,
   MAX_COMPACTION_FAN_IN,
+  MAX_COMPACTION_FINAL_OUTPUT_TOKENS,
   MAX_COMPACTION_INTERMEDIATE_TOKENS,
   MAX_COMPACTION_RECORD_TEXT_UTF8_BYTES,
   MAX_COMPACTION_PROVIDER_CALLS,
@@ -79,6 +80,8 @@ export interface CompactionMapReducePlan {
   readonly planned_input_tokens: number;
   readonly context_window_tokens: number;
   readonly output_reserve_tokens: number;
+  /** Output reserve of the final call; larger than a child's, the summary of a whole session needs the room. */
+  readonly final_output_reserve_tokens: number;
   readonly reduction_fan_in: number;
   readonly tool_pairs: readonly CompactionToolPairV1[];
   readonly calls: readonly CompactionCallPlan[];
@@ -186,12 +189,17 @@ export function buildCompactionMapReducePlan(
     options.context.options?.contextWindowTokens,
     COMPACTION_DEFAULT_CONTEXT_WINDOW_TOKENS,
   );
+  const requestedOutput = positiveInteger(
+    options.context.options?.maxOutputTokens,
+    COMPACTION_DEFAULT_OUTPUT_RESERVE_TOKENS,
+  );
   const outputReserve = Math.min(
-    positiveInteger(
-      options.context.options?.maxOutputTokens,
-      COMPACTION_DEFAULT_OUTPUT_RESERVE_TOKENS,
-    ),
+    requestedOutput,
     MAX_COMPACTION_INTERMEDIATE_TOKENS,
+  );
+  const finalOutputReserve = Math.max(
+    outputReserve,
+    Math.min(requestedOutput, MAX_COMPACTION_FINAL_OUTPUT_TOKENS),
   );
   const planningSystemPrompt = Object.values(options.systemPrompts).reduce(
     (longest, prompt) => prompt.length > longest.length ? prompt : longest,
@@ -220,7 +228,8 @@ export function buildCompactionMapReducePlan(
       options,
       commonOptions,
       contextWindow,
-      outputReserve,
+      // A single chunk becomes the final call, which reserves more output.
+      outputReserve: finalOutputReserve,
       planningWork,
     });
     if (candidate === null) {
@@ -261,6 +270,7 @@ export function buildCompactionMapReducePlan(
     ...options,
     contextWindow,
     outputReserve,
+    finalOutputReserve,
     reductionFanIn,
   }, planningWork);
   const topology = compactionMapReduceTopology(chunks.length, reductionFanIn);
@@ -302,6 +312,7 @@ export function buildCompactionMapReducePlan(
     planned_input_tokens: plannedInput,
     context_window_tokens: contextWindow,
     output_reserve_tokens: outputReserve,
+    final_output_reserve_tokens: finalOutputReserve,
     reduction_fan_in: reductionFanIn,
     tool_pairs: toolPairs,
     calls,
@@ -456,6 +467,7 @@ function buildCallDag(
   options: BuildCompactionPlanOptions & {
     readonly contextWindow: number;
     readonly outputReserve: number;
+    readonly finalOutputReserve: number;
     readonly reductionFanIn: number;
   },
   planningWork: MutableCompactionPlanningWork,
@@ -473,7 +485,8 @@ function buildCallDag(
       providerName: options.providerName,
       model: options.model,
       contextWindowTokens: options.contextWindow,
-      outputReserveTokens: options.outputReserve,
+      outputReserveTokens:
+        stage === "final" ? options.finalOutputReserve : options.outputReserve,
     }, planningWork);
     calls.push({
       call_index: callIndex,
@@ -505,19 +518,21 @@ function buildCallDag(
         stage,
         requestedFocus: options.requestedFocus,
       });
+      const ownReserve =
+        stage === "final" ? options.finalOutputReserve : options.outputReserve;
       const wrapper = accountPlannedCompactionCall({
         messages,
         systemPrompt: options.systemPrompts[stage],
         providerName: options.providerName,
         model: options.model,
         contextWindowTokens: options.contextWindow,
-        outputReserveTokens: options.outputReserve,
+        outputReserveTokens: ownReserve,
       }, planningWork);
       const upperBound = safeSum(
         wrapper.inputTokens,
         group.length * options.outputReserve,
       );
-      if (safeSum(upperBound, options.outputReserve) > options.contextWindow) {
+      if (safeSum(upperBound, ownReserve) > options.contextWindow) {
         throw new CompactionCannotReduceError(
           "context_limit",
           `planned ${stage} call ${callIndex} cannot fit its frozen worst-case child outputs`,
@@ -771,8 +786,24 @@ function buildSemanticUnits(
 function createCompactionModelProjection(
   messages: readonly RuntimeMessage[],
 ): readonly RuntimeMessage[] {
-  return messages.map((message) => {
+  const cleared = oldLargeToolResultIndexes(messages);
+  return messages.map((message, index) => {
     const content = message.content ?? message.message?.content;
+    if (cleared.has(index) && typeof content === "string") {
+      // The live context already replaced this body with the marker the
+      // model knows from microcompaction; the summary does not need the
+      // bytes either. The authoritative message, its integrity record and
+      // its pair digest are untouched: only what the compactor reads changes.
+      const projectedContent =
+        `${COMPACTION_PROJECTION_CLEARED_MARKER} (${Buffer.byteLength(content, "utf8")} bytes; the runtime keeps the full result)`;
+      return {
+        ...message,
+        content: projectedContent,
+        ...(message.message === undefined
+          ? {}
+          : { message: { ...message.message, content: projectedContent } }),
+      };
+    }
     if (!Array.isArray(content)) return message;
     const projectedContent = content.map(redactCompactionContentPart);
     return {
@@ -783,6 +814,36 @@ function createCompactionModelProjection(
         : { message: { ...message.message, content: projectedContent } }),
     };
   });
+}
+
+/** Same marker microcompaction leaves in the live context. */
+const COMPACTION_PROJECTION_CLEARED_MARKER = "[Old tool result content cleared]";
+/** Tool results at least this long are candidates for clearing. */
+const COMPACTION_PROJECTION_TOOL_RESULT_MIN_CHARS = 6_000;
+/** The newest large tool results keep their bodies for the summary. */
+const COMPACTION_PROJECTION_KEEP_RECENT_TOOL_RESULTS = 5;
+
+/**
+ * Indexes of tool results whose bodies the compactor does not need: long
+ * ones that are not among the newest few. A 218-call session carried
+ * 233 KB of old tool output into every compaction request, most of it
+ * file bodies the model had already stopped seeing.
+ */
+function oldLargeToolResultIndexes(
+  messages: readonly RuntimeMessage[],
+): ReadonlySet<number> {
+  const large: number[] = [];
+  messages.forEach((message, index) => {
+    if (message.role !== "tool") return;
+    const content = message.content ?? message.message?.content;
+    if (typeof content !== "string") return;
+    if (content.length < COMPACTION_PROJECTION_TOOL_RESULT_MIN_CHARS) return;
+    if (content.startsWith(COMPACTION_PROJECTION_CLEARED_MARKER)) return;
+    large.push(index);
+  });
+  return new Set(
+    large.slice(0, Math.max(0, large.length - COMPACTION_PROJECTION_KEEP_RECENT_TOOL_RESULTS)),
+  );
 }
 
 function redactCompactionContentPart(part: unknown): unknown {

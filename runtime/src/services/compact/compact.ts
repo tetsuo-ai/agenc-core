@@ -211,7 +211,14 @@ async function compactConversationImpl(
   // assistant tool_call lives in the summarized prefix. Without this
   // adjustment the kept suffix is provider-invalid (every openai-
   // compatible endpoint 400s on an orphaned tool message).
-  const candidateSplit = Math.max(0, summaryInputMessages.length - keepCount);
+  // The kept suffix also reaches back to the most recent human message
+  // when it is close: the words the user just typed are the one thing a
+  // summary must not paraphrase, and a suffix that starts after them
+  // resumes a turn whose request is no longer in the transcript.
+  const candidateSplit = Math.min(
+    Math.max(0, summaryInputMessages.length - keepCount),
+    nearestRecentHumanMessageIndex(summaryInputMessages, keepCount),
+  );
   const toolPairSafeSplitIndex = resolveAtomicSliceIndex(
     summaryInputMessages,
     candidateSplit,
@@ -374,6 +381,68 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 function chooseKeepCount(messages: readonly RuntimeMessage[]): number {
   if (messages.length <= 2) return 0;
   return Math.min(4, Math.max(1, Math.floor(messages.length * 0.2)));
+}
+
+/** How far back the kept suffix may stretch to include the last human message. */
+const KEEP_RECENT_HUMAN_MESSAGE_WITHIN = 12;
+/** The kept tail may hold at most this share of the history's bytes, or 16 KB. */
+const KEEP_RECENT_HUMAN_MESSAGE_BYTE_SHARE = 0.15;
+const KEEP_RECENT_HUMAN_MESSAGE_MIN_BYTES = 16_384;
+
+/**
+ * Index of the most recent message the human typed, when it lies within the
+ * last few messages and the tail from it onwards is small; otherwise the list
+ * length, which leaves the positional split alone. Runtime-authored user-role
+ * messages (boundary markers, prior summaries, agent invocations) do not
+ * count. The byte bound keeps a context-window collapse able to shrink: a
+ * tail full of large tool results is summarized, not kept.
+ */
+export function nearestRecentHumanMessageIndex(
+  messages: readonly RuntimeMessage[],
+  keepCount: number,
+): number {
+  const reach = Math.max(keepCount, KEEP_RECENT_HUMAN_MESSAGE_WITHIN);
+  const totalBytes = messages.reduce(
+    (sum, message) => sum + messageContentBytes(message),
+    0,
+  );
+  const tailBudget = Math.max(
+    KEEP_RECENT_HUMAN_MESSAGE_MIN_BYTES,
+    Math.floor(totalBytes * KEEP_RECENT_HUMAN_MESSAGE_BYTE_SHARE),
+  );
+  let tailBytes = 0;
+  for (
+    let index = messages.length - 1;
+    index >= Math.max(0, messages.length - reach);
+    index -= 1
+  ) {
+    const message = messages[index]!;
+    tailBytes += messageContentBytes(message);
+    if (tailBytes > tailBudget) return messages.length;
+    if (isHumanTypedMessage(message)) return index;
+  }
+  return messages.length;
+}
+
+function messageContentBytes(message: RuntimeMessage): number {
+  return Buffer.byteLength(
+    typeof message.content === "string"
+      ? message.content
+      : JSON.stringify(message.content ?? message.message?.content ?? ""),
+    "utf8",
+  );
+}
+
+/** A user-role message the human typed, as opposed to one the runtime wrote. */
+function isHumanTypedMessage(message: RuntimeMessage): boolean {
+  if (message.role !== "user") return false;
+  if (message.originalRole !== undefined && message.originalRole !== "user") {
+    return false;
+  }
+  if (message.runtimeOnly?.compactionHistory !== undefined) return false;
+  if (isAgentInvocationMessage(message)) return false;
+  const text = typeof message.content === "string" ? message.content : "";
+  return !text.startsWith(COMPACTION_BOUNDARY_MARKER_V1);
 }
 
 /**

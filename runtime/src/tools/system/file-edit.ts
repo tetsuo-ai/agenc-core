@@ -48,6 +48,7 @@ import {
   resolveSessionId,
   safePathAllowingSessionPlanFile,
 } from "./filesystem.js";
+import { checkMemorySecrets } from "../../memory/privacy.js";
 import {
   agentNamespacePathHint,
   denyAgentNamespacePath,
@@ -904,6 +905,12 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         );
       }
       const absoluteFilePath = safe.resolved;
+      // Durable memory is plain text under $AGENC_HOME that re-enters later
+      // prompts: never persist a secret there.
+      const secretError = checkMemorySecrets(absoluteFilePath, new_string);
+      if (secretError !== null) {
+        return preMutationErrorResult(secretError, FILE_EDIT_TOOL_NAME);
+      }
 
       // Reject .ipynb. AgenC has no notebook tool today, but pointing
       // the model at a "notebook-specific tool" still saves it from
@@ -1248,6 +1255,13 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
       }
       const absoluteFilePath = safe.resolved;
+      const secretError = checkMemorySecrets(
+        absoluteFilePath,
+        edits.map((edit) => edit.new_string).join("\n"),
+      );
+      if (secretError !== null) {
+        return preMutationErrorResult(secretError, FILE_MULTI_EDIT_TOOL_NAME);
+      }
 
       if (absoluteFilePath.endsWith(".ipynb")) {
         return errorResult(

@@ -922,6 +922,50 @@ describe("durable checkpoint reader", () => {
     });
   });
 
+  it("plans an upgrade across a compaction commit whose replacement history carries response ids", () => {
+    // Live shape: the compaction transaction persisted the boundary and
+    // summary messages with the runtime uuid as `id`; the checkpoints written
+    // after the commit were hashed over the live projection (no id), so the
+    // upgrade planner refused the whole session on the next restart.
+    const liveReplacement: ToolResultIntegrityResponseItem[] = [
+      { role: "developer", content: "agenc_compaction_boundary_v1: untrusted context" },
+      { role: "user", content: "summary of the work so far" },
+      { role: "assistant", content: "kept tail of the conversation" },
+    ];
+    const persistedReplacement = liveReplacement.map((message, index) =>
+      index < 2 ? { ...message, id: `uuid-${index}` } : message,
+    );
+    const source: RolloutItem[] = [
+      {
+        type: "session_meta",
+        payload: {
+          sessionId: "compaction-id-run",
+          timestamp: "2026-09-02T00:00:00.000Z",
+          cwd: "/workspace",
+          originator: "test",
+          agencVersion: "0.17.0",
+          rolloutSchemaVersion: 5,
+        },
+      },
+      { type: "response_item", payload: { role: "user", content: "before the compaction" } },
+      {
+        type: "compaction_committed",
+        payload: { attempt_id: "compact-1", replacement_history: persistedReplacement },
+      } as unknown as RolloutItem,
+      checkpointItem(v4CheckpointForHistory(liveReplacement)),
+    ];
+
+    const outcome = planLegacyDurableCheckpointUpgrade({
+      items: source,
+      runId: "compaction-id-run",
+      projection,
+      projectionId: "compaction-id-plan",
+      sourceKey: "compaction-id",
+    });
+
+    expect(outcome).toMatchObject({ status: "planned" });
+  });
+
   it("rejects UTF-8 replacement aliases in a v2 checkpoint prefix", () => {
     const replacementHistory: ToolResultIntegrityResponseItem[] = [
       { role: "user", content: "\ufffd" },

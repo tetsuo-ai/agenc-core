@@ -43,6 +43,9 @@ describe("compaction with runtime-owned tool pairs", () => {
     const result = await compactConversation(source, harness.context);
     const committed = result.transaction?.committed;
     expect(committed?.replacement_history.length).toBeGreaterThan(0);
+    // The persisted replacement history is the live projection: no message
+    // carries a response id, or the durable checkpoint hash can never match.
+    expect(committed?.replacement_history.every((message) => message.id === undefined)).toBe(true);
     const serialized = JSON.stringify(committed);
     for (const index of [0, 1, TOOL_CALLS / 2, TOOL_CALLS - 1]) {
       expect(serialized).toContain(`"call-${index}"`);
@@ -64,6 +67,10 @@ describe("compaction with runtime-owned tool pairs", () => {
     harness = createCompactionTransactionHarness(source, {
       compactionMode: "automatic",
       sessionId: SESSION_ID,
+      // A realistic window: the wire output limit now leaves room for
+      // hidden reasoning, and the harness default of 64k is too tight for
+      // 200 tool results plus that room.
+      contextWindowTokens: 256_000,
       maxOutputTokens: 8_192,
       chat: bodyWithoutPairs("y".repeat(9_216), 2_300),
     });
@@ -104,6 +111,73 @@ describe("compaction with runtime-owned tool pairs", () => {
     await expect(compactConversation(source, harness.context)).rejects.toThrow(
       /omitted, forged, duplicated, or reordered/,
     );
+  });
+
+  it("gives the final call a larger output reserve and hides old tool bodies from the compactor", async () => {
+    // Eight results of 7,000 characters: the newest five keep their bodies,
+    // the three oldest are cleared in what the model reads. The authoritative
+    // history and its pair digests are untouched.
+    const source = createSource(8, 7_000);
+    harness = createCompactionTransactionHarness(source, {
+      compactionMode: "automatic",
+      sessionId: SESSION_ID,
+      contextWindowTokens: 256_000,
+      maxOutputTokens: 32_768,
+      chat: bodyWithoutPairs("z".repeat(2_000), 600),
+    });
+
+    const result = await compactConversation(source, harness.context);
+    expect(result.transaction?.committed.replacement_history.length).toBeGreaterThan(0);
+    const calls = harness.provider.chat.mock.calls as unknown as [
+      LLMMessage[],
+      { maxOutputTokens?: number; reasoningEffort?: string },
+    ][];
+    expect(calls.length).toBeGreaterThan(0);
+    const [messages, options] = calls[calls.length - 1]!;
+    // 16k of visible summary, doubled on the wire for hidden reasoning.
+    expect(options.maxOutputTokens).toBe(16_384 * 2);
+    expect(options.reasoningEffort).toBe("low");
+    const payload = String(messages[0]?.content);
+    // The kept suffix (three messages) holds call 7, so the summarized span
+    // carries seven results: the newest five keep their bodies, two are
+    // cleared.
+    expect(payload.match(/\[Old tool result content cleared\]/g)?.length ?? 0).toBe(2);
+    expect(payload).toContain("wrote game6/index.html####");
+    expect(payload).toContain("wrote game2/index.html####");
+    expect(payload).not.toContain("wrote game0/index.html####");
+    expect(payload).not.toContain("wrote game1/index.html####");
+    const committed = JSON.stringify(result.transaction?.committed);
+    expect(committed.match(/"tool_call_id"/g)?.length ?? 0).toBeGreaterThanOrEqual(8);
+  });
+
+  it("accepts records without source_ref_ids when only one ref is allowed", async () => {
+    const source = createSource(40, 300);
+    harness = createCompactionTransactionHarness(source, {
+      compactionMode: "automatic",
+      sessionId: SESSION_ID,
+      chat: async () => ({
+        content: JSON.stringify({
+          narrative: "Four games written.",
+          facts: [{ id: "f1", text: "game0..game3 exist" }],
+          open_actions: [{ id: "a1", text: "wire the hub" }],
+        }),
+        toolCalls: [],
+        usage: {
+          promptTokens: 128,
+          completionTokens: 64,
+          totalTokens: 192,
+          availability: "reported",
+          provenance: "provider",
+        },
+        model: "grok-4.5",
+        finishReason: "stop",
+      }),
+    });
+
+    const result = await compactConversation(source, harness.context);
+    const committed = JSON.stringify(result.transaction?.committed);
+    expect(committed).toContain("wire the hub");
+    expect(committed).toContain(":span:001");
   });
 
   it("does not ask the model for tool pairs anymore", () => {

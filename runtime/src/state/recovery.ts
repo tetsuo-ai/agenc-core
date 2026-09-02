@@ -10,6 +10,7 @@ import {
 } from "./run-cancellation.js";
 import { asRecord } from "../utils/record.js";
 import { StartupRecoveryBudget } from "./recovery-cutover.js";
+import { StateRecoveryIncidentRepository } from "./recovery-incidents.js";
 import {
   recoverCanonicalRunJournalsOnStartup,
   recoverPendingEffectReviewsOnStartup,
@@ -173,6 +174,16 @@ export function recoverDaemonStateOnStartup(
   try {
     const warnings: DaemonStartupRecoveryWarning[] = [];
     const recoveredAt = options.now?.() ?? new Date().toISOString();
+    // A source_not_quiescent deferral whose retry window has passed is stale
+    // evidence about a lease some process held at the time, not about the
+    // source now. Resolve those first so the run is scanned below instead of
+    // being reported as excluded.
+    const recoveredAtMs = Date.parse(recoveredAt);
+    if (Number.isFinite(recoveredAtMs)) {
+      new StateRecoveryIncidentRepository(driver).releaseExpiredLiveSourceDeferrals(
+        recoveredAtMs,
+      );
+    }
     const preexistingExclusions = loadStartupRecoveryExclusions(driver);
     const startupBudget = new StartupRecoveryBudget();
     const admissions = new ExecutionAdmissionRepository(driver, {

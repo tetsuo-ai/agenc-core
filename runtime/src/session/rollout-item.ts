@@ -328,3 +328,20 @@ export function parseRolloutLine(line: string): RolloutItem | null {
 export function isKnownRolloutType(type: string): boolean {
   return KNOWN_ROLLOUT_TYPES.has(type);
 }
+
+/**
+ * Replacement history as the live session projects it. Compaction commits
+ * written before the transaction stopped persisting the runtime uuid carry an
+ * `id` on the compaction messages; LLMMessages never do, and the durable
+ * checkpoint hash covers `response-id`, so the id must not reach any history
+ * a checkpoint is verified against.
+ */
+export function withoutResponseIds(
+  items: ReadonlyArray<ResponseItem>,
+): ReadonlyArray<ResponseItem> {
+  return items.map((item) => {
+    if (item.id === undefined) return item;
+    const { id: _id, ...rest } = item;
+    return rest;
+  });
+}

@@ -58,6 +58,7 @@ import {
   authorizeBypassPermissionsConsent,
   canonicalizeBypassPermissionsCwd,
   loadBypassPermissionsConsent,
+  recordBypassPermissionsConsent,
 } from "./bypass-consent-state.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -972,6 +973,26 @@ export async function initializeToolPermissionContext(
           opts.permissionMode === "bypassPermissions");
       if (explicitStartupBypass) {
         ctx = authorizeBypassPermissionsConsent(ctx, canonicalCwd);
+        // The operator chose bypass for this exact cwd at startup (the CLI
+        // flag or a client's permissionMode). Record that consent durably,
+        // the way the /permissions command does: a session restored after a
+        // daemon restart is refused with "restored bypass permission mode
+        // requires persisted exact-cwd consent" when only the in-memory
+        // authorization existed. Persistence failing never blocks startup.
+        if (!untrustedProject && canonicalEnv.configStore !== undefined) {
+          try {
+            recordBypassPermissionsConsent(
+              canonicalEnv.configStore.stateRepository,
+              canonicalCwd,
+            );
+          } catch (error) {
+            warnings.push(
+              `Bypass permissions consent could not be persisted for ${canonicalCwd}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        }
       } else if (
         !untrustedProject &&
         canonicalEnv.configStore !== undefined

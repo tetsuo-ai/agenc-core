@@ -3,9 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  pruneSessionSnapshotsForSession,
+  pruneSessionSnapshotsPerSession,
   pruneSessionStateSnapshots,
   pruneTerminalAgentRuns,
+  SESSION_SNAPSHOT_HARD_CAP,
 } from "./pruning.js";
+import { defaultConfig } from "../../src/config/schema.js";
 import { recoverDaemonStateOnStartup } from "./recovery.js";
 import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
 
@@ -227,6 +231,174 @@ describe("pruneTerminalAgentRuns", () => {
       sessionId: "session-latest-a",
       snapshotAt: "2026-05-01T00:00:02.000Z",
     });
+  });
+});
+
+// Review P0-2: the table-wide sweep above never deleted a row in the live
+// daemon (5,607 rows / 1.16 GB for one session under the default 64 MiB cap)
+// and cost a LENGTH() scan of the whole table per pass. The per-session prune
+// is bounded by the hard cap so it can run on every snapshot write.
+describe("pruneSessionSnapshotsForSession", () => {
+  it("keeps a session under the hard cap after 10,000 writes with the default retention", () => {
+    seedRun("agent-flood", "session-flood", "running", "2026-05-01T00:00:00.000Z");
+    const retention = defaultConfig().agent?.retention;
+    expect(retention).toMatchObject({
+      snapshot_days: 3,
+      snapshot_max_count: 10_000,
+      snapshot_max_bytes: 67_108_864,
+    });
+    const baseMs = Date.parse("2026-05-01T00:00:01.000Z");
+    driver.transaction(() => {
+      for (let index = 0; index < 10_000; index++) {
+        insertSnapshot(
+          "session-flood",
+          new Date(baseMs + index).toISOString(),
+          {
+            conversation: [{ role: "assistant", content: "x".repeat(1024) }],
+            toolState: { index },
+            mcpConnectionState: {},
+          },
+        );
+      }
+    });
+    expect(snapshotCount("session-flood")).toBe(10_001);
+
+    const report = pruneSessionSnapshotsForSession(driver, "session-flood", {
+      ...retention,
+      now: () => "2026-05-01T00:00:20.000Z",
+    });
+
+    expect(report).toEqual({
+      prunedSnapshots: 10_001 - SESSION_SNAPSHOT_HARD_CAP,
+      prunedSessionIds: ["session-flood"],
+    });
+    expect(snapshotCount("session-flood")).toBe(SESSION_SNAPSHOT_HARD_CAP);
+    expect(snapshotTimes("session-flood").at(-1)).toBe(
+      new Date(baseMs + 9_999).toISOString(),
+    );
+    // A second pass is a no-op over the retained rows.
+    expect(
+      pruneSessionSnapshotsForSession(driver, "session-flood", {
+        ...retention,
+        now: () => "2026-05-01T00:00:20.000Z",
+      }),
+    ).toEqual({ prunedSnapshots: 0, prunedSessionIds: [] });
+  });
+
+  it("applies a configured count cap below the hard cap and keeps the newest rows", () => {
+    for (const second of [1, 2, 3, 4, 5]) {
+      insertSnapshot("session-count", `2026-05-01T00:00:0${second}.000Z`, {
+        conversation: [],
+        toolState: {},
+        mcpConnectionState: {},
+      });
+    }
+
+    const report = pruneSessionSnapshotsForSession(driver, "session-count", {
+      snapshot_max_count: 2,
+    });
+
+    expect(report.prunedSnapshots).toBe(3);
+    expect(snapshotTimes("session-count")).toEqual([
+      "2026-05-01T00:00:04.000Z",
+      "2026-05-01T00:00:05.000Z",
+    ]);
+  });
+
+  it("applies the age cutoff but always keeps the newest row", () => {
+    insertSnapshot("session-age", "2026-04-20T00:00:00.000Z", {
+      conversation: [],
+      toolState: {},
+      mcpConnectionState: {},
+    });
+    insertSnapshot("session-age", "2026-04-21T00:00:00.000Z", {
+      conversation: [],
+      toolState: {},
+      mcpConnectionState: {},
+    });
+
+    pruneSessionSnapshotsForSession(driver, "session-age", {
+      snapshot_days: 3,
+      now: () => "2026-05-01T00:00:00.000Z",
+    });
+
+    expect(snapshotTimes("session-age")).toEqual(["2026-04-21T00:00:00.000Z"]);
+  });
+
+  it("applies the byte cap newest-first over the surviving rows", () => {
+    insertSnapshot("session-bytes", "2026-05-01T00:00:01.000Z", {
+      conversation: [],
+      toolState: {},
+      mcpConnectionState: { payload: "z".repeat(128) },
+    });
+    insertSnapshot("session-bytes", "2026-05-01T00:00:02.000Z", {
+      conversation: [],
+      toolState: { payload: "y".repeat(40) },
+      mcpConnectionState: {},
+    });
+    insertSnapshot("session-bytes", "2026-05-01T00:00:03.000Z", {
+      conversation: [{ payload: "x".repeat(40) }],
+      toolState: {},
+      mcpConnectionState: {},
+    });
+
+    const report = pruneSessionSnapshotsForSession(driver, "session-bytes", {
+      snapshot_max_bytes: 150,
+    });
+
+    expect(report.prunedSnapshots).toBe(1);
+    expect(snapshotTimes("session-bytes")).toEqual([
+      "2026-05-01T00:00:02.000Z",
+      "2026-05-01T00:00:03.000Z",
+    ]);
+  });
+
+  it("leaves other sessions alone even when they share the agent", () => {
+    seedRun("agent-shared", "session-shared-a", "running", "2026-05-01T00:00:00.000Z");
+    seedSessionAgentLink("session-shared-b", "agent-shared");
+    for (const second of [1, 2, 3]) {
+      insertSnapshot("session-shared-a", `2026-05-01T00:00:0${second}.000Z`, {
+        conversation: [],
+        toolState: {},
+        mcpConnectionState: {},
+      });
+      insertSnapshot("session-shared-b", `2026-05-01T00:00:0${second}.000Z`, {
+        conversation: [],
+        toolState: {},
+        mcpConnectionState: {},
+      });
+    }
+
+    pruneSessionSnapshotsForSession(driver, "session-shared-a", {
+      snapshot_max_count: 1,
+    });
+
+    expect(snapshotCount("session-shared-a")).toBe(1);
+    expect(snapshotCount("session-shared-b")).toBe(3);
+  });
+
+  it("pruneSessionSnapshotsPerSession caps every session independently", () => {
+    const baseMs = Date.parse("2026-05-01T00:00:00.000Z");
+    driver.transaction(() => {
+      for (const sessionId of ["session-many-a", "session-many-b"]) {
+        for (let index = 0; index < SESSION_SNAPSHOT_HARD_CAP + 10; index++) {
+          insertSnapshot(sessionId, new Date(baseMs + index).toISOString(), {
+            conversation: [],
+            toolState: {},
+            mcpConnectionState: {},
+          });
+        }
+      }
+    });
+
+    const report = pruneSessionSnapshotsPerSession(driver);
+
+    expect(report).toEqual({
+      prunedSnapshots: 20,
+      prunedSessionIds: ["session-many-a", "session-many-b"],
+    });
+    expect(snapshotCount("session-many-a")).toBe(SESSION_SNAPSHOT_HARD_CAP);
+    expect(snapshotCount("session-many-b")).toBe(SESSION_SNAPSHOT_HARD_CAP);
   });
 });
 

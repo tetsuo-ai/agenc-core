@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -48,7 +48,7 @@ beforeAll(async () => {
 }, 30_000);
 
 beforeEach(() => {
-  tempRoot = mkdtempSync(join(tmpdir(), "agenc-memory-prompt-"));
+  tempRoot = mkdtempSync(join(realpathSync(tmpdir()), "agenc-memory-prompt-"));
   oldProjectRoot = getProjectRoot();
   oldOriginalCwd = getOriginalCwd();
   oldAgencHome = process.env.AGENC_HOME;
@@ -81,44 +81,58 @@ afterAll(() => {
 });
 
 describe("memory prompt", () => {
-  it("renders all three D-13 memory layers without a session filesystem path", () => {
+  it("lists all three D-13 memory layers in the directory block without a session filesystem path", () => {
     installMemoryAuthority();
-    const prompt = memory.buildMemoryLines("auto memory", getProjectMemoryPath()).join("\n");
-    expect(prompt).toContain("Global memory");
-    expect(prompt).toContain("Project memory");
-    expect(prompt).toContain("Session memory");
-    expect(prompt).toContain("Save user-level memories");
-    expect(prompt).toContain("Save project-level memories");
-    expect(prompt).toContain(join(tempRoot, "home", "memory"));
-    expect(prompt).toContain(join(tempRoot, "repo", "AGENC.md"));
+    const directories = memory.buildMemoryDirectoryLines(getProjectMemoryPath()).join("\n");
+    expect(directories).toContain("# Memory directories");
+    expect(directories).toContain("Global memory");
+    expect(directories).toContain("Project memory");
+    expect(directories).toContain("Session memory");
+    expect(directories).toContain(join(tempRoot, "home", "memory"));
+    expect(directories).toContain(getProjectMemoryPath());
+    expect(directories).toContain("These directories already exist");
+    expect(memory.buildMemoryLayerLines().join("\n")).toContain(
+      join(tempRoot, "repo", "AGENC.md"),
+    );
     expect(memory.buildSessionMemoryLayerLines().join("\n")).toContain(
       "in-conversation state",
     );
-    expect(prompt).not.toContain("session-memory/");
+    expect(directories).not.toContain("session-memory/");
   });
 
-  it("loadMemoryPrompt keeps compatibility while adding D-13 layers", async () => {
+  it("keeps the instructions path-free and under the prompt budget", () => {
+    installMemoryAuthority();
+    const instructions = memory.buildMemoryInstructionLines().join("\n");
+    expect(instructions.startsWith("# auto memory")).toBe(true);
+    expect(instructions).toContain("## When to save");
+    expect(instructions).toContain("## How to save");
+    expect(instructions).toContain("## How to recall");
+    expect(instructions).toContain("One fact per file");
+    expect(instructions).toContain("name: {{short name}}");
+    expect(instructions).toContain("type: {{user, feedback, project, reference}}");
+    expect(instructions).toContain("`MEMORY.md` is an index, not a memory");
+    expect(instructions).toContain("You must check memory when the user asks you to check, recall, or remember");
+    expect(instructions).toContain('Grep with pattern="<term>" path="<memory directory>" glob="*.md"');
+    // Paths live only in the directory block so the instructions stay cacheable.
+    expect(instructions).not.toContain(tempRoot);
+    // Well under the 1.5k-token target (about 4 characters per token).
+    expect(instructions.length).toBeLessThan(4_000);
+    expect(instructions).not.toContain("\u2014");
+  });
+
+  it("loadMemoryPrompt returns cacheable instructions plus per-session directories and creates both directories", async () => {
     installMemoryAuthority();
     const prompt = await memory.loadMemoryPrompt();
-    expect(prompt).toContain("Global memory");
-    expect(prompt).toContain("Project memory");
-    expect(prompt).toContain("Session memory");
-    expect(prompt).toContain(getProjectMemoryPath());
-    expect(prompt).toContain(getGlobalMemoryPath());
-  });
-
-  it("directs durable saves to global or project memory by scope", () => {
-    installMemoryAuthority();
-    const prompt = memory.buildMemoryLines("auto memory", getProjectMemoryPath()).join("\n");
-
-    expect(prompt).toContain(
-      `Save user-level memories (preferences, corrections, cross-project facts) in global memory at \`${getGlobalMemoryPath()}\``,
-    );
-    expect(prompt).toContain(
-      `Save project-level memories (repo-specific decisions, workflow context, project references not derivable from code) in project memory at \`${getProjectMemoryPath()}\``,
-    );
-    expect(prompt).toContain("that same directory's `MEMORY.md` index");
-    expect(prompt).toContain("appropriate global or project memory directory");
+    expect(prompt).not.toBeNull();
+    expect(prompt?.instructions).toContain("# auto memory");
+    expect(prompt?.instructions).not.toContain(getGlobalMemoryPath());
+    expect(prompt?.directories).toContain("Global memory");
+    expect(prompt?.directories).toContain("Project memory");
+    expect(prompt?.directories).toContain("Session memory");
+    expect(prompt?.directories).toContain(getProjectMemoryPath());
+    expect(prompt?.directories).toContain(getGlobalMemoryPath());
+    expect(existsSync(getGlobalMemoryPath())).toBe(true);
+    expect(existsSync(getProjectMemoryPath())).toBe(true);
   });
 
   it("loads both global and project durable memory entrypoints", async () => {

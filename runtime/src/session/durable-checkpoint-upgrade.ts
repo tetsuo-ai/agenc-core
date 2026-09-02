@@ -6,6 +6,7 @@ import type {
   RolloutItem,
   ToolResultIntegrityResponseItem,
 } from "./rollout-item.js";
+import { withoutResponseIds } from "./rollout-item.js";
 import {
   DURABLE_CHECKPOINT_READ_VERSION,
   DURABLE_CHECKPOINT_V2,
@@ -454,13 +455,18 @@ function updateUpgradeHistory(params: {
     item.payload.replacementHistory !== undefined
   ) {
     return updatedHistory(
-      Array.from(item.payload.replacementHistory),
+      Array.from(withoutResponseIds(item.payload.replacementHistory)),
       params.historyDerivationWork,
     );
   }
   if (item.type === "compaction_committed") {
+    // Checkpoints after a commit were hashed over the live projection, which
+    // never carries a response id; a persisted id here made every one of them
+    // fail ("checkpoint prefix digest does not match persisted history").
     return updatedHistory(
-      item.payload.replacement_history.map((message) => ({ ...message })),
+      withoutResponseIds(item.payload.replacement_history).map((message) => ({
+        ...message,
+      })),
       params.historyDerivationWork,
     );
   }

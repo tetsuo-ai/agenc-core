@@ -178,24 +178,26 @@ describe("post-sample context-collapse recovery contract", () => {
 
     expect(recovered).toEqual({ kind: "applied", reason: "context_collapse" });
     expect(findToolTurnValidationIssue(state.messagesForQuery)).toBeNull();
+    // The kept suffix reaches back to the user's last message ("read file"),
+    // so the whole tool exchange stays verbatim and paired in the live
+    // context; the summary covers only the older turn and pins no pairs.
+    const keptCall = state.messagesForQuery.find(
+      (message) =>
+        message.role === "assistant" &&
+        message.toolCalls?.some((call) => call.id === "tc-collapse"),
+    );
+    const keptResult = state.messagesForQuery.find(
+      (message) => message.role === "tool" && message.toolCallId === "tc-collapse",
+    );
+    expect(keptCall).toBeDefined();
+    expect(keptResult).toBeDefined();
+    expect(keptResult?.runtimeOnly?.toolResultIntegrity).toEqual(toolIntegrity);
     const commit = harness.store.readAll().findLast(
       (item) => item.type === "compaction_committed",
     );
     expect(commit).toMatchObject({
       type: "compaction_committed",
-      payload: {
-        summary: {
-          body: {
-            tool_pairs: [{
-              tool_call_id: "tc-collapse",
-              result_sha256: toolIntegrity.original.digest.replace(
-                /^sha256:/u,
-                "",
-              ),
-            }],
-          },
-        },
-      },
+      payload: { summary: { body: { tool_pairs: [] } } },
     });
     harness.close();
   });

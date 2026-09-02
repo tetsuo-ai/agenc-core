@@ -101,6 +101,7 @@ import type { AgenCConfig } from "../config/schema.js";
 import {
   assembleSystemPrompt,
   buildAssembleSystemPromptOpts,
+  resolveMemoryPromptInputs,
   type McpServerInstructionsInput,
 } from "../prompts/system-prompt.js";
 import { getOutputStyleConfig } from "../constants/outputStyles.js";
@@ -990,6 +991,7 @@ export interface RunSingleTurnOpts {
   readonly loadTurnInputsFn?: () => Promise<PreparedTurnRuntimeInputs>;
   /** Compatibility direct inputs retained for focused unit tests. */
   readonly memoryPromptText?: string;
+  readonly memoryInstructionsText?: string;
   readonly allMemories?: readonly [];
   /** Tool registry + MCP inputs that shape the system prompt. */
   readonly enabledToolNames?: ReadonlySet<string>;
@@ -1031,6 +1033,7 @@ export async function* runSingleTurn(
     ? await opts.loadTurnInputsFn()
     : {
         memoryPromptText: opts.memoryPromptText ?? "",
+        memoryInstructionsText: opts.memoryInstructionsText ?? "",
         allMemories: opts.allMemories ?? [],
         enabledToolNames: opts.enabledToolNames ?? new Set<string>(),
         mcpServers: opts.mcpServers ?? [],
@@ -1060,6 +1063,7 @@ export async function* runSingleTurn(
       ctx: opts.ctx,
       // Session.runTurn is the sole owner of workspace instruction loading.
       projectInstructions: "",
+      memoryInstructions: turnInputs.memoryInstructionsText ?? "",
       memoryPrompt: turnInputs.memoryPromptText,
       mcpServers: turnInputs.mcpServers,
       enabledToolNames: turnInputs.enabledToolNames,
@@ -1091,7 +1095,10 @@ export async function* runSingleTurn(
 }
 
 export interface PreparedTurnRuntimeInputs {
+  /** Memory directory block for the dynamic system-prompt tail. */
   readonly memoryPromptText: string;
+  /** Path-free memory instructions for the cacheable system-prompt head. */
+  readonly memoryInstructionsText?: string;
   readonly allMemories: readonly [];
   readonly enabledToolNames: ReadonlySet<string>;
   readonly mcpServers: readonly McpServerInstructionsInput[];
@@ -1106,9 +1113,11 @@ export async function prepareTurnRuntimeInputs(params: {
   readonly registry: { readonly tools: readonly { readonly name: string }[] };
 }): Promise<PreparedTurnRuntimeInputs> {
   const currentConfig = params.configStore.current();
+  const memory = await resolveMemoryPromptInputs();
 
   return {
-    memoryPromptText: "",
+    memoryPromptText: memory.memoryPrompt,
+    memoryInstructionsText: memory.memoryInstructions,
     allMemories: [],
     enabledToolNames: new Set(params.registry.tools.map((tool) => tool.name)),
     mcpServers: await loadSessionMcpServerInstructions(

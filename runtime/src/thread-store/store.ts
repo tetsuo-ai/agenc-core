@@ -43,6 +43,8 @@ import {
   getProjectDir,
   listResumableSessions,
   readAndValidateSchemaVersion,
+  SessionLock,
+  SessionLockedError,
 } from "../session/session-store.js";
 import {
   LOGS_DATABASE_FILENAME,
@@ -54,6 +56,7 @@ import {
 import { StateThreadRepository } from "../state/threads.js";
 import { backfillRolloutFile } from "../state/backfill.js";
 import { isRecord } from "../utils/record.js";
+import { timed } from "../utils/slow-store-op.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Params + types — mirrored from agenc runtime `thread-store/src/types.rs`.
@@ -566,7 +569,11 @@ export class FileThreadStore implements ThreadStore {
       ) {
         return;
       }
-      const archivedRolloutPath = this.archiveRolloutFile(existing);
+      // This instance owns the writer it just flushed, so the rollout lease
+      // it still holds is not a foreign live writer.
+      const archivedRolloutPath = this.archiveRolloutFile(existing, {
+        ownedWriter: true,
+      });
       if (archivedRolloutPath === undefined) return;
       registry.set(threadId, {
         ...existing,
@@ -842,28 +849,30 @@ export class FileThreadStore implements ThreadStore {
 
   archiveThread(params: ArchiveThreadParams): void {
     this.assertOpen();
-    this.updateRegistry((registry) => {
-      const existing = registry.get(params.threadId);
-      if (existing === undefined) {
-        throw new ThreadNotFoundError(params.threadId);
-      }
-      if (existing.archivedAt !== undefined) {
-        return; // already archived
-      }
-      const now = new Date().toISOString();
-      this.appendThreadMetadataRollout(existing, {
-        archivedAt: now,
-      });
-      const archivedRolloutPath = this.liveRecorders.has(params.threadId)
-        ? existing.archivedRolloutPath
-        : this.archiveRolloutFile(existing);
-      registry.set(params.threadId, {
-        ...existing,
-        updatedAt: now,
-        archivedAt: now,
-        ...(archivedRolloutPath !== undefined ? { archivedRolloutPath } : {}),
-      });
-    });
+    timed("thread_archive", () =>
+      this.updateRegistry((registry) => {
+        const existing = registry.get(params.threadId);
+        if (existing === undefined) {
+          throw new ThreadNotFoundError(params.threadId);
+        }
+        if (existing.archivedAt !== undefined) {
+          return; // already archived
+        }
+        const now = new Date().toISOString();
+        this.appendThreadMetadataRollout(existing, {
+          archivedAt: now,
+        });
+        const archivedRolloutPath = this.liveRecorders.has(params.threadId)
+          ? existing.archivedRolloutPath
+          : this.archiveRolloutFile(existing);
+        registry.set(params.threadId, {
+          ...existing,
+          updatedAt: now,
+          archivedAt: now,
+          ...(archivedRolloutPath !== undefined ? { archivedRolloutPath } : {}),
+        });
+      }),
+    );
   }
 
   unarchiveThread(params: ArchiveThreadParams): StoredThread {
@@ -1096,15 +1105,42 @@ export class FileThreadStore implements ThreadStore {
     }
     const rolloutPath = this.readableRolloutPath(entry);
     if (rolloutPath === undefined || !existsSync(rolloutPath)) return;
-    appendFileSync(
-      rolloutPath,
-      serializeRolloutItem({
-        type: "session_meta",
-        payload,
-      } as RolloutItem),
-      "utf8",
-    );
-    this.indexRolloutFile(rolloutPath);
+    // Another store instance may own a live writer for this rollout (the
+    // daemon archives sessions that bootstrap-services' store created). A
+    // foreign appendFileSync would bypass that writer's size and offset
+    // bookkeeping, so under a held lease the registry alone records the
+    // change and the file is left to its owner.
+    this.withRolloutLease(rolloutPath, () => {
+      appendFileSync(
+        rolloutPath,
+        serializeRolloutItem({
+          type: "session_meta",
+          payload,
+        } as RolloutItem),
+        "utf8",
+      );
+      this.indexRolloutFile(rolloutPath);
+    });
+  }
+
+  /**
+   * Run `fn` while holding the rollout's session lease. Returns undefined
+   * without running it when a live process (this one included) already holds
+   * the lease: the same check retention uses before deleting a session.
+   */
+  private withRolloutLease<T>(rolloutPath: string, fn: () => T): T | undefined {
+    const lease = new SessionLock(`${rolloutPath}.lock`);
+    try {
+      lease.acquire();
+    } catch (error) {
+      if (error instanceof SessionLockedError) return undefined;
+      throw error;
+    }
+    try {
+      return fn();
+    } finally {
+      lease.release();
+    }
   }
 
   private indexReadableRollout(entry: RegistryEntry): void {
@@ -1127,21 +1163,31 @@ export class FileThreadStore implements ThreadStore {
     });
   }
 
-  private archiveRolloutFile(entry: RegistryEntry): string | undefined {
-    if (entry.rolloutPath === undefined || !existsSync(entry.rolloutPath)) {
+  private archiveRolloutFile(
+    entry: RegistryEntry,
+    options: { readonly ownedWriter?: boolean } = {},
+  ): string | undefined {
+    const rolloutPath = entry.rolloutPath;
+    if (rolloutPath === undefined || !existsSync(rolloutPath)) {
       return entry.archivedRolloutPath;
     }
-    const targetDir = join(this.archivedSessionsDir, entry.threadId);
-    mkdirSync(targetDir, { recursive: true });
-    let targetPath = join(targetDir, basename(entry.rolloutPath));
-    if (existsSync(targetPath) && targetPath !== entry.rolloutPath) {
-      targetPath = join(
-        targetDir,
-        `${Date.now()}-${basename(entry.rolloutPath)}`,
-      );
-    }
-    this.relocateRolloutFile(entry.rolloutPath, targetPath);
-    return targetPath;
+    const relocate = (): string => {
+      const targetDir = join(this.archivedSessionsDir, entry.threadId);
+      mkdirSync(targetDir, { recursive: true });
+      let targetPath = join(targetDir, basename(rolloutPath));
+      if (existsSync(targetPath) && targetPath !== rolloutPath) {
+        targetPath = join(targetDir, `${Date.now()}-${basename(rolloutPath)}`);
+      }
+      this.relocateRolloutFile(rolloutPath, targetPath);
+      return targetPath;
+    };
+    if (options.ownedWriter === true) return relocate();
+    // A held lease means a live writer elsewhere still owns this file; a
+    // rename now would split its journal across two paths (the writer keeps
+    // appending by path) and leave the daemon snapshot pointing at the old
+    // one. Record the archive in the registry only; the owner's
+    // shutdownThread completes the move once it releases the lease.
+    return this.withRolloutLease(rolloutPath, relocate) ?? entry.archivedRolloutPath;
   }
 
   private unarchiveRolloutFile(entry: RegistryEntry): string | undefined {

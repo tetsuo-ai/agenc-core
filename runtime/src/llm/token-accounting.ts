@@ -71,6 +71,42 @@ const TOKEN_ACCOUNTING_UTF8_WORST_CASE_BYTES_PER_TOKEN = 1;
 const TOKEN_ACCOUNTING_CONSERVATIVE_BYTES_PER_TOKEN = 2;
 
 /**
+ * Bytes per token for the fallback, by provider family. BPE tokenizers of
+ * these families sit near 3.8 to 4.3 bytes per token on the prose, code and
+ * JSON a coding session sends (grok-4.6 measured at 3.83 on a 600 KB
+ * prompt); 3.5 keeps the estimate above the real count with the 10 %
+ * margin on top, instead of the 2.3x over-count that made compaction fire
+ * at a third of the window and admission deny at 42 % of it. Families
+ * without a measurement keep the floor of 2.
+ */
+const TOKEN_ACCOUNTING_FALLBACK_BYTES_PER_TOKEN_BY_PROVIDER: Readonly<
+  Record<string, number>
+> = {
+  grok: 3.5,
+  xai: 3.5,
+  "x-ai": 3.5,
+  openai: 3.5,
+  gemini: 3.5,
+  groq: 3.5,
+  github: 3.5,
+  deepseek: 3.2,
+  mistral: 3.2,
+  anthropic: 2.8,
+  openrouter: 2.8,
+  minimax: 2.8,
+};
+
+export function conservativeBytesPerTokenForProvider(
+  provider: string | undefined,
+): number {
+  const key = provider?.trim().toLowerCase() ?? "";
+  return (
+    TOKEN_ACCOUNTING_FALLBACK_BYTES_PER_TOKEN_BY_PROVIDER[key] ??
+    TOKEN_ACCOUNTING_CONSERVATIVE_BYTES_PER_TOKEN
+  );
+}
+
+/**
  * Ceiling charged for one inline (base64) image or document.
  *
  * Base64 payloads are not prose, and the bytes-per-token divisor above does
@@ -987,8 +1023,10 @@ function conservativeFallbackResult(
   );
   const proseBytes = Math.max(0, serializedBytes - inspection.inlineMediaBytes);
   const promptTokens = safeTokenSum(
-    Math.ceil(proseBytes / TOKEN_ACCOUNTING_CONSERVATIVE_BYTES_PER_TOKEN),
-    inspection.inlineMediaCount * TOKEN_ACCOUNTING_INLINE_MEDIA_TOKENS,
+    Math.ceil(
+      proseBytes / conservativeBytesPerTokenForProvider(request.provider),
+    ),
+    inspection.inlineMediaTokens,
   );
   const frameTokens =
     TOKEN_ACCOUNTING_REQUEST_FRAME_TOKENS +
@@ -1096,6 +1134,24 @@ function resultFromNativeCount(
   };
 }
 
+/**
+ * Tokens charged for one inline payload of {@link bytes}.
+ *
+ * {@link TOKEN_ACCOUNTING_INLINE_MEDIA_TOKENS} is a CEILING, not a price list:
+ * it exists to stop a multi-megabyte transport encoding from reserving the
+ * whole window. Charging it unconditionally invents tokens for payloads
+ * smaller than the ceiling — an 8-byte base64 stub billed 3,000 tokens, which
+ * pushed a trivial MCP image result past a 2,000-token output cap and made
+ * the truncation layer shred content that fits. A payload can never cost more
+ * than the same bytes cost as prose, so take the smaller of the two bounds.
+ */
+function inlineMediaTokenCharge(bytes: number, bytesPerToken: number): number {
+  return Math.min(
+    TOKEN_ACCOUNTING_INLINE_MEDIA_TOKENS,
+    Math.ceil(bytes / bytesPerToken),
+  );
+}
+
 function inspectRequestContent(
   messages: readonly LLMMessage[],
   tools: readonly LLMTool[] | undefined,
@@ -1110,7 +1166,8 @@ function inspectRequestContent(
   readonly hasDocuments: boolean;
   /** Serialized bytes of inline base64 payloads, which are not prose. */
   readonly inlineMediaBytes: number;
-  readonly inlineMediaCount: number;
+  /** Per-payload inline media charge, each bounded by the image ceiling. */
+  readonly inlineMediaTokens: number;
 } {
   const contentTypes = new Set<TokenAccountingContentType>();
   const uncertainComponents = new Set<string>();
@@ -1118,7 +1175,15 @@ function inspectRequestContent(
   let hasImages = false;
   let hasDocuments = false;
   let inlineMediaBytes = 0;
-  let inlineMediaCount = 0;
+  let inlineMediaTokens = 0;
+  const inlineBytesPerToken = conservativeBytesPerTokenForProvider(provider);
+  const addInlineMedia = (bytes: number): void => {
+    inlineMediaBytes += bytes;
+    inlineMediaTokens = safeTokenSum(
+      inlineMediaTokens,
+      inlineMediaTokenCharge(bytes, inlineBytesPerToken),
+    );
+  };
 
   if (
     provider === "gemini" &&
@@ -1160,8 +1225,7 @@ function inspectRequestContent(
         const url = part.image_url?.url?.trim() ?? "";
         if (isInlineDataUrl(url)) {
           contentTypes.add("image_inline");
-          inlineMediaBytes += utf8ByteLength(url);
-          inlineMediaCount += 1;
+          addInlineMedia(utf8ByteLength(url));
         } else {
           contentTypes.add("image_remote");
           uncertainComponents.add(
@@ -1178,8 +1242,7 @@ function inspectRequestContent(
           : {};
         if (source.type === "base64" && typeof source.data === "string") {
           contentTypes.add("image_inline");
-          inlineMediaBytes += utf8ByteLength(source.data);
-          inlineMediaCount += 1;
+          addInlineMedia(utf8ByteLength(source.data));
         } else {
           contentTypes.add("image_remote");
           uncertainComponents.add(
@@ -1193,8 +1256,7 @@ function inspectRequestContent(
         mediaCount += 1;
         if (part.source?.type === "base64" && part.source.data.length > 0) {
           contentTypes.add("document_inline");
-          inlineMediaBytes += utf8ByteLength(part.source.data);
-          inlineMediaCount += 1;
+          addInlineMedia(utf8ByteLength(part.source.data));
         } else if (typeof part.fallbackText === "string") {
           contentTypes.add("text");
         } else {
@@ -1219,7 +1281,7 @@ function inspectRequestContent(
     hasImages,
     hasDocuments,
     inlineMediaBytes,
-    inlineMediaCount,
+    inlineMediaTokens,
   };
 }
 

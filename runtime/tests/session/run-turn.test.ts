@@ -8,7 +8,7 @@
  * `process_killed` abort for every clean turn.
  */
 
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   chmodSync,
   mkdirSync,
@@ -176,7 +176,20 @@ function createTestConfigStore(base?: AgenCConfig): ConfigStore {
   });
 }
 
+// Every session in this file shares the conversation id "conv-test", so they
+// share one memory-extraction lane and its eligible-turn counter. Extraction
+// therefore fires in whichever test happens to be running when the counter
+// reaches the cadence, launching a background child that samples on that
+// test's own provider. These tests are about turn mechanics, not memory, and
+// several of them count model calls or post-sampling launches exactly, so the
+// extraction fork is switched off for the file rather than being absorbed
+// into each expectation.
+beforeEach(() => {
+  vi.stubEnv("AGENC_DISABLE_EXTRACT_MEMORIES", "1");
+});
+
 afterEach(() => {
+  vi.unstubAllEnvs();
   sessionMemoryPostSamplingMockState.calls.length = 0;
   sessionMemoryPostSamplingMockState.error = null;
   clearSessionReadState("conv-test", tmpdir());
@@ -5301,7 +5314,6 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
 
   test("LP-07 clears failed streamed tool state before retrying", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0.5);
-
     let attempts = 0;
     let staleInvocations = 0;
     let staleSawAbort = false;
