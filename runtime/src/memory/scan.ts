@@ -345,7 +345,7 @@ async function bindMemoryRoot(
     ) {
       throw new MemoryScanFailure("unavailable", "memory root changed while binding");
     }
-    const finalPath = await finalDescriptorPath(handle, signal);
+    const finalPath = await finalDescriptorPath(handle, canonicalPath, signal);
     if (finalPath !== canonicalPath) {
       throw new MemoryScanFailure("unavailable", "memory root final path changed");
     }
@@ -461,12 +461,17 @@ async function assertBoundDirectoryUnchanged(
     : root.binding.requestedPath;
   const current = await lstat(currentPath, { bigint: true });
   throwIfMemoryRecallAborted(signal);
-  const finalPath = await finalDescriptorPath(handle, signal);
+  const finalPath = await finalDescriptorPath(
+    handle,
+    canonicalRelativePath(root, pending.relativePath),
+    signal,
+  );
   if (
     !opened.isDirectory() ||
     current.isSymbolicLink() ||
     !sameStats(opened, pending.identity) ||
     !sameStats(opened, current) ||
+    finalPath === null ||
     !isBoundDirectoryPath(root.binding.canonicalPath, finalPath)
   ) {
     throw new MemoryScanFailure(
@@ -523,8 +528,15 @@ async function openVerifiedDirectory(
         "admitted memory directory identity changed before enumeration",
       );
     }
-    const finalPath = await finalDescriptorPath(handle, signal);
-    if (!isBoundDirectoryPath(root.binding.canonicalPath, finalPath)) {
+    const finalPath = await finalDescriptorPath(
+      handle,
+      canonicalRelativePath(root, pending.relativePath),
+      signal,
+    );
+    if (
+      finalPath === null ||
+      !isBoundDirectoryPath(root.binding.canonicalPath, finalPath)
+    ) {
       throw new MemoryScanFailure(
         "unavailable",
         "admitted memory directory escaped its canonical root",
@@ -533,7 +545,7 @@ async function openVerifiedDirectory(
     let directory;
     try {
       directory = await (hooks.openDirectory ?? opendir)(
-        descriptorHandlePath(handle),
+        descriptorHandlePath(handle, descriptorPath),
       );
     } catch {
       throwIfMemoryRecallAborted(signal);
@@ -578,7 +590,11 @@ async function openBoundRootDirectory(
       "bound memory root identity changed before enumeration",
     );
   }
-  const finalPath = await finalDescriptorPath(root.handle, signal);
+  const finalPath = await finalDescriptorPath(
+    root.handle,
+    root.binding.canonicalPath,
+    signal,
+  );
   if (finalPath !== root.binding.canonicalPath) {
     throw new MemoryScanFailure(
       "unavailable",
@@ -588,7 +604,7 @@ async function openBoundRootDirectory(
   let directory;
   try {
     directory = await (hooks.openDirectory ?? opendir)(
-      descriptorHandlePath(root.handle),
+      descriptorHandlePath(root.handle, root.binding.requestedPath),
     );
   } catch {
     throwIfMemoryRecallAborted(signal);
@@ -786,8 +802,15 @@ async function openVerifiedCandidate(
       throwIfMemoryRecallAborted(signal);
       return null;
     }
-    const finalPath = await finalDescriptorPath(handle, signal);
-    if (!isContained(root.binding.canonicalPath, finalPath)) {
+    const finalPath = await finalDescriptorPath(
+      handle,
+      canonicalRelativePath(root, relativePath),
+      signal,
+    );
+    if (
+      finalPath === null ||
+      !isContained(root.binding.canonicalPath, finalPath)
+    ) {
       await handle.close();
       throwIfMemoryRecallAborted(signal);
       return null;
@@ -814,7 +837,7 @@ async function verifyParentChain(
   signal: AbortSignal,
 ): Promise<boolean> {
   const segments = relativePath.split(sep);
-  let cursor = descriptorHandlePath(root.handle);
+  let cursor = descriptorHandlePath(root.handle, root.binding.requestedPath);
   const parentSegments = segments.slice(0, -1);
   for (const segment of parentSegments) {
     throwIfMemoryRecallAborted(signal);
@@ -855,19 +878,41 @@ async function assertCandidateUnchanged(
   }
 }
 
+/**
+ * Resolve the path an open descriptor currently refers to, or `null` when it
+ * can no longer be proven to sit at `expectedPath`.
+ *
+ * Linux exposes the live target through `/proc/self/fd/N`. darwin and freebsd
+ * do not: `realpath("/dev/fd/N")` yields `/dev/fd/<basename>` instead of the
+ * target, so a string comparison against the canonical path can never match
+ * and every recall root used to fail closed. Those platforms instead prove the
+ * descriptor identity (dev/ino/mode/size/mtime/ctime) against `expectedPath`,
+ * which is the property the alias comparison was buying.
+ */
 async function finalDescriptorPath(
   handle: FileHandle,
+  expectedPath: string,
   signal: AbortSignal,
-): Promise<string> {
+): Promise<string | null> {
   if (process.platform === "linux") {
     const path = await realpath(`/proc/self/fd/${handle.fd}`);
     throwIfMemoryRecallAborted(signal);
     return path;
   }
   if (process.platform === "darwin" || process.platform === "freebsd") {
-    const path = await realpath(`/dev/fd/${handle.fd}`);
+    const opened = await handle.stat({ bigint: true });
     throwIfMemoryRecallAborted(signal);
-    return path;
+    let expected: BigIntStats;
+    try {
+      expected = await lstat(expectedPath, { bigint: true });
+    } catch {
+      throwIfMemoryRecallAborted(signal);
+      return null;
+    }
+    throwIfMemoryRecallAborted(signal);
+    return !expected.isSymbolicLink() && sameStats(opened, expected)
+      ? expectedPath
+      : null;
   }
   throw new MemoryScanFailure(
     "unsupported",
@@ -994,10 +1039,18 @@ function portablePathBytes(root: BoundMemoryRoot, relativePath: string): Buffer 
   );
 }
 
-function descriptorHandlePath(handle: FileHandle): string {
+/**
+ * Path used to enumerate and open entries below an already-verified
+ * descriptor. Linux traverses through `/proc/self/fd/N`. On darwin and
+ * freebsd `/dev/fd/N` is not traversable (`opendir` fails with ENOTDIR and
+ * children resolve to ENOENT), so the real requested path is used while the
+ * retained descriptor, `O_NOFOLLOW`, `nlink === 1`, and the before/after
+ * identity checks continue to guard against exchanges.
+ */
+function descriptorHandlePath(handle: FileHandle, requestedPath: string): string {
   if (process.platform === "linux") return `/proc/self/fd/${handle.fd}`;
   if (process.platform === "darwin" || process.platform === "freebsd") {
-    return `/dev/fd/${handle.fd}`;
+    return requestedPath;
   }
   throw new MemoryScanFailure(
     "unsupported",
@@ -1009,10 +1062,22 @@ function descriptorRelativePath(
   root: BoundMemoryRoot,
   relativePath: string,
 ): string {
-  const descriptorPath = descriptorHandlePath(root.handle);
+  const descriptorPath = descriptorHandlePath(
+    root.handle,
+    root.binding.requestedPath,
+  );
   return relativePath.length === 0
     ? descriptorPath
     : join(descriptorPath, relativePath);
+}
+
+function canonicalRelativePath(
+  root: BoundMemoryRoot,
+  relativePath: string,
+): string {
+  return relativePath.length === 0
+    ? root.binding.canonicalPath
+    : join(root.binding.canonicalPath, relativePath);
 }
 
 function isBoundDirectoryPath(root: string, candidate: string): boolean {

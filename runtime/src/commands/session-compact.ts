@@ -52,6 +52,7 @@ import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
 import {
   assembleSystemPrompt,
   buildAssembleSystemPromptOpts,
+  resolveMemoryPromptInputs,
   type McpServerInstructionsInput,
 } from "../prompts/system-prompt.js";
 import { loadSessionMcpServerInstructions } from "../prompts/mcp-server-instructions.js";
@@ -1033,16 +1034,17 @@ async function buildSyntheticSystemMessage(opts: {
         ?.autonomousMode === true;
     const provider = opts.ctx.modelProviderId;
     const outputStyle = await getOutputStyleConfig();
+    // Mirror `prepareTurnRuntimeInputs`: the memory instructions and the
+    // directory block are part of every turn's prompt when auto memory is
+    // enabled, so /context must count them too.
+    const memory = await resolveMemoryPromptInputs();
     const assembled = await assembleSystemPrompt(
       buildAssembleSystemPromptOpts({
         session: opts.session,
         ctx: opts.ctx,
         projectInstructions: opts.projectInstructions,
-        // /context isn't a real turn boundary, so it has no `memdir`
-        // tail to surface. Production passes
-        // `turnInputs.memoryPromptText`, which is currently always ""
-        // out of `prepareTurnRuntimeInputs`. Match that explicitly.
-        memoryPrompt: "",
+        memoryInstructions: memory.memoryInstructions,
+        memoryPrompt: memory.memoryPrompt,
         mcpServers: opts.mcpServers,
         enabledToolNames: opts.enabledToolNames,
         provider,

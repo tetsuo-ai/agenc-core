@@ -52,6 +52,22 @@ function extractionContext(opts: {
   };
 }
 
+function sessionWithBus(
+  warnings: Array<{ cause: string; message: string }>,
+): Session {
+  let subId = 0;
+  return {
+    conversationId: `bus-${Math.random().toString(36).slice(2)}`,
+    services: { runtimeOptions: defaultRuntimeOptions },
+    nextInternalSubId: () => String(subId++),
+    emit: (event: { msg: { type: string; payload: unknown } }) => {
+      if (event.msg.type === "warning") {
+        warnings.push(event.msg.payload as { cause: string; message: string });
+      }
+    },
+  } as unknown as Session;
+}
+
 async function eventually(assertion: () => void): Promise<void> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -181,6 +197,72 @@ describe("auto memory child tool policy", () => {
     });
   });
 
+  // Live (session 2763eb6e, 2026-09-02): the child opened the shared root the
+  // main agent uses, was denied, and the run was recorded as a failed
+  // extraction with its messages re-queued.
+  describe("the shared memory root", () => {
+    const policy = () =>
+      createAutoMemoryToolPolicy("/tmp/project-memory/", ["/tmp/global-memory/"]);
+
+    it("is readable, so the child can check what is already recorded", () => {
+      expect(
+        policy()({ name: "FileRead" }, { file_path: "/tmp/global-memory/MEMORY.md" }),
+      ).toMatchObject({
+        behavior: "allow",
+        updatedInput: {
+          file_path: "/tmp/global-memory/MEMORY.md",
+          __agencSessionAllowedRoots: ["/tmp/project-memory/", "/tmp/global-memory/"],
+        },
+      });
+      expect(
+        policy()({ name: "Grep" }, { pattern: "style", path: "/tmp/global-memory/" }),
+      ).toMatchObject({ behavior: "allow" });
+      expect(
+        policy()({ name: "Glob" }, { pattern: "*.md", path: "/tmp/global-memory/" }),
+      ).toMatchObject({ behavior: "allow" });
+    });
+
+    it("is not writable, and says so", () => {
+      // The child summarizes untrusted conversation content, and this root is
+      // shared by every project on the machine.
+      const denial = policy()(
+        { name: "Write" },
+        { file_path: "/tmp/global-memory/user.md", content: "x" },
+      );
+      expect(denial).toMatchObject({
+        behavior: "deny",
+        metadata: { reason: "write_outside_memory" },
+      });
+      expect((denial as { message: string }).message).toContain(
+        "may only write to this session's project memory directory",
+      );
+    });
+
+    it("still writes to the project root and still denies everything else", () => {
+      expect(
+        policy()({ name: "Write" }, { file_path: "notes.md", content: "hello" }),
+      ).toMatchObject({
+        behavior: "allow",
+        updatedInput: {
+          file_path: "/tmp/project-memory/notes.md",
+          __agencSessionAllowedRoots: ["/tmp/project-memory/"],
+        },
+      });
+      expect(
+        policy()({ name: "FileRead" }, { file_path: "/tmp/elsewhere/secrets.md" }),
+      ).toMatchObject({ behavior: "deny" });
+    });
+
+    it("without a shared root the policy is unchanged", () => {
+      expect(
+        createAutoMemoryToolPolicy("/tmp/project-memory/")(
+          { name: "FileRead" },
+          { file_path: "/tmp/global-memory/MEMORY.md" },
+        ),
+      ).toMatchObject({ behavior: "deny" });
+    });
+  });
+
   it("denies reads outside the memory directory", async () => {
     const policy = createAutoMemoryToolPolicy("/tmp/memory/");
     expect(
@@ -232,6 +314,44 @@ describe("auto memory child tool policy", () => {
     });
   });
 
+  it("denies memory writes that carry secrets and allows clean ones", async () => {
+    const memoryDir = "/memory/";
+    const policy = createAutoMemoryToolPolicy(memoryDir);
+    const token = `ghp_${"A".repeat(36)}`;
+
+    expect(
+      policy({ name: "Write" }, { file_path: "notes.md", content: `token=${token}` }),
+    ).toMatchObject({
+      behavior: "deny",
+      message: expect.stringContaining("GitHub PAT"),
+      metadata: { reason: "secret_in_memory_write" },
+    });
+    expect(
+      policy(
+        { name: "Edit" },
+        { file_path: "notes.md", old_string: "x", new_string: `key ${token}` },
+      ),
+    ).toMatchObject({ behavior: "deny", metadata: { reason: "secret_in_memory_write" } });
+    expect(
+      policy(
+        { name: "MultiEdit" },
+        {
+          file_path: "notes.md",
+          edits: [
+            { old_string: "a", new_string: "safe" },
+            { old_string: "b", new_string: `leak ${token}` },
+          ],
+        },
+      ),
+    ).toMatchObject({ behavior: "deny", metadata: { reason: "secret_in_memory_write" } });
+    expect(
+      policy(
+        { name: "Write" },
+        { file_path: "notes.md", content: "user prefers terse replies" },
+      ),
+    ).toMatchObject({ behavior: "allow" });
+  });
+
   it("allows Glob patterns rooted inside memory subdirectories", async () => {
     const policy = createAutoMemoryToolPolicy("/tmp/memory/");
     expect(
@@ -270,6 +390,7 @@ describe("extract memories service", () => {
     );
     initExtractMemories({
       env: {},
+      minEligibleTurns: 1,
       resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
       runChild,
     });
@@ -324,6 +445,7 @@ describe("extract memories service", () => {
     const runChild = vi.fn(async () => ({ outcome: "completed" as const }));
     initExtractMemories({
       env: {},
+      minEligibleTurns: 1,
       resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
       runChild,
     });
@@ -347,6 +469,7 @@ describe("extract memories service", () => {
     const runChild = vi.fn(async () => ({ outcome: "completed" as const }));
     initExtractMemories({
       env: {},
+      minEligibleTurns: 1,
       resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
       runChild,
     });
@@ -390,6 +513,7 @@ describe("extract memories service", () => {
     const runChild = vi.fn(async () => ({ outcome: "completed" as const }));
     initExtractMemories({
       env: {},
+      minEligibleTurns: 1,
       resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
       runChild,
     });
@@ -427,7 +551,7 @@ describe("extract memories service", () => {
     expect(runChild).toHaveBeenCalledOnce();
   });
 
-  it("does not advance the cursor when child policy denied a tool", async () => {
+  it("does not advance the cursor when child policy denied a memory write", async () => {
     const runChild = vi
       .fn(
         async (_request: ExtractMemoriesChildRequest) =>
@@ -436,8 +560,8 @@ describe("extract memories service", () => {
       .mockImplementationOnce(async (request) => {
         request.onProgress({
           kind: "tool_result",
-          callId: "read-1",
-          toolName: "FileRead",
+          callId: "write-1",
+          toolName: "Write",
           result: "{}",
           isError: true,
           metadata: { childPolicyDenied: true },
@@ -447,6 +571,7 @@ describe("extract memories service", () => {
       .mockResolvedValue({ outcome: "completed" });
     initExtractMemories({
       env: {},
+      minEligibleTurns: 1,
       resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
       runChild,
     });
@@ -460,6 +585,63 @@ describe("extract memories service", () => {
 
     expect(runChild).toHaveBeenCalledTimes(2);
     expect(runChild.mock.calls[1]![0].prompt).toContain("~2 model-visible");
+  });
+
+  it("completes and advances the cursor when only reads outside the memory directory were denied", async () => {
+    // Live shape: the child probed two sibling memory directories the prompt
+    // never named (both denied), then read the right one and finished with
+    // "No new memory". That was recorded as a failed extraction and the
+    // messages were re-queued for the next run.
+    const emitted: unknown[] = [];
+    const runChild = vi
+      .fn(
+        async (_request: ExtractMemoriesChildRequest) =>
+          ({ outcome: "completed" as const }),
+      )
+      .mockImplementationOnce(async (request) => {
+        for (const callId of ["read-1", "read-2"]) {
+          request.onProgress({
+            kind: "tool_result",
+            callId,
+            toolName: "FileRead",
+            result: "{}",
+            isError: true,
+            metadata: { childPolicyDenied: true },
+          });
+        }
+        return { outcome: "completed" };
+      })
+      .mockResolvedValue({ outcome: "completed" });
+    initExtractMemories({
+      env: {},
+      minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      runChild,
+    });
+
+    const messages: LLMMessage[] = [
+      { role: "user", content: "remember this" },
+      { role: "assistant", content: "ok" },
+    ];
+    const context = extractionContext({ cwd: root, messages });
+    (context.session as unknown as { emit: (event: unknown) => void }).emit = (
+      event,
+    ) => {
+      emitted.push(event);
+    };
+    (context.session as unknown as { nextInternalSubId: () => string }).nextInternalSubId =
+      () => "sub-test-1";
+    await executeExtractMemories(context);
+    await executeExtractMemories(extractionContext({ cwd: root, messages }));
+
+    // The second run has nothing new to process: the cursor advanced.
+    expect(runChild).toHaveBeenCalledOnce();
+    expect(runChild.mock.calls[0]![0].prompt).toContain(memoryDir);
+    const warnings = emitted
+      .map((event) => (event as { msg?: { payload?: { cause?: string; message?: string } } }).msg?.payload)
+      .filter((payload) => payload !== undefined);
+    expect(warnings.some((payload) => payload?.cause === "memory_extraction_denied_read")).toBe(true);
+    expect(warnings.some((payload) => payload?.cause === "memory_extraction_failed")).toBe(false);
   });
 
   it("does not advance the cursor when a tracked child write fails", async () => {
@@ -484,6 +666,7 @@ describe("extract memories service", () => {
       .mockResolvedValue({ outcome: "completed" as const });
     initExtractMemories({
       env: {},
+      minEligibleTurns: 1,
       resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
       runChild,
     });
@@ -512,6 +695,7 @@ describe("extract memories service", () => {
       .mockResolvedValue({ outcome: "completed" as const });
     initExtractMemories({
       env: {},
+      minEligibleTurns: 1,
       resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
       runChild,
     });
@@ -568,6 +752,7 @@ describe("extract memories service", () => {
     });
     initExtractMemories({
       env: {},
+      minEligibleTurns: 1,
       resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
       runChild,
     });
@@ -607,6 +792,7 @@ describe("extract memories service", () => {
     }));
     initExtractMemories({
       env: {},
+      minEligibleTurns: 1,
       resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
       delegateFn: delegateFn as never,
       ensureAgentControl: ensureAgentControl as never,
@@ -641,12 +827,114 @@ describe("extract memories service", () => {
       runInBackground: false,
       silent: true,
     });
-    expect(delegateCall.toolAllowlist).toBeUndefined();
+    // The catalog is filtered to the file tools before the path policy runs.
+    expect(delegateCall.toolAllowlist).toEqual([
+      "FileRead",
+      "Grep",
+      "Glob",
+      "Edit",
+      "MultiEdit",
+      "Write",
+    ]);
     expect(
       delegateCall.childToolPolicy({ name: "system.bash" }, {}),
     ).toMatchObject({
       behavior: "deny",
       metadata: { reason: "tool_not_allowed" },
+    });
+  });
+
+  it("runs the child on every third eligible turn by default and reports each deferral", async () => {
+    const runChild = vi.fn(async () => ({ outcome: "completed" as const }));
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const session = sessionWithBus(warnings);
+    initExtractMemories({
+      env: {},
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      runChild,
+    });
+
+    const messages: LLMMessage[] = [
+      { role: "user", content: "remember the cadence" },
+      { role: "assistant", content: "ok" },
+    ];
+    for (let turn = 0; turn < 3; turn += 1) {
+      await executeExtractMemories(
+        extractionContext({ cwd: root, messages, session }),
+      );
+    }
+
+    expect(runChild).toHaveBeenCalledOnce();
+    expect(warnings.map((warning) => warning.cause)).toEqual([
+      "memory_extraction_skipped",
+      "memory_extraction_skipped",
+    ]);
+    expect(warnings[0]?.message).toContain("deferred by eligible-turn cadence (1/3");
+    expect(warnings[1]?.message).toContain("deferred by eligible-turn cadence (2/3");
+  });
+
+  it("reports why extraction was skipped or failed instead of swallowing it", async () => {
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const session = sessionWithBus(warnings);
+    const messages: LLMMessage[] = [
+      { role: "user", content: "remember this" },
+      { role: "assistant", content: "ok" },
+    ];
+
+    initExtractMemories({
+      env: {},
+      minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({
+        enabled: false,
+        reason: "disabled_by_settings",
+      }),
+      runChild: vi.fn(async () => ({ outcome: "completed" as const })),
+    });
+    await executeExtractMemories(extractionContext({ cwd: root, messages, session }));
+    expect(warnings.at(-1)).toEqual({
+      cause: "memory_extraction_skipped",
+      message: "memory directory unavailable (disabled_by_settings)",
+    });
+
+    initExtractMemories({
+      env: { AGENC_DISABLE_EXTRACT_MEMORIES: "1" },
+      minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      runChild: vi.fn(async () => ({ outcome: "completed" as const })),
+    });
+    await executeExtractMemories(extractionContext({ cwd: root, messages, session }));
+    expect(warnings.at(-1)).toEqual({
+      cause: "memory_extraction_skipped",
+      message: "AGENC_DISABLE_EXTRACT_MEMORIES is set",
+    });
+
+    initExtractMemories({
+      env: {},
+      minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      runChild: vi.fn(async () => ({
+        outcome: "rejected" as const,
+        error: "no capacity",
+      })),
+    });
+    await executeExtractMemories(extractionContext({ cwd: root, messages, session }));
+    expect(warnings.at(-1)).toEqual({
+      cause: "memory_extraction_failed",
+      message: "child outcome rejected: no capacity; 2 message(s) stay queued for the next run",
+    });
+
+    initExtractMemories({
+      env: {},
+      minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      runChild: vi.fn(async () => {
+        throw new Error("delegate exploded");
+      }),
+    });
+    await executeExtractMemories(extractionContext({ cwd: root, messages, session }));
+    expect(warnings.at(-1)).toEqual({
+      cause: "memory_extraction_failed",
+      message: "delegate exploded",
     });
   });
 
@@ -660,6 +948,7 @@ describe("extract memories service", () => {
     );
     initExtractMemories({
       env: {},
+      minEligibleTurns: 1,
       resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
       runChild,
     });
@@ -700,6 +989,7 @@ describe("extract memories service", () => {
     const runChild = vi.fn(async () => ({ outcome: "completed" as const }));
     initExtractMemories({
       env: {},
+      minEligibleTurns: 1,
       resolveMemoryDirectory: async ({ cwd }) => ({
         enabled: true,
         path: cwd.endsWith("project-b") ? memoryDirB : memoryDir,

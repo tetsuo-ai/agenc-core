@@ -734,16 +734,26 @@ export class AgenCDaemonAgentManager {
           cwd,
           resumeSessionId,
           resumeProof,
+          this.#agencHome,
         );
-        if (
-          retainedAgent?.objective !== undefined &&
-          retainedAgent.objective !== resumeProof.objective
-        ) {
-          throw new AgenCDaemonAgentLifecycleError(
-            "INVALID_ARGUMENT",
-            `canonical session ${resumeSessionId} retained objective disagrees with the rollout`,
-          );
-        }
+        /*
+         * The retained objective is NOT a session identity. A client that
+         * defers the initial turn (every interactive session: the desktop
+         * app, `agenc` itself) passes a label like "Interactive session"
+         * while the rollout's canonical objective is whatever the user
+         * typed first, so the two never agree and strict equality refused
+         * 100% of legitimate interactive resumes — the same failure shape
+         * as the retained `createdAt` equality fixed in #1750. The label is
+         * disposable either way: a successful resume replaces it with
+         * `resumeProof.objective` a few lines below.
+         *
+         * A rollout swapped in from another session is still refused, by
+         * evidence rather than by label: the path must live under
+         * `sessions/<resumeSessionId>/` and its filename must end in
+         * `-<resumeSessionId>.jsonl`, the caller's dev/ino/size/sha256
+         * proof is revalidated here against the real file, and the journal
+         * is validated with `expectedRunId` set to this session id.
+         */
         if (
           retainedAgent?.createdAt !== undefined &&
           !retainedCreatedAtMatchesRollout(
@@ -4208,18 +4218,33 @@ function interactivePermissionModeFromRuntimeSettings(
   return mode;
 }
 
-function assertCanonicalRuntimeSettingsProjection(
+function describeError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message.length > 0 ? error.message : error.name;
+  }
+  return String(error);
+}
+
+export function assertCanonicalRuntimeSettingsProjection(
   cwd: string,
   runId: string,
   proof: ResumeSourceProof,
+  agencHome: string,
 ): void {
   let driver: ReturnType<typeof openStateDatabases>;
   try {
-    driver = openStateDatabases({ cwd });
-  } catch {
+    // The daemon's home is passed explicitly. Resolving it through the
+    // ambient current-session accessor refused with "Ambiguous runtime
+    // session" as soon as more than one session lived in the daemon, so no
+    // session could be resumed after a restart while others were open.
+    driver = openStateDatabases({ cwd, agencHome });
+  } catch (error) {
+    // Say why. A live resume failed for an hour with this sentence and
+    // nothing else; the cause (a locked database, a schema mismatch, a bad
+    // cwd) is what the operator needs to see.
     throw new AgenCDaemonAgentLifecycleError(
       "INVALID_ARGUMENT",
-      `canonical session ${runId} runtime settings projection is unavailable`,
+      `canonical session ${runId} runtime settings projection is unavailable: ${describeError(error)}`,
     );
   }
   let projected: ReturnType<
@@ -4242,7 +4267,7 @@ function assertCanonicalRuntimeSettingsProjection(
   if (primaryError !== undefined) {
     throw new AgenCDaemonAgentLifecycleError(
       "INVALID_ARGUMENT",
-      `canonical session ${runId} runtime settings projection could not be verified`,
+      `canonical session ${runId} runtime settings projection could not be verified: ${describeError(primaryError)}`,
     );
   }
   if (projected === undefined) {

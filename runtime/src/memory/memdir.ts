@@ -1,9 +1,13 @@
 /**
  * Ports the upstream `src/memdir/memdir.ts` prompt flow onto AgenC memory layers.
  *
- * AgenC keeps the upstream typed-memory prompt and truncation behavior, then
- * makes the D-13 layers explicit: global durable memory, project memory and
- * instructions, and session-only in-conversation state.
+ * AgenC keeps the upstream truncation behavior and the D-13 layers (global
+ * durable memory, project memory and instructions, session-only in-conversation
+ * state) but trims the model-facing prompt to what a coding agent needs: when
+ * to save, where, the one-fact-per-file frontmatter format, the `MEMORY.md`
+ * index, and how to recall. The prompt is split in two so the system prompt
+ * assembler can cache it: `instructions` carry no paths and live in the static
+ * head, `directories` carry the two memory paths and live in the dynamic tail.
  */
 import { feature } from 'bun:bundle'
 import { join } from 'path'
@@ -25,13 +29,7 @@ import { hasEmbeddedSearchTools } from '../utils/embeddedTools.js'
 import { formatFileSize } from '../utils/format.js'
 import { getProjectDir } from '../utils/sessionStorage.js'
 import { getSessionCoworkMemoryExtraGuidelines } from '../session/runtime-options.js'
-import {
-  MEMORY_FRONTMATTER_EXAMPLE,
-  TRUSTING_RECALL_SECTION,
-  TYPES_SECTION_INDIVIDUAL,
-  WHAT_NOT_TO_SAVE_SECTION,
-  WHEN_TO_ACCESS_SECTION,
-} from './types.js'
+import { MEMORY_TYPES, WHAT_NOT_TO_SAVE_SECTION } from './types.js'
 
 export const ENTRYPOINT_NAME = 'MEMORY.md'
 export const MAX_ENTRYPOINT_LINES = 200
@@ -114,6 +112,14 @@ export const DIR_EXISTS_GUIDANCE =
 export const DIRS_EXIST_GUIDANCE =
   'These directories already exist — write to them directly with the Write tool (do not run mkdir or check for their existence).'
 
+/** The two halves of the memory prompt; see the module comment. */
+export interface MemoryPromptSections {
+  /** Path-free instructions for the cacheable static head. */
+  readonly instructions: string
+  /** Memory directory paths (and per-session guidance) for the dynamic tail. */
+  readonly directories: string
+}
+
 /**
  * Ensure a memory directory exists. Idempotent — called from loadMemoryPrompt
  * (once per session via systemPromptSection cache) so the model can always
@@ -162,115 +168,74 @@ export function buildMemoryLayerLines(projectMemoryDir = getProjectMemoryPath())
   ]
 }
 
-function buildMemorySaveDestinationLines(
-  projectMemoryDir = getProjectMemoryPath(),
-): string[] {
+/**
+ * Shell or tool form of a memory search, without a concrete directory so the
+ * text stays byte-stable across sessions (the directories are listed in the
+ * dynamic tail).
+ */
+function memorySearchExample(): string {
+  return hasEmbeddedSearchTools() || isReplModeEnabled()
+    ? '`grep -rn "<term>" <memory directory> --include="*.md"`'
+    : `${GREP_TOOL_NAME} with pattern="<term>" path="<memory directory>" glob="*.md"`
+}
+
+/**
+ * Path-free memory instructions for the cacheable static head of the system
+ * prompt: when to save, where, the one-fact-per-file frontmatter format, the
+ * `MEMORY.md` index, and how to recall. Roughly 650 tokens.
+ */
+export function buildMemoryInstructionLines(): string[] {
   return [
-    '## Where to save memories',
+    `# ${AUTO_MEM_DISPLAY_NAME}`,
     '',
-    `- Save user-level memories (preferences, corrections, cross-project facts) in global memory at \`${getGlobalMemoryPath()}\`. Update that directory's \`${ENTRYPOINT_NAME}\` index when you add, rename, or remove a global memory topic file.`,
-    `- Save project-level memories (repo-specific decisions, workflow context, project references not derivable from code) in project memory at \`${projectMemoryDir}\`. Update that directory's \`${ENTRYPOINT_NAME}\` index when you add, rename, or remove a project memory topic file.`,
-    '- Do not save session-only information to durable memory unless it will matter in future conversations.',
+    `You have persistent, file-based memory directories: a global memory directory for user-level facts that apply across projects, and a project memory directory for facts about this repository. Their paths are listed under "Memory directories" in this prompt. Each directory already exists and holds one markdown file per memory plus a \`${ENTRYPOINT_NAME}\` index.`,
     '',
+    '## When to save',
+    '- When the user asks you to remember something, save it immediately. When they ask you to forget something, delete the memory file and its index line.',
+    '- Save facts about the user (role, expertise, how they want to work), feedback (corrections and approaches the user confirmed, with the reason), project context that is not in the code (decisions and why, deadlines, incidents, who owns what), and references (where things live in external systems).',
+    '- Do not save code patterns, architecture, file paths, git history, fix recipes, anything already in AGENC.md, or in-progress task state; these are derivable from the repository. If the user asks you to save an activity log or PR list, ask what was surprising or non-obvious about it and save that.',
+    '',
+    '## How to save',
+    'One fact per file. Write `<topic>.md` in the matching directory with this frontmatter, then the fact:',
+    '```markdown',
+    '---',
+    'name: {{short name}}',
+    'description: {{one line used to judge relevance in later sessions, be specific}}',
+    `type: {{${MEMORY_TYPES.join(', ')}}}`,
+    '---',
+    '',
+    '{{the fact; for feedback and project memories add a **Why:** line and a **How to apply:** line}}',
+    '```',
+    `Then add one line to that directory's \`${ENTRYPOINT_NAME}\` index: \`- [Title](topic.md): one-line hook\`. \`${ENTRYPOINT_NAME}\` is an index, not a memory: one line per file, no frontmatter, under 150 characters per line, and only its first ${MAX_ENTRYPOINT_LINES} lines are loaded. Before writing, check for an existing file on the topic and update or delete it instead of adding a duplicate.`,
+    '',
+    '## How to recall',
+    `- Both \`${ENTRYPOINT_NAME}\` indexes are loaded into your context, and memories that match the current request may be attached to a turn. When an index line looks relevant, read that file. You must check memory when the user asks you to check, recall, or remember something.`,
+    `- To search memory: ${memorySearchExample()}.`,
+    '- A memory is a claim about the past. Before recommending a file, function, or flag it names, verify it still exists; trust what you observe now and fix or delete the stale memory.',
+    '- If the user says to ignore memory, proceed as if the indexes were empty and do not mention memory content.',
   ]
 }
 
 /**
- * Build the typed-memory behavioral instructions (without MEMORY.md content).
- * Constrains memories to a closed four-type taxonomy (user / feedback / project /
- * reference) — content that is derivable from the current project state (code
- * patterns, architecture, git history) is explicitly excluded.
- *
- * Individual-only variant: no `## Memory scope` section, no <scope> tags
- * in type blocks, and team/global/project qualifiers stripped from examples.
- *
- * Used by loadMemoryPrompt for system memory instructions.
+ * The memory directory block for the dynamic tail: the two durable paths,
+ * the session layer, and any per-session guidance a host injected.
  */
-export function buildMemoryLines(
-  displayName: string,
-  memoryDir: string,
-  extraGuidelines?: string[],
-  skipIndex = false,
+export function buildMemoryDirectoryLines(
+  projectMemoryDir = getProjectMemoryPath(),
+  extraGuidelines?: readonly string[],
 ): string[] {
-  const isAutoMemory = displayName === AUTO_MEM_DISPLAY_NAME
-  const scopedSaveDestination = isAutoMemory
-    ? ' in the appropriate global or project memory directory'
-    : ''
-  const howToSave = skipIndex
-    ? [
-        '## How to save memories',
-        '',
-        `Write each memory to its own file${scopedSaveDestination} (e.g., \`user_role.md\`, \`feedback_testing.md\`) using this frontmatter format:`,
-        '',
-        ...MEMORY_FRONTMATTER_EXAMPLE,
-        '',
-        '- Keep the name, description, and type fields in memory files up-to-date with the content',
-        '- Organize memory semantically by topic, not chronologically',
-        '- Update or remove memories that turn out to be wrong or outdated',
-        '- Do not write duplicate memories. First check if there is an existing memory you can update before writing a new one.',
-      ]
-    : [
-        '## How to save memories',
-        '',
-        'Saving a memory is a two-step process:',
-        '',
-        `**Step 1** — write the memory to its own file${scopedSaveDestination} (e.g., \`user_role.md\`, \`feedback_testing.md\`) using this frontmatter format:`,
-        '',
-        ...MEMORY_FRONTMATTER_EXAMPLE,
-        '',
-        isAutoMemory
-          ? `**Step 2** — add a pointer to that file in that same directory's \`${ENTRYPOINT_NAME}\` index. \`${ENTRYPOINT_NAME}\` is an index, not a memory — each entry should be one line, under ~150 characters: \`- [Title](file.md) — one-line hook\`. It has no frontmatter. Never write memory content directly into \`${ENTRYPOINT_NAME}\`.`
-          : `**Step 2** — add a pointer to that file in \`${ENTRYPOINT_NAME}\`. \`${ENTRYPOINT_NAME}\` is an index, not a memory — each entry should be one line, under ~150 characters: \`- [Title](file.md) — one-line hook\`. It has no frontmatter. Never write memory content directly into \`${ENTRYPOINT_NAME}\`.`,
-        '',
-        `- \`${ENTRYPOINT_NAME}\` is always loaded into your conversation context — lines after ${MAX_ENTRYPOINT_LINES} will be truncated, so keep the index concise`,
-        '- Keep the name, description, and type fields in memory files up-to-date with the content',
-        '- Organize memory semantically by topic, not chronologically',
-        '- Update or remove memories that turn out to be wrong or outdated',
-        '- Do not write duplicate memories. First check if there is an existing memory you can update before writing a new one.',
-      ]
-
-  const lines: string[] = [
-    `# ${displayName}`,
+  return [
+    '# Memory directories',
     '',
-    ...(isAutoMemory
-      ? [
-          `You have persistent, file-based memory directories: global memory at \`${getGlobalMemoryPath()}\` and project memory at \`${memoryDir}\`. ${DIRS_EXIST_GUIDANCE}`,
-        ]
-      : [
-          `You have a persistent, file-based memory system at \`${memoryDir}\`. ${DIR_EXISTS_GUIDANCE}`,
-        ]),
+    `- Global memory (user-level, shared across projects): \`${getGlobalMemoryPath()}\``,
+    `- Project memory (this repository, shared by its git worktrees): \`${projectMemoryDir}\``,
+    '- Session memory is the current conversation: use plans and tasks for state that only matters in this session.',
     '',
-    ...(isAutoMemory ? buildMemoryLayerLines(memoryDir) : []),
-    ...(isAutoMemory ? buildMemorySaveDestinationLines(memoryDir) : []),
-    "You should build up this memory system over time so that future conversations can have a complete picture of who the user is, how they'd like to collaborate with you, what behaviors to avoid or repeat, and the context behind the work the user gives you.",
-    '',
-    'If the user explicitly asks you to remember something, save it immediately as whichever type fits best. If they ask you to forget something, find and remove the relevant entry.',
-    '',
-    ...TYPES_SECTION_INDIVIDUAL,
-    ...WHAT_NOT_TO_SAVE_SECTION,
-    '',
-    ...howToSave,
-    '',
-    ...WHEN_TO_ACCESS_SECTION,
-    '',
-    ...TRUSTING_RECALL_SECTION,
-    '',
-    '## Memory and other forms of persistence',
-    'Memory is one of several persistence mechanisms available to you as you assist the user in a given conversation. The distinction is often that memory can be recalled in future conversations and should not be used for persisting information that is only useful within the scope of the current conversation.',
-    '- When to use or update a plan instead of memory: If you are about to start a non-trivial implementation task and would like to reach alignment with the user on your approach you should use a Plan rather than saving this information to memory. Similarly, if you already have a plan within the conversation and you have changed your approach persist that change by updating the plan rather than saving a memory.',
-    '- When to use or update tasks instead of memory: When you need to break your work in current conversation into discrete steps or keep track of your progress use tasks instead of saving to memory. Tasks are great for persisting information about the work that needs to be done in the current conversation, but memory should be reserved for information that will be useful in future conversations.',
-    '',
-    ...(extraGuidelines ?? []),
-    '',
+    'These directories already exist. Write to them directly with the Write tool; do not run mkdir or check for their existence.',
+    ...(extraGuidelines !== undefined && extraGuidelines.length > 0
+      ? ['', ...extraGuidelines]
+      : []),
   ]
-
-  lines.push(
-    ...buildSearchingPastContextSection(
-      isAutoMemory ? [getGlobalMemoryPath(), memoryDir] : memoryDir,
-    ),
-  )
-
-  return lines
 }
 
 /**
@@ -397,72 +362,46 @@ function quoteShellPath(path: string): string {
 }
 
 /**
- * Load the unified memory prompt for inclusion in the system prompt.
- * Dispatches based on which memory systems are enabled:
- *   - auto + team: combined prompt (both directories)
- *   - auto only: memory lines (single directory)
- * Team memory requires auto memory (enforced by isTeamMemoryEnabled), so
- * there is no team-only branch.
+ * Load the memory prompt for the system prompt and make sure both memory
+ * directories exist so the model can write without checking first.
  *
- * Returns null when auto memory is disabled.
+ * Returns the trimmed auto-memory prompt split into cacheable instructions and
+ * the per-session directory block. Team memory has no sync transport in this
+ * runtime, so the combined team prompt is not built: the team subdirectory
+ * stays readable and writable as ordinary project memory. Returns null when
+ * auto memory is disabled.
  */
-export async function loadMemoryPrompt(): Promise<string | null> {
+export async function loadMemoryPrompt(): Promise<MemoryPromptSections | null> {
   const autoEnabled = isAutoMemoryEnabled()
+  if (!autoEnabled) return null
 
   const skipIndex = false
 
-  // KAIROS daily-log mode takes precedence over TEAMMEM: the append-only
-  // log paradigm does not compose with team sync (which expects a shared
-  // MEMORY.md that both sides read + write). Gating on `autoEnabled` here
-  // means the !autoEnabled case falls through to the tengu_memdir_disabled
-  // telemetry block below, matching the non-KAIROS path.
-  if (feature('KAIROS') && autoEnabled && getKairosActive()) {
-    return buildAssistantDailyLogPrompt(skipIndex)
+  // KAIROS daily-log mode replaces the save instructions with an append-only
+  // log, so its self-contained prompt travels whole in the dynamic tail.
+  if (feature('KAIROS') && getKairosActive()) {
+    return {
+      instructions: '',
+      directories: buildAssistantDailyLogPrompt(skipIndex),
+    }
   }
 
-  // Cowork injects memory-policy text via env var; thread into all builders.
+  // Cowork injects memory-policy text via env var; it is per-session, so it
+  // rides with the directory block.
   const coworkExtraGuidelines = getSessionCoworkMemoryExtraGuidelines()
   const extraGuidelines =
     coworkExtraGuidelines && coworkExtraGuidelines.trim().length > 0
       ? [coworkExtraGuidelines]
       : undefined
 
-  if (feature('TEAMMEM')) {
-    const teamMemPaths = await import('../memdir/teamMemPaths.js')
-    if (teamMemPaths.isTeamMemoryEnabled()) {
-      const teamMemPrompts = await import('../memdir/teamMemPrompts.js')
-      const globalDir = getGlobalMemoryPath()
-      const teamDir = teamMemPaths.getTeamMemPath()
-      // Harness guarantees these directories exist so the model can write
-      // without checking. The prompt text reflects this ("already exists").
-      // Only creating teamDir is sufficient: getTeamMemPath() is defined as
-      // join(getAutoMemPath(), 'team'), so recursive mkdir of the team dir
-      // creates the auto dir as a side effect. If the team dir ever moves
-      // out from under the auto dir, add a second ensureMemoryDirExists call
-      // for autoDir here.
-      await ensureMemoryDirExists(globalDir)
-      await ensureMemoryDirExists(teamDir)
-      return teamMemPrompts.buildCombinedMemoryPrompt(
-        extraGuidelines,
-        skipIndex,
-      )
-    }
+  const autoDir = getAutoMemPath()
+  const globalDir = getGlobalMemoryPath()
+  // Harness guarantees the directories exist so the model can write without
+  // checking. The prompt text reflects this ("already exist").
+  await ensureMemoryDirExists(globalDir)
+  await ensureMemoryDirExists(autoDir)
+  return {
+    instructions: buildMemoryInstructionLines().join('\n'),
+    directories: buildMemoryDirectoryLines(autoDir, extraGuidelines).join('\n'),
   }
-
-  if (autoEnabled) {
-    const autoDir = getAutoMemPath()
-    const globalDir = getGlobalMemoryPath()
-    // Harness guarantees the directory exists so the model can write without
-    // checking. The prompt text reflects this ("already exists").
-    await ensureMemoryDirExists(globalDir)
-    await ensureMemoryDirExists(autoDir)
-    return buildMemoryLines(
-      'auto memory',
-      autoDir,
-      extraGuidelines,
-      skipIndex,
-    ).join('\n')
-  }
-
-  return null
 }

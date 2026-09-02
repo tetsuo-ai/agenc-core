@@ -59,6 +59,15 @@ export interface AgenCStateAgentRunStatusUpdate {
   readonly lastActiveAt: string;
   readonly currentSessionId?: string;
   readonly metadataPatch?: JsonObject;
+  /**
+   * Set ONLY by the audited explicit-reopen path. The stickiness above
+   * exists so a dying agent's late snapshot cannot undo an explicit
+   * cancel; an operator reopening a settled terminal into a NEW lifecycle
+   * epoch is the opposite of that — it is the authorized transition, and
+   * its own gates (terminal epoch, no active suspension, no unsettled
+   * effect intents, and the caller's canonical rollout proof) already ran.
+   */
+  readonly reopeningLockedRun?: boolean;
 }
 
 export function upsertAgentRun(
@@ -114,7 +123,10 @@ export function updateAgentRunStatus(
   driver: StateSqliteDriver,
   update: AgenCStateAgentRunStatusUpdate,
 ): AgentRunWriteOutcome {
-  const locked = cancelLockedExistingStatus(driver, update.id, update.status);
+  const locked =
+    update.reopeningLockedRun === true
+      ? undefined
+      : cancelLockedExistingStatus(driver, update.id, update.status);
   if (locked !== undefined) {
     return {
       applied: false,

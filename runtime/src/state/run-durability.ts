@@ -944,7 +944,20 @@ export class StateRunDurabilityRepository {
       }
 
       const current = this.currentEpoch(params.runId);
-      this.assertNotCancellationLocked(params.runId);
+      /*
+       * No cancellation-lock check here, deliberately. That lock makes a
+       * dying agent's late status write lose against an explicit cancel;
+       * an operator reopening a settled terminal is the authorized
+       * transition, not a straggler. Applying it here contradicted this
+       * function's own contract ("settled terminals — completed, failed,
+       * cancelled — reopen with reviews still pending", below) and left
+       * every interrupted session permanently unresumable, which is the
+       * failure #1750 set out to end. The gates that matter still run:
+       * the epoch must be terminal, nothing may be suspended, no effect
+       * intent may be unsettled, an unknown-outcome terminal with pending
+       * reviews stays refused, and agent.create proved the caller owns
+       * this session's canonical rollout before reaching this point.
+       */
       if (current === undefined || current.epoch !== params.fromEpoch) {
         throw conflict(
           "RUN_EPOCH_CONFLICT",
@@ -1024,7 +1037,16 @@ export class StateRunDurabilityRepository {
         id: params.runId,
         status: "running",
         lastActiveAt: params.openedAt,
+        // A cancelled run's status is sticky against implicit writers; this
+        // audited reopen is the one transition allowed to move it.
+        reopeningLockedRun: true,
       });
+      // The same authorization lifts the run's own admission lock. Left in
+      // place, the lock still denied the reopened run's first model step
+      // (`execution admission deny: parent_cancel_locked`) and its pre-turn
+      // compaction, so a reopened session could never take a turn. Only the
+      // reopened run's row goes: descendants keep theirs.
+      this.liftSupersededCancellation(params.runId, true, false);
       const value: RunLifecycleEpoch = {
         runId: params.runId,
         epoch: nextEpoch,
@@ -2155,28 +2177,98 @@ export class StateRunDurabilityRepository {
   private assertNotCancellationLocked(runId: RunId): void {
     const state = this.driver
       .prepareState<
-        [string, string],
-        { readonly admission_cancelled: number; readonly status: string | null }
+        [string, string, string],
+        {
+          readonly admission_cancelled_at: string | null;
+          readonly status: string | null;
+          readonly status_at: string | null;
+        }
       >(
         `SELECT
-           EXISTS (
-             SELECT 1
-             FROM execution_admission_cancellations
-             WHERE run_id = ?
-           ) AS admission_cancelled,
-           (SELECT status FROM agent_runs WHERE id = ?) AS status`,
+           (SELECT cancelled_at
+              FROM execution_admission_cancellations
+              WHERE run_id = ?) AS admission_cancelled_at,
+           (SELECT status FROM agent_runs WHERE id = ?) AS status,
+           (SELECT last_active_at FROM agent_runs WHERE id = ?) AS status_at`,
       )
-      .get(runId, runId);
+      .get(runId, runId, runId);
+    const statusLocked =
+      state?.status !== null &&
+      state?.status !== undefined &&
+      isCancelLockedAgentRunStatus(state.status);
+    const admissionLocked =
+      state?.admission_cancelled_at !== null &&
+      state?.admission_cancelled_at !== undefined;
+    if (!statusLocked && !admissionLocked) return;
     if (
-      state?.admission_cancelled === 1 ||
-      (state?.status !== null &&
-        state?.status !== undefined &&
-        isCancelLockedAgentRunStatus(state.status))
+      this.cancellationSupersededByReopen(runId, [
+        ...(admissionLocked ? [state.admission_cancelled_at as string] : []),
+        ...(statusLocked && state.status_at !== null ? [state.status_at] : []),
+      ])
     ) {
-      throw conflict(
-        "RUN_CANCELLATION_CONFLICT",
-        `run ${runId} is cancellation-locked and cannot cross an executable lifecycle boundary`,
-      );
+      this.liftSupersededCancellation(runId, admissionLocked, statusLocked);
+      return;
+    }
+    throw conflict(
+      "RUN_CANCELLATION_CONFLICT",
+      `run ${runId} is cancellation-locked and cannot cross an executable lifecycle boundary`,
+    );
+  }
+
+  /**
+   * A cancellation lock exists so a dying agent's late status write loses
+   * against an explicit cancel. An explicit reopen into a fresh lifecycle
+   * epoch is the audited, authorized transition in the other direction: when
+   * the run's current epoch was reopened at or after every lock was recorded
+   * and has not ended, the locks predate the authorization and are stale.
+   * Live shape: a daemon shutdown during a turn cancelled the run, startup
+   * repair recorded a `recovery_cascade_repair` admission lock, the user
+   * continued the session (reopen), and the next shutdown, resume and
+   * settings change were all refused as "cancellation-locked".
+   */
+  private cancellationSupersededByReopen(
+    runId: RunId,
+    lockedAt: ReadonlyArray<string>,
+  ): boolean {
+    const current = this.currentEpoch(runId);
+    if (current === undefined || current.reopenedFromEpoch === undefined) {
+      return false;
+    }
+    if (this.getTerminalResult(runId, current.epoch) !== undefined) return false;
+    return lockedAt.every((at) => at <= current.openedAt);
+  }
+
+  private liftSupersededCancellation(
+    runId: RunId,
+    admissionLocked: boolean,
+    statusLocked: boolean,
+  ): void {
+    if (admissionLocked) {
+      this.driver
+        .prepareState<[string]>(
+          `DELETE FROM execution_admission_cancellations WHERE run_id = ?`,
+        )
+        .run(runId);
+    }
+    if (statusLocked) {
+      // The sticky-status rule guards against implicit writers; this write
+      // completes the explicit reopen that the current epoch already records.
+      this.driver
+        .prepareState<[string]>(
+          `UPDATE agent_runs
+           SET status = 'running',
+               metadata_json = json_set(
+                 CASE
+                   WHEN metadata_json IS NOT NULL
+                    AND json_valid(metadata_json)
+                    AND json_type(metadata_json) = 'object'
+                   THEN metadata_json ELSE '{}'
+                 END,
+                 '$.cancellationLiftedBy', 'explicit_reopen'
+               )
+           WHERE id = ?`,
+        )
+        .run(runId);
     }
   }
 }

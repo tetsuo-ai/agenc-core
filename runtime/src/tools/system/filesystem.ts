@@ -45,6 +45,12 @@ import {
 } from "node:fs";
 import { resolve, dirname, basename, join } from "node:path";
 import { resolveHomeContext } from "../../config/home.js";
+// Imported from the defining module rather than the `memory/index.js` barrel.
+// The barrel re-exports the recall pipeline, which reaches `utils/ide.ts` and
+// `utils/envDynamic.ts`; that module calls `stat` at import time on Linux, so
+// pulling the barrel in here made the filesystem tool fail to load in any
+// suite that mocks `node:fs/promises`.
+import { getDurableMemoryRoots } from "../../memory/paths.js";
 import { getCurrentRuntimeSession } from "../../session/current-session.js";
 import {
   getSessionTempNamespaceName,
@@ -1080,6 +1086,16 @@ export async function isPathAllowed(
  * defense-in-depth, but enforcement now lives HERE — a future ingress
  * that forgets to strip cannot reintroduce the sandbox escape, because
  * an unsigned/forged root is ignored at this sink.
+ *
+ * The two durable memory roots (`$AGENC_HOME/memory/` and
+ * `$AGENC_HOME/projects/<slug>/memory/`) are folded in as well. The memory
+ * prompt tells the model to write its memories there, outside the
+ * workspace, and the permission layer already carves them out; without this
+ * every such Write, Glob and Grep was refused as "outside allowed
+ * directories". The roots are runtime-derived from the same resolvers the
+ * prompt and recall use, never from model input, and only those two
+ * directories are admitted: sibling state under `$AGENC_HOME` (sessions,
+ * config, auth) stays denied.
  */
 export function resolveToolAllowedPaths(
   allowedPaths: readonly string[],
@@ -1089,9 +1105,6 @@ export function resolveToolAllowedPaths(
     args[SESSION_ALLOWED_ROOTS_ARG],
     args[SESSION_ALLOWED_ROOTS_SIG_ARG],
   );
-  if (verifiedRoots.length === 0) {
-    return allowedPaths;
-  }
   const normalizedExtraRoots = verifiedRoots
     .filter(
       (entry): entry is string =>
@@ -1100,10 +1113,15 @@ export function resolveToolAllowedPaths(
     .map((entry) => resolveSessionWorkspaceRoot(entry))
     .filter((entry): entry is string => typeof entry === "string")
     .map((entry) => normalizeFilesystemUnicodeIdentity(resolve(entry)));
-  if (normalizedExtraRoots.length === 0) {
+  const memoryRoots = getDurableMemoryRoots().map((root) =>
+    normalizeFilesystemUnicodeIdentity(resolve(root)),
+  );
+  if (normalizedExtraRoots.length === 0 && memoryRoots.length === 0) {
     return allowedPaths;
   }
-  return Array.from(new Set([...allowedPaths, ...normalizedExtraRoots]));
+  return Array.from(
+    new Set([...allowedPaths, ...normalizedExtraRoots, ...memoryRoots]),
+  );
 }
 
 function normalizeFilesystemUnicodeIdentity(path: string): string {

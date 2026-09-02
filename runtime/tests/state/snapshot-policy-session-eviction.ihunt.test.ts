@@ -9,11 +9,11 @@ import {
 } from "../../src/state/sqlite-driver.js";
 
 // Regression guard for the unbounded in-memory #sessions leak:
-// `flushPeriodic()` emits exactly one snapshot record per session retained in
-// the in-memory map, so its length is a faithful probe of map size. Before the
-// fix there was no eviction path at all (no forgetSession, no LRU cap), so the
-// map grew one entry per distinct sessionId forever and flushPeriodic
-// re-snapshotted every session ever seen.
+// `trackedSessionIds()` lists the sessions retained in the in-memory map.
+// Before the fix there was no eviction path at all (no forgetSession, no LRU
+// cap), so the map grew one entry per distinct sessionId forever and
+// flushPeriodic re-snapshotted every session ever seen. (flushPeriodic itself
+// now only writes dirty sessions, so it is no longer a probe of map size.)
 
 let home = "";
 let cwd = "";
@@ -113,8 +113,5 @@ describe("AgenCSessionSnapshotPolicy in-memory session eviction", () => {
 });
 
 function periodicSessionIds(policy: AgenCSessionSnapshotPolicy): string[] {
-  return policy
-    .flushPeriodic()
-    .map((record) => record.sessionId)
-    .sort();
+  return [...policy.trackedSessionIds()].sort();
 }

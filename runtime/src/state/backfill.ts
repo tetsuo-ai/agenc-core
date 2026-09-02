@@ -751,6 +751,12 @@ function mergeThreadFromMeta(args: {
 }): void {
   const { metaForUpdate, metaForCreate } = args;
   const archivedAt = args.archived === true ? args.now : undefined;
+  // The archive state is derived from the file's location root, which only
+  // the offline sweep knows. A store-driven incremental index (archived
+  // undefined) must not clear archived_at: a thread archived in the registry
+  // while its writer still owns the file (the move is deferred until that
+  // writer shuts down) would otherwise resurface as active on its next append.
+  const replaceArchiveState = args.archived !== undefined;
   args.threads.mergeThread(
     {
       threadId: args.threadId,
@@ -766,7 +772,7 @@ function mergeThreadFromMeta(args: {
         ? { archivedAt, archivedRolloutPath: args.rolloutPath }
         : { rolloutPath: args.rolloutPath }),
     },
-    { replaceArchiveState: true },
+    { replaceArchiveState },
   );
 }
 

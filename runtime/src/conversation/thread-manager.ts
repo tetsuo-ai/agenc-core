@@ -39,7 +39,11 @@ import type { IndexSnapshot } from "../session/session-store.js";
 import { SessionLock } from "../session/session-store.js";
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
 import type { LLMContentPart } from "../llm/types.js";
-import { responseItemToLlmMessage } from "../session/message-history-conversion.js";
+import {
+  llmMessageToDurableResponseItem,
+  responseItemToLlmMessage,
+} from "../session/message-history-conversion.js";
+import { createToolResultIntegrity } from "../session/tool-result-integrity.js";
 import { AsyncLock } from "../utils/async-lock.js";
 import {
   reconstructFromRollout,
@@ -357,6 +361,17 @@ export class ConversationThreadManager extends ThreadManager {
     session.rolloutStore?.acknowledgeCompactionReconstruction(
       reconstruction.activeCompactionAttemptIds,
     );
+    // The durable journal already holds turn and event ids up to the
+    // highest sub-id in the rollout; the resumed session must number its
+    // new turns after them or admission rejects the first model step.
+    session.seedInternalSubId(
+      highestInternalSubId(rolloutItems, session.conversationId) + 1,
+    );
+    appliedState = await closeTrailingDanglingToolCalls(
+      session,
+      appliedState,
+      opts.emitSynthesized === true,
+    );
 
     // GOAL #4b Stage 1 — stash the reconstruction so the prewarm hook can
     // consult its `resumableTurns` and resume-continue an orphaned in-flight
@@ -644,6 +659,115 @@ export class ConversationThreadManager extends ThreadManager {
     }
     return undefined;
   }
+}
+
+export const DANGLING_TOOL_CALLS_CLOSED_CAUSE = "dangling_tool_calls_closed";
+
+/**
+ * Tool calls of the last assistant message that never received a result.
+ * A turn killed between the model's tool calls and their results (daemon
+ * restart, crash) leaves the persisted history ending in open calls; the live
+ * tool-pair gate then rejects every later message ("tool results must
+ * immediately follow their assistant calls"), so the session can never
+ * continue. Only the trailing assistant message is inspected: an unresolved
+ * call earlier in the history is already an invalid rollout.
+ */
+export function trailingDanglingToolCalls(
+  history: ReadonlyArray<unknown>,
+): ReadonlyArray<{ readonly id: string; readonly name: string }> {
+  const items = history.map(historyResponseItem);
+  const resolved = new Set<string>();
+  let index = items.length - 1;
+  while (index >= 0 && items[index]?.role === "tool") {
+    const toolCallId = items[index]?.toolCallId;
+    if (typeof toolCallId === "string") resolved.add(toolCallId);
+    index -= 1;
+  }
+  const assistant = items[index];
+  if (assistant?.role !== "assistant" || !Array.isArray(assistant.toolCalls)) {
+    return [];
+  }
+  return assistant.toolCalls
+    .filter((call) => !resolved.has(call.id))
+    .map((call) => ({ id: call.id, name: call.name }));
+}
+
+function historyResponseItem(item: unknown): ResponseItem | undefined {
+  if (typeof item !== "object" || item === null) return undefined;
+  const role = (item as { role?: unknown }).role;
+  return typeof role === "string" ? (item as ResponseItem) : undefined;
+}
+
+/** Model-facing body of a result synthesized for an interrupted tool call. */
+export function interruptedToolCallResultContent(call: {
+  readonly id: string;
+  readonly name: string;
+}): string {
+  return JSON.stringify({
+    tool_use_id: call.id,
+    is_error: true,
+    content: `<tool_use_error>interrupted: the runtime restarted before ${call.name} completed and no result was recorded; call it again if the result is still needed</tool_use_error>`,
+  });
+}
+
+/**
+ * Close the trailing dangling tool calls of a restored history with sealed,
+ * persisted error results so the resumed session can accept its next message.
+ * The results are sealed under the session's run id exactly like live tool
+ * results (`createToolResultIntegrity` + the durable projection), appended to
+ * the rollout through the live tool-pair gate, which resolves the open calls,
+ * and mirrored into the session history in the persisted item shape.
+ */
+async function closeTrailingDanglingToolCalls(
+  session: Session,
+  appliedState: SessionState,
+  emitWarning: boolean,
+): Promise<SessionState> {
+  const dangling = trailingDanglingToolCalls(appliedState.history);
+  if (dangling.length === 0) return appliedState;
+  const synthesized: ResponseItem[] = dangling.map((call) => {
+    const content = interruptedToolCallResultContent(call);
+    return llmMessageToDurableResponseItem({
+      role: "tool",
+      content,
+      toolCallId: call.id,
+      toolName: call.name,
+      runtimeOnly: {
+        toolResultIntegrity: createToolResultIntegrity({
+          runId: session.conversationId,
+          toolCallId: call.id,
+          content,
+        }),
+      },
+    });
+  });
+  for (const item of synthesized) {
+    session.rolloutStore?.appendRollout({ type: "response_item", payload: item });
+  }
+  const next = await session.state.update((current) => {
+    const updated: SessionState = {
+      ...current,
+      history: [...current.history, ...synthesized],
+    };
+    return { next: updated, result: updated };
+  });
+  // Like the other synthesized recovery events, the warning is emitted only
+  // when the caller replays with `emitSynthesized`: a bootstrap replay that
+  // has not seeded the live event sequence yet must not append events.
+  if (!emitWarning) return next;
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "warning",
+      payload: {
+        cause: DANGLING_TOOL_CALLS_CLOSED_CAUSE,
+        message: `closed ${dangling.length} tool call(s) left without a result by an interrupted turn: ${dangling
+          .map((call) => `${call.name} ${call.id}`)
+          .join(", ")}`,
+      },
+    },
+  });
+  return next;
 }
 
 async function applyRolloutReconstructionToSession(
@@ -1368,4 +1492,34 @@ function cloneResponseHistory(
 
 function cloneLlmHistory(history: ReadonlyArray<ResponseItem>) {
   return history.map(responseItemToLlmMessage);
+}
+
+/**
+ * Highest `sub-<conversationId>-N` id recorded in a rollout, from event ids
+ * and turn ids alike; -1 when none. Ids of other conversations are ignored.
+ */
+export function highestInternalSubId(
+  rolloutItems: ReadonlyArray<RolloutItem>,
+  conversationId: string,
+): number {
+  const prefix = `sub-${conversationId}-`;
+  let highest = -1;
+  const consider = (value: unknown): void => {
+    if (typeof value !== "string" || !value.startsWith(prefix)) return;
+    const ordinal = Number(value.slice(prefix.length));
+    if (Number.isSafeInteger(ordinal) && ordinal > highest) highest = ordinal;
+  };
+  for (const item of rolloutItems) {
+    if (item.type !== "event_msg") continue;
+    const payload = item.payload as {
+      readonly id?: unknown;
+      readonly msg?: { readonly payload?: unknown };
+    };
+    consider(payload.id);
+    const inner = payload.msg?.payload;
+    if (inner !== null && typeof inner === "object") {
+      consider((inner as { readonly turnId?: unknown }).turnId);
+    }
+  }
+  return highest;
 }

@@ -1,4 +1,5 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -44,6 +45,7 @@ describe("memory public access surface", () => {
   it("exports the MM-07 public access contract", () => {
     for (const name of [
       "clearMemoryFileCaches",
+      "checkMemorySecrets",
       "checkTeamMemSecrets",
       "detectSessionFileType",
       "detectSessionPatternType",
@@ -113,7 +115,7 @@ describe("memory public access surface", () => {
   });
 
   it("selects relevant memories through the public recall surface", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "agenc-memory-index-"));
+    tempDir = await mkdtemp(join(realpathSync(tmpdir()), "agenc-memory-index-"));
     const targetPath = join(tempDir, "target.md");
     const surfacedPath = join(tempDir, "already.md");
 
@@ -156,7 +158,7 @@ describe("memory public access surface", () => {
   });
 
   it("loads instruction memory files through the public surface", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "agenc-memory-index-"));
+    tempDir = await mkdtemp(join(realpathSync(tmpdir()), "agenc-memory-index-"));
     const instructionPath = join(tempDir, "AGENC.md");
     await writeFile(
       instructionPath,
@@ -188,7 +190,7 @@ describe("memory public access surface", () => {
   });
 
   it("scans and formats manifests through the public surface", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "agenc-memory-index-"));
+    tempDir = await mkdtemp(join(realpathSync(tmpdir()), "agenc-memory-index-"));
     await writeFile(
       join(tempDir, "feedback.md"),
       [

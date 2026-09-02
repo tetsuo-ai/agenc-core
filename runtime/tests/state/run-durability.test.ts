@@ -15,6 +15,7 @@ import type {
   EffectReviewResolution,
   RunTerminalResult,
 } from "../../src/contracts/run-contracts.js";
+import { updateAgentRunStatus } from "../../src/state/agent-runs.js";
 import {
   RunDurabilityConflictError,
   StateRunDurabilityRepository,
@@ -305,15 +306,30 @@ describe("StateRunDurabilityRepository", () => {
       expect.objectContaining({ code: "RUN_CANCELLATION_CONFLICT" }),
     );
 
+  });
+
+  it("reopens a cancelled run into a fresh epoch while implicit writers stay locked out", () => {
+    // The cancellation lock exists so a dying agent's late status write
+    // loses against an explicit cancel. An operator reopening a settled
+    // terminal is the authorized transition — refusing it left every
+    // interrupted session permanently unresumable.
     runs.ensureInitialEpoch({ runId: "run-reopen-cancelled", openedAt: T0 });
     runs.recordTerminalResult({
       epoch: 1,
       result: terminal({
         runId: "run-reopen-cancelled",
         finishedAt: T1,
+        status: "cancelled",
       }),
       eventId: "event-terminal-before-cancel-lock",
     });
+    driver
+      .prepareState(
+        `INSERT INTO agent_runs (
+           id, objective, status, started_at, last_active_at
+         ) VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run("run-reopen-cancelled", "cancelled work", "cancelled", T0, T1);
     driver
       .prepareState(
         `INSERT INTO execution_admission_cancellations (
@@ -321,7 +337,8 @@ describe("StateRunDurabilityRepository", () => {
          ) VALUES (?, ?, ?)`,
       )
       .run("run-reopen-cancelled", "operator", T2);
-    expect(() =>
+
+    expect(
       runs.reopenRun({
         runId: "run-reopen-cancelled",
         fromEpoch: 1,
@@ -329,9 +346,217 @@ describe("StateRunDurabilityRepository", () => {
         eventId: "event-reopen-after-cancel",
         reason: "retry",
       }),
+    ).toMatchObject({
+      applied: true,
+      value: { epoch: 2, reopenedFromEpoch: 1 },
+    });
+    expect(
+      driver
+        .prepareState<[string], { status: string }>(
+          "SELECT status FROM agent_runs WHERE id = ?",
+        )
+        .get("run-reopen-cancelled")?.status,
+    ).toBe("running");
+  });
+
+  it("keeps a late implicit status write from undoing an explicit cancel", () => {
+    driver
+      .prepareState(
+        `INSERT INTO agent_runs (
+           id, objective, status, started_at, last_active_at
+         ) VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run("run-late-writer", "cancelled work", "cancelled", T0, T1);
+
+    expect(
+      updateAgentRunStatus(driver, {
+        id: "run-late-writer",
+        status: "running",
+        lastActiveAt: T2,
+      }),
+    ).toMatchObject({
+      applied: false,
+      reason: "cancel_locked_status_sticky",
+      existingStatus: "cancelled",
+    });
+    expect(
+      driver
+        .prepareState<[string], { status: string }>(
+          "SELECT status FROM agent_runs WHERE id = ?",
+        )
+        .get("run-late-writer")?.status,
+    ).toBe("cancelled");
+  });
+
+  it("lifts cancellation locks that an explicit reopen superseded", () => {
+    // Live shape: a daemon shutdown during a turn cancelled epoch 1, startup
+    // repair recorded an admission lock and a sticky `cancelled` status, the
+    // user continued the session into epoch 2, and every later boundary
+    // (suspend, resume, settings) was refused as cancellation-locked.
+    runs.ensureInitialEpoch({ runId: "run-revived", openedAt: T0 });
+    runs.recordTerminalResult({
+      epoch: 1,
+      result: terminal({
+        runId: "run-revived",
+        status: "cancelled",
+        exitCode: null,
+        stopReason: "daemon_shutdown_not_idle",
+        finishedAt: T1,
+      }),
+      eventId: "event-terminal-shutdown",
+    });
+    driver
+      .prepareState(
+        `INSERT INTO execution_admission_cancellations (
+           run_id, reason, cancelled_at
+         ) VALUES (?, ?, ?)`,
+      )
+      .run("run-revived", "recovery_cascade_repair", T1);
+    driver
+      .prepareState(
+        `INSERT INTO agent_runs (
+           id, objective, status, started_at, last_active_at
+         ) VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run("run-revived", "continue", "cancelled", T0, T1);
+    // The authorized reopen recorded its epoch after the locks.
+    driver
+      .prepareState(
+        `INSERT INTO run_lifecycle_epochs (
+           run_id, epoch, opened_at, opened_event_id,
+           reopened_from_epoch, reopen_reason
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run("run-revived", 2, T2, "event-reopen-continue", 1, "user_session_continue");
+
+    const suspended = runs.recordRunSuspended({
+      runId: "run-revived",
+      epoch: 2,
+      eventId: "event-suspend-after-revival",
+      eventSequence: 1,
+      reason: "daemon_shutdown_idle",
+      suspendedAt: T3,
+    });
+    expect(suspended.applied).toBe(true);
+    expect(
+      driver
+        .prepareState<[string], { readonly n: number }>(
+          `SELECT count(*) AS n FROM execution_admission_cancellations WHERE run_id = ?`,
+        )
+        .get("run-revived")?.n,
+    ).toBe(0);
+    expect(
+      driver
+        .prepareState<[string], { readonly status: string; readonly meta: string }>(
+          `SELECT status, metadata_json AS meta FROM agent_runs WHERE id = ?`,
+        )
+        .get("run-revived"),
+    ).toEqual({
+      status: "running",
+      meta: JSON.stringify({ cancellationLiftedBy: "explicit_reopen" }),
+    });
+
+    // A lock recorded AFTER the reopen is a real cancellation and still holds.
+    runs.ensureInitialEpoch({ runId: "run-recancelled", openedAt: T0 });
+    runs.recordTerminalResult({
+      epoch: 1,
+      result: terminal({ runId: "run-recancelled", finishedAt: T1 }),
+      eventId: "event-terminal-recancelled",
+    });
+    driver
+      .prepareState(
+        `INSERT INTO run_lifecycle_epochs (
+           run_id, epoch, opened_at, opened_event_id,
+           reopened_from_epoch, reopen_reason
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run("run-recancelled", 2, T2, "event-reopen-recancelled", 1, "retry");
+    driver
+      .prepareState(
+        `INSERT INTO execution_admission_cancellations (
+           run_id, reason, cancelled_at
+         ) VALUES (?, ?, ?)`,
+      )
+      .run("run-recancelled", "operator", T3);
+    expect(() =>
+      runs.recordRunSuspended({
+        runId: "run-recancelled",
+        epoch: 2,
+        eventId: "event-suspend-recancelled",
+        eventSequence: 1,
+        reason: "daemon_shutdown_idle",
+        suspendedAt: T3,
+      }),
     ).toThrowError(
       expect.objectContaining({ code: "RUN_CANCELLATION_CONFLICT" }),
     );
+  });
+
+  it("lifts the run's admission lock when a cancelled run is explicitly reopened", () => {
+    // Live shape (a session whose turn a daemon restart had cancelled): the
+    // reopen created epoch 2 and moved the status to running, but the
+    // admission lock row survived and the first model step of the reopened
+    // run was denied with parent_cancel_locked.
+    runs.ensureInitialEpoch({ runId: "run-reopened-locked", openedAt: T0 });
+    runs.recordTerminalResult({
+      epoch: 1,
+      result: terminal({
+        runId: "run-reopened-locked",
+        status: "cancelled",
+        exitCode: null,
+        stopReason: "daemon_shutdown_not_idle",
+        finishedAt: T1,
+      }),
+      eventId: "event-terminal-locked",
+    });
+    driver
+      .prepareState(
+        `INSERT INTO execution_admission_cancellations (
+           run_id, reason, cancelled_at
+         ) VALUES (?, ?, ?)`,
+      )
+      .run("run-reopened-locked", "recovery_cascade_repair", T1);
+    driver
+      .prepareState(
+        `INSERT INTO agent_runs (
+           id, objective, status, started_at, last_active_at
+         ) VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run("run-reopened-locked", "continue", "cancelled", T0, T1);
+
+    const reopened = runs.reopenRun({
+      runId: "run-reopened-locked",
+      fromEpoch: 1,
+      openedAt: T2,
+      eventId: "event-reopen-locked",
+      reason: "user_session_continue",
+    });
+    expect(reopened.applied).toBe(true);
+    expect(
+      driver
+        .prepareState<[string], { readonly n: number }>(
+          `SELECT count(*) AS n FROM execution_admission_cancellations WHERE run_id = ?`,
+        )
+        .get("run-reopened-locked")?.n,
+    ).toBe(0);
+    expect(
+      driver
+        .prepareState<[string], { readonly status: string }>(
+          `SELECT status FROM agent_runs WHERE id = ?`,
+        )
+        .get("run-reopened-locked")?.status,
+    ).toBe("running");
+    // The reopened epoch crosses its next lifecycle boundary without conflict.
+    expect(
+      runs.recordRunSuspended({
+        runId: "run-reopened-locked",
+        epoch: 2,
+        eventId: "event-suspend-after-reopen",
+        eventSequence: 1,
+        reason: "daemon_shutdown_idle",
+        suspendedAt: T3,
+      }).applied,
+    ).toBe(true);
   });
 
   it("keeps terminal results sticky and retains them across explicit reopen epochs", () => {

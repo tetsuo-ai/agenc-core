@@ -4,10 +4,15 @@ import { isAbsolute, join, normalize, sep } from "node:path";
 import {
   findRelevantMemories,
   formatRelevantMemoryHeader,
-  isAutoMemoryEnabled,
+  buildProjectMemoryDirectory,
+  getGlobalMemoryPath,
+  getMemoryBaseDir,
+  getMemoryProjectRoot,
   MEMORY_DIRNAME,
-  PROJECT_MEMORY_DIR,
+  getProjectMemoryPath,
+  isAutoMemoryEnabled,
   readMemoryContent,
+  redactSecrets,
   resolveMemoryIndexDatabasePath,
   type MemoryRecallMode,
   type RelevantMemory,
@@ -42,7 +47,12 @@ export const relevantMemoriesProducer: AttachmentProducer = async (
   const query = opts.userInput?.trim() ?? "";
   const mode = selectRecallMode(query, opts.subagentDepth, trackingState);
   if (mode === null) return [];
-  const memoryDirs = durableMemorySearchDirs(opts.agencHome, opts.cwd);
+  // The attachment lives only in the current request's projection
+  // (`messagesForQuery`), never in durable history, so a memory surfaced on
+  // one turn is gone from the model's context on the next. Dedup therefore
+  // scopes to one request: a memory that matches again is shown again.
+  trackingState.surfacedRelevantMemoryPaths.clear();
+  const memoryDirs = durableMemorySearchDirs(opts.agencHome);
   if (memoryDirs.length === 0) return [];
 
   const selected = await findRelevantMemories({
@@ -117,15 +127,39 @@ function selectRecallMode(
   return firstRun && subagentDepth === 0 ? "session_start" : null;
 }
 
-function durableMemorySearchDirs(
-  agencHome: string | undefined,
-  cwd: string,
-): string[] {
+/**
+ * The two durable roots recall searches. They come from the shared memory
+ * path resolvers, so recall looks exactly where the memory prompt tells the
+ * model to write and where the extraction child writes (including remote
+ * bases, trusted overrides and worktree-shared canonical git roots) instead
+ * of rebuilding a repository-local `.agenc/memory` path from the cwd.
+ */
+function durableMemorySearchDirs(agencHome: string | undefined): string[] {
   if (agencHome === undefined || agencHome.trim().length === 0) return [];
+  // The shared resolvers read the ambient memory base. When the request names
+  // that same base they are the right answer, because they also carry the
+  // trusted overrides (a Cowork path override, an `autoMemoryDirectory`
+  // setting, a remote root) that a plain join would drop.
+  //
+  // When the request names a different home, the ambient answer is the wrong
+  // one and searching it anyway would read another home's memories into this
+  // request. Build both roots from the home the request gave, through the
+  // same formula the writers use, so recall still lands where the extraction
+  // child and the memory prompt point.
+  if (normalizeDirectory(agencHome) === normalizeDirectory(getMemoryBaseDir())) {
+    return Array.from(
+      new Set([
+        normalizeDirectory(getGlobalMemoryPath()),
+        normalizeDirectory(getProjectMemoryPath()),
+      ]),
+    );
+  }
   return Array.from(
     new Set([
       normalizeDirectory(join(agencHome, MEMORY_DIRNAME)),
-      normalizeDirectory(join(cwd, PROJECT_MEMORY_DIR, MEMORY_DIRNAME)),
+      normalizeDirectory(
+        buildProjectMemoryDirectory(agencHome, getMemoryProjectRoot()),
+      ),
     ]),
   );
 }
@@ -153,13 +187,16 @@ async function readMemoriesForAttachment(
         perFileByteLimit,
         MAX_MEMORY_LINES,
       );
+      // Memory files are model- or user-authored plain text; a token that
+      // slipped into one must not ride back into the prompt.
+      const redactedContent = redactSecrets(result.content);
       const unboundedContent = result.truncated
         ? [
-            result.content,
+            redactedContent,
             "",
             `> This memory file was truncated at the bounded recall limit. Read the complete file directly before relying on omitted details: ${selectedMemory.path}`,
           ].join("\n")
-        : result.content;
+        : redactedContent;
       const content = truncateUtf8(unboundedContent, remaining);
       const lineEnd = Math.max(1, result.lineCount);
       memories.push({

@@ -2927,6 +2927,68 @@ describe("AgenC background agent lifecycle", () => {
     );
   });
 
+  it("reopens an interactive session whose retained label differs from the rollout", async () => {
+    // A deferred-initial-turn client (the desktop app, `agenc` itself)
+    // registers a label like "Interactive session" while the rollout's
+    // canonical objective is the user's first prompt. Comparing the two
+    // made every interactive session permanently unresumable once its
+    // agent ended.
+    const fixture = createResumeFixture("conv-interactive1", {
+      objective: "Reply with the single word: ok",
+    });
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_interactive_resumed"]),
+      now: sequence(["2026-08-19T12:00:01.000Z"]),
+    });
+    const startAgent = vi.fn(async () => ({
+      agentId: "unexpected_fresh_agent",
+      startedAt: "2026-08-19T12:00:00.500Z",
+      status: "running" as const,
+    }));
+    const restoreAgent = vi.fn(async () => true);
+    const agents = new AgenCDaemonAgentManager({
+      now: sequence(["2026-08-19T12:00:00.000Z"]),
+      runner: { startAgent, restoreAgent },
+      sessionManager: sessions,
+    });
+    await agents.restoreAgent({
+      agentId: "conv-interactive1",
+      // The label a deferred-initial-turn client registers.
+      objective: "Interactive session",
+      status: "stopped",
+      createdAt: "2026-05-01T12:30:00.000Z",
+      startedAt: "2026-05-01T12:30:00.000Z",
+      lastActiveAt: "2026-05-01T12:31:00.000Z",
+      cwd: fixture.cwd,
+      metadata: { agentPath: "/root", model: "grok-4", provider: "grok" },
+      sessionIds: ["session_interactive_original"],
+    });
+
+    await expect(
+      createTestAgent(agents, {
+        resumeSessionId: "conv-interactive1",
+        resumeRolloutPath: fixture.rolloutPath,
+        resumeSourceProof: fixture.sourceProof,
+        cwd: fixture.cwd,
+      }),
+    ).resolves.toMatchObject({
+      agentId: "conv-interactive1",
+      // The disposable label is replaced by the canonical objective.
+      objective: "Reply with the single word: ok",
+      status: "running",
+      activeSessionIds: expect.arrayContaining([
+        "session_interactive_resumed",
+      ]),
+    });
+    expect(startAgent).not.toHaveBeenCalled();
+    expect(restoreAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "conv-interactive1",
+        objective: "Reply with the single word: ok",
+      }),
+    );
+  });
+
   it("restores the latest canonical runtime overlay instead of stale agent metadata", async () => {
     const fixture = createResumeFixture("conv-runtime-overlay1", {
       runtimeSettings: (cwd) =>
@@ -3405,7 +3467,15 @@ describe("AgenC background agent lifecycle", () => {
     expect(restoreAgent).toHaveBeenCalledOnce();
   });
 
-  it.each(["objective", "createdAt", "model", "provider"] as const)(
+  /*
+   * `objective` is deliberately absent: the retained objective is a
+   * client-supplied label, not session identity. Interactive clients defer
+   * the initial turn and register a label that can never equal the
+   * rollout's canonical objective, and a successful resume overwrites it
+   * with the canonical one anyway. The rollout's binding to this session is
+   * proven by its path, filename, filesystem proof and journal run id.
+   */
+  it.each(["createdAt", "model", "provider"] as const)(
     "rejects stale retained %s that disagrees with canonical rollout authority",
     async (field) => {
       const sessionId = `conv-stale-${field.toLowerCase()}1`;
@@ -3423,10 +3493,7 @@ describe("AgenC background agent lifecycle", () => {
       });
       await agents.restoreAgent({
         agentId: sessionId,
-        objective:
-          field === "objective"
-            ? "stale projected objective"
-            : "retained canonical objective",
+        objective: "retained canonical objective",
         status: "stopped",
         // Drift beyond RETAINED_CREATED_AT_TOLERANCE_MS (#1750): benign
         // millisecond skew between the daemon clock and the rollout header is
@@ -3441,7 +3508,9 @@ describe("AgenC background agent lifecycle", () => {
         metadata: {
           agentPath: "/root",
           model: field === "model" ? "stale-model" : "grok-4",
-          provider: field === "provider" ? "stale-provider" : "xai",
+          // Matches the fixture rollout's `modelProvider`; anything else
+          // would trip this very check for the unrelated rows.
+          provider: field === "provider" ? "stale-provider" : "grok",
         },
       });
 

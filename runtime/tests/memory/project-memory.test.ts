@@ -1,3 +1,5 @@
+import { realpathSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { ConfigStore } from '../config/store.js'
@@ -93,23 +95,27 @@ describe('project-memory API', () => {
   })
 
   it('classifies session files through the canonical detector', () => {
+    // ConfigStore canonicalizes its home through existing ancestors, so the
+    // fixture must start from a canonical temp root (macOS: /tmp -> /private/tmp).
+    const tempRoot = realpathSync(tmpdir())
+    const home = join(tempRoot, 'agenc-test-config')
     const store = new ConfigStore({
-      home: '/tmp/agenc-test-config',
-      env: { AGENC_HOME: '/tmp/agenc-test-config' },
-      cwd: '/tmp',
+      home,
+      env: { AGENC_HOME: home },
+      cwd: tempRoot,
     })
     runWithCanonicalSettingsAuthority(store, () => {
       expect(
-        detectSessionFileType(
-          '/tmp/agenc-test-config/session-memory/summary.md',
-        ),
+        detectSessionFileType(join(home, 'session-memory', 'summary.md')),
       ).toBe('session_memory')
       expect(
-        detectSessionFileType('/tmp/agenc-test-config/projects/repo/turn.jsonl'),
+        detectSessionFileType(join(home, 'projects', 'repo', 'turn.jsonl')),
       ).toBe('session_transcript')
-      expect(detectSessionFileType('/tmp/other/session-memory/summary.md')).toBe(
-        null,
-      )
+      expect(
+        detectSessionFileType(
+          join(tempRoot, 'other', 'session-memory', 'summary.md'),
+        ),
+      ).toBeNull()
     })
   })
 })

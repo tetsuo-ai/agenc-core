@@ -1449,7 +1449,10 @@ describe("prepareTurnRuntimeInputs", () => {
       registry: { tools: [{ name: "bash" }] },
     });
     expect(first).not.toHaveProperty("projectInstructions");
-    expect(first.memoryPromptText).toBe("");
+    // Auto memory is on by default: the cacheable instructions and the
+    // per-session directory block both come out of the turn inputs.
+    expect(first.memoryInstructionsText).toContain("# auto memory");
+    expect(first.memoryPromptText).toContain("# Memory directories");
     expect(first.mcpServers).toEqual([
       { name: "alpha", instructions: "MCP-ONE" },
     ]);
@@ -1467,7 +1470,8 @@ describe("prepareTurnRuntimeInputs", () => {
       registry: { tools: [{ name: "bash" }] },
     });
     expect(second).not.toHaveProperty("projectInstructions");
-    expect(second.memoryPromptText).toBe("");
+    expect(second.memoryInstructionsText).toContain("# auto memory");
+    expect(second.memoryPromptText).toContain("# Memory directories");
     expect(second.mcpServers).toEqual([
       { name: "alpha", instructions: "MCP-TWO" },
     ]);

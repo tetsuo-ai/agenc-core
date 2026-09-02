@@ -9,6 +9,7 @@ import {
   utimes,
   writeFile,
 } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -160,7 +161,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("reconciles an equal-size, equal-mtime replacement during the initial build", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-build-race-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-build-race-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
@@ -245,7 +246,7 @@ describe("C3b persistent full-corpus index", () => {
   }, 6 * 60_000);
 
   it("uses indexed pending order without repeated discovered-file counts", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-counts-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-counts-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     await mkdir(memoryRoot, { recursive: true });
@@ -323,7 +324,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("enforces the discovered-file boundary for replayed watcher changes", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-replay-limit-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-replay-limit-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
@@ -415,7 +416,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("updates one file with bounded SQLite maintenance headroom and rolls back growth without advancing its cursor", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-page-cap-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-page-cap-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
@@ -546,7 +547,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("rejects the exact 512-to-513 incremental create and recovers after a deletion", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-file-cap-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-file-cap-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
@@ -652,6 +653,22 @@ describe("C3b persistent full-corpus index", () => {
     expect(recovered.candidates[0]?.canonicalPath).toBe(createdPath);
   });
 
+  it("garbage-collects idle roots once per index instance, not on every refresh", async () => {
+    const fixture = await createFixture();
+    await writeMemory(join(fixture.globalRoot, "note.md"), "Note", "cleanup_once_term");
+    const cleanup = vi.spyOn(index!, "cleanupUnusedRoots");
+
+    await index!.refresh(fixture.rootSpecs, new AbortController().signal, {
+      explicit: true,
+    });
+    await index!.refresh(fixture.rootSpecs, new AbortController().signal);
+    await index!.refresh(fixture.rootSpecs, new AbortController().signal, {
+      explicit: true,
+    });
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
   it("repairs a missed equal-size/equal-mtime external change through the bounded audit", async () => {
     const fixture = await createFixture();
     const databasePath = join(temporaryRoot, "state", "memory.sqlite");
@@ -733,7 +750,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("rotates an incompatible derived schema and recreates secure state", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-schema-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-schema-"));
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
     await mkdir(stateRoot, { recursive: true });
@@ -753,7 +770,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("rotates a corrupt derived database without touching memory sources", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-corrupt-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-corrupt-"));
     const sourceRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
@@ -776,7 +793,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("rotates a same-version database whose schema contract is incomplete", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-signature-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-signature-"));
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
     await mkdir(stateRoot, { recursive: true });
@@ -827,7 +844,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("serializes two daemon writers through the bounded SQLite lease", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-writers-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-writers-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
@@ -874,7 +891,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("evicts the deterministic LRU root at the exact 64/65 global boundary without deleting sources", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-root-cap-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-root-cap-"));
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
     await mkdir(stateRoot, { recursive: true });
@@ -958,7 +975,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("honors the exact root idle-TTL boundary and preserves source memory", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-root-ttl-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-root-ttl-"));
     const sourceRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     await mkdir(sourceRoot, { recursive: true });
@@ -999,7 +1016,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("keeps an idle root while another daemon holds its watcher lease", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-owner-lease-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-owner-lease-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
@@ -1040,7 +1057,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("does not retire an idle watcher while its root has an in-flight query", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-query-owner-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-query-owner-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     await mkdir(memoryRoot, { recursive: true });
@@ -1092,7 +1109,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("fails closed without leaking its reader heartbeat when close races an awaiting helper", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-query-close-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-query-close-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
@@ -1153,7 +1170,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("returns a degraded result when close races a foreground refresh", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-refresh-close-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-refresh-close-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
@@ -1234,7 +1251,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("preserves caller cancellation when close races a foreground refresh", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-refresh-abort-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-refresh-abort-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
@@ -1282,7 +1299,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("does not cancel a staging refresh through a closed SQLite handle", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-cancel-close-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-cancel-close-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
@@ -1323,7 +1340,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("cancels an in-flight audit before closing SQLite", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-audit-close-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-audit-close-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
@@ -1380,7 +1397,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("returns refresh pending when a reader outlives the incremental drain bound", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-query-race-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-query-race-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
@@ -1518,7 +1535,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("lands an incremental update after overlapping readers outlive the prior drain bound", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-reader-stream-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-reader-stream-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
@@ -1614,7 +1631,7 @@ describe("C3b persistent full-corpus index", () => {
 
   it("renews an expired builder lease after reader drain before incremental preparation", async () => {
     temporaryRoot = await mkdtemp(
-      join(tmpdir(), "agenc-c3b-lease-renewal-"),
+      join(realpathSync(tmpdir()), "agenc-c3b-lease-renewal-"),
     );
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
@@ -1677,7 +1694,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("atomically refuses every requested root while one current generation has a writer lease", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-writer-race-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-writer-race-"));
     const stateRoot = join(temporaryRoot, "state");
     const globalRoot = join(temporaryRoot, "global-memory");
     const projectRoot = join(temporaryRoot, "project-memory");
@@ -1801,7 +1818,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("discards helper output when an expired reader pin is reclaimed by an incremental writer", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-pin-loss-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-pin-loss-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
@@ -1876,7 +1893,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("protects root cleanup with a live crash pin and reclaims it after expiry", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-pin-expiry-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-pin-expiry-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
@@ -2038,7 +2055,7 @@ describe("C3b persistent full-corpus index", () => {
   });
 
   it("never exposes a sliced prefix and resumes a single large directory after restart", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-resume-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-resume-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     const databasePath = join(stateRoot, "memory.sqlite");
@@ -2139,7 +2156,7 @@ async function createFixture(): Promise<{
   readonly projectRoot: string;
   readonly rootSpecs: readonly MemoryIndexRootSpec[];
 }> {
-  temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-index-"));
+  temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-index-"));
   const stateRoot = join(temporaryRoot, "state");
   const globalRoot = join(temporaryRoot, "global-memory");
   const projectRoot = join(temporaryRoot, "project-memory");

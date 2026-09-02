@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,8 +9,15 @@ import type {
   ExecutionAdmissionClient,
 } from "../../src/budget/admission-client.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
+import { getProjectRoot, setProjectRoot } from "../../src/bootstrap/state.js";
+import { ConfigStore } from "../../src/config/store.js";
 import { createAdmittedMemorySelector } from "../../src/memory/admitted-selector.js";
 import { closeFullCorpusMemoryIndexes } from "../../src/memory/find-relevant.js";
+import { getProjectMemoryPath } from "../../src/memory/paths.js";
+import {
+  enterCanonicalSettingsAuthority,
+  resetCanonicalSettingsAuthorityForTesting,
+} from "../../src/utils/settings/canonicalAuthority.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -22,9 +30,13 @@ import { relevantMemoriesProducer } from "../../src/prompts/attachments/relevant
 
 let temporaryRoot = "";
 let previousAgenCHome: string | undefined;
+let previousProjectRoot = "";
 
 afterEach(async () => {
   closeFullCorpusMemoryIndexes();
+  setProjectRoot(previousProjectRoot);
+  resetCanonicalSettingsAuthorityForTesting();
+  getProjectMemoryPath.cache?.clear?.();
   if (previousAgenCHome === undefined) delete process.env.AGENC_HOME;
   else process.env.AGENC_HOME = previousAgenCHome;
   if (temporaryRoot !== "") {
@@ -36,15 +48,37 @@ afterEach(async () => {
 describe("C3b production memory recall wiring", () => {
   it("runs full-corpus recall older than 200 through admission and a provider", async () => {
     previousAgenCHome = process.env.AGENC_HOME;
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3a-production-"));
+    previousProjectRoot = getProjectRoot();
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3a-production-"));
     const agencHome = join(temporaryRoot, "home");
     const cwd = join(temporaryRoot, "workspace");
     await mkdir(join(agencHome, "memory"), { recursive: true });
-    await mkdir(join(cwd, ".agenc", "memory"), { recursive: true });
+    await mkdir(cwd, { recursive: true });
+    process.env.AGENC_HOME = agencHome;
+    setProjectRoot(cwd);
+    enterCanonicalSettingsAuthority(
+      new ConfigStore({
+        home: agencHome,
+        env: { ...process.env, AGENC_HOME: agencHome },
+        cwd,
+      }),
+    );
+    getProjectMemoryPath.cache?.clear?.();
+    await mkdir(getProjectMemoryPath(), { recursive: true });
     const memoryPath = join(agencHome, "memory", "browser.md");
     await writeFile(
       memoryPath,
       "---\nname: Browser warning\ndescription: uniquebrowserfailure recovery\ntype: user\n---\nUse the safe browser recovery sequence.\n",
+    );
+    // More matches than the five-memory attachment limit, so the admitted
+    // selector is consulted instead of the lexical shortcut.
+    await Promise.all(
+      Array.from({ length: 5 }, (_, index) =>
+        writeFile(
+          join(agencHome, "memory", `browser-variant-${index}.md`),
+          `---\nname: Browser variant ${index}\ndescription: uniquebrowserfailure variant ${index}\ntype: user\n---\nVariant.\n`,
+        ),
+      ),
     );
     await Promise.all(
       Array.from({ length: 220 }, (_, index) =>
@@ -54,7 +88,6 @@ describe("C3b production memory recall wiring", () => {
         ),
       ),
     );
-    process.env.AGENC_HOME = agencHome;
 
     const acquire = vi.fn(
       async (input: AdmissionAcquireInput): Promise<AdmissionLease> => ({
@@ -102,13 +135,23 @@ describe("C3b production memory recall wiring", () => {
     } as unknown as ExecutionAdmissionClient;
     const chat = vi.fn(
       async (
-        _messages: LLMMessage[],
+        messages: LLMMessage[],
         _options?: LLMChatOptions,
-      ): Promise<LLMResponse> => ({
-        content: JSON.stringify({ selected_candidate_ids: ["candidate-1"] }),
+      ): Promise<LLMResponse> => {
+        // The selector request is the JSON-serialized candidate list; pick
+        // the "Browser warning" memory by title like a model would.
+        const request = JSON.parse(String(messages[0]?.content)) as {
+          candidates: ReadonlyArray<{ id: string; title: string }>;
+        };
+        const chosen = request.candidates.find(
+          (candidate) => candidate.title === "Browser warning",
+        );
+        const selected = chosen === undefined ? [] : [chosen.id];
+        return {
+        content: JSON.stringify({ selected_candidate_ids: selected }),
         structuredOutput: {
           type: "json_schema",
-          parsed: { selected_candidate_ids: ["candidate-1"] },
+          parsed: { selected_candidate_ids: selected },
         },
         toolCalls: [],
         usage: {
@@ -120,7 +163,8 @@ describe("C3b production memory recall wiring", () => {
         },
         model: "grok-4.5",
         finishReason: "stop",
-      }),
+        };
+      },
     );
     const provider = {
       name: "grok",

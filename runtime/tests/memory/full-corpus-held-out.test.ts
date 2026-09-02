@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,7 +52,7 @@ describe("C3b held-out full-corpus relevance gate", () => {
       suiteId: "agenc-memory-relevance-v1",
       newestBaselineSize: 200,
     });
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-memory-held-out-"));
+    temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-memory-held-out-"));
     const memoryRoot = join(temporaryRoot, "memory");
     const stateRoot = join(temporaryRoot, "state");
     await mkdir(memoryRoot, { recursive: true });

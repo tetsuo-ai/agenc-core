@@ -4,6 +4,13 @@ import {
   shutdownSessionLifecycle,
 } from "./lifecycle.js";
 import { mkSession } from "../fixtures.js";
+import {
+  executeExtractMemories,
+  initExtractMemories,
+} from "../services/extractMemories/extractMemories.js";
+import { resolveAgentRuntimeOptions } from "./runtime-options.js";
+import type { Session } from "./session.js";
+import type { TurnContext } from "./turn-context.js";
 
 function stubSession() {
   return {
@@ -27,6 +34,50 @@ describe("shutdownSessionLifecycle", () => {
     const session = stubSession();
     await shutdownSessionLifecycle({ session });
     expect(session.abortController.abort).toHaveBeenCalledWith("session_shutdown");
+  });
+
+  it("lets an in-flight memory extraction finish before quiescing the controller", async () => {
+    let resolveChild!: () => void;
+    const runChild = vi.fn(
+      () =>
+        new Promise<{ readonly outcome: "completed" }>((resolve) => {
+          resolveChild = () => resolve({ outcome: "completed" });
+        }),
+    );
+    initExtractMemories({
+      env: {},
+      minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({
+        enabled: true,
+        path: "/nonexistent/agenc-lifecycle-memory/",
+      }),
+      runChild,
+    });
+    const extraction = executeExtractMemories({
+      messages: [
+        { role: "user", content: "remember the shutdown order" },
+        { role: "assistant", content: "ok" },
+      ],
+      completedToolResults: [],
+      ctx: { cwd: "/tmp", depth: 0, sessionSource: "cli_main" } as unknown as TurnContext,
+      session: {
+        conversationId: "lifecycle-extraction",
+        services: { runtimeOptions: resolveAgentRuntimeOptions({}) },
+      } as unknown as Session,
+    });
+    await vi.waitFor(() => expect(runChild).toHaveBeenCalledOnce());
+
+    const session = stubSession();
+    const shutdown = shutdownSessionLifecycle({ session });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The child is still running: the controller has not been aborted yet.
+    expect(session.abortController.abort).not.toHaveBeenCalled();
+
+    resolveChild();
+    await extraction;
+    await shutdown;
+    expect(session.abortController.abort).toHaveBeenCalledWith("session_shutdown");
+    expect(session.shutdown).toHaveBeenCalledOnce();
   });
 
   it("cascades agentControl.shutdownAll before inner shutdown (I-33 ordering)", async () => {

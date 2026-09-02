@@ -103,7 +103,6 @@ import {
 } from "../phases/continuation-nudge.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { executeTools } from "../phases/execute-tools.js";
-import { drainPendingExtraction } from "../services/extractMemories/extractMemories.js";
 import { runMagicDocsPostSamplingHook } from "../services/MagicDocs/magicDocs.js";
 import { runSessionMemoryPostSamplingHook } from "../memory/session/sessionMemory.js";
 import { createAdmittedMemorySelector } from "../memory/admitted-selector.js";
@@ -112,7 +111,10 @@ import {
   postSampleRecovery,
 } from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
-import { getAttachmentTrackingState } from "./attachment-state.js";
+import {
+  getAttachmentTrackingState,
+  resetRelevantMemoryBudget,
+} from "./attachment-state.js";
 import { claimRequiredSwarmToolChoice } from "../prompts/attachments/swarm-mode.js";
 import {
   frameWorkspaceAgentRoleGuidance,
@@ -2463,6 +2465,9 @@ async function runAutoCompact(
 }
 
 function cleanupSessionAfterCompaction(session: Session): void {
+  // Compaction dropped every recalled memory along with the history it was
+  // attached to, so the cumulative recall budget starts over.
+  resetRelevantMemoryBudget(session);
   const direct = session as unknown as {
     readonly readFileState?: { clear(): void };
     readonly clearSearchIndexes?: () => void;
@@ -5096,7 +5101,6 @@ async function* runTurnKernelInner(
         usage,
         stopReason,
       };
-      await drainPendingExtraction();
       return terminal;
     }
 
@@ -5246,7 +5250,6 @@ async function* runTurnKernelInner(
         usage,
         stopReason,
       };
-      await drainPendingExtraction();
       return terminal;
     }
     const drainedQueuedCommandEvents = drainQueuedCommandsAfterTools({

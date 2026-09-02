@@ -1807,7 +1807,39 @@ function readProviderHttpClient(
   return candidate instanceof ProviderHttpClient ? candidate : undefined;
 }
 
-function normalizeHistoryMessages(
+/**
+ * Durable metadata of a history item. The live turn stores it under
+ * `runtimeOnly` (LLMMessage shape); a rollout reconstruction restores the
+ * persisted ResponseItem shape, where the same fields sit at the top level.
+ * Both must normalize identically: a resumed session whose restored tool
+ * results lost their seal fails its first durable checkpoint with
+ * "checkpoint v2 requires every tool result to be sealed".
+ */
+function durableHistoryMetadata(candidate: {
+  readonly toolResultIntegrity?: ToolResultIntegrity;
+  readonly agentInvocation?: AgentInvocationChannelMetadata;
+  readonly compactionHistory?: CompactionHistoryMarkerV1;
+  readonly runtimeOnly?: {
+    readonly toolResultIntegrity?: ToolResultIntegrity;
+    readonly agentInvocation?: AgentInvocationChannelMetadata;
+    readonly compactionHistory?: CompactionHistoryMarkerV1;
+  };
+}): {
+  readonly toolResultIntegrity?: ToolResultIntegrity;
+  readonly agentInvocation?: AgentInvocationChannelMetadata;
+  readonly compactionHistory?: CompactionHistoryMarkerV1;
+} {
+  return {
+    toolResultIntegrity:
+      candidate.runtimeOnly?.toolResultIntegrity ?? candidate.toolResultIntegrity,
+    agentInvocation:
+      candidate.runtimeOnly?.agentInvocation ?? candidate.agentInvocation,
+    compactionHistory:
+      candidate.runtimeOnly?.compactionHistory ?? candidate.compactionHistory,
+  };
+}
+
+export function normalizeHistoryMessages(
   history: ReadonlyArray<unknown>,
 ): LLMMessage[] {
   const normalized: LLMMessage[] = [];
@@ -1820,6 +1852,9 @@ function normalizeHistoryMessages(
       toolCalls?: unknown;
       toolCallId?: unknown;
       toolName?: unknown;
+      toolResultIntegrity?: ToolResultIntegrity;
+      agentInvocation?: AgentInvocationChannelMetadata;
+      compactionHistory?: CompactionHistoryMarkerV1;
       runtimeOnly?: {
         userMessageId?: unknown;
         toolResultIntegrity?: ToolResultIntegrity;
@@ -1827,6 +1862,7 @@ function normalizeHistoryMessages(
         compactionHistory?: CompactionHistoryMarkerV1;
       };
     };
+    const durable = durableHistoryMetadata(candidate);
     if (
       candidate.role !== "system" &&
       candidate.role !== "developer" &&
@@ -1859,30 +1895,25 @@ function normalizeHistoryMessages(
       // The invocation merge boundary is derived from authenticated channel
       // metadata instead of accepting a transient serialized flag.
       ...(typeof candidate.runtimeOnly?.userMessageId === "string" ||
-      candidate.runtimeOnly?.toolResultIntegrity !== undefined ||
-      candidate.runtimeOnly?.agentInvocation !== undefined ||
-      candidate.runtimeOnly?.compactionHistory !== undefined
+      durable.toolResultIntegrity !== undefined ||
+      durable.agentInvocation !== undefined ||
+      durable.compactionHistory !== undefined
         ? {
             runtimeOnly: {
               ...(typeof candidate.runtimeOnly?.userMessageId === "string"
                 ? { userMessageId: candidate.runtimeOnly.userMessageId }
                 : {}),
-              ...(candidate.runtimeOnly?.toolResultIntegrity !== undefined
-                ? {
-                    toolResultIntegrity:
-                      candidate.runtimeOnly.toolResultIntegrity,
-                  }
+              ...(durable.toolResultIntegrity !== undefined
+                ? { toolResultIntegrity: durable.toolResultIntegrity }
                 : {}),
-              ...(candidate.runtimeOnly?.agentInvocation !== undefined
+              ...(durable.agentInvocation !== undefined
                 ? {
-                    agentInvocation: candidate.runtimeOnly.agentInvocation,
+                    agentInvocation: durable.agentInvocation,
                     mergeBoundary: "user_context" as const,
                   }
                 : {}),
-              ...(candidate.runtimeOnly?.compactionHistory !== undefined
-                ? {
-                    compactionHistory: candidate.runtimeOnly.compactionHistory,
-                  }
+              ...(durable.compactionHistory !== undefined
+                ? { compactionHistory: durable.compactionHistory }
                 : {}),
             },
           }
@@ -3663,6 +3694,19 @@ export class Session {
   /**
    * Mirrors agenc runtime `Session::next_internal_sub_id` — monotonic id allocation.
    */
+  /**
+   * Move the internal sub-id counter past ids that already exist durably.
+   * A resumed session starts the counter at zero; without this its first
+   * turn reused `sub-<conversation>-2` and the admission journal refused
+   * the model step ("admission step identity already exists with different
+   * request data"). Never moves the counter backwards.
+   */
+  seedInternalSubId(next: number): void {
+    if (Number.isSafeInteger(next) && next > this.nextInternalSubIdValue) {
+      this.nextInternalSubIdValue = next;
+    }
+  }
+
   nextInternalSubId(): string {
     const id = this.nextInternalSubIdValue;
     this.nextInternalSubIdValue += 1;

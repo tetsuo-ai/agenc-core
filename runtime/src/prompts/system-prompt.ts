@@ -65,7 +65,9 @@ import {
 import { sanitizeSystemReminderContent } from "./attachments/system-reminder-sanitizer.js";
 import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./system-prompt-boundary.js";
 import { BRIEF_TOOL_NAME } from "../tools/BriefTool/prompt.js";
+import { loadMemoryPrompt } from "../memory/memdir.js";
 import { UNTRUSTED_TOOL_RESULT_BOUNDARY } from "../tools/untrusted-tool-result-framing.js";
+import { logForDebugging } from "../utils/debug.js";
 export type { McpServerInstructionsInput } from "./mcp-instructions-framing.js";
 export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./system-prompt-boundary.js";
 
@@ -366,12 +368,50 @@ function getSessionGuidanceSection(
   return joinSection("# Session-specific guidance", items);
 }
 
-/** memory — `loadMemoryPrompt()` output (from T10-C). Wired as a
- *  compute closure so the caller can pass a pre-loaded string or leave
- *  it absent. AgenC-original wrapper. */
+/** memory — the directory block of `loadMemoryPrompt()` (per-session
+ *  paths). Wired as a compute closure so the caller can pass a pre-loaded
+ *  string or leave it absent. AgenC-original wrapper. */
 function getMemorySection(memoryPrompt: string | undefined): string | null {
   if (!memoryPrompt || memoryPrompt.trim().length === 0) return null;
   return memoryPrompt;
+}
+
+/** auto memory — the path-free instruction half of `loadMemoryPrompt()`.
+ *  Lives in the static head: it is byte-stable across turns and sessions,
+ *  so it rides inside the cached prefix while only the directory paths stay
+ *  in the dynamic tail. */
+function getMemoryInstructionsSection(
+  memoryInstructions: string | undefined,
+): string | null {
+  if (!memoryInstructions || memoryInstructions.trim().length === 0) {
+    return null;
+  }
+  return memoryInstructions;
+}
+
+/**
+ * Resolve both halves of the memory prompt for a live session. Returns empty
+ * strings when auto memory is disabled, and fails closed (no memory prompt)
+ * when the memory directories or settings authority cannot be resolved, so a
+ * memory misconfiguration never blocks prompt assembly.
+ */
+export async function resolveMemoryPromptInputs(): Promise<{
+  readonly memoryInstructions: string;
+  readonly memoryPrompt: string;
+}> {
+  try {
+    const prompt = await loadMemoryPrompt();
+    return {
+      memoryInstructions: prompt?.instructions ?? "",
+      memoryPrompt: prompt?.directories ?? "",
+    };
+  } catch (error) {
+    logForDebugging(
+      `memory prompt unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      { level: "debug" },
+    );
+    return { memoryInstructions: "", memoryPrompt: "" };
+  }
 }
 
 // Re-export for the env helper's use; kept internal so callers don't
@@ -614,7 +654,15 @@ export interface AssembleSystemPromptOpts {
   readonly ctx: TurnContext;
   /** AGENC.md instruction content (from T10-B). */
   readonly projectInstructions?: string;
-  /** `memdir` loader output (from T10-C). */
+  /**
+   * Path-free memory instructions (`loadMemoryPrompt().instructions`).
+   * Rendered in the cacheable static head under `# auto memory`.
+   */
+  readonly memoryInstructions?: string;
+  /**
+   * Memory directory block (`loadMemoryPrompt().directories`). Rendered in
+   * the dynamic tail because it carries per-session paths.
+   */
   readonly memoryPrompt?: string;
   /** Whether the session has the agent/task tool enabled. */
   readonly agentsEnabled?: boolean;
@@ -740,12 +788,14 @@ export async function assembleBaseInstructionsForModel(params: {
   const enabledToolNames = new Set(
     params.registry.tools.map((tool) => tool.name),
   );
+  const memory = await resolveMemoryPromptInputs();
   const snapshot = await assembleSystemPromptSnapshot({
     profile: params.profile,
     session: params.session,
     ctx: params.ctx,
     projectInstructions: "",
-    memoryPrompt: "",
+    memoryInstructions: memory.memoryInstructions,
+    memoryPrompt: memory.memoryPrompt,
     mcpServers: [],
     enabledToolNames,
     agentsEnabled: enabledToolNames.has("spawn_agent"),
@@ -771,6 +821,7 @@ export interface AssembleSystemPromptInputs {
   readonly session: SystemPromptSessionSnapshot;
   readonly ctx: TurnContext;
   readonly projectInstructions: string;
+  readonly memoryInstructions: string;
   readonly memoryPrompt: string;
   readonly mcpServers: readonly McpServerInstructionsInput[];
   readonly enabledToolNames: ReadonlySet<string>;
@@ -796,6 +847,7 @@ export function buildAssembleSystemPromptOpts(
     session: inputs.session,
     ctx: inputs.ctx,
     projectInstructions: inputs.projectInstructions,
+    memoryInstructions: inputs.memoryInstructions,
     memoryPrompt: inputs.memoryPrompt,
     mcpServers: [...inputs.mcpServers],
     enabledToolNames: inputs.enabledToolNames,
@@ -909,7 +961,7 @@ export async function assembleSystemPrompt(
   // next to per-tool guidance.
   // Section order:
   //   intro → system → doing_tasks → actions → using_your_tools
-  //   → (agent_tool) → tone_and_style → output_efficiency
+  //   → (agent_tool) → tone_and_style → output_efficiency → (auto memory)
   const staticSections: Array<string | null> = [
     getSimpleIntroSection(opts.outputStyle != null),
     getSimpleSystemSection(),
@@ -921,6 +973,7 @@ export async function assembleSystemPrompt(
     getAgentToolSection(enabledTools),
     getSimpleToneAndStyleSection(),
     getOutputEfficiencySection(),
+    getMemoryInstructionsSection(opts.memoryInstructions),
   ];
 
   // Dynamic (post-boundary) tail. Sections returning null are dropped.
@@ -950,7 +1003,7 @@ export async function assembleSystemPrompt(
     DANGEROUS_uncachedSystemPromptSection(
       "memory",
       () => getMemorySection(opts.memoryPrompt),
-      "memory is rebuilt per turn and must not leak across sessions",
+      "memory directories are per session and must not leak across sessions",
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "project_instructions",
