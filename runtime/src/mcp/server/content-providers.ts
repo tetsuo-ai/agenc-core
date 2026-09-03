@@ -32,7 +32,19 @@
  * ancestor between them so the identity check lands on an out-of-scope inode
  * while the containment check lands on an in-scope name. The two proofs then
  * describe different files and out-of-scope bytes are served under an in-scope
- * path. Nothing here resolves a candidate pathname twice.
+ * path.
+ *
+ * There is exactly one second resolution left, and it is quarantined. Memory
+ * listings discover candidates with `scanMemoryFiles`, which binds the memory
+ * directory itself, so flipping that directory's parent while the scan runs
+ * lands the scan on an out-of-scope tree. Its output is therefore treated as
+ * an untrusted list of candidate NAMES and nothing else: a name is only ever
+ * used relative to the retained handle, where admission and the read reject it
+ * if it does not resolve to an admissible file inside the bound root, and
+ * every field this module then serves for that candidate — description and
+ * body alike — comes from a read made through that handle. Before that,
+ * `resources/list` copied the scan's description verbatim and could advertise
+ * an in-scope URI carrying an out-of-scope file's frontmatter.
  *
  * Platform: the shared primitives need a descriptor-path mechanism
  * (`/proc/self/fd` on linux; an identity comparison on darwin and freebsd).
@@ -126,10 +138,16 @@ export interface ScopedReadRejection {
  * tests replace the candidate at each filesystem I/O boundary.
  */
 export interface ScopedRegularFileTestHooks {
-  /** Fires after admission, before the verified open. */
+  /** Fires after admission, before the verified open of a BODY read. */
   readonly beforeOpenForTesting?: (path: string) => void | Promise<void>;
-  /** Fires after the verified open, before the bounded read. */
+  /** Fires after the verified open, before the bounded BODY read. */
   readonly beforeReadForTesting?: (path: string) => void | Promise<void>;
+  /**
+   * Fires after the verified open of a listing's bounded frontmatter read,
+   * before its bytes are taken. Kept separate from the body seams so a test
+   * can tell a listing's metadata read from a `resources/read`.
+   */
+  readonly beforeHeaderReadForTesting?: (path: string) => void | Promise<void>;
 }
 
 /**
@@ -201,14 +219,28 @@ function isSameOrChildPath(scopeRoot: string, candidate: string): boolean {
   return offset === "" || (!offset.startsWith("..") && !isAbsolute(offset));
 }
 
-/** One admission contract for listing and reading: regular, unlinked-again, bounded. */
+/**
+ * One admission contract for listing and reading: regular, unlinked-again,
+ * bounded.
+ *
+ * There is no symlink clause here and there never needs to be: every caller
+ * passes stats from `lstat` or from `fstat` on an already-open handle, and
+ * `isFile()` is false for a symlink in both. A `!isSymbolicLink()` clause did
+ * sit here, and it was dead code — no input could reach it with `isFile()`
+ * true — so it is gone rather than left to read like a guard. Final-component
+ * symlinks are refused by `O_NOFOLLOW` and by the explicit `isSymbolicLink()`
+ * check in `openVerifiedCandidate`, which are reachable.
+ *
+ * `nlink === 1n` is checked here, in `openVerifiedCandidate`, and again on the
+ * opened handle in `readScopedRegularFile`. No one of those three is killable
+ * on its own; they are pinned collectively.
+ */
 function admitsScopedSnapshot(
   stats: BigIntStats,
   maximumBytes: number,
 ): boolean {
   return (
     stats.isFile() &&
-    !stats.isSymbolicLink() &&
     stats.nlink === 1n &&
     stats.size <= BigInt(maximumBytes)
   );
@@ -428,6 +460,131 @@ async function readScopedRegularFile(
   }
 }
 
+/**
+ * Byte ceiling for the frontmatter prefix a memory listing reads.
+ *
+ * A description lives in frontmatter, and `resources/list` runs on every
+ * request, so the listing must not pull whole bodies into memory to find one
+ * field. 8 KiB is comfortably past any frontmatter block and two orders of
+ * magnitude below the body ceiling.
+ */
+const MAX_SCOPED_HEADER_BYTES = 8_192;
+
+/** Decode a possibly-truncated UTF-8 prefix, or `null` if it cannot be. */
+function decodeScopedPrefix(bytes: Buffer, truncated: boolean): string | null {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  // A prefix can end mid-sequence; a UTF-8 sequence is at most 4 bytes, so at
+  // most 3 trailing bytes may be dropped. Nothing else is tolerated: the
+  // decode stays fatal, so invalid bytes cannot reshape frontmatter.
+  const minimumEnd = truncated ? Math.max(0, bytes.byteLength - 3) : bytes.byteLength;
+  for (let end = bytes.byteLength; end >= minimumEnd; end -= 1) {
+    try {
+      return decoder.decode(bytes.subarray(0, end));
+    } catch {
+      // Try one byte fewer.
+    }
+  }
+  return null;
+}
+
+/**
+ * Derive a listed memory resource's description from a read bound to the very
+ * root handle its admission was proven against.
+ *
+ * This is the listing half of #1794. The description used to be copied
+ * verbatim out of `scanMemoryFiles`, which resolves the memory directory a
+ * second time and independently; flipping that directory's PARENT while the
+ * scan ran bound the scan to an out-of-scope tree, and `resources/list` then
+ * advertised an in-scope URI whose description exists only in an out-of-scope
+ * file's frontmatter. Measured against the module before this change, with no
+ * test seams, that leaked on 14 of 253,480 listings. Reading the field here
+ * instead means the listing can only describe a file the retained handle
+ * proved is inside the scope root.
+ */
+async function readScopedFrontmatterDescription(
+  root: VerifiedRoot,
+  relativePath: string,
+  admitted: FileIdentity,
+  hooks: ScopedRegularFileTestHooks,
+  observer: ScopedReadObserverOptions,
+): Promise<string | null> {
+  const requestedPath = join(root.binding.requestedPath, relativePath);
+  let handle: FileHandle | null = null;
+  try {
+    handle = await openVerifiedCandidate(
+      root,
+      relativePath,
+      NEVER_ABORTED,
+      VERIFIED_READ_CONTEXT,
+    );
+    if (handle === null) {
+      return noteRejection(observer, "verification_failed", requestedPath);
+    }
+    const opened = await handle.stat({ bigint: true });
+    const openedIdentity = identityFromStats(opened);
+    // The opened object must be the one admission proved, or the description
+    // would describe a file this listing never admitted.
+    if (!sameStats(admitted, openedIdentity)) {
+      return noteRejection(observer, "verification_failed", requestedPath);
+    }
+    await hooks.beforeHeaderReadForTesting?.(requestedPath);
+    const limit = Math.min(MAX_SCOPED_HEADER_BYTES, Number(opened.size));
+    const buffer = Buffer.allocUnsafe(limit);
+    let length = 0;
+    while (length < limit) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        length,
+        limit - length,
+        length,
+      );
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    await assertCandidateUnchanged(
+      handle,
+      descriptorRelativePath(root, relativePath, VERIFIED_READ_CONTEXT),
+      openedIdentity,
+      NEVER_ABORTED,
+      VERIFIED_READ_CONTEXT,
+    );
+    if (
+      !(await verifyParentChain(
+        root,
+        relativePath,
+        NEVER_ABORTED,
+        VERIFIED_READ_CONTEXT,
+      ))
+    ) {
+      return noteRejection(observer, "ancestor_changed", requestedPath);
+    }
+    const text = decodeScopedPrefix(
+      buffer.subarray(0, length),
+      Number(opened.size) > limit,
+    );
+    if (text === null) {
+      return noteRejection(observer, "invalid_utf8", requestedPath);
+    }
+    const { frontmatter } = parseFrontmatter(
+      text,
+      canonicalRelativePath(root, relativePath),
+    );
+    return typeof frontmatter.description === "string"
+      ? frontmatter.description
+      : null;
+  } catch (error) {
+    return noteRejection(
+      observer,
+      error instanceof UnsupportedVerifiedReadPlatformError
+        ? "platform_unsupported"
+        : "verification_failed",
+      requestedPath,
+    );
+  } finally {
+    if (handle !== null) await handle.close().catch(() => undefined);
+  }
+}
+
 interface SkillCandidate {
   readonly name: string;
   readonly relativePath: string;
@@ -563,6 +720,14 @@ export interface MemoryResourceProviderOptions
   readonly scopeRoot?: string;
   /** Captured config home used to exclude private session files. */
   readonly configHomeDir?: string;
+  /**
+   * @internal Deterministic race seams around the memory scan, which resolves
+   * the memory directory independently of the retained root handle. A test
+   * flips an ancestor between them to prove the listing trusts nothing the
+   * scan reports about a candidate.
+   */
+  readonly beforeMemoryScanForTesting?: (dir: string) => void | Promise<void>;
+  readonly afterMemoryScanForTesting?: (dir: string) => void | Promise<void>;
 }
 
 const MEMORY_URI_SCHEME = "agenc-memory://";
@@ -586,34 +751,47 @@ async function listMemoryResources(
     const root = await bindScopedRoot(dir, scopeRoot, options);
     if (root === null) continue;
     try {
-      const headers = await scanMemoryFiles(dir);
-      for (const header of headers) {
+      await options.beforeMemoryScanForTesting?.(dir);
+      // The scan binds `dir` itself, so an ancestor flip while it runs lands
+      // it on an out-of-scope tree. Take names from it; take nothing else.
+      const scanned = await scanMemoryFiles(dir);
+      await options.afterMemoryScanForTesting?.(dir);
+      for (const header of scanned) {
+        const { relativePath } = header;
+        const requestedPath = join(root.binding.requestedPath, relativePath);
         // Session memory/transcripts are excluded outright — same boundary
-        // the permission layer enforces for in-process reads.
+        // the permission layer enforces for in-process reads. The path tested
+        // is the candidate's path below the bound root, not the one the scan
+        // reported for it.
         if (
-          detectSessionFileType(header.filePath, options.configHomeDir) !== null
+          detectSessionFileType(requestedPath, options.configHomeDir) !== null
         ) {
           continue;
         }
         const admitted = await admitScopedCandidate(
           root,
-          header.relativePath,
+          relativePath,
           MAX_SCOPED_FILE_BYTES,
           options,
         );
         if (admitted === null) continue;
-        const uri = `${MEMORY_URI_SCHEME}${dirIndex}/${header.filename}`;
+        const description = await readScopedFrontmatterDescription(
+          root,
+          relativePath,
+          admitted,
+          options,
+          options,
+        );
+        const uri = `${MEMORY_URI_SCHEME}${dirIndex}/${relativePath}`;
         resources.set(uri, {
           definition: {
             uri,
-            name: header.filename,
-            ...(header.description !== null
-              ? { description: header.description }
-              : {}),
+            name: relativePath,
+            ...(description !== null ? { description } : {}),
             mimeType: "text/markdown",
           },
           rootDir: dir,
-          relativePath: header.relativePath,
+          relativePath,
           maximumBytes: MAX_SCOPED_FILE_BYTES,
         });
       }

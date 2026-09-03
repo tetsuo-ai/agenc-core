@@ -3,17 +3,36 @@
  * prompts and resource bodies from a location proven against a retained root
  * descriptor, never from a pathname resolved a second time.
  *
- * Every test here is a *mutation* test: each one is written so that deleting
- * the single guard named in its title makes it fail. A guard whose deletion
- * leaves the suite green is not covered, however many tests surround it. The
- * one guard with no behavioural mutant, `O_NOFOLLOW`, is pinned on the flag
- * value instead and the reason is written down in `tests/fs/verified-read.test.ts`.
+ * Most tests here are *mutation* tests: each is written so that deleting the
+ * single guard named in its title makes it fail. A guard whose deletion leaves
+ * the suite green is not covered, however many tests surround it.
+ *
+ * Some guards are not individually killable, and saying so is part of the
+ * record rather than a gap to paper over:
+ *
+ *   - `O_NOFOLLOW` has no behavioural mutant at all. It is pinned on the flag
+ *     value in `tests/fs/verified-read.test.ts`, with the reason.
+ *   - `nlink === 1n` is checked in three places (listing admission, the open
+ *     in `openVerifiedCandidate`, and the opened handle in
+ *     `readScopedRegularFile`). Deleting any one leaves the suite green; only
+ *     deleting all three fails it. They are pinned collectively.
+ *   - the root symlink pre-check in `bindVerifiedRoot` is only killable
+ *     together with `O_DIRECTORY`/`O_NOFOLLOW` on the root open.
+ *   - the `isContained` pre-check in `openVerifiedCandidate` is redundant with
+ *     the ancestor walk's canonical containment for every reachable escape.
+ *
+ * Two tests here used to pass for the wrong reason and now do not: the
+ * pre-open ancestor walk (see "at the open boundary") stayed green when it was
+ * deleted, because the test's own restore step moved the bound root's
+ * timestamps and the POST-read walk rejected instead; and the same-inode
+ * symlink test named a proof that never runs.
  */
 import { spawnSync } from "node:child_process";
 import {
   linkSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -31,6 +50,7 @@ import {
   MAX_SCOPED_INSTRUCTION_FILE_BYTES,
   createMemoryResourceProvider,
   createSkillPromptProvider,
+  type MemoryResourceProviderOptions,
   type ScopedReadRejection,
 } from "../../src/mcp/server/content-providers.js";
 
@@ -43,7 +63,7 @@ let root: string;
 let rejections: ScopedReadRejection[];
 
 beforeEach(async () => {
-  root = mkdtempSync(join(tmpdir(), "agenc-mcp-verified-"));
+  root = realpathSync(mkdtempSync(join(tmpdir(), "agenc-mcp-verified-")));
   roots.push(root);
   rejections = [];
   vi.stubEnv("AGENC_HOME", root);
@@ -77,7 +97,7 @@ function makeSkill(name: string, body: string): string {
 }
 
 function makeOutsideDir(): string {
-  const outside = mkdtempSync(join(tmpdir(), "agenc-mcp-outside-"));
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), "agenc-mcp-outside-")));
   roots.push(outside);
   return outside;
 }
@@ -119,6 +139,7 @@ function skillProvider(
     scopeRoot?: string;
     beforeOpenForTesting?: (path: string) => void;
     beforeReadForTesting?: (path: string) => void;
+    beforeHeaderReadForTesting?: (path: string) => void;
   } = {},
 ) {
   return createSkillPromptProvider({
@@ -130,13 +151,7 @@ function skillProvider(
 }
 
 function resourceProvider(
-  overrides: {
-    memoryDirs?: readonly string[];
-    instructionFiles?: readonly string[];
-    scopeRoot?: string;
-    beforeOpenForTesting?: (path: string) => void;
-    beforeReadForTesting?: (path: string) => void;
-  } = {},
+  overrides: Partial<MemoryResourceProviderOptions> = {},
 ) {
   return createMemoryResourceProvider({
     memoryDirs: [join(root, "memory")],
@@ -173,16 +188,17 @@ describe("verified skill prompt reads", () => {
     expect(await provider.getPrompt("swapped")).toBeNull();
   });
 
-  test("omits a skill swapped for a same-inode symlink: the identity proof rejects it", async () => {
+  test("omits a skill swapped for a same-inode symlink: the pre-open symlink check rejects it", async () => {
     const file = makeSkill("selflink", "safe body");
     const provider = skillProvider({
       beforeOpenForTesting: (path) => {
         if (path !== file) return;
         // The replacement symlink resolves to the very inode validation saw.
-        // What rejects it is the identity proof, not `O_NOFOLLOW`: creating
-        // the second name moves the inode's ctime, so the opened object no
-        // longer matches the admitted one. See tests/fs/verified-read.test.ts
-        // for why no behavioural mutant can isolate the flag.
+        // Instrumenting both branches shows which clause actually fires: the
+        // `lstat(...).isSymbolicLink()` check inside `openVerifiedCandidate`,
+        // before the open. The identity proof would also reject it — creating
+        // the second name moves the inode's ctime — but it never runs, so
+        // this test does not pin it and the title no longer says it does.
         const alias = `${file}.same-inode`;
         linkSync(file, alias);
         rmSync(file);
@@ -371,14 +387,23 @@ describe("descriptor-bound ancestor containment", () => {
         selfSymlinkAncestor("preopen");
       },
       beforeReadForTesting: (path) => {
-        // Restore before the post-read walk, so only the pre-open walk can
-        // reject this. Without it the same bytes are served through an
-        // unvetted ancestor.
+        // Reached only when the pre-open walk is gone. Restoring here puts the
+        // ancestor back before the post-read walk looks, so the post-read walk
+        // cannot stand in for the deleted one and the mutant serves bytes
+        // taken through an unvetted ancestor.
         if (path !== file) return;
         restoreAncestor("preopen");
       },
     });
     expect(await provider.listPrompts()).toEqual([]);
+    // Naming the reason is what makes this isolating. The restore moves the
+    // bound skills root's mtime and ctime; while the directory re-proof still
+    // compared those, the POST-read walk rejected on the restore alone and
+    // this test stayed green with the pre-open walk deleted. The directory
+    // re-proof is now dev/ino/mode, so a moved timestamp is not a rejection
+    // and `ancestor_changed` here would mean the wrong walk did the work.
+    expect(reasons()).toContain("verification_failed");
+    expect(reasons()).not.toContain("ancestor_changed");
   });
 
   test("omits a skill whose ancestor becomes a symlink after the bytes are read", async () => {
@@ -544,6 +569,94 @@ describe("fatal UTF-8 decoding", () => {
   });
 });
 
+/**
+ * GUARD: `readScopedFrontmatterDescription`, i.e. the listing's description
+ * coming from a read bound to the retained root handle instead of from
+ * `scanMemoryFiles`.
+ *
+ * `scanMemoryFiles` binds the memory directory itself, so it is a second,
+ * independent resolution of that name. Flipping the directory's PARENT for
+ * exactly the length of the scan lands the scan on an out-of-scope tree while
+ * the provider's own bind and admission both land in scope. Deleting the
+ * scope-bound read and taking `header.description` back makes this test
+ * report the out-of-scope frontmatter under an in-scope URI. Measured without
+ * seams against the module before this change: 14 forged listings in 253,480.
+ *
+ * Flipping a deeper ancestor, inside the scanned tree, does not reproduce it:
+ * that trips the scanner's own directory-identity checks. It is the ROOT
+ * BINDING that has to be churned.
+ */
+describe("memory listing metadata", () => {
+  test("does not describe an in-scope resource with an out-of-scope file's frontmatter", async () => {
+    const sub = join(root, "sub");
+    mkdirSync(join(sub, "memory"), { recursive: true });
+    writeFileSync(
+      join(sub, "memory", "note.md"),
+      ["---", "name: note", "description: in-scope note", "---", "in-scope body"].join("\n"),
+    );
+    const outside = makeOutsideDir();
+    mkdirSync(join(outside, "memory"), { recursive: true });
+    writeFileSync(
+      join(outside, "memory", "note.md"),
+      ["---", "name: note", `description: ${FORGED}`, "---", SECRET].join("\n"),
+    );
+    const provider = resourceProvider({
+      memoryDirs: [join(sub, "memory")],
+      beforeMemoryScanForTesting: () => {
+        renameSync(sub, `${sub}.real`);
+        symlinkSync(outside, sub);
+      },
+      afterMemoryScanForTesting: () => {
+        unlinkSync(sub);
+        renameSync(`${sub}.real`, sub);
+      },
+    });
+    const resources = await provider.listResources();
+    const note = resources.find((r) => r.name === "note.md");
+    expect(note).toBeDefined();
+    expect(note!.uri).toBe("agenc-memory://0/note.md");
+    expect(note!.description).toBe("in-scope note");
+    expect(JSON.stringify(resources)).not.toContain(FORGED);
+  });
+});
+
+/**
+ * GUARD: the directory re-proof being `dev`/`ino`/`mode` rather than the full
+ * six-field identity.
+ *
+ * A directory's mtime and ctime advance whenever any child is added, removed,
+ * or renamed. While the re-proof compared them, one neighbouring write during
+ * a listing emptied the whole listing: measured under purely benign sibling
+ * churn with no attacker, the skill listing was available 112 times in
+ * 172,076 attempts. Widening the comparison back fails this test.
+ */
+describe("availability under benign concurrent writes", () => {
+  test("still lists a skill while a sibling file is written into the skill root", async () => {
+    makeSkill("stable", "safe body");
+    const provider = skillProvider({
+      beforeReadForTesting: () => {
+        writeFileSync(
+          join(root, "skills", "sibling.md"),
+          ["---", "description: sibling", "---", "neighbour"].join("\n"),
+        );
+      },
+    });
+    const prompts = await provider.listPrompts();
+    expect(prompts.map((p) => p.name)).toContain("stable");
+  });
+
+  test("still lists a memory resource while a sibling file is written into the memory dir", async () => {
+    makeMemoryFile("notes.md", "plain body");
+    const provider = resourceProvider({
+      beforeHeaderReadForTesting: () => {
+        writeFileSync(join(root, "memory", "sibling.md"), "neighbour");
+      },
+    });
+    const resources = await provider.listResources();
+    expect(resources.map((r) => r.name)).toContain("notes.md");
+  });
+});
+
 describe("verified memory resource reads", () => {
   test("reads an in-scope memory file with secrets redacted", async () => {
     makeMemoryFile("notes.md", `plain body ${SECRET_TOKEN}`);
@@ -557,19 +670,26 @@ describe("verified memory resource reads", () => {
     expect(read?.contents[0].text).not.toContain(SECRET_TOKEN);
   });
 
-  test("does not read resource bodies while listing", async () => {
+  test("reads only a bounded frontmatter prefix while listing, never a body", async () => {
     makeMemoryFile("notes.md", "plain body");
-    let reads = 0;
+    let bodyReads = 0;
+    let headerReads = 0;
     const provider = resourceProvider({
       beforeReadForTesting: () => {
-        reads += 1;
+        bodyReads += 1;
+      },
+      beforeHeaderReadForTesting: () => {
+        headerReads += 1;
       },
     });
     const resources = await provider.listResources();
-    expect(reads).toBe(0);
+    // The listing derives its description from the candidate it admitted, so
+    // it does take bytes — a bounded frontmatter prefix, not the body.
+    expect(headerReads).toBe(1);
+    expect(bodyReads).toBe(0);
     const uri = resources.find((r) => r.name === "notes.md")!.uri;
     await provider.readResource(uri);
-    expect(reads).toBe(1);
+    expect(bodyReads).toBe(1);
   });
 
   test("does not list multiply linked memory files", async () => {

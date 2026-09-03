@@ -23,6 +23,18 @@
  *      descriptor still resolves inside the root.
  *   4. `assertCandidateUnchanged` re-proves the object after the bytes are read.
  *
+ * Directories and files are proven on different fields, deliberately. A
+ * candidate FILE is proven on the full `sameStats` identity, because `size`,
+ * `mtime`, and `ctime` are what detect a content swap under a retained
+ * handle. A DIRECTORY is proven on `sameDirectoryIdentity` — `dev`, `ino`,
+ * `mode` — because a directory's `size`, `mtime`, and `ctime` move whenever
+ * any child is added, removed, or renamed. Requiring those to stand still was
+ * not stricter containment, it was an availability collapse: measured under
+ * purely benign sibling churn with no attacker, an MCP skill listing survived
+ * 112 of 172,076 attempts. What an ancestor swap must do is make the retained
+ * handle and the pathname name different objects, and `dev`/`ino` is exactly
+ * the pair that catches that.
+ *
  * Platform story, and it is not uniform:
  *
  *   - linux: `/proc/self/fd/N` is a traversable, live view of an open
@@ -88,6 +100,23 @@ export interface VerifiedReadContext {
   readonly checkAborted: (signal: AbortSignal) => void;
   /** Builds the error raised on a platform without descriptor-path proofs. */
   readonly unsupportedPlatform: (message: string) => Error;
+  /**
+   * @internal Deterministic race seam, fired by `bindVerifiedRoot` after the
+   * validating `lstat`/`realpath` and before the `open` that retains the
+   * descriptor.
+   *
+   * That gap is the one window a root binding cannot close by construction:
+   * `O_NOFOLLOW` refuses a symlinked *final* component but says nothing about
+   * mid-path ones, so an attacker who repoints an ancestor here makes the
+   * `open` land on a different directory than the one that was validated. The
+   * two proofs that catch it — the before/opened/after identity proof and the
+   * final-path proof — are what the tests reach through this hook; without a
+   * seam they are only reachable by a timing race, which is why they sat
+   * unpinned while a mutant that deletes them served out-of-scope bodies.
+   */
+  readonly beforeRootOpenForTesting?: (
+    requestedPath: string,
+  ) => void | Promise<void>;
 }
 
 /** Raised when the platform cannot prove where an open descriptor points. */
@@ -168,6 +197,38 @@ export function sameStats(
     left.size === right.size &&
     left.mtimeNs === right.mtimeNs &&
     left.ctimeNs === right.ctimeNs
+  );
+}
+
+/**
+ * Identity fields that prove two observations describe the same *directory*.
+ *
+ * Deliberately narrower than `sameStats`: a directory's `mtime`, `ctime`, and
+ * `size` all move whenever any child is added, removed, or renamed, so a
+ * directory proof that included them rejected every ordinary concurrent write
+ * in the workspace. Measured under purely benign sibling churn and no
+ * attacker at all, the full-identity proof left the MCP skill listing
+ * available 0.07% of the time (112 of 172,076 listings); the entire listing
+ * collapsed because a neighbouring file was being written.
+ *
+ * Containment does not need those fields. What an ancestor swap has to do is
+ * make the retained handle and the pathname refer to *different* objects, and
+ * `dev`/`ino` is exactly the pair that detects that; `mode` pins the object
+ * type and permission bits alongside it. A directory's own timestamp
+ * advancing is not a containment violation, and treating it as one traded all
+ * availability for no additional proof.
+ *
+ * Candidate *files* keep the full `sameStats` identity, where `size`, `mtime`,
+ * and `ctime` are what detect an in-place content swap.
+ */
+export function sameDirectoryIdentity(
+  left: BigIntStats | FileIdentity,
+  right: BigIntStats | FileIdentity,
+): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode
   );
 }
 
@@ -267,6 +328,8 @@ export async function bindVerifiedRoot(
     return null;
   }
   context.checkAborted(signal);
+  await context.beforeRootOpenForTesting?.(requestedPath);
+  context.checkAborted(signal);
   let handle: FileHandle;
   try {
     handle = await open(requestedPath, verifiedDirectoryOpenFlags());
@@ -281,10 +344,15 @@ export async function bindVerifiedRoot(
     context.checkAborted(signal);
     const after = await lstat(requestedPath, { bigint: true });
     context.checkAborted(signal);
+    // Directory identity, not full `sameStats`: `before`, `opened`, and
+    // `after` are three observations taken across two awaits, so any child
+    // write anywhere in this directory moved its timestamps between them.
+    // What this proves is that the object the `open` landed on is the object
+    // the `lstat` validated, and `dev`/`ino`/`mode` is that proof.
     if (
       !opened.isDirectory() ||
-      !sameStats(before, opened) ||
-      !sameStats(opened, after)
+      !sameDirectoryIdentity(before, opened) ||
+      !sameDirectoryIdentity(opened, after)
     ) {
       throw new VerifiedRootUnstableError(
         "identity",
@@ -423,10 +491,13 @@ export async function verifyParentChain(
   context.checkAborted(signal);
   const currentRoot = await lstat(root.binding.requestedPath, { bigint: true });
   context.checkAborted(signal);
+  // `sameDirectoryIdentity`, not `sameStats`: see its doc comment. The root
+  // is re-proven on every listing and on every read, so requiring its
+  // timestamps to stand still required the whole workspace to stand still.
   return (
     !currentRoot.isSymbolicLink() &&
-    sameStats(openedRoot, root.binding.identity) &&
-    sameStats(currentRoot, root.binding.identity)
+    sameDirectoryIdentity(openedRoot, root.binding.identity) &&
+    sameDirectoryIdentity(currentRoot, root.binding.identity)
   );
 }
 
@@ -483,9 +554,23 @@ export async function finalDescriptorPath(
       return null;
     }
     context.checkAborted(signal);
-    return !expected.isSymbolicLink() && sameStats(opened, expected)
-      ? expectedPath
-      : null;
+    if (expected.isSymbolicLink()) return null;
+    // Directories are compared on `dev`/`ino`/`mode` for the reason given on
+    // `sameDirectoryIdentity`; every caller that hands a directory here
+    // separately proves the handle against its retained binding. Regular
+    // files keep the full identity, which is what detects a content swap.
+    //
+    // This branch has no deterministic test: the two observations it compares
+    // are both taken inside this function, so nothing can write between them
+    // on demand. It is pinned by measurement instead. Narrowing only the two
+    // other directory proofs and leaving this one on `sameStats` puts the
+    // benign-churn skill listing at 68.91% (24,129 of 35,016) instead of
+    // 100.00%; on linux the branch is not reached at all, because there the
+    // descriptor's path is read back from `/proc/self/fd`.
+    const same = opened.isDirectory()
+      ? expected.isDirectory() && sameDirectoryIdentity(opened, expected)
+      : sameStats(opened, expected);
+    return same ? expectedPath : null;
   }
   throw context.unsupportedPlatform(
     "descriptor final-path verification is unavailable on this platform",
