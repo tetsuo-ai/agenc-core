@@ -475,9 +475,28 @@ admission, redaction, and audit path.
 Prompts and resources are scoped to the same canonical workspace: project
 `.agenc/skills`, `.agenc/memory`, and `AGENC.md`. User-global skills, memory,
 and instructions are never exposed by inbound serve.
-Every candidate is canonicalized, regular-file checked, and rejected if a
-symlink resolves outside the workspace. Resource listing remains metadata-only;
-the server revalidates and reads only the resource selected by `resources/read`.
+Containment is bound to an open directory descriptor, not to a pathname. Each
+skill root, memory directory, and instruction-file parent is opened once per
+request and retained; that handle is proven to sit inside the workspace, and
+every candidate below it is admitted, opened with `O_NOFOLLOW`, read, and
+re-proven against the same handle, with the whole ancestor chain checked for
+symlinks and escapes before and after the bytes are taken. Deciding containment
+by resolving a candidate's pathname a second time is not sound: `lstat` and
+`realpath` are independent resolutions, and a writable workspace can flip an
+ancestor between them so the two checks describe different files. Resource
+listing remains metadata-only; the server revalidates and reads only the
+resource selected by `resources/read`.
+
+An instruction file is served up to the same 5 MiB ceiling the runtime applies
+to the same file in-process, so an AGENC.md that the agent reads is not
+silently missing over MCP. Skills and memory files keep a 1 MiB ceiling.
+
+The descriptor proofs need a platform mechanism for reading back where an open
+descriptor points (`/proc/self/fd` on Linux; a descriptor-identity comparison
+on macOS and FreeBSD). Where the platform offers neither — **Windows** — inbound
+serve fails closed: `prompts/list` and `resources/list` are empty rather than
+falling back to plain pathname resolution. Memory resources were already empty
+there, because the memory scanner reports `unsupported` on win32.
 
 ## Security notes
 

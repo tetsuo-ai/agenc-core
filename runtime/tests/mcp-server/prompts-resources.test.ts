@@ -5,7 +5,7 @@
  * prompt, and reads a memory file as a resource; excluded/secret
  * content stays out.
  */
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -140,17 +140,6 @@ describe("MCP prompts backed by skills", () => {
 });
 
 describe("MCP resources backed by memory + instruction files", () => {
-  it("imports the canonical secret sanitizer for resource egress", async () => {
-    const source = await readFile(
-      new URL("../../src/mcp/server/content-providers.ts", import.meta.url),
-      "utf8",
-    );
-
-    expect(source).toContain(
-      'import { redactSecrets } from "../../secrets/sanitizer.js";',
-    );
-  });
-
   async function makeResourceServer(
     setup: {
       /** Body written into deploy-notes.md and AGENC.md before serving. */

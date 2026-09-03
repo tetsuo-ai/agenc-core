@@ -24,6 +24,7 @@ import {
 } from "node:path";
 
 import {
+  MAX_SECURE_PROJECT_FILE_BYTES,
   type InstructionFileIdentity,
   readInstructionFileSnapshot,
 } from "./secure-instruction-file.js";
@@ -46,7 +47,6 @@ export {
  */
 const OVERRIDE_PROJECT_INSTRUCTION_FILE = "AGENC.override.md";
 const DOT_AGENC_PROJECT_INSTRUCTION_FILE = join(".agenc", "AGENC.md");
-const MAX_SECURE_PROJECT_FILE_BYTES = 5 * 1024 * 1024;
 
 /**
  * Default project-root markers used when config does not specify any.

@@ -1,10 +1,13 @@
 /**
- * Regression tests for issue #1794: MCP content providers must serve
- * skill prompts and resource bodies through one descriptor-bound reader.
- * A writable workspace cannot swap the candidate file or an ancestor
- * between validation and bytes: every swap lands on a hook at a real
- * filesystem I/O boundary, and each scenario must end with the candidate
- * omitted (prompts) or unreadable (resources) — never with swapped bytes.
+ * Regression tests for issue #1794: MCP content providers must serve skill
+ * prompts and resource bodies from a location proven against a retained root
+ * descriptor, never from a pathname resolved a second time.
+ *
+ * Every test here is a *mutation* test: each one is written so that deleting
+ * the single guard named in its title makes it fail. A guard whose deletion
+ * leaves the suite green is not covered, however many tests surround it. The
+ * one guard with no behavioural mutant, `O_NOFOLLOW`, is pinned on the flag
+ * value instead and the reason is written down in `tests/fs/verified-read.test.ts`.
  */
 import { spawnSync } from "node:child_process";
 import {
@@ -14,6 +17,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,19 +28,24 @@ import { enterCanonicalSettingsAuthority } from "../../src/utils/settings/canoni
 
 import {
   MAX_SCOPED_FILE_BYTES,
+  MAX_SCOPED_INSTRUCTION_FILE_BYTES,
   createMemoryResourceProvider,
   createSkillPromptProvider,
+  type ScopedReadRejection,
 } from "../../src/mcp/server/content-providers.js";
 
 const SECRET = "PRIVATE SESSION TRANSCRIPT ak_1794_secret";
 const SECRET_TOKEN = "ghp_1794567890abcdefABCDEF1234567890abcdef";
+const FORGED = "FORGED-OUT-OF-SCOPE";
 
 const roots: string[] = [];
 let root: string;
+let rejections: ScopedReadRejection[];
 
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), "agenc-mcp-verified-"));
   roots.push(root);
+  rejections = [];
   vi.stubEnv("AGENC_HOME", root);
   enterCanonicalSettingsAuthority(new ConfigStore({
     home: root,
@@ -52,6 +61,10 @@ afterEach(() => {
   }
 });
 
+function reasons(): string[] {
+  return rejections.map((rejection) => rejection.reason);
+}
+
 function makeSkill(name: string, body: string): string {
   const dir = join(root, "skills", name);
   mkdirSync(dir, { recursive: true });
@@ -63,10 +76,14 @@ function makeSkill(name: string, body: string): string {
   return file;
 }
 
-function makeOutsideSecret(name: string): string {
+function makeOutsideDir(): string {
   const outside = mkdtempSync(join(tmpdir(), "agenc-mcp-outside-"));
   roots.push(outside);
-  const file = join(outside, name);
+  return outside;
+}
+
+function makeOutsideSecret(name: string): string {
+  const file = join(makeOutsideDir(), name);
   writeFileSync(
     file,
     ["---", `description: ${name}`, "---", SECRET, SECRET_TOKEN].join("\n"),
@@ -84,8 +101,22 @@ function makeMemoryFile(name: string, body: string): string {
   return file;
 }
 
+/**
+ * `mkfifo` is asserted here, in the test body, and never inside a reader hook:
+ * a hook throws *into* the reader's own try/catch, where the failure becomes
+ * the same `null` the test asserts on and the test passes without ever having
+ * built a FIFO.
+ */
+function makeFifo(path: string): void {
+  const result = spawnSync("mkfifo", [path]);
+  expect(result.error).toBeUndefined();
+  expect(result.status).toBe(0);
+}
+
 function skillProvider(
-  hooks: {
+  overrides: {
+    skillRoots?: readonly string[];
+    scopeRoot?: string;
     beforeOpenForTesting?: (path: string) => void;
     beforeReadForTesting?: (path: string) => void;
   } = {},
@@ -93,12 +124,16 @@ function skillProvider(
   return createSkillPromptProvider({
     skillRoots: [join(root, "skills")],
     scopeRoot: root,
-    ...hooks,
+    onRejected: (rejection) => rejections.push(rejection),
+    ...overrides,
   });
 }
 
 function resourceProvider(
-  hooks: {
+  overrides: {
+    memoryDirs?: readonly string[];
+    instructionFiles?: readonly string[];
+    scopeRoot?: string;
     beforeOpenForTesting?: (path: string) => void;
     beforeReadForTesting?: (path: string) => void;
   } = {},
@@ -106,7 +141,8 @@ function resourceProvider(
   return createMemoryResourceProvider({
     memoryDirs: [join(root, "memory")],
     scopeRoot: root,
-    ...hooks,
+    onRejected: (rejection) => rejections.push(rejection),
+    ...overrides,
   });
 }
 
@@ -137,13 +173,16 @@ describe("verified skill prompt reads", () => {
     expect(await provider.getPrompt("swapped")).toBeNull();
   });
 
-  test("omits a skill swapped for a symlink to the same inode after validation", async () => {
+  test("omits a skill swapped for a same-inode symlink: the identity proof rejects it", async () => {
     const file = makeSkill("selflink", "safe body");
     const provider = skillProvider({
       beforeOpenForTesting: (path) => {
         if (path !== file) return;
-        // The replacement symlink resolves to the very inode validation
-        // saw; only the O_NOFOLLOW open rejects it.
+        // The replacement symlink resolves to the very inode validation saw.
+        // What rejects it is the identity proof, not `O_NOFOLLOW`: creating
+        // the second name moves the inode's ctime, so the opened object no
+        // longer matches the admitted one. See tests/fs/verified-read.test.ts
+        // for why no behavioural mutant can isolate the flag.
         const alias = `${file}.same-inode`;
         linkSync(file, alias);
         rmSync(file);
@@ -168,11 +207,10 @@ describe("verified skill prompt reads", () => {
 
   test("omits a skill whose ancestor directory is swapped for a symlink after validation", async () => {
     const file = makeSkill("ancestor", "safe body");
-    const outsideDir = mkdtempSync(join(tmpdir(), "agenc-mcp-outside-"));
-    roots.push(outsideDir);
+    const outsideDir = makeOutsideDir();
     writeFileSync(
       join(outsideDir, "SKILL.md"),
-      ["---", "description: forged", "---", SECRET].join("\n"),
+      ["---", `description: ${FORGED}`, "---", SECRET].join("\n"),
     );
     const provider = skillProvider({
       beforeOpenForTesting: (path) => {
@@ -229,22 +267,281 @@ describe("verified skill prompt reads", () => {
     );
     const provider = skillProvider();
     expect(await provider.listPrompts()).toEqual([]);
+    expect(reasons()).toContain("too_large");
   });
 
   test.runIf(process.platform !== "win32")(
     "omits a skill replaced by a FIFO after validation without blocking",
     async () => {
       const file = makeSkill("fifod", "safe body");
+      const fifo = join(root, "skills", "fifod", "swap-in.fifo");
+      makeFifo(fifo);
       const provider = skillProvider({
         beforeOpenForTesting: (path) => {
           if (path !== file) return;
           rmSync(file);
-          expect(spawnSync("mkfifo", [file]).status).toBe(0);
+          renameSync(fifo, file);
         },
       });
       expect(await provider.listPrompts()).toEqual([]);
     },
   );
+});
+
+/**
+ * GUARD: the `scopeRoot` containment check in `bindScopedRoot`.
+ * Deleting it makes both tests below serve out-of-scope bodies.
+ */
+describe("scope-root containment", () => {
+  test("omits a skill root whose canonical path escapes the scope root", async () => {
+    const outside = makeOutsideDir();
+    const escapedSkills = join(outside, "skills");
+    mkdirSync(join(escapedSkills, "escaped"), { recursive: true });
+    writeFileSync(
+      join(escapedSkills, "escaped", "SKILL.md"),
+      ["---", `description: ${FORGED}`, "---", SECRET].join("\n"),
+    );
+    // The requested path is inside the scope root and is a real directory;
+    // only its canonical resolution is outside, because an ancestor is a
+    // symlink. Nothing about the name gives that away.
+    symlinkSync(outside, join(root, "linked"));
+    const provider = skillProvider({
+      skillRoots: [join(root, "linked", "skills")],
+    });
+    expect(await provider.listPrompts()).toEqual([]);
+    expect(await provider.getPrompt("escaped")).toBeNull();
+    expect(reasons()).toContain("root_outside_scope");
+  });
+
+  test("omits an instruction file whose parent escapes the scope root", async () => {
+    const outside = makeOutsideDir();
+    mkdirSync(join(outside, "project"), { recursive: true });
+    writeFileSync(
+      join(outside, "project", "AGENC.md"),
+      `# escaped instructions\n${SECRET}`,
+    );
+    symlinkSync(outside, join(root, "linked"));
+    const provider = resourceProvider({
+      memoryDirs: [],
+      instructionFiles: [join(root, "linked", "project", "AGENC.md")],
+    });
+    expect(await provider.listResources()).toEqual([]);
+    expect(reasons()).toContain("root_outside_scope");
+  });
+
+  test("omits a skill root that is itself a symlink", async () => {
+    const outside = makeOutsideDir();
+    mkdirSync(join(outside, "escaped"), { recursive: true });
+    writeFileSync(
+      join(outside, "escaped", "SKILL.md"),
+      ["---", `description: ${FORGED}`, "---", SECRET].join("\n"),
+    );
+    symlinkSync(outside, join(root, "skills"));
+    const provider = skillProvider();
+    expect(await provider.listPrompts()).toEqual([]);
+  });
+});
+
+/**
+ * GUARD: `verifyParentChain`, before the open and again after the read.
+ *
+ * Both tests replace one ancestor with a symlink that resolves to the very
+ * directory it replaced, so the candidate's inode, size, and timestamps are
+ * untouched: every identity proof still passes and only the ancestor walk can
+ * tell the difference. That is the check the escape in #1794 defeated.
+ */
+describe("descriptor-bound ancestor containment", () => {
+  function selfSymlinkAncestor(name: string): void {
+    const dir = join(root, "skills", name);
+    renameSync(dir, `${dir}.real`);
+    symlinkSync(`${name}.real`, dir);
+  }
+
+  function restoreAncestor(name: string): void {
+    const dir = join(root, "skills", name);
+    unlinkSync(dir);
+    renameSync(`${dir}.real`, dir);
+  }
+
+  test("omits a skill whose ancestor is a symlink at the open boundary", async () => {
+    const file = makeSkill("preopen", "safe body");
+    const provider = skillProvider({
+      beforeOpenForTesting: (path) => {
+        if (path !== file) return;
+        selfSymlinkAncestor("preopen");
+      },
+      beforeReadForTesting: (path) => {
+        // Restore before the post-read walk, so only the pre-open walk can
+        // reject this. Without it the same bytes are served through an
+        // unvetted ancestor.
+        if (path !== file) return;
+        restoreAncestor("preopen");
+      },
+    });
+    expect(await provider.listPrompts()).toEqual([]);
+  });
+
+  test("omits a skill whose ancestor becomes a symlink after the bytes are read", async () => {
+    const file = makeSkill("postread", "safe body");
+    const provider = skillProvider({
+      beforeReadForTesting: (path) => {
+        if (path !== file) return;
+        selfSymlinkAncestor("postread");
+      },
+    });
+    expect(await provider.listPrompts()).toEqual([]);
+    expect(reasons()).toContain("ancestor_changed");
+  });
+
+  /**
+   * GUARD: the path side of `assertCandidateUnchanged`.
+   *
+   * Isolating it takes a nested candidate. Exchanging the *directory* that
+   * holds the file leaves the open inode completely untouched — no unlink, no
+   * ctime move — so the handle-side check passes; and because the exchanged
+   * directory is an intermediate ancestor rather than the bound root, the
+   * ancestor walk passes too: it sees a real, contained, non-symlink
+   * directory and the root's own identity has not moved. Only comparing the
+   * path's object against the one that was read notices that the name now
+   * leads somewhere else.
+   */
+  test("fails a nested resource read whose directory is exchanged after the read", async () => {
+    const nested = join(root, "memory", "a", "b");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(
+      join(nested, "notes.md"),
+      ["---", "name: notes", "description: nested notes", "---", "safe body"].join("\n"),
+    );
+    const decoy = join(root, "decoy");
+    mkdirSync(decoy, { recursive: true });
+    writeFileSync(
+      join(decoy, "notes.md"),
+      ["---", "name: notes", "description: decoy", "---", "decoy body"].join("\n"),
+    );
+    const provider = resourceProvider();
+    const listed = await provider.listResources();
+    const target = listed.find((r) => r.name.endsWith("notes.md"))!;
+    expect(target).toBeDefined();
+    const file = join(root, "memory", "a", "b", "notes.md");
+    const swapped = resourceProvider({
+      beforeReadForTesting: (path) => {
+        if (path !== file) return;
+        renameSync(nested, join(root, "b.away"));
+        renameSync(decoy, nested);
+      },
+    });
+    expect(await swapped.readResource(target.uri)).toBeNull();
+  });
+});
+
+/**
+ * GUARD: the `isFile()` clause of `admitsScopedSnapshot`.
+ *
+ * A FIFO is the case that isolates it: it is not a symlink, has one link, and
+ * has size 0, so every other clause admits it. Without `isFile()` the listing
+ * advertises a resource whose read would block or fail.
+ */
+describe("regular-file admission", () => {
+  test.runIf(process.platform !== "win32")(
+    "does not list an instruction path that is a FIFO",
+    async () => {
+      const fifo = join(root, "AGENC.md");
+      makeFifo(fifo);
+      const provider = resourceProvider({
+        memoryDirs: [],
+        instructionFiles: [fifo],
+      });
+      expect(await provider.listResources()).toEqual([]);
+      expect(reasons()).toContain("not_admissible");
+    },
+  );
+
+  test("does not list an instruction path that is a directory", async () => {
+    mkdirSync(join(root, "AGENC.md"), { recursive: true });
+    const provider = resourceProvider({
+      memoryDirs: [],
+      instructionFiles: [join(root, "AGENC.md")],
+    });
+    expect(await provider.listResources()).toEqual([]);
+  });
+});
+
+/**
+ * GUARD: the byte ceilings, and the fact that the instruction ceiling is the
+ * same number the runtime uses for the same file in-process.
+ */
+describe("byte ceilings", () => {
+  test("serves an instruction file larger than the skill ceiling", async () => {
+    const body = `# big instructions\n${"a".repeat(2 * 1024 * 1024)}`;
+    expect(body.length).toBeGreaterThan(MAX_SCOPED_FILE_BYTES);
+    expect(body.length).toBeLessThan(MAX_SCOPED_INSTRUCTION_FILE_BYTES);
+    writeFileSync(join(root, "AGENC.md"), body);
+    const provider = resourceProvider({
+      memoryDirs: [],
+      instructionFiles: [join(root, "AGENC.md")],
+    });
+    const resources = await provider.listResources();
+    expect(resources.map((r) => r.name)).toContain("AGENC.md");
+    const read = await provider.readResource(resources[0]!.uri);
+    expect(read?.contents[0].text).toContain("# big instructions");
+  });
+
+  test("omits an instruction file past the shared in-process ceiling", async () => {
+    writeFileSync(
+      join(root, "AGENC.md"),
+      Buffer.alloc(MAX_SCOPED_INSTRUCTION_FILE_BYTES + 1, 0x61),
+    );
+    const provider = resourceProvider({
+      memoryDirs: [],
+      instructionFiles: [join(root, "AGENC.md")],
+    });
+    expect(await provider.listResources()).toEqual([]);
+    expect(reasons()).toContain("too_large");
+  });
+});
+
+/**
+ * GUARD: the fatal UTF-8 decode. `Buffer#toString("utf8")` substitutes U+FFFD,
+ * which hands the client a body that is not the file and lets invalid bytes
+ * reshape frontmatter.
+ */
+describe("fatal UTF-8 decoding", () => {
+  test("omits a skill whose bytes are not valid UTF-8", async () => {
+    const dir = join(root, "skills", "binary");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "SKILL.md"),
+      Buffer.concat([
+        Buffer.from("---\ndescription: binary\n---\n", "utf8"),
+        Buffer.from([0xff, 0xfe, 0x80]),
+      ]),
+    );
+    const provider = skillProvider();
+    expect(await provider.listPrompts()).toEqual([]);
+    expect(reasons()).toContain("invalid_utf8");
+  });
+
+  test("fails a resource read whose bytes are not valid UTF-8", async () => {
+    // The invalid bytes sit past the 64 KiB header prefix the memory scanner
+    // decodes, so the file still lists; only the full body read sees them.
+    makeMemoryFile("notes.md", "placeholder");
+    mkdirSync(join(root, "memory"), { recursive: true });
+    writeFileSync(
+      join(root, "memory", "notes.md"),
+      Buffer.concat([
+        Buffer.from(
+          `---\nname: notes\ndescription: notes.md\n---\n${"pad\n".repeat(20_000)}`,
+          "utf8",
+        ),
+        Buffer.from([0xc3, 0x28]),
+      ]),
+    );
+    const provider = resourceProvider();
+    const resources = await provider.listResources();
+    const target = resources.find((r) => r.name === "notes.md")!;
+    expect(await provider.readResource(target.uri)).toBeNull();
+    expect(reasons()).toContain("invalid_utf8");
+  });
 });
 
 describe("verified memory resource reads", () => {
@@ -277,8 +574,7 @@ describe("verified memory resource reads", () => {
 
   test("does not list multiply linked memory files", async () => {
     const file = makeMemoryFile("leak.md", SECRET);
-    const outsideDir = mkdtempSync(join(tmpdir(), "agenc-mcp-outside-"));
-    roots.push(outsideDir);
+    const outsideDir = makeOutsideDir();
     // The memory file now also answers to a name outside the scope root.
     linkSync(file, join(outsideDir, "alias.md"));
     const provider = resourceProvider();
@@ -339,11 +635,13 @@ describe("verified memory resource reads", () => {
       const resources = await provider.listResources();
       const target = resources.find((r) => r.name === "notes.md")!;
       const file = join(root, "memory", "notes.md");
+      const fifo = join(root, "memory", "swap-in.fifo");
+      makeFifo(fifo);
       const swapped = resourceProvider({
         beforeOpenForTesting: (path) => {
           if (path !== file) return;
           rmSync(file);
-          expect(spawnSync("mkfifo", [file]).status).toBe(0);
+          renameSync(fifo, file);
         },
       });
       expect(await swapped.readResource(target.uri)).toBeNull();
