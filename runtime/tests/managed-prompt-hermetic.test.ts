@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -245,14 +245,21 @@ describe('hermetic managed prompt policy', () => {
     }
   })
 
-  it('caps combined additional-directory instructions and evidence at a UTF-8 boundary', async () => {
+  it('caps additional-directory instructions without cross-root source attribution', async () => {
     const hermeticHome = process.env.AGENC_TEST_HERMETIC_HOME
     expect(hermeticHome).toBeTruthy()
     const project = join(hermeticHome as string, 'add-dir-budget-project')
     const userHome = join(hermeticHome as string, 'add-dir-budget-user')
-    const additionalDirectories = Array.from(
+    const physicalAdditionalDirectories = Array.from(
       { length: 5 },
       (_, index) => join(hermeticHome as string, `add-dir-budget-${index}`),
+    )
+    const secondDirectoryAlias = join(
+      hermeticHome as string,
+      'ADD-DIR-BUDGET-1',
+    )
+    const additionalDirectories = physicalAdditionalDirectories.map(
+      (directory, index) => index === 1 ? secondDirectoryAlias : directory,
     )
     const contents = additionalDirectories.map(
       (_, index) =>
@@ -260,7 +267,9 @@ describe('hermetic managed prompt policy', () => {
         (index === 0 ? '\n@include retained.md' : ''),
     )
     const retainedIncludePath = join(additionalDirectories[0]!, 'retained.md')
-    const retainedIncludeContent = 'retained include source'
+    const nestedIncludePath = join(additionalDirectories[0]!, 'nested.md')
+    const nestedIncludeContent = 'nested retained source'
+    const retainedIncludeContent = 'retained include source\n@include nested.md'
     const laterSameTierContent = '🙂 later same-tier source must stay out'
     const sanitizedContents = contents.map(content =>
       content.replace('<system>', '<neutralized-system-tag>'),
@@ -269,41 +278,86 @@ describe('hermetic managed prompt policy', () => {
       `--- project (${join(additionalDirectories[0]!, 'AGENC.md')}) ---\n\n` +
       sanitizedContents[0]!.replace(
         '@include retained.md',
-        `<!-- @include retained.md -->\n${retainedIncludeContent}`,
+        [
+          '<!-- @include retained.md -->',
+          retainedIncludeContent.replace(
+            '@include nested.md',
+            `<!-- @include nested.md -->\n${nestedIncludeContent}`,
+          ),
+        ].join('\n'),
       )
-    const secondRootPath = join(additionalDirectories[1]!, 'AGENC.md')
+    const secondRootPath = join(physicalAdditionalDirectories[1]!, 'AGENC.md')
+    const renderedSecondRootPath = join(additionalDirectories[1]!, 'AGENC.md')
+    expect(renderedSecondRootPath).not.toBe(secondRootPath)
+    expect(renderedSecondRootPath.toLowerCase()).toBe(
+      secondRootPath.toLowerCase(),
+    )
     const laterSameTierPath = join(
+      physicalAdditionalDirectories[1]!,
+      '.agenc',
+      'AGENC.md',
+    )
+    const renderedLaterSameTierPath = join(
       additionalDirectories[1]!,
       '.agenc',
       'AGENC.md',
     )
+    const collidingRulePath = join(
+      physicalAdditionalDirectories[1]!,
+      '.agenc',
+      'rules',
+      'retained.md',
+    )
     const secondBlockPrefix = [
-      `--- project (${laterSameTierPath}) ---`,
-      `--- project-doc (${secondRootPath}) ---`,
+      `--- project (${renderedLaterSameTierPath}) ---`,
+      `--- project-doc (${renderedSecondRootPath}) ---`,
       sanitizedContents[1],
-      `--- project-doc (${laterSameTierPath}) ---`,
+      `--- project-doc (${renderedLaterSameTierPath}) ---`,
       '',
     ].join('\n\n')
     const expected = `${firstBlock}\n\n${secondBlockPrefix}`
     // Leave two bytes after the later source boundary. Its first character is
     // four-byte UTF-8, so the aggregate cut must retain zero source bytes.
     const aggregateBudget = Buffer.byteLength(expected, 'utf8') + 2
-    createdPaths.push(project, userHome, ...additionalDirectories)
+    createdPaths.push(
+      project,
+      userHome,
+      ...physicalAdditionalDirectories,
+      ...(process.platform === 'win32' ? [] : [secondDirectoryAlias]),
+    )
     await Promise.all([
       mkdir(project, { recursive: true }),
       mkdir(userHome, { recursive: true }),
-      ...additionalDirectories.map(directory =>
+      ...physicalAdditionalDirectories.map(directory =>
         mkdir(directory, { recursive: true }),
       ),
-      mkdir(join(additionalDirectories[1]!, '.agenc'), { recursive: true }),
+      mkdir(
+        join(physicalAdditionalDirectories[1]!, '.agenc', 'rules'),
+        { recursive: true },
+      ),
     ])
+    if (process.platform !== 'win32') {
+      // Reproduce a Windows spelling alias on case-sensitive hosts while the
+      // resolver below runs with Windows path-identity semantics.
+      await symlink(
+        physicalAdditionalDirectories[1]!,
+        secondDirectoryAlias,
+        'dir',
+      )
+    }
     await Promise.all(
-      additionalDirectories.map((directory, index) =>
+      physicalAdditionalDirectories.map((directory, index) =>
         writeFile(join(directory, 'AGENC.md'), contents[index]!, 'utf8'),
       ),
     )
     await writeFile(retainedIncludePath, retainedIncludeContent, 'utf8')
+    await writeFile(nestedIncludePath, nestedIncludeContent, 'utf8')
     await writeFile(laterSameTierPath, laterSameTierContent, 'utf8')
+    await writeFile(
+      collidingRulePath,
+      'later colliding rule must stay out',
+      'utf8',
+    )
     const store = new ConfigStore({
       home: userHome,
       cwd: project,
@@ -330,8 +384,17 @@ describe('hermetic managed prompt policy', () => {
       setProjectMemoryWarnings: vi.fn(),
     } as unknown as Session
     const previousFlag = process.env.AGENC_ADDITIONAL_DIRECTORIES_AGENC_MD
+    const platformDescriptor = Object.getOwnPropertyDescriptor(
+      process,
+      'platform',
+    )
+    expect(platformDescriptor).toBeDefined()
     process.env.AGENC_ADDITIONAL_DIRECTORIES_AGENC_MD = '1'
     clearTieredInstructionsCacheForTesting()
+    Object.defineProperty(process, 'platform', {
+      ...platformDescriptor,
+      value: 'win32',
+    })
     try {
       const envelope = await runWithAgentRuntimeOptions(
         resolveAgentRuntimeOptions({}, { simpleMode: true }),
@@ -356,19 +419,29 @@ describe('hermetic managed prompt policy', () => {
       expect(payload).not.toContain('\uFFFD')
       expect(payload).not.toContain(contents[2]!)
       expect(payload).not.toContain(laterSameTierContent)
-      expect(envelope.sources.map(source => source.path)).toEqual([
-        join(additionalDirectories[0]!, 'AGENC.md'),
-        retainedIncludePath,
-        secondRootPath,
-      ])
+      const sourcePathKeys = envelope.sources.map(source =>
+        source.path.toLowerCase(),
+      )
+      expect(sourcePathKeys).toEqual(
+        [
+          join(additionalDirectories[0]!, 'AGENC.md'),
+          retainedIncludePath,
+          nestedIncludePath,
+          secondRootPath,
+        ].map(path => path.toLowerCase()),
+      )
       expect(envelope.evidence.sources).toEqual(envelope.sources)
-      expect(envelope.evidence.sources.map(source => source.path)).not.toContain(
-        laterSameTierPath,
+      expect(sourcePathKeys).not.toContain(
+        laterSameTierPath.toLowerCase(),
+      )
+      expect(sourcePathKeys).not.toContain(
+        collidingRulePath.toLowerCase(),
       )
       expect(envelope.warnings).toContain(
         `Additional-directory instructions exceeded the ${aggregateBudget}-byte aggregate UTF-8 budget and were truncated`,
       )
     } finally {
+      Object.defineProperty(process, 'platform', platformDescriptor!)
       if (previousFlag === undefined) {
         delete process.env.AGENC_ADDITIONAL_DIRECTORIES_AGENC_MD
       } else {

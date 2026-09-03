@@ -104,6 +104,96 @@ export interface TieredInstructions {
   readonly local: TierEntry | null;
 }
 
+interface InstructionSourceSegment {
+  readonly path: string;
+  readonly start: number;
+  readonly end: number;
+}
+
+interface SourcedInstructionText {
+  readonly text: string;
+  readonly sourceSegments: readonly InstructionSourceSegment[];
+}
+
+// Keep byte-attribution metadata private so TierEntry's public shape and the
+// model-visible instruction text remain unchanged.
+const tierEntrySourceSegments = new WeakMap<
+  TierEntry,
+  readonly InstructionSourceSegment[]
+>();
+
+function rememberTierEntrySourceSegments(
+  entry: TierEntry,
+  sourceSegments: readonly InstructionSourceSegment[],
+): TierEntry {
+  tierEntrySourceSegments.set(entry, sourceSegments);
+  return entry;
+}
+
+function appendSourcedInstructionText(
+  target: { text: string; sourceSegments: InstructionSourceSegment[] },
+  addition: SourcedInstructionText,
+): void {
+  const offset = target.text.length;
+  target.text += addition.text;
+  for (const segment of addition.sourceSegments) {
+    if (segment.end <= segment.start) continue;
+    target.sourceSegments.push({
+      path: segment.path,
+      start: offset + segment.start,
+      end: offset + segment.end,
+    });
+  }
+}
+
+function sourcedInstructionText(
+  text: string,
+  path?: string,
+): SourcedInstructionText {
+  return {
+    text,
+    sourceSegments:
+      path !== undefined && text.length > 0
+        ? [{ path, start: 0, end: text.length }]
+        : [],
+  };
+}
+
+function joinSourcedInstructionText(
+  parts: readonly SourcedInstructionText[],
+  separator: string,
+): SourcedInstructionText {
+  const result = { text: "", sourceSegments: [] as InstructionSourceSegment[] };
+  for (const [index, part] of parts.entries()) {
+    if (index > 0) result.text += separator;
+    appendSourcedInstructionText(result, part);
+  }
+  return result;
+}
+
+function trimSourcedInstructionText(
+  input: SourcedInstructionText,
+): SourcedInstructionText {
+  const text = input.text.trim();
+  if (text.length === 0) return sourcedInstructionText("");
+  const start = input.text.indexOf(text);
+  const end = start + text.length;
+  return {
+    text,
+    sourceSegments: input.sourceSegments.flatMap((segment) => {
+      const retainedStart = Math.max(segment.start, start);
+      const retainedEnd = Math.min(segment.end, end);
+      return retainedEnd > retainedStart
+        ? [{
+            path: segment.path,
+            start: retainedStart - start,
+            end: retainedEnd - start,
+          }]
+        : [];
+    }),
+  };
+}
+
 export interface LoadTieredInstructionsOptions extends ProjectInstructionsConfig {
   /** Current working directory for project/local tier discovery. */
   readonly cwd: string;
@@ -277,6 +367,23 @@ export async function resolveIncludes(
   content: string,
   opts: ResolveIncludesOptions,
 ): Promise<ResolvedContent> {
+  const resolved = await resolveIncludesWithSources(content, opts);
+  return {
+    text: resolved.text,
+    included: resolved.included,
+    dropped: resolved.dropped,
+    probes: resolved.probes,
+  };
+}
+
+interface ResolvedContentWithSources extends ResolvedContent {
+  readonly sourceSegments: readonly InstructionSourceSegment[];
+}
+
+async function resolveIncludesWithSources(
+  content: string,
+  opts: ResolveIncludesOptions,
+): Promise<ResolvedContentWithSources> {
   const maxDepth = boundedIntegerOption(
     "include max depth",
     opts.maxDepth,
@@ -298,23 +405,26 @@ export async function resolveIncludes(
   const state = opts.ledger ?? { totalBytes: 0, references: 0 };
   const contentBytes = Buffer.byteLength(content, "utf8");
   const remainingForContent = Math.max(0, maxBytes - state.totalBytes);
+  const includingFile = opts.includingFile ?? opts.baseDir;
   if (contentBytes > remainingForContent) {
     state.totalBytes = maxBytes;
+    const text = truncateUtf8Bytes(content, remainingForContent);
     return {
-      text: truncateUtf8Bytes(content, remainingForContent),
+      text,
       included,
       dropped,
       probes,
+      sourceSegments: sourcedInstructionText(text, includingFile).sourceSegments,
     };
   }
   state.totalBytes += contentBytes;
 
-  const text = await expandText({
+  const expanded = await expandText({
     text: content,
     baseDir: opts.baseDir,
     projectRoot: resolve(opts.projectRoot),
     workspaceRoot: resolve(opts.workspaceRoot ?? opts.projectRoot),
-    includingFile: opts.includingFile ?? opts.baseDir,
+    includingFile,
     ...(opts.includingFileSha256 !== undefined
       ? { includingFileSha256: opts.includingFileSha256 }
       : {}),
@@ -329,7 +439,13 @@ export async function resolveIncludes(
     state,
   });
 
-  return { text, included, dropped, probes };
+  return {
+    text: expanded.text,
+    included,
+    dropped,
+    probes,
+    sourceSegments: expanded.sourceSegments,
+  };
 }
 
 function truncateUtf8Bytes(content: string, maximumBytes: number): string {
@@ -365,7 +481,7 @@ interface ExpandCtx {
   externalApprovals?: ExternalInstructionApprovalStore;
 }
 
-async function expandText(ctx: ExpandCtx): Promise<string> {
+async function expandText(ctx: ExpandCtx): Promise<SourcedInstructionText> {
   const matches: Array<{ start: number; end: number; raw: string; target: string }> = [];
   INCLUDE_LINE_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
@@ -377,12 +493,23 @@ async function expandText(ctx: ExpandCtx): Promise<string> {
       target: m[1]!.trim(),
     });
   }
-  if (matches.length === 0) return ctx.text;
+  if (matches.length === 0) {
+    return sourcedInstructionText(ctx.text, ctx.includingFile);
+  }
 
-  let out = "";
+  const result = {
+    text: "",
+    sourceSegments: [] as InstructionSourceSegment[],
+  };
+  const appendSourceText = (text: string): void => {
+    appendSourcedInstructionText(
+      result,
+      sourcedInstructionText(text, ctx.includingFile),
+    );
+  };
   let cursor = 0;
   for (const match of matches) {
-    out += ctx.text.slice(cursor, match.start);
+    appendSourceText(ctx.text.slice(cursor, match.start));
     cursor = match.end;
 
     const drop = (
@@ -411,7 +538,9 @@ async function expandText(ctx: ExpandCtx): Promise<string> {
     };
 
     if (ctx.state.references >= MAX_INCLUDE_REFERENCES) {
-      out += "<!-- further @include references rejected: reference_limit -->";
+      appendSourceText(
+        "<!-- further @include references rejected: reference_limit -->",
+      );
       cursor = ctx.text.length;
       break;
     }
@@ -421,7 +550,7 @@ async function expandText(ctx: ExpandCtx): Promise<string> {
     // path terminator and would silently truncate; reject up front so an
     // attacker can't smuggle `foo\0.md` past later checks.
     if (match.target.includes("\0")) {
-      out += drop("invalid_path");
+      appendSourceText(drop("invalid_path"));
       continue;
     }
 
@@ -430,7 +559,9 @@ async function expandText(ctx: ExpandCtx): Promise<string> {
 
     // Depth guard.
     if (ctx.depth + 1 > ctx.maxDepth) {
-      out += drop("max_depth", `depth=${ctx.depth + 1} > max=${ctx.maxDepth}`);
+      appendSourceText(
+        drop("max_depth", `depth=${ctx.depth + 1} > max=${ctx.maxDepth}`),
+      );
       continue;
     }
 
@@ -479,12 +610,14 @@ async function expandText(ctx: ExpandCtx): Promise<string> {
         mapped === "max_bytes"
           ? `cap=${ctx.maxBytes}B; used=${ctx.state.totalBytes}B`
           : undefined;
-      out += drop(mapped, extra, {
-        ...(read.canonicalPath !== undefined
-          ? { canonicalPath: read.canonicalPath }
-          : {}),
-        ...(read.identity !== undefined ? { identity: read.identity } : {}),
-      });
+      appendSourceText(
+        drop(mapped, extra, {
+          ...(read.canonicalPath !== undefined
+            ? { canonicalPath: read.canonicalPath }
+            : {}),
+          ...(read.identity !== undefined ? { identity: read.identity } : {}),
+        }),
+      );
       continue;
     }
     const canonicalPath = read.snapshot.canonicalPath;
@@ -495,9 +628,11 @@ async function expandText(ctx: ExpandCtx): Promise<string> {
 
     // Cycle detection is identity-path based after the secure open.
     if (ctx.stack.includes(canonicalPath)) {
-      out += drop(
-        "circular",
-        `cycle via ${ctx.stack.length > 0 ? ctx.stack.join(" -> ") : "self"}`,
+      appendSourceText(
+        drop(
+          "circular",
+          `cycle via ${ctx.stack.length > 0 ? ctx.stack.join(" -> ") : "self"}`,
+        ),
       );
       continue;
     }
@@ -507,9 +642,11 @@ async function expandText(ctx: ExpandCtx): Promise<string> {
     // Byte-budget guard before recursion.
     const addBytes = Buffer.byteLength(raw, "utf8");
     if (ctx.state.totalBytes + addBytes > ctx.maxBytes) {
-      out += drop(
-        "max_bytes",
-        `would add ${addBytes}B; cap=${ctx.maxBytes}B; used=${ctx.state.totalBytes}B`,
+      appendSourceText(
+        drop(
+          "max_bytes",
+          `would add ${addBytes}B; cap=${ctx.maxBytes}B; used=${ctx.state.totalBytes}B`,
+        ),
       );
       continue;
     }
@@ -534,10 +671,11 @@ async function expandText(ctx: ExpandCtx): Promise<string> {
       state: ctx.state,
       externalApprovals: ctx.externalApprovals,
     });
-    out += `${okMarker}\n${nested}`;
+    result.text += `${okMarker}\n`;
+    appendSourcedInstructionText(result, nested);
   }
-  out += ctx.text.slice(cursor);
-  return out;
+  appendSourceText(ctx.text.slice(cursor));
+  return result;
 }
 
 /**
@@ -583,7 +721,7 @@ async function loadTier(
   });
   const raw = read.snapshot.text;
 
-  const resolved = await resolveIncludes(raw, {
+  const resolved = await resolveIncludesWithSources(raw, {
     baseDir: pathDir(filePath),
     projectRoot: boundary,
     maxDepth: includeMaxDepth,
@@ -596,7 +734,7 @@ async function loadTier(
   });
   for (const probe of resolved.probes) recordCacheProbe(cacheEvidence, probe);
 
-  return {
+  return rememberTierEntrySourceSegments({
     tier,
     path: filePath,
     scopePath: resolve(boundary),
@@ -604,7 +742,7 @@ async function loadTier(
     rawContent: raw,
     dropped: resolved.dropped,
     dependencies: [read.snapshot.canonicalPath, ...resolved.included],
-  };
+  }, resolved.sourceSegments);
 }
 
 function formatProjectTierChainEntry(
@@ -614,15 +752,37 @@ function formatProjectTierChainEntry(
   return `--- project-doc (${entry.path}) ---\n\n${normalizeExternalText(content).trim()}`;
 }
 
+function formatSourcedProjectTierChainEntry(
+  entry: Pick<ProjectInstructionChainEntry, "path">,
+  content: SourcedInstructionText,
+): SourcedInstructionText {
+  const normalized = normalizeExternalText(content.text);
+  const trimmed = trimSourcedInstructionText({
+    text: normalized,
+    sourceSegments:
+      normalized === content.text ? content.sourceSegments : [],
+  });
+  const text = formatProjectTierChainEntry(entry, content.text);
+  const contentStart = text.length - trimmed.text.length;
+  return {
+    text,
+    sourceSegments: trimmed.sourceSegments.map((segment) => ({
+      path: segment.path,
+      start: contentStart + segment.start,
+      end: contentStart + segment.end,
+    })),
+  };
+}
+
 async function appendUnconditionalRules(
-  content: string,
+  content: SourcedInstructionText,
   rulesDir: string,
   type: "Managed" | "User" | "Project" | "Local",
   boundaryDir?: string,
   dependencyPaths?: string[],
   cacheEvidence?: InstructionCacheEvidence,
   resourceLedger?: RuleDiscoveryLedger,
-): Promise<string> {
+): Promise<SourcedInstructionText> {
   const discovery = await discoverInstructionRulesDetailed({
     rulesDir,
     type,
@@ -647,9 +807,27 @@ async function appendUnconditionalRules(
   // Directory and negative probes remain in cache evidence, but they did not
   // contribute instructions and must not be reported as model input.
   dependencyPaths?.push(...rules.map((rule) => rule.path));
-  const block = formatRulesBlock(rules);
-  if (block.length === 0) return content;
-  return content.length === 0 ? block : `${content}\n\n${block}`;
+  const block = joinSourcedInstructionText(
+    rules.map((rule) => {
+      const text = formatRulesBlock([rule]);
+      const contentStart = text.length - rule.content.length;
+      return {
+        text,
+        sourceSegments: rule.content.length > 0
+          ? [{
+              path: rule.path,
+              start: contentStart,
+              end: text.length,
+            }]
+          : [],
+      };
+    }),
+    "\n\n",
+  );
+  if (block.text.length === 0) return content;
+  return content.text.length === 0
+    ? block
+    : joinSourcedInstructionText([content, block], "\n\n");
 }
 
 /**
@@ -939,31 +1117,41 @@ async function loadTieredInstructionsUncached(
   let managed = managedBase;
   const managedDependencies = [...(managedBase?.dependencies ?? [])];
   const managedRuleContent = enabled.has("managed") ? await appendUnconditionalRules(
-    managedBase?.content ?? "",
+    {
+      text: managedBase?.content ?? "",
+      sourceSegments:
+        managedBase === null
+          ? []
+          : tierEntrySourceSegments.get(managedBase) ?? [],
+    },
     managedRulesPath,
     "Managed",
     pathDir(managedRulesPath),
     managedDependencies,
     cacheEvidence,
     ruleLedger,
-  ) : "";
-  if (managedRuleContent.length > 0) {
-    managed =
+  ) : sourcedInstructionText("");
+  if (managedRuleContent.text.length > 0) {
+    const nextManaged: TierEntry =
       managedBase === null
         ? {
             tier: "managed",
             path: managedRulesPath,
             scopePath: resolve(pathDir(managedRulesPath)),
-            content: managedRuleContent,
-            rawContent: managedRuleContent,
+            content: managedRuleContent.text,
+            rawContent: managedRuleContent.text,
             dropped: [],
             dependencies: managedDependencies,
           }
         : {
             ...managedBase,
-            content: managedRuleContent,
+            content: managedRuleContent.text,
             dependencies: managedDependencies,
           };
+    managed = rememberTierEntrySourceSegments(
+      nextManaged,
+      managedRuleContent.sourceSegments,
+    );
   }
 
   // User tier — boundary is `~/.agenc`.
@@ -985,27 +1173,39 @@ async function loadTieredInstructionsUncached(
   }
   const userDependencies = [...(user?.dependencies ?? [])];
   const userRuleContent = enabled.has("user") ? await appendUnconditionalRules(
-    user?.content ?? "",
+    {
+      text: user?.content ?? "",
+      sourceSegments:
+        user === null ? [] : tierEntrySourceSegments.get(user) ?? [],
+    },
     join(agencHome, "rules"),
     "User",
     agencHome,
     userDependencies,
     cacheEvidence,
     ruleLedger,
-  ) : "";
-  if (userRuleContent.length > 0) {
-    user =
+  ) : sourcedInstructionText("");
+  if (userRuleContent.text.length > 0) {
+    const nextUser: TierEntry =
       user === null
         ? {
             tier: "user",
             path: join(agencHome, "rules"),
             scopePath: resolve(agencHome),
-            content: userRuleContent,
-            rawContent: userRuleContent,
+            content: userRuleContent.text,
+            rawContent: userRuleContent.text,
             dropped: [],
             dependencies: userDependencies,
           }
-        : { ...user, content: userRuleContent, dependencies: userDependencies };
+        : {
+            ...user,
+            content: userRuleContent.text,
+            dependencies: userDependencies,
+          };
+    user = rememberTierEntrySourceSegments(
+      nextUser,
+      userRuleContent.sourceSegments,
+    );
   }
 
   // Project tier — ancestor-walk via project-instructions loader.
@@ -1030,11 +1230,11 @@ async function loadTieredInstructionsUncached(
   const projectRootDir = discoveredProjectRoot;
   let projectTier: TierEntry | null = null;
   if (enabled.has("project") && projectRootDir !== undefined) {
-    const parts: string[] = [];
+    const parts: SourcedInstructionText[] = [];
     const rawParts: string[] = [];
     const dropped: DroppedInclude[] = [];
     const projectDependencies: string[] = [];
-    let singleProjectContent = "";
+    let singleProjectContent = sourcedInstructionText("");
     let singleProjectRaw = "";
 
     for (const dir of projectInstructionDirectories(projectRootDir, opts.cwd)) {
@@ -1048,7 +1248,7 @@ async function loadTieredInstructionsUncached(
           path: entry.canonicalPath,
           identity: entry.identity,
         });
-        const resolved = await resolveIncludes(entry.content, {
+        const resolved = await resolveIncludesWithSources(entry.content, {
           baseDir: pathDir(entry.canonicalPath),
           projectRoot: entry.rootDir,
           maxDepth: includeMaxDepth,
@@ -1064,13 +1264,16 @@ async function loadTieredInstructionsUncached(
         for (const probe of resolved.probes) recordCacheProbe(cacheEvidence, probe);
         dropped.push(...resolved.dropped);
         projectDependencies.push(entry.canonicalPath, ...resolved.included);
-        singleProjectContent = resolved.text;
+        singleProjectContent = {
+          text: resolved.text,
+          sourceSegments: resolved.sourceSegments,
+        };
         singleProjectRaw = entry.content;
-        parts.push(formatProjectTierChainEntry(entry, resolved.text));
+        parts.push(formatSourcedProjectTierChainEntry(entry, resolved));
         rawParts.push(formatProjectTierChainEntry(entry, entry.content));
       }
       const ruleBlock = await appendUnconditionalRules(
-        "",
+        sourcedInstructionText(""),
         projectRulesDir(dir),
         "Project",
         dir,
@@ -1078,28 +1281,29 @@ async function loadTieredInstructionsUncached(
         cacheEvidence,
         ruleLedger,
       );
-      if (ruleBlock.length > 0) {
+      if (ruleBlock.text.length > 0) {
         parts.push(ruleBlock);
-        rawParts.push(ruleBlock);
+        rawParts.push(ruleBlock.text);
       }
     }
 
     if (parts.length > 0) {
-      projectTier = {
+      const projectContent =
+        parts.length === 1 && projectChain.length === 1
+          ? singleProjectContent
+          : joinSourcedInstructionText(parts, "\n\n");
+      projectTier = rememberTierEntrySourceSegments({
         tier: "project",
         path: projectChain.at(-1)?.path ?? projectRulesDir(projectRootDir),
         scopePath: resolve(projectRootDir),
-        content:
-          parts.length === 1 && projectChain.length === 1
-            ? singleProjectContent
-            : parts.join("\n\n"),
+        content: projectContent.text,
         rawContent:
           rawParts.length === 1 && projectChain.length === 1
             ? singleProjectRaw
             : rawParts.join("\n\n"),
         dropped,
         dependencies: projectDependencies,
-      };
+      }, projectContent.sourceSegments);
     }
   }
 
@@ -1141,6 +1345,48 @@ export function assembleTieredInstructions(tiers: TieredInstructions): string {
   return Buffer.byteLength(assembled, "utf8") <= DEFAULT_INCLUDE_MAX_BYTES
     ? assembled
     : truncateUtf8Bytes(assembled, DEFAULT_INCLUDE_MAX_BYTES);
+}
+
+/** Return canonical assembly plus private source-derived text boundaries. */
+export function assembleTieredInstructionsWithSourceSegments(
+  tiers: TieredInstructions,
+): {
+  readonly text: string;
+  readonly sourceSegments: readonly InstructionSourceSegment[];
+} {
+  const assembled = assembleTieredInstructions(tiers);
+  const result = {
+    text: "",
+    sourceSegments: [] as InstructionSourceSegment[],
+  };
+  for (const tier of ["managed", "user", "project", "local"] as const) {
+    const entry = tiers[tier];
+    if (entry === null) continue;
+    if (result.text.length > 0) result.text += "\n\n";
+    const normalized = normalizeExternalText(entry.content);
+    const content = trimSourcedInstructionText({
+      text: normalized,
+      sourceSegments:
+        normalized === entry.content
+          ? tierEntrySourceSegments.get(entry) ?? []
+          : [],
+    });
+    result.text += `--- ${tier} (${entry.path}) ---\n\n`;
+    appendSourcedInstructionText(result, content);
+  }
+
+  if (result.text.slice(0, assembled.length) !== assembled) {
+    return { text: assembled, sourceSegments: [] };
+  }
+  return {
+    text: assembled,
+    sourceSegments: result.sourceSegments.flatMap((segment) => {
+      const end = Math.min(segment.end, assembled.length);
+      return end > segment.start
+        ? [{ path: segment.path, start: segment.start, end }]
+        : [];
+    }),
+  };
 }
 
 function formatDroppedInclude(drop: DroppedInclude): string {
