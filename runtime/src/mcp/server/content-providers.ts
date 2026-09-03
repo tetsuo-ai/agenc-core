@@ -373,16 +373,23 @@ async function admitScopedCandidate(
     }
     return identityFromStats(stats);
   } catch (error) {
-    return noteRejection(
-      observer,
-      error instanceof UnsupportedVerifiedReadPlatformError
-        ? "platform_unsupported"
-        : (error as NodeJS.ErrnoException).code === "ENOENT"
-          ? "not_found"
-          : "verification_failed",
-      requestedPath,
-    );
+    return noteRejection(observer, admissionFailureReason(error), requestedPath);
   }
+}
+
+/**
+ * Why an admission attempt threw: a platform with no descriptor-path
+ * mechanism, a candidate that is simply gone, or a proof that did not hold.
+ * The three cases are named here rather than nested at the call site, because
+ * `not_found` and `verification_failed` reach the observer as very different
+ * events and reading them out of a chained ternary invites confusing them.
+ */
+function admissionFailureReason(error: unknown): ScopedReadRejectionReason {
+  if (error instanceof UnsupportedVerifiedReadPlatformError) {
+    return "platform_unsupported";
+  }
+  if ((error as NodeJS.ErrnoException).code === "ENOENT") return "not_found";
+  return "verification_failed";
 }
 
 /** Read exactly the validated byte count, plus one byte to catch growth. */
