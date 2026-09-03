@@ -103,6 +103,22 @@ describe("secrets sanitizer", () => {
     expect(redacted).toContain("value=abcd1234EFGH5678ijkl9012MNOP3456qrst7890");
   });
 
+  it("redacts complete QwenCloud PayGo and Token Plan key shapes", () => {
+    const payGo = ["sk-ws-H", "WORK123", "ABCD", "a".repeat(64)].join(".");
+    const tokenPlan = ["sk-sp-H", "PLAN123", "WXYZ", "b".repeat(64)].join(".");
+
+    const redactedText = redactSecrets(`paygo=${payGo}\nplan=${tokenPlan}`);
+    expect(redactedText).not.toContain(payGo);
+    expect(redactedText).not.toContain(tokenPlan);
+    expect(redactedText.split(REDACTED_SECRET)).toHaveLength(3);
+
+    const redactedValue = redactSecretsInValue({ payGo, nested: { tokenPlan } });
+    expect(redactedValue).toEqual({
+      payGo: REDACTED_SECRET,
+      nested: { tokenPlan: REDACTED_SECRET },
+    });
+  });
+
   it("redacts AWS secret/access-key fields on the structured-object path", () => {
     const artifact = {
       credentials: {

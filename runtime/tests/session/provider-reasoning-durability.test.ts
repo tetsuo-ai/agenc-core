@@ -94,8 +94,13 @@ describe("provider reasoning durability", () => {
   });
 
   test("fails closed instead of mutating replay state during secret redaction", () => {
-    const secretLikeReasoning =
-      "provider state sk-proj-abcdefghijklmnopqrstuvwxyz123456-";
+    const qwenCredential = [
+      "sk-ws-H",
+      "WORK123",
+      "ABCD",
+      "a".repeat(64),
+    ].join(".");
+    const secretLikeReasoning = `provider state ${qwenCredential}`;
     expect(() =>
       llmMessageToDurableResponseItem({
         role: "assistant",
