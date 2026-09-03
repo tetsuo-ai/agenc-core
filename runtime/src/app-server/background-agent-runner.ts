@@ -4303,12 +4303,17 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           configStore: preparedConfigReload.authority,
         });
         await session.permissionModeRegistry.transact((current) => {
+          const next = applyPermissionRulesSnapshot(
+            current,
+            permissionSnapshot,
+          );
           const configuredExecutionAuthority =
             active.bootstrap.prepareConfiguredExecutionAuthority(
               preparedConfigReload.config,
+              next,
             );
           return {
-            next: applyPermissionRulesSnapshot(current, permissionSnapshot),
+            next,
             metadata: {
               runtimeSettings: {
                 reason: "config_applied" as const,

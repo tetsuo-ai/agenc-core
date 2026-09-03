@@ -27,6 +27,9 @@ import {
 } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import {
+  validateAndDedupeAdditionalWorkingDirectoryInputs,
+} from "../contracts/additional-working-directories.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
 import { cloneFrozenRuntimeSettingsSnapshot } from "../state/runtime-settings-snapshot.js";
 
@@ -787,6 +790,22 @@ export class AgenCDaemonAgentManager {
         metadataString(retainedMetadata, "provider") ??
         metadataString(retainedMetadata, "modelProvider");
       const retainedConfigPath = metadataString(retainedMetadata, "configPath");
+      const requestedAddDirs =
+        params.addDirs ?? metadataStringList(retainedMetadata, "addDirs");
+      let addDirs: readonly string[] | undefined;
+      if (requestedAddDirs !== undefined) {
+        try {
+          addDirs = validateAndDedupeAdditionalWorkingDirectoryInputs(
+            requestedAddDirs,
+            "agent.create param 'addDirs'",
+          );
+        } catch (error) {
+          throw new AgenCDaemonAgentLifecycleError(
+            "INVALID_ARGUMENT",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
       const canonicalRuntimeSettings = resumeProof?.runtimeSettings;
       if (
         canonicalRuntimeSettings === undefined &&
@@ -887,6 +906,7 @@ export class AgenCDaemonAgentManager {
             ? { profile }
             : {}),
         ...(configPath !== undefined ? { configPath } : {}),
+        ...(addDirs !== undefined ? { addDirs: [...addDirs] } : {}),
         ...(permissionMode !== undefined ? { permissionMode } : {}),
         unattendedAllow,
         unattendedDeny,
@@ -906,9 +926,7 @@ export class AgenCDaemonAgentManager {
               ...(provider !== undefined ? { provider } : {}),
               ...(profile !== undefined ? { profile } : {}),
               ...(configPath !== undefined ? { configPath } : {}),
-              ...(params.addDirs !== undefined
-                ? { addDirs: params.addDirs }
-                : {}),
+              ...(addDirs !== undefined ? { addDirs } : {}),
               ...(params.initialContent !== undefined
                 ? { initialContent: params.initialContent }
                 : {}),
@@ -955,9 +973,7 @@ export class AgenCDaemonAgentManager {
               ...(provider !== undefined ? { provider } : {}),
               ...(profile !== undefined ? { profile } : {}),
               ...(configPath !== undefined ? { configPath } : {}),
-              ...(params.addDirs !== undefined
-                ? { addDirs: params.addDirs }
-                : {}),
+              ...(addDirs !== undefined ? { addDirs } : {}),
               ...(permissionMode !== undefined ? { permissionMode } : {}),
               ...(canonicalRuntimeSettings !== undefined
                 ? { runtimeSettings: canonicalRuntimeSettings }

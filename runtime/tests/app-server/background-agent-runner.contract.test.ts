@@ -378,6 +378,7 @@ function makeTopLevelRunner(opts: {
     next: ToolPermissionContext,
     current: ToolPermissionContext,
   ) => Promise<void> | void;
+  readonly initialCliAdditionalDirectories?: readonly string[];
   readonly configLayers?: readonly {
     readonly scope: "managed" | "user" | "project" | "local";
     readonly label: string;
@@ -392,6 +393,16 @@ function makeTopLevelRunner(opts: {
     isAutoModeAvailable:
       typeof opts.env?.XAI_API_KEY === "string" ||
       typeof opts.env?.GROK_API_KEY === "string",
+    ...(opts.initialCliAdditionalDirectories !== undefined
+      ? {
+          additionalWorkingDirectories: new Map(
+            opts.initialCliAdditionalDirectories.map((path) => [
+              path,
+              { path, source: "cliArg" as const },
+            ]),
+          ),
+        }
+      : {}),
   });
   let permissionRegistryQueue: Promise<void> = Promise.resolve();
   const withPermissionRegistryLock = <T>(
@@ -675,10 +686,24 @@ function makeTopLevelRunner(opts: {
   });
   let configuredExecutionAuthority: SessionExecutionAuthority =
     sessionExecutionAuthorityFromAgenCConfig({
-      config: {},
+      config:
+        opts.initialCliAdditionalDirectories === undefined
+          ? {}
+          : {
+              sandbox: {
+                filesystem: {
+                  allowWrite: [...opts.initialCliAdditionalDirectories],
+                },
+              },
+            },
       workspaceRoot,
       projectTrust: "trusted",
     });
+  const preparedConfiguredExecutionAuthorities: SessionExecutionAuthority[] =
+    [];
+  const preparedConfiguredPermissionContexts: Array<
+    Pick<ToolPermissionContext, "additionalWorkingDirectories">
+  > = [];
   const sandboxExecutionBroker = new SandboxExecutionBroker({
     cwd: workspaceRoot,
     ...sandboxExecutionBrokerAuthorityFromSessionAuthority(
@@ -924,13 +949,21 @@ function makeTopLevelRunner(opts: {
     get configuredExecutionAuthority() {
       return configuredExecutionAuthority;
     },
-    prepareConfiguredExecutionAuthority: (config: Record<string, unknown>) => {
+    prepareConfiguredExecutionAuthority: (
+      config: Record<string, unknown>,
+      nextPermissionContext: Pick<
+        ToolPermissionContext,
+        "additionalWorkingDirectories"
+      >,
+    ) => {
       const previous = configuredExecutionAuthority;
       const authority = sessionExecutionAuthorityFromAgenCConfig({
         config,
         workspaceRoot,
         projectTrust: "trusted",
       });
+      preparedConfiguredExecutionAuthorities.push(authority);
+      preparedConfiguredPermissionContexts.push(nextPermissionContext);
       let committed = false;
       return {
         authority,
@@ -990,6 +1023,8 @@ function makeTopLevelRunner(opts: {
     rolloutStore,
     configStore,
     configPublicationOptions,
+    preparedConfiguredExecutionAuthorities,
+    preparedConfiguredPermissionContexts,
     sandboxExecutionBroker,
     sessionState,
     stateRepository,
@@ -6937,6 +6972,109 @@ describe("AgenC delegate background-agent runner", () => {
     expect(result.summary).toContain(
       "MCP refreshed (1 configured, 1 required)",
     );
+  });
+
+  it("atomically revokes a startup CLI directory on managed-only reload without later resurrection", async () => {
+    const agentId = "config-reload-managed-cli-directory";
+    const cliDirectory = join(process.cwd(), "managed-revoked-cli-root");
+    const managedLayer: {
+      readonly scope: "managed";
+      readonly label: string;
+      config: Record<string, unknown>;
+    } = {
+      scope: "managed",
+      label: "managed-policy",
+      config: { allowManagedPermissionRulesOnly: true },
+    };
+    const {
+      runner,
+      permissionModeRegistry,
+      preparedConfiguredExecutionAuthorities,
+      preparedConfiguredPermissionContexts,
+      sandboxExecutionBroker,
+      sessionState,
+    } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+      initialCliAdditionalDirectories: [cliDirectory],
+      configLayers: [managedLayer],
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+
+    expect(
+      permissionModeRegistry.current().additionalWorkingDirectories.get(
+        cliDirectory,
+      ),
+    ).toEqual({ path: cliDirectory, source: "cliArg" });
+    expect(
+      sessionState.sessionConfiguration.fileSystemSandboxPolicy.allowWrite,
+    ).toContain(cliDirectory);
+    expect(
+      sandboxExecutionBroker
+        .executionAuthority()
+        .permissionProfile?.fileSystem.entries.some(
+          (entry) =>
+            entry.path.kind === "path" && entry.path.path === cliDirectory,
+        ),
+    ).toBe(true);
+
+    await expect(
+      runner.applyAgentConfig(agentId, {
+        sessionId: agentId,
+        reload: true,
+      }),
+    ).resolves.toMatchObject({ applied: true });
+
+    expect(
+      permissionModeRegistry.current().additionalWorkingDirectories.has(
+        cliDirectory,
+      ),
+    ).toBe(false);
+    expect(
+      preparedConfiguredExecutionAuthorities.at(-1)?.fileSystemSandboxPolicy
+        .allowWrite,
+    ).not.toContain(cliDirectory);
+    expect(
+      preparedConfiguredPermissionContexts
+        .at(-1)
+        ?.additionalWorkingDirectories.has(cliDirectory),
+    ).toBe(false);
+    expect(
+      sessionState.sessionConfiguration.fileSystemSandboxPolicy.allowWrite,
+    ).not.toContain(cliDirectory);
+    expect(
+      sandboxExecutionBroker
+        .executionAuthority()
+        .permissionProfile?.fileSystem.entries.some(
+          (entry) =>
+            entry.path.kind === "path" && entry.path.path === cliDirectory,
+        ),
+    ).toBe(false);
+
+    managedLayer.config = {};
+    await expect(
+      runner.applyAgentConfig(agentId, {
+        sessionId: agentId,
+        reload: true,
+      }),
+    ).resolves.toMatchObject({ applied: true });
+    expect(
+      permissionModeRegistry.current().additionalWorkingDirectories.has(
+        cliDirectory,
+      ),
+    ).toBe(false);
+    expect(
+      preparedConfiguredExecutionAuthorities.at(-1)?.fileSystemSandboxPolicy
+        .allowWrite,
+    ).not.toContain(cliDirectory);
+    expect(
+      sandboxExecutionBroker
+        .executionAuthority()
+        .permissionProfile?.fileSystem.entries.some(
+          (entry) =>
+            entry.path.kind === "path" && entry.path.path === cliDirectory,
+        ),
+    ).toBe(false);
   });
 
   it("serializes a blocked prepared config reload after a permission-mode publication without mixed authority", async () => {

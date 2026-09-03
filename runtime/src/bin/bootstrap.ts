@@ -648,6 +648,10 @@ export interface LocalRuntimeBootstrap {
   /** Stage a configured baseline for the registry publication transaction. */
   readonly prepareConfiguredExecutionAuthority: (
     config: AgenCConfig,
+    permissionContext: Pick<
+      ToolPermissionContext,
+      "additionalWorkingDirectories"
+    >,
   ) => PreparedConfiguredExecutionAuthority;
   readonly workspaceRoot: string;
   readonly conversationId: string;
@@ -906,10 +910,11 @@ async function bootstrapLocalRuntimeSessionScoped(
   let additionalWorkingDirectoryAllowWrite: readonly string[] = [];
   const withAdditionalWorkingDirectories = (
     authority: SessionExecutionAuthority,
+    allowWrite: readonly string[] = additionalWorkingDirectoryAllowWrite,
   ): SessionExecutionAuthority => {
     if (
       authority.sandboxPolicy.value !== "workspace_write" ||
-      additionalWorkingDirectoryAllowWrite.length === 0
+      allowWrite.length === 0
     ) {
       return authority;
     }
@@ -920,7 +925,7 @@ async function bootstrapLocalRuntimeSessionScoped(
         allowWrite: Object.freeze([
           ...new Set([
             ...authority.fileSystemSandboxPolicy.allowWrite,
-            ...additionalWorkingDirectoryAllowWrite,
+            ...allowWrite,
           ]),
         ]),
       }),
@@ -960,10 +965,21 @@ async function bootstrapLocalRuntimeSessionScoped(
   };
   const prepareConfiguredExecutionAuthority = (
     canonicalConfig: AgenCConfig,
+    permissionContext: Pick<
+      ToolPermissionContext,
+      "additionalWorkingDirectories"
+    >,
   ): PreparedConfiguredExecutionAuthority => {
     const previousConfig = configuredExecutionConfig;
     const previous = currentConfiguredExecutionAuthority();
     const previousProjectTrust = configuredExecutionAuthorityProjectTrust;
+    const previousAdditionalWorkingDirectoryAllowWrite =
+      additionalWorkingDirectoryAllowWrite;
+    const preparedAdditionalWorkingDirectoryAllowWrite = Object.freeze(
+      [...permissionContext.additionalWorkingDirectories.values()]
+        .filter((directory) => directory.source === "cliArg")
+        .map((directory) => directory.path),
+    );
     const preparedCwd = sandboxExecutionBroker.cwd;
     const preparedProjectTrust = executionProjectTrust(
       canonicalConfig,
@@ -975,6 +991,7 @@ async function bootstrapLocalRuntimeSessionScoped(
         workspaceRoot: preparedCwd,
         projectTrust: preparedProjectTrust,
       }),
+      preparedAdditionalWorkingDirectoryAllowWrite,
     );
     let committed = false;
     return Object.freeze({
@@ -983,6 +1000,15 @@ async function bootstrapLocalRuntimeSessionScoped(
         if (configuredExecutionConfig !== previousConfig && !committed) {
           throw new Error(
             "configured execution authority changed before staged commit",
+          );
+        }
+        if (
+          additionalWorkingDirectoryAllowWrite !==
+            previousAdditionalWorkingDirectoryAllowWrite &&
+          !committed
+        ) {
+          throw new Error(
+            "configured additional-directory authority changed before staged commit",
           );
         }
         if (sandboxExecutionBroker.cwd !== preparedCwd && !committed) {
@@ -1000,6 +1026,8 @@ async function bootstrapLocalRuntimeSessionScoped(
           );
         }
         configuredExecutionConfig = canonicalConfig;
+        additionalWorkingDirectoryAllowWrite =
+          preparedAdditionalWorkingDirectoryAllowWrite;
         configuredExecutionAuthority = authority;
         configuredExecutionAuthorityCwd = preparedCwd;
         configuredExecutionAuthorityProjectTrust = preparedProjectTrust;
@@ -1012,7 +1040,17 @@ async function bootstrapLocalRuntimeSessionScoped(
             "configured execution authority changed before staged rollback",
           );
         }
+        if (
+          additionalWorkingDirectoryAllowWrite !==
+          preparedAdditionalWorkingDirectoryAllowWrite
+        ) {
+          throw new Error(
+            "configured additional-directory authority changed before staged rollback",
+          );
+        }
         configuredExecutionConfig = previousConfig;
+        additionalWorkingDirectoryAllowWrite =
+          previousAdditionalWorkingDirectoryAllowWrite;
         const currentCwd = sandboxExecutionBroker.cwd;
         const currentProjectTrust = executionProjectTrust(
           previousConfig,
@@ -1028,6 +1066,7 @@ async function bootstrapLocalRuntimeSessionScoped(
                   workspaceRoot: currentCwd,
                   projectTrust: currentProjectTrust,
                 }),
+                previousAdditionalWorkingDirectoryAllowWrite,
               );
         configuredExecutionAuthorityCwd = currentCwd;
         configuredExecutionAuthorityProjectTrust = currentProjectTrust;

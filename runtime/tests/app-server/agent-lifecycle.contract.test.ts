@@ -2524,6 +2524,7 @@ describe("AgenC background agent lifecycle", () => {
       activeSessionIds: ["session_1"],
       metadata: {
         ticket: "F-06a",
+        addDirs: ["../shared workspace", "/tmp/shared"],
         unattendedAllow: [],
         unattendedDeny: [],
         runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
@@ -2537,6 +2538,7 @@ describe("AgenC background agent lifecycle", () => {
         addDirs: ["../shared workspace", "/tmp/shared"],
         metadata: {
           ticket: "F-06a",
+          addDirs: ["../shared workspace", "/tmp/shared"],
           unattendedAllow: [],
           unattendedDeny: [],
           runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
@@ -2557,6 +2559,7 @@ describe("AgenC background agent lifecycle", () => {
       cwd: process.cwd(),
       metadata: {
         ticket: "F-06a",
+        addDirs: ["../shared workspace", "/tmp/shared"],
         objective: "build the parser",
         source: "agent.start",
         unattendedAllow: [],
@@ -2578,6 +2581,7 @@ describe("AgenC background agent lifecycle", () => {
           activeSessionIds: ["session_1"],
           metadata: {
             ticket: "F-06a",
+            addDirs: ["../shared workspace", "/tmp/shared"],
             unattendedAllow: [],
             unattendedDeny: [],
             runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
@@ -2607,6 +2611,7 @@ describe("AgenC background agent lifecycle", () => {
           cwd: process.cwd(),
           metadata: {
             ticket: "F-06a",
+            addDirs: ["../shared workspace", "/tmp/shared"],
             objective: "build the parser",
             source: "agent.start",
             unattendedAllow: [],
@@ -2886,6 +2891,7 @@ describe("AgenC background agent lifecycle", () => {
       activeSessionIds: ["session_resumed"],
       metadata: {
         resumedFromSessionId: "conv-retained1",
+        addDirs: ["../shared workspace", "/tmp/shared"],
       },
     });
     expect(startAgent).not.toHaveBeenCalled();
@@ -2908,6 +2914,7 @@ describe("AgenC background agent lifecycle", () => {
         agentPath: "/root",
         model: "grok-4.3",
         provider: "grok",
+        addDirs: ["../shared workspace", "/tmp/shared"],
         permissionMode: "acceptEdits",
         unattendedAllow: [],
         unattendedDeny: [],
@@ -2931,6 +2938,75 @@ describe("AgenC background agent lifecycle", () => {
           objective: "retained canonical objective",
         },
       },
+    );
+  });
+
+  it("restores retained additional directories on a flagless cold resume", async () => {
+    const fixture = createResumeFixture("conv-retained-add-dirs");
+    const freshRunner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "conv-retained-add-dirs",
+        agentPath: "/root",
+        startedAt: "2026-05-01T12:30:00.000Z",
+        status: "running",
+      }),
+    };
+    const freshAgents = new AgenCDaemonAgentManager({
+      now: () => "2026-05-01T12:30:00.000Z",
+      runner: freshRunner,
+    });
+    const fresh = await createTestAgent(freshAgents, {
+      cwd: fixture.cwd,
+      objective: "retained canonical objective",
+      addDirs: ["../shared workspace", "/tmp/shared", "/tmp/shared"],
+    });
+
+    expect(fresh.metadata).toMatchObject({
+      addDirs: ["../shared workspace", "/tmp/shared"],
+    });
+
+    const restoreAgent = vi.fn(async () => true);
+    const resumedAgents = new AgenCDaemonAgentManager({
+      runner: {
+        startAgent: async () => ({
+          agentId: "unexpected-fresh-agent",
+          startedAt: "2026-05-01T12:30:00.000Z",
+          status: "running",
+        }),
+        restoreAgent,
+      },
+    });
+    await resumedAgents.restoreAgent({
+      agentId: "conv-retained-add-dirs",
+      objective: "retained canonical objective",
+      status: "idle",
+      createdAt: "2026-05-01T12:30:00.000Z",
+      startedAt: "2026-05-01T12:30:00.000Z",
+      lastActiveAt: "2026-05-01T12:31:00.000Z",
+      cwd: fixture.cwd,
+      sessionIds: [],
+      runtimeAvailable: false,
+      metadata: {
+        ...fresh.metadata,
+        agentPath: "/root",
+      },
+    });
+
+    await createTestAgent(resumedAgents, {
+      resumeSessionId: "conv-retained-add-dirs",
+      resumeRolloutPath: fixture.rolloutPath,
+      resumeSourceProof: fixture.sourceProof,
+      cwd: fixture.cwd,
+    });
+
+    expect(restoreAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "conv-retained-add-dirs",
+        addDirs: ["../shared workspace", "/tmp/shared"],
+        metadata: expect.objectContaining({
+          addDirs: ["../shared workspace", "/tmp/shared"],
+        }),
+      }),
     );
   });
 
@@ -6119,6 +6195,7 @@ describe("AgenC background agent lifecycle", () => {
         lastActiveAt: "2026-05-01T12:00:00.500Z",
         cwd: process.cwd(),
         metadata: {
+          addDirs: ["../shared workspace", "/tmp/shared"],
           unattendedAllow: [],
           unattendedDeny: [],
           runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
@@ -6163,6 +6240,7 @@ describe("AgenC background agent lifecycle", () => {
             lastActiveAt: "2026-05-01T12:00:00.500Z",
             cwd: process.cwd(),
             metadata: {
+              addDirs: ["../shared workspace", "/tmp/shared"],
               unattendedAllow: [],
               unattendedDeny: [],
               runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,

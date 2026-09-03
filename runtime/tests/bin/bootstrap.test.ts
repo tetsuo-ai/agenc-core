@@ -271,6 +271,94 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
+  it("commits and rolls back CLI directory authority from the staged permission context", async () => {
+    const home = await mkdtemp(
+      join(tmpdir(), "agenc-bootstrap-add-dir-reload-home-"),
+    );
+    const workspace = await mkdtemp(
+      join(tmpdir(), "agenc-bootstrap-add-dir-reload-ws-"),
+    );
+    const rebasedWorkspace = await mkdtemp(
+      join(tmpdir(), "agenc-bootstrap-add-dir-reload-rebased-"),
+    );
+    const additionalDirectory = await mkdtemp(
+      join(tmpdir(), "agenc-bootstrap-add-dir-reload-extra-"),
+    );
+    await mkdir(join(workspace, ".git"));
+    await mkdir(join(rebasedWorkspace, ".git"));
+    trustWorkspaceForTest(home, workspace);
+    trustWorkspaceForTest(home, rebasedWorkspace);
+
+    await installBootstrapProviderStub();
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        cwd: workspace,
+        argv: ["node", "agenc", "--add-dir", additionalDirectory],
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+      const withoutCliDirectories = {
+        additionalWorkingDirectories: new Map(),
+      };
+      const config = boot.configStore.current();
+
+      const rolledBack = boot.prepareConfiguredExecutionAuthority(
+        config,
+        withoutCliDirectories,
+      );
+      expect(
+        rolledBack.authority.fileSystemSandboxPolicy.allowWrite,
+      ).not.toContain(additionalDirectory);
+      rolledBack.commit();
+      expect(
+        boot.configuredExecutionAuthority.fileSystemSandboxPolicy.allowWrite,
+      ).not.toContain(additionalDirectory);
+      rolledBack.rollback();
+      expect(
+        boot.configuredExecutionAuthority.fileSystemSandboxPolicy.allowWrite,
+      ).toContain(additionalDirectory);
+
+      const revoked = boot.prepareConfiguredExecutionAuthority(
+        config,
+        withoutCliDirectories,
+      );
+      revoked.commit();
+      await transitionSandboxExecutionBroker(
+        boot.session.services.sandboxExecutionBroker!,
+        rebasedWorkspace,
+      );
+      expect(
+        boot.configuredExecutionAuthority.fileSystemSandboxPolicy.allowWrite,
+      ).not.toContain(additionalDirectory);
+
+      const laterReload = boot.prepareConfiguredExecutionAuthority(
+        config,
+        withoutCliDirectories,
+      );
+      expect(
+        laterReload.authority.fileSystemSandboxPolicy.allowWrite,
+      ).not.toContain(additionalDirectory);
+      laterReload.commit();
+      expect(
+        boot.configuredExecutionAuthority.fileSystemSandboxPolicy.allowWrite,
+      ).not.toContain(additionalDirectory);
+    } finally {
+      await shutdown?.().catch(() => {});
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+      await rm(rebasedWorkspace, { recursive: true, force: true });
+      await rm(additionalDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("resolves mode, trust, and reloaded-config authority from the live broker cwd after rebase", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-authority-home-"));
     const workspace = await mkdtemp(
@@ -335,16 +423,19 @@ describe("bootstrapLocalRuntimeSession", () => {
         boot.configuredExecutionAuthority.fileSystemSandboxPolicy.allowWrite,
       ).toEqual([rebasedWorkspace]);
 
-      const prepared = boot.prepareConfiguredExecutionAuthority({
-        ...boot.configStore.current(),
-        sandbox_mode: "workspace-write",
-        sandbox: {
-          ...boot.configStore.current().sandbox,
-          filesystem: {
-            allowWrite: ["./relative-grant"],
+      const prepared = boot.prepareConfiguredExecutionAuthority(
+        {
+          ...boot.configStore.current(),
+          sandbox_mode: "workspace-write",
+          sandbox: {
+            ...boot.configStore.current().sandbox,
+            filesystem: {
+              allowWrite: ["./relative-grant"],
+            },
           },
         },
-      });
+        boot.session.permissionModeRegistry.current(),
+      );
       expect(prepared.authority.fileSystemSandboxPolicy.allowWrite).toEqual([
         rebasedWorkspace,
         join(rebasedWorkspace, "relative-grant"),
