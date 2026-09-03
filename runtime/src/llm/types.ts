@@ -59,6 +59,12 @@ export type LLMContentPart =
 export interface LLMMessage {
   role: MessageRole;
   content: string | LLMContentPart[];
+  /**
+   * Opaque provider reasoning state required for same-provider tool-result
+   * replay. It is never rendered as assistant content and wire adapters must
+   * only forward it for providers whose protocol explicitly requires it.
+   */
+  providerReasoningContent?: string;
   /** Optional local phase metadata for runtime-side replay and completion logic. */
   phase?: LLMAssistantPhase;
   /**
@@ -762,6 +768,8 @@ export interface LLMResponse {
     readonly redacted: boolean;
     readonly kind?: "thinking" | "reasoning_summary";
   }>;
+  /** Opaque reasoning state to preserve across a provider-managed tool loop. */
+  providerReasoningContent?: string;
   finishReason: "stop" | "tool_calls" | "length" | "content_filter" | "error";
   /** Underlying error when finishReason is "error". */
   error?: Error;

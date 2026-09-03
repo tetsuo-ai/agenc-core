@@ -207,10 +207,17 @@ describe("cost helpers", () => {
     for (const [provider, model] of Object.entries(
       BUILT_IN_PROVIDER_DEFAULT_MODELS,
     )) {
-      // Meta does not publish an authoritative per-token price for Muse Spark.
-      // Its separate regression below must remain unknown rather than turning
-      // a conservative fallback estimate into a claimed provider rate.
-      if (provider === "meta") continue;
+      // Meta and QwenCloud Token Plan do not expose a single authoritative
+      // per-token rate. Qwen PayGo pricing is model/region/tier dependent and
+      // is intentionally not guessed here. Their regressions below remain
+      // unknown rather than claiming the conservative fallback as a rate.
+      if (
+        provider === "meta" ||
+        provider === "qwen" ||
+        provider === "qwen-token-plan"
+      ) {
+        continue;
+      }
       const sidecar = new CostSidecar({
         defaultProvider: provider,
         defaultModel: model,
@@ -250,6 +257,35 @@ describe("cost helpers", () => {
     (model) => {
       const usage = {
         provider: "meta",
+        model,
+        inputTokens: 1_000,
+        outputTokens: 500,
+        cachedInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        reasoningOutputTokens: 0,
+        webSearchRequests: 0,
+        totalTokens: 1_500,
+        turns: 1,
+      };
+
+      expect(resolveModelCostEntry(usage, DEFAULT_MODEL_COSTS)).toBeNull();
+      expect(computeUsdCostWithResolution(usage, DEFAULT_MODEL_COSTS))
+        .toMatchObject({ known: false });
+    },
+  );
+
+  test.each(
+    (["qwen", "qwen-token-plan"] as const).flatMap((provider) =>
+      BUILT_IN_PROVIDER_MODEL_CATALOG[provider].map((model) => [
+        provider,
+        model,
+      ] as const)
+    ),
+  )(
+    "keeps %s model %s pricing unknown without a stable authoritative rate",
+    (provider, model) => {
+      const usage = {
+        provider,
         model,
         inputTokens: 1_000,
         outputTokens: 500,

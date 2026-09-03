@@ -101,6 +101,7 @@ function toChatCompletionsMessages(
   options: LLMChatOptions | undefined,
   systemSuffix?: string,
   toolResultImagePolicy?: "relay_as_user",
+  replaysReasoningContent = false,
 ): Array<Record<string, unknown>> {
   const prepared = prepareMessagesForWire(messages);
   let systemPrompt = systemPromptParts(prepared, options).join("\n\n");
@@ -188,6 +189,9 @@ function toChatCompletionsMessages(
       wireMessages.push({
         role: "assistant",
         content: messageTextContent(message.content),
+        ...(replaysReasoningContent && message.providerReasoningContent
+          ? { reasoning_content: message.providerReasoningContent }
+          : {}),
         tool_calls: message.toolCalls.map((toolCall) => ({
           id: toolCall.id,
           type: "function",
@@ -206,6 +210,11 @@ function toChatCompletionsMessages(
     wireMessages.push({
       role: message.role,
       content: toOpenAIMessageContent(message.content),
+      ...(message.role === "assistant" &&
+      replaysReasoningContent &&
+      message.providerReasoningContent
+        ? { reasoning_content: message.providerReasoningContent }
+        : {}),
     });
   }
   flushToolImageRelays();
@@ -233,11 +242,17 @@ export function buildChatCompletionsRequest(
       input.options,
       input.providerCapabilityHints?.reasoningSoftSwitchSuffix,
       input.providerCapabilityHints?.toolResultImagePolicy,
+      input.providerCapabilityHints?.replaysReasoningContent === true,
     ),
     [maxTokenField]: maxTokens,
   };
 
   const requestedToolChoice = input.options?.toolChoice;
+  const disablesThinkingForForcedToolChoice =
+    input.providerCapabilityHints?.disablesThinkingForForcedToolChoice === true &&
+    requestedToolChoice !== undefined &&
+    requestedToolChoice !== "auto" &&
+    requestedToolChoice !== "none";
   const autoOnlyToolChoice =
     input.providerCapabilityHints?.toolChoicePolicy === "auto_only";
   const omitToolsForChoice =
@@ -253,6 +268,9 @@ export function buildChatCompletionsRequest(
     body.tool_choice = autoOnlyToolChoice
       ? "auto"
       : parseOpenAIToolChoice(requestedToolChoice);
+  }
+  if (disablesThinkingForForcedToolChoice) {
+    body.enable_thinking = false;
   }
   if (
     input.options?.parallelToolCalls !== undefined &&
@@ -276,6 +294,7 @@ export function buildChatCompletionsRequest(
   // unmigrated callers don't regress.
   if (
     input.options?.reasoningEffort !== undefined &&
+    !disablesThinkingForForcedToolChoice &&
     input.providerCapabilityHints?.acceptsReasoningEffort !== false &&
     // Providers with per-model effort enums (NVIDIA NIM) reject or
     // silently ignore out-of-enum values; stripping lets the model run
@@ -392,9 +411,12 @@ export function parseChatCompletionsResponse(
       ? message.content
       : Array.isArray(message.content)
         ? assistantTextFromContentBlocks(message.content)
-        : typeof message.reasoning_content === "string"
-          ? message.reasoning_content
-          : "";
+        : "";
+  const providerReasoningContent =
+    typeof message.reasoning_content === "string" &&
+      message.reasoning_content.length > 0
+      ? message.reasoning_content
+      : undefined;
   // Models whose template inlines chain-of-thought in `content`
   // (MiniMax M3, Qwen3, R1 distills, Kimi K2) would otherwise print
   // literal think markers in the transcript. A leading block moves to
@@ -435,16 +457,21 @@ export function parseChatCompletionsResponse(
 
   return {
     content,
-    ...(inlineThinking.length > 0
+    ...(providerReasoningContent !== undefined || inlineThinking.length > 0
       ? {
           thinking: Object.freeze([
             Object.freeze({
-              text: inlineThinking,
+              text: [providerReasoningContent, inlineThinking]
+                .filter((value): value is string => Boolean(value))
+                .join("\n"),
               redacted: false,
               kind: "reasoning_summary" as const,
             }),
           ]),
         }
+      : {}),
+    ...(providerReasoningContent !== undefined
+      ? { providerReasoningContent }
       : {}),
     toolCalls,
     usage: coerceUsage({

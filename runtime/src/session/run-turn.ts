@@ -385,6 +385,7 @@ type AgenCMessageRole = "system" | "developer" | "user" | "assistant" | "tool";
 interface AgenCMessage {
   readonly role: AgenCMessageRole;
   readonly content: string | readonly LLMContentPart[];
+  readonly providerReasoningContent?: string;
   readonly toolCallId?: string;
   readonly toolName?: string;
   readonly phase?: string;
@@ -401,6 +402,7 @@ type AgenCRuntimeMessage = Omit<
   readonly originalRole?: AgenCMessage["role"];
   readonly toolCallId?: string;
   readonly toolName?: string;
+  readonly providerReasoningContent?: string;
   readonly toolCalls?: readonly {
     readonly id: string;
     readonly name: string;
@@ -558,6 +560,9 @@ function toAgenCMessage(message: LLMMessage): AgenCMessage {
   return {
     role: message.role,
     content: cloneContent(message.content),
+    ...(message.providerReasoningContent !== undefined
+      ? { providerReasoningContent: message.providerReasoningContent }
+      : {}),
     ...(message.toolCallId !== undefined
       ? { toolCallId: message.toolCallId }
       : {}),
@@ -930,6 +935,9 @@ function fromAgenCRuntimeMessage(
     return {
       role,
       content: fromRuntimeMessageContent(message.content),
+      ...(message.providerReasoningContent !== undefined
+        ? { providerReasoningContent: message.providerReasoningContent }
+        : {}),
       ...(message.toolCallId !== undefined
         ? { toolCallId: message.toolCallId }
         : {}),

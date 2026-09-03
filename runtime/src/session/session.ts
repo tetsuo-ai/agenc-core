@@ -1864,6 +1864,11 @@ export function normalizeHistoryMessages(
       toolCalls?: unknown;
       toolCallId?: unknown;
       toolName?: unknown;
+      providerReasoningContent?: unknown;
+      providerReasoning?: {
+        version?: unknown;
+        content?: unknown;
+      };
       toolResultIntegrity?: ToolResultIntegrity;
       agentInvocation?: AgentInvocationChannelMetadata;
       compactionHistory?: CompactionHistoryMarkerV1;
@@ -1888,6 +1893,17 @@ export function normalizeHistoryMessages(
       typeof candidate.content === "string" || Array.isArray(candidate.content)
         ? candidate.content
         : "";
+    const providerReasoningContent =
+      candidate.role === "assistant"
+        ? typeof candidate.providerReasoningContent === "string" &&
+          candidate.providerReasoningContent.length > 0
+          ? candidate.providerReasoningContent
+          : candidate.providerReasoning?.version === 1 &&
+              typeof candidate.providerReasoning.content === "string" &&
+              candidate.providerReasoning.content.length > 0
+            ? candidate.providerReasoning.content
+            : undefined
+        : undefined;
     normalized.push({
       role: candidate.role,
       content: content as LLMMessage["content"],
@@ -1902,6 +1918,9 @@ export function normalizeHistoryMessages(
         : {}),
       ...(typeof candidate.toolName === "string"
         ? { toolName: candidate.toolName }
+        : {}),
+      ...(providerReasoningContent !== undefined
+        ? { providerReasoningContent }
         : {}),
       // Preserve the file-history join key and durable integrity metadata.
       // The invocation merge boundary is derived from authenticated channel

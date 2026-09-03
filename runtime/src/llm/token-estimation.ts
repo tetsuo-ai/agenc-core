@@ -124,6 +124,14 @@ export const MODEL_TOKENIZER_CONFIGS: readonly ModelTokenizerConfig[] = [
     supportsCode: true,
   },
   {
+    modelFamily: "qwen",
+    providerNames: ["qwen", "qwen-token-plan"],
+    modelMatchers: [/qwen/i],
+    bytesPerToken: 3.8,
+    supportsJson: true,
+    supportsCode: true,
+  },
+  {
     modelFamily: "deepseek",
     providerNames: ["deepseek"],
     modelMatchers: [/deepseek/i],

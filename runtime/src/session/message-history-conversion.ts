@@ -33,6 +33,15 @@ export function llmMessageToResponseItem(message: LLMMessage): ResponseItem {
       ? { toolCallId: message.toolCallId }
       : {}),
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+    ...(message.providerReasoningContent !== undefined &&
+    message.providerReasoningContent.length > 0
+      ? {
+          providerReasoning: {
+            version: 1 as const,
+            content: message.providerReasoningContent,
+          },
+        }
+      : {}),
     ...(message.phase !== undefined ? { phase: message.phase } : {}),
     ...(message.runtimeOnly?.toolResultIntegrity !== undefined
       ? { toolResultIntegrity: message.runtimeOnly.toolResultIntegrity }
@@ -105,6 +114,10 @@ export function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
       : {}),
     ...(item.toolCallId !== undefined ? { toolCallId: item.toolCallId } : {}),
     ...(item.toolName !== undefined ? { toolName: item.toolName } : {}),
+    ...(item.providerReasoning !== undefined &&
+    item.providerReasoning.content.length > 0
+      ? { providerReasoningContent: item.providerReasoning.content }
+      : {}),
     ...(item.toolResultIntegrity !== undefined ||
     item.agentInvocation !== undefined ||
     item.compactionHistory !== undefined
@@ -233,6 +246,14 @@ function redactResponseItemForPersistence(
             agentInvocation,
           } as ResponseItem;
         })();
+  if (
+    item.providerReasoning !== undefined &&
+    redacted.providerReasoning?.content !== item.providerReasoning.content
+  ) {
+    throw new Error(
+      "cannot persist provider reasoning replay because secret redaction would change its opaque content",
+    );
+  }
   assertResponseAgentInvocationItem(redacted);
   if (integrity === undefined) return redacted;
   if (redacted.role !== "tool" || redacted.toolCallId === undefined) {

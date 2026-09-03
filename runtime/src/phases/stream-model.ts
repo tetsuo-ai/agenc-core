@@ -1534,6 +1534,9 @@ export async function streamModel(
   state.messages.push({
     role: "assistant",
     content: response.content,
+    ...(response.providerReasoningContent !== undefined
+      ? { providerReasoningContent: response.providerReasoningContent }
+      : {}),
     toolCalls:
       !maxOutputTruncated && assistant.toolCalls.length > 0
         ? [...assistant.toolCalls]

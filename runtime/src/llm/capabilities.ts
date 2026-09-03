@@ -260,6 +260,27 @@ function isMetaMuseSparkModel(model: string): boolean {
   );
 }
 
+function isQwen38ThinkingModel(model: string): boolean {
+  return matchesModelFamily(
+    model,
+    /(?:^|[/:])qwen3\.8-(?:max|flash)(?:$|[-_.:])/,
+  );
+}
+
+function isQwenVisionModel(model: string): boolean {
+  return matchesModelFamily(
+    model,
+    /(?:^|[/:])qwen3\.(?:8-(?:max|flash)|7-(?:plus|flash)|6-(?:plus|flash))(?:$|[-_.:])/,
+  );
+}
+
+function isQwenTokenPlanVisionModel(model: string): boolean {
+  return matchesModelFamily(
+    model,
+    /(?:^|[/:])qwen3\.(?:8-(?:max|flash)|7-plus|6-flash)(?:$|[-_.:])/,
+  );
+}
+
 const HOSTED_CHAT_COMPATIBLE_CAPABILITIES = {
   supportsToolUse: true,
   supportsPromptCaching: false,
@@ -405,6 +426,22 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsStructuredOutputWithTools: isMetaMuseSparkModel,
     acceptsImageHistory: isMetaMuseSparkModel,
     acceptsReasoningEffort: isMetaMuseSparkModel,
+  },
+  qwen: {
+    ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
+    supportsImageInput: isQwenVisionModel,
+    supportsExtendedThinking: isQwen38ThinkingModel,
+    acceptsImageHistory: isQwenVisionModel,
+    acceptsThinkingHistory: isQwen38ThinkingModel,
+    acceptsReasoningEffort: isQwen38ThinkingModel,
+  },
+  "qwen-token-plan": {
+    ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
+    supportsImageInput: isQwenTokenPlanVisionModel,
+    supportsExtendedThinking: isQwen38ThinkingModel,
+    acceptsImageHistory: isQwenTokenPlanVisionModel,
+    acceptsThinkingHistory: isQwen38ThinkingModel,
+    acceptsReasoningEffort: isQwen38ThinkingModel,
   },
   gemini: {
     supportsToolUse: true,

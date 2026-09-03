@@ -57,6 +57,14 @@ export interface ChatCompletionsCapabilityHints {
    */
   readonly toolResultImagePolicy?: "relay_as_user";
   /**
+   * Replay the provider-owned reasoning_content field on assistant messages.
+   * Qwen's thinking-mode function calling requires this value to be echoed
+   * unchanged before the corresponding tool results are submitted.
+   */
+  readonly replaysReasoningContent?: boolean;
+  /** Forced Qwen tool choices require hybrid thinking to be disabled. */
+  readonly disablesThinkingForForcedToolChoice?: boolean;
+  /**
    * If `false`, caller-supplied stop sequences are omitted. Some compatible
    * APIs reject the otherwise-standard `stop` request field.
    */
@@ -113,6 +121,15 @@ const META_REASONING_EFFORT_VALUES = new Set([
   "low",
   "medium",
   "high",
+  "xhigh",
+]);
+
+// Qwen3.8 exposes these values on both QwenCloud billing routes. Older
+// families use different thinking controls, so they stay fail-closed rather
+// than inheriting a field that their endpoint may reject.
+const QWEN_38_REASONING_EFFORT_VALUES = new Set([
+  "low",
+  "medium",
   "xhigh",
 ]);
 
@@ -275,6 +292,12 @@ export function chatCompletionsCapabilityHintsForProvider(
   } else if (slug === "meta" && /(?:^|[/:])muse-spark-/i.test(model ?? "")) {
     reasoningEffortAllowedValues = META_REASONING_EFFORT_VALUES;
     acceptsReasoningEffort = true;
+  } else if (
+    (slug === "qwen" || slug === "qwen-token-plan") &&
+    /(?:^|[/:])qwen3\.8-(?:max|flash)(?:$|[-_.:])/i.test(model ?? "")
+  ) {
+    reasoningEffortAllowedValues = QWEN_38_REASONING_EFFORT_VALUES;
+    acceptsReasoningEffort = true;
   } else if (slug === "nvidia-nim") {
     reasoningEffortAllowedValues = nimReasoningEffortValues(model);
     acceptsReasoningEffort = reasoningEffortAllowedValues !== undefined;
@@ -322,8 +345,14 @@ export function chatCompletionsCapabilityHintsForProvider(
       ? { reasoningEffortAllowedValues }
       : {}),
     ...(slug === "meta" ? { toolChoicePolicy: "auto_only" as const } : {}),
-    ...(slug === "meta"
+    ...(slug === "meta" || slug === "qwen" || slug === "qwen-token-plan"
       ? { toolResultImagePolicy: "relay_as_user" as const }
+      : {}),
+    ...(slug === "qwen" || slug === "qwen-token-plan"
+      ? {
+          replaysReasoningContent: true,
+          disablesThinkingForForcedToolChoice: true,
+        }
       : {}),
     acceptsStopSequences: slug !== "meta",
     acceptsServiceTier,

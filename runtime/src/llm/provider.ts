@@ -49,6 +49,10 @@ import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { MetaProvider } from "./providers/meta/index.js";
+import {
+  QwenProvider,
+  QwenTokenPlanProvider,
+} from "./providers/qwen/index.js";
 import { MistralProvider } from "./providers/mistral/index.js";
 import { NvidiaNimProvider } from "./providers/nvidia-nim/index.js";
 import { MiniMaxProvider } from "./providers/minimax/index.js";
@@ -1314,6 +1318,8 @@ function buildOpenAICompatibleProvider(
     | "groq"
     | "deepseek"
     | "meta"
+    | "qwen"
+    | "qwen-token-plan"
     | "mistral"
     | "nvidia-nim"
     | "minimax"
@@ -1907,6 +1913,18 @@ export function createProvider(
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: MetaProvider,
+      });
+    case "qwen":
+      return buildOpenAICompatibleProvider("qwen", opts, {
+        apiKeyMode: "required",
+        useResponsesApi: false,
+        providerCtor: QwenProvider,
+      });
+    case "qwen-token-plan":
+      return buildOpenAICompatibleProvider("qwen-token-plan", opts, {
+        apiKeyMode: "required",
+        useResponsesApi: false,
+        providerCtor: QwenTokenPlanProvider,
       });
     case "mistral":
       return buildOpenAICompatibleProvider("mistral", opts, {

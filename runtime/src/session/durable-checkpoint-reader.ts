@@ -67,6 +67,7 @@ const RESPONSE_ITEM_KEYS = Object.freeze([
   "endTurn",
   "id",
   "phase",
+  "providerReasoning",
   "role",
   "toolCallId",
   "toolCalls",
@@ -74,6 +75,7 @@ const RESPONSE_ITEM_KEYS = Object.freeze([
   "toolResultIntegrity",
 ]);
 const TOOL_CALL_KEYS = Object.freeze(["arguments", "id", "name"]);
+const PROVIDER_REASONING_KEYS = Object.freeze(["content", "version"]);
 
 export type ReadableTurnCheckpoint =
   | {
@@ -375,6 +377,19 @@ function computeCheckpointPrefixHash(
     );
     if (message.endTurn !== undefined) {
       writer.writeString("end-turn", String(message.endTurn));
+    }
+
+    // Conditional encoding preserves existing checkpoint hashes when the
+    // optional field is absent, while authenticating every new replay value.
+    if (message.providerReasoning !== undefined) {
+      writer.writeCount(
+        "provider-reasoning-version",
+        message.providerReasoning.version,
+      );
+      writer.writeString(
+        "provider-reasoning-content",
+        message.providerReasoning.content,
+      );
     }
 
     writer.writeString(
@@ -830,6 +845,20 @@ function assertResponseItemShape(
   }
   if (item.endTurn !== undefined && typeof item.endTurn !== "boolean") {
     throw malformed(`checkpoint response item ${index} has invalid endTurn`);
+  }
+  if (item.providerReasoning !== undefined) {
+    if (
+      item.role !== "assistant" ||
+      !isRecord(item.providerReasoning) ||
+      !hasOnlyKnownKeys(item.providerReasoning, PROVIDER_REASONING_KEYS) ||
+      item.providerReasoning.version !== 1 ||
+      typeof item.providerReasoning.content !== "string" ||
+      item.providerReasoning.content.length === 0
+    ) {
+      throw malformed(
+        `checkpoint response item ${index} has invalid provider reasoning replay`,
+      );
+    }
   }
   if (
     item.toolResultIntegrity !== undefined &&

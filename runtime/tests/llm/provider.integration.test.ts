@@ -61,6 +61,28 @@ const PROVIDER_CASES: ReadonlyArray<{
     apiKey: () => process.env.MODEL_API_KEY,
   },
   {
+    provider: "qwen",
+    model: process.env.AGENC_QWEN_INTEGRATION_MODEL ?? "qwen3.8-max",
+    enabled:
+      RUN_REMOTE &&
+      Boolean(process.env.DASHSCOPE_API_KEY ?? process.env.QWEN_API_KEY),
+    apiKey: () => process.env.DASHSCOPE_API_KEY ?? process.env.QWEN_API_KEY,
+  },
+  {
+    provider: "qwen-token-plan",
+    model:
+      process.env.AGENC_QWEN_TOKEN_PLAN_INTEGRATION_MODEL ?? "qwen3.8-max",
+    enabled:
+      RUN_REMOTE &&
+      Boolean(
+        process.env.QWEN_TOKEN_PLAN_API_KEY ??
+          process.env.DASHSCOPE_TOKEN_PLAN_API_KEY,
+      ),
+    apiKey: () =>
+      process.env.QWEN_TOKEN_PLAN_API_KEY ??
+      process.env.DASHSCOPE_TOKEN_PLAN_API_KEY,
+  },
+  {
     provider: "gemini",
     model: process.env.AGENC_GEMINI_INTEGRATION_MODEL ?? "gemini-2.5-pro",
     enabled: RUN_REMOTE && Boolean(process.env.GEMINI_API_KEY),
