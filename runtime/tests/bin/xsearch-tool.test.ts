@@ -51,51 +51,54 @@ describe("supportsProviderNativeXSearch", () => {
   });
 });
 
-describe("LIVE XSearch tool catalog gate (Hermes-style)", () => {
-  it("is NOT registered for non-Grok sessions (openai)", () => {
+describe("LIVE XSearch independent tool backend", () => {
+  it("is not registered without an xAI backend credential", () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => null,
-      sessionProvider: "openai",
+      sessionProvider: "meta",
+      env: {},
       grokCapabilities: { x_search: true },
     });
     expect(tools.some((t) => t.name === "XSearch")).toBe(false);
   });
 
-  it("is NOT registered for OpenRouter host even if provider slug is grok", () => {
+  it("is registered for Meta when an independent xAI backend is configured", () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => null,
-      sessionProvider: "grok",
-      sessionBaseURL: "https://openrouter.ai/api/v1",
-      grokCapabilities: { x_search: true },
-    });
-    expect(tools.some((t) => t.name === "XSearch")).toBe(false);
-  });
-
-  it("is NOT registered when x_search is disabled (default)", () => {
-    const tools = createModelFacingTools({
-      workspaceRoot: process.cwd(),
-      getSession: () => null,
-      sessionProvider: "grok",
-      sessionBaseURL: "https://api.x.ai/v1",
-      grokCapabilities: { x_search: false },
-    });
-    expect(tools.some((t) => t.name === "XSearch")).toBe(false);
-  });
-
-  it("is registered only for grok + direct xAI + x_search on", () => {
-    const tools = createModelFacingTools({
-      workspaceRoot: process.cwd(),
-      getSession: () => null,
-      sessionProvider: "grok",
-      sessionBaseURL: "https://api.x.ai/v1",
+      sessionProvider: "meta",
+      sessionBaseURL: "https://api.meta.ai/v1",
+      env: { XAI_API_KEY: "xai-tool-key", MODEL_API_KEY: "meta-turn-key" },
       grokCapabilities: { x_search: true },
     });
     expect(tools.some((t) => t.name === "XSearch")).toBe(true);
   });
 
-  it("one-shots native x_search when enabled (mocked provider factory)", async () => {
+  it("does not reuse the reasoning provider host for the xAI backend", () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => null,
+      sessionProvider: "openrouter",
+      sessionBaseURL: "https://openrouter.ai/api/v1",
+      env: { XAI_API_KEY: "xai-tool-key" },
+      grokCapabilities: { x_search: true },
+    });
+    expect(tools.some((t) => t.name === "XSearch")).toBe(true);
+  });
+
+  it("is not registered when the xAI backend capability is disabled", () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => null,
+      sessionProvider: "meta",
+      env: { XAI_API_KEY: "xai-tool-key" },
+      grokCapabilities: { x_search: false },
+    });
+    expect(tools.some((t) => t.name === "XSearch")).toBe(false);
+  });
+
+  it("lets Meta invoke x_search through a credential-isolated Grok backend", async () => {
     const chat = vi.fn(async () => ({
       content: "People are talking about xAI.[[1]](https://x.com/xai/status/1)",
       toolCalls: [],
@@ -112,11 +115,11 @@ describe("LIVE XSearch tool catalog gate (Hermes-style)", () => {
     }));
 
     const { createProvider } = await import("../../src/llm/provider.js");
-    const sessionProvider = createProvider("grok", {
-      apiKey: "test-key",
-      model: "grok-4.5",
+    const sessionProvider = createProvider("meta", {
+      apiKey: "meta-turn-key",
+      model: "muse-spark-1.3",
+      baseURL: "https://api.meta.ai/v1",
       tools: [],
-      extra: { xSearch: true },
     });
 
     const factory = vi.fn((...args: Parameters<typeof createProvider>) => {
@@ -132,8 +135,12 @@ describe("LIVE XSearch tool catalog gate (Hermes-style)", () => {
           nextInternalSubId: () => "xsearch-1",
           services: { admissionRequired: false, provider: sessionProvider },
         }) as unknown as Session,
-      sessionProvider: "grok",
-      sessionBaseURL: "https://api.x.ai/v1",
+      sessionProvider: "meta",
+      sessionBaseURL: "https://api.meta.ai/v1",
+      env: {
+        XAI_API_KEY: "xai-tool-key",
+        MODEL_API_KEY: "meta-turn-key",
+      },
       grokCapabilities: { x_search: true },
       providerFactory: factory as typeof createProvider,
     });
@@ -146,7 +153,15 @@ describe("LIVE XSearch tool catalog gate (Hermes-style)", () => {
     expect(result.content).toMatch(/grok_x_search/);
     expect(result.content).toMatch(/x\.com\/xai\/status\/1/);
     expect(factory).toHaveBeenCalled();
-    const factoryExtra = factory.mock.calls[0]?.[1]?.extra as
+    const factoryCall = factory.mock.calls[0];
+    expect(factoryCall?.[0]).toBe("grok");
+    expect(factoryCall?.[1]).toMatchObject({
+      apiKey: "xai-tool-key",
+      baseURL: "https://api.x.ai/v1",
+      model: "grok-4.6",
+    });
+    expect(factoryCall?.[1]?.apiKey).not.toBe("meta-turn-key");
+    const factoryExtra = factoryCall?.[1]?.extra as
       | { xSearch?: boolean; webSearch?: boolean }
       | undefined;
     expect(factoryExtra?.xSearch).toBe(true);

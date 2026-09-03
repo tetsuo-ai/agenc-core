@@ -207,16 +207,22 @@ Meta Model API uses `MODEL_API_KEY` and the OpenAI-compatible
 `/chat/completions` transport. Its LLM catalog includes `muse-spark-1.3`,
 `muse-spark-1.3-contributor`, `muse-spark-1.2`,
 `muse-spark-1.2-contributor`, and `muse-spark-1.1`. The `/models` entries
-`muse-image-1.0` and `muse-voice-transcribe-1.0` are media APIs, so they are
-not offered as session LLMs. Muse Spark is registered with a 1,048,576-token
-context window and a 131,072-token maximum output. Its supported reasoning
-levels are `minimal`, `low`, `medium`, `high`, and `xhigh` (default `medium`);
-`none` and `max` are rejected by the API. The chat models accept image input,
-JSON-schema structured output, and parallel function calls. Meta accepts only
-`tool_choice: "auto"` and rejects `stop`, so AgenC normalizes those controls
-before sending a request. Exact per-token pricing is not published in the
-authoritative provider documentation, so AgenC reports the cost as unknown
-instead of treating its conservative fallback estimate as authoritative.
+`muse-image-1.0` and `muse-voice-transcribe-1.0` are media APIs, so they remain
+excluded from the chat/session model picker. `muse-image-1.0` is instead the
+native Meta backend for the model-facing `ImagineImage` tool. Muse Spark (and
+any other tool-capable reasoning provider) can invoke that tool when
+`MODEL_API_KEY` is configured; tool availability is not restricted by the
+reasoning provider slug.
+
+Muse Spark is registered with a 1,048,576-token context window and a
+131,072-token maximum output. Its supported reasoning levels are `minimal`,
+`low`, `medium`, `high`, and `xhigh` (default `medium`); `none` and `max` are
+rejected by the API. The chat models accept image input, JSON-schema structured
+output, and parallel function calls. Meta accepts only `tool_choice: "auto"`
+and rejects `stop`, so AgenC normalizes those controls before sending a
+request. Exact per-token pricing is not published in the authoritative
+provider documentation, so AgenC reports the cost as unknown instead of
+treating its conservative fallback estimate as authoritative.
 
 ## Local context windows
 

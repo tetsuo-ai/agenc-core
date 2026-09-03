@@ -152,12 +152,14 @@ Legacy `system.*` utilities (not the primary edit surface):
 | `system.symbolReferences` | Deferred |
 | `LSP` | Language-server diagnostics / definition / references / symbols |
 | `WebSearch` | Web search (provider-native Grok path when available, else configured endpoint / DuckDuckGo) |
-| `XSearch` | **Grok-gated.** Live X/Twitter search via direct xAI when session provider is `grok` and `[providers.grok] x_search = true` |
+| `XSearch` | Live X/Twitter search through an independent direct-xAI backend. Any tool-capable reasoning provider may invoke it when xAI credentials exist and `[providers.grok] x_search = true` |
 | `web_fetch` | Fetch URL → text/markdown |
 
 There is **no** separate LIVE tool named `web_search`; that string is only a
 provider-native server-side tool id used internally by the Grok web-search
-path. Model-facing search is `WebSearch` (plus gated `XSearch` when enabled).
+path. Model-facing search is `WebSearch` (plus backend-gated `XSearch` when
+enabled). The reasoning provider does not have to be Grok; `XSearch` performs
+its server-side native search through a separately authenticated Grok backend.
 
 ### Planning / workflow
 
@@ -191,16 +193,18 @@ path. Model-facing search is `WebSearch` (plus gated `XSearch` when enabled).
 | `EnterWorktree` | **Deferred** by default |
 | `ExitWorktree` | **Deferred** by default |
 
-### Media (Grok-gated)
+### Media (backend-gated, provider-independent)
 
 | Name | Notes |
 | --- | --- |
-| `ImagineImage` | Image generation via direct xAI when session provider is `grok` and credentials are available |
-| `ImagineVideo` | Video generation via direct xAI when session provider is `grok` and credentials are available |
+| `ImagineImage` | Image generation via Meta Muse Image (`MODEL_API_KEY`) or direct xAI Imagine (xAI credentials); callable by any tool-capable reasoning provider |
+| `ImagineVideo` | Video generation via an independently authenticated direct-xAI Imagine backend; callable by any tool-capable reasoning provider |
 
-These are registered on the LIVE surface but only usable on the Grok/direct-xAI
-path. Other providers do not advertise them as working media tools. Operator
-guide: [imagine.md](../imagine.md).
+Registration follows execution-backend capability, not the provider doing the
+reasoning. `ImagineImage` is included when a Meta or xAI image credential is
+available; `ImagineVideo` is included when xAI credentials are available.
+Provider session keys never cross backend trust boundaries. Operator guide:
+[imagine.md](../imagine.md).
 
 ### Browser
 

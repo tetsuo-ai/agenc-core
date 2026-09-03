@@ -107,6 +107,31 @@ function sessionWith(provider: unknown): Session {
   return { services: { provider } } as unknown as Session;
 }
 
+describe("provider-independent xAI tool catalog", () => {
+  it("exposes xAI backend tools independently of reasoning provider", async () => {
+    const openaiTools = createModelFacingTools({
+      workspaceRoot: OUT,
+      getSession: () => null,
+      sessionProvider: "openai",
+      env: { XAI_API_KEY: "independent-xai-backend" },
+      grokCapabilities: {
+        x_search: true,
+        web_search: true,
+      },
+    });
+    const openaiNames = openaiTools.map((t) => t.name);
+    expect(openaiNames).toContain("ImagineImage");
+    expect(openaiNames).toContain("ImagineVideo");
+    expect(openaiNames).toContain("XSearch");
+    // WebSearch remains generic.
+    expect(openaiNames).toContain("WebSearch");
+
+    await log(
+      `catalog openai=${openaiNames.filter((n) => n.startsWith("Imagine") || n === "XSearch").join(",")}`,
+    );
+  });
+});
+
 describe("LIVE full Grok surface e2e", () => {
   let bearer = "";
 
@@ -150,46 +175,6 @@ describe("LIVE full Grok surface e2e", () => {
     );
     expect(rest).toBe(bearer);
     await log("OAuth-wins-over-BYOK OK");
-  });
-
-  it("catalog: non-Grok has no Imagine/XSearch; Grok has full media + XSearch", async () => {
-    const openaiTools = createModelFacingTools({
-      workspaceRoot: OUT,
-      getSession: () => null,
-      sessionProvider: "openai",
-      env: { XAI_API_KEY: "should-not-matter" },
-      grokCapabilities: {
-        x_search: true,
-        web_search: true,
-      },
-    });
-    const openaiNames = openaiTools.map((t) => t.name);
-    expect(openaiNames).not.toContain("ImagineImage");
-    expect(openaiNames).not.toContain("ImagineVideo");
-    expect(openaiNames).not.toContain("XSearch");
-    // WebSearch remains generic
-    expect(openaiNames).toContain("WebSearch");
-
-    const grokTools = createModelFacingTools({
-      workspaceRoot: OUT,
-      getSession: () => null,
-      sessionProvider: "grok",
-      sessionBaseURL: "https://api.x.ai/v1",
-      // no env BYOK — OAuth credentials present via storage
-      env: {},
-      grokCapabilities: {
-        x_search: true,
-        web_search: true,
-      },
-    });
-    const grokNames = grokTools.map((t) => t.name);
-    expect(grokNames).toContain("ImagineImage");
-    expect(grokNames).toContain("ImagineVideo");
-    expect(grokNames).toContain("XSearch");
-    expect(grokNames).toContain("WebSearch");
-    await log(
-      `catalog openai=${openaiNames.filter((n) => n.startsWith("Imagine") || n === "XSearch").join(",") || "none"} grok media+XSearch present`,
-    );
   });
 
   it(

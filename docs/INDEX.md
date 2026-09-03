@@ -41,10 +41,10 @@ history; the linked pages below are current product truth.
 | [eval/real-agent-baseline-runbook.md](eval/real-agent-baseline-runbook.md) | Operator runbook for reproducible real-agent pilot batches from pinned inputs, including fail-closed CLI parsing |
 | [eval/seed-baseline-2026-07-17.md](eval/seed-baseline-2026-07-17.md) | Dated snapshot: first contained 10-task real-agent scorecard (2026-07-17, runtime 0.6.1). Not a reproduction contract |
 | [ci-required-gates.md](ci-required-gates.md) | Fast `test:fast` classification, typecheck-only native/policy-inventory surfaces, exact-SHA release gates, and the inactive optional GitHub App/ruleset design |
-| [provider-tool-compat.md](provider-tool-compat.md) | Wire-schema shaping: object-root tools, llama.cpp grammar-safe schemas, Gemini native JSON Schema, Gemini object-applicator roots that omit type, and the LM Studio/openai-compatible 8192 ceiling |
+| [provider-tool-compat.md](provider-tool-compat.md) | Provider-independent tool backends plus wire-schema shaping: object-root tools, llama.cpp grammar-safe schemas, Gemini native JSON Schema, Gemini object-applicator roots that omit type, and the LM Studio/openai-compatible 8192 ceiling |
 | [embedded-neovim-buffer.md](embedded-neovim-buffer.md) | Embedded Neovim workspace, multi-buffer safety, recovery, editor/chat handoff, request-scoped Editor turn bounds, configuration, troubleshooting, and hosted PTY split |
 | [browser.md](browser.md) | Browser tool, Chromium profile, SSRF proxy, `[browser]` config |
-| [imagine.md](imagine.md) | Grok ImagineImage / ImagineVideo tools (direct xAI only) |
+| [imagine.md](imagine.md) | Provider-independent image/video tools backed by Meta Muse Image or direct xAI Imagine |
 | [sdk.md](sdk.md) | Embed via `@tetsuo-ai/agenc-sdk` (socket + subprocess), including `startRun` model/provider, the generated transcript.v2 protocol slice, and marker-checked workflow-result types |
 | [security/slm-transaction-guard.md](security/slm-transaction-guard.md) | Opt-in SLM CourtGuard for Solana-like tool calls |
 | [security/mobile-ledger-transfer.md](security/mobile-ledger-transfer.md) | Typed Android `@ledger` SOL handoff: trust boundary, schemas, idempotency, recovery |
