@@ -25,8 +25,10 @@
  *     green — only the flag-VALUE test fails, and that one asserts a number,
  *     not an open. Its real partner is `!before.isDirectory()` in the same
  *     expression: `lstat` of a symlink reports `isDirectory()` false, so that
- *     clause rejects a symlinked root on its own. Delete the whole expression
- *     and "refuses a root that is a symlink" finally fails.
+ *     clause rejects a symlinked root on its own. Deleting the whole
+ *     expression is still not enough on its own: measured, that alone fails
+ *     nothing, and only the expression together with both directory open
+ *     flags makes "refuses a root that is a symlink" fail.
  *   - the `isContained` pre-check in `openVerifiedCandidate` is redundant with
  *     the ancestor walk's canonical containment for every reachable escape.
  *   - `fatal: true` in `decodeScopedPrefix` — see the note in "scope-bound
@@ -755,13 +757,18 @@ describe("scope-bound description reads", () => {
   });
 
   /**
-   * GUARD: the handle side of `assertCandidateUnchanged` on the description
-   * path.
+   * GUARD: the `assertCandidateUnchanged` CALL on the description path.
+   *
+   * It pins the call, not the handle side, and the distinction is measured
+   * rather than assumed: deleting `!sameStats(before, openedAfter)` from
+   * `runtime/src/fs/verified-read.ts` leaves this suite green, while deleting
+   * `!sameStats(before, pathAfter)` kills two tests, neither of them this one.
+   * So the handle side of that expression is unpinned everywhere in the repo,
+   * and this docstring used to claim the opposite.
    *
    * The file is rewritten in place after the open, so the descriptor still
-   * points at the same inode and every path-based check agrees. The bytes
-   * this read returns are the new ones; only re-proving the opened object
-   * against what it was at open time notices.
+   * points at the same inode. The path side rejects it, which is why the call
+   * being present is what this test proves.
    */
   test("does not describe a candidate rewritten in place after the open", async () => {
     makeMemoryFile("notes.md", "plain body");
@@ -961,7 +968,7 @@ describe("availability under benign concurrent writes", () => {
    * which fires long after `scanMemoryRoots` has returned; the identical
    * write also passed at `beforeMemoryScanForTesting`, which fires before the
    * scan binds anything. Neither could fail, so neither pinned anything, and
-   * the memory listing sat at 0.17% availability under exactly the churn this
+   * the memory listing sat at 0.15% availability under exactly the churn this
    * test claimed to cover.
    */
   test("still lists a memory resource while a sibling file is written during the scan", async () => {

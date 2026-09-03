@@ -229,8 +229,10 @@ describe("ancestor chain", () => {
    * A directory's `mtime`, `ctime`, and `size` move on every child add,
    * remove, or rename. Proving a *directory* on those fields is not
    * containment, and it cost everything: under purely benign sibling churn,
-   * with no attacker at all, the MCP skill listing was available 0.07% of the
-   * time. Containment is `dev`/`ino`/`mode`.
+   * with no attacker at all, the MCP SKILL listing was available 102 of
+   * 116,343 attempts, 0.09%. (The MCP MEMORY listing is a separate surface
+   * with its own proofs in `runtime/src/memory/scan.ts`; it measured 0.15%
+   * and is narrowed there.) Containment is `dev`/`ino`/`mode`.
    */
   test("keeps a bound root usable while its children are being written", async () => {
     const root = makeRoot();

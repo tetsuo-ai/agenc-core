@@ -30,9 +30,9 @@
  * handle. A DIRECTORY is proven on `sameDirectoryIdentity` — `dev`, `ino`,
  * `mode` — because a directory's `size`, `mtime`, and `ctime` move whenever
  * any child is added, removed, or renamed. Requiring those to stand still was
- * not stricter containment, it was an availability collapse: measured under
- * purely benign sibling churn with no attacker, an MCP skill listing survived
- * 112 of 172,076 attempts. What an ancestor swap must do is make the retained
+ * not stricter containment, it was an availability collapse. The measurement
+ * is in the table below rather than stated twice here. What an ancestor swap
+ * must do is make the retained
  * handle and the pathname name different objects, and `dev`/`ino` is exactly
  * the pair that catches that.
  *

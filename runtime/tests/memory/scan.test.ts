@@ -218,12 +218,25 @@ describe("scanMemoryFiles", () => {
    * empty array — so the MCP memory listing, which cannot produce a single
    * resource without the scan, lost everything. Measured on this machine with
    * a separate process writing and removing one sibling file in the memory
-   * directory and no attacker at all: the memory listing was available 105
-   * times in 63,141 attempts, 0.17%. Narrowed, 11,886 of 11,887, 99.99%.
+   * directory and no attacker at all: the memory listing was available 113
+   * times in 76,583 attempts, 0.15%. Narrowed, 22,561 of 22,561, 100.00%.
    *
    * Each of the three tests below writes a sibling file at the one seam that
    * falls inside that proof's window, and each fails if its proof is widened
    * back to `sameStats`.
+   *
+   * Pinned in the WIDENING direction only, and that is worth stating plainly
+   * rather than leaving a reader to assume otherwise. Deleting
+   * `!sameDirectoryIdentity(opened, pending.identity) ||
+   * !sameDirectoryIdentity(opened, current)` outright from
+   * `assertBoundDirectoryUnchanged`, `openVerifiedDirectory` or
+   * `openBoundRootDirectory` leaves this suite green, unlike the
+   * `bindVerifiedRoot` proofs, which each have a test that kills them on
+   * deletion. These three are defence in depth: the adversarial run that
+   * cleared this change attacked the narrowed scan directly for 1,963,015
+   * seam-free attempts across nine shapes, including two aimed at the
+   * narrowing itself, and forged nothing. That is evidence the escape is
+   * closed, not evidence these clauses are individually load-bearing.
    */
   it("survives a sibling write between the root bind and the root open", async () => {
     tempDir = await mkdtemp(join(tmpdir(), "agenc-memory-scan-"));
