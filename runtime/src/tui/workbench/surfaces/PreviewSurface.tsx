@@ -221,7 +221,7 @@ export function PreviewSurface({
         setStartLine((value) => clampPreviewStartLine(value + (key.wheelUp ? -3 : 3), totalLines));
         return true;
       },
-      [totalLines],
+      [setStartLine, totalLines],
     ),
     { context: "Surface", isActive: true },
   );

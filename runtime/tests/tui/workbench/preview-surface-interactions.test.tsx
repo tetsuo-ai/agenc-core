@@ -57,15 +57,23 @@ vi.mock("../../../src/tui/workbench/project-tree/gitStatus.js", () => ({
   collectGitStatus: vi.fn(async () => new Map([["target.ts", "modified"]])),
 }));
 
-vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
-  useInputCapture: () => {},
-  useKeybinding: () => {},
-  useKeybindings: (handlers: Record<string, () => void>) => {
-    previewHarness.handlers = handlers;
-  },
-}));
+vi.mock(
+  "../../../src/tui/keybindings/useKeybinding.js",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("../../../src/tui/keybindings/useKeybinding.js")
+    >()),
+    useKeybinding: () => {},
+    useKeybindings: (handlers: Record<string, () => void>) => {
+      previewHarness.handlers = handlers;
+    },
+  }),
+);
 
 import { createRoot } from "../../../src/tui/ink.js";
+import { getInkInstance } from "../../../src/tui/ink/instances.js";
+import { cellAt } from "../../../src/tui/ink/screen.js";
+import { KeybindingSetup } from "../../../src/tui/keybindings/KeybindingProviderSetup.js";
 import {
   AppStateProvider,
   getDefaultAppState,
@@ -163,6 +171,93 @@ function PreviewTargetController({
     });
   }, [onReady, setAppState]);
   return null;
+}
+
+function PreviewPathOverrideController({
+  initialPath,
+  onReady,
+}: {
+  readonly initialPath: string;
+  readonly onReady: (setPathOverride: (filePath: string) => void) => void;
+}): React.ReactElement {
+  const [pathOverride, setPathOverride] = React.useState(initialPath);
+  React.useEffect(() => {
+    onReady(setPathOverride);
+  }, [onReady]);
+  return <PreviewSurface focused={false} pathOverride={pathOverride} />;
+}
+
+async function renderPathOverridePreview(
+  initialPath: string,
+  activeFileLine: number,
+) {
+  let setter: ((filePath: string) => void) | null = null;
+  const io = createStreams();
+  const root = await createRoot({
+    patchConsole: false,
+    stdin: io.stdin as unknown as NodeJS.ReadStream,
+    stdout: io.stdout as unknown as NodeJS.WriteStream,
+  });
+  root.render(
+    <AppStateProvider
+      initialState={{
+        ...getDefaultAppState(),
+        workbench: {
+          ...getDefaultAppState().workbench,
+          activeSurfaceMode: "preview",
+          activeFilePath: "center.ts",
+          activeFileLine,
+        },
+      }}
+    >
+      <KeybindingSetup>
+        <PreviewPathOverrideController
+          initialPath={initialPath}
+          onReady={(nextSetter) => {
+            setter = nextSetter;
+          }}
+        />
+      </KeybindingSetup>
+    </AppStateProvider>,
+  );
+  return {
+    ...io,
+    setPathOverride(filePath: string): void {
+      if (setter === null) {
+        throw new Error("Path override controller is not ready");
+      }
+      setter(filePath);
+    },
+    unmount(): void {
+      root.unmount();
+      io.stdin.end();
+      io.stdout.end();
+    },
+  };
+}
+
+function waitForPathRead(fileName: string, index = 0): Promise<PreviewReadCall> {
+  return waitForPreviewRead(
+    (call) =>
+      call ===
+      previewHarness.calls.filter(({ filePath }) =>
+        filePath.endsWith(fileName),
+      )[index],
+  );
+}
+
+function currentScreenText(stdout: PassThrough): string {
+  const screen = getInkInstance(stdout as unknown as NodeJS.WriteStream)
+    ?.frontFrame.screen;
+  if (!screen) return "";
+  return Array.from({ length: screen.height }, (_, row) =>
+    Array.from(
+      { length: screen.width },
+      (_, column) => cellAt(screen, column, row)?.char ?? " ",
+    )
+      .join("")
+      .trimEnd(),
+  ).join("\n");
 }
 
 describe("PreviewSurface interactions", () => {
@@ -687,6 +782,103 @@ describe("PreviewSurface interactions", () => {
       root.unmount();
       stdin.end();
       stdout.end();
+    }
+  });
+
+  it("starts override previews at line one and clears old content on navigation", async () => {
+    const preview = await renderPathOverridePreview("a.ts", 37);
+
+    try {
+      const aRead = await waitForPathRead("a.ts");
+      expect(aRead.offset).toBe(0);
+      resolvePreviewRead(aRead, {
+        content: "resolved body from a",
+        lineCount: 1,
+        totalLines: 1,
+      });
+      await sleep();
+      expect(currentScreenText(preview.stdout)).toContain(
+        "resolved body from a",
+      );
+
+      preview.setPathOverride("b.ts");
+      const bRead = await waitForPathRead("b.ts");
+      expect(bRead.offset).toBe(0);
+      await sleep();
+
+      const pendingFrame = currentScreenText(preview.stdout);
+      expect(pendingFrame).toContain("b.ts [read-only");
+      expect(pendingFrame).not.toContain("resolved body from a");
+    } finally {
+      preview.unmount();
+    }
+  });
+
+  it("keeps the newest A preview across deferred A to B to A reads", async () => {
+    const preview = await renderPathOverridePreview("a.ts", 23);
+
+    try {
+      const firstARead = await waitForPathRead("a.ts");
+      preview.setPathOverride("b.ts");
+      const bRead = await waitForPathRead("b.ts");
+      preview.setPathOverride("a.ts");
+      const newestARead = await waitForPathRead("a.ts", 1);
+
+      expect(previewHarness.calls.map(({ offset }) => offset)).toEqual([
+        0, 0, 0,
+      ]);
+      expect(firstARead.signal?.aborted).toBe(true);
+      expect(bRead.signal?.aborted).toBe(true);
+
+      resolvePreviewRead(newestARead, {
+        content: "newest a body",
+        lineCount: 1,
+        totalLines: 1,
+      });
+      await sleep();
+      expect(currentScreenText(preview.stdout)).toContain("newest a body");
+
+      resolvePreviewRead(bRead, {
+        content: "late b body",
+        lineCount: 1,
+        totalLines: 1,
+      });
+      resolvePreviewRead(firstARead, {
+        content: "late first a body",
+        lineCount: 1,
+        totalLines: 1,
+      });
+      await sleep();
+
+      const settledFrame = currentScreenText(preview.stdout);
+      expect(settledFrame).toContain("a.ts [read-only");
+      expect(settledFrame).toContain("newest a body");
+      expect(settledFrame).not.toContain("late b body");
+      expect(settledFrame).not.toContain("late first a body");
+    } finally {
+      preview.unmount();
+    }
+  });
+
+  it("scrolls the current override while both path reads are pending", async () => {
+    const preview = await renderPathOverridePreview("a.ts", 1);
+
+    try {
+      const aRead = await waitForPathRead("a.ts");
+      preview.setPathOverride("b.ts");
+      const bRead = await waitForPathRead("b.ts");
+      await sleep();
+
+      preview.stdin.write("\x1b[<65;1;2M");
+      const scrolledBRead = await waitForPreviewRead(
+        (call) => call.filePath.endsWith("b.ts") && call.offset === 3,
+      );
+
+      expect(aRead.signal?.aborted).toBe(true);
+      expect(bRead.signal?.aborted).toBe(true);
+      expect(scrolledBRead.offset).toBe(3);
+    } finally {
+      preview.unmount();
     }
   });
 });
