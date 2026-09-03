@@ -35,7 +35,7 @@
  * path.
  *
  * There is exactly one second resolution left, and it is quarantined. Memory
- * listings discover candidates with `scanMemoryFiles`, which binds the memory
+ * listings discover candidates with the memory scanner, which binds the memory
  * directory itself, so flipping that directory's parent while the scan runs
  * lands the scan on an out-of-scope tree. Its output is therefore treated as
  * an untrusted list of candidate NAMES and nothing else: a name is only ever
@@ -45,6 +45,26 @@
  * body alike — comes from a read made through that handle. Before that,
  * `resources/list` copied the scan's description verbatim and could advertise
  * an in-scope URI carrying an out-of-scope file's frontmatter.
+ *
+ * What that costs, measured on this machine with 200 memory files present,
+ * as the median of 40 requests, the three heads run back to back twice:
+ *
+ *   surface           no description read   description read   this module
+ *   `resources/list`   59.36 / 67.30ms      100.09 / 104.97ms  103.01 / 107.12ms
+ *   `resources/read`   60.47 / 74.91ms      100.51 / 106.43ms   63.13 /  63.78ms
+ *
+ * The listing pays about 70% for the fix and keeps paying: every listed
+ * memory file is admitted through the retained handle and then opened again
+ * for a bounded frontmatter prefix, and the second observation is the whole
+ * point — the identity admission recorded is exactly what the description
+ * read is proven against, so folding the two into one open would delete the
+ * guard rather than optimise it. That is accepted deliberately:
+ * `resources/list` is one request, the extra read is capped at 8 KiB per
+ * file, and the alternative is advertising descriptions that came from a
+ * directory nobody proved. `resources/read` used to pay the same 70% for
+ * nothing — it rebuilds the listing only to bound the client's URI and then
+ * discards the descriptions — so it now asks for the map without them and is
+ * back to what it cost before this fix existed.
  *
  * Platform: the shared primitives need a descriptor-path mechanism
  * (`/proc/self/fd` on linux; an identity comparison on darwin and freebsd).
@@ -82,7 +102,7 @@ import {
 } from "../../fs/verified-read.js";
 import {
   detectSessionFileType,
-  scanMemoryFiles,
+  scanMemoryRoots,
 } from "../../memory/index.js";
 import { MAX_SECURE_PROJECT_FILE_BYTES } from "../../prompts/secure-instruction-file.js";
 import { redactSecrets } from "../../secrets/sanitizer.js";
@@ -148,6 +168,18 @@ export interface ScopedRegularFileTestHooks {
    * can tell a listing's metadata read from a `resources/read`.
    */
   readonly beforeHeaderReadForTesting?: (path: string) => void | Promise<void>;
+  /**
+   * Fires after a listing candidate is admitted, before the verified open of
+   * its frontmatter read. This is the window the description path's
+   * `sameStats(admitted, openedIdentity)` closes: a candidate exchanged here
+   * opens and verifies perfectly on its own terms, and only the comparison
+   * against the admitted identity notices that the listing is about to
+   * describe a file it never admitted. `beforeOpenForTesting` is the same
+   * window on the body path.
+   */
+  readonly beforeDescriptionOpenForTesting?: (
+    path: string,
+  ) => void | Promise<void>;
 }
 
 /**
@@ -231,9 +263,15 @@ function isSameOrChildPath(scopeRoot: string, candidate: string): boolean {
  * symlinks are refused by `O_NOFOLLOW` and by the explicit `isSymbolicLink()`
  * check in `openVerifiedCandidate`, which are reachable.
  *
- * `nlink === 1n` is checked here, in `openVerifiedCandidate`, and again on the
- * opened handle in `readScopedRegularFile`. No one of those three is killable
- * on its own; they are pinned collectively.
+ * `nlink === 1n` is TWO source clauses reached from THREE call sites: this
+ * one, used by `admitScopedCandidate` when listing and again on the opened
+ * handle in `readScopedRegularFile`, and a separate clause in
+ * `openVerifiedCandidate`. Deleting either clause alone leaves the suite
+ * green; they are pinned collectively. The memory listing has a fourth,
+ * earlier check that this module does not own: the memory scanner refuses a
+ * multiply linked candidate before a name ever reaches here, which is why the
+ * multiply-linked MEMORY test stays green when both clauses above are
+ * deleted and only the multiply-linked SKILL test fails.
  */
 function admitsScopedSnapshot(
   stats: BigIntStats,
@@ -492,14 +530,25 @@ function decodeScopedPrefix(bytes: Buffer, truncated: boolean): string | null {
  * root handle its admission was proven against.
  *
  * This is the listing half of #1794. The description used to be copied
- * verbatim out of `scanMemoryFiles`, which resolves the memory directory a
+ * verbatim out of the memory scanner, which resolves the memory directory a
  * second time and independently; flipping that directory's PARENT while the
  * scan ran bound the scan to an out-of-scope tree, and `resources/list` then
  * advertised an in-scope URI whose description exists only in an out-of-scope
- * file's frontmatter. Measured against the module before this change, with no
- * test seams, that leaked on 14 of 253,480 listings. Reading the field here
- * instead means the listing can only describe a file the retained handle
- * proved is inside the scope root.
+ * file's frontmatter.
+ *
+ * That leak is comfortably reproducible free-running, and an earlier note
+ * here that called the window too narrow to hit was a tuning artifact of a
+ * symmetric duty cycle. The attacker has to hold the flip ON for the whole
+ * scan and OFF across the provider's own bind and admission, which is
+ * asymmetric: at ON 700us / OFF 250us against the pre-fix module (ffa7aed91),
+ * with the attacker in a separate process and no test seams, 330 of 330
+ * served listings carried the out-of-scope description across 45,019
+ * attempts. Re-run against this module at the same tuning: 399 served of
+ * 88,077, 0 forged; and at ON 700us / OFF 2500us, where the listing succeeds
+ * most of the time, 14,441 served of 43,261, 0 forged.
+ *
+ * Reading the field here means the listing can only describe a file the
+ * retained handle proved is inside the scope root.
  */
 async function readScopedFrontmatterDescription(
   root: VerifiedRoot,
@@ -511,6 +560,7 @@ async function readScopedFrontmatterDescription(
   const requestedPath = join(root.binding.requestedPath, relativePath);
   let handle: FileHandle | null = null;
   try {
+    await hooks.beforeDescriptionOpenForTesting?.(requestedPath);
     handle = await openVerifiedCandidate(
       root,
       relativePath,
@@ -728,6 +778,14 @@ export interface MemoryResourceProviderOptions
    */
   readonly beforeMemoryScanForTesting?: (dir: string) => void | Promise<void>;
   readonly afterMemoryScanForTesting?: (dir: string) => void | Promise<void>;
+  /**
+   * @internal Fires INSIDE the scan, after one directory's entries have been
+   * enumerated and before the scan re-proves that directory against the
+   * identity it bound. Nothing else can write there: the two seams above
+   * both fire outside the scan, so a write at either of them is not a write
+   * during the scan and cannot show whether the scan survives one.
+   */
+  readonly duringMemoryScanForTesting?: (path: string) => void | Promise<void>;
 }
 
 const MEMORY_URI_SCHEME = "agenc-memory://";
@@ -741,8 +799,23 @@ interface ListedResource {
   readonly maximumBytes: number;
 }
 
+/**
+ * Build the URI -> candidate map a memory listing serves.
+ *
+ * `describe` is a COST switch, never a security one. Every candidate is
+ * admitted through the retained root handle either way, so the set of URIs
+ * this returns is identical; what `describe: false` skips is the bounded
+ * frontmatter read that fills in `description`, which only `resources/list`
+ * ever serves. `resources/read` calls this purely to bound the client's URI
+ * to a candidate it just admitted and then throws the definitions away, so
+ * paying for one open plus one header read plus two re-proofs per memory file
+ * bought it nothing: with 200 memory files that was 100.51ms per read against
+ * 60.47ms before descriptions were read at all, and 63.13ms with this switch.
+ * Full table in the module header.
+ */
 async function listMemoryResources(
   options: MemoryResourceProviderOptions,
+  describe: boolean,
 ): Promise<Map<string, ListedResource>> {
   const resources = new Map<string, ListedResource>();
   const scopeRoot = await canonicalScopeRoot(options.scopeRoot);
@@ -754,7 +827,33 @@ async function listMemoryResources(
       await options.beforeMemoryScanForTesting?.(dir);
       // The scan binds `dir` itself, so an ancestor flip while it runs lands
       // it on an out-of-scope tree. Take names from it; take nothing else.
-      const scanned = await scanMemoryFiles(dir);
+      //
+      // `scanMemoryRoots` rather than `scanMemoryFiles` only so a test can
+      // reach a seam inside the enumeration; the two are otherwise the same
+      // call, and an incomplete scan yields no names here exactly as
+      // `scanMemoryFiles` yields an empty array.
+      const scan = await scanMemoryRoots([dir], NEVER_ABORTED, {
+        ...(options.duringMemoryScanForTesting !== undefined
+          ? { afterDirectoryEnumeration: options.duringMemoryScanForTesting }
+          : {}),
+      });
+      // A scan that does not complete yields NO names, so the listing silently
+      // drops every resource under this directory. That is the pre-existing
+      // failure mode and it is unchanged — `scanMemoryFiles` returns an empty
+      // array for exactly the same cases — but it used to be unobservable, and
+      // "my memory files vanished from the MCP server" with no reason
+      // anywhere is the worst way to meet it. The reason is now reported the
+      // same way every other rejection is.
+      const scanned = scan.kind === "complete" ? scan.headers : [];
+      if (scan.kind !== "complete") {
+        noteRejection(
+          options,
+          scan.kind === "unsupported"
+            ? "platform_unsupported"
+            : "root_unavailable",
+          dir,
+        );
+      }
       await options.afterMemoryScanForTesting?.(dir);
       for (const header of scanned) {
         const { relativePath } = header;
@@ -775,13 +874,15 @@ async function listMemoryResources(
           options,
         );
         if (admitted === null) continue;
-        const description = await readScopedFrontmatterDescription(
-          root,
-          relativePath,
-          admitted,
-          options,
-          options,
-        );
+        const description = describe
+          ? await readScopedFrontmatterDescription(
+              root,
+              relativePath,
+              admitted,
+              options,
+              options,
+            )
+          : null;
         const uri = `${MEMORY_URI_SCHEME}${dirIndex}/${relativePath}`;
         resources.set(uri, {
           definition: {
@@ -861,13 +962,16 @@ export function createMemoryResourceProvider(
 ): McpResourceProvider {
   return {
     async listResources(): Promise<readonly McpResourceDefinition[]> {
-      const resources = await listMemoryResources(options);
+      const resources = await listMemoryResources(options, true);
       return [...resources.values()].map((resource) => resource.definition);
     },
     async readResource(uri: string): Promise<McpReadResourceResult | null> {
       // Path bounding: only URIs from a fresh listing are readable. The
-      // client-supplied uri is a map key, never a filesystem path.
-      const resources = await listMemoryResources(options);
+      // client-supplied uri is a map key, never a filesystem path. The
+      // listing is rebuilt with descriptions off: the same admission runs and
+      // the same URIs come back, and the body below is read and re-proven
+      // through its own bound handle regardless.
+      const resources = await listMemoryResources(options, false);
       const resource = resources.get(uri);
       if (resource === undefined) return null;
       const scopeRoot = await canonicalScopeRoot(options.scopeRoot);

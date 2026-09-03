@@ -1,7 +1,8 @@
 /**
  * Regression tests for issue #1794: MCP content providers must serve skill
- * prompts and resource bodies from a location proven against a retained root
- * descriptor, never from a pathname resolved a second time.
+ * prompts, resource bodies, AND listing metadata from a location proven
+ * against a retained root descriptor, never from a pathname resolved a second
+ * time.
  *
  * Most tests here are *mutation* tests: each is written so that deleting the
  * single guard named in its title makes it fail. A guard whose deletion leaves
@@ -12,20 +13,44 @@
  *
  *   - `O_NOFOLLOW` has no behavioural mutant at all. It is pinned on the flag
  *     value in `tests/fs/verified-read.test.ts`, with the reason.
- *   - `nlink === 1n` is checked in three places (listing admission, the open
- *     in `openVerifiedCandidate`, and the opened handle in
- *     `readScopedRegularFile`). Deleting any one leaves the suite green; only
- *     deleting all three fails it. They are pinned collectively.
- *   - the root symlink pre-check in `bindVerifiedRoot` is only killable
- *     together with `O_DIRECTORY`/`O_NOFOLLOW` on the root open.
+ *   - `nlink === 1n` is two source clauses reached from three call sites
+ *     (listing admission and the opened handle in `readScopedRegularFile`
+ *     share one clause; `openVerifiedCandidate` has the other). Deleting
+ *     either clause leaves the suite green; only deleting both fails it.
+ *   - the root symlink pre-check in `bindVerifiedRoot` is not pinned by
+ *     anything behavioural, and it is not `O_DIRECTORY`/`O_NOFOLLOW` that
+ *     stands in for it: deleting `before.isSymbolicLink()` AND both directory
+ *     open flags leaves every behavioural test in this file, in
+ *     `tests/fs/verified-read.test.ts`, and in `tests/memory/scan.test.ts`
+ *     green — only the flag-VALUE test fails, and that one asserts a number,
+ *     not an open. Its real partner is `!before.isDirectory()` in the same
+ *     expression: `lstat` of a symlink reports `isDirectory()` false, so that
+ *     clause rejects a symlinked root on its own. Delete the whole expression
+ *     and "refuses a root that is a symlink" finally fails.
  *   - the `isContained` pre-check in `openVerifiedCandidate` is redundant with
  *     the ancestor walk's canonical containment for every reachable escape.
+ *   - `fatal: true` in `decodeScopedPrefix` — see the note in "scope-bound
+ *     description reads".
  *
- * Two tests here used to pass for the wrong reason and now do not: the
- * pre-open ancestor walk (see "at the open boundary") stayed green when it was
+ * Two guards live in another module and are recorded here so this file is not
+ * read as covering them: "does not list multiply linked memory files" passes
+ * because `scanMemoryFiles` refuses a multiply linked candidate before a name
+ * reaches these providers at all, not because of anything here; and the
+ * memory listing's availability under concurrent writes is decided by the
+ * directory proofs in `runtime/src/memory/scan.ts`, whose own mutation tests
+ * live in `tests/memory/scan.test.ts`.
+ *
+ * Tests that used to pass for the wrong reason and now do not: the pre-open
+ * ancestor walk (see "at the open boundary") stayed green when it was
  * deleted, because the test's own restore step moved the bound root's
- * timestamps and the POST-read walk rejected instead; and the same-inode
- * symlink test named a proof that never runs.
+ * timestamps and the POST-read walk rejected instead; the same-inode symlink
+ * test named a proof that never runs; and the memory availability test fired
+ * its write after `scanMemoryRoots` had already returned, so it passed with
+ * the scan's directory proofs left at their broken width — verified by
+ * widening them back, at which point the write at
+ * `beforeHeaderReadForTesting` and the identical write at
+ * `beforeMemoryScanForTesting` both still passed and only the write at
+ * `duringMemoryScanForTesting` failed.
  */
 import { spawnSync } from "node:child_process";
 import {
@@ -579,8 +604,17 @@ describe("fatal UTF-8 decoding", () => {
  * exactly the length of the scan lands the scan on an out-of-scope tree while
  * the provider's own bind and admission both land in scope. Deleting the
  * scope-bound read and taking `header.description` back makes this test
- * report the out-of-scope frontmatter under an in-scope URI. Measured without
- * seams against the module before this change: 14 forged listings in 253,480.
+ * report the out-of-scope frontmatter under an in-scope URI.
+ *
+ * It is not a narrow window. Free-running against the pre-fix module, with
+ * the attacker in a separate process and no seams, an ASYMMETRIC duty cycle
+ * (ON ~700us, long enough to span the whole scan; OFF ~250us, spanning the
+ * provider's own bind and admission) forged 330 of 330 served listings across
+ * 45,019 attempts. Symmetric cycles find nothing, which is what an earlier
+ * "0 across 1.9M attempts, window too narrow" note was actually measuring.
+ * The same harness against this module: 0 forged of 399 served in 88,077
+ * attempts at that tuning, and 0 of 14,441 served in 43,261 attempts at ON
+ * 700us / OFF 2500us, where the listing succeeds most of the time.
  *
  * Flipping a deeper ancestor, inside the scanned tree, does not reproduce it:
  * that trips the scanner's own directory-identity checks. It is the ROOT
@@ -621,14 +655,285 @@ describe("memory listing metadata", () => {
 });
 
 /**
+ * The description a memory listing serves is now read through the retained
+ * root handle, and the guards on that read are pinned here one at a time.
+ *
+ * The read is small — open the admitted candidate, prove it is the admitted
+ * one, take a bounded frontmatter prefix, re-prove the object and the
+ * ancestor chain — but every one of those clauses could be deleted with the
+ * whole suite green until these tests existed. The first one matters most:
+ * it fails if `readScopedFrontmatterDescription` is replaced by a plain
+ * `readFile` of the candidate's pathname, which is the original #1794 leak
+ * written back in.
+ */
+describe("scope-bound description reads", () => {
+  /** Memory dir at `<root>/sub/memory`, with a forged twin outside the scope. */
+  function flippableMemoryDir(): { sub: string; outside: string } {
+    const sub = join(root, "sub");
+    mkdirSync(join(sub, "memory"), { recursive: true });
+    writeFileSync(
+      join(sub, "memory", "note.md"),
+      ["---", "name: note", "description: in-scope note", "---", "in-scope body"].join("\n"),
+    );
+    const outside = makeOutsideDir();
+    mkdirSync(join(outside, "memory"), { recursive: true });
+    writeFileSync(
+      join(outside, "memory", "note.md"),
+      ["---", "name: note", `description: ${FORGED}`, "---", SECRET].join("\n"),
+    );
+    return { sub, outside };
+  }
+
+  /**
+   * GUARD: the description read going through the bound root handle at all.
+   *
+   * The candidate's parent is repointed at an out-of-scope tree AFTER the
+   * verified open and held there across the read. Reading through the handle
+   * yields in-scope bytes and the post-read proofs then reject, so the
+   * listing carries no description. A `readFile(join(requestedPath, rel))` in
+   * the same place resolves the name a second time, through the flipped
+   * parent, and serves the out-of-scope frontmatter under the in-scope URI —
+   * which is exactly what `resources/list` did before this round.
+   */
+  test("does not describe a resource through a parent flipped across the read", async () => {
+    const { sub, outside } = flippableMemoryDir();
+    let flipped = false;
+    const provider = resourceProvider({
+      memoryDirs: [join(sub, "memory")],
+      beforeHeaderReadForTesting: () => {
+        if (flipped) return;
+        flipped = true;
+        renameSync(sub, `${sub}.real`);
+        symlinkSync(outside, sub);
+      },
+    });
+    const resources = await provider.listResources();
+    expect(flipped).toBe(true);
+    const note = resources.find((r) => r.name === "note.md");
+    expect(note).toBeDefined();
+    expect(note!.uri).toBe("agenc-memory://0/note.md");
+    expect(note!.description).toBeUndefined();
+    expect(JSON.stringify(resources)).not.toContain(FORGED);
+    // Cleanup runs on a real directory, not the symlink.
+    unlinkSync(sub);
+    renameSync(`${sub}.real`, sub);
+  });
+
+  /**
+   * GUARD: `sameStats(admitted, openedIdentity)` in
+   * `readScopedFrontmatterDescription`.
+   *
+   * The candidate is exchanged for another regular file between admission
+   * and the verified open. The replacement opens and verifies perfectly on
+   * its own terms — right type, one link, path and handle agree — so
+   * `openVerifiedCandidate` returns a handle and nothing downstream objects.
+   * Only the comparison against the identity admission recorded notices that
+   * the listing is about to describe a file it never admitted.
+   */
+  test("does not describe a candidate exchanged between admission and the open", async () => {
+    makeMemoryFile("notes.md", "plain body");
+    const file = join(root, "memory", "notes.md");
+    const replacement = join(root, "replacement.md");
+    writeFileSync(
+      replacement,
+      ["---", "name: notes", `description: ${FORGED}`, "---", SECRET].join("\n"),
+    );
+    let swapped = false;
+    const provider = resourceProvider({
+      beforeDescriptionOpenForTesting: (path) => {
+        if (path !== file || swapped) return;
+        swapped = true;
+        renameSync(replacement, file);
+      },
+    });
+    const resources = await provider.listResources();
+    expect(swapped).toBe(true);
+    const note = resources.find((r) => r.name === "notes.md")!;
+    expect(note.description).toBeUndefined();
+    expect(JSON.stringify(resources)).not.toContain(FORGED);
+    expect(reasons()).toContain("verification_failed");
+  });
+
+  /**
+   * GUARD: the handle side of `assertCandidateUnchanged` on the description
+   * path.
+   *
+   * The file is rewritten in place after the open, so the descriptor still
+   * points at the same inode and every path-based check agrees. The bytes
+   * this read returns are the new ones; only re-proving the opened object
+   * against what it was at open time notices.
+   */
+  test("does not describe a candidate rewritten in place after the open", async () => {
+    makeMemoryFile("notes.md", "plain body");
+    const file = join(root, "memory", "notes.md");
+    let mutated = false;
+    const provider = resourceProvider({
+      beforeHeaderReadForTesting: (path) => {
+        if (path !== file || mutated) return;
+        mutated = true;
+        writeFileSync(
+          file,
+          ["---", "name: notes", `description: ${FORGED}`, "---", SECRET, "x".repeat(400)].join("\n"),
+        );
+      },
+    });
+    const resources = await provider.listResources();
+    expect(mutated).toBe(true);
+    const note = resources.find((r) => r.name === "notes.md")!;
+    expect(note.description).toBeUndefined();
+    expect(JSON.stringify(resources)).not.toContain(FORGED);
+    expect(reasons()).toContain("verification_failed");
+  });
+
+  /**
+   * GUARD: the path side of `assertCandidateUnchanged` on the description
+   * path.
+   *
+   * Exchanging the directory that holds a nested candidate leaves the open
+   * inode untouched, so the handle side passes; and the exchanged directory
+   * is a real, contained, non-symlink directory below an unmoved root, so the
+   * ancestor walk passes too. Only comparing the pathname's object against
+   * the one that was opened sees that the name now leads somewhere else.
+   */
+  test("does not describe a nested candidate whose directory is exchanged", async () => {
+    const nested = join(root, "memory", "a", "b");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(
+      join(nested, "notes.md"),
+      ["---", "name: notes", "description: nested notes", "---", "safe body"].join("\n"),
+    );
+    const decoy = join(root, "decoy");
+    mkdirSync(decoy, { recursive: true });
+    writeFileSync(
+      join(decoy, "notes.md"),
+      ["---", "name: notes", `description: ${FORGED}`, "---", SECRET].join("\n"),
+    );
+    const file = join(nested, "notes.md");
+    let exchanged = false;
+    const provider = resourceProvider({
+      beforeHeaderReadForTesting: (path) => {
+        if (path !== file || exchanged) return;
+        exchanged = true;
+        renameSync(nested, join(root, "b.away"));
+        renameSync(decoy, nested);
+      },
+    });
+    const resources = await provider.listResources();
+    expect(exchanged).toBe(true);
+    const note = resources.find((r) => r.name.endsWith("notes.md"))!;
+    expect(note.description).toBeUndefined();
+    expect(JSON.stringify(resources)).not.toContain(FORGED);
+    expect(reasons()).toContain("verification_failed");
+  });
+
+  /**
+   * GUARD: the post-read `verifyParentChain` on the description path.
+   *
+   * The ancestor is replaced by a symlink to ITSELF, so the candidate's
+   * pathname still resolves to the very same inode and both sides of
+   * `assertCandidateUnchanged` agree. Only the ancestor walk, which rejects a
+   * symlinked parent segment outright, can reject here — and the reason it
+   * reports is what makes this test isolating.
+   */
+  test("does not describe a candidate whose ancestor becomes a symlink", async () => {
+    const dir = join(root, "memory", "nested");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "notes.md"),
+      ["---", "name: notes", "description: nested notes", "---", "safe body"].join("\n"),
+    );
+    const file = join(dir, "notes.md");
+    let linked = false;
+    const provider = resourceProvider({
+      beforeHeaderReadForTesting: (path) => {
+        if (path !== file || linked) return;
+        linked = true;
+        renameSync(dir, `${dir}.real`);
+        symlinkSync("nested.real", dir);
+      },
+    });
+    const resources = await provider.listResources();
+    expect(linked).toBe(true);
+    const note = resources.find((r) => r.name.endsWith("notes.md"))!;
+    expect(note.description).toBeUndefined();
+    expect(reasons()).toContain("ancestor_changed");
+  });
+
+  /*
+   * NOT KILLABLE, and the reason is structural rather than a gap.
+   *
+   * `fatal: true` in `decodeScopedPrefix` has no behavioural mutant reachable
+   * from this module. Its only caller is the memory listing, and a memory
+   * listing only ever sees names `scanMemoryRoots` produced; the scan decodes
+   * the first 65,536 bytes of every candidate with a fatal decoder of its own
+   * and drops the file if that fails, which is strictly wider and strictly
+   * earlier than this module's 8,192-byte prefix. So no file that reaches
+   * `decodeScopedPrefix` can carry invalid bytes in the window it reads, and
+   * the lenient mutant serves exactly what the strict one does.
+   *
+   * The clause stays anyway. This module's whole stance is that the scan is an
+   * untrusted source of candidate names and nothing else; leaning on the
+   * scan's decode to justify deleting this one would be trusting precisely
+   * what the module refuses to trust. The corresponding clause on the BODY
+   * path, which has no scan in front of it, is killed by two tests.
+   */
+
+  /**
+   * GUARD: the truncation-tolerance loop (`minimumEnd`) in
+   * `decodeScopedPrefix`.
+   *
+   * The listing reads a bounded 8 KiB prefix, and a prefix boundary lands
+   * wherever the file happens to put it — including inside a multi-byte
+   * sequence. This file is built so byte 8191 is the lead byte of a two-byte
+   * character, so the prefix ends mid-sequence: a fatal decode of the whole
+   * prefix fails, and only backing off up to three bytes recovers the
+   * frontmatter. Without the loop, any memory file over 8 KiB that happens to
+   * split a character at the boundary silently loses its description.
+   */
+  test("describes a memory file whose 8 KiB prefix is cut mid-sequence", async () => {
+    mkdirSync(join(root, "memory"), { recursive: true });
+    const header = Buffer.from(
+      ["---", "name: cut", "description: cut prefix", "---", ""].join("\n"),
+      "utf8",
+    );
+    const padding = Buffer.alloc(8_191 - header.byteLength, 0x61);
+    const split = Buffer.from("é", "utf8");
+    expect(split.byteLength).toBe(2);
+    const tail = Buffer.alloc(64, 0x61);
+    const bytes = Buffer.concat([header, padding, split, tail]);
+    expect(bytes.byteLength).toBeGreaterThan(8_192);
+    expect(bytes[8_191]).toBe(0xc3);
+    writeFileSync(join(root, "memory", "cut.md"), bytes);
+    const provider = resourceProvider();
+    const resources = await provider.listResources();
+    const note = resources.find((r) => r.name === "cut.md")!;
+    expect(note.description).toBe("cut prefix");
+  });
+});
+
+/**
  * GUARD: the directory re-proof being `dev`/`ino`/`mode` rather than the full
  * six-field identity.
  *
  * A directory's mtime and ctime advance whenever any child is added, removed,
  * or renamed. While the re-proof compared them, one neighbouring write during
- * a listing emptied the whole listing: measured under purely benign sibling
- * churn with no attacker, the skill listing was available 112 times in
- * 172,076 attempts. Widening the comparison back fails this test.
+ * a listing emptied the whole listing.
+ *
+ * The two surfaces are separate and measure separately, because they go
+ * through different modules:
+ *
+ *   SKILL listing   `fs/verified-read.ts` proofs. 102 of 116,343 = 0.09%
+ *                   before narrowing, 33,622 of 33,622 = 100.00% after.
+ *   MEMORY listing  `memory/scan.ts` proofs, which the first narrowing did
+ *                   not touch. 113 of 76,583 = 0.15% before, 22,561 of
+ *                   22,561 = 100.00% after.
+ *
+ * All measured with one separate process writing and removing a single
+ * sibling file, no attacker. Controls: no churn 100.00%, churn in a directory
+ * outside the listed root 100.00%.
+ *
+ * Widening either module's directory comparison back fails one of these two
+ * tests.
  */
 describe("availability under benign concurrent writes", () => {
   test("still lists a skill while a sibling file is written into the skill root", async () => {
@@ -645,15 +950,64 @@ describe("availability under benign concurrent writes", () => {
     expect(prompts.map((p) => p.name)).toContain("stable");
   });
 
-  test("still lists a memory resource while a sibling file is written into the memory dir", async () => {
+  /**
+   * The memory listing's availability is decided INSIDE `scanMemoryRoots`,
+   * not in this module: `listMemoryResources` cannot produce a single
+   * resource without the scan, and a failed scan yields no names at all. So
+   * the write has to land inside the scan, and `duringMemoryScanForTesting`
+   * is the only seam that reaches there.
+   *
+   * The earlier version of this test wrote at `beforeHeaderReadForTesting`,
+   * which fires long after `scanMemoryRoots` has returned; the identical
+   * write also passed at `beforeMemoryScanForTesting`, which fires before the
+   * scan binds anything. Neither could fail, so neither pinned anything, and
+   * the memory listing sat at 0.17% availability under exactly the churn this
+   * test claimed to cover.
+   */
+  test("still lists a memory resource while a sibling file is written during the scan", async () => {
     makeMemoryFile("notes.md", "plain body");
+    let wrote = false;
     const provider = resourceProvider({
-      beforeHeaderReadForTesting: () => {
+      duringMemoryScanForTesting: () => {
+        if (wrote) return;
+        wrote = true;
         writeFileSync(join(root, "memory", "sibling.md"), "neighbour");
       },
     });
     const resources = await provider.listResources();
+    expect(wrote).toBe(true);
     expect(resources.map((r) => r.name)).toContain("notes.md");
+  });
+});
+
+/**
+ * The memory listing's one remaining failure mode, written down rather than
+ * hidden: a scan that does not complete produces no candidate NAMES, so the
+ * listing drops every memory resource under that directory. It has always
+ * behaved this way — `scanMemoryFiles` returns an empty array for a failed
+ * scan — and this round did not change it; what changed is that the reason
+ * reaches `onRejected` instead of vanishing.
+ */
+describe("memory scan failure", () => {
+  test("reports a directory whose scan did not complete instead of dropping it silently", async () => {
+    makeMemoryFile("notes.md", "plain body");
+    const dir = join(root, "memory");
+    const outside = makeOutsideDir();
+    let broke = false;
+    const provider = resourceProvider({
+      duringMemoryScanForTesting: () => {
+        if (broke) return;
+        broke = true;
+        renameSync(dir, `${dir}.real`);
+        symlinkSync(outside, dir);
+      },
+    });
+    const resources = await provider.listResources();
+    expect(broke).toBe(true);
+    expect(resources).toEqual([]);
+    expect(reasons()).toContain("root_unavailable");
+    unlinkSync(dir);
+    renameSync(`${dir}.real`, dir);
   });
 });
 

@@ -20,6 +20,7 @@ import {
 } from "../../src/memory/recall-contract.js";
 import {
   MAX_MEMORY_FILES,
+  readMemoryContent,
   scanMemoryRoots,
   scanMemoryFiles,
 } from "../../src/memory/scan.js";
@@ -203,6 +204,114 @@ describe("scanMemoryFiles", () => {
 
     expect(exchanged).toBe(true);
     expect(result).toMatchObject({ kind: "unavailable", headers: [] });
+  });
+
+  /**
+   * GUARD: the scan's three DIRECTORY proofs comparing `dev`/`ino`/`mode`
+   * rather than the full six-field identity.
+   *
+   * A directory's `size`, `mtime`, and `ctime` move whenever any child is
+   * added, removed, or renamed, and a memory directory is written to by the
+   * very runtime that scans it. While these three proofs compared those
+   * fields, one benign neighbouring write anywhere in the memory directory
+   * failed the whole scan, and `scanMemoryFiles` turns a failed scan into an
+   * empty array — so the MCP memory listing, which cannot produce a single
+   * resource without the scan, lost everything. Measured on this machine with
+   * a separate process writing and removing one sibling file in the memory
+   * directory and no attacker at all: the memory listing was available 105
+   * times in 63,141 attempts, 0.17%. Narrowed, 11,886 of 11,887, 99.99%.
+   *
+   * Each of the three tests below writes a sibling file at the one seam that
+   * falls inside that proof's window, and each fails if its proof is widened
+   * back to `sameStats`.
+   */
+  it("survives a sibling write between the root bind and the root open", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "agenc-memory-scan-"));
+    await writeFile(join(tempDir, "note.md"), "---\nname: note\n---\nbody");
+    let wrote = false;
+
+    const result = await scanMemoryRoots([tempDir], new AbortController().signal, {
+      // Fires after the scan bound the root and before `openBoundRootDirectory`
+      // compares the opened handle against that binding.
+      beforeDirectoryOpen: async (path) => {
+        if (path !== tempDir || wrote) return;
+        wrote = true;
+        await writeFile(join(tempDir, "sibling.md"), "---\nname: sibling\n---\nb");
+      },
+    });
+
+    expect(wrote).toBe(true);
+    expect(result.kind).toBe("complete");
+    expect(result.headers.map((header) => header.filename)).toContain("note.md");
+  });
+
+  it("survives a sibling write between a subdirectory's identity binding and its open", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "agenc-memory-scan-"));
+    const nested = join(tempDir, "nested");
+    await mkdir(nested, { recursive: true });
+    await writeFile(join(nested, "note.md"), "---\nname: note\n---\nbody");
+    let wrote = false;
+
+    const result = await scanMemoryRoots([tempDir], new AbortController().signal, {
+      // Fires after the parent's enumeration recorded this directory's
+      // identity and before `openVerifiedDirectory` compares its open against
+      // that record.
+      beforeDirectoryOpen: async (path) => {
+        if (path !== nested || wrote) return;
+        wrote = true;
+        await writeFile(join(nested, "sibling.md"), "---\nname: sibling\n---\nb");
+      },
+    });
+
+    expect(wrote).toBe(true);
+    expect(result.kind).toBe("complete");
+    expect(
+      result.headers.some((header) => header.relativePath === "nested/note.md"),
+    ).toBe(true);
+  });
+
+  it("survives a sibling write across a directory's enumeration", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "agenc-memory-scan-"));
+    await writeFile(join(tempDir, "note.md"), "---\nname: note\n---\nbody");
+    let wrote = false;
+
+    const result = await scanMemoryRoots([tempDir], new AbortController().signal, {
+      // Fires after the entries are read and before
+      // `assertBoundDirectoryUnchanged` re-proves the directory.
+      afterDirectoryEnumeration: async (path) => {
+        if (path !== tempDir || wrote) return;
+        wrote = true;
+        await writeFile(join(tempDir, "sibling.md"), "---\nname: sibling\n---\nb");
+      },
+    });
+
+    expect(wrote).toBe(true);
+    expect(result.kind).toBe("complete");
+    expect(result.headers.map((header) => header.filename)).toContain("note.md");
+  });
+
+  /**
+   * GUARD: the root re-bind in `readMemoryContent` comparing directory
+   * identity rather than the full six-field identity.
+   *
+   * The header was produced by one bind and the content read makes another,
+   * with arbitrary time in between. Comparing `size`/`mtime`/`ctime` there
+   * meant any write into the memory directory after recall selected a
+   * memory — including the runtime writing the next memory — turned the read
+   * into "memory root identity changed before content read". The candidate
+   * FILE keeps the full identity, and that is what this test leaves intact.
+   */
+  it("reads memory content after a sibling was written into the memory dir", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "agenc-memory-scan-"));
+    await writeFile(join(tempDir, "note.md"), "---\nname: note\n---\nbody text");
+
+    const headers = await scanMemoryFiles(tempDir, new AbortController().signal);
+    const header = headers.find((entry) => entry.filename === "note.md")!;
+    expect(header).toBeDefined();
+    await writeFile(join(tempDir, "sibling.md"), "---\nname: sibling\n---\nb");
+
+    const content = await readMemoryContent(header, new AbortController().signal);
+    expect(content.content).toContain("body text");
   });
 
   it("discards a candidate whose pathname is exchanged after descriptor open", async () => {

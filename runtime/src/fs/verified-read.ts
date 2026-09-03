@@ -18,9 +18,10 @@
  *      descriptor path, rejects symlinked or non-directory ancestors, requires
  *      each ancestor's canonical path to sit inside the root's canonical path,
  *      and re-proves the root handle against the retained binding.
- *   3. `openVerifiedCandidate` opens the final component with `O_NOFOLLOW`,
- *      proves the opened object against the path stat, and proves the
- *      descriptor still resolves inside the root.
+ *   3. `openVerifiedCandidate` opens the final component with `O_NOFOLLOW`
+ *      and proves the opened object against the path stat. What it then does
+ *      about containment differs by platform, and the docstring on that
+ *      function says which half is load-bearing where.
  *   4. `assertCandidateUnchanged` re-proves the object after the bytes are read.
  *
  * Directories and files are proven on different fields, deliberately. A
@@ -34,6 +35,21 @@
  * 112 of 172,076 attempts. What an ancestor swap must do is make the retained
  * handle and the pathname name different objects, and `dev`/`ino` is exactly
  * the pair that catches that.
+ *
+ * That number is the SKILL listing, and only the skill listing. The MCP
+ * MEMORY listing runs through `runtime/src/memory/scan.ts`, which has
+ * directory proofs of its own and was still comparing the full identity in
+ * all three of them; narrowing this file did nothing for it. Re-measured with
+ * one separate process writing and removing a single sibling file, the three
+ * heads run back to back:
+ *
+ *   surface   before this file was narrowed   after   after scan.ts too
+ *   skills    102/116,343 = 0.09%             100.00%  100.00%
+ *   memory     50/139,285 = 0.04%               0.15%  100.00%
+ *
+ * Controls, both surfaces and all three heads: no churn 100.00%, churn in a
+ * directory outside the listed root 100.00%. Both surfaces are narrowed now;
+ * the memory proofs and their own mutation tests live with that module.
  *
  * Platform story, and it is not uniform:
  *
@@ -208,8 +224,10 @@ export function sameStats(
  * directory proof that included them rejected every ordinary concurrent write
  * in the workspace. Measured under purely benign sibling churn and no
  * attacker at all, the full-identity proof left the MCP skill listing
- * available 0.07% of the time (112 of 172,076 listings); the entire listing
- * collapsed because a neighbouring file was being written.
+ * available 0.09% of the time (102 of 116,343 listings) and, through the
+ * separate proofs in `memory/scan.ts`, the MCP memory listing available 0.15%
+ * of the time (113 of 76,583 listings); the entire listing collapsed because
+ * a neighbouring file was being written.
  *
  * Containment does not need those fields. What an ancestor swap has to do is
  * make the retained handle and the pathname refer to *different* objects, and
@@ -386,10 +404,40 @@ export async function bindVerifiedRoot(
 }
 
 /**
- * Open one candidate below a bound root and prove it is still reachable only
- * from inside that root. This is the check that closes the ancestor-swap
- * escape: containment is decided against the retained root descriptor, never
- * against a second resolution of the candidate's pathname.
+ * Open one candidate below a bound root, prove the opened object is the one
+ * the path named, and prove it is still reachable only from inside that root.
+ *
+ * Be precise about which clause buys what, because the obvious reading of the
+ * last step is wrong on two of the three platforms:
+ *
+ *   - `verifyParentChain`, called here before the open and again by every
+ *     caller after the bytes are read, is what actually rejects an ancestor
+ *     swap. It walks each parent segment from the retained root descriptor,
+ *     refuses a symlinked or non-directory segment, requires each segment's
+ *     canonical path to sit inside the root's, and re-proves the root handle.
+ *   - on linux, `finalDescriptorPath` reads the descriptor's live location
+ *     back out of `/proc/self/fd`, so `isContained` on that result is a real
+ *     containment proof about the opened object.
+ *   - on darwin and freebsd it is not. There `finalDescriptorPath` returns
+ *     the very `expectedPath` it was handed — `join(canonicalPath, rel)` —
+ *     or `null`, so `isContained(canonicalPath, join(canonicalPath, rel))` is
+ *     a tautology for any `rel` the `isContained` pre-check already admitted.
+ *     Only `canonicalPath` is symlink-free by construction; the `rel` part of
+ *     that name traverses the very segments an attacker controls, the same
+ *     ones the open traversed. What the call still buys on those platforms is
+ *     the identity comparison inside it — the open handle against
+ *     `lstat(join(canonicalPath, rel))` — which is a third resolution of the
+ *     name, not a containment proof.
+ *
+ * Measured, in the geometry where a segment INSIDE the bound root is flipped
+ * between a real directory and a symlink to an out-of-scope twin, attacker in
+ * its own process, no seams: deleting the whole final-path block here forges
+ * nothing (0 of 31,621 served, 53,722 attempts), and deleting the callers'
+ * post-read `assertCandidateUnchanged` and ancestor re-walk on top of it
+ * still forges nothing (0 of 44,394 served, 66,736 attempts). Deleting
+ * `verifyParentChain` forges immediately: 56 of 40,342 served, 54,687
+ * attempts. In that geometry the ancestor walk is the guard; everything after
+ * the open is depth behind it.
  */
 export async function openVerifiedCandidate(
   root: VerifiedRoot,
