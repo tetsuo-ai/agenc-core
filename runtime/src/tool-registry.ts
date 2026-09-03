@@ -595,9 +595,9 @@ export interface BuildToolRegistryOptions {
    * LIVE tools (XSearch) so Pattern A one-shots can gate on config.
    */
   readonly grokCapabilities?: import("./config/schema.js").GrokCapabilityConfig;
-  /** Session provider slug for catalog-gating xAI-only LIVE tools. */
+  /** @deprecated Tool availability is independent of the reasoning provider. */
   readonly sessionProvider?: string;
-  /** Session inference base URL for direct-xAI host checks. */
+  /** @deprecated Tool backends resolve their own endpoint authority. */
   readonly sessionBaseURL?: string;
   /**
    * Runtime integration seam: extra tools to register beyond the default

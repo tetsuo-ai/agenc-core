@@ -1,13 +1,21 @@
-# Imagine image and video tools
+# Image and video generation tools
 
-LIVE tools `ImagineImage` and `ImagineVideo` call xAI Grok Imagine REST
-endpoints. They are registered on the tool catalog but only run when all of
-these hold:
+LIVE tools `ImagineImage` and `ImagineVideo` use separately authenticated
+media backends. The provider that performs the reasoning turn does **not** gate
+these tools: Meta, OpenAI, Grok, and any other tool-capable model can invoke
+them when the corresponding media backend is configured.
 
-1. Session provider is `grok`
-2. Inference host is direct xAI (`api.x.ai`), not OpenRouter or another gateway
-3. Credentials: `XAI_API_KEY` / `GROK_API_KEY`, or
-   `/grok-login` subscription OAuth
+| Tool | Backend availability |
+| --- | --- |
+| `ImagineImage` | Meta Muse Image with `MODEL_API_KEY`, or xAI Imagine with `XAI_API_KEY`, `GROK_API_KEY`, or `/grok-login` OAuth |
+| `ImagineVideo` | xAI Imagine with `XAI_API_KEY`, `GROK_API_KEY`, or `/grok-login` OAuth |
+
+Backend authority is credential-isolated. A Meta, OpenAI, or gateway session
+key is never forwarded to xAI, and an xAI key is never forwarded to Meta. A
+direct Grok session may reuse its own xAI bearer; otherwise xAI media calls use
+the independently configured xAI credentials. A Meta reasoning session prefers
+Muse Image when `MODEL_API_KEY` is configured. Other reasoning providers can
+also use Muse Image when it is the available image backend.
 
 Both tools require approval (`requiresApproval: true`) and run exclusive
 (no parallel sibling Imagine calls). Files land under
@@ -20,25 +28,34 @@ OAuth: [grok-oauth.md](grok-oauth.md).
 ## ImagineImage
 
 Source: `runtime/src/tools/system/imagine-image.ts`.
-POST `https://api.x.ai/v1/images/generations`. Tool timeout 150 s; the
-request itself uses a 120 s abort.
+
+- Meta backend: POST
+  `${META_BASE_URL:-https://api.meta.ai/v1}/images/generations` with
+  `muse-image-1.0`.
+- xAI backend: POST `https://api.x.ai/v1/images/generations` with
+  `grok-imagine-image` or `grok-imagine-image-quality`.
+
+The tool timeout is 150 s; the request itself uses a 120 s abort.
 
 | Argument | Required | Notes |
 | --- | --- | --- |
 | `prompt` | yes | Text prompt |
-| `model` | no | `grok-imagine-image` (default) or `grok-imagine-image-quality` |
+| `model` | no | Backend default: `muse-image-1.0` on Meta; `grok-imagine-image` on xAI. xAI also accepts `grok-imagine-image-quality` |
 | `n` | no | 1-10 images, default 1 |
 | `aspect_ratio` | no | `1:1`, `16:9`, `9:16`, `4:3`, `3:4`, `3:2`, `2:3`, `2:1`, `1:2`, `19.5:9`, `9:19.5`, `20:9`, `9:20`, `auto` |
-| `resolution` | no | `1k` or `2k` |
+| `resolution` | no | xAI only: `1k` or `2k` |
 
-Ask the agent to generate an image in a grok session, or call the tool by
-name. The model only sees the tool when the gate stack above succeeds.
+For Meta, aspect ratios map to `1024x1024`, `1536x1024`, or `1024x1536`.
+The tool accepts either base64 or URL results from both backends, downloads the
+image when necessary, and saves Meta output as WebP (xAI output as JPEG) under
+the workspace so desktop media rendering receives the correct content type.
 
 ## ImagineVideo
 
 Source: `runtime/src/tools/system/imagine-video.ts`.
-POST `/v1/videos/generations`, then poll `GET /v1/videos/{request_id}` until
-done. Tool timeout 300 s. Poll interval 5 s, poll budget 240 s.
+The execution backend is always direct xAI: POST `/v1/videos/generations`, then
+poll `GET /v1/videos/{request_id}` until done. The reasoning model can belong to
+any provider. Tool timeout 300 s. Poll interval 5 s, poll budget 240 s.
 
 | Argument | Required | Notes |
 | --- | --- | --- |
@@ -54,10 +71,11 @@ Saves an MP4 under the workspace.
 
 ## Failures you will actually see
 
-- Session provider is not grok
-- Base URL is not `api.x.ai` (OpenRouter is refused)
-- No bearer token (set a key or run `/grok-login`)
+- No compatible media credential is configured
+- An independently configured xAI base URL is not direct `api.x.ai`
+- The requested model belongs to the other image backend
 - Missing `prompt`
 - Approval denied
 
-There is no separate `agenc imagine` CLI. These are model tools.
+Changing the reasoning provider does not fix a missing media credential. There
+is no separate `agenc imagine` CLI; these are model tools.

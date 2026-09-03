@@ -1177,7 +1177,6 @@ async function bootstrapLocalRuntimeSessionScoped(
         config: startup.config,
         environment: providerEnvironment,
       }).settings;
-  const selectedBaseURL = initialTransportRequest.requested.baseURL;
   const mcpManager = createSessionMcpManager([], {
     environment: sessionMcpRequestEnvironment,
     sandboxExecutionBroker,
@@ -1286,14 +1285,10 @@ async function bootstrapLocalRuntimeSessionScoped(
             enabled_tools: [...LIVE_COORDINATOR_ALLOWED_TOOLS],
           }
         : baseToolsConfig,
-      // G1/G3 Hermes-style catalog gates: pass session provider + host so
-      // XSearch / ImagineImage are not advertised to Claude/GPT/OpenRouter.
+      // xAI settings configure an independent tool backend. They do not
+      // restrict which reasoning provider may invoke XSearch/Imagine.
       ...(startup.config.providers?.grok !== undefined
         ? { grokCapabilities: startup.config.providers.grok }
-        : {}),
-      sessionProvider: resolvedProvider,
-      ...(selectedBaseURL !== undefined
-        ? { sessionBaseURL: selectedBaseURL }
         : {}),
     },
   });

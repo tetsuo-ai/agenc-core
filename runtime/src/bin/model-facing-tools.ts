@@ -9,7 +9,6 @@ import type * as undici from "undici";
 import pMap from "p-map";
 import { resolveHomeContext } from "../config/home.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
-import { normalizeProviderIdentity } from "../provider-identity.js";
 import {
   ROOT_AGENT_PATH,
   type AgentPath,
@@ -48,12 +47,19 @@ import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 import { AdmissionDeniedError } from "../budget/admission-client.js";
 import type { GrokCapabilityConfig } from "../config/schema.js";
 import {
-  hasXaiCredentials,
   isDirectXaiInferenceHost,
   isXaiLiveXSearchEnabled,
+  resolveXaiBearerToken,
   resolveXaiLiveWebSearchOptions,
   resolveXaiLiveXSearchOptions,
 } from "../llm/xai-capability-config.js";
+import {
+  BUILT_IN_PROVIDER_BASE_URLS,
+  BUILT_IN_PROVIDER_DEFAULT_MODELS,
+} from "../llm/registry/provider-info.js";
+import {
+  resolveProviderBaseURLEnvironment,
+} from "../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../tools/types.js";
 import { safeStringify } from "../tools/types.js";
 import { createFileReadTool } from "../tools/system/file-read.js";
@@ -112,8 +118,14 @@ import { isPreapprovedHost } from "./web-fetch-preapproved.js";
 import { createRequestUserInputTool } from "../elicitation/request-user-input.js";
 import { createRequestLedgerTransferTool } from "../elicitation/request-ledger-transfer.js";
 import { createLedgerWalletCliTools } from "../elicitation/ledger-wallet-cli.js";
-import { createImagineImageTool } from "../tools/system/imagine-image.js";
-import { createImagineVideoTool } from "../tools/system/imagine-video.js";
+import {
+  createImagineImageTool,
+  hasImagineImageBackend,
+} from "../tools/system/imagine-image.js";
+import {
+  createImagineVideoTool,
+  hasImagineVideoBackend,
+} from "../tools/system/imagine-video.js";
 import { getRuleByContentsForTool } from "../permissions/rules.js";
 import type {
   PermissionResult,
@@ -182,15 +194,14 @@ export interface ModelFacingToolOptions {
     readonly web_search_endpoint_kind?: string;
     readonly [k: string]: unknown;
   };
-  /** `[providers.grok]` capability profile for Grok-native LIVE tools. */
+  /** `[providers.grok]` capability profile for the independent xAI tool backend. */
   readonly grokCapabilities?: GrokCapabilityConfig;
   /**
-   * Session provider slug at registry build time (e.g. `grok`, `openai`).
-   * Used for Hermes-style *catalog* gating: xAI-only LIVE tools must not be
-   * advertised to non-Grok models (execute-time refuse is defense-in-depth).
+   * Session provider slug retained for embedding compatibility. Tool
+   * availability must not be gated by the provider that performs reasoning.
    */
   readonly sessionProvider?: string;
-  /** Session inference base URL — OpenRouter/custom hosts are not "direct xAI". */
+  /** Session inference base URL retained for embedding compatibility. */
   readonly sessionBaseURL?: string;
 }
 
@@ -201,23 +212,6 @@ function requireModelFacingRequestEnvironment(
     throw new Error("model-facing tools require a captured request environment");
   }
   return opts.env;
-}
-
-/**
- * Hermes-style availability: only advertise xAI-native LIVE tools when the
- * session is actually Grok on a first-party xAI host. Mirrors Hermes
- * `is_available()` + `is_xai_responses` scoping (do not register for Claude/GPT).
- */
-export function isGrokDirectXaiSession(opts: {
-  readonly sessionProvider?: string;
-  readonly sessionBaseURL?: string;
-}): boolean {
-  const provider = normalizeProviderIdentity(
-    opts.sessionProvider,
-    "model-facing tool provider",
-  );
-  if (provider !== "grok") return false;
-  return isDirectXaiInferenceHost(opts.sessionBaseURL);
 }
 
 interface WebSearchFilters {
@@ -929,6 +923,74 @@ function currentSessionProvider(
     ?.provider;
 }
 
+interface XaiToolBackend {
+  readonly apiKey: string;
+  readonly baseURL: string;
+  readonly model: string;
+  readonly credentialHome: ReturnType<typeof resolveSecureStorageHome>;
+  readonly timeoutMs?: number;
+}
+
+/**
+ * Resolve the xAI service used by xAI-backed client tools independently from
+ * the model that is running the main turn. A Meta/OpenAI/Anthropic session may
+ * call XSearch or Imagine without its own credential ever crossing into xAI.
+ */
+function resolveXaiToolBackend(
+  opts: ModelFacingToolOptions,
+): XaiToolBackend | undefined {
+  const environment = requireModelFacingRequestEnvironment(opts);
+  const credentialHome = resolveSecureStorageHome(
+    environment,
+    opts.agencHome,
+  );
+  const currentProvider = currentSessionProvider(opts);
+  const currentIsGrok = readProviderIdentity(currentProvider) === "grok";
+  const currentFactory = currentIsGrok && currentProvider
+    ? readProviderFactoryOptions(currentProvider)
+    : undefined;
+  const currentIsDirect =
+    currentFactory !== undefined &&
+    isDirectXaiInferenceHost(currentFactory.baseURL);
+  const sessionApiKey =
+    currentIsDirect && typeof currentFactory?.apiKey === "string"
+      ? currentFactory.apiKey
+      : undefined;
+  const apiKey = resolveXaiBearerToken(
+    credentialHome,
+    environment,
+    sessionApiKey,
+  );
+  if (apiKey === undefined) return undefined;
+
+  const configuredBaseURL = resolveProviderBaseURLEnvironment(
+    "grok",
+    environment,
+  )?.value;
+  const baseURL = currentIsDirect
+    ? (currentFactory?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS.grok)
+    : (configuredBaseURL ?? BUILT_IN_PROVIDER_BASE_URLS.grok);
+  if (!isDirectXaiInferenceHost(baseURL)) return undefined;
+
+  const currentModel = currentIsDirect ? currentFactory?.model : undefined;
+  const model = supportsProviderNativeXSearch({
+    provider: "grok",
+    model: currentModel,
+    xSearch: true,
+  })
+    ? currentModel!
+    : BUILT_IN_PROVIDER_DEFAULT_MODELS.grok;
+  return {
+    apiKey,
+    baseURL,
+    model,
+    credentialHome,
+    ...(currentFactory?.timeoutMs !== undefined
+      ? { timeoutMs: currentFactory.timeoutMs }
+      : {}),
+  };
+}
+
 async function runAdmittedModelFacingCall(
   opts: ModelFacingToolOptions,
   provider: LLMProvider,
@@ -1138,7 +1200,7 @@ function xSearchOptionsFromArgs(
   };
 }
 
-function isXSearchEnabledForSession(opts: ModelFacingToolOptions): boolean {
+function isXSearchBackendEnabled(opts: ModelFacingToolOptions): boolean {
   if (
     isXaiLiveXSearchEnabled(opts.grokCapabilities)
   ) {
@@ -1154,18 +1216,14 @@ function buildGrokNativeXSearchProvider(
   opts: ModelFacingToolOptions,
   xSearchOptions: LLMXSearchConfig | undefined,
 ): LLMProvider | undefined {
-  const currentProvider = currentSessionProvider(opts);
-  if (readProviderIdentity(currentProvider) !== "grok" || !currentProvider) {
+  const backend = resolveXaiToolBackend(opts);
+  if (backend === undefined || !isXSearchBackendEnabled(opts)) {
     return undefined;
   }
-  if (!isXSearchEnabledForSession(opts)) {
-    return undefined;
-  }
-  const factoryOptions = readProviderFactoryOptions(currentProvider);
   if (
     !supportsProviderNativeXSearch({
       provider: "grok",
-      model: factoryOptions.model,
+      model: backend.model,
       xSearch: true,
     })
   ) {
@@ -1187,7 +1245,6 @@ function buildGrokNativeXSearchProvider(
     };
   })();
   const extra: ProviderFactoryOptions["extra"] = {
-    ...(factoryOptions.extra ?? {}),
     // One-shot only: native x_search, no dual continuous web search spam.
     webSearch: false,
     xSearch: true,
@@ -1198,10 +1255,14 @@ function buildGrokNativeXSearchProvider(
   const providerFactory = opts.providerFactory ?? createProvider;
   try {
     return providerFactory("grok", {
-      ...factoryOptions,
+      credentialHome: backend.credentialHome,
+      apiKey: backend.apiKey,
+      baseURL: backend.baseURL,
+      model: backend.model,
       tools: [],
-      // Preserve only an operator-supplied timeout. Native x_search agentic
-      // loops are otherwise unbounded like every other model call.
+      ...(backend.timeoutMs !== undefined
+        ? { timeoutMs: backend.timeoutMs }
+        : {}),
       extra,
     });
   } catch {
@@ -1244,17 +1305,16 @@ async function runGrokNativeXSearch(
   args: Record<string, unknown>,
   query: string,
 ): Promise<ToolResult> {
-  const currentProvider = currentSessionProvider(opts);
-  if (readProviderIdentity(currentProvider) !== "grok") {
+  if (resolveXaiToolBackend(opts) === undefined) {
     return json(
       {
         error:
-          "XSearch is only available when the session provider is grok (direct xAI).",
+          "XSearch needs an independent xAI backend: run /grok-login or configure XAI_API_KEY / GROK_API_KEY.",
       },
       true,
     );
   }
-  if (!isXSearchEnabledForSession(opts)) {
+  if (!isXSearchBackendEnabled(opts)) {
     return json(
       {
         error:
@@ -1269,7 +1329,7 @@ async function runGrokNativeXSearch(
     return json(
       {
         error:
-          "XSearch native path unavailable for this Grok model (server tools require Grok 4 family on api.x.ai).",
+          "XSearch backend is unavailable (native x_search requires a compatible Grok 4 model on api.x.ai).",
       },
       true,
     );
@@ -3791,7 +3851,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
     {
       name: "XSearch",
       description:
-        "Search X (Twitter) via xAI native x_search when the session uses Grok on api.x.ai and [providers.grok] x_search is enabled. Read-only research with x.com citations.",
+        "Search X (Twitter) through an independently configured xAI backend. Any reasoning provider may call this read-only tool; it returns findings with x.com citations.",
       metadata: toolMetadata("web", {
         keywords: ["x", "twitter", "search", "social", "posts"],
       }),
@@ -3826,11 +3886,11 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
     },
   ];
 
-  // Catalog gate (Hermes is_available): only register XSearch when session is
-  // Grok+direct-xAI AND [providers.grok].x_search is enabled. Non-Grok models must
-  // never see this tool in the schema list.
+  // Tool availability follows its backend, never the provider running the
+  // main turn. The internal one-shot still uses a Grok provider because
+  // native x_search is an xAI wire capability.
   const includeXSearch =
-    isGrokDirectXaiSession(opts) &&
+    resolveXaiToolBackend(opts) !== undefined &&
     isXaiLiveXSearchEnabled(opts.grokCapabilities);
   if (!includeXSearch) {
     return tools.filter((t) => t.name !== "XSearch");
@@ -4935,38 +4995,35 @@ export function createModelFacingTools(
     ...opts,
     env: Object.freeze({ ...(opts.env ?? process.env) }),
   });
-  // Hermes-style catalog gates: xAI-only LIVE tools are omitted unless the
-  // session is Grok on a direct xAI host (and credentials/config allow).
-  // Credentials = BYOK **or** /grok-login OAuth (subscription Grok Build).
-  // Execute-time refuses remain as defense-in-depth.
-  const grokDirect = isGrokDirectXaiSession(scopedOpts);
+  // Media tools follow independently configured execution backends, not the
+  // provider running the reasoning turn. Credentials = provider BYOK or, for
+  // xAI, /grok-login OAuth (subscription Grok Build).
   const credentialHome = resolveSecureStorageHome(
     scopedOpts.env!,
     scopedOpts.agencHome,
   );
-  // Image + video Imagine surface (same credential probe as Hermes).
-  const includeImagineMedia =
-    grokDirect && hasXaiCredentials(credentialHome, scopedOpts.env);
+  const imagineOptions = {
+    workspaceRoot: scopedOpts.workspaceRoot,
+    home: credentialHome,
+    getSession: scopedOpts.getSession,
+    env: scopedOpts.env!,
+  } as const;
+  const includeImagineImage = hasImagineImageBackend(imagineOptions);
+  const includeImagineVideo = hasImagineVideoBackend(imagineOptions);
 
   return [
     ...createMultiAgentV2RuntimeTools(scopedOpts),
     ...createMcpResourceTools(scopedOpts),
     createSkillInvocationRuntimeTool(scopedOpts),
     ...createWebTools(scopedOpts),
-    ...(includeImagineMedia
+    ...(includeImagineImage
       ? [
-          createImagineImageTool({
-            workspaceRoot: scopedOpts.workspaceRoot,
-            home: credentialHome,
-            getSession: scopedOpts.getSession,
-            env: scopedOpts.env!,
-          }),
-          createImagineVideoTool({
-            workspaceRoot: scopedOpts.workspaceRoot,
-            home: credentialHome,
-            getSession: scopedOpts.getSession,
-            env: scopedOpts.env!,
-          }),
+          createImagineImageTool(imagineOptions),
+        ]
+      : []),
+    ...(includeImagineVideo
+      ? [
+          createImagineVideoTool(imagineOptions),
         ]
       : []),
     createNotebookReadTool(scopedOpts),

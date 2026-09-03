@@ -11,6 +11,26 @@ exactly now fail in-process with `LLMProviderError` instead of reaching
 Local window probes and `context_window_exceeded` text:
 [providers.md](reference/providers.md#local-context-windows).
 
+## Reasoning providers and execution backends
+
+The model that selects a client tool and the service that executes that tool
+are separate identities. A tool-capable reasoning provider is not required to
+own a tool's backend. Catalog exposure follows the backend credentials and
+capabilities captured for the request, not the reasoning provider slug.
+
+For example, a Meta Muse Spark or OpenAI model can invoke `XSearch`,
+`ImagineImage`, or `ImagineVideo`. `XSearch` then performs native X search
+through an independently authenticated direct-xAI Grok backend;
+`ImagineVideo` similarly uses xAI Imagine. `ImagineImage` can use Meta Muse
+Image with `MODEL_API_KEY` or xAI Imagine with separate xAI credentials. The
+reasoning session's API key and base URL are never borrowed for a different
+provider's backend.
+
+This does not turn provider-native server tools into generic wire features.
+Native `x_search`, for example, is still sent only on the internal compatible
+Grok request. The original reasoning model sees and invokes the AgenC client
+tool, while AgenC owns the backend-specific request.
+
 ## Object-root tools (Grok / DeepSeek)
 
 Strict OpenAI-compatible providers (x.ai / Grok, DeepSeek) require each tool
@@ -117,7 +137,9 @@ Model API rejects them. Meta accepts only `tool_choice: "auto"`: required and
 named choices are normalized to `auto`, while `none` removes tools from the
 request. Caller-supplied stop sequences are stripped because Meta rejects the
 `stop` field. Meta requests use `max_completion_tokens`; Muse Spark supports
-image input, JSON-schema structured output, and parallel function calls.
+image input, JSON-schema structured output, and parallel function calls. Those
+function calls can target the same backend-qualified AgenC tool catalog as
+calls from other cloud providers.
 
 ## Gemini native JSON Schema
 

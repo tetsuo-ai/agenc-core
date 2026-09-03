@@ -1,10 +1,10 @@
 /**
- * G3: LIVE Imagine image generation tool (xAI REST /v1/images/generations).
+ * LIVE image generation tool with provider-independent media backends.
  *
- * Gate stack (fail-closed):
- * 1. Session provider === "grok"
- * 2. Direct xAI host (not OpenRouter)
- * 3. /grok-login OAuth (wins) or BYOK aliases
+ * Backend routing (fail-closed and credential-isolated):
+ * 1. Meta reasoning sessions prefer Meta Muse Image + MODEL_API_KEY.
+ * 2. Any reasoning provider may use independent xAI credentials.
+ * 3. Direct Grok sessions retain their session bearer/base URL compatibility.
  *
  * @module
  */
@@ -14,7 +14,6 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import {
-  createProvider,
   readProviderFactoryOptions,
   readProviderIdentity,
 } from "../../llm/provider.js";
@@ -22,6 +21,10 @@ import {
   isDirectXaiInferenceHost,
   resolveXaiBearerToken,
 } from "../../llm/xai-capability-config.js";
+import {
+  resolveProviderApiKeyEnvironment,
+  resolveProviderBaseURLEnvironment,
+} from "../../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import type { HomeContext } from "../../config/home.js";
@@ -73,11 +76,145 @@ const ALLOWED_ASPECT = new Set([
   "auto",
 ]);
 
+const DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1";
+const DEFAULT_META_BASE_URL = "https://api.meta.ai/v1";
+
+type ImageBackend =
+  | {
+      readonly kind: "meta";
+      readonly baseURL: string;
+      readonly bearer: string;
+    }
+  | {
+      readonly kind: "xai";
+      readonly baseURL: string;
+      readonly bearer: string;
+    };
+
+type BackendResolution =
+  | { readonly backend: ImageBackend }
+  | { readonly error: string };
+
+function withoutTrailingSlash(value: string): string {
+  return value.replace(/\/$/, "");
+}
+
+/**
+ * Media credentials are intentionally independent from the reasoning
+ * provider. A Meta/OpenAI/etc session key must never become an xAI bearer.
+ * Direct Grok sessions retain their existing session-bearer compatibility.
+ */
+function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
+  const env = opts.env ?? process.env;
+  const provider = opts.getSession()?.services?.provider;
+  const providerIdentity = readProviderIdentity(provider as never);
+  const metaCredential = resolveProviderApiKeyEnvironment("meta", env);
+  const metaBackend = (): ImageBackend | undefined => {
+    if (metaCredential === undefined) return undefined;
+    const metaBaseURL =
+      resolveProviderBaseURLEnvironment("meta", env)?.value ??
+      DEFAULT_META_BASE_URL;
+    return {
+      kind: "meta",
+      baseURL: withoutTrailingSlash(metaBaseURL),
+      bearer: metaCredential.value,
+    };
+  };
+
+  // A Meta reasoning session prefers Meta's native image API, but only the
+  // canonical MODEL_API_KEY ingress may authorize it. Never borrow a factory
+  // key or an xAI alias for this request.
+  if (providerIdentity === "meta") {
+    const backend = metaBackend();
+    if (backend !== undefined) return { backend };
+  }
+
+  if (providerIdentity === "grok" && provider !== undefined) {
+    const factory = readProviderFactoryOptions(provider as never);
+    if (isDirectXaiInferenceHost(factory.baseURL)) {
+      const sessionKey =
+        typeof factory.apiKey === "string" ? factory.apiKey : undefined;
+      const bearer = resolveXaiBearerToken(opts.home, env, sessionKey);
+      if (bearer !== undefined) {
+        return {
+          backend: {
+            kind: "xai",
+            baseURL: withoutTrailingSlash(
+              factory.baseURL ?? DEFAULT_XAI_BASE_URL,
+            ),
+            bearer,
+          },
+        };
+      }
+    }
+  }
+
+  // A non-direct Grok session follows this path too: use only independent
+  // xAI authority, never the gateway's session key or base URL.
+  const xaiBearer = resolveXaiBearerToken(opts.home, env);
+  if (xaiBearer !== undefined) {
+    const xaiBaseURL =
+      resolveProviderBaseURLEnvironment("grok", env)?.value ??
+      DEFAULT_XAI_BASE_URL;
+    if (!isDirectXaiInferenceHost(xaiBaseURL)) {
+      const fallbackMetaBackend = metaBackend();
+      if (fallbackMetaBackend !== undefined) {
+        return { backend: fallbackMetaBackend };
+      }
+      return {
+        error:
+          "ImagineImage's independent xAI backend must use a direct xAI host (api.x.ai).",
+      };
+    }
+    return {
+      backend: {
+        kind: "xai",
+        baseURL: withoutTrailingSlash(xaiBaseURL),
+        bearer: xaiBearer,
+      },
+    };
+  }
+
+  // MODEL_API_KEY is a complete, isolated Meta media backend even when a
+  // different model provider performs the reasoning turn.
+  const fallbackMetaBackend = metaBackend();
+  if (fallbackMetaBackend !== undefined) {
+    return { backend: fallbackMetaBackend };
+  }
+
+  return {
+    error:
+      "ImagineImage needs a media backend credential: MODEL_API_KEY for Meta Muse Image, or /grok-login, XAI_API_KEY, or GROK_API_KEY for xAI Imagine.",
+  };
+}
+
+/** Whether this request has at least one usable, isolated image backend. */
+export function hasImagineImageBackend(
+  opts: ImagineImageToolOptions,
+): boolean {
+  return "backend" in resolveImageBackend(opts);
+}
+
+function metaImageSize(aspectRatio: string | undefined): string {
+  if (
+    aspectRatio === undefined ||
+    aspectRatio === "auto" ||
+    aspectRatio === "1:1"
+  ) {
+    return "1024x1024";
+  }
+  const [width, height] = aspectRatio.split(":").map(Number);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width === height) {
+    return "1024x1024";
+  }
+  return width > height ? "1536x1024" : "1024x1536";
+}
+
 export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
   return {
     name: "ImagineImage",
     description:
-      "Generate an image with xAI Grok Imagine (POST /v1/images/generations). Only available when the session provider is grok on api.x.ai with either XAI_API_KEY/aliases or /grok-login subscription OAuth. Saves the image under the workspace and returns the path.",
+      "Generate an image with the configured media backend and save it under the workspace. Meta reasoning sessions prefer Muse Image when MODEL_API_KEY is configured; any reasoning provider may use an independent xAI Imagine backend configured with /grok-login, XAI_API_KEY, or GROK_API_KEY.",
     isReadOnly: false,
     requiresApproval: true,
     concurrencyClass: { kind: "exclusive" },
@@ -98,7 +235,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         model: {
           type: "string",
           description:
-            "grok-imagine-image (default) or grok-imagine-image-quality",
+            "Backend-specific model: muse-image-1.0 for Meta, or grok-imagine-image / grok-imagine-image-quality for xAI. Omit to use the selected backend default.",
         },
         n: { type: "number", description: "1–10 images (default 1)" },
         aspect_ratio: { type: "string" },
@@ -110,61 +247,30 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
     execute: async (args) => {
       const admittedSignal = abortSignalFromArgs(args);
       admittedSignal?.throwIfAborted();
-      const session = opts.getSession();
-      const provider = session?.services?.provider;
-      if (readProviderIdentity(provider as never) !== "grok") {
-        return json(
-          {
-            error:
-              "ImagineImage is only available when the session provider is grok.",
-          },
-          true,
-        );
+      const backendResolution = resolveImageBackend(opts);
+      if ("error" in backendResolution) {
+        return json({ error: backendResolution.error }, true);
       }
-
-      const factory = readProviderFactoryOptions(provider as never);
-      if (!isDirectXaiInferenceHost(factory.baseURL)) {
-        return json(
-          {
-            error:
-              "ImagineImage requires a direct xAI host (api.x.ai). OpenRouter and custom gateways are not supported for Imagine REST.",
-          },
-          true,
-        );
-      }
-
-      // Hermes-style: BYOK env wins, else /grok-login OAuth, else session bearer.
-      // Subscription Grok Build users authenticate via OAuth — do not require
-      // a metered XAI_API_KEY for Imagine.
-      const sessionKey =
-        typeof factory.apiKey === "string" ? factory.apiKey : undefined;
-      const bearer = resolveXaiBearerToken(
-        opts.home,
-        opts.env ?? process.env,
-        sessionKey,
-      );
-      if (!bearer) {
-        return json(
-          {
-            error:
-              "ImagineImage needs xAI credentials: set XAI_API_KEY (or GROK_API_KEY), or run /grok-login for subscription access.",
-          },
-          true,
-        );
-      }
+      const { backend } = backendResolution;
 
       const prompt = stringValue(args.prompt);
       if (!prompt) return json({ error: "prompt is required" }, true);
 
-      const model = stringValue(args.model) ?? "grok-imagine-image";
-      if (
+      const model =
+        stringValue(args.model) ??
+        (backend.kind === "meta" ? "muse-image-1.0" : "grok-imagine-image");
+      if (backend.kind === "meta") {
+        if (model !== "muse-image-1.0") {
+          return json({ error: "Meta image model must be muse-image-1.0" }, true);
+        }
+      } else if (
         model !== "grok-imagine-image" &&
         model !== "grok-imagine-image-quality"
       ) {
         return json(
           {
             error:
-              "model must be grok-imagine-image or grok-imagine-image-quality",
+              "xAI image model must be grok-imagine-image or grok-imagine-image-quality",
           },
           true,
         );
@@ -188,29 +294,25 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         return json({ error: "resolution must be 1k or 2k" }, true);
       }
 
-      const body: Record<string, unknown> = {
-        model,
-        prompt,
-        n,
-        response_format: "b64_json",
-      };
-      if (aspect_ratio !== undefined) body.aspect_ratio = aspect_ratio;
-      if (resolution !== undefined) body.resolution = resolution;
+      const body: Record<string, unknown> =
+        backend.kind === "meta"
+          ? { model, prompt, size: metaImageSize(aspect_ratio), n }
+          : { model, prompt, n, response_format: "b64_json" };
+      if (backend.kind === "xai") {
+        if (aspect_ratio !== undefined) body.aspect_ratio = aspect_ratio;
+        if (resolution !== undefined) body.resolution = resolution;
+      }
 
-      const baseURL = (factory.baseURL ?? "https://api.x.ai/v1").replace(
-        /\/$/,
-        "",
-      );
       const fetchImpl = opts.fetchImpl ?? fetch;
       const timeoutSignal = AbortSignal.timeout(120_000);
       const requestSignal = admittedSignal
         ? AbortSignal.any([admittedSignal, timeoutSignal])
         : timeoutSignal;
       try {
-        const res = await fetchImpl(`${baseURL}/images/generations`, {
+        const res = await fetchImpl(`${backend.baseURL}/images/generations`, {
           method: "POST",
           headers: {
-            authorization: `Bearer ${bearer}`,
+            authorization: `Bearer ${backend.bearer}`,
             "content-type": "application/json",
           },
           body: JSON.stringify(body),
@@ -223,7 +325,9 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         if (!res.ok) {
           return json(
             {
-              error: payload.error?.message ?? `Imagine HTTP ${res.status}`,
+              error:
+                payload.error?.message ??
+                `${backend.kind === "meta" ? "Muse Image" : "Imagine"} HTTP ${res.status}`,
             },
             true,
           );
@@ -237,7 +341,10 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         await mkdir(outDir, { recursive: true });
         const paths: string[] = [];
         for (const image of images) {
-          const filename = `imagine-${randomUUID()}.jpg`;
+          // Muse Image returns WebP. Keep the extension honest so Electron's
+          // agenc-media protocol derives a renderable content type.
+          const extension = backend.kind === "meta" ? "webp" : "jpg";
+          const filename = `imagine-${randomUUID()}.${extension}`;
           const path = join(outDir, filename);
           if (image.b64_json) {
             await writeFile(path, Buffer.from(image.b64_json, "base64"), {
@@ -249,6 +356,14 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
             const imgRes = await fetchImpl(image.url, {
               signal: requestSignal,
             });
+            if (!imgRes.ok) {
+              return json(
+                {
+                  error: `Image download HTTP ${imgRes.status}`,
+                },
+                true,
+              );
+            }
             const buf = Buffer.from(await imgRes.arrayBuffer());
             await writeFile(path, buf, { signal: requestSignal });
             paths.push(path);
@@ -261,6 +376,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
           );
         }
         return json({
+          backend: backend.kind,
           model,
           paths,
           path: paths[0],
@@ -279,6 +395,3 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
     },
   };
 }
-
-// Silence unused import if tree-shaken in some builds — createProvider used only for types.
-void createProvider;

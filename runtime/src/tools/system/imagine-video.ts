@@ -1,5 +1,5 @@
 /**
- * LIVE Imagine **video** generation (xAI REST).
+ * LIVE Imagine **video** generation through an independent xAI backend.
  *
  * Text-to-video and image-to-video via:
  *   POST /v1/videos/generations  → request_id
@@ -8,10 +8,9 @@
  * Auth (same as Hermes video_gen/xai): `/grok-login` OAuth **wins** over
  * BYOK; subscription SuperGrok / Grok Build users can generate video.
  *
- * Gate stack (fail-closed):
- * 1. Session provider === "grok"
- * 2. Direct xAI host (not OpenRouter)
- * 3. OAuth or BYOK credentials
+ * Any reasoning provider may invoke this tool with independent xAI OAuth or
+ * BYOK credentials. A direct Grok session additionally retains compatibility
+ * with its own session bearer and base URL.
  *
  * @module
  */
@@ -29,6 +28,7 @@ import {
   isDirectXaiInferenceHost,
   resolveXaiBearerToken,
 } from "../../llm/xai-capability-config.js";
+import { resolveProviderBaseURLEnvironment } from "../../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import type { HomeContext } from "../../config/home.js";
@@ -73,6 +73,82 @@ const VALID_RESOLUTIONS = new Set(["480p", "720p"]);
 const TEXT_TO_VIDEO_MODEL = "grok-imagine-video";
 const IMAGE_TO_VIDEO_MODEL = "grok-imagine-video-1.5-preview";
 const MAX_REFERENCE_IMAGES = 7;
+const DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1";
+
+type XaiBackendResolution =
+  | {
+      readonly backend: {
+        readonly baseURL: string;
+        readonly bearer: string;
+      };
+    }
+  | { readonly error: string };
+
+/**
+ * Resolve xAI as a media backend, independently from the reasoning provider.
+ * Only a direct Grok session is allowed to contribute its factory bearer or
+ * URL; Meta/OpenAI/etc credentials must never cross the xAI trust boundary.
+ */
+function resolveXaiVideoBackend(
+  opts: ImagineVideoToolOptions,
+): XaiBackendResolution {
+  const env = opts.env ?? process.env;
+  const provider = opts.getSession()?.services?.provider;
+  const providerIdentity = readProviderIdentity(provider as never);
+
+  if (providerIdentity === "grok" && provider !== undefined) {
+    const factory = readProviderFactoryOptions(provider as never);
+    if (isDirectXaiInferenceHost(factory.baseURL)) {
+      const sessionKey =
+        typeof factory.apiKey === "string" ? factory.apiKey : undefined;
+      const bearer = resolveXaiBearerToken(opts.home, env, sessionKey);
+      if (bearer !== undefined) {
+        return {
+          backend: {
+            baseURL: (factory.baseURL ?? DEFAULT_XAI_BASE_URL).replace(
+              /\/$/,
+              "",
+            ),
+            bearer,
+          },
+        };
+      }
+    }
+  }
+
+  // Never pass a non-Grok session key/base URL. A non-direct Grok session
+  // also lands here and must supply independent xAI authority.
+  const bearer = resolveXaiBearerToken(opts.home, env);
+  if (bearer !== undefined) {
+    const baseURL =
+      resolveProviderBaseURLEnvironment("grok", env)?.value ??
+      DEFAULT_XAI_BASE_URL;
+    if (!isDirectXaiInferenceHost(baseURL)) {
+      return {
+        error:
+          "ImagineVideo's independent xAI backend must use a direct xAI host (api.x.ai).",
+      };
+    }
+    return {
+      backend: {
+        baseURL: baseURL.replace(/\/$/, ""),
+        bearer,
+      },
+    };
+  }
+
+  return {
+    error:
+      "ImagineVideo needs an independent xAI media credential via /grok-login, XAI_API_KEY, or GROK_API_KEY.",
+  };
+}
+
+/** Whether this request has a usable, credential-isolated xAI video backend. */
+export function hasImagineVideoBackend(
+  opts: ImagineVideoToolOptions,
+): boolean {
+  return "backend" in resolveXaiVideoBackend(opts);
+}
 
 async function imageRefToUrl(
   value: string,
@@ -132,9 +208,9 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
   return {
     name: "ImagineVideo",
     description:
-      "Generate a video with xAI Grok Imagine (text-to-video or image-to-video). " +
-      "Uses POST /v1/videos/generations + poll. Available when session provider is grok " +
-      "on api.x.ai with /grok-login OAuth (preferred) or XAI_API_KEY. Saves the MP4 under the workspace.",
+      "Generate a video with an independently configured xAI Grok Imagine media backend (text-to-video or image-to-video). " +
+      "Any reasoning provider may invoke it when /grok-login, XAI_API_KEY, or GROK_API_KEY is available. " +
+      "Direct Grok sessions may also use their session bearer. Saves the MP4 under the workspace.",
     isReadOnly: false,
     requiresApproval: true,
     concurrencyClass: { kind: "exclusive" },
@@ -182,45 +258,11 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
     execute: async (args) => {
       const admittedSignal = abortSignalFromArgs(args);
       admittedSignal?.throwIfAborted();
-      const session = opts.getSession();
-      const provider = session?.services?.provider;
-      if (readProviderIdentity(provider as never) !== "grok") {
-        return json(
-          {
-            error:
-              "ImagineVideo is only available when the session provider is grok.",
-          },
-          true,
-        );
+      const backendResolution = resolveXaiVideoBackend(opts);
+      if ("error" in backendResolution) {
+        return json({ error: backendResolution.error }, true);
       }
-
-      const factory = readProviderFactoryOptions(provider as never);
-      if (!isDirectXaiInferenceHost(factory.baseURL)) {
-        return json(
-          {
-            error:
-              "ImagineVideo requires a direct xAI host (api.x.ai). OpenRouter is not supported for Imagine video REST.",
-          },
-          true,
-        );
-      }
-
-      const sessionKey =
-        typeof factory.apiKey === "string" ? factory.apiKey : undefined;
-      const bearer = resolveXaiBearerToken(
-        opts.home,
-        opts.env ?? process.env,
-        sessionKey,
-      );
-      if (!bearer) {
-        return json(
-          {
-            error:
-              "ImagineVideo needs xAI credentials: /grok-login (subscription) or XAI_API_KEY / GROK_API_KEY.",
-          },
-          true,
-        );
-      }
+      const { backend } = backendResolution;
 
       const prompt = stringValue(args.prompt);
       if (!prompt) return json({ error: "prompt is required" }, true);
@@ -291,18 +333,14 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
         body.reference_images = reference_images;
       }
 
-      const baseURL = (factory.baseURL ?? "https://api.x.ai/v1").replace(
-        /\/$/,
-        "",
-      );
       const fetchImpl = opts.fetchImpl ?? fetch;
       const headers = {
-        authorization: `Bearer ${bearer}`,
+        authorization: `Bearer ${backend.bearer}`,
         "content-type": "application/json",
       };
 
       try {
-        const submitRes = await fetchImpl(`${baseURL}/videos/generations`, {
+        const submitRes = await fetchImpl(`${backend.baseURL}/videos/generations`, {
           method: "POST",
           headers: {
             ...headers,
@@ -342,7 +380,7 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
         let doneBody: Record<string, unknown> | undefined;
 
         while (elapsed < pollTimeout) {
-          const pollRes = await fetchImpl(`${baseURL}/videos/${requestId}`, {
+          const pollRes = await fetchImpl(`${backend.baseURL}/videos/${requestId}`, {
             method: "GET",
             headers,
             ...(admittedSignal !== undefined
