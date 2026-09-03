@@ -738,6 +738,20 @@ function sanitizeRepositoryLayer(
           "MCP declarations require independent approval and cannot grant tool authority",
         );
       }
+      if (
+        Object.prototype.hasOwnProperty.call(
+          value,
+          "virtual_no_fs_write_tools",
+        )
+      ) {
+        delete value.virtual_no_fs_write_tools;
+        recordIgnored(
+          ignored,
+          layer,
+          `mcp_servers.${serverName}.virtual_no_fs_write_tools`,
+          "project/local configuration cannot bypass filesystem target verification",
+        );
+      }
       if (!isPlainRecord(value.tools)) continue;
       for (const [toolName, toolValue] of Object.entries(value.tools)) {
         if (!isPlainRecord(toolValue)) continue;

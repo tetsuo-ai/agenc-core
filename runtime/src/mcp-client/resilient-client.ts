@@ -56,12 +56,22 @@ export function toToolCatalogPolicyConfig(
   )
     ? config.default_tools_approval_mode
     : undefined;
+  // This flag bypasses filesystem target inference, so only authorities that
+  // cannot be supplied by a checked-out project, a plugin, or a session may
+  // grant it. Desktop persists its audited loopback bridge at user scope.
+  const virtualNoFsWriteTools =
+    config.origin?.scope === "default" ||
+      config.origin?.scope === "managed" ||
+      config.origin?.scope === "user"
+      ? config.virtual_no_fs_write_tools
+      : undefined;
   if (
     !config.supplyChain &&
     !config.pinnedCatalogSha256 &&
     allowedTools === undefined &&
     deniedTools === undefined &&
     defaultToolsApprovalMode === undefined &&
+    virtualNoFsWriteTools === undefined &&
     config.tools === undefined
   ) {
     return undefined;
@@ -74,6 +84,9 @@ export function toToolCatalogPolicyConfig(
       : {}),
     ...(defaultToolsApprovalMode !== undefined
       ? { defaultToolsApprovalMode }
+      : {}),
+    ...(virtualNoFsWriteTools !== undefined
+      ? { virtualNoFsWriteTools }
       : {}),
     ...(config.tools !== undefined ? { tools: config.tools } : {}),
     supplyChain: config.supplyChain,

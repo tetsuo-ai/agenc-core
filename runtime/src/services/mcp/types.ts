@@ -42,6 +42,7 @@ const McpToolCatalogPolicyConfigSchema = lazySchema(() =>
     default_tools_approval_mode: PermissionDefaultModeSchema().optional(),
     enabled_tools: z.array(NonEmptyStringSchema()).optional(),
     disabled_tools: z.array(NonEmptyStringSchema()).optional(),
+    virtual_no_fs_write_tools: z.array(NonEmptyStringSchema()).optional(),
     tools: z.record(z.string(), PerToolConfigSchema()).optional(),
     pinnedCatalogSha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
     supplyChain: z

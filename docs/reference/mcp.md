@@ -46,6 +46,7 @@ args = ["-y", "some-mcp-server"]
 # default_tools_approval_mode = "ask"
 # enabled_tools = ["search"]
 # disabled_tools = ["delete"]
+# virtual_no_fs_write_tools = ["show_ui"] # audited user/managed config only
 # container = "my-desktop-container"  # optional: stdio via desktop sandbox / docker exec
 ```
 
@@ -149,6 +150,10 @@ refusal text.
 - Result size cap: `MAX_MCP_CALL_RESULT_BYTES` (5 MiB)
 - Catalog policy: `enabled_tools` / `disabled_tools` /
   `default_tools_approval_mode` (normalized in the resilient client)
+- Trusted user or managed config may mark an explicit, hand-audited
+  `virtual_no_fs_write_tools` list. Project, local, plugin, and session config
+  cannot grant this filesystem-target exemption; never use it for shell/code
+  tools or tools that accept model-selected output paths.
 - Dead connections reconnect with exponential backoff
   (`ResilientMCPBridge`, 1 s → 30 s, ×2)
 - Optional **supply-chain pin** (SHA-256 over the canonical tool catalog JSON)

@@ -260,6 +260,31 @@ describe("strict schema-v2 validation coverage", () => {
     ).toHaveProperty("plugin:sample:local");
   });
 
+  test("accepts audited virtual non-filesystem write tool names in MCP config", () => {
+    const config = validateAgenCConfigBlocks({
+      mcp_servers: {
+        desktop: {
+          command: "node",
+          virtual_no_fs_write_tools: ["browser_navigate"],
+        },
+      },
+    });
+
+    expect(config.mcp_servers?.desktop?.virtual_no_fs_write_tools).toEqual([
+      "browser_navigate",
+    ]);
+    expect(() =>
+      validateAgenCConfigBlocks(malformed({
+        mcp_servers: {
+          desktop: {
+            command: "node",
+            virtual_no_fs_write_tools: ["browser_navigate", 42],
+          },
+        },
+      })),
+    ).toThrow(/desktop\.virtual_no_fs_write_tools.*array element/u);
+  });
+
   test("ordinary strict loading rejects the retired llm.xai surface", () => {
     expect(() =>
       validateStrictConfigDocument({

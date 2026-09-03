@@ -89,6 +89,11 @@ export interface MCPServerConfig {
   readonly enabled_tools?: readonly string[];
   /** Explicit deny-list of raw MCP tool names removed after the allow-list. */
   readonly disabled_tools?: readonly string[];
+  /**
+   * Raw tool names explicitly audited by a trusted config authority as having
+   * no model-directed filesystem writes. Untrusted config scopes are ignored.
+   */
+  readonly virtual_no_fs_write_tools?: readonly string[];
   /** Per raw MCP tool approval settings. */
   readonly tools?: Readonly<Record<string, PerToolConfig>>;
   /** Canonical SHA-256 digest pin for the server's exposed tool catalog. */

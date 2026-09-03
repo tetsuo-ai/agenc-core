@@ -550,6 +550,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `mcp_servers.<server>.enabled`, `mcp_servers.<server>.required`, `mcp_servers.<server>.timeout` | Enablement, required-startup policy, and timeout. |
 | `mcp_servers.<server>.default_tools_approval_mode` | Server-wide approval default. |
 | `mcp_servers.<server>.enabled_tools`, `mcp_servers.<server>.disabled_tools` | Tool arrays. |
+| `mcp_servers.<server>.virtual_no_fs_write_tools` | Trusted user/managed-only list of hand-audited tools that cannot perform model-directed filesystem writes. Never use it for shell/code tools or tools accepting output paths. Project, local, plugin, and session layers cannot grant this exemption. |
 | `mcp_servers.<server>.tools`, `mcp_servers.<server>.tools.<name>` | Per-tool blocks. |
 | `mcp_servers.<server>.tools.<name>.default_permission_mode` | Per-tool approval default. Enablement belongs only in the server lists. |
 | `xaa_idp` | Non-secret OIDC metadata shared by MCP Cross-App Access. IdP tokens and client secrets remain in native secure storage. |

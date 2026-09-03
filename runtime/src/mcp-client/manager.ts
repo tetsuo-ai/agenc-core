@@ -237,6 +237,13 @@ function immutableMcpServerConfig(config: MCPServerConfig): MCPServerConfig {
     ...(config.disabled_tools !== undefined
       ? { disabled_tools: Object.freeze([...config.disabled_tools]) }
       : {}),
+    ...(config.virtual_no_fs_write_tools !== undefined
+      ? {
+          virtual_no_fs_write_tools: Object.freeze([
+            ...config.virtual_no_fs_write_tools,
+          ]),
+        }
+      : {}),
     ...(tools !== undefined ? { tools } : {}),
     ...(config.supplyChain !== undefined
       ? { supplyChain: Object.freeze({ ...config.supplyChain }) }
@@ -297,6 +304,13 @@ export function toScopedMcpServerConfig(
       : {}),
     ...(config.disabled_tools !== undefined
       ? { disabled_tools: [...config.disabled_tools] }
+      : {}),
+    ...(config.virtual_no_fs_write_tools !== undefined
+      ? {
+          virtual_no_fs_write_tools: [
+            ...config.virtual_no_fs_write_tools,
+          ],
+        }
       : {}),
     ...(config.tools !== undefined ? { tools: config.tools } : {}),
     ...(config.pinnedCatalogSha256 !== undefined

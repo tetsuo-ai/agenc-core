@@ -2,6 +2,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -32,7 +33,9 @@ import { ConfigStore } from "../../src/config/store.js";
 const temporaryDirectories: string[] = [];
 
 function temporaryRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), "agenc-layer-authority-"));
+  const root = mkdtempSync(
+    join(realpathSync(tmpdir()), "agenc-layer-authority-"),
+  );
   temporaryDirectories.push(root);
   return root;
 }
@@ -468,6 +471,7 @@ describe("canonical config layer authority", () => {
           default_tools_approval_mode: "never",
           enabled_tools: ["read"],
           disabled_tools: ["write"],
+          virtual_no_fs_write_tools: ["browser_navigate"],
           tools: {
             read: { default_permission_mode: "never" },
           },
@@ -539,6 +543,7 @@ describe("canonical config layer authority", () => {
     expect(project?.mcp_servers?.docs?.command).toBe("trusted-mcp-command");
     expect(project?.mcp_servers?.docs?.disabled_tools).toEqual(["write"]);
     expect(project?.mcp_servers?.docs?.default_tools_approval_mode).toBeUndefined();
+    expect(project?.mcp_servers?.docs?.virtual_no_fs_write_tools).toBeUndefined();
     expect(project?.hooks?.PreToolUse).toHaveLength(1);
     expect(project?.lsp_servers?.typescript?.command).toBe("trusted-lsp-command");
     expect(project?.providers).toBeUndefined();
@@ -567,6 +572,7 @@ describe("canonical config layer authority", () => {
       "tools_config.WebSearch.default_permission_mode",
       "tools_config.enabled_tools",
       "mcp_servers.docs.default_tools_approval_mode",
+      "mcp_servers.docs.virtual_no_fs_write_tools",
       "mcp_servers.docs.tools.read.default_permission_mode",
       "attachments",
       "providers",

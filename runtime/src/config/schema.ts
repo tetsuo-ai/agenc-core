@@ -298,6 +298,11 @@ export interface McpServerConfig {
   readonly default_tools_approval_mode?: PermissionDefaultMode;
   readonly enabled_tools?: readonly string[];
   readonly disabled_tools?: readonly string[];
+  /**
+   * Raw MCP tool names hand-audited to perform no model-directed filesystem
+   * writes. Only trusted configuration authorities may grant this exemption.
+   */
+  readonly virtual_no_fs_write_tools?: readonly string[];
   readonly tools?: Readonly<Record<string, PerToolConfig>>;
 }
 
@@ -2400,6 +2405,7 @@ const EXTERNAL_MCP_SERVER_KEYS: ReadonlySet<string> = new Set([
   "default_tools_approval_mode",
   "enabled_tools",
   "disabled_tools",
+  "virtual_no_fs_write_tools",
   "tools",
 ]);
 
@@ -2464,6 +2470,7 @@ function validateExternalMcpServerConfig(
     "env_vars",
     "enabled_tools",
     "disabled_tools",
+    "virtual_no_fs_write_tools",
   ] as const) {
     const value = optionalStringArray(
       record[key],

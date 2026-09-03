@@ -79,6 +79,8 @@ export interface MCPToolCatalogPolicyConfig {
   readonly deniedTools?: readonly string[];
   readonly pinnedCatalogSha256?: string;
   readonly defaultToolsApprovalMode?: PermissionDefaultMode;
+  /** Trusted, explicit raw tool names with no model-directed filesystem writes. */
+  readonly virtualNoFsWriteTools?: readonly string[];
   readonly tools?: Readonly<Record<string, PerToolConfig>>;
   readonly supplyChain?: {
     readonly catalogSha256?: string;
@@ -112,6 +114,13 @@ function perMcpToolApprovalMode(
   return isValidPermissionDefaultMode(config?.defaultToolsApprovalMode)
     ? config.defaultToolsApprovalMode
     : undefined;
+}
+
+function mcpToolHasNoFilesystemWrites(
+  config: MCPToolCatalogPolicyConfig | undefined,
+  rawToolName: string,
+): boolean {
+  return config?.virtualNoFsWriteTools?.includes(rawToolName) === true;
 }
 
 const DEFAULT_MCP_LIST_TOOLS_TIMEOUT_MS = 30_000;
@@ -896,6 +905,10 @@ export async function createToolBridge(
       mcpTool.name,
       namespacedName,
     );
+    const virtualNoFsWrites = mcpToolHasNoFilesystemWrites(
+      options.serverConfig,
+      mcpTool.name,
+    );
 
     const bridgeTool: Tool = {
       name: namespacedName,
@@ -913,6 +926,9 @@ export async function createToolBridge(
       ),
       serverId: serverName,
       mcpInfo: { serverName, toolName: mcpTool.name },
+      ...(virtualNoFsWrites
+        ? { metadata: { mutating: true, virtualNoFsWrites: true } }
+        : {}),
       ...(defaultPermissionMode !== undefined ? { defaultPermissionMode } : {}),
 
       async execute(args: Record<string, unknown>): Promise<ToolResult> {

@@ -1098,6 +1098,46 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
       .toBe("never");
   });
 
+  test("marks only explicitly audited raw MCP tools as virtual non-filesystem writers", async () => {
+    const fakeClient = {
+      listTools: async () => ({
+        tools: [
+          {
+            name: "browser_navigate",
+            inputSchema: { type: "object", properties: {} },
+          },
+          {
+            name: "terminal_run",
+            inputSchema: { type: "object", properties: {} },
+          },
+        ],
+      }),
+      callTool: async () => ({
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+      }),
+      close: async () => {},
+    };
+
+    const bridge = await createToolBridge(fakeClient, "agenc-desktop", undefined, {
+      serverConfig: {
+        virtualNoFsWriteTools: ["browser_navigate"],
+      },
+    });
+
+    const browserNavigate = bridge.tools.find(
+      (tool) => tool.name === "mcp.agenc-desktop.browser_navigate",
+    );
+    const terminalRun = bridge.tools.find(
+      (tool) => tool.name === "mcp.agenc-desktop.terminal_run",
+    );
+    expect(browserNavigate?.metadata).toEqual({
+      mutating: true,
+      virtualNoFsWrites: true,
+    });
+    expect(terminalRun?.metadata?.virtualNoFsWrites).not.toBe(true);
+  });
+
   test("treats an empty server allowlist as exposing zero tools", async () => {
     const fakeClient = {
       listTools: async () => ({
