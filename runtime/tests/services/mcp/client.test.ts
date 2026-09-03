@@ -193,10 +193,10 @@ async function configureIsolatedSession(): Promise<{ toolResultsDir: string }> {
   return { toolResultsDir: getToolResultsDir() }
 }
 
-async function callAgentMcpTool(
+async function createAgentMcpTool(
   serverName: string,
-  rawResult: unknown,
-): Promise<unknown> {
+  resultForArgs: (args: Record<string, unknown>) => unknown,
+) {
   const config = {
     type: 'stdio',
     command: serverName,
@@ -210,13 +210,24 @@ async function callAgentMcpTool(
       request: async () => ({
         tools: [{ name: 'adversarial', inputSchema: { type: 'object' } }],
       }),
-      callTool: async () => rawResult,
+      callTool: async request =>
+        resultForArgs(
+          (request as { arguments?: Record<string, unknown> }).arguments ?? {},
+        ),
     } as never,
   })
   seedConnectionCache(serverName, config, client)
 
   const [tool] = await fetchToolsForClient(client)
   assert.ok(tool)
+  return tool
+}
+
+async function callAgentMcpTool(
+  serverName: string,
+  rawResult: unknown,
+): Promise<unknown> {
+  const tool = await createAgentMcpTool(serverName, () => rawResult)
   return await tool.call(
     {},
     {
@@ -845,6 +856,64 @@ test('agent MCP tool rejects oversized base64 before legacy binary transformatio
   assert.match(serialized, /Invalid or oversized MCP binary content omitted/)
   assert.equal(serialized.includes(oversizedBase64.slice(0, 1_024)), false)
   assert.deepEqual(await readdir(toolResultsDir), [])
+})
+
+test('concurrent agent MCP binary calls use distinct artifact namespaces', async () => {
+  const { toolResultsDir } = await configureIsolatedSession()
+  const firstBytes = Buffer.from([0x00, 0x11, 0x22, 0x33])
+  const secondBytes = Buffer.from([0x44, 0x55, 0x66, 0x77])
+  const serverName = 'concurrent-binary-server'
+  const tool = await createAgentMcpTool(serverName, args => {
+    const bytes = args.variant === 'first' ? firstBytes : secondBytes
+    return {
+      content: [
+        {
+          type: 'audio',
+          data: bytes.toString('base64'),
+          mimeType: 'audio/wav',
+        },
+      ],
+    }
+  })
+  vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000)
+
+  const invoke = (variant: 'first' | 'second') =>
+    tool.call(
+      { variant },
+      {
+        abortController: new AbortController(),
+        setAppState: value =>
+          value({ elicitation: { queue: [] } } as never),
+      } as never,
+      undefined as never,
+      { message: { content: [] } } as never,
+    )
+  const results = await Promise.all([invoke('first'), invoke('second')])
+
+  const files = (await readdir(toolResultsDir)).sort()
+  assert.equal(files.length, 2)
+  assert.notEqual(files[0], files[1])
+
+  const referencedFiles = results.map(result => {
+    const text = (result as { data: Array<{ text?: string }> }).data
+      .map(block => block.text ?? '')
+      .join('\n')
+    assert.doesNotMatch(text, /could not be persisted|conflict|error/iu)
+    const referencedFile = files.find(file =>
+      text.includes(join(toolResultsDir, file)),
+    )
+    assert.ok(referencedFile)
+    return referencedFile
+  })
+  assert.notEqual(referencedFiles[0], referencedFiles[1])
+  assert.deepEqual(
+    await readFile(join(toolResultsDir, referencedFiles[0]!)),
+    firstBytes,
+  )
+  assert.deepEqual(
+    await readFile(join(toolResultsDir, referencedFiles[1]!)),
+    secondBytes,
+  )
 })
 
 test('agent MCP tool caps aggregate content blocks before legacy transformation', async () => {

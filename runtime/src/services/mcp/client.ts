@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type {
   Base64ImageSource,
   ContentBlockParam,
@@ -2714,6 +2715,20 @@ async function callMCPTool({
             ? String(result.toolResult)
             : '[Unsupported MCP toolResult value omitted]'
         : undefined
+      const rawToolUseId = meta?.['agenccode/toolUseId']
+      const artifactToolUseId =
+        typeof rawToolUseId === 'string' &&
+        /^[a-zA-Z0-9._-]{1,64}$/u.test(rawToolUseId)
+          ? rawToolUseId
+          : undefined
+      const artifactCallId = [
+        'mcp',
+        normalizeNameForMCP(name),
+        normalizeNameForMCP(tool),
+        ...(artifactToolUseId === undefined ? [] : [artifactToolUseId]),
+        String(toolStartTime),
+        randomUUID(),
+      ].join('-')
       const normalized = await normalizeMcpToolOutput({
         raw: hasLegacyToolResult
           ? {
@@ -2727,7 +2742,7 @@ async function callMCPTool({
           : result,
         serverName: name,
         toolName: tool,
-        callId: `mcp-${normalizeNameForMCP(name)}-${normalizeNameForMCP(tool)}-${toolStartTime}`,
+        callId: artifactCallId,
         // The canonical pass owns the hard work envelope. The legacy result
         // processor below still owns the configured token persistence policy.
         environment: {
