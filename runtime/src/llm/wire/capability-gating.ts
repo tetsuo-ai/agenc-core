@@ -49,6 +49,14 @@ export interface ChatCompletionsCapabilityHints {
    */
   readonly toolChoicePolicy?: "auto_only";
   /**
+   * Some OpenAI-compatible endpoints accept multimodal content on user
+   * messages but require tool-result `content` to remain a string. When this
+   * policy is enabled, image parts are removed from the tool message and
+   * relayed immediately after the complete tool-result group as a user image
+   * message. Text remains attached to the original tool call.
+   */
+  readonly toolResultImagePolicy?: "relay_as_user";
+  /**
    * If `false`, caller-supplied stop sequences are omitted. Some compatible
    * APIs reject the otherwise-standard `stop` request field.
    */
@@ -314,6 +322,9 @@ export function chatCompletionsCapabilityHintsForProvider(
       ? { reasoningEffortAllowedValues }
       : {}),
     ...(slug === "meta" ? { toolChoicePolicy: "auto_only" as const } : {}),
+    ...(slug === "meta"
+      ? { toolResultImagePolicy: "relay_as_user" as const }
+      : {}),
     acceptsStopSequences: slug !== "meta",
     acceptsServiceTier,
     acceptsStreamUsage,

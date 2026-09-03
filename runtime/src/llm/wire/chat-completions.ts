@@ -100,6 +100,7 @@ function toChatCompletionsMessages(
   messages: readonly LLMMessage[],
   options: LLMChatOptions | undefined,
   systemSuffix?: string,
+  toolResultImagePolicy?: "relay_as_user",
 ): Array<Record<string, unknown>> {
   const prepared = prepareMessagesForWire(messages);
   let systemPrompt = systemPromptParts(prepared, options).join("\n\n");
@@ -111,9 +112,67 @@ function toChatCompletionsMessages(
   if (systemPrompt.length > 0) {
     wireMessages.push({ role: "system", content: systemPrompt });
   }
+  const pendingToolImageRelays: Array<{
+    readonly toolCallId: string | undefined;
+    readonly toolName: string | undefined;
+    readonly imageParts: Array<Record<string, unknown>>;
+  }> = [];
+  const flushToolImageRelays = (): void => {
+    if (pendingToolImageRelays.length === 0) return;
+    const content: Array<Record<string, unknown>> = [];
+    for (const relay of pendingToolImageRelays) {
+      const identity = relay.toolName?.trim() || relay.toolCallId?.trim();
+      content.push({
+        type: "text",
+        text: identity
+          ? `Image returned by tool ${identity}.`
+          : "Image returned by the preceding tool call.",
+      });
+      content.push(...relay.imageParts);
+    }
+    wireMessages.push({ role: "user", content });
+    pendingToolImageRelays.length = 0;
+  };
   for (const message of prepared) {
     if (message.role === "system" || message.role === "developer") continue;
     if (message.role === "tool") {
+      if (
+        toolResultImagePolicy === "relay_as_user" &&
+        Array.isArray(message.content)
+      ) {
+        const imageParts = message.content.flatMap((part) =>
+          part.type === "image_url" && part.image_url.url.trim().length > 0
+            ? [
+                {
+                  type: "image_url",
+                  image_url: { url: part.image_url.url },
+                },
+              ]
+            : [],
+        );
+        const textContent = message.content
+          .filter((part) => part.type !== "image_url")
+          .map((part) => messageTextContent([part]))
+          .filter((text) => text.length > 0)
+          .join("\n");
+        wireMessages.push({
+          role: "tool",
+          content:
+            textContent ||
+            (imageParts.length > 0
+              ? "[Tool returned image content; image follows in the next message.]"
+              : "[Tool returned no textual content.]"),
+          tool_call_id: message.toolCallId,
+        });
+        if (imageParts.length > 0) {
+          pendingToolImageRelays.push({
+            toolCallId: message.toolCallId,
+            toolName: message.toolName,
+            imageParts,
+          });
+        }
+        continue;
+      }
       wireMessages.push({
         role: "tool",
         content: toOpenAIToolMessageContent(message.content),
@@ -121,6 +180,10 @@ function toChatCompletionsMessages(
       });
       continue;
     }
+    // A single assistant turn may request tools in parallel. Keep every tool
+    // result contiguous, then relay their images only after the whole group so
+    // strict chat-completions validators see all tool_call_ids resolved first.
+    flushToolImageRelays();
     if (message.role === "assistant" && message.toolCalls?.length) {
       wireMessages.push({
         role: "assistant",
@@ -145,6 +208,7 @@ function toChatCompletionsMessages(
       content: toOpenAIMessageContent(message.content),
     });
   }
+  flushToolImageRelays();
   return wireMessages;
 }
 
@@ -168,6 +232,7 @@ export function buildChatCompletionsRequest(
       input.messages,
       input.options,
       input.providerCapabilityHints?.reasoningSoftSwitchSuffix,
+      input.providerCapabilityHints?.toolResultImagePolicy,
     ),
     [maxTokenField]: maxTokens,
   };
