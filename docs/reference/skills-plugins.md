@@ -653,11 +653,12 @@ from each skill directory's `SKILL.md` frontmatter.
 
 Remote plugin resolution (`resolvePluginSource` in
 `runtime/src/plugins/resolution.ts`) verifies an Ed25519 publisher signature
-against a local keyring. Marketplace install through either the CLI or the
+against the operator keyring plus AgenC's built-in official publisher root.
+Marketplace install through either the CLI or the
 `/plugins` menu sets `requireSignature` when the marketplace `sourceType` is
 not `local` (`installRequiresSignature` in `catalog-cli.ts`). The official
 `agenc-plugins` catalog is a URL marketplace, so this gate applies to it.
-There is no `agenc plugin sign` command and no shipped default keyring.
+There is no `agenc plugin sign` command and no generated default keyring file.
 
 #### When verification runs
 
@@ -712,6 +713,13 @@ same-named workspace directory. The shipped CLI cannot opt out.
 Default path: `$AGENC_HOME/plugin-publishers.json`. The resolver accepts an
 in-process `publishersPath` override; there is no operator CLI for it.
 
+AgenC includes the `tetsuo-ai` public key as its official publisher trust root,
+so signed plugins from the shipped marketplace work in a clean profile. The
+default keyring can add third-party publishers or explicitly replace that entry.
+An in-process `publishersPath` override is authoritative and does not use the
+built-in fallback. Missing or malformed keyrings still fail closed for every
+other publisher.
+
 ```json
 {
   "publishers": {
@@ -722,11 +730,13 @@ in-process `publishersPath` override; there is no operator CLI for it.
 }
 ```
 
-A publisher entry may be that base64 string directly. A parsed keyring without
-a usable entry for the named publisher throws
-`plugin publisher is not trusted: <name>`. Missing, unreadable, or malformed
-keyrings surface their filesystem or JSON error. A well-formed public key and
-signature that do not verify throw
+A publisher entry may be that base64 string directly. An explicit entry with
+an empty or unusable value is authoritative and throws
+`plugin publisher is not trusted: <name>`; it never falls back to the shipped
+root. A missing default keyring uses the built-in root only for `tetsuo-ai`.
+Missing keyrings for other publishers, unreadable files, and malformed JSON
+surface their filesystem or JSON error. A well-formed public key and signature
+that do not verify throw
 `plugin signature verification failed for publisher <name>`; malformed key
 material can surface a crypto parsing error.
 
@@ -761,7 +771,7 @@ payload.
 | Symptom | What to check |
 | --- | --- |
 | `plugin signature is required` | A required install lacks `.agenc-plugin/signature.json`. Direct local `plugin install ./dir` does not take this path. |
-| `plugin publisher is not trusted` | The parsed `$AGENC_HOME/plugin-publishers.json` has no usable key for that publisher. Missing, unreadable, or malformed keyrings report their underlying error instead. |
+| `plugin publisher is not trusted` | The selected keyring has an explicit unusable entry, or has no usable key for a non-built-in publisher. A missing default keyring is supported only for the built-in `tetsuo-ai` root; other missing, unreadable, or malformed keyrings report their underlying error. |
 | `signatureVerified: false` after marketplace install | Expected only for a local marketplace or a custom caller that disabled the requirement. A successful non-local marketplace install returning false violates the shipped path's invariant. |
 | `plugin update` without `--source` accepts an unsigned tree | Install metadata records a waiver or has neither `signatureRequired: true` nor the legacy `signatureVerified: true` signal. Reinstall the plugin from its marketplace to establish the current requirement. |
 | `plugin update --source <remote>` rejects an unsigned tree after a local install | The replacement source uses the remote resolver default. Sign the replacement or keep using a local source. |

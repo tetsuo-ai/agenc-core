@@ -24,6 +24,7 @@ import { redactSecrets } from "../secrets/index.js";
 import { isRecord } from "../utils/record.js";
 import { findPluginManifestPath, loadPluginManifest } from "./manifest.js";
 import { pluginCacheDirPath, sanitizePluginId } from "./directories.js";
+import { builtInPluginPublisherPublicKey } from "./publisher-trust.js";
 import {
   buildPluginIdentifier,
   isCanonicalPluginIdentity,
@@ -760,7 +761,15 @@ export async function verifyResolvedPluginSignature(
   const publishersPath = options.publishersPath ?? defaultPublishersPath(
     options.agencHome,
   );
-  const publicKey = await readPublisherPublicKey(publishersPath, signature.publisher);
+  const publicKey = await readPublisherPublicKey(
+    publishersPath,
+    signature.publisher,
+    // An explicit path is an authoritative caller-supplied trust store. The
+    // built-in AgenC root is only the fallback for the normal profile keyring.
+    options.publishersPath === undefined
+      ? builtInPluginPublisherPublicKey(signature.publisher)
+      : undefined,
+  );
   const manifestPath = await findPluginManifestPath(pluginRoot);
   if (!manifestPath) throw new Error("cannot verify plugin signature without plugin.json");
   const manifestBytes = await readFile(manifestPath);
@@ -1633,12 +1642,37 @@ function redactPluginResolutionError(error: unknown): Error {
   return new Error(redactPluginSource(String(error)));
 }
 
-async function readPublisherPublicKey(path: string, publisher: string): Promise<string> {
-  const parsed = JSON.parse(await readFile(path, "utf8")) as PublisherKeyring;
-  const entry = parsed.publishers?.[publisher];
+async function readPublisherPublicKey(
+  path: string,
+  publisher: string,
+  builtInPublicKey?: string,
+): Promise<string> {
+  let parsed: PublisherKeyring;
+  try {
+    parsed = JSON.parse(await readFile(path, "utf8")) as PublisherKeyring;
+  } catch (error) {
+    if (
+      (error as NodeJS.ErrnoException).code === "ENOENT" &&
+      builtInPublicKey !== undefined
+    ) {
+      return builtInPublicKey;
+    }
+    throw error;
+  }
+  const publishers = parsed.publishers;
+  const hasExplicitEntry =
+    publishers !== undefined &&
+    Object.prototype.hasOwnProperty.call(publishers, publisher);
+  const entry = publishers?.[publisher];
   const publicKey = typeof entry === "string" ? entry : entry?.publicKey;
-  if (!publicKey) throw new Error(`plugin publisher is not trusted: ${publisher}`);
-  return publicKey;
+  if (publicKey) return publicKey;
+  // An entry with an empty or malformed value is still an explicit operator
+  // decision. Never mask it with the shipped root.
+  if (hasExplicitEntry) {
+    throw new Error(`plugin publisher is not trusted: ${publisher}`);
+  }
+  if (builtInPublicKey !== undefined) return builtInPublicKey;
+  throw new Error(`plugin publisher is not trusted: ${publisher}`);
 }
 
 function defaultPublishersPath(agencHome: string): string {

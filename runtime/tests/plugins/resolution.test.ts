@@ -30,6 +30,12 @@ import {
   loadPlugins as loadPluginsWithAuthority,
   type LoadedPlugin,
 } from "./loader.js";
+import {
+  OFFICIAL_PLUGIN_PUBLISHER,
+  OFFICIAL_PLUGIN_PUBLISHER_KEY_SHA256,
+  OFFICIAL_PLUGIN_PUBLISHER_PUBLIC_KEY,
+  pluginPublisherKeyFingerprint,
+} from "./publisher-trust.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1783,6 +1789,104 @@ describe("plugin source resolution", () => {
           requireSignature: true,
         }),
       ).rejects.toThrow(/digest mismatch/u);
+    });
+  });
+
+  test("uses the built-in official publisher root only for the default keyring", async () => {
+    await withTempDir(async (root) => {
+      expect(
+        pluginPublisherKeyFingerprint(OFFICIAL_PLUGIN_PUBLISHER_PUBLIC_KEY),
+      ).toBe(OFFICIAL_PLUGIN_PUBLISHER_KEY_SHA256);
+
+      const pluginRoot = join(root, "official-signed");
+      const manifestPath = await writePlugin(pluginRoot, "official-signed");
+      const files = await pluginPayloadFiles(pluginRoot);
+      await writeJson(join(pluginRoot, ".agenc-plugin", "signature.json"), {
+        publisher: OFFICIAL_PLUGIN_PUBLISHER,
+        signature: Buffer.alloc(64).toString("base64"),
+        files,
+      });
+
+      // The missing default keyring reaches cryptographic verification using
+      // the shipped root; an invalid signature still fails closed.
+      await expect(
+        verifyResolvedPluginSignature(pluginRoot, {
+          agencHome: root,
+          requireSignature: true,
+        }),
+      ).rejects.toThrow(/signature verification failed for publisher tetsuo-ai/u);
+
+      // An explicitly selected missing keyring stays authoritative and keeps
+      // the underlying filesystem error instead of silently using the root.
+      await expect(
+        verifyResolvedPluginSignature(pluginRoot, {
+          agencHome: root,
+          publishersPath: join(root, "explicit-missing.json"),
+          requireSignature: true,
+        }),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+
+      await writeJson(join(root, "plugin-publishers.json"), {
+        publishers: { [OFFICIAL_PLUGIN_PUBLISHER]: {} },
+      });
+      await expect(
+        verifyResolvedPluginSignature(pluginRoot, {
+          agencHome: root,
+          requireSignature: true,
+        }),
+      ).rejects.toThrow(/plugin publisher is not trusted: tetsuo-ai/u);
+
+      await writeFile(join(root, "plugin-publishers.json"), "{not-json");
+      await expect(
+        verifyResolvedPluginSignature(pluginRoot, {
+          agencHome: root,
+          requireSignature: true,
+        }),
+      ).rejects.toBeInstanceOf(SyntaxError);
+
+      // A present default keyring entry is also authoritative.
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const signature = sign(
+        null,
+        pluginSignaturePayloadBytes(await readFile(manifestPath), files),
+        privateKey,
+      ).toString("base64");
+      await writeJson(join(pluginRoot, ".agenc-plugin", "signature.json"), {
+        publisher: OFFICIAL_PLUGIN_PUBLISHER,
+        signature,
+        files,
+      });
+      await writeJson(join(root, "plugin-publishers.json"), {
+        publishers: {
+          [OFFICIAL_PLUGIN_PUBLISHER]: {
+            publicKey: publicKey
+              .export({ format: "der", type: "spki" })
+              .toString("base64"),
+          },
+        },
+      });
+      await expect(
+        verifyResolvedPluginSignature(pluginRoot, {
+          agencHome: root,
+          requireSignature: true,
+        }),
+      ).resolves.toMatchObject({
+        verified: true,
+        publisher: OFFICIAL_PLUGIN_PUBLISHER,
+      });
+
+      await writeJson(join(pluginRoot, ".agenc-plugin", "signature.json"), {
+        publisher: "unknown-publisher",
+        signature,
+        files,
+      });
+      await rm(join(root, "plugin-publishers.json"));
+      await expect(
+        verifyResolvedPluginSignature(pluginRoot, {
+          agencHome: root,
+          requireSignature: true,
+        }),
+      ).rejects.toMatchObject({ code: "ENOENT" });
     });
   });
 
