@@ -6,6 +6,10 @@ import {
   runAgentProgressEventToAgentSummaryMessage,
 } from "./transcript.js";
 import { WEB_FETCH_TOOL_NAME } from "../../tools/WebFetchTool/prompt.js";
+import {
+  frameUntrustedToolResultContent,
+  type UntrustedToolResultKind,
+} from "../../tools/untrusted-tool-result-framing.js";
 
 export interface AgentSummaryTranscriptLimits {
   /** Maximum JSON-serialized UTF-8 bytes retained for rolling activity. */
@@ -31,6 +35,12 @@ const MIN_TOOL_RESULT_BYTES = 128;
 const EPOCH_TIMESTAMP = new Date(0).toISOString();
 const TOOL_RESULT_SAFETY_FRAME_OMISSION =
   "[tool result omitted: safety frame exceeds configured UTF-8 limit]";
+const CANONICAL_FRAME_BODY_SENTINEL =
+  "agenc-canonical-frame-body-sentinel-7f4d6b17";
+const UNTRUSTED_TOOL_RESULT_KINDS = [
+  "external",
+  "workspace",
+] as const satisfies readonly UntrustedToolResultKind[];
 
 type ToolResultProgressEvent = Extract<
   RunAgentProgressEvent,
@@ -362,6 +372,39 @@ function initialToolResultText(message: LLMMessage): string {
         .join("\n");
 }
 
+function canonicalWebFetchResultBody(
+  content: LLMMessage["content"],
+  pairedToolName: string | undefined,
+): string | null {
+  if (pairedToolName !== WEB_FETCH_TOOL_NAME || typeof content !== "string") {
+    return null;
+  }
+  for (const kind of UNTRUSTED_TOOL_RESULT_KINDS) {
+    const template = frameUntrustedToolResultContent(
+      pairedToolName,
+      CANONICAL_FRAME_BODY_SENTINEL,
+      kind,
+    );
+    if (typeof template !== "string") continue;
+    const bodyOffset = template.indexOf(CANONICAL_FRAME_BODY_SENTINEL);
+    if (bodyOffset < 0) continue;
+    const prefix = template.slice(0, bodyOffset);
+    const suffix = template.slice(
+      bodyOffset + CANONICAL_FRAME_BODY_SENTINEL.length,
+    );
+    if (!content.startsWith(prefix) || !content.endsWith(suffix)) continue;
+    const body = content.slice(prefix.length, content.length - suffix.length);
+    // Canonical framing remains owned by the shared framing layer: only an
+    // exact round trip can unwrap, so nested and lookalike frames fail closed.
+    if (
+      frameUntrustedToolResultContent(pairedToolName, body, kind) === content
+    ) {
+      return body;
+    }
+  }
+  return null;
+}
+
 function boundedInitialMessage(
   message: LLMMessage,
   index: number,
@@ -371,9 +414,10 @@ function boundedInitialMessage(
   if (message.role !== "tool" || !message.toolCallId) {
     return llmMessageToAgentSummaryMessage(message, index);
   }
+  const pairedToolName = toolNamesByCallId.get(message.toolCallId);
   const recordedToolName = message.toolName?.trim();
   const producingToolName =
-    toolNamesByCallId.get(message.toolCallId) ??
+    pairedToolName ??
     (recordedToolName && recordedToolName.length > 0
       ? recordedToolName
       : "unknown_tool");
@@ -381,7 +425,14 @@ function boundedInitialMessage(
     message.toolName === producingToolName
       ? message
       : { ...message, toolName: producingToolName };
-  const rawResult = initialToolResultText(normalizedMessage);
+  const canonicalBody = canonicalWebFetchResultBody(
+    normalizedMessage.content,
+    pairedToolName,
+  );
+  const sourceMessage = canonicalBody === null
+    ? normalizedMessage
+    : { ...normalizedMessage, content: canonicalBody };
+  const rawResult = initialToolResultText(sourceMessage);
   return boundedToolResultMessage(
     rawResult,
     producingToolName,
@@ -389,8 +440,8 @@ function boundedInitialMessage(
     (result) =>
       llmMessageToAgentSummaryMessage(
         result === rawResult
-          ? normalizedMessage
-          : { ...normalizedMessage, content: result },
+          ? sourceMessage
+          : { ...sourceMessage, content: result },
         index,
       ),
   );
