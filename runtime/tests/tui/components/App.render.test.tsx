@@ -1,6 +1,13 @@
 import { PassThrough } from "node:stream";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import React, { type SetStateAction } from "react";
@@ -1259,6 +1266,96 @@ async function runConcurrentExitIntentScenario({
 }
 
 describeWithVitestMocks("AgenCTuiApp render smoke", () => {
+  test("detects a completion log recreated after the watched file is deleted", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const tempRoot = mkdtempSync(join(tmpdir(), "agenc-completion-log-watch-"));
+    const eventLogPath = join(tempRoot, "events.jsonl");
+    const previousEventLogPath =
+      process.env.AGENC_TUI_COMPLETION_PIPELINE_LOG;
+    const event = (
+      pipelineId: string,
+      status: "completed" | "started",
+      gateId = "prep",
+      gateIndex = 0,
+    ) =>
+      `${JSON.stringify({
+        pipelineId,
+        sequence: 1,
+        gateId,
+        gateIndex,
+        status,
+        timestamp: "2026-01-01T00:00:00.000Z",
+      })}\n`;
+
+    writeFileSync(eventLogPath, event("inactive", "completed"));
+    process.env.AGENC_TUI_COMPLETION_PIPELINE_LOG = eventLogPath;
+    resetShellSurfaceProbe();
+    const renderedText = (node: React.ReactNode): string => {
+      if (typeof node === "string" || typeof node === "number") {
+        return String(node);
+      }
+      if (Array.isArray(node)) return node.map(renderedText).join("");
+      if (!React.isValidElement(node)) return "";
+      return renderedText(
+        (node.props as { readonly children?: React.ReactNode }).children,
+      );
+    };
+    const completionSurface = () =>
+      renderedText(
+        providerProbe.fullscreenLayoutProps.at(-1)?.scrollable,
+      ).replace(/\s+/gu, "");
+
+    try {
+      await withRenderedApp(
+        <AgenCTuiApp session={createSession()} isInteractive={false} />,
+        async () => {
+          await vi.waitFor(() => {
+            expect(completionSurface()).toContain("Completionpipelinecomplete");
+          });
+
+          unlinkSync(eventLogPath);
+          await vi.waitFor(() => {
+            expect(completionSurface()).not.toContain(
+              "Completionpipelinecomplete",
+            );
+          });
+
+          writeFileSync(eventLogPath, event("replacement", "started"));
+          await vi.waitFor(
+            () => {
+              expect(completionSurface()).toContain(
+                "Completion1/9:Preparegoalrunning",
+              );
+            },
+            { timeout: 3_000 },
+          );
+
+          const atomicReplacementPath = join(tempRoot, "replacement.jsonl");
+          writeFileSync(
+            atomicReplacementPath,
+            event("atomic-replacement", "started", "typecheck", 5),
+          );
+          renameSync(atomicReplacementPath, eventLogPath);
+          await vi.waitFor(
+            () => {
+              expect(completionSurface()).toContain(
+                "Completion6/9:Typecheckrunning",
+              );
+            },
+            { timeout: 3_000 },
+          );
+        },
+      );
+    } finally {
+      if (previousEventLogPath === undefined) {
+        delete process.env.AGENC_TUI_COMPLETION_PIPELINE_LOG;
+      } else {
+        process.env.AGENC_TUI_COMPLETION_PIPELINE_LOG = previousEventLogPath;
+      }
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   test("keeps command discovery on session plugin authority across config reload", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const pluginStorageRoot = join(

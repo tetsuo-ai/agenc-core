@@ -1,4 +1,3 @@
-import { watch, type FSWatcher } from "node:fs";
 import { logForDebugging } from "src/utils/debug.js";
 import { createHash, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
@@ -290,6 +289,7 @@ import {
   resolveCompletionPipelineEventLogPath,
   type CompletionPipelineState,
 } from "../completion-pipeline.js";
+import { watchCompletionPipelineEventLog } from "../completion-pipeline-watcher.js";
 export { shouldEnableTranscriptScrollKeybindings } from "../workbench/transcriptScroll.js";
 export type McpFieldValue = string | number | boolean | readonly string[];
 const EMPTY_MCP_CLIENTS: readonly MCPServerConnection[] = [];
@@ -2454,43 +2454,21 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     // parsed object per poll would re-render the whole shell even when
     // nothing moved (same compare-before-setState pattern as
     // useSessionMcpSurface above).
-    const refresh = () =>
+    const refresh = (): boolean => {
+      const next = readCompletionPipelineState();
       setCompletionPipelineState((previous) => {
-        const next = readCompletionPipelineState();
         return completionPipelineStateSignature(previous) ===
           completionPipelineStateSignature(next)
           ? previous
           : next;
       });
-    refresh();
-    // fs.watch is the cheap change source; the 1s poll is the fallback when
-    // the log file can't be watched (e.g. it doesn't exist yet — watching a
-    // missing path throws). While the pipeline owns the prompt, gates flip
-    // quickly, so keep the poll running on top of the watcher to stay
-    // responsive even if watch events get dropped.
-    let watcher: FSWatcher | null = null;
-    try {
-      watcher = watch(
-        resolveCompletionPipelineEventLogPath(),
-        { persistent: false },
-        () => refresh(),
-      );
-      // A watch error (e.g. the file is deleted mid-run) must not surface as
-      // an uncaught 'error' event; the poll/state gates above keep the UI
-      // consistent without it.
-      watcher.on("error", () => {});
-    } catch {
-      watcher = null;
+      return completionPipelineOwnsPrompt(next);
     }
-    const interval =
-      watcher !== null && !completionPipelineActive
-        ? null
-        : setInterval(refresh, 1000);
-    return () => {
-      watcher?.close();
-      if (interval !== null) clearInterval(interval);
-    };
-  }, [completionPipelineActive]);
+    return watchCompletionPipelineEventLog({
+      eventLogPath: resolveCompletionPipelineEventLogPath(),
+      refresh,
+    });
+  }, []);
   const completionPipelineRows = formatCompletionPipelineRows(
     completionPipelineState,
   );
