@@ -13,6 +13,7 @@ import { AnthropicProvider } from "./providers/anthropic/adapter.js";
 import { BedrockProvider } from "./providers/bedrock/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { MetaProvider } from "./providers/meta/index.js";
+import { CerebrasProvider } from "./providers/cerebras/index.js";
 import {
   QwenProvider,
   QwenTokenPlanProvider,
@@ -810,6 +811,23 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
             fetchImpl,
           }),
         payload: buildChatCompletionsPayload("muse-spark-1.3", parityCase),
+      }),
+  },
+  {
+    provider: "cerebras",
+    model: "gpt-oss-120b",
+    apiKey: "cerebras-test",
+    env: { CEREBRAS_API_KEY: undefined },
+    createHarness: (parityCase) =>
+      createFetchHarness({
+        factory: (fetchImpl) =>
+          new CerebrasProvider({
+            apiKey: "cerebras-test",
+            model: "gpt-oss-120b",
+            tools: parityCase.tools ? [...parityCase.tools] : [],
+            fetchImpl,
+          }),
+        payload: buildChatCompletionsPayload("gpt-oss-120b", parityCase),
       }),
   },
   {

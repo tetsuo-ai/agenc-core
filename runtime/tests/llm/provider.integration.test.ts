@@ -83,6 +83,13 @@ const PROVIDER_CASES: ReadonlyArray<{
       process.env.DASHSCOPE_TOKEN_PLAN_API_KEY,
   },
   {
+    provider: "cerebras",
+    model:
+      process.env.AGENC_CEREBRAS_INTEGRATION_MODEL ?? "gpt-oss-120b",
+    enabled: RUN_REMOTE && Boolean(process.env.CEREBRAS_API_KEY),
+    apiKey: () => process.env.CEREBRAS_API_KEY,
+  },
+  {
     provider: "gemini",
     model: process.env.AGENC_GEMINI_INTEGRATION_MODEL ?? "gemini-2.5-pro",
     enabled: RUN_REMOTE && Boolean(process.env.GEMINI_API_KEY),
@@ -112,7 +119,12 @@ describe("provider integration (env-gated)", () => {
         });
         const response = await provider.chat(
           [{ role: "user", content: "Reply with OK." }],
-          { timeoutMs: 60_000 },
+          {
+            timeoutMs: 60_000,
+            ...(testCase.provider === "cerebras"
+              ? { maxOutputTokens: 64, singleWireAttempt: true }
+              : {}),
+          },
         );
         expect(typeof response.content).toBe("string");
         expect(response.content.trim().length).toBeGreaterThan(0);

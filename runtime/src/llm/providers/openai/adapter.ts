@@ -826,6 +826,7 @@ export class OpenAIProvider implements LLMProvider {
   private resolveChatCompletionsMaxTokenField(): ChatCompletionsMaxTokenField {
     if (
       this.name === "meta" ||
+      this.name === "cerebras" ||
       this.name === "qwen" ||
       this.name === "qwen-token-plan"
     ) {
@@ -1285,10 +1286,10 @@ export class OpenAIProvider implements LLMProvider {
       }
 
       let content = "";
-      // DeepSeek-reasoner / openai-compat reasoning models stream
-      // chain-of-thought on `delta.reasoning_content` rather than
-      // `delta.content`. Preserve it as an explicit hidden thinking channel;
-      // it must never become canonical assistant content.
+      // Compatible reasoning models stream provider-owned thinking separately
+      // from `delta.content`. Most use `reasoning_content`; Cerebras uses
+      // `reasoning`. Preserve either as an explicit hidden thinking channel;
+      // neither may become canonical assistant content.
       let reasoningContent = "";
       // Others (MiniMax M3, Qwen3, Kimi K2 templates) inline the
       // chain-of-thought in `delta.content` behind think markers; the
@@ -1375,16 +1376,17 @@ export class OpenAIProvider implements LLMProvider {
               onChunk({ content: "", done: false });
             }
           }
-          if (
-            typeof delta.reasoning_content === "string" &&
-            delta.reasoning_content.length > 0
-          ) {
-            reasoningContent += delta.reasoning_content;
+          const reasoningDelta =
+            streamCapabilityHints.reasoningContentField === "reasoning"
+              ? delta.reasoning
+              : delta.reasoning_content;
+          if (typeof reasoningDelta === "string" && reasoningDelta.length > 0) {
+            reasoningContent += reasoningDelta;
             onChunk({
               content: "",
               done: false,
               reasoningSummaryDelta: {
-                delta: delta.reasoning_content,
+                delta: reasoningDelta,
                 summaryIndex:
                   typeof choice.index === "number" ? choice.index : 0,
               },
@@ -1485,7 +1487,10 @@ export class OpenAIProvider implements LLMProvider {
                   // `reasoning_content` into visible assistant output.
                   content,
                   ...(reasoningContent.length > 0
-                    ? { reasoning_content: reasoningContent }
+                    ? {
+                        [streamCapabilityHints.reasoningContentField ??
+                        "reasoning_content"]: reasoningContent,
+                      }
                     : {}),
                   ...(toolCalls.length > 0
                     ? {

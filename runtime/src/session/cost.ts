@@ -183,6 +183,23 @@ const COST_TIER_MISTRAL_MEDIUM_3_5: Readonly<ModelCostEntry> = Object.freeze({
   cachedInputIncludedInInputTokens: true,
 });
 
+// Official Cerebras model/pricing pages retrieved 2026-09-04.
+// Qwen's Developer rate is authoritative over the public endpoint's transient
+// zero-price catalog value.
+// https://inference-docs.cerebras.ai/models/qwen-3.8-27b
+const COST_TIER_CEREBRAS_GPT_OSS_120B: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.00035,
+  outputUsdPer1K: 0.00075,
+});
+const COST_TIER_CEREBRAS_QWEN_38_27B: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.00099,
+  outputUsdPer1K: 0.00149,
+});
+const COST_TIER_CEREBRAS_GEMMA_4_31B: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.00099,
+  outputUsdPer1K: 0.00149,
+});
+
 const COST_TIER_SONNET: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.003,
   outputUsdPer1K: 0.015,
@@ -398,6 +415,9 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "deepseek-v4-pro": COST_TIER_DEEPSEEK_V4_PRO,
     "deepseek/deepseek-v4-pro": COST_TIER_DEEPSEEK_V4_PRO,
     "openrouter:deepseek/deepseek-v4-pro": COST_TIER_DEEPSEEK_V4_PRO,
+    "cerebras:gpt-oss-120b": COST_TIER_CEREBRAS_GPT_OSS_120B,
+    "cerebras:qwen-3.8-27b": COST_TIER_CEREBRAS_QWEN_38_27B,
+    "cerebras:gemma-4-31b": COST_TIER_CEREBRAS_GEMMA_4_31B,
     "gemini:gemini-2.5-pro": {
       inputUsdPer1K: 0.00125,
       outputUsdPer1K: 0.01,

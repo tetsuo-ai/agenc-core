@@ -39,6 +39,11 @@ import {
   encodeMcpToolNameForWire,
 } from "./mcp-tool-naming.js";
 import type { ChatCompletionsCapabilityHints } from "./capability-gating.js";
+import {
+  applyCerebrasImageInputContract,
+  assertCerebrasRequestPayloadSize,
+  buildCerebrasStructuredOutputTextFormat,
+} from "./cerebras-contract.js";
 import { splitLeadingThinkBlock } from "./think-tags.js";
 
 export interface ChatCompletionsRequestOptions {
@@ -51,8 +56,8 @@ export interface ChatCompletionsRequestOptions {
   /**
    * Per-provider capability hints. Adapters populate this so the
    * wire builder can strip fields the destination provider rejects.
-   * For example `service_tier` is recognized only by a single
-   * upstream provider, and `reasoning_effort` only applies to a
+   * For example `service_tier` is recognized only by explicit
+   * provider contracts, and `reasoning_effort` only applies to a
    * handful of model families. Backward-compatible: when undefined,
    * current behavior is preserved (all caller-supplied fields are
    * sent).
@@ -104,10 +109,22 @@ function toChatCompletionsMessages(
   systemSuffix?: string,
   toolResultImagePolicy?: "relay_as_user" | "strip",
   replaysReasoningContent = false,
+  reasoningContentField: "reasoning_content" | "reasoning" =
+    "reasoning_content",
   reasoningContentProvenance?: ProviderReasoningProvenance,
+  requiresStrictToolResultSequence = false,
+  imageInputContract?: "cerebras_v2",
+  acceptsDirectImageInput = false,
 ): Array<Record<string, unknown>> {
+  const normalized = prepareMessagesForWire(messages);
+  if (requiresStrictToolResultSequence) {
+    assertStrictToolResultSequence(normalized);
+  }
+  const imageSafeMessages = imageInputContract === "cerebras_v2"
+    ? applyCerebrasImageInputContract(normalized, acceptsDirectImageInput)
+    : normalized;
   const prepared = applyToolResultImagePolicyForWire(
-    prepareMessagesForWire(messages),
+    imageSafeMessages,
     toolResultImagePolicy,
   );
   let systemPrompt = systemPromptParts(prepared, options).join("\n\n");
@@ -156,7 +173,7 @@ function toChatCompletionsMessages(
         role: "assistant",
         content: messageTextContent(message.content),
         ...(providerReasoningContent !== undefined
-          ? { reasoning_content: providerReasoningContent }
+          ? { [reasoningContentField]: providerReasoningContent }
           : {}),
         tool_calls: message.toolCalls.map((toolCall) => ({
           id: toolCall.id,
@@ -179,11 +196,60 @@ function toChatCompletionsMessages(
       content: toOpenAIMessageContent(message.content),
       ...(message.role === "assistant" &&
       providerReasoningContent !== undefined
-        ? { reasoning_content: providerReasoningContent }
+        ? { [reasoningContentField]: providerReasoningContent }
         : {}),
     });
   }
   return wireMessages;
+}
+
+function assertStrictToolResultSequence(
+  messages: readonly LLMMessage[],
+): void {
+  const seenToolCallIds = new Set<string>();
+  let pendingToolCallIds = new Set<string>();
+
+  for (const message of messages) {
+    if (pendingToolCallIds.size > 0) {
+      if (message.role !== "tool") {
+        throw new TypeError(
+          "Cerebras API v2 requires each assistant tool call to be followed immediately by its tool result",
+        );
+      }
+      const resultId = message.toolCallId?.trim() ?? "";
+      if (!pendingToolCallIds.delete(resultId)) {
+        throw new TypeError(
+          "Cerebras API v2 received a duplicate or mismatched tool result id",
+        );
+      }
+      continue;
+    }
+
+    if (message.role === "tool") {
+      throw new TypeError(
+        "Cerebras API v2 does not accept orphan tool result messages",
+      );
+    }
+
+    if (message.role !== "assistant" || !message.toolCalls?.length) continue;
+    pendingToolCallIds = new Set<string>();
+    for (const toolCall of message.toolCalls) {
+      const toolCallId = toolCall.id.trim();
+      if (toolCallId.length === 0 || seenToolCallIds.has(toolCallId)) {
+        throw new TypeError(
+          "Cerebras API v2 requires every tool call id to be non-empty and unique",
+        );
+      }
+      seenToolCallIds.add(toolCallId);
+      pendingToolCallIds.add(toolCallId);
+    }
+  }
+
+  if (pendingToolCallIds.size > 0) {
+    throw new TypeError(
+      "Cerebras API v2 requires a tool result for every assistant tool call",
+    );
+  }
 }
 
 export function buildChatCompletionsRequest(
@@ -208,7 +274,11 @@ export function buildChatCompletionsRequest(
       input.providerCapabilityHints?.reasoningSoftSwitchSuffix,
       input.providerCapabilityHints?.toolResultImagePolicy,
       input.providerCapabilityHints?.replaysReasoningContent === true,
+      input.providerCapabilityHints?.reasoningContentField,
       input.providerCapabilityHints?.reasoningContentProvenance,
+      input.providerCapabilityHints?.requiresStrictToolResultSequence === true,
+      input.providerCapabilityHints?.imageInputContract,
+      input.providerCapabilityHints?.acceptsDirectImageInput === true,
     ),
     [maxTokenField]: maxTokens,
   };
@@ -230,7 +300,14 @@ export function buildChatCompletionsRequest(
         input.providerCapabilityHints?.requiresGrammarSafeToolSchemas === true,
     });
   if (tools.length > 0) body.tools = tools;
-  if (requestedToolChoice !== undefined && !omitToolsForChoice) {
+  const omitToolControlsWithoutTools =
+    input.providerCapabilityHints?.omitsToolControlsWithoutTools === true &&
+    tools.length === 0;
+  if (
+    requestedToolChoice !== undefined &&
+    !omitToolsForChoice &&
+    !omitToolControlsWithoutTools
+  ) {
     body.tool_choice = autoOnlyToolChoice
       ? "auto"
       : parseOpenAIToolChoice(requestedToolChoice);
@@ -248,7 +325,9 @@ export function buildChatCompletionsRequest(
   }
   if (
     input.options?.parallelToolCalls !== undefined &&
-    !(autoOnlyToolChoice && tools.length === 0)
+    !(autoOnlyToolChoice && tools.length === 0) &&
+    !omitToolControlsWithoutTools &&
+    input.providerCapabilityHints?.acceptsParallelToolCalls !== false
   ) {
     body.parallel_tool_calls = input.options.parallelToolCalls;
   }
@@ -287,15 +366,21 @@ export function buildChatCompletionsRequest(
   ) {
     body.service_tier = input.options.serviceTier;
   }
-  const structuredFormat = buildStructuredOutputTextFormat(
-    input.options?.structuredOutput,
-  );
+  const structuredFormat =
+    input.providerCapabilityHints?.structuredOutputContract === "cerebras_v2"
+      ? buildCerebrasStructuredOutputTextFormat(
+          input.options?.structuredOutput,
+        )
+      : buildStructuredOutputTextFormat(input.options?.structuredOutput);
   if (structuredFormat) {
     const { type: _formatType, ...jsonSchema } = structuredFormat;
     body.response_format = {
       type: "json_schema",
       json_schema: jsonSchema,
     };
+  }
+  if (input.providerCapabilityHints?.imageInputContract === "cerebras_v2") {
+    assertCerebrasRequestPayloadSize(body);
   }
   return body;
 }
@@ -390,10 +475,14 @@ export function parseChatCompletionsResponse(
       "OpenAI chat-completions response emitted invalid tool_call",
     )
     : [];
+  const reasoningContentField =
+    request.providerCapabilityHints?.reasoningContentField ??
+    "reasoning_content";
+  const rawProviderReasoningContent = message[reasoningContentField];
   const providerReasoningContent =
-    typeof message.reasoning_content === "string" &&
-      message.reasoning_content.length > 0
-      ? message.reasoning_content
+    typeof rawProviderReasoningContent === "string" &&
+      rawProviderReasoningContent.length > 0
+      ? rawProviderReasoningContent
       : undefined;
   const rawContent =
     typeof message.content === "string"

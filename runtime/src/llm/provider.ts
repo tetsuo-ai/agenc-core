@@ -49,6 +49,7 @@ import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { MetaProvider } from "./providers/meta/index.js";
+import { CerebrasProvider } from "./providers/cerebras/index.js";
 import {
   QwenProvider,
   QwenTokenPlanProvider,
@@ -1318,6 +1319,7 @@ function buildOpenAICompatibleProvider(
     | "groq"
     | "deepseek"
     | "meta"
+    | "cerebras"
     | "qwen"
     | "qwen-token-plan"
     | "mistral"
@@ -1913,6 +1915,12 @@ export function createProvider(
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: MetaProvider,
+      });
+    case "cerebras":
+      return buildOpenAICompatibleProvider("cerebras", opts, {
+        apiKeyMode: "required",
+        useResponsesApi: false,
+        providerCtor: CerebrasProvider,
       });
     case "qwen":
       return buildOpenAICompatibleProvider("qwen", opts, {

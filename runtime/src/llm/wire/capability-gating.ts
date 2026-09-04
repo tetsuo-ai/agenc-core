@@ -50,6 +50,18 @@ export interface ChatCompletionsCapabilityHints {
    * no-tools semantics by omitting both `tools` and `tool_choice`.
    */
   readonly toolChoicePolicy?: "auto_only";
+  /** Omit tool-selection controls when no tool definitions are attached. */
+  readonly omitsToolControlsWithoutTools?: boolean;
+  /** Whether the selected model accepts `parallel_tool_calls`. */
+  readonly acceptsParallelToolCalls?: boolean;
+  /** Enforce API-v2 adjacent, complete, unique tool-call/result groups. */
+  readonly requiresStrictToolResultSequence?: boolean;
+  /** Apply Cerebras' strict base64 PNG/JPEG image payload contract. */
+  readonly imageInputContract?: "cerebras_v2";
+  /** Whether the selected model accepts direct user image input. */
+  readonly acceptsDirectImageInput?: boolean;
+  /** Apply Cerebras API v2's supported strict JSON-Schema subset. */
+  readonly structuredOutputContract?: "cerebras_v2";
   /**
    * Some OpenAI-compatible endpoints accept multimodal content on user
    * messages but require tool-result `content` to remain a string. When this
@@ -65,6 +77,8 @@ export interface ChatCompletionsCapabilityHints {
    * unchanged before the corresponding tool results are submitted.
    */
   readonly replaysReasoningContent?: boolean;
+  /** Provider-specific assistant reasoning field used for parse and replay. */
+  readonly reasoningContentField?: "reasoning_content" | "reasoning";
   /** Canonical destination required for opaque reasoning replay. */
   readonly reasoningContentProvenance?: ProviderReasoningProvenance;
   /**
@@ -84,7 +98,7 @@ export interface ChatCompletionsCapabilityHints {
   readonly acceptsStopSequences?: boolean;
   /**
    * If `false`, `service_tier` is stripped. The field is recognized
-   * only on a single upstream provider; non-matching providers
+   * only on an explicit provider allowlist; non-matching providers
    * either reject it or silently ignore it.
    */
   readonly acceptsServiceTier?: boolean;
@@ -124,7 +138,11 @@ export interface ChatCompletionsCapabilityHints {
 
 // Providers that document `service_tier` on chat-completions.
 // branding-scan: allow real provider identifiers in capability matrix
-const SERVICE_TIER_PROVIDERS = new Set(["openai", "azure-openai"]);
+const SERVICE_TIER_PROVIDERS = new Set([
+  "openai",
+  "azure-openai",
+  "cerebras",
+]);
 
 // Meta Model API rejects `none` and `max`, but accepts the five levels below
 // for every Muse Spark chat model. Keep this allowlist fail-closed because the
@@ -144,6 +162,18 @@ const QWEN_38_REASONING_EFFORT_VALUES = new Set([
   "low",
   "medium",
   "xhigh",
+]);
+
+const CEREBRAS_QWEN_GEMMA_REASONING_EFFORT_VALUES = new Set([
+  "none",
+  "low",
+  "medium",
+  "high",
+]);
+const CEREBRAS_GPT_OSS_REASONING_EFFORT_VALUES = new Set([
+  "low",
+  "medium",
+  "high",
 ]);
 
 // Providers explicitly known to reject `stream_options.include_usage`.
@@ -329,12 +359,26 @@ export function chatCompletionsCapabilityHintsForProvider(
   ) {
     reasoningEffortAllowedValues = QWEN_38_REASONING_EFFORT_VALUES;
     acceptsReasoningEffort = true;
+  } else if (
+    slug === "cerebras" &&
+    /(?:^|[/:])gpt-oss-120b$/i.test(model ?? "")
+  ) {
+    reasoningEffortAllowedValues =
+      CEREBRAS_GPT_OSS_REASONING_EFFORT_VALUES;
+    acceptsReasoningEffort = true;
+  } else if (
+    slug === "cerebras" &&
+    /(?:^|[/:])(?:qwen-3\.8-27b|gemma-4-31b)$/i.test(model ?? "")
+  ) {
+    reasoningEffortAllowedValues =
+      CEREBRAS_QWEN_GEMMA_REASONING_EFFORT_VALUES;
+    acceptsReasoningEffort = true;
   } else if (slug === "nvidia-nim") {
     reasoningEffortAllowedValues = nimReasoningEffortValues(model);
     acceptsReasoningEffort = reasoningEffortAllowedValues !== undefined;
   }
 
-  // service_tier: recognized by a single upstream provider. Strip
+  // service_tier: recognized only by documented providers. Strip
   // everywhere else — most servers ignore it silently, but at least
   // one custom proxy in the wild rejects unknown fields.
   const acceptsServiceTier = SERVICE_TIER_PROVIDERS.has(slug);
@@ -376,7 +420,10 @@ export function chatCompletionsCapabilityHintsForProvider(
       ? { reasoningEffortAllowedValues }
       : {}),
     ...(slug === "meta" ? { toolChoicePolicy: "auto_only" as const } : {}),
-    ...(slug === "meta" || slug === "qwen" || slug === "qwen-token-plan"
+    ...(slug === "meta" ||
+    slug === "qwen" ||
+    slug === "qwen-token-plan" ||
+    slug === "cerebras"
       ? {
           toolResultImagePolicy: acceptsToolResultImages
             ? ("relay_as_user" as const)
@@ -390,6 +437,22 @@ export function chatCompletionsCapabilityHintsForProvider(
             ? { preservesThinkingHistory: true }
             : {}),
           disablesThinkingForForcedToolChoice: true,
+        }
+      : {}),
+    ...(slug === "cerebras"
+      ? {
+          replaysReasoningContent:
+            /(?:^|[/:])(?:gpt-oss-120b|qwen-3\.8-27b|gemma-4-31b)$/i.test(
+              model ?? "",
+            ),
+          reasoningContentField: "reasoning" as const,
+          omitsToolControlsWithoutTools: true,
+          acceptsParallelToolCalls:
+            /(?:^|[/:])(?:qwen-3\.8-27b|gemma-4-31b)$/i.test(model ?? ""),
+          requiresStrictToolResultSequence: true,
+          imageInputContract: "cerebras_v2" as const,
+          acceptsDirectImageInput: acceptsToolResultImages,
+          structuredOutputContract: "cerebras_v2" as const,
         }
       : {}),
     ...(reasoningContentProvenance !== undefined

@@ -26,10 +26,13 @@ export interface RegisteredModelCatalogEntry {
   readonly contextWindow?: number;
   readonly maxContextWindow?: number;
   readonly maxOutputTokens?: number;
+  readonly maxOutputTokensUpperLimit?: number;
+  readonly maxOutputTokensCappedDefault?: boolean;
   readonly inputModalities: readonly ModelInputModality[];
   readonly supportsToolUse: boolean;
   readonly supportsParallelToolCalls: boolean;
   readonly supportsStructuredOutput: boolean;
+  readonly supportsStructuredOutputWithTools?: boolean;
   readonly supportsSearchTool: boolean;
   readonly supportsVerbosity: boolean;
   readonly modelMessages?: ModelMessages;
@@ -48,6 +51,7 @@ export interface ModelCatalogMetadata {
   readonly maxContextWindow?: number;
   readonly maxOutputTokens?: number;
   readonly maxOutputTokensUpperLimit?: number;
+  readonly maxOutputTokensCappedDefault?: boolean;
 }
 
 export interface ModelCapabilityHints {
@@ -70,6 +74,9 @@ const TEXT_IMAGE_MODALITIES = Object.freeze([
   "text",
   "image",
 ] as const satisfies readonly ModelInputModality[]);
+const TEXT_MODALITIES = Object.freeze(
+  ["text"] as const satisfies readonly ModelInputModality[],
+);
 const FAST_SPEED_TIER = Object.freeze(["fast"] as const);
 const NO_ADDITIONAL_SPEED_TIERS = Object.freeze([] as const);
 const NO_REASONING_LEVELS = Object.freeze(
@@ -86,6 +93,17 @@ const QWEN_38_REASONING_LEVELS = Object.freeze([
   "low",
   "medium",
   "xhigh",
+] as const satisfies readonly ReasoningEffort[]);
+const CEREBRAS_QWEN_GEMMA_REASONING_LEVELS = Object.freeze([
+  "none",
+  "low",
+  "medium",
+  "high",
+] as const satisfies readonly ReasoningEffort[]);
+const CEREBRAS_GPT_OSS_REASONING_LEVELS = Object.freeze([
+  "low",
+  "medium",
+  "high",
 ] as const satisfies readonly ReasoningEffort[]);
 
 const QWEN_CLOUD_PROVIDER_IDS = Object.freeze([
@@ -273,6 +291,80 @@ const OPENAI_PERSONALITY_MESSAGES: ModelMessages = Object.freeze({
 export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
   Object.freeze([
     ...qwenCloudCatalogEntries(),
+    {
+      provider: "cerebras",
+      model: "gpt-oss-120b",
+      displayName: "GPT OSS 120B",
+      contextWindow: 131_072,
+      maxContextWindow: 131_072,
+      maxOutputTokens: 40_960,
+      inputModalities: TEXT_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: false,
+      supportsStructuredOutput: true,
+      supportsStructuredOutputWithTools: false,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: CEREBRAS_GPT_OSS_REASONING_LEVELS,
+      defaultReasoningLevel: "medium",
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: 0,
+      visibility: "list",
+    },
+    {
+      provider: "cerebras",
+      model: "qwen-3.8-27b",
+      displayName: "Qwen 3.8 27B",
+      contextWindow: 65_536,
+      maxContextWindow: 65_536,
+      // Reserving the full 32k provider limit on every call leaves too little
+      // of Qwen's 65k window for AgenC's tool harness. Start at 8k and retain
+      // the documented 32k ceiling for explicit overrides/recovery retries.
+      maxOutputTokens: 8_000,
+      maxOutputTokensUpperLimit: 32_768,
+      maxOutputTokensCappedDefault: true,
+      inputModalities: TEXT_IMAGE_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: true,
+      supportsStructuredOutputWithTools: false,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: CEREBRAS_QWEN_GEMMA_REASONING_LEVELS,
+      defaultReasoningLevel: "high",
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: 1,
+      visibility: "list",
+    },
+    {
+      provider: "cerebras",
+      model: "gemma-4-31b",
+      displayName: "Gemma 4 31B",
+      contextWindow: 131_072,
+      maxContextWindow: 131_072,
+      maxOutputTokens: 40_960,
+      inputModalities: TEXT_IMAGE_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: true,
+      supportsStructuredOutputWithTools: false,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: CEREBRAS_QWEN_GEMMA_REASONING_LEVELS,
+      defaultReasoningLevel: "none",
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: 2,
+      visibility: "list",
+    },
     {
       provider: "meta",
       model: "muse-spark-1.3",
@@ -770,7 +862,14 @@ export function resolveModelCatalogMetadata(input: {
     ...(entry.maxOutputTokens !== undefined
       ? {
         maxOutputTokens: entry.maxOutputTokens,
-        maxOutputTokensUpperLimit: entry.maxOutputTokens,
+        maxOutputTokensUpperLimit:
+          entry.maxOutputTokensUpperLimit ?? entry.maxOutputTokens,
+        ...(entry.maxOutputTokensCappedDefault !== undefined
+          ? {
+            maxOutputTokensCappedDefault:
+              entry.maxOutputTokensCappedDefault,
+          }
+          : {}),
       }
       : {}),
   };
@@ -824,8 +923,9 @@ export function resolveModelCapabilityHints(input: {
     supportsToolUse: entry.supportsToolUse,
     supportsImageInput,
     supportsStructuredOutput: entry.supportsStructuredOutput,
-    supportsStructuredOutputWithTools: entry.supportsStructuredOutput &&
-      entry.supportsToolUse,
+    supportsStructuredOutputWithTools:
+      entry.supportsStructuredOutputWithTools ??
+      (entry.supportsStructuredOutput && entry.supportsToolUse),
     supportsProviderNativeWebSearch: entry.supportsSearchTool,
     acceptsImageHistory: supportsImageInput,
     acceptsReasoningEffort: entry.supportedReasoningLevels.length > 0,
