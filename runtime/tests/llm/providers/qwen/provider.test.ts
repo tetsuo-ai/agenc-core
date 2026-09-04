@@ -94,7 +94,7 @@ describe.each([
     Provider: QwenTokenPlanProvider,
   },
 ])("$id provider", ({ id, key, Provider }) => {
-  test("uses the isolated OpenAI-compatible endpoint and bearer", async () => {
+  test("preserves the caller fetch implementation, endpoint, and bearer", async () => {
     const model = BUILT_IN_PROVIDER_DEFAULT_MODELS[id];
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       successfulChat(model),

@@ -1,5 +1,10 @@
 import { OpenAIProvider } from "../openai/adapter.js";
 import type { OpenAIProviderConfig } from "../openai/types.js";
+import { BUILT_IN_PROVIDER_BASE_URLS } from "../../registry/provider-info.js";
+import {
+  createQwenOfficialDnsTransport,
+  type QwenDnsTransport,
+} from "./dns-transport.js";
 
 export type QwenProviderConfig = OpenAIProviderConfig;
 
@@ -83,28 +88,62 @@ function assertQwenCloudModeConfiguration(
   }
 }
 
+function createQwenDnsTransport(
+  providerName: QwenCloudProviderName,
+  config: QwenProviderConfig,
+): QwenDnsTransport | undefined {
+  // Explicit fetch implementations are an authority boundary used by tests,
+  // embedders, and proxy-aware callers. Never replace or wrap one implicitly.
+  if (config.fetchImpl) return undefined;
+  const defaultBaseURL = BUILT_IN_PROVIDER_BASE_URLS[providerName];
+  const baseURL = config.baseURL ?? defaultBaseURL;
+  const hostname = new URL(defaultBaseURL).hostname;
+  return createQwenOfficialDnsTransport(baseURL, hostname);
+}
+
 /** QwenCloud Pay-As-You-Go adapter over the OpenAI-compatible chat wire. */
 export class QwenProvider extends OpenAIProvider {
+  private readonly qwenDnsTransport: QwenDnsTransport | undefined;
+
   constructor(config: QwenProviderConfig) {
     assertQwenChatModel("qwen", config.model);
     assertQwenCloudModeConfiguration("qwen", config);
+    const qwenDnsTransport = createQwenDnsTransport("qwen", config);
     super({
       ...config,
       providerName: "qwen",
       useResponsesApi: false,
+      ...(qwenDnsTransport ? { fetchImpl: qwenDnsTransport.fetchImpl } : {}),
     });
+    this.qwenDnsTransport = qwenDnsTransport;
+  }
+
+  async dispose(): Promise<void> {
+    await this.qwenDnsTransport?.dispose();
   }
 }
 
 /** QwenCloud Token Plan adapter. Its key and endpoint are isolated from PAYG. */
 export class QwenTokenPlanProvider extends OpenAIProvider {
+  private readonly qwenDnsTransport: QwenDnsTransport | undefined;
+
   constructor(config: QwenProviderConfig) {
     assertQwenChatModel("qwen-token-plan", config.model);
     assertQwenCloudModeConfiguration("qwen-token-plan", config);
+    const qwenDnsTransport = createQwenDnsTransport(
+      "qwen-token-plan",
+      config,
+    );
     super({
       ...config,
       providerName: "qwen-token-plan",
       useResponsesApi: false,
+      ...(qwenDnsTransport ? { fetchImpl: qwenDnsTransport.fetchImpl } : {}),
     });
+    this.qwenDnsTransport = qwenDnsTransport;
+  }
+
+  async dispose(): Promise<void> {
+    await this.qwenDnsTransport?.dispose();
   }
 }
