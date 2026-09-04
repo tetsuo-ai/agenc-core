@@ -56,6 +56,23 @@ npm run eval:agent -- --suite eval/tasks \
 The real executor needs `AGENC_HOME` pointing at an isolated home, never your
 own. Print mode has no TTY for the project-trust prompt, so the runner trusts
 each temporary task workspace inside that home before the agent runs there.
+`--session-command <cmd>` runs a session task through another agent's CLI, one
+command per step in the same workspace, with `{prompt}`, `{stepId}`,
+`{stepIndex}` and `{continue}` (the value of `--session-continue-arg` from
+the second step on, empty on the first). Step and task verifiers are the same
+as for the SDK path; per-step metrics stay empty because the runner cannot read
+that agent's transcript, and the task carries the
+`external_agent_no_session_metrics` flag. Example for Hermes, which resumes
+its last session with `-c`:
+
+```bash
+npm run eval:agent -- --suite eval/tasks --executor real \
+  --agent-command "hermes chat -Q --yolo --provider xai -m grok-4.6 -q {prompt}" \
+  --session-command "hermes chat -Q --yolo --provider xai -m grok-4.6 {continue} -q {prompt}" \
+  --session-continue-arg -c --agent-name hermes --provider xai --model grok-4.6 \
+  --output eval/reports/hermes.json
+```
+
 `--setup-command <cmd>` (repeatable) runs in every workspace before the agent,
 with the same placeholders as `--agent-command`; task-level `setupCommands`
 run after it.

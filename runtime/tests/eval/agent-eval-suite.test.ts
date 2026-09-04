@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import {
   cpSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -199,6 +200,69 @@ describe("agent eval suite (mock executor)", () => {
     },
     120_000,
   );
+
+  test("writes the report into a directory that does not exist yet", () => {
+    const dir = mkdtempSync(join(controlledTmpDir, "fresh-reports-"));
+    const output = join(dir, "reports", "nested", "report.json");
+    const result = runRunner(["--suite", suitePath, "--executor", "mock", "--output", output]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(output, "utf8")).toContain('"schemaVersion"');
+  });
+
+  test("a session task can run through an external agent command, one step at a time", () => {
+    // Both live under the controlled temp root, which afterAll removes.
+    const dir = mkdtempSync(join(controlledTmpDir, "external-"));
+    const home = mkdtempSync(join(controlledTmpDir, "external-home-"));
+    const taskDir = join(dir, "notes");
+    mkdirSync(join(taskDir, "fixture"), { recursive: true });
+    writeFileSync(join(taskDir, "fixture", "README.md"), "# notes\n");
+    // The fake agent appends the prompt it received, plus argv, to a log and
+    // prints a usage object the way an --output-format json agent would.
+    const agent = join(dir, "agent.mjs");
+    writeFileSync(agent, [
+      'import { appendFileSync } from "node:fs";',
+      'const args = process.argv.slice(2);',
+      'appendFileSync("agent.log", JSON.stringify(args) + "\\n");',
+      'console.log(JSON.stringify({ usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } }));',
+    ].join("\n"));
+    writeFileSync(join(dir, "tasks.json"), JSON.stringify({
+      benchmark: "external-agent-check",
+      tasks: [{
+        id: "notes",
+        kind: "session",
+        dir: "notes",
+        fixture: "fixture",
+        steps: [
+          { id: "one", prompt: "first prompt", verifiers: [{ name: "logged", command: "grep -q 'first prompt' agent.log" }] },
+          { id: "two", prompt: "second prompt", verifiers: [{ name: "resumed", command: "grep -q -- '--resume-last' agent.log" }] },
+        ],
+        verifiers: [{ name: "two-calls", command: "test \"$(wc -l < agent.log | tr -d ' ')\" = 2" }],
+      }],
+    }));
+    const output = join(dir, "report.json");
+    const result = spawnSync(process.execPath, [
+      runnerScriptPath,
+      "--tasks", join(dir, "tasks.json"),
+      "--executor", "real",
+      "--agent-command", "true",
+      "--session-command", `${JSON.stringify(process.execPath)} ${JSON.stringify(agent)} {continue} --prompt {prompt} --step {stepId}`,
+      "--session-continue-arg", "--resume-last",
+      "--agent-name", "fake-external",
+      "--output", output,
+    ], { encoding: "utf8", env: { ...process.env, AGENC_HOME: home } });
+    expect(result.status, result.stderr).toBe(0);
+    const report = JSON.parse(readFileSync(output, "utf8"));
+    const task = report.tasks[0];
+    expect(task.status).toBe("passed");
+    expect(task.steps.map((step: { id: string; status: string }) => [step.id, step.status])).toEqual([["one", "passed"], ["two", "passed"]]);
+    expect(task.commands).toHaveLength(2);
+    expect(task.commands[0].command).not.toContain("--resume-last");
+    expect(task.commands[1].command).toContain("--resume-last");
+    expect(task.tokens).toEqual({ input: 20, output: 10, total: 30 });
+    expect(task.riskFlags).toContain("external_agent_no_session_metrics");
+    expect(task.notes).toContain("steps after the first carried --resume-last");
+    expect(report.run.agent.name).toBe("fake-external");
+  });
 
   test("a session task without steps is a manifest error", () => {
     const dir = mkdtempSync(join(tmpdir(), "agenc-eval-session-invalid-"));
