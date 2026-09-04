@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { LLMMessage, LLMResponse } from "../llm/types.js";
 import {
+  projectTurnCompactionReplacementHistoryForTests,
   runTurn,
   setAutoCompactImplForTests,
   type AutoCompactImpl,
@@ -29,6 +30,34 @@ afterEach(() => {
 });
 
 describe("runTurn compact contract", () => {
+  test("keeps provider reasoning provenance in the fallback compact shape", async () => {
+    const replacementHistory =
+      await projectTurnCompactionReplacementHistoryForTests({
+        boundaryMarker: { role: "user", content: "boundary" },
+        summaryMessages: [],
+        messagesToKeep: [{
+          type: "assistant",
+          message: { role: "assistant", content: "kept" },
+          providerReasoningContent: "opaque qwen state",
+          providerReasoningProvenance: {
+            provider: "qwen-token-plan",
+            model: "qwen3.8-max",
+          },
+        }],
+        attachments: [],
+      });
+
+    expect(replacementHistory[1]).toMatchObject({
+      role: "assistant",
+      content: "kept",
+      providerReasoningContent: "opaque qwen state",
+      providerReasoningProvenance: {
+        provider: "qwen-token-plan",
+        model: "qwen3.8-max",
+      },
+    });
+  });
+
   test("ordinary under-threshold turns reach model sampling", async () => {
     const seen: LLMMessage[][] = [];
     const { session } = mkSession({

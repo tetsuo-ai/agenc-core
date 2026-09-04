@@ -97,6 +97,19 @@ export function buildPostCompactMessages(
       ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
       ...(message.id !== undefined ? { uuid: message.id } : {}),
       ...(message.phase !== undefined ? { phase: message.phase } : {}),
+      ...(message.providerReasoning !== undefined
+        ? {
+            providerReasoningContent: message.providerReasoning.content,
+            ...(message.providerReasoning.version === 2
+              ? {
+                  providerReasoningProvenance: {
+                    provider: message.providerReasoning.provider,
+                    model: message.providerReasoning.model,
+                  },
+                }
+              : {}),
+          }
+        : {}),
       ...(message.toolResultIntegrity !== undefined ||
       message.agentInvocation !== undefined ||
       message.compactionHistory !== undefined

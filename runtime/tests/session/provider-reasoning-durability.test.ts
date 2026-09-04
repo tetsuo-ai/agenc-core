@@ -24,10 +24,19 @@ describe("provider reasoning durability", () => {
       role: "assistant" as const,
       content: "",
       providerReasoningContent: reasoning,
+      providerReasoningProvenance: {
+        provider: "qwen-token-plan",
+        model: "qwen3.8-max",
+      },
       toolCalls: [{ id: "call-1", name: "FileRead", arguments: "{}" }],
     };
     const durable = llmMessageToDurableResponseItem(source);
-    expect(durable.providerReasoning).toEqual({ version: 1, content: reasoning });
+    expect(durable.providerReasoning).toEqual({
+      version: 2,
+      content: reasoning,
+      provider: "qwen-token-plan",
+      model: "qwen3.8-max",
+    });
     expect(llmMessageToCheckpointResponseItem(source).providerReasoning)
       .toEqual(durable.providerReasoning);
     expect(llmMessageToReplacementResponseItem(source).providerReasoning)
@@ -41,6 +50,17 @@ describe("provider reasoning durability", () => {
     expect(parsed.eventVersion).toBe(2);
     expect(responseItemToLlmMessage(parsed.payload).providerReasoningContent)
       .toBe(reasoning);
+    expect(
+      responseItemToLlmMessage(parsed.payload).providerReasoningProvenance,
+    ).toEqual({ provider: "qwen-token-plan", model: "qwen3.8-max" });
+
+    const legacyReasoning = responseItemToLlmMessage({
+      role: "assistant",
+      content: "",
+      providerReasoning: { version: 1, content: reasoning },
+    });
+    expect(legacyReasoning.providerReasoningContent).toBe(reasoning);
+    expect(legacyReasoning.providerReasoningProvenance).toBeUndefined();
 
     const legacy = parseRolloutLine(
       serializeRolloutItem({
@@ -62,11 +82,21 @@ describe("provider reasoning durability", () => {
     const first: ResponseItem = {
       role: "assistant",
       content: "",
-      providerReasoning: { version: 1, content: reasoning },
+      providerReasoning: {
+        version: 2,
+        content: reasoning,
+        provider: "qwen",
+        model: "qwen3.8-max",
+      },
     };
     const changed: ResponseItem = {
       ...first,
-      providerReasoning: { version: 1, content: `${reasoning} changed` },
+      providerReasoning: {
+        version: 2,
+        content: reasoning,
+        provider: "qwen-token-plan",
+        model: "qwen3.8-max",
+      },
     };
     expect(computeCheckpointPrefixHashV3([first], 1))
       .not.toBe(computeCheckpointPrefixHashV3([changed], 1));
@@ -88,6 +118,20 @@ describe("provider reasoning durability", () => {
           role: "assistant",
           content: "",
           providerReasoning: { version: 1, content: "" },
+        },
+      ], 1))
+      .toThrow(/invalid provider reasoning replay/u);
+    expect(() =>
+      computeCheckpointPrefixHashV3([
+        {
+          role: "assistant",
+          content: "",
+          providerReasoning: {
+            version: 2,
+            content: reasoning,
+            provider: "",
+            model: "qwen3.8-max",
+          },
         },
       ], 1))
       .toThrow(/invalid provider reasoning replay/u);

@@ -27,5 +27,8 @@ export function canonicalCompactionProjectionMessages(
     ...(message.agentInvocation !== undefined
       ? { agent_invocation: message.agentInvocation }
       : {}),
+    ...(message.providerReasoning !== undefined
+      ? { provider_reasoning: message.providerReasoning }
+      : {}),
   }));
 }

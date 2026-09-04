@@ -1851,6 +1851,105 @@ function durableHistoryMetadata(candidate: {
   };
 }
 
+function normalizedReasoningProvenance(
+  value: unknown,
+): LLMMessage["providerReasoningProvenance"] | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as { readonly provider?: unknown; readonly model?: unknown };
+  if (
+    typeof record.provider !== "string" ||
+    record.provider.trim().length === 0 ||
+    typeof record.model !== "string" ||
+    record.model.trim().length === 0
+  ) {
+    return undefined;
+  }
+  return {
+    provider: record.provider.trim().toLowerCase(),
+    model: record.model.trim().toLowerCase(),
+  };
+}
+
+function normalizedProviderReasoning(candidate: {
+  readonly providerReasoningContent?: unknown;
+  readonly providerReasoningProvenance?: unknown;
+  readonly providerReasoning?: unknown;
+}): Pick<
+  LLMMessage,
+  "providerReasoningContent" | "providerReasoningProvenance"
+> {
+  const hasFlatContent = candidate.providerReasoningContent !== undefined;
+  const flatContent =
+    typeof candidate.providerReasoningContent === "string" &&
+    candidate.providerReasoningContent.length > 0
+      ? candidate.providerReasoningContent
+      : undefined;
+  const hasFlatProvenance =
+    candidate.providerReasoningProvenance !== undefined;
+  const flatProvenance = normalizedReasoningProvenance(
+    candidate.providerReasoningProvenance,
+  );
+  const hasDurable = candidate.providerReasoning !== undefined;
+  const durable =
+    candidate.providerReasoning !== null &&
+    typeof candidate.providerReasoning === "object" &&
+    !Array.isArray(candidate.providerReasoning)
+      ? (candidate.providerReasoning as Record<string, unknown>)
+      : undefined;
+  const durableContent =
+    typeof durable?.content === "string" && durable.content.length > 0
+      ? durable.content
+      : undefined;
+
+  // Treat every supplied representation as one atomic tuple. A malformed
+  // duplicate must not be ignored while another representation is accepted:
+  // doing so could bind opaque state to an identity that did not produce it.
+  if (
+    (hasFlatContent && flatContent === undefined) ||
+    (hasFlatProvenance && flatProvenance === undefined) ||
+    (hasDurable && durable === undefined)
+  ) {
+    return {};
+  }
+
+  if (durable !== undefined) {
+    if (durable.version === 2) {
+      const durableProvenance = normalizedReasoningProvenance(durable);
+      if (durableContent === undefined || durableProvenance === undefined) {
+        return {};
+      }
+      if (
+        (flatContent !== undefined && flatContent !== durableContent) ||
+        (flatProvenance !== undefined &&
+          (flatProvenance.provider !== durableProvenance.provider ||
+            flatProvenance.model !== durableProvenance.model))
+      ) {
+        return {};
+      }
+      return {
+        providerReasoningContent: durableContent,
+        providerReasoningProvenance: durableProvenance,
+      };
+    }
+    if (durable.version !== 1 || durableContent === undefined) return {};
+    if (flatContent !== undefined && flatContent !== durableContent) return {};
+    // V1 is deliberately unbound. Never upgrade it from adjacent flat fields;
+    // only a producer-written V2 record is authoritative provenance.
+    if (flatProvenance !== undefined) return {};
+    return { providerReasoningContent: durableContent };
+  }
+
+  if (flatContent === undefined) return {};
+  return {
+    providerReasoningContent: flatContent,
+    ...(flatProvenance !== undefined
+      ? { providerReasoningProvenance: flatProvenance }
+      : {}),
+  };
+}
+
 export function normalizeHistoryMessages(
   history: ReadonlyArray<unknown>,
 ): LLMMessage[] {
@@ -1865,9 +1964,15 @@ export function normalizeHistoryMessages(
       toolCallId?: unknown;
       toolName?: unknown;
       providerReasoningContent?: unknown;
+      providerReasoningProvenance?: {
+        provider?: unknown;
+        model?: unknown;
+      };
       providerReasoning?: {
         version?: unknown;
         content?: unknown;
+        provider?: unknown;
+        model?: unknown;
       };
       toolResultIntegrity?: ToolResultIntegrity;
       agentInvocation?: AgentInvocationChannelMetadata;
@@ -1893,17 +1998,10 @@ export function normalizeHistoryMessages(
       typeof candidate.content === "string" || Array.isArray(candidate.content)
         ? candidate.content
         : "";
-    const providerReasoningContent =
+    const providerReasoning =
       candidate.role === "assistant"
-        ? typeof candidate.providerReasoningContent === "string" &&
-          candidate.providerReasoningContent.length > 0
-          ? candidate.providerReasoningContent
-          : candidate.providerReasoning?.version === 1 &&
-              typeof candidate.providerReasoning.content === "string" &&
-              candidate.providerReasoning.content.length > 0
-            ? candidate.providerReasoning.content
-            : undefined
-        : undefined;
+        ? normalizedProviderReasoning(candidate)
+        : {};
     normalized.push({
       role: candidate.role,
       content: content as LLMMessage["content"],
@@ -1919,9 +2017,7 @@ export function normalizeHistoryMessages(
       ...(typeof candidate.toolName === "string"
         ? { toolName: candidate.toolName }
         : {}),
-      ...(providerReasoningContent !== undefined
-        ? { providerReasoningContent }
-        : {}),
+      ...providerReasoning,
       // Preserve the file-history join key and durable integrity metadata.
       // The invocation merge boundary is derived from authenticated channel
       // metadata instead of accepting a transient serialized flag.

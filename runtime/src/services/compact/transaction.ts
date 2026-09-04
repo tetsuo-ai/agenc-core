@@ -1374,6 +1374,31 @@ function toProjectionMessage(message: RuntimeMessage): CompactionProjectionMessa
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
     ...(message.uuid !== undefined ? { id: message.uuid } : {}),
     ...(message.phase !== undefined ? { phase: message.phase } : {}),
+    ...(typeof message.providerReasoningContent === "string" &&
+    message.providerReasoningContent.length > 0
+      ? {
+          providerReasoning:
+            message.providerReasoningProvenance !== undefined &&
+            typeof message.providerReasoningProvenance.provider === "string" &&
+            message.providerReasoningProvenance.provider.trim().length > 0 &&
+            typeof message.providerReasoningProvenance.model === "string" &&
+            message.providerReasoningProvenance.model.trim().length > 0
+              ? {
+                  version: 2 as const,
+                  content: message.providerReasoningContent,
+                  provider: message.providerReasoningProvenance.provider
+                    .trim()
+                    .toLowerCase(),
+                  model: message.providerReasoningProvenance.model
+                    .trim()
+                    .toLowerCase(),
+                }
+              : {
+                  version: 1 as const,
+                  content: message.providerReasoningContent,
+                },
+        }
+      : {}),
     ...(message.runtimeOnly?.toolResultIntegrity !== undefined
       ? {
           toolResultIntegrity: {
@@ -1407,6 +1432,19 @@ function toLlmMessage(message: RuntimeMessage): LLMMessage {
       : {}),
     ...(projected.toolCallId !== undefined ? { toolCallId: projected.toolCallId } : {}),
     ...(projected.toolName !== undefined ? { toolName: projected.toolName } : {}),
+    ...(projected.providerReasoning !== undefined
+      ? {
+          providerReasoningContent: projected.providerReasoning.content,
+          ...(projected.providerReasoning.version === 2
+            ? {
+                providerReasoningProvenance: {
+                  provider: projected.providerReasoning.provider,
+                  model: projected.providerReasoning.model,
+                },
+              }
+            : {}),
+        }
+      : {}),
     ...(projected.compactionHistory !== undefined
       ? { runtimeOnly: { compactionHistory: projected.compactionHistory } }
       : {}),

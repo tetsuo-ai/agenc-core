@@ -692,6 +692,8 @@ type AgenCMessageRole =
 interface AgenCMessage {
   readonly role: AgenCMessageRole;
   readonly content: string | readonly LLMContentPart[];
+  readonly providerReasoningContent?: string;
+  readonly providerReasoningProvenance?: LLMMessage["providerReasoningProvenance"];
   readonly toolCallId?: string;
   readonly toolName?: string;
   readonly phase?: string;
@@ -1079,6 +1081,12 @@ function toAgenCMessage(message: LLMMessage): AgenCMessage {
   return {
     role: message.role,
     content: cloneContent(message.content),
+    ...(message.providerReasoningContent !== undefined
+      ? { providerReasoningContent: message.providerReasoningContent }
+      : {}),
+    ...(message.providerReasoningProvenance !== undefined
+      ? { providerReasoningProvenance: message.providerReasoningProvenance }
+      : {}),
     ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
     ...(message.phase !== undefined ? { phase: message.phase } : {}),
@@ -1442,6 +1450,16 @@ async function toAgenCCompactionResult(
   };
 }
 
+/** @internal Regression seam for the manual-compaction runtime projection. */
+export async function projectManualCompactionReplacementHistoryForTests(
+  result: unknown,
+): Promise<LLMMessage[]> {
+  return [
+    ...(await toAgenCCompactionResult(result as AgenCCompactionResult))
+      .replacementHistory,
+  ];
+}
+
 function toCompactServiceResult(result: AgenCCompactionResult): CompactionResult {
   if (!result.boundaryMarker) {
     throw new Error("Compaction result is missing its boundary marker");
@@ -1571,6 +1589,12 @@ function fromAgenCRuntimeMessage(
     return {
       role,
       content: fromRuntimeMessageContent(message.content),
+      ...(message.providerReasoningContent !== undefined
+        ? { providerReasoningContent: message.providerReasoningContent }
+        : {}),
+      ...(message.providerReasoningProvenance !== undefined
+        ? { providerReasoningProvenance: message.providerReasoningProvenance }
+        : {}),
       ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
       ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
       ...(message.phase === "commentary" || message.phase === "final_answer"
@@ -1602,6 +1626,12 @@ function fromAgenCRuntimeMessage(
   return {
     role,
     content: fromRuntimeMessageContent(readContent(message)),
+    ...(message.providerReasoningContent !== undefined
+      ? { providerReasoningContent: message.providerReasoningContent }
+      : {}),
+    ...(message.providerReasoningProvenance !== undefined
+      ? { providerReasoningProvenance: message.providerReasoningProvenance }
+      : {}),
     ...(message.toolCalls !== undefined
       ? {
           toolCalls: message.toolCalls.map((call) => ({

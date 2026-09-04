@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   canonicalCompactionSourceMessages,
 } from "../../../src/services/compact/plan.js";
+import { canonicalCompactionProjectionMessages } from "../../../src/services/compact/projection-digest.js";
 import {
   accumulateCompactionOutputBudget,
   compactionOutputTokenUpperBound,
@@ -31,6 +32,7 @@ import {
   MAX_COMPACTION_SCHEMA_WORK_UNITS_PER_OUTPUT,
   MAX_COMPACTION_WALL_MS,
   COMPACTION_CONFIGURATION_DIGEST_DOMAIN,
+  type CompactionProjectionMessageV1,
   type CompactionTransactionAdapter,
 } from "../../../src/services/compact/transaction-types.js";
 import type {
@@ -82,6 +84,8 @@ type TransactionRunOverrides = Pick<
   readonly automatic?: boolean;
   readonly customInstructions?: string;
   readonly hooks?: TestCompactionHooks;
+  readonly messagesToKeep?: readonly RuntimeMessage[];
+  readonly messagesToSummarize?: readonly RuntimeMessage[];
 };
 
 describe("transactional compaction strict contracts", () => {
@@ -233,6 +237,44 @@ describe("transactional compaction strict contracts", () => {
     expect(
       canonicalizeJson(canonicalCompactionSourceMessages(runtime)),
     ).toBe(canonicalizeJson(canonicalCompactionSourceMessages(wire)));
+  });
+
+  it("authenticates reasoning content, provider, and model in compaction digests", () => {
+    const runtime: RuntimeMessage[] = [{
+      role: "assistant",
+      content: "",
+      providerReasoningContent: "opaque replay state",
+      providerReasoningProvenance: {
+        provider: "QWEN",
+        model: "Qwen3.8-Max",
+      },
+    }];
+    const persisted: CompactionProjectionMessageV1[] = [{
+      role: "assistant",
+      content: "",
+      providerReasoning: {
+        version: 2,
+        content: "opaque replay state",
+        provider: "qwen",
+        model: "qwen3.8-max",
+      },
+    }];
+    const canonical = canonicalizeJson(
+      canonicalCompactionSourceMessages(runtime),
+    );
+    expect(canonicalizeJson(canonicalCompactionProjectionMessages(persisted)))
+      .toBe(canonical);
+
+    for (const providerReasoning of [
+      { ...persisted[0]!.providerReasoning!, content: "changed" },
+      { ...persisted[0]!.providerReasoning!, provider: "qwen-token-plan" },
+      { ...persisted[0]!.providerReasoning!, model: "qwen3.8-flash" },
+    ]) {
+      expect(canonicalizeJson(canonicalCompactionProjectionMessages([{
+        ...persisted[0]!,
+        providerReasoning,
+      }]))).not.toBe(canonical);
+    }
   });
 });
 
@@ -622,6 +664,81 @@ describe("transactional compaction production path", () => {
     });
   });
 
+  it("preserves provider-bound reasoning through compact, commit, and disk replay", async () => {
+    await withTransactionalStore("transaction-reasoning-replay", async (store) => {
+      const source = appendSourceMessages(store, 8, 4_000);
+      const reasoningMessage: RuntimeMessage = {
+        role: "assistant",
+        content: "",
+        providerReasoningContent: "opaque qwen tool-loop state",
+        providerReasoningProvenance: {
+          provider: "qwen",
+          model: "qwen3.8-max",
+        },
+      };
+      store.appendRollout({
+        type: "response_item",
+        payload: {
+          role: "assistant",
+          content: "",
+          providerReasoning: {
+            version: 2,
+            content: "opaque qwen tool-loop state",
+            provider: "qwen",
+            model: "qwen3.8-max",
+          },
+        },
+      }, { durable: true });
+      source.push(reasoningMessage);
+
+      const result = await runRealTransaction(
+        store,
+        source,
+        compactionProvider(),
+        {
+          messagesToKeep: [reasoningMessage],
+          messagesToSummarize: source.slice(0, -1),
+        },
+      );
+      const expected = {
+        version: 2,
+        content: "opaque qwen tool-loop state",
+        provider: "qwen",
+        model: "qwen3.8-max",
+      } as const;
+      expect(
+        result.transaction?.committed.replacement_history.find(
+          (message) => message.providerReasoning !== undefined,
+        )?.providerReasoning,
+      ).toEqual(expected);
+
+      const committedRow = store.readAll().find(
+        (item) => item.type === "compaction_committed",
+      );
+      expect(committedRow?.type).toBe("compaction_committed");
+      if (committedRow?.type !== "compaction_committed") {
+        throw new Error("missing compaction commit");
+      }
+      const parsed = readCompactionRolloutPayload(
+        committedRow.type,
+        committedRow.payload,
+      );
+      if (!("replacement_history" in parsed)) {
+        throw new Error("missing replacement history in compaction payload");
+      }
+      expect(
+        parsed.replacement_history.find(
+          (message) => message.providerReasoning !== undefined,
+        )?.providerReasoning,
+      ).toEqual(expected);
+      expect(
+        reduceAll(store.readAll()).state.history.find(
+          (message) => message.providerReasoning !== undefined,
+        )?.providerReasoning,
+      ).toEqual(expected);
+    });
+  });
+
   it("persists one provider_non_stop failure terminal and keeps source authoritative", async () => {
     await withTransactionalStore("transaction-non-stop", async (store) => {
       const source = appendSourceMessages(store, 8, 4_000);
@@ -967,6 +1084,8 @@ async function runRealTransaction(
   const {
     automatic = false,
     customInstructions = "retain decisions",
+    messagesToKeep = [],
+    messagesToSummarize = source,
     hooks = {
       executePreCompact: async () => ({}),
       executePostCompact: async () => ({}),
@@ -1033,9 +1152,9 @@ async function runRealTransaction(
       {
         customInstructions,
         automatic,
-        messagesToKeep: [],
+        messagesToKeep,
         completeSourceMessages: source,
-        messagesToSummarize: source,
+        messagesToSummarize,
         summaryPlacement: "before_keep",
         createBoundaryMarker: () => ({
           role: "user",

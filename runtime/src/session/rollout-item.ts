@@ -15,6 +15,7 @@
  */
 
 import type { Event, EventMsg, SessionMetaLine } from "./event-log.js";
+import type { ProviderReasoningReplay } from "../llm/types.js";
 import type { SessionAgentTask } from "./agent-task-lifecycle.js";
 import type { ToolResultIntegrity } from "./tool-result-integrity.js";
 import type { AgentInvocationChannelMetadata } from "../contracts/agent-invocation-envelope.js";
@@ -44,11 +45,11 @@ export interface SessionStateUpdate {
   readonly agentTask?: SessionAgentTask;
 }
 
-/** Versioned, provider-owned reasoning state needed to resume tool loops. */
-export interface ProviderReasoningReplayV1 {
-  readonly version: 1;
-  readonly content: string;
-}
+export type {
+  ProviderReasoningReplay,
+  ProviderReasoningReplayV1,
+  ProviderReasoningReplayV2,
+} from "../llm/types.js";
 
 /** Port of agenc runtime `ResponseItem` subset used in rollout. Every history
  *  message the model sent/received lives here. */
@@ -69,7 +70,7 @@ export interface ResponseItem {
   readonly toolCallId?: string;
   readonly toolName?: string;
   /** Opaque provider state; never render this as assistant text. */
-  readonly providerReasoning?: ProviderReasoningReplayV1;
+  readonly providerReasoning?: ProviderReasoningReplay;
   /** Checkpoint-v2 identity for the exact durable tool-result body. */
   readonly toolResultIntegrity?: ToolResultIntegrity;
   /** Durable authority/channel identity for a versioned agent invocation. */
@@ -275,16 +276,25 @@ function rolloutCarriesProviderReasoning(item: RolloutItem): boolean {
 }
 
 function providerReasoningValues(item: RolloutItem): readonly string[] {
-  if (item.type === "response_item") {
-    return item.payload.providerReasoning === undefined
+  const values = (
+    reasoning: ProviderReasoningReplay | undefined,
+  ): readonly string[] =>
+    reasoning === undefined
       ? []
-      : [item.payload.providerReasoning.content];
+      : reasoning.version === 2
+        ? [
+            String(reasoning.version),
+            reasoning.content,
+            reasoning.provider,
+            reasoning.model,
+          ]
+        : [String(reasoning.version), reasoning.content];
+  if (item.type === "response_item") {
+    return values(item.payload.providerReasoning);
   }
   if (item.type === "compacted") {
     return (item.payload.replacementHistory ?? []).flatMap((message) =>
-      message.providerReasoning === undefined
-        ? []
-        : [message.providerReasoning.content]);
+      values(message.providerReasoning));
   }
   return [];
 }

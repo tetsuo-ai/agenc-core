@@ -641,6 +641,8 @@ export class OpenAIProvider implements LLMProvider {
           tools: requestTools,
           options,
         });
+        const providerCapabilityHints =
+          chatCompletionsCapabilityHintsForProvider(this.name, model);
         const response = await session.requestJson<Record<string, unknown>>({
           api: "chat_completions",
           path: this.resolvePath("/chat/completions"),
@@ -661,6 +663,7 @@ export class OpenAIProvider implements LLMProvider {
           options,
           maxTokens: this.resolveRequestMaxTokens(options),
           maxTokenField: this.resolveChatCompletionsMaxTokenField(),
+          providerCapabilityHints,
         });
       }, { singleWireAttempt: options?.singleWireAttempt });
     } catch (error) {
@@ -1210,6 +1213,10 @@ export class OpenAIProvider implements LLMProvider {
     timeoutMs: number | undefined,
   ): Promise<LLMResponse> {
     const requestModel = options?.model?.trim() || this.config.model;
+    const streamCapabilityHints = chatCompletionsCapabilityHintsForProvider(
+      this.name,
+      requestModel,
+    );
     const requestOptions = {
       model: requestModel,
       messages,
@@ -1217,6 +1224,7 @@ export class OpenAIProvider implements LLMProvider {
       options,
       maxTokens: this.resolveRequestMaxTokens(options),
       maxTokenField: this.resolveChatCompletionsMaxTokenField(),
+      providerCapabilityHints: streamCapabilityHints,
     };
     assertProviderStructuredOutputCompatibility({
       providerName: this.name,
@@ -1230,10 +1238,6 @@ export class OpenAIProvider implements LLMProvider {
     // Some local openai-compat servers (older Ollama versions, custom
     // proxies) reject unknown `stream_options` keys and tear down the
     // SSE stream — strip the field for those providers up-front.
-    const streamCapabilityHints = chatCompletionsCapabilityHintsForProvider(
-      this.name,
-      requestModel,
-    );
     const request = {
       ...this.prepareChatCompletionsRequest(requestOptions),
       stream: true,

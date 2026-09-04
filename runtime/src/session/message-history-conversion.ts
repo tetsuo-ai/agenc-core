@@ -37,7 +37,21 @@ export function llmMessageToResponseItem(message: LLMMessage): ResponseItem {
     message.providerReasoningContent.length > 0
       ? {
           providerReasoning: {
-            version: 1 as const,
+            ...(message.providerReasoningProvenance !== undefined &&
+            typeof message.providerReasoningProvenance.provider === "string" &&
+            typeof message.providerReasoningProvenance.model === "string" &&
+            message.providerReasoningProvenance.provider.trim().length > 0 &&
+            message.providerReasoningProvenance.model.trim().length > 0
+              ? {
+                  version: 2 as const,
+                  provider: message.providerReasoningProvenance.provider
+                    .trim()
+                    .toLowerCase(),
+                  model: message.providerReasoningProvenance.model
+                    .trim()
+                    .toLowerCase(),
+                }
+              : { version: 1 as const }),
             content: message.providerReasoningContent,
           },
         }
@@ -116,7 +130,21 @@ export function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
     ...(item.toolName !== undefined ? { toolName: item.toolName } : {}),
     ...(item.providerReasoning !== undefined &&
     item.providerReasoning.content.length > 0
-      ? { providerReasoningContent: item.providerReasoning.content }
+      ? {
+          providerReasoningContent: item.providerReasoning.content,
+          ...(item.providerReasoning.version === 2 &&
+          typeof item.providerReasoning.provider === "string" &&
+          item.providerReasoning.provider.trim().length > 0 &&
+          typeof item.providerReasoning.model === "string" &&
+          item.providerReasoning.model.trim().length > 0
+            ? {
+                providerReasoningProvenance: {
+                  provider: item.providerReasoning.provider,
+                  model: item.providerReasoning.model,
+                },
+              }
+            : {}),
+        }
       : {}),
     ...(item.toolResultIntegrity !== undefined ||
     item.agentInvocation !== undefined ||
@@ -149,6 +177,13 @@ export function cloneLlmMessage(message: LLMMessage): LLMMessage {
     content: cloneContent(message.content),
     ...(message.toolCalls !== undefined
       ? { toolCalls: message.toolCalls.map((call) => ({ ...call })) }
+      : {}),
+    ...(message.providerReasoningProvenance !== undefined
+      ? {
+          providerReasoningProvenance: {
+            ...message.providerReasoningProvenance,
+          },
+        }
       : {}),
     ...(message.runtimeOnly !== undefined
       ? { runtimeOnly: { ...message.runtimeOnly } }
@@ -248,7 +283,13 @@ function redactResponseItemForPersistence(
         })();
   if (
     item.providerReasoning !== undefined &&
-    redacted.providerReasoning?.content !== item.providerReasoning.content
+    (redacted.providerReasoning?.content !== item.providerReasoning.content ||
+      redacted.providerReasoning.version !== item.providerReasoning.version ||
+      (item.providerReasoning.version === 2 &&
+        (redacted.providerReasoning.version !== 2 ||
+          redacted.providerReasoning.provider !==
+            item.providerReasoning.provider ||
+          redacted.providerReasoning.model !== item.providerReasoning.model)))
   ) {
     throw new Error(
       "cannot persist provider reasoning replay because secret redaction would change its opaque content",

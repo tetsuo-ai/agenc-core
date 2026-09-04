@@ -10,6 +10,7 @@ import type {
   LLMResponse,
   LLMTool,
   LLMToolCall,
+  ProviderReasoningProvenance,
 } from "../types.js";
 import { estimateUtf8TokenUnits } from "../token-accounting.js";
 import {
@@ -100,8 +101,9 @@ function toChatCompletionsMessages(
   messages: readonly LLMMessage[],
   options: LLMChatOptions | undefined,
   systemSuffix?: string,
-  toolResultImagePolicy?: "relay_as_user",
+  toolResultImagePolicy?: "relay_as_user" | "strip",
   replaysReasoningContent = false,
+  reasoningContentProvenance?: ProviderReasoningProvenance,
 ): Array<Record<string, unknown>> {
   const prepared = prepareMessagesForWire(messages);
   let systemPrompt = systemPromptParts(prepared, options).join("\n\n");
@@ -134,11 +136,32 @@ function toChatCompletionsMessages(
     wireMessages.push({ role: "user", content });
     pendingToolImageRelays.length = 0;
   };
+  const replayReasoningContent = (
+    message: LLMMessage,
+  ): string | undefined => {
+    if (
+      !replaysReasoningContent ||
+      !message.providerReasoningContent ||
+      reasoningContentProvenance === undefined ||
+      message.providerReasoningProvenance === undefined
+    ) {
+      return undefined;
+    }
+    const source = message.providerReasoningProvenance;
+    return typeof source.provider === "string" &&
+      typeof source.model === "string" &&
+      source.provider.trim().toLowerCase() ===
+        reasoningContentProvenance.provider.trim().toLowerCase() &&
+      source.model.trim().toLowerCase() ===
+        reasoningContentProvenance.model.trim().toLowerCase()
+      ? message.providerReasoningContent
+      : undefined;
+  };
   for (const message of prepared) {
     if (message.role === "system" || message.role === "developer") continue;
     if (message.role === "tool") {
       if (
-        toolResultImagePolicy === "relay_as_user" &&
+        toolResultImagePolicy !== undefined &&
         Array.isArray(message.content)
       ) {
         const imageParts = message.content.flatMap((part) =>
@@ -161,11 +184,16 @@ function toChatCompletionsMessages(
           content:
             textContent ||
             (imageParts.length > 0
-              ? "[Tool returned image content; image follows in the next message.]"
+              ? toolResultImagePolicy === "relay_as_user"
+                ? "[Tool returned image content; image follows in the next message.]"
+                : "[Tool returned image content; this model does not accept image input.]"
               : "[Tool returned no textual content.]"),
           tool_call_id: message.toolCallId,
         });
-        if (imageParts.length > 0) {
+        if (
+          toolResultImagePolicy === "relay_as_user" &&
+          imageParts.length > 0
+        ) {
           pendingToolImageRelays.push({
             toolCallId: message.toolCallId,
             toolName: message.toolName,
@@ -186,11 +214,12 @@ function toChatCompletionsMessages(
     // strict chat-completions validators see all tool_call_ids resolved first.
     flushToolImageRelays();
     if (message.role === "assistant" && message.toolCalls?.length) {
+      const providerReasoningContent = replayReasoningContent(message);
       wireMessages.push({
         role: "assistant",
         content: messageTextContent(message.content),
-        ...(replaysReasoningContent && message.providerReasoningContent
-          ? { reasoning_content: message.providerReasoningContent }
+        ...(providerReasoningContent !== undefined
+          ? { reasoning_content: providerReasoningContent }
           : {}),
         tool_calls: message.toolCalls.map((toolCall) => ({
           id: toolCall.id,
@@ -207,13 +236,13 @@ function toChatCompletionsMessages(
       });
       continue;
     }
+    const providerReasoningContent = replayReasoningContent(message);
     wireMessages.push({
       role: message.role,
       content: toOpenAIMessageContent(message.content),
       ...(message.role === "assistant" &&
-      replaysReasoningContent &&
-      message.providerReasoningContent
-        ? { reasoning_content: message.providerReasoningContent }
+      providerReasoningContent !== undefined
+        ? { reasoning_content: providerReasoningContent }
         : {}),
     });
   }
@@ -243,6 +272,7 @@ export function buildChatCompletionsRequest(
       input.providerCapabilityHints?.reasoningSoftSwitchSuffix,
       input.providerCapabilityHints?.toolResultImagePolicy,
       input.providerCapabilityHints?.replaysReasoningContent === true,
+      input.providerCapabilityHints?.reasoningContentProvenance,
     ),
     [maxTokenField]: maxTokens,
   };
@@ -476,7 +506,16 @@ export function parseChatCompletionsResponse(
         }
       : {}),
     ...(providerReasoningContent !== undefined
-      ? { providerReasoningContent }
+      ? {
+          providerReasoningContent,
+          ...(request.providerCapabilityHints?.reasoningContentProvenance !==
+          undefined
+            ? {
+                providerReasoningProvenance:
+                  request.providerCapabilityHints.reasoningContentProvenance,
+              }
+            : {}),
+        }
       : {}),
     toolCalls,
     usage: coerceUsage({

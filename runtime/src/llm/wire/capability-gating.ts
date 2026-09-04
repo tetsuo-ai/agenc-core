@@ -24,6 +24,8 @@
 
 import { normalizeProviderIdentity } from "../../provider-identity.js";
 import { BRIEF_TOOL_NAME } from "../../tools/BriefTool/prompt.js";
+import { resolveModelCapabilityHints } from "../registry/model-catalog.js";
+import type { ProviderReasoningProvenance } from "../types.js";
 import { supportsXaiReasoningEffortParam } from "../structured-output.js";
 
 export interface ChatCompletionsCapabilityHints {
@@ -51,17 +53,20 @@ export interface ChatCompletionsCapabilityHints {
   /**
    * Some OpenAI-compatible endpoints accept multimodal content on user
    * messages but require tool-result `content` to remain a string. When this
-   * policy is enabled, image parts are removed from the tool message and
-   * relayed immediately after the complete tool-result group as a user image
-   * message. Text remains attached to the original tool call.
+   * policy is enabled, image parts are removed from the tool message. Vision
+   * models receive them immediately after the complete tool-result group as a
+   * user image message; text-only models discard them. Text remains attached
+   * to the original tool call.
    */
-  readonly toolResultImagePolicy?: "relay_as_user";
+  readonly toolResultImagePolicy?: "relay_as_user" | "strip";
   /**
    * Replay the provider-owned reasoning_content field on assistant messages.
    * Qwen's thinking-mode function calling requires this value to be echoed
    * unchanged before the corresponding tool results are submitted.
    */
   readonly replaysReasoningContent?: boolean;
+  /** Canonical destination required for opaque reasoning replay. */
+  readonly reasoningContentProvenance?: ProviderReasoningProvenance;
   /** Forced Qwen tool choices require hybrid thinking to be disabled. */
   readonly disablesThinkingForForcedToolChoice?: boolean;
   /**
@@ -278,6 +283,14 @@ export function chatCompletionsCapabilityHintsForProvider(
   model: string | undefined,
 ): ChatCompletionsCapabilityHints {
   const slug = normalizeProviderIdentity(providerName, "capability gate") ?? "";
+  const normalizedModel = model?.trim().toLowerCase() ?? "";
+  const reasoningContentProvenance =
+    slug.length > 0 && normalizedModel.length > 0
+      ? Object.freeze({ provider: slug, model: normalizedModel })
+      : undefined;
+  const acceptsToolResultImages =
+    resolveModelCapabilityHints({ provider: slug, model })
+      ?.supportsImageInput === true;
 
   // reasoning_effort: allow only provider/model combinations with a verified
   // contract. Every other destination either rejects it or silently ignores
@@ -346,13 +359,20 @@ export function chatCompletionsCapabilityHintsForProvider(
       : {}),
     ...(slug === "meta" ? { toolChoicePolicy: "auto_only" as const } : {}),
     ...(slug === "meta" || slug === "qwen" || slug === "qwen-token-plan"
-      ? { toolResultImagePolicy: "relay_as_user" as const }
+      ? {
+          toolResultImagePolicy: acceptsToolResultImages
+            ? ("relay_as_user" as const)
+            : ("strip" as const),
+        }
       : {}),
     ...(slug === "qwen" || slug === "qwen-token-plan"
       ? {
           replaysReasoningContent: true,
           disablesThinkingForForcedToolChoice: true,
         }
+      : {}),
+    ...(reasoningContentProvenance !== undefined
+      ? { reasoningContentProvenance }
       : {}),
     acceptsStopSequences: slug !== "meta",
     acceptsServiceTier,

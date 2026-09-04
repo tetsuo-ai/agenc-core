@@ -386,6 +386,7 @@ interface AgenCMessage {
   readonly role: AgenCMessageRole;
   readonly content: string | readonly LLMContentPart[];
   readonly providerReasoningContent?: string;
+  readonly providerReasoningProvenance?: LLMMessage["providerReasoningProvenance"];
   readonly toolCallId?: string;
   readonly toolName?: string;
   readonly phase?: string;
@@ -403,6 +404,7 @@ type AgenCRuntimeMessage = Omit<
   readonly toolCallId?: string;
   readonly toolName?: string;
   readonly providerReasoningContent?: string;
+  readonly providerReasoningProvenance?: LLMMessage["providerReasoningProvenance"];
   readonly toolCalls?: readonly {
     readonly id: string;
     readonly name: string;
@@ -562,6 +564,9 @@ function toAgenCMessage(message: LLMMessage): AgenCMessage {
     content: cloneContent(message.content),
     ...(message.providerReasoningContent !== undefined
       ? { providerReasoningContent: message.providerReasoningContent }
+      : {}),
+    ...(message.providerReasoningProvenance !== undefined
+      ? { providerReasoningProvenance: message.providerReasoningProvenance }
       : {}),
     ...(message.toolCallId !== undefined
       ? { toolCallId: message.toolCallId }
@@ -835,6 +840,16 @@ async function toAgenCCompactionResult(
   };
 }
 
+/** @internal Regression seam for the turn-owned compaction projection. */
+export async function projectTurnCompactionReplacementHistoryForTests(
+  result: unknown,
+): Promise<LLMMessage[]> {
+  return [
+    ...(await toAgenCCompactionResult(result as AgenCCompactionResult))
+      .replacementHistory,
+  ];
+}
+
 function toCompactServiceResult(
   result: AgenCCompactionResult,
 ): CompactionResult {
@@ -938,6 +953,9 @@ function fromAgenCRuntimeMessage(
       ...(message.providerReasoningContent !== undefined
         ? { providerReasoningContent: message.providerReasoningContent }
         : {}),
+      ...(message.providerReasoningProvenance !== undefined
+        ? { providerReasoningProvenance: message.providerReasoningProvenance }
+        : {}),
       ...(message.toolCallId !== undefined
         ? { toolCallId: message.toolCallId }
         : {}),
@@ -994,6 +1012,12 @@ function fromAgenCRuntimeMessage(
   return {
     role,
     content: fromRuntimeMessageContent(readContent(message)),
+    ...(message.providerReasoningContent !== undefined
+      ? { providerReasoningContent: message.providerReasoningContent }
+      : {}),
+    ...(message.providerReasoningProvenance !== undefined
+      ? { providerReasoningProvenance: message.providerReasoningProvenance }
+      : {}),
     ...(message.toolCalls !== undefined
       ? {
           toolCalls: message.toolCalls.map((call) => ({

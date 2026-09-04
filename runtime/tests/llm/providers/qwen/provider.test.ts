@@ -204,6 +204,7 @@ describe.each([
         role: "assistant",
         content: "",
         providerReasoningContent: "opaque-reasoning-state",
+        providerReasoningProvenance: { provider: id, model },
         toolCalls: [
           { id: "call_read", name: "FileRead", arguments: "{}" },
         ],
@@ -272,6 +273,10 @@ describe.each([
     ]);
 
     expect(response.providerReasoningContent).toBe("provider replay token");
+    expect(response.providerReasoningProvenance).toEqual({
+      provider: id,
+      model,
+    });
     expect(response.thinking?.[0]?.text).toBe("provider replay token");
     expect(response.toolCalls).toEqual([
       { id: "call_echo", name: "system.echo", arguments: '{"text":"ok"}' },
@@ -298,11 +303,199 @@ describe.each([
     expect(response.content).toBe("done");
     expect(response.thinking?.[0]?.text).toBe("think");
     expect(response.providerReasoningContent).toBe("think");
+    expect(response.providerReasoningProvenance).toEqual({
+      provider: id,
+      model,
+    });
     const body = JSON.parse(
       String(fetchImpl.mock.calls[0]?.[1]?.body),
     ) as Record<string, unknown>;
     expect(body.stream).toBe(true);
     expect(body.stream_options).toEqual({ include_usage: true });
+  });
+
+  test("never replays reasoning from another provider or model", async () => {
+    const model = BUILT_IN_PROVIDER_DEFAULT_MODELS[id];
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      successfulChat(model),
+    );
+    const provider = new Provider({ apiKey: key, model, fetchImpl });
+
+    await provider.chat([
+      { role: "user", content: "continue the tool loop" },
+      {
+        role: "assistant",
+        content: "",
+        providerReasoningContent: "private DeepSeek reasoning",
+        providerReasoningProvenance: {
+          provider: "deepseek",
+          model: "deepseek-v4-pro",
+        },
+        toolCalls: [{ id: "call_read", name: "FileRead", arguments: "{}" }],
+      },
+      {
+        role: "tool",
+        toolCallId: "call_read",
+        toolName: "FileRead",
+        content: "done",
+      },
+      {
+        role: "assistant",
+        content: "old Qwen state",
+        providerReasoningContent: "private state from another Qwen model",
+        providerReasoningProvenance: {
+          provider: id,
+          model: "qwen3.8-flash",
+        },
+      },
+      {
+        role: "assistant",
+        content: "legacy unbound state",
+        providerReasoningContent: "legacy opaque state without provenance",
+      },
+      { role: "user", content: "finish" },
+    ]);
+
+    const body = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as { messages: Array<Record<string, unknown>> };
+    const assistantMessages = body.messages.filter(
+      (message) => message.role === "assistant",
+    );
+    expect(assistantMessages).toHaveLength(3);
+    expect(assistantMessages[0]?.reasoning_content).toBeUndefined();
+    expect(assistantMessages[1]?.reasoning_content).toBeUndefined();
+    expect(assistantMessages[2]?.reasoning_content).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain("private DeepSeek reasoning");
+    expect(JSON.stringify(body)).not.toContain(
+      "private state from another Qwen model",
+    );
+    expect(JSON.stringify(body)).not.toContain(
+      "legacy opaque state without provenance",
+    );
+  });
+
+  test("strips tool-result images for qwen3.7-max", async () => {
+    const model = "qwen3.7-max";
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      successfulChat(model),
+    );
+    const provider = new Provider({ apiKey: key, model, fetchImpl });
+
+    await provider.chat([
+      { role: "user", content: "read the result" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call_read", name: "FileRead", arguments: "{}" }],
+      },
+      {
+        role: "tool",
+        toolCallId: "call_read",
+        toolName: "FileRead",
+        content: [
+          { type: "text", text: "Image Size: 10x10." },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,dG9vbA==" },
+          },
+        ],
+      },
+    ]);
+
+    const body = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as { messages: Array<Record<string, unknown>> };
+    expect(body.messages[2]).toEqual({
+      role: "tool",
+      content: "Image Size: 10x10.",
+      tool_call_id: "call_read",
+    });
+    expect(JSON.stringify(body)).not.toContain("image_url");
+    expect(
+      chatCompletionsCapabilityHintsForProvider(id, model),
+    ).toMatchObject({ toolResultImagePolicy: "strip" });
+  });
+
+  test("keeps image-only tool results text-only for qwen3.7-max", async () => {
+    const model = "qwen3.7-max";
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      successfulChat(model),
+    );
+    const provider = new Provider({ apiKey: key, model, fetchImpl });
+
+    await provider.chat([
+      { role: "user", content: "read the result" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call_read", name: "FileRead", arguments: "{}" }],
+      },
+      {
+        role: "tool",
+        toolCallId: "call_read",
+        toolName: "FileRead",
+        content: [{
+          type: "image_url",
+          image_url: { url: "data:image/png;base64,dG9vbA==" },
+        }],
+      },
+    ]);
+
+    const body = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as { messages: Array<Record<string, unknown>> };
+    expect(body.messages).toHaveLength(3);
+    expect(body.messages[2]).toEqual({
+      role: "tool",
+      content:
+        "[Tool returned image content; this model does not accept image input.]",
+      tool_call_id: "call_read",
+    });
+    expect(JSON.stringify(body)).not.toContain("image_url");
+  });
+
+  test("strips tool-result images on the qwen3.7-max streaming path", async () => {
+    const model = "qwen3.7-max";
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        `data: {"model":"${model}","choices":[{"index":0,"delta":{"content":"ok"}}]}\n\n`,
+        'data: {"choices":[{"index":0,"finish_reason":"stop"}]}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+    );
+    const provider = new Provider({ apiKey: key, model, fetchImpl });
+
+    await provider.chatStream([
+      { role: "user", content: "read the result" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call_read", name: "FileRead", arguments: "{}" }],
+      },
+      {
+        role: "tool",
+        toolCallId: "call_read",
+        toolName: "FileRead",
+        content: [
+          { type: "text", text: "Image Size: 10x10." },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,dG9vbA==" },
+          },
+        ],
+      },
+    ], () => {});
+
+    const body = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as { messages: Array<Record<string, unknown>> };
+    expect(body.messages[2]).toEqual({
+      role: "tool",
+      content: "Image Size: 10x10.",
+      tool_call_id: "call_read",
+    });
+    expect(JSON.stringify(body)).not.toContain("image_url");
   });
 });
 
@@ -357,6 +550,18 @@ describe("QwenCloud registration and fail-closed routing", () => {
       }),
     ).toMatchObject({ supportsImageInput: false, acceptsImageHistory: false });
   });
+
+  test.each(["qwen", "qwen-token-plan"] as const)(
+    "fails closed on tool-result images for an unknown %s model",
+    (provider) => {
+      expect(
+        chatCompletionsCapabilityHintsForProvider(
+          provider,
+          "future-unregistered-model",
+        ),
+      ).toMatchObject({ toolResultImagePolicy: "strip" });
+    },
+  );
 
   test("keeps billing keys and endpoints isolated", () => {
     expect(

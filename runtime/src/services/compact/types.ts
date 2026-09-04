@@ -8,7 +8,12 @@
  * short-lived upstream mirror and from excluded UI/session modules.
  */
 
-import type { LLMProvider, LLMTool, LLMToolChoice } from "../../llm/types.js";
+import type {
+  LLMProvider,
+  LLMTool,
+  LLMToolChoice,
+  ProviderReasoningProvenance,
+} from "../../llm/types.js";
 import type { Session } from "../../session/session.js";
 import type { ToolResultIntegrity } from "../../session/tool-result-integrity.js";
 import type { AgentInvocationChannelMetadata } from "../../contracts/agent-invocation-envelope.js";
@@ -27,6 +32,8 @@ export type RuntimeMessage = {
   readonly toolCallId?: string;
   readonly toolName?: string;
   readonly phase?: string;
+  readonly providerReasoningContent?: string;
+  readonly providerReasoningProvenance?: ProviderReasoningProvenance;
   readonly toolCalls?: readonly {
     readonly id: string;
     readonly name: string;
