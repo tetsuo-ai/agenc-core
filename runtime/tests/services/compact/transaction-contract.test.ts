@@ -10,6 +10,7 @@ import { canonicalCompactionProjectionMessages } from "../../../src/services/com
 import {
   accumulateCompactionOutputBudget,
   compactionOutputTokenUpperBound,
+  conservativeOutputTokenEstimate,
   compactionWallTimeExceeded,
 } from "../../../src/services/compact/transaction-limits.js";
 import {
@@ -121,16 +122,13 @@ describe("transactional compaction strict contracts", () => {
     }
   });
 
-  it("uses reported output tokens and a fail-closed UTF-8 upper bound", () => {
+  it("trusts reported output tokens and otherwise estimates at two bytes per token", () => {
+    // The provider counted what it produced: that number stands, however
+    // many bytes the text has. The old one-token-per-byte "upper bound"
+    // rejected every summary over 8 KB and no long session could compact.
     expect(
       compactionOutputTokenUpperBound(
-        "x".repeat(MAX_COMPACTION_INTERMEDIATE_TOKENS + 1),
-        undefined,
-      ),
-    ).toBe(MAX_COMPACTION_INTERMEDIATE_TOKENS + 1);
-    expect(
-      compactionOutputTokenUpperBound(
-        "large response",
+        "x".repeat(MAX_COMPACTION_INTERMEDIATE_TOKENS * 4),
         MAX_COMPACTION_INTERMEDIATE_TOKENS,
       ),
     ).toBe(MAX_COMPACTION_INTERMEDIATE_TOKENS);
@@ -140,20 +138,24 @@ describe("transactional compaction strict contracts", () => {
         MAX_COMPACTION_INTERMEDIATE_TOKENS + 1,
       ),
     ).toBe(MAX_COMPACTION_INTERMEDIATE_TOKENS + 1);
-    expect(
-      compactionOutputTokenUpperBound(
-        "x".repeat(MAX_COMPACTION_INTERMEDIATE_TOKENS),
-        1,
-      ),
-    ).toBe(MAX_COMPACTION_INTERMEDIATE_TOKENS);
-    expect(
-      compactionOutputTokenUpperBound(
-        "x".repeat(MAX_COMPACTION_INTERMEDIATE_TOKENS + 1),
-        1,
-      ),
-    ).toBe(MAX_COMPACTION_INTERMEDIATE_TOKENS + 1);
-    expect(compactionOutputTokenUpperBound("é", 1)).toBe(
-      Buffer.byteLength("é", "utf8"),
+    // Without provider usage the estimate is conservative (two bytes per
+    // token, half the runtime default) but not absurd.
+    const unreported = "x".repeat(MAX_COMPACTION_INTERMEDIATE_TOKENS + 1);
+    expect(compactionOutputTokenUpperBound(unreported, undefined)).toBe(
+      conservativeOutputTokenEstimate(unreported),
+    );
+    expect(conservativeOutputTokenEstimate(unreported)).toBeLessThan(
+      MAX_COMPACTION_INTERMEDIATE_TOKENS,
+    );
+    expect(conservativeOutputTokenEstimate(unreported)).toBeGreaterThanOrEqual(
+      Math.ceil((MAX_COMPACTION_INTERMEDIATE_TOKENS + 1) / 2),
+    );
+    expect(compactionOutputTokenUpperBound("é", undefined)).toBe(
+      conservativeOutputTokenEstimate("é"),
+    );
+    // Negative or non-integer usage is not usage.
+    expect(compactionOutputTokenUpperBound("abcd", -1)).toBe(
+      conservativeOutputTokenEstimate("abcd"),
     );
   });
 

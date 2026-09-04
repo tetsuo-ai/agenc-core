@@ -6,6 +6,7 @@ import {
   MAX_COMPACTION_WALL_MS,
   CompactionTransactionError,
 } from "./transaction-types.js";
+import { roughTokenCountEstimation } from "../../llm/token-estimation.js";
 
 interface CompactionOutputTotals {
   readonly bytes: number;
@@ -43,22 +44,34 @@ export function accumulateCompactionOutputBudget(
 }
 
 /**
- * A tokenizer can emit at most one token per UTF-8 byte. Provider usage is
- * authoritative when present; the greater value is a fail-closed upper bound.
+ * Bytes per token assumed for compaction output when no tokenizer and no
+ * provider usage is available: half the runtime's default of four, so the
+ * estimate errs high without pretending every byte is a token. The old
+ * one-token-per-byte bound rejected any summary over 8 KB, which is every
+ * summary of a session long enough to need compacting.
+ */
+export const CONSERVATIVE_OUTPUT_BYTES_PER_TOKEN = 2;
+
+export function conservativeOutputTokenEstimate(content: string): number {
+  return roughTokenCountEstimation(content, CONSERVATIVE_OUTPUT_BYTES_PER_TOKEN);
+}
+
+/**
+ * Provider usage is authoritative when present: the provider counted the
+ * tokens it produced. Without it, a conservative estimate stands in.
  */
 export function compactionOutputTokenUpperBound(
   content: string,
   reportedCompletionTokens: number | undefined,
 ): number {
-  const utf8UpperBound = Buffer.byteLength(content, "utf8");
   if (
     reportedCompletionTokens !== undefined &&
     Number.isSafeInteger(reportedCompletionTokens) &&
     reportedCompletionTokens >= 0
   ) {
-    return Math.max(reportedCompletionTokens, utf8UpperBound);
+    return reportedCompletionTokens;
   }
-  return utf8UpperBound;
+  return conservativeOutputTokenEstimate(content);
 }
 
 export function compactionWallTimeExceeded(elapsedMs: number): boolean {

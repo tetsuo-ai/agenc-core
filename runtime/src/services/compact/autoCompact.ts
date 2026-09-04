@@ -77,17 +77,25 @@ export async function autoCompactIfNeeded(
   readonly wasCompacted: boolean;
   readonly compactionResult?: CompactionResult;
   readonly consecutiveFailures?: number;
+  /**
+   * Why a compaction attempt did not compact. The turn loop reports this
+   * to the user: without it a failed attempt reached the transcript as a
+   * bare "compact skipped" and the reason — computed, then discarded —
+   * was unavailable to anyone trying to act on it.
+   */
+  readonly skippedReason?: string;
 }> {
   if (querySource === "compact" || querySource === "session_memory") {
     return { wasCompacted: false };
   }
   if (!isAutoCompactEnabled()) {
-    return { wasCompacted: false };
+    return { wasCompacted: false, skippedReason: "auto-compaction is disabled" };
   }
   if ((tracking?.consecutiveFailures ?? 0) >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES) {
     return {
       wasCompacted: false,
       consecutiveFailures: tracking?.consecutiveFailures,
+      skippedReason: `auto-compaction gave up after ${MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES} consecutive failures`,
     };
   }
   const tokenCount = Math.max(
@@ -122,6 +130,10 @@ export async function autoCompactIfNeeded(
     return {
       wasCompacted: false,
       consecutiveFailures: (tracking?.consecutiveFailures ?? 0) + 1,
+      skippedReason:
+        error instanceof Error && error.message.trim().length > 0
+          ? error.message
+          : String(error),
     };
   }
 }

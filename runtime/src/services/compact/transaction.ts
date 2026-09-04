@@ -25,6 +25,7 @@ import {
 } from "./plan.js";
 import {
   accumulateCompactionOutputBudget,
+  conservativeOutputTokenEstimate,
   compactionOutputTokenUpperBound,
   compactionWallTimeExceeded,
 } from "./transaction-limits.js";
@@ -848,7 +849,13 @@ async function runSummaryTree(params: {
     }
     const allowedIds = new Set(sourceRefs.map((ref) => ref.ref_id));
     const validated = parseCompactionBodyV1(response.content, allowedIds);
-    assertExactToolPairs(validated.body.tool_pairs, expectedToolPairs);
+    // The runtime knows every tool call/result pair of the span and pins
+    // them into the summary itself. A model that echoes them anyway must
+    // match exactly; one that leaves them out has done nothing wrong.
+    if (validated.body.tool_pairs.length > 0) {
+      assertExactToolPairs(validated.body.tool_pairs, expectedToolPairs);
+    }
+    const body = { ...validated.body, tool_pairs: expectedToolPairs };
     totals = accumulateCompactionOutputBudget(totals, validated.budget);
     const summary = createCompactionSummaryV1({
       stage,
@@ -856,7 +863,7 @@ async function runSummaryTree(params: {
       policyDigest: params.policyDigest,
       accountingRef: params.accountingRef,
       sourceRefs,
-      body: validated.body,
+      body,
     });
     const ref: CompactionSummaryRefV1 = {
       kind: "compaction_summary",
@@ -1247,7 +1254,7 @@ async function countCompactionProviderOutput(params: {
   const withContent = await count(params.content);
   if (withContent.source === "conservative_fallback") {
     return {
-      tokens: Buffer.byteLength(params.content, "utf8"),
+      tokens: conservativeOutputTokenEstimate(params.content),
       source: "conservative_fallback",
       exact: false,
     };
@@ -1258,7 +1265,7 @@ async function countCompactionProviderOutput(params: {
     emptyEnvelope.source !== withContent.source
   ) {
     return {
-      tokens: Buffer.byteLength(params.content, "utf8"),
+      tokens: conservativeOutputTokenEstimate(params.content),
       source: "conservative_fallback",
       exact: false,
     };
@@ -1451,6 +1458,45 @@ function toLlmMessage(message: RuntimeMessage): LLMMessage {
   };
 }
 
+function describeProjectionMismatch(
+  callerComplete: readonly RuntimeMessage[],
+  callerIndex: number,
+  canonical: readonly RuntimeMessage[],
+  searchedBelow: number,
+): string {
+  const describe = (message: RuntimeMessage): string => {
+    const role = message.originalRole ?? message.role ?? message.message?.role ?? "user";
+    const content = message.content ?? message.message?.content ?? "";
+    const bytes = Buffer.byteLength(
+      typeof content === "string" ? content : JSON.stringify(content),
+      "utf8",
+    );
+    let tool = "";
+    if (message.toolName !== undefined) {
+      tool = ` tool=${message.toolName}`;
+    } else if (message.toolCalls !== undefined) {
+      tool = ` toolCalls=${message.toolCalls.length}`;
+    }
+    return `${role}${tool} ${bytes}B`;
+  };
+  const failing = callerComplete[callerIndex]!;
+  const failingRole = failing.originalRole ?? failing.role ?? failing.message?.role ?? "user";
+  const sameRoleCandidates = canonical
+    .slice(0, searchedBelow)
+    .filter((candidate) =>
+      (candidate.originalRole ?? candidate.role ?? candidate.message?.role ?? "user") ===
+        failingRole,
+    );
+  const nearest = sameRoleCandidates.at(-1);
+  return (
+    `caller message ${callerIndex + 1}/${callerComplete.length} (${describe(failing)}) ` +
+    `has no canonical match among ${searchedBelow} of ${canonical.length} canonical messages` +
+    (nearest !== undefined
+      ? `; nearest canonical ${failingRole} is ${describe(nearest)}`
+      : "")
+  );
+}
+
 function createAuthoritativeSelectionMapper(
   callerComplete: readonly RuntimeMessage[],
   prepared: CompactionPreparedSourceV1,
@@ -1459,8 +1505,31 @@ function createAuthoritativeSelectionMapper(
   readonly sourceRefs: readonly Extract<CompactionSourceRefV1, { readonly kind: "rollout_span" }>[];
   readonly preparedIndexes: readonly number[];
 } {
-  const key = (message: RuntimeMessage): string =>
-    canonicalizeJson(canonicalCompactionSourceMessages([message]));
+  // A tool result's body is bounded in memory once it is persisted (the
+  // runtime keeps only the most recent few full, older ones become a
+  // marker) while the canonical rollout keeps the full body. Matching such a
+  // message by its text could therefore never succeed after a few tool calls,
+  // and every mid-turn compaction of a long session died on it. The sealed
+  // integrity record is the authenticated identity of the body on both sides,
+  // so a sealed tool result maps to its canonical record by that identity.
+  // The canonical body is what gets summarized either way; the caller only
+  // ever points at a position.
+  const key = (message: RuntimeMessage): string => {
+    const role =
+      message.originalRole ?? message.role ?? message.message?.role ?? "user";
+    const integrity = message.runtimeOnly?.toolResultIntegrity;
+    if (role === "tool" && integrity !== undefined && message.toolCallId !== undefined) {
+      const { persisted: _persisted, ...identity } =
+        integrity as unknown as Record<string, unknown>;
+      return canonicalizeJson({
+        role,
+        tool_call_id: message.toolCallId,
+        ...(message.toolName !== undefined ? { tool_name: message.toolName } : {}),
+        tool_result_integrity: identity,
+      });
+    }
+    return canonicalizeJson(canonicalCompactionSourceMessages([message]));
+  };
   const preparedByKey = new Map<string, number[]>();
   prepared.messages.forEach((message, index) => {
     const messageKey = key(message);
@@ -1475,9 +1544,19 @@ function createAuthoritativeSelectionMapper(
     const positions = preparedByKey.get(key(message)) ?? [];
     const positionIndex = lastIndexLessThan(positions, nextPreparedIndex);
     if (positionIndex < 0) {
+      // Name the message that broke the projection. Without this the
+      // sentence alone could not distinguish a rewritten tool result from a
+      // message the canonical rollout never saw, so a live failure could not
+      // be acted on. Shape only, never content: role, tool, sizes, position.
       throw new CompactionTransactionError(
         "pin_failed",
-        "caller history is not an ordered projection of canonical active history",
+        "caller history is not an ordered projection of canonical active history: " +
+          describeProjectionMismatch(
+            callerComplete,
+            callerIndex,
+            prepared.messages,
+            nextPreparedIndex,
+          ),
       );
     }
     nextPreparedIndex = positions[positionIndex]!;

@@ -889,6 +889,9 @@ function structuredTranscriptMessages(
         kind: COMPACTION_STRUCTURED_TRANSCRIPT_KIND,
         coverage_priority: requestedFocus ?? "",
         allowed_source_ref_ids: allowedSourceRefIds,
+        // Tool call/result pairs are not part of the payload: the runtime
+        // pins them into the summary itself, so the model has nothing to
+        // echo and the output no longer grows with the number of tool calls.
         units: units.map((unit) => ({
           unit_id: unit.unit_id,
           messages: unit.messages,

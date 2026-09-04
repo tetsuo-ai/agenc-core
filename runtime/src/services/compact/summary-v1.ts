@@ -688,9 +688,22 @@ function validateBody(
       throw limit("compaction schema validation exceeds its work limit");
     }
   };
+  // tool_pairs is optional: the runtime records every tool call/result pair
+  // itself from the source history. A model that still echoes them must
+  // echo them exactly (checked by the transaction), but a body without
+  // them is complete. Echoing 200+ sha256 digests used to cost more output
+  // than the intermediate-token reserve allowed, and no long session
+  // could ever compact.
+  const hasToolPairs =
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.prototype.hasOwnProperty.call(value, "tool_pairs");
   const body = requireExactObject(
     value,
-    ["narrative", "facts", "open_actions", "tool_pairs"],
+    hasToolPairs
+      ? ["narrative", "facts", "open_actions", "tool_pairs"]
+      : ["narrative", "facts", "open_actions"],
     "compaction body",
   );
   spend(4);
@@ -791,6 +804,7 @@ function validateToolPairs(
   value: JsonValue | undefined,
   spend: (units?: number) => void,
 ): readonly CompactionToolPairV1[] {
+  if (value === undefined) return [];
   if (!Array.isArray(value)) throw invalid("tool_pairs must be an array");
   if (value.length > MAX_COMPACTION_TOOL_PAIRS_PER_OUTPUT) {
     throw limit("tool_pairs exceeds its record limit");

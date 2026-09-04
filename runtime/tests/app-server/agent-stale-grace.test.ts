@@ -1,5 +1,8 @@
-import { describe, expect, test } from "vitest";
-import { isStaleAgent } from "../../src/app-server/agent-lifecycle.js";
+import { describe, expect, it, test } from "vitest";
+import {
+  canonicalValidationFailure,
+  isStaleAgent,
+} from "../../src/app-server/agent-lifecycle.js";
 
 const base = {
   status: "working",
@@ -52,4 +55,30 @@ describe("stale-agent grace window", () => {
       expect(isStaleAgent(agent, item.at)).toBe(item.stale);
     });
   }
+});
+
+describe("canonical resume rejection messages", () => {
+  it("carries the validator's own reason instead of a bare sentence", () => {
+    // "failed strict canonical validation" alone cannot be acted on: a
+    // truncated prefix, a bad checksum and a sequence gap all read the
+    // same. One real rollout needed a validator run by hand to learn it
+    // said "canonical journal event sequence is not contiguous".
+    expect(
+      canonicalValidationFailure(
+        new Error("canonical journal event sequence is not contiguous"),
+      ),
+    ).toBe(
+      "agent.create resume rollout failed strict canonical validation: " +
+        "canonical journal event sequence is not contiguous",
+    );
+  });
+
+  it("falls back to the bare sentence when the thrown value says nothing", () => {
+    expect(canonicalValidationFailure(new Error("  "))).toBe(
+      "agent.create resume rollout failed strict canonical validation",
+    );
+    expect(canonicalValidationFailure("not an error")).toBe(
+      "agent.create resume rollout failed strict canonical validation",
+    );
+  });
 });
