@@ -13,6 +13,10 @@ import { AnthropicProvider } from "./providers/anthropic/adapter.js";
 import { BedrockProvider } from "./providers/bedrock/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { MetaProvider } from "./providers/meta/index.js";
+import {
+  QwenProvider,
+  QwenTokenPlanProvider,
+} from "./providers/qwen/index.js";
 import { GeminiProvider } from "./providers/gemini/index.js";
 import { createGeminiEndpointPlan } from "./providers/gemini/endpoint-plan.js";
 import { GrokProvider } from "./providers/grok/adapter.js";
@@ -809,6 +813,43 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
       }),
   },
   {
+    provider: "qwen",
+    model: "qwen3.8-max",
+    apiKey: "sk-ws-test",
+    env: { DASHSCOPE_API_KEY: undefined, QWEN_API_KEY: undefined },
+    createHarness: (parityCase) =>
+      createFetchHarness({
+        factory: (fetchImpl) =>
+          new QwenProvider({
+            apiKey: "sk-ws-test",
+            model: "qwen3.8-max",
+            tools: parityCase.tools ? [...parityCase.tools] : [],
+            fetchImpl,
+          }),
+        payload: buildChatCompletionsPayload("qwen3.8-max", parityCase),
+      }),
+  },
+  {
+    provider: "qwen-token-plan",
+    model: "qwen3.8-max",
+    apiKey: "sk-sp-test",
+    env: {
+      QWEN_TOKEN_PLAN_API_KEY: undefined,
+      DASHSCOPE_TOKEN_PLAN_API_KEY: undefined,
+    },
+    createHarness: (parityCase) =>
+      createFetchHarness({
+        factory: (fetchImpl) =>
+          new QwenTokenPlanProvider({
+            apiKey: "sk-sp-test",
+            model: "qwen3.8-max",
+            tools: parityCase.tools ? [...parityCase.tools] : [],
+            fetchImpl,
+          }),
+        payload: buildChatCompletionsPayload("qwen3.8-max", parityCase),
+      }),
+  },
+  {
     provider: "gemini",
     model: "gemini-2.5-pro",
     extra: {
@@ -959,7 +1000,11 @@ describe("provider parity", () => {
         provider: entry.provider,
         model: entry.model,
       });
-      const modelInfo = await manager.getModelInfo(entry.model);
+      const modelInfo = await manager.getModelInfo(
+        entry.provider === "qwen" || entry.provider === "qwen-token-plan"
+          ? `${entry.provider}:${entry.model}`
+          : entry.model,
+      );
 
       expect(readProviderIdentity(provider)).toBe(entry.provider);
       expect(provider.name).toBe(entry.provider);

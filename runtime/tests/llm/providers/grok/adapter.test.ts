@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from "vitest";
 import type { LLMMessage, LLMTool } from "../../types.js";
 import { LLMTimeoutError } from "../../errors.js";
 import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER } from "../../wire/shared.js";
+import { encodeMcpToolNameForWire } from "../../wire/mcp-tool-naming.js";
 import { DEFAULT_REQUEST_OPEN_TIMEOUT_MS, GrokProvider } from "./adapter.js";
 
 function buildXaiResponse(id: string, text: string): Record<string, unknown> {
@@ -445,6 +446,148 @@ describe("GrokProvider incremental continuation", () => {
 
   test("parallelToolCalls: false still pins one tool call per turn", () => {
     expect(planWithTools(false).params.parallel_tool_calls).toBe(false);
+  });
+
+  test("derives the decode catalog from the exact provider-native request subset", () => {
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+      tools: [TEST_TOOL],
+      webSearch: true,
+      xSearch: true,
+    });
+    const plan = (provider as any).buildRequestPlan(previousMessages, {
+      toolRouting: { allowedToolNames: ["web_search"] },
+    });
+
+    expect(plan.params.tools).toEqual([
+      expect.objectContaining({ type: "web_search" }),
+    ]);
+    expect(
+      (provider as any).advertisedCanonicalToolNames(plan.params, undefined),
+    ).toEqual(["web_search"]);
+  });
+
+  test("decodes hashed aliases in stream start, completion, and final response events", async () => {
+    const longToolName = `mcp.plugin-${"shared-prefix-".repeat(5)}.search`;
+    const wireName = encodeMcpToolNameForWire(longToolName);
+    expect(wireName).toMatch(/^toolh__/);
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: longToolName,
+            description: "Search through a long-named plugin.",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+    });
+    const functionCall = {
+      type: "function_call",
+      id: "fc-long",
+      call_id: "call-long",
+      name: wireName,
+      arguments: "{}",
+    };
+    (provider as any).client = {
+      responses: {
+        create: vi.fn(() =>
+          withResponse(
+            streamFromEvents([
+              { type: "response.output_item.added", output_index: 0, item: functionCall },
+              { type: "response.output_item.done", output_index: 0, item: functionCall },
+              {
+                type: "response.completed",
+                response: {
+                  id: "resp-long",
+                  status: "completed",
+                  model: "grok-4-fast",
+                  output: [functionCall],
+                  usage: {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    total_tokens: 2,
+                  },
+                },
+              },
+            ]),
+          )
+        ),
+      },
+    };
+    const chunks: Array<Record<string, unknown>> = [];
+
+    const response = await provider.chatStream(
+      [{ role: "user", content: "search" }],
+      (chunk) => chunks.push(chunk as unknown as Record<string, unknown>),
+    );
+
+    const start = chunks.find((chunk) => chunk.toolInputBlockStart !== undefined)
+      ?.toolInputBlockStart as {
+        contentBlock?: { name?: string };
+      } | undefined;
+    expect(start?.contentBlock?.name).toBe(longToolName);
+    expect(response.toolCalls).toEqual([
+      {
+        id: "call-long",
+        name: longToolName,
+        arguments: "{}",
+      },
+    ]);
+  });
+
+  test("rejects an unadvertised hashed alias when toolChoice none removed tools", async () => {
+    const longToolName = `mcp.plugin-${"shared-prefix-".repeat(5)}.search`;
+    const wireName = encodeMcpToolNameForWire(longToolName);
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: longToolName,
+            description: "A long tool that is disabled for this request.",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+    });
+    const requestBodies: Record<string, unknown>[] = [];
+    (provider as any).client = {
+      responses: {
+        create: vi.fn((params: Record<string, unknown>) => {
+          requestBodies.push(params);
+          return withResponse({
+            id: "resp-unadvertised",
+            status: "completed",
+            model: "grok-4-fast",
+            output: [
+              {
+                type: "function_call",
+                id: "fc-unadvertised",
+                call_id: "call-unadvertised",
+                name: wireName,
+                arguments: "{}",
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+          });
+        }),
+      },
+    };
+
+    await expect(
+      provider.chat(
+        [{ role: "user", content: "hello" }],
+        { toolChoice: "none" },
+      ),
+    ).rejects.toThrow(/unknown hashed tool name/i);
+    expect(requestBodies[0]?.tools).toBeUndefined();
   });
 
   test("reuses previous_response_id and retries chat with full history on expiry", async () => {

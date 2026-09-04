@@ -624,6 +624,91 @@ export function prepareMessagesForWire(
   });
 }
 
+/**
+ * Apply the OpenAI-compatible tool-result image policy before serialization.
+ * Keeping this projection shared lets admission accounting inspect the exact
+ * image set that the provider will receive instead of over-counting images a
+ * text-only destination strips from tool results.
+ */
+export function applyToolResultImagePolicyForWire(
+  messages: readonly LLMMessage[],
+  policy: "relay_as_user" | "strip" | undefined,
+): readonly LLMMessage[] {
+  if (policy === undefined) return messages;
+
+  const projected: LLMMessage[] = [];
+  const pendingRelays: Array<{
+    readonly toolCallId?: string;
+    readonly toolName?: string;
+    readonly imageParts: LLMContentPart[];
+  }> = [];
+  const flushRelays = (): void => {
+    if (pendingRelays.length === 0) return;
+    const content: LLMContentPart[] = [];
+    for (const relay of pendingRelays) {
+      const identity = relay.toolName?.trim() || relay.toolCallId?.trim();
+      content.push({
+        type: "text",
+        text: identity
+          ? `Image returned by tool ${identity}.`
+          : "Image returned by the preceding tool call.",
+      });
+      content.push(...relay.imageParts);
+    }
+    projected.push({ role: "user", content });
+    pendingRelays.length = 0;
+  };
+
+  for (const message of messages) {
+    if (message.role !== "tool") {
+      flushRelays();
+      projected.push(message);
+      continue;
+    }
+    if (!Array.isArray(message.content)) {
+      projected.push(message);
+      continue;
+    }
+
+    const imageParts: LLMContentPart[] = message.content.flatMap((part) =>
+      part.type === "image_url" && part.image_url.url.trim().length > 0
+        ? [
+            {
+              type: "image_url" as const,
+              image_url: { url: part.image_url.url },
+            },
+          ]
+        : [],
+    );
+    const textContent = message.content
+      .filter((part) => part.type !== "image_url")
+      .map((part) => messageTextContent([part]))
+      .filter((text) => text.length > 0)
+      .join("\n");
+    projected.push({
+      ...message,
+      content:
+        textContent ||
+        (imageParts.length > 0
+          ? policy === "relay_as_user"
+            ? "[Tool returned image content; image follows in the next message.]"
+            : "[Tool returned image content; this model does not accept image input.]"
+          : "[Tool returned no textual content.]"),
+    });
+    if (policy === "relay_as_user" && imageParts.length > 0) {
+      pendingRelays.push({
+        ...(message.toolCallId !== undefined
+          ? { toolCallId: message.toolCallId }
+          : {}),
+        ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+        imageParts,
+      });
+    }
+  }
+  flushRelays();
+  return projected;
+}
+
 export function normalizeToolCalls(
   toolCalls: readonly LLMToolCall[],
 ): LLMToolCall[] {

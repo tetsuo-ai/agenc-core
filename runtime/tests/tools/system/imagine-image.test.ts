@@ -20,6 +20,41 @@ function testHome(workspaceRoot: string) {
   );
 }
 
+type QwenImageProduct = "qwen" | "qwen-token-plan";
+
+function qwenJsonResponse(payload: unknown): Response {
+  return new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function qwenImageResult(image: string): Response {
+  return qwenJsonResponse({
+    output: {
+      choices: [{ message: { content: [{ image }] } }],
+    },
+  });
+}
+
+function createQwenImagineTool(
+  product: QwenImageProduct,
+  fetchImpl: typeof fetch,
+  workspaceRoot = process.cwd(),
+) {
+  const provider = createProvider(product, {
+    apiKey: product === "qwen" ? "sk-ws-session" : "sk-sp-session",
+    model: "qwen3.8-max",
+  });
+  return createImagineImageTool({
+    workspaceRoot,
+    home: testHome(workspaceRoot),
+    getSession: () => ({ services: { provider } }) as unknown as Session,
+    env: {},
+    fetchImpl,
+  });
+}
+
 describe("ImagineImage tool", () => {
   it("is catalog-registered for non-Grok sessions with an independent xAI credential", () => {
     const tools = createModelFacingTools({
@@ -40,6 +75,20 @@ describe("ImagineImage tool", () => {
       env: { MODEL_API_KEY: "meta-key" },
     });
     expect(tools.some((t) => t.name === "ImagineImage")).toBe(true);
+  });
+
+  it("is catalog-registered for either isolated QwenCloud credential", () => {
+    for (const env of [
+      { DASHSCOPE_API_KEY: "sk-ws-test" },
+      { QWEN_TOKEN_PLAN_API_KEY: "sk-sp-test" },
+    ]) {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+        env,
+      });
+      expect(tools.some((tool) => tool.name === "ImagineImage")).toBe(true);
+    }
   });
 
   it("is catalog-registered for grok + direct xAI with BYOK or any credential probe", () => {
@@ -175,6 +224,228 @@ describe("ImagineImage tool", () => {
     });
   });
 
+  it("uses Qwen Image's synchronous PayGo endpoint and downloads immediately", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-qwen-paygo-"));
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      if (
+        String(url) ===
+        "https://dashscope-result-sg.oss-ap-southeast-1.aliyuncs.com/qwen.png"
+      ) {
+        return new Response(Buffer.from("png"), {
+          status: 200,
+          headers: { "content-type": "image/png" },
+        });
+      }
+      return qwenImageResult(
+        "https://dashscope-result-sg.oss-ap-southeast-1.aliyuncs.com/qwen.png",
+      );
+    });
+    const tool = createQwenImagineTool("qwen", fetchImpl, root);
+
+    const result = await tool.execute({
+      prompt: "a production-ready spaceship",
+      model: "qwen-image-3.0-pro",
+      aspect_ratio: "16:9",
+      resolution: "2k",
+      n: 9,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const parsed = JSON.parse(result.content) as {
+      backend: string;
+      path: string;
+    };
+    expect(parsed.backend).toBe("qwen");
+    expect(parsed.path).toMatch(/\.png$/u);
+    expect(await readFile(parsed.path, "utf8")).toBe("png");
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(url)).toBe(
+      "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+    );
+    expect((init?.headers as Record<string, string>).authorization).toBe(
+      "Bearer sk-ws-session",
+    );
+    expect(JSON.parse(String(init?.body))).toEqual({
+      model: "qwen-image-3.0-pro",
+      input: {
+        messages: [
+          {
+            role: "user",
+            content: [{ text: "a production-ready spaceship" }],
+          },
+        ],
+      },
+      parameters: {
+        prompt_extend: true,
+        n: 6,
+        size: "2720*1536",
+      },
+    });
+
+    const portrait = await tool.execute({
+      prompt: "a portrait-oriented spaceship",
+      model: "qwen-image-3.0-pro",
+      aspect_ratio: "9:16",
+      resolution: "2k",
+    });
+    expect(portrait.isError).toBeUndefined();
+    const portraitRequest = JSON.parse(
+      String(fetchImpl.mock.calls[2]?.[1]?.body),
+    ) as { parameters: { size: string } };
+    expect(portraitRequest.parameters.size).toBe("1536*2720");
+  });
+
+  it("rejects an unverified Qwen Image model on Token Plan", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const tool = createQwenImagineTool("qwen-token-plan", fetchImpl);
+
+    const result = await tool.execute({
+      prompt: "must not be sent",
+      model: "qwen-image-3.0",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/qwen-image-3\.0-pro.*wan2\.7/u);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("blocks a signed-image redirect that leaves trusted HTTPS hosts", async () => {
+    const signed =
+      "https://dashscope-result-sg.oss-ap-southeast-1.aliyuncs.com/image.png";
+    const fetchImpl = vi.fn(async (url: string | URL | Request) =>
+      String(url).includes("/multimodal-generation/generation")
+        ? qwenImageResult(signed)
+        : new Response(null, {
+            status: 302,
+            headers: { location: "http://127.0.0.1/internal" },
+          }));
+    const tool = createQwenImagineTool("qwen", fetchImpl);
+
+    const result = await tool.execute({ prompt: "safe redirect handling" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/credential-free HTTPS/u);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects oversized signed images before buffering the response", async () => {
+    const signed =
+      "https://dashscope-result-sg.oss-ap-southeast-1.aliyuncs.com/large.png";
+    const fetchImpl = vi.fn(async (url: string | URL | Request) =>
+      String(url).includes("/multimodal-generation/generation")
+        ? qwenImageResult(signed)
+        : new Response("not buffered", {
+            status: 200,
+            headers: {
+              "content-type": "image/png",
+              "content-length": String(20 * 1024 * 1024 + 1),
+            },
+          }));
+    const tool = createQwenImagineTool("qwen", fetchImpl);
+
+    const result = await tool.execute({ prompt: "bounded download" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/20 MiB limit/u);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("runs and polls a Token Plan Wan 2.7 image task with its native schema", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-qwen-token-plan-"));
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.endsWith("/api/v1/services/aigc/image-generation/generation")) {
+        return qwenJsonResponse({
+          output: { task_id: "task-123", task_status: "PENDING" },
+        });
+      }
+      if (value.endsWith("/api/v1/tasks/task-123")) {
+        return qwenJsonResponse({
+          output: {
+            task_id: "task-123",
+            task_status: "SUCCEEDED",
+            results: [
+              {
+                url: "https://dashscope-result-sg.oss-ap-southeast-1.aliyuncs.com/wan.png",
+              },
+            ],
+          },
+        });
+      }
+      if (
+        value ===
+        "https://dashscope-result-sg.oss-ap-southeast-1.aliyuncs.com/wan.png"
+      ) {
+        return new Response(Buffer.from("wan-png"), {
+          status: 200,
+          headers: { "content-type": "image/png" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    const tool = createQwenImagineTool("qwen-token-plan", fetchImpl, root);
+
+    const result = await tool.execute({
+      prompt: "a detailed frog meme",
+      model: "wan2.7-image-pro",
+      resolution: "2k",
+      n: 8,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const parsed = JSON.parse(result.content) as {
+      backend: string;
+      path: string;
+    };
+    expect(parsed.backend).toBe("qwen-token-plan");
+    expect(await readFile(parsed.path, "utf8")).toBe("wan-png");
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    const [createUrl, createInit] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(createUrl)).toBe(
+      "https://token-plan.ap-southeast-1.maas.aliyuncs.com/api/v1/services/aigc/image-generation/generation",
+    );
+    expect(
+      (createInit?.headers as Record<string, string>)["x-dashscope-async"],
+    ).toBe("enable");
+    expect(JSON.parse(String(createInit?.body))).toEqual({
+      model: "wan2.7-image-pro",
+      input: {
+        messages: [
+          { role: "user", content: [{ text: "a detailed frog meme" }] },
+        ],
+      },
+      parameters: {
+        n: 4,
+        size: "2048*2048",
+        enable_sequential: false,
+        watermark: false,
+        thinking_mode: true,
+      },
+    });
+  });
+
+  it("fails a terminal UNKNOWN Token Plan image task instead of polling forever", async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request) =>
+      qwenJsonResponse(
+        String(url).includes("/api/v1/tasks/")
+          ? {
+              output: {
+                task_status: "UNKNOWN",
+                code: "InvalidTask",
+                message: "task disappeared",
+              },
+            }
+          : { output: { task_id: "missing", task_status: "PENDING" } },
+      ));
+    const tool = createQwenImagineTool("qwen-token-plan", fetchImpl);
+
+    const result = await tool.execute({ prompt: "will fail" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/task disappeared/u);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("falls back to Meta when the configured xAI media host is unusable", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-invalid-xai-meta-"));
     const provider = createProvider("openai", {
@@ -215,7 +486,7 @@ describe("ImagineImage tool", () => {
   it("does not save an error response returned by an image URL", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-download-error-"));
     const fetchImpl = vi.fn(async (url: string | URL | Request) => {
-      if (String(url) === "https://cdn.example/generated.webp") {
+      if (String(url) === "https://scontent.example.fbcdn.net/generated.webp") {
         return {
           ok: false,
           status: 502,
@@ -226,7 +497,7 @@ describe("ImagineImage tool", () => {
         ok: true,
         status: 200,
         json: async () => ({
-          data: [{ url: "https://cdn.example/generated.webp" }],
+          data: [{ url: "https://scontent.example.fbcdn.net/generated.webp" }],
         }),
       };
     }) as unknown as typeof fetch;

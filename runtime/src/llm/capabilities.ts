@@ -260,6 +260,41 @@ function isMetaMuseSparkModel(model: string): boolean {
   );
 }
 
+function isQwen38ThinkingModel(model: string): boolean {
+  return matchesModelFamily(
+    model,
+    /(?:^|[/:])qwen3\.8-(?:max|flash)(?:$|[-_.:])/,
+  );
+}
+
+function isQwenThinkingHistoryModel(model: string): boolean {
+  return matchesModelFamily(
+    model,
+    /(?:^|[/:])qwen3\.(?:8-(?:max|flash)|7-(?:max|plus|flash)|6-(?:max-preview|plus|flash))(?:$|[-_.:])/,
+  );
+}
+
+function isQwenTokenPlanThinkingHistoryModel(model: string): boolean {
+  return matchesModelFamily(
+    model,
+    /(?:^|[/:])qwen3\.(?:8-(?:max|flash)|7-(?:max|plus)|6-flash)(?:$|[-_.:])/,
+  );
+}
+
+function isQwenVisionModel(model: string): boolean {
+  return matchesModelFamily(
+    model,
+    /(?:^|[/:])qwen3\.(?:8-(?:max|flash)|7-(?:plus|flash)|6-(?:plus|flash))(?:$|[-_.:])/,
+  );
+}
+
+function isQwenTokenPlanVisionModel(model: string): boolean {
+  return matchesModelFamily(
+    model,
+    /(?:^|[/:])qwen3\.(?:8-(?:max|flash)|7-plus|6-flash)(?:$|[-_.:])/,
+  );
+}
+
 const HOSTED_CHAT_COMPATIBLE_CAPABILITIES = {
   supportsToolUse: true,
   supportsPromptCaching: false,
@@ -405,6 +440,22 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsStructuredOutputWithTools: isMetaMuseSparkModel,
     acceptsImageHistory: isMetaMuseSparkModel,
     acceptsReasoningEffort: isMetaMuseSparkModel,
+  },
+  qwen: {
+    ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
+    supportsImageInput: isQwenVisionModel,
+    supportsExtendedThinking: isQwenThinkingHistoryModel,
+    acceptsImageHistory: isQwenVisionModel,
+    acceptsThinkingHistory: isQwenThinkingHistoryModel,
+    acceptsReasoningEffort: isQwen38ThinkingModel,
+  },
+  "qwen-token-plan": {
+    ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
+    supportsImageInput: isQwenTokenPlanVisionModel,
+    supportsExtendedThinking: isQwenTokenPlanThinkingHistoryModel,
+    acceptsImageHistory: isQwenTokenPlanVisionModel,
+    acceptsThinkingHistory: isQwenTokenPlanThinkingHistoryModel,
+    acceptsReasoningEffort: isQwen38ThinkingModel,
   },
   gemini: {
     supportsToolUse: true,

@@ -50,6 +50,34 @@ export type LLMContentPart =
     };
 
 /**
+ * Canonical identity of the provider/model that produced opaque reasoning
+ * replay state. The state is only safe to echo back to this exact
+ * destination; it must never cross a provider or model boundary.
+ */
+export interface ProviderReasoningProvenance {
+  readonly provider: string;
+  readonly model: string;
+}
+
+/** Legacy unbound durable replay state; readable but never safe to replay. */
+export interface ProviderReasoningReplayV1 {
+  readonly version: 1;
+  readonly content: string;
+}
+
+/** Durable replay state bound to the exact provider/model that produced it. */
+export interface ProviderReasoningReplayV2 {
+  readonly version: 2;
+  readonly content: string;
+  readonly provider: string;
+  readonly model: string;
+}
+
+export type ProviderReasoningReplay =
+  | ProviderReasoningReplayV1
+  | ProviderReasoningReplayV2;
+
+/**
  * A single message in an LLM conversation.
  *
  * `content` may be a plain string or an array of content parts for multimodal
@@ -59,6 +87,14 @@ export type LLMContentPart =
 export interface LLMMessage {
   role: MessageRole;
   content: string | LLMContentPart[];
+  /**
+   * Opaque provider reasoning state required for same-provider tool-result
+   * replay. It is never rendered as assistant content and wire adapters must
+   * only forward it for providers whose protocol explicitly requires it.
+   */
+  providerReasoningContent?: string;
+  /** Origin of `providerReasoningContent`; required for provider replay. */
+  providerReasoningProvenance?: ProviderReasoningProvenance;
   /** Optional local phase metadata for runtime-side replay and completion logic. */
   phase?: LLMAssistantPhase;
   /**
@@ -762,6 +798,10 @@ export interface LLMResponse {
     readonly redacted: boolean;
     readonly kind?: "thinking" | "reasoning_summary";
   }>;
+  /** Opaque reasoning state to preserve across a provider-managed tool loop. */
+  providerReasoningContent?: string;
+  /** Canonical origin that constrains where opaque reasoning may be replayed. */
+  providerReasoningProvenance?: ProviderReasoningProvenance;
   finishReason: "stop" | "tool_calls" | "length" | "content_filter" | "error";
   /** Underlying error when finishReason is "error". */
   error?: Error;

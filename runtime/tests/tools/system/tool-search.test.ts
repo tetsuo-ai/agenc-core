@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { ToolCatalogEntry } from "../types.js";
+import { encodeMcpToolNameForWire } from "../../llm/wire/mcp-tool-naming.js";
 import { createToolSearchTool } from "./tool-search.js";
 
 function deferredCatalogEntry(name = "system.deepTool"): ToolCatalogEntry {
@@ -77,6 +78,29 @@ describe("system.searchTools", () => {
     expect(payload.results[0].useHint).toContain("Do not use exec_command");
     expect(payload.results[0].useHint).toContain("echo");
     expect(payload.results[0].useHint).toContain("Skill");
+  });
+
+  test("resolves a long hashed MCP selection through the live catalog", async () => {
+    const canonicalName =
+      `mcp.plugin:${"shared-segment-".repeat(5)}alpha.fetch_record`;
+    const wireName = encodeMcpToolNameForWire(canonicalName);
+    const discovered: string[][] = [];
+    const tool = createToolSearchTool({
+      allowedPaths: [process.cwd()],
+      persistenceRootDir: process.cwd(),
+      getToolCatalog: () => [deferredCatalogEntry(canonicalName)],
+      onDiscoverTools: (names) => {
+        discovered.push([...names]);
+      },
+    });
+
+    const result = await tool.execute({ select: wireName });
+
+    expect(wireName).toMatch(/^toolh__/);
+    expect(discovered).toEqual([[canonicalName]]);
+    const payload = JSON.parse(result.content);
+    expect(payload.missingSelections).toEqual([]);
+    expect(payload.loaded).toEqual([canonicalName]);
   });
 
   test("selecting a server name loads its single matching MCP tool", async () => {

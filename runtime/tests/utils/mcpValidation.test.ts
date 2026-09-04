@@ -63,9 +63,19 @@ describe("MCP accounting and truncation", () => {
     ).resolves.toBeUndefined();
   });
 
-  test("accounts inline images but fails closed for unbounded image sources", async () => {
+  test("accepts bounded inline images and fails closed for malformed or remote sources", async () => {
     const environment = { MAX_MCP_OUTPUT_TOKENS: "2000" };
     const inline = [
+      {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: "image/png",
+          data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==",
+        },
+      },
+    ] as MCPToolResult;
+    const malformedInline = [
       {
         type: "image",
         source: {
@@ -83,6 +93,12 @@ describe("MCP accounting and truncation", () => {
     ] as unknown as MCPToolResult;
 
     await expect(mcpContentNeedsTruncation(inline, environment)).resolves.toBe(false);
+    await expect(
+      mcpContentNeedsTruncation(malformedInline, environment),
+    ).resolves.toBe(true);
+    await expect(
+      truncateMcpContentIfNeeded(malformedInline, environment),
+    ).resolves.toBeUndefined();
     await expect(mcpContentNeedsTruncation(remote, environment)).resolves.toBe(true);
     await expect(truncateMcpContentIfNeeded(remote, environment)).resolves.toEqual([
       expect.objectContaining({

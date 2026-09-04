@@ -69,4 +69,115 @@ describe("normalizeHistoryMessages", () => {
     const [user] = normalizeHistoryMessages([{ role: "user", content: "hi" }]);
     expect(user?.runtimeOnly).toBeUndefined();
   });
+
+  it("restores reasoning provenance while keeping legacy replay state unbound", () => {
+    const [current, legacy] = normalizeHistoryMessages([
+      {
+        role: "assistant",
+        content: "",
+        providerReasoning: {
+          version: 2,
+          content: "qwen-state",
+          provider: "qwen",
+          model: "qwen3.8-max",
+        },
+      },
+      {
+        role: "assistant",
+        content: "",
+        providerReasoning: { version: 1, content: "legacy-state" },
+      },
+    ]);
+
+    expect(current).toMatchObject({
+      providerReasoningContent: "qwen-state",
+      providerReasoningProvenance: {
+        provider: "qwen",
+        model: "qwen3.8-max",
+      },
+    });
+    expect(legacy?.providerReasoningContent).toBe("legacy-state");
+    expect(legacy?.providerReasoningProvenance).toBeUndefined();
+  });
+
+  it("drops conflicting dual reasoning representations atomically", () => {
+    const conflicts = normalizeHistoryMessages([
+      {
+        role: "assistant",
+        content: "",
+        providerReasoningContent: "deepseek-state",
+        providerReasoningProvenance: {
+          provider: "deepseek",
+          model: "deepseek-v4-pro",
+        },
+        providerReasoning: {
+          version: 2,
+          content: "qwen-state",
+          provider: "qwen",
+          model: "qwen3.8-max",
+        },
+      },
+      {
+        role: "assistant",
+        content: "",
+        providerReasoningContent: "same-state",
+        providerReasoningProvenance: {
+          provider: "deepseek",
+          model: "deepseek-v4-pro",
+        },
+        providerReasoning: {
+          version: 2,
+          content: "same-state",
+          provider: "qwen",
+          model: "qwen3.8-max",
+        },
+      },
+    ]);
+
+    for (const message of conflicts) {
+      expect(message.providerReasoningContent).toBeUndefined();
+      expect(message.providerReasoningProvenance).toBeUndefined();
+    }
+  });
+
+  it("never upgrades legacy or malformed replay state with adjacent provenance", () => {
+    const messages = normalizeHistoryMessages([
+      {
+        role: "assistant",
+        content: "",
+        providerReasoningContent: "legacy-state",
+        providerReasoningProvenance: {
+          provider: "qwen",
+          model: "qwen3.8-max",
+        },
+        providerReasoning: { version: 1, content: "legacy-state" },
+      },
+      {
+        role: "assistant",
+        content: "",
+        providerReasoningContent: "flat-state",
+        providerReasoningProvenance: {
+          provider: "qwen",
+          model: "qwen3.8-max",
+        },
+        providerReasoning: "malformed",
+      },
+      {
+        role: "assistant",
+        content: "",
+        providerReasoning: {
+          version: 2,
+          content: "durable-state",
+          provider: "qwen",
+          model: "qwen3.8-max",
+        },
+        providerReasoningProvenance: { provider: "qwen" },
+      },
+    ]);
+
+    for (const message of messages) {
+      expect(message.providerReasoningContent).toBeUndefined();
+      expect(message.providerReasoningProvenance).toBeUndefined();
+    }
+  });
 });

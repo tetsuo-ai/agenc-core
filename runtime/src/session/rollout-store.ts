@@ -695,6 +695,9 @@ function cloneProjectionMessage(
     ...(message.toolCalls !== undefined
       ? { toolCalls: message.toolCalls.map((call) => ({ ...call })) }
       : {}),
+    ...(message.providerReasoning !== undefined
+      ? { providerReasoning: { ...message.providerReasoning } }
+      : {}),
     ...(message.toolResultIntegrity !== undefined
       ? { toolResultIntegrity: { ...message.toolResultIntegrity } }
       : {}),
@@ -4623,6 +4626,16 @@ function runtimeMessageFromResponseItem(item: ResponseItem): RuntimeMessage {
       : {}),
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
     ...(message.phase !== undefined ? { phase: message.phase } : {}),
+    ...(message.providerReasoningContent !== undefined
+      ? { providerReasoningContent: message.providerReasoningContent }
+      : {}),
+    ...(message.providerReasoningProvenance !== undefined
+      ? {
+          providerReasoningProvenance: {
+            ...message.providerReasoningProvenance,
+          },
+        }
+      : {}),
     ...(item.id !== undefined ? { uuid: item.id } : {}),
     ...(message.runtimeOnly !== undefined
       ? { runtimeOnly: message.runtimeOnly }

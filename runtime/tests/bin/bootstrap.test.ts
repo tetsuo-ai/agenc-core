@@ -59,17 +59,61 @@ function offlineFetchFixture(): typeof fetch {
     .mockRejectedValue(new Error("offline bootstrap fixture"));
 }
 
-async function installBootstrapProviderStub(): Promise<void> {
+async function installBootstrapProviderStub() {
   const providerModule = await import("../llm/provider.js");
   const chat = vi.fn().mockResolvedValue({
     content: "ok",
     toolCalls: [],
     usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
   });
-  vi.spyOn(providerModule, "createProvider").mockReturnValue({
+  return vi.spyOn(providerModule, "createProvider").mockReturnValue({
     name: "stub",
     chat,
   } as never);
+}
+
+async function captureQwenProviderExtra(
+  fetchImpl?: typeof fetch,
+): Promise<Record<string, unknown>> {
+  const [home, workspace] = await Promise.all([
+    mkdtemp(join(tmpdir(), "agenc-bootstrap-home-")),
+    mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-")),
+  ]);
+  const createProviderSpy = await installBootstrapProviderStub();
+  vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+  let shutdown: (() => Promise<void>) | null = null;
+  try {
+    const boot = await bootstrapLocalRuntimeSession({
+      ...(fetchImpl === undefined ? {} : { fetchImpl }),
+      env: {
+        ...process.env,
+        AGENC_HOME: home,
+        AGENC_MODEL: "qwen3.8-max",
+        AGENC_PROVIDER: "qwen",
+        AGENC_WORKSPACE: workspace,
+        HOME: home,
+        QWEN_API_KEY: "qwen-test-key",
+      },
+      argv: ["node", "agenc", "--provider", "qwen"],
+    });
+    shutdown = boot.shutdown;
+
+    const qwenCall = createProviderSpy.mock.calls.find(
+      ([providerName]) => providerName === "qwen",
+    );
+    expect(qwenCall).toBeDefined();
+    return (
+      (qwenCall?.[1] as { extra?: Record<string, unknown> } | undefined)
+        ?.extra ?? {}
+    );
+  } finally {
+    await shutdown?.().catch(() => undefined);
+    await Promise.all([
+      rm(home, { recursive: true, force: true }),
+      rm(workspace, { recursive: true, force: true }),
+    ]);
+  }
 }
 
 function clearProcessEnv(keys: readonly string[]): () => void {
@@ -2115,6 +2159,17 @@ describe("bootstrapLocalRuntimeSession", () => {
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+
+  it("does not promote ambient fetch into a provider transport override", async () => {
+    expect(await captureQwenProviderExtra()).not.toHaveProperty("fetchImpl");
+  });
+
+  it("preserves a caller-provided provider transport override", async () => {
+    const fetchImpl = offlineFetchFixture();
+    expect((await captureQwenProviderExtra(fetchImpl)).fetchImpl).toBe(
+      fetchImpl,
+    );
   });
 
   it("keeps Gemini environment keys out of explicit factory precedence", async () => {

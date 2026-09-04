@@ -24,6 +24,7 @@ import type {
 } from "../../types.js";
 import { nonEmptyString as nonBlankText } from "../../../utils/stringUtils.js";
 import {
+  createProviderToolNameWireLookup,
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "../../wire/mcp-tool-naming.js";
@@ -401,6 +402,9 @@ function buildToolConfig(
     );
   }
   const bedrockToolChoice = toBedrockToolChoice(toolChoice);
+  createProviderToolNameWireLookup(
+    tools.map((tool) => tool.function.name),
+  );
   const bedrockTools = tools.map((tool) => ({
     toolSpec: {
       // The Converse `ToolSpecification.name` constraint is pattern
@@ -550,6 +554,7 @@ function parseResponse(
   model: string,
   response: BedrockResponse,
   metrics: LLMRequestMetrics,
+  advertisedToolNames: readonly string[],
 ): LLMResponse {
   const contentBlocks = response.output?.message?.content ?? [];
   const content: string[] = [];
@@ -566,7 +571,10 @@ function parseResponse(
         // Decode the encoded wire name back to the internal-registry
         // form (`mcp.<server>.<tool>`) before dispatch. Non-MCP names
         // pass through unchanged.
-        name: decodeMcpToolNameFromWire(block.toolUse.name),
+        name: decodeMcpToolNameFromWire(
+          block.toolUse.name,
+          advertisedToolNames,
+        ),
         arguments: JSON.stringify(block.toolUse.input ?? {}),
       });
     }
@@ -740,6 +748,7 @@ async function parseStreamResponse(params: {
   readonly model: string;
   readonly metrics: LLMRequestMetrics;
   readonly onChunk: StreamProgressCallback;
+  readonly advertisedToolNames: readonly string[];
 }): Promise<LLMResponse> {
   let content = "";
   let stopReason: string | undefined;
@@ -766,7 +775,10 @@ async function parseStreamResponse(params: {
         // Decode the encoded wire name back to the internal-registry
         // form so downstream dispatch and progress chunks see the
         // dotted name. Non-MCP names pass through unchanged.
-        const name = decodeMcpToolNameFromWire(String(toolUse.name ?? ""));
+        const name = decodeMcpToolNameFromWire(
+          String(toolUse.name ?? ""),
+          params.advertisedToolNames,
+        );
         toolBlocks.set(index, { id, name, arguments: "" });
         params.onChunk({
           content: "",
@@ -1062,11 +1074,15 @@ export class BedrockProvider implements LLMProvider {
     if (!model) {
       throw new Error("amazon-bedrock provider requires a model identifier");
     }
+    const tools = requestTools(this.config, options);
     const request = buildRequest(this.config, messages, options);
+    const advertisedToolNames = request.toolConfig === undefined
+      ? []
+      : tools.map((tool) => tool.function.name);
     const body = JSON.stringify(request);
     const metrics = requestMetrics(
       messages,
-      requestTools(this.config, options),
+      tools,
       body,
     );
     const signed = signRequest({
@@ -1093,7 +1109,12 @@ export class BedrockProvider implements LLMProvider {
           `Amazon Bedrock request failed (HTTP ${response.status}): ${errorMessageFromBody(parsed)}`,
         );
       }
-      return parseResponse(model, parsed as BedrockResponse, metrics);
+      return parseResponse(
+        model,
+        parsed as BedrockResponse,
+        metrics,
+        advertisedToolNames,
+      );
     } finally {
       signalState.cleanup();
     }
@@ -1108,11 +1129,15 @@ export class BedrockProvider implements LLMProvider {
     if (!model) {
       throw new Error("amazon-bedrock provider requires a model identifier");
     }
+    const tools = requestTools(this.config, options);
     const request = buildRequest(this.config, messages, options);
+    const advertisedToolNames = request.toolConfig === undefined
+      ? []
+      : tools.map((tool) => tool.function.name);
     const body = JSON.stringify(request);
     const metrics = requestMetrics(
       messages,
-      requestTools(this.config, options),
+      tools,
       body,
       true,
     );
@@ -1146,6 +1171,7 @@ export class BedrockProvider implements LLMProvider {
         model,
         metrics,
         onChunk,
+        advertisedToolNames,
       });
     } finally {
       signalState.cleanup();

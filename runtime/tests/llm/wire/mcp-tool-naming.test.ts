@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  createProviderToolNameWireLookup,
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
   isProviderToolNameSafe,
@@ -152,5 +153,47 @@ describe("MCP tool-name wire encoding", () => {
       expect(wire.length).toBeLessThanOrEqual(64);
       expect(isProviderToolNameSafe(wire)).toBe(true);
     }
+  });
+
+  test("hashes distinct overlength plugin names without prefix collisions", () => {
+    const sharedPrefix = `mcp.plugin:${"shared-segment-".repeat(5)}`;
+    const first = `${sharedPrefix}alpha.fetch_record`;
+    const second = `${sharedPrefix}bravo.fetch_record`;
+
+    const firstWire = encodeMcpToolNameForWire(first);
+    const secondWire = encodeMcpToolNameForWire(second);
+
+    expect(firstWire).toMatch(/^toolh__[a-zA-Z0-9_-]{43}$/);
+    expect(secondWire).toMatch(/^toolh__[a-zA-Z0-9_-]{43}$/);
+    expect(firstWire).not.toBe(secondWire);
+    expect(firstWire.length).toBeLessThanOrEqual(64);
+    expect(secondWire.length).toBeLessThanOrEqual(64);
+    expect(encodeMcpToolNameForWire(first)).toBe(firstWire);
+    expect(decodeMcpToolNameFromWire(firstWire, [first, second])).toBe(first);
+    expect(decodeMcpToolNameFromWire(secondWire, [first, second])).toBe(second);
+  });
+
+  test("fails closed when a hashed alias has no matching request catalog", () => {
+    const canonical = `mcp.${"very-long-plugin-server-".repeat(4)}.run`;
+    const wire = encodeMcpToolNameForWire(canonical);
+
+    expect(() => decodeMcpToolNameFromWire(wire)).toThrow(
+      /cannot be decoded without the request tool catalog/,
+    );
+    expect(() => decodeMcpToolNameFromWire(wire, ["FileRead"])).toThrow(
+      /unknown hashed tool name/,
+    );
+  });
+
+  test("rejects an alias collision before provider exposure", () => {
+    const canonical = `mcp.${"very-long-plugin-server-".repeat(4)}.run`;
+    const alias = encodeMcpToolNameForWire(canonical);
+
+    // An internal tool can legally choose the reserved-looking alias as its
+    // own short name. The request-scoped lookup must reject that ambiguity
+    // rather than guessing which dispatcher target the model intended.
+    expect(() => createProviderToolNameWireLookup([canonical, alias])).toThrow(
+      /provider tool-name collision/i,
+    );
   });
 });

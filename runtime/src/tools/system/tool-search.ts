@@ -153,7 +153,10 @@ function resolveSelection(
   selection: string,
   catalog: readonly ToolCatalogEntry[],
 ): ToolCatalogEntry | undefined {
-  const decoded = decodeMcpToolNameFromWire(selection);
+  const decoded = decodeMcpToolNameFromWire(
+    selection,
+    catalog.map((entry) => entry.name),
+  );
   const exact = catalog.find((entry) => entry.name === decoded);
   if (exact) return exact;
 

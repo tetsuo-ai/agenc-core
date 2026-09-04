@@ -12,7 +12,10 @@
  */
 
 import type { LLMTool } from "../types.js";
-import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
+import {
+  createProviderToolNameWireLookup,
+  encodeMcpToolNameForWire,
+} from "./mcp-tool-naming.js";
 import { normalizeToolParamSchema } from "../../utils/toolParamSchema.js";
 
 type FunctionTool = {
@@ -155,6 +158,9 @@ export function toChatCompletionsTools(
   tools: readonly LLMTool[],
   opts?: { readonly grammarSafe?: boolean },
 ): FunctionTool[] {
+  createProviderToolNameWireLookup(
+    tools.map((tool) => tool.function.name),
+  );
   return tools.map((tool) => ({
     type: "function",
     function: {
@@ -173,6 +179,9 @@ export function toChatCompletionsTools(
 export function toOpenAIResponsesTools(
   tools: readonly LLMTool[],
 ): FlatFunctionTool[] {
+  createProviderToolNameWireLookup(
+    tools.map((tool) => tool.function.name),
+  );
   return tools.map((tool) => ({
     type: "function",
     name: toolName(tool),
@@ -190,6 +199,9 @@ export function toXaiResponsesTools(
 export function toAnthropicTools(
   tools: readonly LLMTool[],
 ): AnthropicTool[] {
+  createProviderToolNameWireLookup(
+    tools.map((tool) => tool.function.name),
+  );
   return tools.map((tool) => ({
     name: toolName(tool),
     description: toolDescription(tool),

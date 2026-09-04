@@ -1384,7 +1384,7 @@ function readProjectionMessage(
     [
       "toolCalls", "toolCallId", "toolName", "id", "phase", "endTurn",
       "toolResultIntegrity", "agentInvocation",
-      "compactionHistory",
+      "compactionHistory", "providerReasoning",
     ],
     "replacement-history message",
   );
@@ -1410,6 +1410,9 @@ function readProjectionMessage(
   if (record.endTurn !== undefined && typeof record.endTurn !== "boolean") {
     throw malformed("replacement-history endTurn must be boolean");
   }
+  const providerReasoning = record.providerReasoning === undefined
+    ? undefined
+    : readProviderReasoningReplay(record.providerReasoning);
   if (record.toolResultIntegrity !== undefined) {
     if (toolCallId === undefined) {
       throw malformed("tool-result integrity requires toolCallId");
@@ -1433,6 +1436,7 @@ function readProjectionMessage(
     ...(id !== undefined ? { id } : {}),
     ...(phase !== undefined ? { phase } : {}),
     ...(record.endTurn !== undefined ? { endTurn: record.endTurn } : {}),
+    ...(providerReasoning !== undefined ? { providerReasoning } : {}),
     ...(record.toolResultIntegrity !== undefined
       ? { toolResultIntegrity: record.toolResultIntegrity as CompactionProjectionMessageV1["toolResultIntegrity"] }
       : {}),
@@ -1455,6 +1459,32 @@ function readProjectionMessage(
     }
   }
   return result;
+}
+
+function readProviderReasoningReplay(
+  value: unknown,
+): NonNullable<CompactionProjectionMessageV1["providerReasoning"]> {
+  const candidate = plainRecord(value, "provider reasoning replay");
+  if (candidate.version === 1) {
+    const record = exact(candidate, ["version", "content"]);
+    if (typeof record.content !== "string" || record.content.length === 0) {
+      throw malformed("provider reasoning content must be nonempty");
+    }
+    return { version: 1, content: record.content };
+  }
+  if (candidate.version === 2) {
+    const record = exact(candidate, ["version", "content", "provider", "model"]);
+    if (typeof record.content !== "string" || record.content.length === 0) {
+      throw malformed("provider reasoning content must be nonempty");
+    }
+    return {
+      version: 2,
+      content: record.content,
+      provider: text(record.provider, "provider reasoning provider"),
+      model: text(record.model, "provider reasoning model"),
+    };
+  }
+  throw malformed("unsupported provider reasoning replay version");
 }
 
 function readCompactionHistoryMarker(value: unknown): CompactionHistoryMarkerV1 {

@@ -49,7 +49,7 @@
           "calls": {
             "plannedProviderCalls": 1,
             "executedProviderCalls": 0,
-            "plannedInputTokens": 5025
+            "plannedInputTokens": 5052
           },
           "operationCounts": {
             "sourceSentencesScanned": 59,
@@ -100,7 +100,7 @@
           "calls": {
             "plannedProviderCalls": 1,
             "executedProviderCalls": 0,
-            "plannedInputTokens": 4927
+            "plannedInputTokens": 4955
           },
           "operationCounts": {
             "sourceSentencesScanned": 57,
@@ -151,7 +151,7 @@
           "calls": {
             "plannedProviderCalls": 1,
             "executedProviderCalls": 0,
-            "plannedInputTokens": 5100
+            "plannedInputTokens": 5127
           },
           "operationCounts": {
             "sourceSentencesScanned": 57,
@@ -200,7 +200,7 @@
         "calls": {
           "plannedProviderCalls": 3,
           "executedProviderCalls": 0,
-          "plannedInputTokens": 15052
+          "plannedInputTokens": 15134
         },
         "operationCounts": {
           "sourceSentencesScanned": 173,

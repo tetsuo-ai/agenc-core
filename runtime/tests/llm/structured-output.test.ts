@@ -97,6 +97,26 @@ describe("structured-output provider capability helpers", () => {
     ).toBe("unsupported");
   });
 
+  test.each(["qwen", "qwen-token-plan"])(
+    "keeps JSON Schema disabled on the %s Singapore route",
+    (provider) => {
+      expect(
+        resolveProviderStructuredOutputMode({
+          provider,
+          model: "qwen3.8-max",
+          api: "chat_completions",
+        }),
+      ).toBe("unsupported");
+      expect(
+        resolveProviderStructuredOutputMode({
+          provider,
+          model: "qwen3.6-flash",
+          api: "chat_completions",
+        }),
+      ).toBe("unsupported");
+    },
+  );
+
   test("enforces compatible strict JSON schema constraints recursively", () => {
     expect(enforceStrictStructuredOutputSchema(SCHEMA)).toEqual({
       type: "object",

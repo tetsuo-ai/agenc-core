@@ -42,6 +42,10 @@ describe("DeepSeekProvider", () => {
     const response = await provider.chat([{ role: "user", content: "hello" }]);
 
     expect(response.content).toBe("reasoning trace");
+    expect(response.providerReasoningProvenance).toEqual({
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+    });
     const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
     expect(String(requestUrl)).toBe(
       `${BUILT_IN_PROVIDER_BASE_URLS.deepseek}/chat/completions`,

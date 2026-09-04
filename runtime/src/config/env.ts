@@ -109,6 +109,14 @@ export interface EnvSnapshot {
   readonly DEEPSEEK_BASE_URL?: string;
   readonly MODEL_API_KEY?: string;
   readonly META_BASE_URL?: string;
+  readonly DASHSCOPE_API_KEY?: string;
+  readonly QWEN_API_KEY?: string;
+  readonly QWEN_TOKEN_PLAN_API_KEY?: string;
+  readonly DASHSCOPE_TOKEN_PLAN_API_KEY?: string;
+  readonly DASHSCOPE_BASE_URL?: string;
+  readonly QWEN_BASE_URL?: string;
+  readonly QWEN_TOKEN_PLAN_BASE_URL?: string;
+  readonly DASHSCOPE_TOKEN_PLAN_BASE_URL?: string;
   readonly GEMINI_API_KEY?: string;
   readonly GEMINI_BASE_URL?: string;
   readonly GOOGLE_API_KEY?: string;

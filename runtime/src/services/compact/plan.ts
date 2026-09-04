@@ -1029,6 +1029,26 @@ function compactionMapReduceTopology(
 }
 
 function messageForDigest(message: RuntimeMessage): unknown {
+  const providerReasoning =
+    typeof message.providerReasoningContent === "string" &&
+    message.providerReasoningContent.length > 0
+      ? message.providerReasoningProvenance !== undefined &&
+        typeof message.providerReasoningProvenance.provider === "string" &&
+        message.providerReasoningProvenance.provider.trim().length > 0 &&
+        typeof message.providerReasoningProvenance.model === "string" &&
+        message.providerReasoningProvenance.model.trim().length > 0
+        ? {
+            version: 2 as const,
+            content: message.providerReasoningContent,
+            provider: message.providerReasoningProvenance.provider
+              .trim()
+              .toLowerCase(),
+            model: message.providerReasoningProvenance.model
+              .trim()
+              .toLowerCase(),
+          }
+        : { version: 1 as const, content: message.providerReasoningContent }
+      : undefined;
   return {
     role: roleOf(message),
     content: fromRuntimeMessageContent(
@@ -1050,6 +1070,9 @@ function messageForDigest(message: RuntimeMessage): unknown {
       : {}),
     ...(message.runtimeOnly?.agentInvocation !== undefined
       ? { agent_invocation: message.runtimeOnly.agentInvocation }
+      : {}),
+    ...(providerReasoning !== undefined
+      ? { provider_reasoning: providerReasoning }
       : {}),
   };
 }

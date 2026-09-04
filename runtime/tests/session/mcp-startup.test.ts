@@ -292,7 +292,7 @@ describe("mcp-startup.attachMcpManagerToSession", () => {
     expect(providerChat).toHaveBeenCalledWith(
       [{ role: "user", content: "Summarize this" }],
       {
-        accountedInputTokens: 677,
+        accountedInputTokens: 704,
         contextWindowTokens: 1_000_000,
         model: "grok-4.3-mini",
         systemPrompt: "Be brief",

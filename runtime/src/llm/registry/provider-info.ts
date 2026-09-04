@@ -440,6 +440,32 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     baseURLEnvVars: ["META_BASE_URL"],
     onboarding: onboardingInfo(95, "api-key"),
   }),
+  qwen: providerDefinition({
+    name: "QwenCloud Pay-As-You-Go",
+    defaultModel: "qwen3.8-max",
+    // The workspace-specific Singapore endpoint is preferred when available,
+    // but requires a workspace id. Alibaba keeps this shared international
+    // endpoint fully functional, making it the only safe built-in default.
+    baseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    credentials: apiKeyCredentials(["DASHSCOPE_API_KEY", "QWEN_API_KEY"]),
+    baseURLEnvVars: ["DASHSCOPE_BASE_URL", "QWEN_BASE_URL"],
+    onboarding: onboardingInfo(97, "api-key"),
+  }),
+  "qwen-token-plan": providerDefinition({
+    name: "QwenCloud Token Plan",
+    defaultModel: "qwen3.8-max",
+    baseURL:
+      "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+    credentials: apiKeyCredentials([
+      "QWEN_TOKEN_PLAN_API_KEY",
+      "DASHSCOPE_TOKEN_PLAN_API_KEY",
+    ]),
+    baseURLEnvVars: [
+      "QWEN_TOKEN_PLAN_BASE_URL",
+      "DASHSCOPE_TOKEN_PLAN_BASE_URL",
+    ],
+    onboarding: onboardingInfo(98, "api-key"),
+  }),
   gemini: providerDefinition({
     name: "Gemini",
     // gemini-2.5-pro is retired for new keys (404 pointing at the 3.x
@@ -636,6 +662,8 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   // `/models` also advertises image generation and voice transcription.
   // Those are not chat-completion LLMs and deliberately stay out of this list.
   meta: mergeDerivedProviderModels("meta"),
+  qwen: mergeDerivedProviderModels("qwen"),
+  "qwen-token-plan": mergeDerivedProviderModels("qwen-token-plan"),
   gemini: Object.freeze([
     "gemini-3.1-pro-preview",
     "gemini-3.7-flash",

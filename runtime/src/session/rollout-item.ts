@@ -15,6 +15,7 @@
  */
 
 import type { Event, EventMsg, SessionMetaLine } from "./event-log.js";
+import type { ProviderReasoningReplay } from "../llm/types.js";
 import type { SessionAgentTask } from "./agent-task-lifecycle.js";
 import type { ToolResultIntegrity } from "./tool-result-integrity.js";
 import type { AgentInvocationChannelMetadata } from "../contracts/agent-invocation-envelope.js";
@@ -44,6 +45,12 @@ export interface SessionStateUpdate {
   readonly agentTask?: SessionAgentTask;
 }
 
+export type {
+  ProviderReasoningReplay,
+  ProviderReasoningReplayV1,
+  ProviderReasoningReplayV2,
+} from "../llm/types.js";
+
 /** Port of agenc runtime `ResponseItem` subset used in rollout. Every history
  *  message the model sent/received lives here. */
 export interface ResponseItem {
@@ -62,6 +69,8 @@ export interface ResponseItem {
   }>;
   readonly toolCallId?: string;
   readonly toolName?: string;
+  /** Opaque provider state; never render this as assistant text. */
+  readonly providerReasoning?: ProviderReasoningReplay;
   /** Checkpoint-v2 identity for the exact durable tool-result body. */
   readonly toolResultIntegrity?: ToolResultIntegrity;
   /** Durable authority/channel identity for a versioned agent invocation. */
@@ -231,14 +240,79 @@ const ROLLOUT_LEGACY_TYPE_ALIASES: Readonly<Record<string, string>> =
  */
 export function serializeRolloutItem(item: RolloutItem): string {
   rejectInlineCompactionWriter(item);
+  if (
+    rolloutCarriesProviderReasoning(item) &&
+    item.eventVersion !== undefined &&
+    item.eventVersion < ROLLOUT_ITEM_VERSION
+  ) {
+    throw new Error(
+      `provider reasoning replay requires rollout eventVersion ${ROLLOUT_ITEM_VERSION}`,
+    );
+  }
   const defaultEventVersion = isCompactionRolloutType(item.type)
     ? ROLLOUT_ITEM_VERSION
-    : LEGACY_ROLLOUT_ITEM_VERSION;
+    : rolloutCarriesProviderReasoning(item)
+      ? ROLLOUT_ITEM_VERSION
+      : LEGACY_ROLLOUT_ITEM_VERSION;
   const stamped =
     item.eventVersion === undefined
       ? { ...item, eventVersion: defaultEventVersion }
       : item;
-  return `${JSON.stringify(redactSecretsInValue(stamped))}\n`;
+  const redacted = redactSecretsInValue(stamped) as typeof stamped;
+  assertProviderReasoningUnchanged(stamped, redacted);
+  return `${JSON.stringify(redacted)}\n`;
+}
+
+function rolloutCarriesProviderReasoning(item: RolloutItem): boolean {
+  if (item.type === "response_item") {
+    return item.payload.providerReasoning !== undefined;
+  }
+  if (item.type === "compacted") {
+    return item.payload.replacementHistory?.some(
+      (message) => message.providerReasoning !== undefined,
+    ) === true;
+  }
+  return false;
+}
+
+function providerReasoningValues(item: RolloutItem): readonly string[] {
+  const values = (
+    reasoning: ProviderReasoningReplay | undefined,
+  ): readonly string[] =>
+    reasoning === undefined
+      ? []
+      : reasoning.version === 2
+        ? [
+            String(reasoning.version),
+            reasoning.content,
+            reasoning.provider,
+            reasoning.model,
+          ]
+        : [String(reasoning.version), reasoning.content];
+  if (item.type === "response_item") {
+    return values(item.payload.providerReasoning);
+  }
+  if (item.type === "compacted") {
+    return (item.payload.replacementHistory ?? []).flatMap((message) =>
+      values(message.providerReasoning));
+  }
+  return [];
+}
+
+function assertProviderReasoningUnchanged(
+  original: RolloutItem,
+  redacted: RolloutItem,
+): void {
+  const before = providerReasoningValues(original);
+  const after = providerReasoningValues(redacted);
+  if (
+    before.length !== after.length ||
+    before.some((value, index) => value !== after[index])
+  ) {
+    throw new Error(
+      "cannot serialize provider reasoning replay because secret redaction would change its opaque content",
+    );
+  }
 }
 
 function rejectInlineCompactionWriter(item: RolloutItem): void {

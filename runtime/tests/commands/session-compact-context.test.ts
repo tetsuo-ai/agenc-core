@@ -26,6 +26,7 @@ import {
   compactCommand,
   computeContextUsageBreakdown,
   contextCommand,
+  projectManualCompactionReplacementHistoryForTests,
 } from "./session-compact.js";
 import type { LLMMessage, LLMTool } from "../llm/types.js";
 import type { RuntimeMessage } from "../services/compact/types.js";
@@ -63,6 +64,36 @@ function tool(name: string, description: string): LLMTool {
     },
   };
 }
+
+describe("manual compact runtime projection", () => {
+  test("keeps provider reasoning provenance in the fallback message shape", async () => {
+    const replacementHistory =
+      await projectManualCompactionReplacementHistoryForTests({
+        boundaryMarker: { role: "user", content: "boundary" },
+        summaryMessages: [],
+        messagesToKeep: [{
+          type: "assistant",
+          message: { role: "assistant", content: "kept" },
+          providerReasoningContent: "opaque qwen state",
+          providerReasoningProvenance: {
+            provider: "qwen",
+            model: "qwen3.8-max",
+          },
+        }],
+        attachments: [],
+      });
+
+    expect(replacementHistory[1]).toMatchObject({
+      role: "assistant",
+      content: "kept",
+      providerReasoningContent: "opaque qwen state",
+      providerReasoningProvenance: {
+        provider: "qwen",
+        model: "qwen3.8-max",
+      },
+    });
+  });
+});
 
 describe("/context display: computeContextUsageBreakdown", () => {
   test("reports four distinct fields: hard limit, compaction threshold, used, free headroom", () => {

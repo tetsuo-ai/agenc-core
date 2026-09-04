@@ -24,6 +24,8 @@
 
 import { normalizeProviderIdentity } from "../../provider-identity.js";
 import { BRIEF_TOOL_NAME } from "../../tools/BriefTool/prompt.js";
+import { resolveModelCapabilityHints } from "../registry/model-catalog.js";
+import type { ProviderReasoningProvenance } from "../types.js";
 import { supportsXaiReasoningEffortParam } from "../structured-output.js";
 
 export interface ChatCompletionsCapabilityHints {
@@ -48,6 +50,33 @@ export interface ChatCompletionsCapabilityHints {
    * no-tools semantics by omitting both `tools` and `tool_choice`.
    */
   readonly toolChoicePolicy?: "auto_only";
+  /**
+   * Some OpenAI-compatible endpoints accept multimodal content on user
+   * messages but require tool-result `content` to remain a string. When this
+   * policy is enabled, image parts are removed from the tool message. Vision
+   * models receive them immediately after the complete tool-result group as a
+   * user image message; text-only models discard them. Text remains attached
+   * to the original tool call.
+   */
+  readonly toolResultImagePolicy?: "relay_as_user" | "strip";
+  /**
+   * Replay the provider-owned reasoning_content field on assistant messages.
+   * Qwen's thinking-mode function calling requires this value to be echoed
+   * unchanged before the corresponding tool results are submitted.
+   */
+  readonly replaysReasoningContent?: boolean;
+  /** Canonical destination required for opaque reasoning replay. */
+  readonly reasoningContentProvenance?: ProviderReasoningProvenance;
+  /**
+   * Qwen 3.6/3.7 default `preserve_thinking` to false. Their thinking-mode
+   * tool loop only consumes replayed `reasoning_content` when this request
+   * switch is explicitly enabled. Qwen 3.8 defaults it to true and uses the
+   * separate `reasoning_effort` control, so it intentionally does not opt in
+   * here.
+   */
+  readonly preservesThinkingHistory?: boolean;
+  /** Forced Qwen tool choices require hybrid thinking to be disabled. */
+  readonly disablesThinkingForForcedToolChoice?: boolean;
   /**
    * If `false`, caller-supplied stop sequences are omitted. Some compatible
    * APIs reject the otherwise-standard `stop` request field.
@@ -105,6 +134,15 @@ const META_REASONING_EFFORT_VALUES = new Set([
   "low",
   "medium",
   "high",
+  "xhigh",
+]);
+
+// Qwen3.8 exposes these values on both QwenCloud billing routes. Older
+// families use different thinking controls, so they stay fail-closed rather
+// than inheriting a field that their endpoint may reject.
+const QWEN_38_REASONING_EFFORT_VALUES = new Set([
+  "low",
+  "medium",
   "xhigh",
 ]);
 
@@ -253,6 +291,24 @@ export function chatCompletionsCapabilityHintsForProvider(
   model: string | undefined,
 ): ChatCompletionsCapabilityHints {
   const slug = normalizeProviderIdentity(providerName, "capability gate") ?? "";
+  const normalizedModel = model?.trim().toLowerCase() ?? "";
+  const reasoningContentProvenance =
+    slug.length > 0 && normalizedModel.length > 0
+      ? Object.freeze({ provider: slug, model: normalizedModel })
+      : undefined;
+  const acceptsToolResultImages =
+    resolveModelCapabilityHints({ provider: slug, model })
+      ?.supportsImageInput === true;
+  const isQwenCloud = slug === "qwen" || slug === "qwen-token-plan";
+  const preservesThinkingHistory =
+    (slug === "qwen" &&
+      /(?:^|[/:])qwen3\.(?:7-(?:max|plus|flash)|6-(?:max-preview|plus|flash))(?:$|[-_.:])/i.test(
+        model ?? "",
+      )) ||
+    (slug === "qwen-token-plan" &&
+      /(?:^|[/:])qwen3\.(?:7-(?:max|plus)|6-flash)(?:$|[-_.:])/i.test(
+        model ?? "",
+      ));
 
   // reasoning_effort: allow only provider/model combinations with a verified
   // contract. Every other destination either rejects it or silently ignores
@@ -266,6 +322,12 @@ export function chatCompletionsCapabilityHintsForProvider(
     acceptsReasoningEffort = supportsXaiReasoningEffortParam(model);
   } else if (slug === "meta" && /(?:^|[/:])muse-spark-/i.test(model ?? "")) {
     reasoningEffortAllowedValues = META_REASONING_EFFORT_VALUES;
+    acceptsReasoningEffort = true;
+  } else if (
+    (slug === "qwen" || slug === "qwen-token-plan") &&
+    /(?:^|[/:])qwen3\.8-(?:max|flash)(?:$|[-_.:])/i.test(model ?? "")
+  ) {
+    reasoningEffortAllowedValues = QWEN_38_REASONING_EFFORT_VALUES;
     acceptsReasoningEffort = true;
   } else if (slug === "nvidia-nim") {
     reasoningEffortAllowedValues = nimReasoningEffortValues(model);
@@ -314,6 +376,25 @@ export function chatCompletionsCapabilityHintsForProvider(
       ? { reasoningEffortAllowedValues }
       : {}),
     ...(slug === "meta" ? { toolChoicePolicy: "auto_only" as const } : {}),
+    ...(slug === "meta" || slug === "qwen" || slug === "qwen-token-plan"
+      ? {
+          toolResultImagePolicy: acceptsToolResultImages
+            ? ("relay_as_user" as const)
+            : ("strip" as const),
+        }
+      : {}),
+    ...(isQwenCloud
+      ? {
+          replaysReasoningContent: true,
+          ...(preservesThinkingHistory
+            ? { preservesThinkingHistory: true }
+            : {}),
+          disablesThinkingForForcedToolChoice: true,
+        }
+      : {}),
+    ...(reasoningContentProvenance !== undefined
+      ? { reasoningContentProvenance }
+      : {}),
     acceptsStopSequences: slug !== "meta",
     acceptsServiceTier,
     acceptsStreamUsage,

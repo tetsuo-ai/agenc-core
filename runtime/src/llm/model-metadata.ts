@@ -39,6 +39,8 @@ const LIVE_METADATA_PROVIDERS = new Set([
   "groq",
   "deepseek",
   "meta",
+  "qwen",
+  "qwen-token-plan",
 ]);
 
 export type ModelMetadataSource =
@@ -470,6 +472,8 @@ const OPENAI_COMPATIBLE_METADATA_PROVIDERS = new Set([
   "groq",
   "deepseek",
   "meta",
+  "qwen",
+  "qwen-token-plan",
   "gemini",
   "ollama",
 ]);

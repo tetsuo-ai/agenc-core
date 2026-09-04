@@ -255,11 +255,12 @@ describe("MetaProvider", () => {
       chatCompletionsCapabilityHintsForProvider("meta", model),
     ).toMatchObject({
       toolChoicePolicy: "auto_only",
+      toolResultImagePolicy: "relay_as_user",
       acceptsStopSequences: false,
     });
   });
 
-  test("sends image input and JSON-schema structured output with tools", async () => {
+  test("sends direct user image input in Meta's supported schema with tools", async () => {
     const model = BUILT_IN_PROVIDER_DEFAULT_MODELS.meta;
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       successfulChat(model, JSON.stringify({ answer: "ok" })),
@@ -319,6 +320,177 @@ describe("MetaProvider", () => {
         ],
       },
     ]);
+  });
+
+  test("relays multimodal tool results as supported user image input", async () => {
+    const model = BUILT_IN_PROVIDER_DEFAULT_MODELS.meta;
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      successfulChat(model, "A cat is shown."),
+    );
+    const provider = new MetaProvider({
+      apiKey: "meta-test",
+      model,
+      tools: [echoTool],
+      fetchImpl,
+    });
+
+    await provider.chat([
+      { role: "user", content: "Inspect the image" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: "call_read_image",
+            name: "FileRead",
+            arguments: '{"file_path":"/tmp/cat.png"}',
+          },
+        ],
+      },
+      {
+        role: "tool",
+        toolCallId: "call_read_image",
+        toolName: "FileRead",
+        content: [
+          { type: "text", text: "Image Size: 640x480." },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,Y2F0" },
+          },
+          { type: "text", text: "Read image successfully." },
+        ],
+      },
+    ]);
+
+    const body = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as Record<string, unknown>;
+    expect(body.messages).toEqual([
+      { role: "user", content: "Inspect the image" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "call_read_image",
+            type: "function",
+            function: {
+              name: "FileRead",
+              arguments: '{"file_path":"/tmp/cat.png"}',
+            },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: "Image Size: 640x480.\nRead image successfully.",
+        tool_call_id: "call_read_image",
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Image returned by tool FileRead." },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,Y2F0" },
+          },
+        ],
+      },
+    ]);
+  });
+
+  test("keeps parallel tool results contiguous before relaying their images", async () => {
+    const model = BUILT_IN_PROVIDER_DEFAULT_MODELS.meta;
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      successfulChat(model, "Both images are visible."),
+    );
+    const provider = new MetaProvider({
+      apiKey: "meta-test",
+      model,
+      fetchImpl,
+    });
+
+    await provider.chat([
+      { role: "user", content: "Compare both images" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: "call_first",
+            name: "FileRead",
+            arguments: '{"file_path":"/tmp/first.png"}',
+          },
+          {
+            id: "call_second",
+            name: "FileRead",
+            arguments: '{"file_path":"/tmp/second.png"}',
+          },
+        ],
+      },
+      {
+        role: "tool",
+        toolCallId: "call_first",
+        toolName: "FileRead",
+        content: [
+          { type: "text", text: "First image." },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,Zmlyc3Q=" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        toolCallId: "call_second",
+        toolName: "FileRead",
+        content: [
+          { type: "text", text: "Second image." },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,c2Vjb25k" },
+          },
+        ],
+      },
+    ]);
+
+    const body = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as { messages: Array<Record<string, unknown>> };
+    expect(body.messages.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "tool",
+      "tool",
+      "user",
+    ]);
+    expect(body.messages.slice(2, 4)).toEqual([
+      {
+        role: "tool",
+        content: "First image.",
+        tool_call_id: "call_first",
+      },
+      {
+        role: "tool",
+        content: "Second image.",
+        tool_call_id: "call_second",
+      },
+    ]);
+    expect(body.messages[4]).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "Image returned by tool FileRead." },
+        {
+          type: "image_url",
+          image_url: { url: "data:image/png;base64,Zmlyc3Q=" },
+        },
+        { type: "text", text: "Image returned by tool FileRead." },
+        {
+          type: "image_url",
+          image_url: { url: "data:image/png;base64,c2Vjb25k" },
+        },
+      ],
+    });
   });
 
   test("resolves the Meta credential and endpoint from canonical env", () => {

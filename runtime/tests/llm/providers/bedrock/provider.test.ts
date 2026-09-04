@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import { createTokenAccountingRequest } from "../../token-accounting.js";
+import { encodeMcpToolNameForWire } from "../../wire/mcp-tool-naming.js";
 import { BedrockProvider } from "./index.js";
 import {
   createCsvAgentInvocationEnvelope,
@@ -554,6 +555,61 @@ describe("providers/bedrock", () => {
         arguments: "{\"query\":\"status\"}",
       },
     ]);
+  });
+
+  it("rejects a hashed tool alias when toolChoice none omitted the request catalog", async () => {
+    const longToolName = `mcp.plugin-${"shared-prefix-".repeat(5)}.search`;
+    const wireName = encodeMcpToolNameForWire(longToolName);
+    expect(wireName).toMatch(/^toolh__/);
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        output: {
+          message: {
+            role: "assistant",
+            content: [
+              {
+                toolUse: {
+                  toolUseId: "toolu-unadvertised",
+                  name: wireName,
+                  input: {},
+                },
+              },
+            ],
+          },
+        },
+        stopReason: "tool_use",
+      }),
+    );
+    const provider = new BedrockProvider({
+      accessKeyId: "AKIDEXAMPLE",
+      secretAccessKey: "secret",
+      region: "us-west-2",
+      model: "amazon.nova-pro-v1:0",
+      fetchImpl,
+      now: () => new Date("2024-01-02T03:04:05Z"),
+    });
+
+    await expect(
+      provider.chat(
+        [{ role: "user", content: "hello" }],
+        {
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: longToolName,
+                description: "A long tool that was disabled for this request.",
+                parameters: { type: "object", properties: {} },
+              },
+            },
+          ],
+          toolChoice: "none",
+        },
+      ),
+    ).rejects.toThrow(/unknown hashed tool name/i);
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty("toolConfig");
   });
 
   it("encodes reserved characters in model identifiers before signing", async () => {

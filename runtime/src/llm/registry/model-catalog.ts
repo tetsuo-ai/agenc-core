@@ -82,6 +82,157 @@ const META_REASONING_LEVELS = Object.freeze([
   "high",
   "xhigh",
 ] as const satisfies readonly ReasoningEffort[]);
+const QWEN_38_REASONING_LEVELS = Object.freeze([
+  "low",
+  "medium",
+  "xhigh",
+] as const satisfies readonly ReasoningEffort[]);
+
+const QWEN_CLOUD_PROVIDER_IDS = Object.freeze([
+  "qwen",
+  "qwen-token-plan",
+] as const);
+
+interface QwenCloudChatModelSpec {
+  readonly model: string;
+  readonly displayName: string;
+  readonly contextWindow: number;
+  readonly maxOutputTokens: number;
+  readonly vision: boolean;
+  readonly payGoOnly?: boolean;
+  readonly priority: number;
+}
+
+const QWEN_CLOUD_CHAT_MODELS = Object.freeze([
+  {
+    model: "qwen3.8-max",
+    displayName: "Qwen3.8 Max",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
+    vision: true,
+    priority: 0,
+  },
+  {
+    model: "qwen3.8-flash",
+    displayName: "Qwen3.8 Flash",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
+    vision: true,
+    priority: 1,
+  },
+  {
+    model: "qwen3.7-max",
+    displayName: "Qwen3.7 Max",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
+    vision: false,
+    priority: 2,
+  },
+  {
+    model: "qwen3.7-plus",
+    displayName: "Qwen3.7 Plus",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 65_536,
+    vision: true,
+    priority: 3,
+  },
+  {
+    model: "qwen3.7-flash",
+    displayName: "Qwen3.7 Flash",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 65_536,
+    vision: true,
+    payGoOnly: true,
+    priority: 4,
+  },
+  {
+    model: "qwen3.6-plus",
+    displayName: "Qwen3.6 Plus",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 65_536,
+    vision: true,
+    payGoOnly: true,
+    priority: 5,
+  },
+  {
+    model: "qwen3.6-flash",
+    displayName: "Qwen3.6 Flash",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 65_536,
+    vision: true,
+    priority: 6,
+  },
+  {
+    model: "qwen3-coder-plus",
+    displayName: "Qwen3 Coder Plus",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 65_536,
+    vision: false,
+    payGoOnly: true,
+    priority: 7,
+  },
+  {
+    model: "qwen3-coder-next",
+    displayName: "Qwen3 Coder Next",
+    contextWindow: 262_144,
+    maxOutputTokens: 65_536,
+    vision: false,
+    payGoOnly: true,
+    priority: 8,
+  },
+] as const satisfies readonly QwenCloudChatModelSpec[]);
+
+function qwenCloudCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
+  return QWEN_CLOUD_PROVIDER_IDS.flatMap((provider) =>
+    QWEN_CLOUD_CHAT_MODELS
+      // Token Plan has an exact, smaller allowlist than Pay-As-You-Go.
+      .filter(
+        (model) =>
+          provider === "qwen" ||
+          !("payGoOnly" in model) ||
+          model.payGoOnly !== true,
+      )
+      .map((model) => {
+        const supportsReasoningEffort = /^qwen3\.8-(?:max|flash)$/i.test(
+          model.model,
+        );
+        return Object.freeze({
+          provider,
+          model: model.model,
+          displayName: model.displayName,
+          contextWindow: model.contextWindow,
+          maxContextWindow: model.contextWindow,
+          maxOutputTokens: model.maxOutputTokens,
+          inputModalities: model.vision
+            ? TEXT_IMAGE_MODALITIES
+            : Object.freeze(["text"] as const),
+          supportsToolUse: true,
+          supportsParallelToolCalls: true,
+          // QwenCloud's Singapore OpenAI-compatible routes do not support
+          // JSON Schema response_format. Keep schema generation on AgenC's
+          // provider-neutral prompt/validation fallback instead.
+          supportsStructuredOutput: false,
+          // AgenC exposes its provider-neutral WebSearch tool. Qwen's built-in
+          // Harness tools live on the separate Responses API and are therefore
+          // not claimed by this chat-completions adapter.
+          supportsSearchTool: false,
+          supportsVerbosity: false,
+          webSearchToolType: "none" as const,
+          supportsReasoningSummaries: false,
+          defaultReasoningSummary: "none" as const,
+          supportedReasoningLevels: supportsReasoningEffort
+            ? QWEN_38_REASONING_LEVELS
+            : NO_REASONING_LEVELS,
+          ...(supportsReasoningEffort
+            ? { defaultReasoningLevel: "xhigh" as const }
+            : {}),
+          additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+          priority: model.priority,
+          visibility: "list" as const,
+        });
+      }),
+  );
+}
 // Grok 4.3 and 4.5 accept these depth controls. The multi-agent family uses
 // the same values to control agent count rather than thinking depth.
 const GROK_REASONING_LEVELS = Object.freeze([
@@ -121,6 +272,7 @@ const OPENAI_PERSONALITY_MESSAGES: ModelMessages = Object.freeze({
 
 export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
   Object.freeze([
+    ...qwenCloudCatalogEntries(),
     {
       provider: "meta",
       model: "muse-spark-1.3",

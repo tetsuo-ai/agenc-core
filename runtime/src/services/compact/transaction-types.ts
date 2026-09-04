@@ -9,6 +9,7 @@ import type { AgentInvocationChannelMetadata } from "../../contracts/agent-invoc
 import type { ToolResultIntegrity } from "../../session/tool-result-integrity.js";
 import type { RuntimeMessage } from "./types.js";
 import type { CompactionHistoryMarkerV1 } from "../../session/compaction-history-marker.js";
+import type { ProviderReasoningReplay } from "../../llm/types.js";
 
 export const COMPACTION_EVENT_FORMAT_VERSION = 1 as const;
 /** Minimum reader stamped by writers of the current event format. */
@@ -326,6 +327,7 @@ export interface CompactionProjectionMessageV1 {
   readonly id?: string;
   readonly phase?: string;
   readonly endTurn?: boolean;
+  readonly providerReasoning?: ProviderReasoningReplay;
   readonly toolResultIntegrity?: ToolResultIntegrity;
   readonly agentInvocation?: AgentInvocationChannelMetadata;
   readonly compactionHistory?: CompactionHistoryMarkerV1;

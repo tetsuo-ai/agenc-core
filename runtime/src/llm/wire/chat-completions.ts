@@ -10,6 +10,7 @@ import type {
   LLMResponse,
   LLMTool,
   LLMToolCall,
+  ProviderReasoningProvenance,
 } from "../types.js";
 import { estimateUtf8TokenUnits } from "../token-accounting.js";
 import {
@@ -19,6 +20,7 @@ import {
 import { DEFAULT_MAX_OUTPUT_TOKENS } from "../openai-compatible-token-limits.js";
 import {
   assistantTextFromContentBlocks,
+  applyToolResultImagePolicyForWire,
   coerceUsage,
   collectRequestMetrics,
   messageTextContent,
@@ -100,8 +102,14 @@ function toChatCompletionsMessages(
   messages: readonly LLMMessage[],
   options: LLMChatOptions | undefined,
   systemSuffix?: string,
+  toolResultImagePolicy?: "relay_as_user" | "strip",
+  replaysReasoningContent = false,
+  reasoningContentProvenance?: ProviderReasoningProvenance,
 ): Array<Record<string, unknown>> {
-  const prepared = prepareMessagesForWire(messages);
+  const prepared = applyToolResultImagePolicyForWire(
+    prepareMessagesForWire(messages),
+    toolResultImagePolicy,
+  );
   let systemPrompt = systemPromptParts(prepared, options).join("\n\n");
   if (systemSuffix !== undefined && systemSuffix.length > 0) {
     systemPrompt =
@@ -111,6 +119,27 @@ function toChatCompletionsMessages(
   if (systemPrompt.length > 0) {
     wireMessages.push({ role: "system", content: systemPrompt });
   }
+  const replayReasoningContent = (
+    message: LLMMessage,
+  ): string | undefined => {
+    if (
+      !replaysReasoningContent ||
+      !message.providerReasoningContent ||
+      reasoningContentProvenance === undefined ||
+      message.providerReasoningProvenance === undefined
+    ) {
+      return undefined;
+    }
+    const source = message.providerReasoningProvenance;
+    return typeof source.provider === "string" &&
+      typeof source.model === "string" &&
+      source.provider.trim().toLowerCase() ===
+        reasoningContentProvenance.provider.trim().toLowerCase() &&
+      source.model.trim().toLowerCase() ===
+        reasoningContentProvenance.model.trim().toLowerCase()
+      ? message.providerReasoningContent
+      : undefined;
+  };
   for (const message of prepared) {
     if (message.role === "system" || message.role === "developer") continue;
     if (message.role === "tool") {
@@ -122,9 +151,13 @@ function toChatCompletionsMessages(
       continue;
     }
     if (message.role === "assistant" && message.toolCalls?.length) {
+      const providerReasoningContent = replayReasoningContent(message);
       wireMessages.push({
         role: "assistant",
         content: messageTextContent(message.content),
+        ...(providerReasoningContent !== undefined
+          ? { reasoning_content: providerReasoningContent }
+          : {}),
         tool_calls: message.toolCalls.map((toolCall) => ({
           id: toolCall.id,
           type: "function",
@@ -140,9 +173,14 @@ function toChatCompletionsMessages(
       });
       continue;
     }
+    const providerReasoningContent = replayReasoningContent(message);
     wireMessages.push({
       role: message.role,
       content: toOpenAIMessageContent(message.content),
+      ...(message.role === "assistant" &&
+      providerReasoningContent !== undefined
+        ? { reasoning_content: providerReasoningContent }
+        : {}),
     });
   }
   return wireMessages;
@@ -168,11 +206,19 @@ export function buildChatCompletionsRequest(
       input.messages,
       input.options,
       input.providerCapabilityHints?.reasoningSoftSwitchSuffix,
+      input.providerCapabilityHints?.toolResultImagePolicy,
+      input.providerCapabilityHints?.replaysReasoningContent === true,
+      input.providerCapabilityHints?.reasoningContentProvenance,
     ),
     [maxTokenField]: maxTokens,
   };
 
   const requestedToolChoice = input.options?.toolChoice;
+  const disablesThinkingForForcedToolChoice =
+    input.providerCapabilityHints?.disablesThinkingForForcedToolChoice === true &&
+    requestedToolChoice !== undefined &&
+    requestedToolChoice !== "auto" &&
+    requestedToolChoice !== "none";
   const autoOnlyToolChoice =
     input.providerCapabilityHints?.toolChoicePolicy === "auto_only";
   const omitToolsForChoice =
@@ -188,6 +234,17 @@ export function buildChatCompletionsRequest(
     body.tool_choice = autoOnlyToolChoice
       ? "auto"
       : parseOpenAIToolChoice(requestedToolChoice);
+  }
+  if (disablesThinkingForForcedToolChoice) {
+    body.enable_thinking = false;
+  } else if (
+    input.providerCapabilityHints?.preservesThinkingHistory === true
+  ) {
+    // Qwen 3.6/3.7 ignore replayed reasoning_content by default. Explicitly
+    // preserve it so a thinking-mode tool call can continue after its tool
+    // result. Forced choices take the branch above because Qwen rejects them
+    // while thinking is enabled.
+    body.preserve_thinking = true;
   }
   if (
     input.options?.parallelToolCalls !== undefined &&
@@ -211,6 +268,7 @@ export function buildChatCompletionsRequest(
   // unmigrated callers don't regress.
   if (
     input.options?.reasoningEffort !== undefined &&
+    !disablesThinkingForForcedToolChoice &&
     input.providerCapabilityHints?.acceptsReasoningEffort !== false &&
     // Providers with per-model effort enums (NVIDIA NIM) reject or
     // silently ignore out-of-enum values; stripping lets the model run
@@ -287,6 +345,15 @@ export function parseChatCompletionsResponse(
   response: Record<string, unknown>,
   request: ChatCompletionsRequestOptions,
 ): LLMResponse {
+  // Keep hashed aliases request-scoped. Meta's auto-only compatibility
+  // contract strips the complete tool catalog when callers select `none`;
+  // using the unfiltered input catalog here would let an unadvertised hashed
+  // name resolve anyway if a malformed or hostile response echoed one.
+  const advertisedToolNames =
+    request.providerCapabilityHints?.toolChoicePolicy === "auto_only" &&
+      request.options?.toolChoice === "none"
+      ? []
+      : request.tools.map((tool) => tool.function.name);
   const choices = Array.isArray(response.choices)
     ? (response.choices as Array<Record<string, unknown>>)
     : [];
@@ -310,6 +377,7 @@ export function parseChatCompletionsResponse(
                 (toolCall.function as Record<string, unknown> | undefined) ?? {}
               ).name ?? "",
             ),
+            advertisedToolNames,
           ),
           arguments: String(
             (
@@ -322,13 +390,21 @@ export function parseChatCompletionsResponse(
       "OpenAI chat-completions response emitted invalid tool_call",
     )
     : [];
+  const providerReasoningContent =
+    typeof message.reasoning_content === "string" &&
+      message.reasoning_content.length > 0
+      ? message.reasoning_content
+      : undefined;
   const rawContent =
     typeof message.content === "string"
       ? message.content
       : Array.isArray(message.content)
         ? assistantTextFromContentBlocks(message.content)
-        : typeof message.reasoning_content === "string"
-          ? message.reasoning_content
+        // DeepSeek's non-streaming compatibility contract historically uses
+        // reasoning_content as its last-resort answer. Other providers (most
+        // notably Qwen) treat that field as opaque replay state, not UI text.
+        : /(?:^|[/:])deepseek(?:$|[-_.:])/iu.test(model)
+          ? providerReasoningContent ?? ""
           : "";
   // Models whose template inlines chain-of-thought in `content`
   // (MiniMax M3, Qwen3, R1 distills, Kimi K2) would otherwise print
@@ -370,15 +446,29 @@ export function parseChatCompletionsResponse(
 
   return {
     content,
-    ...(inlineThinking.length > 0
+    ...(providerReasoningContent !== undefined || inlineThinking.length > 0
       ? {
           thinking: Object.freeze([
             Object.freeze({
-              text: inlineThinking,
+              text: [providerReasoningContent, inlineThinking]
+                .filter((value): value is string => Boolean(value))
+                .join("\n"),
               redacted: false,
               kind: "reasoning_summary" as const,
             }),
           ]),
+        }
+      : {}),
+    ...(providerReasoningContent !== undefined
+      ? {
+          providerReasoningContent,
+          ...(request.providerCapabilityHints?.reasoningContentProvenance !==
+          undefined
+            ? {
+                providerReasoningProvenance:
+                  request.providerCapabilityHints.reasoningContentProvenance,
+              }
+            : {}),
         }
       : {}),
     toolCalls,

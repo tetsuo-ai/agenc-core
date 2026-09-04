@@ -4,6 +4,7 @@ import {
   collectChatCompletionsRequestMetadata,
   parseChatCompletionsResponse,
 } from "./chat-completions.js";
+import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
 
 describe("buildChatCompletionsRequest", () => {
   test("serializes request instructions as the first system message only", () => {
@@ -457,6 +458,52 @@ describe("buildChatCompletionsRequest", () => {
     });
   });
 
+  test("does not resolve a hashed tool alias when auto-only tool choice omitted the catalog", () => {
+    const longToolName = `mcp.plugin-${"shared-prefix-".repeat(5)}.search`;
+    const wireName = encodeMcpToolNameForWire(longToolName);
+    expect(wireName).toMatch(/^toolh__/);
+
+    expect(() =>
+      parseChatCompletionsResponse(
+        "meta-model",
+        {
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: null,
+                tool_calls: [
+                  {
+                    id: "call_unadvertised",
+                    type: "function",
+                    function: { name: wireName, arguments: "{}" },
+                  },
+                ],
+              },
+              finish_reason: "tool_calls",
+            },
+          ],
+        },
+        {
+          model: "meta-model",
+          messages: [{ role: "user", content: "hello" }],
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: longToolName,
+                description: "A long tool that was disabled for this request.",
+                parameters: { type: "object", properties: {} },
+              },
+            },
+          ],
+          options: { toolChoice: "none" },
+          providerCapabilityHints: { toolChoicePolicy: "auto_only" },
+        },
+      )
+    ).toThrow(/unknown hashed tool name/i);
+  });
+
   test("falls back to DeepSeek reasoning_content when content is absent", () => {
     const response = parseChatCompletionsResponse(
       "deepseek-v4-pro",
@@ -481,5 +528,38 @@ describe("buildChatCompletionsRequest", () => {
     );
 
     expect(response.content).toBe("reasoning trace");
+  });
+
+  test("keeps Qwen reasoning_content out of visible content", () => {
+    const response = parseChatCompletionsResponse(
+      "qwen3.8-max",
+      {
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: null,
+              reasoning_content: "opaque replay state",
+              tool_calls: [
+                {
+                  id: "call_echo",
+                  type: "function",
+                  function: { name: "system.echo", arguments: "{}" },
+                },
+              ],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      },
+      {
+        model: "qwen3.8-max",
+        messages: [{ role: "user", content: "call echo" }],
+        tools: [],
+      },
+    );
+
+    expect(response.content).toBe("");
+    expect(response.providerReasoningContent).toBe("opaque replay state");
   });
 });

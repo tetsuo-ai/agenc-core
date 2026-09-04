@@ -277,6 +277,14 @@ const SECRET_PATTERNS: ReadonlyArray<{
   readonly replacement: string;
 }> = [
   {
+    // QwenCloud workspace / Token Plan keys use three dot-separated payload
+    // segments. The generic sk-* matcher intentionally excludes dots, so the
+    // complete vendor shape must run first or only its short prefix is seen.
+    pattern:
+      /(?<![A-Za-z0-9_.-])sk-(?:ws|sp)-H\.[A-Za-z0-9_-]{4,32}\.[A-Za-z0-9_-]{4,32}\.[A-Za-z0-9_-]{32,}(?=$|[^A-Za-z0-9_.-])/g,
+    replacement: REDACTED_SECRET,
+  },
+  {
     // xAI — the runtime's OWN classifier key shape; redact first so a bare
     // `xai-...` never leaks even when no surrounding key/context is present.
     pattern: /(?<![A-Za-z0-9_-])xai-[A-Za-z0-9_-]{16,}(?=$|[^A-Za-z0-9_-])/g,

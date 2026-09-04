@@ -77,7 +77,7 @@ describe("token estimation", () => {
     expect(bounds.estimate).toBeLessThan(bounds.max);
   });
 
-  test("estimates multimodal blocks from their actual serialized payload", () => {
+  test("estimates image media independently from its Base64 transport size", () => {
     const shortPayload = roughTokenCountEstimationForContent([
       { type: "text", text: "a".repeat(8) },
       { type: "image", source: { data: "a" } },
@@ -90,6 +90,15 @@ describe("token estimation", () => {
     ]);
 
     expect(shortPayload).toBeGreaterThan(0);
+    // Only the document remains byte-accounted. The image itself is metered as
+    // visual patches, so its Base64 transport size cannot dominate the count.
+    const longImageOnly = roughTokenCountEstimationForContent([
+      { type: "image", source: { type: "base64", data: "a".repeat(400) } },
+    ]);
+    const shortImageOnly = roughTokenCountEstimationForContent([
+      { type: "image", source: { type: "base64", data: "a" } },
+    ]);
+    expect(longImageOnly).toBe(shortImageOnly);
     expect(longPayload).toBeGreaterThan(shortPayload);
 
     expect(
