@@ -260,6 +260,20 @@ function isMetaMuseSparkModel(model: string): boolean {
   );
 }
 
+function isCerebrasReasoningModel(model: string): boolean {
+  return matchesModelFamily(
+    model,
+    /(?:^|[/:])(?:gpt-oss-120b|qwen-3\.8-27b|gemma-4-31b)$/,
+  );
+}
+
+function isCerebrasVisionModel(model: string): boolean {
+  return matchesModelFamily(
+    model,
+    /(?:^|[/:])(?:qwen-3\.8-27b|gemma-4-31b)$/,
+  );
+}
+
 function isQwen38ThinkingModel(model: string): boolean {
   return matchesModelFamily(
     model,
@@ -440,6 +454,14 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsStructuredOutputWithTools: isMetaMuseSparkModel,
     acceptsImageHistory: isMetaMuseSparkModel,
     acceptsReasoningEffort: isMetaMuseSparkModel,
+  },
+  cerebras: {
+    ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
+    supportsImageInput: isCerebrasVisionModel,
+    supportsExtendedThinking: isCerebrasReasoningModel,
+    acceptsImageHistory: isCerebrasVisionModel,
+    acceptsThinkingHistory: isCerebrasReasoningModel,
+    acceptsReasoningEffort: isCerebrasReasoningModel,
   },
   qwen: {
     ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,

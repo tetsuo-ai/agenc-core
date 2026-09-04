@@ -466,6 +466,14 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     ],
     onboarding: onboardingInfo(98, "api-key"),
   }),
+  cerebras: providerDefinition({
+    name: "Cerebras",
+    defaultModel: "gpt-oss-120b",
+    baseURL: "https://api.cerebras.ai/v1",
+    credentials: apiKeyCredentials(["CEREBRAS_API_KEY"]),
+    baseURLEnvVars: ["CEREBRAS_BASE_URL"],
+    onboarding: onboardingInfo(99, "api-key"),
+  }),
   gemini: providerDefinition({
     name: "Gemini",
     // gemini-2.5-pro is retired for new keys (404 pointing at the 3.x
@@ -664,6 +672,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   meta: mergeDerivedProviderModels("meta"),
   qwen: mergeDerivedProviderModels("qwen"),
   "qwen-token-plan": mergeDerivedProviderModels("qwen-token-plan"),
+  cerebras: mergeDerivedProviderModels("cerebras"),
   gemini: Object.freeze([
     "gemini-3.1-pro-preview",
     "gemini-3.7-flash",

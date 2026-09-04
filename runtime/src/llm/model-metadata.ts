@@ -41,6 +41,7 @@ const LIVE_METADATA_PROVIDERS = new Set([
   "meta",
   "qwen",
   "qwen-token-plan",
+  "cerebras",
 ]);
 
 export type ModelMetadataSource =
@@ -474,6 +475,7 @@ const OPENAI_COMPATIBLE_METADATA_PROVIDERS = new Set([
   "meta",
   "qwen",
   "qwen-token-plan",
+  "cerebras",
   "gemini",
   "ollama",
 ]);

@@ -136,6 +136,14 @@ export const MODEL_TOKENIZER_CONFIGS: readonly ModelTokenizerConfig[] = [
     supportsCode: true,
   },
   {
+    modelFamily: "cerebras",
+    providerNames: ["cerebras"],
+    modelMatchers: [/gpt-oss/i, /qwen-3\.8/i, /gemma-4/i],
+    bytesPerToken: 3.8,
+    supportsJson: true,
+    supportsCode: true,
+  },
+  {
     modelFamily: "deepseek",
     providerNames: ["deepseek"],
     modelMatchers: [/deepseek/i],

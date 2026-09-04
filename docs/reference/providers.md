@@ -93,7 +93,7 @@ the Grok 4.6 default and capability change.
 they run only through the Grok Build CLI ACP path. See
 [grok-oauth.md](../grok-oauth.md#composer-models-acp).
 
-## Built-in providers (19)
+## Built-in providers (20)
 
 | Slug | Display name | Default model | Default base URL | Ordered credential env aliases | Ordered endpoint env aliases | Onboarding access |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -109,6 +109,7 @@ they run only through the Grok Build CLI ACP path. See
 | `meta` | Meta | `muse-spark-1.3` | `https://api.meta.ai/v1` | `MODEL_API_KEY` | `META_BASE_URL` | `api-key` |
 | `qwen` | QwenCloud Pay-As-You-Go | `qwen3.8-max` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY`, `QWEN_API_KEY` | `DASHSCOPE_BASE_URL`, `QWEN_BASE_URL` | `api-key` |
 | `qwen-token-plan` | QwenCloud Token Plan | `qwen3.8-max` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | `QWEN_TOKEN_PLAN_API_KEY`, `DASHSCOPE_TOKEN_PLAN_API_KEY` | `QWEN_TOKEN_PLAN_BASE_URL`, `DASHSCOPE_TOKEN_PLAN_BASE_URL` | `api-key` |
+| `cerebras` | Cerebras | `gpt-oss-120b` | `https://api.cerebras.ai/v1` | `CEREBRAS_API_KEY` | `CEREBRAS_BASE_URL` | `api-key` |
 | `gemini` | Gemini | `gemini-3.1-pro-preview` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `GEMINI_BASE_URL` | `api-key` |
 | `mistral` | Mistral | `mistral-medium-latest` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | `MISTRAL_BASE_URL` | `api-key` |
 | `nvidia-nim` | NVIDIA NIM | `nvidia/llama-3.1-nemotron-70b-instruct` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | `NVIDIA_BASE_URL` | `api-key` |
@@ -226,6 +227,33 @@ request. Exact per-token pricing is not published in the authoritative
 provider documentation, so AgenC reports the cost as unknown instead of
 treating its conservative fallback estimate as authoritative.
 
+Cerebras uses `CEREBRAS_API_KEY` with the OpenAI-compatible
+`https://api.cerebras.ai/v1/chat/completions` endpoint. The optional
+`CEREBRAS_BASE_URL` override supports a private/dedicated deployment without
+restricting its model name to the public catalog. The public chat catalog is:
+
+| Model | Context | Max output | Input / output per 1M tokens | Image input | Parallel tools | Reasoning effort (default) |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| `gpt-oss-120b` | 131,072 | 40,960 | $0.35 / $0.75 | no | no | `low`, `medium`, `high` (`medium`) |
+| `qwen-3.8-27b` | 65,536 | 32,768 | $0.00 / $0.00 | yes | yes | `none`, `low`, `medium`, `high` (`high`) |
+| `gemma-4-31b` | 131,072 | 40,960 | $0.99 / $1.49 | yes | yes | `none`, `low`, `medium`, `high` (`none`) |
+
+All three expose function tools and JSON-schema structured output. AgenC sends
+`max_completion_tokens`, keeps Cerebras' `reasoning` response field out of
+visible assistant text, and replays that opaque field only to the same
+provider/model during a tool loop. Tool-result images are relayed as a user
+image only for the two vision models; `gpt-oss-120b` and unknown dedicated
+models strip them. The adapter targets API v2, whose strict tool sequence
+requires every assistant tool call to be followed immediately by its matching
+tool result. The optional `priority` and `flex` service tiers are exposed in
+model metadata. These capabilities were verified against the public Cerebras
+model catalog and inference documentation on 2026-09-04. The listed shared-API
+rates are the public catalog snapshot from that date; dedicated endpoint rates
+remain deployment-specific. Sources: [public model catalog](https://inference-docs.cerebras.ai/api-reference/models/public-models),
+[Chat Completions](https://inference-docs.cerebras.ai/api-reference/chat-completions),
+[reasoning](https://inference-docs.cerebras.ai/capabilities/reasoning),
+and [service tiers](https://inference-docs.cerebras.ai/capabilities/service-tiers).
+
 ## Local context windows
 
 How AgenC learns the token budget for a local or OpenAI-compatible model.
@@ -274,8 +302,8 @@ explicit config, the built-in heuristic, or 128k. The admitted session window
 can therefore be smaller than the picker after the live probe returns.
 
 Live metadata providers: `grok`, `openai`, `ollama`, `lmstudio`,
-`openai-compatible`, `groq`, `deepseek`, `meta`. Grok / OpenAI / Groq /
-DeepSeek / Meta
+`openai-compatible`, `groq`, `deepseek`, `meta`, `qwen`,
+`qwen-token-plan`, and `cerebras`. Hosted providers
 are probed only when `providers.<slug>.base_url` or that provider's endpoint
 env is set.
 
@@ -451,7 +479,7 @@ Source: `runtime/src/llm/wire/think-tags.ts`, `capability-gating.ts`,
 `chat-completions.ts`; streaming split in
 `runtime/src/llm/providers/openai/adapter.ts`.
 
-### Think tags and `reasoning_content`
+### Think tags and provider reasoning fields
 
 Reasoning models disagree about where chain-of-thought goes.
 
@@ -459,6 +487,7 @@ Reasoning models disagree about where chain-of-thought goes.
 | --- | --- |
 | Streaming `delta.reasoning_content` | Emits hidden thinking events and stays out of visible assistant text. |
 | Non-streaming `message.reasoning_content` | Becomes visible assistant content only when `message.content` is absent, null, or otherwise not text/content blocks. A string `content`, including an empty string, takes precedence. |
+| Cerebras `delta.reasoning` / `message.reasoning` | Emits/stores hidden thinking separately from `content`; opaque state is replayed as `reasoning` only to the exact same Cerebras model. |
 | Leading `<think>...</think>` or `◁think▷...◁/think▷` in `content` | First leading block (whitespace before the opener allowed) moves to thinking. Text after the closer is the answer. |
 | Literal `<think>` later in the answer | Left visible. Only a marker that opens at the start of the assistant message starts a block. |
 | Opener with no closer | Remainder is thinking. The generation died mid-thought; it is not an answer. |
@@ -479,10 +508,10 @@ rejects or silently ignores. An undefined `acceptsX` flag still means
 
 | Field | Who gets it |
 | --- | --- |
-| `reasoning_effort` | OpenAI reasoning-family slugs (`gpt-5`, `o1`, `o3`, `o4`, `codex`, `chatgpt-5`). Grok 4.3 / 4.5 / 4.6, `grok-4-20-multi-agent` / `grok-4.20-multi-agent`, and `grok-build-latest`. Meta Muse Spark models for `minimal`, `low`, `medium`, `high`, and `xhigh` only. NVIDIA NIM families below, and only values in that family's enum. Everyone else: stripped. `/effort` on a local model is a no-op on the wire. |
-| `tool_choice` | Meta accepts only `auto`. `required` and named choices are normalized to `auto`; `none` omits both the tools and choice fields. Other compatible providers keep the requested value. |
+| `reasoning_effort` | OpenAI reasoning-family slugs (`gpt-5`, `o1`, `o3`, `o4`, `codex`, `chatgpt-5`). Grok 4.3 / 4.5 / 4.6, `grok-4-20-multi-agent` / `grok-4.20-multi-agent`, and `grok-build-latest`. Meta Muse Spark models for `minimal`, `low`, `medium`, `high`, and `xhigh` only. Cerebras `gpt-oss-120b` for `low`, `medium`, `high`; Cerebras `qwen-3.8-27b` and `gemma-4-31b` for `none`, `low`, `medium`, `high`. NVIDIA NIM families below, and only values in that family's enum. Everyone else: stripped. `/effort` on a local model is a no-op on the wire. |
+| `tool_choice` | Meta accepts only `auto`. `required` and named choices are normalized to `auto`; `none` omits both the tools and choice fields. Cerebras omits tool-choice/parallel controls whenever no tool definitions are attached, as required by API v2. Other compatible providers keep the requested value. |
 | `stop` | Meta rejects stop sequences, so its adapter strips them. Other compatible providers keep caller-supplied sequences. |
-| `service_tier` | `openai` and `azure-openai` only |
+| `service_tier` | `openai`, `azure-openai`, and `cerebras` only |
 | `stream_options.include_usage` | Default **on**. `STREAM_USAGE_INCOMPATIBLE_PROVIDERS` is currently empty, and no operator or per-instance override is wired. |
 
 NVIDIA NIM `reasoning_effort` enums (hosted schemas, 2026-08):
@@ -508,8 +537,8 @@ For `lmstudio` and `openai-compatible` only
   `maxOutputTokens` option and `max_output_tokens` setting supply the requested
   value. Non-local OpenAI chat-completions requests use
   `max_completion_tokens`. The runtime default remains
-  `DEFAULT_MAX_OUTPUT_TOKENS` (**32_000**); Meta also uses
-  `max_completion_tokens`. This ceiling applies only to the two
+  `DEFAULT_MAX_OUTPUT_TOKENS` (**32_000**); Meta, QwenCloud, and Cerebras also
+  use `max_completion_tokens`. This ceiling applies only to the two
   grammar-constrained slugs.
 - **`/no_think` system suffix** when the model slug matches `qwen3` /
   `qwen-3`. Qwen3 hybrid thinking honors that line. LM Studio ignores

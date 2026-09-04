@@ -19,6 +19,7 @@ import type {
 } from "./types.js";
 import { isRecord } from "../utils/record.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
+import { resolveModelCapabilityHints } from "./registry/model-catalog.js";
 
 export const ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME = "agenc_structured_output";
 
@@ -104,6 +105,18 @@ export function resolveProviderStructuredOutputMode(input: {
     if (
       input.api !== "chat_completions" ||
       !supportsMetaStructuredOutputs(input.model)
+    ) {
+      return "unsupported";
+    }
+    return "chat_response_format";
+  }
+  if (provider === "cerebras") {
+    if (
+      input.api !== "chat_completions" ||
+      resolveModelCapabilityHints({
+        provider,
+        model: input.model,
+      })?.supportsStructuredOutput !== true
     ) {
       return "unsupported";
     }
