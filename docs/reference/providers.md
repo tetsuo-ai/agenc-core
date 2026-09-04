@@ -235,23 +235,38 @@ restricting its model name to the public catalog. The public chat catalog is:
 | Model | Context | Max output | Input / output per 1M tokens | Image input | Parallel tools | Reasoning effort (default) |
 | --- | ---: | ---: | ---: | --- | --- | --- |
 | `gpt-oss-120b` | 131,072 | 40,960 | $0.35 / $0.75 | no | no | `low`, `medium`, `high` (`medium`) |
-| `qwen-3.8-27b` | 65,536 | 32,768 | $0.00 / $0.00 | yes | yes | `none`, `low`, `medium`, `high` (`high`) |
+| `qwen-3.8-27b` | 65,536 | 32,768 | $0.99 / $1.49 | yes | yes | `none`, `low`, `medium`, `high` (`high`) |
 | `gemma-4-31b` | 131,072 | 40,960 | $0.99 / $1.49 | yes | yes | `none`, `low`, `medium`, `high` (`none`) |
 
-All three expose function tools and JSON-schema structured output. AgenC sends
+All three expose function tools and JSON-schema structured output, but
+Cerebras rejects combining those two modes in one request; AgenC blocks that
+combination before dispatch. AgenC sends
 `max_completion_tokens`, keeps Cerebras' `reasoning` response field out of
 visible assistant text, and replays that opaque field only to the same
 provider/model during a tool loop. Tool-result images are relayed as a user
 image only for the two vision models; `gpt-oss-120b` and unknown dedicated
-models strip them. The adapter targets API v2, whose strict tool sequence
+models strip them. Direct image history must use base64 PNG or JPEG data URIs
+on `user` messages; remote URLs, WebP, and GIF are rejected before dispatch.
+Requests are limited to ten images and a 10 MiB total HTTP request payload.
+Unsupported or excess
+tool-result media is dropped while its textual result remains available to the
+model. The adapter targets API v2, whose strict tool sequence
 requires every assistant tool call to be followed immediately by its matching
-tool result. The optional `priority` and `flex` service tiers are exposed in
-model metadata. These capabilities were verified against the public Cerebras
-model catalog and inference documentation on 2026-09-04. The listed shared-API
-rates are the public catalog snapshot from that date; dedicated endpoint rates
-remain deployment-specific. Sources: [public model catalog](https://inference-docs.cerebras.ai/api-reference/models/public-models),
+tool result. Explicit `service_tier` values remain available to callers of
+configured dedicated endpoints, but the shared model catalog advertises no
+selectable speed tiers because `flex` is private preview and `priority` is
+dedicated-only. Structured schemas outside Cerebras' strict subset (including
+array-size constraints such as `maxItems`) automatically use `strict: false`
+on the wire without erasing the original application constraint. These
+capabilities were verified against the public Cerebras model catalog and
+inference documentation on 2026-09-04. The listed shared-API rates use the
+official model/pricing pages from that date; dedicated endpoint rates remain
+deployment-specific. Sources: [public model catalog](https://inference-docs.cerebras.ai/api-reference/models/public-models),
+[Qwen 3.8 27B](https://inference-docs.cerebras.ai/models/qwen-3.8-27b),
 [Chat Completions](https://inference-docs.cerebras.ai/api-reference/chat-completions),
 [reasoning](https://inference-docs.cerebras.ai/capabilities/reasoning),
+[image inputs](https://inference-docs.cerebras.ai/capabilities/image-inputs),
+[structured outputs](https://inference-docs.cerebras.ai/capabilities/structured-outputs),
 and [service tiers](https://inference-docs.cerebras.ai/capabilities/service-tiers).
 
 ## Local context windows
@@ -511,7 +526,7 @@ rejects or silently ignores. An undefined `acceptsX` flag still means
 | `reasoning_effort` | OpenAI reasoning-family slugs (`gpt-5`, `o1`, `o3`, `o4`, `codex`, `chatgpt-5`). Grok 4.3 / 4.5 / 4.6, `grok-4-20-multi-agent` / `grok-4.20-multi-agent`, and `grok-build-latest`. Meta Muse Spark models for `minimal`, `low`, `medium`, `high`, and `xhigh` only. Cerebras `gpt-oss-120b` for `low`, `medium`, `high`; Cerebras `qwen-3.8-27b` and `gemma-4-31b` for `none`, `low`, `medium`, `high`. NVIDIA NIM families below, and only values in that family's enum. Everyone else: stripped. `/effort` on a local model is a no-op on the wire. |
 | `tool_choice` | Meta accepts only `auto`. `required` and named choices are normalized to `auto`; `none` omits both the tools and choice fields. Cerebras omits tool-choice/parallel controls whenever no tool definitions are attached, as required by API v2. Other compatible providers keep the requested value. |
 | `stop` | Meta rejects stop sequences, so its adapter strips them. Other compatible providers keep caller-supplied sequences. |
-| `service_tier` | `openai`, `azure-openai`, and `cerebras` only |
+| `service_tier` | `openai` and `azure-openai`; explicit Cerebras pass-through remains for configured dedicated endpoints, while its shared catalog advertises no selectable tier |
 | `stream_options.include_usage` | Default **on**. `STREAM_USAGE_INCOMPATIBLE_PROVIDERS` is currently empty, and no operator or per-instance override is wired. |
 
 NVIDIA NIM `reasoning_effort` enums (hosted schemas, 2026-08):

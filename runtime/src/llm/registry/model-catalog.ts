@@ -30,6 +30,7 @@ export interface RegisteredModelCatalogEntry {
   readonly supportsToolUse: boolean;
   readonly supportsParallelToolCalls: boolean;
   readonly supportsStructuredOutput: boolean;
+  readonly supportsStructuredOutputWithTools?: boolean;
   readonly supportsSearchTool: boolean;
   readonly supportsVerbosity: boolean;
   readonly modelMessages?: ModelMessages;
@@ -74,7 +75,6 @@ const TEXT_MODALITIES = Object.freeze(
   ["text"] as const satisfies readonly ModelInputModality[],
 );
 const FAST_SPEED_TIER = Object.freeze(["fast"] as const);
-const CEREBRAS_SERVICE_TIERS = Object.freeze(["priority", "flex"] as const);
 const NO_ADDITIONAL_SPEED_TIERS = Object.freeze([] as const);
 const NO_REASONING_LEVELS = Object.freeze(
   [] as const satisfies readonly ReasoningEffort[],
@@ -299,6 +299,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportsToolUse: true,
       supportsParallelToolCalls: false,
       supportsStructuredOutput: true,
+      supportsStructuredOutputWithTools: false,
       supportsSearchTool: false,
       supportsVerbosity: false,
       webSearchToolType: "none",
@@ -306,7 +307,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       defaultReasoningSummary: "none",
       supportedReasoningLevels: CEREBRAS_GPT_OSS_REASONING_LEVELS,
       defaultReasoningLevel: "medium",
-      additionalSpeedTiers: CEREBRAS_SERVICE_TIERS,
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
       priority: 0,
       visibility: "list",
     },
@@ -321,6 +322,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportsToolUse: true,
       supportsParallelToolCalls: true,
       supportsStructuredOutput: true,
+      supportsStructuredOutputWithTools: false,
       supportsSearchTool: false,
       supportsVerbosity: false,
       webSearchToolType: "none",
@@ -328,7 +330,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       defaultReasoningSummary: "none",
       supportedReasoningLevels: CEREBRAS_QWEN_GEMMA_REASONING_LEVELS,
       defaultReasoningLevel: "high",
-      additionalSpeedTiers: CEREBRAS_SERVICE_TIERS,
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
       priority: 1,
       visibility: "list",
     },
@@ -343,6 +345,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportsToolUse: true,
       supportsParallelToolCalls: true,
       supportsStructuredOutput: true,
+      supportsStructuredOutputWithTools: false,
       supportsSearchTool: false,
       supportsVerbosity: false,
       webSearchToolType: "none",
@@ -350,7 +353,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       defaultReasoningSummary: "none",
       supportedReasoningLevels: CEREBRAS_QWEN_GEMMA_REASONING_LEVELS,
       defaultReasoningLevel: "none",
-      additionalSpeedTiers: CEREBRAS_SERVICE_TIERS,
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
       priority: 2,
       visibility: "list",
     },
@@ -905,8 +908,9 @@ export function resolveModelCapabilityHints(input: {
     supportsToolUse: entry.supportsToolUse,
     supportsImageInput,
     supportsStructuredOutput: entry.supportsStructuredOutput,
-    supportsStructuredOutputWithTools: entry.supportsStructuredOutput &&
-      entry.supportsToolUse,
+    supportsStructuredOutputWithTools:
+      entry.supportsStructuredOutputWithTools ??
+      (entry.supportsStructuredOutput && entry.supportsToolUse),
     supportsProviderNativeWebSearch: entry.supportsSearchTool,
     acceptsImageHistory: supportsImageInput,
     acceptsReasoningEffort: entry.supportedReasoningLevels.length > 0,

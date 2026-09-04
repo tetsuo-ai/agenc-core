@@ -39,6 +39,11 @@ import {
   encodeMcpToolNameForWire,
 } from "./mcp-tool-naming.js";
 import type { ChatCompletionsCapabilityHints } from "./capability-gating.js";
+import {
+  applyCerebrasImageInputContract,
+  assertCerebrasRequestPayloadSize,
+  buildCerebrasStructuredOutputTextFormat,
+} from "./cerebras-contract.js";
 import { splitLeadingThinkBlock } from "./think-tags.js";
 
 export interface ChatCompletionsRequestOptions {
@@ -108,13 +113,18 @@ function toChatCompletionsMessages(
     "reasoning_content",
   reasoningContentProvenance?: ProviderReasoningProvenance,
   requiresStrictToolResultSequence = false,
+  imageInputContract?: "cerebras_v2",
+  acceptsDirectImageInput = false,
 ): Array<Record<string, unknown>> {
   const normalized = prepareMessagesForWire(messages);
   if (requiresStrictToolResultSequence) {
     assertStrictToolResultSequence(normalized);
   }
+  const imageSafeMessages = imageInputContract === "cerebras_v2"
+    ? applyCerebrasImageInputContract(normalized, acceptsDirectImageInput)
+    : normalized;
   const prepared = applyToolResultImagePolicyForWire(
-    normalized,
+    imageSafeMessages,
     toolResultImagePolicy,
   );
   let systemPrompt = systemPromptParts(prepared, options).join("\n\n");
@@ -267,6 +277,8 @@ export function buildChatCompletionsRequest(
       input.providerCapabilityHints?.reasoningContentField,
       input.providerCapabilityHints?.reasoningContentProvenance,
       input.providerCapabilityHints?.requiresStrictToolResultSequence === true,
+      input.providerCapabilityHints?.imageInputContract,
+      input.providerCapabilityHints?.acceptsDirectImageInput === true,
     ),
     [maxTokenField]: maxTokens,
   };
@@ -354,15 +366,21 @@ export function buildChatCompletionsRequest(
   ) {
     body.service_tier = input.options.serviceTier;
   }
-  const structuredFormat = buildStructuredOutputTextFormat(
-    input.options?.structuredOutput,
-  );
+  const structuredFormat =
+    input.providerCapabilityHints?.structuredOutputContract === "cerebras_v2"
+      ? buildCerebrasStructuredOutputTextFormat(
+          input.options?.structuredOutput,
+        )
+      : buildStructuredOutputTextFormat(input.options?.structuredOutput);
   if (structuredFormat) {
     const { type: _formatType, ...jsonSchema } = structuredFormat;
     body.response_format = {
       type: "json_schema",
       json_schema: jsonSchema,
     };
+  }
+  if (input.providerCapabilityHints?.imageInputContract === "cerebras_v2") {
+    assertCerebrasRequestPayloadSize(body);
   }
   return body;
 }

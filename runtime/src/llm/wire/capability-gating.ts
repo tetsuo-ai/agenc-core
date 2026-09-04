@@ -56,6 +56,12 @@ export interface ChatCompletionsCapabilityHints {
   readonly acceptsParallelToolCalls?: boolean;
   /** Enforce API-v2 adjacent, complete, unique tool-call/result groups. */
   readonly requiresStrictToolResultSequence?: boolean;
+  /** Apply Cerebras' strict base64 PNG/JPEG image payload contract. */
+  readonly imageInputContract?: "cerebras_v2";
+  /** Whether the selected model accepts direct user image input. */
+  readonly acceptsDirectImageInput?: boolean;
+  /** Apply Cerebras API v2's supported strict JSON-Schema subset. */
+  readonly structuredOutputContract?: "cerebras_v2";
   /**
    * Some OpenAI-compatible endpoints accept multimodal content on user
    * messages but require tool-result `content` to remain a string. When this
@@ -444,6 +450,9 @@ export function chatCompletionsCapabilityHintsForProvider(
           acceptsParallelToolCalls:
             /(?:^|[/:])(?:qwen-3\.8-27b|gemma-4-31b)$/i.test(model ?? ""),
           requiresStrictToolResultSequence: true,
+          imageInputContract: "cerebras_v2" as const,
+          acceptsDirectImageInput: acceptsToolResultImages,
+          structuredOutputContract: "cerebras_v2" as const,
         }
       : {}),
     ...(reasoningContentProvenance !== undefined

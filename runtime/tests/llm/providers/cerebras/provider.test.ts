@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer";
+
 import { describe, expect, test, vi } from "vitest";
 
 import { resolveProviderCapabilityEntry } from "../../capabilities.js";
@@ -14,6 +16,7 @@ import {
 } from "../../registry/provider-info.js";
 import type { LLMTool } from "../../types.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../wire/capability-gating.js";
+import { buildChatCompletionsRequest } from "../../wire/chat-completions.js";
 import { CerebrasProvider } from "./index.js";
 
 function successfulChat(
@@ -68,6 +71,15 @@ const ECHO_TOOL: LLMTool = {
   },
 };
 
+const VALID_PNG_DATA_URI =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const VALID_JPEG_DATA_URI = `data:image/jpeg;base64,${Buffer.from([
+  0xff,
+  0xd8,
+  0xff,
+  0xd9,
+]).toString("base64")}`;
+
 describe("CerebrasProvider", () => {
   test("factory uses the Cerebras v2 chat endpoint and bearer auth", async () => {
     const model = BUILT_IN_PROVIDER_DEFAULT_MODELS.cerebras;
@@ -84,7 +96,6 @@ describe("CerebrasProvider", () => {
 
     await provider.chat([{ role: "user", content: "hello" }], {
       reasoningEffort: "high",
-      serviceTier: "priority",
     });
 
     const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
@@ -99,10 +110,33 @@ describe("CerebrasProvider", () => {
       model,
       stream: false,
       reasoning_effort: "high",
-      service_tier: "priority",
     });
+    expect(body.service_tier).toBeUndefined();
     expect(body.max_completion_tokens).toBeTypeOf("number");
     expect(body.max_tokens).toBeUndefined();
+  });
+
+  test("passes an explicit service tier through to a dedicated endpoint", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      successfulChat("private-dedicated-model"),
+    );
+    const provider = new CerebrasProvider({
+      apiKey: "cerebras-test",
+      baseURL: "https://dedicated.cerebras.invalid/v1",
+      model: "private-dedicated-model",
+      fetchImpl,
+    });
+
+    await provider.chat([{ role: "user", content: "hello" }], {
+      serviceTier: "priority",
+    });
+
+    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(requestUrl)).toBe(
+      "https://dedicated.cerebras.invalid/v1/chat/completions",
+    );
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    expect(body.service_tier).toBe("priority");
   });
 
   test("requires an explicit resolved Cerebras credential", () => {
@@ -178,7 +212,7 @@ describe("CerebrasProvider", () => {
           supportsVisionInput: vision,
           acceptsImageHistory: vision,
           supportsStructuredOutput: true,
-          supportsStructuredOutputWithTools: true,
+          supportsStructuredOutputWithTools: false,
           supportsExtendedThinking: true,
           acceptsThinkingHistory: true,
           acceptsReasoningEffort: reasoningLevels.length > 0,
@@ -190,7 +224,8 @@ describe("CerebrasProvider", () => {
       expect(catalogEntry).toMatchObject({
         supportedReasoningLevels: [...reasoningLevels],
         supportsParallelToolCalls: parallel,
-        additionalSpeedTiers: ["priority", "flex"],
+        supportsStructuredOutputWithTools: false,
+        additionalSpeedTiers: [],
       });
       expect(catalogEntry?.defaultReasoningLevel).toBe(defaultReasoningLevel);
     },
@@ -448,7 +483,6 @@ describe("CerebrasProvider", () => {
     const provider = new CerebrasProvider({
       apiKey: "cerebras-test",
       model,
-      tools: [ECHO_TOOL],
       fetchImpl,
     });
 
@@ -478,6 +512,95 @@ describe("CerebrasProvider", () => {
       json_schema: { name: "answer", strict: true },
     });
     expect(response.structuredOutput?.parsed).toEqual({ answer: "ok" });
+  });
+
+  test("falls back from strict mode without erasing unsupported schema constraints", async () => {
+    const model = "qwen-3.8-27b";
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      successfulChat(model, '{"selected_candidate_ids":["memory-1"]}'),
+    );
+    const provider = new CerebrasProvider({
+      apiKey: "cerebras-test",
+      model,
+      fetchImpl,
+    });
+
+    const response = await provider.chat(
+      [{ role: "user", content: "select relevant memories" }],
+      {
+        structuredOutput: {
+          schema: {
+            type: "json_schema",
+            name: "agenc_memory_selector_v1",
+            strict: true,
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                selected_candidate_ids: {
+                  type: "array",
+                  maxItems: 5,
+                  items: { type: "string" },
+                },
+              },
+              required: ["selected_candidate_ids"],
+            },
+          },
+        },
+      },
+    );
+
+    const body = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as {
+      response_format: {
+        json_schema: {
+          strict: boolean;
+          schema: Record<string, unknown>;
+        };
+      };
+    };
+    expect(body.response_format.json_schema.strict).toBe(false);
+    expect(body.response_format.json_schema.schema).toMatchObject({
+      properties: {
+        selected_candidate_ids: {
+          type: "array",
+          maxItems: 5,
+          items: { type: "string" },
+        },
+      },
+    });
+    expect(response.structuredOutput?.parsed).toEqual({
+      selected_candidate_ids: ["memory-1"],
+    });
+  });
+
+  test("rejects structured output combined with tools before HTTP", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new CerebrasProvider({
+      apiKey: "cerebras-test",
+      model: "gpt-oss-120b",
+      tools: [ECHO_TOOL],
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chat([{ role: "user", content: "answer with a tool as JSON" }], {
+        structuredOutput: {
+          schema: {
+            type: "json_schema",
+            name: "answer",
+            schema: {
+              type: "object",
+              properties: { answer: { type: "string" } },
+              required: ["answer"],
+              additionalProperties: false,
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow(/does not support combining structured outputs with function tools/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test.each([
@@ -512,7 +635,7 @@ describe("CerebrasProvider", () => {
             { type: "text", text: "Image Size: 10x10." },
             {
               type: "image_url",
-              image_url: { url: "data:image/png;base64,dG9vbA==" },
+              image_url: { url: VALID_PNG_DATA_URI },
             },
           ],
         },
@@ -532,6 +655,338 @@ describe("CerebrasProvider", () => {
       ).toMatchObject({ toolResultImagePolicy: policy });
     },
   );
+
+  test("accepts only base64 PNG and JPEG direct image inputs on vision models", async () => {
+    const model = "qwen-3.8-27b";
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      successfulChat(model),
+    );
+    const provider = new CerebrasProvider({
+      apiKey: "cerebras-test",
+      model,
+      fetchImpl,
+    });
+
+    await provider.chat([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "compare these" },
+          { type: "image_url", image_url: { url: VALID_PNG_DATA_URI } },
+          { type: "image_url", image_url: { url: VALID_JPEG_DATA_URI } },
+        ],
+      },
+    ]);
+
+    const body = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as { messages: Array<{ content: unknown }> };
+    expect(body.messages[0]?.content).toEqual([
+      { type: "text", text: "compare these" },
+      { type: "image_url", image_url: { url: VALID_PNG_DATA_URI } },
+      { type: "image_url", image_url: { url: VALID_JPEG_DATA_URI } },
+    ]);
+  });
+
+  test.each([
+    "https://example.invalid/image.png",
+    "data:image/webp;base64,UklGRg==",
+    "data:image/gif;base64,R0lGODlh",
+    "data:image/png;base64,R0lGODlh",
+    "data:image/jpeg;base64,not-base64",
+  ])("rejects unsupported direct image input before HTTP: %s", async (url) => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new CerebrasProvider({
+      apiKey: "cerebras-test",
+      model: "qwen-3.8-27b",
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chat([
+        {
+          role: "user",
+          content: [{ type: "image_url", image_url: { url } }],
+        },
+      ]),
+    ).rejects.toThrow(/base64 PNG or JPEG data URI/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test.each(["gpt-oss-120b", "private-dedicated-model"])(
+    "rejects direct images before HTTP for text-only model %s",
+    async (model) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const provider = new CerebrasProvider({
+        apiKey: "cerebras-test",
+        model,
+        fetchImpl,
+      });
+
+      await expect(
+        provider.chat([
+          {
+            role: "user",
+            content: [
+              { type: "image_url", image_url: { url: VALID_PNG_DATA_URI } },
+            ],
+          },
+        ]),
+      ).rejects.toThrow(/does not support image input/i);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  test("rejects more than ten direct images before HTTP", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new CerebrasProvider({
+      apiKey: "cerebras-test",
+      model: "qwen-3.8-27b",
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chat([
+        {
+          role: "user",
+          content: Array.from({ length: 11 }, () => ({
+            type: "image_url" as const,
+            image_url: { url: VALID_PNG_DATA_URI },
+          })),
+        },
+      ]),
+    ).rejects.toThrow(/at most 10 images/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("rejects direct image payloads above the 10 MiB request limit", async () => {
+    const oversizedPng = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.alloc(10 * 1024 * 1024 - 7),
+    ]);
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new CerebrasProvider({
+      apiKey: "cerebras-test",
+      model: "qwen-3.8-27b",
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chat([
+        {
+          role: "user",
+          content: [
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:image/png;base64,${oversizedPng.toString("base64")}`,
+              },
+            },
+          ],
+        },
+      ]),
+    ).rejects.toThrow(/10 MiB total request payload limit/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("counts the complete encoded HTTP body toward the 10 MiB limit", () => {
+    expect(() =>
+      buildChatCompletionsRequest({
+        model: "qwen-3.8-27b",
+        messages: [
+          { role: "user", content: "x".repeat(10 * 1024 * 1024) },
+        ],
+        tools: [],
+        providerCapabilityHints:
+          chatCompletionsCapabilityHintsForProvider(
+            "cerebras",
+            "qwen-3.8-27b",
+          ),
+      }),
+    ).toThrow(/10 MiB total payload limit/i);
+  });
+
+  test("rejects images outside user messages before HTTP", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new CerebrasProvider({
+      apiKey: "cerebras-test",
+      model: "qwen-3.8-27b",
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chat([
+        {
+          role: "assistant",
+          content: [
+            { type: "image_url", image_url: { url: VALID_PNG_DATA_URI } },
+          ],
+        },
+      ]),
+    ).rejects.toThrow(/only in user messages/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("strips invalid tool media while preserving its textual result", async () => {
+    const model = "qwen-3.8-27b";
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      successfulChat(model),
+    );
+    const provider = new CerebrasProvider({
+      apiKey: "cerebras-test",
+      model,
+      fetchImpl,
+    });
+
+    await provider.chat([
+      { role: "user", content: "inspect" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call_read", name: "FileRead", arguments: "{}" }],
+      },
+      {
+        role: "tool",
+        toolCallId: "call_read",
+        toolName: "FileRead",
+        content: [
+          { type: "text", text: "The tool result remains." },
+          {
+            type: "image_url",
+            image_url: { url: "https://example.invalid/image.png" },
+          },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/webp;base64,UklGRg==" },
+          },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/gif;base64,R0lGODlh" },
+          },
+        ],
+      },
+    ]);
+
+    const body = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as { messages: Array<Record<string, unknown>> };
+    expect(body.messages[2]).toEqual({
+      role: "tool",
+      content: "The tool result remains.",
+      tool_call_id: "call_read",
+    });
+    expect(JSON.stringify(body)).not.toContain("image_url");
+  });
+
+  test("caps direct and tool-result images at ten total", async () => {
+    const model = "qwen-3.8-27b";
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      successfulChat(model),
+    );
+    const provider = new CerebrasProvider({
+      apiKey: "cerebras-test",
+      model,
+      fetchImpl,
+    });
+
+    await provider.chat([
+      {
+        role: "user",
+        content: Array.from({ length: 9 }, () => ({
+          type: "image_url" as const,
+          image_url: { url: VALID_PNG_DATA_URI },
+        })),
+      },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call_read", name: "FileRead", arguments: "{}" }],
+      },
+      {
+        role: "tool",
+        toolCallId: "call_read",
+        toolName: "FileRead",
+        content: [
+          { type: "text", text: "two candidate images" },
+          { type: "image_url", image_url: { url: VALID_PNG_DATA_URI } },
+          { type: "image_url", image_url: { url: VALID_JPEG_DATA_URI } },
+        ],
+      },
+    ]);
+
+    const body = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as { messages: Array<Record<string, unknown>> };
+    expect(body.messages[2]).toEqual({
+      role: "tool",
+      content: "two candidate images",
+      tool_call_id: "call_read",
+    });
+    expect(JSON.stringify(body).match(/"type":"image_url"/gu)).toHaveLength(10);
+  });
+
+  test("drops tool-result images that would exceed the 10 MiB request total", async () => {
+    const largePng = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.alloc(6 * 1024 * 1024),
+    ]);
+    const secondLargePng = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.alloc(2 * 1024 * 1024),
+    ]);
+    const model = "qwen-3.8-27b";
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      successfulChat(model),
+    );
+    const provider = new CerebrasProvider({
+      apiKey: "cerebras-test",
+      model,
+      fetchImpl,
+    });
+
+    await provider.chat([
+      {
+        role: "user",
+        content: [
+          {
+            type: "image_url",
+            image_url: {
+                url: `data:image/png;base64,${largePng.toString("base64")}`,
+            },
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call_read", name: "FileRead", arguments: "{}" }],
+      },
+      {
+        role: "tool",
+        toolCallId: "call_read",
+        toolName: "FileRead",
+        content: [
+          { type: "text", text: "image omitted, text retained" },
+          {
+            type: "image_url",
+            image_url: {
+              url: `data:image/png;base64,${secondLargePng.toString("base64")}`,
+            },
+          },
+        ],
+      },
+    ]);
+
+    const body = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as { messages: Array<Record<string, unknown>> };
+    expect(body.messages[2]).toEqual({
+      role: "tool",
+      content: "image omitted, text retained",
+      tool_call_id: "call_read",
+    });
+    expect(JSON.stringify(body).match(/"type":"image_url"/gu)).toHaveLength(1);
+  });
 
   test("keeps v2 tool controls model-safe and omits them without tools", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(

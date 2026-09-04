@@ -303,14 +303,14 @@ describe("cost helpers", () => {
     },
   );
 
-  test("uses the current Cerebras public-catalog token rates", () => {
+  test("uses the current official Cerebras token rates", () => {
     expect(DEFAULT_MODEL_COSTS["cerebras:gpt-oss-120b"]).toMatchObject({
       inputUsdPer1K: 0.00035,
       outputUsdPer1K: 0.00075,
     });
     expect(DEFAULT_MODEL_COSTS["cerebras:qwen-3.8-27b"]).toMatchObject({
-      inputUsdPer1K: 0,
-      outputUsdPer1K: 0,
+      inputUsdPer1K: 0.00099,
+      outputUsdPer1K: 0.00149,
     });
     expect(DEFAULT_MODEL_COSTS["cerebras:gemma-4-31b"]).toMatchObject({
       inputUsdPer1K: 0.00099,

@@ -99,19 +99,24 @@ export function assertProviderStructuredOutputCompatibility(input: {
       400,
     );
   }
-  if (
-    normalizeProviderIdentity(
-      input.providerName,
-      "structured-output provider capability",
-    ) === "grok" &&
-    input.toolsRequested
-  ) {
+  const provider = normalizeProviderIdentity(
+    input.providerName,
+    "structured-output provider capability",
+  );
+  if (provider === "grok" && input.toolsRequested) {
     assertXaiStructuredOutputToolCompatibility({
       providerName: input.providerName,
       model: input.model,
       structuredOutputRequested: true,
       toolsRequested: true,
     });
+  }
+  if (provider === "cerebras" && input.toolsRequested) {
+    throw new LLMProviderError(
+      input.providerName,
+      "Cerebras does not support combining structured outputs with function tools",
+      400,
+    );
   }
 }
 

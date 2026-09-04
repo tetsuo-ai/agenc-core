@@ -183,15 +183,17 @@ const COST_TIER_MISTRAL_MEDIUM_3_5: Readonly<ModelCostEntry> = Object.freeze({
   cachedInputIncludedInInputTokens: true,
 });
 
-// Cerebras public-model catalog prices retrieved 2026-09-04:
-// https://api.cerebras.ai/public/v1/models
+// Official Cerebras model/pricing pages retrieved 2026-09-04.
+// Qwen's Developer rate is authoritative over the public endpoint's transient
+// zero-price catalog value.
+// https://inference-docs.cerebras.ai/models/qwen-3.8-27b
 const COST_TIER_CEREBRAS_GPT_OSS_120B: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.00035,
   outputUsdPer1K: 0.00075,
 });
 const COST_TIER_CEREBRAS_QWEN_38_27B: Readonly<ModelCostEntry> = Object.freeze({
-  inputUsdPer1K: 0,
-  outputUsdPer1K: 0,
+  inputUsdPer1K: 0.00099,
+  outputUsdPer1K: 0.00149,
 });
 const COST_TIER_CEREBRAS_GEMMA_4_31B: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.00099,

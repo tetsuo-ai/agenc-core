@@ -53,4 +53,16 @@ describe("assertProviderStructuredOutputCompatibility", () => {
       }),
     ).not.toThrow();
   });
+
+  test("rejects Cerebras structured output combined with function tools", () => {
+    expect(() =>
+      assertProviderStructuredOutputCompatibility({
+        providerName: "cerebras",
+        model: "gpt-oss-120b",
+        structuredOutput,
+        toolsRequested: true,
+        api: "chat_completions",
+      }),
+    ).toThrow(/does not support combining structured outputs with function tools/i);
+  });
 });
