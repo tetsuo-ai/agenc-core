@@ -2997,6 +2997,17 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       permissionModeRegistry: permissionRegistry,
       withDenialTracking: true,
     });
+    // The session's bound ConfigStore home is the plan-path authority the
+    // sandbox preflight consults; the harness binds a canonical authority per
+    // test, so the env override above does not reach runtime home resolution.
+    Object.assign(session.services, {
+      configStore: {
+        homeContext: resolveHomeContext(
+          { AGENC_HOME: agencHome, HOME: agencHome },
+          { platformHome: agencHome },
+        ),
+      },
+    });
     const state = mkState({
       toolCalls: [
         {
@@ -3010,7 +3021,12 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       ],
     });
 
-    await executeTools(state, mkCtx(), session);
+    // The turn cwd must be the real workspace so the plan file sits outside
+    // it on every platform. With the fixture default of "/tmp" the hermetic
+    // temp tree on Linux lives inside the workspace and the sandbox admits
+    // the write by accident, hiding a missing plan-file allowance; macOS
+    // exposes it because its temp tree resolves under /private/tmp.
+    await executeTools(state, mkCtx({ cwd: workspaceRoot }), session);
 
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]!.content).toContain("File created successfully");

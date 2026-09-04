@@ -5,10 +5,12 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, normalize, resolve } from "node:path";
+import { basename, dirname, join, normalize, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, test, vi } from "vitest";
 import {
@@ -28,6 +30,12 @@ import {
 } from "../system/file-edit.js";
 import { createFileWriteTool } from "../system/file-write.js";
 import { createPlanningTools } from "../system/planning.js";
+import {
+  clearAllPlanSlugs,
+  getPlanFilePath,
+  setPlanSlug,
+} from "../../planning/plan-files.js";
+import { resolveHomeContext } from "../../config/home.js";
 import { recordSessionRead } from "../system/filesystem.js";
 import { createWriteStdinTool } from "../system/write-stdin.js";
 import {
@@ -1020,6 +1028,122 @@ describe("tools/runtimes", () => {
         args: { input: "*** Begin Patch\nnot a hunk\n*** End Patch\n" },
       }),
     ).toThrow(/could not verify write targets/);
+  });
+
+  test("workspace-write preflight admits only the active session plan file outside the workspace", () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-runtime-plan-home-"));
+    const aliasRoot = mkdtempSync(join(tmpdir(), "agenc-runtime-plan-alias-"));
+    // A symlinked spelling of the home stands in for macOS, where the
+    // advertised `/tmp/...` plan path resolves under `/private/tmp`.
+    const aliasHome = join(aliasRoot, "home");
+    symlinkSync(agencHome, aliasHome, process.platform === "win32" ? "junction" : "dir");
+    try {
+      const sessionId = "runtime-plan-session";
+      setPlanSlug({ agencHome, sessionId }, "ivory-bridge-aaed0227");
+      const planPath = getPlanFilePath({ agencHome, sessionId });
+      const agentPlanPath = getPlanFilePath({ agencHome, sessionId, agentId: "agent-1" });
+      const plansDirectory = dirname(planPath);
+      expect(planPath.startsWith(resolve("/repo"))).toBe(false);
+      // The session's bound ConfigStore home is the plan-path authority.
+      const boundServices = {
+        ...TEST_RUNTIME_SERVICES,
+        configStore: {
+          homeContext: resolveHomeContext(
+            { AGENC_HOME: agencHome, HOME: agencHome },
+            { platformHome: agencHome },
+          ),
+        },
+      };
+
+      const mutatingTool: Tool = {
+        name: "Write",
+        description: "",
+        inputSchema: { type: "object" },
+        metadata: { mutating: true },
+        execute: async () => ({ content: "not reached" }),
+      };
+      const base = callContext("call-plan-preflight", EXCLUSIVE, false);
+      const attempt = (
+        args: Record<string, unknown>,
+        overrides: {
+          readonly conversationId?: string;
+          readonly sandboxMode?: "workspace_write" | "read_only";
+          readonly services?: typeof TEST_RUNTIME_SERVICES;
+        } = {},
+      ) => () =>
+        enforceRuntimeSandboxAttempt({
+          context: {
+            ...base,
+            approvalPolicy: "never",
+            requestedSandboxMode: overrides.sandboxMode ?? "workspace_write",
+            sandboxMode: overrides.sandboxMode ?? "workspace_write",
+            approvalResolved: false,
+            rawArgs: "{}",
+            invocation: {
+              session: {
+                ...("conversationId" in overrides
+                  ? { conversationId: overrides.conversationId }
+                  : { conversationId: sessionId }),
+                services: overrides.services ?? boundServices,
+              } as never,
+              turn: { cwd: "/repo" } as never,
+              tracker: tracker() as never,
+              callId: "call-plan-preflight",
+              toolName: { name: "Write" },
+              payload: { kind: "function", arguments: "{}" },
+              source: "direct",
+            } as const,
+          },
+          tool: mutatingTool,
+          args,
+        });
+
+      // The session's own plan-file family is admitted, including the
+      // per-agent spelling and a canonical alias of the plans directory.
+      expect(attempt({ file_path: planPath })).not.toThrow();
+      expect(attempt({ file_path: agentPlanPath })).not.toThrow();
+      expect(
+        attempt({ file_path: join(aliasHome, "plans", basename(planPath)) }),
+      ).not.toThrow();
+
+      // Without a bound home the preflight falls back to the runtime's own
+      // home resolver, the same one the plan attachment uses.
+      const fallbackSessionId = "runtime-plan-fallback-session";
+      const fallbackPlanPath = getPlanFilePath({ sessionId: fallbackSessionId });
+      expect(
+        attempt(
+          { file_path: fallbackPlanPath },
+          { conversationId: fallbackSessionId, services: TEST_RUNTIME_SERVICES },
+        ),
+      ).not.toThrow();
+
+      // Everything else in the plans directory stays outside the workspace.
+      expect(attempt({ file_path: join(plansDirectory, "other-plan.md") })).toThrow(
+        /workspace_write blocked/,
+      );
+      expect(attempt({ file_path: join(plansDirectory, ".slugs.json") })).toThrow(
+        /workspace_write blocked/,
+      );
+      expect(
+        attempt({ file_path: join(plansDirectory, "nested", basename(planPath)) }),
+      ).toThrow(/workspace_write blocked/);
+
+      // A different session gets no carve-out for this plan, no session
+      // identity gets none at all, and read_only stays read-only.
+      expect(
+        attempt({ file_path: planPath }, { conversationId: "some-other-session" }),
+      ).toThrow(/workspace_write blocked/);
+      expect(attempt({ file_path: planPath }, { conversationId: undefined })).toThrow(
+        /workspace_write blocked/,
+      );
+      expect(attempt({ file_path: planPath }, { sandboxMode: "read_only" })).toThrow(
+        /read_only blocked/,
+      );
+    } finally {
+      clearAllPlanSlugs();
+      rmSync(aliasRoot, { recursive: true, force: true });
+      rmSync(agencHome, { recursive: true, force: true });
+    }
   });
 
   test("virtualNoFsWrites tools bypass the indeterminate-target denial without weakening real writers", () => {
