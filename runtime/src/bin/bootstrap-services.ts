@@ -477,6 +477,7 @@ export function loadBootstrapHooks(opts: {
 
 function readConfiguredLspServers(
   cfg: ReturnType<ConfigStore["current"]>,
+  workspaceRoot?: string,
 ): ReturnType<typeof parseLspServersConfig> {
   const parsed = parseLspServersConfig(cfg.lsp_servers);
   if (!parsed.success) return parsed;
@@ -486,7 +487,7 @@ function readConfiguredLspServers(
   return {
     success: true,
     servers: {
-      ...builtinLspServerConfigs({ configured: parsed.servers }),
+      ...builtinLspServerConfigs({ configured: parsed.servers, workspaceRoot }),
       ...parsed.servers,
     },
   };
@@ -501,7 +502,7 @@ export async function loadBootstrapLspServers(
   cfg: ReturnType<ConfigStore["current"]>,
   opts: BootstrapLspServerOptions = {},
 ): Promise<void> {
-  const parsed = readConfiguredLspServers(cfg);
+  const parsed = readConfiguredLspServers(cfg, opts.workspaceRoot);
   const managerOptions = {
     ...(opts.workspaceRoot !== undefined
       ? { workspaceRoot: opts.workspaceRoot }

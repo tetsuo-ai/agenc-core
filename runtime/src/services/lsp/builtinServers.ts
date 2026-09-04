@@ -12,8 +12,8 @@
  * AGENC_DISABLE_BUILTIN_LSP=1 to turn every profile off; AGENC_DISABLE_LSP
  * still turns the whole service off.
  */
-import { accessSync, constants as fsConstants, statSync } from "node:fs";
-import { delimiter, isAbsolute, join } from "node:path";
+import { accessSync, constants as fsConstants, realpathSync, statSync } from "node:fs";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import type { ScopedLspServerConfig } from "./types.js";
 
 interface BuiltinProfile {
@@ -112,6 +112,57 @@ export interface BuiltinLspServerOptions {
   /** Servers the user configured; a profile yields to any overlap in extensions. */
   readonly configured?: Readonly<Record<string, ScopedLspServerConfig>>;
   readonly resolveCommand?: (command: string) => string | undefined;
+  /** The workspace the servers will analyse; decides the TypeScript fallback. */
+  readonly workspaceRoot?: string;
+}
+
+const WORKSPACE_TSSERVER = join("node_modules", "typescript", "lib", "tsserver.js");
+
+/**
+ * typescript-language-server 5+ ships no TypeScript of its own: it uses the
+ * workspace's `node_modules/typescript` or an explicit `tsserver.path`, and
+ * exits during initialize otherwise. When the workspace has no TypeScript,
+ * point the server at the TypeScript installed next to it, which the user
+ * installed together with the server. Nothing from the workspace is executed
+ * that the server would not have executed on its own. Only TypeScript 5.x
+ * qualifies: the Go-based TypeScript 7 has no `lib/tsserver.js`, so the
+ * fallback stays undefined and the server reports the missing installation.
+ */
+export function typescriptServerFallback(
+  serverCommand: string,
+  workspaceRoot: string | undefined,
+): { readonly tsserver: { readonly path: string } } | undefined {
+  if (workspaceRoot !== undefined && isRegularFile(join(workspaceRoot, WORKSPACE_TSSERVER))) {
+    return undefined;
+  }
+  let real: string;
+  try {
+    real = realpathSync(serverCommand);
+  } catch {
+    return undefined;
+  }
+  // <prefix>/node_modules/typescript-language-server/lib/cli.mjs (npm) or
+  // <prefix>/lib/node_modules/... (global): walk up to the first node_modules.
+  let dir = dirname(real);
+  for (let depth = 0; depth < 6; depth += 1) {
+    if (dir.endsWith(`${delimiter === ";" ? "\\" : "/"}node_modules`) || dir.endsWith("node_modules")) {
+      const candidate = join(dir, "typescript", "lib", "tsserver.js");
+      if (isRegularFile(candidate)) return { tsserver: { path: candidate } };
+      return undefined;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
+}
+
+function isRegularFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -136,11 +187,15 @@ export function builtinLspServerConfigs(
     if (extensions.some((extension) => claimed.has(extension))) continue;
     const command = profile.commands.map(resolveCommand).find((path) => path !== undefined);
     if (command === undefined) continue;
+    const initializationOptions = profile.name === "builtin-typescript"
+      ? typescriptServerFallback(command, options.workspaceRoot)
+      : undefined;
     out[profile.name] = {
       command,
       args: [...profile.args],
       extensionToLanguage: { ...profile.extensionToLanguage },
       displayName: profile.displayName,
+      ...(initializationOptions !== undefined ? { initializationOptions } : {}),
     };
   }
   return out;

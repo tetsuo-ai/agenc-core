@@ -1423,41 +1423,50 @@ describe("loadBootstrapLspServers", () => {
   }
 
   test("starts and stops the LSP manager from typed config", async () => {
-    _resetLspManagerForTesting();
-    try {
-      await loadBootstrapLspServers(
-        {
-          ...defaultConfig(),
-          lsp_servers: {
-            ts: {
-              command: "typescript-language-server",
-              extensionToLanguage: { ".ts": "typescript" },
+      // This test is about the typed lsp_servers config alone. Built-in profiles
+      // would start whatever language server the host happens to have on PATH.
+      const previousBuiltin = process.env.AGENC_DISABLE_BUILTIN_LSP;
+      process.env.AGENC_DISABLE_BUILTIN_LSP = "1";
+      try {
+      _resetLspManagerForTesting();
+      try {
+        await loadBootstrapLspServers(
+          {
+            ...defaultConfig(),
+            lsp_servers: {
+              ts: {
+                command: "typescript-language-server",
+                extensionToLanguage: { ".ts": "typescript" },
+              },
             },
           },
-        },
-        { workspaceRoot: "/workspace/project" },
-      );
-      expect(getInitializationStatus().status).toBe("pending");
-      await waitForInitialization();
-      expect(getInitializationStatus().status).toBe("success");
-      expect(getLspServerManager()?.getAllServers().has("ts")).toBe(true);
+          { workspaceRoot: "/workspace/project" },
+        );
+        expect(getInitializationStatus().status).toBe("pending");
+        await waitForInitialization();
+        expect(getInitializationStatus().status).toBe("success");
+        expect(getLspServerManager()?.getAllServers().has("ts")).toBe(true);
 
-      await loadBootstrapLspServers(
-        { ...defaultConfig(), lsp_servers: undefined },
-        { workspaceRoot: "/workspace/project" },
-      );
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(getInitializationStatus().status).toBe("not-started");
+        await loadBootstrapLspServers(
+          { ...defaultConfig(), lsp_servers: undefined },
+          { workspaceRoot: "/workspace/project" },
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(getInitializationStatus().status).toBe("not-started");
 
-      await loadBootstrapLspServers(
-        { ...defaultConfig(), lsp_servers: undefined },
-        { workspaceRoot: "/workspace/project" },
-      );
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(getInitializationStatus().status).toBe("not-started");
+        await loadBootstrapLspServers(
+          { ...defaultConfig(), lsp_servers: undefined },
+          { workspaceRoot: "/workspace/project" },
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(getInitializationStatus().status).toBe("not-started");
+      } finally {
+        await shutdownLspServerManager();
+        _resetLspManagerForTesting();
+      }
     } finally {
-      await shutdownLspServerManager();
-      _resetLspManagerForTesting();
+      if (previousBuiltin === undefined) delete process.env.AGENC_DISABLE_BUILTIN_LSP;
+      else process.env.AGENC_DISABLE_BUILTIN_LSP = previousBuiltin;
     }
   });
 
