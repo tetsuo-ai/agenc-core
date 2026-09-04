@@ -482,4 +482,37 @@ describe("buildChatCompletionsRequest", () => {
 
     expect(response.content).toBe("reasoning trace");
   });
+
+  test("keeps Qwen reasoning_content out of visible content", () => {
+    const response = parseChatCompletionsResponse(
+      "qwen3.8-max",
+      {
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: null,
+              reasoning_content: "opaque replay state",
+              tool_calls: [
+                {
+                  id: "call_echo",
+                  type: "function",
+                  function: { name: "system.echo", arguments: "{}" },
+                },
+              ],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      },
+      {
+        model: "qwen3.8-max",
+        messages: [{ role: "user", content: "call echo" }],
+        tools: [],
+      },
+    );
+
+    expect(response.content).toBe("");
+    expect(response.providerReasoningContent).toBe("opaque replay state");
+  });
 });

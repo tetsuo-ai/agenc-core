@@ -406,17 +406,22 @@ export function parseChatCompletionsResponse(
       "OpenAI chat-completions response emitted invalid tool_call",
     )
     : [];
-  const rawContent =
-    typeof message.content === "string"
-      ? message.content
-      : Array.isArray(message.content)
-        ? assistantTextFromContentBlocks(message.content)
-        : "";
   const providerReasoningContent =
     typeof message.reasoning_content === "string" &&
       message.reasoning_content.length > 0
       ? message.reasoning_content
       : undefined;
+  const rawContent =
+    typeof message.content === "string"
+      ? message.content
+      : Array.isArray(message.content)
+        ? assistantTextFromContentBlocks(message.content)
+        // DeepSeek's non-streaming compatibility contract historically uses
+        // reasoning_content as its last-resort answer. Other providers (most
+        // notably Qwen) treat that field as opaque replay state, not UI text.
+        : /(?:^|[/:])deepseek(?:$|[-_.:])/iu.test(model)
+          ? providerReasoningContent ?? ""
+          : "";
   // Models whose template inlines chain-of-thought in `content`
   // (MiniMax M3, Qwen3, R1 distills, Kimi K2) would otherwise print
   // literal think markers in the transcript. A leading block moves to
