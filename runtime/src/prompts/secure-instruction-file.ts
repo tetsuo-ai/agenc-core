@@ -13,6 +13,14 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import { normalizeExternalText } from "./_deps/file-read.js";
 
+/**
+ * Hard ceiling for a single secure instruction file (5 MiB).
+ *
+ * Every surface that serves the same AGENC.md must use this number, or the
+ * same file is readable in-process and silently missing elsewhere.
+ */
+export const MAX_SECURE_PROJECT_FILE_BYTES = 5 * 1024 * 1024;
+
 export type InstructionSourceClass =
   | "managed"
   | "user"
