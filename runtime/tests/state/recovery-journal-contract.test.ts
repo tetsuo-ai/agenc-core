@@ -468,6 +468,16 @@ describe("strict canonical journal contract", () => {
     ["compacted", {}],
     ["turn_context", {}],
     ["session_state", { agentTask: 42 }],
+    [
+      "session_state",
+      {
+        memoryExtraction: {
+          memoryRoot: "/memory",
+          processedVisibleCount: -1,
+          turnsSinceLastExtraction: 0,
+        },
+      },
+    ],
   ] as const)(
     "rejects an invalid %s payload before normalization",
     (type, payload) => {
@@ -682,6 +692,20 @@ describe("strict canonical journal contract", () => {
       isCanonicalEventPayload("turn_started", {
         turnId: "turn-1",
         startedAt: "not-a-number",
+      }),
+    ).toBe(false);
+    expect(
+      isCanonicalRolloutPayload("session_state", {
+        memoryExtraction: {
+          memoryRoot: "/memory",
+          processedVisibleCount: 4,
+          turnsSinceLastExtraction: 2,
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isCanonicalRolloutPayload("session_state", {
+        memoryExtraction: { memoryRoot: "/memory", processedVisibleCount: 4 },
       }),
     ).toBe(false);
   });

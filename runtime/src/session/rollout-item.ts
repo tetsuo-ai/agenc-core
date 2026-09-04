@@ -40,9 +40,55 @@ import {
 // Per-variant payloads
 // ─────────────────────────────────────────────────────────────────────
 
-/** agenc runtime `SessionStateUpdate` — session-scoped mutable slots. */
+/**
+ * Memory-extraction cadence for one memory root of a session. The extraction
+ * service paces its child by eligible turns and remembers how far into the
+ * model-visible history it has read. Both counters used to live only in the
+ * service's in-process lane map, so a daemon restart began the wait again
+ * while the conversation it paced stayed on disk. The service writes this
+ * slot after every cadence decision and the resume path seeds a new lane from
+ * the newest item per memory root.
+ */
+export interface SessionMemoryExtractionState {
+  /** Normalized memory directory the counters belong to. */
+  readonly memoryRoot: string;
+  /** Model-visible messages already offered to the extraction child. */
+  readonly processedVisibleCount: number;
+  /** Eligible turns since the last run, compared against minEligibleTurns. */
+  readonly turnsSinceLastExtraction: number;
+}
+
+/**
+ * agenc runtime `SessionStateUpdate`: session-scoped mutable slots.
+ *
+ * Every writer persists one slot per item. A walker restoring one slot must
+ * therefore skip the items another writer produced instead of reading its
+ * own missing key as an explicit clear; see sessionStateUpdateAddressesSlot.
+ */
 export interface SessionStateUpdate {
   readonly agentTask?: SessionAgentTask;
+  readonly memoryExtraction?: SessionMemoryExtractionState;
+}
+
+export type SessionStateSlot = keyof SessionStateUpdate;
+
+/**
+ * Whether a persisted `session_state` payload addresses `slot`.
+ *
+ * A key that is present addresses its slot, cleared or not. An explicit clear
+ * is written as `undefined`, which JSON.stringify drops, so after a round trip
+ * a cleared agent task is a payload with no keys at all. That empty payload
+ * is still read as the agent-task clear, because the agent task is the only
+ * slot that has ever been cleared this way. A payload carrying some other
+ * slot was written by that slot's writer and says nothing about this one.
+ */
+export function sessionStateUpdateAddressesSlot(
+  payload: SessionStateUpdate,
+  slot: SessionStateSlot,
+): boolean {
+  if (typeof payload !== "object" || payload === null) return false;
+  if (Object.hasOwn(payload, slot)) return true;
+  return slot === "agentTask" && Object.keys(payload).length === 0;
 }
 
 export type {

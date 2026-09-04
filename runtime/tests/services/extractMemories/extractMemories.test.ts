@@ -21,6 +21,9 @@ import {
 import { formatMemoryManifest, scanMemoryFiles } from "../../memory/index.js";
 import { resolveAgentRuntimeOptions } from "../../session/runtime-options.js";
 import { createControlledPromise } from "../../helpers/controlled-async.js";
+import { AsyncLock } from "../../utils/async-lock.js";
+import type { RolloutItem } from "../../session/rollout-item.js";
+import { recordInitialHistoryOnResume } from "../../session/agent-task-lifecycle.js";
 
 vi.mock("bun:bundle", () => ({ feature: () => false }));
 vi.mock("../../tools.js", () => ({}));
@@ -1096,5 +1099,229 @@ describe("memory manifest scan", () => {
     expect(manifest).toContain("Use terse responses");
     expect(manifest).not.toContain("MEMORY.md");
     expect(manifest).not.toContain("secret.md");
+  });
+});
+
+describe("extraction cadence across a daemon restart", () => {
+  let root: string;
+  let memoryDir: string;
+  const cadenceMessages: LLMMessage[] = [
+    { role: "user", content: "remember the cadence" },
+    { role: "assistant", content: "ok" },
+  ];
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "agenc-extract-memory-restart-"));
+    memoryDir = join(root, "memory");
+    await mkdir(memoryDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  type Warning = { cause: string; message: string };
+
+  /** A session whose state lock and rollout recorder outlive the process. */
+  function durableSession(opts: {
+    readonly conversationId: string;
+    readonly rollout: RolloutItem[];
+    readonly warnings?: Warning[];
+    readonly record?: (item: RolloutItem) => Promise<void>;
+  }): Session {
+    let subId = 0;
+    return {
+      conversationId: opts.conversationId,
+      services: {
+        runtimeOptions: defaultRuntimeOptions,
+        rollout: {
+          record: async (item: unknown) => {
+            if (opts.record) await opts.record(item as RolloutItem);
+            opts.rollout.push(item as RolloutItem);
+          },
+        },
+      },
+      state: new AsyncLock<Record<string, unknown>>({}),
+      nextInternalSubId: () => String(subId++),
+      emit: (event: { msg: { type: string; payload: unknown } }) => {
+        if (event.msg.type === "warning") {
+          opts.warnings?.push(event.msg.payload as Warning);
+        }
+      },
+    } as unknown as Session;
+  }
+
+  /**
+   * The daemon restarts: the session object is rebuilt and resumed from the
+   * rollout the previous process wrote (the JSONL round trip drops undefined
+   * keys), and the caller starts a fresh extraction service.
+   */
+  async function resumedSession(opts: {
+    readonly conversationId: string;
+    readonly rollout: RolloutItem[];
+    readonly warnings?: Warning[];
+  }): Promise<Session> {
+    const session = durableSession(opts);
+    const replayed = opts.rollout.map(
+      (item) => JSON.parse(JSON.stringify(item)) as RolloutItem,
+    );
+    await recordInitialHistoryOnResume(session, replayed, {
+      currentModel: "test-model",
+    });
+    return session;
+  }
+
+  function startExtractionService(
+    runChild: NonNullable<Parameters<typeof initExtractMemories>[0]["runChild"]>,
+    minEligibleTurns?: number,
+  ): void {
+    initExtractMemories({
+      env: {},
+      ...(minEligibleTurns !== undefined ? { minEligibleTurns } : {}),
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      runChild,
+    });
+  }
+
+  function persistedCadences(rollout: readonly RolloutItem[]) {
+    return rollout.map((item) =>
+      item.type === "session_state" ? item.payload.memoryExtraction : item.type,
+    );
+  }
+
+  it("a restart between the second and third eligible turns still extracts on the third", async () => {
+    const rollout: RolloutItem[] = [];
+    const runChild = vi.fn(async () => ({ outcome: "completed" as const }));
+    const firstWarnings: Warning[] = [];
+    const first = durableSession({
+      conversationId: "conv-restart",
+      rollout,
+      warnings: firstWarnings,
+    });
+    startExtractionService(runChild);
+    for (let turn = 0; turn < 2; turn += 1) {
+      await executeExtractMemories(
+        extractionContext({ cwd: root, messages: cadenceMessages, session: first }),
+      );
+    }
+    expect(runChild).not.toHaveBeenCalled();
+    expect(firstWarnings.map((warning) => warning.message)).toEqual([
+      expect.stringContaining("deferred by eligible-turn cadence (1/3"),
+      expect.stringContaining("deferred by eligible-turn cadence (2/3"),
+    ]);
+    expect(persistedCadences(rollout)).toEqual([
+      { memoryRoot: memoryDir, processedVisibleCount: 0, turnsSinceLastExtraction: 1 },
+      { memoryRoot: memoryDir, processedVisibleCount: 0, turnsSinceLastExtraction: 2 },
+    ]);
+
+    const secondWarnings: Warning[] = [];
+    const second = await resumedSession({
+      conversationId: "conv-restart",
+      rollout,
+      warnings: secondWarnings,
+    });
+    startExtractionService(runChild);
+    await executeExtractMemories(
+      extractionContext({ cwd: root, messages: cadenceMessages, session: second }),
+    );
+
+    expect(runChild).toHaveBeenCalledOnce();
+    expect(secondWarnings).toEqual([]);
+    expect(persistedCadences(rollout).at(-1)).toEqual({
+      memoryRoot: memoryDir,
+      processedVisibleCount: 2,
+      turnsSinceLastExtraction: 0,
+    });
+  });
+
+  it("does not offer the child history the previous process already extracted", async () => {
+    const rollout: RolloutItem[] = [];
+    const runChild = vi.fn(async () => ({ outcome: "completed" as const }));
+    const first = durableSession({ conversationId: "conv-cursor", rollout });
+    startExtractionService(runChild, 1);
+    await executeExtractMemories(
+      extractionContext({ cwd: root, messages: cadenceMessages, session: first }),
+    );
+    expect(runChild).toHaveBeenCalledOnce();
+    expect(runChild.mock.calls[0]![0].prompt).toContain("~2 model-visible");
+
+    const second = await resumedSession({ conversationId: "conv-cursor", rollout });
+    startExtractionService(runChild, 1);
+    await executeExtractMemories(
+      extractionContext({
+        cwd: root,
+        messages: [
+          ...cadenceMessages,
+          { role: "user", content: "one more durable fact" },
+        ],
+        session: second,
+      }),
+    );
+
+    expect(runChild).toHaveBeenCalledTimes(2);
+    expect(runChild.mock.calls[1]![0].prompt).toContain("~1 model-visible");
+  });
+
+  it("waits the full cadence for a session with nothing persisted, as before", async () => {
+    const runChild = vi.fn(async () => ({ outcome: "completed" as const }));
+    const warnings: Warning[] = [];
+    const session = await resumedSession({
+      conversationId: "conv-fresh",
+      rollout: [],
+      warnings,
+    });
+    startExtractionService(runChild);
+    await executeExtractMemories(
+      extractionContext({ cwd: root, messages: cadenceMessages, session }),
+    );
+
+    expect(runChild).not.toHaveBeenCalled();
+    expect(warnings.map((warning) => warning.message)).toEqual([
+      expect.stringContaining("deferred by eligible-turn cadence (1/3"),
+    ]);
+  });
+
+  it("writes the cadence only when a decision changed it", async () => {
+    const rollout: RolloutItem[] = [];
+    const runChild = vi.fn(async () => ({ outcome: "completed" as const }));
+    const session = durableSession({ conversationId: "conv-quiet", rollout });
+    startExtractionService(runChild, 1);
+    await executeExtractMemories(
+      extractionContext({ cwd: root, messages: cadenceMessages, session }),
+    );
+    expect(runChild).toHaveBeenCalledOnce();
+    expect(rollout).toHaveLength(1);
+
+    // The same history again: no new model-visible messages, nothing to write.
+    await executeExtractMemories(
+      extractionContext({ cwd: root, messages: cadenceMessages, session }),
+    );
+    expect(runChild).toHaveBeenCalledOnce();
+    expect(rollout).toHaveLength(1);
+  });
+
+  it("reports a cadence write failure without failing the extraction", async () => {
+    const runChild = vi.fn(async () => ({ outcome: "completed" as const }));
+    const warnings: Warning[] = [];
+    const session = durableSession({
+      conversationId: "conv-broken-rollout",
+      rollout: [],
+      warnings,
+      record: async () => {
+        throw new Error("disk full");
+      },
+    });
+    startExtractionService(runChild, 1);
+    await executeExtractMemories(
+      extractionContext({ cwd: root, messages: cadenceMessages, session }),
+    );
+
+    expect(runChild).toHaveBeenCalledOnce();
+    expect(warnings).toEqual([
+      {
+        cause: "memory_extraction_state_not_persisted",
+        message: expect.stringContaining("disk full"),
+      },
+    ]);
   });
 });

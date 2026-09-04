@@ -7,6 +7,10 @@
  *     is the count of model-visible messages processed. If compaction shrinks
  *     the visible history, the next extraction falls back to the retained
  *     visible messages instead of permanently disabling extraction.
+ *   - The eligible-turn cadence and that cursor are persisted per (session,
+ *     memory root) as the session's memory-extraction slot and seeded back
+ *     into a new lane, so a daemon restart continues the wait instead of
+ *     beginning it again.
  *   - Child tool access is enforced by a `ChildToolPolicy` layered inside
  *     `run-agent.ts`, not by the older `canUseTool` hook, and the child only
  *     ever sees the read/write file tools through `toolAllowlist`.
@@ -47,6 +51,11 @@ import {
   type MemoryExtractionTriggerState,
 } from "../../memory/extraction-triggers.js";
 import {
+  persistMemoryExtractionState,
+  readMemoryExtractionState,
+  type SessionMemoryExtractionState,
+} from "../../session/memory-extraction-state.js";
+import {
   formatMemoryManifest,
   scanForSecrets,
   scanMemoryFiles,
@@ -82,7 +91,8 @@ const MAX_EXTRACTION_LANES = 256;
 type ExtractionWarningCause =
   | "memory_extraction_skipped"
   | "memory_extraction_failed"
-  | "memory_extraction_denied_read";
+  | "memory_extraction_denied_read"
+  | "memory_extraction_state_not_persisted";
 
 /**
  * Record why an extraction run stopped. Warning causes outside the TUI's
@@ -173,6 +183,10 @@ interface ExtractionLane {
   inProgress: boolean;
   lastAccessedAt: number;
   pendingContext: QueuedExtraction | undefined;
+  /** The persisted cadence was read once, before the lane's first decision. */
+  restored: boolean;
+  /** Last cadence written for this lane, so unchanged state is not rewritten. */
+  persisted: SessionMemoryExtractionState | undefined;
 }
 
 interface ChildWriteTracker {
@@ -541,6 +555,8 @@ export function initExtractMemories(
       inProgress: false,
       lastAccessedAt: Date.now(),
       pendingContext: undefined,
+      restored: false,
+      persisted: undefined,
     };
     lanes.set(key, created);
     return created;
@@ -554,6 +570,65 @@ export function initExtractMemories(
     for (const [key] of idleEntries) {
       if (lanes.size <= MAX_EXTRACTION_LANES) return;
       lanes.delete(key);
+    }
+  }
+
+  /**
+   * Seed a new lane from the session's persisted cadence before its first
+   * decision. The value is the process-local mirror that persistLane keeps
+   * and that the resume path fills from the rollout; a session with nothing
+   * persisted, or a test double without session state, starts at zero as
+   * before.
+   */
+  async function restoreLane(
+    lane: ExtractionLane,
+    session: Session,
+    memoryDir: string,
+  ): Promise<void> {
+    if (lane.restored) return;
+    lane.restored = true;
+    const persisted = await readMemoryExtractionState(
+      session,
+      memoryRoot(memoryDir),
+    );
+    if (persisted === undefined) return;
+    lane.trigger.processedVisibleCount = persisted.processedVisibleCount;
+    lane.trigger.turnsSinceLastExtraction = persisted.turnsSinceLastExtraction;
+    lane.persisted = persisted;
+  }
+
+  /**
+   * Write the lane's cadence after a decision changed it. Writes go to the
+   * session state mirror and the rollout; a failure is reported and costs at
+   * most one further cadence after a restart, never the turn.
+   */
+  async function persistLane(
+    lane: ExtractionLane,
+    session: Session,
+    memoryDir: string,
+  ): Promise<void> {
+    const next: SessionMemoryExtractionState = {
+      memoryRoot: memoryRoot(memoryDir),
+      processedVisibleCount: lane.trigger.processedVisibleCount,
+      turnsSinceLastExtraction: lane.trigger.turnsSinceLastExtraction,
+    };
+    const last = lane.persisted;
+    if (
+      last !== undefined &&
+      last.processedVisibleCount === next.processedVisibleCount &&
+      last.turnsSinceLastExtraction === next.turnsSinceLastExtraction
+    ) {
+      return;
+    }
+    try {
+      await persistMemoryExtractionState(session, next);
+      lane.persisted = next;
+    } catch (error) {
+      emitExtractionWarning(
+        session,
+        "memory_extraction_state_not_persisted",
+        `cadence state not written; a restart may wait a further cadence: ${errorText(error)}`,
+      );
     }
   }
 
@@ -736,6 +811,10 @@ export function initExtractMemories(
     lane.inProgress = true;
     try {
       try {
+        // A lane created after a restart, or after the lane map pruned it,
+        // continues from the persisted cadence. This runs under the
+        // in-progress guard so a concurrent request queues behind it.
+        await restoreLane(lane, queued.context.session, memoryDir);
         await runExtraction(queued, memoryDir, lane, false, readOnlyMemoryRoots);
       } catch (error) {
         // Best effort: extraction failures must never break the user turn,
@@ -746,6 +825,7 @@ export function initExtractMemories(
           errorText(error),
         );
       }
+      await persistLane(lane, queued.context.session, memoryDir);
       while (lane.pendingContext) {
         const trailing = lane.pendingContext;
         lane.pendingContext = undefined;
@@ -758,6 +838,7 @@ export function initExtractMemories(
             `trailing run: ${errorText(error)}`,
           );
         }
+        await persistLane(lane, trailing.context.session, memoryDir);
       }
     } finally {
       lane.inProgress = false;
