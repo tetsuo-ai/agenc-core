@@ -4,6 +4,7 @@ import { existsSync } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import * as path from 'path'
 import { fileURLToPath } from 'url'
+import { selectPinnedRipgrepPath } from '../tools/system/pinned-ripgrep.js'
 import { isInBundledMode } from './bundledMode.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvDefinedFalsy } from './envUtils.js'
@@ -79,6 +80,25 @@ export type RipgrepIngressOptions = {
   readonly systemExecutablePath: string
 }
 
+/**
+ * Prefer the lockfile-pinned @vscode/ripgrep platform binary. Fall back to the
+ * legacy runtime/vendor/ripgrep layout used by some source checkouts.
+ */
+export function resolveBuiltinRipgrepCommand(
+  packagedPath: string | undefined = selectPinnedRipgrepPath(),
+): { command: string; exists: boolean } {
+  if (packagedPath !== undefined && existsSync(packagedPath)) {
+    return { command: packagedPath, exists: true }
+  }
+
+  const rgRoot = path.resolve(__dirname, 'vendor', 'ripgrep')
+  const vendorCommand =
+    process.platform === 'win32'
+      ? path.resolve(rgRoot, `${process.arch}-win32`, 'rg.exe')
+      : path.resolve(rgRoot, `${process.arch}-${process.platform}`, 'rg')
+  return { command: vendorCommand, exists: existsSync(vendorCommand) }
+}
+
 function buildRipgrepConfig(
   environment: NodeJS.ProcessEnv,
   systemExecutablePath: string,
@@ -87,12 +107,8 @@ function buildRipgrepConfig(
     environment.USE_BUILTIN_RIPGREP,
   )
   const bundledMode = isInBundledMode()
-  const rgRoot = path.resolve(__dirname, 'vendor', 'ripgrep')
-  const builtinCommand =
-    process.platform === 'win32'
-      ? path.resolve(rgRoot, `${process.arch}-win32`, 'rg.exe')
-      : path.resolve(rgRoot, `${process.arch}-${process.platform}`, 'rg')
-  const builtinExists = existsSync(builtinCommand)
+  const { command: builtinCommand, exists: builtinExists } =
+    resolveBuiltinRipgrepCommand()
 
   return resolveRipgrepConfig({
     userWantsSystemRipgrep,

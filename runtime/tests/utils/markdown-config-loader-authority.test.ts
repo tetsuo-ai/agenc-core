@@ -5,15 +5,18 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
 
 import { ConfigStore } from '../../src/config/store.js'
+import { selectPinnedRipgrepPath } from '../../src/tools/system/pinned-ripgrep.js'
 import {
   loadMarkdownFilesForSubdir,
   loadMarkdownFilesForSubdirFresh,
 } from '../../src/utils/markdownConfigLoader.js'
+import { getRipgrepStatus } from '../../src/utils/ripgrep.js'
 import {
   resetCanonicalSettingsAuthorityForTesting,
   runWithCanonicalSettingsAuthority,
 } from '../../src/utils/settings/canonicalAuthority.js'
 
+const pinnedRipgrepPath = selectPinnedRipgrepPath()
 const temporaryRoots: string[] = []
 
 function temporaryRoot(label: string): string {
@@ -126,6 +129,45 @@ describe('markdown discovery authority', () => {
       else process.env.PATH = previousPath
     }
   })
+
+  test.skipIf(pinnedRipgrepPath === undefined)(
+    'packaged @vscode/ripgrep supports markdown discovery without system rg',
+    async () => {
+      const pinned = pinnedRipgrepPath!
+
+      const workspace = temporaryRoot('workspace-packaged-rg')
+      const home = temporaryRoot('home-packaged-rg')
+      writeAgent(home, 'Found via packaged ripgrep.')
+      const authority = await createAuthority(home, workspace)
+
+      const previousPath = process.env.PATH
+      const previousNative = process.env.AGENC_USE_NATIVE_FILE_SEARCH
+      const emptyBin = temporaryRoot('empty-bin-packaged')
+      process.env.PATH = emptyBin
+      delete process.env.AGENC_USE_NATIVE_FILE_SEARCH
+      try {
+        const status = getRipgrepStatus({
+          environment: { ...process.env, PATH: emptyBin },
+          systemExecutablePath: 'rg',
+        })
+        expect(status.mode).toBe('builtin')
+        expect(status.path).toBe(pinned)
+
+        const files = await runWithCanonicalSettingsAuthority(authority, () =>
+          loadMarkdownFilesForSubdirFresh('agents', workspace),
+        )
+        expect(prompt(files)).toBe('Found via packaged ripgrep.')
+      } finally {
+        if (previousPath === undefined) delete process.env.PATH
+        else process.env.PATH = previousPath
+        if (previousNative === undefined) {
+          delete process.env.AGENC_USE_NATIVE_FILE_SEARCH
+        } else {
+          process.env.AGENC_USE_NATIVE_FILE_SEARCH = previousNative
+        }
+      }
+    },
+  )
 
   test('isolates same-home snapshots and clears only the active ConfigStore partition', async () => {
     const workspace = temporaryRoot('shared-workspace')

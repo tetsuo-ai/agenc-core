@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,10 +12,15 @@ import {
   deletedRuntimeFallbackPlan,
   parseNulNames,
   readChangedFiles,
+  resolveGitExecutable,
   runCommand,
 } from "./run-fast-checks.mjs";
 
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const typecheckOnlyArgs = [
+  ["runtime/scripts/check-ripgrep-available.mjs"],
+  ["run", "typecheck"],
+];
 
 test("documentation paths skip code checks", () => {
   const plan = classifyChangedFiles(["README.md", "docs/ci-required-gates.md", "todo.txt"]);
@@ -255,7 +260,7 @@ test("native C and C# sources typecheck only", () => {
     assert.equal(plan.typecheck, true, file);
     assert.deepEqual(plan.runtimeInputs, [], file);
     assert.equal(plan.policy, false, file);
-    assert.deepEqual(commandsForPlan(plan).map((command) => command.args), [["run", "typecheck"]], file);
+    assert.deepEqual(commandsForPlan(plan).map((command) => command.args), typecheckOnlyArgs, file);
   }
 });
 
@@ -265,7 +270,7 @@ test("deleted native C does not use the JS/TS fail-closed mapping", () => {
     fileExists: () => false,
     isDirectory: () => false,
   });
-  assert.deepEqual(commands.map((command) => command.args), [["run", "typecheck"]]);
+  assert.deepEqual(commands.map((command) => command.args), typecheckOnlyArgs);
 });
 
 test("required-gate inventory outside the policy selector typechecks only", () => {
@@ -277,7 +282,7 @@ test("required-gate inventory outside the policy selector typechecks only", () =
     const plan = classifyChangedFiles([file]);
     assert.equal(plan.policy, false, file);
     assert.equal(plan.typecheck, true, file);
-    assert.deepEqual(commandsForPlan(plan).map((command) => command.args), [["run", "typecheck"]], file);
+    assert.deepEqual(commandsForPlan(plan).map((command) => command.args), typecheckOnlyArgs, file);
   }
 });
 
@@ -289,6 +294,28 @@ test("runtime lock and toolchain files do not select policy tests", () => {
     const plan = classifyChangedFiles([file]);
     assert.equal(plan.policy, false, file);
     assert.equal(plan.typecheck, true, file);
-    assert.deepEqual(commandsForPlan(plan).map((command) => command.args), [["run", "typecheck"]], file);
+    assert.deepEqual(commandsForPlan(plan).map((command) => command.args), typecheckOnlyArgs, file);
+  }
+});
+
+test("resolveGitExecutable keeps Nix-style PATH entries (no short PATH rewrite)", () => {
+  const source = readFileSync(path.join(repositoryRoot, "scripts/run-fast-checks.mjs"), "utf8");
+  assert.equal(source.includes("fixedPathEnv"), false);
+  assert.equal(source.includes(String.raw`C:\Program Files\Git\cmd`), false);
+
+  const realGit = resolveGitExecutable();
+  const nixGitDir = path.join(repositoryRoot, "scripts", ".tmp-nix-git-bin");
+  const nixGit = path.join(nixGitDir, process.platform === "win32" ? "git.exe" : "git");
+  rmSync(nixGitDir, { recursive: true, force: true });
+  mkdirSync(nixGitDir, { recursive: true });
+  try {
+    copyFileSync(realGit, nixGit);
+    const resolved = resolveGitExecutable({
+      ...process.env,
+      PATH: [nixGitDir, process.env.PATH ?? ""].join(path.delimiter),
+    });
+    assert.equal(resolved, nixGit);
+  } finally {
+    rmSync(nixGitDir, { recursive: true, force: true });
   }
 });
