@@ -25,24 +25,17 @@ describe("createHermeticRunRoot", () => {
     },
   );
 
-  it.runIf(process.platform === "darwin")(
-    "bases the root under /private/tmp on macOS, never the /tmp symlink",
+  it.runIf(process.platform !== "win32")(
+    "bases the root on the canonical temp directory of the platform",
     () => {
+      // macOS: /private/tmp, the real directory behind the /tmp symlink.
+      // Linux: /tmp itself. One assertion, no platform-specific skip, so the
+      // suite registers zero skipped tests on every default-suite runner.
+      const expectedBase =
+        process.platform === "darwin" ? "/private/tmp" : "/tmp";
       const root = createHermeticRunRoot("agv-test-");
       try {
-        expect(root.startsWith("/private/tmp/agv-test-")).toBe(true);
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
-    },
-  );
-
-  it.runIf(process.platform === "linux")(
-    "bases the root under /tmp on Linux",
-    () => {
-      const root = createHermeticRunRoot("agv-test-");
-      try {
-        expect(root.startsWith("/tmp/agv-test-")).toBe(true);
+        expect(root.startsWith(`${expectedBase}/agv-test-`)).toBe(true);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
