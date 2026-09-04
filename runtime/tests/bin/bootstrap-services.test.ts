@@ -8,7 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const policyLimitsMocks = vi.hoisted(() => ({
   configurePolicyLimitsService: vi.fn(),
@@ -1389,6 +1389,19 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
 });
 
 describe("loadBootstrapLspServers", () => {
+  // These tests are about the typed lsp_servers config alone. Built-in
+  // profiles would otherwise start whatever language server the host happens
+  // to have on PATH and make an empty typed config mean "one server".
+  let previousBuiltinLsp: string | undefined;
+  beforeEach(() => {
+    previousBuiltinLsp = process.env.AGENC_DISABLE_BUILTIN_LSP;
+    process.env.AGENC_DISABLE_BUILTIN_LSP = "1";
+  });
+  afterEach(() => {
+    if (previousBuiltinLsp === undefined) delete process.env.AGENC_DISABLE_BUILTIN_LSP;
+    else process.env.AGENC_DISABLE_BUILTIN_LSP = previousBuiltinLsp;
+  });
+
   function rejectingStopServer(): LSPServerInstance {
     const config = normalizeLspServerConfig("ts", {
       command: "typescript-language-server",

@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 vi.mock("../../services/lsp/fileNotifications.js", () => ({
   notifyLspFileChanged: vi.fn(),
+  collectEditFeedback: vi.fn(async () => ""),
 }));
 
 import { createFileWriteTool } from "./file-write.js";

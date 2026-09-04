@@ -598,7 +598,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 
 | Paths | Type / meaning |
 | --- | --- |
-| `lsp_servers`, `lsp_servers.<server>` | Named language server configs. |
+| `lsp_servers`, `lsp_servers.<server>` | Named language server configs. Without any, built-in profiles start `typescript-language-server`, `basedpyright-langserver`/`pyright-langserver`, `gopls` and `rust-analyzer` when the binary is on PATH (never from the workspace); a configured server that claims an extension replaces the matching profile. `AGENC_DISABLE_BUILTIN_LSP=1` turns the profiles off. |
 | `lsp_servers.<server>.command`, `lsp_servers.<server>.args`, `lsp_servers.<server>.workspaceFolder` | Launch command and workspace. |
 | `lsp_servers.<server>.env`, `lsp_servers.<server>.env.<name>` | String environment map. |
 | `lsp_servers.<server>.extensionToLanguage`, `lsp_servers.<server>.extensionToLanguage.<name>` | Required extension-to-language map. |

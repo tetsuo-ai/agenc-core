@@ -55,7 +55,7 @@ import {
   isAgentNamespacePath,
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
-import { notifyLspFileChanged } from "../../services/lsp/fileNotifications.js";
+import { collectEditFeedback } from "../../services/lsp/fileNotifications.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 import {
   prepareWorkspaceMutation,
@@ -989,9 +989,9 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
           absoluteFilePath,
           new_string,
         );
-        notifyLspFileChanged(absoluteFilePath, new_string);
+        const lspFeedback = await collectEditFeedback(absoluteFilePath, new_string);
         return {
-          content: `Created file ${file_path}.`,
+          content: `Created file ${file_path}.${lspFeedback}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "create",
@@ -1103,9 +1103,9 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
           return errorResult(formatWriteFileError(err));
         }
         await snapshotPostWrite(sessionId, absoluteFilePath, new_string);
-        notifyLspFileChanged(absoluteFilePath, new_string);
+        const lspFeedback = await collectEditFeedback(absoluteFilePath, new_string);
         return {
-          content: successText(file_path, false),
+          content: `${successText(file_path, false)}${lspFeedback}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "edit",
@@ -1151,10 +1151,10 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
 
       await snapshotPostWrite(sessionId, absoluteFilePath, updated);
 
-      notifyLspFileChanged(absoluteFilePath, updated);
+      const lspFeedback = await collectEditFeedback(absoluteFilePath, updated);
 
       return {
-        content: successText(file_path, replace_all),
+        content: `${successText(file_path, replace_all)}${lspFeedback}`,
         metadata: buildFileMutationMetadata({
           filePath: file_path,
           operation: "edit",
@@ -1365,9 +1365,9 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
           absoluteFilePath,
           firstEdit.new_string,
         );
-        notifyLspFileChanged(absoluteFilePath, firstEdit.new_string);
+        const lspFeedback = await collectEditFeedback(absoluteFilePath, firstEdit.new_string);
         return {
-          content: `Created file ${file_path}.`,
+          content: `Created file ${file_path}.${lspFeedback}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "create",
@@ -1474,9 +1474,9 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
           absoluteFilePath,
           firstEdit.new_string,
         );
-        notifyLspFileChanged(absoluteFilePath, firstEdit.new_string);
+        const lspFeedback = await collectEditFeedback(absoluteFilePath, firstEdit.new_string);
         return {
-          content: multiEditSuccessText(file_path, 1, 1),
+          content: `${multiEditSuccessText(file_path, 1, 1)}${lspFeedback}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "edit",
@@ -1552,10 +1552,10 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       }
 
       await snapshotPostWrite(sessionId, absoluteFilePath, updated);
-      notifyLspFileChanged(absoluteFilePath, updated);
+      const lspFeedback = await collectEditFeedback(absoluteFilePath, updated);
 
       return {
-        content: multiEditSuccessText(file_path, edits.length, replacements),
+        content: `${multiEditSuccessText(file_path, edits.length, replacements)}${lspFeedback}`,
         metadata: buildFileMutationMetadata({
           filePath: file_path,
           operation: "edit",
