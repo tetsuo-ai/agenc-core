@@ -161,6 +161,37 @@ describe("provider trace sink", () => {
     });
   });
 
+  test("writes the full request body only when bodies are requested", () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-trace-bodies-"));
+    homes.push(home);
+    const payload = {
+      model: "grok-4",
+      prompt_cache_key: "conv-bodies",
+      instructions: "static head",
+      input: [{ role: "user", content: "hello with token sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG" }],
+      tools: [{ name: "FileRead" }],
+    };
+    const request: LLMProviderTraceEvent = {
+      kind: "request",
+      transport: "chat_stream",
+      provider: "grok",
+      model: "grok-4",
+      payload,
+    };
+    const silent = createProviderTraceSink({ agencHome: home, conversationId: "conv-silent" });
+    silent.onProviderTraceEvent(request);
+    expect(readdirSync(silent.directory)).toEqual(["llm-00001.jsonl"]);
+
+    const loud = createProviderTraceSink({ agencHome: home, conversationId: "conv-bodies", bodies: true });
+    loud.onProviderTraceEvent(request);
+    expect(readdirSync(loud.directory).sort()).toEqual(["llm-00001.jsonl", "llm-00001.request.json"]);
+    const body = JSON.parse(readFileSync(join(loud.directory, "llm-00001.request.json"), "utf8"));
+    expect(body.instructions).toBe("static head");
+    expect(body.input).toHaveLength(1);
+    expect(body.tools).toEqual([{ name: "FileRead" }]);
+    expect(JSON.stringify(body)).not.toContain("sk-ant-api03-abcdefghijklmnopqrstuvwxyz");
+  });
+
   test("numbers files per request and records errors with elapsed time", () => {
     const home = tempHome();
     let clock = 0;

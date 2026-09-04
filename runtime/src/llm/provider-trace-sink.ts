@@ -13,13 +13,18 @@
  * `max_output_tokens`, counts for input items and tools), the provider
  * usage, the stream event count and the elapsed milliseconds.
  *
+ * With `AGENC_PROVIDER_TRACE_BODIES=1` as well, each request also lands in
+ * full as `llm-<seq>.request.json` (secrets redacted): the whole prompt, so
+ * two consecutive requests can be diffed byte for byte when the digests say
+ * the cached prefix changed. `scripts/eval/prefix-diff.mjs` reads them.
+ *
  * Diagnostics only: a write failure disables the sink for the session and
  * never reaches the turn.
  *
  * @module
  */
 
-import { appendFileSync, mkdirSync, readdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -33,6 +38,18 @@ export function providerTraceEnabled(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   return isEnvTruthy(env[PROVIDER_TRACE_ENV]);
+}
+
+export const PROVIDER_TRACE_BODIES_ENV = "AGENC_PROVIDER_TRACE_BODIES";
+
+/**
+ * Full request bodies are a second opt-in on top of the trace: they hold the
+ * whole prompt, so they are never written by the trace flag alone.
+ */
+export function providerTraceBodiesEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return providerTraceEnabled(env) && isEnvTruthy(env[PROVIDER_TRACE_BODIES_ENV]);
 }
 
 export interface ProviderTraceSink {
@@ -214,6 +231,8 @@ export function highestExistingTraceSeq(directory: string): number {
 export function createProviderTraceSink(params: {
   readonly agencHome: string;
   readonly conversationId: string;
+  /** Also write each full request as `llm-<seq>.request.json`. */
+  readonly bodies?: boolean;
   readonly now?: () => number;
   readonly wallClock?: () => string;
 }): ProviderTraceSink {
@@ -251,6 +270,23 @@ export function createProviderTraceSink(params: {
     }
   };
 
+  const writeBody = (path: string, payload: Record<string, unknown>): void => {
+    if (disabled) return;
+    try {
+      if (!directoryReady) {
+        mkdirSync(directory, { recursive: true, mode: 0o700 });
+        directoryReady = true;
+      }
+      writeFileSync(
+        path,
+        `${JSON.stringify(redactSecretsInValue(payload))}\n`,
+        { mode: 0o600 },
+      );
+    } catch {
+      disabled = true;
+    }
+  };
+
   const base = (event: LLMProviderTraceEvent, request: InFlightRequest) => ({
     seq: request.seq,
     ts: wallClock(),
@@ -265,10 +301,11 @@ export function createProviderTraceSink(params: {
     if (disabled) return;
     if (event.kind === "request") {
       seq += 1;
+      const stem = `llm-${String(seq).padStart(5, "0")}`;
       inFlight = {
         seq,
         startedAtMs: now(),
-        path: join(directory, `llm-${String(seq).padStart(5, "0")}.jsonl`),
+        path: join(directory, `${stem}.jsonl`),
         streamEvents: 0,
         firstStreamEventMs: undefined,
       };
@@ -278,6 +315,9 @@ export function createProviderTraceSink(params: {
         params: summarizeProviderRequestParams(event.payload),
         ...(event.context !== undefined ? { context: event.context } : {}),
       });
+      if (params.bodies === true) {
+        writeBody(join(directory, `${stem}.request.json`), event.payload);
+      }
       return;
     }
     if (inFlight === undefined) return;
