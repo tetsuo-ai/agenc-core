@@ -75,6 +75,45 @@ function bodyAt(
   >;
 }
 
+function createSuccessfulZaiProvider(model = "glm-5.3") {
+  const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+    successfulChat(model),
+  );
+  const provider = new ZaiProvider({
+    apiKey: "zai-test",
+    model,
+    tools: [ECHO_TOOL],
+    fetchImpl,
+  });
+  return { fetchImpl, provider };
+}
+
+function echoReasoningRound(options: {
+  readonly id: string;
+  readonly text: string;
+  readonly reasoning: string;
+}): readonly [LLMMessage, LLMMessage] {
+  return [{
+    role: "assistant",
+    content: "",
+    toolCalls: [{
+      id: options.id,
+      name: "system.echo",
+      arguments: JSON.stringify({ text: options.text }),
+    }],
+    providerReasoningContent: options.reasoning,
+    providerReasoningProvenance: {
+      provider: "zai",
+      model: "glm-5.3",
+    },
+  }, {
+    role: "tool",
+    toolCallId: options.id,
+    toolName: "system.echo",
+    content: options.text,
+  }];
+}
+
 describe("ZaiProvider", () => {
   test("routes the isolated Coding Plan provider to its own endpoint and key", async () => {
     const model = "glm-5.3";
@@ -456,37 +495,14 @@ describe("ZaiProvider", () => {
   });
 
   test("clears stale Z.AI reasoning after the adjacent tool continuation", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      successfulChat("glm-5.3"),
-    );
-    const provider = new ZaiProvider({
-      apiKey: "zai-test",
-      model: "glm-5.3",
-      tools: [ECHO_TOOL],
-      fetchImpl,
-    });
+    const { fetchImpl, provider } = createSuccessfulZaiProvider();
     await provider.chat([
       { role: "user", content: "call echo" },
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: [{
-          id: "call_old",
-          name: "system.echo",
-          arguments: '{"text":"old"}',
-        }],
-        providerReasoningContent: "old opaque reasoning",
-        providerReasoningProvenance: {
-          provider: "zai",
-          model: "glm-5.3",
-        },
-      },
-      {
-        role: "tool",
-        toolCallId: "call_old",
-        toolName: "system.echo",
-        content: "old",
-      },
+      ...echoReasoningRound({
+        id: "call_old",
+        text: "old",
+        reasoning: "old opaque reasoning",
+      }),
       { role: "user", content: "now answer a new question" },
     ]);
 
@@ -499,52 +515,19 @@ describe("ZaiProvider", () => {
   });
 
   test("replays every intact reasoning block in a multi-round tool chain", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      successfulChat("glm-5.3"),
-    );
-    const provider = new ZaiProvider({
-      apiKey: "zai-test",
-      model: "glm-5.3",
-      tools: [ECHO_TOOL],
-      fetchImpl,
-    });
-    const provenance = { provider: "zai", model: "glm-5.3" } as const;
+    const { fetchImpl, provider } = createSuccessfulZaiProvider();
     const messages: LLMMessage[] = [
       { role: "user", content: "run two tools" },
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: [{
-          id: "call_one",
-          name: "system.echo",
-          arguments: '{"text":"one"}',
-        }],
-        providerReasoningContent: "reasoning one",
-        providerReasoningProvenance: provenance,
-      },
-      {
-        role: "tool",
-        toolCallId: "call_one",
-        toolName: "system.echo",
-        content: "one",
-      },
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: [{
-          id: "call_two",
-          name: "system.echo",
-          arguments: '{"text":"two"}',
-        }],
-        providerReasoningContent: "reasoning two",
-        providerReasoningProvenance: provenance,
-      },
-      {
-        role: "tool",
-        toolCallId: "call_two",
-        toolName: "system.echo",
-        content: "two",
-      },
+      ...echoReasoningRound({
+        id: "call_one",
+        text: "one",
+        reasoning: "reasoning one",
+      }),
+      ...echoReasoningRound({
+        id: "call_two",
+        text: "two",
+        reasoning: "reasoning two",
+      }),
     ];
 
     await provider.chat(messages);
@@ -562,37 +545,14 @@ describe("ZaiProvider", () => {
   });
 
   test("clears the whole reasoning chain when a runtime boundary was normalized", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      successfulChat("glm-5.3"),
-    );
-    const provider = new ZaiProvider({
-      apiKey: "zai-test",
-      model: "glm-5.3",
-      tools: [ECHO_TOOL],
-      fetchImpl,
-    });
+    const { fetchImpl, provider } = createSuccessfulZaiProvider();
     await provider.chat([
       { role: "user", content: "call a tool" },
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: [{
-          id: "call_before_boundary",
-          name: "system.echo",
-          arguments: '{"text":"old"}',
-        }],
-        providerReasoningContent: "must not cross compaction",
-        providerReasoningProvenance: {
-          provider: "zai",
-          model: "glm-5.3",
-        },
-      },
-      {
-        role: "tool",
-        toolCallId: "call_before_boundary",
-        toolName: "system.echo",
-        content: "old",
-      },
+      ...echoReasoningRound({
+        id: "call_before_boundary",
+        text: "old",
+        reasoning: "must not cross compaction",
+      }),
       { role: "system", content: "[boundary] compacted history" },
     ]);
 
@@ -731,15 +691,9 @@ describe("ZaiProvider", () => {
   );
 
   test("strips unsupported tool-result images before relaying to Flash", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      successfulChat("glm-5.3-flash"),
+    const { fetchImpl, provider } = createSuccessfulZaiProvider(
+      "glm-5.3-flash",
     );
-    const provider = new ZaiProvider({
-      apiKey: "zai-test",
-      model: "glm-5.3-flash",
-      tools: [ECHO_TOOL],
-      fetchImpl,
-    });
 
     await provider.chat([
       { role: "user", content: "inspect" },

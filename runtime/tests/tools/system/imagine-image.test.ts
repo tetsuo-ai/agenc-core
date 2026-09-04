@@ -4,21 +4,14 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { resolveHomeContext } from "../../../src/config/home.js";
 import { createImagineImageTool } from "../../../src/tools/system/imagine-image.js";
 import { createModelFacingTools } from "../../../src/bin/model-facing-tools.js";
 import { createProvider } from "../../../src/llm/provider.js";
 import type { Session } from "../../../src/session/session.js";
-
-function testHome(workspaceRoot: string) {
-  return resolveHomeContext(
-    {
-      AGENC_HOME: join(workspaceRoot, ".agenc-test-home"),
-      HOME: workspaceRoot,
-    },
-    { platformHome: workspaceRoot },
-  );
-}
+import {
+  isModelFacingToolRegistered,
+  mediaTestHome as testHome,
+} from "./media-test-helpers.js";
 
 type QwenImageProduct = "qwen" | "qwen-token-plan";
 
@@ -55,15 +48,45 @@ function createQwenImagineTool(
   });
 }
 
+function generatedImageUrlFetch(generatedUrl: string, contents: string) {
+  return vi.fn(async (url: string | URL | Request) =>
+    String(url) === generatedUrl
+      ? new Response(Buffer.from(contents), {
+          status: 200,
+          headers: { "content-type": "image/png" },
+        })
+      : new Response(JSON.stringify({ data: [{ url: generatedUrl }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }));
+}
+
+function createSessionImagineImageTool(options: {
+  readonly workspaceRoot: string;
+  readonly provider: ReturnType<typeof createProvider>;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly fetchImpl?: typeof fetch;
+}) {
+  return createImagineImageTool({
+    workspaceRoot: options.workspaceRoot,
+    home: testHome(options.workspaceRoot),
+    getSession: () =>
+      ({ services: { provider: options.provider } }) as unknown as Session,
+    env: options.env ?? {},
+    ...(options.fetchImpl === undefined
+      ? {}
+      : { fetchImpl: options.fetchImpl }),
+  });
+}
+
 describe("ImagineImage tool", () => {
   it("is catalog-registered for non-Grok sessions with an independent xAI credential", () => {
-    const tools = createModelFacingTools({
+    expect(isModelFacingToolRegistered("ImagineImage", {
       workspaceRoot: process.cwd(),
       getSession: () => null,
       sessionProvider: "openai",
       env: { XAI_API_KEY: "key" },
-    });
-    expect(tools.some((t) => t.name === "ImagineImage")).toBe(true);
+    })).toBe(true);
   });
 
   it("is catalog-registered for Meta sessions with a native image credential", () => {
@@ -105,16 +128,7 @@ describe("ImagineImage tool", () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-zai-switch-"));
     let session: Session | null = null;
     const generatedUrl = "https://cdn.bigmodel.cn/generated/switched.png";
-    const fetchImpl = vi.fn(async (url: string | URL | Request) =>
-      String(url) === generatedUrl
-        ? new Response(Buffer.from("switched-png"), {
-            status: 200,
-            headers: { "content-type": "image/png" },
-          })
-        : new Response(JSON.stringify({ data: [{ url: generatedUrl }] }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          }));
+    const fetchImpl = generatedImageUrlFetch(generatedUrl, "switched-png");
     const originalFetch = globalThis.fetch;
     vi.stubGlobal("fetch", fetchImpl);
     try {
@@ -184,20 +198,10 @@ describe("ImagineImage tool", () => {
       model: "glm-5.3",
     });
     const generatedUrl = "https://cdn.bigmodel.cn/generated/isolated.png";
-    const fetchImpl = vi.fn(async (url: string | URL | Request) =>
-      String(url) === generatedUrl
-        ? new Response(Buffer.from("isolated-png"), {
-            status: 200,
-            headers: { "content-type": "image/png" },
-          })
-        : new Response(JSON.stringify({ data: [{ url: generatedUrl }] }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          }));
-    const tool = createImagineImageTool({
+    const fetchImpl = generatedImageUrlFetch(generatedUrl, "isolated-png");
+    const tool = createSessionImagineImageTool({
       workspaceRoot: root,
-      home: testHome(root),
-      getSession: () => ({ services: { provider } }) as unknown as Session,
+      provider,
       env: {
         ZAI_CODING_PLAN_API_KEY: "coding-plan-key-must-not-leak",
         ZAI_API_KEY: "payg-media-key",
@@ -219,16 +223,7 @@ describe("ImagineImage tool", () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-zai-late-session-"));
     let session: Session | null = null;
     const generatedUrl = "https://cdn.bigmodel.cn/generated/late.png";
-    const fetchImpl = vi.fn(async (url: string | URL | Request) =>
-      String(url) === generatedUrl
-        ? new Response(Buffer.from("late-png"), {
-            status: 200,
-            headers: { "content-type": "image/png" },
-          })
-        : new Response(JSON.stringify({ data: [{ url: generatedUrl }] }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          }));
+    const fetchImpl = generatedImageUrlFetch(generatedUrl, "late-png");
     const tool = createImagineImageTool({
       workspaceRoot: root,
       home: testHome(root),
@@ -362,14 +357,13 @@ describe("ImagineImage tool", () => {
   });
 
   it("is catalog-registered for grok + direct xAI with BYOK or any credential probe", () => {
-    const tools = createModelFacingTools({
+    expect(isModelFacingToolRegistered("ImagineImage", {
       workspaceRoot: process.cwd(),
       getSession: () => null,
       sessionProvider: "grok",
       sessionBaseURL: "https://api.x.ai/v1",
       env: { XAI_API_KEY: "key" },
-    });
-    expect(tools.some((t) => t.name === "ImagineImage")).toBe(true);
+    })).toBe(true);
   });
 
   it("uses a direct Grok factory bearer when no environment key exists", async () => {
@@ -379,14 +373,12 @@ describe("ImagineImage tool", () => {
       model: "grok-4.6",
       baseURL: "https://api.x.ai/v1",
     });
-    const tools = createModelFacingTools({
+    expect(isModelFacingToolRegistered("ImagineImage", {
       workspaceRoot: root,
       agencHome: join(root, ".agenc-test-home"),
       getSession: () => ({ services: { provider } }) as unknown as Session,
       env: {},
-    });
-
-    expect(tools.some((t) => t.name === "ImagineImage")).toBe(true);
+    })).toBe(true);
   });
 
   it("keeps an unusable non-direct xAI backend deferred and fail-closed", async () => {
@@ -505,22 +497,10 @@ describe("ImagineImage tool", () => {
       model: "glm-5.3",
     });
     const generatedUrl = "https://cdn.bigmodel.cn/generated/glm-image.png";
-    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
-      if (String(url) === generatedUrl) {
-        return new Response(Buffer.from("zai-png"), {
-          status: 200,
-          headers: { "content-type": "image/png" },
-        });
-      }
-      return new Response(JSON.stringify({ data: [{ url: generatedUrl }] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    });
-    const tool = createImagineImageTool({
+    const fetchImpl = generatedImageUrlFetch(generatedUrl, "zai-png");
+    const tool = createSessionImagineImageTool({
       workspaceRoot: root,
-      home: testHome(root),
-      getSession: () => ({ services: { provider } }) as unknown as Session,
+      provider,
       env: {
         ZAI_API_KEY: "isolated-zai-key",
         XAI_API_KEY: "must-not-win-for-zai-session",

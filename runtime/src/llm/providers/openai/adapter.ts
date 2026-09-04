@@ -62,7 +62,7 @@ import {
 } from "../../provider-capabilities.js";
 import type { OpenAIProviderConfig } from "./types.js";
 import { OpenAIAuthSession } from "./auth.js";
-import { parseSSEFrames } from "../../_deps/sse.js";
+import { parseSSEFrames, type SSEFrame } from "../../_deps/sse.js";
 import {
   evaluateProviderFallback,
   normalizeFallbackRetryBudget,
@@ -84,6 +84,33 @@ const CHAT_COMPLETIONS_MIN_OUTPUT_TOKENS = 256;
 interface OpenAISseEvent {
   readonly event?: string;
   readonly data: Record<string, unknown>;
+}
+
+function decodeOpenAISseEventBatch(
+  frames: readonly SSEFrame[],
+  providerName: string,
+): { readonly events: readonly OpenAISseEvent[]; readonly done: boolean } {
+  const events: OpenAISseEvent[] = [];
+  for (const frame of frames) {
+    if (!frame.data || frame.data === "[DONE]") {
+      if (frame.data === "[DONE]") {
+        return { events, done: true };
+      }
+      continue;
+    }
+    try {
+      const data = JSON.parse(frame.data) as Record<string, unknown>;
+      events.push({ event: frame.event, data });
+    } catch (error) {
+      if (isZaiProviderName(providerName)) {
+        throw new LLMInvalidResponseError(
+          providerName,
+          `Malformed JSON in Z.AI SSE event: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+  return { events, done: false };
 }
 
 function resolveTimeoutMs(
@@ -1651,53 +1678,22 @@ export class OpenAIProvider implements LLMProvider {
       buffer += decoder.decode(chunk.value, { stream: true });
       const parsed = parseSSEFrames(buffer, this.name);
       buffer = parsed.remaining;
-
-      for (const frame of parsed.frames) {
-        if (!frame.data || frame.data === "[DONE]") {
-          if (frame.data === "[DONE]") {
-            onDone?.();
-            return;
-          }
-          continue;
-        }
-        try {
-          const data = JSON.parse(frame.data) as Record<string, unknown>;
-          yield { event: frame.event, data };
-        } catch (error) {
-          if (isZaiProviderName(this.name)) {
-            throw new LLMInvalidResponseError(
-              this.name,
-              `Malformed JSON in Z.AI SSE event: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          }
-          continue;
-        }
+      const batch = decodeOpenAISseEventBatch(
+        parsed.frames,
+        this.name,
+      );
+      for (const event of batch.events) yield event;
+      if (batch.done) {
+        onDone?.();
+        return;
       }
     }
 
     buffer += decoder.decode();
     const parsed = parseSSEFrames(buffer, this.name);
-    for (const frame of parsed.frames) {
-      if (!frame.data || frame.data === "[DONE]") {
-        if (frame.data === "[DONE]") {
-          onDone?.();
-          return;
-        }
-        continue;
-      }
-      try {
-        const data = JSON.parse(frame.data) as Record<string, unknown>;
-        yield { event: frame.event, data };
-      } catch (error) {
-        if (isZaiProviderName(this.name)) {
-          throw new LLMInvalidResponseError(
-            this.name,
-            `Malformed JSON in Z.AI SSE event: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
-        continue;
-      }
-    }
+    const batch = decodeOpenAISseEventBatch(parsed.frames, this.name);
+    for (const event of batch.events) yield event;
+    if (batch.done) onDone?.();
   }
 
   private async requestStream(args: {
