@@ -2,6 +2,8 @@ name: platform-tests
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 concurrency:
   group: platform-tests-${{ github.event.pull_request.number || github.ref }}
@@ -1147,6 +1149,22 @@ jobs:
           npm_config_build_from_source=true \
             npm rebuild better-sqlite3 esbuild node-pty
 
+      - name: Run the suites that only fail on macOS when darwin is broken
+        # The durability helper, the run-turn tool-result budget that depends on
+        # it, and the MCP client's artifact persistence were unsupported on
+        # darwin for seven weeks while this job ran one unrelated file.
+        shell: bash
+        run: |
+          set -euo pipefail
+          node runtime/scripts/run-hermetic-vitest.mjs \
+            --require-zero-skips \
+            run \
+            tests/durability \
+            tests/session/run-turn.test.ts \
+            tests/services/mcp/client.test.ts \
+            --allowOnly=false \
+            --reporter=dot
+
       - name: Run the exact macOS red-probe runner contract
         shell: bash
         run: |
@@ -1215,6 +1233,7 @@ jobs:
             --require-zero-skips \
             run \
             tests/agents/jobs/csv-output.native.test.ts \
+            tests/durability/atomic-artifact.darwin.test.ts \
             tests/fnd/benchmark-harness-faults.test.ts \
             tests/fnd/bounded-file-io.test.ts \
             tests/fnd/fnd-fixtures.test.ts \
@@ -1236,6 +1255,7 @@ jobs:
           const results = JSON.parse(readFileSync(resultsPath, "utf8"));
           const expectedFiles = [
             "tests/agents/jobs/csv-output.native.test.ts",
+            "tests/durability/atomic-artifact.darwin.test.ts",
             "tests/fnd/benchmark-harness-faults.test.ts",
             "tests/fnd/bounded-file-io.test.ts",
             "tests/fnd/fnd-fixtures.test.ts",
@@ -1245,12 +1265,12 @@ jobs:
             "tests/utils/secureStorage/macOsKeychainHelper.darwin.test.ts",
           ];
           const exactCounts = {
-            numTotalTestSuites: 12,
-            numPassedTestSuites: 12,
+            numTotalTestSuites: 14,
+            numPassedTestSuites: 14,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 97,
-            numPassedTests: 97,
+            numTotalTests: 101,
+            numPassedTests: 101,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1277,7 +1297,7 @@ jobs:
               `macOS-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("macOS FND/native capability lane passed 97 tests in 8 files with zero skipped");
+          console.log("macOS FND/native capability lane passed 101 tests in 9 files with zero skipped");
           NODE
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
 

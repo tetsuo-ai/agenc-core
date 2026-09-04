@@ -447,6 +447,9 @@ describe("reproducible install and release contract", () => {
       "Run the exact macOS FND/native capability lane",
     );
     expect(macosJob).toContain("tests/agents/jobs/csv-output.native.test.ts");
+    expect(macosJob).toContain(
+      "tests/durability/atomic-artifact.darwin.test.ts",
+    );
     expect(macosJob).toContain("tests/fnd/benchmark-harness-faults.test.ts");
     expect(macosJob).toContain("tests/fnd/bounded-file-io.test.ts");
     expect(macosJob).toContain("tests/fnd/fnd-fixtures.test.ts");
@@ -459,11 +462,17 @@ describe("reproducible install and release contract", () => {
       "tests/utils/secureStorage/macOsKeychainHelper.darwin.test.ts",
     );
     expect(macosJob).toContain("--config vitest.native.config.ts");
-    expect(macosJob).toContain("numTotalTestSuites: 12");
-    expect(macosJob).toContain("numTotalTests: 97");
+    expect(macosJob).toContain("numTotalTestSuites: 14");
+    expect(macosJob).toContain("numTotalTests: 101");
     expect(macosJob).toContain(
-      "macOS FND/native capability lane passed 97 tests in 8 files with zero skipped",
+      "macOS FND/native capability lane passed 101 tests in 9 files with zero skipped",
     );
+    expect(macosJob).toContain(
+      "Run the suites that only fail on macOS when darwin is broken",
+    );
+    expect(macosJob).toContain("tests/durability");
+    expect(macosJob).toContain("tests/session/run-turn.test.ts");
+    expect(macosJob).toContain("tests/services/mcp/client.test.ts");
 
     const windowsJob = workflow.slice(workflow.indexOf("\n  windows-native:"));
     expect(windowsJob).toContain("runs-on: windows-2025-vs2026");
@@ -553,7 +562,7 @@ describe("reproducible install and release contract", () => {
         /actions\/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e/g,
       ),
     ).toHaveLength(4);
-    expect(workflow.match(/--require-zero-skips/g)).toHaveLength(9);
+    expect(workflow.match(/--require-zero-skips/g)).toHaveLength(10);
     expect(workflow).not.toMatch(/uses:\s+actions\/[\w-]+@v\d/);
     expect(workflow).not.toContain("cache: npm");
     expect(workflow).not.toContain("--passWithNoTests");
