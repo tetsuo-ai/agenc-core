@@ -23,9 +23,16 @@ import {
 // macOS has no traversable descriptor path for a directory, so the helper runs
 // in its witnessed-path mode there: children are addressed through the
 // canonical path, and every directory mutation must be witnessed by the pinned
-// directory descriptor. These tests pin that mode's contract. They are darwin
-// only because the descriptor mode on Linux makes the injected swaps inert.
-describe.runIf(process.platform === "darwin")(
+// directory descriptor. These tests pin that mode's contract. Like the other
+// platform probes in NATIVE_TEST_INCLUDE, the file runs only in its matching
+// native lane (vitest.native.config.ts on a macOS builder); on Linux the
+// descriptor mode makes the injected swaps inert, and a platform skip would
+// trip the default suite's zero-skip rule.
+if (process.platform !== "darwin") {
+  throw new Error("the darwin atomic-artifact integration tests require macOS");
+}
+
+describe(
   "atomic artifact commit on macOS (witnessed-path mode)",
   () => {
     const directories: string[] = [];
