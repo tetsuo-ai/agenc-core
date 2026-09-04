@@ -1,5 +1,5 @@
 import { execa, execaSync } from "execa";
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 import { jsonStringify } from "../slowOperations.js";
 import {
   CREDENTIALS_SERVICE_SUFFIX,
@@ -40,7 +40,8 @@ function decodeKeychainReadResult(
   if (result.exitCode !== 0) {
     throw new Error(
       result.stderr?.trim() ||
-        `macOS Keychain lookup failed with exit code ${result.exitCode}`,
+        `macOS Keychain lookup failed with exit code ${result.exitCode}` +
+          (result.failure ? ` (${result.failure})` : ""),
     );
   }
   if (!result.stdout) {
@@ -230,6 +231,7 @@ async function doReadAsync(
   let result;
   try {
     result = await execa(executable, ["read", storageServiceName, username], {
+      cwd: dirname(executable),
       reject: false,
       stdin: "ignore",
       stdout: "pipe",
