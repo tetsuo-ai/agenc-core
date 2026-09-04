@@ -20,6 +20,41 @@ function testHome(workspaceRoot: string) {
   );
 }
 
+type QwenImageProduct = "qwen" | "qwen-token-plan";
+
+function qwenJsonResponse(payload: unknown): Response {
+  return new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function qwenImageResult(image: string): Response {
+  return qwenJsonResponse({
+    output: {
+      choices: [{ message: { content: [{ image }] } }],
+    },
+  });
+}
+
+function createQwenImagineTool(
+  product: QwenImageProduct,
+  fetchImpl: typeof fetch,
+  workspaceRoot = process.cwd(),
+) {
+  const provider = createProvider(product, {
+    apiKey: product === "qwen" ? "sk-ws-session" : "sk-sp-session",
+    model: "qwen3.8-max",
+  });
+  return createImagineImageTool({
+    workspaceRoot,
+    home: testHome(workspaceRoot),
+    getSession: () => ({ services: { provider } }) as unknown as Session,
+    env: {},
+    fetchImpl,
+  });
+}
+
 describe("ImagineImage tool", () => {
   it("is catalog-registered for non-Grok sessions with an independent xAI credential", () => {
     const tools = createModelFacingTools({
@@ -191,10 +226,6 @@ describe("ImagineImage tool", () => {
 
   it("uses Qwen Image's synchronous PayGo endpoint and downloads immediately", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-qwen-paygo-"));
-    const provider = createProvider("qwen", {
-      apiKey: "sk-ws-session",
-      model: "qwen3.8-max",
-    });
     const fetchImpl = vi.fn(async (url: string | URL | Request) => {
       if (
         String(url) ===
@@ -205,33 +236,11 @@ describe("ImagineImage tool", () => {
           headers: { "content-type": "image/png" },
         });
       }
-      return new Response(
-        JSON.stringify({
-          output: {
-            choices: [
-              {
-                message: {
-                  content: [
-                    {
-                      image:
-                        "https://dashscope-result-sg.oss-ap-southeast-1.aliyuncs.com/qwen.png",
-                    },
-                  ],
-                },
-              },
-            ],
-          },
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
+      return qwenImageResult(
+        "https://dashscope-result-sg.oss-ap-southeast-1.aliyuncs.com/qwen.png",
       );
     });
-    const tool = createImagineImageTool({
-      workspaceRoot: root,
-      home: testHome(root),
-      getSession: () => ({ services: { provider } }) as unknown as Session,
-      env: {},
-      fetchImpl,
-    });
+    const tool = createQwenImagineTool("qwen", fetchImpl, root);
 
     const result = await tool.execute({
       prompt: "a production-ready spaceship",
@@ -287,18 +296,8 @@ describe("ImagineImage tool", () => {
   });
 
   it("rejects an unverified Qwen Image model on Token Plan", async () => {
-    const provider = createProvider("qwen-token-plan", {
-      apiKey: "sk-sp-session",
-      model: "qwen3.8-max",
-    });
     const fetchImpl = vi.fn<typeof fetch>();
-    const tool = createImagineImageTool({
-      workspaceRoot: process.cwd(),
-      home: testHome(process.cwd()),
-      getSession: () => ({ services: { provider } }) as unknown as Session,
-      env: {},
-      fetchImpl,
-    });
+    const tool = createQwenImagineTool("qwen-token-plan", fetchImpl);
 
     const result = await tool.execute({
       prompt: "must not be sent",
@@ -311,33 +310,16 @@ describe("ImagineImage tool", () => {
   });
 
   it("blocks a signed-image redirect that leaves trusted HTTPS hosts", async () => {
-    const provider = createProvider("qwen", {
-      apiKey: "sk-ws-session",
-      model: "qwen3.8-max",
-    });
     const signed =
       "https://dashscope-result-sg.oss-ap-southeast-1.aliyuncs.com/image.png";
     const fetchImpl = vi.fn(async (url: string | URL | Request) =>
       String(url).includes("/multimodal-generation/generation")
-        ? new Response(
-            JSON.stringify({
-              output: {
-                choices: [{ message: { content: [{ image: signed }] } }],
-              },
-            }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          )
+        ? qwenImageResult(signed)
         : new Response(null, {
             status: 302,
             headers: { location: "http://127.0.0.1/internal" },
           }));
-    const tool = createImagineImageTool({
-      workspaceRoot: process.cwd(),
-      home: testHome(process.cwd()),
-      getSession: () => ({ services: { provider } }) as unknown as Session,
-      env: {},
-      fetchImpl,
-    });
+    const tool = createQwenImagineTool("qwen", fetchImpl);
 
     const result = await tool.execute({ prompt: "safe redirect handling" });
 
@@ -347,22 +329,11 @@ describe("ImagineImage tool", () => {
   });
 
   it("rejects oversized signed images before buffering the response", async () => {
-    const provider = createProvider("qwen", {
-      apiKey: "sk-ws-session",
-      model: "qwen3.8-max",
-    });
     const signed =
       "https://dashscope-result-sg.oss-ap-southeast-1.aliyuncs.com/large.png";
     const fetchImpl = vi.fn(async (url: string | URL | Request) =>
       String(url).includes("/multimodal-generation/generation")
-        ? new Response(
-            JSON.stringify({
-              output: {
-                choices: [{ message: { content: [{ image: signed }] } }],
-              },
-            }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          )
+        ? qwenImageResult(signed)
         : new Response("not buffered", {
             status: 200,
             headers: {
@@ -370,13 +341,7 @@ describe("ImagineImage tool", () => {
               "content-length": String(20 * 1024 * 1024 + 1),
             },
           }));
-    const tool = createImagineImageTool({
-      workspaceRoot: process.cwd(),
-      home: testHome(process.cwd()),
-      getSession: () => ({ services: { provider } }) as unknown as Session,
-      env: {},
-      fetchImpl,
-    });
+    const tool = createQwenImagineTool("qwen", fetchImpl);
 
     const result = await tool.execute({ prompt: "bounded download" });
 
@@ -387,35 +352,25 @@ describe("ImagineImage tool", () => {
 
   it("runs and polls a Token Plan Wan 2.7 image task with its native schema", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-qwen-token-plan-"));
-    const provider = createProvider("qwen-token-plan", {
-      apiKey: "sk-sp-session",
-      model: "qwen3.8-max",
-    });
     const fetchImpl = vi.fn(async (url: string | URL | Request) => {
       const value = String(url);
       if (value.endsWith("/api/v1/services/aigc/image-generation/generation")) {
-        return new Response(
-          JSON.stringify({
-            output: { task_id: "task-123", task_status: "PENDING" },
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
+        return qwenJsonResponse({
+          output: { task_id: "task-123", task_status: "PENDING" },
+        });
       }
       if (value.endsWith("/api/v1/tasks/task-123")) {
-        return new Response(
-          JSON.stringify({
-            output: {
-              task_id: "task-123",
-              task_status: "SUCCEEDED",
-              results: [
-                {
-                  url: "https://dashscope-result-sg.oss-ap-southeast-1.aliyuncs.com/wan.png",
-                },
-              ],
-            },
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
+        return qwenJsonResponse({
+          output: {
+            task_id: "task-123",
+            task_status: "SUCCEEDED",
+            results: [
+              {
+                url: "https://dashscope-result-sg.oss-ap-southeast-1.aliyuncs.com/wan.png",
+              },
+            ],
+          },
+        });
       }
       if (
         value ===
@@ -428,13 +383,7 @@ describe("ImagineImage tool", () => {
       }
       return new Response("not found", { status: 404 });
     });
-    const tool = createImagineImageTool({
-      workspaceRoot: root,
-      home: testHome(root),
-      getSession: () => ({ services: { provider } }) as unknown as Session,
-      env: {},
-      fetchImpl,
-    });
+    const tool = createQwenImagineTool("qwen-token-plan", fetchImpl, root);
 
     const result = await tool.execute({
       prompt: "a detailed frog meme",
@@ -476,32 +425,19 @@ describe("ImagineImage tool", () => {
   });
 
   it("fails a terminal UNKNOWN Token Plan image task instead of polling forever", async () => {
-    const provider = createProvider("qwen-token-plan", {
-      apiKey: "sk-sp-session",
-      model: "qwen3.8-max",
-    });
     const fetchImpl = vi.fn(async (url: string | URL | Request) =>
-      new Response(
-        JSON.stringify(
-          String(url).includes("/api/v1/tasks/")
-            ? {
-                output: {
-                  task_status: "UNKNOWN",
-                  code: "InvalidTask",
-                  message: "task disappeared",
-                },
-              }
-            : { output: { task_id: "missing", task_status: "PENDING" } },
-        ),
-        { status: 200, headers: { "content-type": "application/json" } },
+      qwenJsonResponse(
+        String(url).includes("/api/v1/tasks/")
+          ? {
+              output: {
+                task_status: "UNKNOWN",
+                code: "InvalidTask",
+                message: "task disappeared",
+              },
+            }
+          : { output: { task_id: "missing", task_status: "PENDING" } },
       ));
-    const tool = createImagineImageTool({
-      workspaceRoot: process.cwd(),
-      home: testHome(process.cwd()),
-      getSession: () => ({ services: { provider } }) as unknown as Session,
-      env: {},
-      fetchImpl,
-    });
+    const tool = createQwenImagineTool("qwen-token-plan", fetchImpl);
 
     const result = await tool.execute({ prompt: "will fail" });
 
