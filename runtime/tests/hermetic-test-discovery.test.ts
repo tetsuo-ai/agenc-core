@@ -55,6 +55,7 @@ const CROSS_REPO_TEST_FILES = [
 const NATIVE_TEST_FILES = [
   "tests/agents/jobs/csv-output.native.test.ts",
   "tests/app-server/windows-named-pipe.win32.test.ts",
+  "tests/durability/atomic-artifact.darwin.test.ts",
   "tests/durability/atomic-artifact.win32.test.ts",
   "tests/fnd/process-repository-helpers.native.test.ts",
   "tests/state/recovery-file.win32.test.ts",

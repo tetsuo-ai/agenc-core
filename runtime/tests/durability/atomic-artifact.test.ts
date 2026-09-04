@@ -269,7 +269,13 @@ describe("atomic artifact commit", () => {
         cleanupOrphanedArtifactTemps(targetPath, { trustedRoot }),
       ).rejects.toBeInstanceOf(AtomicArtifactUnsafePathError);
 
-      expect(existsSync(join(movedRoot, tempName))).toBe(false);
+      // Descriptor mode keeps operating inside the pinned root after the
+      // lexical swap, so the owned orphan is gone. Witnessed-path mode (darwin)
+      // can no longer address the pinned root through its path, so it refuses
+      // to delete anything and the owned orphan survives for the next pass.
+      expect(existsSync(join(movedRoot, tempName))).toBe(
+        process.platform === "darwin",
+      );
       expect(readFileSync(join(outsideRoot, tempName), "utf8")).toBe(
         "must stay",
       );

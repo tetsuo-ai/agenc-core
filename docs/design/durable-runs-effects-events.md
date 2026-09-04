@@ -546,12 +546,23 @@ returned to the model:
 4. remove the temporary name and fsync the parent directory.
 
 Those child-path operations stay bound to the already-open trusted-root
-descriptor. The supported and acceptance-tested aliases are `/proc/self/fd`
-or `/dev/fd` on Linux and `/dev/fd` on macOS. A platform where AgenC cannot
-resolve such a descriptor-relative path fails commit, cleanup, and recovery
-observation closed with `ARTIFACT_SAFE_OPERATION_UNSUPPORTED`; the current
-Windows implementation therefore does not publish large tool-result artifacts
-until an equivalent descriptor-bound primitive is available.
+descriptor wherever the platform offers a descriptor path: `/proc/self/fd` or
+`/dev/fd` on Linux. macOS offers none (`/dev/fd/N` is not traversable for a
+directory and never resolves to the canonical path), so on darwin the helper
+runs in a witnessed-path mode: children are addressed through the canonical
+lexical path while the directory descriptor stays open, and every directory
+mutation (temp creation, publication link, temp or orphan unlink) must be
+witnessed by that descriptor as a change of the pinned directory's own
+mtime/ctime. A mutation the pinned directory did not witness landed in a
+directory swapped into the path; it is retracted by the exact inode it created
+and reported as `AtomicArtifactUnsafePathError`. Reads (recovery observation,
+orphan listing) have no witness and rely on the identity re-verification around
+them, so a same-user swap installed and removed inside that window is the
+residual darwin cannot detect. A platform with neither primitive fails commit,
+cleanup, and recovery observation closed with
+`ARTIFACT_SAFE_OPERATION_UNSUPPORTED`; the current Windows implementation
+therefore does not publish large tool-result artifacts until an equivalent
+descriptor-bound primitive is available.
 
 After publication, `artifact_committed` records `committed` or
 `already_committed` and references the intent sequence. An identical retry is

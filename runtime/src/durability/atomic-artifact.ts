@@ -94,7 +94,11 @@ export interface AtomicArtifactObservationOptions {
 }
 
 type AtomicArtifactOperation =
-  "commit" | "cleanup" | "cleanup_sync" | "observe";
+  | "commit"
+  | "commit_before_link"
+  | "cleanup"
+  | "cleanup_sync"
+  | "observe";
 type AtomicArtifactOperationForTesting = (operation: {
   readonly operation: AtomicArtifactOperation;
   readonly targetPath: string;
@@ -330,23 +334,14 @@ export async function commitArtifactAtomically(
       trustedRoot: scope.trustedRoot,
     });
 
-    const handle = await open(
+    const { handle, opened } = await openWitnessedTemp(
+      scope,
+      pinned,
       tempPath,
-      fsConstants.O_WRONLY |
-        fsConstants.O_CREAT |
-        fsConstants.O_EXCL |
-        noFollowFlag(),
       options.mode ?? 0o600,
     );
     tempExists = true;
     try {
-      const opened = await handle.stat();
-      if (!opened.isFile() || opened.nlink !== 1) {
-        throw new AtomicArtifactUnsafePathError(
-          scope.targetPath,
-          scope.trustedRoot,
-        );
-      }
       await handle.writeFile(expected);
       await handle.sync();
       const afterWrite = await handle.stat();
@@ -361,12 +356,15 @@ export async function commitArtifactAtomically(
     }
 
     await assertPinnedRootCurrent(scope, pinned);
-    hitM4DurabilityFailpoint("before_artifact_commit");
     let outcome: AtomicArtifactCommitResult = "committed";
     try {
-      // link() is an atomic no-replace publication on the same filesystem.
-      // Unlike rename(), it cannot silently overwrite immutable evidence.
-      await link(tempPath, pinnedTargetPath);
+      await publishWitnessedTemp(
+        scope,
+        pinned,
+        tempPath,
+        pinnedTargetPath,
+        opened,
+      );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const existing = await readExistingRegularFile(pinnedTargetPath);
@@ -433,23 +431,14 @@ export async function commitArtifactSourceAtomically(
       trustedRoot: scope.trustedRoot,
     });
 
-    const handle = await open(
+    const { handle, opened } = await openWitnessedTemp(
+      scope,
+      pinned,
       tempPath,
-      fsConstants.O_WRONLY |
-        fsConstants.O_CREAT |
-        fsConstants.O_EXCL |
-        noFollowFlag(),
       options.mode ?? 0o600,
     );
     tempExists = true;
     try {
-      const opened = await handle.stat();
-      if (!opened.isFile() || opened.nlink !== 1) {
-        throw new AtomicArtifactUnsafePathError(
-          scope.targetPath,
-          scope.trustedRoot,
-        );
-      }
       await copyAtomicArtifactSource(handle, source);
       await handle.sync();
       const afterWrite = await handle.stat();
@@ -468,10 +457,15 @@ export async function commitArtifactSourceAtomically(
     }
 
     await assertPinnedRootCurrent(scope, pinned);
-    hitM4DurabilityFailpoint("before_artifact_commit");
     let outcome: AtomicArtifactCommitResult = "committed";
     try {
-      await link(tempPath, pinnedTargetPath);
+      await publishWitnessedTemp(
+        scope,
+        pinned,
+        tempPath,
+        pinnedTargetPath,
+        opened,
+      );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const existing = await digestExistingRegularFile(pinnedTargetPath);
@@ -532,12 +526,47 @@ function artifactScope(targetPath: string, trustedRoot: string): ArtifactScope {
 }
 
 type AsyncDirectoryHandle = Awaited<ReturnType<typeof open>>;
+
+interface FileIdentity {
+  readonly dev: number | bigint;
+  readonly ino: number | bigint;
+}
+
+/**
+ * How child operations under a pinned trusted root are bound to that root.
+ *
+ * `descriptor`: children are addressed through a descriptor path such as
+ * `/proc/self/fd/N/<child>`, so swapping the lexical root cannot redirect them.
+ *
+ * `witnessed-path` (darwin only): macOS exposes no traversable descriptor path
+ * for a directory and Node has no openat-style primitive, so children are
+ * addressed through the canonical lexical path while the directory descriptor
+ * stays open. Every directory MUTATION is then witnessed through that
+ * descriptor: the pinned directory's own mtime/ctime must change, which proves
+ * the entry landed in the pinned directory and not in one swapped into its
+ * path (APFS stamps each entry mutation with a distinct nanosecond time; a
+ * mutation elsewhere leaves the pinned directory untouched). A mutation the
+ * pinned directory did not witness is retracted by the exact inode it created
+ * and reported as AtomicArtifactUnsafePathError. Reads (observation, cleanup
+ * listing) have no witness and rely on the identity re-verification around
+ * them; a same-user swap installed and removed inside that window is the
+ * residual this mode cannot detect, and the reason `descriptor` stays the
+ * default wherever the platform offers it.
+ */
+type PinnedRootMode = "descriptor" | "witnessed-path";
+
+interface DirectoryWitness {
+  readonly mtimeNs: bigint;
+  readonly ctimeNs: bigint;
+}
+
 interface PinnedTrustedRoot {
   readonly canonicalPath: string;
   readonly dev: number | bigint;
   readonly ino: number | bigint;
   readonly handle: AsyncDirectoryHandle;
   readonly operationPath: string;
+  readonly mode: PinnedRootMode;
 }
 
 interface PinnedTrustedRootSync {
@@ -546,6 +575,182 @@ interface PinnedTrustedRootSync {
   readonly ino: number | bigint;
   readonly fd: number;
   readonly operationPath: string;
+  readonly mode: PinnedRootMode;
+}
+
+function bindPinnedRoot(
+  descriptorPath: string | undefined,
+  canonicalPath: string,
+  scope: ArtifactScope,
+  operation: "commit" | "cleanup" | "observe",
+): { readonly operationPath: string; readonly mode: PinnedRootMode } {
+  if (descriptorPath !== undefined) {
+    return { operationPath: descriptorPath, mode: "descriptor" };
+  }
+  if (process.platform === "darwin") {
+    return { operationPath: canonicalPath, mode: "witnessed-path" };
+  }
+  throw new AtomicArtifactOperationUnsupportedError(
+    operation,
+    scope.trustedRoot,
+  );
+}
+
+/** The pinned directory's own timestamps; undefined in descriptor mode. */
+async function directoryWitness(
+  pinned: PinnedTrustedRoot,
+): Promise<DirectoryWitness | undefined> {
+  if (pinned.mode !== "witnessed-path") return undefined;
+  const stat = await pinned.handle.stat({ bigint: true });
+  return { mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs };
+}
+
+function directoryWitnessSync(
+  pinned: PinnedTrustedRootSync,
+): DirectoryWitness | undefined {
+  if (pinned.mode !== "witnessed-path") return undefined;
+  const stat = fstatSync(pinned.fd, { bigint: true });
+  return { mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs };
+}
+
+/**
+ * True when a directory mutation performed between the two snapshots was
+ * witnessed by the pinned directory. Descriptor mode needs no witness because
+ * the operation itself was descriptor-relative.
+ */
+function witnessedMutation(
+  before: DirectoryWitness | undefined,
+  after: DirectoryWitness | undefined,
+): boolean {
+  if (before === undefined || after === undefined) return true;
+  return after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs;
+}
+
+/**
+ * Remove an entry that a pathname operation created somewhere the pinned
+ * directory did not witness, but only when it is exactly the inode this
+ * commit created. Anything else at that path belongs to someone else.
+ */
+async function retractMisplacedEntry(
+  path: string,
+  identity: FileIdentity,
+): Promise<void> {
+  try {
+    const stat = await lstat(path);
+    if (
+      !stat.isFile() ||
+      stat.isSymbolicLink() ||
+      !isSameIdentity(stat, identity)
+    ) {
+      return;
+    }
+    await unlink(path);
+  } catch {
+    // Nothing to retract, or it is already gone.
+  }
+}
+
+/**
+ * Create the exclusive temp file and require the pinned directory to witness
+ * it. A temp the pinned directory did not witness landed in a directory
+ * swapped into the lexical path; it is removed through that same path.
+ */
+async function openWitnessedTemp(
+  scope: ArtifactScope,
+  pinned: PinnedTrustedRoot,
+  tempPath: string,
+  mode: number,
+): Promise<{
+  readonly handle: AsyncDirectoryHandle;
+  readonly opened: Awaited<ReturnType<AsyncDirectoryHandle["stat"]>>;
+}> {
+  const before = await directoryWitness(pinned);
+  const handle = await open(
+    tempPath,
+    fsConstants.O_WRONLY |
+      fsConstants.O_CREAT |
+      fsConstants.O_EXCL |
+      noFollowFlag(),
+    mode,
+  );
+  try {
+    if (!witnessedMutation(before, await directoryWitness(pinned))) {
+      throw new AtomicArtifactUnsafePathError(
+        scope.targetPath,
+        scope.trustedRoot,
+      );
+    }
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.nlink !== 1) {
+      throw new AtomicArtifactUnsafePathError(
+        scope.targetPath,
+        scope.trustedRoot,
+      );
+    }
+    return { handle, opened };
+  } catch (error) {
+    await handle.close();
+    try {
+      await unlink(tempPath);
+    } catch {
+      // Already gone; nothing else at this path is ours.
+    }
+    throw error;
+  }
+}
+
+/**
+ * Publish the verified temp: run the test seam and the crash failpoint that
+ * sit at the commit boundary, then link with the pinned directory as witness.
+ */
+async function publishWitnessedTemp(
+  scope: ArtifactScope,
+  pinned: PinnedTrustedRoot,
+  tempPath: string,
+  pinnedTargetPath: string,
+  tempIdentity: FileIdentity,
+): Promise<void> {
+  await atomicArtifactOperationForTesting?.({
+    operation: "commit_before_link",
+    targetPath: scope.targetPath,
+    trustedRoot: scope.trustedRoot,
+  });
+  hitM4DurabilityFailpoint("before_artifact_commit");
+  await linkWitnessed(scope, pinned, tempPath, pinnedTargetPath, tempIdentity);
+}
+
+/**
+ * link() is an atomic no-replace publication on the same filesystem. Unlike
+ * rename(), it cannot silently overwrite immutable evidence. The pinned
+ * directory must witness the new entry; a link it did not witness was
+ * published into a swapped directory and is retracted by the temp's inode.
+ * EEXIST is left to the caller, which decides between replay and conflict.
+ */
+async function linkWitnessed(
+  scope: ArtifactScope,
+  pinned: PinnedTrustedRoot,
+  tempPath: string,
+  pinnedTargetPath: string,
+  tempIdentity: FileIdentity,
+): Promise<void> {
+  const before = await directoryWitness(pinned);
+  try {
+    await link(tempPath, pinnedTargetPath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" && pinned.mode === "witnessed-path") {
+      // The temp this commit just wrote is no longer where its path points:
+      // the lexical root was swapped underneath the pathname.
+      throw new AtomicArtifactUnsafePathError(
+        scope.targetPath,
+        scope.trustedRoot,
+      );
+    }
+    throw error;
+  }
+  if (witnessedMutation(before, await directoryWitness(pinned))) return;
+  await retractMisplacedEntry(pinnedTargetPath, tempIdentity);
+  throw new AtomicArtifactUnsafePathError(scope.targetPath, scope.trustedRoot);
 }
 
 function isSameIdentity(
@@ -585,8 +790,9 @@ async function descriptorOperationPath(
     try {
       if ((await realpath(candidate)) === canonicalPath) return candidate;
     } catch {
-      // Optional descriptor aliases are probed below; an unavailable alias is
-      // not permission to fall back to a racy POSIX pathname.
+      // Optional descriptor aliases are probed in turn. An unavailable alias
+      // is not permission to fall back to a bare POSIX pathname; bindPinnedRoot
+      // decides what the platform may do instead (see PinnedRootMode).
     }
   }
   return undefined;
@@ -657,20 +863,20 @@ async function pinTrustedRoot(
         scope.trustedRoot,
       );
     }
-    const descriptorPath = await descriptorOperationPath(handle, canonicalPath);
-    if (descriptorPath === undefined) {
-      throw new AtomicArtifactOperationUnsupportedError(
-        options.operation,
-        scope.trustedRoot,
-      );
-    }
+    const binding = bindPinnedRoot(
+      await descriptorOperationPath(handle, canonicalPath),
+      canonicalPath,
+      scope,
+      options.operation,
+    );
 
     const pinned: PinnedTrustedRoot = {
       canonicalPath,
       dev: lexical.dev,
       ino: lexical.ino,
       handle,
-      operationPath: descriptorPath,
+      operationPath: binding.operationPath,
+      mode: binding.mode,
     };
     await assertPinnedRootCurrent(scope, pinned);
     return pinned;
@@ -725,25 +931,25 @@ function pinTrustedRootSync(
 
   try {
     const opened = fstatSync(fd);
-    const operationPath = descriptorOperationPathSync(fd, canonicalPath);
     if (!opened.isDirectory() || !isSameIdentity(opened, lexical)) {
       throw new AtomicArtifactUnsafePathError(
         scope.targetPath,
         scope.trustedRoot,
       );
     }
-    if (operationPath === undefined) {
-      throw new AtomicArtifactOperationUnsupportedError(
-        options.operation,
-        scope.trustedRoot,
-      );
-    }
+    const binding = bindPinnedRoot(
+      descriptorOperationPathSync(fd, canonicalPath),
+      canonicalPath,
+      scope,
+      options.operation,
+    );
     const pinned: PinnedTrustedRootSync = {
       canonicalPath,
       dev: lexical.dev,
       ino: lexical.ino,
       fd,
-      operationPath,
+      operationPath: binding.operationPath,
+      mode: binding.mode,
     };
     assertPinnedRootCurrentSync(scope, pinned);
     return pinned;
@@ -842,11 +1048,24 @@ async function cleanupPinnedArtifactTemps(
       if (removedCount > 0) await fsyncPinnedRoot(pinned);
       return { removedCount, truncated: true };
     }
+    if (pinned.mode === "witnessed-path") {
+      // A pathname unlink cannot be undone: re-verify the root immediately
+      // before each one and require the pinned directory to witness it.
+      await assertPinnedRootCurrent(scope, pinned);
+    }
+    const beforeUnlink = await directoryWitness(pinned);
     try {
       await unlink(candidate);
       removedCount += 1;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      continue;
+    }
+    if (!witnessedMutation(beforeUnlink, await directoryWitness(pinned))) {
+      throw new AtomicArtifactUnsafePathError(
+        scope.targetPath,
+        scope.trustedRoot,
+      );
     }
   }
   if (removedCount > 0) await fsyncPinnedRoot(pinned);
@@ -877,11 +1096,22 @@ function cleanupPinnedArtifactTempsSync(
       if (removedCount > 0) fsyncPinnedRootSync(pinned);
       return { removedCount, truncated: true };
     }
+    if (pinned.mode === "witnessed-path") {
+      assertPinnedRootCurrentSync(scope, pinned);
+    }
+    const beforeUnlink = directoryWitnessSync(pinned);
     try {
       unlinkSync(candidate);
       removedCount += 1;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      continue;
+    }
+    if (!witnessedMutation(beforeUnlink, directoryWitnessSync(pinned))) {
+      throw new AtomicArtifactUnsafePathError(
+        scope.targetPath,
+        scope.trustedRoot,
+      );
     }
   }
   if (removedCount > 0) fsyncPinnedRootSync(pinned);
