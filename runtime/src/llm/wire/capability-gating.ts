@@ -57,11 +57,11 @@ export interface ChatCompletionsCapabilityHints {
   /** Enforce API-v2 adjacent, complete, unique tool-call/result groups. */
   readonly requiresStrictToolResultSequence?: boolean;
   /** Apply Cerebras' strict base64 PNG/JPEG image payload contract. */
-  readonly imageInputContract?: "cerebras_v2";
+  readonly imageInputContract?: "cerebras_v2" | "zai_flash";
   /** Whether the selected model accepts direct user image input. */
   readonly acceptsDirectImageInput?: boolean;
   /** Apply Cerebras API v2's supported strict JSON-Schema subset. */
-  readonly structuredOutputContract?: "cerebras_v2";
+  readonly structuredOutputContract?: "cerebras_v2" | "zai_json_object";
   /**
    * Some OpenAI-compatible endpoints accept multimodal content on user
    * messages but require tool-result `content` to remain a string. When this
@@ -79,8 +79,22 @@ export interface ChatCompletionsCapabilityHints {
   readonly replaysReasoningContent?: boolean;
   /** Provider-specific assistant reasoning field used for parse and replay. */
   readonly reasoningContentField?: "reasoning_content" | "reasoning";
+  /**
+   * Replay provider-owned reasoning only for the complete assistant-tool/result
+   * group immediately preceding this request. Z.AI requires that state for a
+   * tool continuation, but stale history must be cleared after compaction or a
+   * later user turn.
+   */
+  readonly replaysReasoningContentOnlyForAdjacentToolContinuation?: boolean;
   /** Canonical destination required for opaque reasoning replay. */
   readonly reasoningContentProvenance?: ProviderReasoningProvenance;
+  /** Provider-native nested thinking configuration for always-on reasoning. */
+  readonly thinkingConfig?: {
+    readonly type: "enabled";
+    readonly clearThinking?: boolean;
+  };
+  /** Enable provider-native incremental function argument streaming. */
+  readonly streamsToolCalls?: boolean;
   /**
    * Qwen 3.6/3.7 default `preserve_thinking` to false. Their thinking-mode
    * tool loop only consumes replayed `reasoning_content` when this request
@@ -96,6 +110,16 @@ export interface ChatCompletionsCapabilityHints {
    * APIs reject the otherwise-standard `stop` request field.
    */
   readonly acceptsStopSequences?: boolean;
+  /** Provider limit for stop sequences; excess values are omitted. */
+  readonly maxStopSequences?: number;
+  /** Provider limit for advertised function definitions. */
+  readonly maxToolDefinitions?: number;
+  /** Treat Z.AI's context-window terminal reason as overflow, not truncation. */
+  readonly rejectsContextWindowExceededFinishReason?: boolean;
+  /** Never dispatch tool calls unless the provider finalized with tool_calls. */
+  readonly requiresToolCallsFinishReason?: boolean;
+  /** Provider-documented terminal finish reasons for final response frames. */
+  readonly allowedFinishReasons?: ReadonlySet<string>;
   /**
    * If `false`, `service_tier` is stripped. The field is recognized
    * only on an explicit provider allowlist; non-matching providers
@@ -174,6 +198,19 @@ const CEREBRAS_GPT_OSS_REASONING_EFFORT_VALUES = new Set([
   "low",
   "medium",
   "high",
+]);
+const ZAI_GLM_53_REASONING_EFFORT_VALUES = new Set([
+  "low",
+  "high",
+  "max",
+]);
+const ZAI_FINISH_REASONS = new Set([
+  "stop",
+  "tool_calls",
+  "length",
+  "sensitive",
+  "model_context_window_exceeded",
+  "network_error",
 ]);
 
 // Providers explicitly known to reject `stream_options.include_usage`.
@@ -329,6 +366,12 @@ export function chatCompletionsCapabilityHintsForProvider(
   const acceptsToolResultImages =
     resolveModelCapabilityHints({ provider: slug, model })
       ?.supportsImageInput === true;
+  const isZai = slug === "zai" || slug === "zai-coding-plan";
+  const supportsZaiToolStreaming =
+    isZai &&
+    /(?:^|[/:])glm-(?:5(?:\.(?:1|2|3))?|4\.(?:6|7))(?:$|[-_.:])/i.test(
+      model ?? "",
+    );
   const isQwenCloud = slug === "qwen" || slug === "qwen-token-plan";
   const preservesThinkingHistory =
     (slug === "qwen" &&
@@ -365,6 +408,12 @@ export function chatCompletionsCapabilityHintsForProvider(
   ) {
     reasoningEffortAllowedValues =
       CEREBRAS_GPT_OSS_REASONING_EFFORT_VALUES;
+    acceptsReasoningEffort = true;
+  } else if (
+    isZai &&
+    /(?:^|[/:])glm-5\.3(?:-flash)?$/i.test(model ?? "")
+  ) {
+    reasoningEffortAllowedValues = ZAI_GLM_53_REASONING_EFFORT_VALUES;
     acceptsReasoningEffort = true;
   } else if (
     slug === "cerebras" &&
@@ -419,11 +468,27 @@ export function chatCompletionsCapabilityHintsForProvider(
     ...(reasoningEffortAllowedValues !== undefined
       ? { reasoningEffortAllowedValues }
       : {}),
-    ...(slug === "meta" ? { toolChoicePolicy: "auto_only" as const } : {}),
+    ...(slug === "meta" || isZai
+      ? { toolChoicePolicy: "auto_only" as const }
+      : {}),
+    ...(isZai
+      ? {
+          acceptsDirectImageInput: acceptsToolResultImages,
+          omitsToolControlsWithoutTools: true,
+          acceptsParallelToolCalls: false,
+          maxStopSequences: 1,
+          maxToolDefinitions: 128,
+          rejectsContextWindowExceededFinishReason: true,
+          requiresToolCallsFinishReason: true,
+          allowedFinishReasons: ZAI_FINISH_REASONS,
+        }
+      : {}),
+    ...(supportsZaiToolStreaming ? { streamsToolCalls: true } : {}),
     ...(slug === "meta" ||
     slug === "qwen" ||
     slug === "qwen-token-plan" ||
-    slug === "cerebras"
+    slug === "cerebras" ||
+    isZai
       ? {
           toolResultImagePolicy: acceptsToolResultImages
             ? ("relay_as_user" as const)
@@ -455,12 +520,28 @@ export function chatCompletionsCapabilityHintsForProvider(
           structuredOutputContract: "cerebras_v2" as const,
         }
       : {}),
+    ...(isZai &&
+    /(?:^|[/:])glm-5\.3(?:-flash)?$/i.test(model ?? "")
+      ? {
+          replaysReasoningContent: true,
+          replaysReasoningContentOnlyForAdjacentToolContinuation: true,
+          reasoningContentField: "reasoning_content" as const,
+          thinkingConfig: {
+            type: "enabled" as const,
+            clearThinking: true,
+          },
+          structuredOutputContract: "zai_json_object" as const,
+          ...(acceptsToolResultImages
+            ? { imageInputContract: "zai_flash" as const }
+            : {}),
+        }
+      : {}),
     ...(reasoningContentProvenance !== undefined
       ? { reasoningContentProvenance }
       : {}),
     acceptsStopSequences: slug !== "meta",
     acceptsServiceTier,
-    acceptsStreamUsage,
+    acceptsStreamUsage: isZai ? false : acceptsStreamUsage,
     requiresGrammarSafeToolSchemas,
     ...(outputTokensCeiling !== undefined ? { outputTokensCeiling } : {}),
     ...(reasoningSoftSwitchSuffix !== undefined

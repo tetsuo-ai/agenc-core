@@ -274,6 +274,17 @@ function isCerebrasVisionModel(model: string): boolean {
   );
 }
 
+function isZaiGlm53Model(model: string): boolean {
+  return matchesModelFamily(
+    model,
+    /(?:^|[/:])glm-5\.3(?:-flash)?$/,
+  );
+}
+
+function isZaiGlm53VisionModel(model: string): boolean {
+  return matchesModelFamily(model, /(?:^|[/:])glm-5\.3-flash$/);
+}
+
 function isQwen38ThinkingModel(model: string): boolean {
   return matchesModelFamily(
     model,
@@ -462,6 +473,22 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     acceptsImageHistory: isCerebrasVisionModel,
     acceptsThinkingHistory: isCerebrasReasoningModel,
     acceptsReasoningEffort: isCerebrasReasoningModel,
+  },
+  zai: {
+    ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
+    supportsImageInput: isZaiGlm53VisionModel,
+    supportsExtendedThinking: isZaiGlm53Model,
+    acceptsImageHistory: isZaiGlm53VisionModel,
+    acceptsThinkingHistory: isZaiGlm53Model,
+    acceptsReasoningEffort: isZaiGlm53Model,
+  },
+  "zai-coding-plan": {
+    ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
+    supportsImageInput: isZaiGlm53VisionModel,
+    supportsExtendedThinking: isZaiGlm53Model,
+    acceptsImageHistory: isZaiGlm53VisionModel,
+    acceptsThinkingHistory: isZaiGlm53Model,
+    acceptsReasoningEffort: isZaiGlm53Model,
   },
   qwen: {
     ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,

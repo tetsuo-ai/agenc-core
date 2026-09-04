@@ -181,3 +181,64 @@ test('Meta Muse models expose and apply their exact catalog effort levels', asyn
   expect(effortValueToReasoningEffort('minimal')).toBe('minimal')
   expect(reasoningEffortToEffortLevel('minimal')).toBe('minimal')
 })
+
+test('Z.ai GLM-5.3 exposes, defaults, applies, and displays literal max effort', async () => {
+  const {
+    getAvailableEffortLevelsForContext,
+    getDefaultEffortForModelForContext,
+    getDisplayedEffortLevelForContext,
+    getEffortSuffixForContext,
+    modelSupportsEffortForContext,
+    modelSupportsMaxEffortForContext,
+    resolveAppliedEffortForContext,
+  } = await importFreshEffortModule({ provider: 'xai' })
+  const context = {
+    home: {},
+    environment: {},
+    provider: 'zai',
+  } as never
+
+  expect(modelSupportsEffortForContext('glm-5.3', context)).toBe(true)
+  expect(modelSupportsMaxEffortForContext('glm-5.3', context)).toBe(true)
+  expect(getAvailableEffortLevelsForContext('glm-5.3', context)).toEqual([
+    'low',
+    'high',
+    'max',
+  ])
+  expect(getDefaultEffortForModelForContext('glm-5.3', context)).toBe('max')
+  expect(resolveAppliedEffortForContext('glm-5.3', 'max', context)).toBe(
+    'max',
+  )
+  expect(resolveAppliedEffortForContext('glm-5.3', undefined, context)).toBe(
+    'max',
+  )
+  expect(getDisplayedEffortLevelForContext('glm-5.3', undefined, context)).toBe(
+    'max',
+  )
+  expect(getEffortSuffixForContext('glm-5.3', 'max', context)).toBe(
+    ' with max effort',
+  )
+})
+
+test('Z.AI Coding Plan preserves the same literal max effort contract', async () => {
+  const {
+    getAvailableEffortLevelsForContext,
+    getDefaultEffortForModelForContext,
+    modelSupportsMaxEffortForContext,
+    resolveAppliedEffortForContext,
+  } = await importFreshEffortModule({ provider: 'xai' })
+  const context = {
+    home: {},
+    environment: {},
+    provider: 'zai-coding-plan',
+  } as never
+
+  expect(getAvailableEffortLevelsForContext('glm-5.3', context)).toEqual([
+    'low',
+    'high',
+    'max',
+  ])
+  expect(getDefaultEffortForModelForContext('glm-5.3', context)).toBe('max')
+  expect(modelSupportsMaxEffortForContext('glm-5.3', context)).toBe(true)
+  expect(resolveAppliedEffortForContext('glm-5.3', 'max', context)).toBe('max')
+})

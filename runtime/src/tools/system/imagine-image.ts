@@ -4,8 +4,9 @@
  * Backend routing (fail-closed and credential-isolated):
  * 1. Meta reasoning sessions prefer Meta Muse Image + MODEL_API_KEY.
  * 2. QwenCloud sessions prefer the matching PayGo or Token Plan image API.
- * 3. Any reasoning provider may use independent xAI credentials.
- * 4. Direct Grok sessions retain their session bearer/base URL compatibility.
+ * 3. Z.AI reasoning sessions prefer GLM-Image + ZAI_API_KEY.
+ * 4. Any reasoning provider may use independent xAI credentials.
+ * 5. Direct Grok sessions retain their session bearer/base URL compatibility.
  *
  * @module
  */
@@ -83,8 +84,11 @@ const DEFAULT_QWEN_BASE_URL =
   "https://dashscope-intl.aliyuncs.com/compatible-mode/v1";
 const DEFAULT_QWEN_TOKEN_PLAN_BASE_URL =
   "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
+const DEFAULT_ZAI_BASE_URL = "https://api.z.ai/api/paas/v4";
 const MAX_IMAGE_DOWNLOAD_BYTES = 20 * 1024 * 1024;
 const MAX_IMAGE_DOWNLOAD_REDIRECTS = 5;
+const ZAI_GLM_IMAGE_COST_USD = 0.015;
+const ZAI_COGVIEW_IMAGE_COST_USD = 0.01;
 
 type ImageBackend =
   | {
@@ -102,6 +106,11 @@ type ImageBackend =
       readonly provider: "qwen" | "qwen-token-plan";
       readonly baseURL: string;
       readonly bearer: string;
+    }
+  | {
+      readonly kind: "zai";
+      readonly baseURL: string;
+      readonly bearer: string;
     };
 
 type BackendResolution =
@@ -117,6 +126,15 @@ function qwenApiOrigin(baseURL: string): string | undefined {
     return new URL(baseURL).origin;
   } catch {
     return undefined;
+  }
+}
+
+function isZaiCodingPlanBaseURL(baseURL: string): boolean {
+  try {
+    const pathname = new URL(baseURL).pathname.replace(/\/+$/u, "");
+    return pathname.endsWith("/api/coding/paas/v4");
+  } catch {
+    return false;
   }
 }
 
@@ -141,7 +159,14 @@ function validatedImageDownloadUrl(value: string, backend: ImageBackend): URL {
           hostname.endsWith(".fbcdn.net") ||
           hostname === "facebook.com" ||
           hostname.endsWith(".facebook.com")
-        : hostname === "x.ai" || hostname.endsWith(".x.ai");
+        : backend.kind === "zai"
+          ? hostname === "z.ai" ||
+            hostname.endsWith(".z.ai") ||
+            hostname === "bigmodel.cn" ||
+            hostname.endsWith(".bigmodel.cn") ||
+            hostname === "chatglm.cn" ||
+            hostname.endsWith(".chatglm.cn")
+          : hostname === "x.ai" || hostname.endsWith(".x.ai");
   if (!trusted) {
     throw new Error(
       `Image download host is not trusted for the ${backend.kind} backend`,
@@ -155,7 +180,7 @@ async function downloadImage(
   value: string,
   backend: ImageBackend,
   signal: AbortSignal,
-): Promise<Buffer> {
+): Promise<{ readonly bytes: Buffer; readonly contentType: string }> {
   let current = validatedImageDownloadUrl(value, backend);
   for (
     let redirects = 0;
@@ -213,7 +238,10 @@ async function downloadImage(
       }
       chunks.push(chunk);
     }
-    return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total);
+    return {
+      bytes: Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total),
+      contentType,
+    };
   }
   throw new Error("Image download exceeded the redirect limit");
 }
@@ -234,6 +262,27 @@ function qwenEnvironmentBackend(
   return {
     kind: "qwen",
     provider,
+    baseURL: withoutTrailingSlash(baseURL),
+    bearer: credential.value,
+  };
+}
+
+function zaiEnvironmentBackend(
+  env: NodeJS.ProcessEnv,
+): ImageBackend | undefined {
+  const credential = resolveProviderApiKeyEnvironment("zai", env);
+  if (credential === undefined) return undefined;
+  const baseURL =
+    resolveProviderBaseURLEnvironment("zai", env)?.value ??
+    DEFAULT_ZAI_BASE_URL;
+  if (isZaiCodingPlanBaseURL(baseURL)) return undefined;
+  try {
+    new URL(baseURL);
+  } catch {
+    return undefined;
+  }
+  return {
+    kind: "zai",
     baseURL: withoutTrailingSlash(baseURL),
     bearer: credential.value,
   };
@@ -281,6 +330,29 @@ function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
         backend: {
           kind: "qwen",
           provider: providerIdentity,
+          baseURL: withoutTrailingSlash(baseURL),
+          bearer,
+        },
+      };
+    }
+  }
+
+  // A Z.AI reasoning session may reuse only its own factory credential (or
+  // canonical ZAI_API_KEY fallback). Never borrow a different provider's
+  // session bearer for the native image route.
+  if (providerIdentity === "zai" && provider !== undefined) {
+    const factory = readProviderFactoryOptions(provider as never);
+    const environmentBackend = zaiEnvironmentBackend(env);
+    const bearer =
+      typeof factory.apiKey === "string" && factory.apiKey.trim().length > 0
+        ? factory.apiKey.trim()
+        : environmentBackend?.bearer;
+    const baseURL =
+      factory.baseURL ?? environmentBackend?.baseURL ?? DEFAULT_ZAI_BASE_URL;
+    if (bearer !== undefined && !isZaiCodingPlanBaseURL(baseURL)) {
+      return {
+        backend: {
+          kind: "zai",
           baseURL: withoutTrailingSlash(baseURL),
           bearer,
         },
@@ -356,9 +428,14 @@ function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
     return { backend: fallbackQwenBackend };
   }
 
+  const fallbackZaiBackend = zaiEnvironmentBackend(env);
+  if (fallbackZaiBackend !== undefined) {
+    return { backend: fallbackZaiBackend };
+  }
+
   return {
     error:
-      "ImagineImage needs a media backend credential: MODEL_API_KEY for Meta Muse Image; DASHSCOPE_API_KEY/QWEN_API_KEY or QWEN_TOKEN_PLAN_API_KEY for QwenCloud; or /grok-login, XAI_API_KEY, or GROK_API_KEY for xAI Imagine.",
+      "ImagineImage needs a media backend credential: MODEL_API_KEY for Meta Muse Image; DASHSCOPE_API_KEY/QWEN_API_KEY or QWEN_TOKEN_PLAN_API_KEY for QwenCloud; ZAI_API_KEY for GLM-Image; or /grok-login, XAI_API_KEY, or GROK_API_KEY for xAI Imagine.",
   };
 }
 
@@ -410,6 +487,216 @@ function qwenImageSize(
   return `${width}*${height}`;
 }
 
+const ZAI_GLM_IMAGE_RECOMMENDED_SIZES: Readonly<Record<string, string>> =
+  Object.freeze({
+    "1:1": "1280x1280",
+    "3:2": "1568x1056",
+    "2:3": "1056x1568",
+    "4:3": "1472x1088",
+    "3:4": "1088x1472",
+    "16:9": "1728x960",
+    "9:16": "960x1728",
+    "2:1": "2048x1024",
+    "1:2": "1024x2048",
+    "19.5:9": "2048x1024",
+    "9:19.5": "1024x2048",
+    "20:9": "2048x1024",
+    "9:20": "1024x2048",
+  });
+
+const ZAI_COGVIEW_RECOMMENDED_SIZES: Readonly<Record<string, string>> =
+  Object.freeze({
+    "1:1": "1024x1024",
+    "3:2": "1152x768",
+    "2:3": "768x1152",
+    "4:3": "1152x864",
+    "3:4": "864x1152",
+    "16:9": "1344x768",
+    "9:16": "768x1344",
+    "2:1": "1440x720",
+    "1:2": "720x1440",
+    "19.5:9": "1440x720",
+    "9:19.5": "720x1440",
+    "20:9": "1440x720",
+    "9:20": "720x1440",
+  });
+
+function zaiImageSize(model: string, aspectRatio: string | undefined): string {
+  const normalizedAspect =
+    aspectRatio === undefined || aspectRatio === "auto" ? "1:1" : aspectRatio;
+  const sizes = /^cogview-/i.test(model)
+    ? ZAI_COGVIEW_RECOMMENDED_SIZES
+    : ZAI_GLM_IMAGE_RECOMMENDED_SIZES;
+  return sizes[normalizedAspect] ?? sizes["1:1"]!;
+}
+
+function extensionForImageContentType(
+  contentType: string,
+  fallback: string,
+): string {
+  switch (contentType.split(";", 1)[0]?.trim().toLowerCase()) {
+    case "image/png":
+      return "png";
+    case "image/jpeg":
+    case "image/jpg":
+      return "jpg";
+    case "image/webp":
+      return "webp";
+    case "image/gif":
+      return "gif";
+    case "image/avif":
+      return "avif";
+    default:
+      return fallback;
+  }
+}
+
+function imagineImageDescription(backend: ImageBackend | undefined): string {
+  switch (backend?.kind) {
+    case "meta":
+      return "Generate images with Meta Muse Image and save them under the workspace.";
+    case "qwen":
+      return backend.provider === "qwen"
+        ? "Generate up to six images with QwenCloud Pay-As-You-Go and save them under the workspace."
+        : "Generate images with QwenCloud Token Plan and save them under the workspace; Wan models return at most four images.";
+    case "zai":
+      return "Generate exactly one image with Z.AI GLM-Image or CogView and save it under the workspace. Select image dimensions with aspect_ratio; Z.AI does not accept resolution or multiple-image requests.";
+    case "xai":
+      return "Generate images with xAI Imagine and save them under the workspace.";
+    default:
+      return "Generate images with the configured QwenCloud, Meta, Z.AI, or xAI media backend and save them under the workspace.";
+  }
+}
+
+function imagineImageInputSchema(
+  backend: ImageBackend | undefined,
+): Record<string, unknown> {
+  const properties: Record<string, unknown> = {
+    prompt: {
+      type: "string",
+      description: "Describe the image to generate.",
+    },
+  };
+  const aspectRatio = {
+    type: "string",
+    enum: [...ALLOWED_ASPECT],
+    description: "Desired output aspect ratio (default 1:1).",
+  };
+
+  switch (backend?.kind) {
+    case "meta":
+      Object.assign(properties, {
+        model: {
+          type: "string",
+          enum: ["muse-image-1.0"],
+          description: "Meta image model (default muse-image-1.0).",
+        },
+        n: {
+          type: "integer",
+          minimum: 1,
+          maximum: 10,
+          description: "Number of images to generate (default 1).",
+        },
+        aspect_ratio: aspectRatio,
+      });
+      break;
+    case "qwen": {
+      const isPayGo = backend.provider === "qwen";
+      Object.assign(properties, {
+        model: {
+          type: "string",
+          enum: isPayGo
+            ? ["qwen-image-3.0", "qwen-image-3.0-pro"]
+            : [
+                "qwen-image-3.0-pro",
+                "wan2.7-image",
+                "wan2.7-image-pro",
+              ],
+          description: isPayGo
+            ? "QwenCloud Pay-As-You-Go image model (default qwen-image-3.0)."
+            : "QwenCloud Token Plan image model (default wan2.7-image).",
+        },
+        n: {
+          type: "integer",
+          minimum: 1,
+          maximum: 6,
+          description: isPayGo
+            ? "Number of images to generate, from 1 to 6 (default 1)."
+            : "Number of images to generate; Qwen Image allows up to 6 and Wan allows up to 4 (default 1).",
+        },
+        aspect_ratio: aspectRatio,
+        resolution: {
+          type: "string",
+          enum: ["1k", "2k"],
+          description: "Output resolution tier (default 1k).",
+        },
+      });
+      break;
+    }
+    case "zai":
+      Object.assign(properties, {
+        model: {
+          type: "string",
+          enum: ["glm-image", "cogview-4-250304"],
+          description: "Z.AI image model (default glm-image).",
+        },
+        aspect_ratio: aspectRatio,
+        quality: {
+          type: "string",
+          enum: ["hd", "standard"],
+          description:
+            "Z.AI image quality (defaults to hd for glm-image and standard for CogView).",
+        },
+      });
+      break;
+    case "xai":
+      Object.assign(properties, {
+        model: {
+          type: "string",
+          enum: ["grok-imagine-image", "grok-imagine-image-quality"],
+          description: "xAI image model (default grok-imagine-image).",
+        },
+        n: {
+          type: "integer",
+          minimum: 1,
+          maximum: 10,
+          description: "Number of images to generate (default 1).",
+        },
+        aspect_ratio: aspectRatio,
+        resolution: { type: "string", enum: ["1k", "2k"] },
+      });
+      break;
+    default:
+      Object.assign(properties, {
+        model: {
+          type: "string",
+          description:
+            "Backend-specific image model. Omit to use the selected backend default.",
+        },
+        n: {
+          type: "integer",
+          minimum: 1,
+          maximum: 10,
+          description: "Number of images to generate (default 1).",
+        },
+        aspect_ratio: aspectRatio,
+        resolution: { type: "string", enum: ["1k", "2k"] },
+        quality: {
+          type: "string",
+          enum: ["hd", "standard"],
+          description: "Z.AI only.",
+        },
+      });
+  }
+
+  return {
+    type: "object",
+    properties,
+    required: ["prompt"],
+    additionalProperties: false,
+  };
+}
+
 async function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const onAbort = (): void => {
@@ -425,10 +712,32 @@ async function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
+  // A registry may be constructed before its Session ref is attached. In that
+  // lifecycle state the eventual provider can still change the media backend,
+  // so a backend-specific frozen schema would advertise the wrong controls.
+  // Keep the universal safe schema until a concrete Session exists; execution
+  // always re-resolves authority from the current Session and environment.
+  const advertisedResolution = opts.getSession() === null
+    ? undefined
+    : resolveImageBackend(opts);
+  const advertisedBackend =
+    advertisedResolution !== undefined && "backend" in advertisedResolution
+      ? advertisedResolution.backend
+      : undefined;
+  const deferredUntilDiscovered =
+    opts.getSession() === null && !hasImagineImageBackend(opts);
   return {
     name: "ImagineImage",
-    description:
-      "Generate an image with the configured media backend and save it under the workspace. QwenCloud sessions use the matching Pay-As-You-Go or Token Plan DashScope image endpoint; Meta sessions prefer Muse Image; other providers may use independently configured QwenCloud, Meta, or xAI media credentials.",
+    description: imagineImageDescription(advertisedBackend),
+    metadata: {
+      family: "media",
+      source: "builtin",
+      hiddenByDefault: false,
+      mutating: true,
+      deferred: deferredUntilDiscovered,
+      keywords: ["image", "generate", "media"],
+      preferredProfiles: ["coding", "operator", "general"],
+    },
     isReadOnly: false,
     requiresApproval: true,
     concurrencyClass: { kind: "exclusive" },
@@ -436,27 +745,24 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
     // must stay above the internal three-minute network/polling timeout.
     timeoutMs: 210_000,
     recoveryCategory: "side-effecting",
-    admissionEstimate: () => ({
-      maxInputTokens: 0,
-      maxOutputTokens: 0,
-      maxCostUsd: null,
-    }),
-    inputSchema: {
-      type: "object",
-      properties: {
-        prompt: { type: "string" },
-        model: {
-          type: "string",
-          description:
-            "Backend-specific model: qwen-image-3.0(-pro) for QwenCloud PayGo, qwen-image-3.0-pro or wan2.7-image(-pro) for Token Plan, muse-image-1.0 for Meta, or grok-imagine-image(-quality) for xAI. Omit to use the selected backend default.",
-        },
-        n: { type: "number", description: "1–10 images (default 1)" },
-        aspect_ratio: { type: "string" },
-        resolution: { type: "string", enum: ["1k", "2k"] },
-      },
-      required: ["prompt"],
-      additionalProperties: false,
+    admissionEstimate: (args) => {
+      const resolution = resolveImageBackend(opts);
+      const model = stringValue(args.model) ?? "glm-image";
+      const maxCostUsd =
+        "backend" in resolution && resolution.backend.kind === "zai"
+          ? model === "glm-image"
+            ? ZAI_GLM_IMAGE_COST_USD
+            : model === "cogview-4-250304"
+              ? ZAI_COGVIEW_IMAGE_COST_USD
+              : null
+          : null;
+      return {
+        maxInputTokens: 0,
+        maxOutputTokens: 0,
+        maxCostUsd,
+      };
     },
+    inputSchema: imagineImageInputSchema(advertisedBackend),
     execute: async (args) => {
       const admittedSignal = abortSignalFromArgs(args);
       admittedSignal?.throwIfAborted();
@@ -477,7 +783,9 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
             ? backend.provider === "qwen"
               ? "qwen-image-3.0"
               : "wan2.7-image"
-            : "grok-imagine-image");
+            : backend.kind === "zai"
+              ? "glm-image"
+              : "grok-imagine-image");
       if (backend.kind === "meta") {
         if (model !== "muse-image-1.0") {
           return json({ error: "Meta image model must be muse-image-1.0" }, true);
@@ -501,6 +809,16 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
             true,
           );
         }
+      } else if (backend.kind === "zai") {
+        if (model !== "glm-image" && model !== "cogview-4-250304") {
+          return json(
+            {
+              error:
+                "Z.AI image model must be glm-image or cogview-4-250304",
+            },
+            true,
+          );
+        }
       } else if (
         model !== "grok-imagine-image" &&
         model !== "grok-imagine-image-quality"
@@ -515,6 +833,15 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       }
 
       const nRaw = typeof args.n === "number" ? args.n : 1;
+      if (backend.kind === "zai" && nRaw !== 1) {
+        return json(
+          {
+            error:
+              "Z.AI image generation returns exactly one image per request",
+          },
+          true,
+        );
+      }
       const qwenMaxImages = /^wan2\.7-image(?:-pro)?$/i.test(model) ? 4 : 6;
       const n = Math.max(
         1,
@@ -535,13 +862,41 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       ) {
         return json({ error: "resolution must be 1k or 2k" }, true);
       }
+      if (backend.kind === "zai" && resolution !== undefined) {
+        return json(
+          {
+            error:
+              "Z.AI image size is selected by aspect_ratio; resolution is not supported",
+          },
+          true,
+        );
+      }
+      const quality = stringValue(args.quality);
+      if (
+        quality !== undefined &&
+        quality !== "hd" &&
+        quality !== "standard"
+      ) {
+        return json({ error: "quality must be hd or standard" }, true);
+      }
+      if (backend.kind !== "zai" && quality !== undefined) {
+        return json({ error: "quality is supported only by Z.AI images" }, true);
+      }
 
       const body: Record<string, unknown> =
         backend.kind === "meta"
           ? { model, prompt, size: metaImageSize(aspect_ratio), n }
           : backend.kind === "qwen"
             ? {}
-            : { model, prompt, n, response_format: "b64_json" };
+            : backend.kind === "zai"
+              ? {
+                  model,
+                  prompt,
+                  size: zaiImageSize(model, aspect_ratio),
+                  quality:
+                    quality ?? (model === "glm-image" ? "hd" : "standard"),
+                }
+              : { model, prompt, n, response_format: "b64_json" };
       if (backend.kind === "xai") {
         if (aspect_ratio !== undefined) body.aspect_ratio = aspect_ratio;
         if (resolution !== undefined) body.resolution = resolution;
@@ -636,7 +991,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
               error:
                 payload.error?.message ??
                 payload.message ??
-                `${backend.kind === "meta" ? "Muse Image" : backend.kind === "qwen" ? "QwenCloud image" : "Imagine"} HTTP ${res.status}`,
+                `${backend.kind === "meta" ? "Muse Image" : backend.kind === "qwen" ? "QwenCloud image" : backend.kind === "zai" ? "Z.AI image" : "Imagine"} HTTP ${res.status}`,
             },
             true,
           );
@@ -723,6 +1078,12 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
             true,
           );
         }
+        if (backend.kind === "zai" && images.length !== 1) {
+          return json(
+            { error: "Z.AI image generation must return exactly one image" },
+            true,
+          );
+        }
 
         const outDir = join(opts.workspaceRoot, ".agenc", "imagine");
         await mkdir(outDir, { recursive: true });
@@ -730,30 +1091,37 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         for (const image of images) {
           // Muse Image returns WebP. Keep the extension honest so Electron's
           // agenc-media protocol derives a renderable content type.
-          const extension =
+          let extension =
             backend.kind === "meta"
               ? "webp"
               : backend.kind === "qwen"
                 ? "png"
-                : "jpg";
-          const filename = `imagine-${randomUUID()}.${extension}`;
-          const path = join(outDir, filename);
+                : backend.kind === "zai"
+                  ? "png"
+                  : "jpg";
+          let bytes: Buffer | undefined;
           if ("b64_json" in image && image.b64_json) {
-            await writeFile(path, Buffer.from(image.b64_json, "base64"), {
-              signal: requestSignal,
-            });
-            paths.push(path);
+            bytes = Buffer.from(image.b64_json, "base64");
           } else if (image.url) {
             // Signed URLs are short-lived and provider-controlled. Follow
             // redirects manually so every hop stays on an expected HTTPS
             // host, and stream through a hard byte cap before writing.
-            const buf = await downloadImage(
+            const downloaded = await downloadImage(
               fetchImpl,
               image.url,
               backend,
               requestSignal,
             );
-            await writeFile(path, buf, { signal: requestSignal });
+            bytes = downloaded.bytes;
+            extension = extensionForImageContentType(
+              downloaded.contentType,
+              extension,
+            );
+          }
+          if (bytes !== undefined) {
+            const filename = `imagine-${randomUUID()}.${extension}`;
+            const path = join(outDir, filename);
+            await writeFile(path, bytes, { signal: requestSignal });
             paths.push(path);
           }
         }

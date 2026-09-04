@@ -410,6 +410,10 @@ function shouldPreferDynamicMetadata(
   env: Readonly<Record<string, string | undefined>>,
 ): boolean {
   const provider = normalizeMetadataProviderIdentity(params.provider);
+  // Z.AI's curated catalog is authoritative even when an operator overrides
+  // the API base URL. `/models` remains a credential health probe, but its
+  // list does not replace exact context/output limits here.
+  if (provider === "zai" || provider === "zai-coding-plan") return false;
   return provider === "openrouter" || shouldQueryLiveEndpoint(params, env);
 }
 
@@ -547,6 +551,8 @@ const OPENAI_COMPATIBLE_METADATA_PROVIDERS = new Set([
   "qwen",
   "qwen-token-plan",
   "cerebras",
+  "zai",
+  "zai-coding-plan",
   "gemini",
   "ollama",
 ]);

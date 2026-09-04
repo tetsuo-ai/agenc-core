@@ -144,6 +144,14 @@ export const MODEL_TOKENIZER_CONFIGS: readonly ModelTokenizerConfig[] = [
     supportsCode: true,
   },
   {
+    modelFamily: "zai",
+    providerNames: ["zai", "zai-coding-plan"],
+    modelMatchers: [/glm-5\.3/i],
+    bytesPerToken: 3.5,
+    supportsJson: true,
+    supportsCode: true,
+  },
+  {
     modelFamily: "deepseek",
     providerNames: ["deepseek"],
     modelMatchers: [/deepseek/i],

@@ -28,6 +28,7 @@ import {
   normalizeToolCallsStrict,
   parseOpenAIToolChoice,
   prepareMessagesForWire,
+  serializeProviderToolArguments,
   toOpenAIMessageContent,
   toOpenAIToolMessageContent,
   withEndpointMarkers,
@@ -45,6 +46,11 @@ import {
   buildCerebrasStructuredOutputTextFormat,
 } from "./cerebras-contract.js";
 import { splitLeadingThinkBlock } from "./think-tags.js";
+import { applyZaiImageInputContract } from "./zai-contract.js";
+import {
+  LLMContextWindowExceededError,
+  LLMInvalidResponseError,
+} from "../errors.js";
 
 export interface ChatCompletionsRequestOptions {
   readonly model: string;
@@ -88,6 +94,17 @@ function positiveInteger(value: number | undefined): number | undefined {
   return normalized > 0 ? normalized : undefined;
 }
 
+function assertToolDefinitionLimit(
+  count: number,
+  limit: number | undefined,
+): void {
+  if (limit === undefined || count <= limit) return;
+  throw new RangeError(
+    `Chat-completions provider accepts at most ${limit} tools; received ${count}. ` +
+      "Reduce the active tool set or use deferred tool discovery.",
+  );
+}
+
 function systemPromptParts(
   messages: readonly LLMMessage[],
   options: LLMChatOptions | undefined,
@@ -103,6 +120,98 @@ function systemPromptParts(
   return parts;
 }
 
+interface ReasoningToolContinuationGroup {
+  readonly assistant: LLMMessage;
+  readonly reasoningContent: string;
+  readonly toolCallIds: readonly string[];
+}
+
+interface ReasoningToolContinuation {
+  readonly groups: readonly ReasoningToolContinuationGroup[];
+}
+
+function reasoningToolContinuation(
+  messages: readonly LLMMessage[],
+  provenance: ProviderReasoningProvenance | undefined,
+): ReasoningToolContinuation | undefined {
+  if (provenance === undefined || messages.length < 2) return undefined;
+  let userIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      userIndex = index;
+      break;
+    }
+  }
+  if (userIndex < 0 || userIndex === messages.length - 1) return undefined;
+
+  const groups: ReasoningToolContinuationGroup[] = [];
+  const seenToolCallIds = new Set<string>();
+  let index = userIndex + 1;
+  while (index < messages.length) {
+    const assistant = messages[index];
+    if (
+      assistant?.role !== "assistant" ||
+      !assistant.toolCalls?.length ||
+      !assistant.providerReasoningContent ||
+      assistant.providerReasoningProvenance === undefined
+    ) {
+      return undefined;
+    }
+    const source = assistant.providerReasoningProvenance;
+    if (
+      source.provider.trim().toLowerCase() !==
+        provenance.provider.trim().toLowerCase() ||
+      source.model.trim().toLowerCase() !==
+        provenance.model.trim().toLowerCase()
+    ) {
+      return undefined;
+    }
+
+    const toolCallIds = assistant.toolCalls.map((call) => call.id.trim());
+    if (
+      toolCallIds.some((id) => id.length === 0 || seenToolCallIds.has(id)) ||
+      new Set(toolCallIds).size !== toolCallIds.length
+    ) {
+      return undefined;
+    }
+    index += 1;
+    for (const toolCallId of toolCallIds) {
+      const result = messages[index];
+      if (
+        result?.role !== "tool" ||
+        result.toolCallId?.trim() !== toolCallId
+      ) {
+        return undefined;
+      }
+      seenToolCallIds.add(toolCallId);
+      index += 1;
+    }
+    groups.push({
+      assistant,
+      reasoningContent: assistant.providerReasoningContent,
+      toolCallIds,
+    });
+  }
+  return groups.length > 0 ? { groups } : undefined;
+}
+
+function sameReasoningToolContinuation(
+  left: ReasoningToolContinuation | undefined,
+  right: ReasoningToolContinuation | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return false;
+  return left.groups.length === right.groups.length &&
+    left.groups.every((group, index) => {
+      const other = right.groups[index];
+      return other !== undefined &&
+        group.reasoningContent === other.reasoningContent &&
+        group.toolCallIds.length === other.toolCallIds.length &&
+        group.toolCallIds.every((id, toolIndex) =>
+          id === other.toolCallIds[toolIndex]
+        );
+    });
+}
+
 function toChatCompletionsMessages(
   messages: readonly LLMMessage[],
   options: LLMChatOptions | undefined,
@@ -112,17 +221,30 @@ function toChatCompletionsMessages(
   reasoningContentField: "reasoning_content" | "reasoning" =
     "reasoning_content",
   reasoningContentProvenance?: ProviderReasoningProvenance,
+  replayOnlyAdjacentToolContinuation = false,
+  reasoningContinuation?: ReasoningToolContinuation,
   requiresStrictToolResultSequence = false,
-  imageInputContract?: "cerebras_v2",
-  acceptsDirectImageInput = false,
+  imageInputContract?: "cerebras_v2" | "zai_flash",
+  acceptsDirectImageInput?: boolean,
 ): Array<Record<string, unknown>> {
-  const normalized = prepareMessagesForWire(messages);
+  // The caller passes the exact normalized sequence used to derive the
+  // reasoning replay plan. Keeping a single projection prevents boundary or
+  // orphan-message normalization from disagreeing with `clear_thinking`.
+  const normalized = messages;
   if (requiresStrictToolResultSequence) {
     assertStrictToolResultSequence(normalized);
   }
-  const imageSafeMessages = imageInputContract === "cerebras_v2"
-    ? applyCerebrasImageInputContract(normalized, acceptsDirectImageInput)
-    : normalized;
+  let imageSafeMessages: readonly LLMMessage[] = normalized;
+  if (imageInputContract === "cerebras_v2") {
+    imageSafeMessages = applyCerebrasImageInputContract(
+      normalized,
+      acceptsDirectImageInput === true,
+    );
+  } else if (imageInputContract === "zai_flash") {
+    imageSafeMessages = applyZaiImageInputContract(normalized);
+  } else if (acceptsDirectImageInput === false) {
+    imageSafeMessages = assertNoDirectImageInput(normalized);
+  }
   const prepared = applyToolResultImagePolicyForWire(
     imageSafeMessages,
     toolResultImagePolicy,
@@ -146,6 +268,17 @@ function toChatCompletionsMessages(
       message.providerReasoningProvenance === undefined
     ) {
       return undefined;
+    }
+    if (replayOnlyAdjacentToolContinuation) {
+      // `prepared` retains assistant object identity through image/tool-result
+      // projection. Match the exact normalized chain position rather than a
+      // content fingerprint, which could collide with an older turn.
+      const matchesIntactGroup = reasoningContinuation?.groups.some(
+        (group) => group.assistant === message,
+      ) === true;
+      if (!matchesIntactGroup) {
+        return undefined;
+      }
     }
     const source = message.providerReasoningProvenance;
     return typeof source.provider === "string" &&
@@ -201,6 +334,20 @@ function toChatCompletionsMessages(
     });
   }
   return wireMessages;
+}
+
+function assertNoDirectImageInput(
+  messages: readonly LLMMessage[],
+): readonly LLMMessage[] {
+  for (const message of messages) {
+    if (message.role === "tool" || !Array.isArray(message.content)) continue;
+    if (message.content.some((part) => part.type === "image_url")) {
+      throw new TypeError(
+        "The selected provider model does not support image input",
+      );
+    }
+  }
+  return messages;
 }
 
 function assertStrictToolResultSequence(
@@ -265,20 +412,64 @@ export function buildChatCompletionsRequest(
   );
   const maxTokens =
     ceiling !== undefined ? Math.min(requestedMaxTokens, ceiling) : requestedMaxTokens;
+  const structuredOutput = input.options?.structuredOutput;
+  const usesZaiJsonObject =
+    input.providerCapabilityHints?.structuredOutputContract ===
+      "zai_json_object" &&
+    structuredOutput?.enabled !== false &&
+    structuredOutput?.schema !== undefined;
+  const zaiJsonSchemaInstruction =
+    usesZaiJsonObject && structuredOutput?.schema !== undefined
+    ? "Return only one JSON object matching this JSON Schema:\n" +
+      JSON.stringify(structuredOutput.schema.schema)
+    : undefined;
+  const systemSuffix = [
+    input.providerCapabilityHints?.reasoningSoftSwitchSuffix,
+    zaiJsonSchemaInstruction,
+  ].filter((value): value is string => value !== undefined).join("\n");
+  const normalizedMessages = prepareMessagesForWire(
+    input.messages,
+    input.options,
+  );
+  const replayOnlyAdjacentToolContinuation =
+    input.providerCapabilityHints
+      ?.replaysReasoningContentOnlyForAdjacentToolContinuation === true;
+  const rawReasoningContinuation = replayOnlyAdjacentToolContinuation
+    ? reasoningToolContinuation(
+        input.messages,
+        input.providerCapabilityHints?.reasoningContentProvenance,
+      )
+    : undefined;
+  const normalizedReasoningContinuation = replayOnlyAdjacentToolContinuation
+    ? reasoningToolContinuation(
+        normalizedMessages,
+        input.providerCapabilityHints?.reasoningContentProvenance,
+      )
+    : undefined;
+  // A normalization boundary, orphan result, or compacted/incomplete tool
+  // chain invalidates provider-owned reasoning as a unit. Never send a subset.
+  const reasoningContinuation = sameReasoningToolContinuation(
+      rawReasoningContinuation,
+      normalizedReasoningContinuation,
+    )
+    ? normalizedReasoningContinuation
+    : undefined;
   const body: Record<string, unknown> = {
     model: input.model,
     stream: false,
     messages: toChatCompletionsMessages(
-      input.messages,
+      normalizedMessages,
       input.options,
-      input.providerCapabilityHints?.reasoningSoftSwitchSuffix,
+      systemSuffix,
       input.providerCapabilityHints?.toolResultImagePolicy,
       input.providerCapabilityHints?.replaysReasoningContent === true,
       input.providerCapabilityHints?.reasoningContentField,
       input.providerCapabilityHints?.reasoningContentProvenance,
+      replayOnlyAdjacentToolContinuation,
+      reasoningContinuation,
       input.providerCapabilityHints?.requiresStrictToolResultSequence === true,
       input.providerCapabilityHints?.imageInputContract,
-      input.providerCapabilityHints?.acceptsDirectImageInput === true,
+      input.providerCapabilityHints?.acceptsDirectImageInput,
     ),
     [maxTokenField]: maxTokens,
   };
@@ -293,12 +484,20 @@ export function buildChatCompletionsRequest(
     input.providerCapabilityHints?.toolChoicePolicy === "auto_only";
   const omitToolsForChoice =
     autoOnlyToolChoice && requestedToolChoice === "none";
-  const tools = omitToolsForChoice
+  const maxToolDefinitions = positiveInteger(
+    input.providerCapabilityHints?.maxToolDefinitions,
+  );
+  assertToolDefinitionLimit(
+    omitToolsForChoice ? 0 : input.tools.length,
+    maxToolDefinitions,
+  );
+  const requestedTools = omitToolsForChoice
     ? []
-    : toChatCompletionsTools(input.tools, {
-      grammarSafe:
-        input.providerCapabilityHints?.requiresGrammarSafeToolSchemas === true,
-    });
+    : input.tools;
+  const tools = toChatCompletionsTools(requestedTools, {
+    grammarSafe:
+      input.providerCapabilityHints?.requiresGrammarSafeToolSchemas === true,
+  });
   if (tools.length > 0) body.tools = tools;
   const omitToolControlsWithoutTools =
     input.providerCapabilityHints?.omitsToolControlsWithoutTools === true &&
@@ -323,6 +522,21 @@ export function buildChatCompletionsRequest(
     // while thinking is enabled.
     body.preserve_thinking = true;
   }
+  if (input.providerCapabilityHints?.thinkingConfig !== undefined) {
+    const keepsAdjacentToolReasoning = reasoningContinuation !== undefined;
+    body.thinking = {
+      type: input.providerCapabilityHints.thinkingConfig.type,
+      ...(input.providerCapabilityHints.thinkingConfig.clearThinking !==
+          undefined
+        ? {
+            clear_thinking:
+              keepsAdjacentToolReasoning
+                ? false
+                : input.providerCapabilityHints.thinkingConfig.clearThinking,
+          }
+        : {}),
+    };
+  }
   if (
     input.options?.parallelToolCalls !== undefined &&
     !(autoOnlyToolChoice && tools.length === 0) &&
@@ -339,7 +553,12 @@ export function buildChatCompletionsRequest(
     input.options.stopSequences.length > 0 &&
     input.providerCapabilityHints?.acceptsStopSequences !== false
   ) {
-    body.stop = [...input.options.stopSequences];
+    const maxStopSequences = positiveInteger(
+      input.providerCapabilityHints?.maxStopSequences,
+    );
+    body.stop = maxStopSequences === undefined
+      ? [...input.options.stopSequences]
+      : input.options.stopSequences.slice(0, maxStopSequences);
   }
   // Strip fields the destination provider rejects. Hints are
   // adapter-populated; an undefined `acceptsX` flag preserves the
@@ -366,18 +585,20 @@ export function buildChatCompletionsRequest(
   ) {
     body.service_tier = input.options.serviceTier;
   }
-  const structuredFormat =
-    input.providerCapabilityHints?.structuredOutputContract === "cerebras_v2"
-      ? buildCerebrasStructuredOutputTextFormat(
-          input.options?.structuredOutput,
-        )
-      : buildStructuredOutputTextFormat(input.options?.structuredOutput);
-  if (structuredFormat) {
-    const { type: _formatType, ...jsonSchema } = structuredFormat;
-    body.response_format = {
-      type: "json_schema",
-      json_schema: jsonSchema,
-    };
+  if (usesZaiJsonObject) {
+    body.response_format = { type: "json_object" };
+  } else {
+    const structuredFormat =
+      input.providerCapabilityHints?.structuredOutputContract === "cerebras_v2"
+        ? buildCerebrasStructuredOutputTextFormat(structuredOutput)
+        : buildStructuredOutputTextFormat(structuredOutput);
+    if (structuredFormat) {
+      const { type: _formatType, ...jsonSchema } = structuredFormat;
+      body.response_format = {
+        type: "json_schema",
+        json_schema: jsonSchema,
+      };
+    }
   }
   if (input.providerCapabilityHints?.imageInputContract === "cerebras_v2") {
     assertCerebrasRequestPayloadSize(body);
@@ -434,11 +655,20 @@ export function parseChatCompletionsResponse(
   // contract strips the complete tool catalog when callers select `none`;
   // using the unfiltered input catalog here would let an unadvertised hashed
   // name resolve anyway if a malformed or hostile response echoed one.
-  const advertisedToolNames =
+  const requestedAdvertisedToolNames =
     request.providerCapabilityHints?.toolChoicePolicy === "auto_only" &&
       request.options?.toolChoice === "none"
       ? []
       : request.tools.map((tool) => tool.function.name);
+  const maxToolDefinitions = positiveInteger(
+    request.providerCapabilityHints?.maxToolDefinitions,
+  );
+  assertToolDefinitionLimit(
+    requestedAdvertisedToolNames.length,
+    maxToolDefinitions,
+  );
+  const advertisedToolNames = requestedAdvertisedToolNames;
+  const enforcesAdvertisedToolCatalog = maxToolDefinitions !== undefined;
   const choices = Array.isArray(response.choices)
     ? (response.choices as Array<Record<string, unknown>>)
     : [];
@@ -447,29 +677,80 @@ export function parseChatCompletionsResponse(
     choice.message && typeof choice.message === "object"
       ? (choice.message as Record<string, unknown>)
       : {};
-  const toolCalls = Array.isArray(message.tool_calls)
+  const allowedFinishReasons =
+    request.providerCapabilityHints?.allowedFinishReasons;
+  if (
+    request.providerCapabilityHints
+      ?.rejectsContextWindowExceededFinishReason === true &&
+    choice.finish_reason === "model_context_window_exceeded"
+  ) {
+    throw new LLMContextWindowExceededError(
+      request.providerCapabilityHints?.reasoningContentProvenance?.provider ??
+        "zai",
+      "The model reported model_context_window_exceeded",
+    );
+  }
+  const finishReason = normalizeFinishReason(choice.finish_reason);
+  if (
+    request.providerCapabilityHints?.requiresToolCallsFinishReason === true &&
+    Array.isArray(message.tool_calls) &&
+    message.tool_calls.length > 0 &&
+    (finishReason === "stop" || finishReason === "tool_calls") &&
+    choice.finish_reason !== "tool_calls"
+  ) {
+    throw new LLMInvalidResponseError(
+      request.providerCapabilityHints?.reasoningContentProvenance?.provider ??
+        "zai",
+      "Tool calls arrived without finish_reason=tool_calls",
+    );
+  }
+  if (
+    allowedFinishReasons !== undefined &&
+    (typeof choice.finish_reason !== "string" ||
+      !allowedFinishReasons.has(choice.finish_reason))
+  ) {
+    throw new LLMInvalidResponseError(
+      request.providerCapabilityHints?.reasoningContentProvenance?.provider ??
+        "zai",
+      `Missing or unsupported finish_reason ${JSON.stringify(choice.finish_reason)}`,
+    );
+  }
+  const acceptsToolCalls =
+    finishReason === "stop" || finishReason === "tool_calls";
+  const toolCalls = acceptsToolCalls && Array.isArray(message.tool_calls)
     ? normalizeToolCallsStrict(
       (message.tool_calls as Array<Record<string, unknown>>).map(
-        (toolCall): LLMToolCall => ({
-          id: String(toolCall.id ?? ""),
+        (toolCall): LLMToolCall => {
           // Decode the strict-regex wire name back to the
           // internal-registry form (`mcp.<server>.<tool>`) before
           // the dispatcher tries to look up the tool. Non-MCP names
           // pass through unchanged.
-          name: decodeMcpToolNameFromWire(
+          const name = decodeMcpToolNameFromWire(
             String(
               (
                 (toolCall.function as Record<string, unknown> | undefined) ?? {}
               ).name ?? "",
             ),
             advertisedToolNames,
-          ),
-          arguments: String(
-            (
-              (toolCall.function as Record<string, unknown> | undefined) ?? {}
-            ).arguments ?? "{}",
-          ),
-        }),
+          );
+          if (
+            enforcesAdvertisedToolCatalog &&
+            !advertisedToolNames.includes(name)
+          ) {
+            throw new Error(
+              `Provider returned unadvertised tool name ${JSON.stringify(name)}`,
+            );
+          }
+          return {
+            id: String(toolCall.id ?? ""),
+            name,
+            arguments: serializeProviderToolArguments(
+              (
+                (toolCall.function as Record<string, unknown> | undefined) ?? {}
+              ).arguments,
+            ),
+          };
+        },
       ),
       // branding-scan: allow real OpenAI provider identifier
       "OpenAI chat-completions response emitted invalid tool_call",
@@ -524,14 +805,12 @@ export function parseChatCompletionsResponse(
     request.options,
   );
 
-  const finishReason = normalizeFinishReason(choice.finish_reason);
   // gaphunt3 #20: a truncated/incomplete generation (finishReason 'length',
   // 'error', or 'content_filter') leaves partial JSON in `content`, which
   // parseStructuredOutputText would JSON.parse and throw on, failing the
   // whole turn instead of surfacing the recoverable truncation. Only attempt
   // structured-output parsing when the generation completed normally.
-  const generationCompleted =
-    finishReason === "stop" || finishReason === "tool_calls";
+  const generationCompleted = finishReason === "stop";
 
   return {
     content,

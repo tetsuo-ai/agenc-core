@@ -119,6 +119,10 @@ export interface EnvSnapshot {
   readonly DASHSCOPE_TOKEN_PLAN_BASE_URL?: string;
   readonly CEREBRAS_API_KEY?: string;
   readonly CEREBRAS_BASE_URL?: string;
+  readonly ZAI_API_KEY?: string;
+  readonly ZAI_BASE_URL?: string;
+  readonly ZAI_CODING_PLAN_API_KEY?: string;
+  readonly ZAI_CODING_PLAN_BASE_URL?: string;
   readonly GEMINI_API_KEY?: string;
   readonly GEMINI_BASE_URL?: string;
   readonly GOOGLE_API_KEY?: string;

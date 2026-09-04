@@ -105,6 +105,37 @@ const CEREBRAS_GPT_OSS_REASONING_LEVELS = Object.freeze([
   "medium",
   "high",
 ] as const satisfies readonly ReasoningEffort[]);
+const ZAI_GLM_53_REASONING_LEVELS = Object.freeze([
+  "low",
+  "high",
+  "max",
+] as const satisfies readonly ReasoningEffort[]);
+const ZAI_PROVIDER_IDS = Object.freeze([
+  "zai",
+  "zai-coding-plan",
+] as const);
+
+interface ZaiChatModelSpec {
+  readonly model: string;
+  readonly displayName: string;
+  readonly vision: boolean;
+  readonly priority: number;
+}
+
+const ZAI_CHAT_MODELS = Object.freeze([
+  {
+    model: "glm-5.3",
+    displayName: "GLM-5.3",
+    vision: false,
+    priority: 0,
+  },
+  {
+    model: "glm-5.3-flash",
+    displayName: "GLM-5.3 Flash",
+    vision: true,
+    priority: 1,
+  },
+] as const satisfies readonly ZaiChatModelSpec[]);
 
 const QWEN_CLOUD_PROVIDER_IDS = Object.freeze([
   "qwen",
@@ -251,6 +282,38 @@ function qwenCloudCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
       }),
   );
 }
+
+function zaiCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
+  return ZAI_PROVIDER_IDS.flatMap((provider) =>
+    ZAI_CHAT_MODELS.map((model) => Object.freeze({
+      provider,
+      model: model.model,
+      displayName: model.displayName,
+      contextWindow: 1_000_000,
+      maxContextWindow: 1_000_000,
+      maxOutputTokens: 131_072,
+      inputModalities: model.vision
+        ? TEXT_IMAGE_MODALITIES
+        : TEXT_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: false,
+      // Z.AI documents json_object rather than JSON Schema. AgenC requests a
+      // JSON object and validates the parsed value against the caller's schema.
+      supportsStructuredOutput: true,
+      supportsStructuredOutputWithTools: true,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none" as const,
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none" as const,
+      supportedReasoningLevels: ZAI_GLM_53_REASONING_LEVELS,
+      defaultReasoningLevel: "max" as const,
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: model.priority,
+      visibility: "list" as const,
+    })),
+  );
+}
 // Grok 4.3 and 4.5 accept these depth controls. The multi-agent family uses
 // the same values to control agent count rather than thinking depth.
 const GROK_REASONING_LEVELS = Object.freeze([
@@ -314,6 +377,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       priority: 0,
       visibility: "list",
     },
+    ...zaiCatalogEntries(),
     {
       provider: "cerebras",
       model: "qwen-3.8-27b",

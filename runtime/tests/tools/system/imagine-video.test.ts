@@ -6,31 +6,23 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { resolveHomeContext } from "../../../src/config/home.js";
 import { createImagineVideoTool } from "../../../src/tools/system/imagine-video.js";
 import { createModelFacingTools } from "../../../src/bin/model-facing-tools.js";
 import { createProvider } from "../../../src/llm/provider.js";
 import type { Session } from "../../../src/session/session.js";
-
-function testHome(workspaceRoot: string) {
-  return resolveHomeContext(
-    {
-      AGENC_HOME: join(workspaceRoot, ".agenc-test-home"),
-      HOME: workspaceRoot,
-    },
-    { platformHome: workspaceRoot },
-  );
-}
+import {
+  isModelFacingToolRegistered,
+  mediaTestHome as testHome,
+} from "./media-test-helpers.js";
 
 describe("ImagineVideo catalog gate", () => {
   it("is registered for non-Grok sessions with independent xAI credentials", () => {
-    const tools = createModelFacingTools({
+    expect(isModelFacingToolRegistered("ImagineVideo", {
       workspaceRoot: process.cwd(),
       getSession: () => null,
       sessionProvider: "openai",
       env: { XAI_API_KEY: "key" },
-    });
-    expect(tools.some((t) => t.name === "ImagineVideo")).toBe(true);
+    })).toBe(true);
   });
 
   it("is registered for grok + direct xAI + credentials", () => {
@@ -64,14 +56,12 @@ describe("ImagineVideo catalog gate", () => {
       model: "grok-4.6",
       baseURL: "https://api.x.ai/v1",
     });
-    const tools = createModelFacingTools({
+    expect(isModelFacingToolRegistered("ImagineVideo", {
       workspaceRoot: root,
       agencHome: join(root, ".agenc-test-home"),
       getSession: () => ({ services: { provider } }) as unknown as Session,
       env: {},
-    });
-
-    expect(tools.some((t) => t.name === "ImagineVideo")).toBe(true);
+    })).toBe(true);
   });
 });
 

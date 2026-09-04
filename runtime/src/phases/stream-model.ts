@@ -69,7 +69,6 @@ import {
 } from "../llm/provider-trace-sink.js";
 import { getAgencHomeDir } from "../session/session-store.js";
 import {
-  effortValueToReasoningEffort,
   getInitialEffortSetting,
 } from "../utils/effort.js";
 import type { ReasoningEffort } from "../session/turn-context.js";
@@ -85,13 +84,11 @@ type WireReasoningEffort = NonNullable<LLMChatOptions["reasoningEffort"]>;
  * a 150-word answer, matching the user's "grok is fucking slow").
  * An explicit per-session "none" stays respected as an opt-out.
  *
- * The persisted spelling of the deepest tier is `max`; on the wire it is
- * `xhigh`. It is forwarded only when the model's catalog advertises xhigh
- * (grok-4.6); every other model clamps to `high`, which every reasoning
- * Grok accepts. Before this mapping a configured xhigh reached this function
- * as `max`, fell through the switch, and no `reasoning.effort` was sent at
- * all, so the session ran at the provider default (measured: 348 reasoning
- * tokens per call on a coding task, effort `null` in every settings event).
+ * Persistence historically spells Grok's deepest `xhigh` tier as `max`, while
+ * providers such as Z.AI use `max` as the literal wire value and do not accept
+ * `xhigh`. Resolve that alias against the selected model's catalog: prefer the
+ * requested top-tier spelling when supported, translate to the other top-tier
+ * spelling when that is the model's only form, and otherwise clamp to `high`.
  */
 function resolveSessionReasoningEffort(
   turnEffort: ReasoningEffort | undefined,
@@ -99,20 +96,21 @@ function resolveSessionReasoningEffort(
 ): WireReasoningEffort | undefined {
   let requested: ReasoningEffort | undefined;
   if (turnEffort === undefined) {
-    requested = effortValueToReasoningEffort(getInitialEffortSetting());
+    requested = getInitialEffortSetting();
   } else if (turnEffort !== "none") {
     requested = turnEffort;
   }
   if (requested === undefined) return undefined;
-  const wire: WireReasoningEffort = requested === "max" ? "xhigh" : requested;
-  if (
-    wire === "xhigh" &&
-    supportedReasoningLevels !== undefined &&
-    !supportedReasoningLevels.includes("xhigh")
-  ) {
+  if (requested === "max" || requested === "xhigh") {
+    if (supportedReasoningLevels === undefined) {
+      return requested === "max" ? "xhigh" : requested;
+    }
+    if (supportedReasoningLevels.includes(requested)) return requested;
+    const topTierAlias = requested === "max" ? "xhigh" : "max";
+    if (supportedReasoningLevels.includes(topTierAlias)) return topTierAlias;
     return "high";
   }
-  return wire;
+  return requested;
 }
 
 // Exported for unit tests; the wiring above is the single call site.
@@ -675,7 +673,8 @@ function assistantMessageFromResponse(
         : response.finishReason === "content_filter"
           ? "refusal"
           : undefined;
-  const allowToolCalls = response.finishReason !== "length";
+  const allowToolCalls =
+    response.finishReason === "stop" || response.finishReason === "tool_calls";
   // I-55: normalize tool_use blocks into canonical shape before the
   // validator sees them (provider-family quirks collapsed here).
   const normalizedToolCalls = normalizeToolCallsForProvider(

@@ -262,6 +262,38 @@ describe("buildChatCompletionsRequest", () => {
     ]);
   });
 
+  test("preserves direct image input when the provider has no explicit image gate", () => {
+    const request = buildChatCompletionsRequest({
+      model: "gpt-4.1",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Describe this" },
+            {
+              type: "image_url",
+              image_url: { url: "https://example.com/cat.png" },
+            },
+          ],
+        },
+      ],
+      tools: [],
+    });
+
+    expect(request.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Describe this" },
+          {
+            type: "image_url",
+            image_url: { url: "https://example.com/cat.png" },
+          },
+        ],
+      },
+    ]);
+  });
+
   test("preserves inline input_audio parts for compatible audio models", () => {
     const request = buildChatCompletionsRequest({
       model: "gpt-audio",

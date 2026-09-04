@@ -15,16 +15,21 @@ Local window probes and `context_window_exceeded` text:
 
 The model that selects a client tool and the service that executes that tool
 are separate identities. A tool-capable reasoning provider is not required to
-own a tool's backend. Catalog exposure follows the backend credentials and
-capabilities captured for the request, not the reasoning provider slug.
+own a tool's backend. Backend authority does not follow the reasoning provider
+slug. Before Session attachment, `ImagineImage` remains universally
+discoverable but deferred so the same registry can survive a later provider
+switch; execution re-resolves current credentials and fails closed if no image
+backend exists.
 
 For example, a Meta Muse Spark or OpenAI model can invoke `XSearch`,
 `ImagineImage`, or `ImagineVideo`. `XSearch` then performs native X search
 through an independently authenticated direct-xAI Grok backend;
 `ImagineVideo` similarly uses xAI Imagine. `ImagineImage` can use Meta Muse
-Image with `MODEL_API_KEY` or xAI Imagine with separate xAI credentials. The
-reasoning session's API key and base URL are never borrowed for a different
-provider's backend.
+Image, QwenCloud image models, Z.AI GLM-Image, or xAI Imagine with each
+backend's separate credential. A matching Meta, QwenCloud, Z.AI Pay-As-You-Go, or direct
+Grok session may reuse only its own native authority. The reasoning session's
+API key and base URL are never borrowed for a different provider's backend;
+Z.AI Coding Plan credentials remain chat-only.
 
 This does not turn provider-native server tools into generic wire features.
 Native `x_search`, for example, is still sent only on the internal compatible
