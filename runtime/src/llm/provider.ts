@@ -54,6 +54,7 @@ import {
   ZaiCodingPlanProvider,
   ZaiProvider,
 } from "./providers/zai/index.js";
+import { KimiProvider } from "./providers/kimi/index.js";
 import {
   QwenProvider,
   QwenTokenPlanProvider,
@@ -1326,6 +1327,7 @@ function buildOpenAICompatibleProvider(
     | "cerebras"
     | "zai"
     | "zai-coding-plan"
+    | "kimi"
     | "qwen"
     | "qwen-token-plan"
     | "mistral"
@@ -1939,6 +1941,12 @@ export function createProvider(
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: ZaiCodingPlanProvider,
+      });
+    case "kimi":
+      return buildOpenAICompatibleProvider("kimi", opts, {
+        apiKeyMode: "required",
+        useResponsesApi: false,
+        providerCtor: KimiProvider,
       });
     case "qwen":
       return buildOpenAICompatibleProvider("qwen", opts, {

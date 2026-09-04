@@ -245,7 +245,8 @@ function resolveCatalogContextWindow(
   if (
     normalizedProvider !== 'grok' &&
     normalizedProvider !== 'zai' &&
-    normalizedProvider !== 'zai-coding-plan'
+    normalizedProvider !== 'zai-coding-plan' &&
+    normalizedProvider !== 'kimi'
   ) {
     return undefined
   }
@@ -318,7 +319,8 @@ export function getModelMaxOutputTokensForContext(
   const normalizedProvider = provider.trim().toLowerCase()
   if (
     normalizedProvider === 'zai' ||
-    normalizedProvider === 'zai-coding-plan'
+    normalizedProvider === 'zai-coding-plan' ||
+    normalizedProvider === 'kimi'
   ) {
     const catalog = resolveModelCatalogMetadata({ provider: normalizedProvider, model })
     if (catalog?.maxOutputTokens !== undefined) {
@@ -327,6 +329,14 @@ export function getModelMaxOutputTokensForContext(
         upperLimit:
           catalog.maxOutputTokensUpperLimit ?? catalog.maxOutputTokens,
       }
+    }
+    if (
+      normalizedProvider === 'kimi' &&
+      /^kimi-k2\.(?:7-code(?:-highspeed)?|6)$/u.test(model.trim().toLowerCase())
+    ) {
+      // This is an AgenC reservation/safety policy, not a published Moonshot
+      // model maximum. The native catalog intentionally leaves the max unset.
+      return { default: 32_768, upperLimit: MAX_OUTPUT_TOKENS_UPPER_LIMIT }
     }
   }
 

@@ -152,6 +152,14 @@ export const MODEL_TOKENIZER_CONFIGS: readonly ModelTokenizerConfig[] = [
     supportsCode: true,
   },
   {
+    modelFamily: "kimi",
+    providerNames: ["kimi"],
+    modelMatchers: [/kimi-k(?:3|2\.)/i],
+    bytesPerToken: 3.5,
+    supportsJson: true,
+    supportsCode: true,
+  },
+  {
     modelFamily: "deepseek",
     providerNames: ["deepseek"],
     modelMatchers: [/deepseek/i],

@@ -176,6 +176,18 @@ export function resolveProviderStructuredOutputMode(input: {
     }
     return "chat_json_object";
   }
+  if (provider === "kimi") {
+    if (
+      input.api !== "chat_completions" ||
+      resolveModelCapabilityHints({
+        provider,
+        model: input.model,
+      })?.supportsStructuredOutput !== true
+    ) {
+      return "unsupported";
+    }
+    return "chat_response_format";
+  }
   if (provider === "anthropic") {
     return supportsAnthropicStructuredOutputToolUse(input.model)
       ? "anthropic_tool_use"

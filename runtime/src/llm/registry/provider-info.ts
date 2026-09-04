@@ -490,6 +490,16 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     baseURLEnvVars: ["ZAI_CODING_PLAN_BASE_URL"],
     onboarding: onboardingInfo(100, "api-key"),
   }),
+  kimi: providerDefinition({
+    name: "Kimi (Moonshot)",
+    defaultModel: "kimi-k3",
+    baseURL: "https://api.moonshot.ai/v1",
+    credentials: apiKeyCredentials(["MOONSHOT_API_KEY"]),
+    // The native provider is intentionally bound to Moonshot's global API.
+    // The existing openai-compatible slot remains available for custom URLs.
+    baseURLEnvVars: [],
+    onboarding: onboardingInfo(101, "api-key"),
+  }),
   gemini: providerDefinition({
     name: "Gemini",
     // gemini-2.5-pro is retired for new keys (404 pointing at the 3.x
@@ -691,6 +701,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   cerebras: mergeDerivedProviderModels("cerebras"),
   zai: mergeDerivedProviderModels("zai"),
   "zai-coding-plan": mergeDerivedProviderModels("zai-coding-plan"),
+  kimi: mergeDerivedProviderModels("kimi"),
   gemini: Object.freeze([
     "gemini-3.1-pro-preview",
     "gemini-3.7-flash",

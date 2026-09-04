@@ -102,6 +102,12 @@ const PROVIDER_CASES: ReadonlyArray<{
     apiKey: () => process.env.ZAI_CODING_PLAN_API_KEY,
   },
   {
+    provider: "kimi",
+    model: process.env.AGENC_KIMI_INTEGRATION_MODEL ?? "kimi-k3",
+    enabled: RUN_REMOTE && Boolean(process.env.MOONSHOT_API_KEY),
+    apiKey: () => process.env.MOONSHOT_API_KEY,
+  },
+  {
     provider: "gemini",
     model: process.env.AGENC_GEMINI_INTEGRATION_MODEL ?? "gemini-2.5-pro",
     enabled: RUN_REMOTE && Boolean(process.env.GEMINI_API_KEY),

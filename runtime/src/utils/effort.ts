@@ -571,7 +571,8 @@ function getDefaultEffortForModelForOptionalContext(
   const registeredEntry =
     registeredProvider === 'meta' ||
       registeredProvider === 'zai' ||
-      registeredProvider === 'zai-coding-plan'
+      registeredProvider === 'zai-coding-plan' ||
+      registeredProvider === 'kimi'
     ? resolveRegisteredModelCatalogEntry({
         provider: registeredProvider,
         model,

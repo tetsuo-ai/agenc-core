@@ -114,6 +114,59 @@ const ZAI_PROVIDER_IDS = Object.freeze([
   "zai",
   "zai-coding-plan",
 ] as const);
+const KIMI_K3_REASONING_LEVELS = Object.freeze([
+  "low",
+  "high",
+  "max",
+] as const satisfies readonly ReasoningEffort[]);
+
+interface KimiChatModelSpec {
+  readonly model: string;
+  readonly displayName: string;
+  readonly contextWindow: number;
+  readonly maxOutputTokens?: number;
+  readonly maxOutputTokensUpperLimit?: number;
+  readonly supportsReasoningEffort: boolean;
+  readonly supportsStructuredOutputWithTools: boolean;
+  readonly priority: number;
+}
+
+const KIMI_CHAT_MODELS: readonly KimiChatModelSpec[] = Object.freeze([
+  {
+    model: "kimi-k3",
+    displayName: "Kimi K3",
+    contextWindow: 1_048_576,
+    maxOutputTokens: 131_072,
+    maxOutputTokensUpperLimit: 1_048_576,
+    supportsReasoningEffort: true,
+    supportsStructuredOutputWithTools: false,
+    priority: 0,
+  },
+  {
+    model: "kimi-k2.7-code",
+    displayName: "Kimi K2.7 Code",
+    contextWindow: 262_144,
+    supportsReasoningEffort: false,
+    supportsStructuredOutputWithTools: true,
+    priority: 1,
+  },
+  {
+    model: "kimi-k2.7-code-highspeed",
+    displayName: "Kimi K2.7 Code Highspeed",
+    contextWindow: 262_144,
+    supportsReasoningEffort: false,
+    supportsStructuredOutputWithTools: false,
+    priority: 2,
+  },
+  {
+    model: "kimi-k2.6",
+    displayName: "Kimi K2.6",
+    contextWindow: 262_144,
+    supportsReasoningEffort: false,
+    supportsStructuredOutputWithTools: false,
+    priority: 3,
+  },
+] as const);
 
 interface ZaiChatModelSpec {
   readonly model: string;
@@ -314,6 +367,48 @@ function zaiCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
     })),
   );
 }
+
+function kimiCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
+  return KIMI_CHAT_MODELS.map((model) => Object.freeze({
+    provider: "kimi",
+    model: model.model,
+    displayName: model.displayName,
+    contextWindow: model.contextWindow,
+    maxContextWindow: model.contextWindow,
+    ...(model.maxOutputTokens !== undefined
+      ? { maxOutputTokens: model.maxOutputTokens }
+      : {}),
+    ...(model.maxOutputTokensUpperLimit !== undefined
+      ? {
+          maxOutputTokensUpperLimit: model.maxOutputTokensUpperLimit,
+          maxOutputTokensCappedDefault:
+            model.maxOutputTokens !== model.maxOutputTokensUpperLimit,
+        }
+      : {}),
+    inputModalities: TEXT_IMAGE_MODALITIES,
+    supportsToolUse: true,
+    supportsParallelToolCalls: false,
+    supportsStructuredOutput: true,
+    // Keep combined mode model-scoped: the complete K2.7 Code tool -> result
+    // -> JSON Schema loop is verified; unverified models remain fail-closed.
+    supportsStructuredOutputWithTools:
+      model.supportsStructuredOutputWithTools,
+    supportsSearchTool: false,
+    supportsVerbosity: false,
+    webSearchToolType: "none" as const,
+    supportsReasoningSummaries: false,
+    defaultReasoningSummary: "none" as const,
+    supportedReasoningLevels: model.supportsReasoningEffort
+      ? KIMI_K3_REASONING_LEVELS
+      : NO_REASONING_LEVELS,
+    ...(model.supportsReasoningEffort
+      ? { defaultReasoningLevel: "max" as const }
+      : {}),
+    additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+    priority: model.priority,
+    visibility: "list" as const,
+  }));
+}
 // Grok 4.3 and 4.5 accept these depth controls. The multi-agent family uses
 // the same values to control agent count rather than thinking depth.
 const GROK_REASONING_LEVELS = Object.freeze([
@@ -378,6 +473,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "list",
     },
     ...zaiCatalogEntries(),
+    ...kimiCatalogEntries(),
     {
       provider: "cerebras",
       model: "qwen-3.8-27b",
