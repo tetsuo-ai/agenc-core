@@ -147,6 +147,9 @@ function modelSupportsMaxEffortForOptionalContext(
   if (supported3P !== undefined) {
     return supported3P
   }
+  if (getRegisteredEffortLevels(model, context)?.includes('max')) {
+    return true
+  }
   const m = model.toLowerCase()
   // Fable 5 supports the full effort range incl. 'max' (provider docs,
   // verified 2026-07-08).
@@ -490,7 +493,7 @@ export function getEffortLevelDescription(level: AvailableEffortLevel): string {
     case 'high':
       return 'Comprehensive implementation with extensive testing and documentation'
     case 'max':
-      return 'Maximum capability with deepest reasoning (Opus 4.6 only)'
+      return 'Maximum capability with deepest reasoning on supported models'
     case 'xhigh':
       return 'Extra high reasoning effort for complex tasks on supported models'
   }
@@ -565,7 +568,10 @@ function getDefaultEffortForModelForOptionalContext(
   }
 
   const registeredProvider = inferCatalogProvider(model, context)
-  const registeredEntry = registeredProvider === 'meta'
+  const registeredEntry =
+    registeredProvider === 'meta' ||
+      registeredProvider === 'zai' ||
+      registeredProvider === 'zai-coding-plan'
     ? resolveRegisteredModelCatalogEntry({
         provider: registeredProvider,
         model,

@@ -214,7 +214,8 @@ describe("cost helpers", () => {
       if (
         provider === "meta" ||
         provider === "qwen" ||
-        provider === "qwen-token-plan"
+        provider === "qwen-token-plan" ||
+        provider === "zai-coding-plan"
       ) {
         continue;
       }
@@ -316,6 +317,42 @@ describe("cost helpers", () => {
       inputUsdPer1K: 0.00099,
       outputUsdPer1K: 0.00149,
     });
+  });
+
+  test("uses the official Z.ai list token rates", () => {
+    expect(DEFAULT_MODEL_COSTS["zai:glm-5.3"]).toMatchObject({
+      inputUsdPer1K: 0.0014,
+      outputUsdPer1K: 0.0044,
+      cachedInputUsdPer1K: 0.00026,
+      cachedInputIncludedInInputTokens: true,
+    });
+    expect(DEFAULT_MODEL_COSTS["zai:glm-5.3-flash"]).toMatchObject({
+      inputUsdPer1K: 0.00015,
+      outputUsdPer1K: 0.0005,
+      cachedInputUsdPer1K: 0.00003,
+      cachedInputIncludedInInputTokens: true,
+    });
+    expect(DEFAULT_MODEL_COSTS["zai-coding-plan:glm-5.3"])
+      .toBeUndefined();
+    const codingPlan = new CostSidecar({
+      defaultProvider: "zai-coding-plan",
+      defaultModel: "glm-5.3",
+    });
+    codingPlan.onEvent({
+      id: "coding-plan-usage",
+      seq: 1,
+      msg: {
+        type: "token_count",
+        payload: {
+          promptTokens: 1_000,
+          completionTokens: 100,
+          totalTokens: 1_100,
+        },
+      },
+    });
+    expect(codingPlan.hasUnknownModelCost()).toBe(true);
+    expect(codingPlan.getUnknownCostModels())
+      .toContain("zai-coding-plan:glm-5.3");
   });
 
   test("current DeepSeek and Mistral defaults use their official cached-token tiers", () => {

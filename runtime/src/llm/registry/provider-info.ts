@@ -474,6 +474,22 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     baseURLEnvVars: ["CEREBRAS_BASE_URL"],
     onboarding: onboardingInfo(99, "api-key"),
   }),
+  zai: providerDefinition({
+    name: "Z.AI",
+    defaultModel: "glm-5.3",
+    baseURL: "https://api.z.ai/api/paas/v4",
+    credentials: apiKeyCredentials(["ZAI_API_KEY"]),
+    baseURLEnvVars: ["ZAI_BASE_URL"],
+    onboarding: onboardingInfo(99, "api-key"),
+  }),
+  "zai-coding-plan": providerDefinition({
+    name: "Z.AI Coding Plan",
+    defaultModel: "glm-5.3",
+    baseURL: "https://api.z.ai/api/coding/paas/v4",
+    credentials: apiKeyCredentials(["ZAI_CODING_PLAN_API_KEY"]),
+    baseURLEnvVars: ["ZAI_CODING_PLAN_BASE_URL"],
+    onboarding: onboardingInfo(100, "api-key"),
+  }),
   gemini: providerDefinition({
     name: "Gemini",
     // gemini-2.5-pro is retired for new keys (404 pointing at the 3.x
@@ -673,6 +689,8 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   qwen: mergeDerivedProviderModels("qwen"),
   "qwen-token-plan": mergeDerivedProviderModels("qwen-token-plan"),
   cerebras: mergeDerivedProviderModels("cerebras"),
+  zai: mergeDerivedProviderModels("zai"),
+  "zai-coding-plan": mergeDerivedProviderModels("zai-coding-plan"),
   gemini: Object.freeze([
     "gemini-3.1-pro-preview",
     "gemini-3.7-flash",

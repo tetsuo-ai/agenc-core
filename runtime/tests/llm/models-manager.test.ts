@@ -40,6 +40,71 @@ describe("StaticModelsManager", () => {
     ]);
   });
 
+  it("uses curated Z.ai metadata without probing a custom base URL", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "zai",
+        model: "glm-5.3",
+        providers: {
+          zai: {
+            default_model: "glm-5.3",
+            base_url: "https://zai-proxy.invalid/api/paas/v4",
+          },
+        },
+      }),
+      fallbackProvider: "zai",
+      metadata: {
+        fetchImpl,
+        env: { ZAI_BASE_URL: "https://zai-proxy.invalid/api/paas/v4" },
+      },
+    });
+
+    const info = await manager.getModelInfo("glm-5.3");
+
+    expect(info).toMatchObject({
+      contextWindow: 1_000_000,
+      maxOutputTokens: 131_072,
+      maxOutputTokensUpperLimit: 131_072,
+      usedFallbackModelMetadata: false,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("uses curated Coding Plan metadata without probing its base URL", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "zai-coding-plan",
+        model: "glm-5.3",
+        providers: {
+          "zai-coding-plan": {
+            default_model: "glm-5.3",
+            base_url: "https://coding-proxy.invalid/api/coding/paas/v4",
+          },
+        },
+      }),
+      fallbackProvider: "zai-coding-plan",
+      metadata: {
+        fetchImpl,
+        env: {
+          ZAI_CODING_PLAN_BASE_URL:
+            "https://coding-proxy.invalid/api/coding/paas/v4",
+        },
+      },
+    });
+
+    expect((await manager.listModels()).map((entry) => entry.slug))
+      .toEqual(expect.arrayContaining(["glm-5.3", "glm-5.3-flash"]));
+    expect(await manager.getModelInfo("glm-5.3")).toMatchObject({
+      contextWindow: 1_000_000,
+      maxOutputTokens: 131_072,
+      maxOutputTokensUpperLimit: 131_072,
+      usedFallbackModelMetadata: false,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("lists and resolves registered bundled model catalog entries", async () => {
     const manager = new StaticModelsManager({
       config: defaultConfig(),

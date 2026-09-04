@@ -18,6 +18,7 @@ vi.mock("../../src/utils/effort.js", async (importOriginal) => {
 
 const GROK_4_6_LEVELS = ["low", "medium", "high", "xhigh"] as const;
 const GROK_4_5_LEVELS = ["low", "medium", "high"] as const;
+const ZAI_GLM_53_LEVELS = ["low", "high", "max"] as const;
 
 describe("resolveSessionReasoningEffort", () => {
   beforeEach(() => {
@@ -69,6 +70,20 @@ describe("resolveSessionReasoningEffort", () => {
     expect(resolveSessionReasoningEffort("xhigh", GROK_4_5_LEVELS)).toBe("high");
     expect(resolveSessionReasoningEffort("max", GROK_4_5_LEVELS)).toBe("high");
     expect(resolveSessionReasoningEffort("high", GROK_4_5_LEVELS)).toBe("high");
+  });
+
+  test("preserves Z.ai's literal max effort instead of translating it to xhigh", () => {
+    settingsEffort.current = "max";
+    expect(resolveSessionReasoningEffort(undefined, ZAI_GLM_53_LEVELS)).toBe(
+      "max",
+    );
+    expect(resolveSessionReasoningEffort("max", ZAI_GLM_53_LEVELS)).toBe(
+      "max",
+    );
+    // A session snapshot may carry the historical persisted xhigh spelling.
+    expect(resolveSessionReasoningEffort("xhigh", ZAI_GLM_53_LEVELS)).toBe(
+      "max",
+    );
   });
 });
 

@@ -51,6 +51,10 @@ import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { MetaProvider } from "./providers/meta/index.js";
 import { CerebrasProvider } from "./providers/cerebras/index.js";
 import {
+  ZaiCodingPlanProvider,
+  ZaiProvider,
+} from "./providers/zai/index.js";
+import {
   QwenProvider,
   QwenTokenPlanProvider,
 } from "./providers/qwen/index.js";
@@ -1320,6 +1324,8 @@ function buildOpenAICompatibleProvider(
     | "deepseek"
     | "meta"
     | "cerebras"
+    | "zai"
+    | "zai-coding-plan"
     | "qwen"
     | "qwen-token-plan"
     | "mistral"
@@ -1921,6 +1927,18 @@ export function createProvider(
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: CerebrasProvider,
+      });
+    case "zai":
+      return buildOpenAICompatibleProvider("zai", opts, {
+        apiKeyMode: "required",
+        useResponsesApi: false,
+        providerCtor: ZaiProvider,
+      });
+    case "zai-coding-plan":
+      return buildOpenAICompatibleProvider("zai-coding-plan", opts, {
+        apiKeyMode: "required",
+        useResponsesApi: false,
+        providerCtor: ZaiCodingPlanProvider,
       });
     case "qwen":
       return buildOpenAICompatibleProvider("qwen", opts, {

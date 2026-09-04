@@ -15,6 +15,10 @@ import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { MetaProvider } from "./providers/meta/index.js";
 import { CerebrasProvider } from "./providers/cerebras/index.js";
 import {
+  ZaiCodingPlanProvider,
+  ZaiProvider,
+} from "./providers/zai/index.js";
+import {
   QwenProvider,
   QwenTokenPlanProvider,
 } from "./providers/qwen/index.js";
@@ -831,6 +835,40 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
       }),
   },
   {
+    provider: "zai",
+    model: "glm-5.3",
+    apiKey: "zai-test",
+    env: { ZAI_API_KEY: undefined },
+    createHarness: (parityCase) =>
+      createFetchHarness({
+        factory: (fetchImpl) =>
+          new ZaiProvider({
+            apiKey: "zai-test",
+            model: "glm-5.3",
+            tools: parityCase.tools ? [...parityCase.tools] : [],
+            fetchImpl,
+          }),
+        payload: buildChatCompletionsPayload("glm-5.3", parityCase),
+      }),
+  },
+  {
+    provider: "zai-coding-plan",
+    model: "glm-5.3",
+    apiKey: "zai-coding-plan-test",
+    env: { ZAI_CODING_PLAN_API_KEY: undefined },
+    createHarness: (parityCase) =>
+      createFetchHarness({
+        factory: (fetchImpl) =>
+          new ZaiCodingPlanProvider({
+            apiKey: "zai-coding-plan-test",
+            model: "glm-5.3",
+            tools: parityCase.tools ? [...parityCase.tools] : [],
+            fetchImpl,
+          }),
+        payload: buildChatCompletionsPayload("glm-5.3", parityCase),
+      }),
+  },
+  {
     provider: "qwen",
     model: "qwen3.8-max",
     apiKey: "sk-ws-test",
@@ -1019,7 +1057,10 @@ describe("provider parity", () => {
         model: entry.model,
       });
       const modelInfo = await manager.getModelInfo(
-        entry.provider === "qwen" || entry.provider === "qwen-token-plan"
+        entry.provider === "qwen" ||
+          entry.provider === "qwen-token-plan" ||
+          entry.provider === "zai" ||
+          entry.provider === "zai-coding-plan"
           ? `${entry.provider}:${entry.model}`
           : entry.model,
       );

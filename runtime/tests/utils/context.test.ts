@@ -2,7 +2,9 @@ import { afterEach, beforeEach, expect, test } from 'bun:test'
 
 import {
   getContextWindowForModel,
+  getContextWindowForModelForContext,
   getModelMaxOutputTokens,
+  getModelMaxOutputTokensForContext,
 } from '../../src/utils/context.ts'
 import { runWithStartupProviderSelection } from '../../src/utils/model/providers.ts'
 
@@ -272,4 +274,41 @@ providerTest('lowercase GLM aliases keep conservative output caps', () => {
     default: 16_384,
     upperLimit: 16_384,
   })
+})
+
+providerTest('native Z.ai GLM-5.3 models use their catalog limits', () => {
+  const context = {
+    provider: 'zai',
+    environment: {},
+  }
+  for (const model of ['glm-5.3', 'glm-5.3-flash']) {
+    expect(getContextWindowForModelForContext(model, context)).toBe(1_000_000)
+    expect(getModelMaxOutputTokensForContext(model, context)).toEqual({
+      default: 131_072,
+      upperLimit: 131_072,
+    })
+  }
+})
+
+providerTest('native Z.AI Coding Plan uses its own catalog limits', () => {
+  const context = {
+    provider: 'zai-coding-plan',
+    environment: {},
+  }
+  for (const model of ['glm-5.3', 'glm-5.3-flash']) {
+    expect(getContextWindowForModelForContext(model, context)).toBe(1_000_000)
+    expect(getModelMaxOutputTokensForContext(model, context)).toEqual({
+      default: 131_072,
+      upperLimit: 131_072,
+    })
+  }
+})
+
+providerTest('native Z.ai respects the administrative 1M context disable switch', () => {
+  const context = {
+    provider: 'zai',
+    environment: { AGENC_DISABLE_1M_CONTEXT: '1' },
+  }
+
+  expect(getContextWindowForModelForContext('glm-5.3', context)).toBe(200_000)
 })

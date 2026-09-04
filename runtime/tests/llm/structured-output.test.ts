@@ -117,6 +117,116 @@ describe("structured-output provider capability helpers", () => {
     },
   );
 
+  test("uses JSON Schema object equality rather than serialized key order", () => {
+    expect(parseStructuredOutputValue(
+      { result: { b: 2, a: 1 } },
+      "ordered_enum",
+      {
+        type: "object",
+        properties: {
+          result: { enum: [{ a: 1, b: 2 }] },
+        },
+        required: ["result"],
+      },
+    ).parsed).toEqual({ result: { b: 2, a: 1 } });
+  });
+
+  test("isolates validators when independent schemas reuse the same $id", () => {
+    const first = {
+      $id: "https://schemas.agenc.test/shared-result",
+      type: "object",
+      properties: { first: { type: "string" } },
+      required: ["first"],
+    };
+    const second = {
+      $id: "https://schemas.agenc.test/shared-result",
+      type: "object",
+      properties: { second: { type: "integer", minimum: 1 } },
+      required: ["second"],
+    };
+
+    expect(parseStructuredOutputValue({ first: "ok" }, "first", first).parsed)
+      .toEqual({ first: "ok" });
+    expect(parseStructuredOutputValue({ second: 2 }, "second", second).parsed)
+      .toEqual({ second: 2 });
+  });
+
+  test("resolves an absolute recursive $ref to the isolated root $id", () => {
+    const schema = {
+      $id: "https://schemas.agenc.test/recursive-node",
+      type: "object",
+      properties: {
+        value: { type: "string" },
+        next: {
+          anyOf: [
+            { $ref: "https://schemas.agenc.test/recursive-node" },
+            { type: "null" },
+          ],
+        },
+      },
+      required: ["value", "next"],
+    };
+
+    expect(parseStructuredOutputValue({
+      value: "root",
+      next: { value: "child", next: null },
+    }, "recursive", schema).parsed).toEqual({
+      value: "root",
+      next: { value: "child", next: null },
+    });
+  });
+
+  test.each(["glm-5.3", "glm-5.3-flash"])(
+    "uses local-schema-validated json_object mode for Z.ai model %s",
+    (model) => {
+      expect(
+        resolveProviderStructuredOutputMode({
+          provider: "zai",
+          model,
+          api: "chat_completions",
+        }),
+      ).toBe("chat_json_object");
+    },
+  );
+
+  test("uses local-schema-validated json_object mode on Z.AI Coding Plan", () => {
+    expect(
+      resolveProviderStructuredOutputMode({
+        provider: "zai-coding-plan",
+        model: "glm-5.3",
+        api: "chat_completions",
+      }),
+    ).toBe("chat_json_object");
+  });
+
+  test.each([
+    [
+      "minimum",
+      { type: "object", properties: { count: { type: "number", minimum: 2 } } },
+      { count: 1 },
+    ],
+    [
+      "pattern",
+      { type: "object", properties: { code: { type: "string", pattern: "^[A-Z]+$" } } },
+      { code: "lowercase" },
+    ],
+    [
+      "$ref",
+      {
+        type: "object",
+        properties: { value: { $ref: "#/$defs/positive" } },
+        $defs: { positive: { type: "integer", minimum: 1 } },
+      },
+      { value: 0 },
+    ],
+  ] as const)(
+    "fully validates Z.AI json_object output keyword %s locally",
+    (_keyword, schema, value) => {
+      expect(() => parseStructuredOutputValue(value, "zai_result", schema))
+        .toThrow(/violated its JSON schema/i);
+    },
+  );
+
   test("enforces compatible strict JSON schema constraints recursively", () => {
     expect(enforceStrictStructuredOutputSchema(SCHEMA)).toEqual({
       type: "object",
@@ -161,7 +271,7 @@ describe("structured-output provider capability helpers", () => {
     });
   });
 
-  test("ignores array-shaped union schema branches while validating structured output", () => {
+  test("rejects malformed array-shaped union schema branches", () => {
     const schema = {
       type: "object",
       properties: {
@@ -175,7 +285,7 @@ describe("structured-output provider capability helpers", () => {
     );
     expect(() =>
       parseStructuredOutputValue({ answer: "ok" }, "answer", schema),
-    ).not.toThrow();
+    ).toThrow(/schema is invalid.*anyOf/i);
   });
 
   test("rejects array-shaped structured payloads as non-object results", () => {

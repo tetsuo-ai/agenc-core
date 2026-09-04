@@ -47,7 +47,11 @@ import {
 } from "../../wire/chat-completions.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../wire/capability-gating.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
-import { coerceUsage } from "../../wire/shared.js";
+import {
+  coerceUsage,
+  normalizeFinishReason,
+  serializeProviderToolArguments,
+} from "../../wire/shared.js";
 import { ThinkTagStreamFilter } from "../../wire/think-tags.js";
 import {
   buildOpenAIResponsesRequest,
@@ -174,6 +178,42 @@ function isOpenRouterBudgetLimitFailure(args: {
     lower.includes("monthly limit") ||
     (lower.includes("can only afford") && lower.includes("max_tokens"))
   );
+}
+
+function readNestedProviderCode(
+  value: unknown,
+  depth = 0,
+): string | undefined {
+  if (depth > 5 || value === null || value === undefined) return undefined;
+  if (typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  if (
+    (typeof record.code === "string" && record.code.trim().length > 0) ||
+    (typeof record.code === "number" && Number.isFinite(record.code))
+  ) {
+    return String(record.code).trim();
+  }
+  return readNestedProviderCode(record.error, depth + 1);
+}
+
+function isZaiProviderName(providerName: string): boolean {
+  return providerName === "zai" || providerName === "zai-coding-plan";
+}
+
+function isZaiInsufficientBalanceFailure(args: {
+  readonly providerName: string;
+  readonly body: unknown;
+}): boolean {
+  return isZaiProviderName(args.providerName) &&
+    readNestedProviderCode(args.body) === "1113";
+}
+
+function zaiInsufficientBalanceErrorMessage(): string {
+  return [
+    "Z.AI code 1113 reports insufficient balance or plan entitlement.",
+    "This is a billing/configuration error, not a transient rate limit.",
+    "Verify that zai Pay-As-You-Go or zai-coding-plan is selected with its matching endpoint and dedicated key.",
+  ].join(" ");
 }
 
 function openRouterBudgetLimitErrorMessage(): string {
@@ -337,6 +377,13 @@ function mapOpenAIHttpFailureToError(args: {
     return new LLMProviderError(
       args.providerName,
       openRouterBudgetLimitErrorMessage(),
+      args.status,
+    );
+  }
+  if (isZaiInsufficientBalanceFailure(args)) {
+    return new LLMProviderError(
+      args.providerName,
+      zaiInsufficientBalanceErrorMessage(),
       args.status,
     );
   }
@@ -1240,9 +1287,15 @@ export class OpenAIProvider implements LLMProvider {
     // Some local openai-compat servers (older Ollama versions, custom
     // proxies) reject unknown `stream_options` keys and tear down the
     // SSE stream — strip the field for those providers up-front.
+    const preparedRequest = this.prepareChatCompletionsRequest(requestOptions);
     const request = {
-      ...this.prepareChatCompletionsRequest(requestOptions),
+      ...preparedRequest,
       stream: true,
+      ...(streamCapabilityHints.streamsToolCalls === true &&
+      Array.isArray(preparedRequest.tools) &&
+      preparedRequest.tools.length > 0
+        ? { tool_stream: true }
+        : {}),
       ...(streamCapabilityHints.acceptsStreamUsage !== false
         ? { stream_options: { include_usage: true } }
         : {}),
@@ -1298,6 +1351,8 @@ export class OpenAIProvider implements LLMProvider {
       const thinkFilter = new ThinkTagStreamFilter();
       let model = requestModel;
       let finishReason: LLMResponse["finishReason"] = "stop";
+      let sawFinishReason = false;
+      const rawFinishReasons = new Set<string>();
       let usage: Record<string, unknown> = {};
       const toolCallAccumulator = new Map<
         number,
@@ -1416,32 +1471,66 @@ export class OpenAIProvider implements LLMProvider {
             if (typeof fn.name === "string" && fn.name.length > 0) {
               existing.name = fn.name;
             }
-            if (typeof fn.arguments === "string" && fn.arguments.length > 0) {
-              existing.arguments += fn.arguments;
+            if (fn.arguments !== undefined && fn.arguments !== null) {
+              const argumentDelta = serializeProviderToolArguments(
+                fn.arguments,
+              );
+              if (argumentDelta.length > 0) {
+                existing.arguments += argumentDelta;
+              }
             }
             toolCallAccumulator.set(index, existing);
           }
 
           if (typeof choice.finish_reason === "string") {
-            switch (choice.finish_reason) {
-              case "tool_calls":
-                finishReason = "tool_calls";
-                break;
-              case "length":
-                finishReason = "length";
-                break;
-              case "content_filter":
-                finishReason = "content_filter";
-                break;
-              case "error":
-                finishReason = "error";
-                break;
-              default:
-                finishReason = "stop";
-                break;
+            if (
+              streamCapabilityHints.allowedFinishReasons !== undefined &&
+              !streamCapabilityHints.allowedFinishReasons.has(
+                choice.finish_reason,
+              )
+            ) {
+              throw new LLMInvalidResponseError(
+                this.name,
+                toolCallAccumulator.size > 0
+                  ? `Streamed tool calls arrived without finish_reason=tool_calls; received unsupported finish_reason ${JSON.stringify(choice.finish_reason)}`
+                  : `Unsupported finish_reason ${JSON.stringify(choice.finish_reason)}`,
+              );
             }
+            sawFinishReason = true;
+            rawFinishReasons.add(choice.finish_reason);
+            if (
+              streamCapabilityHints
+                .rejectsContextWindowExceededFinishReason === true &&
+              choice.finish_reason === "model_context_window_exceeded"
+            ) {
+              throw new LLMContextWindowExceededError(
+                this.name,
+                "The model reported model_context_window_exceeded",
+              );
+            }
+            finishReason = normalizeFinishReason(choice.finish_reason);
           }
         }
+      }
+
+      if (
+        isZaiProviderName(this.name) &&
+        (!sawFinishReason ||
+          rawFinishReasons.size > 1 ||
+          (toolCallAccumulator.size > 0 &&
+            (finishReason === "stop" || finishReason === "tool_calls") &&
+            (rawFinishReasons.size !== 1 ||
+              !rawFinishReasons.has("tool_calls"))))
+      ) {
+        throw new LLMInvalidResponseError(
+          this.name,
+          rawFinishReasons.size > 1
+            ? "Stream emitted conflicting finish_reason values"
+            : toolCallAccumulator.size > 0 &&
+                (finishReason === "stop" || finishReason === "tool_calls")
+            ? "Streamed tool calls arrived without finish_reason=tool_calls"
+            : "Stream closed without an explicit finish_reason",
+        );
       }
 
       // The stream can end while the filter still holds an unresolved
@@ -1464,7 +1553,8 @@ export class OpenAIProvider implements LLMProvider {
         });
       }
 
-      const includeToolCalls = finishReason !== "length";
+      const includeToolCalls =
+        finishReason === "stop" || finishReason === "tool_calls";
       const toolCalls = includeToolCalls
         ? Array.from(toolCallAccumulator.values()).map((toolCall) =>
           validateProviderToolCallOrThrow(
@@ -1508,8 +1598,10 @@ export class OpenAIProvider implements LLMProvider {
                     }
                     : {}),
                 },
-                finish_reason:
-                  finishReason === "tool_calls"
+                finish_reason: isZaiProviderName(this.name) &&
+                    rawFinishReasons.size === 1
+                  ? rawFinishReasons.values().next().value
+                  : finishReason === "tool_calls"
                     ? "tool_calls"
                     : finishReason === "length"
                       ? "length"
@@ -1551,6 +1643,7 @@ export class OpenAIProvider implements LLMProvider {
 
   private async *readSseEvents(
     response: ProviderHttpStreamResponse,
+    onDone?: () => void,
   ): AsyncGenerator<OpenAISseEvent> {
     const decoder = new TextDecoder();
     let buffer = "";
@@ -1561,13 +1654,22 @@ export class OpenAIProvider implements LLMProvider {
 
       for (const frame of parsed.frames) {
         if (!frame.data || frame.data === "[DONE]") {
-          if (frame.data === "[DONE]") return;
+          if (frame.data === "[DONE]") {
+            onDone?.();
+            return;
+          }
           continue;
         }
         try {
           const data = JSON.parse(frame.data) as Record<string, unknown>;
           yield { event: frame.event, data };
-        } catch {
+        } catch (error) {
+          if (isZaiProviderName(this.name)) {
+            throw new LLMInvalidResponseError(
+              this.name,
+              `Malformed JSON in Z.AI SSE event: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
           continue;
         }
       }
@@ -1577,13 +1679,22 @@ export class OpenAIProvider implements LLMProvider {
     const parsed = parseSSEFrames(buffer, this.name);
     for (const frame of parsed.frames) {
       if (!frame.data || frame.data === "[DONE]") {
-        if (frame.data === "[DONE]") return;
+        if (frame.data === "[DONE]") {
+          onDone?.();
+          return;
+        }
         continue;
       }
       try {
         const data = JSON.parse(frame.data) as Record<string, unknown>;
         yield { event: frame.event, data };
-      } catch {
+      } catch (error) {
+        if (isZaiProviderName(this.name)) {
+          throw new LLMInvalidResponseError(
+            this.name,
+            `Malformed JSON in Z.AI SSE event: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
         continue;
       }
     }

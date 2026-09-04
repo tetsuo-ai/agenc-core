@@ -3,6 +3,8 @@ const ZAI_API_HOSTS = new Set([
 ])
 
 const ZAI_GLM_MODEL_IDS = new Set([
+  'GLM-5.3',
+  'GLM-5.3-Flash',
   'GLM-5.1',
   'GLM-5-Turbo',
   'GLM-5',

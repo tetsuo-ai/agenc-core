@@ -200,6 +200,23 @@ const COST_TIER_CEREBRAS_GEMMA_4_31B: Readonly<ModelCostEntry> = Object.freeze({
   outputUsdPer1K: 0.00149,
 });
 
+// Official Z.AI list prices retrieved 2026-09-04. GLM-5.3-Flash has a
+// temporary 50% launch discount; use the stable list rate so persisted budget
+// estimates do not understate cost after the promotion ends.
+// https://docs.z.ai/guides/overview/pricing
+const COST_TIER_ZAI_GLM_53: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.0014,
+  outputUsdPer1K: 0.0044,
+  cachedInputUsdPer1K: 0.00026,
+  cachedInputIncludedInInputTokens: true,
+});
+const COST_TIER_ZAI_GLM_53_FLASH: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.00015,
+  outputUsdPer1K: 0.0005,
+  cachedInputUsdPer1K: 0.00003,
+  cachedInputIncludedInInputTokens: true,
+});
+
 const COST_TIER_SONNET: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.003,
   outputUsdPer1K: 0.015,
@@ -418,6 +435,8 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "cerebras:gpt-oss-120b": COST_TIER_CEREBRAS_GPT_OSS_120B,
     "cerebras:qwen-3.8-27b": COST_TIER_CEREBRAS_QWEN_38_27B,
     "cerebras:gemma-4-31b": COST_TIER_CEREBRAS_GEMMA_4_31B,
+    "zai:glm-5.3": COST_TIER_ZAI_GLM_53,
+    "zai:glm-5.3-flash": COST_TIER_ZAI_GLM_53_FLASH,
     "gemini:gemini-2.5-pro": {
       inputUsdPer1K: 0.00125,
       outputUsdPer1K: 0.01,

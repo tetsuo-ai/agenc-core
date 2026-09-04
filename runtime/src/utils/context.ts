@@ -180,8 +180,14 @@ export function getContextWindowForModelForContext(
   // model context windows. When the model resolves to a catalog entry (e.g.
   // grok-* and registered openai models), use that value so the TUI resolver
   // agrees with the grok adapter path (kills the 2M-vs-1M grok-4.3 mismatch).
-  const catalogContextWindow = resolveCatalogContextWindow(model)
+  const catalogContextWindow = resolveCatalogContextWindow(model, provider)
   if (catalogContextWindow !== undefined) {
+    if (
+      catalogContextWindow > MODEL_CONTEXT_WINDOW_DEFAULT &&
+      is1mContextDisabledIn(environment)
+    ) {
+      return MODEL_CONTEXT_WINDOW_DEFAULT
+    }
     return catalogContextWindow
   }
 
@@ -231,12 +237,20 @@ export function getContextWindowForModelForContext(
  * registry migration covers, and limiting the lookup keeps openai/anthropic
  * TUI resolution behavior unchanged for models still resolved elsewhere.
  */
-function resolveCatalogContextWindow(model: string): number | undefined {
-  const normalized = model.trim().toLowerCase()
-  if (!normalized.startsWith('grok-')) {
+function resolveCatalogContextWindow(
+  model: string,
+  provider: string,
+): number | undefined {
+  const normalizedProvider = provider.trim().toLowerCase()
+  if (
+    normalizedProvider !== 'grok' &&
+    normalizedProvider !== 'zai' &&
+    normalizedProvider !== 'zai-coding-plan'
+  ) {
     return undefined
   }
-  return resolveModelCatalogMetadata({ provider: 'grok', model })?.contextWindow
+  return resolveModelCatalogMetadata({ provider: normalizedProvider, model })
+    ?.contextWindow
 }
 
 /**
@@ -298,6 +312,21 @@ export function getModelMaxOutputTokensForContext(
       defaultTokens = antModel.defaultMaxTokens ?? MAX_OUTPUT_TOKENS_DEFAULT
       upperLimit = antModel.upperMaxTokensLimit ?? MAX_OUTPUT_TOKENS_UPPER_LIMIT
       return { default: defaultTokens, upperLimit }
+    }
+  }
+
+  const normalizedProvider = provider.trim().toLowerCase()
+  if (
+    normalizedProvider === 'zai' ||
+    normalizedProvider === 'zai-coding-plan'
+  ) {
+    const catalog = resolveModelCatalogMetadata({ provider: normalizedProvider, model })
+    if (catalog?.maxOutputTokens !== undefined) {
+      return {
+        default: catalog.maxOutputTokens,
+        upperLimit:
+          catalog.maxOutputTokensUpperLimit ?? catalog.maxOutputTokens,
+      }
     }
   }
 

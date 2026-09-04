@@ -93,7 +93,7 @@ the Grok 4.6 default and capability change.
 they run only through the Grok Build CLI ACP path. See
 [grok-oauth.md](../grok-oauth.md#composer-models-acp).
 
-## Built-in providers (20)
+## Built-in providers (22)
 
 | Slug | Display name | Default model | Default base URL | Ordered credential env aliases | Ordered endpoint env aliases | Onboarding access |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -110,6 +110,8 @@ they run only through the Grok Build CLI ACP path. See
 | `qwen` | QwenCloud Pay-As-You-Go | `qwen3.8-max` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY`, `QWEN_API_KEY` | `DASHSCOPE_BASE_URL`, `QWEN_BASE_URL` | `api-key` |
 | `qwen-token-plan` | QwenCloud Token Plan | `qwen3.8-max` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | `QWEN_TOKEN_PLAN_API_KEY`, `DASHSCOPE_TOKEN_PLAN_API_KEY` | `QWEN_TOKEN_PLAN_BASE_URL`, `DASHSCOPE_TOKEN_PLAN_BASE_URL` | `api-key` |
 | `cerebras` | Cerebras | `gpt-oss-120b` | `https://api.cerebras.ai/v1` | `CEREBRAS_API_KEY` | `CEREBRAS_BASE_URL` | `api-key` |
+| `zai` | Z.AI | `glm-5.3` | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` | `ZAI_BASE_URL` | `api-key` |
+| `zai-coding-plan` | Z.AI Coding Plan | `glm-5.3` | `https://api.z.ai/api/coding/paas/v4` | `ZAI_CODING_PLAN_API_KEY` | `ZAI_CODING_PLAN_BASE_URL` | `api-key` |
 | `gemini` | Gemini | `gemini-3.1-pro-preview` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `GEMINI_BASE_URL` | `api-key` |
 | `mistral` | Mistral | `mistral-medium-latest` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | `MISTRAL_BASE_URL` | `api-key` |
 | `nvidia-nim` | NVIDIA NIM | `nvidia/llama-3.1-nemotron-70b-instruct` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | `NVIDIA_BASE_URL` | `api-key` |
@@ -269,6 +271,71 @@ deployment-specific. Sources: [public model catalog](https://inference-docs.cere
 [structured outputs](https://inference-docs.cerebras.ai/capabilities/structured-outputs),
 and [service tiers](https://inference-docs.cerebras.ai/capabilities/service-tiers).
 
+Z.AI Pay-As-You-Go uses `ZAI_API_KEY` with the OpenAI-compatible
+`https://api.z.ai/api/paas/v4/chat/completions` endpoint. The separate
+`zai-coding-plan` provider uses `ZAI_CODING_PLAN_API_KEY` with
+`https://api.z.ai/api/coding/paas/v4/chat/completions`. `ZAI_BASE_URL` and
+`ZAI_CODING_PLAN_BASE_URL` override only their matching route. Credentials and
+endpoints never cross between the two billing modes. Both curated chat
+catalogs are intentionally fixed rather than derived from `/models`:
+
+| Model | Context | Max output | Input / cached input / output per 1M tokens | Image input | Reasoning effort (default) |
+| --- | ---: | ---: | ---: | --- | --- |
+| `glm-5.3` | 1,000,000 | 131,072 | $1.40 / $0.26 / $4.40 | no | `low`, `high`, `max` (`max`) |
+| `glm-5.3-flash` | 1,000,000 | 131,072 | $0.15 / $0.03 / $0.50 | yes | `low`, `high`, `max` (`max`) |
+
+Both models are documented for Pay-As-You-Go and Coding Plan and use
+always-enabled thinking. Coding Plan access is subscription-based, so AgenC
+does not apply Pay-As-You-Go token prices to its cost accounting. AgenC sends
+the provider's nested `thinking` object with `clear_thinking=true` for ordinary
+turns. It switches that field to `false` only for a complete, immediately
+adjacent tool/result continuation from the exact same provider and model, and
+then replays every reasoning block in that intact multi-round chain in its
+original order. Compacted, incomplete, or older reasoning is cleared as a
+unit and remains outside the visible answer. Z.AI receives the
+full normal AgenC tool catalog up to its documented
+128-function limit. If a request would exceed that limit, AgenC fails before
+HTTP with an actionable error instead of silently dropping tools.
+`tool_choice` is normalized to `auto`, parallel-tool and undocumented
+stream-usage controls are omitted, streamed tool arguments use `tool_stream`,
+and `max_tokens` is the output field. Tool-call arguments may arrive as either
+a JSON string or an object; both forms are normalized before dispatch. JSON
+structured output uses Z.AI's `json_object` response format, includes the
+requested schema as a system constraint, and validates the result locally with
+full JSON Schema semantics. Structured output remains available through
+function-tool loops: intermediate `tool_calls` turns skip final-output parsing,
+then the terminal `stop` answer is schema-validated. The Z.AI-specific
+`sensitive`, `network_error`, and
+`model_context_window_exceeded` finish reasons map to AgenC's content-filter,
+error, and context-overflow states. Code `1113` is surfaced as a non-retryable
+billing/endpoint configuration error rather than a transient rate limit.
+Streamed tool calls require an explicit `finish_reason=tool_calls`; malformed
+or conflicting terminal frames fail closed. Only `glm-5.3-flash` admits image history; tool-result
+images are relayed as a user image for Flash and stripped for the text-only
+model. Flash validates inline input as JPEG/PNG under 5 MiB and no larger than
+6000x6000; unsupported tool-result images are omitted without losing their
+text result.
+
+`ZAI_API_KEY` also enables the provider-independent `ImagineImage` tool. A
+Z.AI Pay-As-You-Go session prefers its native synchronous
+`/images/generations` route over unrelated media credentials; another
+reasoning provider can use it only as an explicitly configured, independent
+media backend. The default image model is `glm-image`; the official
+`cogview-4-250304` model is also accepted. The tool sends one image per
+request and reserves the official $0.015 / $0.01 per-image cost respectively.
+It validates the documented `hd` / `standard` quality and size choices,
+downloads the returned temporary URL through a 20 MiB limit, and revalidates
+every HTTPS redirect against the Z.AI image-host allowlist. Image models are
+rejected by the chat provider before network dispatch. Coding Plan credentials
+never authorize this general image route: a `zai-coding-plan` session needs a
+separate `ZAI_API_KEY` (or another independent media backend) to expose
+`ImagineImage`. Sources:
+[GLM-5.3](https://docs.z.ai/guides/llm/glm-5.3),
+[GLM-5.3 Flash](https://docs.z.ai/guides/vlm/glm-5.3-flash),
+[Chat Completions](https://docs.z.ai/api-reference/llm/chat-completion),
+[Generate Image](https://docs.z.ai/api-reference/image/generate-image), and
+[pricing](https://docs.z.ai/guides/overview/pricing).
+
 ## Local context windows
 
 How AgenC learns the token budget for a local or OpenAI-compatible model.
@@ -321,6 +388,12 @@ Live metadata providers: `grok`, `openai`, `ollama`, `lmstudio`,
 `qwen-token-plan`, and `cerebras`. Hosted providers
 are probed only when `providers.<slug>.base_url` or that provider's endpoint
 env is set.
+
+Z.AI and Z.AI Coding Plan are deliberately not live-metadata providers: their curated GLM catalogs
+supplies context and output limits even with a custom base URL. Provider health
+checks still authenticate with `GET {base}/models`; a rejected or expired key
+therefore does not appear usable, but that response never overrides the
+curated limits.
 
 ### Local probes (recorded against live servers)
 
@@ -503,6 +576,7 @@ Reasoning models disagree about where chain-of-thought goes.
 | Streaming `delta.reasoning_content` | Emits hidden thinking events and stays out of visible assistant text. |
 | Non-streaming `message.reasoning_content` | Becomes visible assistant content only when `message.content` is absent, null, or otherwise not text/content blocks. A string `content`, including an empty string, takes precedence. |
 | Cerebras `delta.reasoning` / `message.reasoning` | Emits/stores hidden thinking separately from `content`; opaque state is replayed as `reasoning` only to the exact same Cerebras model. |
+| Z.AI `delta.reasoning_content` / `message.reasoning_content` | Emits/stores hidden thinking separately from `content`; all blocks are replayed in order only for a complete, immediately adjacent multi-round tool chain on the exact same Z.AI model. Other turns clear the whole stale chain. |
 | Leading `<think>...</think>` or `◁think▷...◁/think▷` in `content` | First leading block (whitespace before the opener allowed) moves to thinking. Text after the closer is the answer. |
 | Literal `<think>` later in the answer | Left visible. Only a marker that opens at the start of the assistant message starts a block. |
 | Opener with no closer | Remainder is thinking. The generation died mid-thought; it is not an answer. |
@@ -523,11 +597,11 @@ rejects or silently ignores. An undefined `acceptsX` flag still means
 
 | Field | Who gets it |
 | --- | --- |
-| `reasoning_effort` | OpenAI reasoning-family slugs (`gpt-5`, `o1`, `o3`, `o4`, `codex`, `chatgpt-5`). Grok 4.3 / 4.5 / 4.6, `grok-4-20-multi-agent` / `grok-4.20-multi-agent`, and `grok-build-latest`. Meta Muse Spark models for `minimal`, `low`, `medium`, `high`, and `xhigh` only. Cerebras `gpt-oss-120b` for `low`, `medium`, `high`; Cerebras `qwen-3.8-27b` and `gemma-4-31b` for `none`, `low`, `medium`, `high`. NVIDIA NIM families below, and only values in that family's enum. Everyone else: stripped. `/effort` on a local model is a no-op on the wire. |
-| `tool_choice` | Meta accepts only `auto`. `required` and named choices are normalized to `auto`; `none` omits both the tools and choice fields. Cerebras omits tool-choice/parallel controls whenever no tool definitions are attached, as required by API v2. Other compatible providers keep the requested value. |
-| `stop` | Meta rejects stop sequences, so its adapter strips them. Other compatible providers keep caller-supplied sequences. |
+| `reasoning_effort` | OpenAI reasoning-family slugs (`gpt-5`, `o1`, `o3`, `o4`, `codex`, `chatgpt-5`). Grok 4.3 / 4.5 / 4.6, `grok-4-20-multi-agent` / `grok-4.20-multi-agent`, and `grok-build-latest`. Meta Muse Spark models for `minimal`, `low`, `medium`, `high`, and `xhigh` only. Z.AI GLM-5.3 models for `low`, `high`, and `max` only. Cerebras `gpt-oss-120b` for `low`, `medium`, `high`; Cerebras `qwen-3.8-27b` and `gemma-4-31b` for `none`, `low`, `medium`, `high`. NVIDIA NIM families below, and only values in that family's enum. Everyone else: stripped. `/effort` on a local model is a no-op on the wire. |
+| `tool_choice` | Meta and Z.AI accept only `auto`. `required` and named choices are normalized to `auto`; `none` omits both the tools and choice fields. A Z.AI request over 128 function definitions fails locally rather than dropping tools. Cerebras omits tool-choice/parallel controls whenever no tool definitions are attached, as required by API v2. Other compatible providers keep the requested value. |
+| `stop` | Meta rejects stop sequences, so its adapter strips them. Z.AI receives only the first sequence from a caller list. Other compatible providers keep caller-supplied sequences. |
 | `service_tier` | `openai` and `azure-openai`; explicit Cerebras pass-through remains for configured dedicated endpoints, while its shared catalog advertises no selectable tier |
-| `stream_options.include_usage` | Default **on**. `STREAM_USAGE_INCOMPATIBLE_PROVIDERS` is currently empty, and no operator or per-instance override is wired. |
+| `stream_options.include_usage` | Default **on**. Z.AI omits this undocumented control. `STREAM_USAGE_INCOMPATIBLE_PROVIDERS` is otherwise empty, and no operator or per-instance override is wired. |
 
 NVIDIA NIM `reasoning_effort` enums (hosted schemas, 2026-08):
 
@@ -553,7 +627,7 @@ For `lmstudio` and `openai-compatible` only
   value. Non-local OpenAI chat-completions requests use
   `max_completion_tokens`. The runtime default remains
   `DEFAULT_MAX_OUTPUT_TOKENS` (**32_000**); Meta, QwenCloud, and Cerebras also
-  use `max_completion_tokens`. This ceiling applies only to the two
+  use `max_completion_tokens`, while Z.AI explicitly uses `max_tokens`. This ceiling applies only to the two
   grammar-constrained slugs.
 - **`/no_think` system suffix** when the model slug matches `qwen3` /
   `qwen-3`. Qwen3 hybrid thinking honors that line. LM Studio ignores

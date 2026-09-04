@@ -91,6 +91,276 @@ describe("ImagineImage tool", () => {
     }
   });
 
+  it("is catalog-registered with an isolated Z.ai image credential", () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => null,
+      sessionProvider: "zai",
+      env: { ZAI_API_KEY: "zai-image-key" },
+    });
+    expect(tools.some((tool) => tool.name === "ImagineImage")).toBe(true);
+  });
+
+  it("keeps a deferred ImagineImage across an OpenAI-to-Z.AI provider switch", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-zai-switch-"));
+    let session: Session | null = null;
+    const generatedUrl = "https://cdn.bigmodel.cn/generated/switched.png";
+    const fetchImpl = vi.fn(async (url: string | URL | Request) =>
+      String(url) === generatedUrl
+        ? new Response(Buffer.from("switched-png"), {
+            status: 200,
+            headers: { "content-type": "image/png" },
+          })
+        : new Response(JSON.stringify({ data: [{ url: generatedUrl }] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }));
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", fetchImpl);
+    try {
+      const tool = createModelFacingTools({
+        workspaceRoot: root,
+        agencHome: join(root, ".agenc-test-home"),
+        getSession: () => session,
+        sessionProvider: "openai",
+        env: {},
+      }).find((candidate) => candidate.name === "ImagineImage");
+      if (tool === undefined) throw new Error("ImagineImage was not registered");
+      expect(tool.metadata?.deferred).toBe(true);
+
+      const provider = createProvider("zai", {
+        apiKey: "late-payg-key",
+        model: "glm-5.3",
+      });
+      session = ({ services: { provider } }) as unknown as Session;
+      const result = await tool.execute({ prompt: "switched session image" });
+
+      expect(result.isError).toBeUndefined();
+      const [, init] = fetchImpl.mock.calls[0] ?? [];
+      expect((init?.headers as Record<string, string>).authorization)
+        .toBe("Bearer late-payg-key");
+    } finally {
+      vi.stubGlobal("fetch", originalFetch);
+    }
+  });
+
+  it("keeps Coding Plan image discovery deferred without treating its key as authority", async () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => null,
+      sessionProvider: "zai",
+      env: {
+        ZAI_API_KEY: "zai-coding-plan-key",
+        ZAI_BASE_URL: "https://api.z.ai/api/coding/paas/v4",
+      },
+    });
+    const tool = tools.find((candidate) => candidate.name === "ImagineImage");
+    if (tool === undefined) throw new Error("ImagineImage was not registered");
+    expect(tool.metadata?.deferred).toBe(true);
+    await expect(tool.execute({ prompt: "must not use coding key" }))
+      .resolves.toMatchObject({ isError: true });
+  });
+
+  it("never treats a native Coding Plan credential as image authority", () => {
+    const provider = createProvider("zai-coding-plan", {
+      apiKey: "coding-plan-key-must-not-be-media",
+      model: "glm-5.3",
+    });
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => ({ services: { provider } }) as unknown as Session,
+      sessionProvider: "zai-coding-plan",
+      env: {
+        ZAI_CODING_PLAN_API_KEY: "coding-plan-key-must-not-be-media",
+      },
+    });
+    expect(tools.some((tool) => tool.name === "ImagineImage")).toBe(false);
+  });
+
+  it("uses only an independent PAYG key for images in a Coding Plan session", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-zai-plan-isolation-"));
+    const provider = createProvider("zai-coding-plan", {
+      apiKey: "coding-plan-key-must-not-leak",
+      model: "glm-5.3",
+    });
+    const generatedUrl = "https://cdn.bigmodel.cn/generated/isolated.png";
+    const fetchImpl = vi.fn(async (url: string | URL | Request) =>
+      String(url) === generatedUrl
+        ? new Response(Buffer.from("isolated-png"), {
+            status: 200,
+            headers: { "content-type": "image/png" },
+          })
+        : new Response(JSON.stringify({ data: [{ url: generatedUrl }] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }));
+    const tool = createImagineImageTool({
+      workspaceRoot: root,
+      home: testHome(root),
+      getSession: () => ({ services: { provider } }) as unknown as Session,
+      env: {
+        ZAI_CODING_PLAN_API_KEY: "coding-plan-key-must-not-leak",
+        ZAI_API_KEY: "payg-media-key",
+      },
+      fetchImpl,
+    });
+
+    const result = await tool.execute({ prompt: "isolated image" });
+
+    expect(result.isError).toBeUndefined();
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const authorization = (init?.headers as Record<string, string>)
+      .authorization;
+    expect(authorization).toBe("Bearer payg-media-key");
+    expect(authorization).not.toContain("coding-plan-key-must-not-leak");
+  });
+
+  it("keeps a universal schema until a late-bound Z.AI session exists", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-zai-late-session-"));
+    let session: Session | null = null;
+    const generatedUrl = "https://cdn.bigmodel.cn/generated/late.png";
+    const fetchImpl = vi.fn(async (url: string | URL | Request) =>
+      String(url) === generatedUrl
+        ? new Response(Buffer.from("late-png"), {
+            status: 200,
+            headers: { "content-type": "image/png" },
+          })
+        : new Response(JSON.stringify({ data: [{ url: generatedUrl }] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }));
+    const tool = createImagineImageTool({
+      workspaceRoot: root,
+      home: testHome(root),
+      getSession: () => session,
+      env: {},
+      fetchImpl,
+    });
+    const properties = tool.inputSchema.properties as Record<string, unknown>;
+    expect(Object.keys(properties)).toEqual([
+      "prompt",
+      "model",
+      "n",
+      "aspect_ratio",
+      "resolution",
+      "quality",
+    ]);
+
+    const provider = createProvider("zai", {
+      apiKey: "late-payg-key",
+      model: "glm-5.3",
+    });
+    session = ({ services: { provider } }) as unknown as Session;
+    const result = await tool.execute({
+      prompt: "late session image",
+      quality: "standard",
+    });
+
+    expect(result.isError).toBeUndefined();
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    expect((init?.headers as Record<string, string>).authorization)
+      .toBe("Bearer late-payg-key");
+  });
+
+  it("advertises a Z.ai-specific schema without unsupported count or resolution", () => {
+    const provider = createProvider("zai", {
+      apiKey: "isolated-zai-key",
+      model: "glm-5.3",
+    });
+    const tool = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      agencHome: join(process.cwd(), ".agenc-test-home"),
+      getSession: () => ({ services: { provider } }) as unknown as Session,
+      sessionProvider: "zai",
+      env: {},
+    }).find((candidate) => candidate.name === "ImagineImage");
+    if (tool === undefined) throw new Error("ImagineImage was not registered");
+    const properties = tool.inputSchema.properties as Record<
+      string,
+      Record<string, unknown>
+    >;
+
+    expect(tool.description).toMatch(/exactly one image/u);
+    expect(Object.keys(properties)).toEqual([
+      "prompt",
+      "model",
+      "aspect_ratio",
+      "quality",
+    ]);
+    expect(properties.model?.enum).toEqual([
+      "glm-image",
+      "cogview-4-250304",
+    ]);
+    expect(properties.n).toBeUndefined();
+    expect(properties.resolution).toBeUndefined();
+    expect(properties.quality?.enum).toEqual(["hd", "standard"]);
+  });
+
+  it("keeps each non-Z.ai backend's supported controls in its schema", () => {
+    const metaProvider = createProvider("meta", {
+      apiKey: "meta-session-key-not-used-for-images",
+      model: "muse-spark-1.3",
+    });
+    const metaTool = createImagineImageTool({
+      workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
+      getSession: () =>
+        ({ services: { provider: metaProvider } }) as unknown as Session,
+      env: { MODEL_API_KEY: "isolated-meta-image-key" },
+    });
+    const metaProperties = metaTool.inputSchema.properties as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(metaProperties.model?.enum).toEqual(["muse-image-1.0"]);
+    expect(metaProperties.n).toMatchObject({
+      type: "integer",
+      minimum: 1,
+      maximum: 10,
+    });
+    expect(metaProperties.aspect_ratio).toBeDefined();
+    expect(metaProperties.resolution).toBeUndefined();
+    expect(metaProperties.quality).toBeUndefined();
+
+    const fetchImpl = vi.fn<typeof fetch>();
+    const qwenTool = createQwenImagineTool("qwen", fetchImpl);
+    const qwenProperties = qwenTool.inputSchema.properties as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(qwenProperties.n).toMatchObject({
+      type: "integer",
+      minimum: 1,
+      maximum: 6,
+    });
+    expect(qwenProperties.resolution?.enum).toEqual(["1k", "2k"]);
+    expect(qwenProperties.quality).toBeUndefined();
+
+    const xaiProvider = createProvider("grok", {
+      apiKey: "isolated-xai-key",
+      model: "grok-4.6",
+      baseURL: "https://api.x.ai/v1",
+    });
+    const xaiTool = createImagineImageTool({
+      workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
+      getSession: () =>
+        ({ services: { provider: xaiProvider } }) as unknown as Session,
+      env: {},
+    });
+    const xaiProperties = xaiTool.inputSchema.properties as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(xaiProperties.n).toMatchObject({
+      type: "integer",
+      minimum: 1,
+      maximum: 10,
+    });
+    expect(xaiProperties.resolution?.enum).toEqual(["1k", "2k"]);
+    expect(xaiProperties.quality).toBeUndefined();
+  });
+
   it("is catalog-registered for grok + direct xAI with BYOK or any credential probe", () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
@@ -119,7 +389,7 @@ describe("ImagineImage tool", () => {
     expect(tools.some((t) => t.name === "ImagineImage")).toBe(true);
   });
 
-  it("does not advertise an unusable non-direct xAI media backend", () => {
+  it("keeps an unusable non-direct xAI backend deferred and fail-closed", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => null,
@@ -129,7 +399,11 @@ describe("ImagineImage tool", () => {
       },
     });
 
-    expect(tools.some((t) => t.name === "ImagineImage")).toBe(false);
+    const tool = tools.find((candidate) => candidate.name === "ImagineImage");
+    if (tool === undefined) throw new Error("ImagineImage was not registered");
+    expect(tool.metadata?.deferred).toBe(true);
+    await expect(tool.execute({ prompt: "must not use proxy credential" }))
+      .resolves.toMatchObject({ isError: true });
   });
 
   it("uses independent xAI credentials for a Meta reasoning session", async () => {
@@ -222,6 +496,213 @@ describe("ImagineImage tool", () => {
       size: "1024x1536",
       n: 1,
     });
+  });
+
+  it("uses Z.ai GLM-Image synchronously with its own key and trusted URL", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-zai-native-"));
+    const provider = createProvider("zai", {
+      apiKey: "isolated-zai-key",
+      model: "glm-5.3",
+    });
+    const generatedUrl = "https://cdn.bigmodel.cn/generated/glm-image.png";
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      if (String(url) === generatedUrl) {
+        return new Response(Buffer.from("zai-png"), {
+          status: 200,
+          headers: { "content-type": "image/png" },
+        });
+      }
+      return new Response(JSON.stringify({ data: [{ url: generatedUrl }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const tool = createImagineImageTool({
+      workspaceRoot: root,
+      home: testHome(root),
+      getSession: () => ({ services: { provider } }) as unknown as Session,
+      env: {
+        ZAI_API_KEY: "isolated-zai-key",
+        XAI_API_KEY: "must-not-win-for-zai-session",
+      },
+      fetchImpl,
+    });
+
+    const result = await tool.execute({
+      prompt: "a precise scientific frog diagram",
+      aspect_ratio: "16:9",
+      quality: "standard",
+      n: 1,
+    });
+
+    expect(tool.admissionEstimate?.({ prompt: "one" }).maxCostUsd).toBe(0.015);
+    expect(
+      tool.admissionEstimate?.({
+        prompt: "one",
+        model: "cogview-4-250304",
+      }).maxCostUsd,
+    ).toBe(0.01);
+    expect(result.isError).toBeUndefined();
+    const parsed = JSON.parse(result.content) as {
+      backend: string;
+      model: string;
+      path: string;
+      n: number;
+    };
+    expect(parsed).toMatchObject({
+      backend: "zai",
+      model: "glm-image",
+      n: 1,
+    });
+    expect(parsed.path).toMatch(/\.png$/u);
+    expect(await readFile(parsed.path, "utf8")).toBe("zai-png");
+
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(url)).toBe(
+      "https://api.z.ai/api/paas/v4/images/generations",
+    );
+    expect((init?.headers as Record<string, string>).authorization).toBe(
+      "Bearer isolated-zai-key",
+    );
+    expect(JSON.parse(String(init?.body))).toEqual({
+      model: "glm-image",
+      prompt: "a precise scientific frog diagram",
+      size: "1728x960",
+      quality: "standard",
+    });
+  });
+
+  it("honors ZAI_BASE_URL without borrowing another provider session key", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-zai-fallback-"));
+    const provider = createProvider("openai", {
+      apiKey: "openai-key-must-not-leak",
+      model: "gpt-5",
+    });
+    const fetchImpl = vi.fn(async (url: string | URL | Request) =>
+      String(url).includes("/images/generations")
+        ? new Response(JSON.stringify({
+            data: [{ url: "https://sfile.chatglm.cn/generated/cogview.png" }],
+          }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          })
+        : new Response(Buffer.from("cogview-webp"), {
+            status: 200,
+            headers: { "content-type": "image/webp" },
+          }));
+    const tool = createImagineImageTool({
+      workspaceRoot: root,
+      home: testHome(root),
+      getSession: () => ({ services: { provider } }) as unknown as Session,
+      env: {
+        ZAI_API_KEY: "zai-only-media-key",
+        ZAI_BASE_URL: "https://zai-proxy.example/api/paas/v4/",
+      },
+      fetchImpl,
+    });
+
+    const result = await tool.execute({
+      prompt: "a safe fallback",
+      model: "cogview-4-250304",
+      aspect_ratio: "3:4",
+    });
+
+    expect(result.isError).toBeUndefined();
+    const parsed = JSON.parse(result.content) as { path: string };
+    expect(parsed.path).toMatch(/\.webp$/u);
+    expect(await readFile(parsed.path, "utf8")).toBe("cogview-webp");
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(url)).toBe(
+      "https://zai-proxy.example/api/paas/v4/images/generations",
+    );
+    const authorization = (init?.headers as Record<string, string>)
+      .authorization;
+    expect(authorization).toBe("Bearer zai-only-media-key");
+    expect(authorization).not.toContain("openai-key-must-not-leak");
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      model: "cogview-4-250304",
+      size: "864x1152",
+      quality: "standard",
+    });
+  });
+
+  it("rejects unsupported Z.ai image requests and untrusted result hosts", async () => {
+    const provider = createProvider("zai", {
+      apiKey: "isolated-zai-key",
+      model: "glm-5.3",
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        data: [{ url: "https://attacker.example/generated.png" }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const tool = createImagineImageTool({
+      workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
+      getSession: () => ({ services: { provider } }) as unknown as Session,
+      env: {},
+      fetchImpl,
+    });
+
+    const invalidModel = await tool.execute({
+      prompt: "must not send",
+      model: "grok-imagine-image",
+    });
+    expect(invalidModel.isError).toBe(true);
+    expect(invalidModel.content).toMatch(/glm-image.*cogview-4-250304/u);
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    const invalidCount = await tool.execute({ prompt: "must not send", n: 2 });
+    expect(invalidCount.isError).toBe(true);
+    expect(invalidCount.content).toMatch(/exactly one image/u);
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    const invalidResolution = await tool.execute({
+      prompt: "must not send",
+      resolution: "2k",
+    });
+    expect(invalidResolution.isError).toBe(true);
+    expect(invalidResolution.content).toMatch(/selected by aspect_ratio/u);
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    const untrusted = await tool.execute({ prompt: "host validation" });
+    expect(untrusted.isError).toBe(true);
+    expect(untrusted.content).toMatch(/not trusted for the zai backend/u);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed when Z.ai unexpectedly returns more than one image", async () => {
+    const provider = createProvider("zai", {
+      apiKey: "isolated-zai-key",
+      model: "glm-5.3",
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        data: [
+          { url: "https://cdn.bigmodel.cn/generated/first.png" },
+          { url: "https://cdn.bigmodel.cn/generated/second.png" },
+        ],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const tool = createImagineImageTool({
+      workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
+      getSession: () => ({ services: { provider } }) as unknown as Session,
+      env: {},
+      fetchImpl,
+    });
+
+    const result = await tool.execute({ prompt: "one image only" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/must return exactly one image/u);
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
   it("uses Qwen Image's synchronous PayGo endpoint and downloads immediately", async () => {

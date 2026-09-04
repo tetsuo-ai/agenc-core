@@ -90,6 +90,18 @@ const PROVIDER_CASES: ReadonlyArray<{
     apiKey: () => process.env.CEREBRAS_API_KEY,
   },
   {
+    provider: "zai",
+    model: process.env.AGENC_ZAI_INTEGRATION_MODEL ?? "glm-5.3",
+    enabled: RUN_REMOTE && Boolean(process.env.ZAI_API_KEY),
+    apiKey: () => process.env.ZAI_API_KEY,
+  },
+  {
+    provider: "zai-coding-plan",
+    model: process.env.AGENC_ZAI_CODING_PLAN_INTEGRATION_MODEL ?? "glm-5.3",
+    enabled: RUN_REMOTE && Boolean(process.env.ZAI_CODING_PLAN_API_KEY),
+    apiKey: () => process.env.ZAI_CODING_PLAN_API_KEY,
+  },
+  {
     provider: "gemini",
     model: process.env.AGENC_GEMINI_INTEGRATION_MODEL ?? "gemini-2.5-pro",
     enabled: RUN_REMOTE && Boolean(process.env.GEMINI_API_KEY),
@@ -121,7 +133,9 @@ describe("provider integration (env-gated)", () => {
           [{ role: "user", content: "Reply with OK." }],
           {
             timeoutMs: 60_000,
-            ...(testCase.provider === "cerebras"
+            ...(testCase.provider === "cerebras" ||
+                testCase.provider === "zai" ||
+                testCase.provider === "zai-coding-plan"
               ? { maxOutputTokens: 64, singleWireAttempt: true }
               : {}),
           },

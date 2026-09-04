@@ -12,6 +12,7 @@
  * @module
  */
 
+import { Ajv, type ValidateFunction } from "ajv";
 import type {
   LLMStructuredOutputRequest,
   LLMStructuredOutputResult,
@@ -23,9 +24,50 @@ import { resolveModelCapabilityHints } from "./registry/model-catalog.js";
 
 export const ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME = "agenc_structured_output";
 
+interface CompiledStructuredOutputValidator {
+  readonly ajv: Ajv;
+  readonly validator: ValidateFunction;
+}
+
+const structuredOutputValidatorCache = new WeakMap<
+  object,
+  CompiledStructuredOutputValidator
+>();
+
+function validateStructuredValueWithAjv(
+  value: unknown,
+  schema: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!schema) return undefined;
+  let compiled = structuredOutputValidatorCache.get(schema);
+  try {
+    if (compiled === undefined) {
+      // Each caller-owned schema gets an isolated AJV registry. This preserves
+      // absolute recursive self-refs through `$id` while allowing unrelated
+      // sessions to reuse that same `$id` without global registry collisions.
+      const ajv = new Ajv({
+        allErrors: true,
+        strict: false,
+        validateFormats: false,
+        logger: false,
+      });
+      compiled = { ajv, validator: ajv.compile(schema) };
+      structuredOutputValidatorCache.set(schema, compiled);
+    }
+  } catch (error) {
+    return `schema is invalid: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  if (compiled.validator(value)) return undefined;
+  return compiled.ajv.errorsText(compiled.validator.errors, {
+    dataVar: "$",
+    separator: "; ",
+  });
+}
+
 export type ProviderStructuredOutputMode =
   | "native_text_format"
   | "chat_response_format"
+  | "chat_json_object"
   | "anthropic_tool_use"
   | "unsupported";
 
@@ -122,6 +164,18 @@ export function resolveProviderStructuredOutputMode(input: {
     }
     return "chat_response_format";
   }
+  if (provider === "zai" || provider === "zai-coding-plan") {
+    if (
+      input.api !== "chat_completions" ||
+      resolveModelCapabilityHints({
+        provider,
+        model: input.model,
+      })?.supportsStructuredOutput !== true
+    ) {
+      return "unsupported";
+    }
+    return "chat_json_object";
+  }
   if (provider === "anthropic") {
     return supportsAnthropicStructuredOutputToolUse(input.model)
       ? "anthropic_tool_use"
@@ -153,128 +207,6 @@ export function supportsXaiReasoningEffortParam(
     /^grok-4[.-]20-multi-agent(?:$|[-_.])/.test(unqualified) ||
     unqualified === "grok-build-latest"
   );
-}
-
-function validateStructuredValue(
-  value: unknown,
-  schema: Record<string, unknown> | undefined,
-  path = "$",
-): string | undefined {
-  if (!schema) {
-    return undefined;
-  }
-  const schemaType = typeof schema.type === "string" ? schema.type : undefined;
-  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
-    const matched = schema.enum.some((entry) => JSON.stringify(entry) === JSON.stringify(value));
-    if (!matched) {
-      return `${path} must match one of the schema enum values`;
-    }
-  }
-  // gaphunt3 #8: validate union combinators; without this a schema node lacking a
-  // `type` keyword (anyOf/oneOf/allOf) was treated as unconstrained and silently passed.
-  const branchSchemas = (key: string): Array<Record<string, unknown>> =>
-    Array.isArray(schema[key])
-      ? (schema[key] as unknown[]).filter((entry): entry is Record<string, unknown> =>
-          isRecord(entry),
-        )
-      : [];
-  const anyOf = branchSchemas("anyOf");
-  if (anyOf.length > 0) {
-    const matched = anyOf.some(
-      (branch) => validateStructuredValue(value, branch, path) === undefined,
-    );
-    if (!matched) {
-      return `${path} must match at least one schema in anyOf`;
-    }
-  }
-  const oneOf = branchSchemas("oneOf");
-  if (oneOf.length > 0) {
-    const matchCount = oneOf.filter(
-      (branch) => validateStructuredValue(value, branch, path) === undefined,
-    ).length;
-    if (matchCount !== 1) {
-      return `${path} must match exactly one schema in oneOf`;
-    }
-  }
-  const allOf = branchSchemas("allOf");
-  for (const branch of allOf) {
-    const error = validateStructuredValue(value, branch, path);
-    if (error) {
-      return error;
-    }
-  }
-  if (!schemaType) {
-    return undefined;
-  }
-  switch (schemaType) {
-    case "object": {
-      if (!isRecord(value)) {
-        return `${path} must be an object`;
-      }
-      const properties = isRecord(schema.properties)
-        ? (schema.properties as Record<string, Record<string, unknown>>)
-        : {};
-      const required = Array.isArray(schema.required)
-        ? schema.required.filter((entry): entry is string => typeof entry === "string")
-        : [];
-      for (const key of required) {
-        if (!(key in value)) {
-          return `${path}.${key} is required`;
-        }
-      }
-      if (schema.additionalProperties === false) {
-        for (const key of Object.keys(value)) {
-          if (!(key in properties)) {
-            return `${path}.${key} is not allowed by the schema`;
-          }
-        }
-      }
-      for (const [key, propertySchema] of Object.entries(properties)) {
-        if (!(key in value)) {
-          continue;
-        }
-        const error = validateStructuredValue(value[key], propertySchema, `${path}.${key}`);
-        if (error) {
-          return error;
-        }
-      }
-      return undefined;
-    }
-    case "array": {
-      if (!Array.isArray(value)) {
-        return `${path} must be an array`;
-      }
-      const itemSchema = isRecord(schema.items)
-        ? (schema.items as Record<string, unknown>)
-        : undefined;
-      if (!itemSchema) {
-        return undefined;
-      }
-      for (let index = 0; index < value.length; index += 1) {
-        const error = validateStructuredValue(value[index], itemSchema, `${path}[${index}]`);
-        if (error) {
-          return error;
-        }
-      }
-      return undefined;
-    }
-    case "string":
-      return typeof value === "string" ? undefined : `${path} must be a string`;
-    case "number":
-      return typeof value === "number" && Number.isFinite(value)
-        ? undefined
-        : `${path} must be a finite number`;
-    case "integer":
-      return typeof value === "number" && Number.isInteger(value)
-        ? undefined
-        : `${path} must be an integer`;
-    case "boolean":
-      return typeof value === "boolean" ? undefined : `${path} must be a boolean`;
-    case "null":
-      return value === null ? undefined : `${path} must be null`;
-    default:
-      return undefined;
-  }
 }
 
 function cloneJsonSchemaValue(value: unknown): unknown {
@@ -413,10 +345,13 @@ export function parseStructuredOutputValue(
       `${schemaName ?? "structured_output"} must return a top-level JSON object`,
     );
   }
-  const validationError = validateStructuredValue(value, schema, "$");
-  if (validationError) {
+  const comprehensiveValidationError = validateStructuredValueWithAjv(
+    value,
+    schema,
+  );
+  if (comprehensiveValidationError) {
     throw new Error(
-      `${schemaName ?? "structured_output"} violated its JSON schema: ${validationError}`,
+      `${schemaName ?? "structured_output"} violated its JSON schema: ${comprehensiveValidationError}`,
     );
   }
   return {

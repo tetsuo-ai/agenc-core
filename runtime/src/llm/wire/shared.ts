@@ -311,11 +311,14 @@ export function normalizeFinishReason(
       return "tool_calls";
     case "length":
     case "max_tokens":
+    case "model_context_window_exceeded":
       return "length";
     case "content_filter":
     case "refusal":
+    case "sensitive":
       return "content_filter";
     case "error":
+    case "network_error":
       return "error";
     default:
       return "stop";
@@ -715,6 +718,14 @@ export function normalizeToolCalls(
   return toolCalls
     .map((toolCall) => validateToolCall(toolCall))
     .filter((toolCall): toolCall is LLMToolCall => toolCall !== null);
+}
+
+/** Normalize compatible APIs that return tool arguments as JSON or an object. */
+export function serializeProviderToolArguments(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "{}";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
 }
 
 export function normalizeToolCallsStrict(

@@ -197,12 +197,12 @@ its server-side native search through a separately authenticated Grok backend.
 
 | Name | Notes |
 | --- | --- |
-| `ImagineImage` | Image generation via Meta Muse Image (`MODEL_API_KEY`) or direct xAI Imagine (xAI credentials); callable by any tool-capable reasoning provider |
+| `ImagineImage` | Image generation via Meta Muse Image, QwenCloud, Z.AI GLM-Image, or direct xAI Imagine with isolated backend credentials; callable by any tool-capable reasoning provider; Z.AI Coding Plan keys are excluded |
 | `ImagineVideo` | Video generation via an independently authenticated direct-xAI Imagine backend; callable by any tool-capable reasoning provider |
 
 Registration follows execution-backend capability, not the provider doing the
-reasoning. `ImagineImage` is included when a Meta or xAI image credential is
-available; `ImagineVideo` is included when xAI credentials are available.
+reasoning. `ImagineImage` is included when a usable Meta, QwenCloud, Z.AI Pay-As-You-Go, or
+xAI image credential is available; `ImagineVideo` is included when xAI credentials are available.
 Provider session keys never cross backend trust boundaries. Operator guide:
 [imagine.md](../imagine.md).
 

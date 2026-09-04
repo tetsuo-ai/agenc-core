@@ -57,6 +57,8 @@ Credential values are not written into the canonical config snapshot.
 | QwenCloud Pay-As-You-Go | `DASHSCOPE_API_KEY`, then `QWEN_API_KEY`; `DASHSCOPE_BASE_URL`, then `QWEN_BASE_URL` |
 | QwenCloud Token Plan | `QWEN_TOKEN_PLAN_API_KEY`, then `DASHSCOPE_TOKEN_PLAN_API_KEY`; `QWEN_TOKEN_PLAN_BASE_URL`, then `DASHSCOPE_TOKEN_PLAN_BASE_URL` |
 | Cerebras | `CEREBRAS_API_KEY`, `CEREBRAS_BASE_URL` |
+| Z.AI Pay-As-You-Go | `ZAI_API_KEY`, `ZAI_BASE_URL` |
+| Z.AI Coding Plan | `ZAI_CODING_PLAN_API_KEY`, `ZAI_CODING_PLAN_BASE_URL` |
 | Gemini | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_ACCESS_TOKEN`, `GEMINI_AUTH_MODE` (`api-key`, `access-token`, or `adc`), `GEMINI_BASE_URL`, `GEMINI_PROJECT_ID`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_QUOTA_PROJECT`, `GOOGLE_APPLICATION_CREDENTIALS`, `GEMINI_VERTEX_LOCATION`, `GOOGLE_CLOUD_LOCATION`, `GEMINI_CACHED_CONTENT` |
 | Mistral | `MISTRAL_API_KEY`, `MISTRAL_BASE_URL` |
 | NVIDIA NIM | `NVIDIA_API_KEY`, `NVIDIA_BASE_URL` |
@@ -72,6 +74,13 @@ shared alias. In particular, LM Studio does not inherit `OPENAI_API_KEY` or
 `OPENAI_BASE_URL`. `OPENAI_API_BASE` applies only to `openai` and
 `openai-compatible`. The same endpoint aliases feed the context-window
 metadata probe; see [providers.md](providers.md#local-context-windows).
+
+`ZAI_API_KEY` authorizes both Z.AI Pay-As-You-Go chat and its isolated
+`ImagineImage` backend. `ZAI_BASE_URL` is the API root for both general routes;
+the runtime appends `/chat/completions` or `/images/generations`.
+`ZAI_CODING_PLAN_API_KEY` and `ZAI_CODING_PLAN_BASE_URL` authorize only the
+separate Coding Plan chat route. The Coding Plan credential is never used for
+image generation, and a Z.AI media request never uses another provider's key.
 
 Amazon Bedrock uses the required access/secret pair for direct SigV4 signing;
 the session token is optional. Only the Bedrock variables in the table are

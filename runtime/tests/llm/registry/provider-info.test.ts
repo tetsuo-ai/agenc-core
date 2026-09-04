@@ -27,6 +27,8 @@ describe("built-in provider info", () => {
       ["qwen", "QwenCloud Pay-As-You-Go", "qwen3.8-max", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "api-key", ["DASHSCOPE_API_KEY", "QWEN_API_KEY"], ["DASHSCOPE_BASE_URL", "QWEN_BASE_URL"], 97, "api-key", false],
       ["qwen-token-plan", "QwenCloud Token Plan", "qwen3.8-max", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", "api-key", ["QWEN_TOKEN_PLAN_API_KEY", "DASHSCOPE_TOKEN_PLAN_API_KEY"], ["QWEN_TOKEN_PLAN_BASE_URL", "DASHSCOPE_TOKEN_PLAN_BASE_URL"], 98, "api-key", false],
       ["cerebras", "Cerebras", "gpt-oss-120b", "https://api.cerebras.ai/v1", "api-key", ["CEREBRAS_API_KEY"], ["CEREBRAS_BASE_URL"], 99, "api-key", false],
+      ["zai", "Z.AI", "glm-5.3", "https://api.z.ai/api/paas/v4", "api-key", ["ZAI_API_KEY"], ["ZAI_BASE_URL"], 99, "api-key", false],
+      ["zai-coding-plan", "Z.AI Coding Plan", "glm-5.3", "https://api.z.ai/api/coding/paas/v4", "api-key", ["ZAI_CODING_PLAN_API_KEY"], ["ZAI_CODING_PLAN_BASE_URL"], 100, "api-key", false],
       ["gemini", "Gemini", "gemini-3.1-pro-preview", "https://generativelanguage.googleapis.com/v1beta", "api-key", ["GEMINI_API_KEY", "GOOGLE_API_KEY"], ["GEMINI_BASE_URL"], 100, "api-key", false],
       ["mistral", "Mistral", "mistral-medium-latest", "https://api.mistral.ai/v1", "api-key", ["MISTRAL_API_KEY"], ["MISTRAL_BASE_URL"], 110, "api-key", false],
       ["nvidia-nim", "NVIDIA NIM", "nvidia/llama-3.1-nemotron-70b-instruct", "https://integrate.api.nvidia.com/v1", "api-key", ["NVIDIA_API_KEY"], ["NVIDIA_BASE_URL"], 120, "api-key", false],
