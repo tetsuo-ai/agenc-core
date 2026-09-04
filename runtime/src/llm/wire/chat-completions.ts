@@ -20,6 +20,7 @@ import {
 import { DEFAULT_MAX_OUTPUT_TOKENS } from "../openai-compatible-token-limits.js";
 import {
   assistantTextFromContentBlocks,
+  applyToolResultImagePolicyForWire,
   coerceUsage,
   collectRequestMetrics,
   messageTextContent,
@@ -105,7 +106,10 @@ function toChatCompletionsMessages(
   replaysReasoningContent = false,
   reasoningContentProvenance?: ProviderReasoningProvenance,
 ): Array<Record<string, unknown>> {
-  const prepared = prepareMessagesForWire(messages);
+  const prepared = applyToolResultImagePolicyForWire(
+    prepareMessagesForWire(messages),
+    toolResultImagePolicy,
+  );
   let systemPrompt = systemPromptParts(prepared, options).join("\n\n");
   if (systemSuffix !== undefined && systemSuffix.length > 0) {
     systemPrompt =
@@ -115,27 +119,6 @@ function toChatCompletionsMessages(
   if (systemPrompt.length > 0) {
     wireMessages.push({ role: "system", content: systemPrompt });
   }
-  const pendingToolImageRelays: Array<{
-    readonly toolCallId: string | undefined;
-    readonly toolName: string | undefined;
-    readonly imageParts: Array<Record<string, unknown>>;
-  }> = [];
-  const flushToolImageRelays = (): void => {
-    if (pendingToolImageRelays.length === 0) return;
-    const content: Array<Record<string, unknown>> = [];
-    for (const relay of pendingToolImageRelays) {
-      const identity = relay.toolName?.trim() || relay.toolCallId?.trim();
-      content.push({
-        type: "text",
-        text: identity
-          ? `Image returned by tool ${identity}.`
-          : "Image returned by the preceding tool call.",
-      });
-      content.push(...relay.imageParts);
-    }
-    wireMessages.push({ role: "user", content });
-    pendingToolImageRelays.length = 0;
-  };
   const replayReasoningContent = (
     message: LLMMessage,
   ): string | undefined => {
@@ -160,48 +143,6 @@ function toChatCompletionsMessages(
   for (const message of prepared) {
     if (message.role === "system" || message.role === "developer") continue;
     if (message.role === "tool") {
-      if (
-        toolResultImagePolicy !== undefined &&
-        Array.isArray(message.content)
-      ) {
-        const imageParts = message.content.flatMap((part) =>
-          part.type === "image_url" && part.image_url.url.trim().length > 0
-            ? [
-                {
-                  type: "image_url",
-                  image_url: { url: part.image_url.url },
-                },
-              ]
-            : [],
-        );
-        const textContent = message.content
-          .filter((part) => part.type !== "image_url")
-          .map((part) => messageTextContent([part]))
-          .filter((text) => text.length > 0)
-          .join("\n");
-        wireMessages.push({
-          role: "tool",
-          content:
-            textContent ||
-            (imageParts.length > 0
-              ? toolResultImagePolicy === "relay_as_user"
-                ? "[Tool returned image content; image follows in the next message.]"
-                : "[Tool returned image content; this model does not accept image input.]"
-              : "[Tool returned no textual content.]"),
-          tool_call_id: message.toolCallId,
-        });
-        if (
-          toolResultImagePolicy === "relay_as_user" &&
-          imageParts.length > 0
-        ) {
-          pendingToolImageRelays.push({
-            toolCallId: message.toolCallId,
-            toolName: message.toolName,
-            imageParts,
-          });
-        }
-        continue;
-      }
       wireMessages.push({
         role: "tool",
         content: toOpenAIToolMessageContent(message.content),
@@ -209,10 +150,6 @@ function toChatCompletionsMessages(
       });
       continue;
     }
-    // A single assistant turn may request tools in parallel. Keep every tool
-    // result contiguous, then relay their images only after the whole group so
-    // strict chat-completions validators see all tool_call_ids resolved first.
-    flushToolImageRelays();
     if (message.role === "assistant" && message.toolCalls?.length) {
       const providerReasoningContent = replayReasoningContent(message);
       wireMessages.push({
@@ -246,7 +183,6 @@ function toChatCompletionsMessages(
         : {}),
     });
   }
-  flushToolImageRelays();
   return wireMessages;
 }
 

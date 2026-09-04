@@ -15,7 +15,11 @@
  */
 
 import { isRecord } from "../utils/record.js";
-import { estimateUtf8TokenUnits } from "./token-accounting.js";
+import {
+  TOKEN_ACCOUNTING_MAX_INLINE_IMAGE_TOKENS,
+  estimateInlineImageTokenUnits,
+  estimateUtf8TokenUnits,
+} from "./token-accounting.js";
 
 export interface ModelTokenizerConfig {
   readonly modelFamily: string;
@@ -389,7 +393,12 @@ function roughTokenCountEstimationForBlock(
       );
     case "image":
     case "image_url":
-    case "input_image":
+    case "input_image": {
+      const dataUrl = imageDataUrlFromBlock(block);
+      return dataUrl === undefined
+        ? TOKEN_ACCOUNTING_MAX_INLINE_IMAGE_TOKENS
+        : estimateInlineImageTokenUnits(dataUrl);
+    }
     case "document":
       return roughTokenCountEstimationForProvider(
         safeJsonStringify(block),
@@ -423,6 +432,33 @@ function roughTokenCountEstimationForBlock(
         hint,
       );
   }
+}
+
+function imageDataUrlFromBlock(
+  block: Record<string, unknown>,
+): string | undefined {
+  if (typeof block.image_url === "string") {
+    return block.image_url.startsWith("data:image/")
+      ? block.image_url
+      : undefined;
+  }
+  if (isRecord(block.image_url) && typeof block.image_url.url === "string") {
+    return block.image_url.url.startsWith("data:image/")
+      ? block.image_url.url
+      : undefined;
+  }
+  if (
+    isRecord(block.source) &&
+    block.source.type === "base64" &&
+    typeof block.source.data === "string"
+  ) {
+    const mediaType =
+      typeof block.source.media_type === "string"
+        ? block.source.media_type
+        : "image/unknown";
+    return `data:${mediaType};base64,${block.source.data}`;
+  }
+  return undefined;
 }
 
 function matchesModel(config: ModelTokenizerConfig, model: string): boolean {
