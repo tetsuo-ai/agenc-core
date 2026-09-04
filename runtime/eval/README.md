@@ -60,6 +60,17 @@ each temporary task workspace inside that home before the agent runs there.
 with the same placeholders as `--agent-command`; task-level `setupCommands`
 run after it.
 
+`eval/baseline-real-grok-4.6-xhigh.json` is the first real-agent baseline
+(grok-4.6 at xhigh effort over xAI, isolated home, 2026-09-04). It is a
+separate file from the mock baseline so each executor compares against its
+own kind of run; `npm run eval:coding:check` compares the newest report in
+`eval/reports` against it, warning on the session ratios and failing on the
+pass-rate, token and latency limits.
+In that run 12 of 12 command tasks passed and the session task passed 14 of
+15 steps; step 15 failed only because the changelog verifier counted list
+items while the agent wrote one headed section per step. The verifier now
+accepts both, so the recorded 92.31% fix rate understates the run.
+
 Model/config matrix (one schema-valid report per entry):
 
 ```bash
