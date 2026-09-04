@@ -1261,11 +1261,14 @@ async function main() {
         args.outputDir,
         `report-${entry?.id ?? "default"}.json`,
       );
+      await mkdir(path.dirname(reportPath), { recursive: true });
       await writeFile(reportPath, output, "utf8");
       process.stdout.write(`Wrote eval report: ${reportPath}\n`);
       continue;
     }
     if (args.outputPath) {
+      // A fresh checkout has no eval/reports yet; a lost report after a long run is unrecoverable.
+      await mkdir(path.dirname(args.outputPath), { recursive: true });
       await writeFile(args.outputPath, output, "utf8");
       process.stdout.write(`Wrote eval report: ${args.outputPath}\n`);
       continue;

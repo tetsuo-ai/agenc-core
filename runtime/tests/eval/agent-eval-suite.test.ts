@@ -201,6 +201,14 @@ describe("agent eval suite (mock executor)", () => {
     120_000,
   );
 
+  test("writes the report into a directory that does not exist yet", () => {
+    const dir = mkdtempSync(join(controlledTmpDir, "fresh-reports-"));
+    const output = join(dir, "reports", "nested", "report.json");
+    const result = runRunner(["--suite", suitePath, "--executor", "mock", "--output", output]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(output, "utf8")).toContain('"schemaVersion"');
+  });
+
   test("a session task can run through an external agent command, one step at a time", () => {
     // Both live under the controlled temp root, which afterAll removes.
     const dir = mkdtempSync(join(controlledTmpDir, "external-"));
