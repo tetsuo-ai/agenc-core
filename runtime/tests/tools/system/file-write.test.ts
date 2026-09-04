@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 vi.mock("../../services/lsp/fileNotifications.js", () => ({
   notifyLspFileChanged: vi.fn(),
+  collectEditFeedback: vi.fn(async () => ""),
 }));
 
 import type { ToolResult } from "../types.js";
@@ -33,7 +34,10 @@ import {
   getPlanFilePath,
   setPlanSlug,
 } from "../../planning/plan-files.js";
-import { notifyLspFileChanged } from "../../services/lsp/fileNotifications.js";
+import {
+  collectEditFeedback,
+  notifyLspFileChanged,
+} from "../../services/lsp/fileNotifications.js";
 
 describe("Write tool", () => {
   let root = "";
@@ -42,6 +46,7 @@ describe("Write tool", () => {
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "agenc-file-write-"));
     vi.mocked(notifyLspFileChanged).mockClear();
+    vi.mocked(collectEditFeedback).mockClear();
   });
 
   afterEach(async () => {
@@ -75,7 +80,7 @@ describe("Write tool", () => {
       },
     });
     await expect(readFile(target, "utf8")).resolves.toBe("hello\nworld\n");
-    expect(notifyLspFileChanged).toHaveBeenCalledWith(target, "hello\nworld\n");
+    expect(collectEditFeedback).toHaveBeenCalledWith(target, "hello\nworld\n");
     // Post-write snapshot anchors the changed-files attachment producer.
     const snap = getSessionReadSnapshot(sessionId, target);
     expect(snap?.rawContent).toBe("hello\nworld\n");
@@ -149,7 +154,7 @@ describe("Write tool", () => {
       },
     });
     await expect(readFile(target, "utf8")).resolves.toBe("alpha\ngamma\n");
-    expect(notifyLspFileChanged).toHaveBeenCalledWith(target, "alpha\ngamma\n");
+    expect(collectEditFeedback).toHaveBeenCalledWith(target, "alpha\ngamma\n");
   });
 
   test("overwrite staleness check compares rawContent when read content is rendered", async () => {

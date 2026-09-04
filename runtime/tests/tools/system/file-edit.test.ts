@@ -32,6 +32,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 vi.mock("../../services/lsp/fileNotifications.js", () => ({
   notifyLspFileChanged: vi.fn(),
+  collectEditFeedback: vi.fn(async () => ""),
 }));
 
 import {
@@ -50,7 +51,10 @@ import {
   SESSION_ID_SIG_ARG,
   signSessionId,
 } from "./filesystem.js";
-import { notifyLspFileChanged } from "../../services/lsp/fileNotifications.js";
+import {
+  collectEditFeedback,
+  notifyLspFileChanged,
+} from "../../services/lsp/fileNotifications.js";
 import { ConfigStore } from "../../config/store.js";
 import {
   clearAllPlanSlugs,
@@ -102,6 +106,7 @@ describe("Edit tool", () => {
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "agenc-file-edit-"));
     vi.mocked(notifyLspFileChanged).mockClear();
+    vi.mocked(collectEditFeedback).mockClear();
   });
 
   afterEach(async () => {
@@ -1204,7 +1209,7 @@ describe("Edit tool", () => {
     });
     await expect(readFile(file, "utf8")).resolves.toBe("done\n");
     expect(getSessionReadSnapshot(SESSION_ID, file)?.content).toBe("done\n");
-    expect(notifyLspFileChanged).toHaveBeenCalledWith(file, "done\n");
+    expect(collectEditFeedback).toHaveBeenCalledWith(file, "done\n");
   });
 
   test("MultiEdit empty replacement follows the same newline semantics", async () => {
@@ -1257,11 +1262,11 @@ describe("Edit tool", () => {
       [SESSION_ID_ARG]: SESSION_ID,
     });
 
-    expect(notifyLspFileChanged).toHaveBeenCalledWith(
+    expect(collectEditFeedback).toHaveBeenCalledWith(
       created,
       "export const created = true;\n",
     );
-    expect(notifyLspFileChanged).toHaveBeenCalledWith(
+    expect(collectEditFeedback).toHaveBeenCalledWith(
       empty,
       "export const empty = true;\n",
     );
@@ -1290,11 +1295,11 @@ describe("Edit tool", () => {
       [SESSION_ID_ARG]: SESSION_ID,
     });
 
-    expect(notifyLspFileChanged).toHaveBeenCalledWith(
+    expect(collectEditFeedback).toHaveBeenCalledWith(
       created,
       "export const created = true;\n",
     );
-    expect(notifyLspFileChanged).toHaveBeenCalledWith(
+    expect(collectEditFeedback).toHaveBeenCalledWith(
       empty,
       "export const empty = true;\n",
     );
