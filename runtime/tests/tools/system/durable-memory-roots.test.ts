@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../services/lsp/fileNotifications.js", () => ({
   notifyLspFileChanged: vi.fn(),
+  collectEditFeedback: vi.fn(async () => ""),
 }));
 
 import { getProjectRoot, setProjectRoot } from "../../bootstrap/state.js";
