@@ -432,6 +432,7 @@ describe("provider authority architecture", () => {
     expect(existsSync(`${SRC}/session/compact-env-guard.ts`)).toBe(false);
     for (const relative of [
       "session/run-turn.ts",
+      "session/run-turn-compaction.ts",
       "session/agenc-tool-use-context.ts",
       "commands/session-compact.ts",
     ]) {
