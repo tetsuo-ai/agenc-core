@@ -458,18 +458,7 @@ describe("descriptor-bound ancestor containment", () => {
    * leads somewhere else.
    */
   test("fails a nested resource read whose directory is exchanged after the read", async () => {
-    const nested = join(root, "memory", "a", "b");
-    mkdirSync(nested, { recursive: true });
-    writeFileSync(
-      join(nested, "notes.md"),
-      ["---", "name: notes", "description: nested notes", "---", "safe body"].join("\n"),
-    );
-    const decoy = join(root, "decoy");
-    mkdirSync(decoy, { recursive: true });
-    writeFileSync(
-      join(decoy, "notes.md"),
-      ["---", "name: notes", "description: decoy", "---", "decoy body"].join("\n"),
-    );
+    const { nested, decoy } = nestedCandidateWithDecoy("decoy", "decoy body");
     const provider = resourceProvider();
     const listed = await provider.listResources();
     const target = listed.find((r) => r.name.endsWith("notes.md"))!;
@@ -622,20 +611,56 @@ describe("fatal UTF-8 decoding", () => {
  * that trips the scanner's own directory-identity checks. It is the ROOT
  * BINDING that has to be churned.
  */
+/**
+ * Memory dir at `<root>/sub/memory` with a forged twin outside the scope, so
+ * a test can point `sub` at the twin for exactly as long as it needs to.
+ * Shared by the listing-metadata suite and the description-read suite, which
+ * attack the same geometry at different seams.
+ */
+function flippableMemoryDir(): { sub: string; outside: string } {
+  const sub = join(root, "sub");
+  mkdirSync(join(sub, "memory"), { recursive: true });
+  writeFileSync(
+    join(sub, "memory", "note.md"),
+    ["---", "name: note", "description: in-scope note", "---", "in-scope body"].join("\n"),
+  );
+  const outside = makeOutsideDir();
+  mkdirSync(join(outside, "memory"), { recursive: true });
+  writeFileSync(
+    join(outside, "memory", "note.md"),
+    ["---", "name: note", `description: ${FORGED}`, "---", SECRET].join("\n"),
+  );
+  return { sub, outside };
+}
+
+/**
+ * A nested candidate at `<root>/memory/a/b/notes.md` plus a decoy directory
+ * ready to take its place. Exchanging the intermediate directory leaves the
+ * open inode untouched, which is what isolates the path side of
+ * `assertCandidateUnchanged`; the decoy's frontmatter differs per test.
+ */
+function nestedCandidateWithDecoy(
+  decoyDescription: string,
+  decoyBody: string,
+): { nested: string; decoy: string } {
+  const nested = join(root, "memory", "a", "b");
+  mkdirSync(nested, { recursive: true });
+  writeFileSync(
+    join(nested, "notes.md"),
+    ["---", "name: notes", "description: nested notes", "---", "safe body"].join("\n"),
+  );
+  const decoy = join(root, "decoy");
+  mkdirSync(decoy, { recursive: true });
+  writeFileSync(
+    join(decoy, "notes.md"),
+    ["---", "name: notes", `description: ${decoyDescription}`, "---", decoyBody].join("\n"),
+  );
+  return { nested, decoy };
+}
+
 describe("memory listing metadata", () => {
   test("does not describe an in-scope resource with an out-of-scope file's frontmatter", async () => {
-    const sub = join(root, "sub");
-    mkdirSync(join(sub, "memory"), { recursive: true });
-    writeFileSync(
-      join(sub, "memory", "note.md"),
-      ["---", "name: note", "description: in-scope note", "---", "in-scope body"].join("\n"),
-    );
-    const outside = makeOutsideDir();
-    mkdirSync(join(outside, "memory"), { recursive: true });
-    writeFileSync(
-      join(outside, "memory", "note.md"),
-      ["---", "name: note", `description: ${FORGED}`, "---", SECRET].join("\n"),
-    );
+    const { sub, outside } = flippableMemoryDir();
     const provider = resourceProvider({
       memoryDirs: [join(sub, "memory")],
       beforeMemoryScanForTesting: () => {
@@ -669,22 +694,6 @@ describe("memory listing metadata", () => {
  * written back in.
  */
 describe("scope-bound description reads", () => {
-  /** Memory dir at `<root>/sub/memory`, with a forged twin outside the scope. */
-  function flippableMemoryDir(): { sub: string; outside: string } {
-    const sub = join(root, "sub");
-    mkdirSync(join(sub, "memory"), { recursive: true });
-    writeFileSync(
-      join(sub, "memory", "note.md"),
-      ["---", "name: note", "description: in-scope note", "---", "in-scope body"].join("\n"),
-    );
-    const outside = makeOutsideDir();
-    mkdirSync(join(outside, "memory"), { recursive: true });
-    writeFileSync(
-      join(outside, "memory", "note.md"),
-      ["---", "name: note", `description: ${FORGED}`, "---", SECRET].join("\n"),
-    );
-    return { sub, outside };
-  }
 
   /**
    * GUARD: the description read going through the bound root handle at all.
@@ -803,18 +812,7 @@ describe("scope-bound description reads", () => {
    * the one that was opened sees that the name now leads somewhere else.
    */
   test("does not describe a nested candidate whose directory is exchanged", async () => {
-    const nested = join(root, "memory", "a", "b");
-    mkdirSync(nested, { recursive: true });
-    writeFileSync(
-      join(nested, "notes.md"),
-      ["---", "name: notes", "description: nested notes", "---", "safe body"].join("\n"),
-    );
-    const decoy = join(root, "decoy");
-    mkdirSync(decoy, { recursive: true });
-    writeFileSync(
-      join(decoy, "notes.md"),
-      ["---", "name: notes", `description: ${FORGED}`, "---", SECRET].join("\n"),
-    );
+    const { nested, decoy } = nestedCandidateWithDecoy(FORGED, SECRET);
     const file = join(nested, "notes.md");
     let exchanged = false;
     const provider = resourceProvider({
