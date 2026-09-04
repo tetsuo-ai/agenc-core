@@ -87,29 +87,36 @@ interface OpenAISseEvent {
   readonly data: Record<string, unknown>;
 }
 
+function decodeOpenAISseEvent(
+  frame: SSEFrame,
+  providerName: string,
+): OpenAISseEvent | undefined {
+  if (!frame.data) return undefined;
+  try {
+    return {
+      event: frame.event,
+      data: JSON.parse(frame.data) as Record<string, unknown>,
+    };
+  } catch (error) {
+    if (requiresStrictChatCompletionsSse(providerName)) {
+      throw new LLMInvalidResponseError(
+        providerName,
+        `Malformed JSON in ${providerName === "kimi" ? "Kimi" : "Z.AI"} SSE event: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    return undefined;
+  }
+}
+
 function decodeOpenAISseEventBatch(
   frames: readonly SSEFrame[],
   providerName: string,
 ): { readonly events: readonly OpenAISseEvent[]; readonly done: boolean } {
   const events: OpenAISseEvent[] = [];
   for (const frame of frames) {
-    if (!frame.data || frame.data === "[DONE]") {
-      if (frame.data === "[DONE]") {
-        return { events, done: true };
-      }
-      continue;
-    }
-    try {
-      const data = JSON.parse(frame.data) as Record<string, unknown>;
-      events.push({ event: frame.event, data });
-    } catch (error) {
-      if (requiresStrictChatCompletionsSse(providerName)) {
-        throw new LLMInvalidResponseError(
-          providerName,
-          `Malformed JSON in ${providerName === "kimi" ? "Kimi" : "Z.AI"} SSE event: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
+    if (frame.data === "[DONE]") return { events, done: true };
+    const event = decodeOpenAISseEvent(frame, providerName);
+    if (event !== undefined) events.push(event);
   }
   return { events, done: false };
 }

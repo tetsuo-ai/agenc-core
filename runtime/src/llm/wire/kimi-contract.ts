@@ -7,6 +7,11 @@ const KIMI_INLINE_IMAGE =
   /^data:image\/(?:jpe?g|png|webp|gif|bmp|heic|heif);base64,([a-z0-9+/]*={0,2})$/iu;
 const KIMI_FILE_REFERENCE = /^ms:\/\/[^\s]+$/u;
 
+function withoutBase64Padding(value: string): string {
+  const paddingIndex = value.indexOf("=");
+  return paddingIndex === -1 ? value : value.slice(0, paddingIndex);
+}
+
 function isValidInlineImage(reference: string): boolean {
   const match = KIMI_INLINE_IMAGE.exec(reference);
   const payload = match?.[1];
@@ -21,8 +26,8 @@ function isValidInlineImage(reference: string): boolean {
   if (paddingIndex !== -1 && payload.length % 4 !== 0) return false;
   const decoded = Buffer.from(payload, "base64");
   return decoded.length > 0 &&
-    decoded.toString("base64").replace(/=+$/u, "") ===
-      payload.replace(/=+$/u, "");
+    withoutBase64Padding(decoded.toString("base64")) ===
+      withoutBase64Padding(payload);
 }
 
 /**

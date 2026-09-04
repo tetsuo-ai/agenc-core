@@ -222,7 +222,7 @@ function reasoningHistoryFingerprint(
 ): string {
   const comparable: Array<Record<string, unknown>> = [];
   for (const message of messages) {
-    const tail = comparable[comparable.length - 1];
+    const tail = comparable.at(-1);
     if (
       mergeConsecutiveUserText &&
       tail?.role === "user" &&

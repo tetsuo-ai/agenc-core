@@ -37,7 +37,10 @@ function withoutFixedSamplingControls(
 
 function assertKimiGlobalEndpoint(baseURL: string | undefined): void {
   if (baseURL === undefined) return;
-  if (baseURL.replace(/\/+$/u, "") !== KIMI_GLOBAL_BASE_URL) {
+  if (
+    baseURL !== KIMI_GLOBAL_BASE_URL &&
+    baseURL !== `${KIMI_GLOBAL_BASE_URL}/`
+  ) {
     throw new Error(
       `kimi is bound to Moonshot's global endpoint ${KIMI_GLOBAL_BASE_URL}`,
     );
@@ -92,7 +95,7 @@ export class KimiProvider extends OpenAIProvider {
       ? 131_072
       : 32_768;
     return {
-      ...(stripped ?? {}),
+      ...stripped,
       ...(stripped?.maxOutputTokens === undefined
         ? {
             maxOutputTokens:
