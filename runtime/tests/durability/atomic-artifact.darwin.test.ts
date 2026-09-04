@@ -25,9 +25,10 @@ import {
 // canonical path, and every directory mutation must be witnessed by the pinned
 // directory descriptor. These tests pin that mode's contract. Like the other
 // platform probes in NATIVE_TEST_INCLUDE, the file runs only in its matching
-// native lane (vitest.native.config.ts on a macOS builder); on Linux the
-// descriptor mode makes the injected swaps inert, and a platform skip would
-// trip the default suite's zero-skip rule.
+// native lane (vitest.native.config.ts on a macOS builder). On Linux the
+// descriptor mode makes the injected swaps inert, and the default suite
+// requires every collected test to run, so the file is excluded there
+// rather than gated.
 if (process.platform !== "darwin") {
   throw new Error("the darwin atomic-artifact integration tests require macOS");
 }
