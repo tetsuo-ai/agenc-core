@@ -14,7 +14,7 @@ import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   BUILT_IN_PROVIDER_MODEL_CATALOG,
 } from "../../registry/provider-info.js";
-import type { LLMTool } from "../../types.js";
+import type { LLMContentPart, LLMMessage, LLMTool } from "../../types.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../wire/capability-gating.js";
 import { buildChatCompletionsRequest } from "../../wire/chat-completions.js";
 import { CerebrasProvider } from "./index.js";
@@ -24,38 +24,119 @@ function successfulChat(
   content = "ok",
   extraMessage: Record<string, unknown> = {},
 ): Response {
-  return new Response(
-    JSON.stringify({
-      id: "chatcmpl_cerebras",
-      model,
-      choices: [
-        {
-          message: { role: "assistant", content, ...extraMessage },
-          finish_reason: "stop",
-        },
-      ],
-      usage: {
-        prompt_tokens: 3,
-        completion_tokens: 1,
-        total_tokens: 4,
+  const payload = {
+    choices: [
+      {
+        finish_reason: "stop",
+        message: { role: "assistant", content, ...extraMessage },
       },
-    }),
-    { status: 200, headers: { "content-type": "application/json" } },
-  );
+    ],
+    id: "chatcmpl_cerebras",
+    model,
+    usage: { completion_tokens: 1, prompt_tokens: 3, total_tokens: 4 },
+  };
+  return new Response(JSON.stringify(payload), {
+    headers: { "content-type": "application/json" },
+  });
 }
 
 function sseResponse(frames: readonly string[]): Response {
-  const encoder = new TextEncoder();
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const frame of frames) controller.enqueue(encoder.encode(frame));
-      controller.close();
+  const encode = new TextEncoder();
+  const chunks = frames.map((frame) => encode.encode(frame));
+  let nextChunk = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const chunk = chunks[nextChunk];
+      nextChunk += 1;
+      if (chunk) controller.enqueue(chunk);
+      else controller.close();
     },
   });
-  return new Response(body, {
-    status: 200,
+  return new Response(stream, {
     headers: { "content-type": "text/event-stream" },
   });
+}
+
+type FetchMock = ReturnType<typeof vi.fn<typeof fetch>>;
+
+function createSuccessfulProvider(model: string) {
+  const fetchImpl = vi
+    .fn<typeof fetch>()
+    .mockResolvedValue(successfulChat(model));
+  const provider = new CerebrasProvider({
+    apiKey: "cerebras-test",
+    model,
+    fetchImpl,
+  });
+  return { fetchImpl, provider };
+}
+
+function requestBody<T>(fetchImpl: FetchMock, callIndex = 0): T {
+  return JSON.parse(String(fetchImpl.mock.calls[callIndex]?.[1]?.body)) as T;
+}
+
+interface ReasoningExchange {
+  readonly reasoning: string;
+  readonly callId: string;
+  readonly toolName: string;
+  readonly result: string;
+  readonly provider?: string;
+  readonly model?: string;
+}
+
+function reasoningToolExchanges(
+  destinationModel: string,
+  exchanges: readonly ReasoningExchange[],
+): LLMMessage[] {
+  return exchanges.flatMap((exchange) => [
+    {
+      role: "assistant",
+      content: "",
+      providerReasoningContent: exchange.reasoning,
+      providerReasoningProvenance: {
+        provider: exchange.provider ?? "cerebras",
+        model: exchange.model ?? destinationModel,
+      },
+      toolCalls: [
+        {
+          id: exchange.callId,
+          name: exchange.toolName,
+          arguments: "{}",
+        },
+      ],
+    },
+    {
+      role: "tool",
+      toolCallId: exchange.callId,
+      toolName: exchange.toolName,
+      content: exchange.result,
+    },
+  ]);
+}
+
+function toolResultConversation(
+  userContent: LLMMessage["content"],
+  text: string,
+  imageUrls: readonly string[],
+): LLMMessage[] {
+  const imageParts: LLMContentPart[] = imageUrls.map((url) => ({
+    type: "image_url",
+    image_url: { url },
+  }));
+  return [
+    { role: "user", content: userContent },
+    {
+      role: "assistant",
+      content: "",
+      toolCalls: [{ id: "call_read", name: "FileRead", arguments: "{}" }],
+    },
+    {
+      role: "tool",
+      toolCallId: "call_read",
+      toolName: "FileRead",
+      content: [{ type: "text", text }, ...imageParts],
+    },
+  ];
 }
 
 const ECHO_TOOL: LLMTool = {
@@ -183,15 +264,17 @@ describe("CerebrasProvider", () => {
   });
 
   test.each([
-    ["gpt-oss-120b", 131_072, 40_960, false, false, ["low", "medium", "high"], "medium"],
-    ["qwen-3.8-27b", 65_536, 32_768, true, true, ["none", "low", "medium", "high"], "high"],
-    ["gemma-4-31b", 131_072, 40_960, true, true, ["none", "low", "medium", "high"], "none"],
+    ["gpt-oss-120b", 131_072, 40_960, 40_960, false, false, false, ["low", "medium", "high"], "medium"],
+    ["qwen-3.8-27b", 65_536, 8_000, 32_768, true, true, true, ["none", "low", "medium", "high"], "high"],
+    ["gemma-4-31b", 131_072, 40_960, 40_960, false, true, true, ["none", "low", "medium", "high"], "none"],
   ] as const)(
     "registers %s with verified model metadata and capabilities",
     (
       model,
       contextWindow,
       maxOutputTokens,
+      maxOutputTokensUpperLimit,
+      cappedDefault,
       vision,
       parallel,
       reasoningLevels,
@@ -203,7 +286,10 @@ describe("CerebrasProvider", () => {
           contextWindow,
           maxContextWindow: contextWindow,
           maxOutputTokens,
-          maxOutputTokensUpperLimit: maxOutputTokens,
+          maxOutputTokensUpperLimit,
+          ...(cappedDefault
+            ? { maxOutputTokensCappedDefault: true }
+            : {}),
         });
       expect(resolveProviderCapabilityEntry({ provider: "cerebras", model }))
         .toMatchObject({
@@ -288,9 +374,9 @@ describe("CerebrasProvider", () => {
       },
     ]);
 
-    const replayBody = JSON.parse(
-      String(fetchImpl.mock.calls[1]?.[1]?.body),
-    ) as { messages: Array<Record<string, unknown>> };
+    const replayBody = requestBody<{
+      messages: Array<Record<string, unknown>>;
+    }>(fetchImpl, 1);
     expect(replayBody.messages).toEqual([
       { role: "user", content: "call echo" },
       expect.objectContaining({
@@ -310,49 +396,30 @@ describe("CerebrasProvider", () => {
   test.each(["gpt-oss-120b", "qwen-3.8-27b"] as const)(
     "preserves each hidden reasoning state through a multi-turn %s tool loop",
     async (model) => {
-      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-        successfulChat(model),
-      );
-      const provider = new CerebrasProvider({
-        apiKey: "cerebras-test",
-        model,
-        fetchImpl,
-      });
+      const { fetchImpl, provider } = createSuccessfulProvider(model);
 
       await provider.chat([
         { role: "user", content: "complete both steps" },
-        {
-          role: "assistant",
-          content: "",
-          providerReasoningContent: "reasoning for step one",
-          providerReasoningProvenance: { provider: "cerebras", model },
-          toolCalls: [{ id: "call_one", name: "First", arguments: "{}" }],
-        },
-        {
-          role: "tool",
-          toolCallId: "call_one",
-          toolName: "First",
-          content: "first result",
-        },
-        {
-          role: "assistant",
-          content: "",
-          providerReasoningContent: "reasoning for step two",
-          providerReasoningProvenance: { provider: "cerebras", model },
-          toolCalls: [{ id: "call_two", name: "Second", arguments: "{}" }],
-        },
-        {
-          role: "tool",
-          toolCallId: "call_two",
-          toolName: "Second",
-          content: "second result",
-        },
+        ...reasoningToolExchanges(model, [
+          {
+            reasoning: "reasoning for step one",
+            callId: "call_one",
+            toolName: "First",
+            result: "first result",
+          },
+          {
+            reasoning: "reasoning for step two",
+            callId: "call_two",
+            toolName: "Second",
+            result: "second result",
+          },
+        ]),
         { role: "user", content: "finish" },
       ]);
 
-      const body = JSON.parse(
-        String(fetchImpl.mock.calls[0]?.[1]?.body),
-      ) as { messages: Array<Record<string, unknown>> };
+      const body = requestBody<{
+        messages: Array<Record<string, unknown>>;
+      }>(fetchImpl);
       const assistantMessages = body.messages.filter(
         (message) => message.role === "assistant",
       );
@@ -374,65 +441,38 @@ describe("CerebrasProvider", () => {
 
   test("never replays hidden reasoning across Cerebras models or providers", async () => {
     const model = "qwen-3.8-27b";
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      successfulChat(model),
-    );
-    const provider = new CerebrasProvider({
-      apiKey: "cerebras-test",
-      model,
-      fetchImpl,
-    });
+    const { fetchImpl, provider } = createSuccessfulProvider(model);
 
     await provider.chat([
       { role: "user", content: "continue safely" },
-      {
-        role: "assistant",
-        content: "",
-        providerReasoningContent: "foreign provider state",
-        providerReasoningProvenance: { provider: "qwen", model },
-        toolCalls: [{ id: "call_foreign", name: "First", arguments: "{}" }],
-      },
-      {
-        role: "tool",
-        toolCallId: "call_foreign",
-        toolName: "First",
-        content: "foreign result",
-      },
-      {
-        role: "assistant",
-        content: "",
-        providerReasoningContent: "other Cerebras model state",
-        providerReasoningProvenance: {
-          provider: "cerebras",
+      ...reasoningToolExchanges(model, [
+        {
+          reasoning: "foreign provider state",
+          callId: "call_foreign",
+          toolName: "First",
+          result: "foreign result",
+          provider: "qwen",
+        },
+        {
+          reasoning: "other Cerebras model state",
+          callId: "call_other",
+          toolName: "Second",
+          result: "other result",
           model: "gpt-oss-120b",
         },
-        toolCalls: [{ id: "call_other", name: "Second", arguments: "{}" }],
-      },
-      {
-        role: "tool",
-        toolCallId: "call_other",
-        toolName: "Second",
-        content: "other result",
-      },
-      {
-        role: "assistant",
-        content: "",
-        providerReasoningContent: "exact Cerebras model state",
-        providerReasoningProvenance: { provider: "cerebras", model },
-        toolCalls: [{ id: "call_exact", name: "Third", arguments: "{}" }],
-      },
-      {
-        role: "tool",
-        toolCallId: "call_exact",
-        toolName: "Third",
-        content: "exact result",
-      },
+        {
+          reasoning: "exact Cerebras model state",
+          callId: "call_exact",
+          toolName: "Third",
+          result: "exact result",
+        },
+      ]),
       { role: "user", content: "finish" },
     ]);
 
-    const body = JSON.parse(
-      String(fetchImpl.mock.calls[0]?.[1]?.body),
-    ) as { messages: Array<Record<string, unknown>> };
+    const body = requestBody<{
+      messages: Array<Record<string, unknown>>;
+    }>(fetchImpl);
     const assistantMessages = body.messages.filter(
       (message) => message.role === "assistant",
     );
@@ -611,39 +651,17 @@ describe("CerebrasProvider", () => {
   ] as const)(
     "applies model-aware tool-result image policy for %s",
     async (model, policy, relaysImage) => {
-      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-        successfulChat(model),
+      const { fetchImpl, provider } = createSuccessfulProvider(model);
+
+      await provider.chat(
+        toolResultConversation("inspect", "Image Size: 10x10.", [
+          VALID_PNG_DATA_URI,
+        ]),
       );
-      const provider = new CerebrasProvider({
-        apiKey: "cerebras-test",
-        model,
-        fetchImpl,
-      });
 
-      await provider.chat([
-        { role: "user", content: "inspect" },
-        {
-          role: "assistant",
-          content: "",
-          toolCalls: [{ id: "call_read", name: "FileRead", arguments: "{}" }],
-        },
-        {
-          role: "tool",
-          toolCallId: "call_read",
-          toolName: "FileRead",
-          content: [
-            { type: "text", text: "Image Size: 10x10." },
-            {
-              type: "image_url",
-              image_url: { url: VALID_PNG_DATA_URI },
-            },
-          ],
-        },
-      ]);
-
-      const body = JSON.parse(
-        String(fetchImpl.mock.calls[0]?.[1]?.body),
-      ) as { messages: Array<Record<string, unknown>> };
+      const body = requestBody<{
+        messages: Array<Record<string, unknown>>;
+      }>(fetchImpl);
       expect(body.messages[2]).toEqual({
         role: "tool",
         content: "Image Size: 10x10.",
@@ -829,47 +847,19 @@ describe("CerebrasProvider", () => {
 
   test("strips invalid tool media while preserving its textual result", async () => {
     const model = "qwen-3.8-27b";
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      successfulChat(model),
+    const { fetchImpl, provider } = createSuccessfulProvider(model);
+
+    await provider.chat(
+      toolResultConversation("inspect", "The tool result remains.", [
+        "https://example.invalid/image.png",
+        "data:image/webp;base64,UklGRg==",
+        "data:image/gif;base64,R0lGODlh",
+      ]),
     );
-    const provider = new CerebrasProvider({
-      apiKey: "cerebras-test",
-      model,
-      fetchImpl,
-    });
 
-    await provider.chat([
-      { role: "user", content: "inspect" },
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: [{ id: "call_read", name: "FileRead", arguments: "{}" }],
-      },
-      {
-        role: "tool",
-        toolCallId: "call_read",
-        toolName: "FileRead",
-        content: [
-          { type: "text", text: "The tool result remains." },
-          {
-            type: "image_url",
-            image_url: { url: "https://example.invalid/image.png" },
-          },
-          {
-            type: "image_url",
-            image_url: { url: "data:image/webp;base64,UklGRg==" },
-          },
-          {
-            type: "image_url",
-            image_url: { url: "data:image/gif;base64,R0lGODlh" },
-          },
-        ],
-      },
-    ]);
-
-    const body = JSON.parse(
-      String(fetchImpl.mock.calls[0]?.[1]?.body),
-    ) as { messages: Array<Record<string, unknown>> };
+    const body = requestBody<{
+      messages: Array<Record<string, unknown>>;
+    }>(fetchImpl);
     expect(body.messages[2]).toEqual({
       role: "tool",
       content: "The tool result remains.",
@@ -880,43 +870,22 @@ describe("CerebrasProvider", () => {
 
   test("caps direct and tool-result images at ten total", async () => {
     const model = "qwen-3.8-27b";
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      successfulChat(model),
-    );
-    const provider = new CerebrasProvider({
-      apiKey: "cerebras-test",
-      model,
-      fetchImpl,
-    });
+    const { fetchImpl, provider } = createSuccessfulProvider(model);
 
-    await provider.chat([
-      {
-        role: "user",
-        content: Array.from({ length: 9 }, () => ({
+    await provider.chat(
+      toolResultConversation(
+        Array.from({ length: 9 }, () => ({
           type: "image_url" as const,
           image_url: { url: VALID_PNG_DATA_URI },
         })),
-      },
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: [{ id: "call_read", name: "FileRead", arguments: "{}" }],
-      },
-      {
-        role: "tool",
-        toolCallId: "call_read",
-        toolName: "FileRead",
-        content: [
-          { type: "text", text: "two candidate images" },
-          { type: "image_url", image_url: { url: VALID_PNG_DATA_URI } },
-          { type: "image_url", image_url: { url: VALID_JPEG_DATA_URI } },
-        ],
-      },
-    ]);
+        "two candidate images",
+        [VALID_PNG_DATA_URI, VALID_JPEG_DATA_URI],
+      ),
+    );
 
-    const body = JSON.parse(
-      String(fetchImpl.mock.calls[0]?.[1]?.body),
-    ) as { messages: Array<Record<string, unknown>> };
+    const body = requestBody<{
+      messages: Array<Record<string, unknown>>;
+    }>(fetchImpl);
     expect(body.messages[2]).toEqual({
       role: "tool",
       content: "two candidate images",
@@ -935,51 +904,26 @@ describe("CerebrasProvider", () => {
       Buffer.alloc(2 * 1024 * 1024),
     ]);
     const model = "qwen-3.8-27b";
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      successfulChat(model),
+    const { fetchImpl, provider } = createSuccessfulProvider(model);
+
+    await provider.chat(
+      toolResultConversation(
+        [
+          {
+            type: "image_url",
+            image_url: {
+              url: `data:image/png;base64,${largePng.toString("base64")}`,
+            },
+          },
+        ],
+        "image omitted, text retained",
+        [`data:image/png;base64,${secondLargePng.toString("base64")}`],
+      ),
     );
-    const provider = new CerebrasProvider({
-      apiKey: "cerebras-test",
-      model,
-      fetchImpl,
-    });
 
-    await provider.chat([
-      {
-        role: "user",
-        content: [
-          {
-            type: "image_url",
-            image_url: {
-                url: `data:image/png;base64,${largePng.toString("base64")}`,
-            },
-          },
-        ],
-      },
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: [{ id: "call_read", name: "FileRead", arguments: "{}" }],
-      },
-      {
-        role: "tool",
-        toolCallId: "call_read",
-        toolName: "FileRead",
-        content: [
-          { type: "text", text: "image omitted, text retained" },
-          {
-            type: "image_url",
-            image_url: {
-              url: `data:image/png;base64,${secondLargePng.toString("base64")}`,
-            },
-          },
-        ],
-      },
-    ]);
-
-    const body = JSON.parse(
-      String(fetchImpl.mock.calls[0]?.[1]?.body),
-    ) as { messages: Array<Record<string, unknown>> };
+    const body = requestBody<{
+      messages: Array<Record<string, unknown>>;
+    }>(fetchImpl);
     expect(body.messages[2]).toEqual({
       role: "tool",
       content: "image omitted, text retained",

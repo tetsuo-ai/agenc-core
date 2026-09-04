@@ -599,6 +599,180 @@ describe("StaticModelsManager", () => {
     expect(info.maxOutputTokensCappedDefault).toBe(true);
   });
 
+  it("uses the safe Cerebras Qwen default while retaining its output ceiling", async () => {
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "cerebras",
+        model: "qwen-3.8-27b",
+      }),
+      fallbackProvider: "cerebras",
+    });
+
+    const info = await manager.getModelInfo("qwen-3.8-27b");
+    expect(info.maxOutputTokens).toBe(8_000);
+    expect(info.maxOutputTokensUpperLimit).toBe(32_768);
+    expect(info.maxOutputTokensExplicit).toBe(false);
+    expect(info.maxOutputTokensCappedDefault).toBe(true);
+  });
+
+  it("keeps the Cerebras Qwen output contract with context-only provider config", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "cerebras",
+        model: "qwen-3.8-27b",
+        providers: {
+          cerebras: {
+            default_model: "qwen-3.8-27b",
+            context_window_tokens: 60_000,
+          },
+        },
+      }),
+      fallbackProvider: "cerebras",
+      metadata: { fetchImpl, env: {} },
+    });
+
+    const info = await manager.getModelInfo("qwen-3.8-27b");
+    expect(info.contextWindow).toBe(60_000);
+    expect(info.maxOutputTokens).toBe(8_000);
+    expect(info.maxOutputTokensUpperLimit).toBe(32_768);
+    expect(info.maxOutputTokensExplicit).toBe(false);
+    expect(info.maxOutputTokensCappedDefault).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Cerebras Qwen output contract with context-only live metadata", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      expect(String(input)).toBe("https://cerebras.invalid/v1/models");
+      return jsonResponse({
+        data: [{ id: "qwen-3.8-27b", context_length: 60_000 }],
+      });
+    });
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "cerebras",
+        model: "qwen-3.8-27b",
+      }),
+      fallbackProvider: "cerebras",
+      metadata: {
+        fetchImpl,
+        env: { CEREBRAS_BASE_URL: "https://cerebras.invalid/v1" },
+      },
+    });
+
+    const info = await manager.getModelInfo("qwen-3.8-27b");
+    expect(info.contextWindow).toBe(60_000);
+    expect(info.maxOutputTokens).toBe(8_000);
+    expect(info.maxOutputTokensUpperLimit).toBe(32_768);
+    expect(info.maxOutputTokensExplicit).toBe(false);
+    expect(info.maxOutputTokensCappedDefault).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets an explicit Cerebras Qwen output override reach its ceiling", async () => {
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "cerebras",
+        model: "qwen-3.8-27b",
+        max_output_tokens: 32_768,
+      }),
+      fallbackProvider: "cerebras",
+    });
+
+    const info = await manager.getModelInfo("qwen-3.8-27b");
+    expect(info.maxOutputTokens).toBe(32_768);
+    expect(info.maxOutputTokensUpperLimit).toBe(32_768);
+    expect(info.maxOutputTokensExplicit).toBe(true);
+    expect(info.maxOutputTokensCappedDefault).toBe(false);
+  });
+
+  it("clamps provider-specific Cerebras Qwen output config to its ceiling", async () => {
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "cerebras",
+        model: "qwen-3.8-27b",
+        providers: {
+          cerebras: {
+            default_model: "qwen-3.8-27b",
+            max_output_tokens: 64_000,
+          },
+        },
+      }),
+      fallbackProvider: "cerebras",
+      metadata: { env: {} },
+    });
+
+    const info = await manager.getModelInfo("qwen-3.8-27b");
+    expect(info.maxOutputTokens).toBe(32_768);
+    expect(info.maxOutputTokensUpperLimit).toBe(32_768);
+    expect(info.maxOutputTokensExplicit).toBe(true);
+    expect(info.maxOutputTokensCappedDefault).toBe(false);
+  });
+
+  it("treats live Cerebras Qwen output metadata as a ceiling", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      jsonResponse({
+        data: [
+          {
+            id: "qwen-3.8-27b",
+            context_length: 65_536,
+            max_output_tokens: 64_000,
+          },
+        ],
+      })
+    );
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "cerebras",
+        model: "qwen-3.8-27b",
+      }),
+      fallbackProvider: "cerebras",
+      metadata: {
+        fetchImpl,
+        env: { CEREBRAS_BASE_URL: "https://cerebras.invalid/v1" },
+      },
+    });
+
+    const info = await manager.getModelInfo("qwen-3.8-27b");
+    expect(info.maxOutputTokens).toBe(8_000);
+    expect(info.maxOutputTokensUpperLimit).toBe(32_768);
+    expect(info.maxOutputTokensExplicit).toBe(false);
+    expect(info.maxOutputTokensCappedDefault).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("lowers the Cerebras Qwen safe default to a smaller live ceiling", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      jsonResponse({
+        data: [
+          {
+            id: "qwen-3.8-27b",
+            context_length: 65_536,
+            max_output_tokens: 4_000,
+          },
+        ],
+      })
+    );
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "cerebras",
+        model: "qwen-3.8-27b",
+      }),
+      fallbackProvider: "cerebras",
+      metadata: {
+        fetchImpl,
+        env: { CEREBRAS_BASE_URL: "https://cerebras.invalid/v1" },
+      },
+    });
+
+    const info = await manager.getModelInfo("qwen-3.8-27b");
+    expect(info.maxOutputTokens).toBe(4_000);
+    expect(info.maxOutputTokensUpperLimit).toBe(4_000);
+    expect(info.maxOutputTokensExplicit).toBe(false);
+    expect(info.maxOutputTokensCappedDefault).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("lets explicit output overrides bypass the capped default", async () => {
     const manager = new StaticModelsManager({
       config: mergeConfigs(defaultConfig(), {

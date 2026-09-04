@@ -26,6 +26,8 @@ export interface RegisteredModelCatalogEntry {
   readonly contextWindow?: number;
   readonly maxContextWindow?: number;
   readonly maxOutputTokens?: number;
+  readonly maxOutputTokensUpperLimit?: number;
+  readonly maxOutputTokensCappedDefault?: boolean;
   readonly inputModalities: readonly ModelInputModality[];
   readonly supportsToolUse: boolean;
   readonly supportsParallelToolCalls: boolean;
@@ -49,6 +51,7 @@ export interface ModelCatalogMetadata {
   readonly maxContextWindow?: number;
   readonly maxOutputTokens?: number;
   readonly maxOutputTokensUpperLimit?: number;
+  readonly maxOutputTokensCappedDefault?: boolean;
 }
 
 export interface ModelCapabilityHints {
@@ -317,7 +320,12 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       displayName: "Qwen 3.8 27B",
       contextWindow: 65_536,
       maxContextWindow: 65_536,
-      maxOutputTokens: 32_768,
+      // Reserving the full 32k provider limit on every call leaves too little
+      // of Qwen's 65k window for AgenC's tool harness. Start at 8k and retain
+      // the documented 32k ceiling for explicit overrides/recovery retries.
+      maxOutputTokens: 8_000,
+      maxOutputTokensUpperLimit: 32_768,
+      maxOutputTokensCappedDefault: true,
       inputModalities: TEXT_IMAGE_MODALITIES,
       supportsToolUse: true,
       supportsParallelToolCalls: true,
@@ -854,7 +862,14 @@ export function resolveModelCatalogMetadata(input: {
     ...(entry.maxOutputTokens !== undefined
       ? {
         maxOutputTokens: entry.maxOutputTokens,
-        maxOutputTokensUpperLimit: entry.maxOutputTokens,
+        maxOutputTokensUpperLimit:
+          entry.maxOutputTokensUpperLimit ?? entry.maxOutputTokens,
+        ...(entry.maxOutputTokensCappedDefault !== undefined
+          ? {
+            maxOutputTokensCappedDefault:
+              entry.maxOutputTokensCappedDefault,
+          }
+          : {}),
       }
       : {}),
   };

@@ -82,6 +82,7 @@ interface ModelMetadataValues {
   readonly maxOutputTokens?: number;
   readonly maxOutputTokensUpperLimit?: number;
   readonly maxOutputTokensExplicit?: boolean;
+  readonly maxOutputTokensCappedDefault?: boolean;
 }
 
 interface FetchJsonOptions {
@@ -188,10 +189,14 @@ export class ModelMetadataResolver {
     source: ModelMetadataSource,
     usedFallbackModelMetadata: boolean,
   ): ResolvedModelMetadata {
+    const effectiveMetadata = applyRegisteredModelOutputContract(
+      params,
+      metadata,
+    );
     const output = resolveEffectiveOutputTokens({
       config: params.config,
       env: this.env,
-      metadata,
+      metadata: effectiveMetadata,
       onWarn: this.warnOnce.bind(this),
     });
     return {
@@ -322,6 +327,60 @@ export class ModelMetadataResolver {
   }
 }
 
+function applyRegisteredModelOutputContract(
+  params: Pick<LookupParams, "provider" | "model">,
+  metadata: ModelMetadataValues,
+): ModelMetadataValues {
+  const catalog = resolveModelCatalogMetadata({
+    provider: normalizeMetadataProviderIdentity(params.provider),
+    model: params.model,
+  });
+  if (catalog?.maxOutputTokens === undefined) return metadata;
+
+  const catalogUpper =
+    catalog.maxOutputTokensUpperLimit ?? catalog.maxOutputTokens;
+  if (metadata.maxOutputTokens === undefined) {
+    return {
+      ...metadata,
+      maxOutputTokens: catalog.maxOutputTokens,
+      maxOutputTokensUpperLimit: catalogUpper,
+      ...(catalog.maxOutputTokensCappedDefault !== undefined
+        ? {
+          maxOutputTokensCappedDefault:
+            catalog.maxOutputTokensCappedDefault,
+        }
+        : {}),
+    };
+  }
+
+  const effectiveUpper = Math.min(
+    metadata.maxOutputTokensUpperLimit ?? metadata.maxOutputTokens,
+    catalogUpper,
+  );
+  if (
+    catalog.maxOutputTokensCappedDefault === true &&
+    metadata.maxOutputTokensExplicit !== true
+  ) {
+    return {
+      ...metadata,
+      maxOutputTokens: boundedOutputTokens(
+        catalog.maxOutputTokens,
+        effectiveUpper,
+      ),
+      maxOutputTokensUpperLimit: effectiveUpper,
+      maxOutputTokensCappedDefault: true,
+    };
+  }
+  return {
+    ...metadata,
+    maxOutputTokens: boundedOutputTokens(
+      metadata.maxOutputTokens,
+      effectiveUpper,
+    ),
+    maxOutputTokensUpperLimit: effectiveUpper,
+  };
+}
+
 export function readExplicitProviderContextWindowTokens(
   config: AgenCConfig,
   provider: string | undefined,
@@ -402,6 +461,12 @@ function mergeLiveEndpointMetadata(
         ...(explicit.maxOutputTokensExplicit !== undefined
           ? { maxOutputTokensExplicit: explicit.maxOutputTokensExplicit }
           : {}),
+        ...(explicit.maxOutputTokensCappedDefault !== undefined
+          ? {
+            maxOutputTokensCappedDefault:
+              explicit.maxOutputTokensCappedDefault,
+          }
+          : {}),
       }
       : live.maxOutputTokens !== undefined
         ? {
@@ -410,6 +475,12 @@ function mergeLiveEndpointMetadata(
             live.maxOutputTokensUpperLimit ?? live.maxOutputTokens,
           ...(live.maxOutputTokensExplicit !== undefined
             ? { maxOutputTokensExplicit: live.maxOutputTokensExplicit }
+            : {}),
+          ...(live.maxOutputTokensCappedDefault !== undefined
+            ? {
+              maxOutputTokensCappedDefault:
+                live.maxOutputTokensCappedDefault,
+            }
             : {}),
         }
         : {}),
@@ -887,8 +958,11 @@ function resolveEffectiveOutputTokens(params: {
     metadata.maxOutputTokensExplicit === true
   ) {
     return {
-      maxOutputTokens: metadata.maxOutputTokens,
-      maxOutputTokensUpperLimit: metadata.maxOutputTokens,
+      maxOutputTokens: boundedOutputTokens(
+        metadata.maxOutputTokens,
+        metadataUpper,
+      ),
+      maxOutputTokensUpperLimit: metadataUpper,
       maxOutputTokensExplicit: true,
       maxOutputTokensCappedDefault: false,
     };
@@ -906,10 +980,15 @@ function resolveEffectiveOutputTokens(params: {
     };
   }
 
-  if (params.config.capped_default_max_output_tokens === true) {
+  if (
+    metadata.maxOutputTokensCappedDefault === true ||
+    params.config.capped_default_max_output_tokens === true
+  ) {
     return {
       maxOutputTokens: boundedOutputTokens(
-        CAPPED_DEFAULT_MAX_OUTPUT_TOKENS,
+        metadata.maxOutputTokensCappedDefault === true
+          ? metadataDefault
+          : CAPPED_DEFAULT_MAX_OUTPUT_TOKENS,
         metadataUpper,
       ),
       maxOutputTokensUpperLimit: metadataUpper,
