@@ -93,6 +93,63 @@ describe("manual compact runtime projection", () => {
       },
     });
   });
+
+  test("keeps a retained assistant tool call and its result with the arguments intact", async () => {
+    // The summarizer hands back `messagesToKeep` in the shape
+    // `toAgenCRuntimeMessages` wrote: top-level role and runtime content, the
+    // tool result remapped to the user wire role with its original role
+    // recorded. This is the branch that used to drop `toolCalls`.
+    const toolCall = {
+      id: "toolu_keep_1792",
+      name: "Bash",
+      arguments: JSON.stringify({ command: "pwd" }),
+    };
+    const replacementHistory =
+      await projectManualCompactionReplacementHistoryForTests({
+        boundaryMarker: { role: "user", content: "boundary" },
+        summaryMessages: [],
+        messagesToKeep: [
+          {
+            role: "assistant",
+            type: "assistant",
+            content: [{ type: "text", text: "Checking the working directory." }],
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Checking the working directory." }],
+            },
+            toolCalls: [toolCall],
+          },
+          {
+            role: "user",
+            originalRole: "tool",
+            type: "user",
+            isMeta: true,
+            content: [{ type: "text", text: "/tmp/project" }],
+            message: {
+              role: "user",
+              content: [{ type: "text", text: "/tmp/project" }],
+            },
+            toolCallId: toolCall.id,
+            toolName: "Bash",
+          },
+        ],
+        attachments: [],
+      });
+
+    expect(replacementHistory.slice(1)).toEqual([
+      {
+        role: "assistant",
+        content: "Checking the working directory.",
+        toolCalls: [toolCall],
+      },
+      {
+        role: "tool",
+        content: "/tmp/project",
+        toolCallId: toolCall.id,
+        toolName: "Bash",
+      },
+    ]);
+  });
 });
 
 describe("/context display: computeContextUsageBreakdown", () => {

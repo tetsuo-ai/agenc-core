@@ -5,13 +5,9 @@ import {
   type SlashCommandResult,
 } from "./types.js";
 import React from "react";
-import type { LLMContentPart, LLMMessage, LLMProvider, LLMTool } from "../llm/types.js";
+import type { LLMMessage, LLMProvider, LLMTool } from "../llm/types.js";
 import { createChildAbortController } from "../utils/abortController.js";
-import {
-  cloneLlmContent as cloneContent,
-  fromRuntimeMessageContent,
-  toRuntimeMessageContent,
-} from "../llm/content-conversion.js";
+import { cloneLlmContent as cloneContent } from "../llm/content-conversion.js";
 import type {
   CompactCleanupDeps,
   CompactionResult,
@@ -26,7 +22,12 @@ import {
 } from "../services/compact/finalize-transaction.js";
 import { formatCompactionOperatorDisplay } from "../services/compact/operator.js";
 import type { CompactedItem } from "../session/rollout-item.js";
-import { validateAgentInvocationMessageSequence } from "../contracts/agent-invocation-envelope.js";
+import {
+  extractMessageText,
+  fromAgenCRuntimeMessages,
+  toAgenCRuntimeMessages,
+  type AgenCRuntimeMessage,
+} from "../session/runtime-message-conversion.js";
 import type { Session } from "../session/session.js";
 import { isAuthenticatedCompactionBoundary } from "../session/compaction-history-marker.js";
 import {
@@ -682,47 +683,6 @@ interface AgenCContextUsageResult {
   readonly text: string;
 }
 
-type AgenCMessageRole =
-  | "system"
-  | "developer"
-  | "user"
-  | "assistant"
-  | "tool";
-
-interface AgenCMessage {
-  readonly role: AgenCMessageRole;
-  readonly content: string | readonly LLMContentPart[];
-  readonly providerReasoningContent?: string;
-  readonly providerReasoningProvenance?: LLMMessage["providerReasoningProvenance"];
-  readonly toolCallId?: string;
-  readonly toolName?: string;
-  readonly phase?: string;
-  readonly runtimeOnly?: LLMMessage["runtimeOnly"];
-}
-
-type AgenCRuntimeWireRole = NonNullable<RuntimeMessage["role"]>;
-
-type AgenCRuntimeMessage = Omit<
-  RuntimeMessage,
-  "role" | "originalRole" | "message"
-> & {
-  readonly role?: AgenCRuntimeWireRole;
-  readonly originalRole?: AgenCMessage["role"];
-  readonly toolCallId?: string;
-  readonly toolName?: string;
-  readonly toolCalls?: readonly {
-    readonly id: string;
-    readonly name: string;
-    readonly arguments?: string;
-  }[];
-  readonly phase?: string;
-  readonly type?: string;
-  readonly message?: {
-    readonly role?: string;
-    readonly content?: unknown;
-  };
-};
-
 type AgenCCompactionResult = {
   readonly boundaryMarker?: AgenCRuntimeMessage;
   readonly summaryMessages?: readonly AgenCRuntimeMessage[];
@@ -1075,40 +1035,6 @@ function buildAgenCCompactedRolloutItem(
     preCompactTokens: result.preCompactTokens,
     postCompactTokens: result.postCompactTokens,
   });
-}
-
-function toAgenCMessage(message: LLMMessage): AgenCMessage {
-  return {
-    role: message.role,
-    content: cloneContent(message.content),
-    ...(message.providerReasoningContent !== undefined
-      ? { providerReasoningContent: message.providerReasoningContent }
-      : {}),
-    ...(message.providerReasoningProvenance !== undefined
-      ? { providerReasoningProvenance: message.providerReasoningProvenance }
-      : {}),
-    ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
-    ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
-    ...(message.phase !== undefined ? { phase: message.phase } : {}),
-    ...(message.runtimeOnly?.toolResultIntegrity !== undefined ||
-    message.runtimeOnly?.agentInvocation !== undefined
-      ? {
-          runtimeOnly: {
-            ...(message.runtimeOnly?.toolResultIntegrity !== undefined
-              ? {
-                  toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
-                }
-              : {}),
-            ...(message.runtimeOnly?.agentInvocation !== undefined
-              ? {
-                  agentInvocation: message.runtimeOnly.agentInvocation,
-                  mergeBoundary: "user_context" as const,
-                }
-              : {}),
-          },
-        }
-      : {}),
-  };
 }
 
 function buildCompactedRolloutPayload(params: {
@@ -1520,187 +1446,6 @@ async function addManualCompactSlashMessages(
       ...slashMessages,
     ],
   };
-}
-
-function toAgenCRuntimeMessages(
-  messages: readonly LLMMessage[],
-): AgenCRuntimeMessage[] {
-  return messages.map((message, index) => {
-    const converted = toAgenCMessage(message);
-    const runtimeContent = toRuntimeMessageContent(message.content);
-    if (message.role === "system") {
-      return {
-        ...converted,
-        role: "system",
-        type: "system",
-        content: runtimeContent,
-        uuid: `agenc-system-${index}`,
-        timestamp: new Date(0).toISOString(),
-      };
-    }
-    const role = toAgenCRuntimeWireRole(message.role);
-    return {
-      ...converted,
-      content: runtimeContent,
-      role,
-      ...(message.role !== role ? { originalRole: message.role } : {}),
-      type: role,
-      message: {
-        role,
-        content: runtimeContent,
-      },
-      uuid: `agenc-${role}-${index}`,
-      timestamp: new Date(0).toISOString(),
-      ...(message.toolCalls !== undefined
-        ? {
-            toolCalls: message.toolCalls.map((call) => ({
-              id: call.id,
-              name: call.name,
-              arguments: call.arguments,
-            })),
-          }
-        : {}),
-      ...(message.role === "tool" ? { isMeta: true } : {}),
-    };
-  });
-}
-
-function toAgenCRuntimeWireRole(role: LLMMessage["role"]): AgenCRuntimeWireRole {
-  if (role === "tool") return "user";
-  if (role === "developer") return "system";
-  return role;
-}
-
-function fromAgenCRuntimeMessages(
-  messages: readonly AgenCRuntimeMessage[],
-): LLMMessage[] {
-  const converted = messages
-    .map(fromAgenCRuntimeMessage)
-    .filter((message): message is LLMMessage => message !== null);
-  validateAgentInvocationMessageSequence(converted);
-  return converted;
-}
-
-function fromAgenCRuntimeMessage(
-  message: AgenCRuntimeMessage,
-): LLMMessage | null {
-  if (message.role && message.content !== undefined) {
-    const role = message.originalRole ?? message.role;
-    return {
-      role,
-      content: fromRuntimeMessageContent(message.content),
-      ...(message.providerReasoningContent !== undefined
-        ? { providerReasoningContent: message.providerReasoningContent }
-        : {}),
-      ...(message.providerReasoningProvenance !== undefined
-        ? { providerReasoningProvenance: message.providerReasoningProvenance }
-        : {}),
-      ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
-      ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
-      ...(message.phase === "commentary" || message.phase === "final_answer"
-        ? { phase: message.phase }
-        : {}),
-      ...(message.runtimeOnly?.toolResultIntegrity !== undefined ||
-      message.runtimeOnly?.agentInvocation !== undefined
-        ? {
-            runtimeOnly: {
-              ...(message.runtimeOnly?.toolResultIntegrity !== undefined
-                ? {
-                    toolResultIntegrity:
-                      message.runtimeOnly.toolResultIntegrity,
-                  }
-                : {}),
-              ...(message.runtimeOnly?.agentInvocation !== undefined
-                ? {
-                    agentInvocation: message.runtimeOnly.agentInvocation,
-                    mergeBoundary: "user_context" as const,
-                  }
-                : {}),
-            },
-          }
-        : {}),
-    };
-  }
-  const role = normalizeRole(message.message?.role ?? message.type);
-  if (!role) return null;
-  return {
-    role,
-    content: fromRuntimeMessageContent(readContent(message)),
-    ...(message.providerReasoningContent !== undefined
-      ? { providerReasoningContent: message.providerReasoningContent }
-      : {}),
-    ...(message.providerReasoningProvenance !== undefined
-      ? { providerReasoningProvenance: message.providerReasoningProvenance }
-      : {}),
-    ...(message.toolCalls !== undefined
-      ? {
-          toolCalls: message.toolCalls.map((call) => ({
-            id: call.id,
-            name: call.name,
-            arguments: call.arguments ?? "",
-          })),
-        }
-      : {}),
-    ...(message.toolCallId !== undefined
-      ? { toolCallId: message.toolCallId }
-      : {}),
-    ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
-    ...(message.phase === "commentary" || message.phase === "final_answer"
-      ? { phase: message.phase }
-      : {}),
-    ...(message.runtimeOnly?.toolResultIntegrity !== undefined ||
-    message.runtimeOnly?.agentInvocation !== undefined
-      ? {
-          runtimeOnly: {
-            ...(message.runtimeOnly?.toolResultIntegrity !== undefined
-              ? {
-                  toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
-                }
-              : {}),
-            ...(message.runtimeOnly?.agentInvocation !== undefined
-              ? {
-                  agentInvocation: message.runtimeOnly.agentInvocation,
-                  mergeBoundary: "user_context" as const,
-                }
-              : {}),
-          },
-        }
-      : {}),
-  };
-}
-
-function normalizeRole(value: unknown): LLMMessage["role"] | null {
-  if (
-    value === "system" ||
-    value === "developer" ||
-    value === "user" ||
-    value === "assistant" ||
-    value === "tool"
-  ) {
-    return value;
-  }
-  return null;
-}
-
-function readContent(
-  message: AgenCRuntimeMessage,
-): LLMMessage["content"] {
-  const content = message.message?.content ?? message.content ?? "";
-  return cloneContent(content);
-}
-
-function extractMessageText(
-  message: AgenCRuntimeMessage | undefined,
-): string | undefined {
-  if (!message) return undefined;
-  const content = readContent(message);
-  if (typeof content === "string") return content;
-  const text = content
-    .map((part) => (part.type === "text" ? part.text : ""))
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-  return text.length > 0 ? text : undefined;
 }
 
 function cloneLLMMessage(message: LLMMessage): LLMMessage {
