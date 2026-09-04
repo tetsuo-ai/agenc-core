@@ -31,7 +31,11 @@
  */
 
 import type { Session } from "./session.js";
-import type { RolloutItem } from "./rollout-item.js";
+import {
+  sessionStateUpdateAddressesSlot,
+  type RolloutItem,
+} from "./rollout-item.js";
+import { restorePersistedMemoryExtractionState } from "./memory-extraction-state.js";
 import type { TokenCountEvent } from "./event-log.js";
 
 export type { RolloutItem, SessionStateUpdate } from "./rollout-item.js";
@@ -201,20 +205,23 @@ export async function maybePrewarmAgentTaskRegistration(
 /**
  * AgenC-specific. Walks rollout items in reverse and returns the
  * `SessionAgentTask | undefined` from the most recent `SessionState`
- * update, wrapped in a `{ value }` envelope so callers can distinguish
- * "no SessionState ever persisted" (returns `undefined`) from
- * "SessionState persisted with the slot explicitly cleared" (returns
- * `{ value: undefined }`). Upstream agenc runtime does not persist an
- * agent-task slot on rollout, so there is no equivalent walker.
+ * update that addresses the agent-task slot, wrapped in a `{ value }`
+ * envelope so callers can distinguish "no SessionState ever persisted"
+ * (returns `undefined`) from "SessionState persisted with the slot
+ * explicitly cleared" (returns `{ value: undefined }`). Items that only
+ * carry another slot (the memory-extraction cadence) are skipped: reading
+ * their missing key as a clear would drop the persisted task on every
+ * resume. Upstream agenc runtime does not persist an agent-task slot on
+ * rollout, so there is no equivalent walker.
  */
 export function latestPersistedAgentTask(
   rolloutItems: ReadonlyArray<RolloutItem>,
 ): { value: SessionAgentTask | undefined } | undefined {
   for (let i = rolloutItems.length - 1; i >= 0; i -= 1) {
     const item = rolloutItems[i];
-    if (item && item.type === "session_state") {
-      return { value: item.payload.agentTask };
-    }
+    if (!item || item.type !== "session_state") continue;
+    if (!sessionStateUpdateAddressesSlot(item.payload, "agentTask")) continue;
+    return { value: item.payload.agentTask };
   }
   return undefined;
 }
@@ -280,7 +287,7 @@ export function lastTokenInfoFromRollout(
  * function at lines 1151-1236; the Resumed arm runs roughly
  * 1172-1209).
  *
- * Three resume-time behaviors are wired here so the AgenC bootstrap
+ * The resume-time behaviors are wired here so the AgenC bootstrap
  * has a single entrypoint for them:
  *
  *   1. **Agent-task restore.** Delegates to `restorePersistedAgentTask`.
@@ -288,6 +295,10 @@ export function lastTokenInfoFromRollout(
  *      not persist the agent task to the rollout. Runs first so the
  *      cached task is consistent with the post-replay session identity
  *      before any model-dependent state mutations.
+ *   1b. **Memory-extraction cadence restore.** Delegates to
+ *      `restorePersistedMemoryExtractionState`. AgenC-specific: seeds the
+ *      extraction service's eligible-turn count and processed-message
+ *      cursor per memory root so a restart does not begin the wait again.
  *   2. **Model-change warning.** agenc runtime emits
  *      `EventMsg::Warning(WarningEvent { ... })` at
  *      `session/mod.rs:1185-1196` when the rollout's last
@@ -318,6 +329,12 @@ export async function recordInitialHistoryOnResume(
   // run first so the cached task lines up with the restored session
   // identity before any model-dependent state mutations.
   await restorePersistedAgentTask(session, rolloutItems);
+
+  // 1b. Memory-extraction cadence restore. AgenC-specific: the extraction
+  // service seeds its per-root lane from session state, so a restart
+  // continues the eligible-turn count and the processed-message cursor
+  // instead of starting both over.
+  await restorePersistedMemoryExtractionState(session, rolloutItems);
 
   // 2. Model-change warning. Matches agenc runtime's sentence at
   // session/mod.rs:1189-1192 with "agenc runtime" → "AgenC".
@@ -353,7 +370,9 @@ export async function recordInitialHistoryOnResume(
 /**
  * AgenC-specific. Persist a `SessionState` rollout item carrying the
  * current agent-task cache value (or an explicit clear when `agentTask`
- * is null). Upstream agenc runtime does not persist this slot.
+ * is null). The item carries this slot only; the memory-extraction slot
+ * has its own writer, and each walker skips the other's items. Upstream
+ * agenc runtime does not persist this slot.
  */
 async function persistAgentTaskUpdate(
   session: Session,

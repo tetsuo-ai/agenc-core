@@ -249,6 +249,12 @@ const isSessionAgentTask = objectShape({
   registeredAt: isString,
 });
 
+const isSessionMemoryExtractionState = objectShape({
+  memoryRoot: isString,
+  processedVisibleCount: isNonNegativeInteger,
+  turnsSinceLastExtraction: isNonNegativeInteger,
+});
+
 const isFileSystemSandboxPolicy = objectShape({
   allowWrite: isStringArray,
   denyWrite: isStringArray,
@@ -1442,7 +1448,13 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
 
 const ROLLOUT_PAYLOAD_VALIDATORS = defineRolloutPayloadValidators({
   session_meta: EVENT_PAYLOAD_VALIDATORS.session_meta,
-  session_state: objectShape({}, { agentTask: isSessionAgentTask }),
+  session_state: objectShape(
+    {},
+    {
+      agentTask: isSessionAgentTask,
+      memoryExtraction: isSessionMemoryExtractionState,
+    },
+  ),
   response_item: isResponseItem,
   compacted: objectShape(
     { message: isString },

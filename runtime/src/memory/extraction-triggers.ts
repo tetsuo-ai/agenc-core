@@ -125,11 +125,11 @@ function resolveMinEligibleTurns(value: number | undefined): number {
 /**
  * Whether to hold this extraction back for the cadence.
  *
- * The counter is process-local: it lives in the in-process lane map, so a
- * daemon restart begins the wait again while the conversation it is pacing
- * stays on disk. That gap is tracked separately; the cadence state belongs in
- * persisted session state, and until it is there a restart costs at most one
- * further cadence before memory is written again.
+ * The counter lives in the extraction service's lane, which persists it as
+ * the session's memory-extraction slot after every decision and seeds a new
+ * lane from that slot (see services/extractMemories). A daemon restart
+ * therefore continues the wait where the previous process left it instead of
+ * beginning it again while the conversation it paces stays on disk.
  *
  * An earlier version tried to close that gap by letting the first decision in
  * a process read the unprocessed backlog instead of the counter, on the theory

@@ -292,4 +292,34 @@ describe("event-log-reducer (I-26 + I-27)", () => {
     expect(report.unknownVariantCount).toBe(0);
     expect(report.seqGapCount).toBe(0);
   });
+
+  test("session_state items that carry only the memory-extraction slot leave the cached agent task alone", () => {
+    const agentTask = {
+      agentRuntimeId: "agent-1",
+      taskId: "task-1",
+      registeredAt: "2026-04-21T00:00:00Z",
+    };
+    const { state } = reduceAll([
+      { type: "session_state", payload: { agentTask } },
+      {
+        type: "session_state",
+        payload: {
+          memoryExtraction: {
+            memoryRoot: "/memory",
+            processedVisibleCount: 2,
+            turnsSinceLastExtraction: 1,
+          },
+        },
+      },
+    ]);
+    expect(state.agentTask).toEqual(agentTask);
+
+    // The legacy explicit clear is an empty payload and still clears.
+    const cleared = reduceAll([
+      { type: "session_state", payload: { agentTask } },
+      { type: "session_state", payload: {} },
+    ]);
+    expect(cleared.state.agentTask).toBeUndefined();
+  });
+
 });

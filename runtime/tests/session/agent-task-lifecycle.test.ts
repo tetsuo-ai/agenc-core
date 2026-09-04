@@ -13,6 +13,7 @@ import {
   type RegisteredAgentTask,
   type SessionAgentTask,
 } from "./agent-task-lifecycle.js";
+import { readMemoryExtractionState } from "./memory-extraction-state.js";
 import type { RolloutItem } from "./rollout-item.js";
 import {
   Session,
@@ -442,4 +443,62 @@ describe("agent task lifecycle", () => {
     // No events emitted, no state mutations.
     expect(session.txEvent.tryRecv()).toBeUndefined();
   });
+
+  it("keeps a persisted agent task when a later session_state item carries only the memory-extraction cadence", async () => {
+    const task: SessionAgentTask = {
+      agentRuntimeId: "agent-5",
+      taskId: "task-5",
+      registeredAt: "2026-04-21T00:00:05Z",
+    };
+    const cadence = {
+      memoryRoot: "/memory",
+      processedVisibleCount: 4,
+      turnsSinceLastExtraction: 2,
+    };
+    // The JSONL round trip drops undefined keys, so the cadence item carries
+    // no agentTask key at all; it must not read as an explicit clear.
+    const replayed = (
+      [
+        { type: "session_state", payload: { agentTask: task } },
+        { type: "session_state", payload: { memoryExtraction: cadence } },
+      ] satisfies RolloutItem[]
+    ).map((item) => JSON.parse(JSON.stringify(item)) as RolloutItem);
+
+    expect(latestPersistedAgentTask(replayed)).toEqual({ value: task });
+
+    const session = buildSession({
+      services: {
+        agentIdentityManager: {
+          ensureRegistered: async () => {},
+          registerTask: vi.fn(async () => null),
+          taskMatchesCurrentIdentity: vi.fn(async () => true),
+        } as SessionServices["agentIdentityManager"],
+      },
+    });
+    await recordInitialHistoryOnResume(session, replayed, {
+      currentModel: "test-model",
+    });
+
+    expect(await readStoredAgentTask(session)).toEqual(task);
+    await expect(readMemoryExtractionState(session, "/memory")).resolves.toEqual(
+      cadence,
+    );
+  });
+
+  it("still reads an empty session_state payload as the legacy explicit clear of the agent task", () => {
+    const task: SessionAgentTask = {
+      agentRuntimeId: "agent-6",
+      taskId: "task-6",
+      registeredAt: "2026-04-21T00:00:06Z",
+    };
+    const replayed = (
+      [
+        { type: "session_state", payload: { agentTask: task } },
+        { type: "session_state", payload: { agentTask: undefined } },
+      ] satisfies RolloutItem[]
+    ).map((item) => JSON.parse(JSON.stringify(item)) as RolloutItem);
+
+    expect(latestPersistedAgentTask(replayed)).toEqual({ value: undefined });
+  });
+
 });

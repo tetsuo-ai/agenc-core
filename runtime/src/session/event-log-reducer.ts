@@ -24,7 +24,10 @@ import type {
   ResponseItem,
   RolloutItem,
 } from "./rollout-item.js";
-import { isKnownRolloutType } from "./rollout-item.js";
+import {
+  isKnownRolloutType,
+  sessionStateUpdateAddressesSlot,
+} from "./rollout-item.js";
 import { agentInvocationGroupStartIndex } from "../contracts/agent-invocation-envelope.js";
 import {
   isUserTurnBoundary,
@@ -56,7 +59,7 @@ export interface ReducedSessionState {
   history: ResponseItem[];
   /** Most-recent TurnContextItem emitted (turn baseline). */
   lastTurnContext?: TurnContextItem;
-  /** Cached agent task from the most recent session_state update. */
+  /** Cached agent task from the newest session_state update that addressed that slot. */
   agentTask?: unknown;
   /** Most-recent compaction boundary metadata. */
   lastCompaction?: CompactedItem;
@@ -135,6 +138,12 @@ export function reduce(
       };
 
     case "session_state":
+      // Writers persist one slot per item. An item that carries another
+      // slot (the memory-extraction cadence) says nothing about the agent
+      // task, so it must not read as a clear.
+      if (!sessionStateUpdateAddressesSlot(item.payload, "agentTask")) {
+        return { state, report: {} };
+      }
       return {
         state: { ...state, agentTask: item.payload.agentTask },
         report: {},
