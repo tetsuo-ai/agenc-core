@@ -18,6 +18,7 @@ import {
   ThreadNotFoundError,
   ThreadStoreInvalidRequestError,
 } from "../thread-store/store.js";
+import { openStateDatabases } from "../state/sqlite-driver.js";
 
 let agencHome = "";
 let originalAgencHome = "";
@@ -924,6 +925,71 @@ describe("FileThreadStore registry durability", () => {
       expect(imported.history?.items[0]?.type).toBe("session_meta");
     } finally {
       rollout.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("FileThreadStore mirror keeps pace with live recorder flushes (#2028)", () => {
+  function mirrorItemCount(cwd: string, threadId: string): number {
+    const driver = openStateDatabases({ cwd });
+    try {
+      return (
+        driver
+          .prepareState<[string], { count: number }>(
+            "SELECT COUNT(*) AS count FROM thread_rollout_items WHERE thread_id = ?",
+          )
+          .get(threadId)?.count ?? -1
+      );
+    } finally {
+      driver.close();
+    }
+  }
+
+  function threadsColumns(cwd: string): string[] {
+    const driver = openStateDatabases({ cwd });
+    try {
+      return driver
+        .prepareState<[], { name: string }>("PRAGMA table_info(threads)")
+        .all()
+        .map((row) => row.name);
+    } finally {
+      driver.close();
+    }
+  }
+
+  it("indexes appends that go through the live RolloutStore, not appendItems", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
+    const rollout = openStore({ cwd, sessionId: "drift" });
+    const store = new FileThreadStore({ cwd });
+    let closed = false;
+    try {
+      store.createThread({ threadId: "drift", rolloutStore: rollout });
+
+      // Session path: write and flush without ThreadStore.appendItems.
+      for (let i = 0; i < 12; i += 1) {
+        rollout.appendRollout(responseItem(`m-${i}`, `msg-${i}`));
+      }
+      rollout.flushDurable();
+      store.close();
+      closed = true;
+
+      // session_meta from open() plus the 12 appended response items.
+      expect(mirrorItemCount(cwd, "drift")).toBe(13);
+    } finally {
+      if (!closed) store.close();
+      rollout.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not expose vestigial threads.last_item_index", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
+    const store = new FileThreadStore({ cwd });
+    try {
+      store.close();
+      expect(threadsColumns(cwd)).not.toContain("last_item_index");
+    } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
   });

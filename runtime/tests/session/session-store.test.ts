@@ -1709,6 +1709,41 @@ describe("session-store", () => {
     rollout.close();
   });
 
+  test("rollout-commit callback failures do not fail or duplicate a canonical flush", () => {
+    const rollout = new RolloutStore({
+      cwd: "/home/test-rollout-commit-callback",
+      sessionId: "sess-rollout-commit-callback",
+      agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
+      autoStartScheduler: false,
+    });
+    rollout.open({
+      sessionId: "sess-rollout-commit-callback",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-rollout-commit-callback",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+    let callbacks = 0;
+    rollout.setOnRolloutCommitted(() => {
+      callbacks += 1;
+      throw new Error("injected mirror failure");
+    });
+    rollout.appendRollout({
+      type: "response_item",
+      payload: { role: "user", content: "written once" },
+    });
+
+    expect(() => rollout.flushDurable()).not.toThrow();
+    expect(callbacks).toBe(1);
+    expect(readFileSync(rollout.store.rolloutPath, "utf8")).toContain(
+      "written once",
+    );
+    expect(() => rollout.flushDurable()).not.toThrow();
+    expect(callbacks).toBe(1);
+
+    rollout.close();
+  });
   test("explicit canonical-tail sync fsyncs an empty pending batch and propagates failure", () => {
     const rollout = new RolloutStore({
       cwd: "/home/test-explicit-tail-sync",

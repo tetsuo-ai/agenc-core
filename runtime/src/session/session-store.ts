@@ -1470,6 +1470,8 @@ export class SessionStore {
    */
   private flushDepth = 0;
   private readonly deferredFlushDiagnostics: SessionStoreDiagnostic[] = [];
+  /** Best-effort mirror notification after rollout bytes are appended. */
+  private onRolloutCommitted?: (rolloutPath: string) => void;
   /**
    * I-38 async fsync retries currently in flight. Tracked so `close()`
    * can wait for them to settle (or so tests can await completion).
@@ -1870,6 +1872,12 @@ export class SessionStore {
     }
   }
 
+  setOnRolloutCommitted(
+    listener: ((rolloutPath: string) => void) | undefined,
+  ): void {
+    this.onRolloutCommitted = listener;
+  }
+
   private emitDiagnostic(d: SessionStoreDiagnostic): void {
     if (this.flushDepth > 0) {
       this.deferredFlushDiagnostics.push(d);
@@ -2187,6 +2195,12 @@ export class SessionStore {
         }
         this.fileSize += Buffer.byteLength(lines, "utf8");
         this.trajectoryExport.writeItems(toWrite);
+        try {
+          this.onRolloutCommitted?.(this.rolloutPath);
+        } catch {
+          // The rollout is already appended. A mirror callback cannot make this
+          // canonical flush fail or cause its items to be re-queued.
+        }
       } catch (err) {
         const safeToRequeue = !(err instanceof AppendRollbackError);
         if (!routeToDegraded(err, safeToRequeue)) {
