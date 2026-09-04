@@ -115,7 +115,7 @@ export interface AgencPromptResult {
 }
 
 export interface AgencTerminalStatus {
-  readonly code: number;
+  readonly code: 0 | 1 | 130;
   readonly message?: string;
 }
 
@@ -164,7 +164,7 @@ export function messageChunkFromNotification(
 /**
  * Detect the terminal status of a turn from a daemon notification. Mirrors
  * the CLI's `daemonOneShotFinalStatus`: `event.agent_status` with a terminal
- * run status, or a nested transcript `turn_complete`/`error` event.
+ * run status, or a nested transcript `turn_complete`/`turn_failed` event.
  */
 export function terminalStatusFromNotification(
   message: JsonObject,
@@ -211,7 +211,7 @@ export function terminalStatusFromNotification(
       ...(finalMessage !== undefined ? { message: finalMessage } : {}),
     };
   }
-  if (transcriptEvent.type === "error") {
+  if (transcriptEvent.type === "turn_failed") {
     const errorMessage =
       payload !== null && typeof payload.message === "string"
         ? payload.message

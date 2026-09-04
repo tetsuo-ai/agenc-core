@@ -179,15 +179,45 @@ describe("agentStatusFromEvent (reference parity)", () => {
     expect(status?.status).toBe("errored");
   });
 
-  it("error event maps to errored with payload message", () => {
-    const status = agentStatusFromEvent({
-      type: "error",
-      payload: { turnId: "t1", message: "boom" },
-    });
-    expect(status).toMatchObject({
+  it("error event is non-terminal unless a bounded legacy failure shape", () => {
+    expect(
+      agentStatusFromEvent({
+        type: "error",
+        payload: { turnId: "t1", message: "boom", cause: "stop_hook_threw" },
+      }),
+    ).toBeUndefined();
+    expect(
+      agentStatusFromEvent({
+        type: "error",
+        payload: {
+          turnId: "t1",
+          message: "boom",
+          cause: "background_agent_error",
+        },
+      }),
+    ).toMatchObject({
       status: "errored",
       turnId: "t1",
       error: "boom",
+    });
+  });
+
+  it("turn_failed maps to errored", () => {
+    expect(
+      agentStatusFromEvent({
+        type: "turn_failed",
+        payload: {
+          turnId: "t1",
+          cause: "background_agent_error",
+          message: "boom",
+          completedAt: 300,
+        },
+      }),
+    ).toMatchObject({
+      status: "errored",
+      turnId: "t1",
+      error: "boom",
+      endedAtMs: 300,
     });
   });
 

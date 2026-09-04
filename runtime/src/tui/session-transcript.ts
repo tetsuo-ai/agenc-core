@@ -21,7 +21,7 @@ import {
   isPermissionDeniedToolResult,
   PERMISSION_DENIED_TOOL_RESULT_MESSAGE,
 } from "./tool-result-denial.js";
-import { isTerminalDaemonErrorPayload } from "./daemon-terminal-error.js";
+import { isTurnLifecycleTerminalEvent } from "../session/turn-lifecycle-terminal.js";
 import { escapeXml } from "../utils/xml.js";
 
 /**
@@ -2113,6 +2113,20 @@ export function adaptTranscriptEvents(
         pendingToolInputDeltas.clear();
         out.push(makeSystemMessage(`Turn aborted: ${stringResult(payload.reason)}`, "warning", nextUuid()));
         break;
+      case "turn_failed":
+        if (typeof payload.message === "string" && payload.message.length > 0) {
+          out.push(makeSystemMessage(payload.message, "error", nextUuid()));
+        }
+        persistAssistantText(streamingText, nextUuid);
+        streamingText = "";
+        streamingThinking = null;
+        streamingToolUses.length = 0;
+        suppressedStreamingToolCallIds.clear();
+        suppressedStreamingToolInputIndexes.clear();
+        pendingToolInputDeltas.clear();
+        isStreaming = false;
+        currentTurnId = null;
+        break;
       case "execution_admission":
         // A denied model turn is the ONLY admission outcome a person must see:
         // the turn then "completes" in a few hundred ms with an empty
@@ -2657,11 +2671,11 @@ export function adaptTranscriptEvents(
       case "error":
       case "stream_error":
         out.push(makeSystemMessage(stringResult(payload.message), "error", nextUuid()));
-        // Raw session errors are diagnostic events. Agent-status run failures
-        // carry an explicit terminal marker from the daemon adapter.
+        // Raw session errors are diagnostic events. Terminal classification
+        // is centralized; only bounded legacy failure shapes close the turn.
         if (
           event.type === "error" &&
-          !isTerminalDaemonErrorPayload(payload)
+          !isTurnLifecycleTerminalEvent({ type: event.type, payload })
         ) {
           break;
         }

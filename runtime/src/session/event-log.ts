@@ -202,6 +202,19 @@ export interface TurnAbortedEvent {
 }
 
 /**
+ * Explicit terminal for a failed turn. Distinct from diagnostic `error`
+ * telemetry that may arrive mid-turn and still be followed by
+ * `turn_complete` / `turn_aborted`.
+ */
+export interface TurnFailedEvent {
+  readonly turnId: string;
+  readonly cause: string;
+  readonly message: string;
+  readonly completedAt?: number;
+  readonly durationMs?: number;
+}
+
+/**
  * GOAL #4b Stage 1 — durable iteration checkpoint.
  *
  * Emitted (fsync-durable — see `DURABLE_EVENT_TYPES`) at each consistent
@@ -1155,6 +1168,7 @@ export type EventMsg =
     }
   | { readonly type: "turn_complete"; readonly payload: TurnCompleteEvent }
   | { readonly type: "turn_aborted"; readonly payload: TurnAbortedEvent }
+  | { readonly type: "turn_failed"; readonly payload: TurnFailedEvent }
   | {
       readonly type: "turn_checkpoint";
       readonly payload: TurnCheckpointEvent;
@@ -1413,6 +1427,7 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "subagent_turn_outcome",
     "turn_complete",
     "turn_aborted",
+    "turn_failed",
     "turn_checkpoint",
     "turn_resumed",
     "thread_rolled_back",
@@ -1481,6 +1496,7 @@ const DURABLE_EVENT_TYPES = Object.freeze(
     "message_submission",
     "turn_complete",
     "turn_aborted",
+    "turn_failed",
     "error",
     "context_compacted",
     "subagent_turn_outcome",

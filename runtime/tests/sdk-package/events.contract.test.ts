@@ -1,8 +1,29 @@
 import { describe, expect, it } from "vitest";
 
-import { promptEventFromNotification } from "../../../packages/agenc-sdk/src/events";
+import {
+  promptEventFromNotification,
+  terminalStatusFromNotification,
+} from "../../../packages/agenc-sdk/src/events";
 
 describe("agenc-sdk prompt event mapping", () => {
+  it("only treats turn_failed, not diagnostic errors, as terminal", () => {
+    const diagnostic = {
+      jsonrpc: "2.0",
+      method: "event.session_event",
+      params: { event: { type: "error", payload: { message: "diagnostic" } } },
+    };
+    const failure = {
+      jsonrpc: "2.0",
+      method: "event.session_event",
+      params: { event: { type: "turn_failed", payload: { message: "failed" } } },
+    };
+
+    expect(terminalStatusFromNotification(diagnostic)).toBeNull();
+    expect(terminalStatusFromNotification(failure)).toEqual({
+      code: 1,
+      message: "failed",
+    });
+  });
   it("preserves a typed mobile client action on user-input requests", () => {
     const clientAction = {
       type: "ledger_solana_transfer_v1",

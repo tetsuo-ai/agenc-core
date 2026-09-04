@@ -1,5 +1,9 @@
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
 import {
+  isTurnLifecycleTerminalEvent,
+  turnLifecycleTerminalFromEvent,
+} from "../session/turn-lifecycle-terminal.js";
+import {
   agentInvocationGroupStartIndex,
   isAgentInvocationTurnBoundary,
 } from "../contracts/agent-invocation-envelope.js";
@@ -136,9 +140,12 @@ function snapshotTurnState(
       activeTurnClosed = false;
       return;
     }
+    const terminal = turnLifecycleTerminalFromEvent(msg);
     if (
-      (msg.type === "turn_complete" || msg.type === "turn_aborted") &&
-      (activeTurnId === undefined || msg.payload.turnId === activeTurnId)
+      terminal !== undefined &&
+      (activeTurnId === undefined ||
+        terminal.turnId === undefined ||
+        terminal.turnId === activeTurnId)
     ) {
       activeTurnClosed = true;
     }
@@ -158,8 +165,7 @@ function snapshotTurnState(
   }
   const hasTerminalBoundary = items.slice(lastUserPosition + 1).some((item) => {
     if (item.type !== "event_msg") return false;
-    const type = item.payload.msg.type;
-    return type === "turn_complete" || type === "turn_aborted";
+    return isTurnLifecycleTerminalEvent(item.payload.msg);
   });
   return { endsMidTurn: !hasTerminalBoundary };
 }

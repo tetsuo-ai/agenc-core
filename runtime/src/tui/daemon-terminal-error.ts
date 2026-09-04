@@ -1,7 +1,10 @@
+import { isLegacyTurnFailureErrorPayload } from "../session/turn-lifecycle-terminal.js";
+
+/**
+ * @deprecated Prefer {@link isLegacyTurnFailureErrorPayload} /
+ * {@link isTurnLifecycleTerminalEvent}. Kept as a thin alias for TUI call sites
+ * that still name the old helper.
+ */
 export function isTerminalDaemonErrorPayload(payload: unknown): boolean {
-  return (
-    payload !== null &&
-    typeof payload === "object" &&
-    (payload as { readonly terminal?: unknown }).terminal === true
-  );
+  return isLegacyTurnFailureErrorPayload(payload);
 }

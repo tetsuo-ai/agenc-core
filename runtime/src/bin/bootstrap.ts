@@ -380,6 +380,7 @@ const TRANSCRIPT_BOOT_EVENT_TYPES = new Set<string>([
   "turn_started",
   "turn_complete",
   "turn_aborted",
+  "turn_failed",
   "user_message",
   "token_count",
   "agent_message",

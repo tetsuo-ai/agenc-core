@@ -8,7 +8,7 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { AgenCDaemonResponseError } from "../app-server/agent-cli.js";
-import { isTerminalDaemonErrorPayload } from "./daemon-terminal-error.js";
+import { isTurnLifecycleTerminalEvent } from "../session/turn-lifecycle-terminal.js";
 import type {
   AgentAttachParams,
   AgenCDaemonMethod,
@@ -228,6 +228,7 @@ const ACTIVE_DAEMON_TRANSCRIPT_EVENTS = new Set([
 const TERMINAL_DAEMON_TRANSCRIPT_EVENTS = new Set([
   "turn_complete",
   "turn_aborted",
+  "turn_failed",
   "error",
 ]);
 
@@ -836,17 +837,17 @@ export function createDaemonTuiSession<
       return;
     }
     const eventType = (event as { readonly type?: unknown }).type;
-    // Raw session errors are diagnostic events. A terminal agent-status error
-    // carries an explicit marker added by transcriptEventFromAgentStatus.
+    // Raw session errors are diagnostic events. Terminal failures use
+    // turn_failed (or bounded legacy error payloads classified centrally).
     if (
       typeof eventType === "string" &&
       TERMINAL_DAEMON_TRANSCRIPT_EVENTS.has(eventType)
     ) {
       if (
-        eventType === "error" &&
-        !isTerminalDaemonErrorPayload(
-          (event as { readonly payload?: unknown }).payload,
-        )
+        !isTurnLifecycleTerminalEvent({
+          type: eventType,
+          payload: (event as { readonly payload?: unknown }).payload,
+        })
       ) {
         return;
       }
@@ -3082,13 +3083,12 @@ function transcriptEventFromAgentStatus(params: JsonObject): JsonObject {
   if (status === "error") {
     return {
       id: daemonTranscriptEventId(params, turnId),
-      type: "error",
+      type: "turn_failed",
       payload: {
         turnId,
+        cause: "agent_status",
         message:
           typeof params.message === "string" ? params.message : "agent error",
-        terminal: true,
-        terminalSource: "agent_status",
         ...(typeof params.runStatus === "string"
           ? { runStatus: params.runStatus }
           : {}),

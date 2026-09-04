@@ -74,6 +74,10 @@ function errorEvent(message: string): RolloutItem {
   return eventItem({ type: "error", payload: { cause: "test", message } });
 }
 
+function turnFailed(message: string): RolloutItem {
+  return eventItem({ type: "turn_failed", payload: { cause: "test", message } });
+}
+
 function streamErrorEvent(message: string): RolloutItem {
   return eventItem({
     type: "stream_error",
@@ -154,6 +158,13 @@ describe("classifyTrajectory filtering", () => {
       ...cleanSessionItems(),
       errorEvent("provider exploded"),
     ]);
+    expect(c.hasErrorEvent).toBe(true);
+    expect(isSftEligible(c)).toBe(false);
+    expect(isDpoEligible(c)).toBe(false);
+  });
+
+  test("a session with a turn_failed event is excluded", () => {
+    const c = classifyTrajectory([...cleanSessionItems(), turnFailed("provider exploded")]);
     expect(c.hasErrorEvent).toBe(true);
     expect(isSftEligible(c)).toBe(false);
     expect(isDpoEligible(c)).toBe(false);

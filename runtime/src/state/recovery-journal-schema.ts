@@ -935,6 +935,10 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
     },
   ),
   turn_aborted: objectShape({ reason: isString }, { turnId: isString }),
+  turn_failed: objectShape(
+    { turnId: isString, cause: isString, message: isString },
+    { completedAt: isNumber, durationMs: isNumber },
+  ),
   turn_checkpoint: isTurnCheckpoint,
   turn_resumed: objectShape(
     {

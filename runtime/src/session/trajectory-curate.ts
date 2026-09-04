@@ -246,6 +246,7 @@ export function classifyTrajectory(
         hasTurnComplete = true;
         break;
       case "error":
+      case "turn_failed":
         hasErrorEvent = true;
         break;
       case "turn_aborted":

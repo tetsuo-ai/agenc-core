@@ -25,6 +25,7 @@
 
 import { BehaviorSubject } from "./_deps/behavior-subject.js";
 import { monotonicMs } from "./_deps/monotonic.js";
+import { turnLifecycleTerminalFromEvent } from "../session/turn-lifecycle-terminal.js";
 
 export type AgentStatus =
   | { readonly status: "pending_init" }
@@ -101,10 +102,13 @@ export function isFinal(status: AgentStatus): boolean {
  *   - TurnAborted(Interrupted   -> Interrupted
  *                |BudgetLimited)
  *   - TurnAborted(other)        -> Errored(reason)
- *   - Error                     -> Errored(message)
+ *   - TurnFailed                -> Errored(message)
+ *   - Error (legacy failure     -> Errored(message)
+ *            shapes only)
  *   - ShutdownComplete          -> Shutdown
  *   - else                      -> None
  *
+ * Diagnostic `error` events (stop_hook_threw, etc.) do not transition.
  * AgenC's TurnAbortedEvent.reason is a free-text string; the mapper
  * recognizes the two reference interrupt-class reasons and treats anything
  * else as an errored transition.
@@ -167,17 +171,30 @@ export function agentStatusFromEvent(event: {
         error: payload.reason ?? "errored",
       };
     }
-    case "error": {
+    case "turn_failed": {
       const payload =
         (event.payload as {
           turnId?: string;
           message?: string;
+          completedAt?: number;
         }) ?? {};
       return {
         status: "errored",
         turnId: payload.turnId ?? "",
-        endedAtMs: Date.now(),
+        endedAtMs: payload.completedAt ?? Date.now(),
         error: payload.message ?? "error",
+      };
+    }
+    case "error": {
+      // Diagnostic telemetry is non-terminal. Only bounded legacy failure
+      // shapes (and never stop_hook_threw / compaction diagnostics) close.
+      const terminal = turnLifecycleTerminalFromEvent(event);
+      if (terminal?.kind !== "failed") return undefined;
+      return {
+        status: "errored",
+        turnId: terminal.turnId ?? "",
+        endedAtMs: Date.now(),
+        error: terminal.message ?? "error",
       };
     }
     default:

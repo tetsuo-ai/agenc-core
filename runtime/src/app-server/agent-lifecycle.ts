@@ -5356,6 +5356,12 @@ function formatEventMessageForLog(
         "system",
         `turn aborted: ${msg.payload.reason}`,
       );
+    case "turn_failed":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine(
+        "system",
+        `turn failed: ${msg.payload.message}`,
+      );
     case "tool_call_started":
       delta.flushAssistantDelta();
       return formatTranscriptLine(

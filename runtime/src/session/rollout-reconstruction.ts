@@ -732,19 +732,20 @@ export function reconstructFromRollout(
             const payload = (
               inner as unknown as { payload: { turnId: string } }
             ).payload;
-            if (active.turnId === undefined) active.turnId = payload.turnId;
+            active.turnId ??= payload.turnId;
             seenTerminated.add(payload.turnId);
             break;
           }
-          case "turn_aborted": {
+          case "turn_aborted":
+          case "turn_failed": {
             if (!active) active = emptySegment();
             const payload = (
               inner as unknown as { payload: { turnId?: string } }
             ).payload;
-            if (active.turnId === undefined && payload.turnId) {
-              active.turnId = payload.turnId;
+            if (payload.turnId) {
+              active.turnId ??= payload.turnId;
+              seenTerminated.add(payload.turnId);
             }
-            if (payload.turnId) seenTerminated.add(payload.turnId);
             break;
           }
           case "user_message": {
@@ -822,7 +823,11 @@ export function reconstructFromRollout(
       }
       continue;
     }
-    if (inner.type === "turn_complete" || inner.type === "turn_aborted") {
+    if (
+      inner.type === "turn_complete" ||
+      inner.type === "turn_aborted" ||
+      inner.type === "turn_failed"
+    ) {
       const payload = inner.payload as { turnId?: string };
       if (typeof payload?.turnId === "string") {
         seenTerminated.add(payload.turnId);
