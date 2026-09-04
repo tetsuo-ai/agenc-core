@@ -138,6 +138,7 @@ results and a `metrics` block; the task carries the aggregate:
 | `compactions`, `compactionAttempts`, `compactionFailures`, `compactionRollbacks` | live `history_reset` plus rollout `compaction_*` records | context management pressure and its failure rate |
 | `promptTokensFirst`, `promptTokensLast`, `cachedTokensLast`, `cachedTokensMax` | rollout `token_count` | context growth and prompt-cache behaviour |
 | `permissionRequests` | live events | approvals the unattended run had to deny |
+| `providerFailures` | rollout `execution_admission` `held_unknown` records | model turns the provider dropped after dispatch; a step that did no work because of one is an error, not a pass |
 | `assistantMessages`, `assistantChars`, `reasoningOutputTokens` | live events and rollout | verbosity and reasoning spend |
 
 `check:eval-regression` derives tool-error rate, re-read ratio, compactions per

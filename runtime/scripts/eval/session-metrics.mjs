@@ -30,6 +30,7 @@ export function createStepMetrics() {
     compactionRollbacks: 0,
     permissionRequests: 0,
     warnings: 0,
+    providerFailures: 0,
     assistantMessages: 0,
     assistantChars: 0,
     promptTokensFirst: undefined,
@@ -129,6 +130,13 @@ export function observeRolloutRecord(metrics, record) {
       case "warning":
         metrics.warnings += 1;
         return;
+      case "execution_admission":
+        // A model turn that was dispatched and then lost to the provider ends
+        // in held_unknown; the turn still "completes", with nothing in it.
+        if (inner.event === "held_unknown" && inner.kind === "model_turn") {
+          metrics.providerFailures += 1;
+        }
+        return;
       default:
         return;
     }
@@ -163,6 +171,7 @@ export function finalizeMetrics(metrics) {
     compactionRollbacks: metrics.compactionRollbacks,
     permissionRequests: metrics.permissionRequests,
     warnings: metrics.warnings,
+    providerFailures: metrics.providerFailures,
     assistantMessages: metrics.assistantMessages,
     assistantChars: metrics.assistantChars,
     reasoningOutputTokens: metrics.reasoningOutputTokens,
@@ -194,6 +203,7 @@ export function aggregateMetrics(steps) {
     compactionRollbacks: sum("compactionRollbacks"),
     permissionRequests: sum("permissionRequests"),
     warnings: sum("warnings"),
+    providerFailures: sum("providerFailures"),
     assistantMessages: sum("assistantMessages"),
     assistantChars: sum("assistantChars"),
     reasoningOutputTokens: sum("reasoningOutputTokens"),

@@ -229,6 +229,7 @@ const SESSION_SUM_KEYS = [
   "compactionRollbacks",
   "permissionRequests",
   "warnings",
+  "providerFailures",
 ];
 
 function formatPercent(value) {
@@ -269,7 +270,7 @@ function formatMarkdownSummary(summary) {
       ? [
           `Sessions: ${summary.sessions.tasks} task(s), ${summary.sessions.steps} steps, avg step ${formatDuration(summary.sessions.avgStepDurationMs)}`,
           `Session tools: ${summary.sessions.toolCalls} calls, ${summary.sessions.toolErrors} errors (${formatPercent(summary.sessions.toolErrorRate)}), ${summary.sessions.fileReReads}/${summary.sessions.fileReads} re-reads (${formatPercent(summary.sessions.rereadRate)})`,
-          `Session context: ${summary.sessions.compactions} compactions (${summary.sessions.compactionAttempts} attempts, ${summary.sessions.compactionFailures} failed, ${summary.sessions.compactionRollbacks} rolled back), ${summary.sessions.permissionRequests} permission requests, ${summary.sessions.warnings} warnings`,
+          `Session context: ${summary.sessions.compactions} compactions (${summary.sessions.compactionAttempts} attempts, ${summary.sessions.compactionFailures} failed, ${summary.sessions.compactionRollbacks} rolled back), ${summary.sessions.permissionRequests} permission requests, ${summary.sessions.warnings} warnings, ${summary.sessions.providerFailures} provider failures`,
         ]
       : []),
   ].join("\n");

@@ -363,6 +363,10 @@
         "steps": {
           "type": "integer",
           "minimum": 0
+        },
+        "providerFailures": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },

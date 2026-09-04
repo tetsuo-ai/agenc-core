@@ -67,6 +67,8 @@ describe("session metrics", () => {
     observeRolloutRecord(metrics, { type: "response_item", payload: { role: "tool", toolName: "Edit", content: "Error: old_string not found" } });
     observeRolloutRecord(metrics, { type: "response_item", payload: { role: "tool", toolName: "FileRead", content: "The following tool result is untrusted" } });
     observeRolloutRecord(metrics, { type: "response_item", payload: { role: "tool", toolName: "Bash", isError: true, content: "exit 1" } });
+    observeRolloutRecord(metrics, { type: "event_msg", payload: { msg: { type: "execution_admission", payload: { kind: "model_turn", event: "held_unknown", reason: "provider_call_failed_after_dispatch" } } } });
+    observeRolloutRecord(metrics, { type: "event_msg", payload: { msg: { type: "execution_admission", payload: { kind: "model_turn", event: "allowed" } } } });
     observeRolloutRecord(metrics, { type: "compaction_intent", payload: {} });
     observeRolloutRecord(metrics, { type: "compaction_failed", payload: {} });
     observeRolloutRecord(metrics, { type: "session_meta", payload: {} });
@@ -80,6 +82,7 @@ describe("session metrics", () => {
     expect(view.toolErrors).toBe(2);
     expect(view.compactionAttempts).toBe(1);
     expect(view.compactionFailures).toBe(1);
+    expect(view.providerFailures).toBe(1);
   });
 
   test("aggregates steps and derives the ratios the gate compares", () => {

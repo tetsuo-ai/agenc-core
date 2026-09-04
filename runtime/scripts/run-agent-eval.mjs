@@ -854,20 +854,31 @@ async function runSessionTask({ task, taskDir, cwd, timeoutMs, commands, riskFla
         tokens.output += stepTokens.output ?? 0;
         tokens.total += stepTokens.total ?? (stepTokens.input ?? 0) + (stepTokens.output ?? 0);
       }
-      const exitCode = stepError ? 1 : stepResult?.exitCode ?? 1;
+      // A turn the provider dropped after dispatch "completes" with an empty
+      // message and exit 0. That is not a pass: the prompt did no work.
+      const providerDropped = !stepError
+        && metrics.providerFailures > 0
+        && metrics.toolCalls === 0
+        && (stepResult?.finalMessage ?? "").trim().length === 0;
+      if (providerDropped) riskFlags.add("provider_call_failed");
+      const exitCode = stepError ? 1 : providerDropped ? 1 : stepResult?.exitCode ?? 1;
       if (exitCode !== 0) riskFlags.add("agent_command_failed");
       const verifiers = exitCode === 0
         ? await runStepVerifiers(step, task, cwd, taskDir, timeoutMs, rawResults, riskFlags)
         : [];
       const notes = stepError
         ? `step ${step.id}: ${stepError.message}`.slice(0, 1000)
-        : undefined;
+        : providerDropped
+          ? `step ${step.id}: the provider call failed after dispatch and the turn completed empty`
+          : undefined;
       steps.push({
         id: step.id,
         status: exitCode !== 0 ? "error" : verifierStatus(verifiers),
         durationMs: Math.round(performance.now() - stepStarted),
         ...(stepTokens ? { tokens: stepTokens } : {}),
-        ...(stepResult?.stopReason ? { stopReason: String(stepResult.stopReason) } : {}),
+        ...(providerDropped
+          ? { stopReason: "provider_failed" }
+          : stepResult?.stopReason ? { stopReason: String(stepResult.stopReason) } : {}),
         exitCode,
         metrics: finalizeMetrics(metrics),
         verifiers,
