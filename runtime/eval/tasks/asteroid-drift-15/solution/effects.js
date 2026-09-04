@@ -1,7 +1,9 @@
+import { random } from './random.js'
+
 export function explode(particles, x, y) {
   for (let index = 0; index < 40; index += 1) {
-    const angle = Math.random() * Math.PI * 2
-    const speed = 60 + Math.random() * 180
+    const angle = random() * Math.PI * 2
+    const speed = 60 + random() * 180
     particles.push({ x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life: 0.8 })
   }
 }
@@ -17,5 +19,5 @@ export function stepParticles(particles, dt) {
 
 export function shakeOffset(shake) {
   if (shake <= 0) return { x: 0, y: 0 }
-  return { x: (Math.random() - 0.5) * shake * 12, y: (Math.random() - 0.5) * shake * 12 }
+  return { x: (random() - 0.5) * shake * 12, y: (random() - 0.5) * shake * 12 }
 }

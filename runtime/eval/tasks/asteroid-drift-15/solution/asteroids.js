@@ -1,6 +1,8 @@
+import { random } from './random.js'
+
 export function spawnAsteroid(width, speedScale) {
-  const radius = 10 + Math.random() * 18
-  return { x: radius + Math.random() * (width - radius * 2), y: -radius, radius, vy: (90 + Math.random() * 120) * speedScale }
+  const radius = 10 + random() * 18
+  return { x: radius + random() * (width - radius * 2), y: -radius, radius, vy: (90 + random() * 120) * speedScale }
 }
 
 export function stepAsteroids(asteroids, dt, height, timeScale) {
