@@ -161,6 +161,9 @@ the memory directory, and never blocks a turn: in-flight runs are drained at
 session shutdown. Every gate that stops a run and every failed run emits a
 `warning` event with cause `memory_extraction_skipped` or
 `memory_extraction_failed` (session log only; not shown in the transcript).
+The same run may also propose a draft skill; those outcomes use cause
+`skill_candidate_proposed` or `skill_candidate_skipped` and are described in
+[skills-plugins.md](skills-plugins.md#skill-candidates).
 
 Query-time recall of those files uses the full-corpus index below when a
 resolved `AGENC_HOME` is available. Session-start recall never uses the index.
