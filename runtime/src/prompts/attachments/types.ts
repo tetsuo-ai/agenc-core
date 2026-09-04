@@ -330,6 +330,17 @@ export interface SkillRelevanceAttachment {
 }
 
 /**
+ * The workspace instructions or the persistent memory index changed since the
+ * session started; the head of the prompt keeps the first version so the
+ * cached prefix holds, and this carries the current one.
+ */
+export interface InstructionUpdateAttachment {
+  readonly kind: "instruction_update";
+  readonly workspaceText?: string;
+  readonly memoryText?: string;
+}
+
+/**
  * Passive diagnostics published by configured LSP servers.
  * Source: upstream attachment donor `attachments.ts:2912-2954`.
  */
@@ -374,6 +385,7 @@ export type Attachment =
   | McpResourceAttachment
   | SkillListingAttachment
   | SkillRelevanceAttachment
+  | InstructionUpdateAttachment
   | LspDiagnosticsAttachment;
 
 /** All possible `Attachment.kind` values. */
