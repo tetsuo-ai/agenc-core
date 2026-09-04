@@ -2117,6 +2117,116 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
+  it("does not promote ambient fetch into a provider transport override", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_MODEL: "qwen3.8-max",
+          AGENC_PROVIDER: "qwen",
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+          QWEN_API_KEY: "qwen-test-key",
+        },
+        argv: ["node", "agenc", "--provider", "qwen"],
+      });
+      shutdown = boot.shutdown;
+
+      expect(createProviderSpy).toHaveBeenCalledWith(
+        "qwen",
+        expect.objectContaining({
+          extra: expect.not.objectContaining({ fetchImpl: expect.anything() }),
+        }),
+      );
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves a caller-provided provider transport override", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const fetchImpl = offlineFetchFixture();
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        fetchImpl,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_MODEL: "qwen3.8-max",
+          AGENC_PROVIDER: "qwen",
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+          QWEN_API_KEY: "qwen-test-key",
+        },
+        argv: ["node", "agenc", "--provider", "qwen"],
+      });
+      shutdown = boot.shutdown;
+
+      expect(createProviderSpy).toHaveBeenCalledWith(
+        "qwen",
+        expect.objectContaining({
+          extra: expect.objectContaining({ fetchImpl }),
+        }),
+      );
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("keeps Gemini environment keys out of explicit factory precedence", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));

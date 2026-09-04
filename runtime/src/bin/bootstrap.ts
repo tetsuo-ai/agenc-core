@@ -1344,7 +1344,11 @@ async function bootstrapLocalRuntimeSessionScoped(
                 : `${provider}/${selection.model} rejected a capability the registry claimed it supported: ${warning.message}`,
           });
         },
-        fetchImpl,
+        // Only propagate an actual embedder override. Passing the resolved
+        // global fetch here makes providers unable to distinguish the normal
+        // runtime path from an authority-boundary/custom transport. Qwen uses
+        // that distinction to install its official-host DNS recovery path.
+        ...(options.fetchImpl !== undefined ? { fetchImpl } : {}),
         sandboxExecutionBroker,
       },
     });
