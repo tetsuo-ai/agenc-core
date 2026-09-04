@@ -329,8 +329,18 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
         wrapSystemReminder(`${SKILL_LISTING_REMINDER_HEADER}\n\n${content}`),
       );
     }
+    case "skill_relevance": {
+      const content = sanitizeSystemReminderContent(attachment.content);
+      return userContextMessage(
+        wrapSystemReminder(`${SKILL_RELEVANCE_REMINDER_HEADER}\n\n${content}`),
+      );
+    }
   }
 }
+
+/** Opening sentence of the per-request `skill_relevance` reminder. */
+export const SKILL_RELEVANCE_REMINDER_HEADER =
+  "Skills relevant to this request that the listing above did not include. Invoke the Skill tool with the name when one fits:";
 
 /**
  * Opening sentence of the rendered `skill_listing` reminder. The producer

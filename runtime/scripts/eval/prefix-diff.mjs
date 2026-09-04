@@ -73,6 +73,19 @@ function toolsDivergence(prevTools, nextTools) {
   return { field: "tools", added, removed, reordered, changedSchemas };
 }
 
+/**
+ * The trailing system item (the dynamic suffix) is the same in both requests
+ * and only moved to the end because `next` appended history before it. Every
+ * byte before it is unchanged, so the cached prefix survives.
+ */
+function suffixMoved(prevInput, nextInput, index) {
+  if (index !== prevInput.length - 1) return false;
+  const tail = prevInput[index];
+  if (itemLabel(tail) !== "system") return false;
+  if (nextInput.length <= prevInput.length) return false;
+  return text(nextInput[nextInput.length - 1]) === text(tail);
+}
+
 function divergenceAt(field, index, role, offsetChars, a, b, at) {
   return {
     field,
@@ -105,6 +118,17 @@ export function firstDivergence(prev, next) {
     const a = text(prevInput[index]);
     const b = text(nextInput[index]);
     if (a !== b) {
+      if (suffixMoved(prevInput, nextInput, index)) {
+        return {
+          field: "input",
+          index,
+          role: itemLabel(prevInput[index]),
+          suffixMoved: true,
+          appended: nextInput.length - prevInput.length,
+          offsetChars: charsBefore,
+          approxTokens: Math.round(charsBefore / CHARS_PER_TOKEN),
+        };
+      }
       const at = commonPrefixLength(a, b);
       return {
         ...divergenceAt("input", index, itemLabel(prevInput[index]), charsBefore + at, a, b, at),
@@ -136,8 +160,15 @@ export function firstDivergence(prev, next) {
   return null;
 }
 
+export function isPrefixStable(divergence) {
+  return divergence === null || divergence.suffixMoved === true;
+}
+
 export function describeDivergence(divergence) {
   if (divergence === null) return "prefix unchanged; input only appended";
+  if (divergence.suffixMoved === true) {
+    return `prefix unchanged up to the trailing system suffix at offset ${divergence.offsetChars} chars (~${divergence.approxTokens} tokens); ${divergence.appended} item(s) appended before it`;
+  }
   const indexed = divergence.index !== undefined && divergence.index >= 0;
   const where = `${divergence.field}${indexed ? `[${divergence.index}]` : ""}`;
   const position = `offset ${divergence.offsetChars} chars (~${divergence.approxTokens} tokens)`;
@@ -160,7 +191,7 @@ export function reportPrefixStability(requests) {
   let stable = 0;
   for (let index = 1; index < requests.length; index += 1) {
     const divergence = firstDivergence(requests[index - 1].body, requests[index].body);
-    if (divergence === null) stable += 1;
+    if (isPrefixStable(divergence)) stable += 1;
     lines.push(`#${requests[index - 1].seq} -> #${requests[index].seq}: ${describeDivergence(divergence)}`);
   }
   lines.push(`${requests.length} requests, ${Math.max(0, requests.length - 1)} pairs, ${stable} with an unchanged prefix`);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeDivergence, firstDivergence, reportPrefixStability } from "../../scripts/eval/prefix-diff.mjs";
+import { describeDivergence, firstDivergence, isPrefixStable, reportPrefixStability } from "../../scripts/eval/prefix-diff.mjs";
 
 const base = {
   instructions: "You are the agent.",
@@ -40,6 +40,17 @@ describe("firstDivergence", () => {
     const divergence = firstDivergence(base, next);
     expect(divergence).toMatchObject({ field: "tools", added: ["Grep"], removed: [], reordered: true, changedSchemas: ["FileRead"] });
     expect(describeDivergence(divergence)).toContain("added Grep");
+  });
+
+  it("treats the trailing system suffix moving to the end as an unchanged prefix", () => {
+    const suffix = { role: "system", content: "# Session-specific guidance" };
+    const prev = { ...base, input: [...base.input, suffix] };
+    const next = { ...base, input: [...base.input, { role: "assistant", content: "ok" }, { role: "tool", content: "r" }, suffix] };
+    const divergence = firstDivergence(prev, next);
+    expect(divergence).toMatchObject({ field: "input", index: 2, suffixMoved: true, appended: 2 });
+    expect(isPrefixStable(divergence)).toBe(true);
+    expect(describeDivergence(divergence)).toContain("trailing system suffix");
+    expect(reportPrefixStability([{ seq: 1, body: prev }, { seq: 2, body: next }]).at(-1)).toBe("2 requests, 1 pairs, 1 with an unchanged prefix");
   });
 
   it("reports removed input items as a divergence at the removal point", () => {

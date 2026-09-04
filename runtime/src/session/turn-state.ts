@@ -281,6 +281,13 @@ export interface TurnState {
   messagesForQuery: LLMMessage[];
 
   /**
+   * Set once the turn's first sampling request has placed its attachments
+   * before the prompt; later requests of the same turn append theirs after
+   * the newest history item so the bytes already sent stay in place.
+   */
+  attachmentsAnchoredForTurn?: boolean;
+
+  /**
    * Fully resolved system/developer/workspace instruction envelope for this
    * turn. Kept outside conversation history so providers receive it exactly
    * once through their native system-prompt field on every retry/iteration.
