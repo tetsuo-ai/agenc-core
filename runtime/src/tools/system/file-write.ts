@@ -62,7 +62,7 @@ import {
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
-import { notifyLspFileChanged } from "../../services/lsp/fileNotifications.js";
+import { collectEditFeedback } from "../../services/lsp/fileNotifications.js";
 import {
   prepareWorkspaceMutation,
   WorkspaceMutationCoordinatorError,
@@ -590,7 +590,7 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
         );
       }
 
-      notifyLspFileChanged(absolutePath, content);
+      const lspFeedback = await collectEditFeedback(absolutePath, content);
 
       // Record the post-write content as the session's view of the
       // file so subsequent overwrites/edits in the same session do
@@ -631,9 +631,11 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
       void existingStat;
       return {
         ...successResult(
-          existed
-            ? `The file ${filePath} has been updated successfully.`
-            : `File created successfully at: ${filePath}`,
+          `${
+            existed
+              ? `The file ${filePath} has been updated successfully.`
+              : `File created successfully at: ${filePath}`
+          }${lspFeedback}`,
         ),
         metadata: buildFileMutationMetadata({
           filePath,

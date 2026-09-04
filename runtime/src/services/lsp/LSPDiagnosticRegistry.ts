@@ -27,15 +27,22 @@ const MAX_TOTAL_DIAGNOSTICS = 30;
 const MAX_DELIVERED_FILES = 500;
 export const MAX_DELIVERED_DIAGNOSTICS_PER_FILE = 100;
 
+interface FileDiagnosticWaiter {
+  readonly file: string;
+  readonly resolve: (file: DiagnosticFile | undefined) => void;
+}
+
 interface LSPDiagnosticState {
   readonly pendingDiagnostics: Map<string, PendingLSPDiagnostic>;
   readonly deliveredDiagnostics: LRUCache<string, Set<string>>;
+  readonly fileWaiters: Set<FileDiagnosticWaiter>;
 }
 
 function createDiagnosticState(): LSPDiagnosticState {
   return {
     pendingDiagnostics: new Map(),
     deliveredDiagnostics: new LRUCache({ max: MAX_DELIVERED_FILES }),
+    fileWaiters: new Set(),
   };
 }
 
@@ -200,6 +207,7 @@ export function registerPendingLSPDiagnostic(input: {
 }, scope?: LSPDiagnosticScope): void {
   const state = stateForScope(scope, true)!;
   for (const file of input.files) {
+    settleFileWaiters(state, file);
     reconcileDeliveredDiagnosticsForFile(state, file);
     const key = pendingKey(input.serverName, file.uri);
     if (file.diagnostics.length === 0) {
@@ -212,6 +220,71 @@ export function registerPendingLSPDiagnostic(input: {
       timestamp: Date.now(),
       attachmentSent: false,
     });
+  }
+}
+
+function settleFileWaiters(state: LSPDiagnosticState, file: DiagnosticFile): void {
+  for (const waiter of Array.from(state.fileWaiters)) {
+    if (!fileMatches(waiter.file, file.uri)) continue;
+    state.fileWaiters.delete(waiter);
+    waiter.resolve({
+      uri: file.uri,
+      diagnostics: file.diagnostics.map((diagnostic) => ({ ...diagnostic })),
+    });
+  }
+}
+
+/**
+ * Resolve with the next diagnostics publication for one file, including an
+ * empty publication (the server reports the file clean), or with undefined
+ * when nothing arrives within `timeoutMs`. The file mutation tools use it to
+ * fold the language server's verdict into the edit result in the same turn.
+ */
+export function waitForFileDiagnostics(
+  file: string,
+  timeoutMs: number,
+  scope?: LSPDiagnosticScope,
+): Promise<DiagnosticFile | undefined> {
+  const state = stateForScope(scope, true)!;
+  return new Promise((resolvePromise) => {
+    let timer: NodeJS.Timeout | undefined;
+    const waiter: FileDiagnosticWaiter = {
+      file,
+      resolve: (result) => {
+        if (timer !== undefined) clearTimeout(timer);
+        resolvePromise(result);
+      },
+    };
+    state.fileWaiters.add(waiter);
+    // The timer is deliberately not unref'd: the mutation tool is awaiting this
+    // bounded wait, and the loop must stay alive until the server answers or
+    // the window closes.
+    timer = setTimeout(() => {
+      state.fileWaiters.delete(waiter);
+      resolvePromise(undefined);
+    }, Math.max(0, timeoutMs));
+  });
+}
+
+/**
+ * Take one file's pending diagnostics out of the next-turn attachment and
+ * remember them as delivered, because the caller already showed them.
+ */
+export function consumePendingDiagnosticsForFile(
+  file: string,
+  scope?: LSPDiagnosticScope,
+): void {
+  const state = stateForScope(scope, false);
+  if (state === undefined) return;
+  for (const [key, pending] of state.pendingDiagnostics.entries()) {
+    const matching = pending.files.filter((candidate) => fileMatches(candidate.uri, file));
+    if (matching.length === 0) continue;
+    for (const candidate of matching) {
+      for (const diagnostic of candidate.diagnostics) {
+        rememberDeliveredDiagnostic(state, candidate.uri, diagnosticKey(diagnostic));
+      }
+    }
+    state.pendingDiagnostics.delete(key);
   }
 }
 
@@ -292,6 +365,8 @@ export function clearAllLSPDiagnostics(scope?: LSPDiagnosticScope): void {
 
 export function resetAllLSPDiagnosticState(): void {
   for (const state of activeDiagnosticStates) {
+    for (const waiter of state.fileWaiters) waiter.resolve(undefined);
+    state.fileWaiters.clear();
     state.pendingDiagnostics.clear();
     state.deliveredDiagnostics.clear();
   }

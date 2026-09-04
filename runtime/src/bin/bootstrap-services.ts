@@ -88,6 +88,7 @@ import { createHookExecutionAuthority } from "../hooks/execution-authority.js";
 import { createAutoFixPostToolHook } from "../services/autoFix/autoFixHook.js";
 import { isProjectTrustedSync } from "../permissions/trust/project-trust.js";
 import { parseLspServersConfig } from "../services/lsp/config.js";
+import { builtinLspServerConfigs } from "../services/lsp/builtinServers.js";
 import {
   getInitializationStatus as getLspInitializationStatus,
   initializeLspServerManager,
@@ -477,7 +478,18 @@ export function loadBootstrapHooks(opts: {
 function readConfiguredLspServers(
   cfg: ReturnType<ConfigStore["current"]>,
 ): ReturnType<typeof parseLspServersConfig> {
-  return parseLspServersConfig(cfg.lsp_servers);
+  const parsed = parseLspServersConfig(cfg.lsp_servers);
+  if (!parsed.success) return parsed;
+  // Built-in profiles fill in a language server for TypeScript, Python, Go and
+  // Rust when the binary is on PATH; a configured server that claims any of
+  // the same extensions wins. See builtinServers.ts for why only PATH counts.
+  return {
+    success: true,
+    servers: {
+      ...builtinLspServerConfigs({ configured: parsed.servers }),
+      ...parsed.servers,
+    },
+  };
 }
 
 interface BootstrapLspServerOptions {
