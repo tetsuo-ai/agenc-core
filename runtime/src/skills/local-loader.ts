@@ -1106,7 +1106,12 @@ export function buildSkillListingWithinBudget(
   skills: readonly SkillListingEntry[],
   contextWindowTokens?: number,
   request?: string | null,
-): { readonly listing: string; readonly stats: SkillListingStats } {
+): {
+  readonly listing: string;
+  readonly stats: SkillListingStats;
+  /** Names of the skills whose lines made it into the listing. */
+  readonly listedNames: readonly string[];
+} {
   const commands = skills.filter((skill) => !skill.disableModelInvocation);
   const tokensForStats = requestMatchTokens(request);
   const emptyStats = (budgetChars: number): SkillListingStats => ({
@@ -1118,7 +1123,11 @@ export function buildSkillListingWithinBudget(
     ranked: false,
   });
   if (commands.length === 0) {
-    return { listing: "", stats: emptyStats(getListingCharBudget(contextWindowTokens)) };
+    return {
+      listing: "",
+      stats: emptyStats(getListingCharBudget(contextWindowTokens)),
+      listedNames: [],
+    };
   }
   const budget = getListingCharBudget(contextWindowTokens);
   const fullLines = commands.map(formatSkillListingLine);
@@ -1135,6 +1144,7 @@ export function buildSkillListingWithinBudget(
         usedChars: fullTotal,
         ranked: false,
       },
+      listedNames: commands.map((skill) => skill.name),
     };
   }
 
@@ -1167,6 +1177,7 @@ export function buildSkillListingWithinBudget(
     )
     .map((entry) => entry.skill);
   const lines = bundled.map(formatSkillListingLine);
+  const listedNames = bundled.map((skill) => skill.name);
   let used = lines.reduce((sum, line) => sum + line.length + 1, 0);
   const reserve = formatHiddenSkillsLine(rest.length).length + 1;
   let shown = 0;
@@ -1176,6 +1187,7 @@ export function buildSkillListingWithinBudget(
     // than one line, so the listing never degrades to a bare count.
     if (shown > 0 && used + line.length + reserve > budget) break;
     lines.push(line);
+    listedNames.push(skill.name);
     used += line.length + 1;
     shown += 1;
   }
@@ -1192,6 +1204,40 @@ export function buildSkillListingWithinBudget(
       usedChars: listing.length,
       ranked: tokensForStats.length > 0,
     },
+    listedNames,
+  };
+}
+
+/**
+ * The skills a request is about that are not yet in front of the model:
+ * relevance-ranked lines for up to `limit` invocable skills outside
+ * `exclude`, or nothing when the request carries no matchable words.
+ */
+export function rankSkillsForRequest(
+  skills: readonly SkillListingEntry[],
+  request: string | null | undefined,
+  exclude: ReadonlySet<string>,
+  limit: number,
+): { readonly lines: readonly string[]; readonly names: readonly string[] } {
+  const tokens = requestMatchTokens(request);
+  if (tokens.length === 0 || limit <= 0) return { lines: [], names: [] };
+  const ranked = skills
+    .filter((skill) => !skill.disableModelInvocation && !exclude.has(skill.name))
+    .map((skill, index) => ({
+      skill,
+      index,
+      rank: skillListingRank(skill),
+      relevance: skillRelevance(skill, tokens),
+    }))
+    .filter((entry) => entry.relevance > 0)
+    .sort(
+      (a, b) =>
+        b.relevance - a.relevance || a.rank - b.rank || a.index - b.index,
+    )
+    .slice(0, limit);
+  return {
+    lines: ranked.map((entry) => formatSkillListingLine(entry.skill)),
+    names: ranked.map((entry) => entry.skill.name),
   };
 }
 

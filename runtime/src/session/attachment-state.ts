@@ -28,6 +28,10 @@
  */
 
 import type { SwarmRoutingDecision } from "../agents/swarm-routing.js";
+import {
+  createAttachmentRetentionLedger,
+  type AttachmentRetentionLedger,
+} from "./attachment-retention.js";
 
 /**
  * Tracking fields owned by the per-turn attachments orchestrator.
@@ -166,6 +170,18 @@ export interface AttachmentTrackingState {
     readonly note: string;
     readonly rolloutIds: readonly string[];
   }>;
+  /**
+   * Every attachment block the model has seen, anchored to the history
+   * message it was shown with, so later projections keep the prompt bytes
+   * in place (see session/attachment-retention.ts).
+   */
+  retainedAttachments: AttachmentRetentionLedger;
+  /**
+   * Skill names already in front of the model through the session listing or
+   * a per-request relevance block; the skill listing producer never repeats
+   * them.
+   */
+  listedSkillNames: Set<string>;
 }
 
 const sessionAttachmentState = new WeakMap<object, AttachmentTrackingState>();
@@ -194,6 +210,8 @@ export function getAttachmentTrackingState(
       surfacedRelevantMemoryBytes: 0,
       memoryMode: "enabled",
       memoryCitations: [],
+      retainedAttachments: createAttachmentRetentionLedger(),
+      listedSkillNames: new Set(),
     };
     sessionAttachmentState.set(sessionKey, state);
   }

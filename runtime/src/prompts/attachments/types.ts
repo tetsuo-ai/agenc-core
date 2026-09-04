@@ -321,6 +321,15 @@ export interface SkillListingAttachment {
 }
 
 /**
+ * Skills the current request is about that the session listing did not have
+ * room for. Small and per turn, so keeping it in the prompt costs little.
+ */
+export interface SkillRelevanceAttachment {
+  readonly kind: "skill_relevance";
+  readonly content: string;
+}
+
+/**
  * Passive diagnostics published by configured LSP servers.
  * Source: upstream attachment donor `attachments.ts:2912-2954`.
  */
@@ -364,6 +373,7 @@ export type Attachment =
   | PdfMentionContextAttachment
   | McpResourceAttachment
   | SkillListingAttachment
+  | SkillRelevanceAttachment
   | LspDiagnosticsAttachment;
 
 /** All possible `Attachment.kind` values. */

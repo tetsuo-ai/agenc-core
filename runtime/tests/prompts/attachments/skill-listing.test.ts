@@ -187,6 +187,51 @@ describe("skillListingProducer", () => {
     ).toEqual([]);
   });
 
+  test("the session listing records the names it showed", async () => {
+    const opts = makeOpts();
+    const tracking = getAttachmentTrackingState(opts.sessionKey);
+    const result = await skillListingProducer(opts, tracking);
+    expect(result.map((attachment) => attachment.kind)).toEqual(["skill_listing"]);
+    // Bundled runtime skills join the listing too; the loaded one must be recorded.
+    expect(tracking.listedSkillNames.has("repo-docs")).toBe(true);
+  });
+
+  test("once the listing is present, a request that names an unlisted skill gets a relevance block, once", async () => {
+    const rendered =
+      `<system-reminder>\n${SKILL_LISTING_REMINDER_HEADER}\n\n- repo-docs: Explain the repository docs\n</system-reminder>`;
+    const opts = makeOpts({
+      userInput: "write unit tests for the parser",
+      messages: [
+        { role: "user", content: rendered, runtimeOnly: { mergeBoundary: "user_context" } },
+        { role: "user", content: "write unit tests for the parser" },
+      ],
+      skillsManager: {
+        skillsForConfig: async () => ({
+          invokedSkills: [],
+          availableSkills: [
+            { name: "repo-docs", description: "Explain the repository docs", loadedFrom: "skills" },
+            { name: "generating-unit-tests", description: "Write unit tests for a module", loadedFrom: "skills" },
+            { name: "deploy-helm", description: "Deploy charts to a cluster", loadedFrom: "skills" },
+          ],
+        }),
+      },
+    });
+    const tracking = getAttachmentTrackingState(opts.sessionKey);
+    tracking.listedSkillNames.add("repo-docs");
+
+    const first = await skillListingProducer(opts, tracking);
+    expect(first).toHaveLength(1);
+    expect(first[0]?.kind).toBe("skill_relevance");
+    const content = (first[0] as { content: string }).content;
+    expect(content).toContain("generating-unit-tests");
+    expect(content).not.toContain("repo-docs");
+    expect(content).not.toContain("deploy-helm");
+    expect(tracking.listedSkillNames.has("generating-unit-tests")).toBe(true);
+
+    // The same request again: every relevant name is already in front of the model.
+    expect(await skillListingProducer(opts, tracking)).toEqual([]);
+  });
+
   test("emits nothing for subagents and skips skills that are not model-invocable", async () => {
     const subagent = makeOpts({ subagentDepth: 1 });
     expect(

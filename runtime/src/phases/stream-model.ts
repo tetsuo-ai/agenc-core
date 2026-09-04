@@ -64,6 +64,7 @@ import {
 import { isPlanMode } from "../session/plan-mode.js";
 import {
   createProviderTraceSink,
+  providerTraceBodiesEnabled,
   providerTraceEnabled,
   type ProviderTraceSink,
 } from "../llm/provider-trace-sink.js";
@@ -276,6 +277,7 @@ function resolveProviderTraceSink(session: Session): ProviderTraceSink | undefin
       sink = createProviderTraceSink({
         agencHome: getAgencHomeDir(configuredHome),
         conversationId: String(session.conversationId),
+        bodies: providerTraceBodiesEnabled(),
       });
     } catch {
       sink = null;

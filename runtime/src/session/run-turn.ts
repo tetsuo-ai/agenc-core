@@ -123,6 +123,14 @@ import {
   type LiveInstructionPolicy,
 } from "../prompts/live-instructions.js";
 import { attachmentsToMessages } from "../prompts/attachments/messages.js";
+import {
+  currentUserMessageIndex,
+  isAttachmentMessage,
+  lastHistoryMessageIndex,
+  projectRetainedAttachments,
+  recordRetainedAttachments,
+  type AttachmentRetentionLedger,
+} from "./attachment-retention.js";
 import { extractMentionAllowedRoots } from "../prompts/file-mentions.js";
 import { CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
 import {
@@ -2707,6 +2715,42 @@ export function buildPrompt(
  * is represented as leading `role: "system"` messages before provider wiring,
  * so user-channel context belongs immediately after that leading prefix.
  */
+/**
+ * Place this request's attachments and remember them in the session ledger.
+ * The turn's first request puts them before the prompt, as before; later
+ * requests append them after the newest history item, so everything the
+ * provider already received keeps its bytes and only new items follow.
+ */
+function placeRetainedAttachments(
+  state: TurnState,
+  ledger: AttachmentRetentionLedger,
+  attachmentMessages: ReadonlyArray<LLMMessage>,
+): LLMMessage[] {
+  const messages = state.messagesForQuery;
+  if (state.attachmentsAnchoredForTurn !== true) {
+    const anchorIndex = currentUserMessageIndex(messages);
+    if (anchorIndex < 0) {
+      return insertContextMessagesAfterLeadingSystem(messages, attachmentMessages);
+    }
+    recordRetainedAttachments(ledger, messages, anchorIndex, "before", attachmentMessages);
+    return [
+      ...messages.slice(0, anchorIndex),
+      ...attachmentMessages,
+      ...messages.slice(anchorIndex),
+    ];
+  }
+  const anchorIndex = lastHistoryMessageIndex(messages);
+  if (anchorIndex < 0) {
+    return insertContextMessagesAfterLeadingSystem(messages, attachmentMessages);
+  }
+  recordRetainedAttachments(ledger, messages, anchorIndex, "after", attachmentMessages);
+  return [
+    ...messages.slice(0, anchorIndex + 1),
+    ...attachmentMessages,
+    ...messages.slice(anchorIndex + 1),
+  ];
+}
+
 export function insertContextMessagesAfterLeadingSystem(
   messages: ReadonlyArray<LLMMessage>,
   contextMessages: ReadonlyArray<LLMMessage>,
@@ -2781,6 +2825,8 @@ function extractLastUserText(
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (message?.role !== "user") continue;
+    // Retained attachments are user-channel context, not what the user asked.
+    if (isAttachmentMessage(message)) continue;
     if (typeof message.content === "string") {
       return message.content.length > 0 ? message.content : null;
     }
@@ -3067,6 +3113,19 @@ async function prepareSamplingRequestBoundary(
   const agencHome = attachmentConfigStore.homeContext.path;
   const currentConfig = attachmentConfigStore.current();
   const fileMentionAllowedRoots = extractMentionAllowedRoots(currentConfig);
+  // Retained attachments first: producers see what the model already has in
+  // front of it, and the bytes sent on earlier requests keep their place.
+  // Editor interactions project one immutable revision and stay out of it.
+  const retention =
+    ctx.editorInteraction === undefined
+      ? getAttachmentTrackingState(session).retainedAttachments
+      : undefined;
+  if (retention !== undefined) {
+    state.messagesForQuery = projectRetainedAttachments(
+      state.messagesForQuery,
+      retention,
+    ).messages;
+  }
   const userInput = extractLastUserText(state.messagesForQuery);
   const rootHumanTurn = session.currentRootHumanTurn();
   if (ctx.editorInteraction === undefined) {
@@ -3121,12 +3180,16 @@ async function prepareSamplingRequestBoundary(
     );
     const attachmentMessages = attachmentsToMessages(attachments);
     if (attachmentMessages.length > 0) {
-      state.messagesForQuery = insertContextMessagesBeforeCurrentUser(
-        state.messagesForQuery,
-        attachmentMessages,
-      );
+      state.messagesForQuery =
+        retention === undefined
+          ? insertContextMessagesBeforeCurrentUser(
+              state.messagesForQuery,
+              attachmentMessages,
+            )
+          : placeRetainedAttachments(state, retention, attachmentMessages);
     }
   }
+  if (retention !== undefined) state.attachmentsAnchoredForTurn = true;
 
   const request = buildSamplingRequestContract(state, session, ctx);
   const swarmToolChoice = claimRequiredSwarmToolChoice({

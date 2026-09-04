@@ -236,6 +236,7 @@ These have their own pages. Short map:
 | Web search | `AGENC_WEB_SEARCH_ENDPOINT`, `AGENC_WEB_SEARCH_KIND`, `AGENC_WEB_SEARCH_API_KEY` | [config.md](config.md) |
 | xAI incremental continuation | `AGENC_XAI_INCREMENTAL` (boolean-like; projects to `providers.grok.incremental_continuation`, off by default). Streaming Grok turns then send `previous_response_id` plus the items added since the last completed response instead of the full history | [providers.md](providers.md) |
 | Provider trace | `AGENC_PROVIDER_TRACE` (truthy). Writes one JSON line per model request and per response or error, without message bodies (model, `prompt_cache_key`, `previous_response_id`, `reasoning`, `parallel_tool_calls`, `max_output_tokens`, usage, stream event count, elapsed ms), to `<AGENC_HOME>/agent-logs/<conversation>/llm-<seq>.jsonl` | [providers.md](providers.md) |
+| Provider trace bodies | `AGENC_PROVIDER_TRACE_BODIES` (truthy, only with `AGENC_PROVIDER_TRACE`). Also writes each full request as `agent-logs/<conversationId>/llm-<seq>.request.json` (secrets redacted, mode 0600). The whole prompt lands on disk, so use it in an isolated home for cache-prefix diagnosis and delete the files afterwards. `node scripts/eval/prefix-diff.mjs <that directory>` reports where consecutive requests first diverge. |
 | Trajectories | `AGENC_TRAJECTORY_EXPORT_DIR`, `AGENC_TRAJECTORY_EXPORT_PATH` | [trajectory-training-data.md](../trajectory-training-data.md) |
 
 ## TUI and BUFFER
