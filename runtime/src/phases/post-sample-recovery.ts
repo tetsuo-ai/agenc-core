@@ -23,6 +23,10 @@
  */
 
 import { createHash } from "node:crypto";
+import {
+  runtimeWireEnvelope,
+  toolCallsForRuntime,
+} from "../session/runtime-message-conversion.js";
 
 import { emitError, emitWarning } from "../session/event-log.js";
 import type { LLMMessage } from "../llm/types.js";
@@ -249,22 +253,8 @@ function toCollapseRuntimeMessages(
         : {}),
       ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
       ...(message.phase !== undefined ? { phase: message.phase } : {}),
-      type: role,
-      message: {
-        role,
-        content: runtimeContent,
-      },
-      uuid: `agenc-${role}-${index}`,
-      timestamp: new Date(0).toISOString(),
-      ...(message.toolCalls !== undefined
-        ? {
-            toolCalls: message.toolCalls.map((call) => ({
-              id: call.id,
-              name: call.name,
-              arguments: call.arguments,
-            })),
-          }
-        : {}),
+      ...runtimeWireEnvelope(role, runtimeContent, index),
+      ...toolCallsForRuntime(message.toolCalls),
       ...(message.role === "tool" ? { isMeta: true } : {}),
       ...(message.runtimeOnly !== undefined
         ? { runtimeOnly: message.runtimeOnly }

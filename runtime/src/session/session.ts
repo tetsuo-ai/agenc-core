@@ -60,6 +60,10 @@ import {
   type AgentInvocationChannelMetadata,
 } from "../contracts/agent-invocation-envelope.js";
 import {
+  projectRuntimeOnly,
+  projectToolExchangeFields,
+} from "./runtime-message-conversion.js";
+import {
   buildPostCompactMessages,
   partialCompactConversationAsync,
 } from "../services/compact/compact.js";
@@ -2248,40 +2252,8 @@ function fromCompactRuntimeMessage(message: RuntimeMessage): LLMMessage | null {
   return {
     role,
     content,
-    ...(message.toolCalls !== undefined
-      ? {
-          toolCalls: message.toolCalls.map((call) => ({
-            id: call.id,
-            name: call.name,
-            arguments: call.arguments ?? "",
-          })),
-        }
-      : {}),
-    ...(message.toolCallId !== undefined
-      ? { toolCallId: message.toolCallId }
-      : {}),
-    ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
-    ...(message.phase === "commentary" || message.phase === "final_answer"
-      ? { phase: message.phase }
-      : {}),
-    ...(message.runtimeOnly?.toolResultIntegrity !== undefined ||
-    message.runtimeOnly?.agentInvocation !== undefined
-      ? {
-          runtimeOnly: {
-            ...(message.runtimeOnly?.toolResultIntegrity !== undefined
-              ? {
-                  toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
-                }
-              : {}),
-            ...(message.runtimeOnly?.agentInvocation !== undefined
-              ? {
-                  agentInvocation: message.runtimeOnly.agentInvocation,
-                  mergeBoundary: "user_context" as const,
-                }
-              : {}),
-          },
-        }
-      : {}),
+    ...projectToolExchangeFields(message),
+    ...projectRuntimeOnly(message.runtimeOnly),
   };
 }
 
