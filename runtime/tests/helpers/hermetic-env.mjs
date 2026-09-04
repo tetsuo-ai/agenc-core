@@ -558,7 +558,7 @@ export function createHermeticRunRoot(prefix, explicitBase) {
     }
     base = join(systemRoot, 'Temp')
   } else {
-    base = '/tmp'
+    base = process.platform === 'darwin' ? '/private/tmp' : '/tmp'
   }
   mkdirSync(base, { mode: 0o700, recursive: true })
   return mkdtempSync(join(base, prefix))
