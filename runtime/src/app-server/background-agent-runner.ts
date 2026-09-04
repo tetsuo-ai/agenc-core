@@ -7714,9 +7714,19 @@ export function phaseEventToProgressEvent(
         };
       }
       if (event.stopReason === "error") {
+        // A turn that errored, most often a provider call the network dropped
+        // after dispatch, is a per-turn outcome too. Mapping it to run_error
+        // flipped the agent to status=error and every later prompt was
+        // refused with "no longer running": one connection error ended a
+        // session whose earlier turns had all settled. The turn ends with the
+        // failure spelled out; the agent stays idle and takes the next prompt.
+        const reason = event.error?.message?.trim() || "turn errored";
+        const sentence = /[.!?]$/u.test(reason) ? reason : `${reason}.`;
         return {
-          kind: "run_error",
-          error: event.error?.message ?? "turn errored",
+          kind: "turn_complete",
+          turnId,
+          toolCallCount: 0,
+          finalMessage: `Turn failed: ${sentence} Send a new prompt to retry.`,
         };
       }
       // Bounded stops — the backstop, a turn cap, the cost cap, a

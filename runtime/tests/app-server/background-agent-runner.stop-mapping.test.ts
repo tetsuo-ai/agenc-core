@@ -72,9 +72,24 @@ describe("stop-reason mapping decides turn versus run scope", () => {
     );
   });
 
-  test("a genuine error still ends the run", () => {
-    const mapped = phaseEventToProgressEvent(turnComplete("error"));
-    expect(mapped?.kind).toBe("run_error");
+  test("a turn error ends the turn with the failure spelled out, never the run", () => {
+    const mapped = phaseEventToProgressEvent({
+      type: "turn_complete",
+      content: "",
+      usage,
+      stopReason: "error",
+      error: new Error("grok error: Connection error."),
+      turnId: "turn-1",
+    } as never);
+    expect(mapped?.kind).toBe("turn_complete");
+    expect((mapped as { finalMessage?: string }).finalMessage).toBe(
+      "Turn failed: grok error: Connection error. Send a new prompt to retry.",
+    );
+    const bare = phaseEventToProgressEvent(turnComplete("error"));
+    expect(bare?.kind).toBe("turn_complete");
+    expect((bare as { finalMessage?: string }).finalMessage).toBe(
+      "Turn failed: turn errored. Send a new prompt to retry.",
+    );
   });
 
   test("completed stays a plain turn completion", () => {
