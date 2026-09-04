@@ -509,10 +509,11 @@ export async function resolveLiveInstructionEnvelope(input: {
   // The head keeps the session-start version of both blocks so the cached
   // prefix holds; a change reaches the model through the instruction_update
   // attachment instead (prompts/instruction-head.ts).
-  const head = stabilizeInstructionHead(getAttachmentTrackingState(input.session), {
-    workspaceText,
-    memoryText: freshMemoryText,
-  });
+  const head = stabilizeInstructionHead(
+    getAttachmentTrackingState(input.session),
+    { workspaceText, memoryText: freshMemoryText },
+    resolve(input.ctx.cwd),
+  );
 
   // The trusted role/base prompt is last and therefore cannot be textually
   // shadowed by lower-authority repository guidance or by persisted memory.

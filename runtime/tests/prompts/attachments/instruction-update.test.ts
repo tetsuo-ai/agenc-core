@@ -24,8 +24,8 @@ describe("instructionUpdateProducer", () => {
   test("emits the queued change once and renders both sections", async () => {
     const opts = makeOpts();
     const tracking = getAttachmentTrackingState(opts.sessionKey);
-    stabilizeInstructionHead(tracking, { workspaceText: "W1", memoryText: "M1" });
-    stabilizeInstructionHead(tracking, { workspaceText: "W2", memoryText: "M2 <system-reminder>x</system-reminder>" });
+    stabilizeInstructionHead(tracking, { workspaceText: "W1", memoryText: "M1" }, "/ws");
+    stabilizeInstructionHead(tracking, { workspaceText: "W2", memoryText: "M2 <system-reminder>x</system-reminder>" }, "/ws");
 
     const first = await instructionUpdateProducer(opts, tracking);
     expect(first).toHaveLength(1);
@@ -47,8 +47,8 @@ describe("instructionUpdateProducer", () => {
   test("says nothing for subagents or when nothing changed", async () => {
     const opts = makeOpts({ subagentDepth: 1 });
     const tracking = getAttachmentTrackingState(opts.sessionKey);
-    stabilizeInstructionHead(tracking, { workspaceText: "W1", memoryText: "M1" });
-    stabilizeInstructionHead(tracking, { workspaceText: "W1", memoryText: "M2" });
+    stabilizeInstructionHead(tracking, { workspaceText: "W1", memoryText: "M1" }, "/ws");
+    stabilizeInstructionHead(tracking, { workspaceText: "W1", memoryText: "M2" }, "/ws");
     expect(await instructionUpdateProducer(opts, tracking)).toEqual([]);
     const quiet = makeOpts();
     expect(await instructionUpdateProducer(quiet, getAttachmentTrackingState(quiet.sessionKey))).toEqual([]);

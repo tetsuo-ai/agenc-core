@@ -36,9 +36,16 @@ export interface InstructionHeadUpdate {
 export function stabilizeInstructionHead(
   tracking: AttachmentTrackingState,
   fresh: InstructionHeadTexts,
+  scope: string,
 ): InstructionHeadTexts {
-  if (tracking.instructionHead === undefined) {
+  // A turn in another workspace is another set of instructions, not a change
+  // to this one: start a fresh head for it instead of announcing a diff.
+  if (
+    tracking.instructionHead === undefined ||
+    tracking.instructionHeadScope !== scope
+  ) {
     tracking.instructionHead = fresh;
+    tracking.instructionHeadScope = scope;
     tracking.instructionAnnounced = fresh;
     tracking.pendingInstructionUpdate = undefined;
     return fresh;
@@ -76,6 +83,7 @@ export function takeInstructionHeadUpdate(
 /** Forget the snapshot; the next turn re-reads and starts a new head. */
 export function resetInstructionHead(tracking: AttachmentTrackingState): void {
   tracking.instructionHead = undefined;
+  tracking.instructionHeadScope = undefined;
   tracking.instructionAnnounced = undefined;
   tracking.pendingInstructionUpdate = undefined;
 }
