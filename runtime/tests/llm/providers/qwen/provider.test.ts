@@ -82,6 +82,41 @@ const TOOLS: readonly LLMTool[] = [
   },
 ];
 
+const LONG_MCP_SHARED_PREFIX = `mcp.plugin:${"shared-segment-".repeat(5)}`;
+const LONG_MCP_TOOL_NAMES = [
+  `${LONG_MCP_SHARED_PREFIX}alpha.fetch_record`,
+  `${LONG_MCP_SHARED_PREFIX}bravo.fetch_record`,
+] as const;
+
+function thinkingToolLoopMessages(
+  provider: "qwen" | "qwen-token-plan",
+  model: string,
+) {
+  return [
+    { role: "user" as const, content: "inspect the workspace" },
+    {
+      role: "assistant" as const,
+      content: "",
+      providerReasoningContent: "opaque thinking continuity",
+      providerReasoningProvenance: { provider, model },
+      toolCalls: [
+        {
+          id: "call_echo",
+          name: "system.echo",
+          arguments: '{"text":"ok"}',
+        },
+      ],
+    },
+    {
+      role: "tool" as const,
+      toolCallId: "call_echo",
+      toolName: "system.echo",
+      content: "ok",
+    },
+    { role: "user" as const, content: "continue" },
+  ];
+}
+
 describe.each([
   {
     id: "qwen" as const,
@@ -155,7 +190,7 @@ describe.each([
   });
 
   test("preserves named tool choice while disabling hybrid thinking", async () => {
-    const model = BUILT_IN_PROVIDER_DEFAULT_MODELS[id];
+    const model = "qwen3.7-max";
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       successfulChat(model),
     );
@@ -179,7 +214,256 @@ describe.each([
       function: { name: "Agent" },
     });
     expect(body.enable_thinking).toBe(false);
+    expect(body.preserve_thinking).toBeUndefined();
     expect(body.reasoning_effort).toBeUndefined();
+    expect(Object.keys(body).sort()).toEqual([
+      "enable_thinking",
+      "max_completion_tokens",
+      "messages",
+      "model",
+      "stream",
+      "tool_choice",
+      "tools",
+    ]);
+  });
+
+  test.each(["qwen3.7-max", "qwen3.6-flash"])(
+    "sends preserve_thinking for a %s non-streaming tool continuation",
+    async (model) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        successfulChat(model),
+      );
+      const provider = new Provider({
+        apiKey: key,
+        model,
+        tools: [...TOOLS],
+        fetchImpl,
+      });
+
+      await provider.chat(thinkingToolLoopMessages(id, model), {
+        toolChoice: "auto",
+        parallelToolCalls: true,
+      });
+
+      const body = JSON.parse(
+        String(fetchImpl.mock.calls[0]?.[1]?.body),
+      ) as Record<string, unknown>;
+      expect(body).toMatchObject({
+        model,
+        stream: false,
+        preserve_thinking: true,
+        tool_choice: "auto",
+        parallel_tool_calls: true,
+      });
+      expect(body.enable_thinking).toBeUndefined();
+      expect(body.reasoning_effort).toBeUndefined();
+      expect(Object.keys(body).sort()).toEqual([
+        "max_completion_tokens",
+        "messages",
+        "model",
+        "parallel_tool_calls",
+        "preserve_thinking",
+        "stream",
+        "tool_choice",
+        "tools",
+      ]);
+      expect(body.messages).toEqual([
+        { role: "user", content: "inspect the workspace" },
+        {
+          role: "assistant",
+          content: "",
+          reasoning_content: "opaque thinking continuity",
+          tool_calls: [
+            {
+              id: "call_echo",
+              type: "function",
+              function: {
+                name: "tool2__system_x2eecho",
+                arguments: '{"text":"ok"}',
+              },
+            },
+          ],
+        },
+        { role: "tool", content: "ok", tool_call_id: "call_echo" },
+        { role: "user", content: "continue" },
+      ]);
+    },
+  );
+
+  test.each(["qwen3.7-max", "qwen3.6-flash"])(
+    "sends preserve_thinking for a %s streaming tool continuation",
+    async (model) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        sseResponse([
+          `data: {"model":"${model}","choices":[{"index":0,"delta":{"content":"done"}}]}\n\n`,
+          'data: {"choices":[{"index":0,"finish_reason":"stop"}]}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+      );
+      const provider = new Provider({
+        apiKey: key,
+        model,
+        tools: [...TOOLS],
+        fetchImpl,
+      });
+
+      await provider.chatStream(
+        thinkingToolLoopMessages(id, model),
+        () => {},
+        { toolChoice: "auto" },
+      );
+
+      const body = JSON.parse(
+        String(fetchImpl.mock.calls[0]?.[1]?.body),
+      ) as Record<string, unknown>;
+      expect(body).toMatchObject({
+        model,
+        stream: true,
+        preserve_thinking: true,
+        tool_choice: "auto",
+        stream_options: { include_usage: true },
+      });
+      expect(body.enable_thinking).toBeUndefined();
+      expect(body.reasoning_effort).toBeUndefined();
+      expect(Object.keys(body).sort()).toEqual([
+        "max_completion_tokens",
+        "messages",
+        "model",
+        "preserve_thinking",
+        "stream",
+        "stream_options",
+        "tool_choice",
+        "tools",
+      ]);
+    },
+  );
+
+  test("keeps qwen3.8 reasoning_effort controls independent", async () => {
+    const model = "qwen3.8-max";
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      successfulChat(model),
+    );
+    const provider = new Provider({ apiKey: key, model, fetchImpl });
+
+    await provider.chat([{ role: "user", content: "reason carefully" }], {
+      reasoningEffort: "xhigh",
+    });
+
+    const body = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as Record<string, unknown>;
+    expect(body.reasoning_effort).toBe("xhigh");
+    expect(body.preserve_thinking).toBeUndefined();
+    expect(body.enable_thinking).toBeUndefined();
+    expect(Object.keys(body).sort()).toEqual([
+      "max_completion_tokens",
+      "messages",
+      "model",
+      "reasoning_effort",
+      "stream",
+    ]);
+  });
+
+  test("round-trips two overlength MCP names that share a prefix", async () => {
+    const model = "qwen3.8-max";
+    const longTools: LLMTool[] = LONG_MCP_TOOL_NAMES.map((name) => ({
+      type: "function",
+      function: {
+        name,
+        description: `Run ${name}`,
+        parameters: { type: "object", properties: {} },
+      },
+    }));
+    let selectedWireName = "";
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+      async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as {
+          tools: Array<{ function: { name: string } }>;
+          tool_choice: { function: { name: string } };
+        };
+        const wireNames = body.tools.map((tool) => tool.function.name);
+        expect(wireNames).toHaveLength(2);
+        expect(new Set(wireNames).size).toBe(2);
+        expect(wireNames.every((name) => name.length <= 64)).toBe(true);
+        expect(wireNames.every((name) => /^toolh__/.test(name))).toBe(true);
+        selectedWireName = wireNames[1]!;
+        expect(body.tool_choice.function.name).toBe(selectedWireName);
+        return successfulChat(model, "", {
+          tool_calls: [
+            {
+              id: "call_long",
+              type: "function",
+              function: { name: selectedWireName, arguments: "{}" },
+            },
+          ],
+        });
+      },
+    );
+    const provider = new Provider({
+      apiKey: key,
+      model,
+      tools: longTools,
+      fetchImpl,
+    });
+
+    const response = await provider.chat(
+      [{ role: "user", content: "use the second plugin tool" }],
+      {
+        toolChoice: {
+          type: "function",
+          name: LONG_MCP_TOOL_NAMES[1],
+        },
+      },
+    );
+
+    expect(selectedWireName).toMatch(/^toolh__/);
+    expect(response.toolCalls).toEqual([
+      { id: "call_long", name: LONG_MCP_TOOL_NAMES[1], arguments: "{}" },
+    ]);
+  });
+
+  test("round-trips an overlength MCP name on the streaming path", async () => {
+    const model = "qwen3.8-max";
+    const longTools: LLMTool[] = LONG_MCP_TOOL_NAMES.map((name) => ({
+      type: "function",
+      function: {
+        name,
+        description: `Run ${name}`,
+        parameters: { type: "object", properties: {} },
+      },
+    }));
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+      async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as {
+          tools: Array<{ function: { name: string } }>;
+        };
+        const selectedWireName = body.tools[0]!.function.name;
+        return sseResponse([
+          `data: {"model":"${model}","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_stream_long","type":"function","function":{"name":"${selectedWireName}","arguments":"{}"}}]}}]}\n\n`,
+          'data: {"choices":[{"index":0,"finish_reason":"tool_calls"}]}\n\n',
+          "data: [DONE]\n\n",
+        ]);
+      },
+    );
+    const provider = new Provider({
+      apiKey: key,
+      model,
+      tools: longTools,
+      fetchImpl,
+    });
+
+    const response = await provider.chatStream(
+      [{ role: "user", content: "stream the first plugin tool" }],
+      () => {},
+    );
+
+    expect(response.toolCalls).toEqual([
+      {
+        id: "call_stream_long",
+        name: LONG_MCP_TOOL_NAMES[0],
+        arguments: "{}",
+      },
+    ]);
   });
 
   test("sends vision input and relays tool images after string tool output", async () => {
@@ -550,6 +834,30 @@ describe("QwenCloud registration and fail-closed routing", () => {
       }),
     ).toMatchObject({ supportsImageInput: false, acceptsImageHistory: false });
   });
+
+  test.each([
+    ["qwen", "qwen3.7-flash", true],
+    ["qwen", "qwen3.6-plus", true],
+    ["qwen-token-plan", "qwen3.7-max", true],
+    ["qwen-token-plan", "qwen3.6-flash", true],
+    ["qwen-token-plan", "qwen3.7-flash", false],
+    ["qwen-token-plan", "qwen3.6-plus", false],
+  ] as const)(
+    "%s thinking-history capability for %s is %s",
+    (provider, model, expected) => {
+      expect(
+        resolveProviderCapabilityEntry({ provider, model }),
+      ).toMatchObject({
+        supportsExtendedThinking: expected,
+        acceptsThinkingHistory: expected,
+        acceptsReasoningEffort: false,
+      });
+      expect(
+        chatCompletionsCapabilityHintsForProvider(provider, model)
+          .preservesThinkingHistory === true,
+      ).toBe(expected);
+    },
+  );
 
   test.each(["qwen", "qwen-token-plan"] as const)(
     "fails closed on tool-result images for an unknown %s model",

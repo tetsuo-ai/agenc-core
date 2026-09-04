@@ -29,7 +29,10 @@ import type {
   ToolCallValidationFailure,
 } from "../../types.js";
 import { validateToolCallDetailed } from "../../types.js";
-import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
+import {
+  decodeMcpToolNameFromWire,
+  encodeMcpToolNameForWire,
+} from "../../wire/mcp-tool-naming.js";
 import { LLMProviderError, mapLLMError } from "../../errors.js";
 import { ensureLazyImport } from "../../lazy-import.js";
 import {
@@ -1159,6 +1162,10 @@ export class GrokProvider implements LLMProvider {
           activePlan.requestMetrics,
           activePlan.compactionDiagnostics,
           options?.structuredOutput,
+          this.advertisedCanonicalToolNames(
+            activePlan.params,
+            options?.tools,
+          ),
         );
         this.emitToolCallNormalizationIssues(
           parsed.normalizationIssues,
@@ -1471,6 +1478,14 @@ export class GrokProvider implements LLMProvider {
           throw err;
         }
       }
+      // Resolve hashed tool aliases only against the catalog on this exact
+      // wire attempt. The continuation-expiry branch above can rebuild
+      // `params`, so compute this after that branch and before consuming the
+      // returned stream.
+      const advertisedToolNames = this.advertisedCanonicalToolNames(
+        params,
+        options?.tools,
+      );
       const stream = result.data;
       attemptPhaseTimeoutMs = streamTimeout.timeoutMs;
       streamResponseMeta = buildProviderResponseMeta({
@@ -1628,7 +1643,10 @@ export class GrokProvider implements LLMProvider {
                 contentBlock: {
                   type: "tool_use",
                   id: callId,
-                  name: typeof item.name === "string" ? item.name : "",
+                  name: decodeMcpToolNameFromWire(
+                    typeof item.name === "string" ? item.name : "",
+                    advertisedToolNames,
+                  ),
                   input: {},
                 },
               },
@@ -1666,7 +1684,10 @@ export class GrokProvider implements LLMProvider {
         }
 
         if (event.type === "response.output_item.done") {
-          const { toolCall, issue } = this.toToolCall(event.item);
+          const { toolCall, issue } = this.toToolCall(
+            event.item,
+            advertisedToolNames,
+          );
           if (toolCall) {
             toolCallAccum.set(toolCall.id, toolCall);
           }
@@ -1730,7 +1751,10 @@ export class GrokProvider implements LLMProvider {
           const {
             toolCalls: completedToolCalls,
             normalizationIssues,
-          } = this.extractToolCallsFromOutput(response.output);
+          } = this.extractToolCallsFromOutput(
+            response.output,
+            advertisedToolNames,
+          );
           for (const toolCall of completedToolCalls) {
             toolCallAccum.set(toolCall.id, toolCall);
           }
@@ -2535,11 +2559,13 @@ export class GrokProvider implements LLMProvider {
     requestMetrics?: LLMRequestMetrics,
     compactionDiagnostics?: LLMCompactionDiagnostics,
     structuredOutputRequest?: LLMChatOptions["structuredOutput"],
+    advertisedToolNames: readonly string[] = [],
   ): LLMResponse & {
     normalizationIssues?: readonly ToolCallNormalizationIssue[];
   } {
     const { toolCalls, normalizationIssues } = this.extractToolCallsFromOutput(
       response.output,
+      advertisedToolNames,
     );
 
     const finishReason = this.mapResponseFinishReason(response, toolCalls);
@@ -2568,7 +2594,16 @@ export class GrokProvider implements LLMProvider {
   }
 
   private toStoredResponse(response: Record<string, unknown>): LLMStoredResponse {
-    const parsed = this.parseResponse(response);
+    // A stored response does not carry its original request catalog. Short
+    // self-describing names remain decodable, while hashed aliases fail
+    // closed instead of being guessed from today's configured tool set.
+    const parsed = this.parseResponse(
+      response,
+      undefined,
+      undefined,
+      undefined,
+      [],
+    );
     const encryptedReasoning = this.extractEncryptedReasoningDiagnostics(response, {
       requested: undefined,
     });
@@ -2613,6 +2648,32 @@ export class GrokProvider implements LLMProvider {
       ...(rawOutput ? { output: rawOutput } : {}),
       raw: cloneProviderTracePayload(response),
     };
+  }
+
+  private advertisedCanonicalToolNames(
+    params: Readonly<Record<string, unknown>>,
+    requestTools: readonly LLMTool[] | undefined,
+  ): readonly string[] {
+    const wireTools = Array.isArray(params.tools) ? params.tools : [];
+    const advertisedWireNames = new Set(extractTraceToolNames(wireTools));
+    const candidates = requestTools ?? this.tools;
+    const clientToolNames = candidates
+      .map((tool) => tool.function.name)
+      .filter((name) =>
+        advertisedWireNames.has(encodeMcpToolNameForWire(name))
+      );
+    // Server-side tools use payloads such as `{type:"web_search"}` rather
+    // than function names, and remote MCP definitions can share the same
+    // `type`. The selected request retains the exact definition payload
+    // objects, so identity gives us a precise subset without guessing by
+    // category or accidentally widening an allowlist.
+    const providerNativeToolNames = this.providerNativeTools
+      .filter((definition) => wireTools.includes(definition.payload))
+      .map((definition) => definition.name);
+    return Array.from(new Set([
+      ...clientToolNames,
+      ...providerNativeToolNames,
+    ]));
   }
 
   private extractOutputText(response: Record<string, unknown>): string | undefined {
@@ -2893,7 +2954,10 @@ export class GrokProvider implements LLMProvider {
     }
   }
 
-  private toToolCall(item: unknown): {
+  private toToolCall(
+    item: unknown,
+    advertisedToolNames: readonly string[],
+  ): {
     toolCall: LLMToolCall | null;
     issue?: ToolCallNormalizationIssue;
   } {
@@ -2907,7 +2971,10 @@ export class GrokProvider implements LLMProvider {
       // Decode the strict-regex wire name back to the internal
       // `mcp.<server>.<tool>` form before dispatch. Non-MCP names
       // pass through unchanged.
-      name: decodeMcpToolNameFromWire(String(candidate.name ?? "")),
+      name: decodeMcpToolNameFromWire(
+        String(candidate.name ?? ""),
+        advertisedToolNames,
+      ),
       arguments: String(candidate.arguments ?? ""),
     });
     if (validation.toolCall) {
@@ -2938,7 +3005,10 @@ export class GrokProvider implements LLMProvider {
     };
   }
 
-  private extractToolCallsFromOutput(output: unknown): {
+  private extractToolCallsFromOutput(
+    output: unknown,
+    advertisedToolNames: readonly string[],
+  ): {
     toolCalls: LLMToolCall[];
     normalizationIssues: ToolCallNormalizationIssue[];
   } {
@@ -2948,7 +3018,10 @@ export class GrokProvider implements LLMProvider {
     const toolCalls: LLMToolCall[] = [];
     const normalizationIssues: ToolCallNormalizationIssue[] = [];
     for (const item of output) {
-      const { toolCall, issue } = this.toToolCall(item);
+      const { toolCall, issue } = this.toToolCall(
+        item,
+        advertisedToolNames,
+      );
       if (toolCall) toolCalls.push(toolCall);
       if (issue) normalizationIssues.push(issue);
     }

@@ -301,6 +301,14 @@ export function buildChatCompletionsRequest(
   }
   if (disablesThinkingForForcedToolChoice) {
     body.enable_thinking = false;
+  } else if (
+    input.providerCapabilityHints?.preservesThinkingHistory === true
+  ) {
+    // Qwen 3.6/3.7 ignore replayed reasoning_content by default. Explicitly
+    // preserve it so a thinking-mode tool call can continue after its tool
+    // result. Forced choices take the branch above because Qwen rejects them
+    // while thinking is enabled.
+    body.preserve_thinking = true;
   }
   if (
     input.options?.parallelToolCalls !== undefined &&
@@ -401,6 +409,15 @@ export function parseChatCompletionsResponse(
   response: Record<string, unknown>,
   request: ChatCompletionsRequestOptions,
 ): LLMResponse {
+  // Keep hashed aliases request-scoped. Meta's auto-only compatibility
+  // contract strips the complete tool catalog when callers select `none`;
+  // using the unfiltered input catalog here would let an unadvertised hashed
+  // name resolve anyway if a malformed or hostile response echoed one.
+  const advertisedToolNames =
+    request.providerCapabilityHints?.toolChoicePolicy === "auto_only" &&
+      request.options?.toolChoice === "none"
+      ? []
+      : request.tools.map((tool) => tool.function.name);
   const choices = Array.isArray(response.choices)
     ? (response.choices as Array<Record<string, unknown>>)
     : [];
@@ -424,6 +441,7 @@ export function parseChatCompletionsResponse(
                 (toolCall.function as Record<string, unknown> | undefined) ?? {}
               ).name ?? "",
             ),
+            advertisedToolNames,
           ),
           arguments: String(
             (

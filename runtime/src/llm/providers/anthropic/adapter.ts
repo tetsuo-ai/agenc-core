@@ -535,7 +535,10 @@ export class AnthropicProvider implements LLMProvider {
             // accumulator boundary covers both `toolInputBlockStart`
             // mid-stream emit and the `completedToolCall` emit at
             // content_block_stop.
-            const name = decodeMcpToolNameFromWire(String(block.name ?? ""));
+            const name = decodeMcpToolNameFromWire(
+              String(block.name ?? ""),
+              requestOptions.tools.map((tool) => tool.function.name),
+            );
             toolBlocks.set(index, {
               id,
               name,

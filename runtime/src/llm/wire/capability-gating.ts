@@ -67,6 +67,14 @@ export interface ChatCompletionsCapabilityHints {
   readonly replaysReasoningContent?: boolean;
   /** Canonical destination required for opaque reasoning replay. */
   readonly reasoningContentProvenance?: ProviderReasoningProvenance;
+  /**
+   * Qwen 3.6/3.7 default `preserve_thinking` to false. Their thinking-mode
+   * tool loop only consumes replayed `reasoning_content` when this request
+   * switch is explicitly enabled. Qwen 3.8 defaults it to true and uses the
+   * separate `reasoning_effort` control, so it intentionally does not opt in
+   * here.
+   */
+  readonly preservesThinkingHistory?: boolean;
   /** Forced Qwen tool choices require hybrid thinking to be disabled. */
   readonly disablesThinkingForForcedToolChoice?: boolean;
   /**
@@ -291,6 +299,16 @@ export function chatCompletionsCapabilityHintsForProvider(
   const acceptsToolResultImages =
     resolveModelCapabilityHints({ provider: slug, model })
       ?.supportsImageInput === true;
+  const isQwenCloud = slug === "qwen" || slug === "qwen-token-plan";
+  const preservesThinkingHistory =
+    (slug === "qwen" &&
+      /(?:^|[/:])qwen3\.(?:7-(?:max|plus|flash)|6-(?:max-preview|plus|flash))(?:$|[-_.:])/i.test(
+        model ?? "",
+      )) ||
+    (slug === "qwen-token-plan" &&
+      /(?:^|[/:])qwen3\.(?:7-(?:max|plus)|6-flash)(?:$|[-_.:])/i.test(
+        model ?? "",
+      ));
 
   // reasoning_effort: allow only provider/model combinations with a verified
   // contract. Every other destination either rejects it or silently ignores
@@ -365,9 +383,12 @@ export function chatCompletionsCapabilityHintsForProvider(
             : ("strip" as const),
         }
       : {}),
-    ...(slug === "qwen" || slug === "qwen-token-plan"
+    ...(isQwenCloud
       ? {
           replaysReasoningContent: true,
+          ...(preservesThinkingHistory
+            ? { preservesThinkingHistory: true }
+            : {}),
           disablesThinkingForForcedToolChoice: true,
         }
       : {}),

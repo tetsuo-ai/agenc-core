@@ -267,6 +267,20 @@ function isQwen38ThinkingModel(model: string): boolean {
   );
 }
 
+function isQwenThinkingHistoryModel(model: string): boolean {
+  return matchesModelFamily(
+    model,
+    /(?:^|[/:])qwen3\.(?:8-(?:max|flash)|7-(?:max|plus|flash)|6-(?:max-preview|plus|flash))(?:$|[-_.:])/,
+  );
+}
+
+function isQwenTokenPlanThinkingHistoryModel(model: string): boolean {
+  return matchesModelFamily(
+    model,
+    /(?:^|[/:])qwen3\.(?:8-(?:max|flash)|7-(?:max|plus)|6-flash)(?:$|[-_.:])/,
+  );
+}
+
 function isQwenVisionModel(model: string): boolean {
   return matchesModelFamily(
     model,
@@ -430,17 +444,17 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
   qwen: {
     ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
     supportsImageInput: isQwenVisionModel,
-    supportsExtendedThinking: isQwen38ThinkingModel,
+    supportsExtendedThinking: isQwenThinkingHistoryModel,
     acceptsImageHistory: isQwenVisionModel,
-    acceptsThinkingHistory: isQwen38ThinkingModel,
+    acceptsThinkingHistory: isQwenThinkingHistoryModel,
     acceptsReasoningEffort: isQwen38ThinkingModel,
   },
   "qwen-token-plan": {
     ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
     supportsImageInput: isQwenTokenPlanVisionModel,
-    supportsExtendedThinking: isQwen38ThinkingModel,
+    supportsExtendedThinking: isQwenTokenPlanThinkingHistoryModel,
     acceptsImageHistory: isQwenTokenPlanVisionModel,
-    acceptsThinkingHistory: isQwen38ThinkingModel,
+    acceptsThinkingHistory: isQwenTokenPlanThinkingHistoryModel,
     acceptsReasoningEffort: isQwen38ThinkingModel,
   },
   gemini: {

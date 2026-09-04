@@ -462,7 +462,10 @@ export function parseAnthropicMessagesResponse(
           // Decode the encoded `mcp__server__tool` form back to the
           // internal-registry `mcp.server.tool` form before dispatch.
           // Non-MCP names (e.g. `FileEdit`) pass through unchanged.
-          name: decodeMcpToolNameFromWire(String(block.name ?? "")),
+          name: decodeMcpToolNameFromWire(
+            String(block.name ?? ""),
+            request.tools.map((tool) => tool.function.name),
+          ),
           arguments: JSON.stringify(block.input ?? {}),
         }),
       ),

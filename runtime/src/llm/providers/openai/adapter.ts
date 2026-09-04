@@ -1062,6 +1062,7 @@ export class OpenAIProvider implements LLMProvider {
                   // and reports a silent dispatch miss.
                   name: decodeMcpToolNameFromWire(
                     String(item.name ?? "").trim(),
+                    requestOptions.tools.map((tool) => tool.function.name),
                   ),
                   arguments: String(item.arguments ?? "{}"),
                 },
