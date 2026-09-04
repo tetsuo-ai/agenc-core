@@ -74,6 +74,20 @@ import type {
 } from "./shared.js";
 import { currentRunEpochFromRollout } from "./journal-reconstruction.js";
 
+
+/**
+ * A synchronous throw from `call` becomes a rejected promise, so the caller
+ * handles both failure shapes on one path. The promise is returned from the
+ * try, not left dangling (typescript:S4822).
+ */
+function promiseFromSyncCall<T>(call: () => T | Promise<T>): Promise<T> {
+  try {
+    return Promise.resolve(call());
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
+
 function configuredHookExecutionState(runtime: {
   isDisabled(): boolean;
   isHardSuppressed(): boolean;
@@ -443,15 +457,11 @@ function prepareMcpAuthorityRefresh(
       if (task !== undefined) {
         throw new Error("MCP authority refresh was started more than once");
       }
-      try {
-        task = Promise.resolve(
-          refresh.call(manager, {
-            onSandboxRefreshDeferred: markDeferred,
-          }),
-        );
-      } catch (error) {
-        task = Promise.reject(error);
-      }
+      task = promiseFromSyncCall(() =>
+        refresh.call(manager, {
+          onSandboxRefreshDeferred: markDeferred,
+        }),
+      );
       void task.then(() => {
         if (!deferred) {
           failReady(
